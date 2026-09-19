@@ -8,5 +8,7 @@ pub mod newapi;
 mod secret_file;
 pub mod quota_store;
 pub mod repository;
+pub mod router;
+pub mod router_proxy;
 pub mod skills;
 pub mod storage;

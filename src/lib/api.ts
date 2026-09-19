@@ -25,7 +25,7 @@ import type {
   CustomInstructionStatePayload,
 } from "@/types";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
-import type { NewApiConnection, NewApiConnectionInput, NewApiBalance, NewApiModel, NewApiAppliedConfig } from "@/types/newapi";
+import type { NewApiState, NewApiStateChange, NewApiImportResult, NewApiProvider, NewApiProviderInput } from "@/types/newapi";
 
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (isTauriRuntime()) {
@@ -36,13 +36,17 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 }
 
 export const api = {
-  loadNewApiConnection: () => invoke<NewApiConnection>("load_newapi_connection"),
-  saveNewApiConnection: (connection: NewApiConnectionInput) => invoke<NewApiConnection>("save_newapi_connection", { connection }),
-  forgetNewApiConnection: () => invoke<void>("forget_newapi_connection"),
-  queryNewApiBalance: () => invoke<NewApiBalance>("query_newapi_balance"),
-  fetchNewApiModels: () => invoke<NewApiModel[]>("fetch_newapi_models"),
-  previewNewApiConfig: () => invoke<string>("preview_newapi_config"),
-  applyNewApiConfig: (writeApiKey: boolean) => invoke<NewApiAppliedConfig>("apply_newapi_config", { writeApiKey }),
+  loadNewApiState: () => invoke<NewApiState>("load_newapi_state"),
+  saveNewApiProvider: (provider: NewApiProviderInput) => invoke<NewApiStateChange>("save_newapi_provider", { provider }),
+  deleteNewApiProvider: (id: string) => invoke<NewApiStateChange>("delete_newapi_provider", { id }),
+  setNewApiProviderEnabled: (id: string, enabled: boolean) => invoke<NewApiStateChange>("set_newapi_provider_enabled", { id, enabled }),
+  setNewApiActiveProvider: (id: string) => invoke<NewApiStateChange>("set_newapi_active_provider", { id }),
+  testNewApiProvider: (id: string) => invoke<NewApiProvider>("test_newapi_provider", { id }),
+  queryNewApiProviderBalance: (id: string) => invoke<NewApiProvider>("query_newapi_provider_balance", { id }),
+  setNewApiSmartRouting: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_smart_routing", { enabled }),
+  setNewApiAccountless: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_accountless", { enabled }),
+  importNewApiProviders: (path: string) => invoke<NewApiImportResult>("import_newapi_providers", { path }),
+  exportNewApiProviders: (path: string) => invoke<void>("export_newapi_providers", { path }),
   loadSnapshot: (localOnly = false) =>
     invoke<CoreEnvelope<CoreSnapshotPayload>>("load_snapshot", { localOnly }),
 

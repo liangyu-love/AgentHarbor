@@ -44,7 +44,7 @@ pub fn load(paths: &CodexPaths) -> Result<Connection, String> {
     }
 }
 
-fn base_url(text: &str) -> Result<Url, String> {
+pub(crate) fn base_url(text: &str) -> Result<Url, String> {
     let mut url = Url::parse(text.trim()).map_err(|_| "newapi.errors.url")?;
     if !matches!(url.scheme(), "https" | "http") || url.host_str().is_none()
         || !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some() {
@@ -56,7 +56,7 @@ fn base_url(text: &str) -> Result<Url, String> {
     Ok(url)
 }
 
-fn validate_limits(config: &Connection) -> Result<(), String> {
+pub(crate) fn validate_limits(config: &Connection) -> Result<(), String> {
     if config.context_window.is_some_and(|v| v == 0 || v > 100_000_000)
         || config.auto_compact_limit.is_some_and(|v| v == 0 || v > 100_000_000)
         || matches!((config.context_window, config.auto_compact_limit), (Some(c), Some(a)) if a >= c) {
@@ -99,7 +99,7 @@ pub fn forget(paths: &CodexPaths) -> Result<(), String> {
     }
 }
 
-fn auth_header(token: &str) -> Result<HeaderValue, String> {
+pub(crate) fn auth_header(token: &str) -> Result<HeaderValue, String> {
     let token = token.trim().strip_prefix("Bearer ").unwrap_or(token.trim());
     if token.is_empty() || token.len() > 8192 || token.chars().any(char::is_whitespace) {
         return Err("newapi.errors.token".into());
@@ -109,7 +109,7 @@ fn auth_header(token: &str) -> Result<HeaderValue, String> {
     Ok(value)
 }
 
-fn client(proxy: &ApiProxyConfigPayload) -> Result<Client, String> {
+pub(crate) fn client(proxy: &ApiProxyConfigPayload) -> Result<Client, String> {
     let proxy = super::api_client::sanitize_proxy_config(proxy).map_err(|_| "newapi.errors.proxy")?;
     let mut builder = Client::builder().no_proxy().timeout(Duration::from_secs(20))
         .connect_timeout(Duration::from_secs(8)).redirect(reqwest::redirect::Policy::none());
@@ -117,7 +117,7 @@ fn client(proxy: &ApiProxyConfigPayload) -> Result<Client, String> {
     builder.build().map_err(|_| "newapi.errors.network".into())
 }
 
-fn get(client: &Client, url: Url, headers: HeaderMap) -> Result<Value, String> {
+pub(crate) fn get(client: &Client, url: Url, headers: HeaderMap) -> Result<Value, String> {
     let response = client.get(url).headers(headers).send().map_err(|e| {
         if e.is_timeout() { "newapi.errors.timeout" } else { "newapi.errors.network" }
     })?;
@@ -134,7 +134,7 @@ fn get(client: &Client, url: Url, headers: HeaderMap) -> Result<Value, String> {
     serde_json::from_slice(&body).map_err(|_| "newapi.errors.response".into())
 }
 
-fn endpoint(config: &Connection, path: &str) -> Result<Url, String> {
+pub(crate) fn endpoint(config: &Connection, path: &str) -> Result<Url, String> {
     base_url(&config.base_url)?.join(path).map_err(|_| "newapi.errors.url".into())
 }
 
@@ -143,8 +143,8 @@ fn data(value: &Value) -> Result<&Value, String> {
     value.get("data").filter(|v| v.is_object()).ok_or_else(|| "newapi.errors.response".into())
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct Balance {
     pub remaining: f64,
     pub used: Option<f64>,
@@ -201,8 +201,8 @@ pub fn balance(config: &Connection, proxy: &ApiProxyConfigPayload) -> Result<Bal
     parse_balance(&user, status.as_ref(), user_id)
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct Model {
     pub id: String,
     pub context_window: Option<u64>,
@@ -262,7 +262,7 @@ fn update_document(document: &mut toml_edit::DocumentMut, config: &Connection) -
     Ok(())
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppliedConfig { pub path: String, pub backup_path: Option<String> }
 

@@ -2,6 +2,7 @@
 node_modules/
 .pnpm-store/
 .runtime-test/
+.runtime-test-visual/
 
 # Build
 dist/

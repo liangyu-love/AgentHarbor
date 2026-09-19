@@ -74,6 +74,22 @@ pub fn run() {
             }
 
             let repo_state: tauri::State<'_, Mutex<Repository>> = app.state();
+            {
+                let paths = repo_state.lock().map(|r| r.paths().clone());
+                if let Ok(paths) = paths {
+                    if let Ok(store) = core::router::load_store(&paths) {
+                        if store.router.enabled {
+                            let port = store.router.port;
+                            tauri::async_runtime::spawn(async move {
+                                let proxy = core::newapi::proxy_from_settings(&paths.settings_path);
+                                if let Err(e) = core::router_proxy::ensure_running(port, paths.clone(), proxy).await {
+                                    eprintln!("[AiMaMi] router proxy startup failed: {e}");
+                                }
+                            });
+                        }
+                    }
+                }
+            }
             let hotspot_enabled = repo_state
                 .lock()
                 .map(|r| r.get_hotspot_enabled())
@@ -107,13 +123,17 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::newapi::load_newapi_connection,
-            commands::newapi::save_newapi_connection,
-            commands::newapi::forget_newapi_connection,
-            commands::newapi::query_newapi_balance,
-            commands::newapi::fetch_newapi_models,
-            commands::newapi::preview_newapi_config,
-            commands::newapi::apply_newapi_config,
+            commands::newapi::load_newapi_state,
+            commands::newapi::save_newapi_provider,
+            commands::newapi::delete_newapi_provider,
+            commands::newapi::set_newapi_provider_enabled,
+            commands::newapi::set_newapi_active_provider,
+            commands::newapi::test_newapi_provider,
+            commands::newapi::query_newapi_provider_balance,
+            commands::newapi::set_newapi_smart_routing,
+            commands::newapi::set_newapi_accountless,
+            commands::newapi::import_newapi_providers,
+            commands::newapi::export_newapi_providers,
             commands::system::load_snapshot,
             commands::system::is_updater_configured,
             commands::mcp::load_mcp_servers,
