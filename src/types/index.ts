@@ -33,6 +33,7 @@ export interface AppPathState {
 }
 
 export interface AutoSwitchStatusPayload {
+  supported: boolean;
   enabled: boolean;
   threshold5hPercent: number;
   thresholdWeeklyPercent: number;

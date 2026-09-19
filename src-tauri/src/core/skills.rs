@@ -38,6 +38,7 @@ fn scan_skills_recursive(dir: &Path, root: &Path, items: &mut Vec<InstalledSkill
     };
     for entry in entries.flatten() {
         let path = entry.path();
+        if entry.file_type().map_or(true, |kind| kind.is_symlink()) { continue; }
         if path
             .file_name()
             .map_or(false, |n| n.to_str().map_or(false, |s| s.starts_with('.')))
@@ -139,6 +140,9 @@ pub fn import_skill(
     } else {
         target.clone()
     };
+    if target_canonical.starts_with(&source_canonical) && target_canonical != source_canonical {
+        return Err(CoreError::InvalidData("Cannot import a skill into its own subdirectory".into()));
+    }
     if source_canonical == target_canonical {
         let skill = load_skill_summary(&target.join("SKILL.md"), skills_dir)
             .ok_or_else(|| CoreError::InvalidData("Invalid skill source".into()))?;
@@ -158,10 +162,9 @@ pub fn import_skill(
             &backup_dir,
             "replace",
         )?);
-        std::fs::remove_dir_all(&target)?;
     }
 
-    copy_dir_all(&source, &target)?;
+    replace_skill_directory(&source, &target)?;
     let skill = load_skill_summary(&target.join("SKILL.md"), skills_dir)
         .ok_or_else(|| CoreError::InvalidData("Invalid skill after import".into()))?;
 
@@ -205,7 +208,7 @@ pub fn restore_skill_backup(
     backup_id: &str,
 ) -> Result<SkillRestorePayload, CoreError> {
     let backup_dir = codexmate_dir.join("skill-backups");
-    let backup_path = backup_dir.join(backup_id);
+    let backup_path = checked_child(&backup_dir, backup_id)?;
     if !backup_path.exists() {
         return Err(CoreError::NotFound(format!(
             "Backup not found: {backup_id}"
@@ -221,7 +224,8 @@ pub fn restore_skill_backup(
         )));
     }
 
-    let target = skills_dir.join(&meta.relative_path);
+    std::fs::create_dir_all(skills_dir)?;
+    let target = checked_child(skills_dir, &meta.relative_path)?;
     std::fs::create_dir_all(target.parent().unwrap_or(skills_dir))?;
 
     let mut rollback_backup = None;
@@ -232,10 +236,9 @@ pub fn restore_skill_backup(
             &backup_dir,
             "restore-rollback",
         )?);
-        std::fs::remove_dir_all(&target)?;
     }
 
-    copy_dir_all(&staged, &target)?;
+    replace_skill_directory(&staged, &target)?;
     let restored = load_skill_summary(&target.join("SKILL.md"), skills_dir)
         .ok_or_else(|| CoreError::InvalidData("Backup corrupted".into()))?;
 
@@ -261,7 +264,7 @@ pub fn delete_skill_backup(
     backup_id: &str,
 ) -> Result<SkillDeleteBackupPayload, CoreError> {
     let backup_dir = codexmate_dir.join("skill-backups");
-    let path = backup_dir.join(backup_id);
+    let path = checked_child(&backup_dir, backup_id)?;
     if !path.exists() {
         return Err(CoreError::NotFound(format!(
             "Backup not found: {backup_id}"
@@ -285,7 +288,7 @@ fn backup_skill_directory(
         .ok_or_else(|| CoreError::InvalidData("Invalid skill source".into()))?;
     std::fs::create_dir_all(backup_dir)?;
     let ts = current_timestamp();
-    let safe_path = skill.relative_path.replace('/', "__");
+    let safe_path = skill.relative_path.replace(['/', '\\'], "__");
     let backup_id = format!(
         "{ts}-{safe_path}-{reason}-{}",
         &uuid::Uuid::new_v4().to_string()[..8]
@@ -342,7 +345,11 @@ fn resolve_skill_source(path: &Path) -> Result<PathBuf, CoreError> {
 
 fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), CoreError> {
     std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)?.flatten() {
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        if entry.file_type()?.is_symlink() {
+            return Err(CoreError::InvalidData("Symbolic links inside skills are not supported".into()));
+        }
         let target = dst.join(entry.file_name());
         if entry.path().is_dir() {
             copy_dir_all(&entry.path(), &target)?;
@@ -351,6 +358,46 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), CoreError> {
         }
     }
     Ok(())
+}
+
+fn replace_skill_directory(source: &Path, target: &Path) -> Result<(), CoreError> {
+    if std::fs::symlink_metadata(target).map_or(false, |meta| meta.file_type().is_symlink()) {
+        return Err(CoreError::InvalidData("Cannot replace a linked skill directory".into()));
+    }
+    let parent = target.parent().ok_or_else(|| CoreError::InvalidData("Missing skill parent directory".into()))?;
+    let staged = parent.join(format!(".aimami-stage-{}", uuid::Uuid::new_v4()));
+    let previous = parent.join(format!(".aimami-previous-{}", uuid::Uuid::new_v4()));
+    let result = (|| -> Result<(), CoreError> {
+        copy_dir_all(source, &staged)?;
+        std::fs::read_to_string(staged.join("SKILL.md"))?;
+        let replacing = target.exists();
+        if replacing { std::fs::rename(target, &previous)?; }
+        if let Err(error) = std::fs::rename(&staged, target) {
+            if replacing { std::fs::rename(&previous, target)?; }
+            return Err(error.into());
+        }
+        if replacing { let _ = std::fs::remove_dir_all(&previous); }
+        Ok(())
+    })();
+    if staged.exists() { let _ = std::fs::remove_dir_all(staged); }
+    result
+}
+
+fn checked_child(root: &Path, relative: &str) -> Result<PathBuf, CoreError> {
+    let relative = Path::new(relative);
+    if relative.as_os_str().is_empty() || relative.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+        return Err(CoreError::InvalidData("Invalid skill or backup path".into()));
+    }
+    let target = root.join(relative);
+    let root_resolved = std::fs::canonicalize(root)?;
+    let mut ancestor = target.as_path();
+    while !ancestor.exists() {
+        ancestor = ancestor.parent().ok_or_else(|| CoreError::InvalidData("Invalid skill path".into()))?;
+    }
+    if !std::fs::canonicalize(ancestor)?.starts_with(root_resolved) {
+        return Err(CoreError::InvalidData("Skill path is outside the managed directory".into()));
+    }
+    Ok(target)
 }
 
 fn first_markdown_heading(text: &str) -> Option<String> {

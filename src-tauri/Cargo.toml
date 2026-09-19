@@ -9,6 +9,9 @@ repository = "https://github.com/borawong/AiMaMi"
 edition = "2021"
 rust-version = "1.77"
 
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
 [lib]
 name = "aimami_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
@@ -19,6 +22,9 @@ path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
@@ -31,6 +37,7 @@ tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+toml_edit = "0.22"
 reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls", "socks"], default-features = false }
 base64 = "0.22"
 sha2 = "0.10"
@@ -45,7 +52,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_Foundation"] }
+windows-sys = { version = "0.59", features = ["Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_Foundation", "Win32_Security_Cryptography"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = { version = "3", features = ["OSX_10_15"] }

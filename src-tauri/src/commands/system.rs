@@ -5,6 +5,23 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 
 #[tauri::command]
+pub fn load_snapshot(repo: State<'_, Mutex<Repository>>) -> Result<CoreEnvelope<CoreSnapshotPayload>, String> {
+    repo.lock().map_err(|e| e.to_string())?.load_snapshot_local().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn is_updater_configured(app: AppHandle) -> bool {
+    updater_configured(app.config())
+}
+
+pub(crate) fn updater_configured(config: &tauri::Config) -> bool {
+    config.plugins.0.get("updater").map_or(false, |config| {
+        config.get("pubkey").and_then(|v| v.as_str()).map_or(false, |v| !v.is_empty())
+            && config.get("endpoints").and_then(|v| v.as_array()).map_or(false, |v| !v.is_empty())
+    })
+}
+
+#[tauri::command]
 pub fn clean(repo: State<'_, Mutex<Repository>>) -> Result<CoreEnvelope<CleanPayload>, String> {
     let repo = repo.lock().map_err(|e| e.to_string())?;
     repo.clean().map_err(|e| e.to_string())
@@ -77,15 +94,12 @@ pub fn set_usage_refresh_interval(
 
 #[tauri::command]
 pub async fn test_api_proxy_config(
-    app: AppHandle,
     mode: ApiProxyMode,
     url: Option<String>,
 ) -> Result<CoreEnvelope<ApiProxyTestPayload>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let context = load_api_request_context_from_repo(&app)?;
         let payload = crate::core::api_client::test_api_connectivity(
             &ApiProxyConfigPayload { mode, url },
-            context.as_ref(),
         );
         Ok(CoreEnvelope::ok(payload))
     })
@@ -94,38 +108,19 @@ pub async fn test_api_proxy_config(
 }
 
 #[tauri::command]
-pub async fn detect_api_proxy_config(
-    app: AppHandle,
-) -> Result<CoreEnvelope<ApiProxyDetectPayload>, String> {
+pub async fn detect_api_proxy_config() -> Result<CoreEnvelope<ApiProxyDetectPayload>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let context = load_api_request_context_from_repo(&app)?;
-        let payload = crate::core::api_client::detect_api_proxy_config(context.as_ref());
+        let payload = crate::core::api_client::detect_api_proxy_config();
         Ok(CoreEnvelope::ok(payload))
     })
     .await
     .map_err(|e| format!("Blocking command task failed: {e}"))?
 }
 
-fn load_api_request_context_from_repo(
-    app: &AppHandle,
-) -> Result<Option<crate::core::auth::ApiRequestContext>, String> {
-    let auth_path = {
-        let repo_state = app.state::<Mutex<Repository>>();
-        let repo = repo_state.lock().map_err(|e| e.to_string())?;
-        repo.paths().auth_path.clone()
-    };
-
-    Ok(crate::core::auth::load_auth_file(&auth_path)
-        .ok()
-        .and_then(|auth| crate::core::auth::make_api_request_context(&auth)))
-}
-
 #[tauri::command]
 pub fn run_daemon_once(
-    repo: State<'_, Mutex<Repository>>,
 ) -> Result<CoreEnvelope<DaemonRunPayload>, String> {
-    let r = repo.lock().map_err(|e| e.to_string())?;
-    r.build_daemon_payload(true).map_err(|e| e.to_string())
+    Err("Automatic account switching is not available in this source build".into())
 }
 
 #[tauri::command]

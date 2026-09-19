@@ -14,6 +14,12 @@
 
 ---
 
+## 当前源码修复版
+
+本工作区已修复公开源码的构建缺失与本地配置管理链路，当前可用范围为：概览、MCP、Skills、自定义指令、维护和设置。下文保留上游产品介绍；其中账号切换、实时额度、智能路由、中转、会话管理及刘海窗口没有完整源码实现，不能视为本修复版已具备的功能。
+
+开发启动：`pnpm install --frozen-lockfile` 后运行 `pnpm tauri dev`。Windows 需要 Rust MSVC、Visual Studio C++ Build Tools 和 WebView2。完整步骤、隔离测试方式及验证记录见 [修复版运行说明](docs/RUNNING.md)。
+
 ## 概述
 
 Codex 的账号、会话、MCP、Skills、智能路由与中转配置分散在 `~/.codex` 下的多个文件里。多账号切换、额度耗尽、第三方模型接入与路由维护、会话清理和配置漂移，都会把日常操作变成手改 TOML / JSON / SQLite。

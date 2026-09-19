@@ -127,7 +127,7 @@ pub fn apply_managed_content(
         template_title,
         parsed.raw_content,
     )?;
-    std::fs::write(&paths.global_agents_path, next_content)?;
+    super::storage::write_atomic(&paths.global_agents_path, next_content.as_bytes())?;
     load_state(paths)
 }
 
@@ -163,7 +163,7 @@ pub fn clear_managed_block(paths: &CodexPaths) -> Result<CustomInstructionStateP
             std::fs::remove_file(&paths.global_agents_path)?;
         }
     } else {
-        std::fs::write(&paths.global_agents_path, cleared)?;
+        super::storage::write_atomic(&paths.global_agents_path, cleared.as_bytes())?;
     }
     load_state(paths)
 }
@@ -177,6 +177,19 @@ pub fn rollback_history(
         .ok_or_else(|| CoreError::NotFound(format!("History entry not found: {history_id}")))?;
     let parsed = parse_global_file(paths)?;
 
+    if parsed.protection_state == CustomInstructionProtectionState::Protected {
+        return Err(CoreError::InvalidData("Repair the instruction markers before rollback".into()));
+    }
+    let previous = parse_content(true, snapshot.full_content.clone())?;
+    if previous.protection_state == CustomInstructionProtectionState::Protected {
+        return Err(CoreError::InvalidData("History contains invalid instruction markers".into()));
+    }
+    let restored = if previous.managed_block_present {
+        compose_with_managed_content(&parsed, &previous.managed_content)?
+    } else {
+        clear_managed_content(&parsed)?
+    };
+
     save_history_snapshot(
         paths,
         CustomInstructionHistoryAction::Rollback,
@@ -186,12 +199,12 @@ pub fn rollback_history(
         parsed.raw_content,
     )?;
 
-    if snapshot.full_content.is_empty() {
+    if restored.is_empty() {
         if paths.global_agents_path.exists() {
             std::fs::remove_file(&paths.global_agents_path)?;
         }
     } else {
-        std::fs::write(&paths.global_agents_path, snapshot.full_content)?;
+        super::storage::write_atomic(&paths.global_agents_path, restored.as_bytes())?;
     }
 
     load_state(paths)
@@ -204,6 +217,11 @@ fn parse_global_file(paths: &CodexPaths) -> Result<ParsedManagedBlock, CoreError
     } else {
         String::new()
     };
+
+    parse_content(file_exists, raw_content)
+}
+
+fn parse_content(file_exists: bool, raw_content: String) -> Result<ParsedManagedBlock, CoreError> {
 
     let start_positions: Vec<usize> = raw_content
         .match_indices(MANAGED_START_MARKER)
@@ -373,7 +391,7 @@ fn save_history_snapshot(
         .custom_instruction_history_dir
         .join(format!("{id}.json"));
     let serialized = serde_json::to_string_pretty(&snapshot)?;
-    std::fs::write(path, serialized)?;
+    super::storage::write_atomic(&path, serialized.as_bytes())?;
     trim_history(paths)?;
     Ok(())
 }
@@ -404,12 +422,16 @@ fn load_history(paths: &CodexPaths) -> Result<Vec<CustomInstructionHistorySnapsh
     for entry in std::fs::read_dir(&paths.custom_instruction_history_dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+        if !entry.file_type()?.is_file()
+            || path.extension().and_then(|value| value.to_str()) != Some("json") {
             continue;
         }
-        let raw = std::fs::read_to_string(path)?;
+        let raw = std::fs::read_to_string(&path)?;
         if let Ok(snapshot) = serde_json::from_str::<CustomInstructionHistorySnapshot>(&raw) {
-            items.push(snapshot);
+            if valid_history_id(&snapshot.id)
+                && path.file_stem().and_then(|value| value.to_str()) == Some(snapshot.id.as_str()) {
+                items.push(snapshot);
+            }
         }
     }
     items.sort_by(|a, b| b.created_at.cmp(&a.created_at));
@@ -420,13 +442,23 @@ fn find_history_snapshot(
     paths: &CodexPaths,
     history_id: &str,
 ) -> Result<Option<CustomInstructionHistorySnapshot>, CoreError> {
+    if !valid_history_id(history_id) {
+        return Err(CoreError::InvalidData("Invalid instruction history ID".into()));
+    }
     let path = paths
         .custom_instruction_history_dir
         .join(format!("{history_id}.json"));
     if !path.exists() {
         return Ok(None);
     }
+    if !std::fs::symlink_metadata(&path)?.file_type().is_file() {
+        return Err(CoreError::InvalidData("History must be a regular file".into()));
+    }
     let raw = std::fs::read_to_string(path)?;
     let snapshot = serde_json::from_str::<CustomInstructionHistorySnapshot>(&raw)?;
     Ok(Some(snapshot))
+}
+
+fn valid_history_id(id: &str) -> bool {
+    !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }

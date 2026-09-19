@@ -39,6 +39,7 @@ export function MaintenancePage() {
   const [results, setResults] = useState<Record<string, ActionResult>>({});
   const [runningKeys, setRunningKeys] = useState<Record<string, boolean>>({});
   const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
+  const [cleanConfirmOpen, setCleanConfirmOpen] = useState(false);
 
   const setActionResult = (key: string, result: ActionResult) => {
     setResults((prev) => ({ ...prev, [key]: result }));
@@ -104,6 +105,8 @@ export function MaintenancePage() {
     const startedAt = Date.now();
     try {
       await mutateAsync();
+    } catch {
+      // Each mutation displays its specific error via onError.
     } finally {
       const elapsed = Date.now() - startedAt;
       if (elapsed < MIN_FEEDBACK_MS) {
@@ -151,7 +154,7 @@ export function MaintenancePage() {
       description: t("maintenance.cleanDesc"),
       actionLabel: t("maintenance.cleanAction"),
       loadingLabel: t("maintenance.cleaning"),
-      onAction: () => runAction("clean", () => cleanMutation.mutateAsync()),
+      onAction: () => setCleanConfirmOpen(true),
     },
     {
       key: "rebuild",
@@ -229,6 +232,12 @@ export function MaintenancePage() {
         </div>
       </BentoCard>
 
+      <AlertDialog open={cleanConfirmOpen} onOpenChange={setCleanConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader><AlertDialogTitle>{t("baseline.cleanConfirmTitle")}</AlertDialogTitle><AlertDialogDescription>{t("baseline.cleanConfirmDesc")}</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogFooter><AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction onClick={() => { setCleanConfirmOpen(false); void runAction("clean", () => cleanMutation.mutateAsync()); }}>{t("maintenance.cleanAction")}</AlertDialogAction></AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog open={restartConfirmOpen} onOpenChange={setRestartConfirmOpen}>
         <AlertDialogContent className="max-w-sm">
           <AlertDialogHeader>

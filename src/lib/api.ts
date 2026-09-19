@@ -1,5 +1,7 @@
 import type {
   CoreEnvelope,
+  CoreSnapshotPayload,
+  McpServerSummary,
   CleanPayload,
   RebuildRegistryPayload,
   AutoSwitchConfigPayload,
@@ -23,6 +25,7 @@ import type {
   CustomInstructionStatePayload,
 } from "@/types";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
+import type { NewApiConnection, NewApiConnectionInput, NewApiBalance, NewApiModel, NewApiAppliedConfig } from "@/types/newapi";
 
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (isTauriRuntime()) {
@@ -33,8 +36,15 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 }
 
 export const api = {
+  loadNewApiConnection: () => invoke<NewApiConnection>("load_newapi_connection"),
+  saveNewApiConnection: (connection: NewApiConnectionInput) => invoke<NewApiConnection>("save_newapi_connection", { connection }),
+  forgetNewApiConnection: () => invoke<void>("forget_newapi_connection"),
+  queryNewApiBalance: () => invoke<NewApiBalance>("query_newapi_balance"),
+  fetchNewApiModels: () => invoke<NewApiModel[]>("fetch_newapi_models"),
+  previewNewApiConfig: () => invoke<string>("preview_newapi_config"),
+  applyNewApiConfig: (writeApiKey: boolean) => invoke<NewApiAppliedConfig>("apply_newapi_config", { writeApiKey }),
   loadSnapshot: (localOnly = false) =>
-    invoke<CoreEnvelope<Record<string, unknown>>>("load_snapshot", { localOnly }),
+    invoke<CoreEnvelope<CoreSnapshotPayload>>("load_snapshot", { localOnly }),
 
   clean: () =>
     invoke<CoreEnvelope<CleanPayload>>("clean"),
@@ -84,8 +94,8 @@ export const api = {
   loadMcpServers: () =>
     invoke<CoreEnvelope<McpServerListPayload>>("load_mcp_servers"),
 
-  upsertMcpServer: (name: string, config: Record<string, unknown>) =>
-    invoke<CoreEnvelope<McpServerMutationPayload>>("upsert_mcp_server", { name, config }),
+  upsertMcpServer: (server: Omit<McpServerSummary, "sourcePath">) =>
+    invoke<CoreEnvelope<McpServerMutationPayload>>("upsert_mcp_server", { ...server }),
 
   setMcpServerEnabled: (name: string, enabled: boolean) =>
     invoke<CoreEnvelope<McpServerMutationPayload>>("set_mcp_server_enabled", { name, enabled }),
@@ -99,38 +109,36 @@ export const api = {
   loadSkillBackups: () =>
     invoke<CoreEnvelope<SkillBackupListPayload>>("load_skill_backups"),
 
-  importSkill: (sourcePath: string) =>
-    invoke<CoreEnvelope<SkillImportPayload>>("import_skill", { sourcePath }),
+  importSkill: (path: string) =>
+    invoke<CoreEnvelope<SkillImportPayload>>("import_skill", { path }),
 
-  removeSkill: (name: string) =>
-    invoke<CoreEnvelope<SkillRemovePayload>>("remove_skill", { name }),
+  removeSkill: (id: string) =>
+    invoke<CoreEnvelope<SkillRemovePayload>>("remove_skill", { id }),
 
-  restoreSkillBackup: (name: string) =>
-    invoke<CoreEnvelope<SkillRestorePayload>>("restore_skill_backup", { name }),
+  restoreSkillBackup: (id: string) =>
+    invoke<CoreEnvelope<SkillRestorePayload>>("restore_skill_backup", { id }),
 
-  deleteSkillBackup: (name: string) =>
-    invoke<CoreEnvelope<SkillDeleteBackupPayload>>("delete_skill_backup", { name }),
+  deleteSkillBackup: (id: string) =>
+    invoke<CoreEnvelope<SkillDeleteBackupPayload>>("delete_skill_backup", { id }),
 
   loadCustomInstructionState: () =>
     invoke<CoreEnvelope<CustomInstructionStatePayload>>("load_custom_instruction_state"),
 
-  previewCustomInstructionApply: (templateId: string, content: string) =>
+  previewCustomInstructionApply: (content: string) =>
     invoke<CoreEnvelope<CustomInstructionPreviewPayload>>("preview_custom_instruction_apply", {
-      templateId,
       content,
     }),
 
-  applyCustomInstruction: (templateId: string, content: string) =>
-    invoke<CoreEnvelope<CustomInstructionStatePayload>>("apply_custom_instruction", {
-      templateId,
-      content,
-    }),
+  applyCustomInstruction: (params: { content: string; templateCode?: string; templateTitle?: string; source?: string }) =>
+    invoke<CoreEnvelope<CustomInstructionStatePayload>>("apply_custom_instruction", { ...params }),
 
   clearCustomInstructionBlock: () =>
     invoke<CoreEnvelope<CustomInstructionStatePayload>>("clear_custom_instruction_block"),
 
-  rollbackCustomInstruction: () =>
-    invoke<CoreEnvelope<CustomInstructionStatePayload>>("rollback_custom_instruction"),
+  rollbackCustomInstruction: (historyId: string) =>
+    invoke<CoreEnvelope<CustomInstructionStatePayload>>("rollback_custom_instruction", { historyId }),
+
+  isUpdaterConfigured: () => invoke<boolean>("is_updater_configured"),
 
   hasNotch: () =>
     invoke<boolean>("has_notch").catch(() => false),

@@ -3,6 +3,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useTheme } from "@/hooks/use-theme";
+import { AppAvatarProvider } from "@/hooks/use-app-avatar";
 import { useAccentColor } from "@/hooks/use-accent-color";
 import { useAutoRefresh } from "@/hooks/use-auto-refresh";
 import { useUpdateCheck } from "@/hooks/use-update-check";
@@ -39,6 +40,8 @@ import "./lib/i18n";
 const McpPage = lazy(() =>
   import("@/components/mcp/mcp-page").then((module) => ({ default: module.McpPage })),
 );
+const OverviewPage = lazy(() => import("@/components/overview/overview-page").then((module) => ({ default: module.OverviewPage })));
+const NewApiPage = lazy(() => import("@/components/newapi/newapi-page").then((module) => ({ default: module.NewApiPage })));
 const SkillsPage = lazy(() =>
   import("@/components/skills/skills-page").then((module) => ({ default: module.SkillsPage })),
 );
@@ -59,7 +62,7 @@ export function MainAppRoot() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider delayDuration={200}>
-        <MainApp />
+        <AppAvatarProvider><MainApp /></AppAvatarProvider>
       </TooltipProvider>
     </QueryClientProvider>
   );
@@ -104,7 +107,9 @@ function MainApp() {
   const renderPage = (targetRoute: Route) => {
     switch (targetRoute) {
       case "overview":
-        return null;
+        return <OverviewPage onNavigate={setRoute} />;
+      case "newapi":
+        return <NewApiPage />;
       case "mcp":
         return <McpPage />;
       case "skills":
@@ -141,6 +146,7 @@ function MainApp() {
 
   const routeOrder: Route[] = [
     "overview",
+    "newapi",
     "customInstructions",
     "mcp",
     "skills",

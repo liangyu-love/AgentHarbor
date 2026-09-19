@@ -3,6 +3,7 @@ import type { Update, DownloadEvent } from "@tauri-apps/plugin-updater";
 import { useTranslation } from "react-i18next";
 import type { UpdateInstallabilityPayload } from "@/types";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
+import { api } from "@/lib/api";
 
 interface UpdateInfo {
   version: string;
@@ -25,13 +26,17 @@ export function useUpdateCheck() {
   const [error, setError] = useState<string | null>(null);
   const updateRef = useRef<Update | null>(null);
 
-  const checkForUpdate = useCallback(async (): Promise<"available" | "up-to-date" | "error"> => {
+  const checkForUpdate = useCallback(async (): Promise<"available" | "up-to-date" | "error" | "unconfigured"> => {
     if (!isTauriRuntime()) {
-      return "up-to-date";
+      return "unconfigured";
     }
     setStatus("checking");
     setError(null);
     try {
+      if (!(await api.isUpdaterConfigured())) {
+        setStatus("idle");
+        return "unconfigured";
+      }
       const { check } = await import("@tauri-apps/plugin-updater");
       const update = await check();
       if (update) {

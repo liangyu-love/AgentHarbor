@@ -1,6 +1,5 @@
 #[cfg(target_os = "macos")]
 pub mod accessibility;
-pub mod audio_feedback;
 pub mod daemon;
 pub mod dock;
 #[cfg(target_os = "macos")]

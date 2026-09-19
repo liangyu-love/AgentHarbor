@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import {
   LayoutDashboard,
+  Wallet,
   FileCode2,
   Server,
   Sparkles,
@@ -12,6 +13,7 @@ import {
 } from "lucide-react";
 
 import { useThemeValue, type Theme } from "@/hooks/use-theme";
+import { AppAvatarImage, useAppAvatar } from "@/hooks/use-app-avatar";
 import { cn } from "@/lib/utils";
 import type { Route } from "@/types/navigation";
 import {
@@ -31,6 +33,7 @@ export const appNavItems: {
   labelKey: string;
 }[] = [
   { route: "overview", icon: LayoutDashboard, labelKey: "nav.overview" },
+  { route: "newapi", icon: Wallet, labelKey: "newapi.title" },
   { route: "customInstructions", icon: FileCode2, labelKey: "nav.customInstructions" },
   { route: "mcp", icon: Server, labelKey: "nav.mcp" },
   { route: "skills", icon: Sparkles, labelKey: "nav.skills" },
@@ -43,7 +46,6 @@ const hiddenNavRoutes = new Set<Route>([]);
 export const SIDEBAR_EXPANDED_WIDTH_PX = 176 * 1.05;
 export const SIDEBAR_COLLAPSED_WIDTH_PX = 64;
 
-const SIDEBAR_LOGO_SRC = "/app-icon.png";
 const SIDEBAR_LOGO_TOP_OFFSET_PX = -21;
 
 const navButtonClassName =
@@ -125,6 +127,7 @@ export function AppSidebar({
 }: AppSidebarProps) {
   const { t } = useTranslation();
   const resolvedTheme = useThemeValue();
+  const avatar = useAppAvatar();
 
   const themeLabel =
     resolvedTheme === "dark" ? t("nav.sidebarDarkTheme") : t("nav.sidebarLightTheme");
@@ -137,40 +140,35 @@ export function AppSidebar({
           className="hidden justify-center group-data-[collapsible=icon]/sidebar:flex"
           style={{ marginTop: SIDEBAR_LOGO_TOP_OFFSET_PX }}
         >
-          <img
-            src={SIDEBAR_LOGO_SRC}
-            alt="AiMaMi"
-            className="h-[35px] w-[35px] select-none rounded-full object-cover md:translate-x-1"
-            draggable={false}
-          />
+          <button type="button" onClick={avatar.chooseImage} disabled={avatar.busy}
+            aria-label={t("avatar.choose")} title={t("avatar.choose")}
+            className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50 md:translate-x-1">
+            <AppAvatarImage className="h-[35px] w-[35px] select-none rounded-full object-cover" />
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={() => onNavigate("overview")}
-          className="group/header flex w-full items-center gap-3 rounded-[10px] pl-2.5 pr-3 py-1 text-left transition-colors hover:bg-sidebar-accent group-data-[collapsible=icon]/sidebar:hidden"
+        <div
+          className="flex w-full items-center gap-3 rounded-[10px] pl-2.5 pr-3 py-1 text-left group-data-[collapsible=icon]/sidebar:hidden"
           style={{ marginTop: SIDEBAR_LOGO_TOP_OFFSET_PX }}
         >
-          <div className="relative h-[35px] w-[35px] shrink-0">
-            <img
-              src={SIDEBAR_LOGO_SRC}
-              alt="AiMaMi"
-              className="h-full w-full select-none rounded-full object-cover"
-              draggable={false}
-            />
+          <button type="button" onClick={avatar.chooseImage} disabled={avatar.busy}
+            aria-label={t("avatar.choose")} title={t("avatar.choose")}
+            className="relative h-[35px] w-[35px] shrink-0 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50">
+            <AppAvatarImage className="h-full w-full select-none rounded-full object-cover" />
             <span
               aria-hidden
               className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-sidebar"
             />
-          </div>
-          <div className="flex min-w-0 flex-col leading-tight">
+          </button>
+          <button type="button" onClick={() => onNavigate("overview")}
+            className="flex min-w-0 flex-col items-start rounded-md text-left leading-tight hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
             <span className="truncate text-[15px] font-semibold text-sidebar-foreground">
               AiMaMi
             </span>
             <span className="truncate text-[11px] text-sidebar-foreground/60">
               Codex Assistant
             </span>
-          </div>
-        </button>
+          </button>
+        </div>
       </SidebarHeader>
       <SidebarContent className="pt-[18px]">
         <SidebarMenu>

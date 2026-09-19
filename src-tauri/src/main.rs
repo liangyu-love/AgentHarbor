@@ -2,12 +2,9 @@
 
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("daemon-run-once") {
-        if let Err(error) = codexmate_lib::run_daemon_once_cli() {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
-        return;
+        eprintln!("Automatic account switching is not available in this source build.");
+        std::process::exit(1);
     }
 
-    codexmate_lib::run()
+    aimami_lib::run()
 }

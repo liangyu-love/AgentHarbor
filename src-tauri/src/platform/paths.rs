@@ -89,8 +89,12 @@ impl CodexPaths {
     }
 
     fn resolve_codex_home() -> PathBuf {
-        if let Ok(val) = std::env::var("CODEX_HOME") {
-            return PathBuf::from(val);
+        // App-only override allows development and smoke tests without changing
+        // the Codex environment or touching the user's normal configuration.
+        for name in ["AIMAMI_CODEX_HOME", "CODEX_HOME"] {
+            if let Some(val) = std::env::var_os(name).filter(|v| !v.is_empty()) {
+                return PathBuf::from(val);
+            }
         }
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))

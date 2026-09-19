@@ -22,7 +22,7 @@ pub fn load_mcp_servers(config_path: &Path) -> Result<Vec<McpServerSummary>, Cor
         return Ok(vec![]);
     }
     let text = std::fs::read_to_string(config_path)?;
-    Ok(parse_mcp_servers(&text, &config_path.display().to_string()))
+    parse_mcp_servers(&text, &config_path.display().to_string())
 }
 
 pub fn upsert_mcp_server(
@@ -54,6 +54,7 @@ pub fn set_mcp_server_enabled(
 
 pub fn remove_mcp_server(config_path: &Path, name: &str) -> Result<(), CoreError> {
     let original = load_config_text(config_path)?;
+    let _: toml::Value = original.parse()?;
     let document = parse_mcp_document(&original);
     let block = document
         .blocks
@@ -74,9 +75,36 @@ pub fn remove_mcp_server(config_path: &Path, name: &str) -> Result<(), CoreError
 
 
 fn write_mcp_server(config_path: &Path, server: &McpServerSummary) -> Result<(), CoreError> {
+    if server.name.trim().is_empty() {
+        return Err(CoreError::InvalidData("MCP server name is required".into()));
+    }
+    match server.transport {
+        McpTransport::Stdio if server.command.as_deref().map_or(true, |s| s.trim().is_empty()) =>
+            return Err(CoreError::InvalidData("MCP command is required".into())),
+        McpTransport::Http | McpTransport::Sse => {
+            let url = server.url.as_deref().and_then(|s| reqwest::Url::parse(s).ok())
+                .ok_or_else(|| CoreError::InvalidData("MCP URL is required".into()))?;
+            if !matches!(url.scheme(), "http" | "https") { return Err(CoreError::InvalidData("MCP URL must use HTTP or HTTPS".into())); }
+        }
+        McpTransport::Unknown => return Err(CoreError::InvalidData("Unsupported MCP transport".into())),
+        _ => {}
+    }
     let original = load_config_text(config_path)?;
+    let original_value: toml::Value = original.parse()?;
     let document = parse_mcp_document(&original);
-    let rendered = render_mcp_block(server);
+    let managed: toml::Value = render_mcp_block(server).join("\n").parse()?;
+    let mut preserved = original_value.get("mcp_servers").and_then(|v| v.get(&server.name))
+        .and_then(toml::Value::as_table).cloned().unwrap_or_default();
+    if !preserved.is_empty() && !document.blocks.contains_key(&server.name) {
+        return Err(CoreError::InvalidData("Expand inline MCP configuration into a table before editing".into()));
+    }
+    for key in ["enabled", "transport", "type", "command", "args", "url", "env", "headers", "http_headers"] { preserved.remove(key); }
+    preserved.extend(managed["mcp_servers"][&server.name].as_table().unwrap().clone());
+    let mut servers = toml::Table::new();
+    servers.insert(server.name.clone(), toml::Value::Table(preserved));
+    let mut wrapper = toml::Table::new();
+    wrapper.insert("mcp_servers".into(), toml::Value::Table(servers));
+    let rendered = toml::to_string_pretty(&wrapper)?.lines().map(str::to_owned).collect();
 
     let updated = if let Some(existing) = document.blocks.get(&server.name) {
         if should_relocate_mcp_block(&document.lines, existing) {
@@ -208,18 +236,18 @@ fn render_mcp_block(server: &McpServerSummary) -> Vec<String> {
                 .get(key)
                 .map(|s| s.as_str())
                 .unwrap_or("");
-            lines.push(format!("{key} = {}", quote_toml(value)));
+            lines.push(format!("{} = {}", quote_toml(key), quote_toml(value)));
         }
     }
 
     if !server.headers.is_empty() {
         lines.push(String::new());
-        lines.push(format!("[mcp_servers.{header}.headers]"));
+        lines.push(format!("[mcp_servers.{header}.http_headers]"));
         let mut keys: Vec<&String> = server.headers.keys().collect();
         keys.sort();
         for key in keys {
             let value = server.headers.get(key).map(|s| s.as_str()).unwrap_or("");
-            lines.push(format!("{key} = {}", quote_toml(value)));
+            lines.push(format!("{} = {}", quote_toml(key), quote_toml(value)));
         }
     }
 
@@ -227,8 +255,7 @@ fn render_mcp_block(server: &McpServerSummary) -> Vec<String> {
 }
 
 fn quote_toml(s: &str) -> String {
-    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
-    format!("\"{escaped}\"")
+    toml::Value::String(s.into()).to_string()
 }
 
 struct McpDocument {
@@ -248,6 +275,11 @@ fn parse_mcp_document(text: &str) -> McpDocument {
     let mut current_start: Option<usize> = None;
 
     for (i, line) in lines.iter().enumerate() {
+        if is_managed_block_begin(line.trim()) || is_managed_block_end(line.trim()) {
+            if let (Some(name), Some(start)) = (current_name.take(), current_start.take()) {
+                blocks.insert(name, McpBlock { start, end: i });
+            }
+        }
         let trimmed = strip_toml_comment(line).trim().to_string();
         if !(trimmed.starts_with('[') && trimmed.ends_with(']')) {
             continue;
@@ -350,180 +382,33 @@ fn strip_toml_comment(line: &str) -> &str {
     line
 }
 
-fn parse_mcp_servers(text: &str, source_path: &str) -> Vec<McpServerSummary> {
-    struct Builder {
-        name: String,
-        transport: McpTransport,
-        enabled: bool,
-        command: Option<String>,
-        args: Vec<String>,
-        url: Option<String>,
-        headers: HashMap<String, String>,
-        environment: HashMap<String, String>,
-    }
-
-    let mut builders: HashMap<String, Builder> = HashMap::new();
-    let mut current_server: Option<String> = None;
-    let mut current_subsection: Option<String> = None;
-
-    for line in text.lines() {
-        let trimmed = strip_toml_comment(line).trim().to_string();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            let header = &trimmed[1..trimmed.len() - 1];
-            if let Some((name, sub)) = parse_mcp_section_header(header) {
-                current_server = Some(name.clone());
-                current_subsection = sub;
-                builders.entry(name.clone()).or_insert(Builder {
-                    name,
-                    transport: McpTransport::Unknown,
-                    enabled: true,
-                    command: None,
-                    args: vec![],
-                    url: None,
-                    headers: HashMap::new(),
-                    environment: HashMap::new(),
-                });
-            } else {
-                current_server = None;
-                current_subsection = None;
-            }
-            continue;
-        }
-
-        let Some(ref server_name) = current_server else {
-            continue;
-        };
-        let Some(eq_pos) = trimmed.find('=') else {
-            continue;
-        };
-        let key = trimmed[..eq_pos].trim();
-        let value = trimmed[eq_pos + 1..].trim();
-        let Some(builder) = builders.get_mut(server_name) else {
-            continue;
-        };
-
-        match current_subsection.as_deref() {
-            None => match key {
-                "transport" | "type" => {
-                    builder.transport = match unquote_toml(value).to_lowercase().as_str() {
-                        "stdio" => McpTransport::Stdio,
-                        "http" => McpTransport::Http,
-                        "sse" => McpTransport::Sse,
-                        _ => McpTransport::Unknown,
-                    };
-                }
-                "command" => {
-                    builder.command = Some(unquote_toml(value));
-                    if matches!(builder.transport, McpTransport::Unknown) {
-                        builder.transport = McpTransport::Stdio;
-                    }
-                }
-                "args" => {
-                    builder.args = parse_toml_array(value);
-                    if matches!(builder.transport, McpTransport::Unknown)
-                        && !builder.args.is_empty()
-                    {
-                        builder.transport = McpTransport::Stdio;
-                    }
-                }
-                "url" => {
-                    let u = unquote_toml(value);
-                    if matches!(builder.transport, McpTransport::Unknown) {
-                        builder.transport = if u.to_lowercase().contains("sse") {
-                            McpTransport::Sse
-                        } else {
-                            McpTransport::Http
-                        };
-                    }
-                    builder.url = Some(u);
-                }
-                "enabled" => builder.enabled = value.to_lowercase() == "true",
-                _ => {}
-            },
-            Some("env") => {
-                builder
-                    .environment
-                    .insert(key.to_string(), unquote_toml(value));
-            }
-            Some("headers") => {
-                builder.headers.insert(key.to_string(), unquote_toml(value));
-            }
-            _ => {}
-        }
-    }
-
-    let mut servers: Vec<McpServerSummary> = builders
-        .into_values()
-        .map(|b| McpServerSummary {
-            name: b.name,
-            transport: b.transport,
-            enabled: b.enabled,
-            source_path: source_path.to_string(),
-            command: b.command,
-            args: b.args,
-            url: b.url,
-            headers: b.headers,
-            environment: b.environment,
-        })
-        .collect();
-    servers.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    servers
-}
-
-fn unquote_toml(value: &str) -> String {
-    let t = value.trim();
-    if t.len() >= 2
-        && ((t.starts_with('"') && t.ends_with('"')) || (t.starts_with('\'') && t.ends_with('\'')))
-    {
-        t[1..t.len() - 1].to_string()
-    } else {
-        t.to_string()
-    }
-}
-
-fn parse_toml_array(value: &str) -> Vec<String> {
-    let t = value.trim();
-    if !(t.starts_with('[') && t.ends_with(']')) {
-        return vec![];
-    }
-    let inner = &t[1..t.len() - 1];
+fn parse_mcp_servers(text: &str, source_path: &str) -> Result<Vec<McpServerSummary>, CoreError> {
+    let document: toml::Value = text.parse()?;
+    let Some(servers) = document.get("mcp_servers").and_then(toml::Value::as_table) else { return Ok(vec![]); };
+    let string_map = |value: Option<&toml::Value>| -> HashMap<String, String> {
+        value.and_then(toml::Value::as_table).map(|table| table.iter().filter_map(|(key, value)| value.as_str().map(|s| (key.clone(), s.to_owned()))).collect()).unwrap_or_default()
+    };
     let mut items = Vec::new();
-    let mut current = String::new();
-    let mut in_quotes = false;
-    let mut escaped = false;
-    for ch in inner.chars() {
-        if escaped {
-            current.push(ch);
-            escaped = false;
-            continue;
-        }
-        if ch == '\\' {
-            escaped = true;
-            continue;
-        }
-        if ch == '"' {
-            in_quotes = !in_quotes;
-            continue;
-        }
-        if ch == ',' && !in_quotes {
-            let v = current.trim().to_string();
-            if !v.is_empty() {
-                items.push(v);
-            }
-            current.clear();
-            continue;
-        }
-        current.push(ch);
+    for (name, value) in servers {
+        let command = value.get("command").and_then(toml::Value::as_str).map(str::to_owned);
+        let url = value.get("url").and_then(toml::Value::as_str).map(str::to_owned);
+        let transport = match value.get("transport").or_else(|| value.get("type")).and_then(toml::Value::as_str) {
+            Some("sse") => McpTransport::Sse,
+            _ if command.is_some() => McpTransport::Stdio,
+            _ if url.is_some() => McpTransport::Http,
+            _ => McpTransport::Unknown,
+        };
+        items.push(McpServerSummary {
+            name: name.clone(), transport, command, url,
+            enabled: value.get("enabled").and_then(toml::Value::as_bool).unwrap_or(true),
+            source_path: source_path.into(),
+            args: value.get("args").and_then(toml::Value::as_array).map(|values| values.iter().filter_map(toml::Value::as_str).map(str::to_owned).collect()).unwrap_or_default(),
+            environment: string_map(value.get("env")),
+            headers: string_map(value.get("http_headers").or_else(|| value.get("headers"))),
+        });
     }
-    let trailing = current.trim().to_string();
-    if !trailing.is_empty() {
-        items.push(trailing);
-    }
-    items
+    items.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(items)
 }
 
 fn load_config_text(path: &Path) -> Result<String, CoreError> {
@@ -534,6 +419,7 @@ fn load_config_text(path: &Path) -> Result<String, CoreError> {
 }
 
 fn save_config_text(path: &Path, text: &str) -> Result<(), CoreError> {
+    let _: toml::Value = text.parse()?;
     let normalized = if text.is_empty() || text.ends_with('\n') {
         text.to_string()
     } else {
@@ -542,10 +428,7 @@ fn save_config_text(path: &Path, text: &str) -> Result<(), CoreError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, normalized.as_bytes())?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    super::storage::write_atomic(path, normalized.as_bytes())
 }
 
 #[cfg(test)]
@@ -600,7 +483,7 @@ mod tests {
         let updated = std::fs::read_to_string(&path).unwrap();
 
         let top_pos = updated.find(ROUTER_TOP_MANAGED_BLOCK_BEGIN).unwrap();
-        let mcp_pos = updated.find("[mcp_servers.\"context7\"]").unwrap();
+        let mcp_pos = updated.find("[mcp_servers.context7]").unwrap();
         let bottom_pos = updated.find(BOTTOM_MANAGED_BLOCK_BEGIN).unwrap();
         assert!(top_pos < mcp_pos);
         assert!(mcp_pos < bottom_pos);
@@ -635,14 +518,14 @@ mod tests {
         upsert_mcp_server(&path, &server).unwrap();
         let updated = std::fs::read_to_string(&path).unwrap();
 
-        let mcp_pos = updated.find("[mcp_servers.\"context7\"]").unwrap();
+        let mcp_pos = updated.find("[mcp_servers.context7]").unwrap();
         let bottom_pos = updated.find(BOTTOM_MANAGED_BLOCK_BEGIN).unwrap();
         assert!(mcp_pos < bottom_pos);
         assert!(updated.contains("enabled = false"));
         assert!(!updated.contains("command = \"old\""));
 
         let managed_block = &updated[bottom_pos..];
-        assert!(!managed_block.contains("[mcp_servers.\"context7\"]"));
+        assert!(!managed_block.contains("[mcp_servers.context7]"));
 
         let _ = std::fs::remove_file(path);
     }

@@ -169,7 +169,7 @@ impl Repository {
     }
 
     pub fn load_snapshot_local(&self) -> Result<CoreEnvelope<CoreSnapshotPayload>, CoreError> {
-        let state = self.load_local_state_synced()?;
+        let state = self.load_local_state()?;
         let status = self.make_status_payload(&state);
         Ok(CoreEnvelope::ok_with_warnings(
             CoreSnapshotPayload { status },
@@ -192,7 +192,7 @@ impl Repository {
     }
 
     pub fn clean(&self) -> Result<CoreEnvelope<CleanPayload>, CoreError> {
-        let mut registry = self.load_registry_or_empty();
+        let mut registry = self.load_registry_or_empty()?;
         let original_count = registry.items.len();
         registry
             .items
@@ -209,7 +209,7 @@ impl Repository {
         if self.paths.auth_backups_dir.exists() {
             if let Ok(entries) = std::fs::read_dir(&self.paths.auth_backups_dir) {
                 for entry in entries.flatten() {
-                    let _ = std::fs::remove_file(entry.path());
+                    std::fs::remove_file(entry.path())?;
                     auth_backups_removed += 1;
                 }
             }
@@ -218,7 +218,7 @@ impl Repository {
         if self.paths.registry_backups_dir.exists() {
             if let Ok(entries) = std::fs::read_dir(&self.paths.registry_backups_dir) {
                 for entry in entries.flatten() {
-                    let _ = std::fs::remove_file(entry.path());
+                    std::fs::remove_file(entry.path())?;
                     registry_backups_removed += 1;
                 }
             }
@@ -264,7 +264,10 @@ impl Repository {
         &self,
         enabled: bool,
     ) -> Result<CoreEnvelope<AutoSwitchConfigPayload>, CoreError> {
-        let mut registry = self.load_registry_or_empty();
+        if enabled {
+            return Err(CoreError::OperationFailed("Automatic account switching is not available in this source build".into()));
+        }
+        let mut registry = self.load_registry_or_empty()?;
         let mut config = registry.auto_switch.clone().unwrap_or_default();
         config.enabled = enabled;
         registry.auto_switch = Some(config);
@@ -294,7 +297,7 @@ impl Repository {
         threshold_5h: Option<i32>,
         threshold_weekly: Option<i32>,
     ) -> Result<CoreEnvelope<AutoSwitchConfigPayload>, CoreError> {
-        let mut registry = self.load_registry_or_empty();
+        let mut registry = self.load_registry_or_empty()?;
         let mut config = registry.auto_switch.clone().unwrap_or_default();
 
         if let Some(t) = threshold_5h {
@@ -345,12 +348,8 @@ impl Repository {
         mode: ApiProxyMode,
         url: Option<String>,
     ) -> Result<CoreEnvelope<ApiProxyTestPayload>, CoreError> {
-        let context = load_auth_file(&self.paths.auth_path)
-            .ok()
-            .and_then(|auth| make_api_request_context(&auth));
         let payload = crate::core::api_client::test_api_connectivity(
             &ApiProxyConfigPayload { mode, url },
-            context.as_ref(),
         );
         Ok(CoreEnvelope::ok(payload))
     }
@@ -358,10 +357,7 @@ impl Repository {
     pub fn detect_api_proxy_config(
         &self,
     ) -> Result<CoreEnvelope<ApiProxyDetectPayload>, CoreError> {
-        let context = load_auth_file(&self.paths.auth_path)
-            .ok()
-            .and_then(|auth| make_api_request_context(&auth));
-        let payload = crate::core::api_client::detect_api_proxy_config(context.as_ref());
+        let payload = crate::core::api_client::detect_api_proxy_config();
         Ok(CoreEnvelope::ok(payload))
     }
 
@@ -380,7 +376,7 @@ impl Repository {
     }
 
     pub fn diagnose(&self) -> Result<CoreEnvelope<DiagnosePayload>, CoreError> {
-        let state = self.load_local_state_synced()?;
+        let state = self.load_local_state()?;
         Ok(CoreEnvelope::ok(DiagnosePayload {
             paths: state.paths,
             core_version: env!("CARGO_PKG_VERSION").into(),
@@ -414,7 +410,7 @@ impl Repository {
     pub(crate) fn sync_local_runtime_state(&self) -> Result<Vec<CoreWarning>, CoreError> {
         let mut warnings: Vec<CoreWarning> = Vec::new();
         let current_auth = self.load_current_auth_snapshot();
-        let mut registry = self.load_registry_or_empty();
+        let mut registry = self.load_registry_or_empty()?;
         let mut quota_store = quota_store::load_or_default(&self.paths.quota_store_path);
         if let Some(ref current_auth) = current_auth {
             if let Err(error) = self.sync_current_auth_into_registry(&mut registry, current_auth) {
@@ -441,7 +437,7 @@ impl Repository {
         let mut warnings: Vec<CoreWarning> = Vec::new();
         let current_auth = self.load_current_auth_snapshot();
         let settings = self.load_settings();
-        let registry = self.load_registry_or_empty();
+        let registry = self.load_registry_or_empty()?;
         let quota_store = quota_store::load_or_default(&self.paths.quota_store_path);
         if !self.paths.registry_path.exists() {
             warnings.push(CoreWarning {
@@ -675,7 +671,8 @@ impl Repository {
     ) -> AutoSwitchStatusPayload {
         let config = registry.auto_switch.clone().unwrap_or_default();
         AutoSwitchStatusPayload {
-            enabled: config.enabled,
+            supported: false,
+            enabled: false,
             threshold_5h_percent: config.threshold_5h_percent,
             threshold_weekly_percent: config.threshold_weekly_percent,
             service_state: service_state.unwrap_or_else(|| {
@@ -729,8 +726,9 @@ impl Repository {
         Ok(registry)
     }
 
-    fn load_registry_or_empty(&self) -> RegistryFile {
-        self.load_registry().unwrap_or_else(|_| RegistryFile {
+    fn load_registry_or_empty(&self) -> Result<RegistryFile, CoreError> {
+        if self.paths.registry_path.exists() { return self.load_registry(); }
+        Ok(RegistryFile {
             schema_version: REGISTRY_SCHEMA_VERSION,
             updated_at: current_timestamp(),
             active_account_key: None,
@@ -767,7 +765,7 @@ impl Repository {
         }
 
         let data = serde_json::to_string_pretty(&reg)?;
-        std::fs::write(&self.paths.registry_path, data)?;
+        super::storage::write_atomic(&self.paths.registry_path, data.as_bytes())?;
         Ok(())
     }
 
@@ -879,12 +877,6 @@ impl Repository {
         Ok(registry)
     }
 
-    pub(crate) fn auto_switch_config(&self) -> AutoSwitchConfig {
-        self.load_registry_or_empty()
-            .auto_switch
-            .unwrap_or_default()
-    }
-
     fn make_snapshot_path(&self, account_key: &str) -> PathBuf {
         let safe_name = account_key
             .replace('@', "_")
@@ -898,7 +890,7 @@ impl Repository {
             Ok(s) => s,
             Err(_) => return CodexMateSettings::default(),
         };
-        let mut v: serde_json::Value = match serde_json::from_str(&raw) {
+        let v: serde_json::Value = match serde_json::from_str(&raw) {
             Ok(j) => j,
             Err(_) => return CodexMateSettings::default(),
         };
@@ -934,16 +926,6 @@ impl Repository {
         })
     }
 
-    pub(crate) fn store_bootstrap_usage_analytics(
-        &self,
-        payload: &crate::core::analytics::UsageAnalyticsPayload,
-    ) -> Result<(), CoreError> {
-        self.update_bootstrap_state(|cache| {
-            cache.written_at = Some(current_timestamp());
-            cache.usage_analytics = Some(payload.clone());
-        })
-    }
-
     pub(crate) fn store_bootstrap_mcp_servers(
         &self,
         payload: &McpServerListPayload,
@@ -967,15 +949,16 @@ impl Repository {
     fn save_settings(&self, settings: &CodexMateSettings) -> Result<(), CoreError> {
         self.paths.ensure_directories()?;
         let data = serde_json::to_string_pretty(settings)?;
-        std::fs::write(&self.paths.settings_path, data)?;
+        super::storage::write_atomic(&self.paths.settings_path, data.as_bytes())?;
         Ok(())
     }
 
     pub fn get_hotspot_enabled(&self) -> bool {
-        self.load_settings().hotspot.enabled
+        false // The public source does not include the hotspot frontend.
     }
 
     pub fn set_hotspot_enabled(&self, enabled: bool) -> Result<(), CoreError> {
+        if enabled { return Err(CoreError::OperationFailed("Hotspot view is not available in this source build".into())); }
         let mut settings = self.load_settings();
         settings.hotspot = HotspotConfig { enabled };
         self.save_settings(&settings)?;
@@ -1113,7 +1096,7 @@ mod tests {
                 id_token: None,
                 access_token: None,
                 refresh_token: None,
-                account_id: None,
+                account_id: Some("test-account".into()),
             },
             last_refresh: Some("2026-04-06T00:00:00Z".into()),
         };

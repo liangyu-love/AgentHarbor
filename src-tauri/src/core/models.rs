@@ -210,6 +210,7 @@ impl Default for ApiProxyConfigPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoSwitchStatusPayload {
+    pub supported: bool,
     pub enabled: bool,
     pub threshold_5h_percent: i32,
     pub threshold_weekly_percent: i32,

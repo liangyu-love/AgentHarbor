@@ -1,3 +1,5 @@
+> **Repaired source baseline:** This checkout restores builds and local configuration workflows (overview, MCP, Skills, custom instructions, maintenance and settings). Account switching, live quotas, routing, relay, session management and the notch overlay remain incomplete in the public source. The upstream product description below is not a feature guarantee for this checkout. See [running and validation notes](docs/RUNNING.md).
+
 <p align="center">
   <img src="assets/app-icon-composed.png" alt="AiMaMi" width="128" height="128" />
 </p>

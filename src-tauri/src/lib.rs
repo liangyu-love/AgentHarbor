@@ -15,6 +15,12 @@ use tauri::{Manager, RunEvent};
 
 pub fn run() {
     let shared_paths = Arc::new(CodexPaths::new());
+    let mut context = tauri::generate_context!();
+    if std::env::var_os("AIMAMI_CODEX_HOME").is_some_and(|value| !value.is_empty()) {
+        for window in &mut context.config_mut().app.windows {
+            window.data_directory = Some(shared_paths.codexmate_dir.join("webview"));
+        }
+    }
 
     let single_instance_guard = match platform::single_instance::acquire(&shared_paths) {
         Ok(guard) => guard,
@@ -41,12 +47,18 @@ pub fn run() {
     #[cfg(not(target_os = "windows"))]
     let updater_plugin_builder = tauri_plugin_updater::Builder::new();
 
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    let builder = if commands::system::updater_configured(context.config()) {
+        builder.plugin(updater_plugin_builder.build())
+    } else {
+        builder
+    };
+
+    let app = builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
-        .plugin(updater_plugin_builder.build())
         .manage(Mutex::new(Repository::new()))
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
@@ -81,7 +93,7 @@ pub fn run() {
 
             TrayIconBuilder::with_id("main")
                 .icon(tray_icon)
-                .icon_as_template(true)
+                .icon_as_template(false)
                 .tooltip("AiMaMi")
                 .menu(&tray_menu)
                 .on_menu_event(|app, event| {
@@ -90,12 +102,20 @@ pub fn run() {
                 .show_menu_on_left_click(true)
                 .build(app)?;
 
-            platform::audio_feedback::restore_volume_at_startup();
             schedule_startup_main_window_reveal(app.handle());
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::newapi::load_newapi_connection,
+            commands::newapi::save_newapi_connection,
+            commands::newapi::forget_newapi_connection,
+            commands::newapi::query_newapi_balance,
+            commands::newapi::fetch_newapi_models,
+            commands::newapi::preview_newapi_config,
+            commands::newapi::apply_newapi_config,
+            commands::system::load_snapshot,
+            commands::system::is_updater_configured,
             commands::mcp::load_mcp_servers,
             commands::mcp::upsert_mcp_server,
             commands::mcp::set_mcp_server_enabled,
@@ -134,7 +154,7 @@ pub fn run() {
             commands::hotspot::focus_main_window,
             commands::hotspot::hotspot_ready,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building AiMaMi");
 
     let activation_watcher_guard = platform::single_instance::start_activation_watcher({
@@ -166,7 +186,7 @@ pub fn run() {
 }
 
 fn load_tray_template_icon() -> Result<Image<'static>, String> {
-    let reader = ImageReader::new(Cursor::new(include_bytes!("../../assets/women.png")))
+    let reader = ImageReader::new(Cursor::new(include_bytes!("../icons/32x32.png")))
         .with_guessed_format()
         .map_err(|e| format!("failed to guess tray icon format: {e}"))?;
     let decoded = reader

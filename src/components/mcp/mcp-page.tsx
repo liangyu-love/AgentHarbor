@@ -66,7 +66,7 @@ export function McpPage() {
 
   const refreshAction = useBusyAction({ minVisibleMs: 800 });
 
-  const { data, refetch } = useQuery({
+  const { data, refetch, error, isPending } = useQuery({
     queryKey: ["mcp-servers"],
     queryFn: () => api.loadMcpServers(),
     staleTime: Infinity,
@@ -117,6 +117,9 @@ export function McpPage() {
     }
     return range;
   }, [totalPages, safePage]);
+
+  if (error) return <div role="alert" className="space-y-3 p-4"><p>{t("baseline.readFailed")}</p><p className="text-sm text-muted-foreground">{String(error)}</p><Button onClick={() => void refetch()}>{t("common.refresh")}</Button></div>;
+  if (isPending) return <p role="status" className="p-4 text-muted-foreground">{t("baseline.loading")}</p>;
 
   return (
     <div className="space-y-6">
@@ -323,7 +326,7 @@ function McpEditorDialog({
       setName(server?.name ?? "");
       setTransport(server?.transport ?? "stdio");
       setCommand(server?.command ?? "");
-      setArgs(server?.args.join(", ") ?? "");
+      setArgs(server?.args.join("\n") ?? "");
       setUrl(server?.url ?? "");
       setEnvText(
         server?.environment ? Object.entries(server.environment).map(([k, v]) => `${k}=${v}`).join("\n") : ""
@@ -349,10 +352,10 @@ function McpEditorDialog({
       return api.upsertMcpServer({
         name,
         transport,
-        enabled: true,
-        command: transport === "stdio" ? command : undefined,
-        args: transport === "stdio" ? args.split(",").map((s) => s.trim()).filter(Boolean) : [],
-        url: transport !== "stdio" ? url : undefined,
+        enabled: server?.enabled ?? true,
+        command: transport === "stdio" ? command : null,
+        args: transport === "stdio" ? args.split("\n").map((s) => s.replace(/\r$/, "")).filter((s) => s.length > 0) : [],
+        url: transport !== "stdio" ? url : null,
         headers,
         environment,
       });
@@ -389,7 +392,7 @@ function McpEditorDialog({
           {transport === "stdio" ? (
             <>
               <InputField label={t("mcp.command")} value={command} onChange={setCommand} mono />
-              <InputField label={t("mcp.args")} value={args} onChange={setArgs} mono placeholder="arg1, arg2, ..." />
+              <TextareaField label={t("baseline.argsPerLine")} value={args} onChange={setArgs} mono placeholder={"-y\npackage-name"} />
             </>
           ) : (
             <>

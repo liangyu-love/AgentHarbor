@@ -31,8 +31,8 @@ import type { Theme } from "@/hooks/use-theme";
 const RUNTIME_STATE_DISPLAY_QUERY_KEY = ["runtime-state", "display"] as const;
 import { REFRESH_OPTIONS, type RefreshInterval } from "@/hooks/use-auto-refresh";
 import { useBusyAction } from "@/hooks/use-busy-action";
-import { isMacPlatform } from "@/lib/platform";
 import { ApiProxyDialog } from "@/components/runtime/api-proxy-dialog";
+import { AvatarSettings } from "@/components/settings/avatar-settings";
 
 type SnapshotEnvelope = Awaited<ReturnType<typeof api.loadSnapshot>>;
 interface SettingsPageProps {
@@ -46,7 +46,7 @@ interface SettingsPageProps {
   setLanguage: (lang: string) => void;
   refreshInterval: RefreshInterval;
   setRefreshInterval: (v: RefreshInterval) => void;
-  onCheckUpdate: () => Promise<"available" | "up-to-date" | "error">;
+  onCheckUpdate: () => Promise<"available" | "up-to-date" | "error" | "unconfigured">;
   onRefreshUsageStatus?: () => Promise<unknown>;
 }
 
@@ -75,7 +75,7 @@ export function SettingsPage({
 }: SettingsPageProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const supportsHotspot = isMacPlatform();
+  const supportsHotspot = false;
 
   const statusQuery = useQuery({
     queryKey: RUNTIME_STATE_DISPLAY_QUERY_KEY,
@@ -211,6 +211,8 @@ export function SettingsPage({
             description: t("settings.upToDateDesc"),
             variant: "default",
           });
+        } else if (result === "unconfigured") {
+          toast({ title: t("baseline.updaterUnavailable"), description: t("baseline.updaterUnavailableDesc") });
         } else if (result === "error") {
           toast({
             title: t("settings.updateCheckFailed"),
@@ -241,6 +243,7 @@ export function SettingsPage({
   return (
     <div className="space-y-8">
       <Section title={t("settings.appearance")}>
+        <AvatarSettings />
         <SettingRow label={t("settings.theme")}>
           <SettingSegmentedControl
             items={[
@@ -281,12 +284,13 @@ export function SettingsPage({
           </div>
         </SettingRow>
 
-        <SettingRow label={t("settings.heatmapColor")} description={t("settings.heatmapColorDesc")}>
+        <SettingRow label={t("settings.heatmapColor")} description={t("baseline.quotaUnavailable")}>
           <div className="flex gap-2">
             {(Object.keys(HEATMAP_PRESETS) as HeatmapPreset[]).map((key) => (
               <button
                 key={key}
                 onClick={() => setHeatmap(key)}
+                disabled
                 title={HEATMAP_PRESETS[key].label}
                 className={cn(
                   "h-6 w-6 rounded-full ring-2 ring-offset-2 ring-offset-card transition-transform hover:scale-110",
@@ -328,7 +332,7 @@ export function SettingsPage({
                 </Badge>
               )}
             </div>
-            <p className="mt-0.5 text-xs text-muted-foreground">{t("settings.autoSwitchDesc")}</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">{t(status?.autoSwitch.supported ? "settings.autoSwitchDesc" : "baseline.autoSwitchUnavailable")}</p>
           </div>
           <Switch
             checked={status?.autoSwitch.enabled ?? false}
@@ -339,13 +343,14 @@ export function SettingsPage({
                 disableAutoSwitchMutation.mutate();
               }
             }}
-            disabled={disableAutoSwitchMutation.isPending || saveThresholdsMutation.isPending}
+            disabled={!status?.autoSwitch.supported || disableAutoSwitchMutation.isPending || saveThresholdsMutation.isPending}
           />
         </div>
         <SettingRow
           label={t("settings.refreshInterval")}
-          description={t("settings.refreshIntervalDesc")}
+          description={t("baseline.quotaUnavailable")}
         >
+          <fieldset disabled className="opacity-50">
           <SettingSegmentedControl
             items={REFRESH_OPTIONS.map(({ value, labelKey }) => ({
               value,
@@ -355,6 +360,7 @@ export function SettingsPage({
             onChange={(v) => setRefreshInterval(v as RefreshInterval)}
             compact
           />
+          </fieldset>
         </SettingRow>
         <SettingRow
           label={

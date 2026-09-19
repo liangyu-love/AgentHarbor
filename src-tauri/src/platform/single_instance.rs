@@ -56,11 +56,11 @@ mod imp {
         }
     }
 
-    pub fn acquire() -> Result<SingleInstanceGuard, String> {
+    pub fn acquire(scope: &str) -> Result<SingleInstanceGuard, String> {
         // Local\\ is per interactive user session and avoids the extra
         // privilege requirements that Global\\ can trigger on locked-down
         // Windows machines.
-        let name: Vec<u16> = std::ffi::OsStr::new("Local\\dev.aimami.desktop.single-instance")
+        let name: Vec<u16> = std::ffi::OsStr::new(&format!("Local\\{scope}.single-instance"))
             .encode_wide()
             .chain(std::iter::once(0))
             .collect();
@@ -98,10 +98,10 @@ mod imp {
         _file: File,
     }
 
-    pub fn acquire() -> Result<SingleInstanceGuard, String> {
+    pub fn acquire(scope: &str) -> Result<SingleInstanceGuard, String> {
         let dir = dirs::data_local_dir()
             .unwrap_or_else(std::env::temp_dir)
-            .join("dev.aimami.desktop");
+            .join(scope);
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("prepare single-instance lock dir failed: {e}"))?;
         let path = dir.join("aimami-single-instance.lock");
@@ -130,12 +130,12 @@ pub use imp::SingleInstanceGuard;
 
 #[cfg(windows)]
 pub fn acquire(_paths: &CodexPaths) -> Result<SingleInstanceGuard, String> {
-    imp::acquire()
+    imp::acquire(&instance_scope())
 }
 
 #[cfg(unix)]
 pub fn acquire(_paths: &CodexPaths) -> Result<SingleInstanceGuard, String> {
-    imp::acquire()
+    imp::acquire(&instance_scope())
 }
 
 pub fn start_activation_watcher<F>(on_activate: F) -> Result<ActivationWatcherGuard, String>
@@ -169,8 +169,20 @@ pub fn request_existing_instance_activation() -> bool {
 fn activation_request_path() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join("dev.aimami.desktop")
+        .join(instance_scope())
         .join("aimami-activate.request")
+}
+
+fn instance_scope() -> String {
+    if std::env::var_os("AIMAMI_CODEX_HOME").is_some_and(|value| !value.is_empty()) {
+        use sha2::{Digest, Sha256};
+        let paths = CodexPaths::new();
+        let absolute = std::fs::canonicalize(&paths.codex_home).unwrap_or(paths.codex_home);
+        let hash = Sha256::digest(absolute.to_string_lossy().as_bytes());
+        format!("dev.aimami.desktop.{hash:x}")
+    } else {
+        "dev.aimami.desktop".into()
+    }
 }
 
 fn prepare_activation_dir(path: &Path) -> Result<(), String> {

@@ -44,7 +44,6 @@ export function SkillsPage() {
   const backupsQuery = useQuery({
     queryKey: ["skill-backups"],
     queryFn: () => api.loadSkillBackups(),
-    enabled: tab === "backups",
   });
 
   const importMutation = useMutation({
@@ -54,7 +53,10 @@ export function SkillsPage() {
       if (typeof path === "string") return api.importSkill(path);
       throw new Error("cancelled");
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["installed-skills"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["installed-skills"] });
+      queryClient.invalidateQueries({ queryKey: ["skill-backups"] });
+    },
   });
 
   const removeMutation = useMutation({
@@ -95,6 +97,10 @@ export function SkillsPage() {
       variant: "default",
     });
   };
+
+  const activeQuery = tab === "installed" ? skillsQuery : backupsQuery;
+  if (activeQuery.error) return <div role="alert" className="space-y-3 p-4"><p>{t("baseline.readFailed")}</p><p className="text-sm text-muted-foreground">{String(activeQuery.error)}</p><Button onClick={() => void activeQuery.refetch()}>{t("common.refresh")}</Button></div>;
+  if (activeQuery.isPending) return <p role="status" className="p-4 text-muted-foreground">{t("baseline.loading")}</p>;
 
   return (
     <div className="space-y-6">
