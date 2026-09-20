@@ -50,5 +50,5 @@ pub fn log_main_bundle_identity() {
         .bundleIdentifier()
         .map(|s| s.to_string())
         .unwrap_or_else(|| "<nil>".into());
-    eprintln!("[AiMaMi] NSBundle.mainBundle: path={path} CFBundleIdentifier={bid}");
+    eprintln!("[CodexHarbor] NSBundle.mainBundle: path={path} CFBundleIdentifier={bid}");
 }

@@ -183,38 +183,41 @@ export function MaintenancePage() {
     <div className="space-y-6">
       <p className="text-sm text-muted-foreground">{t("maintenance.description")}</p>
 
-      <BentoCard className="p-0">
-        <div className="divide-y divide-border">
+      <div className="grid gap-4 sm:grid-cols-2">
         {actions.map(({ key, icon: Icon, iconTile, label, description, actionLabel, loadingLabel, onAction, variant }) => {
           const result = results[key];
           const busy = !!runningKeys[key];
           return (
-            <div key={key} className="px-5 py-4 transition-colors hover:bg-accent">
-              <div className="flex items-center justify-between gap-4">
-                <div className="flex min-w-0 items-center gap-3">
-                  <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ring-1 ring-inset", iconTile)}>
-                    <Icon className="h-4 w-4" />
+            <BentoCard key={key} className="flex flex-col justify-between p-5">
+              <div>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ring-1 ring-inset", iconTile)}>
+                      <Icon className="h-4 w-4" />
+                    </div>
+                    <span className="text-[15px] font-semibold tracking-tight">{label}</span>
                   </div>
-                  <div className="min-w-0">
-                    <span className="text-[14px] font-semibold">{label}</span>
-                    <p className="mt-0.5 text-xs text-muted-foreground leading-relaxed">{description}</p>
-                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={onAction}
+                    disabled={busy}
+                    className={cn(
+                      "shrink-0",
+                      variant === "destructive" ? "text-muted-foreground hover:bg-destructive hover:text-white hover:border-destructive" : ""
+                    )}
+                  >
+                    {busy && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+                    {busy ? loadingLabel : actionLabel}
+                  </Button>
                 </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={onAction}
-                  disabled={busy}
-                  className={cn("shrink-0", variant === "destructive" ? "text-muted-foreground hover:bg-destructive hover:text-white hover:border-destructive" : "")}
-                >
-                  {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                  {busy ? loadingLabel : actionLabel}
-                </Button>
+                <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{description}</p>
               </div>
+
               {result && (
                 <div
                   className={cn(
-                    "mt-3 flex items-start gap-2 rounded-xl border px-3 py-2 text-xs",
+                    "mt-4 flex items-start gap-2 rounded-xl border px-3 py-2 text-xs",
                     result.type === "success"
                       ? "border-emerald-500/20 bg-emerald-500/5 text-emerald-700 dark:text-emerald-400"
                       : "border-destructive/20 bg-destructive/5 text-destructive"
@@ -225,14 +228,13 @@ export function MaintenancePage() {
                   ) : (
                     <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                   )}
-                  <span>{result.message}</span>
+                  <span className="leading-relaxed">{result.message}</span>
                 </div>
               )}
-            </div>
+            </BentoCard>
           );
         })}
-        </div>
-      </BentoCard>
+      </div>
 
       <AlertDialog open={cleanConfirmOpen} onOpenChange={setCleanConfirmOpen}>
         <AlertDialogContent>

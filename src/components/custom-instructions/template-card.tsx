@@ -1,8 +1,9 @@
 import { Badge } from "@/components/ui/badge";
-import { BentoInnerPanel } from "@/components/ui/bento-inner-panel";
 import { Button } from "@/components/ui/button";
 import type { CustomInstructionTemplate } from "@/lib/custom-instruction-templates";
 import { useTranslation } from "react-i18next";
+import { cn } from "@/lib/utils";
+import { Sparkles, Eye, ArrowRight, Check } from "lucide-react";
 
 interface TemplateCardProps {
   template: CustomInstructionTemplate;
@@ -15,42 +16,68 @@ export function TemplateCard({ template, isSelected, onSelect, onPreview }: Temp
   const { t } = useTranslation();
 
   return (
-    <BentoInnerPanel
-      className={isSelected ? "border-primary/40 bg-primary/[0.05]" : undefined}
+    <div
+      className={cn(
+        "rounded-xl border p-4 flex flex-col justify-between transition-all duration-200",
+        isSelected
+          ? "border-primary/50 bg-primary/[0.05] ring-1 ring-primary/20 shadow-sm"
+          : "border-border/80 bg-card hover:border-primary/30 hover:shadow-sm"
+      )}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="space-y-2">
-          <div>
-            <div className="text-sm font-semibold">{template.title}</div>
-            <p className="mt-1 text-xs leading-5 text-muted-foreground">{template.summary}</p>
+      <div>
+        <div className="flex items-start justify-between gap-2.5">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <Sparkles className="h-3.5 w-3.5" />
+            </span>
+            <h3 className="text-sm font-bold tracking-tight text-foreground truncate" title={template.title}>
+              {template.title}
+            </h3>
           </div>
-
-          <div className="flex flex-wrap gap-2">
-            {template.tags.map((tag) => (
-              <Badge key={tag} variant="outline" className="text-[11px]">
-                {tag}
-              </Badge>
-            ))}
-          </div>
-
-          <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
-            {typeof template.applyCount === "number" && (
-              <span className="flex items-center rounded-full border border-border px-2.5 py-0.5">
-                {t("customInstructions.appliedCount", { count: template.applyCount })}
-              </span>
-            )}
-          </div>
+          {typeof template.applyCount === "number" && template.applyCount > 0 && (
+            <span className="shrink-0 text-[10px] font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded-full">
+              {t("customInstructions.appliedCount", { count: template.applyCount })}
+            </span>
+          )}
         </div>
 
-        <div className="flex shrink-0 flex-col gap-2">
-          <Button variant={isSelected ? "default" : "outline"} size="sm" onClick={onSelect}>
-            {isSelected ? t("customInstructions.loadedToEditor") : t("customInstructions.loadToEditor")}
-          </Button>
-          <Button variant="outline" size="sm" onClick={onPreview}>
-            {t("customInstructions.previewAction")}
-          </Button>
+        <p className="mt-2.5 text-xs text-muted-foreground line-clamp-2 leading-relaxed min-h-[32px]">
+          {template.summary}
+        </p>
+
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {template.tags.map((tag) => (
+            <Badge key={tag} variant="outline" className="text-[10px] px-1.5 py-0 bg-muted/30">
+              {tag}
+            </Badge>
+          ))}
         </div>
       </div>
-    </BentoInnerPanel>
+
+      <div className="mt-4 pt-2.5 border-t border-border/50 flex items-center justify-between gap-2">
+        <Button variant="outline" size="sm" className="h-7 text-xs px-2.5 gap-1" onClick={onPreview}>
+          <Eye className="h-3.5 w-3.5 text-muted-foreground" />
+          {t("customInstructions.previewAction")}
+        </Button>
+        <Button
+          variant={isSelected ? "default" : "outline"}
+          size="sm"
+          className="h-7 text-xs px-2.5 gap-1"
+          onClick={onSelect}
+        >
+          {isSelected ? (
+            <>
+              <Check className="h-3 w-3" />
+              {t("customInstructions.loadedToEditor")}
+            </>
+          ) : (
+            <>
+              <ArrowRight className="h-3 w-3" />
+              {t("customInstructions.loadToEditor")}
+            </>
+          )}
+        </Button>
+      </div>
+    </div>
   );
 }

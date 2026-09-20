@@ -2,11 +2,11 @@ use crate::core::models::{AutoSwitchRuntimeState, CoreError};
 use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "macos")]
-const MACOS_DAEMON_LABEL: &str = "dev.aimami.auto-switch";
+const MACOS_DAEMON_LABEL: &str = "dev.codexharbor.auto-switch";
 #[cfg(target_os = "macos")]
-const LEGACY_MACOS_DAEMON_LABEL: &str = "dev.aimami.legacy-auto-switch";
+const LEGACY_MACOS_DAEMON_LABEL: &str = "dev.codexharbor.legacy-auto-switch";
 #[cfg(target_os = "macos")]
-const LEGACY_MACOS_DAEMON_PLIST: &str = "dev.aimami.legacy-auto-switch.plist";
+const LEGACY_MACOS_DAEMON_PLIST: &str = "dev.codexharbor.legacy-auto-switch.plist";
 #[cfg(target_os = "macos")]
 static LEGACY_DAEMON_CLEANUP: std::sync::Once = std::sync::Once::new();
 
@@ -66,9 +66,9 @@ pub fn install_daemon(
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/tmp/codexmate-auto-switch.log</string>
+    <string>/tmp/codexharbor-auto-switch.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/codexmate-auto-switch-error.log</string>
+    <string>/tmp/codexharbor-auto-switch-error.log</string>
 </dict>
 </plist>"#,
         MACOS_DAEMON_LABEL,

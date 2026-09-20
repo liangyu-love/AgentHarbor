@@ -38,7 +38,7 @@ impl Connection {
 }
 
 pub fn load(paths: &CodexPaths) -> Result<Connection, String> {
-    match secret_file::read(&paths.codexmate_dir.join("newapi-connection.dat"))? {
+    match secret_file::read(&paths.app_data_dir.join("newapi-connection.dat"))? {
         Some(bytes) => serde_json::from_slice(&bytes).map_err(|_| "newapi.errors.storage".into()),
         None => Ok(Connection::default()),
     }
@@ -87,12 +87,12 @@ pub fn save(paths: &CodexPaths, mut next: Connection) -> Result<ConnectionView, 
         if !token.is_empty() { auth_header(token)?; }
     }
     let bytes = serde_json::to_vec(&next).map_err(|_| "newapi.errors.storage")?;
-    secret_file::write(&paths.codexmate_dir.join("newapi-connection.dat"), &bytes)?;
+    secret_file::write(&paths.app_data_dir.join("newapi-connection.dat"), &bytes)?;
     Ok(next.view())
 }
 
 pub fn forget(paths: &CodexPaths) -> Result<(), String> {
-    match std::fs::remove_file(paths.codexmate_dir.join("newapi-connection.dat")) {
+    match std::fs::remove_file(paths.app_data_dir.join("newapi-connection.dat")) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(_) => Err("newapi.errors.storage".into()),
@@ -243,7 +243,7 @@ pub fn config_snippet(config: &Connection) -> Result<String, String> {
 fn update_document(document: &mut toml_edit::DocumentMut, config: &Connection) -> Result<(), String> {
     use toml_edit::value;
     document["model"] = value(&config.model);
-    document["model_provider"] = value("aimami_newapi");
+    document["model_provider"] = value("codexharbor_newapi");
     for (key, setting) in [("model_context_window", config.context_window), ("model_auto_compact_token_limit", config.auto_compact_limit)] {
         if let Some(setting) = setting { document[key] = value(setting as i64); } else { document.remove(key); }
     }
@@ -252,12 +252,12 @@ fn update_document(document: &mut toml_edit::DocumentMut, config: &Connection) -
         providers.set_implicit(true);
         document["model_providers"] = toml_edit::Item::Table(providers);
     }
-    let provider = &mut document["model_providers"]["aimami_newapi"];
+    let provider = &mut document["model_providers"]["codexharbor_newapi"];
     *provider = toml_edit::Item::Table(toml_edit::Table::new());
-    provider["name"] = value("AiMaMi New API");
+    provider["name"] = value("CodexHarbor New API");
     provider["base_url"] = value(endpoint(config, "v1")?.as_str());
     provider["wire_api"] = value("responses");
-    provider["env_key"] = value("AIMAMI_NEWAPI_KEY");
+    provider["env_key"] = value("CODEX_HARBOR_NEWAPI_KEY");
     provider["requires_openai_auth"] = value(false);
     Ok(())
 }
@@ -279,12 +279,12 @@ pub fn apply_config(paths: &CodexPaths, config: &Connection, write_api_key: bool
     update_document(&mut document, config)?;
     if write_api_key {
         auth_header(&config.api_key)?;
-        let provider = document["model_providers"]["aimami_newapi"].as_table_mut().ok_or("newapi.errors.configParse")?;
+        let provider = document["model_providers"]["codexharbor_newapi"].as_table_mut().ok_or("newapi.errors.configParse")?;
         provider.remove("env_key");
         provider["experimental_bearer_token"] = toml_edit::value(config.api_key.trim().strip_prefix("Bearer ").unwrap_or(config.api_key.trim()));
     }
     let backup = if let Some(original) = original {
-        let path = paths.codexmate_dir.join("config-backups").join(format!("{}.toml", uuid::Uuid::new_v4()));
+        let path = paths.app_data_dir.join("config-backups").join(format!("{}.toml", uuid::Uuid::new_v4()));
         storage::write_atomic(&path, original.as_bytes()).map_err(|_| "newapi.errors.storage")?;
         Some(path.display().to_string())
     } else { None };
@@ -344,7 +344,7 @@ mod tests {
         assert!(!encoded.contains("sk-fixture-model-key"));
         assert_eq!(load(&paths).unwrap().access_token, c.access_token);
         #[cfg(windows)]
-        assert!(!String::from_utf8_lossy(&std::fs::read(paths.codexmate_dir.join("newapi-connection.dat")).unwrap()).contains("fixture-user-token"));
+        assert!(!String::from_utf8_lossy(&std::fs::read(paths.app_data_dir.join("newapi-connection.dat")).unwrap()).contains("fixture-user-token"));
         let mut edit = c.clone(); edit.access_token.clear(); edit.api_key.clear();
         save(&paths, edit.clone()).unwrap();
         assert_eq!(load(&paths).unwrap().api_key, c.api_key);
@@ -382,7 +382,7 @@ mod tests {
         assert_eq!(parsed["mcp_servers"]["demo"]["command"].as_str(), Some("node"));
         assert_eq!(parsed["model_providers"]["other"]["name"].as_str(), Some("Other"));
         assert_eq!(parsed["model_context_window"].as_integer(), Some(128000));
-        assert_eq!(parsed["model_providers"]["aimami_newapi"]["env_key"].as_str(), Some("AIMAMI_NEWAPI_KEY"));
+        assert_eq!(parsed["model_providers"]["codexharbor_newapi"]["env_key"].as_str(), Some("CODEX_HARBOR_NEWAPI_KEY"));
         c.context_window = None; c.auto_compact_limit = None;
         apply_config(&paths, &c, true).unwrap();
         let text = std::fs::read_to_string(&paths.config_path).unwrap();
@@ -400,8 +400,8 @@ mod tests {
         let c = connection();
         let preview = config_snippet(&c).unwrap();
         let parsed = preview.parse::<toml::Value>().unwrap();
-        assert_eq!(parsed["model_providers"]["aimami_newapi"]["base_url"].as_str(), Some("https://example.com/v1"));
-        assert_eq!(parsed["model_providers"]["aimami_newapi"]["wire_api"].as_str(), Some("responses"));
+        assert_eq!(parsed["model_providers"]["codexharbor_newapi"]["base_url"].as_str(), Some("https://example.com/v1"));
+        assert_eq!(parsed["model_providers"]["codexharbor_newapi"]["wire_api"].as_str(), Some("responses"));
         let dir = tempfile::tempdir().unwrap();
         let paths = CodexPaths::from_home(dir.path().to_owned());
         let applied = apply_config(&paths, &c, false).unwrap();
@@ -432,7 +432,7 @@ mod tests {
     #[test]
     #[ignore = "Requires an explicitly provided local encrypted test connection"]
     fn live_newapi_smoke() {
-        let home = std::env::var("AIMAMI_NEWAPI_TEST_HOME").expect("Set isolated test home");
+        let home = std::env::var("CODEX_HARBOR_NEWAPI_TEST_HOME").expect("Set isolated test home");
         let paths = CodexPaths::from_home(home.into());
         let c = load(&paths).unwrap();
         let proxy = proxy_from_settings(&paths.settings_path);

@@ -78,8 +78,8 @@ pub async fn ensure_running(port: u16, paths: CodexPaths, proxy: ApiProxyConfigP
     let bound_port = listener.local_addr().map_err(|_| "newapi.errors.network".to_owned())?.port();
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let context = std::sync::Arc::new(ArcContext {
-        store_path: paths.codexmate_dir.join("newapi-providers.dat"),
-        codexmate_dir: paths.codexmate_dir.clone(),
+        store_path: paths.app_data_dir.join("newapi-providers.dat"),
+        app_data_dir: paths.app_data_dir.clone(),
         auth_path: paths.auth_path.clone(),
         outbound: outbound_client(&proxy)?,
     });
@@ -90,7 +90,7 @@ pub async fn ensure_running(port: u16, paths: CodexPaths, proxy: ApiProxyConfigP
 
 struct ArcContext {
     store_path: PathBuf,
-    codexmate_dir: PathBuf,
+    app_data_dir: PathBuf,
     auth_path: PathBuf,
     outbound: Client,
 }
@@ -132,7 +132,7 @@ fn json_response(status: StatusCode, message: &str) -> Response<ResponseBody> {
     Response::builder()
         .status(status)
         .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
-        .body(full_body(json!({"error": {"message": message, "type": "aimami_local_router"}}).to_string()))
+        .body(full_body(json!({"error": {"message": message, "type": "codexharbor_local_router"}}).to_string()))
         .expect("static response parts")
 }
 
@@ -152,7 +152,7 @@ enum Destination {
 async fn handle(request: Request<Incoming>, context: std::sync::Arc<ArcContext>) -> ForwardResult {
     let path = request.uri().path().to_owned();
     let query = request.uri().query().map(str::to_owned);
-    if path == "/aimami/health" {
+    if path == "/codexharbor/health" {
         return Ok(Response::builder().status(StatusCode::OK).body(full_body("ok".to_owned())).expect("static body"));
     }
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
@@ -204,7 +204,7 @@ async fn handle(request: Request<Incoming>, context: std::sync::Arc<ArcContext>)
     let destination = match segments.as_slice() {
         // Codex model catalog for the model picker (`model_catalog_json` mirror).
         ["codex", "v1", "models"] if !has_body => {
-            let catalog = router::catalog_value(&context.codexmate_dir, &store);
+            let catalog = router::catalog_value(&context.app_data_dir, &store);
             let entries: Vec<Value> = catalog
                 .get("models")
                 .and_then(Value::as_array)
@@ -376,7 +376,7 @@ mod tests {
                     assert!(request.contains("authorization: bearer sk-upstream"), "upstream must see the provider key");
                     assert!(!request.contains("sk-codex-dummy"), "the inbound dummy key must be replaced");
                     assert!(request.contains("/v1/"), "path must be rewritten to the provider root");
-                    assert!(!request.contains("aimami_relay"), "the model slug prefix must be stripped");
+                    assert!(!request.contains("codexharbor_fixture"), "the model slug prefix must be stripped");
                     socket.write_all(b"HTTP/1.1 200 OK
 content-type: application/json
 content-length: 22
@@ -387,9 +387,9 @@ content-length: 22
 
             let dir = tempfile::tempdir().unwrap();
             let paths = CodexPaths::from_home(dir.path().to_owned());
-            std::fs::create_dir_all(&paths.codexmate_dir).unwrap();
+            std::fs::create_dir_all(&paths.app_data_dir).unwrap();
             let provider = Provider {
-                id: "aimami_relay_fixture".into(),
+                id: "codexharbor_fixture".into(),
                 name: "Mock".into(),
                 base_url: format!("http://127.0.0.1:{upstream_port}/"),
                 api_key: "sk-upstream".into(),
@@ -402,10 +402,10 @@ content-length: 22
             let store = Store {
                 version: 1,
                 providers: vec![provider],
-                active_provider_id: Some("aimami_relay_fixture".into()),
+                active_provider_id: Some("codexharbor_fixture".into()),
                 router: RouterSettings { bearer_token: "router-test-token".into(), ..Default::default() },
             };
-            crate::core::secret_file::write(&paths.codexmate_dir.join("newapi-providers.dat"), &serde_json::to_vec(&store).unwrap()).unwrap();
+            crate::core::secret_file::write(&paths.app_data_dir.join("newapi-providers.dat"), &serde_json::to_vec(&store).unwrap()).unwrap();
 
             let port = ensure_running(0, paths.clone(), ApiProxyConfigPayload::default()).await.unwrap();
             assert!(port > 0);
@@ -433,13 +433,13 @@ content-length: 22
                 .await
                 .unwrap();
             let entries = catalog.get("data").and_then(Value::as_array).unwrap();
-            assert_eq!(entries[0].get("id").and_then(Value::as_str), Some("aimami_relay_fixture::mock-model"));
+            assert_eq!(entries[0].get("id").and_then(Value::as_str), Some("codexharbor_fixture::mock-model"));
 
             // Codex-style POST with a prefixed model is routed and the prefix stripped.
             let response = client
                 .post(format!("{base}/codex/v1/responses"))
                 .header(AUTHORIZATION, "Bearer router-test-token")
-                .json(&json!({"model": "aimami_relay_fixture::mock-model", "input": "hi"}))
+                .json(&json!({"model": "codexharbor_fixture::mock-model", "input": "hi"}))
                 .send()
                 .await
                 .unwrap();
@@ -457,7 +457,7 @@ content-length: 22
 
             // Legacy per-provider and default routes keep working.
             let response = client
-                .get(format!("{base}/p/aimami_relay_fixture/v1/models"))
+                .get(format!("{base}/p/codexharbor_fixture/v1/models"))
                 .header(AUTHORIZATION, "Bearer router-test-token")
                 .send()
                 .await
@@ -486,7 +486,7 @@ content-length: 22
             let count = oversized.read(&mut response).await.unwrap();
             assert!(String::from_utf8_lossy(&response[..count]).starts_with("HTTP/1.1 413"));
 
-            let health = client.get(format!("{base}/aimami/health")).send().await.unwrap();
+            let health = client.get(format!("{base}/codexharbor/health")).send().await.unwrap();
             assert_eq!(health.status(), 200);
             stop();
         });
@@ -498,14 +498,14 @@ content-length: 22
         let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             let source_home = std::path::PathBuf::from(
-                std::env::var("AIMAMI_NEWAPI_TEST_HOME").expect("Set isolated test home"),
+                std::env::var("CODEX_HARBOR_NEWAPI_TEST_HOME").expect("Set isolated test home"),
             );
             let temp = tempfile::tempdir().unwrap();
             let paths = CodexPaths::from_home(temp.path().join("codex"));
-            std::fs::create_dir_all(&paths.codexmate_dir).unwrap();
+            std::fs::create_dir_all(&paths.app_data_dir).unwrap();
             std::fs::copy(
                 source_home.join("codexmate/newapi-connection.dat"),
-                paths.codexmate_dir.join("newapi-connection.dat"),
+                paths.app_data_dir.join("newapi-connection.dat"),
             )
             .unwrap();
             let source_settings = source_home.join("codexmate/settings.json");
@@ -570,7 +570,7 @@ content-length: 22
             let mut store = router::load_store(&paths).unwrap();
             store.router.port = port;
             crate::core::secret_file::write(
-                &paths.codexmate_dir.join("newapi-providers.dat"),
+                &paths.app_data_dir.join("newapi-providers.dat"),
                 &serde_json::to_vec(&store).unwrap(),
             )
             .unwrap();

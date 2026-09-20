@@ -1,7 +1,7 @@
 {
-  "name": "aimami-plugins",
+  "name": "codexharbor-plugins",
   "interface": {
-    "displayName": "AiMaMi Plugins"
+    "displayName": "CodexHarbor Plugins"
   },
   "plugins": [
     {

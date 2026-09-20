@@ -75,9 +75,9 @@ pub fn reveal_main_window(app: &AppHandle) {
 /// macOS NSApplication.activateIgnoringOtherApps 把焦点夺回。
 ///
 /// 用于：
-/// - 用户从 Dock / 任务栏点击 AiMaMi 已打开的实例（macOS Reopen / Windows
+/// - 用户从 Dock / 任务栏点击 CodexHarbor 已打开的实例（macOS Reopen / Windows
 ///   single-instance activation watcher），保证窗口一定能浮到最前
-/// - 其他始终在前的应用（Codex / 开发工具）开启时，让 AiMaMi 不被遮挡
+/// - 其他始终在前的应用（Codex / 开发工具）开启时，让 CodexHarbor 不被遮挡
 pub fn force_reveal_main_window(app: &AppHandle) {
     reveal_main_window_inner(app, true);
 }

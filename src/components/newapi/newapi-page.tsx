@@ -140,7 +140,7 @@ export function NewApiPage() {
   const exportProviders = () =>
     run("export", async () => {
       const { save } = await import("@tauri-apps/plugin-dialog");
-      const path = await save({ defaultPath: "aimami-relays.json", filters: [{ name: "JSON", extensions: ["json"] }] });
+      const path = await save({ defaultPath: "codexharbor-relays.json", filters: [{ name: "JSON", extensions: ["json"] }] });
       if (typeof path !== "string") return;
       await api.exportNewApiProviders(path);
       toast({ title: t("newapi.exportedDone", { path }), variant: "success" });
@@ -180,7 +180,7 @@ export function NewApiPage() {
           </span>
           <span className="font-medium">{t(proxyRunning ? "newapi.proxyRunning" : "newapi.proxyStopped")}</span>
           <span className="rounded-md bg-muted px-2 py-0.5 font-mono text-xs text-muted-foreground">
-            http://127.0.0.1:{router?.port ?? 25817}
+            http://127.0.0.1:{router?.port ?? 43127}
           </span>
         </div>
       </div>
@@ -326,7 +326,7 @@ export function NewApiPage() {
         </div>
 
         {state.isLoading ? (
-          <div className="grid gap-3.5 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+          <div className="grid gap-4 sm:grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
             {[0, 1, 2].map(i => (
               <AuroraCard key={i} color="blue" className="pointer-events-none opacity-70">
                 <div className="space-y-3 p-4">
@@ -334,8 +334,14 @@ export function NewApiPage() {
                     <Skeleton className="h-5 w-28" />
                     <Skeleton className="h-5 w-9 rounded-full" />
                   </div>
-                  <Skeleton className="h-14 w-full rounded-xl" />
-                  <Skeleton className="h-4 w-40" />
+                  <div className="grid grid-cols-2 gap-2">
+                    <Skeleton className="h-16 w-full rounded-xl" />
+                    <Skeleton className="h-16 w-full rounded-xl" />
+                  </div>
+                  <div className="flex items-center justify-between pt-1">
+                    <Skeleton className="h-4 w-24" />
+                    <Skeleton className="h-6 w-28 rounded-md" />
+                  </div>
                 </div>
               </AuroraCard>
             ))}
@@ -352,7 +358,7 @@ export function NewApiPage() {
             </Button>
           </div>
         ) : (
-          <div className="grid gap-3.5 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+          <div className="grid gap-4 sm:grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
             {shown.map(provider => {
               const active = provider.id === activeId && routingEnabled;
               const selected = filter === provider.id;
@@ -376,77 +382,125 @@ export function NewApiPage() {
                   }}
                 >
                   <div className="flex flex-1 flex-col p-3.5">
-                    <div className="flex items-start justify-between gap-2">
+                    {/* Header: Title + Domain + Badges + Switch */}
+                    <div className="flex items-center justify-between gap-2.5">
                       <div className="flex min-w-0 items-center gap-2">
                         <StatusDot provider={provider} active={active} />
-                        <h3 className="truncate text-[15px] font-semibold">{provider.name}</h3>
-                        <span className="shrink-0 text-[11px] text-muted-foreground">· {t("newapi.modelCount", { count: provider.models.length })}</span>
-                      </div>
-                      <Switch
-                        checked={provider.enabled}
-                        className={active ? "data-[state=checked]:bg-amber-500" : undefined}
-                        disabled={lock(`enable:${provider.id}`)}
-                        onCheckedChange={value =>
-                          void run(`enable:${provider.id}`, async () => {
-                            const change = await api.setNewApiProviderEnabled(provider.id, value);
-                            applyChange(change);
-                          }, t("newapi.enableFailed"))
-                        }
-                      />
-                    </div>
-                    <div className="mt-1.5 flex flex-wrap gap-1.5">
-                      {provider.enabled && <Badge className={softBadge("green")}>{t("newapi.badgeEnabled")}</Badge>}
-                      {provider.enabled && routingEnabled && <Badge className={softBadge("amber")}>{t("newapi.badgeLocked")}</Badge>}
-                      {provider.testStatus === "untested" && <Badge className={softBadge("gray")}>{t("newapi.badgeUntested")}</Badge>}
-                      {provider.testStatus === "ok" && <Badge className={softBadge("green")}>{t("newapi.badgeOk")}</Badge>}
-                      {provider.testStatus === "failed" && <Badge className={softBadge("red")}>{t("newapi.badgeFailed")}</Badge>}
-                      {dsPeak !== null && (
-                        <Badge className={softBadge(dsPeak ? "amber" : "green")} title={t("newapi.deepSeekPeakTip")}>
-                          {t(dsPeak ? "newapi.peakNow" : "newapi.offPeakNow")}
-                        </Badge>
-                      )}
-                    </div>
-                    <div className={cn(
-                      "mt-2 rounded-xl px-3 py-2 ring-1 transition-colors",
-                      active
-                        ? "bg-amber-500/[0.08] ring-amber-500/25"
-                        : "bg-black/[0.03] ring-border/60 dark:bg-white/[0.03]",
-                    )}>
-                      <div className="flex items-center gap-2.5">
-                        <span className="shrink-0 text-xs text-muted-foreground">{balanceLabel(provider)}</span>
-                        <span className={cn("min-w-0 truncate text-base font-semibold tabular-nums tracking-tight", active && valuePositive && "text-emerald-600 dark:text-emerald-400")}>
-                          {value ?? "— —"}
+                        <h3 className="truncate text-[15px] font-semibold tracking-tight">{provider.name}</h3>
+                        <span className="shrink-0 rounded bg-black/[0.04] px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground dark:bg-white/[0.06]">
+                          {hostOf(provider)}
                         </span>
-                        <button
-                          type="button"
-                          className={iconButton}
-                          title={t("newapi.refreshBalance")}
-                          aria-label={t("newapi.refreshBalance")}
-                          disabled={lock(`balance:${provider.id}`) || !(provider.hasApiKey || (!!provider.userId && provider.hasAccessToken))}
-                          onClick={() =>
-                            void run(`balance:${provider.id}`, async () => patchProvider(await api.queryNewApiProviderBalance(provider.id)), t("newapi.balanceFailed"))
-                          }
-                        >
-                          {busy === `balance:${provider.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                        </button>
                       </div>
-                      <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{balanceCaption(provider)}</p>
+                      <div className="flex shrink-0 items-center gap-2">
+                        {provider.enabled && routingEnabled && (
+                          <Badge className={softBadge("amber")}>{t("newapi.badgeLocked")}</Badge>
+                        )}
+                        {provider.enabled && !routingEnabled && (
+                          <Badge className={softBadge("green")}>{t("newapi.badgeEnabled")}</Badge>
+                        )}
+                        <Switch
+                          checked={provider.enabled}
+                          className={active ? "data-[state=checked]:bg-amber-500" : undefined}
+                          disabled={lock(`enable:${provider.id}`)}
+                          onCheckedChange={value =>
+                            void run(`enable:${provider.id}`, async () => {
+                              const change = await api.setNewApiProviderEnabled(provider.id, value);
+                              applyChange(change);
+                            }, t("newapi.enableFailed"))
+                          }
+                        />
+                      </div>
                     </div>
-                    <div className="mt-2 flex flex-1 items-end justify-between gap-2">
-                      <div className="flex min-w-0 flex-col gap-1">
-                        <div className="flex min-w-0 items-center gap-1.5">
+
+                    {/* Dual Info Cards: Balance (Left) & Model/Status (Right) */}
+                    <div className="mt-2.5 grid grid-cols-2 gap-2">
+                      {/* Left: Balance Box */}
+                      <div className={cn(
+                        "flex flex-col justify-between rounded-xl p-2.5 ring-1 transition-colors min-w-0",
+                        active
+                          ? "bg-amber-500/[0.07] ring-amber-500/25"
+                          : "bg-black/[0.025] ring-border/50 dark:bg-white/[0.03]",
+                      )}>
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-[11px] font-medium text-muted-foreground truncate">{balanceLabel(provider)}</span>
+                          <button
+                            type="button"
+                            className={iconButton}
+                            title={t("newapi.refreshBalance")}
+                            aria-label={t("newapi.refreshBalance")}
+                            disabled={lock(`balance:${provider.id}`) || !(provider.hasApiKey || (!!provider.userId && provider.hasAccessToken))}
+                            onClick={() =>
+                              void run(`balance:${provider.id}`, async () => patchProvider(await api.queryNewApiProviderBalance(provider.id)), t("newapi.balanceFailed"))
+                            }
+                          >
+                            {busy === `balance:${provider.id}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                          </button>
+                        </div>
+                        <div className="mt-0.5">
+                          <span className={cn(
+                            "truncate text-base font-semibold tabular-nums tracking-tight block",
+                            active && valuePositive && "text-emerald-600 dark:text-emerald-400"
+                          )}>
+                            {value ?? "— —"}
+                          </span>
+                        </div>
+                        <p className="mt-1 truncate text-[10px] text-muted-foreground/80" title={balanceCaption(provider)}>
+                          {balanceCaption(provider)}
+                        </p>
+                      </div>
+
+                      {/* Right: Model & Connection Box */}
+                      <div className={cn(
+                        "flex flex-col justify-between rounded-xl p-2.5 ring-1 transition-colors min-w-0",
+                        active
+                          ? "bg-amber-500/[0.07] ring-amber-500/25"
+                          : "bg-black/[0.025] ring-border/50 dark:bg-white/[0.03]",
+                      )}>
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-[11px] font-medium text-muted-foreground truncate">
+                            {t("newapi.model")}
+                          </span>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {provider.testStatus === "untested" && <Badge className={softBadge("gray")}>{t("newapi.badgeUntested")}</Badge>}
+                            {provider.testStatus === "ok" && <Badge className={softBadge("green")}>{t("newapi.badgeOk")}</Badge>}
+                            {provider.testStatus === "failed" && <Badge className={softBadge("red")}>{t("newapi.badgeFailed")}</Badge>}
+                            {dsPeak !== null && (
+                              <Badge className={softBadge(dsPeak ? "amber" : "green")} title={t("newapi.deepSeekPeakTip")}>
+                                {t(dsPeak ? "newapi.peakNow" : "newapi.offPeakNow")}
+                              </Badge>
+                            )}
+                          </div>
+                        </div>
+                        <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
                           <List className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                          <span className="truncate font-mono text-xs">{provider.model || t("newapi.noModel")}</span>
-                          {provider.models.length > 1 && (
-                            <span className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-muted-foreground">
-                              +{provider.models.length - 1}
-                            </span>
-                          )}
-                          <span className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-muted-foreground">
+                          <span className="truncate font-mono text-xs font-medium" title={provider.model || t("newapi.noModel")}>
+                            {provider.model || t("newapi.noModel")}
+                          </span>
+                        </div>
+                        <div className="mt-1 flex items-center justify-between gap-1 text-[10px] text-muted-foreground">
+                          <span className="truncate">
+                            {t("newapi.modelCount", { count: provider.models.length })}
+                          </span>
+                          <span className="shrink-0 rounded bg-muted px-1 py-0.2 font-mono text-[9px] text-muted-foreground">
                             Responses
                           </span>
                         </div>
-                        <p className="truncate font-mono text-[11px] text-muted-foreground/80">{hostOf(provider)}</p>
+                      </div>
+                    </div>
+
+                    {/* Footer: Status / Hint & Action Buttons */}
+                    <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-border/40 pt-2">
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        {active ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400">
+                            <PlugZap className="h-3 w-3" />
+                            {t("newapi.isCurrentRoute")}
+                          </span>
+                        ) : (
+                          <span className="truncate font-mono text-[11px] text-muted-foreground/80">
+                            http://{hostOf(provider)}
+                          </span>
+                        )}
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
                         <button

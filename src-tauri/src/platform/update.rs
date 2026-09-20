@@ -15,7 +15,7 @@ fn windows_install_dir_arg_from_exe(exe: &Path) -> Option<OsString> {
     // NSIS reads /D=<dir> before .onInit and uses it as $INSTDIR. It must be
     // the final installer argument; the updater plugin appends this value after
     // its own /UPDATE /ARGS values, so Windows updates stay in-place even when
-    // the user originally installed AiMaMi into a custom directory.
+    // the user originally installed CodexHarbor into a custom directory.
     Some(OsString::from(format!(
         "/D={}",
         install_dir.to_string_lossy()
@@ -119,25 +119,25 @@ mod tests {
 
     #[test]
     fn resolves_bundle_from_macos_executable_path() {
-        let exe = Path::new("/Applications/AiMaMi.app/Contents/MacOS/AiMaMi");
+        let exe = Path::new("/Applications/CodexHarbor.app/Contents/MacOS/CodexHarbor");
         let bundle = resolve_app_bundle_from_exe(exe).expect("bundle path");
-        assert_eq!(bundle, Path::new("/Applications/AiMaMi.app"));
+        assert_eq!(bundle, Path::new("/Applications/CodexHarbor.app"));
     }
 
     #[test]
     fn detects_app_translocation_paths() {
         let translocated = Path::new(
-            "/private/var/folders/x/AppTranslocation/ABCDE/d/AiMaMi.app/Contents/MacOS/AiMaMi",
+            "/private/var/folders/x/AppTranslocation/ABCDE/d/CodexHarbor.app/Contents/MacOS/CodexHarbor",
         );
-        let regular = Path::new("/Applications/AiMaMi.app/Contents/MacOS/AiMaMi");
+        let regular = Path::new("/Applications/CodexHarbor.app/Contents/MacOS/CodexHarbor");
         assert!(is_app_translocation_path(translocated));
         assert!(!is_app_translocation_path(regular));
     }
 
     #[test]
     fn detects_disk_image_mount_paths() {
-        let dmg = Path::new("/Volumes/AiMaMi/AiMaMi.app/Contents/MacOS/AiMaMi");
-        let regular = Path::new("/Applications/AiMaMi.app/Contents/MacOS/AiMaMi");
+        let dmg = Path::new("/Volumes/CodexHarbor/CodexHarbor.app/Contents/MacOS/CodexHarbor");
+        let regular = Path::new("/Applications/CodexHarbor.app/Contents/MacOS/CodexHarbor");
         assert!(is_disk_image_mount_path(dmg));
         assert!(!is_disk_image_mount_path(regular));
     }

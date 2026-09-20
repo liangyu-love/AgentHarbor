@@ -2,7 +2,7 @@ import { Suspense, lazy, useCallback, useEffect, useState, type CSSProperties } 
 import { QueryClientProvider } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { useTheme } from "@/hooks/use-theme";
+import { useTheme, useThemeValue, type Theme } from "@/hooks/use-theme";
 import { AppAvatarProvider } from "@/hooks/use-app-avatar";
 import { useAccentColor } from "@/hooks/use-accent-color";
 import { useAutoRefresh } from "@/hooks/use-auto-refresh";
@@ -17,6 +17,7 @@ import {
   SIDEBAR_EXPANDED_WIDTH_PX,
 } from "@/components/layout/sidebar";
 import { SiteHeader } from "@/components/site-header";
+import { CommandPalette } from "@/components/command-palette/command-palette";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Toaster } from "@/components/ui/toaster";
@@ -71,11 +72,13 @@ export function MainAppRoot() {
 function MainApp() {
   const [route, setRoute] = useState<Route>("overview");
   const { theme, setTheme } = useTheme();
+  const resolvedTheme = useThemeValue();
   const { accent, setAccent, heatmap, setHeatmap } = useAccentColor();
   const { i18n, t } = useTranslation();
   const [sidebarOpen, setSidebarOpen] = useState(
     () => localStorage.getItem("sidebar_collapsed") === "false",
   );
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const { refreshInterval, setRefreshInterval } = useAutoRefresh();
   const update = useUpdateCheck();
   const showUpdateOverlay =
@@ -87,9 +90,21 @@ function MainApp() {
   const installLocationPrompt = useInstallLocationPrompt();
   const routeTransition = useRouteTransition(route, { durationMs: 240 });
 
-  const handleThemeChange = useCallback((nextTheme: "light" | "dark" | "system") => {
+  const handleThemeChange = useCallback((nextTheme: Theme) => {
     setTheme(nextTheme);
   }, [setTheme]);
+
+  // Global Ctrl+K / Cmd+K listener
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setCommandPaletteOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   const prewarmRoutes = useDeferredReady(900);
   useEffect(() => {
@@ -182,7 +197,12 @@ function MainApp() {
           onThemeChange={handleThemeChange}
         />
         <SidebarInset className="max-h-screen overflow-hidden">
-          <SiteHeader title={t(routeLabelKey)} />
+          <SiteHeader
+            title={t(routeLabelKey)}
+            onOpenSpotlight={() => setCommandPaletteOpen(true)}
+            onThemeToggle={() => handleThemeChange(resolvedTheme === "dark" ? "light" : "dark")}
+            isDarkMode={resolvedTheme === "dark"}
+          />
           <div className="relative min-h-0 flex-1 overflow-hidden">
             {routeOrder
               .filter((candidate) => routeTransition.mountedRoutes.includes(candidate))
@@ -199,6 +219,14 @@ function MainApp() {
           </div>
         </SidebarInset>
       </SidebarProvider>
+
+      <CommandPalette
+        open={commandPaletteOpen}
+        onOpenChange={setCommandPaletteOpen}
+        onNavigate={setRoute}
+        onThemeToggle={() => handleThemeChange(resolvedTheme === "dark" ? "light" : "dark")}
+        isDarkMode={resolvedTheme === "dark"}
+      />
 
       <Toaster />
       <InstallLocationPromptDialog prompt={installLocationPrompt} />
@@ -239,17 +267,18 @@ function useInstallLocationPrompt() {
     };
   }, []);
 
-  const dismiss = () => setOpen(false);
+  const openApplications = useCallback(() => {
+    void api.openPath("/Applications");
+  }, []);
 
-  const openApplications = async () => {
-    await api.openPath("/Applications");
+  const dismiss = useCallback(() => {
     setOpen(false);
-  };
+  }, []);
 
   return {
     open,
-    dismiss,
     openApplications,
+    dismiss,
   };
 }
 
@@ -262,7 +291,7 @@ function InstallLocationPromptDialog({
 
   return (
     <AlertDialog open={prompt.open}>
-      <AlertDialogContent className="max-w-md">
+      <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>{t("update.installPromptTitle")}</AlertDialogTitle>
           <AlertDialogDescription>

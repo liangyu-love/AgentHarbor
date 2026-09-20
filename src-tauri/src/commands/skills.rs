@@ -44,7 +44,7 @@ pub fn import_skill(
 ) -> Result<CoreEnvelope<SkillImportPayload>, String> {
     let repo = repo.lock().map_err(|e| e.to_string())?;
     let paths = repo.paths();
-    let payload = skills::import_skill(&paths.skills_dir, &paths.codexmate_dir, &path)
+    let payload = skills::import_skill(&paths.skills_dir, &paths.app_data_dir, &path)
         .map_err(|e| e.to_string())?;
     Ok(CoreEnvelope::ok(payload))
 }
@@ -56,7 +56,7 @@ pub fn remove_skill(
 ) -> Result<CoreEnvelope<SkillRemovePayload>, String> {
     let repo = repo.lock().map_err(|e| e.to_string())?;
     let paths = repo.paths();
-    let payload = skills::remove_skill(&paths.skills_dir, &paths.codexmate_dir, &id)
+    let payload = skills::remove_skill(&paths.skills_dir, &paths.app_data_dir, &id)
         .map_err(|e| e.to_string())?;
     Ok(CoreEnvelope::ok(payload))
 }
@@ -68,7 +68,7 @@ pub fn restore_skill_backup(
 ) -> Result<CoreEnvelope<SkillRestorePayload>, String> {
     let repo = repo.lock().map_err(|e| e.to_string())?;
     let paths = repo.paths();
-    let payload = skills::restore_skill_backup(&paths.skills_dir, &paths.codexmate_dir, &id)
+    let payload = skills::restore_skill_backup(&paths.skills_dir, &paths.app_data_dir, &id)
         .map_err(|e| e.to_string())?;
     Ok(CoreEnvelope::ok(payload))
 }
@@ -81,6 +81,6 @@ pub fn delete_skill_backup(
     let repo = repo.lock().map_err(|e| e.to_string())?;
     let paths = repo.paths();
     let payload =
-        skills::delete_skill_backup(&paths.codexmate_dir, &id).map_err(|e| e.to_string())?;
+        skills::delete_skill_backup(&paths.app_data_dir, &id).map_err(|e| e.to_string())?;
     Ok(CoreEnvelope::ok(payload))
 }

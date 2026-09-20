@@ -12,11 +12,11 @@ const BOOTSTRAP_SUBTITLE_ID: &str = "tray_bootstrap_subtitle";
 pub fn create_bootstrap_tray_menu(app: &AppHandle) -> Result<Menu<Wry>, String> {
     MenuBuilder::new(app)
         .item(
-            &MenuItem::with_id(app, BOOTSTRAP_HEADER_ID, "AiMaMi", false, None::<&str>)
+            &MenuItem::with_id(app, BOOTSTRAP_HEADER_ID, "CodexHarbor", false, None::<&str>)
                 .map_err(|e| e.to_string())?,
         )
         .item(
-            &MenuItem::with_id(app, BOOTSTRAP_TITLE_ID, "AiMaMi", true, None::<&str>)
+            &MenuItem::with_id(app, BOOTSTRAP_TITLE_ID, "CodexHarbor", true, None::<&str>)
                 .map_err(|e| e.to_string())?,
         )
         .item(
@@ -31,7 +31,7 @@ pub fn create_bootstrap_tray_menu(app: &AppHandle) -> Result<Menu<Wry>, String> 
         )
         .separator()
         .item(
-            &MenuItem::with_id(app, OPEN_MAIN_ID, "Open AiMaMi", true, None::<&str>)
+            &MenuItem::with_id(app, OPEN_MAIN_ID, "Open CodexHarbor", true, None::<&str>)
                 .map_err(|e| e.to_string())?,
         )
         .separator()

@@ -1,6 +1,6 @@
-# Contributing to AiMaMi
+# Contributing to CodexHarbor
 
-Thanks for taking the time to improve AiMaMi. This project touches local Codex configuration, account data, sessions, MCP entries, Skills, and relay settings, so contributions should keep user data safety and reversibility in mind.
+Thanks for taking the time to improve CodexHarbor. This project touches local Codex configuration, account data, sessions, MCP entries, Skills, and relay settings, so contributions should keep user data safety and reversibility in mind.
 
 ## Development setup
 
@@ -14,8 +14,7 @@ Before starting, make sure you have the following installed:
 Clone the repository and install dependencies:
 
 ```bash
-git clone https://github.com/borawong/AiMaMi.git
-cd AiMaMi
+cd CodexHarbor
 pnpm install
 ```
 
@@ -39,10 +38,10 @@ For documentation-only changes, verify that links, commands, headings, and scree
 
 ## Local data safety
 
-AiMaMi works with files under `~/.codex` and app-managed data under `~/.codex/codexmate/`. When contributing features or fixes that read, write, import, export, clean, or rebuild local data:
+CodexHarbor works with files under `~/.codex` and app-managed data under `~/.codex/codexharbor/`. When contributing features or fixes that read, write, import, export, clean, or rebuild local data:
 
 - Prefer reversible operations and provide clear user confirmation for destructive actions.
-- Avoid silently overwriting user-managed configuration outside AiMaMi-controlled blocks.
+- Avoid silently overwriting user-managed configuration outside CodexHarbor-controlled blocks.
 - Keep backup, restore, preview, and rollback flows easy to understand.
 - Be careful with account, session, relay, and routing data in logs, screenshots, and bug reports.
 - Test changes with disposable local data whenever possible instead of personal production Codex data.
@@ -57,9 +56,9 @@ AiMaMi works with files under `~/.codex` and app-managed data under `~/.codex/co
 
 ---
 
-# 参与 AiMaMi 贡献
+# 参与 CodexHarbor 贡献
 
-感谢你愿意改进 AiMaMi。该项目会接触本地 Codex 配置、账号数据、会话、MCP、Skills 与中转设置，因此贡献时应优先考虑用户数据安全与可逆性。
+感谢你愿意改进 CodexHarbor。该项目会接触本地 Codex 配置、账号数据、会话、MCP、Skills 与中转设置，因此贡献时应优先考虑用户数据安全与可逆性。
 
 ## 开发环境
 
@@ -73,8 +72,7 @@ AiMaMi works with files under `~/.codex` and app-managed data under `~/.codex/co
 克隆仓库并安装依赖：
 
 ```bash
-git clone https://github.com/borawong/AiMaMi.git
-cd AiMaMi
+cd CodexHarbor
 pnpm install
 ```
 
@@ -98,10 +96,10 @@ pnpm tauri build
 
 ## 本地数据安全
 
-AiMaMi 会处理 `~/.codex` 下的文件，以及 `~/.codex/codexmate/` 下的应用数据。当贡献内容涉及读取、写入、导入、导出、清理或重建本地数据时：
+CodexHarbor 会处理 `~/.codex` 下的文件，以及 `~/.codex/codexharbor/` 下的应用数据。当贡献内容涉及读取、写入、导入、导出、清理或重建本地数据时：
 
 - 优先设计可逆操作，对破坏性动作提供明确确认。
-- 避免静默覆盖 AiMaMi 受控区块之外的用户配置。
+- 避免静默覆盖 CodexHarbor 受控区块之外的用户配置。
 - 让备份、恢复、预览与回滚流程清晰易懂。
 - 在日志、截图和问题反馈中谨慎处理账号、会话、中转与路由数据。
 - 尽量使用一次性测试数据验证改动，避免直接使用个人生产 Codex 数据。

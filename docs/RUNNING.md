@@ -1,6 +1,6 @@
-# AiMaMi 修复版运行说明
+# CodexHarbor 运行说明
 
-基于公开仓库 `borawong/AiMaMi` 的 `add37271e29ba81ee17f15f444a24925af50bb87` 修复。保留上游 `1.0.0` 源码版本号；这不是上游 `v1.2.6` 发布包的完整还原。
+CodexHarbor 已从原始源码分离出独立的产品身份。应用名、进程、安装标识、单实例锁、本地数据目录和智能路由端口均与旧版隔离。
 
 ## 已恢复的范围
 
@@ -11,7 +11,7 @@
 - 设置与维护：主题、语言、本地设置、代理保存与无凭据连通性测试、本地诊断和维护入口。
 - 中转站：New API 账户余额、模型列表、上下文设置、Codex 配置预览与带备份的应用。
 
-公开源码缺少完整账号、实时额度、自动切换、智能路由、中转、会话管理、语音和刘海窗口实现。本轮只补齐现有本地工作流所需的支撑代码；相关不可用功能已在界面说明或禁用。代理探测成功只表示网络可达，不代表账号鉴权或额度有效。
+代理探测成功只表示网络可达，不代表账号鉴权或额度有效。智能路由默认监听 `127.0.0.1:43127`，只接受应用生成的本地 Bearer Token。
 
 更新服务未配置公钥和端点，因此不加载更新插件，也不在启动时请求更新。后续发布时需要自行配置与签名。
 
@@ -19,7 +19,7 @@
 
 在“系统设置 → 外观 → 应用头像”点击“更换头像”，也可以直接点击左上角头像。支持 PNG、JPG、WebP，单张不超过 5 MB、任一边不超过 8192 像素。图片居中裁切为正方形并缩小到 256 × 256，设置页可查看预览，侧栏立即同步。
 
-头像副本保存在当前 AiMaMi 界面的本地存储中，不上传到网络；移动或删除原图不影响显示，正常退出和重启后保留。点击“恢复默认”可以回到内置头像。此设置修改应用内头像，安装包和系统托盘图标使用固定的打包图标；本次已按用户提供的图片同时更新默认头像、程序、安装包和托盘图标。清除应用的 WebView 数据会同时清除头像、主题等界面偏好。
+头像副本保存在当前 CodexHarbor 界面的本地存储中，不上传到网络；移动或删除原图不影响显示，正常退出和重启后保留。点击“恢复默认”可以回到内置头像。此设置修改应用内头像，安装包和系统托盘图标使用固定的打包图标；本次已按用户提供的图片同时更新默认头像、程序、安装包和托盘图标。清除应用的 WebView 数据会同时清除头像、主题等界面偏好。
 
 ## New API 中转站
 
@@ -32,11 +32,11 @@
 
 拉取模型后可选择默认模型、设置上下文长度与自动压缩阈值。未返回上下文元数据的模型明确显示“站点未提供”；留空时不写入覆盖值，由 Codex 决定默认值。选择新模型会清除上一个模型的长度覆盖值。Codex 配置使用 Responses 协议，模型出现在列表中并不保证它能用于 Codex。
 
-“保存并预览配置”只保存 AiMaMi 偏好；“应用到 Codex”经过界面确认后才修改当前数据目录下的 `config.toml`，并将原文件备份到 `codexmate/config-backups/`。其他提供方、MCP 配置及注释保留；无效 TOML 或不支持的内联提供方表拒绝写入。不会修改 `auth.json`，也不会自动重启 Codex。
+“保存并预览配置”只保存 CodexHarbor 偏好；“应用到 Codex”经过界面确认后才修改当前数据目录下的 `config.toml`，并将原文件备份到 `codexharbor/config-backups/`。其他提供方、MCP 配置及注释保留；无效 TOML 或不支持的内联提供方表拒绝写入。不会修改 `auth.json`，也不会自动重启 Codex。
 
-默认生成 `env_key = "AIMAMI_NEWAPI_KEY"`，需要在启动 Codex 的环境里设置该变量。勾选“将已保存的 API Key 明文写入 Codex 配置”可免去环境变量，但会使用 `experimental_bearer_token` 将密钥写进配置文件，后续备份也可能含有它。配置预览从不展示真实密钥。
+默认生成 `env_key = "CODEX_HARBOR_NEWAPI_KEY"`，需要在启动 Codex 的环境里设置该变量。勾选“将已保存的 API Key 明文写入 Codex 配置”可免去环境变量，但会使用 `experimental_bearer_token` 将密钥写进配置文件，后续备份也可能含有它。配置预览从不展示真实密钥。
 
-AiMaMi 连接保存在 `codexmate/newapi-connection.dat`。Windows 使用当前用户的 DPAPI 加密，其他平台使用仅文件所有者可读的本地文件（0600，不承诺加密）。前端不读取已保存的明文凭据，密码框留空保留原值；更换站点时不会沿用旧站凭据。“移除连接”仅清除 AiMaMi 的连接，已经应用的 Codex 配置保留。
+CodexHarbor 连接保存在 `codexharbor/newapi-connection.dat`。Windows 使用当前用户的 DPAPI 加密，其他平台使用仅文件所有者可读的本地文件（0600，不承诺加密）。前端不读取已保存的明文凭据，密码框留空保留原值；更换站点时不会沿用旧站凭据。“移除连接”仅清除 CodexHarbor 的连接，已经应用的 Codex 配置保留。
 
 接口与配置参考：[New API 认证](https://github.com/QuantumNous/new-api-docs-v1/blob/main/content/docs/en/api/management/auth.mdx)、[Codex 配置参考](https://developers.openai.com/codex/config-reference/)。
 
@@ -51,7 +51,7 @@ pnpm tauri dev
 
 项目的 `scripts/tauri.mjs` 在 Windows 子进程中默认选择 `stable-x86_64-pc-windows-msvc`，不修改全局 Rust 默认工具链。若已显式设置 `RUSTUP_TOOLCHAIN`，则使用该值。前端依赖存储目录为项目内的 `.pnpm-store`。
 
-若已安装的旧版 AiMaMi 正在运行，普通启动会唤醒旧实例。使用下面的隔离模式可以并行测试；要使用正常数据目录启动本修复版，请先通过旧版托盘菜单退出旧实例。
+CodexHarbor 使用 `dev.codexharbor.desktop` 和独立的单实例锁，可与旧应用并行运行。开发调试如需隔离 Codex 配置，可使用下面的环境变量。
 
 `pnpm dev` 只启动网页预览；文件管理需要桌面程序的 Rust 命令，不能只开浏览器来验证。
 
@@ -65,12 +65,12 @@ $env:HTTPS_PROXY = 'http://127.0.0.1:10808'
 ## 隔离测试
 
 ```powershell
-$env:AIMAMI_CODEX_HOME = Join-Path (Get-Location) '.runtime-test\codex'
-New-Item -ItemType Directory -Force $env:AIMAMI_CODEX_HOME | Out-Null
+$env:CODEX_HARBOR_CODEX_HOME = Join-Path (Get-Location) '.runtime-test\codex'
+New-Item -ItemType Directory -Force $env:CODEX_HARBOR_CODEX_HOME | Out-Null
 pnpm tauri dev
 ```
 
-`AIMAMI_CODEX_HOME` 只影响 AiMaMi，优先于 `CODEX_HOME`，无需修改 Codex 的环境。隔离模式同时分开单实例锁、唤醒请求和 WebView 数据目录，可与已安装的 AiMaMi 同时运行。退出当前会话或移除此变量即可恢复正常目录选择；未覆盖时读取已有 `CODEX_HOME`，否则使用用户目录下的 `.codex`。
+`CODEX_HARBOR_CODEX_HOME` 只影响 CodexHarbor，优先于 `CODEX_HOME`，无需修改 Codex 的环境。隔离模式同时分开单实例锁、唤醒请求和 WebView 数据目录。退出当前会话或移除此变量即可恢复正常目录选择；未覆盖时读取已有 `CODEX_HOME`，否则使用用户目录下的 `.codex`。
 
 测试过程中只使用临时 fixtures；未对真实 Codex 配置执行清理、账号同步、守护任务安装或重启。正式使用维护功能时，应先查看界面的操作说明。关闭窗口会收起到托盘，彻底退出请使用托盘菜单的 `Quit`。
 
@@ -83,8 +83,8 @@ pnpm tauri build --debug --no-bundle
 pnpm tauri build
 ```
 
-- 调试可执行文件：`src-tauri/target/debug/AiMaMi.exe`。
-- 发布可执行文件：`src-tauri/target/release/AiMaMi.exe`。
+- 调试可执行文件：`src-tauri/target/debug/CodexHarbor.exe`。
+- 发布可执行文件：`src-tauri/target/release/CodexHarbor.exe`。
 - Windows 安装包：`src-tauri/target/release/bundle/nsis/`。
 - 打包命令自动合并 `tauri.windows.conf.json`，生成中英文 NSIS 安装包。
 

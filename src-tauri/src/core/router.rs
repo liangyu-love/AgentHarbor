@@ -8,13 +8,12 @@ use std::{
     sync::{Mutex, MutexGuard, OnceLock},
 };
 
-pub const DEFAULT_PORT: u16 = 25817;
-pub const PROVIDER_PREFIX: &str = "aimami_p";
-/// Single provider entry injected into Codex, matching the original app's protocol.
-pub const CATALOG_PROVIDER_KEY: &str = "aimami_relay";
-/// Model-slug prefix used by the original app for relay models (`<provider id>::<model>`).
-pub const ORIGINAL_MODEL_PREFIX: &str = "aimami_relay_";
-const LEGACY_PROVIDER_KEY: &str = "aimami_newapi";
+pub const DEFAULT_PORT: u16 = 43127;
+const PREVIOUS_DEFAULT_PORT: u16 = 25817;
+pub const PROVIDER_PREFIX: &str = "codexharbor_p";
+pub const CATALOG_PROVIDER_KEY: &str = "codexharbor_relay";
+const DIRECT_PROVIDER_KEY: &str = "codexharbor_newapi";
+const PREVIOUS_RELAY_MODEL_PREFIX: &str = "aimami_relay_";
 const MAX_PROVIDERS: usize = 64;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -194,7 +193,7 @@ fn now() -> i64 {
 }
 
 fn store_path(paths: &CodexPaths) -> PathBuf {
-    paths.codexmate_dir.join("newapi-providers.dat")
+    paths.app_data_dir.join("newapi-providers.dat")
 }
 
 static STORE_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -211,8 +210,35 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
         let mut store: Store = serde_json::from_slice(&bytes).map_err(|_| "newapi.errors.storage")?;
         let mut changed = false;
         let mut removed_incompatible_route = false;
-        if store.router.bearer_token.is_empty() {
+        let mut migrated_previous_identity = store.router.port == PREVIOUS_DEFAULT_PORT
+            || store.router.bearer_token.starts_with("aimami_");
+        if store.router.bearer_token.is_empty() || migrated_previous_identity {
             store.router.bearer_token = new_router_bearer();
+            changed = true;
+        }
+        if store.router.port == PREVIOUS_DEFAULT_PORT {
+            store.router.port = DEFAULT_PORT;
+            changed = true;
+        }
+        let previous_active = store.active_provider_id.clone();
+        let mut migrated_active = None;
+        for provider in &mut store.providers {
+            if provider.id.starts_with("aimami_") {
+                migrated_previous_identity = true;
+                let previous_id = std::mem::replace(&mut provider.id, uuid::Uuid::new_v4().to_string());
+                if previous_active.as_deref() == Some(previous_id.as_str()) {
+                    migrated_active = Some(provider.id.clone());
+                }
+                changed = true;
+            }
+        }
+        if migrated_active.is_some() {
+            store.active_provider_id = migrated_active;
+        }
+        if migrated_previous_identity && store.router.enabled {
+            // Import credentials and choices, but require an explicit enable in
+            // CodexHarbor so the old application's active route is not replaced.
+            store.router.enabled = false;
             changed = true;
         }
         for provider in &mut store.providers {
@@ -254,14 +280,14 @@ pub fn load_store(paths: &CodexPaths) -> Result<Store, String> {
 }
 
 fn new_router_bearer() -> String {
-    format!("aimami_{}", uuid::Uuid::new_v4().simple())
+    format!("codexharbor_{}", uuid::Uuid::new_v4().simple())
 }
 
-// The original AiMaMi release keeps its relay data in `codexmate/relay/`:
+// The previous AiMaMi release keeps its relay data in `codexmate/relay/`:
 // state.json holds providers/settings, keys/<provider id> holds plaintext API keys.
 // Promoting it lets users of the installed app see their real relays immediately.
 fn migrate_original_relay(paths: &CodexPaths) -> Result<Option<Store>, String> {
-    let relay_dir = paths.codexmate_dir.join("relay");
+    let relay_dir = paths.codex_home.join("codexmate").join("relay");
     let Ok(text) = std::fs::read_to_string(relay_dir.join("state.json")) else { return Ok(None) };
     let Ok(value) = serde_json::from_str::<Value>(&text) else { return Ok(None) };
     let items = value.get("providers").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -293,7 +319,7 @@ fn migrate_original_relay(paths: &CodexPaths) -> Result<Option<Store>, String> {
         }
         let updated = item.get("updatedAt").and_then(Value::as_i64).unwrap_or(0) / 1000;
         providers.push(Provider {
-            id: id.to_owned(),
+            id: uuid::Uuid::new_v4().to_string(),
             name,
             base_url: base_url.to_string(),
             api_key,
@@ -308,16 +334,15 @@ fn migrate_original_relay(paths: &CodexPaths) -> Result<Option<Store>, String> {
         });
     }
     if providers.is_empty() { return Ok(None) }
+    let active_provider_id = providers.iter().find(|provider| provider.enabled).map(|provider| provider.id.clone());
     Ok(Some(Store {
         version: 1,
         providers,
-        active_provider_id: active.first().cloned(),
+        active_provider_id,
         router: RouterSettings {
-            enabled: value.get("codexRouterEnabled").and_then(Value::as_bool).unwrap_or(false),
+            enabled: false,
             accountless: value.get("codexRouterNoAccountMode").and_then(Value::as_bool).unwrap_or(false),
-            port: value.pointer("/proxy/port").and_then(Value::as_u64)
-                .filter(|p| (1..=65535).contains(p)).map(|p| p as u16)
-                .unwrap_or(DEFAULT_PORT),
+            port: DEFAULT_PORT,
             bearer_token: String::new(),
         },
     }))
@@ -333,7 +358,7 @@ pub fn read_store(path: &Path) -> Result<Store, String> {
 
 // Promote the previous single-connection setup into the first provider card.
 fn migrate_legacy_connection(paths: &CodexPaths) -> Result<Option<Store>, String> {
-    let bytes = match secret_file::read(&paths.codexmate_dir.join("newapi-connection.dat"))? {
+    let bytes = match secret_file::read(&paths.app_data_dir.join("newapi-connection.dat"))? {
         Some(bytes) => bytes,
         None => return Ok(None),
     };
@@ -712,7 +737,7 @@ fn open_config(paths: &CodexPaths) -> Result<(Option<String>, toml_edit::Documen
 fn backup_and_write(paths: &CodexPaths, original: Option<String>, document: &toml_edit::DocumentMut) -> Result<newapi::AppliedConfig, String> {
     let backup = match original {
         Some(original) => {
-            let path = paths.codexmate_dir.join("config-backups").join(format!("{}.toml", uuid::Uuid::new_v4()));
+            let path = paths.app_data_dir.join("config-backups").join(format!("{}.toml", uuid::Uuid::new_v4()));
             storage::write_atomic(&path, original.as_bytes()).map_err(|_| "newapi.errors.storage".to_owned())?;
             Some(path.display().to_string())
         }
@@ -722,12 +747,12 @@ fn backup_and_write(paths: &CodexPaths, original: Option<String>, document: &tom
     Ok(newapi::AppliedConfig { path: paths.config_path.display().to_string(), backup_path: backup })
 }
 
-fn remove_aimami_provider_entries(document: &mut toml_edit::DocumentMut) {
+fn remove_managed_provider_entries(document: &mut toml_edit::DocumentMut) {
     if let Some(providers) = document.get_mut("model_providers").and_then(toml_edit::Item::as_table_mut) {
         let ours: Vec<String> = providers
             .iter()
             .map(|(key, _)| key.to_owned())
-            .filter(|key| key == LEGACY_PROVIDER_KEY || key == CATALOG_PROVIDER_KEY || key.starts_with(PROVIDER_PREFIX))
+            .filter(|key| key == DIRECT_PROVIDER_KEY || key == CATALOG_PROVIDER_KEY || key.starts_with(PROVIDER_PREFIX))
             .collect();
         for key in ours {
             providers.remove(&key);
@@ -739,32 +764,32 @@ fn model_provider_is_ours(document: &toml_edit::DocumentMut) -> bool {
     document
         .get("model_provider")
         .and_then(toml_edit::Item::as_str)
-        .is_some_and(|value| value == LEGACY_PROVIDER_KEY || value == CATALOG_PROVIDER_KEY || value.starts_with(PROVIDER_PREFIX))
+        .is_some_and(|value| value == DIRECT_PROVIDER_KEY || value == CATALOG_PROVIDER_KEY || value.starts_with(PROVIDER_PREFIX))
 }
 
 pub(crate) fn catalog_path(paths: &CodexPaths) -> PathBuf {
-    paths.codexmate_dir.join("newapi-router-catalog.json")
+    paths.app_data_dir.join("newapi-router-catalog.json")
 }
 
 /// Codex reads relay + official models from this catalog file (`model_catalog_json`),
 /// matching the original app's protocol. Official entries are borrowed read-only from
 /// the original app's catalog when it is present.
 pub(crate) fn write_catalog(paths: &CodexPaths, store: &Store) -> Result<PathBuf, String> {
-    let document = catalog_value(&paths.codexmate_dir, store);
+    let document = catalog_value(&paths.app_data_dir, store);
     let bytes = serde_json::to_vec_pretty(&document).map_err(|_| "newapi.errors.storage".to_owned())?;
     storage::write_atomic(&catalog_path(paths), &bytes).map_err(|_| "newapi.errors.storage".to_owned())?;
     Ok(catalog_path(paths))
 }
 
 /// Pure catalog builder (no disk writes) so the local proxy can serve it per request.
-pub(crate) fn catalog_value(codexmate_dir: &std::path::Path, store: &Store) -> Value {
+pub(crate) fn catalog_value(app_data_dir: &std::path::Path, store: &Store) -> Value {
     let mut models: Vec<Value> = Vec::new();
-    if let Ok(original) = std::fs::read(codexmate_dir.join("relay").join("codex_router_catalog.json")) {
+    if let Ok(original) = std::fs::read(app_data_dir.join("previous-router-catalog.json")) {
         if let Ok(value) = serde_json::from_slice::<Value>(&original) {
             if let Some(entries) = value.get("models").and_then(Value::as_array) {
                 for entry in entries {
                     let is_relay = entry.get("slug").and_then(Value::as_str)
-                        .is_some_and(|slug| slug.starts_with(ORIGINAL_MODEL_PREFIX));
+                        .is_some_and(|slug| slug.starts_with(PREVIOUS_RELAY_MODEL_PREFIX));
                     if !is_relay {
                         models.push(entry.clone());
                     }
@@ -800,7 +825,7 @@ pub fn apply_routing_config(paths: &CodexPaths, store: &Store) -> Result<newapi:
     if document.get("model_providers").is_some_and(|item| !item.is_table()) {
         return Err("newapi.errors.configParse".into());
     }
-    remove_aimami_provider_entries(&mut document);
+    remove_managed_provider_entries(&mut document);
     let catalog = write_catalog(paths, store)?;
     document["model"] = value(format!("{}::{}", active.id, active.model));
     document["model_provider"] = value(CATALOG_PROVIDER_KEY);
@@ -823,7 +848,7 @@ pub fn apply_routing_config(paths: &CodexPaths, store: &Store) -> Result<newapi:
     let _ = entries;
     let entry = &mut document["model_providers"][CATALOG_PROVIDER_KEY];
     *entry = toml_edit::Item::Table(toml_edit::Table::new());
-    entry["name"] = value("AiMaMi 智能路由");
+    entry["name"] = value("CodexHarbor 智能路由");
     entry["base_url"] = value(format!("http://127.0.0.1:{}/codex/v1", store.router.port));
     entry["wire_api"] = value("responses");
     entry["experimental_bearer_token"] = value(&store.router.bearer_token);
@@ -853,7 +878,7 @@ pub fn ensure_routing_config(
     let catalog_current = std::fs::read(catalog_path(paths))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .is_some_and(|catalog| catalog == catalog_value(&paths.codexmate_dir, store));
+        .is_some_and(|catalog| catalog == catalog_value(&paths.app_data_dir, store));
     let provider = document
         .get("model_providers")
         .and_then(toml_edit::Item::as_table)
@@ -883,7 +908,7 @@ pub fn remove_routing_config(paths: &CodexPaths, store: &Store) -> Result<Option
     if document.get("model_providers").is_some_and(|item| !item.is_table()) {
         return Err("newapi.errors.configParse".into());
     }
-    remove_aimami_provider_entries(&mut document);
+    remove_managed_provider_entries(&mut document);
     if model_provider_is_ours(&document) {
         document.remove("model_provider");
         document.remove("model");
@@ -1049,7 +1074,7 @@ mod tests {
             ..Default::default()
         };
         secret_file::write(
-            &paths.codexmate_dir.join("newapi-connection.dat"),
+            &paths.app_data_dir.join("newapi-connection.dat"),
             &serde_json::to_vec(&legacy).unwrap(),
         )
         .unwrap();
@@ -1060,6 +1085,41 @@ mod tests {
         assert_eq!(store.providers[0].base_url, "https://old.example.com/");
         assert_eq!(store.providers[0].api_key, "sk-legacy");
         assert!(!store.providers[0].enabled);
+    }
+
+    #[test]
+    fn previous_router_identity_moves_to_the_isolated_port_and_namespace() {
+        let (_dir, paths) = paths();
+        let store = Store {
+            version: 1,
+            providers: vec![Provider {
+                id: "aimami_relay_fixture".into(),
+                name: "Previous relay".into(),
+                base_url: "https://relay.example.com/".into(),
+                api_key: "sk-fixture".into(),
+                model: "model-a".into(),
+                enabled: true,
+                ..Default::default()
+            }],
+            router: RouterSettings {
+                port: PREVIOUS_DEFAULT_PORT,
+                bearer_token: "aimami_previous_token".into(),
+                enabled: true,
+                ..Default::default()
+            },
+            active_provider_id: Some("aimami_relay_fixture".into()),
+        };
+        secret_file::write(&store_path(&paths), &serde_json::to_vec(&store).unwrap()).unwrap();
+
+        let migrated = load_store(&paths).unwrap();
+        assert_eq!(migrated.router.port, DEFAULT_PORT);
+        assert!(!migrated.router.enabled);
+        assert!(migrated.router.bearer_token.starts_with("codexharbor_"));
+        assert!(!migrated.providers[0].id.starts_with("aimami_"));
+        assert_eq!(
+            migrated.active_provider_id.as_deref(),
+            Some(migrated.providers[0].id.as_str())
+        );
     }
 
     #[test]
@@ -1103,10 +1163,10 @@ mod tests {
         assert!(change.state.router.enabled);
         let text = std::fs::read_to_string(&paths.config_path).unwrap();
         let store = load_store(&paths).unwrap();
-        assert!(store.router.bearer_token.starts_with("aimami_"));
+        assert!(store.router.bearer_token.starts_with("codexharbor_"));
         assert!(store.router.bearer_token.len() > 24);
         assert!(text.contains(&store.router.bearer_token));
-        assert!(text.contains("http://127.0.0.1:25817/codex/v1"));
+        assert!(text.contains("http://127.0.0.1:43127/codex/v1"));
         assert!(text.contains("::model-a"));
         assert!(text.contains("model_catalog_json"));
         let change = set_smart_routing(&paths, false).unwrap();
@@ -1162,7 +1222,9 @@ mod tests {
         std::fs::create_dir_all(paths.config_path.parent().unwrap()).unwrap();
         std::fs::write(
             &paths.config_path,
-            "model = 'legacy-chat::chat-model'\nmodel_provider = 'aimami_relay'\n[model_providers.aimami_relay]\nwire_api = 'chat'\n",
+            format!(
+                "model = 'legacy-chat::chat-model'\nmodel_provider = '{CATALOG_PROVIDER_KEY}'\n[model_providers.{CATALOG_PROVIDER_KEY}]\nwire_api = 'chat'\n"
+            ),
         )
         .unwrap();
 
@@ -1171,7 +1233,7 @@ mod tests {
         assert!(!migrated.router.enabled);
         assert!(migrated.active_provider_id.is_none());
         let config = std::fs::read_to_string(&paths.config_path).unwrap();
-        assert!(!config.contains("aimami_relay"));
+        assert!(!config.contains(CATALOG_PROVIDER_KEY));
         assert!(!config.contains("model_provider"));
     }
 
@@ -1202,14 +1264,17 @@ mod tests {
         assert!(text.contains("# keep"));
         let parsed: toml::Value = text.parse().unwrap();
         assert_eq!(parsed["model_providers"]["other"]["name"].as_str(), Some("Other"));
-        assert!(parsed.get("model_providers").and_then(|p| p.get(LEGACY_PROVIDER_KEY)).is_none());
+        assert_eq!(
+            parsed["model_providers"]["aimami_newapi"]["name"].as_str(),
+            Some("legacy")
+        );
         assert!(text.contains("preferred_auth_method = \"apikey\""));
         assert!(text.contains(CATALOG_PROVIDER_KEY));
         let catalog = std::fs::read_to_string(catalog_path(&paths)).unwrap();
         assert!(catalog.contains(&format!("{id}::model-a")));
         remove_routing_config(&paths, &store).unwrap();
         let text = std::fs::read_to_string(&paths.config_path).unwrap();
-        assert!(!text.contains("aimami_p_"));
+        assert!(!text.contains("codexharbor_p_"));
         assert!(!catalog_path(&paths).exists());
         let parsed: toml::Value = text.parse().unwrap();
         // Our routing keys are gone; foreign tables and settings survive.
@@ -1223,8 +1288,8 @@ mod tests {
     fn import_skips_invalid_and_duplicate_entries_and_export_hides_secrets() {
         let (_dir, paths) = paths();
         save_provider(&paths, input("Relay A", "https://a.example.com")).unwrap();
-        let import_path = paths.codexmate_dir.join("import.json");
-        std::fs::create_dir_all(&paths.codexmate_dir).unwrap();
+        let import_path = paths.app_data_dir.join("import.json");
+        std::fs::create_dir_all(&paths.app_data_dir).unwrap();
         std::fs::write(
             &import_path,
             serde_json::json!({"providers": [
@@ -1239,7 +1304,7 @@ mod tests {
         let result = import_providers(&paths, &import_path).unwrap();
         assert_eq!(result.imported, 1);
         assert_eq!(result.skipped, 3);
-        let export_path = paths.codexmate_dir.join("export.json");
+        let export_path = paths.app_data_dir.join("export.json");
         export_providers(&paths, &export_path).unwrap();
         let text = String::from_utf8(std::fs::read(&export_path).unwrap()).unwrap();
         assert!(!text.contains("sk-a"));
@@ -1250,7 +1315,7 @@ mod tests {
     #[test]
     fn migrates_providers_from_the_original_app_relay_store() {
         let (_dir, paths) = paths();
-        let relay = paths.codexmate_dir.join("relay");
+        let relay = paths.codex_home.join("codexmate").join("relay");
         std::fs::create_dir_all(relay.join("keys")).unwrap();
         std::fs::write(
             relay.join("state.json"),
@@ -1276,7 +1341,7 @@ mod tests {
         let store = load_store(&paths).unwrap();
         assert_eq!(store.providers.len(), 2);
         let deepseek = &store.providers[0];
-        assert_eq!(deepseek.id, "aimami_relay_602abf8b50");
+        assert!(!deepseek.id.starts_with("aimami_"));
         assert_eq!(deepseek.api_key, "sk-original-key");
         assert_eq!(deepseek.base_url, "https://api.deepseek.com/");
         assert_eq!(deepseek.models[0].id, "deepseek-flash");
@@ -1284,9 +1349,9 @@ mod tests {
         assert!(deepseek.enabled);
         assert_eq!(deepseek.test_status, "ok");
         assert!(!store.providers[1].enabled);
-        assert!(store.router.enabled);
+        assert!(!store.router.enabled);
         assert_eq!(store.router.port, DEFAULT_PORT);
-        assert_eq!(store.active_provider_id.as_deref(), Some("aimami_relay_602abf8b50"));
+        assert_eq!(store.active_provider_id.as_deref(), Some(deepseek.id.as_str()));
         // The promoted store is persisted; removing the foreign files no longer matters.
         std::fs::remove_file(relay.join("state.json")).unwrap();
         let store = load_store(&paths).unwrap();

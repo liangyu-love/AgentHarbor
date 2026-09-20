@@ -124,11 +124,11 @@ pub fn load_skill_backups(backup_dir: &Path) -> Result<Vec<SkillBackupSummary>, 
 
 pub fn import_skill(
     skills_dir: &Path,
-    codexmate_dir: &Path,
+    app_data_dir: &Path,
     source_path: &str,
 ) -> Result<SkillImportPayload, CoreError> {
     std::fs::create_dir_all(skills_dir)?;
-    let backup_dir = codexmate_dir.join("skill-backups");
+    let backup_dir = app_data_dir.join("skill-backups");
     std::fs::create_dir_all(&backup_dir)?;
 
     let source = resolve_skill_source(Path::new(source_path))?;
@@ -177,7 +177,7 @@ pub fn import_skill(
 
 pub fn remove_skill(
     skills_dir: &Path,
-    codexmate_dir: &Path,
+    app_data_dir: &Path,
     id: &str,
 ) -> Result<SkillRemovePayload, CoreError> {
     let installed = load_installed_skills(skills_dir)?;
@@ -186,7 +186,7 @@ pub fn remove_skill(
         .find(|s| s.id == id)
         .ok_or_else(|| CoreError::NotFound(format!("Skill not found: {id}")))?;
 
-    let backup_dir = codexmate_dir.join("skill-backups");
+    let backup_dir = app_data_dir.join("skill-backups");
     let dir = PathBuf::from(&skill.directory_path);
     let backup = backup_skill_directory(&dir, skills_dir, &backup_dir, "remove")?;
 
@@ -204,10 +204,10 @@ pub fn remove_skill(
 
 pub fn restore_skill_backup(
     skills_dir: &Path,
-    codexmate_dir: &Path,
+    app_data_dir: &Path,
     backup_id: &str,
 ) -> Result<SkillRestorePayload, CoreError> {
-    let backup_dir = codexmate_dir.join("skill-backups");
+    let backup_dir = app_data_dir.join("skill-backups");
     let backup_path = checked_child(&backup_dir, backup_id)?;
     if !backup_path.exists() {
         return Err(CoreError::NotFound(format!(
@@ -260,10 +260,10 @@ pub fn restore_skill_backup(
 }
 
 pub fn delete_skill_backup(
-    codexmate_dir: &Path,
+    app_data_dir: &Path,
     backup_id: &str,
 ) -> Result<SkillDeleteBackupPayload, CoreError> {
-    let backup_dir = codexmate_dir.join("skill-backups");
+    let backup_dir = app_data_dir.join("skill-backups");
     let path = checked_child(&backup_dir, backup_id)?;
     if !path.exists() {
         return Err(CoreError::NotFound(format!(
@@ -365,8 +365,8 @@ fn replace_skill_directory(source: &Path, target: &Path) -> Result<(), CoreError
         return Err(CoreError::InvalidData("Cannot replace a linked skill directory".into()));
     }
     let parent = target.parent().ok_or_else(|| CoreError::InvalidData("Missing skill parent directory".into()))?;
-    let staged = parent.join(format!(".aimami-stage-{}", uuid::Uuid::new_v4()));
-    let previous = parent.join(format!(".aimami-previous-{}", uuid::Uuid::new_v4()));
+    let staged = parent.join(format!(".codexharbor-stage-{}", uuid::Uuid::new_v4()));
+    let previous = parent.join(format!(".codexharbor-previous-{}", uuid::Uuid::new_v4()));
     let result = (|| -> Result<(), CoreError> {
         copy_dir_all(source, &staged)?;
         std::fs::read_to_string(staged.join("SKILL.md"))?;

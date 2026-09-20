@@ -241,167 +241,172 @@ export function SettingsPage({
   const currentProxy = status?.api.proxy ?? { mode: "direct" as ApiProxyMode, url: null };
 
   return (
-    <div className="space-y-8">
-      <Section title={t("settings.appearance")} glow="bg-blue-500/10">
-        <AvatarSettings />
-        <SettingRow label={t("settings.theme")}>
-          <SettingSegmentedControl
-            items={[
-              { value: "light", icon: Sun, label: t("settings.light") },
-              { value: "dark", icon: Moon, label: t("settings.dark") },
-              { value: "system", icon: Monitor, label: t("settings.system") },
-            ]}
-            value={theme}
-            onChange={(v) => onThemeChange(v as Theme)}
-          />
-        </SettingRow>
-
-        <SettingRow label={t("settings.language")}>
-          <SettingSegmentedControl
-            items={[
-              { value: "zh", icon: Globe, label: "中文" },
-              { value: "en", icon: Globe, label: "English" },
-            ]}
-            value={language}
-            onChange={setLanguage}
-          />
-        </SettingRow>
-
-        <SettingRow label={t("settings.accentColor")} description={t("settings.accentColorDesc")}>
-          <div className="flex gap-2">
-            {(Object.keys(ACCENT_PRESETS) as AccentPreset[]).map((key) => (
-              <button
-                key={key}
-                onClick={() => setAccent(key)}
-                title={ACCENT_PRESETS[key].label}
-                className={cn(
-                  "h-6 w-6 rounded-full ring-2 ring-offset-2 ring-offset-card transition-transform hover:scale-110",
-                  accent === key ? "ring-foreground" : "ring-transparent",
-                )}
-                style={{ backgroundColor: ACCENT_PRESETS[key].hex }}
-              />
-            ))}
-          </div>
-        </SettingRow>
-
-        <SettingRow label={t("settings.heatmapColor")} description={t("baseline.quotaUnavailable")}>
-          <div className="flex gap-2">
-            {(Object.keys(HEATMAP_PRESETS) as HeatmapPreset[]).map((key) => (
-              <button
-                key={key}
-                onClick={() => setHeatmap(key)}
-                disabled
-                title={HEATMAP_PRESETS[key].label}
-                className={cn(
-                  "h-6 w-6 rounded-full ring-2 ring-offset-2 ring-offset-card transition-transform hover:scale-110",
-                  heatmap === key ? "ring-foreground" : "ring-transparent",
-                )}
-                style={{ backgroundColor: HEATMAP_PRESETS[key].hex }}
-              />
-            ))}
-          </div>
-        </SettingRow>
-
-        {supportsHotspot && (
-          <SettingRow
-            label={t("settings.hotspot")}
-            description={hasNotch ? t("settings.hotspotDesc") : t("settings.hotspotNotSupported")}
-          >
-            <Switch
-              checked={hasNotch && (hotspotQuery.data ?? false)}
-              onCheckedChange={(v) => hotspotMutation.mutate(v)}
-              disabled={!hasNotch || hotspotMutation.isPending}
+    <div className="space-y-6">
+      <div className="grid gap-5 lg:grid-cols-2 items-start">
+        {/* Left Column: Appearance */}
+        <Section title={t("settings.appearance")} glow="bg-blue-500/10">
+          <AvatarSettings />
+          <SettingRow label={t("settings.theme")}>
+            <SettingSegmentedControl
+              items={[
+                { value: "light", icon: Sun, label: t("settings.light") },
+                { value: "dark", icon: Moon, label: t("settings.dark") },
+                { value: "system", icon: Monitor, label: t("settings.system") },
+              ]}
+              value={theme}
+              onChange={(v) => onThemeChange(v as Theme)}
             />
           </SettingRow>
-        )}
 
-      </Section>
-
-      <Section title={t("settings.modeSwitch")} glow="bg-purple-500/10">
-        <div className="flex items-center justify-between px-5 py-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-[13px] font-medium">{t("settings.autoSwitch")}</span>
-              {status?.autoSwitch.enabled && (
-                <Badge
-                  variant="secondary"
-                  className="cursor-pointer text-[11px] font-normal hover:bg-secondary/60"
-                  onClick={() => openThresholdDialog(false)}
-                >
-                  5h ≤{status.autoSwitch.threshold5hPercent ?? 15}% · 1w ≤{status.autoSwitch.thresholdWeeklyPercent ?? 10}%
-                </Badge>
-              )}
-            </div>
-            <p className="mt-0.5 text-xs text-muted-foreground">{t(status?.autoSwitch.supported ? "settings.autoSwitchDesc" : "baseline.autoSwitchUnavailable")}</p>
-          </div>
-          <Switch
-            checked={status?.autoSwitch.enabled ?? false}
-            onCheckedChange={(v) => {
-              if (v) {
-                openThresholdDialog(true);
-              } else {
-                disableAutoSwitchMutation.mutate();
-              }
-            }}
-            disabled={!status?.autoSwitch.supported || disableAutoSwitchMutation.isPending || saveThresholdsMutation.isPending}
-          />
-        </div>
-        <SettingRow
-          label={t("settings.refreshInterval")}
-          description={t("baseline.quotaUnavailable")}
-        >
-          <fieldset disabled className="opacity-50">
-          <SettingSegmentedControl
-            items={REFRESH_OPTIONS.map(({ value, labelKey }) => ({
-              value,
-              label: t(labelKey),
-            }))}
-            value={refreshInterval}
-            onChange={(v) => setRefreshInterval(v as RefreshInterval)}
-            compact
-          />
-          </fieldset>
-        </SettingRow>
-        <SettingRow
-          label={
-            <div className="flex items-center gap-2">
-              <span>{t("settings.apiProxy")}</span>
-              <Badge variant="secondary" className="text-[11px] font-normal">
-                {proxyModeBadgeLabel(t, currentProxy.mode)}
-              </Badge>
-            </div>
-          }
-          description={t("settings.apiProxyDesc")}
-        >
-          <Button variant="outline" size="sm" onClick={openProxyDialog}>
-            {t("common.edit")}
-          </Button>
-        </SettingRow>
-      </Section>
-
-      <Section title={t("settings.about")} glow="bg-green-500/10">
-        <SettingRow label={t("settings.version")}>
-          <span className=" text-sm text-muted-foreground">
-            {appVersion}
-          </span>
-        </SettingRow>
-        <SettingRow label={t("settings.checkUpdate")}>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleCheckUpdate}
-            disabled={checkingUpdate}
-            aria-busy={checkingUpdate}
-          >
-            <ButtonBusyContent
-              busy={checkingUpdate}
-              idleIcon={<Download className="h-3.5 w-3.5 shrink-0" />}
-              idleLabel={t("settings.checkUpdate")}
-              busyLabel={t("settings.checkUpdateBusy")}
+          <SettingRow label={t("settings.language")}>
+            <SettingSegmentedControl
+              items={[
+                { value: "zh", icon: Globe, label: "中文" },
+                { value: "en", icon: Globe, label: "English" },
+              ]}
+              value={language}
+              onChange={setLanguage}
             />
-          </Button>
-        </SettingRow>
-      </Section>
+          </SettingRow>
+
+          <SettingRow label={t("settings.accentColor")} description={t("settings.accentColorDesc")}>
+            <div className="flex gap-2">
+              {(Object.keys(ACCENT_PRESETS) as AccentPreset[]).map((key) => (
+                <button
+                  key={key}
+                  onClick={() => setAccent(key)}
+                  title={ACCENT_PRESETS[key].label}
+                  className={cn(
+                    "h-6 w-6 rounded-full ring-2 ring-offset-2 ring-offset-card transition-transform hover:scale-110",
+                    accent === key ? "ring-foreground" : "ring-transparent",
+                  )}
+                  style={{ backgroundColor: ACCENT_PRESETS[key].hex }}
+                />
+              ))}
+            </div>
+          </SettingRow>
+
+          <SettingRow label={t("settings.heatmapColor")} description={t("baseline.quotaUnavailable")}>
+            <div className="flex gap-2">
+              {(Object.keys(HEATMAP_PRESETS) as HeatmapPreset[]).map((key) => (
+                <button
+                  key={key}
+                  onClick={() => setHeatmap(key)}
+                  disabled
+                  title={HEATMAP_PRESETS[key].label}
+                  className={cn(
+                    "h-6 w-6 rounded-full ring-2 ring-offset-2 ring-offset-card transition-transform hover:scale-110",
+                    heatmap === key ? "ring-foreground" : "ring-transparent",
+                  )}
+                  style={{ backgroundColor: HEATMAP_PRESETS[key].hex }}
+                />
+              ))}
+            </div>
+          </SettingRow>
+
+          {supportsHotspot && (
+            <SettingRow
+              label={t("settings.hotspot")}
+              description={hasNotch ? t("settings.hotspotDesc") : t("settings.hotspotNotSupported")}
+            >
+              <Switch
+                checked={hasNotch && (hotspotQuery.data ?? false)}
+                onCheckedChange={(v) => hotspotMutation.mutate(v)}
+                disabled={!hasNotch || hotspotMutation.isPending}
+              />
+            </SettingRow>
+          )}
+        </Section>
+
+        {/* Right Column: Mode Switch & About */}
+        <div className="space-y-5">
+          <Section title={t("settings.modeSwitch")} glow="bg-purple-500/10">
+            <div className="flex items-center justify-between px-5 py-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[13px] font-medium">{t("settings.autoSwitch")}</span>
+                  {status?.autoSwitch.enabled && (
+                    <Badge
+                      variant="secondary"
+                      className="cursor-pointer text-[11px] font-normal hover:bg-secondary/60"
+                      onClick={() => openThresholdDialog(false)}
+                    >
+                      5h ≤{status.autoSwitch.threshold5hPercent ?? 15}% · 1w ≤{status.autoSwitch.thresholdWeeklyPercent ?? 10}%
+                    </Badge>
+                  )}
+                </div>
+                <p className="mt-0.5 text-xs text-muted-foreground">{t(status?.autoSwitch.supported ? "settings.autoSwitchDesc" : "baseline.autoSwitchUnavailable")}</p>
+              </div>
+              <Switch
+                checked={status?.autoSwitch.enabled ?? false}
+                onCheckedChange={(v) => {
+                  if (v) {
+                    openThresholdDialog(true);
+                  } else {
+                    disableAutoSwitchMutation.mutate();
+                  }
+                }}
+                disabled={!status?.autoSwitch.supported || disableAutoSwitchMutation.isPending || saveThresholdsMutation.isPending}
+              />
+            </div>
+            <SettingRow
+              label={t("settings.refreshInterval")}
+              description={t("baseline.quotaUnavailable")}
+            >
+              <fieldset disabled className="opacity-50">
+              <SettingSegmentedControl
+                items={REFRESH_OPTIONS.map(({ value, labelKey }) => ({
+                  value,
+                  label: t(labelKey),
+                }))}
+                value={refreshInterval}
+                onChange={(v) => setRefreshInterval(v as RefreshInterval)}
+                compact
+              />
+              </fieldset>
+            </SettingRow>
+            <SettingRow
+              label={
+                <div className="flex items-center gap-2">
+                  <span>{t("settings.apiProxy")}</span>
+                  <Badge variant="secondary" className="text-[11px] font-normal">
+                    {proxyModeBadgeLabel(t, currentProxy.mode)}
+                  </Badge>
+                </div>
+              }
+              description={t("settings.apiProxyDesc")}
+            >
+              <Button variant="outline" size="sm" onClick={openProxyDialog}>
+                {t("common.edit")}
+              </Button>
+            </SettingRow>
+          </Section>
+
+          <Section title={t("settings.about")} glow="bg-green-500/10">
+            <SettingRow label={t("settings.version")}>
+              <span className=" text-sm text-muted-foreground">
+                {appVersion}
+              </span>
+            </SettingRow>
+            <SettingRow label={t("settings.checkUpdate")}>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleCheckUpdate}
+                disabled={checkingUpdate}
+                aria-busy={checkingUpdate}
+              >
+                <ButtonBusyContent
+                  busy={checkingUpdate}
+                  idleIcon={<Download className="h-3.5 w-3.5 shrink-0" />}
+                  idleLabel={t("settings.checkUpdate")}
+                  busyLabel={t("settings.checkUpdateBusy")}
+                />
+              </Button>
+            </SettingRow>
+          </Section>
+        </div>
+      </div>
 
       <Dialog open={thresholdDialogOpen} onOpenChange={setThresholdDialogOpen}>
         <DialogContent className="max-w-sm">

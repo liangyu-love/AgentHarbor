@@ -1,12 +1,12 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-cli/schema.json",
-  "productName": "AiMaMi",
+  "productName": "CodexHarbor",
   "version": "1.0.0",
-  "identifier": "dev.aimami.desktop",
+  "identifier": "dev.codexharbor.desktop",
   "build": {
     "beforeBuildCommand": "pnpm build",
     "beforeDevCommand": "pnpm dev",
-    "devUrl": "http://localhost:3123",
+    "devUrl": "http://localhost:3417",
     "frontendDist": "../dist"
   },
   "app": {
@@ -17,7 +17,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "AiMaMi",
+        "title": "CodexHarbor",
         "width": 1200,
         "height": 800,
         "minWidth": 960,
@@ -45,7 +45,7 @@
     ],
     "macOS": {
       "minimumSystemVersion": "12.0",
-      "bundleName": "AiMaMi",
+      "bundleName": "CodexHarbor",
       "entitlements": "Entitlements.plist",
       "infoPlist": "Info.plist"
     },

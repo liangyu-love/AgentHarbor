@@ -6,5 +6,5 @@ fn main() {
         std::process::exit(1);
     }
 
-    aimami_lib::run()
+    codexharbor_lib::run()
 }

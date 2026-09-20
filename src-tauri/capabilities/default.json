@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default permissions for AiMaMi",
+  "description": "Default permissions for CodexHarbor",
   "windows": ["main", "hotspot", "voice-overlay", "voice-search-overlay"],
   "permissions": [
     "core:default",

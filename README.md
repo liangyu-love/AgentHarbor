@@ -1,10 +1,10 @@
-> **Repaired source baseline:** This checkout restores builds and local configuration workflows (overview, MCP, Skills, custom instructions, maintenance and settings). Account switching, live quotas, routing, relay, session management and the notch overlay remain incomplete in the public source. The upstream product description below is not a feature guarantee for this checkout. See [running and validation notes](docs/RUNNING.md).
+> **CodexHarbor:** an independent rebuild with its own application identity, local data directory, smart-router namespace, and default port. It can run alongside an installed AiMaMi release.
 
 <p align="center">
-  <img src="assets/app-icon-composed.png" alt="AiMaMi" width="128" height="128" />
+  <img src="assets/app-icon-composed.png" alt="CodexHarbor" width="128" height="128" />
 </p>
 
-<h1 align="center">AiMaMi</h1>
+<h1 align="center">CodexHarbor</h1>
 
 <p align="center">
   <strong>A native desktop companion for OpenAI Codex — manage accounts, routing, sessions, and local configuration in one place.</strong>
@@ -20,7 +20,7 @@
 
 Codex stores accounts, sessions, MCP entries, Skills, smart-router settings, and relay configuration across multiple files under `~/.codex`. Multi-account switching, quota exhaustion, third-party model setup, session cleanup, and config drift quickly turn day-to-day work into hand-editing TOML, JSON, and SQLite.
 
-AiMaMi is built with **Tauri 2, React, and Rust**. It consolidates these high-frequency workflows — including smart routing and relay management — into a single desktop app that reads and writes Codex data locally, reducing the risk of manual file edits.
+CodexHarbor is built with **Tauri 2, React, and Rust**. It consolidates these high-frequency workflows — including smart routing and relay management — into a single desktop app that reads and writes Codex data locally, reducing the risk of manual file edits.
 
 ---
 
@@ -35,21 +35,15 @@ AiMaMi is built with **Tauri 2, React, and Rust**. It consolidates these high-fr
 | **Session management** | Safely inspect, analyze, and bulk-clean local threads from the real index |
 | **MCP / Skills** | Manage MCP entries and Skills lifecycle in the UI, with backup and restore |
 | **Plugins** | Unified toggles for built-in extensions (e.g. web tools, image support) |
-| **Custom instructions** | Manage only the AiMaMi-managed block in `~/.codex/AGENTS.md`, with preview and rollback |
+| **Custom instructions** | Manage only the CodexHarbor-managed block in `~/.codex/AGENTS.md`, with preview and rollback |
 | **System maintenance** | Diagnose, clean, rebuild registry, force-quit Codex, fix common config issues |
 | **Settings & runtime** | Theme, language, quota refresh, API proxy, update checks; tray and macOS notch quota display |
 
-**Smart router note:** Relay models are forwarded through AiMaMi's local proxy. Keep AiMaMi running while Codex uses relay models.
+**Smart router note:** Relay models are forwarded through CodexHarbor's local proxy. Keep CodexHarbor running while Codex uses relay models.
 
 <p align="center">
-  <img src="assets/console.png" alt="AiMaMi" width="1200" height="812" />
+  <img src="assets/console.png" alt="CodexHarbor" width="1200" height="812" />
 </p>
-<p align="center">
-  <img src="assets/aimami-qun.png" alt="AiMaMi community QR code" width="400" height="300" />
-</p>
-
----
-
 ## Platform Support
 
 | Platform | Notes |
@@ -71,8 +65,7 @@ Tauri 2 · React 18 · TypeScript · Vite 6 · Tailwind CSS · shadcn/ui · Rust
 **Requirements:** Node.js · pnpm · Rust · [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)
 
 ```bash
-git clone https://github.com/borawong/AiMaMi.git
-cd AiMaMi
+cd CodexHarbor
 pnpm install
 pnpm tauri dev
 ```
@@ -102,7 +95,7 @@ assets/        Branding and documentation assets
 ```text
 React UI ── invoke() ──▶ Tauri commands ──▶ core/
                                               ├── ~/.codex          (Codex native)
-                                              └── ~/.codex/codexmate/ (AiMaMi app data)
+                                              └── ~/.codex/codexharbor/ (CodexHarbor app data)
                          platform/            macOS / Windows implementations
 ```
 
@@ -122,4 +115,4 @@ Issues and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING
 
 ## Disclaimer
 
-AiMaMi is an independent tool for local Codex workflows. It is not affiliated with, endorsed by, or sponsored by OpenAI. Use third-party relay services at your own risk and comply with their terms of service.
+CodexHarbor is an independent tool for local Codex workflows. It is not affiliated with, endorsed by, or sponsored by OpenAI. Use third-party relay services at your own risk and comply with their terms of service.

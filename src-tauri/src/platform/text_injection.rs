@@ -101,7 +101,7 @@ pub fn inject_text(text: &str, expected_bundle_id: Option<&str>) -> Result<(), S
     {
         if !accessibility::is_trusted() {
             return Err(
-                "未获得辅助功能权限，无法自动粘贴文本。请在「系统设置 → 隐私与安全性 → 辅助功能」中开启 AiMaMi。".into(),
+                "未获得辅助功能权限，无法自动粘贴文本。请在「系统设置 → 隐私与安全性 → 辅助功能」中开启 CodexHarbor。".into(),
             );
         }
 

@@ -1,6 +1,6 @@
-use aimami_lib::core::{custom_instructions, mcp, skills};
-use aimami_lib::core::models::{McpServerSummary, McpTransport};
-use aimami_lib::platform::paths::CodexPaths;
+use codexharbor_lib::core::{custom_instructions, mcp, skills};
+use codexharbor_lib::core::models::{McpServerSummary, McpTransport};
+use codexharbor_lib::platform::paths::CodexPaths;
 use std::{collections::HashMap, fs};
 
 #[test]
@@ -12,18 +12,18 @@ fn skill_import_replace_remove_and_restore_roundtrip() {
     fs::create_dir_all(source.join("references")).unwrap();
     fs::write(source.join("SKILL.md"), "# Example\nFirst version").unwrap();
     fs::write(source.join("references/guide.md"), "reference").unwrap();
-    let imported = skills::import_skill(&paths.skills_dir, &paths.codexmate_dir, source.to_str().unwrap()).unwrap();
+    let imported = skills::import_skill(&paths.skills_dir, &paths.app_data_dir, source.to_str().unwrap()).unwrap();
     assert!(!imported.replaced_existing);
     fs::write(source.join("SKILL.md"), "# Example\nSecond version").unwrap();
-    let replaced = skills::import_skill(&paths.skills_dir, &paths.codexmate_dir, source.to_str().unwrap()).unwrap();
+    let replaced = skills::import_skill(&paths.skills_dir, &paths.app_data_dir, source.to_str().unwrap()).unwrap();
     assert!(replaced.replaced_existing);
     assert!(replaced.backup.is_some());
-    let removed = skills::remove_skill(&paths.skills_dir, &paths.codexmate_dir, &imported.skill.id).unwrap();
+    let removed = skills::remove_skill(&paths.skills_dir, &paths.app_data_dir, &imported.skill.id).unwrap();
     assert_eq!(removed.remaining_installed_count, 0);
-    skills::restore_skill_backup(&paths.skills_dir, &paths.codexmate_dir, &removed.backup.id).unwrap();
+    skills::restore_skill_backup(&paths.skills_dir, &paths.app_data_dir, &removed.backup.id).unwrap();
     assert_eq!(fs::read_to_string(paths.skills_dir.join("example-skill/SKILL.md")).unwrap(), "# Example\nSecond version");
     assert_eq!(fs::read_to_string(paths.skills_dir.join("example-skill/references/guide.md")).unwrap(), "reference");
-    skills::delete_skill_backup(&paths.codexmate_dir, &removed.backup.id).unwrap();
+    skills::delete_skill_backup(&paths.app_data_dir, &removed.backup.id).unwrap();
     assert_eq!(skills::load_skill_backups(&paths.skill_backups_dir).unwrap().len(), 1);
 }
 
@@ -36,10 +36,10 @@ fn nested_skill_backup_is_discoverable_on_windows() {
     fs::create_dir_all(&nested).unwrap();
     fs::write(nested.join("SKILL.md"), "# Nested").unwrap();
     let installed = skills::load_installed_skills(&paths.skills_dir).unwrap();
-    let removed = skills::remove_skill(&paths.skills_dir, &paths.codexmate_dir, &installed[0].id).unwrap();
+    let removed = skills::remove_skill(&paths.skills_dir, &paths.app_data_dir, &installed[0].id).unwrap();
     assert!(!removed.backup.id.contains(['/', '\\']));
     assert_eq!(skills::load_skill_backups(&paths.skill_backups_dir).unwrap().len(), 1);
-    skills::restore_skill_backup(&paths.skills_dir, &paths.codexmate_dir, &removed.backup.id).unwrap();
+    skills::restore_skill_backup(&paths.skills_dir, &paths.app_data_dir, &removed.backup.id).unwrap();
     assert!(nested.join("SKILL.md").exists());
 }
 
@@ -48,11 +48,11 @@ fn invalid_backup_path_cannot_delete_outside_the_backup_directory() {
     let temp = tempfile::tempdir().unwrap();
     let paths = CodexPaths::from_home(temp.path().join("codex"));
     paths.ensure_directories().unwrap();
-    let unrelated = paths.codexmate_dir.join("keep");
+    let unrelated = paths.app_data_dir.join("keep");
     fs::create_dir_all(&unrelated).unwrap();
     fs::write(unrelated.join("important.txt"), "keep me").unwrap();
-    assert!(skills::delete_skill_backup(&paths.codexmate_dir, "../keep").is_err());
-    assert!(skills::restore_skill_backup(&paths.skills_dir, &paths.codexmate_dir, "../keep").is_err());
+    assert!(skills::delete_skill_backup(&paths.app_data_dir, "../keep").is_err());
+    assert!(skills::restore_skill_backup(&paths.skills_dir, &paths.app_data_dir, "../keep").is_err());
     assert!(unrelated.join("important.txt").exists());
 }
 
@@ -73,7 +73,7 @@ fn instruction_rollback_keeps_later_user_edits() {
     assert!(restored.contains("User rules"));
     assert!(restored.contains("Later user rules"));
     assert!(!restored.contains("Managed first"));
-    assert!(!restored.contains("AIMAMI_CUSTOM_INSTRUCTIONS_START"));
+    assert!(!restored.contains("CODEX_HARBOR_CUSTOM_INSTRUCTIONS_START"));
 }
 
 #[test]
@@ -81,7 +81,7 @@ fn broken_instruction_markers_refuse_writes_and_rollback() {
     let temp = tempfile::tempdir().unwrap();
     let paths = CodexPaths::from_home(temp.path().join("codex"));
     let state = custom_instructions::apply_managed_content(&paths, "Managed", None, None, None).unwrap();
-    let broken = "User rules\n<!-- AIMAMI_CUSTOM_INSTRUCTIONS_START -->\nbroken";
+    let broken = "User rules\n<!-- CODEX_HARBOR_CUSTOM_INSTRUCTIONS_START -->\nbroken";
     fs::write(&paths.global_agents_path, broken).unwrap();
     assert!(custom_instructions::preview_apply(&paths, "new").is_err());
     assert!(custom_instructions::rollback_history(&paths, &state.history[0].id).is_err());
@@ -138,8 +138,8 @@ startup_timeout_sec = 45
 enabled_tools = ["search"]
 [mcp_servers.example.env]
 "APP.DATA" = 'C:\data'
-"# --- AiMaMi Managed" = "value"
-"# --- End AiMaMi Managed" = "value"
+"# --- CodexHarbor Managed" = "value"
+"# --- End CodexHarbor Managed" = "value"
 "[not_a_table]" = "value"
 "# comment" = "value"
 "###).unwrap();
