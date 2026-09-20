@@ -574,6 +574,11 @@ content-length: 22
                 &serde_json::to_vec(&store).unwrap(),
             )
             .unwrap();
+            assert!(
+                !paths.auth_path.exists(),
+                "isolated Codex home must not contain auth.json"
+            );
+            router::set_accountless(&paths, true).unwrap();
             router::set_smart_routing(&paths, true).unwrap();
             let store = router::load_store(&paths).unwrap();
             ensure_running(port, paths.clone(), proxy).await.unwrap();
@@ -588,9 +593,15 @@ content-length: 22
                 Some(format!("http://127.0.0.1:{port}/codex/v1").as_str())
             );
             assert_eq!(injected["wire_api"].as_str(), Some("responses"));
+            assert_eq!(injected["requires_openai_auth"].as_bool(), Some(false));
             assert_eq!(
                 injected["experimental_bearer_token"].as_str(),
                 Some(store.router.bearer_token.as_str())
+            );
+            assert_eq!(config["preferred_auth_method"].as_str(), Some("apikey"));
+            assert!(
+                !paths.auth_path.exists(),
+                "accountless routing must not create auth.json"
             );
 
             let client = Client::builder().timeout(Duration::from_secs(90)).build().unwrap();
