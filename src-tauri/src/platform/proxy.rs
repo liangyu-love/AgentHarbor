@@ -1,5 +1,6 @@
 use reqwest::blocking::Client;
 use std::fs;
+#[cfg(target_os = "macos")]
 use std::process::Command;
 use std::time::Duration;
 

@@ -365,8 +365,8 @@ fn replace_skill_directory(source: &Path, target: &Path) -> Result<(), CoreError
         return Err(CoreError::InvalidData("Cannot replace a linked skill directory".into()));
     }
     let parent = target.parent().ok_or_else(|| CoreError::InvalidData("Missing skill parent directory".into()))?;
-    let staged = parent.join(format!(".codexharbor-stage-{}", uuid::Uuid::new_v4()));
-    let previous = parent.join(format!(".codexharbor-previous-{}", uuid::Uuid::new_v4()));
+    let staged = parent.join(format!(".agentharbor-stage-{}", uuid::Uuid::new_v4()));
+    let previous = parent.join(format!(".agentharbor-previous-{}", uuid::Uuid::new_v4()));
     let result = (|| -> Result<(), CoreError> {
         copy_dir_all(source, &staged)?;
         std::fs::read_to_string(staged.join("SKILL.md"))?;

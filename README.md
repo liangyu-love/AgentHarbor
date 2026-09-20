@@ -1,13 +1,13 @@
-> **CodexHarbor:** an independent rebuild with its own application identity, local data directory, smart-router namespace, and default port. It can run alongside an installed AiMaMi release.
+> **AgentHarbor:** an independent rebuild with its own application identity, local data directory, smart-router namespace, and default port. It can run alongside an installed AiMaMi release.
 
 <p align="center">
-  <img src="assets/app-icon-composed.png" alt="CodexHarbor" width="128" height="128" />
+  <img src="assets/app-icon-composed.png" alt="AgentHarbor" width="128" height="128" />
 </p>
 
-<h1 align="center">CodexHarbor</h1>
+<h1 align="center">AgentHarbor</h1>
 
 <p align="center">
-  <strong>A native desktop companion for OpenAI Codex — manage accounts, routing, sessions, and local configuration in one place.</strong>
+  <strong>A native desktop harbor for coding agents — manage accounts, routing, sessions, and local configuration in one place.</strong>
 </p>
 
 <p align="center">
@@ -20,7 +20,7 @@
 
 Codex stores accounts, sessions, MCP entries, Skills, smart-router settings, and relay configuration across multiple files under `~/.codex`. Multi-account switching, quota exhaustion, third-party model setup, session cleanup, and config drift quickly turn day-to-day work into hand-editing TOML, JSON, and SQLite.
 
-CodexHarbor is built with **Tauri 2, React, and Rust**. It consolidates these high-frequency workflows — including smart routing and relay management — into a single desktop app that reads and writes Codex data locally, reducing the risk of manual file edits.
+AgentHarbor is built with **Tauri 2, React, and Rust**. Codex is the first supported agent; the product identity and provider-specific modules are kept separate so adapters such as Claude Code can be added later. Today it consolidates Codex workflows — including smart routing and relay management — into a single desktop app that reduces risky manual file edits.
 
 ---
 
@@ -35,14 +35,14 @@ CodexHarbor is built with **Tauri 2, React, and Rust**. It consolidates these hi
 | **Session management** | Safely inspect, analyze, and bulk-clean local threads from the real index |
 | **MCP / Skills** | Manage MCP entries and Skills lifecycle in the UI, with backup and restore |
 | **Plugins** | Unified toggles for built-in extensions (e.g. web tools, image support) |
-| **Custom instructions** | Manage only the CodexHarbor-managed block in `~/.codex/AGENTS.md`, with preview and rollback |
+| **Custom instructions** | Manage only the AgentHarbor-managed block in `~/.codex/AGENTS.md`, with preview and rollback |
 | **System maintenance** | Diagnose, clean, rebuild registry, force-quit Codex, fix common config issues |
 | **Settings & runtime** | Theme, language, quota refresh, API proxy, update checks; tray and macOS notch quota display |
 
-**Smart router note:** Relay models are forwarded through CodexHarbor's local proxy. Keep CodexHarbor running while Codex uses relay models.
+**Smart router note:** Relay models are forwarded through AgentHarbor's local proxy. Keep AgentHarbor running while Codex uses relay models.
 
 <p align="center">
-  <img src="assets/console.png" alt="CodexHarbor" width="1200" height="812" />
+  <img src="assets/console.png" alt="AgentHarbor" width="1200" height="812" />
 </p>
 ## Platform Support
 
@@ -65,7 +65,7 @@ Tauri 2 · React 18 · TypeScript · Vite 6 · Tailwind CSS · shadcn/ui · Rust
 **Requirements:** Node.js · pnpm · Rust · [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)
 
 ```bash
-cd CodexHarbor
+cd AgentHarbor
 pnpm install
 pnpm tauri dev
 ```
@@ -95,7 +95,7 @@ assets/        Branding and documentation assets
 ```text
 React UI ── invoke() ──▶ Tauri commands ──▶ core/
                                               ├── ~/.codex          (Codex native)
-                                              └── ~/.codex/codexharbor/ (CodexHarbor app data)
+                                              └── ~/.codex/agentharbor/ (AgentHarbor app data)
                          platform/            macOS / Windows implementations
 ```
 
@@ -115,4 +115,4 @@ Issues and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING
 
 ## Disclaimer
 
-CodexHarbor is an independent tool for local Codex workflows. It is not affiliated with, endorsed by, or sponsored by OpenAI. Use third-party relay services at your own risk and comply with their terms of service.
+AgentHarbor is an independent tool for local Codex workflows. It is not affiliated with, endorsed by, or sponsored by OpenAI. Use third-party relay services at your own risk and comply with their terms of service.

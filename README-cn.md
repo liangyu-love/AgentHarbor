@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="assets/app-icon-composed.png" alt="CodexHarbor" width="128" height="128" />
+  <img src="assets/app-icon-composed.png" alt="AgentHarbor" width="128" height="128" />
 </p>
 
-<h1 align="center">CodexHarbor</h1>
+<h1 align="center">AgentHarbor</h1>
 
 <p align="center">
-  <strong>面向 OpenAI Codex 的原生桌面伴侣 —— 统一管理账号、路由、会话与本地配置。</strong>
+  <strong>面向编程 Agent 的原生桌面工作台 —— 统一管理账号、路由、会话与本地配置。</strong>
 </p>
 
 <p align="center">
@@ -16,7 +16,7 @@
 
 ## 当前重构版
 
-CodexHarbor 已使用独立的应用标识、进程名、安装包名、单实例锁、本地数据目录、智能路由命名空间和默认端口，可以与本机已安装的 AiMaMi 并行运行。当前源码包含概览、中转管理、智能路由、无账号模式、MCP、Skills、自定义指令、维护和设置等本地工作流。
+AgentHarbor 已使用独立的应用标识、进程名、安装包名、单实例锁、本地数据目录、智能路由命名空间和默认端口，可以与本机已安装的 AiMaMi 并行运行。当前源码包含概览、中转管理、智能路由、无账号模式、MCP、Skills、自定义指令、维护和设置等本地工作流。
 
 开发启动：`pnpm install --frozen-lockfile` 后运行 `pnpm tauri dev`。Windows 需要 Rust MSVC、Visual Studio C++ Build Tools 和 WebView2。完整步骤、隔离测试方式及验证记录见 [修复版运行说明](docs/RUNNING.md)。
 
@@ -24,7 +24,7 @@ CodexHarbor 已使用独立的应用标识、进程名、安装包名、单实�
 
 Codex 的账号、会话、MCP、Skills、智能路由与中转配置分散在 `~/.codex` 下的多个文件里。多账号切换、额度耗尽、第三方模型接入与路由维护、会话清理和配置漂移，都会把日常操作变成手改 TOML / JSON / SQLite。
 
-CodexHarbor 基于 **Tauri 2 + React + Rust**，把这些高频操作 —— 含智能路由与中转管理 —— 收敛到一个桌面应用里，在本地安全读写 Codex 数据，减少手工改文件带来的风险。
+AgentHarbor 基于 **Tauri 2 + React + Rust**。Codex 是首个已接入的 Agent，产品身份与工具专属模块保持分离，后续可继续增加 Claude Code 等适配器。当前版本把 Codex 的高频操作 —— 含智能路由与中转管理 —— 收敛到一个桌面应用里，减少手工修改本地文件带来的风险。
 
 ---
 
@@ -39,14 +39,14 @@ CodexHarbor 基于 **Tauri 2 + React + Rust**，把这些高频操作 —— 含
 | **会话管理** | 基于真实索引安全查看、统计与批量清理本地线程 |
 | **MCP / Skills** | 图形化管理 MCP 条目与 Skills 生命周期，支持备份恢复 |
 | **插件** | 统一管理内置扩展（如 web tools、image support） |
-| **自定义指令** | 仅管理 `~/.codex/AGENTS.md` 中的 CodexHarbor 受控区块，支持预览与回滚 |
+| **自定义指令** | 仅管理 `~/.codex/AGENTS.md` 中的 AgentHarbor 受控区块，支持预览与回滚 |
 | **系统维护** | 诊断、清理、重建 registry、强杀 Codex、修复常见配置问题 |
 | **设置与运行时** | 主题、语言、额度刷新、API 代理、更新检查；托盘与 macOS 刘海额度展示 |
 
-**智能路由说明：** 中转模型经 CodexHarbor 本地代理转发，使用期间需保持 CodexHarbor 运行。
+**智能路由说明：** 中转模型经 AgentHarbor 本地代理转发，使用期间需保持 AgentHarbor 运行。
 
 <p align="center">
-  <img src="assets/console.png" alt="CodexHarbor" width="1200" height="812" />
+  <img src="assets/console.png" alt="AgentHarbor" width="1200" height="812" />
 </p>
 ## 平台支持
 
@@ -69,7 +69,7 @@ Tauri 2 · React 18 · TypeScript · Vite 6 · Tailwind CSS · shadcn/ui · Rust
 **环境要求：** Node.js · pnpm · Rust · [Tauri 系统依赖](https://v2.tauri.app/start/prerequisites/)
 
 ```bash
-cd CodexHarbor
+cd AgentHarbor
 pnpm install
 pnpm tauri dev
 ```
@@ -99,7 +99,7 @@ assets/        品牌与文档素材
 ```text
 React UI ── invoke() ──▶ Tauri commands ──▶ core/
                                               ├── ~/.codex          (Codex 原生)
-                                              └── ~/.codex/codexharbor/ (CodexHarbor 数据)
+                                              └── ~/.codex/agentharbor/ (AgentHarbor 数据)
                          platform/            macOS / Windows 差异实现
 ```
 
@@ -119,4 +119,4 @@ React UI ── invoke() ──▶ Tauri commands ──▶ core/
 
 ## 免责声明
 
-CodexHarbor 是独立的 Codex 本地工作流工具，与 OpenAI 无隶属、背书或赞助关系。使用第三方中转服务请自行评估风险并遵守相应条款。
+AgentHarbor 是独立的 Codex 本地工作流工具，与 OpenAI 无隶属、背书或赞助关系。使用第三方中转服务请自行评估风险并遵守相应条款。

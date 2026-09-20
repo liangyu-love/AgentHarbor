@@ -11,7 +11,7 @@
 //! 下次启动会自动还原音量，而不是永久停在低音状态。
 //!
 //! 与 Type4Me `Services/SystemVolumeManager.swift` 思路一致（MIT），细节按本项目数据
-//! 目录约定改写：marker 走 `<codex_home>/codexharbor/voice-volume-marker.json`，而不是
+//! 目录约定改写：marker 走 `<codex_home>/agentharbor/voice-volume-marker.json`，而不是
 //! UserDefaults。
 
 #![cfg(target_os = "macos")]
@@ -105,7 +105,7 @@ fn volume_worker() -> &'static mpsc::Sender<VolumeOperation> {
     VOLUME_WORKER.get_or_init(|| {
         let (tx, rx) = mpsc::channel::<VolumeOperation>();
         let _ = std::thread::Builder::new()
-            .name("codexharbor-system-volume".to_string())
+            .name("agentharbor-system-volume".to_string())
             .spawn(move || {
                 while let Ok(op) = rx.recv() {
                     match op {

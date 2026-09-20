@@ -1,4 +1,5 @@
 use crate::core::repository::Repository;
+#[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
@@ -23,6 +24,8 @@ pub fn get_hotspot_enabled(repo: State<'_, Mutex<Repository>>) -> Result<bool, S
 }
 
 pub fn register_hotspot_relayout_observers(app: &AppHandle) {
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
     #[cfg(target_os = "macos")]
     {
         use std::sync::OnceLock;
@@ -75,9 +78,9 @@ pub fn reveal_main_window(app: &AppHandle) {
 /// macOS NSApplication.activateIgnoringOtherApps 把焦点夺回。
 ///
 /// 用于：
-/// - 用户从 Dock / 任务栏点击 CodexHarbor 已打开的实例（macOS Reopen / Windows
+/// - 用户从 Dock / 任务栏点击 AgentHarbor 已打开的实例（macOS Reopen / Windows
 ///   single-instance activation watcher），保证窗口一定能浮到最前
-/// - 其他始终在前的应用（Codex / 开发工具）开启时，让 CodexHarbor 不被遮挡
+/// - 其他始终在前的应用（Codex / 开发工具）开启时，让 AgentHarbor 不被遮挡
 pub fn force_reveal_main_window(app: &AppHandle) {
     reveal_main_window_inner(app, true);
 }
@@ -226,12 +229,15 @@ fn destroy_hotspot_window(app: &AppHandle) {
 }
 
 fn apply_hotspot_layout(win: &tauri::WebviewWindow, bring_to_front: bool) {
+    #[cfg(not(target_os = "macos"))]
+    let _ = (win, bring_to_front);
     #[cfg(target_os = "macos")]
     {
         apply_native_hotspot_properties(win, bring_to_front);
     }
 }
 
+#[cfg(target_os = "macos")]
 fn schedule_hotspot_relayout(app: AppHandle) {
     static RELAYOUT_VERSION: AtomicU64 = AtomicU64::new(0);
     let version = RELAYOUT_VERSION.fetch_add(1, Ordering::SeqCst) + 1;
@@ -249,6 +255,7 @@ fn schedule_hotspot_relayout(app: AppHandle) {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn refresh_hotspot_on_main(app: &AppHandle) {
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {

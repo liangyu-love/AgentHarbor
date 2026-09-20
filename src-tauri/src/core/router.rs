@@ -10,9 +10,12 @@ use std::{
 
 pub const DEFAULT_PORT: u16 = 43127;
 const PREVIOUS_DEFAULT_PORT: u16 = 25817;
-pub const PROVIDER_PREFIX: &str = "codexharbor_p";
-pub const CATALOG_PROVIDER_KEY: &str = "codexharbor_relay";
-const DIRECT_PROVIDER_KEY: &str = "codexharbor_newapi";
+pub const PROVIDER_PREFIX: &str = "agentharbor_p";
+pub const CATALOG_PROVIDER_KEY: &str = "agentharbor_relay";
+const DIRECT_PROVIDER_KEY: &str = "agentharbor_newapi";
+const PREVIOUS_PROVIDER_PREFIX: &str = "codexharbor_p";
+const PREVIOUS_CATALOG_PROVIDER_KEY: &str = "codexharbor_relay";
+const PREVIOUS_DIRECT_PROVIDER_KEY: &str = "codexharbor_newapi";
 const PREVIOUS_RELAY_MODEL_PREFIX: &str = "aimami_relay_";
 const MAX_PROVIDERS: usize = 64;
 
@@ -211,7 +214,8 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
         let mut changed = false;
         let mut removed_incompatible_route = false;
         let mut migrated_previous_identity = store.router.port == PREVIOUS_DEFAULT_PORT
-            || store.router.bearer_token.starts_with("aimami_");
+            || store.router.bearer_token.starts_with("aimami_")
+            || store.router.bearer_token.starts_with("codexharbor_");
         if store.router.bearer_token.is_empty() || migrated_previous_identity {
             store.router.bearer_token = new_router_bearer();
             changed = true;
@@ -237,7 +241,7 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
         }
         if migrated_previous_identity && store.router.enabled {
             // Import credentials and choices, but require an explicit enable in
-            // CodexHarbor so the old application's active route is not replaced.
+            // AgentHarbor so the old application's active route is not replaced.
             store.router.enabled = false;
             changed = true;
         }
@@ -280,7 +284,7 @@ pub fn load_store(paths: &CodexPaths) -> Result<Store, String> {
 }
 
 fn new_router_bearer() -> String {
-    format!("codexharbor_{}", uuid::Uuid::new_v4().simple())
+    format!("agentharbor_{}", uuid::Uuid::new_v4().simple())
 }
 
 // The previous AiMaMi release keeps its relay data in `codexmate/relay/`:
@@ -752,7 +756,7 @@ fn remove_managed_provider_entries(document: &mut toml_edit::DocumentMut) {
         let ours: Vec<String> = providers
             .iter()
             .map(|(key, _)| key.to_owned())
-            .filter(|key| key == DIRECT_PROVIDER_KEY || key == CATALOG_PROVIDER_KEY || key.starts_with(PROVIDER_PREFIX))
+            .filter(|key| managed_provider_key(key))
             .collect();
         for key in ours {
             providers.remove(&key);
@@ -764,7 +768,16 @@ fn model_provider_is_ours(document: &toml_edit::DocumentMut) -> bool {
     document
         .get("model_provider")
         .and_then(toml_edit::Item::as_str)
-        .is_some_and(|value| value == DIRECT_PROVIDER_KEY || value == CATALOG_PROVIDER_KEY || value.starts_with(PROVIDER_PREFIX))
+        .is_some_and(managed_provider_key)
+}
+
+fn managed_provider_key(key: &str) -> bool {
+    key == DIRECT_PROVIDER_KEY
+        || key == CATALOG_PROVIDER_KEY
+        || key.starts_with(PROVIDER_PREFIX)
+        || key == PREVIOUS_DIRECT_PROVIDER_KEY
+        || key == PREVIOUS_CATALOG_PROVIDER_KEY
+        || key.starts_with(PREVIOUS_PROVIDER_PREFIX)
 }
 
 pub(crate) fn catalog_path(paths: &CodexPaths) -> PathBuf {
@@ -848,7 +861,7 @@ pub fn apply_routing_config(paths: &CodexPaths, store: &Store) -> Result<newapi:
     let _ = entries;
     let entry = &mut document["model_providers"][CATALOG_PROVIDER_KEY];
     *entry = toml_edit::Item::Table(toml_edit::Table::new());
-    entry["name"] = value("CodexHarbor 智能路由");
+    entry["name"] = value("AgentHarbor 智能路由");
     entry["base_url"] = value(format!("http://127.0.0.1:{}/codex/v1", store.router.port));
     entry["wire_api"] = value("responses");
     entry["experimental_bearer_token"] = value(&store.router.bearer_token);
@@ -1114,12 +1127,42 @@ mod tests {
         let migrated = load_store(&paths).unwrap();
         assert_eq!(migrated.router.port, DEFAULT_PORT);
         assert!(!migrated.router.enabled);
-        assert!(migrated.router.bearer_token.starts_with("codexharbor_"));
+        assert!(migrated.router.bearer_token.starts_with("agentharbor_"));
         assert!(!migrated.providers[0].id.starts_with("aimami_"));
         assert_eq!(
             migrated.active_provider_id.as_deref(),
             Some(migrated.providers[0].id.as_str())
         );
+    }
+
+    #[test]
+    fn previous_harbor_router_token_is_rotated_and_disabled() {
+        let (_dir, paths) = paths();
+        let store = Store {
+            version: 1,
+            providers: vec![Provider {
+                id: "existing-provider-id".into(),
+                name: "Previous harbor relay".into(),
+                base_url: "https://relay.example.com/".into(),
+                api_key: "sk-fixture".into(),
+                model: "model-a".into(),
+                enabled: true,
+                ..Default::default()
+            }],
+            router: RouterSettings {
+                port: DEFAULT_PORT,
+                bearer_token: "codexharbor_previous_token".into(),
+                enabled: true,
+                ..Default::default()
+            },
+            active_provider_id: Some("existing-provider-id".into()),
+        };
+        secret_file::write(&store_path(&paths), &serde_json::to_vec(&store).unwrap()).unwrap();
+
+        let migrated = load_store(&paths).unwrap();
+        assert!(!migrated.router.enabled);
+        assert!(migrated.router.bearer_token.starts_with("agentharbor_"));
+        assert_eq!(migrated.providers[0].id, "existing-provider-id");
     }
 
     #[test]
@@ -1163,7 +1206,7 @@ mod tests {
         assert!(change.state.router.enabled);
         let text = std::fs::read_to_string(&paths.config_path).unwrap();
         let store = load_store(&paths).unwrap();
-        assert!(store.router.bearer_token.starts_with("codexharbor_"));
+        assert!(store.router.bearer_token.starts_with("agentharbor_"));
         assert!(store.router.bearer_token.len() > 24);
         assert!(text.contains(&store.router.bearer_token));
         assert!(text.contains("http://127.0.0.1:43127/codex/v1"));
@@ -1248,7 +1291,7 @@ mod tests {
         // The placeholder key above lives at top level; rewrite with a real one.
         std::fs::write(
             &paths.config_path,
-            "# keep\nmodel = 'gpt-x'\nmodel_provider = 'aimami_newapi'\npreferred_auth_method = 'chatgpt'\n[model_providers.other]\nname = 'Other'\n[model_providers.aimami_newapi]\nname = 'legacy'\n",
+            "# keep\nmodel = 'gpt-x'\nmodel_provider = 'aimami_newapi'\npreferred_auth_method = 'chatgpt'\n[model_providers.other]\nname = 'Other'\n[model_providers.aimami_newapi]\nname = 'legacy'\n[model_providers.codexharbor_relay]\nname = 'Previous Harbor'\n",
         )
         .unwrap();
         let state = save_provider(&paths, input("Relay A", "https://a.example.com")).unwrap();
@@ -1270,11 +1313,12 @@ mod tests {
         );
         assert!(text.contains("preferred_auth_method = \"apikey\""));
         assert!(text.contains(CATALOG_PROVIDER_KEY));
+        assert!(!text.contains(PREVIOUS_CATALOG_PROVIDER_KEY));
         let catalog = std::fs::read_to_string(catalog_path(&paths)).unwrap();
         assert!(catalog.contains(&format!("{id}::model-a")));
         remove_routing_config(&paths, &store).unwrap();
         let text = std::fs::read_to_string(&paths.config_path).unwrap();
-        assert!(!text.contains("codexharbor_p_"));
+        assert!(!text.contains("agentharbor_p_"));
         assert!(!catalog_path(&paths).exists());
         let parsed: toml::Value = text.parse().unwrap();
         // Our routing keys are gone; foreign tables and settings survive.

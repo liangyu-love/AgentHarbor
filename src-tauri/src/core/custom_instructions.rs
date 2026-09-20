@@ -8,8 +8,8 @@ use crate::platform::paths::CodexPaths;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-const MANAGED_START_MARKER: &str = "<!-- CODEX_HARBOR_CUSTOM_INSTRUCTIONS_START -->";
-const MANAGED_END_MARKER: &str = "<!-- CODEX_HARBOR_CUSTOM_INSTRUCTIONS_END -->";
+const MANAGED_START_MARKER: &str = "<!-- AGENT_HARBOR_CUSTOM_INSTRUCTIONS_START -->";
+const MANAGED_END_MARKER: &str = "<!-- AGENT_HARBOR_CUSTOM_INSTRUCTIONS_END -->";
 const HISTORY_LIMIT: usize = 10;
 
 #[derive(Debug, Clone)]
@@ -250,7 +250,7 @@ fn parse_content(file_exists: bool, raw_content: String) -> Result<ParsedManaged
             file_exists,
             protection_state: CustomInstructionProtectionState::Protected,
             issue_message: Some(
-                "检测到重复或不完整的 CodexHarbor 自定义指令标记，请先手动修复全局 AGENTS 文件。"
+                "检测到重复或不完整的 AgentHarbor 自定义指令标记，请先手动修复全局 AGENTS 文件。"
                     .to_string(),
             ),
             managed_block_present: false,
@@ -268,7 +268,7 @@ fn parse_content(file_exists: bool, raw_content: String) -> Result<ParsedManaged
             file_exists,
             protection_state: CustomInstructionProtectionState::Protected,
             issue_message: Some(
-                "CodexHarbor 自定义指令标记顺序异常，请先手动修复全局 AGENTS 文件。".to_string(),
+                "AgentHarbor 自定义指令标记顺序异常，请先手动修复全局 AGENTS 文件。".to_string(),
             ),
             managed_block_present: false,
             managed_content: String::new(),
@@ -362,7 +362,7 @@ fn normalize_managed_content(content: &str) -> String {
 fn validate_managed_content(content: &str) -> Result<(), CoreError> {
     if content.contains(MANAGED_START_MARKER) || content.contains(MANAGED_END_MARKER) {
         return Err(CoreError::InvalidData(
-            "自定义指令内容不能包含 CodexHarbor 受控区块标记。".to_string(),
+            "自定义指令内容不能包含 AgentHarbor 受控区块标记。".to_string(),
         ));
     }
     Ok(())

@@ -1,6 +1,5 @@
-use crate::core::repository::Repository;
 use tauri::menu::{Menu, MenuBuilder, MenuItem};
-use tauri::{AppHandle, Manager, Wry};
+use tauri::{AppHandle, Wry};
 
 const TRAY_ID: &str = "main";
 const OPEN_MAIN_ID: &str = "tray_open_main";
@@ -12,26 +11,20 @@ const BOOTSTRAP_SUBTITLE_ID: &str = "tray_bootstrap_subtitle";
 pub fn create_bootstrap_tray_menu(app: &AppHandle) -> Result<Menu<Wry>, String> {
     MenuBuilder::new(app)
         .item(
-            &MenuItem::with_id(app, BOOTSTRAP_HEADER_ID, "CodexHarbor", false, None::<&str>)
+            &MenuItem::with_id(app, BOOTSTRAP_HEADER_ID, "AgentHarbor", false, None::<&str>)
                 .map_err(|e| e.to_string())?,
         )
         .item(
-            &MenuItem::with_id(app, BOOTSTRAP_TITLE_ID, "CodexHarbor", true, None::<&str>)
+            &MenuItem::with_id(app, BOOTSTRAP_TITLE_ID, "AgentHarbor", true, None::<&str>)
                 .map_err(|e| e.to_string())?,
         )
         .item(
-            &MenuItem::with_id(
-                app,
-                BOOTSTRAP_SUBTITLE_ID,
-                "Ready",
-                true,
-                None::<&str>,
-            )
-            .map_err(|e| e.to_string())?,
+            &MenuItem::with_id(app, BOOTSTRAP_SUBTITLE_ID, "Ready", true, None::<&str>)
+                .map_err(|e| e.to_string())?,
         )
         .separator()
         .item(
-            &MenuItem::with_id(app, OPEN_MAIN_ID, "Open CodexHarbor", true, None::<&str>)
+            &MenuItem::with_id(app, OPEN_MAIN_ID, "Open AgentHarbor", true, None::<&str>)
                 .map_err(|e| e.to_string())?,
         )
         .separator()

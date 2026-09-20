@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default permissions for CodexHarbor",
+  "description": "Default permissions for AgentHarbor",
   "windows": ["main", "hotspot", "voice-overlay", "voice-search-overlay"],
   "permissions": [
     "core:default",

@@ -1,4 +1,5 @@
 export interface ThreadSummary {
+  key: string;
   id: string;
   cwd: string;
   folderName: string;

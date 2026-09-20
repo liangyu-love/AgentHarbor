@@ -16,7 +16,7 @@ use tauri::{Manager, RunEvent};
 pub fn run() {
     let shared_paths = Arc::new(CodexPaths::new());
     let mut context = tauri::generate_context!();
-    if std::env::var_os("CODEX_HARBOR_CODEX_HOME").is_some_and(|value| !value.is_empty()) {
+    if std::env::var_os("AGENT_HARBOR_CODEX_HOME").is_some_and(|value| !value.is_empty()) {
         for window in &mut context.config_mut().app.windows {
             window.data_directory = Some(shared_paths.app_data_dir.join("webview"));
         }
@@ -25,10 +25,10 @@ pub fn run() {
     let single_instance_guard = match platform::single_instance::acquire(&shared_paths) {
         Ok(guard) => guard,
         Err(error) => {
-            eprintln!("[CodexHarbor] another instance is already running; exiting: {error}");
+            eprintln!("[AgentHarbor] another instance is already running; exiting: {error}");
             let activated = platform::single_instance::request_existing_instance_activation();
             if !activated {
-                eprintln!("[CodexHarbor] failed to activate the running instance");
+                eprintln!("[AgentHarbor] failed to activate the running instance");
             }
             return;
         }
@@ -85,11 +85,11 @@ pub fn run() {
                                     tauri::async_runtime::spawn(async move {
                                         let proxy = core::newapi::proxy_from_settings(&paths.settings_path);
                                         if let Err(e) = core::router_proxy::ensure_running(port, paths.clone(), proxy).await {
-                                            eprintln!("[CodexHarbor] router proxy startup failed: {e}");
+                                            eprintln!("[AgentHarbor] router proxy startup failed: {e}");
                                         }
                                     });
                                 }
-                                Err(e) => eprintln!("[CodexHarbor] router config repair failed: {e}"),
+                                Err(e) => eprintln!("[AgentHarbor] router config repair failed: {e}"),
                             }
                         }
                     }
@@ -99,11 +99,11 @@ pub fn run() {
                 .lock()
                 .map(|r| r.get_hotspot_enabled())
                 .unwrap_or(false);
-            eprintln!("[CodexHarbor] startup: hotspot_enabled={hotspot_enabled}");
+            eprintln!("[AgentHarbor] startup: hotspot_enabled={hotspot_enabled}");
             commands::hotspot::register_hotspot_relayout_observers(app.handle());
             if hotspot_enabled && platform::screen::has_notch_screen() {
                 if let Err(e) = commands::hotspot::create_hotspot_window(app.handle()) {
-                    eprintln!("[CodexHarbor] failed to create hotspot window at startup: {e}");
+                    eprintln!("[AgentHarbor] failed to create hotspot window at startup: {e}");
                 }
             }
 
@@ -115,7 +115,7 @@ pub fn run() {
             TrayIconBuilder::with_id("main")
                 .icon(tray_icon)
                 .icon_as_template(false)
-                .tooltip("CodexHarbor")
+                .tooltip("AgentHarbor")
                 .menu(&tray_menu)
                 .on_menu_event(|app, event| {
                     commands::tray_menu::handle_tray_menu_event(app, &event.id.0);
@@ -184,7 +184,7 @@ pub fn run() {
             commands::threads::export_codex_threads,
         ])
         .build(context)
-        .expect("error while building CodexHarbor");
+        .expect("error while building AgentHarbor");
 
     let activation_watcher_guard = platform::single_instance::start_activation_watcher({
         let handle = app.handle().clone();
@@ -192,7 +192,7 @@ pub fn run() {
     })
     .map_err(|error| {
         eprintln!(
-            "[CodexHarbor] failed to start single-instance activation watcher: {error}"
+            "[AgentHarbor] failed to start single-instance activation watcher: {error}"
         );
         error
     })

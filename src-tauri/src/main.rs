@@ -6,5 +6,5 @@ fn main() {
         std::process::exit(1);
     }
 
-    codexharbor_lib::run()
+    agentharbor_lib::run()
 }

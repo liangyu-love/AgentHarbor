@@ -1,7 +1,7 @@
 //! Cross-platform process-level single instance guard.
 //!
 //! This guard is intentionally acquired before Tauri setup starts so a second
-//! CodexHarbor process cannot rewrite Codex config.
+//! AgentHarbor process cannot rewrite Codex config.
 
 use crate::platform::paths::CodexPaths;
 use std::io::Write;
@@ -75,7 +75,7 @@ mod imp {
             unsafe {
                 let _ = CloseHandle(handle);
             }
-            return Err("CodexHarbor is already running".into());
+            return Err("AgentHarbor is already running".into());
         }
         Ok(SingleInstanceGuard { handle })
     }
@@ -104,7 +104,7 @@ mod imp {
             .join(scope);
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("prepare single-instance lock dir failed: {e}"))?;
-        let path = dir.join("codexharbor-single-instance.lock");
+        let path = dir.join("agentharbor-single-instance.lock");
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -114,7 +114,7 @@ mod imp {
             .map_err(|e| format!("open single-instance lock failed ({}): {e}", path.display()))?;
         let rc = unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) };
         if rc != 0 {
-            return Err("CodexHarbor is already running".into());
+            return Err("AgentHarbor is already running".into());
         }
         let _ = file.set_len(0);
         let _ = writeln!(file, "pid={}", std::process::id());
@@ -170,18 +170,18 @@ fn activation_request_path() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join(instance_scope())
-        .join("codexharbor-activate.request")
+        .join("agentharbor-activate.request")
 }
 
 fn instance_scope() -> String {
-    if std::env::var_os("CODEX_HARBOR_CODEX_HOME").is_some_and(|value| !value.is_empty()) {
+    if std::env::var_os("AGENT_HARBOR_CODEX_HOME").is_some_and(|value| !value.is_empty()) {
         use sha2::{Digest, Sha256};
         let paths = CodexPaths::new();
         let absolute = std::fs::canonicalize(&paths.codex_home).unwrap_or(paths.codex_home);
         let hash = Sha256::digest(absolute.to_string_lossy().as_bytes());
-        format!("dev.codexharbor.desktop.{hash:x}")
+        format!("dev.agentharbor.desktop.{hash:x}")
     } else {
-        "dev.codexharbor.desktop".into()
+        "dev.agentharbor.desktop".into()
     }
 }
 

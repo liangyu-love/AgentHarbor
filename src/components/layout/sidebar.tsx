@@ -164,7 +164,7 @@ export function AppSidebar({
           <button type="button" onClick={() => onNavigate("overview")}
             className="flex min-w-0 flex-col items-start rounded-md text-left leading-tight hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
             <span className="truncate text-[15px] font-semibold text-sidebar-foreground">
-              CodexHarbor
+              AgentHarbor
             </span>
             <span className="truncate text-[11px] text-sidebar-foreground/60">
               Codex Assistant

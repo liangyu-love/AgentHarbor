@@ -1,15 +1,12 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import {
-  Archive,
   CheckSquare,
   Download,
   FileDown,
-  FileText,
   Folder,
   FolderOpen,
-  MessageSquare,
   MessagesSquare,
   RotateCw,
   Search,
@@ -17,7 +14,6 @@ import {
   X,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import { cn } from "@/lib/utils";
 import { BentoCard } from "@/components/ui/bento-card";
 import { AuroraCard } from "@/components/ui/aurora-card";
 import { RainbowButton } from "@/registry/magicui/rainbow-button";
@@ -27,28 +23,17 @@ import { Input } from "@/components/ui/input";
 import { SegmentedOptions } from "@/components/ui/segmented-options";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/hooks/use-toast";
-import { formatDateTime, formatRelative } from "@/lib/format-time";
 import { useBusyAction } from "@/hooks/use-busy-action";
-import type { ThreadSummary } from "@/types/threads";
+import { ThreadCard } from "@/components/threads/thread-card";
+import {
+  filterThreads,
+  groupThreads,
+  type StatusFilter,
+} from "@/components/threads/thread-utils";
 
-type StatusFilter = "all" | "active" | "archived";
 type ExportFormat = "markdown" | "jsonl";
 
-const THREADS_KEY = ["codex-threads"] as const;
-
-function formatSize(bytes: number): string {
-  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${bytes} B`;
-}
-
-interface FolderGroup {
-  key: string;
-  cwd: string;
-  folderName: string;
-  items: ThreadSummary[];
-  latestAt: number;
-}
+const THREADS_KEY = ["threads", "codex"] as const;
 
 export function ThreadsPage() {
   const { t } = useTranslation();
@@ -66,42 +51,21 @@ export function ThreadsPage() {
 
   const threads = useMemo(() => threadsQuery.data?.data.items ?? [], [threadsQuery.data]);
 
-  const filtered = useMemo(() => {
-    const keyword = query.trim().toLowerCase();
-    return threads.filter((thread) => {
-      if (status === "active" && thread.archived) return false;
-      if (status === "archived" && !thread.archived) return false;
-      if (!keyword) return true;
-      return (
-        thread.title.toLowerCase().includes(keyword) ||
-        thread.cwd.toLowerCase().includes(keyword) ||
-        thread.folderName.toLowerCase().includes(keyword)
-      );
-    });
-  }, [threads, status, query]);
-
-  const groups = useMemo<FolderGroup[]>(() => {
-    const map = new Map<string, FolderGroup>();
-    for (const thread of filtered) {
-      const key = thread.cwd || t("threads.unknownFolder");
-      const existing = map.get(key);
-      if (existing) {
-        existing.items.push(thread);
-        existing.latestAt = Math.max(existing.latestAt, thread.updatedAt);
-      } else {
-        map.set(key, {
-          key,
-          cwd: thread.cwd,
-          folderName: thread.folderName || key,
-          items: [thread],
-          latestAt: thread.updatedAt,
-        });
-      }
-    }
-    return [...map.values()].sort((a, b) => b.latestAt - a.latestAt);
-  }, [filtered, t]);
+  const filtered = useMemo(() => filterThreads(threads, status, query), [threads, status, query]);
+  const groups = useMemo(
+    () => groupThreads(filtered, t("threads.unknownFolder")),
+    [filtered, t],
+  );
 
   const archivedCount = useMemo(() => threads.filter((item) => item.archived).length, [threads]);
+
+  useEffect(() => {
+    const available = new Set(threads.map((thread) => thread.key));
+    setSelected((previous) => {
+      const next = new Set([...previous].filter((key) => available.has(key)));
+      return next.size === previous.size ? previous : next;
+    });
+  }, [threads]);
 
   const toggleSelect = (id: string) => {
     setSelected((prev) => {
@@ -115,7 +79,7 @@ export function ThreadsPage() {
     });
   };
 
-  const selectFiltered = () => setSelected(new Set(filtered.map((item) => item.id)));
+  const selectFiltered = () => setSelected(new Set(filtered.map((item) => item.key)));
   const clearSelection = () => setSelected(new Set());
 
   const handleRefresh = async () => {
@@ -124,14 +88,17 @@ export function ThreadsPage() {
     });
   };
 
-  const handleExport = async (ids: string[]) => {
-    if (ids.length === 0) return;
+  const handleExport = async (keys: string[]) => {
+    if (keys.length === 0) return;
     const { open } = await import("@tauri-apps/plugin-dialog");
     const targetDir = await open({ directory: true, multiple: false });
     if (typeof targetDir !== "string") return;
     try {
-      const result = await api.exportCodexThreads(ids, targetDir, format);
+      const result = await api.exportCodexThreads(keys, targetDir, format);
       const payload = result.data;
+      if (payload.exported === 0) {
+        throw new Error(t("threads.nothingExported"));
+      }
       toast({
         title: t("threads.exportDone", { count: payload.exported }),
         description: payload.directory,
@@ -139,7 +106,7 @@ export function ThreadsPage() {
       });
       setSelected((prev) => {
         const next = new Set(prev);
-        for (const id of ids) next.delete(id);
+        for (const key of keys) next.delete(key);
         return next;
       });
     } catch (error) {
@@ -151,7 +118,19 @@ export function ThreadsPage() {
     }
   };
 
-  const selectedInFiltered = filtered.filter((item) => selected.has(item.id)).length;
+  const handleOpenPath = async (path: string) => {
+    try {
+      await api.openPath(path);
+    } catch (error) {
+      toast({
+        title: t("threads.openFailed"),
+        description: String(error),
+        variant: "destructive",
+      });
+    }
+  };
+
+  const selectedInFiltered = filtered.filter((item) => selected.has(item.key)).length;
 
   return (
     <div className="space-y-6">
@@ -274,6 +253,15 @@ export function ThreadsPage() {
             </div>
           ))}
         </div>
+      ) : threadsQuery.isError ? (
+        <BentoCard className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+          <MessagesSquare className="h-8 w-8 text-destructive/70" />
+          <p className="text-sm font-medium">{t("threads.loadFailed")}</p>
+          <p className="max-w-md text-xs text-muted-foreground">{String(threadsQuery.error)}</p>
+          <Button variant="outline" size="sm" onClick={() => void handleRefresh()}>
+            {t("threads.retry")}
+          </Button>
+        </BentoCard>
       ) : groups.length === 0 ? (
         <BentoCard className="flex flex-col items-center justify-center gap-2 py-16 text-center">
           <MessagesSquare className="h-8 w-8 text-muted-foreground/50" />
@@ -307,7 +295,7 @@ export function ThreadsPage() {
                     size="icon-sm"
                     className="h-7 w-7 text-muted-foreground hover:text-foreground"
                     title={t("threads.openFolder")}
-                    onClick={() => void api.openPath(group.cwd)}
+                    onClick={() => void handleOpenPath(group.cwd)}
                   >
                     <FolderOpen className="h-3.5 w-3.5" />
                   </Button>
@@ -316,7 +304,7 @@ export function ThreadsPage() {
                   variant="outline"
                   size="sm"
                   className="h-7 gap-1.5 px-2.5 text-xs"
-                  onClick={() => void handleExport(group.items.map((item) => item.id))}
+                  onClick={() => void handleExport(group.items.map((item) => item.key))}
                 >
                   <FileDown className="h-3.5 w-3.5" />
                   {t("threads.exportFolder")}
@@ -326,11 +314,12 @@ export function ThreadsPage() {
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
               {group.items.map((thread) => (
                 <ThreadCard
-                  key={thread.id}
+                  key={thread.key}
                   thread={thread}
-                  selected={selected.has(thread.id)}
-                  onToggleSelect={() => toggleSelect(thread.id)}
-                  onExport={() => void handleExport([thread.id])}
+                  selected={selected.has(thread.key)}
+                  onToggleSelect={() => toggleSelect(thread.key)}
+                  onExport={() => void handleExport([thread.key])}
+                  onOpenRaw={() => void handleOpenPath(thread.filePath)}
                 />
               ))}
             </div>
@@ -338,90 +327,6 @@ export function ThreadsPage() {
         ))
       )}
     </div>
-  );
-}
-
-
-function ThreadCard({
-  thread,
-  selected,
-  onToggleSelect,
-  onExport,
-}: {
-  thread: ThreadSummary;
-  selected: boolean;
-  onToggleSelect: () => void;
-  onExport: () => void;
-}) {
-  const { t } = useTranslation();
-  const displayTitle = thread.title || t("threads.untitled");
-  return (
-    <BentoCard
-      className={cn(
-        "group cursor-pointer p-4 transition-shadow",
-        selected && "ring-2 ring-primary/60",
-      )}
-      onClick={onToggleSelect}
-    >
-      <div className="flex items-start gap-2.5">
-        <span
-          className={cn(
-            "mt-0.5 flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-[5px] border transition-colors",
-            selected
-              ? "border-primary bg-primary text-primary-foreground"
-              : "border-border text-transparent group-hover:border-primary/50",
-          )}
-        >
-          <CheckSquare className="h-3 w-3" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            <p className="truncate text-[13px] font-medium leading-snug">{displayTitle}</p>
-            {thread.archived && (
-              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
-                <Archive className="h-2.5 w-2.5" />
-                {t("threads.archivedBadge")}
-              </span>
-            )}
-          </div>
-          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
-            <span className="inline-flex items-center gap-1" title={t("threads.messagesTooltip")}>
-              <MessageSquare className="h-3 w-3 opacity-60" />
-              {thread.userMessages} / {thread.agentMessages}
-            </span>
-            <span title={formatDateTime(thread.updatedAt)}>{formatRelative(thread.updatedAt)}</span>
-            <span>{formatSize(thread.fileSize)}</span>
-            {thread.source && <span className="font-mono opacity-70">{thread.source}</span>}
-          </div>
-        </div>
-        <div className="flex shrink-0 flex-col gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="h-6 w-6 text-muted-foreground hover:text-foreground"
-            title={t("threads.exportThread")}
-            onClick={(event) => {
-              event.stopPropagation();
-              onExport();
-            }}
-          >
-            <FileText className="h-3.5 w-3.5" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="h-6 w-6 text-muted-foreground hover:text-foreground"
-            title={t("threads.openRawFile")}
-            onClick={(event) => {
-              event.stopPropagation();
-              void api.openPath(thread.filePath);
-            }}
-          >
-            <FolderOpen className="h-3.5 w-3.5" />
-          </Button>
-        </div>
-      </div>
-    </BentoCard>
   );
 }
 

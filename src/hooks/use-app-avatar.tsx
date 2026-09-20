@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "@/hooks/use-toast";
 
 export const DEFAULT_AVATAR = new URL("../../assets/app-icon.png", import.meta.url).href;
-const STORAGE_KEY = "codexharbor_avatar";
+const STORAGE_KEY = "agentharbor_avatar";
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const AVATAR_SIZE = 256;
 

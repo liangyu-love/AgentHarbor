@@ -140,7 +140,7 @@ export function NewApiPage() {
   const exportProviders = () =>
     run("export", async () => {
       const { save } = await import("@tauri-apps/plugin-dialog");
-      const path = await save({ defaultPath: "codexharbor-relays.json", filters: [{ name: "JSON", extensions: ["json"] }] });
+      const path = await save({ defaultPath: "agentharbor-relays.json", filters: [{ name: "JSON", extensions: ["json"] }] });
       if (typeof path !== "string") return;
       await api.exportNewApiProviders(path);
       toast({ title: t("newapi.exportedDone", { path }), variant: "success" });

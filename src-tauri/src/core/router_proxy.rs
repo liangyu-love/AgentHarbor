@@ -132,7 +132,7 @@ fn json_response(status: StatusCode, message: &str) -> Response<ResponseBody> {
     Response::builder()
         .status(status)
         .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
-        .body(full_body(json!({"error": {"message": message, "type": "codexharbor_local_router"}}).to_string()))
+        .body(full_body(json!({"error": {"message": message, "type": "agentharbor_local_router"}}).to_string()))
         .expect("static response parts")
 }
 
@@ -152,7 +152,7 @@ enum Destination {
 async fn handle(request: Request<Incoming>, context: std::sync::Arc<ArcContext>) -> ForwardResult {
     let path = request.uri().path().to_owned();
     let query = request.uri().query().map(str::to_owned);
-    if path == "/codexharbor/health" {
+    if path == "/agentharbor/health" {
         return Ok(Response::builder().status(StatusCode::OK).body(full_body("ok".to_owned())).expect("static body"));
     }
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
@@ -376,7 +376,7 @@ mod tests {
                     assert!(request.contains("authorization: bearer sk-upstream"), "upstream must see the provider key");
                     assert!(!request.contains("sk-codex-dummy"), "the inbound dummy key must be replaced");
                     assert!(request.contains("/v1/"), "path must be rewritten to the provider root");
-                    assert!(!request.contains("codexharbor_fixture"), "the model slug prefix must be stripped");
+                    assert!(!request.contains("agentharbor_fixture"), "the model slug prefix must be stripped");
                     socket.write_all(b"HTTP/1.1 200 OK
 content-type: application/json
 content-length: 22
@@ -389,7 +389,7 @@ content-length: 22
             let paths = CodexPaths::from_home(dir.path().to_owned());
             std::fs::create_dir_all(&paths.app_data_dir).unwrap();
             let provider = Provider {
-                id: "codexharbor_fixture".into(),
+                id: "agentharbor_fixture".into(),
                 name: "Mock".into(),
                 base_url: format!("http://127.0.0.1:{upstream_port}/"),
                 api_key: "sk-upstream".into(),
@@ -402,7 +402,7 @@ content-length: 22
             let store = Store {
                 version: 1,
                 providers: vec![provider],
-                active_provider_id: Some("codexharbor_fixture".into()),
+                active_provider_id: Some("agentharbor_fixture".into()),
                 router: RouterSettings { bearer_token: "router-test-token".into(), ..Default::default() },
             };
             crate::core::secret_file::write(&paths.app_data_dir.join("newapi-providers.dat"), &serde_json::to_vec(&store).unwrap()).unwrap();
@@ -433,13 +433,13 @@ content-length: 22
                 .await
                 .unwrap();
             let entries = catalog.get("data").and_then(Value::as_array).unwrap();
-            assert_eq!(entries[0].get("id").and_then(Value::as_str), Some("codexharbor_fixture::mock-model"));
+            assert_eq!(entries[0].get("id").and_then(Value::as_str), Some("agentharbor_fixture::mock-model"));
 
             // Codex-style POST with a prefixed model is routed and the prefix stripped.
             let response = client
                 .post(format!("{base}/codex/v1/responses"))
                 .header(AUTHORIZATION, "Bearer router-test-token")
-                .json(&json!({"model": "codexharbor_fixture::mock-model", "input": "hi"}))
+                .json(&json!({"model": "agentharbor_fixture::mock-model", "input": "hi"}))
                 .send()
                 .await
                 .unwrap();
@@ -457,7 +457,7 @@ content-length: 22
 
             // Legacy per-provider and default routes keep working.
             let response = client
-                .get(format!("{base}/p/codexharbor_fixture/v1/models"))
+                .get(format!("{base}/p/agentharbor_fixture/v1/models"))
                 .header(AUTHORIZATION, "Bearer router-test-token")
                 .send()
                 .await
@@ -486,7 +486,7 @@ content-length: 22
             let count = oversized.read(&mut response).await.unwrap();
             assert!(String::from_utf8_lossy(&response[..count]).starts_with("HTTP/1.1 413"));
 
-            let health = client.get(format!("{base}/codexharbor/health")).send().await.unwrap();
+            let health = client.get(format!("{base}/agentharbor/health")).send().await.unwrap();
             assert_eq!(health.status(), 200);
             stop();
         });
@@ -498,7 +498,7 @@ content-length: 22
         let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             let source_home = std::path::PathBuf::from(
-                std::env::var("CODEX_HARBOR_NEWAPI_TEST_HOME").expect("Set isolated test home"),
+                std::env::var("AGENT_HARBOR_NEWAPI_TEST_HOME").expect("Set isolated test home"),
             );
             let temp = tempfile::tempdir().unwrap();
             let paths = CodexPaths::from_home(temp.path().join("codex"));

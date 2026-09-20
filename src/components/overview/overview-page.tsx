@@ -134,7 +134,7 @@ export function OverviewPage({ onNavigate }: { onNavigate: (route: Route) => voi
             </Badge>
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
-            CodexHarbor 本地开发环境健康稳定，随时提供模型注入、工具链扩展与全局指令支持。
+            AgentHarbor 本地开发环境健康稳定，随时提供模型注入、工具链扩展与全局指令支持。
           </p>
         </div>
 

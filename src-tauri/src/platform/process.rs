@@ -155,7 +155,11 @@ mod win32_process {
 
             let path_str = String::from_utf16_lossy(&buf[..size as usize]);
             let p = PathBuf::from(path_str);
-            if p.exists() { Some(p) } else { None }
+            if p.exists() {
+                Some(p)
+            } else {
+                None
+            }
         }
     }
 }
@@ -513,19 +517,13 @@ pub fn restart_codex_app() -> Result<(), CoreError> {
 }
 
 #[cfg(target_os = "windows")]
-pub(crate) fn stop_windows_codex_app() -> Result<(), CoreError> {
-    snapshot_running_codex_path();
-    stop_codex_app_gracefully(Duration::from_secs(8))
-}
-
-#[cfg(target_os = "windows")]
 pub fn snapshot_codex_path_before_stop() {
     snapshot_running_codex_path();
 }
 
 /// Windows 路由 toggle / config 重写前的快路径：
 /// - Codex 未运行时直接返回，避免 PowerShell snapshot + writer probe 的开销
-///   （CodexHarbor 用户经常在打开 Codex 之前就先在面板里切换路由）
+///   （AgentHarbor 用户经常在打开 Codex 之前就先在面板里切换路由）
 /// - Codex 在跑时按完整流程：snapshot 路径 + graceful stop +
 ///   ensure 写 ~/.codex 的进程都退出
 ///
@@ -557,7 +555,7 @@ pub fn stop_codex_for_config_edit(timeout: Duration) -> Result<(), CoreError> {
 fn snapshot_running_codex_path() {
     let path = get_running_process_path("Codex");
     if let Some(ref p) = path {
-        log::info!("[CodexHarbor] captured running Codex path: {}", p.display());
+        log::info!("[AgentHarbor] captured running Codex path: {}", p.display());
     }
     if let Ok(mut cached) = LAST_KNOWN_CODEX_PATH.lock() {
         *cached = path;

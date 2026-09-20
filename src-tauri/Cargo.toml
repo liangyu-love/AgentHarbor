@@ -1,9 +1,9 @@
 [package]
-name = "codex-harbor"
+name = "agent-harbor"
 version = "1.0.0"
-default-run = "CodexHarbor"
-description = "Cross-platform Codex companion app — MCP, Skills, Custom Instructions, and more"
-authors = ["CodexHarbor contributors"]
+default-run = "AgentHarbor"
+description = "Cross-platform coding-agent desktop workspace"
+authors = ["AgentHarbor contributors"]
 license = "Apache-2.0"
 edition = "2021"
 rust-version = "1.77"
@@ -12,11 +12,11 @@ rust-version = "1.77"
 custom-protocol = ["tauri/custom-protocol"]
 
 [lib]
-name = "codexharbor_lib"
+name = "agentharbor_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
-name = "CodexHarbor"
+name = "AgentHarbor"
 path = "src/main.rs"
 
 [build-dependencies]

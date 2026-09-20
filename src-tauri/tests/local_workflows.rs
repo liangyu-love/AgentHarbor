@@ -1,6 +1,6 @@
-use codexharbor_lib::core::{custom_instructions, mcp, skills};
-use codexharbor_lib::core::models::{McpServerSummary, McpTransport};
-use codexharbor_lib::platform::paths::CodexPaths;
+use agentharbor_lib::core::{custom_instructions, mcp, skills};
+use agentharbor_lib::core::models::{McpServerSummary, McpTransport};
+use agentharbor_lib::platform::paths::CodexPaths;
 use std::{collections::HashMap, fs};
 
 #[test]
@@ -73,7 +73,7 @@ fn instruction_rollback_keeps_later_user_edits() {
     assert!(restored.contains("User rules"));
     assert!(restored.contains("Later user rules"));
     assert!(!restored.contains("Managed first"));
-    assert!(!restored.contains("CODEX_HARBOR_CUSTOM_INSTRUCTIONS_START"));
+    assert!(!restored.contains("AGENT_HARBOR_CUSTOM_INSTRUCTIONS_START"));
 }
 
 #[test]
@@ -81,7 +81,7 @@ fn broken_instruction_markers_refuse_writes_and_rollback() {
     let temp = tempfile::tempdir().unwrap();
     let paths = CodexPaths::from_home(temp.path().join("codex"));
     let state = custom_instructions::apply_managed_content(&paths, "Managed", None, None, None).unwrap();
-    let broken = "User rules\n<!-- CODEX_HARBOR_CUSTOM_INSTRUCTIONS_START -->\nbroken";
+    let broken = "User rules\n<!-- AGENT_HARBOR_CUSTOM_INSTRUCTIONS_START -->\nbroken";
     fs::write(&paths.global_agents_path, broken).unwrap();
     assert!(custom_instructions::preview_apply(&paths, "new").is_err());
     assert!(custom_instructions::rollback_history(&paths, &state.history[0].id).is_err());
@@ -138,8 +138,8 @@ startup_timeout_sec = 45
 enabled_tools = ["search"]
 [mcp_servers.example.env]
 "APP.DATA" = 'C:\data'
-"# --- CodexHarbor Managed" = "value"
-"# --- End CodexHarbor Managed" = "value"
+"# --- AgentHarbor Managed" = "value"
+"# --- End AgentHarbor Managed" = "value"
 "[not_a_table]" = "value"
 "# comment" = "value"
 "###).unwrap();

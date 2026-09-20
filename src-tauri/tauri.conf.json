@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-cli/schema.json",
-  "productName": "CodexHarbor",
+  "productName": "AgentHarbor",
   "version": "1.0.0",
-  "identifier": "dev.codexharbor.desktop",
+  "identifier": "dev.agentharbor.desktop",
   "build": {
     "beforeBuildCommand": "pnpm build",
     "beforeDevCommand": "pnpm dev",
@@ -17,7 +17,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "CodexHarbor",
+        "title": "AgentHarbor",
         "width": 1200,
         "height": 800,
         "minWidth": 960,
@@ -45,7 +45,7 @@
     ],
     "macOS": {
       "minimumSystemVersion": "12.0",
-      "bundleName": "CodexHarbor",
+      "bundleName": "AgentHarbor",
       "entitlements": "Entitlements.plist",
       "infoPlist": "Info.plist"
     },

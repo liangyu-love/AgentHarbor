@@ -9,6 +9,46 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "agent-harbor"
+version = "1.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "block2",
+ "chrono",
+ "dirs",
+ "env_logger",
+ "futures-util",
+ "hostname",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "image",
+ "log",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "reqwest 0.12.28",
+ "security-framework",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-process",
+ "tauri-plugin-shell",
+ "tauri-plugin-updater",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.8.2",
+ "toml_edit 0.22.27",
+ "uuid",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -383,46 +423,6 @@ dependencies = [
  "serde",
  "wasm-bindgen",
  "windows-link 0.2.1",
-]
-
-[[package]]
-name = "codex-harbor"
-version = "1.0.0"
-dependencies = [
- "base64 0.22.1",
- "block2",
- "chrono",
- "dirs",
- "env_logger",
- "futures-util",
- "hostname",
- "http-body-util",
- "hyper",
- "hyper-util",
- "image",
- "log",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
- "reqwest 0.12.28",
- "security-framework",
- "serde",
- "serde_json",
- "sha2",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-process",
- "tauri-plugin-shell",
- "tauri-plugin-updater",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "toml 0.8.2",
- "toml_edit 0.22.27",
- "uuid",
- "windows-sys 0.59.0",
 ]
 
 [[package]]

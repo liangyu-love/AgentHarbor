@@ -7,36 +7,57 @@ use std::sync::Mutex;
 use tauri::State;
 
 #[tauri::command]
-pub fn list_codex_threads(
+pub async fn list_codex_threads(
     repo: State<'_, Mutex<Repository>>,
 ) -> Result<CoreEnvelope<ThreadListPayload>, String> {
-    let repo = repo.lock().map_err(|e| e.to_string())?;
-    let paths = repo.paths();
-    let items = threads::scan_threads(&paths.sessions_dir, &paths.archived_sessions_dir);
+    let (sessions_dir, archived_sessions_dir) = {
+        let repo = repo.lock().map_err(|e| e.to_string())?;
+        let paths = repo.paths();
+        (
+            paths.sessions_dir.clone(),
+            paths.archived_sessions_dir.clone(),
+        )
+    };
+    let items = tauri::async_runtime::spawn_blocking(move || {
+        threads::scan_threads(&sessions_dir, &archived_sessions_dir)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())?;
     Ok(CoreEnvelope::ok(ThreadListPayload {
-        total: items.len() as i32,
+        total: items.len(),
         last_scan_at: current_timestamp(),
         items,
     }))
 }
 
 #[tauri::command]
-pub fn export_codex_threads(
+pub async fn export_codex_threads(
     repo: State<'_, Mutex<Repository>>,
-    ids: Vec<String>,
+    keys: Vec<String>,
     target_dir: String,
     format: String,
 ) -> Result<CoreEnvelope<ThreadExportPayload>, String> {
-    let repo = repo.lock().map_err(|e| e.to_string())?;
-    let paths = repo.paths();
     let format = ThreadExportFormat::parse(&format).map_err(|e| e.to_string())?;
-    let result = threads::export_threads(
-        &paths.sessions_dir,
-        &paths.archived_sessions_dir,
-        &ids,
-        &PathBuf::from(&target_dir),
-        format,
-    )
+    let (sessions_dir, archived_sessions_dir) = {
+        let repo = repo.lock().map_err(|e| e.to_string())?;
+        let paths = repo.paths();
+        (
+            paths.sessions_dir.clone(),
+            paths.archived_sessions_dir.clone(),
+        )
+    };
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        threads::export_threads(
+            &sessions_dir,
+            &archived_sessions_dir,
+            &keys,
+            &PathBuf::from(&target_dir),
+            format,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
     .map_err(|e| e.to_string())?;
     Ok(CoreEnvelope::ok(ThreadExportPayload {
         exported: result.exported,

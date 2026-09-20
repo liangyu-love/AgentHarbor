@@ -45,13 +45,13 @@ impl CodexPaths {
     }
 
     pub fn from_home(codex_home: PathBuf) -> Self {
-        let app_data_dir = codex_home.join("codexharbor");
+        let app_data_dir = codex_home.join("agentharbor");
         let accounts_dir = app_data_dir.join("accounts");
         let custom_instructions_dir = app_data_dir.join("custom-instructions");
         let launch_agent_path = Self::resolve_launch_agent_path();
 
         // Copy the previous build's state once. Keeping the source intact lets
-        // CodexHarbor and an installed AiMaMi run independently.
+        // AgentHarbor and an installed AiMaMi run independently.
         if !app_data_dir.exists() {
             let _ = migrate_previous_app_data(&codex_home, &app_data_dir);
         }
@@ -91,7 +91,7 @@ impl CodexPaths {
     fn resolve_codex_home() -> PathBuf {
         // App-only override allows development and smoke tests without changing
         // the Codex environment or touching the user's normal configuration.
-        for name in ["CODEX_HARBOR_CODEX_HOME", "CODEX_HOME"] {
+        for name in ["AGENT_HARBOR_CODEX_HOME", "CODEX_HOME"] {
             if let Some(val) = std::env::var_os(name).filter(|v| !v.is_empty()) {
                 return PathBuf::from(val);
             }
@@ -105,7 +105,7 @@ impl CodexPaths {
     fn resolve_launch_agent_path() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("Library/LaunchAgents/dev.codexharbor.auto-switch.plist")
+            .join("Library/LaunchAgents/dev.agentharbor.auto-switch.plist")
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -127,6 +127,13 @@ impl CodexPaths {
 }
 
 fn migrate_previous_app_data(codex_home: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+    // Prefer the immediately preceding CodexHarbor build so local changes made
+    // during the rename are preserved. The source remains untouched.
+    let previous_harbor = codex_home.join("codexharbor");
+    if previous_harbor.is_dir() {
+        return copy_directory_if_present(&previous_harbor, target);
+    }
+
     let previous = codex_home.join("codexmate");
     let previous_accounts = codex_home.join("accounts");
     if !previous.exists() && !previous_accounts.exists() {
@@ -199,8 +206,8 @@ mod tests {
         std::fs::write(previous_accounts.join("registry.json"), "previous-registry").unwrap();
 
         let paths = CodexPaths::from_home(codex_home.clone());
-        assert_eq!(paths.app_data_dir, codex_home.join("codexharbor"));
-        assert_eq!(paths.accounts_dir, codex_home.join("codexharbor/accounts"));
+        assert_eq!(paths.app_data_dir, codex_home.join("agentharbor"));
+        assert_eq!(paths.accounts_dir, codex_home.join("agentharbor/accounts"));
         assert_eq!(std::fs::read_to_string(&paths.settings_path).unwrap(), "previous-settings");
         assert_eq!(
             std::fs::read_to_string(&paths.registry_path).unwrap(),
@@ -212,5 +219,24 @@ mod tests {
         std::fs::write(previous.join("settings.json"), "changed-later").unwrap();
         let paths = CodexPaths::from_home(codex_home);
         assert_eq!(std::fs::read_to_string(paths.settings_path).unwrap(), "previous-settings");
+    }
+
+    #[test]
+    fn intermediate_harbor_state_takes_priority_without_moving_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let codex_home = temp.path().join(".codex");
+        let intermediate = codex_home.join("codexharbor");
+        let original = codex_home.join("codexmate");
+        std::fs::create_dir_all(&intermediate).unwrap();
+        std::fs::create_dir_all(&original).unwrap();
+        std::fs::write(intermediate.join("settings.json"), "intermediate").unwrap();
+        std::fs::write(original.join("settings.json"), "original").unwrap();
+
+        let paths = CodexPaths::from_home(codex_home);
+        assert_eq!(
+            std::fs::read_to_string(&paths.settings_path).unwrap(),
+            "intermediate"
+        );
+        assert!(intermediate.join("settings.json").exists());
     }
 }

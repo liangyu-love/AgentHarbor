@@ -171,9 +171,9 @@ export const api = {
   listCodexThreads: () =>
     invoke<CoreEnvelope<import("@/types/threads").ThreadListPayload>>("list_codex_threads"),
 
-  exportCodexThreads: (ids: string[], targetDir: string, format: "markdown" | "jsonl") =>
+  exportCodexThreads: (keys: string[], targetDir: string, format: "markdown" | "jsonl") =>
     invoke<CoreEnvelope<import("@/types/threads").ThreadExportPayload>>("export_codex_threads", {
-      ids,
+      keys,
       targetDir,
       format,
     }),

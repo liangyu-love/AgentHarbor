@@ -1,7 +1,7 @@
 {
-  "name": "codexharbor-plugins",
+  "name": "agentharbor-plugins",
   "interface": {
-    "displayName": "CodexHarbor Plugins"
+    "displayName": "AgentHarbor Plugins"
   },
   "plugins": [
     {

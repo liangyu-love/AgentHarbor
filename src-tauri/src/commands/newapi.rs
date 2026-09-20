@@ -15,7 +15,7 @@ pub async fn load_newapi_state(repo: State<'_, Mutex<Repository>>) -> Result<New
         if !router_proxy::is_running() {
             // A busy port (e.g. the original app still running) must not blank out the page.
             if let Err(error) = start_proxy(&paths, store.router.port).await {
-                eprintln!("[CodexHarbor] router proxy startup failed: {error}");
+                eprintln!("[AgentHarbor] router proxy startup failed: {error}");
             }
         }
     }

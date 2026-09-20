@@ -2,8 +2,8 @@ use crate::core::models::*;
 use std::collections::HashMap;
 use std::path::Path;
 
-const MANAGED_BLOCK_BEGIN_PREFIX: &str = "# --- CodexHarbor Managed";
-const MANAGED_BLOCK_END_SUFFIX: &str = "# --- End CodexHarbor Managed";
+const MANAGED_BLOCK_BEGIN_PREFIX: &str = "# --- AgentHarbor Managed";
+const MANAGED_BLOCK_END_SUFFIX: &str = "# --- End AgentHarbor Managed";
 
 fn is_managed_block_begin(line: &str) -> bool {
     line.starts_with(MANAGED_BLOCK_BEGIN_PREFIX)
@@ -13,9 +13,9 @@ fn is_managed_block_end(line: &str) -> bool {
     line.starts_with(MANAGED_BLOCK_END_SUFFIX)
 }
 
-const BOTTOM_MANAGED_BLOCK_BEGIN: &str = "# --- CodexHarbor Managed Block (bottom) ---";
-const LEGACY_TOP_MANAGED_BLOCK_BEGIN: &str = "# --- CodexHarbor Managed Block (top) ---";
-const ROUTER_TOP_MANAGED_BLOCK_BEGIN: &str = "# --- CodexHarbor Managed Block (router-top) ---";
+const BOTTOM_MANAGED_BLOCK_BEGIN: &str = "# --- AgentHarbor Managed Block (bottom) ---";
+const LEGACY_TOP_MANAGED_BLOCK_BEGIN: &str = "# --- AgentHarbor Managed Block (top) ---";
+const ROUTER_TOP_MANAGED_BLOCK_BEGIN: &str = "# --- AgentHarbor Managed Block (router-top) ---";
 
 pub fn load_mcp_servers(config_path: &Path) -> Result<Vec<McpServerSummary>, CoreError> {
     if !config_path.exists() {
@@ -436,8 +436,8 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    const BOTTOM_MANAGED_BLOCK_END: &str = "# --- End CodexHarbor Managed Block (bottom) ---";
-    const ROUTER_TOP_MANAGED_BLOCK_END: &str = "# --- End CodexHarbor Managed Block (router-top) ---";
+    const BOTTOM_MANAGED_BLOCK_END: &str = "# --- End AgentHarbor Managed Block (bottom) ---";
+    const ROUTER_TOP_MANAGED_BLOCK_END: &str = "# --- End AgentHarbor Managed Block (router-top) ---";
 
     fn stdio_server(name: &str) -> McpServerSummary {
         McpServerSummary {
@@ -459,7 +459,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "codexharbor-mcp-{test_name}-{}-{nanos}.toml",
+            "agentharbor-mcp-{test_name}-{}-{nanos}.toml",
             std::process::id()
         ))
     }
@@ -474,7 +474,7 @@ mod tests {
              {ROUTER_TOP_MANAGED_BLOCK_END}\n\n\
              {BOTTOM_MANAGED_BLOCK_BEGIN}\n\
              [model_providers.aimai1]\n\
-             name = \"CodexHarbor 智能路由\"\n\
+             name = \"AgentHarbor 智能路由\"\n\
              {BOTTOM_MANAGED_BLOCK_END}\n"
         );
         std::fs::write(&path, original).unwrap();

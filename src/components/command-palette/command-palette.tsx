@@ -450,7 +450,7 @@ export function CommandPalette({
             <span>导航: <kbd className="font-mono bg-muted px-1 rounded">↑</kbd> <kbd className="font-mono bg-muted px-1 rounded">↓</kbd></span>
             <span>确认: <kbd className="font-mono bg-muted px-1 rounded">↵</kbd></span>
           </div>
-          <span className="font-mono text-[10px]">CodexHarbor Spotlight</span>
+          <span className="font-mono text-[10px]">AgentHarbor Spotlight</span>
         </div>
       </DialogContent>
     </Dialog>

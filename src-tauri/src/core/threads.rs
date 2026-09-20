@@ -1,18 +1,24 @@
 use crate::core::models::CoreError;
+use chrono::DateTime;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadSummary {
+    /// Stable locator for UI selection and export. Session IDs are not guaranteed to be unique.
+    pub key: String,
     pub id: String,
     pub cwd: String,
     pub folder_name: String,
     pub title: String,
     pub created_at: i64,
     pub updated_at: i64,
-    pub user_messages: i32,
-    pub agent_messages: i32,
+    pub user_messages: usize,
+    pub agent_messages: usize,
     pub file_size: u64,
     pub archived: bool,
     pub source: String,
@@ -23,7 +29,7 @@ pub struct ThreadSummary {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadExportResult {
-    pub exported: i32,
+    pub exported: usize,
     pub directory: String,
     pub files: Vec<String>,
 }
@@ -46,48 +52,96 @@ impl ThreadExportFormat {
     }
 }
 
+#[derive(Debug)]
+struct ThreadFile {
+    key: String,
+    path: PathBuf,
+    archived: bool,
+}
+
+#[derive(Debug)]
 struct ChatMessage {
     role: &'static str,
     timestamp: String,
     text: String,
 }
 
-
-/// 扫描 sessions 与 archived_sessions 目录，汇总每个 Codex 线程（rollout jsonl）。
-pub fn scan_threads(sessions_dir: &Path, archived_dir: &Path) -> Vec<ThreadSummary> {
-    let mut files = Vec::new();
-    collect_rollout_files(sessions_dir, false, &mut files);
-    collect_rollout_files(archived_dir, true, &mut files);
-    let mut items: Vec<ThreadSummary> = files
-        .iter()
-        .filter_map(|(path, archived)| summarize_thread(path, *archived))
-        .collect();
-    items.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    items
+#[derive(Debug)]
+struct ParsedThread {
+    summary: ThreadSummary,
+    messages: Vec<ChatMessage>,
 }
 
-fn collect_rollout_files(root: &Path, archived: bool, out: &mut Vec<(PathBuf, bool)>) {
-    if !root.is_dir() {
-        return;
+/// Scan active and archived Codex rollout files.
+pub fn scan_threads(
+    sessions_dir: &Path,
+    archived_dir: &Path,
+) -> Result<Vec<ThreadSummary>, CoreError> {
+    let mut items = Vec::new();
+    for file in collect_thread_files(sessions_dir, archived_dir)? {
+        if let Some(parsed) = parse_thread(&file, false)? {
+            items.push(parsed.summary);
+        }
     }
+    items.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    Ok(items)
+}
+
+fn collect_thread_files(
+    sessions_dir: &Path,
+    archived_dir: &Path,
+) -> Result<Vec<ThreadFile>, CoreError> {
+    let mut files = Vec::new();
+    collect_rollout_files(sessions_dir, false, &mut files)?;
+    collect_rollout_files(archived_dir, true, &mut files)?;
+    Ok(files)
+}
+
+fn collect_rollout_files(
+    root: &Path,
+    archived: bool,
+    out: &mut Vec<ThreadFile>,
+) -> Result<(), CoreError> {
+    if !root.exists() {
+        return Ok(());
+    }
+    if !root.is_dir() {
+        return Err(CoreError::InvalidData(format!(
+            "thread source is not a directory: {}",
+            root.display()
+        )));
+    }
+
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if entry.file_type().map_or(true, |kind| kind.is_symlink()) {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
                 continue;
             }
-            if path.is_dir() {
+            let path = entry.path();
+            if file_type.is_dir() {
                 stack.push(path);
-            } else if is_rollout_file(&path) {
-                out.push((path, archived));
+            } else if file_type.is_file() && is_rollout_file(&path) {
+                let relative = path.strip_prefix(root).unwrap_or(&path);
+                let scope = if archived { "archived" } else { "active" };
+                out.push(ThreadFile {
+                    key: format!("{scope}:{}", normalize_relative_path(relative)),
+                    path,
+                    archived,
+                });
             }
         }
     }
+    Ok(())
+}
+
+fn normalize_relative_path(path: &Path) -> String {
+    path.components()
+        .map(|part| part.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn is_rollout_file(path: &Path) -> bool {
@@ -96,70 +150,9 @@ fn is_rollout_file(path: &Path) -> bool {
 }
 
 fn parse_timestamp_millis(value: &serde_json::Value) -> Option<i64> {
-    parse_iso8601_millis(value.as_str()?)
-}
-
-/// 解析 ISO8601（如 2026-06-14T07:29:58.259Z，允许 +08:00 偏移），返回毫秒时间戳。
-fn parse_iso8601_millis(raw: &str) -> Option<i64> {
-    let bytes = raw.as_bytes();
-    if bytes.len() < 19 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' {
-        return None;
-    }
-    let year: i64 = raw.get(0..4)?.parse().ok()?;
-    let month: i64 = raw.get(5..7)?.parse().ok()?;
-    let day: i64 = raw.get(8..10)?.parse().ok()?;
-    let hour: i64 = raw.get(11..13)?.parse().ok()?;
-    let minute: i64 = raw.get(14..16)?.parse().ok()?;
-    let second: i64 = raw.get(17..19)?.parse().ok()?;
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-    let rest = &raw[19..];
-    let mut millis: i64 = 0;
-    let mut offset_seconds: i64 = 0;
-    if let Some(dot) = rest.strip_prefix('.') {
-        let digits: String = dot.chars().take_while(|c| c.is_ascii_digit()).collect();
-        let padded = format!("{:0<3}", digits);
-        millis = padded.get(0..3)?.parse().ok()?;
-    }
-    if rest.ends_with('Z') {
-        offset_seconds = 0;
-    } else if let Some(pos) = rest.rfind(['+', '-']) {
-        let sign = if rest.as_bytes()[pos] == b'-' { -1 } else { 1 };
-        let oh: i64 = rest.get(pos + 1..pos + 3)?.parse().ok()?;
-        let om: i64 = rest.get(pos + 4..pos + 6)?.parse().ok()?;
-        offset_seconds = sign * (oh * 3600 + om * 60);
-    }
-    Some(
-        days_from_civil(year, month, day) * 86_400_000
-            + (hour * 3600 + minute * 60 + second - offset_seconds) * 1000
-            + millis,
-    )
-}
-
-/// Howards Hinnant 的 days_from_civil 算法（公历日期 → 距 1970-01-01 天数）
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = (month + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
-}
-
-/// days_from_civil 的逆运算
-fn civil_from_days(z: i64) -> (i64, i64, i64) {
-    let z = z + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    (if m <= 2 { y + 1 } else { y }, m, d)
+    DateTime::parse_from_rfc3339(value.as_str()?)
+        .ok()
+        .map(|timestamp| timestamp.timestamp_millis())
 }
 
 fn extract_item_text(item: &serde_json::Value) -> String {
@@ -184,135 +177,39 @@ fn extract_item_text(item: &serde_json::Value) -> String {
     parts.join("\n\n")
 }
 
-fn summarize_thread(path: &Path, archived: bool) -> Option<ThreadSummary> {
-    let content = std::fs::read_to_string(path).ok()?;
+fn set_title_once(title: &mut Option<String>, text: &str) {
+    if title.is_some() {
+        return;
+    }
+    let first_line = text.lines().next().unwrap_or("").trim();
+    if !first_line.is_empty() {
+        *title = Some(first_line.chars().take(80).collect());
+    }
+}
+
+fn parse_thread(
+    file: &ThreadFile,
+    include_messages: bool,
+) -> Result<Option<ParsedThread>, CoreError> {
+    let source_file = File::open(&file.path)?;
+    let mut reader = BufReader::new(source_file);
+    let mut line = String::new();
     let mut session_id = String::new();
     let mut cwd = String::new();
     let mut created_at: Option<i64> = None;
     let mut updated_at: Option<i64> = None;
     let mut title: Option<String> = None;
-    let mut user_messages = 0i32;
-    let mut agent_messages = 0i32;
+    let mut user_messages = 0usize;
+    let mut agent_messages = 0usize;
     let mut source = String::new();
     let mut cli_version = String::new();
-
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        if let Some(ts) = value.get("timestamp").and_then(parse_timestamp_millis) {
-            updated_at = Some(updated_at.map_or(ts, |prev| prev.max(ts)));
-            if created_at.is_none() {
-                created_at = Some(ts);
-            }
-        }
-        let Some(payload) = value.get("payload") else {
-            continue;
-        };
-        match payload.get("type").and_then(|t| t.as_str()).unwrap_or("") {
-            "session_meta" => {
-                session_id = payload
-                    .get("session_id")
-                    .or_else(|| payload.get("id"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                cwd = payload
-                    .get("cwd")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                source = payload
-                    .get("source")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                cli_version = payload
-                    .get("cli_version")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-            }
-            "item_completed" => {
-                let Some(item) = payload.get("item") else {
-                    continue;
-                };
-                match item.get("type").and_then(|t| t.as_str()).unwrap_or("") {
-                    "UserMessage" => {
-                        user_messages += 1;
-                        if title.is_none() {
-                            let text = extract_item_text(item);
-                            let first_line =
-                                text.lines().next().unwrap_or("").trim().to_string();
-                            if !first_line.is_empty() {
-                                title = Some(first_line.chars().take(80).collect());
-                            }
-                        }
-                    }
-                    "AgentMessage" => agent_messages += 1,
-                    _ => {}
-                }
-            }
-            "user_message" => {
-                user_messages += 1;
-                if title.is_none() {
-                    if let Some(text) = payload.get("message").and_then(|m| m.as_str()) {
-                        let first_line = text.lines().next().unwrap_or("").trim().to_string();
-                        if !first_line.is_empty() {
-                            title = Some(first_line.chars().take(80).collect());
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if session_id.is_empty() && cwd.is_empty() && user_messages == 0 && agent_messages == 0 {
-        return None;
-    }
-    if session_id.is_empty() {
-        session_id = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default()
-            .to_string();
-    }
-    let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    let folder_name = Path::new(&cwd)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| cwd.clone());
-    let created = created_at.or(updated_at).unwrap_or(0);
-    Some(ThreadSummary {
-        id: session_id,
-        cwd,
-        folder_name,
-        title: title.unwrap_or_default(),
-        created_at: created / 1000,
-        updated_at: updated_at.unwrap_or(created) / 1000,
-        user_messages,
-        agent_messages,
-        file_size,
-        archived,
-        source,
-        cli_version,
-        file_path: path.display().to_string(),
-    })
-}
-
-fn read_chat_messages(path: &Path) -> Vec<ChatMessage> {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
     let mut messages = Vec::new();
-    for line in content.lines() {
+
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            break;
+        }
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -322,55 +219,145 @@ fn read_chat_messages(path: &Path) -> Vec<ChatMessage> {
         };
         let timestamp = value
             .get("timestamp")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if let Some(timestamp_millis) = value.get("timestamp").and_then(parse_timestamp_millis) {
+            updated_at =
+                Some(updated_at.map_or(timestamp_millis, |prev| prev.max(timestamp_millis)));
+            created_at =
+                Some(created_at.map_or(timestamp_millis, |prev| prev.min(timestamp_millis)));
+        }
         let Some(payload) = value.get("payload") else {
             continue;
         };
-        match payload.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+
+        let record_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        let payload_type = payload.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        if record_type == "session_meta" || payload_type == "session_meta" {
+            session_id = payload
+                .get("session_id")
+                .or_else(|| payload.get("id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            cwd = payload
+                .get("cwd")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            source = payload
+                .get("source")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            cli_version = payload
+                .get("cli_version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            continue;
+        }
+
+        match payload_type {
             "item_completed" => {
                 let Some(item) = payload.get("item") else {
                     continue;
                 };
-                let role = match item.get("type").and_then(|t| t.as_str()).unwrap_or("") {
-                    "UserMessage" => "user",
-                    "AgentMessage" => "assistant",
-                    _ => continue,
+                let (role, text) = match item.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+                    "UserMessage" => {
+                        user_messages += 1;
+                        let text = extract_item_text(item);
+                        set_title_once(&mut title, &text);
+                        (Some("user"), text)
+                    }
+                    "AgentMessage" => {
+                        agent_messages += 1;
+                        (Some("assistant"), extract_item_text(item))
+                    }
+                    _ => (None, String::new()),
                 };
-                let text = extract_item_text(item);
-                if !text.is_empty() {
-                    messages.push(ChatMessage { role, timestamp, text });
+                if include_messages && !text.is_empty() {
+                    if let Some(role) = role {
+                        messages.push(ChatMessage {
+                            role,
+                            timestamp: timestamp.to_string(),
+                            text,
+                        });
+                    }
                 }
             }
             "user_message" => {
+                user_messages += 1;
                 if let Some(text) = payload.get("message").and_then(|m| m.as_str()) {
                     let text = text.trim();
-                    if !text.is_empty() {
+                    set_title_once(&mut title, text);
+                    if include_messages && !text.is_empty() {
                         messages.push(ChatMessage {
                             role: "user",
-                            timestamp,
+                            timestamp: timestamp.to_string(),
                             text: text.to_string(),
                         });
                     }
                 }
             }
             "agent_message" => {
-                if let Some(text) = payload.get("message").and_then(|m| m.as_str()) {
-                    let text = text.trim();
-                    if !text.is_empty() {
-                        messages.push(ChatMessage {
-                            role: "assistant",
-                            timestamp,
-                            text: text.to_string(),
-                        });
+                agent_messages += 1;
+                if include_messages {
+                    if let Some(text) = payload.get("message").and_then(|m| m.as_str()) {
+                        let text = text.trim();
+                        if !text.is_empty() {
+                            messages.push(ChatMessage {
+                                role: "assistant",
+                                timestamp: timestamp.to_string(),
+                                text: text.to_string(),
+                            });
+                        }
                     }
                 }
             }
             _ => {}
         }
     }
-    messages
+
+    if session_id.is_empty() && cwd.is_empty() && user_messages == 0 && agent_messages == 0 {
+        return Ok(None);
+    }
+    if session_id.is_empty() {
+        session_id = file
+            .path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_string();
+    }
+    let file_size = std::fs::metadata(&file.path)?.len();
+    let folder_name = Path::new(&cwd)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| cwd.clone());
+    let created = created_at.or(updated_at).unwrap_or(0);
+
+    Ok(Some(ParsedThread {
+        summary: ThreadSummary {
+            key: file.key.clone(),
+            id: session_id,
+            cwd,
+            folder_name,
+            title: title.unwrap_or_default(),
+            created_at: created / 1000,
+            updated_at: updated_at.unwrap_or(created) / 1000,
+            user_messages,
+            agent_messages,
+            file_size,
+            archived: file.archived,
+            source,
+            cli_version,
+            file_path: file.path.display().to_string(),
+        },
+        messages,
+    }))
 }
 
 fn sanitize_file_name(name: &str) -> String {
@@ -383,99 +370,380 @@ fn sanitize_file_name(name: &str) -> String {
         })
         .collect();
     let out = out.trim_matches([' ', '.']);
-    if out.is_empty() {
+    let mut out: String = if out.is_empty() {
         "thread".to_string()
     } else {
         out.chars().take(60).collect()
+    };
+    let device_name = out.split('.').next().unwrap_or("").to_ascii_uppercase();
+    let numbered_device = device_name
+        .strip_prefix("COM")
+        .or_else(|| device_name.strip_prefix("LPT"))
+        .is_some_and(|suffix| {
+            matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+        });
+    if matches!(device_name.as_str(), "CON" | "PRN" | "AUX" | "NUL") || numbered_device {
+        out.insert(0, '_');
     }
+    out
 }
 
 fn export_file_stem(summary: &ThreadSummary) -> String {
-    let (y, m, d) = civil_from_days(summary.created_at / 86_400);
+    let date = DateTime::from_timestamp(summary.created_at, 0)
+        .map(|value| value.format("%Y%m%d").to_string())
+        .unwrap_or_else(|| "undated".to_string());
     let base_title = if summary.title.is_empty() {
-        summary.folder_name.clone()
+        &summary.folder_name
     } else {
-        summary.title.clone()
+        &summary.title
     };
-    format!("{:04}{:02}{:02}-{}", y, m, d, sanitize_file_name(&base_title))
+    format!("{date}-{}", sanitize_file_name(base_title))
 }
 
-/// 将选中线程导出到指定目录：Markdown 会话记录或原始 jsonl 拷贝。
+fn validate_target_dir(
+    sessions_dir: &Path,
+    archived_dir: &Path,
+    target_dir: &Path,
+) -> Result<PathBuf, CoreError> {
+    if target_dir.as_os_str().is_empty() {
+        return Err(CoreError::InvalidData(
+            "export directory is required".into(),
+        ));
+    }
+    if target_dir.exists() && !target_dir.is_dir() {
+        return Err(CoreError::InvalidData(format!(
+            "export target is not a directory: {}",
+            target_dir.display()
+        )));
+    }
+    std::fs::create_dir_all(target_dir)?;
+    let target = target_dir.canonicalize()?;
+    for source in [sessions_dir, archived_dir] {
+        if source.exists() {
+            let source = source.canonicalize()?;
+            if target.starts_with(&source) {
+                return Err(CoreError::InvalidData(
+                    "export directory cannot be inside a thread source directory".into(),
+                ));
+            }
+        }
+    }
+    Ok(target)
+}
+
+fn next_export_name(
+    summary: &ThreadSummary,
+    format: ThreadExportFormat,
+    target_dir: &Path,
+    used_names: &mut HashSet<String>,
+) -> String {
+    let ext = match format {
+        ThreadExportFormat::Markdown => "md",
+        ThreadExportFormat::Jsonl => "jsonl",
+    };
+    let stem = export_file_stem(summary);
+    let mut file_name = format!("{stem}.{ext}");
+    let mut counter = 2;
+    while used_names.contains(&file_name.to_ascii_lowercase())
+        || target_dir.join(&file_name).exists()
+    {
+        file_name = format!("{stem}-{counter}.{ext}");
+        counter += 1;
+    }
+    used_names.insert(file_name.to_ascii_lowercase());
+    file_name
+}
+
+#[derive(Debug)]
+struct StagedExport {
+    temp_path: PathBuf,
+    final_path: PathBuf,
+    file_name: String,
+}
+
+fn create_staged_file(target_dir: &Path) -> Result<(PathBuf, File), CoreError> {
+    for _ in 0..10 {
+        let path = target_dir.join(format!(".agentharbor-export-{}.tmp", uuid::Uuid::new_v4()));
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(CoreError::OperationFailed(
+        "could not allocate a temporary export file".into(),
+    ))
+}
+
+fn cleanup_staged(staged: &[StagedExport]) {
+    for item in staged {
+        let _ = std::fs::remove_file(&item.temp_path);
+    }
+}
+
+fn stage_export(
+    file: &ThreadFile,
+    target_dir: &Path,
+    format: ThreadExportFormat,
+    used_names: &mut HashSet<String>,
+) -> Result<StagedExport, CoreError> {
+    let include_messages = format == ThreadExportFormat::Markdown;
+    let parsed = parse_thread(file, include_messages)?.ok_or_else(|| {
+        CoreError::InvalidData(format!(
+            "selected file is not a readable conversation log: {}",
+            file.path.display()
+        ))
+    })?;
+    let mut jsonl_source = match format {
+        ThreadExportFormat::Jsonl => Some(File::open(&file.path)?),
+        ThreadExportFormat::Markdown => None,
+    };
+    let file_name = next_export_name(&parsed.summary, format, target_dir, used_names);
+    let final_path = target_dir.join(&file_name);
+    let (temp_path, temp_file) = create_staged_file(target_dir)?;
+    let write_result = match format {
+        ThreadExportFormat::Jsonl => {
+            let mut target = BufWriter::new(temp_file);
+            match jsonl_source.as_mut() {
+                Some(source) => std::io::copy(source, &mut target)
+                    .and_then(|_| target.flush())
+                    .map(|_| ()),
+                None => Err(std::io::Error::other("missing JSONL source")),
+            }
+        }
+        ThreadExportFormat::Markdown => {
+            let mut target = BufWriter::new(temp_file);
+            target
+                .write_all(render_markdown(&parsed.summary, &parsed.messages).as_bytes())
+                .and_then(|_| target.flush())
+        }
+    };
+    if let Err(error) = write_result {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(error.into());
+    }
+    Ok(StagedExport {
+        temp_path,
+        final_path,
+        file_name,
+    })
+}
+
+/// Export selected rollout files as Markdown transcripts or raw JSONL.
 pub fn export_threads(
     sessions_dir: &Path,
     archived_dir: &Path,
-    ids: &[String],
+    keys: &[String],
     target_dir: &Path,
     format: ThreadExportFormat,
 ) -> Result<ThreadExportResult, CoreError> {
-    if ids.is_empty() {
+    let requested: HashSet<&str> = keys.iter().map(String::as_str).collect();
+    if requested.is_empty() {
         return Err(CoreError::InvalidData("no threads selected".into()));
     }
-    let summaries = scan_threads(sessions_dir, archived_dir);
-    std::fs::create_dir_all(target_dir)?;
-    let mut files = Vec::new();
-    let mut used_names: Vec<String> = Vec::new();
-    for summary in summaries.iter().filter(|s| ids.contains(&s.id)) {
-        let source_path = PathBuf::from(&summary.file_path);
-        if !source_path.is_file() {
-            continue;
-        }
-        let ext = match format {
-            ThreadExportFormat::Markdown => "md",
-            ThreadExportFormat::Jsonl => "jsonl",
-        };
-        let stem = export_file_stem(summary);
-        let mut file_name = format!("{stem}.{ext}");
-        let mut counter = 2;
-        while used_names.iter().any(|n| n.eq_ignore_ascii_case(&file_name))
-            || target_dir.join(&file_name).exists()
-        {
-            file_name = format!("{stem}-{counter}.{ext}");
-            counter += 1;
-        }
-        used_names.push(file_name.clone());
-        let target = target_dir.join(&file_name);
-        match format {
-            ThreadExportFormat::Jsonl => {
-                std::fs::copy(&source_path, &target)?;
-            }
-            ThreadExportFormat::Markdown => {
-                let messages = read_chat_messages(&source_path);
-                std::fs::write(&target, render_markdown(summary, &messages))?;
-            }
-        }
-        files.push(file_name);
+
+    let target_dir = validate_target_dir(sessions_dir, archived_dir, target_dir)?;
+    let mut selected: Vec<ThreadFile> = collect_thread_files(sessions_dir, archived_dir)?
+        .into_iter()
+        .filter(|file| requested.contains(file.key.as_str()))
+        .collect();
+    if selected.len() != requested.len() {
+        return Err(CoreError::NotFound(
+            "one or more selected threads no longer exist; refresh and try again".into(),
+        ));
     }
+    selected.sort_by(|a, b| a.key.cmp(&b.key));
+
+    let mut staged = Vec::with_capacity(selected.len());
+    let mut used_names = HashSet::new();
+    for file in selected {
+        match stage_export(&file, &target_dir, format, &mut used_names) {
+            Ok(item) => staged.push(item),
+            Err(error) => {
+                cleanup_staged(&staged);
+                return Err(error);
+            }
+        }
+    }
+
+    let mut committed = Vec::new();
+    for (index, item) in staged.iter().enumerate() {
+        if let Err(error) = std::fs::rename(&item.temp_path, &item.final_path) {
+            for path in committed {
+                let _ = std::fs::remove_file(path);
+            }
+            cleanup_staged(&staged[index..]);
+            return Err(error.into());
+        }
+        committed.push(item.final_path.clone());
+    }
+
+    let files: Vec<String> = staged.into_iter().map(|item| item.file_name).collect();
     Ok(ThreadExportResult {
-        exported: files.len() as i32,
+        exported: files.len(),
         directory: target_dir.display().to_string(),
         files,
     })
 }
 
+fn escape_heading(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace(['\r', '\n'], " ")
+        .replace('#', "\\#")
+}
+
+fn html_code(value: &str) -> String {
+    format!(
+        "<code>{}</code>",
+        value
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    )
+}
+
 fn render_markdown(summary: &ThreadSummary, messages: &[ChatMessage]) -> String {
-    let mut out = String::new();
     let heading = if summary.title.is_empty() {
         &summary.id
     } else {
         &summary.title
     };
-    out.push_str(&format!(
-        "# {heading}\n\n- 工作目录: `{}`\n- 线程 ID: `{}`\n- 来源: {}\n- 消息数: 用户 {} / 助手 {}\n\n---\n\n",
-        summary.cwd, summary.id, summary.source, summary.user_messages, summary.agent_messages
-    ));
+    let mut out = format!(
+        "# {}\n\n- 工作目录: {}\n- 线程 ID: {}\n- 来源: {}\n- 消息数: 用户 {} / 助手 {}\n\n---\n\n",
+        escape_heading(heading),
+        html_code(&summary.cwd),
+        html_code(&summary.id),
+        html_code(&summary.source),
+        summary.user_messages,
+        summary.agent_messages
+    );
     for message in messages {
         out.push_str(if message.role == "user" {
             "## 👤 用户"
         } else {
-            "## 🤖 Codex"
+            "## 🤖 助手"
         });
         if !message.timestamp.is_empty() {
-            out.push_str(&format!("  `{}`", message.timestamp));
+            out.push_str("  ");
+            out.push_str(&html_code(&message.timestamp));
         }
         out.push_str("\n\n");
         out.push_str(&message.text);
         out.push_str("\n\n---\n\n");
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    fn rollout(id: &str, cwd: &str, title: &str) -> String {
+        format!(
+            "{{\"timestamp\":\"2026-09-20T12:00:00+08:00\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{cwd}\",\"source\":\"cli\"}}}}\n\
+             {{\"timestamp\":\"2026-09-20T12:01:00+08:00\",\"payload\":{{\"type\":\"user_message\",\"message\":\"{title}\"}}}}\n\
+             {{\"timestamp\":\"2026-09-20T12:02:00+08:00\",\"payload\":{{\"type\":\"agent_message\",\"message\":\"done\"}}}}\n"
+        )
+    }
+
+    #[test]
+    fn scan_streams_threads_and_assigns_unique_keys() {
+        let root = tempdir().unwrap();
+        let sessions = root.path().join("sessions");
+        let archived = root.path().join("archived_sessions");
+        fs::create_dir_all(sessions.join("2026/09/20")).unwrap();
+        fs::create_dir_all(&archived).unwrap();
+        fs::write(
+            sessions.join("2026/09/20/rollout-a.jsonl"),
+            rollout("same-id", "C:/work/one", "First"),
+        )
+        .unwrap();
+        fs::write(
+            archived.join("rollout-b.jsonl"),
+            rollout("same-id", "C:/work/two", "Second"),
+        )
+        .unwrap();
+
+        let items = scan_threads(&sessions, &archived).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_ne!(items[0].key, items[1].key);
+        assert_eq!(items[0].user_messages, 1);
+        assert_eq!(items[0].agent_messages, 1);
+    }
+
+    #[test]
+    fn export_rejects_source_directory_and_stale_keys() {
+        let root = tempdir().unwrap();
+        let sessions = root.path().join("sessions");
+        let archived = root.path().join("archived_sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::write(
+            sessions.join("rollout-a.jsonl"),
+            rollout("id", "C:/work", "Title"),
+        )
+        .unwrap();
+        let key = scan_threads(&sessions, &archived).unwrap()[0].key.clone();
+
+        assert!(export_threads(
+            &sessions,
+            &archived,
+            std::slice::from_ref(&key),
+            &sessions.join("exports"),
+            ThreadExportFormat::Markdown,
+        )
+        .is_err());
+        assert!(export_threads(
+            &sessions,
+            &archived,
+            &["active:missing.jsonl".into()],
+            &root.path().join("exports"),
+            ThreadExportFormat::Markdown,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn export_is_collision_safe_and_escapes_metadata() {
+        let root = tempdir().unwrap();
+        let sessions = root.path().join("sessions");
+        let archived = root.path().join("archived_sessions");
+        let output = root.path().join("output");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::write(
+            sessions.join("rollout-a.jsonl"),
+            rollout("id`x", "C:/work/`demo`", "Title"),
+        )
+        .unwrap();
+        let key = scan_threads(&sessions, &archived).unwrap()[0].key.clone();
+
+        let first = export_threads(
+            &sessions,
+            &archived,
+            std::slice::from_ref(&key),
+            &output,
+            ThreadExportFormat::Markdown,
+        )
+        .unwrap();
+        let second = export_threads(
+            &sessions,
+            &archived,
+            &[key],
+            &output,
+            ThreadExportFormat::Markdown,
+        )
+        .unwrap();
+        assert_ne!(first.files[0], second.files[0]);
+        let markdown = fs::read_to_string(output.join(&first.files[0])).unwrap();
+        assert!(markdown.contains("<code>C:/work/`demo`</code>"));
+        assert!(markdown.contains("<code>id`x</code>"));
+    }
+
+    #[test]
+    fn timestamp_parser_rejects_invalid_dates() {
+        assert!(DateTime::parse_from_rfc3339("2026-02-30T12:00:00Z").is_err());
+        assert!(DateTime::parse_from_rfc3339("2026-09-20T12:00:00+25:00").is_err());
+    }
 }

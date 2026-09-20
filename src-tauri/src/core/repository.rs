@@ -1,7 +1,7 @@
 use crate::core::auth::*;
 use crate::core::bootstrap_cache::{self, BootstrapStatePayload};
 use crate::core::models::*;
-use crate::core::quota_store::{self, QuotaStoreFile, QuotaStoreItem};
+use crate::core::quota_store::{self, QuotaStoreFile};
 use crate::platform::paths::CodexPaths;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -81,10 +81,6 @@ fn default_true() -> bool {
     true
 }
 
-fn effective_api_config(_api: Option<&ApiConfig>) -> ApiConfig {
-    ApiConfig::default()
-}
-
 fn default_usage_refresh_interval() -> String {
     "1m".to_string()
 }
@@ -145,7 +141,6 @@ pub(crate) struct LoadedState {
     pub paths: AppPathState,
     pub settings: CodexMateSettings,
     pub registry: RegistryFile,
-    pub quota_store: QuotaStoreFile,
     pub last_scan_at: i64,
     pub warnings: Vec<CoreWarning>,
     pub api_diagnostics: ApiDiagnostics,
@@ -175,20 +170,6 @@ impl Repository {
             CoreSnapshotPayload { status },
             state.warnings,
         ))
-    }
-
-    pub(crate) fn load_local_state_synced(&self) -> Result<LoadedState, CoreError> {
-        let mut sync_warnings = self.sync_local_runtime_state()?;
-        let mut state = self.load_local_state()?;
-        if let Err(error) = self.repair_auto_switch_daemon_if_enabled(&state.registry) {
-            sync_warnings.push(CoreWarning {
-                code: "AUTO_SWITCH_DAEMON_REPAIR_FAILED".into(),
-                message: format!("Failed to repair enabled auto-switch daemon: {error}"),
-            });
-        }
-        sync_warnings.append(&mut state.warnings);
-        state.warnings = sync_warnings;
-        Ok(state)
     }
 
     pub fn clean(&self) -> Result<CoreEnvelope<CleanPayload>, CoreError> {
@@ -265,7 +246,9 @@ impl Repository {
         enabled: bool,
     ) -> Result<CoreEnvelope<AutoSwitchConfigPayload>, CoreError> {
         if enabled {
-            return Err(CoreError::OperationFailed("Automatic account switching is not available in this source build".into()));
+            return Err(CoreError::OperationFailed(
+                "Automatic account switching is not available in this source build".into(),
+            ));
         }
         let mut registry = self.load_registry_or_empty()?;
         let mut config = registry.auto_switch.clone().unwrap_or_default();
@@ -348,9 +331,8 @@ impl Repository {
         mode: ApiProxyMode,
         url: Option<String>,
     ) -> Result<CoreEnvelope<ApiProxyTestPayload>, CoreError> {
-        let payload = crate::core::api_client::test_api_connectivity(
-            &ApiProxyConfigPayload { mode, url },
-        );
+        let payload =
+            crate::core::api_client::test_api_connectivity(&ApiProxyConfigPayload { mode, url });
         Ok(CoreEnvelope::ok(payload))
     }
 
@@ -359,20 +341,6 @@ impl Repository {
     ) -> Result<CoreEnvelope<ApiProxyDetectPayload>, CoreError> {
         let payload = crate::core::api_client::detect_api_proxy_config();
         Ok(CoreEnvelope::ok(payload))
-    }
-
-    pub(crate) fn build_daemon_payload(
-        &self,
-        auto_switch_enabled: bool,
-    ) -> Result<CoreEnvelope<DaemonRunPayload>, CoreError> {
-        let service_state =
-            crate::platform::daemon::check_daemon_state(&self.paths.launch_agent_path);
-        Ok(CoreEnvelope::ok(DaemonRunPayload {
-            executed_at: current_timestamp(),
-            run_once: true,
-            auto_switch_enabled,
-            service_state,
-        }))
     }
 
     pub fn diagnose(&self) -> Result<CoreEnvelope<DiagnosePayload>, CoreError> {
@@ -407,38 +375,10 @@ impl Repository {
     // Internal helpers
     // -----------------------------------------------------------------------
 
-    pub(crate) fn sync_local_runtime_state(&self) -> Result<Vec<CoreWarning>, CoreError> {
-        let mut warnings: Vec<CoreWarning> = Vec::new();
-        let current_auth = self.load_current_auth_snapshot();
-        let mut registry = self.load_registry_or_empty()?;
-        let mut quota_store = quota_store::load_or_default(&self.paths.quota_store_path);
-        if let Some(ref current_auth) = current_auth {
-            if let Err(error) = self.sync_current_auth_into_registry(&mut registry, current_auth) {
-                warnings.push(CoreWarning {
-                    code: "CURRENT_AUTH_SYNC_FAILED".into(),
-                    message: format!(
-                        "Failed to sync current auth.json into the CodexHarbor registry: {error}"
-                    ),
-                });
-            }
-        }
-        if let Err(error) =
-            self.sync_legacy_registry_quota_into_store(&mut registry, &mut quota_store)
-        {
-            warnings.push(CoreWarning {
-                code: "LEGACY_QUOTA_MIGRATION_FAILED".into(),
-                message: format!("Failed to migrate legacy account quota cache: {error}"),
-            });
-        }
-        Ok(warnings)
-    }
-
     pub(crate) fn load_local_state(&self) -> Result<LoadedState, CoreError> {
         let mut warnings: Vec<CoreWarning> = Vec::new();
-        let current_auth = self.load_current_auth_snapshot();
         let settings = self.load_settings();
         let registry = self.load_registry_or_empty()?;
-        let quota_store = quota_store::load_or_default(&self.paths.quota_store_path);
         if !self.paths.registry_path.exists() {
             warnings.push(CoreWarning {
                 code: "REGISTRY_MISSING".into(),
@@ -465,173 +405,12 @@ impl Repository {
             paths: app_paths,
             settings,
             registry,
-            quota_store,
             last_scan_at,
             warnings,
             api_diagnostics: ApiDiagnostics::default(),
             active_usage_api_status: ApiReachabilityStatus::Unknown,
             active_usage_api_last_error: None,
         })
-    }
-
-    fn load_current_auth_snapshot(&self) -> Option<AuthSnapshot> {
-        load_auth_file(&self.paths.auth_path)
-            .ok()
-            .and_then(|af| make_auth_snapshot(&af, &self.paths.auth_path).ok())
-    }
-
-    fn sync_current_auth_into_registry(
-        &self,
-        registry: &mut RegistryFile,
-        current_auth: &AuthSnapshot,
-    ) -> Result<(), CoreError> {
-        self.paths.ensure_directories()?;
-
-        let snapshot_path = self.make_snapshot_path(&current_auth.account_key);
-        let snapshot_path_string = snapshot_path.display().to_string();
-        let now = current_timestamp();
-        let mut changed = false;
-
-        if self.paths.auth_path.exists() {
-            let auth_bytes = std::fs::read(&self.paths.auth_path)?;
-            let existing_bytes = std::fs::read(&snapshot_path).ok();
-            if existing_bytes.as_ref() != Some(&auth_bytes) {
-                std::fs::write(&snapshot_path, auth_bytes)?;
-                changed = true;
-            }
-        }
-
-        let plan = format!("{:?}", current_auth.plan).to_lowercase();
-        let auth_mode = format!("{:?}", current_auth.auth_mode).to_lowercase();
-
-        match registry
-            .items
-            .iter_mut()
-            .find(|item| item.account_key == current_auth.account_key)
-        {
-            Some(item) => {
-                if item.snapshot_path != snapshot_path_string {
-                    item.snapshot_path = snapshot_path_string.clone();
-                    changed = true;
-                }
-                if item.email != current_auth.email {
-                    item.email = current_auth.email.clone();
-                    changed = true;
-                }
-                if item.account_name != current_auth.account_name {
-                    item.account_name = current_auth.account_name.clone();
-                    changed = true;
-                }
-                if item.workspace_name.is_none() && current_auth.workspace_name.is_some() {
-                    item.workspace_name = current_auth.workspace_name.clone();
-                    changed = true;
-                }
-                if item.profile_name != current_auth.profile_name {
-                    item.profile_name = current_auth.profile_name.clone();
-                    changed = true;
-                }
-                if item.plan != plan {
-                    item.plan = plan.clone();
-                    changed = true;
-                }
-                if item.auth_mode != auth_mode {
-                    item.auth_mode = auth_mode.clone();
-                    changed = true;
-                }
-                if item.last_used_at.is_none() {
-                    item.last_used_at = Some(now);
-                    changed = true;
-                }
-            }
-            None => {
-                registry.items.push(RegistryItem {
-                    account_key: current_auth.account_key.clone(),
-                    snapshot_path: snapshot_path_string,
-                    email: current_auth.email.clone(),
-                    alias: String::new(),
-                    account_name: current_auth.account_name.clone(),
-                    workspace_name: current_auth.workspace_name.clone(),
-                    profile_name: current_auth.profile_name.clone(),
-                    plan,
-                    auth_mode,
-                    has_active_subscription: None,
-                    subscription_expires_at: None,
-                    subscription_will_renew: None,
-                    created_at: current_auth.created_at,
-                    last_used_at: Some(now),
-                    last_usage_at: None,
-                    cached_primary_window: None,
-                    cached_secondary_window: None,
-                });
-                changed = true;
-            }
-        }
-
-        if registry.active_account_key.as_deref() != Some(current_auth.account_key.as_str()) {
-            registry.active_account_key = Some(current_auth.account_key.clone());
-            changed = true;
-        }
-
-        if changed {
-            registry
-                .items
-                .sort_by(|a, b| a.email.to_lowercase().cmp(&b.email.to_lowercase()));
-            registry.updated_at = now;
-            self.save_registry(registry)?;
-        }
-
-        Ok(())
-    }
-
-    fn sync_legacy_registry_quota_into_store(
-        &self,
-        registry: &mut RegistryFile,
-        quota_store: &mut QuotaStoreFile,
-    ) -> Result<(), CoreError> {
-        let mut quota_store_changed = false;
-        let mut registry_changed = false;
-
-        for item in &mut registry.items {
-            if item.cached_primary_window.is_none() && item.cached_secondary_window.is_none() {
-                continue;
-            }
-
-            if quota_store::find_item(quota_store, &item.account_key).is_none() {
-                let captured_at = item
-                    .last_usage_at
-                    .or(item.last_used_at)
-                    .unwrap_or(item.created_at);
-                let migrated = QuotaStoreItem {
-                    account_key: item.account_key.clone(),
-                    captured_at,
-                    usage_source: UsageSource::Api,
-                    primary_window: item.cached_primary_window.clone(),
-                    secondary_window: item.cached_secondary_window.clone(),
-                    // 历史 registry 缓存迁移时还没参与过 enrich，token_status 留空
-                    // 等下次 enrich 跑完会把真实状态写进来
-                    token_status: None,
-                };
-                quota_store_changed |=
-                    quota_store::upsert_item(quota_store, migrated, current_timestamp());
-            }
-
-            if item.cached_primary_window.take().is_some() {
-                registry_changed = true;
-            }
-            if item.cached_secondary_window.take().is_some() {
-                registry_changed = true;
-            }
-        }
-
-        if quota_store_changed {
-            self.save_quota_store(quota_store)?;
-        }
-        if registry_changed {
-            registry.updated_at = current_timestamp();
-            self.persist_registry(registry, false)?;
-        }
-
-        Ok(())
     }
 
     pub(crate) fn make_status_payload(&self, state: &LoadedState) -> AppStatusPayload {
@@ -678,47 +457,9 @@ impl Repository {
             service_state: service_state.unwrap_or_else(|| {
                 crate::platform::daemon::check_daemon_state(&self.paths.launch_agent_path)
             }),
-            service_label: "dev.codexharbor.auto-switch".into(),
+            service_label: "dev.agentharbor.auto-switch".into(),
         }
     }
-
-    #[cfg(target_os = "macos")]
-    fn repair_auto_switch_daemon_if_enabled(
-        &self,
-        registry: &RegistryFile,
-    ) -> Result<(), CoreError> {
-        if !registry
-            .auto_switch
-            .as_ref()
-            .map(|config| config.enabled)
-            .unwrap_or(false)
-        {
-            return Ok(());
-        }
-
-        if matches!(
-            crate::platform::daemon::check_daemon_state(&self.paths.launch_agent_path),
-            AutoSwitchRuntimeState::Running
-        ) {
-            return Ok(());
-        }
-
-        let daemon_binary = self.resolve_daemon_binary()?;
-        crate::platform::daemon::install_daemon(
-            &self.paths.launch_agent_path,
-            &daemon_binary,
-            &self.paths.codex_home,
-        )
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    fn repair_auto_switch_daemon_if_enabled(
-        &self,
-        _registry: &RegistryFile,
-    ) -> Result<(), CoreError> {
-        Ok(())
-    }
-
 
     fn load_registry(&self) -> Result<RegistryFile, CoreError> {
         let data = std::fs::read_to_string(&self.paths.registry_path)?;
@@ -727,7 +468,9 @@ impl Repository {
     }
 
     fn load_registry_or_empty(&self) -> Result<RegistryFile, CoreError> {
-        if self.paths.registry_path.exists() { return self.load_registry(); }
+        if self.paths.registry_path.exists() {
+            return self.load_registry();
+        }
         Ok(RegistryFile {
             schema_version: REGISTRY_SCHEMA_VERSION,
             updated_at: current_timestamp(),
@@ -772,7 +515,6 @@ impl Repository {
     pub(crate) fn save_quota_store(&self, quota_store: &QuotaStoreFile) -> Result<(), CoreError> {
         quota_store::save(&self.paths.quota_store_path, quota_store)
     }
-
 
     fn rebuild_registry_state(&self) -> Result<RegistryFile, CoreError> {
         self.paths.ensure_directories()?;
@@ -909,23 +651,6 @@ impl Repository {
         bootstrap_cache::update(&self.paths.bootstrap_cache_path, apply)
     }
 
-    pub(crate) fn store_bootstrap_snapshot_progressive(
-        &self,
-        payload: &CoreSnapshotPayload,
-    ) -> Result<(), CoreError> {
-        if bootstrap_cache::load(&self.paths.bootstrap_cache_path)
-            .snapshot_progressive
-            .as_ref()
-            == Some(payload)
-        {
-            return Ok(());
-        }
-        self.update_bootstrap_state(|cache| {
-            cache.written_at = Some(current_timestamp());
-            cache.snapshot_progressive = Some(payload.clone());
-        })
-    }
-
     pub(crate) fn store_bootstrap_mcp_servers(
         &self,
         payload: &McpServerListPayload,
@@ -958,7 +683,11 @@ impl Repository {
     }
 
     pub fn set_hotspot_enabled(&self, enabled: bool) -> Result<(), CoreError> {
-        if enabled { return Err(CoreError::OperationFailed("Hotspot view is not available in this source build".into())); }
+        if enabled {
+            return Err(CoreError::OperationFailed(
+                "Hotspot view is not available in this source build".into(),
+            ));
+        }
         let mut settings = self.load_settings();
         settings.hotspot = HotspotConfig { enabled };
         self.save_settings(&settings)?;
@@ -992,7 +721,6 @@ impl Repository {
         Ok(id)
     }
 
-
     fn resolve_daemon_binary(&self) -> Result<PathBuf, CoreError> {
         std::env::current_exe().map_err(|e| {
             CoreError::OperationFailed(format!("Failed to resolve current executable: {e}"))
@@ -1021,7 +749,6 @@ fn prev_item<'a>(
             .find(|item| item.account_key == account_key)
     })
 }
-
 
 fn carry_over_registry_state(item: &mut RegistryItem, previous: Option<&RegistryItem>) {
     let Some(previous) = previous else { return };
@@ -1069,7 +796,6 @@ fn carry_over_registry_state(item: &mut RegistryItem, previous: Option<&Registry
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1077,7 +803,7 @@ mod tests {
 
     fn make_test_repo(label: &str) -> (Repository, PathBuf) {
         let codex_home = std::env::temp_dir().join(format!(
-            "codexharbor-repository-{label}-{}-{}",
+            "agentharbor-repository-{label}-{}-{}",
             std::process::id(),
             chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
         ));

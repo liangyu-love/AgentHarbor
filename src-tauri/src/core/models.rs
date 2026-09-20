@@ -854,7 +854,7 @@ pub struct ChangeAnalyticsPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadListPayload {
-    pub total: i32,
+    pub total: usize,
     pub last_scan_at: i64,
     pub items: Vec<crate::core::threads::ThreadSummary>,
 }
@@ -862,7 +862,7 @@ pub struct ThreadListPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadExportPayload {
-    pub exported: i32,
+    pub exported: usize,
     pub directory: String,
     pub files: Vec<String>,
 }
