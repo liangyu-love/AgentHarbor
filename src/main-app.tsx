@@ -43,6 +43,9 @@ const McpPage = lazy(() =>
 );
 const OverviewPage = lazy(() => import("@/components/overview/overview-page").then((module) => ({ default: module.OverviewPage })));
 const NewApiPage = lazy(() => import("@/components/newapi/newapi-page").then((module) => ({ default: module.NewApiPage })));
+const ThreadsPage = lazy(() =>
+  import("@/components/threads/threads-page").then((module) => ({ default: module.ThreadsPage })),
+);
 const SkillsPage = lazy(() =>
   import("@/components/skills/skills-page").then((module) => ({ default: module.SkillsPage })),
 );
@@ -125,6 +128,8 @@ function MainApp() {
         return <OverviewPage onNavigate={setRoute} />;
       case "newapi":
         return <NewApiPage />;
+      case "threads":
+        return <ThreadsPage />;
       case "mcp":
         return <McpPage />;
       case "skills":
@@ -162,6 +167,7 @@ function MainApp() {
   const routeOrder: Route[] = [
     "overview",
     "newapi",
+    "threads",
     "customInstructions",
     "mcp",
     "skills",

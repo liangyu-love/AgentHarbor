@@ -15,6 +15,7 @@ import {
   FolderOpen,
   RotateCw,
   Terminal,
+  MessagesSquare,
   ArrowRight,
   ShieldCheck,
 } from "lucide-react";
@@ -123,6 +124,17 @@ export function CommandPalette({
         shortcut: "⌘2",
         onSelect: () => {
           onNavigate("newapi");
+          onOpenChange(false);
+        },
+      },
+      {
+        id: "nav-threads",
+        title: t("nav.threads"),
+        subtitle: "按文件夹归档的 Codex 对话线程与导出",
+        icon: MessagesSquare,
+        category: "navigation",
+        onSelect: () => {
+          onNavigate("threads");
           onOpenChange(false);
         },
       },

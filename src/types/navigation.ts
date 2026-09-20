@@ -1,6 +1,7 @@
 export type Route =
   | "overview"
   | "newapi"
+  | "threads"
   | "customInstructions"
   | "mcp"
   | "skills"
@@ -10,6 +11,7 @@ export type Route =
 export const ALL_APP_ROUTES: Route[] = [
   "overview",
   "newapi",
+  "threads",
   "customInstructions",
   "mcp",
   "skills",
@@ -20,3 +22,4 @@ export const ALL_APP_ROUTES: Route[] = [
 export function isAppRoute(value: string): value is Route {
   return (ALL_APP_ROUTES as string[]).includes(value);
 }
+

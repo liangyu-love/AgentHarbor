@@ -180,6 +180,8 @@ pub fn run() {
             commands::hotspot::set_hotspot_enabled,
             commands::hotspot::focus_main_window,
             commands::hotspot::hotspot_ready,
+            commands::threads::list_codex_threads,
+            commands::threads::export_codex_threads,
         ])
         .build(context)
         .expect("error while building CodexHarbor");

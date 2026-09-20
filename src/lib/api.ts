@@ -167,4 +167,14 @@ export const api = {
 
   getSystemInfo: () =>
     invoke<{ os: string; osVersion: string; arch: string; hostname: string }>("get_system_info"),
+
+  listCodexThreads: () =>
+    invoke<CoreEnvelope<import("@/types/threads").ThreadListPayload>>("list_codex_threads"),
+
+  exportCodexThreads: (ids: string[], targetDir: string, format: "markdown" | "jsonl") =>
+    invoke<CoreEnvelope<import("@/types/threads").ThreadExportPayload>>("export_codex_threads", {
+      ids,
+      targetDir,
+      format,
+    }),
 };

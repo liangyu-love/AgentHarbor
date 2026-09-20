@@ -848,6 +848,26 @@ pub struct ChangeAnalyticsPayload {
 }
 
 // ---------------------------------------------------------------------------
+// Thread management (Codex 会话线程)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadListPayload {
+    pub total: i32,
+    pub last_scan_at: i64,
+    pub items: Vec<crate::core::threads::ThreadSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadExportPayload {
+    pub exported: i32,
+    pub directory: String,
+    pub files: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Generic envelope
 // ---------------------------------------------------------------------------
 
