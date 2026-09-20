@@ -10,13 +10,16 @@ fn paths(repo: &State<'_, Mutex<Repository>>) -> Result<CodexPaths, String> {
 pub async fn load_newapi_state(repo: State<'_, Mutex<Repository>>) -> Result<NewApiState, String> {
     let paths = paths(&repo)?;
     let store = router::load_store(&paths)?;
-    if store.router.enabled && !router_proxy::is_running() {
-        // A busy port (e.g. the original app still running) must not blank out the page.
-        if let Err(error) = start_proxy(&paths, store.router.port).await {
-            eprintln!("[AiMaMi] router proxy startup failed: {error}");
+    if store.router.enabled {
+        router::ensure_routing_config(&paths, &store)?;
+        if !router_proxy::is_running() {
+            // A busy port (e.g. the original app still running) must not blank out the page.
+            if let Err(error) = start_proxy(&paths, store.router.port).await {
+                eprintln!("[AiMaMi] router proxy startup failed: {error}");
+            }
         }
     }
-    router::state(&paths, router_proxy::is_running())
+    Ok(router::state_from_store(&store, router_proxy::is_running()))
 }
 
 async fn start_proxy(paths: &CodexPaths, port: u16) -> Result<(), String> {

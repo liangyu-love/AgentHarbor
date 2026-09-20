@@ -62,6 +62,9 @@
     "offPeakNow": "低峰·半价",
     "forceDirect": "强制直连（不走本地代理）",
     "directApplied": "已切换为直连，Codex 将直接连接该站点",
+    "confirmDirectTitle": "确认切换为直连",
+    "confirmDirectBody": "将关闭智能路由，并把「{{name}}」的模型 API Key 明文写入当前 Codex config.toml。写入前会自动备份原配置。",
+    "confirmDirectAction": "确认直连",
     "deepSeekPeakTip": "DeepSeek 峰谷计价：高峰 9:00-12:00 / 14:00-18:00（北京时间），其余时段与周末全天为低峰半价。",
     "sectionBalance": "余额查询（可选）",
     "sectionAdvanced": "高级设置",
@@ -80,6 +83,8 @@
     "model": "默认模型",
     "fetchModels": "拉取模型",
     "modelHint": "点「拉取模型」获取站点模型列表并点选；也可手动输入模型 ID。",
+    "responsesOnlyHint": "当前 Codex 仅支持 Responses API。中转站必须提供 /v1/responses；仅支持 /v1/chat/completions 的线路无法注入。",
+    "chatOnlyModel": "仅 Chat，不可注入",
     "contextWindow": "上下文长度（tokens，可选）",
     "contextHint": "仅在确认模型支持的长度后填写；留空使用 Codex 默认值。",
     "autoCompact": "自动压缩阈值（tokens，可选）",
@@ -91,7 +96,6 @@
     "storageHint": "凭据只保存到本机并加密。智能路由开启时，Codex 通过本机代理（127.0.0.1）访问中转，使用期间请保持 AiMaMi 运行。",
     "backup": "原配置备份",
     "errors": {
-      "wireApi": "不支持的线路协议，仅支持 Responses 或 Chat。",
       "storage": "无法读取或保存本机连接。请检查文件权限；加密数据只能由保存它的 Windows 用户读取。",
       "url": "请输入有效的 http:// 或 https:// 站点地址，不要包含账号密码、查询参数或片段。",
       "userId": "请填写有效的数字用户 ID。",
@@ -119,7 +123,9 @@
       "balanceDetect": "未检测到可用的余额接口；请确认已填写用户 ID + 访问令牌，或站点支持 NewAPI / Billing / DeepSeek 余额。",
       "importFile": "导入文件无效或格式不正确。",
       "portBusy": "本地代理端口被占用，请在关闭占用该端口的程序后重试。",
-      "noActiveProvider": "请先启用至少一个中转（含 API Key 与默认模型），再开启智能路由。"
+      "noActiveProvider": "请先启用至少一个中转（含 API Key 与默认模型），再开启智能路由。",
+      "changed": "配置在请求期间已被修改，请重试。",
+      "responsesRequired": "所选模型只支持 Chat Completions，无法注入当前 Codex；请选择支持 Responses API 的模型。"
     },
     "balanceRemaining": "剩余额度",
     "useDefault": "留空使用默认",

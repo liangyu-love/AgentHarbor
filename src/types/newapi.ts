@@ -31,7 +31,6 @@ export interface NewApiProvider {
   balanceSource: string | null;
   testStatus: "untested" | "ok" | "failed";
   testAt: number | null;
-  wireApi: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -68,5 +67,4 @@ export interface NewApiProviderInput {
   model: string;
   contextWindow: number | null;
   autoCompactLimit: number | null;
-  wireApi: string;
 }

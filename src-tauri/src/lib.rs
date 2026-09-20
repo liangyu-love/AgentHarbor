@@ -79,13 +79,18 @@ pub fn run() {
                 if let Ok(paths) = paths {
                     if let Ok(store) = core::router::load_store(&paths) {
                         if store.router.enabled {
-                            let port = store.router.port;
-                            tauri::async_runtime::spawn(async move {
-                                let proxy = core::newapi::proxy_from_settings(&paths.settings_path);
-                                if let Err(e) = core::router_proxy::ensure_running(port, paths.clone(), proxy).await {
-                                    eprintln!("[AiMaMi] router proxy startup failed: {e}");
+                            match core::router::ensure_routing_config(&paths, &store) {
+                                Ok(_) => {
+                                    let port = store.router.port;
+                                    tauri::async_runtime::spawn(async move {
+                                        let proxy = core::newapi::proxy_from_settings(&paths.settings_path);
+                                        if let Err(e) = core::router_proxy::ensure_running(port, paths.clone(), proxy).await {
+                                            eprintln!("[AiMaMi] router proxy startup failed: {e}");
+                                        }
+                                    });
                                 }
-                            });
+                                Err(e) => eprintln!("[AiMaMi] router config repair failed: {e}"),
+                            }
                         }
                     }
                 }

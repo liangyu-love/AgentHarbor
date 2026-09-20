@@ -1,12 +1,14 @@
-use super::{models::ApiProxyConfigPayload, newapi, secret_file, storage};
+use super::{models::ApiProxyConfigPayload, newapi, router_balance, secret_file, storage};
 use crate::platform::paths::CodexPaths;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Mutex, MutexGuard, OnceLock},
+};
 
 pub const DEFAULT_PORT: u16 = 25817;
-pub const ROUTER_BEARER: &str = "aimami-local-router";
 pub const PROVIDER_PREFIX: &str = "aimami_p";
 /// Single provider entry injected into Codex, matching the original app's protocol.
 pub const CATALOG_PROVIDER_KEY: &str = "aimami_relay";
@@ -34,8 +36,9 @@ pub struct Provider {
     pub balance_source: Option<String>,
     pub test_status: String,
     pub test_at: Option<i64>,
-    #[serde(default = "default_wire_api")]
-    pub wire_api: String,
+    /// Read only during migration from builds that exposed the removed Chat wire protocol.
+    #[serde(rename = "wireApi", default = "default_wire_api", skip_serializing)]
+    pub(crate) legacy_wire_api: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -50,11 +53,12 @@ pub struct RouterSettings {
     pub enabled: bool,
     pub accountless: bool,
     pub port: u16,
+    pub bearer_token: String,
 }
 
 impl Default for RouterSettings {
     fn default() -> Self {
-        Self { enabled: false, accountless: false, port: DEFAULT_PORT }
+        Self { enabled: false, accountless: false, port: DEFAULT_PORT, bearer_token: String::new() }
     }
 }
 
@@ -86,7 +90,6 @@ pub struct ProviderView {
     pub balance_source: Option<String>,
     pub test_status: String,
     pub test_at: Option<i64>,
-    pub wire_api: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -110,14 +113,33 @@ impl Provider {
             balance_source: self.balance_source.clone(),
             test_status: self.test_status.clone(),
             test_at: self.test_at,
-            wire_api: self.wire_api.clone(),
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
     }
 
     pub(crate) fn is_routable(&self) -> bool {
-        self.enabled && !self.api_key.is_empty() && !self.model.is_empty()
+        self.enabled
+            && !self.api_key.is_empty()
+            && !self.model.is_empty()
+            && self.model_supports_responses()
+    }
+
+    fn model_supports_responses(&self) -> bool {
+        match self.models.iter().find(|model| model.id == self.model) {
+            None => true,
+            Some(model) => {
+                let has_responses = model
+                    .endpoint_types
+                    .iter()
+                    .any(|endpoint| endpoint.to_ascii_lowercase().contains("response"));
+                let explicitly_chat_only = model.endpoint_types.iter().any(|endpoint| {
+                    let endpoint = endpoint.to_ascii_lowercase();
+                    endpoint.contains("chat") || endpoint.contains("completion")
+                });
+                has_responses || !explicitly_chat_only
+            }
+        }
     }
 }
 
@@ -165,8 +187,6 @@ pub struct ProviderInput {
     pub model: String,
     pub context_window: Option<u64>,
     pub auto_compact_limit: Option<u64>,
-    #[serde(default = "default_wire_api")]
-    pub wire_api: String,
 }
 
 fn now() -> i64 {
@@ -177,17 +197,64 @@ fn store_path(paths: &CodexPaths) -> PathBuf {
     paths.codexmate_dir.join("newapi-providers.dat")
 }
 
-pub fn load_store(paths: &CodexPaths) -> Result<Store, String> {
+static STORE_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn store_write_guard() -> Result<MutexGuard<'static, ()>, String> {
+    STORE_WRITE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| "newapi.errors.storage".to_owned())
+}
+
+fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
     if let Some(bytes) = secret_file::read(&store_path(paths))? {
-        return serde_json::from_slice(&bytes).map_err(|_| "newapi.errors.storage".into());
+        let mut store: Store = serde_json::from_slice(&bytes).map_err(|_| "newapi.errors.storage")?;
+        let mut changed = false;
+        let mut removed_incompatible_route = false;
+        if store.router.bearer_token.is_empty() {
+            store.router.bearer_token = new_router_bearer();
+            changed = true;
+        }
+        for provider in &mut store.providers {
+            if provider.legacy_wire_api != "responses" {
+                provider.enabled = false;
+                provider.legacy_wire_api = default_wire_api();
+                if store.active_provider_id.as_deref() == Some(provider.id.as_str()) {
+                    store.active_provider_id = None;
+                }
+                changed = true;
+            }
+        }
+        if store.router.enabled && effective_active(&store).is_none() {
+            store.router.enabled = false;
+            removed_incompatible_route = true;
+            changed = true;
+        }
+        if changed {
+            save_store_unlocked(paths, &store)?;
+        }
+        if removed_incompatible_route {
+            remove_routing_config(paths, &store)?;
+        }
+        return Ok(store);
     }
-    let store = match migrate_original_relay(paths)? {
+    let mut store = match migrate_original_relay(paths)? {
         Some(store) => store,
         None => migrate_legacy_connection(paths)?.unwrap_or_default(),
     };
+    store.router.bearer_token = new_router_bearer();
     // Persist the promoted store so later reads do not depend on the foreign files.
-    save_store(paths, &store)?;
+    save_store_unlocked(paths, &store)?;
     Ok(store)
+}
+
+pub fn load_store(paths: &CodexPaths) -> Result<Store, String> {
+    let _guard = store_write_guard()?;
+    load_store_unlocked(paths)
+}
+
+fn new_router_bearer() -> String {
+    format!("aimami_{}", uuid::Uuid::new_v4().simple())
 }
 
 // The original AiMaMi release keeps its relay data in `codexmate/relay/`:
@@ -251,6 +318,7 @@ fn migrate_original_relay(paths: &CodexPaths) -> Result<Option<Store>, String> {
             port: value.pointer("/proxy/port").and_then(Value::as_u64)
                 .filter(|p| (1..=65535).contains(p)).map(|p| p as u16)
                 .unwrap_or(DEFAULT_PORT),
+            bearer_token: String::new(),
         },
     }))
 }
@@ -299,19 +367,18 @@ fn migrate_legacy_connection(paths: &CodexPaths) -> Result<Option<Store>, String
     Ok(Some(Store { version: 1, providers: vec![provider], ..Default::default() }))
 }
 
-fn save_store(paths: &CodexPaths, store: &Store) -> Result<(), String> {
+fn save_store_unlocked(paths: &CodexPaths, store: &Store) -> Result<(), String> {
     let bytes = serde_json::to_vec(store).map_err(|_| "newapi.errors.storage")?;
     secret_file::write(&store_path(paths), &bytes)
 }
 
-pub fn state(paths: &CodexPaths, proxy_running: bool) -> Result<NewApiState, String> {
-    let store = load_store(paths)?;
-    Ok(NewApiState {
+pub(crate) fn state_from_store(store: &Store, proxy_running: bool) -> NewApiState {
+    NewApiState {
         providers: store.providers.iter().map(Provider::view).collect(),
         router: RouterView { enabled: store.router.enabled, accountless: store.router.accountless, port: store.router.port },
         proxy_running,
-        active_provider_id: store.active_provider_id,
-    })
+        active_provider_id: store.active_provider_id.clone(),
+    }
 }
 
 /// The provider traffic is routed to: the pinned one, else the first enabled.
@@ -340,11 +407,6 @@ fn validate_input(input: &mut ProviderInput) -> Result<(), String> {
     input.access_token = input.access_token.trim().to_owned();
     input.api_key = input.api_key.trim().to_owned();
     input.model = input.model.trim().to_owned();
-    input.wire_api = match input.wire_api.trim() {
-        "" | "responses" => "responses".to_owned(),
-        "chat" => "chat".to_owned(),
-        _ => return Err("newapi.errors.wireApi".into()),
-    };
     for token in [&input.access_token, &input.api_key] {
         if !token.is_empty() {
             newapi::auth_header(token)?;
@@ -370,7 +432,8 @@ fn apply_routing_if_enabled(paths: &CodexPaths, store: &Store) -> Result<Option<
 
 pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<StateChange, String> {
     validate_input(&mut input)?;
-    let mut store = load_store(paths)?;
+    let _guard = store_write_guard()?;
+    let mut store = load_store_unlocked(paths)?;
     let timestamp = now();
     let applied;
     match input.id.as_ref().and_then(|id| store.providers.iter_mut().find(|p| &p.id == id)) {
@@ -394,7 +457,6 @@ pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<Sta
             provider.model = input.model.clone();
             provider.context_window = input.context_window;
             provider.auto_compact_limit = input.auto_compact_limit;
-            provider.wire_api = input.wire_api.clone();
             provider.updated_at = timestamp;
             if site_changed {
                 provider.models.clear();
@@ -423,7 +485,6 @@ pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<Sta
                 model: input.model.clone(),
                 context_window: input.context_window,
                 auto_compact_limit: input.auto_compact_limit,
-                wire_api: input.wire_api.clone(),
                 enabled: false,
                 test_status: "untested".into(),
                 created_at: timestamp,
@@ -436,12 +497,13 @@ pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<Sta
             applied = apply_routing_if_enabled(paths, &store)?;
         }
     }
-    save_store(paths, &store)?;
-    Ok(StateChange { state: state(paths, super::router_proxy::is_running())?, applied })
+    save_store_unlocked(paths, &store)?;
+    Ok(StateChange { state: state_from_store(&store, super::router_proxy::is_running()), applied })
 }
 
 pub fn delete_provider(paths: &CodexPaths, id: &str) -> Result<StateChange, String> {
-    let mut store = load_store(paths)?;
+    let _guard = store_write_guard()?;
+    let mut store = load_store_unlocked(paths)?;
     if !store.providers.iter().any(|p| p.id == id) {
         return Err("newapi.errors.notFound".into());
     }
@@ -450,39 +512,45 @@ pub fn delete_provider(paths: &CodexPaths, id: &str) -> Result<StateChange, Stri
         store.active_provider_id = None;
     }
     let applied = apply_routing_if_enabled(paths, &store)?;
-    save_store(paths, &store)?;
-    Ok(StateChange { state: state(paths, super::router_proxy::is_running())?, applied })
+    save_store_unlocked(paths, &store)?;
+    Ok(StateChange { state: state_from_store(&store, super::router_proxy::is_running()), applied })
 }
 
 pub fn set_enabled(paths: &CodexPaths, id: &str, enabled: bool) -> Result<StateChange, String> {
-    let mut store = load_store(paths)?;
+    let _guard = store_write_guard()?;
+    let mut store = load_store_unlocked(paths)?;
     let provider = store.providers.iter_mut().find(|p| p.id == id).ok_or("newapi.errors.notFound")?;
     if enabled && (provider.api_key.is_empty() || provider.model.is_empty()) {
         return Err("newapi.errors.enableRequirements".into());
     }
+    if enabled && !provider.model_supports_responses() {
+        return Err("newapi.errors.responsesRequired".into());
+    }
     provider.enabled = enabled;
     provider.updated_at = now();
     let applied = apply_routing_if_enabled(paths, &store)?;
-    save_store(paths, &store)?;
-    Ok(StateChange { state: state(paths, super::router_proxy::is_running())?, applied })
+    save_store_unlocked(paths, &store)?;
+    Ok(StateChange { state: state_from_store(&store, super::router_proxy::is_running()), applied })
 }
 
 pub fn set_active(paths: &CodexPaths, id: &str) -> Result<StateChange, String> {
-    let mut store = load_store(paths)?;
+    let _guard = store_write_guard()?;
+    let mut store = load_store_unlocked(paths)?;
     let provider = store.providers.iter().find(|p| p.id == id).ok_or("newapi.errors.notFound")?;
     if !provider.is_routable() {
         return Err("newapi.errors.enableRequirements".into());
     }
     store.active_provider_id = Some(id.to_owned());
     let applied = apply_routing_if_enabled(paths, &store)?;
-    save_store(paths, &store)?;
-    Ok(StateChange { state: state(paths, super::router_proxy::is_running())?, applied })
+    save_store_unlocked(paths, &store)?;
+    Ok(StateChange { state: state_from_store(&store, super::router_proxy::is_running()), applied })
 }
 
 /// Point Codex straight at this provider (key embedded in its config), bypassing
 /// the local routing proxy entirely.
 pub fn set_direct(paths: &CodexPaths, id: &str) -> Result<StateChange, String> {
-    let mut store = load_store(paths)?;
+    let _guard = store_write_guard()?;
+    let mut store = load_store_unlocked(paths)?;
     let index = store.providers.iter().position(|p| p.id == id).ok_or("newapi.errors.notFound")?;
     if !store.providers[index].is_routable() {
         return Err("newapi.errors.enableRequirements".into());
@@ -496,12 +564,11 @@ pub fn set_direct(paths: &CodexPaths, id: &str) -> Result<StateChange, String> {
         model: provider.model.clone(),
         context_window: provider.context_window,
         auto_compact_limit: provider.auto_compact_limit,
-        wire_api: provider.wire_api.clone(),
         ..Default::default()
     };
     let applied = newapi::apply_config(paths, &connection, true)?;
-    save_store(paths, &store)?;
-    Ok(StateChange { state: state(paths, super::router_proxy::is_running())?, applied: Some(applied) })
+    save_store_unlocked(paths, &store)?;
+    Ok(StateChange { state: state_from_store(&store, super::router_proxy::is_running()), applied: Some(applied) })
 }
 
 pub fn fetch_models(
@@ -532,17 +599,22 @@ pub fn fetch_models(
 }
 
 pub fn test_provider(paths: &CodexPaths, id: &str, proxy: &ApiProxyConfigPayload) -> Result<ProviderView, String> {
-    let mut store = load_store(paths)?;
-    let index = store.providers.iter().position(|p| p.id == id).ok_or("newapi.errors.notFound")?;
-    let connection = newapi::Connection {
-        base_url: store.providers[index].base_url.clone(),
-        api_key: store.providers[index].api_key.clone(),
-        ..Default::default()
+    let snapshot = {
+        let _guard = store_write_guard()?;
+        let store = load_store_unlocked(paths)?;
+        store.providers.iter().find(|p| p.id == id).cloned().ok_or("newapi.errors.notFound")?
     };
+    let connection = newapi::Connection { base_url: snapshot.base_url.clone(), api_key: snapshot.api_key.clone(), ..Default::default() };
     if connection.api_key.is_empty() {
         return Err("newapi.errors.apiKeyRequired".into());
     }
     let result = newapi::models(&connection, proxy);
+    let _guard = store_write_guard()?;
+    let mut store = load_store_unlocked(paths)?;
+    let index = store.providers.iter().position(|p| p.id == id).ok_or("newapi.errors.notFound")?;
+    if store.providers[index].base_url != snapshot.base_url || store.providers[index].api_key != snapshot.api_key {
+        return Err("newapi.errors.changed".into());
+    }
     let provider = &mut store.providers[index];
     let timestamp = now();
     match result {
@@ -555,120 +627,50 @@ pub fn test_provider(paths: &CodexPaths, id: &str, proxy: &ApiProxyConfigPayload
         Err(error) => {
             provider.test_status = "failed".into();
             provider.test_at = Some(timestamp);
-            save_store(paths, &store)?;
+            save_store_unlocked(paths, &store)?;
             return Err(error);
         }
     }
-    save_store(paths, &store)?;
+    save_store_unlocked(paths, &store)?;
     Ok(store.providers[index].view())
 }
 
 // Balance detection order: NewAPI user endpoint, OpenAI-compatible billing endpoints,
 // then the DeepSeek official balance endpoint for its known host.
 pub fn query_provider_balance(paths: &CodexPaths, id: &str, proxy: &ApiProxyConfigPayload) -> Result<ProviderView, String> {
-    let mut store = load_store(paths)?;
-    let index = store.providers.iter().position(|p| p.id == id).ok_or("newapi.errors.notFound")?;
-    let provider = &store.providers[index];
+    let snapshot = {
+        let _guard = store_write_guard()?;
+        let store = load_store_unlocked(paths)?;
+        store.providers.iter().find(|p| p.id == id).cloned().ok_or("newapi.errors.notFound")?
+    };
     let connection = newapi::Connection {
-        base_url: provider.base_url.clone(),
-        user_id: provider.user_id,
-        access_token: provider.access_token.clone(),
-        api_key: provider.api_key.clone(),
+        base_url: snapshot.base_url.clone(),
+        user_id: snapshot.user_id,
+        access_token: snapshot.access_token.clone(),
+        api_key: snapshot.api_key.clone(),
         ..Default::default()
     };
-    let detected = if connection.user_id.is_some() && !connection.access_token.is_empty() {
-        newapi::balance(&connection, proxy).ok().map(|balance| (balance, "newapi"))
-    } else {
-        None
+    let (balance, source) = router_balance::query(&connection, proxy)?;
+    let _guard = store_write_guard()?;
+    let mut store = load_store_unlocked(paths)?;
+    let index = store.providers.iter().position(|p| p.id == id).ok_or("newapi.errors.notFound")?;
+    let provider = &mut store.providers[index];
+    if provider.base_url != snapshot.base_url
+        || provider.user_id != snapshot.user_id
+        || provider.access_token != snapshot.access_token
+        || provider.api_key != snapshot.api_key
+    {
+        return Err("newapi.errors.changed".into());
     }
-    .or_else(|| (!connection.api_key.is_empty()).then(|| billing_balance(&connection, proxy).ok()).flatten().map(|balance| (balance, "billing")))
-    .or_else(|| {
-        (!connection.api_key.is_empty()).then(|| deepseek_balance(&connection, proxy).ok()).flatten().map(|balance| (balance, "deepseek"))
-    });
-    match detected {
-        Some((balance, source)) => {
-            {
-                let provider = &mut store.providers[index];
-                provider.balance = Some(balance);
-                provider.balance_source = Some(source.into());
-            }
-            save_store(paths, &store)?;
-            Ok(store.providers[index].view())
-        }
-        None => Err("newapi.errors.balanceDetect".into()),
-    }
-}
-
-fn parse_first_f64(value: &Value, keys: &[&str]) -> Option<f64> {
-    keys.iter().find_map(|key| value.get(key).and_then(Value::as_f64).filter(|v| v.is_finite()))
-}
-
-// OpenAI-compatible billing endpoints exposed by one-api / new-api style relays.
-fn billing_balance(connection: &newapi::Connection, proxy: &ApiProxyConfigPayload) -> Result<newapi::Balance, String> {
-    let client = newapi::client(proxy)?;
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(reqwest::header::AUTHORIZATION, newapi::auth_header(&connection.api_key)?);
-    let root = newapi::base_url(&connection.base_url)?;
-    let fetch = |path: &str| -> Result<Value, String> {
-        let url = root.join(path).map_err(|_| "newapi.errors.url".to_owned())?;
-        newapi::get(&client, url, headers.clone())
-    };
-    let subscription = fetch("v1/dashboard/billing/subscription")
-        .or_else(|_| fetch("dashboard/billing/subscription"))?;
-    let hard_limit = parse_first_f64(&subscription, &["hard_limit_usd", "hard_limit", "system_hard_limit_usd"])
-        .ok_or("newapi.errors.response")?;
-    let usage = fetch("v1/dashboard/billing/usage").or_else(|_| fetch("dashboard/billing/usage")).ok();
-    let used_cents = usage.as_ref().and_then(|value| parse_first_f64(value, &["total_usage"])).unwrap_or(0.0);
-    let remaining = hard_limit - used_cents / 100.0;
-    Ok(newapi::Balance {
-        remaining,
-        used: Some(used_cents / 100.0),
-        unit: "USD".into(),
-        raw_quota: remaining,
-        quota_per_unit: None,
-        request_count: None,
-        checked_at: now(),
-        conversion_available: true,
-    })
-}
-
-fn deepseek_balance(connection: &newapi::Connection, proxy: &ApiProxyConfigPayload) -> Result<newapi::Balance, String> {
-    let host = newapi::base_url(&connection.base_url)?.host_str().unwrap_or_default().to_ascii_lowercase();
-    if host != "api.deepseek.com" {
-        return Err("newapi.errors.balanceDetect".into());
-    }
-    let client = newapi::client(proxy)?;
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(reqwest::header::AUTHORIZATION, newapi::auth_header(&connection.api_key)?);
-    let url = newapi::base_url(&connection.base_url)?
-        .join("api/user/balance")
-        .map_err(|_| "newapi.errors.url".to_owned())?;
-    let value = newapi::get(&client, url, headers)?;
-    let info = value
-        .get("balance_infos")
-        .and_then(Value::as_array)
-        .and_then(|items| items.first())
-        .ok_or("newapi.errors.response")?;
-    let total = info
-        .get("total_balance")
-        .and_then(Value::as_str)
-        .and_then(|text| text.trim().parse::<f64>().ok())
-        .or_else(|| parse_first_f64(info, &["total_balance"]))
-        .ok_or("newapi.errors.response")?;
-    Ok(newapi::Balance {
-        remaining: total,
-        used: None,
-        unit: info.get("currency").and_then(Value::as_str).unwrap_or("").to_owned(),
-        raw_quota: total,
-        quota_per_unit: None,
-        request_count: None,
-        checked_at: now(),
-        conversion_available: true,
-    })
+    provider.balance = Some(balance);
+    provider.balance_source = Some(source.into());
+    save_store_unlocked(paths, &store)?;
+    Ok(store.providers[index].view())
 }
 
 pub fn set_smart_routing(paths: &CodexPaths, enabled: bool) -> Result<StateChange, String> {
-    let mut store = load_store(paths)?;
+    let _guard = store_write_guard()?;
+    let mut store = load_store_unlocked(paths)?;
     let applied;
     if enabled {
         if effective_active(&store).is_none() {
@@ -680,16 +682,17 @@ pub fn set_smart_routing(paths: &CodexPaths, enabled: bool) -> Result<StateChang
         applied = remove_routing_config(paths, &store)?;
         store.router.enabled = false;
     }
-    save_store(paths, &store)?;
-    Ok(StateChange { state: state(paths, super::router_proxy::is_running())?, applied })
+    save_store_unlocked(paths, &store)?;
+    Ok(StateChange { state: state_from_store(&store, super::router_proxy::is_running()), applied })
 }
 
 pub fn set_accountless(paths: &CodexPaths, accountless: bool) -> Result<StateChange, String> {
-    let mut store = load_store(paths)?;
+    let _guard = store_write_guard()?;
+    let mut store = load_store_unlocked(paths)?;
     store.router.accountless = accountless;
     let applied = apply_routing_if_enabled(paths, &store)?;
-    save_store(paths, &store)?;
-    Ok(StateChange { state: state(paths, super::router_proxy::is_running())?, applied })
+    save_store_unlocked(paths, &store)?;
+    Ok(StateChange { state: state_from_store(&store, super::router_proxy::is_running()), applied })
 }
 
 fn open_config(paths: &CodexPaths) -> Result<(Option<String>, toml_edit::DocumentMut), String> {
@@ -785,6 +788,9 @@ pub(crate) fn catalog_value(codexmate_dir: &std::path::Path, store: &Store) -> V
 
 pub fn apply_routing_config(paths: &CodexPaths, store: &Store) -> Result<newapi::AppliedConfig, String> {
     use toml_edit::value;
+    if store.router.bearer_token.is_empty() {
+        return Err("newapi.errors.storage".into());
+    }
     let active = effective_active(store).ok_or("newapi.errors.noActiveProvider")?;
     let entries = routable(store);
     if !entries.iter().any(|p| p.id == active.id) {
@@ -820,7 +826,7 @@ pub fn apply_routing_config(paths: &CodexPaths, store: &Store) -> Result<newapi:
     entry["name"] = value("AiMaMi 智能路由");
     entry["base_url"] = value(format!("http://127.0.0.1:{}/codex/v1", store.router.port));
     entry["wire_api"] = value("responses");
-    entry["experimental_bearer_token"] = value(ROUTER_BEARER);
+    entry["experimental_bearer_token"] = value(&store.router.bearer_token);
     entry["requires_openai_auth"] = value(false);
     if store.router.accountless {
         document["preferred_auth_method"] = value("apikey");
@@ -828,6 +834,47 @@ pub fn apply_routing_config(paths: &CodexPaths, store: &Store) -> Result<newapi:
         document.remove("preferred_auth_method");
     }
     backup_and_write(paths, original, &document)
+}
+
+/// Repair an enabled router configuration only when its critical fields are
+/// missing or stale. This avoids creating a backup every time the page loads.
+pub fn ensure_routing_config(
+    paths: &CodexPaths,
+    store: &Store,
+) -> Result<Option<newapi::AppliedConfig>, String> {
+    if !store.router.enabled {
+        return Ok(None);
+    }
+    let active = effective_active(store).ok_or("newapi.errors.noActiveProvider")?;
+    let (_, document) = open_config(paths)?;
+    let expected_base = format!("http://127.0.0.1:{}/codex/v1", store.router.port);
+    let expected_model = format!("{}::{}", active.id, active.model);
+    let expected_catalog = catalog_path(paths).to_string_lossy().to_string();
+    let catalog_current = std::fs::read(catalog_path(paths))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .is_some_and(|catalog| catalog == catalog_value(&paths.codexmate_dir, store));
+    let provider = document
+        .get("model_providers")
+        .and_then(toml_edit::Item::as_table)
+        .and_then(|providers| providers.get(CATALOG_PROVIDER_KEY))
+        .and_then(toml_edit::Item::as_table);
+    let current = provider.is_some_and(|provider| {
+        provider.get("base_url").and_then(toml_edit::Item::as_str) == Some(expected_base.as_str())
+            && provider.get("wire_api").and_then(toml_edit::Item::as_str) == Some("responses")
+            && provider
+                .get("experimental_bearer_token")
+                .and_then(toml_edit::Item::as_str)
+                == Some(store.router.bearer_token.as_str())
+    }) && document.get("model_provider").and_then(toml_edit::Item::as_str) == Some(CATALOG_PROVIDER_KEY)
+        && document.get("model").and_then(toml_edit::Item::as_str) == Some(expected_model.as_str())
+        && document.get("model_catalog_json").and_then(toml_edit::Item::as_str) == Some(expected_catalog.as_str())
+        && catalog_current;
+    if current {
+        Ok(None)
+    } else {
+        apply_routing_config(paths, store).map(Some)
+    }
 }
 
 pub fn remove_routing_config(paths: &CodexPaths, store: &Store) -> Result<Option<newapi::AppliedConfig>, String> {
@@ -878,7 +925,8 @@ pub fn import_providers(paths: &CodexPaths, path: &Path) -> Result<ImportResult,
         .cloned()
         .or_else(|| value.as_array().cloned())
         .ok_or("newapi.errors.importFile")?;
-    let mut store = load_store(paths)?;
+    let _guard = store_write_guard()?;
+    let mut store = load_store_unlocked(paths)?;
     let mut imported = 0usize;
     let mut skipped = 0usize;
     let timestamp = now();
@@ -916,8 +964,8 @@ pub fn import_providers(paths: &CodexPaths, path: &Path) -> Result<ImportResult,
         });
         imported += 1;
     }
-    save_store(paths, &store)?;
-    Ok(ImportResult { state: state(paths, super::router_proxy::is_running())?, imported, skipped })
+    save_store_unlocked(paths, &store)?;
+    Ok(ImportResult { state: state_from_store(&store, super::router_proxy::is_running()), imported, skipped })
 }
 
 pub fn export_providers(paths: &CodexPaths, path: &Path) -> Result<(), String> {
@@ -968,7 +1016,6 @@ mod tests {
             model: "model-a".into(),
             context_window: None,
             auto_compact_limit: None,
-            wire_api: "responses".into(),
         }
     }
 
@@ -1016,6 +1063,27 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_provider_writes_do_not_overwrite_each_other() {
+        let (_dir, paths) = paths();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        std::thread::scope(|scope| {
+            for (name, url) in [("Relay A", "https://a.example.com"), ("Relay B", "https://b.example.com")] {
+                let paths = paths.clone();
+                let barrier = barrier.clone();
+                scope.spawn(move || {
+                    barrier.wait();
+                    save_provider(&paths, input(name, url)).unwrap();
+                });
+            }
+            barrier.wait();
+        });
+        let store = load_store(&paths).unwrap();
+        assert_eq!(store.providers.len(), 2);
+        assert!(store.providers.iter().any(|provider| provider.name == "Relay A"));
+        assert!(store.providers.iter().any(|provider| provider.name == "Relay B"));
+    }
+
+    #[test]
     fn enable_requires_credentials_and_routing_needs_an_active_provider() {
         let (_dir, paths) = paths();
         let mut bare = input("Relay A", "https://a.example.com");
@@ -1034,6 +1102,10 @@ mod tests {
         assert!(change.applied.is_some());
         assert!(change.state.router.enabled);
         let text = std::fs::read_to_string(&paths.config_path).unwrap();
+        let store = load_store(&paths).unwrap();
+        assert!(store.router.bearer_token.starts_with("aimami_"));
+        assert!(store.router.bearer_token.len() > 24);
+        assert!(text.contains(&store.router.bearer_token));
         assert!(text.contains("http://127.0.0.1:25817/codex/v1"));
         assert!(text.contains("::model-a"));
         assert!(text.contains("model_catalog_json"));
@@ -1044,6 +1116,63 @@ mod tests {
         assert!(!text.contains("model_provider ="));
         assert!(!text.contains("model_catalog_json"));
         assert!(!catalog_path(&paths).exists());
+    }
+
+    #[test]
+    fn chat_only_model_metadata_blocks_injection() {
+        let (_dir, paths) = paths();
+        let state = save_provider(&paths, input("Relay A", "https://a.example.com")).unwrap();
+        let id = state.state.providers[0].id.clone();
+        let mut store = load_store(&paths).unwrap();
+        store.providers[0].models = vec![newapi::Model {
+            id: "model-a".into(),
+            context_window: None,
+            max_output_tokens: None,
+            endpoint_types: vec!["openai-chat".into()],
+        }];
+        save_store_unlocked(&paths, &store).unwrap();
+        assert_eq!(set_enabled(&paths, &id, true).unwrap_err(), "newapi.errors.responsesRequired");
+    }
+
+    #[test]
+    fn removed_chat_routes_are_disabled_during_store_migration() {
+        let (_dir, paths) = paths();
+        let provider = Provider {
+            id: "legacy-chat".into(),
+            name: "Legacy Chat".into(),
+            base_url: "https://chat.example.com/".into(),
+            api_key: "sk-chat".into(),
+            model: "chat-model".into(),
+            enabled: true,
+            ..Default::default()
+        };
+        let store = Store {
+            version: 1,
+            providers: vec![provider],
+            router: RouterSettings {
+                enabled: true,
+                bearer_token: "old-router-token".into(),
+                ..Default::default()
+            },
+            active_provider_id: Some("legacy-chat".into()),
+        };
+        let mut value = serde_json::to_value(store).unwrap();
+        value["providers"][0]["wireApi"] = serde_json::json!("chat");
+        secret_file::write(&store_path(&paths), &serde_json::to_vec(&value).unwrap()).unwrap();
+        std::fs::create_dir_all(paths.config_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &paths.config_path,
+            "model = 'legacy-chat::chat-model'\nmodel_provider = 'aimami_relay'\n[model_providers.aimami_relay]\nwire_api = 'chat'\n",
+        )
+        .unwrap();
+
+        let migrated = load_store(&paths).unwrap();
+        assert!(!migrated.providers[0].enabled);
+        assert!(!migrated.router.enabled);
+        assert!(migrated.active_provider_id.is_none());
+        let config = std::fs::read_to_string(&paths.config_path).unwrap();
+        assert!(!config.contains("aimami_relay"));
+        assert!(!config.contains("model_provider"));
     }
 
     #[test]
@@ -1067,7 +1196,7 @@ mod tests {
         store.router.accountless = true;
         // Catalog entries come from the cached model list (populated by 测试连通 in the UI).
         store.providers[0].models.push(newapi::Model { id: "model-a".into(), context_window: Some(128000), max_output_tokens: None, endpoint_types: vec![] });
-        save_store(&paths, &store).unwrap();
+        save_store_unlocked(&paths, &store).unwrap();
         apply_routing_config(&paths, &store).unwrap();
         let text = std::fs::read_to_string(&paths.config_path).unwrap();
         assert!(text.contains("# keep"));
@@ -1180,4 +1309,5 @@ mod tests {
         assert_eq!(effective_active(&store).unwrap().id, "b");
         let _ = ApiProxyConfigPayload::default();
     }
+
 }

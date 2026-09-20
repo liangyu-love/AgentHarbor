@@ -1,9 +1,13 @@
 use super::models::ApiProxyConfigPayload;
-use super::router::{self, Store};
+use super::router;
 use crate::platform::paths::CodexPaths;
 use http_body_util::{combinators::BoxBody, BodyExt, Full, StreamBody};
 use hyper::body::{Bytes, Frame, Incoming};
-use hyper::header::{HeaderValue, AUTHORIZATION, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, TRANSFER_ENCODING, UPGRADE};
+use hyper::header::{
+    HeaderMap, HeaderValue, ACCEPT_ENCODING, AUTHORIZATION, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE,
+    COOKIE, EXPECT, HOST, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, TE, TRAILER, TRANSFER_ENCODING,
+    UPGRADE,
+};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
@@ -27,9 +31,14 @@ struct ProxyHandle {
 }
 
 static HANDLE: OnceLock<Mutex<Option<ProxyHandle>>> = OnceLock::new();
+static START_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 fn handle_slot() -> &'static Mutex<Option<ProxyHandle>> {
     HANDLE.get_or_init(|| Mutex::new(None))
+}
+
+fn start_lock() -> &'static tokio::sync::Mutex<()> {
+    START_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 pub fn is_running() -> bool {
@@ -51,6 +60,7 @@ pub fn stop() {
 /// Bind the router on localhost. Returns the actually bound port.
 /// Called from async commands and app setup.
 pub async fn ensure_running(port: u16, paths: CodexPaths, proxy: ApiProxyConfigPayload) -> Result<u16, String> {
+    let _start_guard = start_lock().lock().await;
     {
         let guard = handle_slot().lock().map_err(|_| "newapi.errors.storage")?;
         if let Some(handle) = guard.as_ref() {
@@ -134,7 +144,7 @@ type ForwardResult = Result<Response<ResponseBody>, (StatusCode, &'static str)>;
 
 enum Destination {
     /// Relay traffic: forward to this provider's base URL with its API key.
-    Provider { provider: router::Provider, model_override: Option<String> },
+    Provider { provider: Box<router::Provider>, model_override: Option<String> },
     /// Official OpenAI models: forward using the local Codex credentials.
     Official,
 }
@@ -148,21 +158,46 @@ async fn handle(request: Request<Incoming>, context: std::sync::Arc<ArcContext>)
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     let store = router::read_store(&context.store_path)
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "router storage unavailable"))?;
+    if !authorized(request.headers(), &store.router.bearer_token) {
+        return Err((StatusCode::UNAUTHORIZED, "invalid local router token"));
+    }
 
     let method = request.method().clone();
     let has_body = !matches!(method, hyper::Method::GET | hyper::Method::HEAD | hyper::Method::DELETE);
     let mut headers = request.headers().clone();
-    for header in [CONNECTION, CONTENT_LENGTH, TRANSFER_ENCODING, UPGRADE, AUTHORIZATION, hyper::header::ACCEPT_ENCODING, hyper::header::EXPECT] {
+    if request
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|length| length > MAX_REQUEST_BODY as u64)
+    {
+        return Err((StatusCode::PAYLOAD_TOO_LARGE, "request body too large"));
+    }
+    for header in [
+        CONNECTION,
+        CONTENT_LENGTH,
+        TRANSFER_ENCODING,
+        UPGRADE,
+        AUTHORIZATION,
+        ACCEPT_ENCODING,
+        EXPECT,
+        HOST,
+        COOKIE,
+        PROXY_AUTHENTICATE,
+        PROXY_AUTHORIZATION,
+        TE,
+        TRAILER,
+    ] {
+        headers.remove(header);
+    }
+    for header in ["x-api-key", "chatgpt-account-id"] {
         headers.remove(header);
     }
     let body: Option<Bytes> = if has_body {
-        let bytes = request.into_body().collect().await.map_err(|_| (StatusCode::BAD_REQUEST, "unreadable request body"))?.to_bytes();
-        if bytes.len() > MAX_REQUEST_BODY {
-            return Err((StatusCode::PAYLOAD_TOO_LARGE, "request body too large"));
-        }
-        Some(Bytes::from(bytes))
+        Some(read_limited_body(request.into_body()).await?)
     } else {
-        request.into_body().collect().await.map_err(|_| (StatusCode::BAD_REQUEST, "unreadable request body"))?;
+        read_limited_body(request.into_body()).await?;
         None
     };
 
@@ -202,7 +237,7 @@ async fn handle(request: Request<Incoming>, context: std::sync::Arc<ArcContext>)
                     let provider = store.providers.iter().find(|p| p.id == provider_id).cloned();
                     match provider {
                         Some(provider) if provider.is_routable() => {
-                            Destination::Provider { provider, model_override: Some(model_id.to_owned()) }
+                            Destination::Provider { provider: Box::new(provider), model_override: Some(model_id.to_owned()) }
                         }
                         Some(_) => return Err((StatusCode::SERVICE_UNAVAILABLE, "provider is not enabled for routing")),
                         None => return Err((StatusCode::NOT_FOUND, "unknown provider")),
@@ -216,13 +251,13 @@ async fn handle(request: Request<Incoming>, context: std::sync::Arc<ArcContext>)
         ["p", id, "v1", ..] => {
             let provider = store.providers.iter().find(|p| p.id == *id).cloned();
             match provider {
-                Some(provider) if provider.is_routable() => Destination::Provider { provider, model_override: None },
+                Some(provider) if provider.is_routable() => Destination::Provider { provider: Box::new(provider), model_override: None },
                 Some(_) => return Err((StatusCode::SERVICE_UNAVAILABLE, "provider is not enabled for routing")),
                 None => return Err((StatusCode::NOT_FOUND, "unknown provider")),
             }
         }
         ["v1", ..] => match router::effective_active(&store) {
-            Some(provider) => Destination::Provider { provider, model_override: None },
+            Some(provider) => Destination::Provider { provider: Box::new(provider), model_override: None },
             None => return Err((StatusCode::SERVICE_UNAVAILABLE, "no enabled provider for routing")),
         },
         _ => return Err((StatusCode::NOT_FOUND, "unsupported path")),
@@ -233,7 +268,7 @@ async fn handle(request: Request<Incoming>, context: std::sync::Arc<ArcContext>)
         _ => String::new(),
     };
 
-    let (url, mut headers) = match &destination {
+    let (url, headers) = match &destination {
         Destination::Provider { provider, .. } => {
             headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", provider.api_key)).map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid provider key"))?);
             (format!("{}v1/{}{}", provider.base_url, suffix, query.map(|q| format!("?{q}")).unwrap_or_default()), headers)
@@ -284,6 +319,30 @@ async fn handle(request: Request<Incoming>, context: std::sync::Arc<ArcContext>)
     builder.body(BodyExt::boxed(StreamBody::new(stream))).map_err(|_| (StatusCode::BAD_GATEWAY, "invalid upstream response"))
 }
 
+fn authorized(headers: &HeaderMap, bearer_token: &str) -> bool {
+    if bearer_token.is_empty() {
+        return false;
+    }
+    let Ok(expected) = HeaderValue::from_str(&format!("Bearer {bearer_token}")) else {
+        return false;
+    };
+    headers.get(AUTHORIZATION) == Some(&expected)
+}
+
+async fn read_limited_body(mut body: Incoming) -> Result<Bytes, (StatusCode, &'static str)> {
+    let mut bytes = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|_| (StatusCode::BAD_REQUEST, "unreadable request body"))?;
+        if let Some(data) = frame.data_ref() {
+            if bytes.len().saturating_add(data.len()) > MAX_REQUEST_BODY {
+                return Err((StatusCode::PAYLOAD_TOO_LARGE, "request body too large"));
+            }
+            bytes.extend_from_slice(data);
+        }
+    }
+    Ok(Bytes::from(bytes))
+}
+
 fn rewrite_model(body: &Bytes, model_id: &str) -> Result<Bytes, (StatusCode, &'static str)> {
     let mut value: Value = serde_json::from_slice(body).map_err(|_| (StatusCode::BAD_REQUEST, "request body is not JSON"))?;
     value
@@ -298,7 +357,7 @@ fn rewrite_model(body: &Bytes, model_id: &str) -> Result<Bytes, (StatusCode, &'s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::router::{Provider, RouterSettings, Store};
+    use crate::core::router::{Provider, ProviderInput, RouterSettings, Store};
     use crate::platform::paths::CodexPaths;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -344,7 +403,7 @@ content-length: 22
                 version: 1,
                 providers: vec![provider],
                 active_provider_id: Some("aimami_relay_fixture".into()),
-                router: RouterSettings::default(),
+                router: RouterSettings { bearer_token: "router-test-token".into(), ..Default::default() },
             };
             crate::core::secret_file::write(&paths.codexmate_dir.join("newapi-providers.dat"), &serde_json::to_vec(&store).unwrap()).unwrap();
 
@@ -354,14 +413,32 @@ content-length: 22
             let base = format!("http://127.0.0.1:{port}");
 
             // The catalog endpoint lists the relay model under its prefixed slug.
-            let catalog: Value = client.get(format!("{base}/codex/v1/models")).send().await.unwrap().json().await.unwrap();
+            let unauthorized = client.get(format!("{base}/codex/v1/models")).send().await.unwrap();
+            assert_eq!(unauthorized.status(), 401);
+            let wrong_token = client
+                .get(format!("{base}/codex/v1/models"))
+                .header(AUTHORIZATION, "Bearer wrong")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(wrong_token.status(), 401);
+
+            let catalog: Value = client
+                .get(format!("{base}/codex/v1/models"))
+                .header(AUTHORIZATION, "Bearer router-test-token")
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
             let entries = catalog.get("data").and_then(Value::as_array).unwrap();
             assert_eq!(entries[0].get("id").and_then(Value::as_str), Some("aimami_relay_fixture::mock-model"));
 
             // Codex-style POST with a prefixed model is routed and the prefix stripped.
             let response = client
                 .post(format!("{base}/codex/v1/responses"))
-                .header(AUTHORIZATION, "Bearer sk-codex-dummy")
+                .header(AUTHORIZATION, "Bearer router-test-token")
                 .json(&json!({"model": "aimami_relay_fixture::mock-model", "input": "hi"}))
                 .send()
                 .await
@@ -371,6 +448,7 @@ content-length: 22
             // An official (unprefixed) model without local credentials fails clearly.
             let response = client
                 .post(format!("{base}/codex/v1/responses"))
+                .header(AUTHORIZATION, "Bearer router-test-token")
                 .json(&json!({"model": "gpt-6-astra", "input": "hi"}))
                 .send()
                 .await
@@ -378,12 +456,173 @@ content-length: 22
             assert_eq!(response.status(), 401);
 
             // Legacy per-provider and default routes keep working.
-            let response = client.get(format!("{base}/p/aimami_relay_fixture/v1/models")).send().await.unwrap();
+            let response = client
+                .get(format!("{base}/p/aimami_relay_fixture/v1/models"))
+                .header(AUTHORIZATION, "Bearer router-test-token")
+                .send()
+                .await
+                .unwrap();
             assert_eq!(response.status(), 200);
-            let response = client.get(format!("{base}/v1/models")).send().await.unwrap();
+            let response = client
+                .get(format!("{base}/v1/models"))
+                .header(AUTHORIZATION, "Bearer router-test-token")
+                .send()
+                .await
+                .unwrap();
             assert_eq!(response.status(), 200);
+
+            let mut oversized = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+            oversized
+                .write_all(
+                    format!(
+                        "POST /codex/v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer router-test-token\r\nContent-Length: {}\r\n\r\n",
+                        MAX_REQUEST_BODY + 1
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            let mut response = [0u8; 1024];
+            let count = oversized.read(&mut response).await.unwrap();
+            assert!(String::from_utf8_lossy(&response[..count]).starts_with("HTTP/1.1 413"));
+
             let health = client.get(format!("{base}/aimami/health")).send().await.unwrap();
             assert_eq!(health.status(), 200);
+            stop();
+        });
+    }
+
+    #[test]
+    #[ignore = "Requires an explicitly provided local encrypted test connection"]
+    fn live_smart_routing_injection() {
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let source_home = std::path::PathBuf::from(
+                std::env::var("AIMAMI_NEWAPI_TEST_HOME").expect("Set isolated test home"),
+            );
+            let temp = tempfile::tempdir().unwrap();
+            let paths = CodexPaths::from_home(temp.path().join("codex"));
+            std::fs::create_dir_all(&paths.codexmate_dir).unwrap();
+            std::fs::copy(
+                source_home.join("codexmate/newapi-connection.dat"),
+                paths.codexmate_dir.join("newapi-connection.dat"),
+            )
+            .unwrap();
+            let source_settings = source_home.join("codexmate/settings.json");
+            if source_settings.exists() {
+                std::fs::copy(source_settings, &paths.settings_path).unwrap();
+            }
+
+            let proxy = crate::core::newapi::proxy_from_settings(&paths.settings_path);
+            let initial = router::load_store(&paths).unwrap();
+            let provider = initial.providers.first().cloned().expect("test relay connection");
+            let tested = {
+                let paths = paths.clone();
+                let provider_id = provider.id.clone();
+                let proxy = proxy.clone();
+                tokio::task::spawn_blocking(move || router::test_provider(&paths, &provider_id, &proxy))
+                    .await
+                    .unwrap()
+                    .unwrap()
+            };
+            let balance = {
+                let paths = paths.clone();
+                let provider_id = provider.id.clone();
+                let proxy = proxy.clone();
+                tokio::task::spawn_blocking(move || {
+                    router::query_provider_balance(&paths, &provider_id, &proxy)
+                })
+                .await
+                .unwrap()
+                .unwrap()
+            };
+            assert!(balance.balance.is_some());
+            let model = tested
+                .models
+                .iter()
+                .find(|model| model.id == "gpt-5.6-luna")
+                .or_else(|| tested.models.first())
+                .expect("at least one relay model")
+                .id
+                .clone();
+            router::save_provider(
+                &paths,
+                ProviderInput {
+                    id: Some(provider.id.clone()),
+                    name: provider.name,
+                    base_url: provider.base_url,
+                    user_id: provider.user_id,
+                    access_token: provider.access_token,
+                    api_key: provider.api_key,
+                    model,
+                    context_window: provider.context_window,
+                    auto_compact_limit: provider.auto_compact_limit,
+                },
+            )
+            .unwrap();
+            router::set_enabled(&paths, &provider.id, true).unwrap();
+            router::set_active(&paths, &provider.id).unwrap();
+
+            let port = {
+                let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+                listener.local_addr().unwrap().port()
+            };
+            let mut store = router::load_store(&paths).unwrap();
+            store.router.port = port;
+            crate::core::secret_file::write(
+                &paths.codexmate_dir.join("newapi-providers.dat"),
+                &serde_json::to_vec(&store).unwrap(),
+            )
+            .unwrap();
+            router::set_smart_routing(&paths, true).unwrap();
+            let store = router::load_store(&paths).unwrap();
+            ensure_running(port, paths.clone(), proxy).await.unwrap();
+
+            let config: toml::Value = std::fs::read_to_string(&paths.config_path)
+                .unwrap()
+                .parse()
+                .unwrap();
+            let injected = &config["model_providers"][router::CATALOG_PROVIDER_KEY];
+            assert_eq!(
+                injected["base_url"].as_str(),
+                Some(format!("http://127.0.0.1:{port}/codex/v1").as_str())
+            );
+            assert_eq!(injected["wire_api"].as_str(), Some("responses"));
+            assert_eq!(
+                injected["experimental_bearer_token"].as_str(),
+                Some(store.router.bearer_token.as_str())
+            );
+
+            let client = Client::builder().timeout(Duration::from_secs(90)).build().unwrap();
+            let base = format!("http://127.0.0.1:{port}");
+            let catalog: Value = client
+                .get(format!("{base}/codex/v1/models"))
+                .bearer_auth(&store.router.bearer_token)
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            let slug = catalog["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find_map(|entry| entry["id"].as_str().filter(|id| id.starts_with(&provider.id)))
+                .expect("prefixed relay model")
+                .to_owned();
+            let response = client
+                .post(format!("{base}/codex/v1/responses"))
+                .bearer_auth(&store.router.bearer_token)
+                .json(&json!({"model": slug, "input": "Reply with exactly OK.", "stream": true}))
+                .send()
+                .await
+                .unwrap();
+            assert!(response.status().is_success(), "relay returned HTTP {}", response.status());
+            let body = response.text().await.unwrap();
+            assert!(body.contains("response.completed"), "response stream did not complete");
             stop();
         });
     }

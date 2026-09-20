@@ -68,6 +68,7 @@ export function NewApiPage() {
   const [filter, setFilter] = useState<string>("all");
   const [dialog, setDialog] = useState<{ open: boolean; provider: NewApiProvider | null }>({ open: false, provider: null });
   const [removing, setRemoving] = useState<NewApiProvider | null>(null);
+  const [directing, setDirecting] = useState<NewApiProvider | null>(null);
   const [appliedNote, setAppliedNote] = useState<NewApiStateChange["applied"]>(null);
 
   const providers = state.data?.providers ?? [];
@@ -421,7 +422,7 @@ export function NewApiPage() {
                           className={iconButton}
                           title={t("newapi.refreshBalance")}
                           aria-label={t("newapi.refreshBalance")}
-                          disabled={lock(`balance:${provider.id}`) || !provider.hasApiKey}
+                          disabled={lock(`balance:${provider.id}`) || !(provider.hasApiKey || (!!provider.userId && provider.hasAccessToken))}
                           onClick={() =>
                             void run(`balance:${provider.id}`, async () => patchProvider(await api.queryNewApiProviderBalance(provider.id)), t("newapi.balanceFailed"))
                           }
@@ -442,7 +443,7 @@ export function NewApiPage() {
                             </span>
                           )}
                           <span className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-muted-foreground">
-                            {provider.wireApi === "chat" ? "Chat" : "Responses"}
+                            Responses
                           </span>
                         </div>
                         <p className="truncate font-mono text-[11px] text-muted-foreground/80">{hostOf(provider)}</p>
@@ -454,13 +455,7 @@ export function NewApiPage() {
                           title={t("newapi.forceDirect")}
                           aria-label={t("newapi.forceDirect")}
                           disabled={!provider.enabled || lock(`direct:${provider.id}`)}
-                          onClick={() =>
-                            void run(`direct:${provider.id}`, async () => {
-                              const change = await api.setNewApiDirect(provider.id);
-                              applyChange(change);
-                              toast({ title: t("newapi.directApplied"), description: change.applied?.path ?? undefined, variant: "success" });
-                            }, t("newapi.routeFailed"))
-                          }
+                          onClick={() => setDirecting(provider)}
                         >
                           <PlugZap className={cn("h-3.5 w-3.5", active && !routingEnabled && "text-amber-500")} />
                         </button>
@@ -512,6 +507,33 @@ export function NewApiPage() {
         onOpenChange={open => setDialog(current => ({ ...current, open }))}
         onSaved={applyChange}
       />
+
+      <AlertDialog open={directing !== null} onOpenChange={open => !open && setDirecting(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("newapi.confirmDirectTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("newapi.confirmDirectBody", { name: directing?.name ?? "" })}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const provider = directing;
+                setDirecting(null);
+                if (provider) {
+                  void run(`direct:${provider.id}`, async () => {
+                    const change = await api.setNewApiDirect(provider.id);
+                    applyChange(change);
+                    toast({ title: t("newapi.directApplied"), description: change.applied?.path ?? undefined, variant: "success" });
+                  }, t("newapi.routeFailed"));
+                }
+              }}
+            >
+              {t("newapi.confirmDirectAction")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={removing !== null} onOpenChange={open => !open && setRemoving(null)}>
         <AlertDialogContent>

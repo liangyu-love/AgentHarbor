@@ -7,11 +7,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "@/hooks/use-toast";
 import type { NewApiProvider, NewApiStateChange, NewApiModel } from "@/types/newapi";
 
-const emptyDraft = { name: "", baseUrl: "", userId: "", accessToken: "", apiKey: "", model: "", contextWindow: "", autoCompactLimit: "", wireApi: "responses" };
+const emptyDraft = { name: "", baseUrl: "", userId: "", accessToken: "", apiKey: "", model: "", contextWindow: "", autoCompactLimit: "" };
 const fromProvider = (provider: NewApiProvider) => ({
   name: provider.name,
   baseUrl: provider.baseUrl,
@@ -21,16 +20,17 @@ const fromProvider = (provider: NewApiProvider) => ({
   model: provider.model,
   contextWindow: provider.contextWindow?.toString() ?? "",
   autoCompactLimit: provider.autoCompactLimit?.toString() ?? "",
-  wireApi: provider.wireApi || "responses",
 });
-const wireOf = (model: NewApiModel) =>
-  model.endpointTypes.some(type => type.includes("response")) ? "responses" : "chat";
 function optionalNumber(text: string, errorKey: string) {
   if (!text.trim()) return null;
   const value = Number(text);
   if (!/^\d+$/.test(text) || !Number.isSafeInteger(value) || value <= 0) throw new Error(errorKey);
   return value;
 }
+const supportsResponses = (model: NewApiModel) => {
+  const endpoints = model.endpointTypes.map(type => type.toLowerCase());
+  return endpoints.some(type => type.includes("response")) || !endpoints.some(type => type.includes("chat") || type.includes("completion"));
+};
 
 function SecretInput({ id, value, placeholder, disabled, onChange }: {
   id: string;
@@ -65,13 +65,6 @@ function SecretInput({ id, value, placeholder, disabled, onChange }: {
   );
 }
 
-const OFFICIAL_PRESETS = [
-  { id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com", wire: "responses" },
-  { id: "xiaomi-mimo", name: "小米 MiMo", baseUrl: "https://token-plan-cn.xiaomimimo.com/v1", wire: "chat" },
-  { id: "opencode-go", name: "OpenCode Go", baseUrl: "https://opencode.ai/zen/go/v1", wire: "chat" },
-  { id: "commandcode-goat", name: "Command Code GOAT", baseUrl: "https://api.commandcode.ai/provider/v1", wire: "chat" },
-];
-
 function SectionLabel({ children }: { children: string }) {
   return (
     <div className="flex items-center gap-2.5 pt-1">
@@ -95,16 +88,14 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
   const [error, setError] = useState<string | null>(null);
   const [showBalance, setShowBalance] = useState(false);
   const [models, setModels] = useState<NewApiModel[]>([]);
-  const [modelWire, setModelWire] = useState<Record<string, string>>({});
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
   useEffect(() => {
     if (open) {
       setDraft(provider ? fromProvider(provider) : emptyDraft);
       setError(null);
-      setShowBalance(!!provider && (!!provider.userId || provider.hasAccessToken));
+      setShowBalance(!!provider && !!provider.userId && provider.hasAccessToken);
       setModels([]);
-      setModelWire({});
       setFetchError(null);
     }
   }, [open, provider]);
@@ -153,7 +144,6 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
         model: draft.model,
         contextWindow: optionalNumber(draft.contextWindow, "newapi.errors.context"),
         autoCompactLimit: optionalNumber(draft.autoCompactLimit, "newapi.errors.context"),
-        wireApi: draft.wireApi,
       });
       onSaved(change);
       onOpenChange(false);
@@ -166,7 +156,7 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
       setSaving(false);
     }
   };
-  const balanceConfigured = !!provider && (!!provider.userId || provider.hasAccessToken);
+  const balanceConfigured = !!provider && !!provider.userId && provider.hasAccessToken;
   const fetchModels = async () => {
     if (fetchingModels || saving) return;
     if (!draft.baseUrl.trim()) {
@@ -230,72 +220,28 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
             {fetchError && <p className="text-[11px] text-destructive">{t(fetchError)}</p>}
             {models.length > 0 && (
               <div className="max-h-40 overflow-y-auto rounded-lg bg-black/[0.02] ring-1 ring-border/60 dark:bg-white/[0.02]">
-                {models.map(model => {
-                  const wire = modelWire[model.id] ?? wireOf(model);
-                  return (
-                    <div key={model.id} className={cn("flex items-center gap-2 px-2.5 py-1.5", draft.model === model.id && "bg-primary/10")}>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          update("model", model.id);
-                          update("wireApi", wire);
-                        }}
-                        className="flex min-w-0 flex-1 items-center justify-between gap-2 text-left font-mono text-[11px] transition-colors hover:text-primary"
-                      >
-                        <span className={cn("truncate", draft.model === model.id && "font-medium text-primary")}>{model.id}</span>
-                        {typeof model.contextWindow === "number" && model.contextWindow > 0 && (
-                          <span className="shrink-0 font-sans text-[10px] text-muted-foreground">{Math.round(model.contextWindow / 1000)}K</span>
-                        )}
-                      </button>
-                      <Select
-                        value={wire}
-                        onValueChange={value => {
-                          setModelWire(current => ({ ...current, [model.id]: value }));
-                          if (draft.model === model.id) update("wireApi", value);
-                        }}
-                      >
-                        <SelectTrigger className="h-6 w-[100px] shrink-0 rounded-md px-2 text-[10px]">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="responses">Responses</SelectItem>
-                          <SelectItem value="chat">Chat</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  );
-                })}
+                {models.map(model => (
+                  <div key={model.id} className={cn("flex items-center gap-2 px-2.5 py-1.5", draft.model === model.id && "bg-primary/10")}>
+                    <button
+                      type="button"
+                      onClick={() => update("model", model.id)}
+                      disabled={!supportsResponses(model)}
+                      className="flex min-w-0 flex-1 items-center justify-between gap-2 text-left font-mono text-[11px] transition-colors hover:text-primary disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                      <span className={cn("truncate", draft.model === model.id && "font-medium text-primary")}>{model.id}</span>
+                      {!supportsResponses(model) ? (
+                        <span className="shrink-0 font-sans text-[10px] text-muted-foreground">{t("newapi.chatOnlyModel")}</span>
+                      ) : typeof model.contextWindow === "number" && model.contextWindow > 0 && (
+                        <span className="shrink-0 font-sans text-[10px] text-muted-foreground">{Math.round(model.contextWindow / 1000)}K</span>
+                      )}
+                    </button>
+                  </div>
+                ))}
               </div>
             )}
             <p className="text-[11px] leading-relaxed text-muted-foreground">{t("newapi.modelHint")}</p>
+            <p className="rounded-lg bg-primary/[0.05] px-3 py-2 text-[11px] leading-relaxed text-muted-foreground ring-1 ring-primary/15">{t("newapi.responsesOnlyHint")}</p>
           </div>
-          <SectionLabel>{t("newapi.sectionOfficial")}</SectionLabel>
-          <div className="flex flex-wrap gap-2">
-            {OFFICIAL_PRESETS.map(preset => {
-              const picked = draft.baseUrl.trim().replace(/\/+$/, "") === preset.baseUrl.replace(/\/+$/, "");
-              return (
-                <button
-                  key={preset.id}
-                  type="button"
-                  disabled={saving}
-                  onClick={() => {
-                    update("baseUrl", preset.baseUrl);
-                    update("wireApi", preset.wire);
-                    if (!draft.name.trim()) update("name", preset.name);
-                  }}
-                  className={cn(
-                    "rounded-lg border bg-card px-2.5 py-1 text-[12px] font-medium shadow-sm transition-all",
-                    picked
-                      ? "border-primary/50 bg-primary/[0.06] text-primary ring-1 ring-primary/15"
-                      : "text-foreground/80 hover:-translate-y-px hover:bg-muted/60",
-                  )}
-                >
-                  {preset.name}
-                </button>
-              );
-            })}
-          </div>
-          <p className="text-[11px] leading-relaxed text-muted-foreground">{t("newapi.officialHint")}</p>
           <SectionLabel>{t("newapi.sectionAdvanced")}</SectionLabel>
           <div className="grid gap-3 sm:grid-cols-2">
             {field("contextWindow", "newapi.contextWindow", { numeric: true, placeholder: t("newapi.useDefault") })}

@@ -15,7 +15,6 @@ pub struct Connection {
     pub model: String,
     pub context_window: Option<u64>,
     pub auto_compact_limit: Option<u64>,
-    pub wire_api: String,
 }
 
 #[derive(Serialize)]
@@ -257,7 +256,7 @@ fn update_document(document: &mut toml_edit::DocumentMut, config: &Connection) -
     *provider = toml_edit::Item::Table(toml_edit::Table::new());
     provider["name"] = value("AiMaMi New API");
     provider["base_url"] = value(endpoint(config, "v1")?.as_str());
-    provider["wire_api"] = value(if config.wire_api == "chat" { "chat" } else { "responses" });
+    provider["wire_api"] = value("responses");
     provider["env_key"] = value("AIMAMI_NEWAPI_KEY");
     provider["requires_openai_auth"] = value(false);
     Ok(())
