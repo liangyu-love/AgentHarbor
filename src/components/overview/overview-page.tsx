@@ -2,10 +2,17 @@ import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { ArrowRight, FileCode2, Server, Sparkles, RotateCw, FolderOpen } from "lucide-react";
 import { api } from "@/lib/api";
+import { AuroraCard } from "@/components/ui/aurora-card";
 import { BentoCard } from "@/components/ui/bento-card";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/hooks/use-toast";
 import type { Route } from "@/types/navigation";
+
+const cardRoutes: Record<string, "blue" | "purple" | "green"> = {
+  mcp: "blue",
+  skills: "purple",
+  customInstructions: "green",
+};
 
 export function OverviewPage({ onNavigate }: { onNavigate: (route: Route) => void }) {
   const { t } = useTranslation();
@@ -31,15 +38,21 @@ export function OverviewPage({ onNavigate }: { onNavigate: (route: Route) => voi
       {errors.length > 0 && <div role="alert" className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm"><p className="font-medium">{t("baseline.readFailed")}</p>{errors.map((error, index) => <p key={index} className="mt-1 break-words text-muted-foreground">{String(error)}</p>)}</div>}
       <div className="grid gap-4 md:grid-cols-3">
         {cards.map(({ route, icon: Icon, label, value, description }) => (
-          <BentoCard key={route}>
-            <div className="flex items-center gap-2 text-sm text-muted-foreground"><Icon className="h-4 w-4" />{label}</div>
-            <div className="my-4 text-3xl font-semibold tracking-tight">{value}</div>
-            <p className="mb-5 flex-1 text-sm text-muted-foreground">{description}</p>
-            <Button variant="outline" className="w-full justify-between" onClick={() => onNavigate(route)}>{t("baseline.manage")}<ArrowRight className="h-4 w-4" /></Button>
-          </BentoCard>
+          <AuroraCard
+            key={route}
+            color={cardRoutes[route]}
+            className="transition-transform duration-200 ease-out motion-reduce:transition-none hover:-translate-y-0.5"
+          >
+            <div className="flex h-full flex-col p-4">
+              <div className="flex items-center gap-2 text-sm text-muted-foreground"><Icon className="h-4 w-4" />{label}</div>
+              <div className="my-4 text-3xl font-semibold tracking-tight tabular-nums">{value}</div>
+              <p className="mb-5 flex-1 text-sm text-muted-foreground">{description}</p>
+              <Button variant="outline" className="w-full justify-between" onClick={() => onNavigate(route)}>{t("baseline.manage")}<ArrowRight className="h-4 w-4" /></Button>
+            </div>
+          </AuroraCard>
         ))}
       </div>
-      <BentoCard>
+      <BentoCard glowColor="bg-primary/10">
         <h2 className="font-semibold">{t("baseline.localData")}</h2>
         <p className="mt-2 break-all font-mono text-xs text-muted-foreground">{status?.paths.codexHome ?? "…"}</p>
         <div className="mt-4 flex flex-wrap gap-x-8 gap-y-2 text-sm">

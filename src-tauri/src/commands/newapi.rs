@@ -45,12 +45,35 @@ pub fn set_newapi_active_provider(repo: State<'_, Mutex<Repository>>, id: String
 }
 
 #[tauri::command]
+pub fn set_newapi_direct(repo: State<'_, Mutex<Repository>>, id: String) -> Result<StateChange, String> {
+    let change = router::set_direct(&paths(&repo)?, &id)?;
+    router_proxy::stop();
+    Ok(change)
+}
+
+#[tauri::command]
 pub async fn test_newapi_provider(repo: State<'_, Mutex<Repository>>, id: String) -> Result<ProviderView, String> {
     let paths = paths(&repo)?;
     let proxy = newapi::proxy_from_settings(&paths.settings_path);
     tauri::async_runtime::spawn_blocking(move || router::test_provider(&paths, &id, &proxy))
         .await
         .map_err(|_| "newapi.errors.network")?
+}
+
+#[tauri::command]
+pub async fn fetch_newapi_models(
+    repo: State<'_, Mutex<Repository>>,
+    provider_id: Option<String>,
+    base_url: String,
+    api_key: String,
+) -> Result<Vec<crate::core::newapi::Model>, String> {
+    let paths = paths(&repo)?;
+    let proxy = newapi::proxy_from_settings(&paths.settings_path);
+    tauri::async_runtime::spawn_blocking(move || {
+        router::fetch_models(&paths, provider_id.as_deref(), &base_url, &api_key, &proxy)
+    })
+    .await
+    .map_err(|_| "newapi.errors.network".to_string())?
 }
 
 #[tauri::command]

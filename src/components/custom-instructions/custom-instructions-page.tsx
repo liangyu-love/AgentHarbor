@@ -247,8 +247,8 @@ export function CustomInstructionsPage() {
         <BentoCard className="min-h-[520px]">
           <div className="mb-5 flex items-start justify-between gap-4">
             <div>
-              <div className="flex items-center gap-2 text-sm font-medium">
-                <Wand2 className="h-4 w-4 text-primary" />
+              <div className="flex items-center gap-2.5 text-sm font-medium">
+                <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-primary/15 to-primary/5 ring-1 ring-inset ring-primary/10"><Wand2 className="h-4 w-4 text-primary" /></span>
                 {t("customInstructions.templatesTitle")}
               </div>
               <p className="mt-1 text-sm text-muted-foreground">
@@ -295,8 +295,8 @@ export function CustomInstructionsPage() {
           <BentoCard>
             <div className="mb-4 flex items-start justify-between gap-4">
               <div>
-                <div className="flex items-center gap-2 text-sm font-medium">
-                  <FileCode2 className="h-4 w-4 text-primary" />
+                <div className="flex items-center gap-2.5 text-sm font-medium">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-primary/15 to-primary/5 ring-1 ring-inset ring-primary/10"><FileCode2 className="h-4 w-4 text-primary" /></span>
                   {t("customInstructions.currentTitle")}
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">
@@ -382,8 +382,8 @@ export function CustomInstructionsPage() {
           <BentoCard>
             <div className="mb-4 flex items-start justify-between gap-4">
               <div>
-                <div className="flex items-center gap-2 text-sm font-medium">
-                  <PencilLine className="h-4 w-4 text-primary" />
+                <div className="flex items-center gap-2.5 text-sm font-medium">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-primary/15 to-primary/5 ring-1 ring-inset ring-primary/10"><PencilLine className="h-4 w-4 text-primary" /></span>
                   {t("customInstructions.editorTitle")}
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">
@@ -438,8 +438,8 @@ export function CustomInstructionsPage() {
           <BentoCard>
             <div className="mb-4 flex items-start justify-between gap-4">
               <div>
-                <div className="flex items-center gap-2 text-sm font-medium">
-                  <History className="h-4 w-4 text-primary" />
+                <div className="flex items-center gap-2.5 text-sm font-medium">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-primary/15 to-primary/5 ring-1 ring-inset ring-primary/10"><History className="h-4 w-4 text-primary" /></span>
                   {t("customInstructions.historyTitle")}
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">

@@ -128,7 +128,7 @@ export function MaintenancePage() {
   const actions: {
     key: string;
     icon: typeof Stethoscope;
-    iconColor: string;
+    iconTile: string;
     label: string;
     description: string;
     actionLabel: string;
@@ -139,7 +139,7 @@ export function MaintenancePage() {
     {
       key: "diagnose",
       icon: Stethoscope,
-      iconColor: "text-blue-500",
+      iconTile: "bg-blue-500/10 ring-blue-500/15 text-blue-500 dark:text-blue-400",
       label: t("maintenance.diagnose"),
       description: t("maintenance.diagnoseDesc"),
       actionLabel: t("maintenance.diagnoseAction"),
@@ -149,7 +149,7 @@ export function MaintenancePage() {
     {
       key: "clean",
       icon: Trash2,
-      iconColor: "text-amber-500",
+      iconTile: "bg-amber-500/10 ring-amber-500/15 text-amber-500 dark:text-amber-400",
       label: t("maintenance.clean"),
       description: t("maintenance.cleanDesc"),
       actionLabel: t("maintenance.cleanAction"),
@@ -159,7 +159,7 @@ export function MaintenancePage() {
     {
       key: "rebuild",
       icon: RotateCw,
-      iconColor: "text-violet-500",
+      iconTile: "bg-violet-500/10 ring-violet-500/15 text-violet-500 dark:text-violet-400",
       label: t("maintenance.rebuild"),
       description: t("maintenance.rebuildDesc"),
       actionLabel: t("maintenance.rebuildAction"),
@@ -169,7 +169,7 @@ export function MaintenancePage() {
     {
       key: "restart",
       icon: RotateCcw,
-      iconColor: "text-red-500",
+      iconTile: "bg-red-500/10 ring-red-500/15 text-red-500 dark:text-red-400",
       label: t("maintenance.restartCodex"),
       description: t("maintenance.restartCodexDesc"),
       actionLabel: t("maintenance.restartCodexAction"),
@@ -185,14 +185,16 @@ export function MaintenancePage() {
 
       <BentoCard className="p-0">
         <div className="divide-y divide-border">
-        {actions.map(({ key, icon: Icon, iconColor, label, description, actionLabel, loadingLabel, onAction, variant }) => {
+        {actions.map(({ key, icon: Icon, iconTile, label, description, actionLabel, loadingLabel, onAction, variant }) => {
           const result = results[key];
           const busy = !!runningKeys[key];
           return (
             <div key={key} className="px-5 py-4 transition-colors hover:bg-accent">
               <div className="flex items-center justify-between gap-4">
-                <div className="flex items-center gap-3 min-w-0">
-                  <Icon className={cn("h-[18px] w-[18px] shrink-0", iconColor)} />
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ring-1 ring-inset", iconTile)}>
+                    <Icon className="h-4 w-4" />
+                  </div>
                   <div className="min-w-0">
                     <span className="text-[14px] font-semibold">{label}</span>
                     <p className="mt-0.5 text-xs text-muted-foreground leading-relaxed">{description}</p>

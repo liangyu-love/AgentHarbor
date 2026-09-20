@@ -2,16 +2,16 @@ import { cn } from "@/lib/utils";
 import { useThemeValue } from "@/hooks/use-theme";
 import { Skeleton } from "@/components/ui/skeleton";
 
-type GlowColor = "blue" | "amber" | "green" | "red" | "purple";
+export type GlowColor = "blue" | "amber" | "green" | "red" | "purple";
 
-interface ColorTokens {
+export interface ColorTokens {
   bar: string;
   strong: [string, string]; // [light, dark]
   mid: [string, string];
   edge: [string, string];
 }
 
-const palette: Record<GlowColor, ColorTokens> = {
+export const glowPalette: Record<GlowColor, ColorTokens> = {
   blue: {
     bar: "#3b82f6",
     strong: ["rgba(59,130,246,0.10)", "rgba(59,130,246,0.22)"],
@@ -54,7 +54,7 @@ interface GlowCardProps {
 }
 
 export function GlowCard({ color, label, value, sub, loading = false, className }: GlowCardProps) {
-  const c = palette[color];
+  const c = glowPalette[color];
   const isDark = useThemeValue() === "dark";
   const i = isDark ? 1 : 0;
 

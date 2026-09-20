@@ -25,7 +25,7 @@ import type {
   CustomInstructionStatePayload,
 } from "@/types";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
-import type { NewApiState, NewApiStateChange, NewApiImportResult, NewApiProvider, NewApiProviderInput } from "@/types/newapi";
+import type { NewApiState, NewApiStateChange, NewApiImportResult, NewApiProvider, NewApiProviderInput, NewApiModel } from "@/types/newapi";
 
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (isTauriRuntime()) {
@@ -41,7 +41,10 @@ export const api = {
   deleteNewApiProvider: (id: string) => invoke<NewApiStateChange>("delete_newapi_provider", { id }),
   setNewApiProviderEnabled: (id: string, enabled: boolean) => invoke<NewApiStateChange>("set_newapi_provider_enabled", { id, enabled }),
   setNewApiActiveProvider: (id: string) => invoke<NewApiStateChange>("set_newapi_active_provider", { id }),
+  setNewApiDirect: (id: string) => invoke<NewApiStateChange>("set_newapi_direct", { id }),
   testNewApiProvider: (id: string) => invoke<NewApiProvider>("test_newapi_provider", { id }),
+  fetchNewApiModels: (providerId: string | null, baseUrl: string, apiKey: string) =>
+    invoke<NewApiModel[]>("fetch_newapi_models", { providerId, baseUrl, apiKey }),
   queryNewApiProviderBalance: (id: string) => invoke<NewApiProvider>("query_newapi_provider_balance", { id }),
   setNewApiSmartRouting: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_smart_routing", { enabled }),
   setNewApiAccountless: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_accountless", { enabled }),

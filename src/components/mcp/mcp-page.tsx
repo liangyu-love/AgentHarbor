@@ -8,6 +8,8 @@ import { ButtonBusyContent } from "@/components/ui/button-busy-content";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { BentoCard } from "@/components/ui/bento-card";
+import { AuroraCard } from "@/components/ui/aurora-card";
+import { RainbowButton } from "@/registry/magicui/rainbow-button";
 import {
   Dialog,
   DialogContent,
@@ -45,6 +47,12 @@ const transportStyles: Record<string, { dot: string; text: string }> = {
   stdio: { dot: "bg-blue-500 shadow-[0_0_0_2px_rgba(59,130,246,0.2)]", text: "text-blue-500" },
   http: { dot: "bg-violet-500 shadow-[0_0_0_2px_rgba(139,92,246,0.2)]", text: "text-violet-500" },
   sse: { dot: "bg-amber-500 shadow-[0_0_0_2px_rgba(245,158,11,0.2)]", text: "text-amber-500" },
+};
+
+const transportTile: Record<string, string> = {
+  stdio: "bg-blue-500/10 ring-blue-500/15 text-blue-500 dark:text-blue-400",
+  http: "bg-violet-500/10 ring-violet-500/15 text-violet-500 dark:text-violet-400",
+  sse: "bg-amber-500/10 ring-amber-500/15 text-amber-500 dark:text-amber-400",
 };
 
 function DotBadge({ dotClass, textClass, children }: { dotClass: string; textClass: string; children: React.ReactNode }) {
@@ -127,10 +135,10 @@ export function McpPage() {
       <div className="flex items-center justify-between">
         <p className="max-w-md text-sm text-muted-foreground">{t("mcp.description")}</p>
         <div className="flex items-center gap-2">
-          <Button size="sm" onClick={() => setEditing("new")}>
+          <RainbowButton size="sm" className="h-8 rounded-lg dark:text-black" onClick={() => setEditing("new")}>
             <Plus className="h-3.5 w-3.5" />
             {t("mcp.addServer")}
-          </Button>
+          </RainbowButton>
           <Button
             variant="outline"
             size="icon-sm"
@@ -149,39 +157,47 @@ export function McpPage() {
 
       {/* Stats row */}
       <div className="grid grid-cols-3 gap-4">
-        <BentoCard compact>
-          <span className="text-xs text-muted-foreground">{t("mcp.serverCount")}</span>
-          <span className="mt-1 text-lg font-semibold">{servers.length}</span>
-        </BentoCard>
-        <BentoCard compact>
-          <span className="text-xs text-muted-foreground">{t("mcp.enabledCount")}</span>
-          <span className="mt-1 text-lg font-semibold">{enabledCount}</span>
-        </BentoCard>
-        <BentoCard compact>
-          <span className="text-xs text-muted-foreground">{t("mcp.configFile")}</span>
-          <button
-            className="mt-1 flex w-full items-center gap-1.5 text-left"
-            title={sourcePath}
-            onClick={() => {
-              navigator.clipboard.writeText(sourcePath);
-              toast({
-                title: t("mcp.pathCopied"),
-                description: t("mcp.pathCopiedDesc"),
-                variant: "default",
-              });
-            }}
-          >
-            <span className="min-w-0 flex-1 truncate text-sm font-medium">{sourcePath}</span>
-            <Copy className="h-3 w-3 shrink-0 text-muted-foreground" />
-          </button>
-        </BentoCard>
+        <AuroraCard color="blue">
+          <div className="p-4">
+            <span className="text-xs text-muted-foreground">{t("mcp.serverCount")}</span>
+            <span className="mt-0.5 block text-xl font-semibold tracking-tight tabular-nums">{servers.length}</span>
+          </div>
+        </AuroraCard>
+        <AuroraCard color="green">
+          <div className="p-4">
+            <span className="text-xs text-muted-foreground">{t("mcp.enabledCount")}</span>
+            <span className="mt-0.5 block text-xl font-semibold tracking-tight tabular-nums">{enabledCount}</span>
+          </div>
+        </AuroraCard>
+        <AuroraCard color="purple">
+          <div className="p-4">
+            <span className="text-xs text-muted-foreground">{t("mcp.configFile")}</span>
+            <button
+              className="mt-1 flex w-full items-center gap-1.5 text-left"
+              title={sourcePath}
+              onClick={() => {
+                navigator.clipboard.writeText(sourcePath);
+                toast({
+                  title: t("mcp.pathCopied"),
+                  description: t("mcp.pathCopiedDesc"),
+                  variant: "default",
+                });
+              }}
+            >
+              <span className="min-w-0 flex-1 truncate text-sm font-medium">{sourcePath}</span>
+              <Copy className="h-3 w-3 shrink-0 text-muted-foreground" />
+            </button>
+          </div>
+        </AuroraCard>
       </div>
 
       {/* Server list */}
       {servers.length === 0 ? (
         <BentoCard>
           <div className="flex h-48 flex-col items-center justify-center">
-            <Server className="h-10 w-10 text-muted-foreground/40" />
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-primary/15 to-primary/5 ring-1 ring-inset ring-primary/10">
+              <Server className="h-5 w-5 text-primary" />
+            </div>
             <p className="mt-3 text-sm text-muted-foreground">{t("mcp.empty")}</p>
           </div>
         </BentoCard>
@@ -191,7 +207,10 @@ export function McpPage() {
             <div className="divide-y divide-border">
               {pagedServers.map((server) => (
                 <div key={server.name} className="group flex items-center justify-between px-5 py-4 transition-colors hover:bg-accent">
-                  <div className="min-w-0 flex-1">
+                  <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ring-1 ring-inset transition-transform group-hover:scale-105", transportTile[server.transport] ?? transportTile.stdio)}>
+                    <Server className="h-4 w-4" />
+                  </div>
+                  <div className="ml-3 min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="text-[14px] font-semibold">{server.name}</span>
                       <DotBadge

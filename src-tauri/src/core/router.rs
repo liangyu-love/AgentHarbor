@@ -34,8 +34,14 @@ pub struct Provider {
     pub balance_source: Option<String>,
     pub test_status: String,
     pub test_at: Option<i64>,
+    #[serde(default = "default_wire_api")]
+    pub wire_api: String,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+fn default_wire_api() -> String {
+    "responses".to_owned()
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -80,6 +86,7 @@ pub struct ProviderView {
     pub balance_source: Option<String>,
     pub test_status: String,
     pub test_at: Option<i64>,
+    pub wire_api: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -103,6 +110,7 @@ impl Provider {
             balance_source: self.balance_source.clone(),
             test_status: self.test_status.clone(),
             test_at: self.test_at,
+            wire_api: self.wire_api.clone(),
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
@@ -157,6 +165,8 @@ pub struct ProviderInput {
     pub model: String,
     pub context_window: Option<u64>,
     pub auto_compact_limit: Option<u64>,
+    #[serde(default = "default_wire_api")]
+    pub wire_api: String,
 }
 
 fn now() -> i64 {
@@ -330,6 +340,11 @@ fn validate_input(input: &mut ProviderInput) -> Result<(), String> {
     input.access_token = input.access_token.trim().to_owned();
     input.api_key = input.api_key.trim().to_owned();
     input.model = input.model.trim().to_owned();
+    input.wire_api = match input.wire_api.trim() {
+        "" | "responses" => "responses".to_owned(),
+        "chat" => "chat".to_owned(),
+        _ => return Err("newapi.errors.wireApi".into()),
+    };
     for token in [&input.access_token, &input.api_key] {
         if !token.is_empty() {
             newapi::auth_header(token)?;
@@ -379,6 +394,7 @@ pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<Sta
             provider.model = input.model.clone();
             provider.context_window = input.context_window;
             provider.auto_compact_limit = input.auto_compact_limit;
+            provider.wire_api = input.wire_api.clone();
             provider.updated_at = timestamp;
             if site_changed {
                 provider.models.clear();
@@ -407,6 +423,7 @@ pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<Sta
                 model: input.model.clone(),
                 context_window: input.context_window,
                 auto_compact_limit: input.auto_compact_limit,
+                wire_api: input.wire_api.clone(),
                 enabled: false,
                 test_status: "untested".into(),
                 created_at: timestamp,
@@ -460,6 +477,58 @@ pub fn set_active(paths: &CodexPaths, id: &str) -> Result<StateChange, String> {
     let applied = apply_routing_if_enabled(paths, &store)?;
     save_store(paths, &store)?;
     Ok(StateChange { state: state(paths, super::router_proxy::is_running())?, applied })
+}
+
+/// Point Codex straight at this provider (key embedded in its config), bypassing
+/// the local routing proxy entirely.
+pub fn set_direct(paths: &CodexPaths, id: &str) -> Result<StateChange, String> {
+    let mut store = load_store(paths)?;
+    let index = store.providers.iter().position(|p| p.id == id).ok_or("newapi.errors.notFound")?;
+    if !store.providers[index].is_routable() {
+        return Err("newapi.errors.enableRequirements".into());
+    }
+    store.active_provider_id = Some(id.to_owned());
+    store.router.enabled = false;
+    let provider = &store.providers[index];
+    let connection = newapi::Connection {
+        base_url: provider.base_url.clone(),
+        api_key: provider.api_key.clone(),
+        model: provider.model.clone(),
+        context_window: provider.context_window,
+        auto_compact_limit: provider.auto_compact_limit,
+        wire_api: provider.wire_api.clone(),
+        ..Default::default()
+    };
+    let applied = newapi::apply_config(paths, &connection, true)?;
+    save_store(paths, &store)?;
+    Ok(StateChange { state: state(paths, super::router_proxy::is_running())?, applied: Some(applied) })
+}
+
+pub fn fetch_models(
+    paths: &CodexPaths,
+    provider_id: Option<&str>,
+    base_url: &str,
+    api_key: &str,
+    proxy: &ApiProxyConfigPayload,
+) -> Result<Vec<newapi::Model>, String> {
+    let mut key = api_key.trim().to_owned();
+    if key.is_empty() {
+        if let Some(id) = provider_id {
+            let store = load_store(paths)?;
+            if let Some(provider) = store.providers.iter().find(|p| p.id == id) {
+                let same_site = newapi::base_url(&provider.base_url).ok().map(|u| u.to_string())
+                    == newapi::base_url(base_url).ok().map(|u| u.to_string());
+                if same_site { key = provider.api_key.clone(); }
+            }
+        }
+    }
+    if key.is_empty() { return Err("newapi.errors.apiKeyRequired".into()); }
+    let connection = newapi::Connection {
+        base_url: newapi::base_url(base_url)?.to_string(),
+        api_key: key,
+        ..Default::default()
+    };
+    newapi::models(&connection, proxy)
 }
 
 pub fn test_provider(paths: &CodexPaths, id: &str, proxy: &ApiProxyConfigPayload) -> Result<ProviderView, String> {
@@ -899,6 +968,7 @@ mod tests {
             model: "model-a".into(),
             context_window: None,
             auto_compact_limit: None,
+            wire_api: "responses".into(),
         }
     }
 

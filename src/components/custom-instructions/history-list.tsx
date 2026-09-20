@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { BentoInnerPanel } from "@/components/ui/bento-inner-panel";
 import type { CustomInstructionHistoryEntry } from "@/types";
+import { cn } from "@/lib/utils";
 import { formatDateTime, formatRelative } from "@/lib/format-time";
 import { useTranslation } from "react-i18next";
 
@@ -12,6 +13,11 @@ interface HistoryListProps {
 
 export function HistoryList({ items, rollbackingId, onRollback }: HistoryListProps) {
   const { t } = useTranslation();
+  const actionDot: Record<string, string> = {
+    apply: "bg-emerald-500 shadow-[0_0_0_2px_rgba(16,185,129,0.2)]",
+    clear: "bg-amber-500 shadow-[0_0_0_2px_rgba(245,158,11,0.2)]",
+    rollback: "bg-blue-500 shadow-[0_0_0_2px_rgba(59,130,246,0.2)]",
+  };
   const actionLabel = (action: CustomInstructionHistoryEntry["action"]) => {
     switch (action) {
       case "apply":
@@ -40,6 +46,7 @@ export function HistoryList({ items, rollbackingId, onRollback }: HistoryListPro
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0 space-y-1">
               <div className="flex flex-wrap items-center gap-2">
+                <span className={cn("inline-block h-1.5 w-1.5 shrink-0 rounded-full", actionDot[item.action] ?? "bg-muted-foreground")} />
                 <span className="text-sm font-medium">{actionLabel(item.action)}</span>
                 <span className="text-xs text-muted-foreground">
                   {item.templateTitle ?? t("customInstructions.manualContent")}

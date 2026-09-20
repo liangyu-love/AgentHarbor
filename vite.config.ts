@@ -16,7 +16,10 @@ export default defineConfig(async () => ({
     // Dev-only port — keep in sync with tauri.conf.json `devUrl`.
     port: 3123,
     strictPort: true,
-    host: host || false,
+    // Bind IPv4 loopback explicitly: on this machine `localhost` resolves to ::1
+    // first and node binds IPv6-only, which WebView2 clients reaching 127.0.0.1
+    // cannot connect to (blank window in `tauri dev`).
+    host: host || "127.0.0.1",
     hmr: host
       ? {
           protocol: "ws",
