@@ -35,6 +35,12 @@ import {
 import { createAppQueryClient } from "@/lib/query-client";
 import { api } from "@/lib/api";
 import { isMacPlatform } from "@/lib/platform";
+import { cn } from "@/lib/utils";
+import {
+  CustomBackgroundProvider,
+  CustomBackgroundLayer,
+  useCustomBackground,
+} from "@/hooks/use-custom-background";
 import type { Route } from "@/types/navigation";
 import "./lib/i18n";
 
@@ -66,7 +72,11 @@ export function MainAppRoot() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider delayDuration={200}>
-        <AppAvatarProvider><MainApp /></AppAvatarProvider>
+        <AppAvatarProvider>
+          <CustomBackgroundProvider>
+            <MainApp />
+          </CustomBackgroundProvider>
+        </AppAvatarProvider>
       </TooltipProvider>
     </QueryClientProvider>
   );
@@ -76,6 +86,8 @@ function MainApp() {
   const [route, setRoute] = useState<Route>("overview");
   const { theme, setTheme } = useTheme();
   const resolvedTheme = useThemeValue();
+  const { activeBackgroundStyle } = useCustomBackground();
+  const hasCustomBackground = Boolean(activeBackgroundStyle);
   const { accent, setAccent, heatmap, setHeatmap } = useAccentColor();
   const { i18n, t } = useTranslation();
   const [sidebarOpen, setSidebarOpen] = useState(
@@ -176,7 +188,13 @@ function MainApp() {
   ];
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#FFFFFF] dark:bg-background">
+    <div
+      className={cn(
+        "flex h-screen w-screen overflow-hidden transition-colors",
+        hasCustomBackground ? "bg-transparent" : "bg-[#FFFFFF] dark:bg-background",
+      )}
+    >
+      <CustomBackgroundLayer />
       <div
         className="fixed inset-x-0 top-0 z-[60]"
         data-tauri-drag-region
@@ -202,12 +220,18 @@ function MainApp() {
           onNavigate={setRoute}
           onThemeChange={handleThemeChange}
         />
-        <SidebarInset className="max-h-screen overflow-hidden">
+        <SidebarInset
+          className={cn(
+            "max-h-screen overflow-hidden transition-colors",
+            hasCustomBackground && "!bg-transparent",
+          )}
+        >
           <SiteHeader
             title={t(routeLabelKey)}
             onOpenSpotlight={() => setCommandPaletteOpen(true)}
             onThemeToggle={() => handleThemeChange(resolvedTheme === "dark" ? "light" : "dark")}
             isDarkMode={resolvedTheme === "dark"}
+            hasCustomBackground={hasCustomBackground}
           />
           <div className="relative min-h-0 flex-1 overflow-hidden">
             {routeOrder

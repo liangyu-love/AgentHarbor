@@ -6,12 +6,14 @@ import { Search, Sun, Moon, FolderOpen } from "lucide-react";
 import { isMacPlatform } from "@/lib/platform";
 import { api } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
+import { cn } from "@/lib/utils";
 
 interface SiteHeaderProps {
   title: string;
   onOpenSpotlight?: () => void;
   onThemeToggle?: () => void;
   isDarkMode?: boolean;
+  hasCustomBackground?: boolean;
 }
 
 export function SiteHeader({
@@ -19,6 +21,7 @@ export function SiteHeader({
   onOpenSpotlight,
   onThemeToggle,
   isDarkMode,
+  hasCustomBackground,
 }: SiteHeaderProps) {
   const newapi = useQuery({
     queryKey: ["newapi-state"],
@@ -47,7 +50,14 @@ export function SiteHeader({
   };
 
   return (
-    <header className="flex h-12 shrink-0 items-center justify-between border-b border-border/70 bg-background/95 backdrop-blur-md px-4 gap-3">
+    <header
+      className={cn(
+        "flex h-12 shrink-0 items-center justify-between border-b px-4 gap-3 transition-colors",
+        hasCustomBackground
+          ? "border-border/50 bg-background/60 backdrop-blur-md"
+          : "border-border/70 bg-background/95 backdrop-blur-md",
+      )}
+    >
       {/* Left: Sidebar toggle + Title */}
       <div className="flex items-center gap-2 min-w-0">
         <SidebarTrigger className="-ml-1 text-muted-foreground hover:text-foreground" />

@@ -33,6 +33,7 @@ import { REFRESH_OPTIONS, type RefreshInterval } from "@/hooks/use-auto-refresh"
 import { useBusyAction } from "@/hooks/use-busy-action";
 import { ApiProxyDialog } from "@/components/runtime/api-proxy-dialog";
 import { AvatarSettings } from "@/components/settings/avatar-settings";
+import { BackgroundSettings } from "@/components/settings/background-settings";
 
 type SnapshotEnvelope = Awaited<ReturnType<typeof api.loadSnapshot>>;
 interface SettingsPageProps {
@@ -249,6 +250,7 @@ export function SettingsPage({
         {/* Left Column: Appearance */}
         <Section title={t("settings.appearance")} glow="bg-blue-500/10">
           <AvatarSettings />
+          <BackgroundSettings />
           <SettingRow label={t("settings.theme")}>
             <SettingSegmentedControl
               items={[

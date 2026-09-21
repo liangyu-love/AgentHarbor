@@ -100,6 +100,26 @@
   }
 }
 
+/* Glassmorphism adaptation when custom wallpaper is enabled */
+html[data-has-custom-bg="true"] {
+  --background: 240 4% 97.6% / 0.50;
+  --card: 0 0% 100% / 0.82;
+  --popover: 0 0% 100% / 0.90;
+  --sidebar-background: 0 0% 98% / 0.72;
+}
+
+html[data-has-custom-bg="true"].dark {
+  --background: 240 10% 6% / 0.50;
+  --card: 240 8% 11% / 0.82;
+  --popover: 240 8% 11% / 0.90;
+  --sidebar-background: 240 5.9% 10% / 0.72;
+}
+
+html[data-has-custom-bg="true"] .bg-card {
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
 @layer base {
   * {
     @apply border-border;
