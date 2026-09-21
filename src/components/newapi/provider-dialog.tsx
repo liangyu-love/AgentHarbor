@@ -207,7 +207,7 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
           <div className="grid gap-4 sm:grid-cols-2">
             {/* Left Column: Basic Connection */}
             <div className="space-y-3">
-              <SectionLabel>{t("newapi.sectionConnection") || t("newapi.sectionThirdParty")}</SectionLabel>
+              <SectionLabel>{t("newapi.sectionConnection")}</SectionLabel>
               {field("name", "newapi.name", { placeholder: t("newapi.namePlaceholder") })}
               {field("baseUrl", "newapi.url", { placeholder: "https://example.com" })}
               {field("apiKey", "newapi.apiKey", {

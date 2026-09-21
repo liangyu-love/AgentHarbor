@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  CircleHelp, FileDown, FileUp, List, Loader2, Plus, PlugZap, RadioTower, RefreshCw, Settings2, Sparkles, SquarePen, Trash2, X,
+  CircleHelp, FileDown, FileUp, List, Loader2, Network, Plus, PlugZap, RadioTower, RefreshCw, Settings2, Sparkles, SquarePen, Trash2, X,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -19,9 +19,10 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ProviderDialog } from "@/components/newapi/provider-dialog";
+import { ProviderTestDialog } from "@/components/newapi/provider-test-dialog";
 import type { NewApiProvider, NewApiState, NewApiStateChange } from "@/types/newapi";
 
 const STATE_KEY = ["newapi-state"] as const;
@@ -48,12 +49,16 @@ const deepSeekPeakNow = () => {
   return !weekend && ((hour >= 9 && hour < 12) || (hour >= 14 && hour < 18));
 };
 
-function StatusDot({ provider, active }: { provider: NewApiProvider; active: boolean }) {
+function StatusDot({ provider }: { provider: NewApiProvider }) {
   return (
     <span
       className={cn(
         "h-2 w-2 shrink-0 rounded-full",
-        active ? "bg-amber-500" : provider.enabled ? "bg-emerald-500" : "bg-zinc-400 dark:bg-zinc-600",
+        provider.testStatus === "ok"
+          ? "bg-emerald-500"
+          : provider.testStatus === "failed"
+            ? "bg-red-500"
+            : "bg-zinc-400 dark:bg-zinc-600",
       )}
     />
   );
@@ -67,8 +72,8 @@ export function NewApiPage() {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>("all");
   const [dialog, setDialog] = useState<{ open: boolean; provider: NewApiProvider | null }>({ open: false, provider: null });
+  const [testDialog, setTestDialog] = useState<NewApiProvider | null>(null);
   const [removing, setRemoving] = useState<NewApiProvider | null>(null);
-  const [directing, setDirecting] = useState<NewApiProvider | null>(null);
   const [appliedNote, setAppliedNote] = useState<NewApiStateChange["applied"]>(null);
 
   const providers = state.data?.providers ?? [];
@@ -117,7 +122,7 @@ export function NewApiPage() {
     if (!provider.balance) return t("newapi.balanceNotQueried");
     switch (provider.balanceSource) {
       case "newapi": return t("newapi.sourceNewApi");
-      case "billing": return t("newapi.sourceBilling");
+      case "sub2api": return t("newapi.sourceSub2Api");
       case "deepseek": return t("newapi.sourceDeepSeek");
       default: return t("newapi.balanceUndetected");
     }
@@ -319,7 +324,7 @@ export function NewApiPage() {
           </button>
           {providers.map(provider => (
             <button key={provider.id} type="button" onClick={() => setFilter(provider.id)} className={chipClass(filter === provider.id)}>
-              <StatusDot provider={provider} active={provider.id === activeId && routingEnabled} />
+              <StatusDot provider={provider} />
               {provider.name}
             </button>
           ))}
@@ -385,7 +390,7 @@ export function NewApiPage() {
                     {/* Header: Title + Domain + Badges + Switch */}
                     <div className="flex items-center justify-between gap-2.5">
                       <div className="flex min-w-0 items-center gap-2">
-                        <StatusDot provider={provider} active={active} />
+                        <StatusDot provider={provider} />
                         <h3 className="truncate text-[15px] font-semibold tracking-tight">{provider.name}</h3>
                         <span className="shrink-0 rounded bg-black/[0.04] px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground dark:bg-white/[0.06]">
                           {hostOf(provider)}
@@ -428,7 +433,7 @@ export function NewApiPage() {
                             className={iconButton}
                             title={t("newapi.refreshBalance")}
                             aria-label={t("newapi.refreshBalance")}
-                            disabled={lock(`balance:${provider.id}`) || !(provider.hasApiKey || (!!provider.userId && provider.hasAccessToken))}
+                            disabled={lock(`balance:${provider.id}`) || !(provider.hasApiKey || provider.hasAccessToken)}
                             onClick={() =>
                               void run(`balance:${provider.id}`, async () => patchProvider(await api.queryNewApiProviderBalance(provider.id)), t("newapi.balanceFailed"))
                             }
@@ -503,27 +508,59 @@ export function NewApiPage() {
                         )}
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
-                        <button
-                          type="button"
-                          className={cardButton}
-                          title={t("newapi.forceDirect")}
-                          aria-label={t("newapi.forceDirect")}
-                          disabled={!provider.enabled || lock(`direct:${provider.id}`)}
-                          onClick={() => setDirecting(provider)}
-                        >
-                          <PlugZap className={cn("h-3.5 w-3.5", active && !routingEnabled && "text-amber-500")} />
-                        </button>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <button
+                              type="button"
+                              className={cardButton}
+                              title={t("newapi.networkMode")}
+                              aria-label={t("newapi.networkMode")}
+                              disabled={lock(`network:${provider.id}`)}
+                            >
+                              <Network className={cn("h-3.5 w-3.5", provider.networkMode === "direct" ? "text-emerald-600 dark:text-emerald-400" : "text-blue-600 dark:text-blue-400")} />
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="w-52">
+                            <DropdownMenuRadioGroup
+                              value={provider.networkMode}
+                              onValueChange={mode => {
+                                if (mode !== "proxy" && mode !== "direct") return;
+                                void run(`network:${provider.id}`, async () => {
+                                  applyChange(await api.setNewApiProviderNetwork(provider.id, mode));
+                                  toast({
+                                    title: t("newapi.networkUpdated"),
+                                    description: t(mode === "direct" ? "newapi.networkDirectHint" : "newapi.networkProxyHint"),
+                                    variant: "success",
+                                  });
+                                }, t("newapi.networkFailed"));
+                              }}
+                            >
+                              <DropdownMenuRadioItem value="proxy">
+                                <PlugZap className="mr-2 h-4 w-4" />
+                                <span>
+                                  <span className="block">{t("newapi.networkProxy")}</span>
+                                  <span className="block text-[10px] text-muted-foreground">{t("newapi.networkProxyShort")}</span>
+                                </span>
+                              </DropdownMenuRadioItem>
+                              <DropdownMenuRadioItem value="direct">
+                                <Network className="mr-2 h-4 w-4" />
+                                <span>
+                                  <span className="block">{t("newapi.networkDirect")}</span>
+                                  <span className="block text-[10px] text-muted-foreground">{t("newapi.networkDirectShort")}</span>
+                                </span>
+                              </DropdownMenuRadioItem>
+                            </DropdownMenuRadioGroup>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                         <button
                           type="button"
                           className={cardButton}
                           title={t("newapi.test")}
                           aria-label={t("newapi.test")}
                           disabled={lock(`test:${provider.id}`) || !provider.hasApiKey}
-                          onClick={() =>
-                            void run(`test:${provider.id}`, async () => patchProvider(await api.testNewApiProvider(provider.id)), t("newapi.testFailed"))
-                          }
+                          onClick={() => setTestDialog(provider)}
                         >
-                          {busy === `test:${provider.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RadioTower className="h-3.5 w-3.5" />}
+                          <RadioTower className="h-3.5 w-3.5" />
                         </button>
                         <button
                           type="button"
@@ -562,32 +599,13 @@ export function NewApiPage() {
         onSaved={applyChange}
       />
 
-      <AlertDialog open={directing !== null} onOpenChange={open => !open && setDirecting(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t("newapi.confirmDirectTitle")}</AlertDialogTitle>
-            <AlertDialogDescription>{t("newapi.confirmDirectBody", { name: directing?.name ?? "" })}</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                const provider = directing;
-                setDirecting(null);
-                if (provider) {
-                  void run(`direct:${provider.id}`, async () => {
-                    const change = await api.setNewApiDirect(provider.id);
-                    applyChange(change);
-                    toast({ title: t("newapi.directApplied"), description: change.applied?.path ?? undefined, variant: "success" });
-                  }, t("newapi.routeFailed"));
-                }
-              }}
-            >
-              {t("newapi.confirmDirectAction")}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ProviderTestDialog
+        open={testDialog !== null}
+        provider={testDialog}
+        onOpenChange={open => !open && setTestDialog(null)}
+        onTested={patchProvider}
+        onFailed={() => void state.refetch()}
+      />
 
       <AlertDialog open={removing !== null} onOpenChange={open => !open && setRemoving(null)}>
         <AlertDialogContent>

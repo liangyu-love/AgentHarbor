@@ -43,22 +43,19 @@ pub fn set_newapi_provider_enabled(repo: State<'_, Mutex<Repository>>, id: Strin
 }
 
 #[tauri::command]
-pub fn set_newapi_active_provider(repo: State<'_, Mutex<Repository>>, id: String) -> Result<StateChange, String> {
-    router::set_active(&paths(&repo)?, &id)
+pub fn set_newapi_provider_network(repo: State<'_, Mutex<Repository>>, id: String, mode: String) -> Result<StateChange, String> {
+    router::set_network_mode(&paths(&repo)?, &id, &mode)
 }
 
 #[tauri::command]
-pub fn set_newapi_direct(repo: State<'_, Mutex<Repository>>, id: String) -> Result<StateChange, String> {
-    let change = router::set_direct(&paths(&repo)?, &id)?;
-    router_proxy::stop();
-    Ok(change)
-}
-
-#[tauri::command]
-pub async fn test_newapi_provider(repo: State<'_, Mutex<Repository>>, id: String) -> Result<ProviderView, String> {
+pub async fn test_newapi_provider(
+    repo: State<'_, Mutex<Repository>>,
+    id: String,
+    model: String,
+) -> Result<ProviderView, String> {
     let paths = paths(&repo)?;
     let proxy = newapi::proxy_from_settings(&paths.settings_path);
-    tauri::async_runtime::spawn_blocking(move || router::test_provider(&paths, &id, &proxy))
+    tauri::async_runtime::spawn_blocking(move || router::test_provider(&paths, &id, &model, &proxy))
         .await
         .map_err(|_| "newapi.errors.network")?
 }

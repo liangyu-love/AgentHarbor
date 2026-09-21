@@ -1,6 +1,10 @@
 use super::{models::ApiProxyConfigPayload, secret_file, storage};
 use crate::platform::paths::CodexPaths;
-use reqwest::{blocking::Client, header::{HeaderMap, HeaderValue, AUTHORIZATION}, Url};
+use reqwest::{
+    blocking::{Client, Response},
+    header::{HeaderMap, HeaderValue, AUTHORIZATION},
+    StatusCode, Url,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{io::Read, path::Path, time::Duration};
@@ -117,16 +121,44 @@ pub(crate) fn client(proxy: &ApiProxyConfigPayload) -> Result<Client, String> {
     builder.build().map_err(|_| "newapi.errors.network".into())
 }
 
+/// 按供应商网络模式计算实际代理配置：direct 直连（忽略全局代理），其余跟随全局设置。
+pub(crate) fn effective_proxy(network_mode: &str, proxy: &ApiProxyConfigPayload) -> ApiProxyConfigPayload {
+    if network_mode == "direct" {
+        ApiProxyConfigPayload { mode: super::models::ApiProxyMode::Direct, url: None }
+    } else {
+        proxy.clone()
+    }
+}
+
 pub(crate) fn get(client: &Client, url: Url, headers: HeaderMap) -> Result<Value, String> {
-    let response = client.get(url).headers(headers).send().map_err(|e| {
-        if e.is_timeout() { "newapi.errors.timeout" } else { "newapi.errors.network" }
-    })?;
+    let response = client.get(url).headers(headers).send().map_err(request_error)?;
+    response_json(response)
+}
+
+fn request_error(error: reqwest::Error) -> String {
+    if error.is_timeout() {
+        "newapi.errors.timeout"
+    } else {
+        "newapi.errors.network"
+    }
+    .into()
+}
+
+fn status_error(status: StatusCode) -> String {
+    match status.as_u16() {
+        401 | 403 => "newapi.errors.auth",
+        404 => "newapi.errors.notFound",
+        429 => "newapi.errors.rateLimit",
+        300..=399 => "newapi.errors.redirect",
+        _ => "newapi.errors.server",
+    }
+    .into()
+}
+
+fn response_json(response: Response) -> Result<Value, String> {
     let status = response.status();
     if !status.is_success() {
-        return Err(match status.as_u16() {
-            401 | 403 => "newapi.errors.auth", 404 => "newapi.errors.notFound", 429 => "newapi.errors.rateLimit",
-            300..=399 => "newapi.errors.redirect", _ => "newapi.errors.server",
-        }.into());
+        return Err(status_error(status));
     }
     let mut body = Vec::new();
     response.take(2 * 1024 * 1024 + 1).read_to_end(&mut body).map_err(|_| "newapi.errors.network")?;
@@ -232,6 +264,38 @@ pub fn models(config: &Connection, proxy: &ApiProxyConfigPayload) -> Result<Vec<
     parse_models(&get(&client(proxy)?, endpoint(config, "v1/models")?, headers)?)
 }
 
+/// 真实连通性测试：向用户选择的模型发送一条 "hi" 聊天请求。
+/// 仅 2xx 且返回有效 Chat Completions choices 才算通过。
+pub fn test_chat(config: &Connection, model: &str, proxy: &ApiProxyConfigPayload) -> Result<(), String> {
+    let model = model.trim();
+    if model.is_empty() || model.len() > 200 || model.chars().any(char::is_control) {
+        return Err("newapi.errors.modelRequired".into());
+    }
+    let mut headers = HeaderMap::new();
+    headers.insert(AUTHORIZATION, auth_header(&config.api_key)?);
+    headers.insert(reqwest::header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [{ "role": "user", "content": "hi" }],
+        "max_tokens": 1,
+        "stream": false,
+    });
+    let value = response_json(
+        client(proxy)?
+        .post(endpoint(config, "v1/chat/completions")?)
+        .headers(headers)
+        .json(&body)
+        .send()
+        .map_err(request_error)?,
+    )?;
+    value
+        .get("choices")
+        .and_then(Value::as_array)
+        .filter(|choices| !choices.is_empty())
+        .map(|_| ())
+        .ok_or_else(|| "newapi.errors.response".into())
+}
+
 pub fn config_snippet(config: &Connection) -> Result<String, String> {
     validate_limits(config)?;
     if config.model.is_empty() { return Err("newapi.errors.model".into()); }
@@ -301,11 +365,53 @@ pub fn proxy_from_settings(path: &Path) -> ApiProxyConfigPayload {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::io::Write;
+    use std::io::{Read, Write};
 
     fn connection() -> Connection {
         Connection { base_url: "https://example.com/".into(), user_id: Some(42), access_token: "fixture-user-token".into(),
             api_key: "sk-fixture-model-key".into(), model: "fixture-model".into(), ..Default::default() }
+    }
+
+    fn request_is_complete(bytes: &[u8]) -> bool {
+        let text = String::from_utf8_lossy(bytes);
+        let Some(header_end) = text.find("\r\n\r\n") else { return false };
+        let content_length = text[..header_end]
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+            .unwrap_or(0);
+        bytes.len() >= header_end + 4 + content_length
+    }
+
+    fn chat_server(
+        status: &'static str,
+        body: &'static str,
+    ) -> (String, std::thread::JoinHandle<String>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                let count = stream.read(&mut chunk).unwrap();
+                if count == 0 { break }
+                request.extend_from_slice(&chunk[..count]);
+                if request_is_complete(&request) { break }
+            }
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            String::from_utf8(request).unwrap()
+        });
+        (format!("http://{address}/"), server)
     }
 
     #[test]
@@ -331,6 +437,51 @@ mod tests {
         assert_eq!(result[0].context_window, None);
         assert_eq!(result[1].context_window, Some(128000));
         assert!(parse_models(&json!({"error":"not authorized"})).is_err());
+    }
+
+    #[test]
+    fn provider_network_mode_either_preserves_or_bypasses_the_global_proxy() {
+        let global = ApiProxyConfigPayload {
+            mode: super::super::models::ApiProxyMode::Manual,
+            url: Some("socks5://127.0.0.1:10808".into()),
+        };
+        assert_eq!(effective_proxy("proxy", &global), global);
+        assert_eq!(
+            effective_proxy("direct", &global),
+            ApiProxyConfigPayload::default()
+        );
+    }
+
+    #[test]
+    fn chat_test_posts_hi_to_the_selected_model() {
+        let (base_url, server) = chat_server(
+            "200 OK",
+            r#"{"id":"chatcmpl-test","choices":[{"message":{"role":"assistant","content":"ok"}}]}"#,
+        );
+        let mut connection = connection();
+        connection.base_url = base_url;
+        test_chat(&connection, "selected-model", &ApiProxyConfigPayload::default()).unwrap();
+
+        let request = server.join().unwrap();
+        let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+        assert!(headers.starts_with("POST /v1/chat/completions HTTP/1.1"));
+        assert!(headers.to_ascii_lowercase().contains("authorization: bearer sk-fixture-model-key"));
+        let body: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(body.get("model").and_then(Value::as_str), Some("selected-model"));
+        assert_eq!(body.pointer("/messages/0/content").and_then(Value::as_str), Some("hi"));
+        assert_eq!(body.get("stream").and_then(Value::as_bool), Some(false));
+    }
+
+    #[test]
+    fn chat_test_rejects_error_json_even_with_a_success_status() {
+        let (base_url, server) = chat_server("200 OK", r#"{"error":{"message":"model unavailable"}}"#);
+        let mut connection = connection();
+        connection.base_url = base_url;
+        assert_eq!(
+            test_chat(&connection, "selected-model", &ApiProxyConfigPayload::default()).unwrap_err(),
+            "newapi.errors.response"
+        );
+        server.join().unwrap();
     }
 
     #[test]

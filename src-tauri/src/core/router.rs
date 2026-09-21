@@ -18,6 +18,7 @@ const PREVIOUS_CATALOG_PROVIDER_KEY: &str = "codexharbor_relay";
 const PREVIOUS_DIRECT_PROVIDER_KEY: &str = "codexharbor_newapi";
 const PREVIOUS_RELAY_MODEL_PREFIX: &str = "aimami_relay_";
 const MAX_PROVIDERS: usize = 64;
+const STORE_VERSION: u32 = 2;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -32,6 +33,9 @@ pub struct Provider {
     pub context_window: Option<u64>,
     pub auto_compact_limit: Option<u64>,
     pub enabled: bool,
+    /// 该供应商的网络出口：proxy = 跟随全局代理设置，direct = 直连不走代理。
+    #[serde(default)]
+    pub network_mode: String,
     pub models: Vec<newapi::Model>,
     pub models_fetched_at: Option<i64>,
     pub balance: Option<newapi::Balance>,
@@ -86,6 +90,7 @@ pub struct ProviderView {
     pub context_window: Option<u64>,
     pub auto_compact_limit: Option<u64>,
     pub enabled: bool,
+    pub network_mode: String,
     pub models: Vec<newapi::Model>,
     pub models_fetched_at: Option<i64>,
     pub balance: Option<newapi::Balance>,
@@ -109,6 +114,7 @@ impl Provider {
             context_window: self.context_window,
             auto_compact_limit: self.auto_compact_limit,
             enabled: self.enabled,
+            network_mode: self.network_mode().to_owned(),
             models: self.models.clone(),
             models_fetched_at: self.models_fetched_at,
             balance: self.balance.clone(),
@@ -125,6 +131,15 @@ impl Provider {
             && !self.api_key.is_empty()
             && !self.model.is_empty()
             && self.model_supports_responses()
+    }
+
+    /// proxy = 跟随全局代理（默认），direct = 直连。
+    pub fn network_mode(&self) -> &str {
+        if self.network_mode == "direct" {
+            "direct"
+        } else {
+            "proxy"
+        }
     }
 
     fn model_supports_responses(&self) -> bool {
@@ -189,6 +204,9 @@ pub struct ProviderInput {
     pub model: String,
     pub context_window: Option<u64>,
     pub auto_compact_limit: Option<u64>,
+    /// 可选：proxy / direct；编辑时留空表示保持原设置。
+    #[serde(default)]
+    pub network_mode: String,
 }
 
 fn now() -> i64 {
@@ -213,6 +231,17 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
         let mut store: Store = serde_json::from_slice(&bytes).map_err(|_| "newapi.errors.storage")?;
         let mut changed = false;
         let mut removed_incompatible_route = false;
+        if store.version < STORE_VERSION {
+            // Older builds treated a successful model-list request as a
+            // connectivity test. Require one real chat request before showing
+            // a provider as reachable.
+            for provider in &mut store.providers {
+                provider.test_status = "untested".into();
+                provider.test_at = None;
+            }
+            store.version = STORE_VERSION;
+            changed = true;
+        }
         let mut migrated_previous_identity = store.router.port == PREVIOUS_DEFAULT_PORT
             || store.router.bearer_token.starts_with("aimami_")
             || store.router.bearer_token.starts_with("codexharbor_");
@@ -272,6 +301,7 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
         Some(store) => store,
         None => migrate_legacy_connection(paths)?.unwrap_or_default(),
     };
+    store.version = STORE_VERSION;
     store.router.bearer_token = new_router_bearer();
     // Persist the promoted store so later reads do not depend on the foreign files.
     save_store_unlocked(paths, &store)?;
@@ -330,7 +360,7 @@ fn migrate_original_relay(paths: &CodexPaths) -> Result<Option<Store>, String> {
             model: item.get("model").and_then(Value::as_str).unwrap_or("").trim().to_owned(),
             models_fetched_at: (!models.is_empty() && updated > 0).then_some(updated),
             enabled: active.iter().any(|a| a == id),
-            test_status: if models.is_empty() { "untested".to_owned() } else { "ok".to_owned() },
+            test_status: "untested".to_owned(),
             created_at: item.get("createdAt").and_then(Value::as_i64).unwrap_or(0) / 1000,
             updated_at: updated,
             models,
@@ -340,7 +370,7 @@ fn migrate_original_relay(paths: &CodexPaths) -> Result<Option<Store>, String> {
     if providers.is_empty() { return Ok(None) }
     let active_provider_id = providers.iter().find(|provider| provider.enabled).map(|provider| provider.id.clone());
     Ok(Some(Store {
-        version: 1,
+        version: STORE_VERSION,
         providers,
         active_provider_id,
         router: RouterSettings {
@@ -393,7 +423,7 @@ fn migrate_legacy_connection(paths: &CodexPaths) -> Result<Option<Store>, String
         updated_at: now(),
         ..Default::default()
     };
-    Ok(Some(Store { version: 1, providers: vec![provider], ..Default::default() }))
+    Ok(Some(Store { version: STORE_VERSION, providers: vec![provider], ..Default::default() }))
 }
 
 fn save_store_unlocked(paths: &CodexPaths, store: &Store) -> Result<(), String> {
@@ -406,18 +436,17 @@ pub(crate) fn state_from_store(store: &Store, proxy_running: bool) -> NewApiStat
         providers: store.providers.iter().map(Provider::view).collect(),
         router: RouterView { enabled: store.router.enabled, accountless: store.router.accountless, port: store.router.port },
         proxy_running,
-        active_provider_id: store.active_provider_id.clone(),
+        active_provider_id: effective_active(store).map(|provider| provider.id.clone()),
     }
 }
 
 /// The provider traffic is routed to: the pinned one, else the first enabled.
-pub fn effective_active(store: &Store) -> Option<Provider> {
+pub fn effective_active(store: &Store) -> Option<&Provider> {
     store
         .active_provider_id
         .as_ref()
         .and_then(|id| store.providers.iter().find(|p| &p.id == id && p.is_routable()))
         .or_else(|| store.providers.iter().find(|p| p.is_routable()))
-        .cloned()
 }
 
 pub fn routable(store: &Store) -> Vec<&Provider> {
@@ -430,7 +459,7 @@ fn validate_input(input: &mut ProviderInput) -> Result<(), String> {
         return Err("newapi.errors.name".into());
     }
     input.base_url = newapi::base_url(&input.base_url)?.to_string();
-    if input.user_id == Some(0) {
+    if input.user_id == Some(0) || input.user_id.is_some_and(|value| value > 9_007_199_254_740_991) {
         return Err("newapi.errors.userId".into());
     }
     input.access_token = input.access_token.trim().to_owned();
@@ -468,16 +497,27 @@ pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<Sta
     match input.id.as_ref().and_then(|id| store.providers.iter_mut().find(|p| &p.id == id)) {
         Some(provider) => {
             // Never silently send credentials from one site/account to another.
-            let same_site = provider.base_url == input.base_url && provider.user_id == input.user_id;
+            let same_site = provider.base_url == input.base_url;
             if same_site {
-                if input.access_token.is_empty() {
+                if input.access_token.is_empty() && provider.user_id == input.user_id {
                     input.access_token = provider.access_token.clone();
                 }
                 if input.api_key.is_empty() {
                     input.api_key = provider.api_key.clone();
                 }
             }
-            let site_changed = provider.base_url != input.base_url;
+            let next_network_mode = if matches!(input.network_mode.as_str(), "proxy" | "direct") {
+                input.network_mode.clone()
+            } else {
+                provider.network_mode().to_owned()
+            };
+            let models_changed = provider.base_url != input.base_url || provider.api_key != input.api_key;
+            let balance_changed = models_changed
+                || provider.user_id != input.user_id
+                || provider.access_token != input.access_token;
+            let connection_changed = models_changed
+                || provider.model != input.model
+                || provider.network_mode() != next_network_mode;
             provider.name = input.name.clone();
             provider.base_url = input.base_url.clone();
             provider.user_id = input.user_id;
@@ -486,12 +526,17 @@ pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<Sta
             provider.model = input.model.clone();
             provider.context_window = input.context_window;
             provider.auto_compact_limit = input.auto_compact_limit;
+            provider.network_mode = next_network_mode;
             provider.updated_at = timestamp;
-            if site_changed {
+            if models_changed {
                 provider.models.clear();
                 provider.models_fetched_at = None;
+            }
+            if balance_changed {
                 provider.balance = None;
                 provider.balance_source = None;
+            }
+            if connection_changed {
                 provider.test_status = "untested".into();
                 provider.test_at = None;
             }
@@ -515,6 +560,7 @@ pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<Sta
                 context_window: input.context_window,
                 auto_compact_limit: input.auto_compact_limit,
                 enabled: false,
+                network_mode: if input.network_mode == "direct" { "direct".into() } else { "proxy".into() },
                 test_status: "untested".into(),
                 created_at: timestamp,
                 updated_at: timestamp,
@@ -562,44 +608,6 @@ pub fn set_enabled(paths: &CodexPaths, id: &str, enabled: bool) -> Result<StateC
     Ok(StateChange { state: state_from_store(&store, super::router_proxy::is_running()), applied })
 }
 
-pub fn set_active(paths: &CodexPaths, id: &str) -> Result<StateChange, String> {
-    let _guard = store_write_guard()?;
-    let mut store = load_store_unlocked(paths)?;
-    let provider = store.providers.iter().find(|p| p.id == id).ok_or("newapi.errors.notFound")?;
-    if !provider.is_routable() {
-        return Err("newapi.errors.enableRequirements".into());
-    }
-    store.active_provider_id = Some(id.to_owned());
-    let applied = apply_routing_if_enabled(paths, &store)?;
-    save_store_unlocked(paths, &store)?;
-    Ok(StateChange { state: state_from_store(&store, super::router_proxy::is_running()), applied })
-}
-
-/// Point Codex straight at this provider (key embedded in its config), bypassing
-/// the local routing proxy entirely.
-pub fn set_direct(paths: &CodexPaths, id: &str) -> Result<StateChange, String> {
-    let _guard = store_write_guard()?;
-    let mut store = load_store_unlocked(paths)?;
-    let index = store.providers.iter().position(|p| p.id == id).ok_or("newapi.errors.notFound")?;
-    if !store.providers[index].is_routable() {
-        return Err("newapi.errors.enableRequirements".into());
-    }
-    store.active_provider_id = Some(id.to_owned());
-    store.router.enabled = false;
-    let provider = &store.providers[index];
-    let connection = newapi::Connection {
-        base_url: provider.base_url.clone(),
-        api_key: provider.api_key.clone(),
-        model: provider.model.clone(),
-        context_window: provider.context_window,
-        auto_compact_limit: provider.auto_compact_limit,
-        ..Default::default()
-    };
-    let applied = newapi::apply_config(paths, &connection, true)?;
-    save_store_unlocked(paths, &store)?;
-    Ok(StateChange { state: state_from_store(&store, super::router_proxy::is_running()), applied: Some(applied) })
-}
-
 pub fn fetch_models(
     paths: &CodexPaths,
     provider_id: Option<&str>,
@@ -608,13 +616,17 @@ pub fn fetch_models(
     proxy: &ApiProxyConfigPayload,
 ) -> Result<Vec<newapi::Model>, String> {
     let mut key = api_key.trim().to_owned();
-    if key.is_empty() {
-        if let Some(id) = provider_id {
-            let store = load_store(paths)?;
-            if let Some(provider) = store.providers.iter().find(|p| p.id == id) {
-                let same_site = newapi::base_url(&provider.base_url).ok().map(|u| u.to_string())
-                    == newapi::base_url(base_url).ok().map(|u| u.to_string());
-                if same_site { key = provider.api_key.clone(); }
+    let mut network_direct = false;
+    let mut cache_snapshot = None;
+    if let Some(id) = provider_id {
+        let store = load_store(paths)?;
+        if let Some(provider) = store.providers.iter().find(|p| p.id == id) {
+            let same_site = newapi::base_url(&provider.base_url).ok().map(|u| u.to_string())
+                == newapi::base_url(base_url).ok().map(|u| u.to_string());
+            if same_site {
+                if key.is_empty() { key = provider.api_key.clone(); }
+                network_direct = provider.network_mode() == "direct";
+                cache_snapshot = Some(provider.clone());
             }
         }
     }
@@ -624,10 +636,33 @@ pub fn fetch_models(
         api_key: key,
         ..Default::default()
     };
-    newapi::models(&connection, proxy)
+    let models = newapi::models(
+        &connection,
+        &newapi::effective_proxy(if network_direct { "direct" } else { "proxy" }, proxy),
+    )?;
+    if let Some(snapshot) = cache_snapshot.filter(|provider| provider.api_key == connection.api_key) {
+        let _guard = store_write_guard()?;
+        let mut store = load_store_unlocked(paths)?;
+        if let Some(provider) = store.providers.iter_mut().find(|provider| provider.id == snapshot.id) {
+            if provider.base_url == snapshot.base_url
+                && provider.api_key == snapshot.api_key
+                && provider.network_mode() == snapshot.network_mode()
+            {
+                provider.models = models.clone();
+                provider.models_fetched_at = Some(now());
+                save_store_unlocked(paths, &store)?;
+            }
+        }
+    }
+    Ok(models)
 }
 
-pub fn test_provider(paths: &CodexPaths, id: &str, proxy: &ApiProxyConfigPayload) -> Result<ProviderView, String> {
+pub fn test_provider(
+    paths: &CodexPaths,
+    id: &str,
+    model: &str,
+    proxy: &ApiProxyConfigPayload,
+) -> Result<ProviderView, String> {
     let snapshot = {
         let _guard = store_write_guard()?;
         let store = load_store_unlocked(paths)?;
@@ -637,19 +672,24 @@ pub fn test_provider(paths: &CodexPaths, id: &str, proxy: &ApiProxyConfigPayload
     if connection.api_key.is_empty() {
         return Err("newapi.errors.apiKeyRequired".into());
     }
-    let result = newapi::models(&connection, proxy);
+    // 遵循该供应商自己的网络模式（系统代理 / 直连）。
+    let provider_proxy = newapi::effective_proxy(snapshot.network_mode(), proxy);
+    // 模型列表由选择弹窗预先拉取，这里只执行真正决定状态的模型请求。
+    let test_model = model.trim();
+    let result = newapi::test_chat(&connection, test_model, &provider_proxy);
     let _guard = store_write_guard()?;
     let mut store = load_store_unlocked(paths)?;
     let index = store.providers.iter().position(|p| p.id == id).ok_or("newapi.errors.notFound")?;
-    if store.providers[index].base_url != snapshot.base_url || store.providers[index].api_key != snapshot.api_key {
+    if store.providers[index].base_url != snapshot.base_url
+        || store.providers[index].api_key != snapshot.api_key
+        || store.providers[index].network_mode() != snapshot.network_mode()
+    {
         return Err("newapi.errors.changed".into());
     }
     let provider = &mut store.providers[index];
     let timestamp = now();
     match result {
-        Ok(models) => {
-            provider.models = models;
-            provider.models_fetched_at = Some(timestamp);
+        Ok(()) => {
             provider.test_status = "ok".into();
             provider.test_at = Some(timestamp);
         }
@@ -664,8 +704,33 @@ pub fn test_provider(paths: &CodexPaths, id: &str, proxy: &ApiProxyConfigPayload
     Ok(store.providers[index].view())
 }
 
-// Balance detection order: NewAPI user endpoint, OpenAI-compatible billing endpoints,
-// then the DeepSeek official balance endpoint for its known host.
+/// 设置供应商网络出口：proxy = 跟随全局代理，direct = 直连。
+pub fn set_network_mode(paths: &CodexPaths, id: &str, mode: &str) -> Result<StateChange, String> {
+    if !matches!(mode, "proxy" | "direct") {
+        return Err("newapi.errors.networkMode".into());
+    }
+    let _guard = store_write_guard()?;
+    let mut store = load_store_unlocked(paths)?;
+    let provider = store.providers.iter_mut().find(|p| p.id == id).ok_or("newapi.errors.notFound")?;
+    if provider.network_mode() == mode {
+        return Ok(StateChange {
+            state: state_from_store(&store, super::router_proxy::is_running()),
+            applied: None,
+        });
+    }
+    provider.network_mode = mode.to_owned();
+    provider.test_status = "untested".into();
+    provider.test_at = None;
+    provider.updated_at = now();
+    save_store_unlocked(paths, &store)?;
+    Ok(StateChange {
+        state: state_from_store(&store, super::router_proxy::is_running()),
+        applied: None,
+    })
+}
+
+// 余额适配由 router_balance 隔离：官方域名走官方协议，自定义域名先通过
+// 无凭据公开接口识别 NewAPI / Sub2API，再发送对应的账户访问令牌。
 pub fn query_provider_balance(paths: &CodexPaths, id: &str, proxy: &ApiProxyConfigPayload) -> Result<ProviderView, String> {
     let snapshot = {
         let _guard = store_write_guard()?;
@@ -679,7 +744,8 @@ pub fn query_provider_balance(paths: &CodexPaths, id: &str, proxy: &ApiProxyConf
         api_key: snapshot.api_key.clone(),
         ..Default::default()
     };
-    let (balance, source) = router_balance::query(&connection, proxy)?;
+    let provider_proxy = newapi::effective_proxy(snapshot.network_mode(), proxy);
+    let (balance, source) = router_balance::query(&connection, &provider_proxy)?;
     let _guard = store_write_guard()?;
     let mut store = load_store_unlocked(paths)?;
     let index = store.providers.iter().position(|p| p.id == id).ok_or("newapi.errors.notFound")?;
@@ -830,10 +896,6 @@ pub fn apply_routing_config(paths: &CodexPaths, store: &Store) -> Result<newapi:
         return Err("newapi.errors.storage".into());
     }
     let active = effective_active(store).ok_or("newapi.errors.noActiveProvider")?;
-    let entries = routable(store);
-    if !entries.iter().any(|p| p.id == active.id) {
-        return Err("newapi.errors.noActiveProvider".into());
-    }
     let (original, mut document) = open_config(paths)?;
     if document.get("model_providers").is_some_and(|item| !item.is_table()) {
         return Err("newapi.errors.configParse".into());
@@ -858,7 +920,6 @@ pub fn apply_routing_config(paths: &CodexPaths, store: &Store) -> Result<newapi:
         providers.set_implicit(true);
         document["model_providers"] = toml_edit::Item::Table(providers);
     }
-    let _ = entries;
     let entry = &mut document["model_providers"][CATALOG_PROVIDER_KEY];
     *entry = toml_edit::Item::Table(toml_edit::Table::new());
     entry["name"] = value("AgentHarbor 智能路由");
@@ -1036,6 +1097,7 @@ pub fn export_providers(paths: &CodexPaths, path: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::core::models::ApiProxyConfigPayload;
+    use std::io::{Read, Write};
 
     fn paths() -> (tempfile::TempDir, CodexPaths) {
         let dir = tempfile::tempdir().unwrap();
@@ -1054,7 +1116,123 @@ mod tests {
             model: "model-a".into(),
             context_window: None,
             auto_compact_limit: None,
+            network_mode: "proxy".into(),
         }
+    }
+
+    fn mark_tested(paths: &CodexPaths, id: &str) {
+        let mut store = load_store(paths).unwrap();
+        let provider = store.providers.iter_mut().find(|provider| provider.id == id).unwrap();
+        provider.test_status = "ok".into();
+        provider.test_at = Some(123);
+        save_store_unlocked(paths, &store).unwrap();
+    }
+
+    #[test]
+    fn old_model_fetch_status_is_reset_until_a_real_chat_test_runs() {
+        let (_dir, paths) = paths();
+        let provider = Provider {
+            id: "legacy-provider".into(),
+            name: "Legacy".into(),
+            base_url: "https://legacy.example.com/".into(),
+            test_status: "ok".into(),
+            test_at: Some(123),
+            models: vec![newapi::Model { id: "model-a".into(), ..Default::default() }],
+            ..Default::default()
+        };
+        let store = Store { version: 1, providers: vec![provider], ..Default::default() };
+        secret_file::write(&store_path(&paths), &serde_json::to_vec(&store).unwrap()).unwrap();
+
+        let migrated = load_store(&paths).unwrap();
+        assert_eq!(migrated.version, STORE_VERSION);
+        assert_eq!(migrated.providers[0].test_status, "untested");
+        assert_eq!(migrated.providers[0].test_at, None);
+        assert_eq!(migrated.providers[0].models.len(), 1);
+
+        // Persisting the version prevents later loads from clearing a new real
+        // test result.
+        mark_tested(&paths, "legacy-provider");
+        assert_eq!(load_store(&paths).unwrap().providers[0].test_status, "ok");
+    }
+
+    #[test]
+    fn connection_edits_and_network_mode_reset_connectivity_status() {
+        let (_dir, paths) = paths();
+        let state = save_provider(&paths, input("Relay A", "https://a.example.com")).unwrap();
+        let id = state.state.providers[0].id.clone();
+
+        mark_tested(&paths, &id);
+        let mut rename = input("Renamed", "https://a.example.com");
+        rename.id = Some(id.clone());
+        rename.access_token.clear();
+        rename.api_key.clear();
+        let renamed = save_provider(&paths, rename).unwrap();
+        assert_eq!(renamed.state.providers[0].test_status, "ok");
+
+        mark_tested(&paths, &id);
+        let mut model_edit = input("Renamed", "https://a.example.com");
+        model_edit.id = Some(id.clone());
+        model_edit.model = "model-b".into();
+        let changed = save_provider(&paths, model_edit).unwrap();
+        assert_eq!(changed.state.providers[0].test_status, "untested");
+        assert_eq!(changed.state.providers[0].test_at, None);
+
+        mark_tested(&paths, &id);
+        let mut key_edit = input("Renamed", "https://a.example.com");
+        key_edit.id = Some(id.clone());
+        key_edit.model = "model-b".into();
+        key_edit.api_key = "sk-b".into();
+        let changed = save_provider(&paths, key_edit).unwrap();
+        assert_eq!(changed.state.providers[0].test_status, "untested");
+
+        mark_tested(&paths, &id);
+        let mut url_edit = input("Renamed", "https://b.example.com");
+        url_edit.id = Some(id.clone());
+        url_edit.model = "model-b".into();
+        url_edit.api_key = "sk-b".into();
+        let changed = save_provider(&paths, url_edit).unwrap();
+        assert_eq!(changed.state.providers[0].test_status, "untested");
+
+        mark_tested(&paths, &id);
+        let network = set_network_mode(&paths, &id, "direct").unwrap();
+        assert_eq!(network.state.providers[0].network_mode, "direct");
+        assert_eq!(network.state.providers[0].test_status, "untested");
+        assert_eq!(network.state.providers[0].test_at, None);
+
+        mark_tested(&paths, &id);
+        assert_eq!(set_network_mode(&paths, &id, "invalid").unwrap_err(), "newapi.errors.networkMode");
+        assert_eq!(load_store(&paths).unwrap().providers[0].test_status, "ok");
+    }
+
+    #[test]
+    fn failed_chat_request_is_persisted_as_failed_instead_of_reachable() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 4096];
+            let _ = stream.read(&mut request).unwrap();
+            let body = r#"{"error":{"message":"model unavailable"}}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+
+        let (_dir, paths) = paths();
+        let state = save_provider(&paths, input("Relay", &format!("http://{address}/"))).unwrap();
+        let id = state.state.providers[0].id.clone();
+        assert_eq!(
+            test_provider(&paths, &id, "model-a", &ApiProxyConfigPayload::default()).unwrap_err(),
+            "newapi.errors.response"
+        );
+        server.join().unwrap();
+
+        let provider = &load_store(&paths).unwrap().providers[0];
+        assert_eq!(provider.test_status, "failed");
+        assert!(provider.test_at.is_some());
     }
 
     #[test]
@@ -1391,7 +1569,7 @@ mod tests {
         assert_eq!(deepseek.models[0].id, "deepseek-flash");
         assert_eq!(deepseek.models[0].context_window, Some(128000));
         assert!(deepseek.enabled);
-        assert_eq!(deepseek.test_status, "ok");
+        assert_eq!(deepseek.test_status, "untested");
         assert!(!store.providers[1].enabled);
         assert!(!store.router.enabled);
         assert_eq!(store.router.port, DEFAULT_PORT);

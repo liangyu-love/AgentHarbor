@@ -82,6 +82,7 @@ pub async fn ensure_running(port: u16, paths: CodexPaths, proxy: ApiProxyConfigP
         app_data_dir: paths.app_data_dir.clone(),
         auth_path: paths.auth_path.clone(),
         outbound: outbound_client(&proxy)?,
+        outbound_direct: outbound_client(&ApiProxyConfigPayload::default())?,
     });
     tokio::spawn(accept_loop(listener, shutdown_rx, context));
     *handle_slot().lock().map_err(|_| "newapi.errors.storage")? = Some(ProxyHandle { port: bound_port, shutdown: shutdown_tx });
@@ -93,6 +94,8 @@ struct ArcContext {
     app_data_dir: PathBuf,
     auth_path: PathBuf,
     outbound: Client,
+    /// 供应商网络模式为 direct 时使用的无代理客户端。
+    outbound_direct: Client,
 }
 
 async fn accept_loop(listener: tokio::net::TcpListener, mut shutdown: tokio::sync::watch::Receiver<bool>, context: std::sync::Arc<ArcContext>) {
@@ -257,7 +260,7 @@ async fn handle(request: Request<Incoming>, context: std::sync::Arc<ArcContext>)
             }
         }
         ["v1", ..] => match router::effective_active(&store) {
-            Some(provider) => Destination::Provider { provider: Box::new(provider), model_override: None },
+            Some(provider) => Destination::Provider { provider: Box::new(provider.clone()), model_override: None },
             None => return Err((StatusCode::SERVICE_UNAVAILABLE, "no enabled provider for routing")),
         },
         _ => return Err((StatusCode::NOT_FOUND, "unsupported path")),
@@ -300,7 +303,13 @@ async fn handle(request: Request<Incoming>, context: std::sync::Arc<ArcContext>)
         (_, Some(bytes)) => Some(bytes),
     };
 
-    let mut outbound = context.outbound.request(method, url).headers(headers);
+    let outbound_client = match &destination {
+        Destination::Provider { provider, .. } if provider.network_mode() == "direct" => {
+            &context.outbound_direct
+        }
+        _ => &context.outbound,
+    };
+    let mut outbound = outbound_client.request(method, url).headers(headers);
     if let Some(body) = body {
         outbound = outbound.body(body);
     }
@@ -516,15 +525,38 @@ content-length: 22
             let proxy = crate::core::newapi::proxy_from_settings(&paths.settings_path);
             let initial = router::load_store(&paths).unwrap();
             let provider = initial.providers.first().cloned().expect("test relay connection");
+            let models = {
+                let paths = paths.clone();
+                let provider_id = provider.id.clone();
+                let base_url = provider.base_url.clone();
+                let proxy = proxy.clone();
+                tokio::task::spawn_blocking(move || {
+                    router::fetch_models(&paths, Some(&provider_id), &base_url, "", &proxy)
+                })
+                .await
+                .unwrap()
+                .unwrap()
+            };
+            let test_model = models
+                .iter()
+                .find(|model| model.id == provider.model)
+                .or_else(|| models.first())
+                .expect("at least one relay model")
+                .id
+                .clone();
             let tested = {
                 let paths = paths.clone();
                 let provider_id = provider.id.clone();
                 let proxy = proxy.clone();
-                tokio::task::spawn_blocking(move || router::test_provider(&paths, &provider_id, &proxy))
-                    .await
-                    .unwrap()
-                    .unwrap()
+                let test_model = test_model.clone();
+                tokio::task::spawn_blocking(move || {
+                    router::test_provider(&paths, &provider_id, &test_model, &proxy)
+                })
+                .await
+                .unwrap()
+                .unwrap()
             };
+            assert_eq!(tested.test_status, "ok");
             let balance = {
                 let paths = paths.clone();
                 let provider_id = provider.id.clone();
@@ -557,11 +589,11 @@ content-length: 22
                     model,
                     context_window: provider.context_window,
                     auto_compact_limit: provider.auto_compact_limit,
+                    network_mode: provider.network_mode,
                 },
             )
             .unwrap();
             router::set_enabled(&paths, &provider.id, true).unwrap();
-            router::set_active(&paths, &provider.id).unwrap();
 
             let port = {
                 let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();

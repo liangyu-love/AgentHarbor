@@ -40,9 +40,9 @@ export const api = {
   saveNewApiProvider: (provider: NewApiProviderInput) => invoke<NewApiStateChange>("save_newapi_provider", { provider }),
   deleteNewApiProvider: (id: string) => invoke<NewApiStateChange>("delete_newapi_provider", { id }),
   setNewApiProviderEnabled: (id: string, enabled: boolean) => invoke<NewApiStateChange>("set_newapi_provider_enabled", { id, enabled }),
-  setNewApiActiveProvider: (id: string) => invoke<NewApiStateChange>("set_newapi_active_provider", { id }),
-  setNewApiDirect: (id: string) => invoke<NewApiStateChange>("set_newapi_direct", { id }),
-  testNewApiProvider: (id: string) => invoke<NewApiProvider>("test_newapi_provider", { id }),
+  setNewApiProviderNetwork: (id: string, mode: "proxy" | "direct") =>
+    invoke<NewApiStateChange>("set_newapi_provider_network", { id, mode }),
+  testNewApiProvider: (id: string, model: string) => invoke<NewApiProvider>("test_newapi_provider", { id, model }),
   fetchNewApiModels: (providerId: string | null, baseUrl: string, apiKey: string) =>
     invoke<NewApiModel[]>("fetch_newapi_models", { providerId, baseUrl, apiKey }),
   queryNewApiProviderBalance: (id: string) => invoke<NewApiProvider>("query_newapi_provider_balance", { id }),

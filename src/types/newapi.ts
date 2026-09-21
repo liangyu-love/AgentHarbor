@@ -25,6 +25,7 @@ export interface NewApiProvider {
   contextWindow: number | null;
   autoCompactLimit: number | null;
   enabled: boolean;
+  networkMode: "proxy" | "direct";
   models: NewApiModel[];
   modelsFetchedAt: number | null;
   balance: NewApiBalance | null;
@@ -67,4 +68,5 @@ export interface NewApiProviderInput {
   model: string;
   contextWindow: number | null;
   autoCompactLimit: number | null;
+  networkMode?: "proxy" | "direct";
 }
