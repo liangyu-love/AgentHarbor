@@ -239,6 +239,9 @@ export function SettingsPage({
   }, []);
 
   const currentProxy = status?.api.proxy ?? { mode: "direct" as ApiProxyMode, url: null };
+  const currentProxySummary = currentProxy.mode === "manual"
+    ? t("settings.apiProxySummaryManual", { url: currentProxy.url ?? "" })
+    : t("settings.apiProxySummaryDirect");
 
   return (
     <div className="space-y-6">
@@ -365,6 +368,9 @@ export function SettingsPage({
               />
               </fieldset>
             </SettingRow>
+          </Section>
+
+          <Section title={t("settings.networkAndProxy")} glow="bg-cyan-500/10">
             <SettingRow
               label={
                 <div className="flex items-center gap-2">
@@ -374,7 +380,14 @@ export function SettingsPage({
                   </Badge>
                 </div>
               }
-              description={t("settings.apiProxyDesc")}
+              description={
+                <div className="max-w-lg space-y-1">
+                  <p>{t("settings.apiProxyDesc")}</p>
+                  <p className="break-all font-mono text-[11px] text-foreground/70">
+                    {currentProxySummary}
+                  </p>
+                </div>
+              }
             >
               <Button variant="outline" size="sm" onClick={openProxyDialog}>
                 {t("common.edit")}
@@ -505,13 +518,13 @@ function SettingRow({
 }) {
   return (
     <div className="flex items-center justify-between px-5 py-4">
-      <div>
+      <div className="min-w-0 pr-4">
         <span className="text-[13px] font-medium">{label}</span>
         {description && (
           <div className="mt-0.5 text-xs text-muted-foreground">{description}</div>
         )}
       </div>
-      {children}
+      <div className="shrink-0">{children}</div>
     </div>
   );
 }

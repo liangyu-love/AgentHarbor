@@ -16,7 +16,7 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
 const MAX_REQUEST_BODY: usize = 64 * 1024 * 1024;
@@ -28,6 +28,7 @@ pub(crate) type ResponseBody = BoxBody<Bytes, Box<dyn std::error::Error + Send +
 struct ProxyHandle {
     port: u16,
     shutdown: tokio::sync::watch::Sender<bool>,
+    outbound: Arc<RwLock<Client>>,
 }
 
 static HANDLE: OnceLock<Mutex<Option<ProxyHandle>>> = OnceLock::new();
@@ -57,14 +58,31 @@ pub fn stop() {
     }
 }
 
+/// Replace the global outbound client used by an already-running router.
+/// Provider routes configured as `direct` keep using their dedicated direct client.
+pub fn update_proxy(proxy: &ApiProxyConfigPayload) -> Result<(), String> {
+    let client = outbound_client(proxy)?;
+    let outbound = handle_slot()
+        .lock()
+        .map_err(|_| "newapi.errors.storage")?
+        .as_ref()
+        .map(|handle| handle.outbound.clone());
+    if let Some(outbound) = outbound {
+        *outbound.write().map_err(|_| "newapi.errors.storage")? = client;
+    }
+    Ok(())
+}
+
 /// Bind the router on localhost. Returns the actually bound port.
 /// Called from async commands and app setup.
 pub async fn ensure_running(port: u16, paths: CodexPaths, proxy: ApiProxyConfigPayload) -> Result<u16, String> {
     let _start_guard = start_lock().lock().await;
+    let next_outbound = outbound_client(&proxy)?;
     {
         let guard = handle_slot().lock().map_err(|_| "newapi.errors.storage")?;
         if let Some(handle) = guard.as_ref() {
             if handle.port == port {
+                *handle.outbound.write().map_err(|_| "newapi.errors.storage")? = next_outbound;
                 return Ok(handle.port);
             }
         }
@@ -77,15 +95,16 @@ pub async fn ensure_running(port: u16, paths: CodexPaths, proxy: ApiProxyConfigP
         })?;
     let bound_port = listener.local_addr().map_err(|_| "newapi.errors.network".to_owned())?.port();
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let context = std::sync::Arc::new(ArcContext {
+    let outbound = Arc::new(RwLock::new(next_outbound));
+    let context = Arc::new(ArcContext {
         store_path: paths.app_data_dir.join("newapi-providers.dat"),
         app_data_dir: paths.app_data_dir.clone(),
         auth_path: paths.auth_path.clone(),
-        outbound: outbound_client(&proxy)?,
+        outbound: outbound.clone(),
         outbound_direct: outbound_client(&ApiProxyConfigPayload::default())?,
     });
     tokio::spawn(accept_loop(listener, shutdown_rx, context));
-    *handle_slot().lock().map_err(|_| "newapi.errors.storage")? = Some(ProxyHandle { port: bound_port, shutdown: shutdown_tx });
+    *handle_slot().lock().map_err(|_| "newapi.errors.storage")? = Some(ProxyHandle { port: bound_port, shutdown: shutdown_tx, outbound });
     Ok(bound_port)
 }
 
@@ -93,12 +112,12 @@ struct ArcContext {
     store_path: PathBuf,
     app_data_dir: PathBuf,
     auth_path: PathBuf,
-    outbound: Client,
+    outbound: Arc<RwLock<Client>>,
     /// 供应商网络模式为 direct 时使用的无代理客户端。
     outbound_direct: Client,
 }
 
-async fn accept_loop(listener: tokio::net::TcpListener, mut shutdown: tokio::sync::watch::Receiver<bool>, context: std::sync::Arc<ArcContext>) {
+async fn accept_loop(listener: tokio::net::TcpListener, mut shutdown: tokio::sync::watch::Receiver<bool>, context: Arc<ArcContext>) {
     loop {
         tokio::select! {
             _ = shutdown.changed() => break,
@@ -139,7 +158,7 @@ fn json_response(status: StatusCode, message: &str) -> Response<ResponseBody> {
         .expect("static response parts")
 }
 
-async fn forward(request: Request<Incoming>, context: std::sync::Arc<ArcContext>) -> Result<Response<ResponseBody>, std::convert::Infallible> {
+async fn forward(request: Request<Incoming>, context: Arc<ArcContext>) -> Result<Response<ResponseBody>, std::convert::Infallible> {
     Ok(handle(request, context).await.unwrap_or_else(|(status, message)| json_response(status, message)))
 }
 
@@ -152,7 +171,7 @@ enum Destination {
     Official,
 }
 
-async fn handle(request: Request<Incoming>, context: std::sync::Arc<ArcContext>) -> ForwardResult {
+async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> ForwardResult {
     let path = request.uri().path().to_owned();
     let query = request.uri().query().map(str::to_owned);
     if path == "/agentharbor/health" {
@@ -305,9 +324,11 @@ async fn handle(request: Request<Incoming>, context: std::sync::Arc<ArcContext>)
 
     let outbound_client = match &destination {
         Destination::Provider { provider, .. } if provider.network_mode() == "direct" => {
-            &context.outbound_direct
+            context.outbound_direct.clone()
         }
-        _ => &context.outbound,
+        _ => context.outbound.read()
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "router network state unavailable"))?
+            .clone(),
     };
     let mut outbound = outbound_client.request(method, url).headers(headers);
     if let Some(body) = body {
@@ -472,6 +493,34 @@ content-length: 22
                 .await
                 .unwrap();
             assert_eq!(response.status(), 200);
+            let response = client
+                .get(format!("{base}/v1/models"))
+                .header(AUTHORIZATION, "Bearer router-test-token")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+
+            // Changing the global proxy updates the running router without rebinding it.
+            let unavailable_proxy = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let unavailable_proxy_port = unavailable_proxy.local_addr().unwrap().port();
+            drop(unavailable_proxy);
+            update_proxy(&ApiProxyConfigPayload {
+                mode: super::super::models::ApiProxyMode::Manual,
+                url: Some(format!("http://127.0.0.1:{unavailable_proxy_port}")),
+            })
+            .unwrap();
+            assert_eq!(running_port(), Some(port));
+            let response = client
+                .get(format!("{base}/v1/models"))
+                .header(AUTHORIZATION, "Bearer router-test-token")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 502);
+
+            update_proxy(&ApiProxyConfigPayload::default()).unwrap();
+            assert_eq!(running_port(), Some(port));
             let response = client
                 .get(format!("{base}/v1/models"))
                 .header(AUTHORIZATION, "Bearer router-test-token")

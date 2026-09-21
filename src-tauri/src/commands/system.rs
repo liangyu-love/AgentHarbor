@@ -61,9 +61,13 @@ pub fn set_api_proxy_config(
     mode: ApiProxyMode,
     url: Option<String>,
 ) -> Result<CoreEnvelope<ApiModePayload>, String> {
-    let repo = repo.lock().map_err(|e| e.to_string())?;
-    repo.set_api_proxy_config(mode, url)
-        .map_err(|e| e.to_string())
+    let result = {
+        let repo = repo.lock().map_err(|e| e.to_string())?;
+        repo.set_api_proxy_config(mode, url)
+            .map_err(|e| e.to_string())?
+    };
+    crate::core::router_proxy::update_proxy(&result.data.api.proxy)?;
+    Ok(result)
 }
 
 #[tauri::command]
