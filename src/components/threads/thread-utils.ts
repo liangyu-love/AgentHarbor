@@ -1,6 +1,7 @@
 import type { ThreadSummary } from "@/types/threads";
 
 export type StatusFilter = "all" | "active" | "archived";
+export type SortOption = "updatedAt" | "messages" | "fileSize" | "createdAt";
 
 export interface FolderGroup {
   key: string;
@@ -8,24 +9,60 @@ export interface FolderGroup {
   folderName: string;
   items: ThreadSummary[];
   latestAt: number;
+  totalMessages: number;
+  totalSize: number;
+  userMessages: number;
+  agentMessages: number;
 }
 
+export function formatSize(bytes: number): string {
+  if (!bytes || bytes <= 0) return "0 B";
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${bytes} B`;
+}
+
+export function filterAndSortThreads(
+  threads: ThreadSummary[],
+  status: StatusFilter,
+  query: string,
+  sortBy: SortOption = "updatedAt",
+): ThreadSummary[] {
+  const keyword = query.trim().toLowerCase();
+  const filtered = threads.filter((thread) => {
+    if (status === "active" && thread.archived) return false;
+    if (status === "archived" && !thread.archived) return false;
+    if (!keyword) return true;
+    return (
+      (thread.title || "").toLowerCase().includes(keyword) ||
+      (thread.cwd || "").toLowerCase().includes(keyword) ||
+      (thread.folderName || "").toLowerCase().includes(keyword) ||
+      (thread.id || "").toLowerCase().includes(keyword)
+    );
+  });
+
+  return filtered.sort((a, b) => {
+    switch (sortBy) {
+      case "messages":
+        return (b.userMessages + b.agentMessages) - (a.userMessages + a.agentMessages);
+      case "fileSize":
+        return b.fileSize - a.fileSize;
+      case "createdAt":
+        return b.createdAt - a.createdAt;
+      case "updatedAt":
+      default:
+        return b.updatedAt - a.updatedAt;
+    }
+  });
+}
+
+// Retain backwards compatibility for filterThreads
 export function filterThreads(
   threads: ThreadSummary[],
   status: StatusFilter,
   query: string,
 ): ThreadSummary[] {
-  const keyword = query.trim().toLowerCase();
-  return threads.filter((thread) => {
-    if (status === "active" && thread.archived) return false;
-    if (status === "archived" && !thread.archived) return false;
-    if (!keyword) return true;
-    return (
-      thread.title.toLowerCase().includes(keyword) ||
-      thread.cwd.toLowerCase().includes(keyword) ||
-      thread.folderName.toLowerCase().includes(keyword)
-    );
-  });
+  return filterAndSortThreads(threads, status, query, "updatedAt");
 }
 
 export function groupThreads(threads: ThreadSummary[], unknownFolder: string): FolderGroup[] {
@@ -33,9 +70,14 @@ export function groupThreads(threads: ThreadSummary[], unknownFolder: string): F
   for (const thread of threads) {
     const key = thread.cwd || unknownFolder;
     const existing = groups.get(key);
+    const msgCount = (thread.userMessages || 0) + (thread.agentMessages || 0);
     if (existing) {
       existing.items.push(thread);
       existing.latestAt = Math.max(existing.latestAt, thread.updatedAt);
+      existing.totalMessages += msgCount;
+      existing.userMessages += thread.userMessages || 0;
+      existing.agentMessages += thread.agentMessages || 0;
+      existing.totalSize += thread.fileSize || 0;
       continue;
     }
     groups.set(key, {
@@ -44,6 +86,10 @@ export function groupThreads(threads: ThreadSummary[], unknownFolder: string): F
       folderName: thread.folderName || key,
       items: [thread],
       latestAt: thread.updatedAt,
+      totalMessages: msgCount,
+      totalSize: thread.fileSize || 0,
+      userMessages: thread.userMessages || 0,
+      agentMessages: thread.agentMessages || 0,
     });
   }
   return [...groups.values()].sort((a, b) => b.latestAt - a.latestAt);
