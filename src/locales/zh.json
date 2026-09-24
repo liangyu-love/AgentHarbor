@@ -62,7 +62,7 @@
     "accountlessApplied": "无账号登录模式已更新",
     "addProvider": "添加中转模型",
     "allProviders": "全部",
-    "groupCount": "{{count}} 个分组",
+    "groupCount": "同中转 {{count}} 张卡片",
     "groupMembers": "同站点分组",
     "renameGroup": "设置别名",
     "groupAliasPrompt": "请输入这个中转站的别名",
@@ -226,7 +226,10 @@
     "balanceRemaining": "剩余额度",
     "useDefault": "留空使用默认",
     "dialogTips": "保存模型清单后，在卡片上选择任意模型发送 hi 测试；连通成功后再启用路由注入。",
-    "dialogSubtitle": "凭据只保存在本机：Windows 使用 DPAPI，macOS 和 Linux 使用仅当前用户可读的本地文件。"
+    "dialogSubtitle": "凭据只保存在本机：Windows 使用 DPAPI，macOS 和 Linux 使用仅当前用户可读的本地文件。",
+    "expandAll": "展开同中转配置",
+    "collapseStack": "收起层叠堆叠",
+    "stackDeckTip": "切换同中转下的不同模型配置"
   },
   "avatar": {
     "title": "应用头像",

@@ -62,7 +62,7 @@
     "accountlessApplied": "Accountless login mode updated",
     "addProvider": "Add relay",
     "allProviders": "All",
-    "groupCount": "{{count}} groups",
+    "groupCount": "{{count}} cards in relay",
     "groupMembers": "Site groups",
     "renameGroup": "Set alias",
     "groupAliasPrompt": "Enter an alias for this relay site",
@@ -226,7 +226,10 @@
     "balanceRemaining": "Remaining balance",
     "useDefault": "Blank = default",
     "dialogTips": "Save the catalog, send hi through any model from the card, then enable routing after connectivity succeeds.",
-    "dialogSubtitle": "Credentials stay on this machine. Windows uses DPAPI; macOS and Linux use an owner-only local file."
+    "dialogSubtitle": "Credentials stay on this machine. Windows uses DPAPI; macOS and Linux use an owner-only local file.",
+    "expandAll": "Expand relay configs",
+    "collapseStack": "Collapse card stack",
+    "stackDeckTip": "Switch configs under this relay"
   },
   "avatar": {
     "title": "App avatar",

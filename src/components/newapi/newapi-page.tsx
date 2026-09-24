@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  CircleHelp, FileDown, FileUp, List, Loader2, Network, Plus, PlugZap, RadioTower, RefreshCw, Settings2, Sparkles, SquarePen, Trash2, X,
+  CircleHelp, FileDown, Layers, FileUp, List, Loader2, Network, Plus, PlugZap, RadioTower, RefreshCw, Settings2, Sparkles, SquarePen, Trash2, X,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
-import { AuroraCard } from "@/components/ui/aurora-card";
+import { AuroraCard, LIQUID_GOLD_SHINE } from "@/components/ui/aurora-card";
 import { AnimatedGradientText } from "@/components/ui/animated-gradient-text";
 import { RainbowButton } from "@/registry/magicui/rainbow-button";
 import type { GlowColor } from "@/components/ui/glow-card";
@@ -37,7 +37,7 @@ const protocolBadgeKey: Record<ModelProtocol, string> = {
   anthropicMessages: "newapi.protocolShortAnthropic",
 };
 
-const cardColors: GlowColor[] = ["blue", "purple", "green", "red"];
+const cardColors: GlowColor[] = ["gold", "blue", "purple", "green", "red", "amber"];
 const providerColor = (id: string): GlowColor => {
   let hash = 0;
   for (const ch of id) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
@@ -115,6 +115,8 @@ export function NewApiPage() {
   });
   const [aliasGroup, setAliasGroup] = useState<RelayGroup | null>(null);
   const [aliasDraft, setAliasDraft] = useState("");
+  const [groupMemberSelect, setGroupMemberSelect] = useState<Record<string, string>>({});
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
 
   const providers = state.data?.providers ?? [];
   const router = state.data?.router;
@@ -432,260 +434,422 @@ export function NewApiPage() {
         ) : (
           <div className="grid gap-4 sm:grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
             {shown.map(group => {
-              const provider = group.providers.find(item => item.id === activeId) ?? group.providers[0];
-              const active = group.providers.some(item => item.id === activeId) && routingEnabled;
+              const activeMemberId = groupMemberSelect[group.key] ?? (group.providers.find(item => item.id === activeId)?.id ?? group.providers[0].id);
+              const provider = group.providers.find(item => item.id === activeMemberId) ?? group.providers[0];
+              const isGroupActive = group.providers.some(item => item.id === activeId) && routingEnabled;
+              const isCurrentActive = provider.id === activeId && routingEnabled;
               const selected = filter === group.key;
               const dsPeak = hostOf(provider) === "api.deepseek.com" ? deepSeekPeakNow() : null;
               const value = balanceValue(provider);
               const valuePositive = !!provider.balance && provider.balance.remaining > 0;
-              return (
-                <AuroraCard
-                  key={group.key}
-                  color={providerColor(provider.id)}
-                  shine={active || selected}
-                  shineColor={active ? "#f59e0b" : ["#60a5fa", "#a78bfa", "#60a5fa"]}
-                  className={cn(
-                    "cursor-pointer transition-transform duration-200 ease-out motion-reduce:transition-none hover:-translate-y-0.5",
-                    selected && "rounded-2xl ring-2 ring-primary/40",
-                    active && "drop-shadow-[0_4px_18px_rgba(245,158,11,0.25)]",
-                  )}
-                  onClick={e => {
-                    if ((e.target as HTMLElement).closest("button, [role=switch], input, a")) return;
-                    setFilter(selected ? "all" : group.key);
-                  }}
-                >
-                  <div className="flex flex-1 flex-col p-3.5">
-                    {/* Header: Title + Domain + Badges + Switch */}
-                    <div className="flex items-center justify-between gap-2.5">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <StatusDot provider={provider} />
-                        <h3 className="truncate text-[15px] font-semibold tracking-tight">{groupAliases[group.key] ?? hostOf(provider)}</h3>
-                        {group.providers.length > 1 && <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">{t("newapi.groupCount", { count: group.providers.length })}</span>}
-                        <span className="shrink-0 rounded bg-black/[0.04] px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground dark:bg-white/[0.06]">
-                          {hostOf(provider)}
-                        </span>
-                      </div>
-                      <div className="flex shrink-0 items-center gap-2">
-                        {provider.enabled && routingEnabled && (
-                          <Badge className={softBadge("amber")}>{t("newapi.badgeLocked")}</Badge>
-                        )}
-                        {provider.enabled && !routingEnabled && (
-                          <Badge className={softBadge("green")}>{t("newapi.badgeEnabled")}</Badge>
-                        )}
-                        <Switch
-                          checked={provider.enabled}
-                          className={active ? "data-[state=checked]:bg-amber-500" : undefined}
-                          disabled={lock(`enable:${provider.id}`)}
-                          onCheckedChange={value =>
-                            void run(`enable:${provider.id}`, async () => {
-                              const change = await api.providers.setEnabled(provider.id, value);
-                              applyChange(change);
-                            }, t("newapi.enableFailed"))
-                          }
-                        />
-                      </div>
-                    </div>
+              const hasMultiple = group.providers.length > 1;
+              const isExpanded = !!expandedGroups[group.key];
+              const cardColor = isGroupActive ? "gold" : providerColor(group.key);
 
-                    {/* Dual Info Cards: Balance (Left) & Model/Status (Right) */}
-                    <div className="mt-2.5 grid grid-cols-2 gap-2">
-                      {/* Left: Balance Box */}
-                      <div className={cn(
-                        "flex flex-col justify-between rounded-xl p-2.5 ring-1 transition-colors min-w-0",
-                        active
-                          ? "bg-amber-500/[0.07] ring-amber-500/25"
-                          : "bg-black/[0.025] ring-border/50 dark:bg-white/[0.03]",
-                      )}>
-                        <div className="flex items-center justify-between gap-1">
-                          <span className="text-[11px] font-medium text-muted-foreground truncate">{balanceLabel(provider)}</span>
+              return (
+                <div key={group.key} className="group relative">
+                  {/* 3D Physical Card Deck Peek Layers for Same-Relay Groups */}
+                  {hasMultiple && !isExpanded && (
+                    <>
+                      <div
+                        aria-hidden
+                        className={cn(
+                          "pointer-events-none absolute -inset-x-1.5 -bottom-2 top-3 rounded-2xl border transition-all duration-300",
+                          cardColor === "gold"
+                            ? "border-[#d4af37]/25 bg-amber-950/15 dark:bg-[#14120e]/80 shadow-[0_8px_20px_-8px_rgba(212,175,55,0.15)]"
+                            : "border-border/60 bg-card/75 dark:bg-card/60 shadow-sm",
+                          "group-hover:-bottom-2.5 group-hover:-inset-x-2",
+                        )}
+                      />
+                      {group.providers.length > 2 && (
+                        <div
+                          aria-hidden
+                          className={cn(
+                            "pointer-events-none absolute -inset-x-3 -bottom-3.5 top-6 rounded-2xl border transition-all duration-300",
+                            cardColor === "gold"
+                              ? "border-[#d4af37]/15 bg-amber-950/10 dark:bg-[#0f0e0b]/60"
+                              : "border-border/40 bg-card/45 dark:bg-card/35 shadow-xs",
+                            "group-hover:-bottom-4 group-hover:-inset-x-3",
+                          )}
+                        />
+                      )}
+                    </>
+                  )}
+
+                  <AuroraCard
+                    color={cardColor}
+                    shine={isGroupActive || selected}
+                    shineColor={isGroupActive ? LIQUID_GOLD_SHINE : ["#60a5fa", "#a78bfa", "#60a5fa"]}
+                    className={cn(
+                      "cursor-pointer transition-transform duration-200 ease-out motion-reduce:transition-none hover:-translate-y-0.5",
+                      selected && "rounded-2xl ring-2 ring-primary/40",
+                      isGroupActive && "drop-shadow-[0_4px_22px_rgba(212,175,55,0.3)]",
+                    )}
+                    onClick={e => {
+                      if ((e.target as HTMLElement).closest("button, [role=switch], input, a")) return;
+                      setFilter(selected ? "all" : group.key);
+                    }}
+                  >
+                    <div className="flex flex-1 flex-col p-3.5">
+                      {/* Header: Title + Domain + Badges + Switch */}
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                          <StatusDot provider={provider} />
+                          <h3 className="truncate text-[15px] font-semibold tracking-tight" title={groupAliases[group.key] ?? hostOf(provider)}>
+                            {groupAliases[group.key] ?? hostOf(provider)}
+                          </h3>
+                          {hasMultiple && (
+                            <span
+                              className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary cursor-pointer hover:bg-primary/20"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setExpandedGroups(prev => ({ ...prev, [group.key]: !prev[group.key] }));
+                              }}
+                              title={isExpanded ? t("newapi.collapseStack") : t("newapi.expandAll")}
+                            >
+                              <Layers className="h-2.5 w-2.5" />
+                              {group.providers.length}
+                            </span>
+                          )}
+                          <span className="shrink-0 max-w-[100px] truncate rounded bg-black/[0.04] px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground dark:bg-white/[0.06]" title={hostOf(provider)}>
+                            {hostOf(provider)}
+                          </span>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          {provider.enabled && routingEnabled && (
+                            <Badge className={softBadge("amber")}>{t("newapi.badgeLocked")}</Badge>
+                          )}
+                          {provider.enabled && !routingEnabled && (
+                            <Badge className={softBadge("green")}>{t("newapi.badgeEnabled")}</Badge>
+                          )}
+                          <Switch
+                            checked={provider.enabled}
+                            className={isCurrentActive ? "data-[state=checked]:bg-amber-500" : undefined}
+                            disabled={lock(`enable:${provider.id}`)}
+                            onCheckedChange={value =>
+                              void run(`enable:${provider.id}`, async () => {
+                                const change = await api.providers.setEnabled(provider.id, value);
+                                applyChange(change);
+                              }, t("newapi.enableFailed"))
+                            }
+                          />
+                        </div>
+                      </div>
+
+                      {/* Stack Deck Selector Tabs for Same-Relay Groups */}
+                      {hasMultiple && !isExpanded && (
+                        <div className="mt-2.5 flex items-center justify-between gap-1 rounded-xl bg-black/[0.03] p-1 ring-1 ring-border/50 dark:bg-white/[0.03]">
+                          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto scrollbar-hide py-0.5">
+                            {group.providers.map(item => {
+                              const isCur = item.id === provider.id;
+                              const isItemActive = item.id === activeId && routingEnabled;
+                              return (
+                                <button
+                                  key={item.id}
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setGroupMemberSelect(prev => ({ ...prev, [group.key]: item.id }));
+                                  }}
+                                  className={cn(
+                                    "flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-medium transition-all",
+                                    isCur
+                                      ? "bg-card text-foreground shadow-xs ring-1 ring-border"
+                                      : "text-muted-foreground hover:bg-black/[0.04] hover:text-foreground dark:hover:bg-white/[0.06]",
+                                  )}
+                                  title={item.name}
+                                >
+                                  <StatusDot provider={item} />
+                                  <span className="max-w-[80px] truncate">{item.name}</span>
+                                  {isItemActive && <PlugZap className="h-3 w-3 text-amber-500 shrink-0" />}
+                                </button>
+                              );
+                            })}
+                          </div>
                           <button
                             type="button"
-                            className={iconButton}
-                            title={t("newapi.refreshBalance")}
-                            aria-label={t("newapi.refreshBalance")}
-                            disabled={lock(`balance:${provider.id}`) || !(provider.hasApiKey || provider.hasAccessToken)}
-                            onClick={() =>
-                              void run(`balance:${provider.id}`, async () => patchProvider(await api.providers.queryBalance(provider.id)), t("newapi.balanceFailed"))
-                            }
+                            className={cn(cardButton, "h-6 w-6 shrink-0")}
+                            title={t("newapi.expandAll")}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setExpandedGroups(prev => ({ ...prev, [group.key]: true }));
+                            }}
                           >
-                            {busy === `balance:${provider.id}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                            <Layers className="h-3 w-3" />
                           </button>
                         </div>
-                        <div className="mt-0.5">
-                          <span className={cn(
-                            "truncate text-base font-semibold tabular-nums tracking-tight block",
-                            active && valuePositive && "text-emerald-600 dark:text-emerald-400"
-                          )}>
-                            {value ?? "— —"}
-                          </span>
-                        </div>
-                        <p className="mt-1 truncate text-[10px] text-muted-foreground/80" title={balanceCaption(provider)}>
-                          {balanceCaption(provider)}
-                        </p>
-                      </div>
+                      )}
 
-                      {/* Right: Model & Connection Box */}
-                      <div className={cn(
-                        "flex flex-col justify-between rounded-xl p-2.5 ring-1 transition-colors min-w-0",
-                        active
-                          ? "bg-amber-500/[0.07] ring-amber-500/25"
-                          : "bg-black/[0.025] ring-border/50 dark:bg-white/[0.03]",
-                      )}>
-                        <div className="flex items-center justify-between gap-1">
-                          <span className="text-[11px] font-medium text-muted-foreground truncate">
-                            {t("newapi.model")}
-                          </span>
-                          <div className="flex items-center gap-1 shrink-0">
-                            {provider.testStatus === "untested" && <Badge className={softBadge("gray")}>{t("newapi.badgeUntested")}</Badge>}
-                            {provider.testStatus === "ok" && <Badge className={softBadge("green")}>{t("newapi.badgeOk")}</Badge>}
-                            {provider.testStatus === "failed" && <Badge className={softBadge("red")}>{t("newapi.badgeFailed")}</Badge>}
-                            {dsPeak !== null && (
-                              <Badge className={softBadge(dsPeak ? "amber" : "green")} title={t("newapi.deepSeekPeakTip")}>
-                                {t(dsPeak ? "newapi.peakNow" : "newapi.offPeakNow")}
-                              </Badge>
-                            )}
-                          </div>
-                        </div>
-                        <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
-                          <List className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                          <span className="truncate font-mono text-xs font-medium" title={provider.model || t("newapi.noModel")}>
-                            {provider.model || t("newapi.noModel")}
-                          </span>
-                        </div>
-                        <div className="mt-1 flex items-center justify-between gap-1 text-[10px] text-muted-foreground">
-                          <span className="truncate">
-                            {t("newapi.modelCount", { count: includedModelsForProtocol(provider.models, provider.protocol).length })}
-                          </span>
-                          <span className="shrink-0 rounded bg-muted px-1 py-0.2 font-mono text-[9px] text-muted-foreground">
-                            {t(protocolBadgeKey[provider.protocol])}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {group.providers.length > 1 && (
-                      <div className="mt-2.5 space-y-1.5 rounded-xl bg-black/[0.025] p-2 ring-1 ring-border/50 dark:bg-white/[0.03]">
-                        <div className="flex items-center justify-between gap-2 px-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                          <span>{t("newapi.groupMembers")}</span>
-                          <button type="button" className="rounded px-1.5 py-0.5 text-primary hover:bg-primary/10" onClick={() => renameGroup(group)}>{t("newapi.renameGroup")}</button>
-                        </div>
-                        {group.providers.map(item => (
-                          <div key={item.id} className="flex items-center gap-2 rounded-lg px-1.5 py-1.5 text-xs hover:bg-muted/60">
-                            <StatusDot provider={item} />
-                            <span className="min-w-0 flex-1 truncate font-medium" title={item.name}>{item.name}</span>
-                            <span className="max-w-[9rem] truncate font-mono text-[10px] text-muted-foreground" title={item.model}>{item.model || t("newapi.noModel")}</span>
-                            <Switch checked={item.enabled} disabled={lock(`enable:${item.id}`)} onCheckedChange={value => void run(`enable:${item.id}`, async () => applyChange(await api.providers.setEnabled(item.id, value)), t("newapi.enableFailed"))} />
-                            <button type="button" className={cardButton} title={t("newapi.edit")} aria-label={t("newapi.edit")} onClick={() => setDialog({ open: true, provider: item })}><SquarePen className="h-3 w-3" /></button>
-                            <button type="button" className={cn(cardButton, "hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400")} title={t("newapi.remove")} aria-label={t("newapi.remove")} onClick={() => setRemoving(item)}><Trash2 className="h-3 w-3" /></button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Footer: Status / Hint & Action Buttons */}
-                    <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-border/40 pt-2">
-                      <div className="flex min-w-0 items-center gap-1.5">
-                        {active ? (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400">
-                            <PlugZap className="h-3 w-3" />
-                            {t("newapi.isCurrentRoute")}
-                          </span>
-                        ) : (
-                          <span className="truncate font-mono text-[11px] text-muted-foreground/80">
-                            http://{hostOf(provider)}
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex shrink-0 items-center gap-1">
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
+                      {/* Dual Info Cards: Balance (Left) & Model/Status (Right) */}
+                      <div className="mt-2.5 grid grid-cols-2 gap-2">
+                        {/* Left: Balance Box */}
+                        <div className={cn(
+                          "flex flex-col justify-between rounded-xl p-2.5 ring-1 transition-colors min-w-0",
+                          isCurrentActive
+                            ? "bg-amber-500/[0.08] ring-amber-500/30"
+                            : "bg-black/[0.025] ring-border/50 dark:bg-white/[0.03]",
+                        )}>
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="text-[11px] font-medium text-muted-foreground truncate">{balanceLabel(provider)}</span>
                             <button
                               type="button"
-                              className={cardButton}
-                              title={t("newapi.networkMode")}
-                              aria-label={t("newapi.networkMode")}
-                              disabled={lock(`network:${provider.id}`)}
+                              className={iconButton}
+                              title={t("newapi.refreshBalance")}
+                              aria-label={t("newapi.refreshBalance")}
+                              disabled={lock(`balance:${provider.id}`) || !(provider.hasApiKey || provider.hasAccessToken)}
+                              onClick={() =>
+                                void run(`balance:${provider.id}`, async () => patchProvider(await api.providers.queryBalance(provider.id)), t("newapi.balanceFailed"))
+                              }
                             >
-                              <Network className={cn("h-3.5 w-3.5", provider.networkMode === "direct" ? "text-emerald-600 dark:text-emerald-400" : "text-blue-600 dark:text-blue-400")} />
+                              {busy === `balance:${provider.id}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
                             </button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end" className="w-52">
-                            <DropdownMenuRadioGroup
-                              value={provider.networkMode}
-                              onValueChange={mode => {
-                                if (mode !== "proxy" && mode !== "direct") return;
-                                void run(`network:${provider.id}`, async () => {
-                                  applyChange(await api.providers.setNetwork(provider.id, mode));
-                                  toast({
-                                    title: t("newapi.networkUpdated"),
-                                    description: t(mode === "direct" ? "newapi.networkDirectHint" : "newapi.networkProxyHint"),
-                                    variant: "success",
-                                  });
-                                }, t("newapi.networkFailed"));
-                              }}
-                            >
-                              <DropdownMenuRadioItem value="proxy">
-                                <PlugZap className="mr-2 h-4 w-4" />
-                                <span>
-                                  <span className="block">{t("newapi.networkProxy")}</span>
-                                  <span className="block text-[10px] text-muted-foreground">{t("newapi.networkProxyShort")}</span>
-                                </span>
-                              </DropdownMenuRadioItem>
-                              <DropdownMenuRadioItem value="direct">
-                                <Network className="mr-2 h-4 w-4" />
-                                <span>
-                                  <span className="block">{t("newapi.networkDirect")}</span>
-                                  <span className="block text-[10px] text-muted-foreground">{t("newapi.networkDirectShort")}</span>
-                                </span>
-                              </DropdownMenuRadioItem>
-                            </DropdownMenuRadioGroup>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                        <button
-                          type="button"
-                          className={cardButton}
-                          title={t("newapi.renameGroup")}
-                          aria-label={t("newapi.renameGroup")}
-                          onClick={() => renameGroup(group)}
-                        >
-                          <SquarePen className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          className={cardButton}
-                          title={t("newapi.test")}
-                          aria-label={t("newapi.test")}
-                          disabled={lock(`test:${provider.id}`) || !provider.hasApiKey}
-                          onClick={() => setTestDialog(provider)}
-                        >
-                          <RadioTower className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          className={cardButton}
-                          title={t("newapi.edit")}
-                          aria-label={t("newapi.edit")}
-                          disabled={lock(`open-dialog`)}
-                          onClick={() => setDialog({ open: true, provider })}
-                        >
-                          <SquarePen className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          className={cn(cardButton, "hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400")}
-                          title={t("newapi.remove")}
-                          aria-label={t("newapi.remove")}
-                          disabled={lock(`delete:${provider.id}`)}
-                          onClick={() => setRemoving(provider)}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
+                          </div>
+                          <div className="mt-0.5">
+                            <span className={cn(
+                              "truncate text-base font-semibold tabular-nums tracking-tight block",
+                              isCurrentActive && valuePositive && "text-emerald-600 dark:text-emerald-400",
+                              cardColor === "gold" && "dark:text-[#fef08a]"
+                            )}>
+                              {value ?? "— —"}
+                            </span>
+                          </div>
+                          <p className="mt-1 truncate text-[10px] text-muted-foreground/80" title={balanceCaption(provider)}>
+                            {balanceCaption(provider)}
+                          </p>
+                        </div>
+
+                        {/* Right: Model & Connection Box */}
+                        <div className={cn(
+                          "flex flex-col justify-between rounded-xl p-2.5 ring-1 transition-colors min-w-0",
+                          isCurrentActive
+                            ? "bg-amber-500/[0.08] ring-amber-500/30"
+                            : "bg-black/[0.025] ring-border/50 dark:bg-white/[0.03]",
+                        )}>
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="text-[11px] font-medium text-muted-foreground truncate">
+                              {t("newapi.model")}
+                            </span>
+                            <div className="flex items-center gap-1 shrink-0">
+                              {provider.testStatus === "untested" && <Badge className={softBadge("gray")}>{t("newapi.badgeUntested")}</Badge>}
+                              {provider.testStatus === "ok" && <Badge className={softBadge("green")}>{t("newapi.badgeOk")}</Badge>}
+                              {provider.testStatus === "failed" && <Badge className={softBadge("red")}>{t("newapi.badgeFailed")}</Badge>}
+                              {dsPeak !== null && (
+                                <Badge className={softBadge(dsPeak ? "amber" : "green")} title={t("newapi.deepSeekPeakTip")}>
+                                  {t(dsPeak ? "newapi.peakNow" : "newapi.offPeakNow")}
+                                </Badge>
+                              )}
+                            </div>
+                          </div>
+                          <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
+                            <List className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                            <span className="truncate font-mono text-xs font-medium" title={provider.model || t("newapi.noModel")}>
+                              {provider.model || t("newapi.noModel")}
+                            </span>
+                          </div>
+                          <div className="mt-1 flex items-center justify-between gap-1 text-[10px] text-muted-foreground">
+                            <span className="truncate">
+                              {t("newapi.modelCount", { count: includedModelsForProtocol(provider.models, provider.protocol).length })}
+                            </span>
+                            <span className="shrink-0 rounded bg-muted px-1 py-0.2 font-mono text-[9px] text-muted-foreground">
+                              {t(protocolBadgeKey[provider.protocol])}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Expanded Mode: Cascaded clean cards for all providers in this relay */}
+                      {hasMultiple && isExpanded && (
+                        <div className="mt-3 space-y-2 rounded-xl bg-black/[0.025] p-2.5 ring-1 ring-border/50 dark:bg-white/[0.03]">
+                          <div className="flex items-center justify-between gap-2 px-1 text-[11px] font-medium text-muted-foreground">
+                            <div className="flex items-center gap-1.5">
+                              <Layers className="h-3.5 w-3.5 text-primary" />
+                              <span>{t("newapi.groupMembers")} ({group.providers.length})</span>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                className="rounded px-1.5 py-0.5 text-xs text-primary hover:bg-primary/10"
+                                onClick={() => renameGroup(group)}
+                              >
+                                {t("newapi.renameGroup")}
+                              </button>
+                              <button
+                                type="button"
+                                className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted"
+                                onClick={() => setExpandedGroups(prev => ({ ...prev, [group.key]: false }))}
+                              >
+                                {t("newapi.collapseStack")}
+                              </button>
+                            </div>
+                          </div>
+                          <div className="space-y-1.5">
+                            {group.providers.map(item => (
+                              <div
+                                key={item.id}
+                                className={cn(
+                                  "flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-card/80 p-2 text-xs transition-colors hover:bg-muted/50",
+                                  item.id === provider.id && "ring-1 ring-primary/40",
+                                )}
+                              >
+                                <div className="flex min-w-0 flex-1 items-center gap-2">
+                                  <StatusDot provider={item} />
+                                  <span className="font-semibold truncate max-w-[120px]" title={item.name}>{item.name}</span>
+                                  <span className="font-mono text-[11px] text-muted-foreground truncate max-w-[110px]" title={item.model}>{item.model || t("newapi.noModel")}</span>
+                                  {item.id === activeId && routingEnabled && (
+                                    <span className="inline-flex items-center gap-0.5 rounded bg-amber-500/10 px-1 py-0.2 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                                      <PlugZap className="h-2.5 w-2.5" />
+                                      {t("newapi.isCurrentRoute")}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex shrink-0 items-center gap-1.5">
+                                  <Switch
+                                    checked={item.enabled}
+                                    disabled={lock(`enable:${item.id}`)}
+                                    onCheckedChange={value =>
+                                      void run(`enable:${item.id}`, async () => applyChange(await api.providers.setEnabled(item.id, value)), t("newapi.enableFailed"))
+                                    }
+                                  />
+                                  <button
+                                    type="button"
+                                    className={cardButton}
+                                    title={t("newapi.test")}
+                                    aria-label={t("newapi.test")}
+                                    disabled={lock(`test:${item.id}`) || !item.hasApiKey}
+                                    onClick={() => setTestDialog(item)}
+                                  >
+                                    <RadioTower className="h-3 w-3" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={cardButton}
+                                    title={t("newapi.edit")}
+                                    aria-label={t("newapi.edit")}
+                                    onClick={() => setDialog({ open: true, provider: item })}
+                                  >
+                                    <SquarePen className="h-3 w-3" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={cn(cardButton, "hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400")}
+                                    title={t("newapi.remove")}
+                                    aria-label={t("newapi.remove")}
+                                    onClick={() => setRemoving(item)}
+                                  >
+                                    <Trash2 className="h-3 w-3" />
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Footer: Status / Hint & Action Buttons */}
+                      <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-border/40 pt-2">
+                        <div className="flex min-w-0 items-center gap-1.5">
+                          {isCurrentActive ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-300">
+                              <PlugZap className="h-3 w-3" />
+                              {t("newapi.isCurrentRoute")}
+                            </span>
+                          ) : (
+                            <span className="truncate font-mono text-[11px] text-muted-foreground/80">
+                              http://{hostOf(provider)}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1">
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <button
+                                type="button"
+                                className={cardButton}
+                                title={t("newapi.networkMode")}
+                                aria-label={t("newapi.networkMode")}
+                                disabled={lock(`network:${provider.id}`)}
+                              >
+                                <Network className={cn("h-3.5 w-3.5", provider.networkMode === "direct" ? "text-emerald-600 dark:text-emerald-400" : "text-blue-600 dark:text-blue-400")} />
+                              </button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-52">
+                              <DropdownMenuRadioGroup
+                                value={provider.networkMode}
+                                onValueChange={mode => {
+                                  if (mode !== "proxy" && mode !== "direct") return;
+                                  void run(`network:${provider.id}`, async () => {
+                                    applyChange(await api.providers.setNetwork(provider.id, mode));
+                                    toast({
+                                      title: t("newapi.networkUpdated"),
+                                      description: t(mode === "direct" ? "newapi.networkDirectHint" : "newapi.networkProxyHint"),
+                                      variant: "success",
+                                    });
+                                  }, t("newapi.networkFailed"));
+                                }}
+                              >
+                                <DropdownMenuRadioItem value="proxy">
+                                  <PlugZap className="mr-2 h-4 w-4" />
+                                  <span>
+                                    <span className="block">{t("newapi.networkProxy")}</span>
+                                    <span className="block text-[10px] text-muted-foreground">{t("newapi.networkProxyShort")}</span>
+                                  </span>
+                                </DropdownMenuRadioItem>
+                                <DropdownMenuRadioItem value="direct">
+                                  <Network className="mr-2 h-4 w-4" />
+                                  <span>
+                                    <span className="block">{t("newapi.networkDirect")}</span>
+                                    <span className="block text-[10px] text-muted-foreground">{t("newapi.networkDirectShort")}</span>
+                                  </span>
+                                </DropdownMenuRadioItem>
+                              </DropdownMenuRadioGroup>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                          <button
+                            type="button"
+                            className={cardButton}
+                            title={t("newapi.renameGroup")}
+                            aria-label={t("newapi.renameGroup")}
+                            onClick={() => renameGroup(group)}
+                          >
+                            <SquarePen className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            className={cardButton}
+                            title={t("newapi.test")}
+                            aria-label={t("newapi.test")}
+                            disabled={lock(`test:${provider.id}`) || !provider.hasApiKey}
+                            onClick={() => setTestDialog(provider)}
+                          >
+                            <RadioTower className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            className={cardButton}
+                            title={t("newapi.edit")}
+                            aria-label={t("newapi.edit")}
+                            disabled={lock(`open-dialog`)}
+                            onClick={() => setDialog({ open: true, provider })}
+                          >
+                            <SquarePen className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            className={cn(cardButton, "hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400")}
+                            title={t("newapi.remove")}
+                            aria-label={t("newapi.remove")}
+                            disabled={lock(`delete:${provider.id}`)}
+                            onClick={() => setRemoving(provider)}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                </AuroraCard>
+                  </AuroraCard>
+                </div>
               );
-            })}
-          </div>
+            })}          </div>
         )}
       </section>
 

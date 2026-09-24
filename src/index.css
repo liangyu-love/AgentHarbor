@@ -301,3 +301,128 @@ body {
   }
 }
 
+
+/* ==========================================================================
+   古典水墨丹青 (Chinese Ink Wash Aesthetic) & 鎏金黑金 (Liquid Gold)
+   ========================================================================== */
+
+@keyframes ink-mist-drift {
+  0% {
+    background-position: 0% 0%;
+    opacity: 0.75;
+  }
+  50% {
+    background-position: 100% 50%;
+    opacity: 0.92;
+  }
+  100% {
+    background-position: 0% 100%;
+    opacity: 0.75;
+  }
+}
+
+@keyframes ink-bloom-pulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+  50% {
+    transform: scale(1.04);
+    opacity: 1;
+  }
+}
+
+@keyframes liquid-gold-sheen {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.animate-ink-mist {
+  animation: ink-mist-drift 22s ease-in-out infinite alternate;
+}
+
+.animate-ink-bloom {
+  animation: ink-bloom-pulse 8s ease-in-out infinite;
+}
+
+.animate-liquid-gold {
+  background-size: 200% 200%;
+  animation: liquid-gold-sheen 6s ease infinite;
+}
+
+/* 宣纸古韵背景纹理 (Xuan Paper Ink Tone) */
+.ink-paper-bg {
+  background-color: #faf8f5;
+  background-image: 
+    radial-gradient(at 15% 20%, rgba(35, 38, 45, 0.03) 0px, transparent 50%),
+    radial-gradient(at 85% 80%, rgba(35, 38, 45, 0.03) 0px, transparent 50%);
+}
+
+.dark .ink-paper-bg {
+  background-color: #0e0f12;
+  background-image: 
+    radial-gradient(at 20% 20%, rgba(212, 175, 55, 0.03) 0px, transparent 55%),
+    radial-gradient(at 80% 75%, rgba(45, 52, 68, 0.08) 0px, transparent 50%),
+    radial-gradient(at 50% 50%, rgba(18, 20, 26, 0.95) 0px, transparent 100%);
+}
+
+/* 朱砂古印闲章 (Classical Cinnabar Seal) */
+.ink-seal {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid #b83b38;
+  color: #b83b38;
+  background: rgba(184, 59, 56, 0.08);
+  font-family: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  text-shadow: 0 0.5px 1px rgba(184, 59, 56, 0.2);
+  box-shadow: inset 0 0 6px rgba(184, 59, 56, 0.15), 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.dark .ink-seal {
+  border-color: #d94f4b;
+  color: #fca5a5;
+  background: rgba(217, 79, 75, 0.14);
+  box-shadow: inset 0 0 8px rgba(217, 79, 75, 0.25), 0 2px 8px rgba(217, 79, 75, 0.15);
+}
+
+/* 宣纸装裱边框 (Traditional Silk & Xuan Mounting Frame) */
+.ink-scroll-frame {
+  position: relative;
+  border-radius: 1rem;
+  border: 1px solid rgba(43, 45, 53, 0.12);
+  background: #fbf9f5;
+  box-shadow: 
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 12px 28px -12px rgba(15, 23, 42, 0.08),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.6);
+}
+
+.dark .ink-scroll-frame {
+  border: 1px solid rgba(212, 175, 55, 0.2);
+  background: linear-gradient(145deg, #131418 0%, #0d0e11 100%);
+  box-shadow: 
+    0 2px 6px rgba(0, 0, 0, 0.4),
+    0 16px 36px -16px rgba(0, 0, 0, 0.7),
+    inset 0 0 0 1px rgba(212, 175, 55, 0.08);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glow-card-aurora,
+  .glow-card-edge,
+  .animate-ink-mist,
+  .animate-ink-bloom,
+  .animate-liquid-gold {
+    animation: none !important;
+  }
+}

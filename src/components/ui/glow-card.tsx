@@ -2,7 +2,7 @@ import { cn } from "@/lib/utils";
 import { useThemeValue } from "@/hooks/use-theme";
 import { Skeleton } from "@/components/ui/skeleton";
 
-export type GlowColor = "blue" | "amber" | "green" | "red" | "purple";
+export type GlowColor = "blue" | "amber" | "green" | "red" | "purple" | "gold" | "blackgold";
 
 export interface ColorTokens {
   bar: string;
@@ -42,6 +42,18 @@ export const glowPalette: Record<GlowColor, ColorTokens> = {
     mid: ["rgba(139,92,246,0.04)", "rgba(139,92,246,0.08)"],
     edge: ["rgba(139,92,246,0.02)", "rgba(139,92,246,0.05)"],
   },
+  gold: {
+    bar: "#d4af37",
+    strong: ["rgba(217,119,6,0.12)", "rgba(245,158,11,0.32)"],
+    mid: ["rgba(217,119,6,0.05)", "rgba(212,175,55,0.16)"],
+    edge: ["rgba(217,119,6,0.02)", "rgba(245,158,11,0.08)"],
+  },
+  blackgold: {
+    bar: "#d4af37",
+    strong: ["rgba(217,119,6,0.14)", "rgba(245,158,11,0.38)"],
+    mid: ["rgba(217,119,6,0.06)", "rgba(212,175,55,0.18)"],
+    edge: ["rgba(217,119,6,0.03)", "rgba(245,158,11,0.10)"],
+  },
 };
 
 interface GlowCardProps {
@@ -54,40 +66,37 @@ interface GlowCardProps {
 }
 
 export function GlowCard({ color, label, value, sub, loading = false, className }: GlowCardProps) {
-  const c = glowPalette[color];
+  const c = glowPalette[color] ?? glowPalette.blue;
   const isDark = useThemeValue() === "dark";
   const i = isDark ? 1 : 0;
+  const isGold = color === "gold" || color === "blackgold";
 
   return (
     <div
       className={cn(
-        "relative overflow-hidden rounded-[15px] border border-border bg-card",
+        "group relative overflow-hidden rounded-[15px] border border-border bg-card transition-all duration-300 ease-out hover:-translate-y-0.5 hover:shadow-lg",
+        isGold && isDark && "border-[#d4af37]/35 bg-gradient-to-br from-[#18150f] via-[#13110d] to-[#0c0a08] shadow-[0_12px_32px_-16px_rgba(212,175,55,0.22)] hover:border-[#d4af37]/65",
         className,
       )}
       style={{
         padding: "24px 24px 20px",
-        "--g2-color": c.bar,
+        "--g2-color": isGold && isDark ? "#e5b85c" : c.bar,
         "--g2-glow-strong": c.strong[i],
         "--g2-glow-mid": c.mid[i],
         "--g2-glow-edge": c.edge[i],
       } as React.CSSProperties}
     >
-      {/* Color bar — top-left, 40px */}
+      {/* Color bar — top-left, 40px, dynamic expand & shadow on hover */}
       <div
+        className="absolute left-5 top-0 h-[3px] w-10 rounded-b-[2px] transition-all duration-300 group-hover:w-16 group-hover:shadow-[0_0_12px_var(--g2-color)]"
         style={{
-          position: "absolute",
-          top: 0,
-          left: 20,
-          width: 40,
-          height: 3,
-          borderRadius: "0 0 2px 2px",
-          background: c.bar,
+          background: isGold && isDark ? "linear-gradient(90deg, #b45309, #fef08a, #d4af37)" : c.bar,
         }}
       />
 
       {/* Primary glow — large diffuse aurora from top-left */}
       <div
-        className="glow-card-aurora"
+        className="glow-card-aurora transition-all duration-500 group-hover:opacity-100 group-hover:scale-105"
         style={{
           position: "absolute",
           top: -60,
@@ -102,7 +111,7 @@ export function GlowCard({ color, label, value, sub, loading = false, className 
 
       {/* Secondary edge glow — subtle right-side reflection */}
       <div
-        className="glow-card-edge"
+        className="glow-card-edge transition-all duration-500 group-hover:opacity-90"
         style={{
           position: "absolute",
           top: -20,

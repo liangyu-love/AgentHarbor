@@ -24,8 +24,9 @@ import {
   X,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import { BentoCard } from "@/components/ui/bento-card";
-import { AuroraCard } from "@/components/ui/aurora-card";
+import { AuroraCard, LIQUID_GOLD_SHINE } from "@/components/ui/aurora-card";
 import { RainbowButton } from "@/registry/magicui/rainbow-button";
 import { Button } from "@/components/ui/button";
 import { ButtonBusyContent } from "@/components/ui/button-busy-content";
@@ -277,7 +278,7 @@ export function ThreadsPage() {
 
         {/* 4-Metric Mission Control HUD */}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <AuroraCard color="blue">
+          <AuroraCard color="blue" className="cursor-pointer transition-all duration-300 hover:-translate-y-0.5 hover:shadow-md" onClick={() => setStatus(status === "active" ? "all" : "active")}>
             <div className="flex items-center justify-between p-4">
               <div className="space-y-0.5">
                 <span className="text-xs font-medium text-muted-foreground">
@@ -298,7 +299,7 @@ export function ThreadsPage() {
             </div>
           </AuroraCard>
 
-          <AuroraCard color="purple">
+          <AuroraCard color="purple" className="transition-all duration-300 hover:-translate-y-0.5 hover:shadow-md">
             <div className="flex items-center justify-between p-4">
               <div className="space-y-0.5">
                 <span className="text-xs font-medium text-muted-foreground">
@@ -317,7 +318,7 @@ export function ThreadsPage() {
             </div>
           </AuroraCard>
 
-          <AuroraCard color="green">
+          <AuroraCard color="green" className="transition-all duration-300 hover:-translate-y-0.5 hover:shadow-md">
             <div className="flex items-center justify-between p-4">
               <div className="space-y-0.5">
                 <span className="text-xs font-medium text-muted-foreground">
@@ -338,7 +339,16 @@ export function ThreadsPage() {
             </div>
           </AuroraCard>
 
-          <AuroraCard color={selected.size > 0 ? "blue" : "amber"}>
+          <AuroraCard
+            color={selected.size > 0 ? "gold" : "amber"}
+            shine={selected.size > 0}
+            shineColor={LIQUID_GOLD_SHINE}
+            className="cursor-pointer transition-all duration-300 hover:-translate-y-0.5 hover:shadow-md"
+            onClick={() => {
+              if (selected.size > 0) clearSelection();
+              else selectFiltered();
+            }}
+          >
             <div className="flex items-center justify-between p-4">
               <div className="space-y-0.5">
                 <span className="text-xs font-medium text-muted-foreground">
@@ -348,21 +358,21 @@ export function ThreadsPage() {
                   <span
                     className={`text-2xl font-bold tracking-tight tabular-nums ${
                       selected.size > 0
-                        ? "text-primary dark:text-primary-foreground"
+                        ? "text-amber-500 dark:text-[#fef08a]"
                         : "text-amber-600 dark:text-amber-400"
                     }`}
                   >
                     {selected.size > 0 ? selected.size : formatSize(totalBytes)}
                   </span>
                   <span className="text-[11px] text-muted-foreground">
-                    {selected.size > 0 ? "个会话已勾选" : "会话记录总大小"}
+                    {selected.size > 0 ? "点击取消全选" : "会话记录总大小"}
                   </span>
                 </div>
               </div>
               <div
                 className={`flex h-10 w-10 items-center justify-center rounded-xl ring-1 ring-inset ${
                   selected.size > 0
-                    ? "bg-primary/10 text-primary ring-primary/20"
+                    ? "bg-amber-500/10 text-amber-500 ring-amber-500/30 dark:bg-[#d4af37]/20 dark:text-[#fef08a]"
                     : "bg-amber-500/10 text-amber-500 ring-amber-500/20"
                 }`}
               >
@@ -493,7 +503,8 @@ export function ThreadsPage() {
 
         {/* Dynamic Sticky Batch Selection Bar */}
         {selected.size > 0 && (
-          <BentoCard className="flex flex-wrap items-center justify-between gap-3 border-primary/40 bg-primary/[0.04] p-3 shadow-xs animate-in fade-in slide-in-from-top-1 duration-200">
+          <div className="sticky bottom-4 z-30 transition-all duration-300 animate-in fade-in slide-in-from-bottom-3">
+            <BentoCard className="flex flex-wrap items-center justify-between gap-3 border-primary/50 bg-card/95 backdrop-blur-md p-3 shadow-2xl ring-1 ring-primary/20 dark:border-amber-400/40 dark:ring-amber-400/20">
             <div className="flex items-center gap-2 text-xs font-medium">
               <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-[11px] font-bold">
                 {selected.size}
@@ -524,6 +535,7 @@ export function ThreadsPage() {
               </RainbowButton>
             </div>
           </BentoCard>
+          </div>
         )}
 
         {/* Content Section */}
@@ -582,20 +594,19 @@ export function ThreadsPage() {
             return (
               <section key={group.key} className="space-y-3">
                 {/* Workspace Folder Header Bar */}
-                <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-border/70 bg-card/60 p-2.5 px-3.5 backdrop-blur-sm transition-colors hover:border-primary/40">
+                <div className={cn(
+                  "flex flex-wrap items-center justify-between gap-2.5 rounded-xl border bg-card/75 p-2.5 px-3.5 backdrop-blur-sm transition-all duration-200 hover:border-primary/50 hover:shadow-xs",
+                  allInGroupSelected ? "border-primary/60 ring-1 ring-primary/25 bg-primary/[0.02]" : "border-border/70",
+                )}>
                   {/* Left: Fold button + Folder icon + Folder Info */}
                   <div className="flex min-w-0 flex-1 items-center gap-2.5">
                     <button
                       type="button"
                       onClick={() => toggleGroupCollapse(group.key)}
-                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-all duration-200"
                       title={isCollapsed ? t("threads.expandAll") : t("threads.collapseAll")}
                     >
-                      {isCollapsed ? (
-                        <ChevronRight className="h-4 w-4" />
-                      ) : (
-                        <ChevronDown className="h-4 w-4" />
-                      )}
+                      <ChevronRight className={cn("h-4 w-4 transition-transform duration-200", !isCollapsed && "rotate-90")} />
                     </button>
 
                     <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-primary/10 text-primary">
