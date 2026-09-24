@@ -54,12 +54,13 @@ pub fn run() {
         builder
     };
 
+    let repository = Repository::from_paths((*shared_paths).clone());
     let app = builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
-        .manage(Mutex::new(Repository::new()))
+        .manage(Mutex::new(repository))
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
                 let win = window.clone();
@@ -79,34 +80,19 @@ pub fn run() {
                 if let Ok(paths) = paths {
                     if let Ok(store) = core::router::load_store(&paths) {
                         if store.router.enabled {
-                            match core::router::ensure_routing_config(&paths, &store) {
-                                Ok(_) => {
-                                    let port = store.router.port;
-                                    tauri::async_runtime::spawn(async move {
-                                        let proxy = core::newapi::proxy_from_settings(&paths.settings_path);
-                                        if let Err(e) = core::router_proxy::ensure_running(port, paths.clone(), proxy).await {
-                                            eprintln!("[AgentHarbor] router proxy startup failed: {e}");
-                                        }
-                                    });
-                                }
-                                Err(e) => eprintln!("[AgentHarbor] router config repair failed: {e}"),
+                            if let Err(e) = core::router::ensure_routing_config(&paths, &store) {
+                                eprintln!("[AgentHarbor] router config repair failed: {e}");
                             }
                         }
+                        tauri::async_runtime::spawn(async move {
+                            let _guard = core::routing_runtime::mutation_guard().await;
+                            if let Err(e) = core::routing_runtime::reconcile(&paths).await {
+                                eprintln!("[AgentHarbor] router proxy startup failed: {e}");
+                            }
+                        });
                     }
                 }
             }
-            let hotspot_enabled = repo_state
-                .lock()
-                .map(|r| r.get_hotspot_enabled())
-                .unwrap_or(false);
-            eprintln!("[AgentHarbor] startup: hotspot_enabled={hotspot_enabled}");
-            commands::hotspot::register_hotspot_relayout_observers(app.handle());
-            if hotspot_enabled && platform::screen::has_notch_screen() {
-                if let Err(e) = commands::hotspot::create_hotspot_window(app.handle()) {
-                    eprintln!("[AgentHarbor] failed to create hotspot window at startup: {e}");
-                }
-            }
-
             let tray_menu = commands::tray_menu::create_bootstrap_tray_menu(app.handle())
                 .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             let tray_icon = load_tray_template_icon()
@@ -128,6 +114,16 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::client_config::list_client_configs,
+            commands::client_config::preview_client_config,
+            commands::client_config::apply_client_config,
+            commands::client_config::restore_client_config,
+            commands::accounts::list_codex_accounts,
+            commands::usage::get_relay_usage,
+            commands::accounts::refresh_codex_accounts,
+            commands::accounts::login_codex_account,
+            commands::accounts::switch_codex_account,
+            commands::accounts::delete_codex_account,
             commands::newapi::load_newapi_state,
             commands::newapi::save_newapi_provider,
             commands::newapi::delete_newapi_provider,
@@ -174,11 +170,10 @@ pub fn run() {
             commands::system::load_bootstrap_state,
             commands::system::open_path,
             commands::system::get_system_info,
-            commands::hotspot::has_notch,
-            commands::hotspot::get_hotspot_enabled,
-            commands::hotspot::set_hotspot_enabled,
+            commands::targets::restart_target,
             commands::hotspot::focus_main_window,
-            commands::hotspot::hotspot_ready,
+            commands::threads::list_conversations,
+            commands::threads::export_conversations,
             commands::threads::list_codex_threads,
             commands::threads::export_codex_threads,
         ])
@@ -190,9 +185,7 @@ pub fn run() {
         move || commands::hotspot::force_reveal_main_window(&handle)
     })
     .map_err(|error| {
-        eprintln!(
-            "[AgentHarbor] failed to start single-instance activation watcher: {error}"
-        );
+        eprintln!("[AgentHarbor] failed to start single-instance activation watcher: {error}");
         error
     })
     .ok();

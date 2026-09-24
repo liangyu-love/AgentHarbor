@@ -48,6 +48,7 @@ const McpPage = lazy(() =>
   import("@/components/mcp/mcp-page").then((module) => ({ default: module.McpPage })),
 );
 const OverviewPage = lazy(() => import("@/components/overview/overview-page").then((module) => ({ default: module.OverviewPage })));
+const AccountsPage = lazy(() => import("@/components/accounts/accounts-page").then((module) => ({ default: module.AccountsPage })));
 const NewApiPage = lazy(() => import("@/components/newapi/newapi-page").then((module) => ({ default: module.NewApiPage })));
 const ThreadsPage = lazy(() =>
   import("@/components/threads/threads-page").then((module) => ({ default: module.ThreadsPage })),
@@ -126,6 +127,7 @@ function MainApp() {
     if (prewarmRoutes) {
       void Promise.allSettled([
         import("@/components/mcp/mcp-page"),
+        import("@/components/accounts/accounts-page"),
         import("@/components/skills/skills-page"),
         import("@/components/custom-instructions/custom-instructions-page"),
         import("@/components/maintenance/maintenance-page"),
@@ -138,6 +140,8 @@ function MainApp() {
     switch (targetRoute) {
       case "overview":
         return <OverviewPage onNavigate={setRoute} />;
+      case "accounts":
+        return <AccountsPage refreshInterval={refreshInterval} />;
       case "newapi":
         return <NewApiPage />;
       case "threads":
@@ -178,6 +182,7 @@ function MainApp() {
 
   const routeOrder: Route[] = [
     "overview",
+    "accounts",
     "newapi",
     "threads",
     "customInstructions",

@@ -8,6 +8,7 @@ import {
   MessagesSquare,
   Wrench,
   Settings,
+  UsersRound,
   Sun,
   Moon,
   type LucideIcon,
@@ -34,6 +35,7 @@ export const appNavItems: {
   labelKey: string;
 }[] = [
   { route: "overview", icon: LayoutDashboard, labelKey: "nav.overview" },
+  { route: "accounts", icon: UsersRound, labelKey: "nav.accounts" },
   { route: "newapi", icon: Wallet, labelKey: "newapi.title" },
   { route: "threads", icon: MessagesSquare, labelKey: "nav.threads" },
   { route: "customInstructions", icon: FileCode2, labelKey: "nav.customInstructions" },

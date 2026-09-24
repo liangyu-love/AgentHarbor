@@ -2,7 +2,7 @@ use crate::core::auth::*;
 use crate::core::bootstrap_cache::{self, BootstrapStatePayload};
 use crate::core::models::*;
 use crate::core::quota_store::{self, QuotaStoreFile};
-use crate::platform::paths::CodexPaths;
+use crate::{core::targets::TargetRegistry, platform::paths::CodexPaths};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -39,6 +39,14 @@ pub struct RegistryItem {
     pub last_usage_at: Option<i64>,
     pub cached_primary_window: Option<RateLimitWindow>,
     pub cached_secondary_window: Option<RateLimitWindow>,
+    #[serde(default = "default_usage_status")]
+    pub usage_status: String,
+    #[serde(default)]
+    pub last_usage_error: Option<String>,
+}
+
+fn default_usage_status() -> String {
+    "unknown".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -107,16 +115,7 @@ pub(crate) fn usage_refresh_interval_seconds(interval: &str) -> u64 {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct HotspotConfig {
-    #[serde(default)]
-    pub enabled: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct CodexMateSettings {
-    #[serde(default)]
-    pub hotspot: HotspotConfig,
+pub struct AgentHarborSettings {
     #[serde(default = "default_usage_refresh_interval")]
     pub usage_refresh_interval: String,
     #[serde(default)]
@@ -139,7 +138,7 @@ pub(crate) struct ApiDiagnostics {
 
 pub(crate) struct LoadedState {
     pub paths: AppPathState,
-    pub settings: CodexMateSettings,
+    pub settings: AgentHarborSettings,
     pub registry: RegistryFile,
     pub last_scan_at: i64,
     pub warnings: Vec<CoreWarning>,
@@ -150,17 +149,27 @@ pub(crate) struct LoadedState {
 
 pub struct Repository {
     paths: CodexPaths,
+    targets: TargetRegistry,
 }
 
 impl Repository {
     pub fn new() -> Self {
+        Self::from_paths(CodexPaths::new())
+    }
+
+    pub fn from_paths(paths: CodexPaths) -> Self {
         Self {
-            paths: CodexPaths::new(),
+            targets: TargetRegistry::new(paths.clone()),
+            paths,
         }
     }
 
     pub fn paths(&self) -> &CodexPaths {
-        &self.paths
+        self.targets.codex().paths()
+    }
+
+    pub fn target_registry(&self) -> &TargetRegistry {
+        &self.targets
     }
 
     pub fn load_snapshot_local(&self) -> Result<CoreEnvelope<CoreSnapshotPayload>, CoreError> {
@@ -467,7 +476,7 @@ impl Repository {
         Ok(registry)
     }
 
-    fn load_registry_or_empty(&self) -> Result<RegistryFile, CoreError> {
+    pub(crate) fn load_registry_or_empty(&self) -> Result<RegistryFile, CoreError> {
         if self.paths.registry_path.exists() {
             return self.load_registry();
         }
@@ -516,7 +525,7 @@ impl Repository {
         quota_store::save(&self.paths.quota_store_path, quota_store)
     }
 
-    fn rebuild_registry_state(&self) -> Result<RegistryFile, CoreError> {
+    pub(crate) fn rebuild_registry_state(&self) -> Result<RegistryFile, CoreError> {
         self.paths.ensure_directories()?;
         let prev = self.load_registry().ok();
         let mut registry = RegistryFile {
@@ -556,6 +565,8 @@ impl Repository {
                     last_usage_at: None,
                     cached_primary_window: None,
                     cached_secondary_window: None,
+                    usage_status: default_usage_status(),
+                    last_usage_error: None,
                 };
                 carry_over_registry_state(
                     &mut item,
@@ -598,6 +609,8 @@ impl Repository {
                                         last_usage_at: None,
                                         cached_primary_window: None,
                                         cached_secondary_window: None,
+                                        usage_status: default_usage_status(),
+                                        last_usage_error: None,
                                     };
                                     carry_over_registry_state(
                                         &mut item,
@@ -627,14 +640,14 @@ impl Repository {
         self.paths.snapshots_dir.join(format!("{safe_name}.json"))
     }
 
-    fn load_settings(&self) -> CodexMateSettings {
+    fn load_settings(&self) -> AgentHarborSettings {
         let raw = match std::fs::read_to_string(&self.paths.settings_path) {
             Ok(s) => s,
-            Err(_) => return CodexMateSettings::default(),
+            Err(_) => return AgentHarborSettings::default(),
         };
         let v: serde_json::Value = match serde_json::from_str(&raw) {
             Ok(j) => j,
-            Err(_) => return CodexMateSettings::default(),
+            Err(_) => return AgentHarborSettings::default(),
         };
         serde_json::from_value(v).unwrap_or_default()
     }
@@ -671,26 +684,10 @@ impl Repository {
         })
     }
 
-    fn save_settings(&self, settings: &CodexMateSettings) -> Result<(), CoreError> {
+    fn save_settings(&self, settings: &AgentHarborSettings) -> Result<(), CoreError> {
         self.paths.ensure_directories()?;
         let data = serde_json::to_string_pretty(settings)?;
         super::storage::write_atomic(&self.paths.settings_path, data.as_bytes())?;
-        Ok(())
-    }
-
-    pub fn get_hotspot_enabled(&self) -> bool {
-        false // The public source does not include the hotspot frontend.
-    }
-
-    pub fn set_hotspot_enabled(&self, enabled: bool) -> Result<(), CoreError> {
-        if enabled {
-            return Err(CoreError::OperationFailed(
-                "Hotspot view is not available in this source build".into(),
-            ));
-        }
-        let mut settings = self.load_settings();
-        settings.hotspot = HotspotConfig { enabled };
-        self.save_settings(&settings)?;
         Ok(())
     }
 
@@ -807,9 +804,7 @@ mod tests {
             std::process::id(),
             chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
         ));
-        let repo = Repository {
-            paths: CodexPaths::from_home(codex_home.clone()),
-        };
+        let repo = Repository::from_paths(CodexPaths::from_home(codex_home.clone()));
         repo.paths.ensure_directories().unwrap();
         (repo, codex_home)
     }
@@ -849,6 +844,8 @@ mod tests {
             last_usage_at: None,
             cached_primary_window: None,
             cached_secondary_window: None,
+            usage_status: default_usage_status(),
+            last_usage_error: None,
         }
     }
 

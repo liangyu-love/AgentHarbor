@@ -92,7 +92,7 @@ export function MaintenancePage() {
   });
 
   const restartMutation = useMutation({
-    mutationFn: () => api.restartCodex(),
+    mutationFn: () => api.targets.restart("codex"),
     onSuccess: () => setActionResult("restart", { type: "success", message: t("maintenance.codexRestarted") }),
     onError: (err) => setActionResult("restart", { type: "error", message: String(err) }),
   });

@@ -38,7 +38,9 @@ fn scan_skills_recursive(dir: &Path, root: &Path, items: &mut Vec<InstalledSkill
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if entry.file_type().map_or(true, |kind| kind.is_symlink()) { continue; }
+        if entry.file_type().map_or(true, |kind| kind.is_symlink()) {
+            continue;
+        }
         if path
             .file_name()
             .map_or(false, |n| n.to_str().map_or(false, |s| s.starts_with('.')))
@@ -141,7 +143,9 @@ pub fn import_skill(
         target.clone()
     };
     if target_canonical.starts_with(&source_canonical) && target_canonical != source_canonical {
-        return Err(CoreError::InvalidData("Cannot import a skill into its own subdirectory".into()));
+        return Err(CoreError::InvalidData(
+            "Cannot import a skill into its own subdirectory".into(),
+        ));
     }
     if source_canonical == target_canonical {
         let skill = load_skill_summary(&target.join("SKILL.md"), skills_dir)
@@ -348,7 +352,9 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), CoreError> {
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         if entry.file_type()?.is_symlink() {
-            return Err(CoreError::InvalidData("Symbolic links inside skills are not supported".into()));
+            return Err(CoreError::InvalidData(
+                "Symbolic links inside skills are not supported".into(),
+            ));
         }
         let target = dst.join(entry.file_name());
         if entry.path().is_dir() {
@@ -362,40 +368,62 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), CoreError> {
 
 fn replace_skill_directory(source: &Path, target: &Path) -> Result<(), CoreError> {
     if std::fs::symlink_metadata(target).map_or(false, |meta| meta.file_type().is_symlink()) {
-        return Err(CoreError::InvalidData("Cannot replace a linked skill directory".into()));
+        return Err(CoreError::InvalidData(
+            "Cannot replace a linked skill directory".into(),
+        ));
     }
-    let parent = target.parent().ok_or_else(|| CoreError::InvalidData("Missing skill parent directory".into()))?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| CoreError::InvalidData("Missing skill parent directory".into()))?;
     let staged = parent.join(format!(".agentharbor-stage-{}", uuid::Uuid::new_v4()));
     let previous = parent.join(format!(".agentharbor-previous-{}", uuid::Uuid::new_v4()));
     let result = (|| -> Result<(), CoreError> {
         copy_dir_all(source, &staged)?;
         std::fs::read_to_string(staged.join("SKILL.md"))?;
         let replacing = target.exists();
-        if replacing { std::fs::rename(target, &previous)?; }
+        if replacing {
+            std::fs::rename(target, &previous)?;
+        }
         if let Err(error) = std::fs::rename(&staged, target) {
-            if replacing { std::fs::rename(&previous, target)?; }
+            if replacing {
+                std::fs::rename(&previous, target)?;
+            }
             return Err(error.into());
         }
-        if replacing { let _ = std::fs::remove_dir_all(&previous); }
+        if replacing {
+            let _ = std::fs::remove_dir_all(&previous);
+        }
         Ok(())
     })();
-    if staged.exists() { let _ = std::fs::remove_dir_all(staged); }
+    if staged.exists() {
+        let _ = std::fs::remove_dir_all(staged);
+    }
     result
 }
 
 fn checked_child(root: &Path, relative: &str) -> Result<PathBuf, CoreError> {
     let relative = Path::new(relative);
-    if relative.as_os_str().is_empty() || relative.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
-        return Err(CoreError::InvalidData("Invalid skill or backup path".into()));
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err(CoreError::InvalidData(
+            "Invalid skill or backup path".into(),
+        ));
     }
     let target = root.join(relative);
     let root_resolved = std::fs::canonicalize(root)?;
     let mut ancestor = target.as_path();
     while !ancestor.exists() {
-        ancestor = ancestor.parent().ok_or_else(|| CoreError::InvalidData("Invalid skill path".into()))?;
+        ancestor = ancestor
+            .parent()
+            .ok_or_else(|| CoreError::InvalidData("Invalid skill path".into()))?;
     }
     if !std::fs::canonicalize(ancestor)?.starts_with(root_resolved) {
-        return Err(CoreError::InvalidData("Skill path is outside the managed directory".into()));
+        return Err(CoreError::InvalidData(
+            "Skill path is outside the managed directory".into(),
+        ));
     }
     Ok(target)
 }

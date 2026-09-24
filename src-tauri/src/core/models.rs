@@ -91,68 +91,6 @@ pub enum CustomInstructionHistoryAction {
     Rollback,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "camelCase")]
-pub enum VoiceTemplateKind {
-    Dictation,
-    Task,
-    Review,
-    Translation,
-    Summary,
-    Custom,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "lowercase")]
-pub enum VoiceVocabularyKind {
-    Hotword,
-    Mapping,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "camelCase")]
-pub enum VoiceSpeechModel {
-    AppleSpeech,
-    AliyunFunAsr,
-    Openai,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "camelCase")]
-pub enum VoiceProcessingMode {
-    Dictation,
-    Task,
-    Review,
-    Summary,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "camelCase")]
-pub enum VoicePermissionState {
-    Authorized,
-    Denied,
-    Restricted,
-    NotDetermined,
-    Unsupported,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "camelCase")]
-pub enum VoiceCaptureState {
-    Idle,
-    Starting,
-    Recording,
-    Stopping,
-    Error,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "camelCase")]
-pub enum VoiceTriggerStyle {
-    Hold,
-    Toggle,
-}
-
 // ---------------------------------------------------------------------------
 // Core data structs
 // ---------------------------------------------------------------------------
@@ -172,7 +110,6 @@ pub struct RateLimitWindow {
     pub window_minutes: Option<i32>,
     pub resets_at: Option<i64>,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -303,237 +240,6 @@ pub struct CustomInstructionPreviewPayload {
     pub next_managed_content: String,
     pub resulting_content: String,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct VoicePromptTemplate {
-    pub id: String,
-    pub title: String,
-    pub description: String,
-    pub kind: VoiceTemplateKind,
-    pub content: String,
-    pub built_in: bool,
-    pub updated_at: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct VoiceVocabularyEntry {
-    pub id: String,
-    pub source: String,
-    pub replacement: String,
-    pub kind: VoiceVocabularyKind,
-    #[serde(default)]
-    pub app_bundle_id: Option<String>,
-    #[serde(default)]
-    pub app_name: Option<String>,
-    pub notes: Option<String>,
-    pub updated_at: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct VoiceVocabularyAppPayload {
-    pub bundle_id: String,
-    pub name: String,
-    pub path: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct VoiceHistoryEntry {
-    pub id: String,
-    pub template_id: String,
-    pub template_title: String,
-    pub template_kind: VoiceTemplateKind,
-    #[serde(default)]
-    pub prompt_content: String,
-    pub raw_text: String,
-    pub rendered_text: String,
-    pub selected_text: String,
-    pub clipboard_text: String,
-    #[serde(default)]
-    pub target_bundle_id: String,
-    #[serde(default)]
-    pub target_app_name: String,
-    #[serde(default = "default_voice_history_status")]
-    pub status: String,
-    #[serde(default)]
-    pub processing_error: Option<String>,
-    #[serde(default)]
-    pub asr_provider: String,
-    #[serde(default)]
-    pub asr_model: String,
-    #[serde(default)]
-    pub asr_language: String,
-    #[serde(default)]
-    pub asr_emotion: String,
-    #[serde(default)]
-    pub asr_duration_ms: Option<u64>,
-    #[serde(default)]
-    pub asr_error_code: Option<String>,
-    pub created_at: i64,
-}
-
-fn default_voice_history_status() -> String {
-    "completed".into()
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct VoiceWorkspacePayload {
-    pub templates: Vec<VoicePromptTemplate>,
-    pub vocabulary: Vec<VoiceVocabularyEntry>,
-    #[serde(default)]
-    pub vocabulary_apps: Vec<VoiceVocabularyAppPayload>,
-    pub history: Vec<VoiceHistoryEntry>,
-    pub source_path: String,
-    pub last_updated_at: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct VoiceTemplateMutationPayload {
-    pub workspace: VoiceWorkspacePayload,
-    pub template: VoicePromptTemplate,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct VoiceVocabularyMutationPayload {
-    pub workspace: VoiceWorkspacePayload,
-    pub entry: VoiceVocabularyEntry,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct VoiceGeneratePayload {
-    pub output: String,
-    pub history_entry: VoiceHistoryEntry,
-    pub workspace: VoiceWorkspacePayload,
-    pub processing_status: String,
-    pub processing_error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct VoiceLlmConfigPayload {
-    pub provider: String,
-    pub api_key: String,
-    pub model: String,
-    pub base_url: String,
-    pub configured: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct VoiceAsrConfigPayload {
-    pub provider: String,
-    pub api_key: String,
-    pub model: String,
-    pub base_url: String,
-    pub configured: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct VoiceRuntimePermissionsPayload {
-    pub microphone: VoicePermissionState,
-    pub speech_recognition: VoicePermissionState,
-    /// macOS 辅助功能权限。用于合成 Cmd+V 把识别文本粘贴到光标位置。
-    /// 其他平台永远为 `Unsupported`。
-    #[serde(default = "default_accessibility_state")]
-    pub accessibility: VoicePermissionState,
-}
-
-fn default_accessibility_state() -> VoicePermissionState {
-    if cfg!(target_os = "macos") {
-        VoicePermissionState::NotDetermined
-    } else {
-        VoicePermissionState::Unsupported
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct PerModeShortcutPayload {
-    pub key_code: i64,
-    pub key_label: String,
-    pub key_kind: String,
-    pub style: VoiceTriggerStyle,
-    /// 修饰键 mask（CGEventFlags & RELEVANT_MODIFIER_MASK）；0 表示单键。
-    /// 旧前端 / 旧数据未提供时默认 0，向后兼容。
-    #[serde(default)]
-    pub modifier_mask: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct VoiceRuntimeStatusPayload {
-    pub supported: bool,
-    pub enabled: bool,
-    pub capture_state: VoiceCaptureState,
-    pub permissions: VoiceRuntimePermissionsPayload,
-    pub global_shortcut: String,
-    pub trigger_key_code: i64,
-    pub trigger_key_label: String,
-    pub trigger_key_kind: String,
-    pub trigger_style: VoiceTriggerStyle,
-    #[serde(default)]
-    pub trigger_modifier_mask: u64,
-    pub hold_trigger_key_code: i64,
-    pub hold_trigger_key_label: String,
-    pub hold_trigger_key_kind: String,
-    #[serde(default)]
-    pub hold_trigger_modifier_mask: u64,
-    pub toggle_trigger_key_code: i64,
-    pub toggle_trigger_key_label: String,
-    pub toggle_trigger_key_kind: String,
-    #[serde(default)]
-    pub toggle_trigger_modifier_mask: u64,
-    pub speech_model: VoiceSpeechModel,
-    #[serde(default = "default_recognition_language")]
-    pub recognition_language: String,
-    pub processing_mode: VoiceProcessingMode,
-    pub processing_mode_id: String,
-    #[serde(default)]
-    pub session_processing_mode_id: Option<String>,
-    pub per_mode_shortcuts: std::collections::HashMap<String, PerModeShortcutPayload>,
-    pub live_text: String,
-    pub committed_text: String,
-    pub captured_selected_text: String,
-    pub captured_clipboard_text: String,
-    #[serde(default)]
-    pub captured_target_bundle_id: String,
-    #[serde(default)]
-    pub captured_target_app_name: String,
-    #[serde(default)]
-    pub active_asr_provider: String,
-    #[serde(default)]
-    pub active_asr_model: String,
-    #[serde(default)]
-    pub detected_asr_language: String,
-    #[serde(default)]
-    pub detected_asr_emotion: String,
-    #[serde(default)]
-    pub last_asr_duration_ms: Option<u64>,
-    #[serde(default)]
-    pub last_asr_error_code: Option<String>,
-    pub last_error: Option<String>,
-    pub config_path: String,
-    pub sidecar_path: Option<String>,
-    #[serde(default = "default_auto_inject")]
-    pub auto_inject: bool,
-}
-
-fn default_recognition_language() -> String {
-    "auto".into()
-}
-
-fn default_auto_inject() -> bool {
-    true
-}
-
 
 // ---------------------------------------------------------------------------
 // MCP payloads
@@ -668,7 +374,6 @@ pub struct SkillDeleteBackupPayload {
     pub remaining_backup_count: i32,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CleanPayload {
@@ -685,13 +390,11 @@ pub struct RebuildRegistryPayload {
     pub registry_updated: bool,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoSwitchConfigPayload {
     pub auto_switch: AutoSwitchStatusPayload,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -727,7 +430,6 @@ pub struct UpdateInstallabilityPayload {
     pub translocated: bool,
     pub quarantined: bool,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -784,7 +486,6 @@ pub struct DiagnosePayload {
     pub session_state: DiagnoseSessionState,
     pub api_state: DiagnoseApiState,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]

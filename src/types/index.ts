@@ -5,14 +5,6 @@ export type AutoSwitchRuntimeState = "running" | "stopped" | "notInstalled" | "u
 export type McpTransport = "stdio" | "http" | "sse" | "unknown";
 export type CustomInstructionProtectionState = "ready" | "unmanaged" | "protected";
 export type CustomInstructionHistoryAction = "apply" | "clear" | "rollback";
-export type VoiceTemplateKind = "dictation" | "task" | "review" | "translation" | "summary" | "custom";
-export type VoiceVocabularyKind = "hotword" | "mapping";
-export type VoiceSpeechModel = "appleSpeech" | "aliyunFunAsr" | "openai";
-export type VoiceProcessingMode = "dictation" | "task" | "review" | "summary";
-export type VoiceProcessingStatus = "completed" | "llm_error" | "llm_missing";
-export type VoicePermissionState = "authorized" | "denied" | "restricted" | "notDetermined" | "unsupported";
-export type VoiceCaptureState = "idle" | "starting" | "recording" | "stopping" | "error";
-export type VoiceTriggerStyle = "hold" | "toggle";
 
 export interface CoreWarning {
   code: string;
@@ -111,163 +103,6 @@ export interface CustomInstructionPreviewPayload {
   currentManagedContent: string;
   nextManagedContent: string;
   resultingContent: string;
-}
-
-export interface VoicePromptTemplate {
-  id: string;
-  title: string;
-  description: string;
-  kind: VoiceTemplateKind;
-  content: string;
-  builtIn: boolean;
-  updatedAt: number;
-}
-
-export interface VoiceVocabularyEntry {
-  id: string;
-  source: string;
-  replacement: string;
-  kind: VoiceVocabularyKind;
-  appBundleId?: string | null;
-  appName?: string | null;
-  notes: string | null;
-  updatedAt: number;
-}
-
-export interface VoiceVocabularyAppPayload {
-  bundleId: string;
-  name: string;
-  path: string;
-}
-
-export interface VoiceHistoryEntry {
-  id: string;
-  templateId: string;
-  templateTitle: string;
-  templateKind: VoiceTemplateKind;
-  promptContent?: string;
-  rawText: string;
-  renderedText: string;
-  selectedText: string;
-  clipboardText: string;
-  targetBundleId?: string;
-  targetAppName?: string;
-  status?: VoiceProcessingStatus;
-  processingError?: string | null;
-  asrProvider?: string;
-  asrModel?: string;
-  asrLanguage?: string;
-  asrEmotion?: string;
-  asrDurationMs?: number | null;
-  asrErrorCode?: string | null;
-  createdAt: number;
-}
-
-export interface VoiceWorkspacePayload {
-  templates: VoicePromptTemplate[];
-  vocabulary: VoiceVocabularyEntry[];
-  vocabularyApps?: VoiceVocabularyAppPayload[];
-  history: VoiceHistoryEntry[];
-  sourcePath: string;
-  lastUpdatedAt: number;
-}
-
-export interface VoiceTemplateMutationPayload {
-  workspace: VoiceWorkspacePayload;
-  template: VoicePromptTemplate;
-}
-
-export interface VoiceVocabularyMutationPayload {
-  workspace: VoiceWorkspacePayload;
-  entry: VoiceVocabularyEntry;
-}
-
-export interface VoiceGeneratePayload {
-  output: string;
-  historyEntry: VoiceHistoryEntry;
-  workspace: VoiceWorkspacePayload;
-  processingStatus: VoiceProcessingStatus;
-  processingError?: string | null;
-}
-
-export interface VoiceLlmConfigPayload {
-  provider: string;
-  apiKey: string;
-  model: string;
-  baseUrl: string;
-  configured: boolean;
-}
-
-export interface VoiceAsrConfigPayload {
-  provider: string;
-  apiKey: string;
-  model: string;
-  baseUrl: string;
-  configured: boolean;
-}
-
-export interface VoiceRuntimePermissionsPayload {
-  microphone: VoicePermissionState;
-  speechRecognition: VoicePermissionState;
-  /**
-   * macOS 辅助功能权限状态。用于合成 Cmd+V 把识别文本粘贴到前台应用的光标。
-   * 非 macOS 恒为 `unsupported`；macOS 下只会是 `authorized` 或 `notDetermined`
-   * （系统 API 无法区分「从未授权」与「被显式关闭」）。
-   */
-  accessibility: VoicePermissionState;
-}
-
-export interface VoiceRuntimeStatusPayload {
-  supported: boolean;
-  enabled: boolean;
-  captureState: VoiceCaptureState;
-  permissions: VoiceRuntimePermissionsPayload;
-  globalShortcut: string;
-  triggerKeyCode: number;
-  triggerKeyLabel: string;
-  triggerKeyKind: string;
-  triggerStyle: VoiceTriggerStyle;
-  /** 修饰键 mask（CGEventFlags 的 4 个语义位）；0 = 单键。旧版本无此字段时为 undefined。 */
-  triggerModifierMask?: number;
-  holdTriggerKeyCode: number;
-  holdTriggerKeyLabel: string;
-  holdTriggerKeyKind: string;
-  holdTriggerModifierMask?: number;
-  toggleTriggerKeyCode: number;
-  toggleTriggerKeyLabel: string;
-  toggleTriggerKeyKind: string;
-  toggleTriggerModifierMask?: number;
-  speechModel: VoiceSpeechModel;
-  recognitionLanguage: string;
-  processingMode: VoiceProcessingMode;
-  processingModeId: string;
-  sessionProcessingModeId?: string | null;
-  perModeShortcuts: Record<
-    string,
-    {
-      keyCode: number;
-      keyLabel: string;
-      keyKind: string;
-      style: VoiceTriggerStyle;
-      modifierMask?: number;
-    }
-  >;
-  liveText: string;
-  committedText: string;
-  capturedSelectedText: string;
-  capturedClipboardText: string;
-  capturedTargetBundleId: string;
-  capturedTargetAppName: string;
-  activeAsrProvider: string;
-  activeAsrModel: string;
-  detectedAsrLanguage: string;
-  detectedAsrEmotion: string;
-  lastAsrDurationMs: number | null;
-  lastAsrErrorCode: string | null;
-  lastError: string | null;
-  configPath: string;
-  sidecarPath: string | null;
-  autoInject: boolean;
 }
 
 export interface McpServerSummary {
@@ -425,6 +260,90 @@ export interface CoreEnvelope<T> {
   message: string;
   warnings: CoreWarning[];
   data: T;
+}
+
+export interface AccountRateLimitWindow {
+  usedPercent: number;
+  remainingPercent: number;
+  windowMinutes: number | null;
+  resetsAt: number | null;
+}
+
+export type CodexAccountUsageStatus = "unknown" | "healthy" | "expired" | "error";
+
+export interface CodexAccountSummary {
+  accountKey: string;
+  email: string;
+  displayName: string;
+  plan: string;
+  authMode: string;
+  isActive: boolean;
+  createdAt: number;
+  lastUsedAt: number | null;
+  lastUsageAt: number | null;
+  primaryWindow: AccountRateLimitWindow | null;
+  secondaryWindow: AccountRateLimitWindow | null;
+  usageStatus: CodexAccountUsageStatus;
+  usageError: string | null;
+}
+
+export interface CodexAccountListPayload {
+  activeAccountKey: string | null;
+  refreshedAt: number;
+  items: CodexAccountSummary[];
+}
+
+export interface RelayUsageTotals {
+  requestCount: number;
+  successfulCount: number;
+  reportedCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
+}
+
+export interface RelayProviderUsage {
+  providerId: string;
+  providerName: string;
+  totals: RelayUsageTotals;
+}
+
+export interface RelayModelUsage extends RelayProviderUsage {
+  model: string;
+}
+
+export interface RelayUsageDay {
+  date: string;
+  totals: RelayUsageTotals;
+}
+
+export interface RelayUsageRecord {
+  timestamp: number;
+  date: string;
+  providerId: string;
+  providerName: string;
+  model: string;
+  protocol: string;
+  statusCode: number;
+  durationMs: number;
+  success: boolean;
+  usageReported: boolean;
+  inputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
+}
+
+export interface RelayUsagePayload {
+  generatedAt: number;
+  today: RelayUsageTotals;
+  week: RelayUsageTotals;
+  allTime: RelayUsageTotals;
+  byProvider: RelayProviderUsage[];
+  byModel: RelayModelUsage[];
+  daily: RelayUsageDay[];
+  recent: RelayUsageRecord[];
 }
 
 export interface BootstrapStatePayload {

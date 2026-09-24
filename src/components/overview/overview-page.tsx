@@ -34,7 +34,7 @@ export function OverviewPage({ onNavigate }: { onNavigate: (route: Route) => voi
   const [copiedHome, setCopiedHome] = useState(false);
 
   const snapshot = useQuery({ queryKey: ["runtime-state", "display"], queryFn: () => api.loadSnapshot(true) });
-  const newapi = useQuery({ queryKey: ["newapi-state"], queryFn: api.loadNewApiState });
+  const newapi = useQuery({ queryKey: ["newapi-state"], queryFn: api.providers.loadState });
   const mcp = useQuery({ queryKey: ["mcp-servers"], queryFn: api.loadMcpServers });
   const skills = useQuery({ queryKey: ["installed-skills"], queryFn: api.loadInstalledSkills });
   const skillBackups = useQuery({ queryKey: ["skill-backups"], queryFn: api.loadSkillBackups });
@@ -84,7 +84,7 @@ export function OverviewPage({ onNavigate }: { onNavigate: (route: Route) => voi
 
   const handleRestartCodex = async () => {
     try {
-      await api.restartCodex();
+      await api.targets.restart("codex");
       toast({ title: "Codex 重启指令已发送", variant: "default" });
     } catch (err) {
       toast({ title: t("common.error"), description: String(err), variant: "destructive" });

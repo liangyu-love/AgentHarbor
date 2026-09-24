@@ -4,7 +4,9 @@ use std::path::Path;
 
 /// Replace a file only after its complete contents have been written.
 pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), CoreError> {
-    let parent = path.parent().ok_or_else(|| CoreError::InvalidData("Missing parent directory".into()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| CoreError::InvalidData("Missing parent directory".into()))?;
     std::fs::create_dir_all(parent)?;
     let staged = parent.join(format!(".agentharbor-{}.tmp", uuid::Uuid::new_v4()));
     let result = (|| -> Result<(), CoreError> {
@@ -22,6 +24,8 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), CoreError> {
         std::fs::rename(&staged, path)?;
         Ok(())
     })();
-    if result.is_err() { let _ = std::fs::remove_file(staged); }
+    if result.is_err() {
+        let _ = std::fs::remove_file(staged);
+    }
     result
 }

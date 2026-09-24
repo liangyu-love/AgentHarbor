@@ -25,7 +25,7 @@ export function SiteHeader({
 }: SiteHeaderProps) {
   const newapi = useQuery({
     queryKey: ["newapi-state"],
-    queryFn: api.loadNewApiState,
+    queryFn: api.providers.loadState,
     staleTime: 5000,
   });
 

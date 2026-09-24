@@ -23,9 +23,12 @@ import type {
   SkillDeleteBackupPayload,
   CustomInstructionPreviewPayload,
   CustomInstructionStatePayload,
+  CodexAccountListPayload,
+  RelayUsagePayload,
 } from "@/types";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
-import type { NewApiState, NewApiStateChange, NewApiImportResult, NewApiProvider, NewApiProviderInput, NewApiModel } from "@/types/newapi";
+import type { TargetId, ClientStatus, ClientConfigRequest, ClientConfigPreview, ClientConfigApplied } from "@/types/clients";
+import type { ModelProtocol, NewApiState, NewApiStateChange, NewApiImportResult, NewApiProvider, NewApiProviderInput, NewApiModel } from "@/types/newapi";
 
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (isTauriRuntime()) {
@@ -35,21 +38,85 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
   throw new Error(`Command "${cmd}" is only available in Tauri runtime`);
 }
 
-export const api = {
-  loadNewApiState: () => invoke<NewApiState>("load_newapi_state"),
-  saveNewApiProvider: (provider: NewApiProviderInput) => invoke<NewApiStateChange>("save_newapi_provider", { provider }),
-  deleteNewApiProvider: (id: string) => invoke<NewApiStateChange>("delete_newapi_provider", { id }),
-  setNewApiProviderEnabled: (id: string, enabled: boolean) => invoke<NewApiStateChange>("set_newapi_provider_enabled", { id, enabled }),
-  setNewApiProviderNetwork: (id: string, mode: "proxy" | "direct") =>
+export type { TargetId } from "@/types/clients";
+
+const providersApi = {
+  loadState: () => invoke<NewApiState>("load_newapi_state"),
+  save: (provider: NewApiProviderInput) => invoke<NewApiStateChange>("save_newapi_provider", { provider }),
+  delete: (id: string) => invoke<NewApiStateChange>("delete_newapi_provider", { id }),
+  setEnabled: (id: string, enabled: boolean) => invoke<NewApiStateChange>("set_newapi_provider_enabled", { id, enabled }),
+  setNetwork: (id: string, mode: "proxy" | "direct") =>
     invoke<NewApiStateChange>("set_newapi_provider_network", { id, mode }),
-  testNewApiProvider: (id: string, model: string) => invoke<NewApiProvider>("test_newapi_provider", { id, model }),
+  test: (id: string, model: string) => invoke<NewApiProvider>("test_newapi_provider", { id, model }),
+  fetchModels: (providerId: string | null, baseUrl: string, apiKey: string, protocol: ModelProtocol) =>
+    invoke<NewApiModel[]>("fetch_newapi_models", { providerId, baseUrl, apiKey, protocol }),
+  queryBalance: (id: string) => invoke<NewApiProvider>("query_newapi_provider_balance", { id }),
+  import: (path: string) => invoke<NewApiImportResult>("import_newapi_providers", { path }),
+  export: (path: string) => invoke<void>("export_newapi_providers", { path }),
+};
+
+const routingApi = {
+  setEnabled: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_smart_routing", { enabled }),
+  setAccountless: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_accountless", { enabled }),
+};
+
+const targetsApi = {
+  restart: (targetId: TargetId) => invoke<void>("restart_target", { targetId }),
+  configs: () => invoke<ClientStatus[]>("list_client_configs"),
+  previewConfig: (request: ClientConfigRequest) => invoke<ClientConfigPreview>("preview_client_config", { request }),
+  applyConfig: (request: ClientConfigRequest, revision: string) => invoke<ClientConfigApplied>("apply_client_config", { request, revision }),
+  restoreConfig: (targetId: TargetId) => invoke<ClientConfigApplied>("restore_client_config", { targetId }),
+};
+
+const conversationsApi = {
+  list: (targetId: TargetId) =>
+    invoke<CoreEnvelope<import("@/types/threads").ThreadListPayload>>("list_conversations", { targetId }),
+  export: (targetId: TargetId, keys: string[], targetDir: string, format: "markdown" | "jsonl") =>
+    invoke<CoreEnvelope<import("@/types/threads").ThreadExportPayload>>("export_conversations", {
+      targetId,
+      keys,
+      targetDir,
+      format,
+    }),
+};
+
+const usageApi = {
+  relay: () => invoke<RelayUsagePayload>("get_relay_usage"),
+};
+
+const accountsApi = {
+  list: () => invoke<CodexAccountListPayload>("list_codex_accounts"),
+  relayUsage: usageApi.relay,
+  refresh: () => invoke<CodexAccountListPayload>("refresh_codex_accounts"),
+  login: () => invoke<CodexAccountListPayload>("login_codex_account"),
+  switch: (accountKey: string) =>
+    invoke<CodexAccountListPayload>("switch_codex_account", { accountKey }),
+  delete: (accountKey: string) =>
+    invoke<CodexAccountListPayload>("delete_codex_account", { accountKey }),
+};
+
+export const api = {
+  providers: providersApi,
+  routing: routingApi,
+  targets: targetsApi,
+  conversations: conversationsApi,
+  accounts: accountsApi,
+  usage: usageApi,
+
+  // Compatibility aliases for extensions and older frontend modules.
+  loadNewApiState: providersApi.loadState,
+  saveNewApiProvider: providersApi.save,
+  deleteNewApiProvider: providersApi.delete,
+  setNewApiProviderEnabled: providersApi.setEnabled,
+  setNewApiProviderNetwork: providersApi.setNetwork,
+  testNewApiProvider: providersApi.test,
   fetchNewApiModels: (providerId: string | null, baseUrl: string, apiKey: string) =>
-    invoke<NewApiModel[]>("fetch_newapi_models", { providerId, baseUrl, apiKey }),
-  queryNewApiProviderBalance: (id: string) => invoke<NewApiProvider>("query_newapi_provider_balance", { id }),
-  setNewApiSmartRouting: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_smart_routing", { enabled }),
-  setNewApiAccountless: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_accountless", { enabled }),
-  importNewApiProviders: (path: string) => invoke<NewApiImportResult>("import_newapi_providers", { path }),
-  exportNewApiProviders: (path: string) => invoke<void>("export_newapi_providers", { path }),
+    providersApi.fetchModels(providerId, baseUrl, apiKey, "responses"),
+  queryNewApiProviderBalance: providersApi.queryBalance,
+  setNewApiSmartRouting: routingApi.setEnabled,
+  setNewApiAccountless: routingApi.setAccountless,
+  importNewApiProviders: providersApi.import,
+  exportNewApiProviders: providersApi.export,
   loadSnapshot: (localOnly = false) =>
     invoke<CoreEnvelope<CoreSnapshotPayload>>("load_snapshot", { localOnly }),
 
@@ -92,8 +159,7 @@ export const api = {
   diagnose: () =>
     invoke<CoreEnvelope<DiagnosePayload>>("diagnose"),
 
-  restartCodex: () =>
-    invoke<void>("restart_codex"),
+  restartCodex: () => targetsApi.restart("codex"),
 
   gracefulRestartForUpdate: () =>
     invoke<void>("graceful_restart_for_update"),
@@ -147,20 +213,8 @@ export const api = {
 
   isUpdaterConfigured: () => invoke<boolean>("is_updater_configured"),
 
-  hasNotch: () =>
-    invoke<boolean>("has_notch").catch(() => false),
-
-  getHotspotEnabled: () =>
-    invoke<boolean>("get_hotspot_enabled"),
-
-  setHotspotEnabled: (enabled: boolean) =>
-    invoke<boolean>("set_hotspot_enabled", { enabled }),
-
   focusMainWindow: () =>
     invoke<void>("focus_main_window"),
-
-  hotspotReady: () =>
-    invoke<void>("hotspot_ready"),
 
   openPath: (path: string) =>
     invoke<void>("open_path", { path }),
@@ -168,13 +222,8 @@ export const api = {
   getSystemInfo: () =>
     invoke<{ os: string; osVersion: string; arch: string; hostname: string }>("get_system_info"),
 
-  listCodexThreads: () =>
-    invoke<CoreEnvelope<import("@/types/threads").ThreadListPayload>>("list_codex_threads"),
+  listCodexThreads: () => conversationsApi.list("codex"),
 
   exportCodexThreads: (keys: string[], targetDir: string, format: "markdown" | "jsonl") =>
-    invoke<CoreEnvelope<import("@/types/threads").ThreadExportPayload>>("export_codex_threads", {
-      keys,
-      targetDir,
-      format,
-    }),
+    conversationsApi.export("codex", keys, targetDir, format),
 };

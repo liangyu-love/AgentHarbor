@@ -10,10 +10,14 @@ export interface NewApiBalance {
 }
 export interface NewApiModel {
   id: string;
+  displayName: string;
   contextWindow: number | null;
   maxOutputTokens: number | null;
   endpointTypes: string[];
+  included: boolean;
+  metadataSource: "upstream" | "local" | "manual";
 }
+export type ModelProtocol = "responses" | "chatCompletions" | "anthropicMessages";
 export interface NewApiProvider {
   id: string;
   name: string;
@@ -21,12 +25,13 @@ export interface NewApiProvider {
   userId: number | null;
   hasAccessToken: boolean;
   hasApiKey: boolean;
+  protocol: ModelProtocol;
   model: string;
+  models: NewApiModel[];
   contextWindow: number | null;
   autoCompactLimit: number | null;
   enabled: boolean;
   networkMode: "proxy" | "direct";
-  models: NewApiModel[];
   modelsFetchedAt: number | null;
   balance: NewApiBalance | null;
   balanceSource: string | null;
@@ -65,7 +70,9 @@ export interface NewApiProviderInput {
   userId: number | null;
   accessToken: string;
   apiKey: string;
+  protocol: ModelProtocol;
   model: string;
+  models: NewApiModel[];
   contextWindow: number | null;
   autoCompactLimit: number | null;
   networkMode?: "proxy" | "direct";

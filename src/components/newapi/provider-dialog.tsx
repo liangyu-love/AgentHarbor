@@ -1,22 +1,26 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, Eye, EyeOff, Loader2, Plug, RefreshCw } from "lucide-react";
+import { ChevronDown, Eye, EyeOff, Loader2, Plug } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
-import type { NewApiProvider, NewApiStateChange, NewApiModel } from "@/types/newapi";
+import { supportsProtocol } from "@/lib/provider-models";
+import type { ModelProtocol, NewApiProvider, NewApiStateChange, NewApiModel } from "@/types/newapi";
+import { ProviderModelEditor } from "@/components/newapi/provider-model-editor";
 
-const emptyDraft = { name: "", baseUrl: "", userId: "", accessToken: "", apiKey: "", model: "", contextWindow: "", autoCompactLimit: "" };
+const emptyDraft = { name: "", baseUrl: "", userId: "", accessToken: "", apiKey: "", protocol: "responses" as ModelProtocol, model: "", contextWindow: "", autoCompactLimit: "" };
 const fromProvider = (provider: NewApiProvider) => ({
   name: provider.name,
   baseUrl: provider.baseUrl,
   userId: provider.userId?.toString() ?? "",
   accessToken: "",
   apiKey: "",
+  protocol: provider.protocol,
   model: provider.model,
   contextWindow: provider.contextWindow?.toString() ?? "",
   autoCompactLimit: provider.autoCompactLimit?.toString() ?? "",
@@ -27,9 +31,10 @@ function optionalNumber(text: string, errorKey: string) {
   if (!/^\d+$/.test(text) || !Number.isSafeInteger(value) || value <= 0) throw new Error(errorKey);
   return value;
 }
-const supportsResponses = (model: NewApiModel) => {
-  const endpoints = model.endpointTypes.map(type => type.toLowerCase());
-  return endpoints.some(type => type.includes("response")) || !endpoints.some(type => type.includes("chat") || type.includes("completion"));
+const protocolLabelKey: Record<ModelProtocol, string> = {
+  responses: "newapi.protocolResponses",
+  chatCompletions: "newapi.protocolChatCompletions",
+  anthropicMessages: "newapi.protocolAnthropicMessages",
 };
 
 function SecretInput({ id, value, placeholder, disabled, onChange }: {
@@ -95,7 +100,15 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
       setDraft(provider ? fromProvider(provider) : emptyDraft);
       setError(null);
       setShowAdvanced(!!provider && (!!provider.userId || provider.hasAccessToken || !!provider.contextWindow || !!provider.autoCompactLimit));
-      setModels([]);
+      setModels(provider?.models.length ? provider.models : provider?.model ? [{
+        id: provider.model,
+        displayName: provider.model,
+        contextWindow: provider.contextWindow,
+        maxOutputTokens: null,
+        endpointTypes: [],
+        included: true,
+        metadataSource: "local",
+      }] : []);
       setFetchError(null);
     }
   }, [open, provider]);
@@ -134,14 +147,16 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
     setSaving(true);
     setError(null);
     try {
-      const change = await api.saveNewApiProvider({
+      const change = await api.providers.save({
         id: provider?.id ?? null,
         name: draft.name,
         baseUrl: draft.baseUrl,
         userId: optionalNumber(draft.userId, "newapi.errors.userId"),
         accessToken: draft.accessToken,
         apiKey: draft.apiKey,
+        protocol: draft.protocol,
         model: draft.model,
+        models,
         contextWindow: optionalNumber(draft.contextWindow, "newapi.errors.context"),
         autoCompactLimit: optionalNumber(draft.autoCompactLimit, "newapi.errors.context"),
       });
@@ -169,7 +184,34 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
     setFetchingModels(true);
     setFetchError(null);
     try {
-      setModels(await api.fetchNewApiModels(provider?.id ?? null, draft.baseUrl.trim(), draft.apiKey));
+      const fetched = await api.providers.fetchModels(
+        provider?.id ?? null,
+        draft.baseUrl.trim(),
+        draft.apiKey,
+        draft.protocol,
+      );
+      setModels(current => {
+        const fetchedIds = new Set(fetched.map(model => model.id));
+        const merged = fetched.map(model => {
+          const existing = current.find(item => item.id === model.id);
+          if (!existing) return model;
+          const manualMetadata = existing.metadataSource === "manual";
+          return {
+            ...model,
+            included: existing.included,
+            displayName: manualMetadata ? existing.displayName : model.displayName,
+            contextWindow: manualMetadata ? existing.contextWindow : model.contextWindow,
+            maxOutputTokens: manualMetadata ? existing.maxOutputTokens : model.maxOutputTokens,
+            metadataSource: manualMetadata ? "manual" as const : model.metadataSource,
+          };
+        });
+        merged.push(...current.filter(model => !fetchedIds.has(model.id)));
+        setDraft(value => {
+          const defaultAvailable = merged.some(model => model.id === value.model && model.included && supportsProtocol(model, value.protocol));
+          return defaultAvailable ? value : { ...value, model: merged.find(model => model.included && supportsProtocol(model, value.protocol))?.id ?? "" };
+        });
+        return merged;
+      });
     } catch (e) {
       const key = typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
       setFetchError(key.startsWith("newapi.") ? key : "newapi.errors.unexpected");
@@ -179,7 +221,7 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
   };
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+      <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-4xl">
         <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 -m-6 mb-0 h-28 bg-gradient-to-b from-primary/[0.07] via-primary/[0.02] to-transparent" />
         <div className="relative flex items-center justify-between gap-3 border-b border-border/40 pb-3">
           <div className="flex items-center gap-3">
@@ -192,7 +234,7 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
             </DialogHeader>
           </div>
           <span className="hidden sm:inline-flex items-center rounded-full bg-primary/10 px-2.5 py-0.5 text-[11px] font-medium text-primary ring-1 ring-inset ring-primary/20">
-            Responses API
+            {t(protocolLabelKey[draft.protocol])}
           </span>
         </div>
 
@@ -217,60 +259,49 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
               })}
             </div>
 
-            {/* Right Column: Model & API Compatibility */}
+            {/* Right Column: API Compatibility */}
             <div className="space-y-3">
-              <SectionLabel>{t("newapi.model")}</SectionLabel>
+              <SectionLabel>{t("newapi.protocol")}</SectionLabel>
               <div className="space-y-1.5">
-                <div className="flex items-center justify-between gap-2">
-                  <Label htmlFor="newapi-provider-model" className="text-[13px]">{t("newapi.model")}</Label>
-                  <button
-                    type="button"
-                    onClick={() => void fetchModels()}
-                    disabled={fetchingModels || saving || !draft.baseUrl.trim()}
-                    className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:pointer-events-none disabled:opacity-40"
-                  >
-                    {fetchingModels ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                    {t("newapi.fetchModels")}
-                  </button>
-                </div>
-                <Input
-                  id="newapi-provider-model"
-                  type="text"
-                  autoComplete="off"
-                  spellCheck={false}
-                  value={draft.model}
-                  disabled={saving}
-                  placeholder="e.g. gpt-4o / deepseek-chat"
-                  onChange={e => update("model", e.target.value)}
-                />
-                {fetchError && <p className="text-[11px] text-destructive">{t(fetchError)}</p>}
-                {models.length > 0 && (
-                  <div className="max-h-36 overflow-y-auto rounded-lg bg-black/[0.02] ring-1 ring-border/60 dark:bg-white/[0.02]">
-                    {models.map(model => (
-                      <div key={model.id} className={cn("flex items-center gap-2 px-2.5 py-1.5", draft.model === model.id && "bg-primary/10")}>
-                        <button
-                          type="button"
-                          onClick={() => update("model", model.id)}
-                          disabled={!supportsResponses(model)}
-                          className="flex min-w-0 flex-1 items-center justify-between gap-2 text-left font-mono text-[11px] transition-colors hover:text-primary disabled:cursor-not-allowed disabled:opacity-45"
-                        >
-                          <span className={cn("truncate", draft.model === model.id && "font-medium text-primary")}>{model.id}</span>
-                          {!supportsResponses(model) ? (
-                            <span className="shrink-0 font-sans text-[10px] text-muted-foreground">{t("newapi.chatOnlyModel")}</span>
-                          ) : typeof model.contextWindow === "number" && model.contextWindow > 0 && (
-                            <span className="shrink-0 font-sans text-[10px] text-muted-foreground">{Math.round(model.contextWindow / 1000)}K</span>
-                          )}
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <p className="text-[11px] leading-relaxed text-muted-foreground">{t("newapi.modelHint")}</p>
-                <p className="rounded-lg bg-primary/[0.05] px-2.5 py-2 text-[11px] leading-relaxed text-muted-foreground ring-1 ring-primary/15">
-                  {t("newapi.responsesOnlyHint")}
-                </p>
+                <Label htmlFor="newapi-provider-protocol" className="text-[13px]">{t("newapi.protocol")}</Label>
+                <Select value={draft.protocol} onValueChange={value => {
+                  const protocol = value as ModelProtocol;
+                  setDraft(current => ({
+                    ...current,
+                    protocol,
+                    model: models.some(model => model.id === current.model && model.included && supportsProtocol(model, protocol))
+                      ? current.model
+                      : models.find(model => model.included && supportsProtocol(model, protocol))?.id ?? "",
+                  }));
+                }} disabled={saving}>
+                  <SelectTrigger id="newapi-provider-protocol">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="responses">{t("newapi.protocolResponses")}</SelectItem>
+                    <SelectItem value="chatCompletions">{t("newapi.protocolChatCompletions")}</SelectItem>
+                    <SelectItem value="anthropicMessages">{t("newapi.protocolAnthropicMessages")}</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
+              <p className="rounded-lg bg-primary/[0.05] px-2.5 py-2 text-[11px] leading-relaxed text-muted-foreground ring-1 ring-primary/15">
+                {t("newapi.protocolHint")}
+              </p>
             </div>
+          </div>
+
+          <div className="border-t border-border/50 pt-4">
+            <ProviderModelEditor
+              models={models}
+              protocol={draft.protocol}
+              defaultModel={draft.model}
+              disabled={saving || fetchingModels}
+              fetching={fetchingModels}
+              fetchError={fetchError}
+              onFetch={() => void fetchModels()}
+              onModelsChange={setModels}
+              onDefaultModelChange={model => update("model", model)}
+            />
           </div>
 
           {/* Collapsible Advanced & Balance Settings */}
@@ -317,7 +348,7 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
               <Button type="button" variant="ghost" size="sm" onClick={() => onOpenChange(false)} disabled={saving}>
                 {t("common.cancel")}
               </Button>
-              <Button type="submit" size="sm" disabled={saving || !draft.name.trim() || !draft.baseUrl.trim()}>
+              <Button type="submit" size="sm" disabled={saving || !draft.name.trim() || !draft.baseUrl.trim() || !draft.model || !models.some(model => model.id === draft.model && model.included)}>
                 {saving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
                 {t("newapi.save")}
               </Button>

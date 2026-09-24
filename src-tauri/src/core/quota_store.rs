@@ -23,7 +23,10 @@ pub struct QuotaStoreItem {
 }
 
 pub fn load_or_default(path: &Path) -> QuotaStoreFile {
-    std::fs::read(path).ok().and_then(|data| serde_json::from_slice(&data).ok()).unwrap_or_default()
+    std::fs::read(path)
+        .ok()
+        .and_then(|data| serde_json::from_slice(&data).ok())
+        .unwrap_or_default()
 }
 
 pub fn find_item<'a>(store: &'a QuotaStoreFile, key: &str) -> Option<&'a QuotaStoreItem> {
@@ -31,10 +34,18 @@ pub fn find_item<'a>(store: &'a QuotaStoreFile, key: &str) -> Option<&'a QuotaSt
 }
 
 pub fn upsert_item(store: &mut QuotaStoreFile, item: QuotaStoreItem, now: i64) -> bool {
-    if let Some(existing) = store.items.iter_mut().find(|old| old.account_key == item.account_key) {
-        if *existing == item { return false; }
+    if let Some(existing) = store
+        .items
+        .iter_mut()
+        .find(|old| old.account_key == item.account_key)
+    {
+        if *existing == item {
+            return false;
+        }
         *existing = item;
-    } else { store.items.push(item); }
+    } else {
+        store.items.push(item);
+    }
     store.updated_at = now;
     true
 }

@@ -18,6 +18,7 @@ import {
   MessagesSquare,
   ArrowRight,
   ShieldCheck,
+  UsersRound,
 } from "lucide-react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
@@ -92,7 +93,7 @@ export function CommandPalette({
 
   const handleRestartCodex = async () => {
     try {
-      await api.restartCodex();
+      await api.targets.restart("codex");
       toast({ title: "Codex 重启指令已发送", variant: "default" });
     } catch (err) {
       toast({ title: t("common.error"), description: String(err), variant: "destructive" });
@@ -112,6 +113,17 @@ export function CommandPalette({
         shortcut: "⌘1",
         onSelect: () => {
           onNavigate("overview");
+          onOpenChange(false);
+        },
+      },
+      {
+        id: "nav-accounts",
+        title: t("nav.accounts"),
+        subtitle: "Codex 官方账号登录、切换与额度监控",
+        icon: UsersRound,
+        category: "navigation",
+        onSelect: () => {
+          onNavigate("accounts");
           onOpenChange(false);
         },
       },

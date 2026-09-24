@@ -1,5 +1,4 @@
-use super::{models::ApiProxyConfigPayload, secret_file, storage};
-use crate::platform::paths::CodexPaths;
+use super::models::ApiProxyConfigPayload;
 use reqwest::{
     blocking::{Client, Response},
     header::{HeaderMap, HeaderValue, AUTHORIZATION},
@@ -21,49 +20,36 @@ pub struct Connection {
     pub auto_compact_limit: Option<u64>,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConnectionView {
-    pub base_url: String,
-    pub user_id: Option<u64>,
-    pub has_access_token: bool,
-    pub has_api_key: bool,
-    pub model: String,
-    pub context_window: Option<u64>,
-    pub auto_compact_limit: Option<u64>,
-}
-
-impl Connection {
-    pub fn view(&self) -> ConnectionView {
-        ConnectionView { base_url: self.base_url.clone(), user_id: self.user_id,
-            has_access_token: !self.access_token.is_empty(), has_api_key: !self.api_key.is_empty(),
-            model: self.model.clone(), context_window: self.context_window, auto_compact_limit: self.auto_compact_limit }
-    }
-}
-
-pub fn load(paths: &CodexPaths) -> Result<Connection, String> {
-    match secret_file::read(&paths.app_data_dir.join("newapi-connection.dat"))? {
-        Some(bytes) => serde_json::from_slice(&bytes).map_err(|_| "newapi.errors.storage".into()),
-        None => Ok(Connection::default()),
-    }
-}
-
 pub(crate) fn base_url(text: &str) -> Result<Url, String> {
     let mut url = Url::parse(text.trim()).map_err(|_| "newapi.errors.url")?;
-    if !matches!(url.scheme(), "https" | "http") || url.host_str().is_none()
-        || !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some() {
+    if !matches!(url.scheme(), "https" | "http")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
         return Err("newapi.errors.url".into());
     }
     // Accept the commonly pasted OpenAI base URL as well as the site root.
-    let path = url.path().trim_end_matches('/').trim_end_matches("/v1").to_owned();
+    let path = url
+        .path()
+        .trim_end_matches('/')
+        .trim_end_matches("/v1")
+        .to_owned();
     url.set_path(&format!("{path}/"));
     Ok(url)
 }
 
 pub(crate) fn validate_limits(config: &Connection) -> Result<(), String> {
-    if config.context_window.is_some_and(|v| v == 0 || v > 100_000_000)
-        || config.auto_compact_limit.is_some_and(|v| v == 0 || v > 100_000_000)
-        || matches!((config.context_window, config.auto_compact_limit), (Some(c), Some(a)) if a >= c) {
+    if config
+        .context_window
+        .is_some_and(|v| v == 0 || v > 100_000_000)
+        || config
+            .auto_compact_limit
+            .is_some_and(|v| v == 0 || v > 100_000_000)
+        || matches!((config.context_window, config.auto_compact_limit), (Some(c), Some(a)) if a >= c)
+    {
         return Err("newapi.errors.context".into());
     }
     if config.model.len() > 200 || config.model.chars().any(char::is_control) {
@@ -72,66 +58,62 @@ pub(crate) fn validate_limits(config: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-pub fn save(paths: &CodexPaths, mut next: Connection) -> Result<ConnectionView, String> {
-    next.base_url = base_url(&next.base_url)?.to_string();
-    if next.user_id == Some(0) || next.user_id.is_some_and(|v| v > 9_007_199_254_740_991) {
-        return Err("newapi.errors.userId".into());
-    }
-    next.access_token = next.access_token.trim().to_owned();
-    next.api_key = next.api_key.trim().to_owned();
-    next.model = next.model.trim().to_owned();
-    validate_limits(&next)?;
-    let old = load(paths)?;
-    // Never silently send credentials from one site/account to another.
-    if old.base_url == next.base_url {
-        if next.access_token.is_empty() && old.user_id == next.user_id { next.access_token = old.access_token; }
-        if next.api_key.is_empty() { next.api_key = old.api_key; }
-    }
-    for token in [&next.access_token, &next.api_key] {
-        if !token.is_empty() { auth_header(token)?; }
-    }
-    let bytes = serde_json::to_vec(&next).map_err(|_| "newapi.errors.storage")?;
-    secret_file::write(&paths.app_data_dir.join("newapi-connection.dat"), &bytes)?;
-    Ok(next.view())
-}
-
-pub fn forget(paths: &CodexPaths) -> Result<(), String> {
-    match std::fs::remove_file(paths.app_data_dir.join("newapi-connection.dat")) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(_) => Err("newapi.errors.storage".into()),
-    }
-}
-
 pub(crate) fn auth_header(token: &str) -> Result<HeaderValue, String> {
+    let token = api_key_header(token)?;
+    let mut value = HeaderValue::from_str(&format!(
+        "Bearer {}",
+        token.to_str().map_err(|_| "newapi.errors.token")?
+    ))
+    .map_err(|_| "newapi.errors.token")?;
+    value.set_sensitive(true);
+    Ok(value)
+}
+
+pub(crate) fn api_key_header(token: &str) -> Result<HeaderValue, String> {
     let token = token.trim().strip_prefix("Bearer ").unwrap_or(token.trim());
     if token.is_empty() || token.len() > 8192 || token.chars().any(char::is_whitespace) {
         return Err("newapi.errors.token".into());
     }
-    let mut value = HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| "newapi.errors.token")?;
+    let mut value = HeaderValue::from_str(token).map_err(|_| "newapi.errors.token")?;
     value.set_sensitive(true);
     Ok(value)
 }
 
 pub(crate) fn client(proxy: &ApiProxyConfigPayload) -> Result<Client, String> {
-    let proxy = super::api_client::sanitize_proxy_config(proxy).map_err(|_| "newapi.errors.proxy")?;
-    let mut builder = Client::builder().no_proxy().timeout(Duration::from_secs(20))
-        .connect_timeout(Duration::from_secs(8)).redirect(reqwest::redirect::Policy::none());
-    if let Some(url) = proxy.url { builder = builder.proxy(reqwest::Proxy::all(url).map_err(|_| "newapi.errors.proxy")?); }
+    let proxy =
+        super::api_client::sanitize_proxy_config(proxy).map_err(|_| "newapi.errors.proxy")?;
+    let mut builder = Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(20))
+        .connect_timeout(Duration::from_secs(8))
+        .redirect(reqwest::redirect::Policy::none());
+    if let Some(url) = proxy.url {
+        builder = builder.proxy(reqwest::Proxy::all(url).map_err(|_| "newapi.errors.proxy")?);
+    }
     builder.build().map_err(|_| "newapi.errors.network".into())
 }
 
 /// 按供应商网络模式计算实际代理配置：direct 直连（忽略全局代理），其余跟随全局设置。
-pub(crate) fn effective_proxy(network_mode: &str, proxy: &ApiProxyConfigPayload) -> ApiProxyConfigPayload {
+pub(crate) fn effective_proxy(
+    network_mode: &str,
+    proxy: &ApiProxyConfigPayload,
+) -> ApiProxyConfigPayload {
     if network_mode == "direct" {
-        ApiProxyConfigPayload { mode: super::models::ApiProxyMode::Direct, url: None }
+        ApiProxyConfigPayload {
+            mode: super::models::ApiProxyMode::Direct,
+            url: None,
+        }
     } else {
         proxy.clone()
     }
 }
 
 pub(crate) fn get(client: &Client, url: Url, headers: HeaderMap) -> Result<Value, String> {
-    let response = client.get(url).headers(headers).send().map_err(request_error)?;
+    let response = client
+        .get(url)
+        .headers(headers)
+        .send()
+        .map_err(request_error)?;
     response_json(response)
 }
 
@@ -161,18 +143,30 @@ fn response_json(response: Response) -> Result<Value, String> {
         return Err(status_error(status));
     }
     let mut body = Vec::new();
-    response.take(2 * 1024 * 1024 + 1).read_to_end(&mut body).map_err(|_| "newapi.errors.network")?;
-    if body.len() > 2 * 1024 * 1024 { return Err("newapi.errors.response".into()); }
+    response
+        .take(2 * 1024 * 1024 + 1)
+        .read_to_end(&mut body)
+        .map_err(|_| "newapi.errors.network")?;
+    if body.len() > 2 * 1024 * 1024 {
+        return Err("newapi.errors.response".into());
+    }
     serde_json::from_slice(&body).map_err(|_| "newapi.errors.response".into())
 }
 
 pub(crate) fn endpoint(config: &Connection, path: &str) -> Result<Url, String> {
-    base_url(&config.base_url)?.join(path).map_err(|_| "newapi.errors.url".into())
+    base_url(&config.base_url)?
+        .join(path)
+        .map_err(|_| "newapi.errors.url".into())
 }
 
 fn data(value: &Value) -> Result<&Value, String> {
-    if value.get("success").and_then(Value::as_bool) != Some(true) { return Err("newapi.errors.rejected".into()); }
-    value.get("data").filter(|v| v.is_object()).ok_or_else(|| "newapi.errors.response".into())
+    if value.get("success").and_then(Value::as_bool) != Some(true) {
+        return Err("newapi.errors.rejected".into());
+    }
+    value
+        .get("data")
+        .filter(|v| v.is_object())
+        .ok_or_else(|| "newapi.errors.response".into())
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -189,27 +183,50 @@ pub struct Balance {
 }
 
 fn number(value: &Value, key: &str) -> Option<f64> {
-    value.get(key).and_then(Value::as_f64).filter(|v| v.is_finite())
+    value
+        .get(key)
+        .and_then(Value::as_f64)
+        .filter(|v| v.is_finite())
 }
 
 fn parse_balance(user: &Value, status: Option<&Value>, user_id: u64) -> Result<Balance, String> {
     let user = data(user)?;
-    if user.get("id").and_then(Value::as_u64) != Some(user_id) { return Err("newapi.errors.userMismatch".into()); }
+    if user.get("id").and_then(Value::as_u64) != Some(user_id) {
+        return Err("newapi.errors.userMismatch".into());
+    }
     let quota = number(user, "quota").ok_or("newapi.errors.response")?;
     let used = number(user, "used_quota");
     let status = status.and_then(|s| data(s).ok());
-    let scale = status.and_then(|s| number(s, "quota_per_unit")).filter(|n| *n > 0.0);
-    let display = status.and_then(|s| s.get("quota_display_type")).and_then(Value::as_str);
+    let scale = status
+        .and_then(|s| number(s, "quota_per_unit"))
+        .filter(|n| *n > 0.0);
+    let display = status
+        .and_then(|s| s.get("quota_display_type"))
+        .and_then(Value::as_str);
     let currency = match display {
         Some("USD") => Some(("USD".to_owned(), 1.0)),
-        Some("CNY") => status.and_then(|s| number(s, "usd_exchange_rate")).filter(|v| *v > 0.0).map(|r| ("CNY".into(), r)),
+        Some("CNY") => status
+            .and_then(|s| number(s, "usd_exchange_rate"))
+            .filter(|v| *v > 0.0)
+            .map(|r| ("CNY".into(), r)),
         Some("CUSTOM") => status.and_then(|s| {
             let rate = number(s, "custom_currency_exchange_rate").filter(|v| *v > 0.0)?;
-            let symbol = s.get("custom_currency_symbol")?.as_str()?.chars().take(12).collect();
+            let symbol = s
+                .get("custom_currency_symbol")?
+                .as_str()?
+                .chars()
+                .take(12)
+                .collect();
             Some((symbol, rate))
         }),
         // Older New API versions use this boolean for the USD display.
-        None if status.and_then(|s| s.get("display_in_currency")).and_then(Value::as_bool) == Some(true) => Some(("USD".into(), 1.0)),
+        None if status
+            .and_then(|s| s.get("display_in_currency"))
+            .and_then(Value::as_bool)
+            == Some(true) =>
+        {
+            Some(("USD".into(), 1.0))
+        }
         _ => None,
     };
     let converted = scale.zip(currency);
@@ -217,42 +234,135 @@ fn parse_balance(user: &Value, status: Option<&Value>, user_id: u64) -> Result<B
         Some((scale, (unit, rate))) => (scale, rate, unit, true),
         None => (1.0, 1.0, "quota".into(), false),
     };
-    Ok(Balance { remaining: quota / divisor * rate, used: used.map(|v| v / divisor * rate), unit,
-        raw_quota: quota, quota_per_unit: scale, request_count: user.get("request_count").and_then(Value::as_u64),
-        checked_at: chrono::Utc::now().timestamp(), conversion_available: available })
+    Ok(Balance {
+        remaining: quota / divisor * rate,
+        used: used.map(|v| v / divisor * rate),
+        unit,
+        raw_quota: quota,
+        quota_per_unit: scale,
+        request_count: user.get("request_count").and_then(Value::as_u64),
+        checked_at: chrono::Utc::now().timestamp(),
+        conversion_available: available,
+    })
 }
 
 pub fn balance(config: &Connection, proxy: &ApiProxyConfigPayload) -> Result<Balance, String> {
-    let user_id = config.user_id.filter(|id| *id > 0).ok_or("newapi.errors.userId")?;
+    let user_id = config
+        .user_id
+        .filter(|id| *id > 0)
+        .ok_or("newapi.errors.userId")?;
     let mut headers = HeaderMap::new();
     headers.insert(AUTHORIZATION, auth_header(&config.access_token)?);
-    headers.insert("New-Api-User", HeaderValue::from_str(&user_id.to_string()).map_err(|_| "newapi.errors.userId")?);
+    headers.insert(
+        "New-Api-User",
+        HeaderValue::from_str(&user_id.to_string()).map_err(|_| "newapi.errors.userId")?,
+    );
     let client = client(proxy)?;
     let user = get(&client, endpoint(config, "api/user/self")?, headers)?;
     let status = get(&client, endpoint(config, "api/status")?, HeaderMap::new()).ok();
     parse_balance(&user, status.as_ref(), user_id)
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Model {
     pub id: String,
+    pub display_name: String,
     pub context_window: Option<u64>,
     pub max_output_tokens: Option<u64>,
     pub endpoint_types: Vec<String>,
+    #[serde(default = "model_included_by_default")]
+    pub included: bool,
+    pub metadata_source: String,
+}
+
+impl Default for Model {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            display_name: String::new(),
+            context_window: None,
+            max_output_tokens: None,
+            endpoint_types: Vec::new(),
+            included: true,
+            metadata_source: String::new(),
+        }
+    }
+}
+
+fn model_included_by_default() -> bool {
+    true
+}
+
+impl Model {
+    pub fn with_local_defaults(mut self) -> Self {
+        let defaults = super::model_defaults::for_model(&self.id);
+        if self.display_name.trim().is_empty() {
+            self.display_name = self.id.clone();
+        }
+        if self.context_window.is_none() {
+            self.context_window = Some(defaults.context_window);
+        }
+        if self.max_output_tokens.is_none() {
+            self.max_output_tokens = Some(defaults.max_output_tokens);
+        }
+        if self.metadata_source.trim().is_empty() {
+            self.metadata_source = "local".into();
+        }
+        self
+    }
 }
 
 fn parse_models(value: &Value) -> Result<Vec<Model>, String> {
-    let items = value.get("data").and_then(Value::as_array).ok_or("newapi.errors.response")?;
+    let items = value
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or("newapi.errors.response")?;
     let mut models = Vec::new();
     for item in items {
-        let id = item.get("id").and_then(Value::as_str).filter(|s| !s.trim().is_empty() && s.len() <= 200)
+        let id = item
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty() && s.len() <= 200)
             .ok_or("newapi.errors.response")?;
-        if models.iter().any(|m: &Model| m.id == id) { continue; }
+        if models.iter().any(|m: &Model| m.id == id) {
+            continue;
+        }
         let positive = |key| item.get(key).and_then(Value::as_u64).filter(|v| *v > 0);
-        models.push(Model { id: id.into(), context_window: positive("context_window").or_else(|| positive("context_length")),
-            max_output_tokens: positive("max_output_tokens"), endpoint_types: item.get("supported_endpoint_types").and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default() });
+        let upstream_context = positive("context_window").or_else(|| positive("context_length"));
+        let upstream_output = positive("max_output_tokens");
+        models.push(
+            Model {
+                id: id.into(),
+                display_name: item
+                    .get("display_name")
+                    .or_else(|| item.get("name"))
+                    .and_then(Value::as_str)
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or(id)
+                    .trim()
+                    .to_owned(),
+                context_window: upstream_context,
+                max_output_tokens: upstream_output,
+                endpoint_types: item
+                    .get("supported_endpoint_types")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                included: true,
+                metadata_source: if upstream_context.is_some() {
+                    "upstream".into()
+                } else {
+                    "local".into()
+                },
+            }
+            .with_local_defaults(),
+        );
     }
     models.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(models)
@@ -261,19 +371,41 @@ fn parse_models(value: &Value) -> Result<Vec<Model>, String> {
 pub fn models(config: &Connection, proxy: &ApiProxyConfigPayload) -> Result<Vec<Model>, String> {
     let mut headers = HeaderMap::new();
     headers.insert(AUTHORIZATION, auth_header(&config.api_key)?);
-    parse_models(&get(&client(proxy)?, endpoint(config, "v1/models")?, headers)?)
+    parse_models(&get(
+        &client(proxy)?,
+        endpoint(config, "v1/models")?,
+        headers,
+    )?)
+}
+
+pub fn anthropic_models(
+    config: &Connection,
+    proxy: &ApiProxyConfigPayload,
+) -> Result<Vec<Model>, String> {
+    let mut headers = HeaderMap::new();
+    headers.insert("x-api-key", api_key_header(&config.api_key)?);
+    headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+    parse_models(&get(
+        &client(proxy)?,
+        endpoint(config, "v1/models")?,
+        headers,
+    )?)
 }
 
 /// 真实连通性测试：向用户选择的模型发送一条 "hi" 聊天请求。
 /// 仅 2xx 且返回有效 Chat Completions choices 才算通过。
-pub fn test_chat(config: &Connection, model: &str, proxy: &ApiProxyConfigPayload) -> Result<(), String> {
-    let model = model.trim();
-    if model.is_empty() || model.len() > 200 || model.chars().any(char::is_control) {
-        return Err("newapi.errors.modelRequired".into());
-    }
+pub fn test_chat(
+    config: &Connection,
+    model: &str,
+    proxy: &ApiProxyConfigPayload,
+) -> Result<(), String> {
+    let model = validated_test_model(model)?;
     let mut headers = HeaderMap::new();
     headers.insert(AUTHORIZATION, auth_header(&config.api_key)?);
-    headers.insert(reqwest::header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert(
+        reqwest::header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
     let body = serde_json::json!({
         "model": model,
         "messages": [{ "role": "user", "content": "hi" }],
@@ -282,11 +414,11 @@ pub fn test_chat(config: &Connection, model: &str, proxy: &ApiProxyConfigPayload
     });
     let value = response_json(
         client(proxy)?
-        .post(endpoint(config, "v1/chat/completions")?)
-        .headers(headers)
-        .json(&body)
-        .send()
-        .map_err(request_error)?,
+            .post(endpoint(config, "v1/chat/completions")?)
+            .headers(headers)
+            .json(&body)
+            .send()
+            .map_err(request_error)?,
     )?;
     value
         .get("choices")
@@ -296,69 +428,88 @@ pub fn test_chat(config: &Connection, model: &str, proxy: &ApiProxyConfigPayload
         .ok_or_else(|| "newapi.errors.response".into())
 }
 
-pub fn config_snippet(config: &Connection) -> Result<String, String> {
-    validate_limits(config)?;
-    if config.model.is_empty() { return Err("newapi.errors.model".into()); }
-    let mut document = toml_edit::DocumentMut::new();
-    update_document(&mut document, config)?;
-    Ok(document.to_string())
+pub fn test_responses(
+    config: &Connection,
+    model: &str,
+    proxy: &ApiProxyConfigPayload,
+) -> Result<(), String> {
+    let model = validated_test_model(model)?;
+    let mut headers = HeaderMap::new();
+    headers.insert(AUTHORIZATION, auth_header(&config.api_key)?);
+    headers.insert(
+        reqwest::header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    let value = response_json(
+        client(proxy)?
+            .post(endpoint(config, "v1/responses")?)
+            .headers(headers)
+            .json(&serde_json::json!({
+                "model": model,
+                "input": "hi",
+                "max_output_tokens": 1,
+                "stream": false,
+            }))
+            .send()
+            .map_err(request_error)?,
+    )?;
+    (value.get("object").and_then(Value::as_str) == Some("response"))
+        .then_some(())
+        .ok_or_else(|| "newapi.errors.response".into())
 }
 
-fn update_document(document: &mut toml_edit::DocumentMut, config: &Connection) -> Result<(), String> {
-    use toml_edit::value;
-    document["model"] = value(&config.model);
-    document["model_provider"] = value("agentharbor_newapi");
-    for (key, setting) in [("model_context_window", config.context_window), ("model_auto_compact_token_limit", config.auto_compact_limit)] {
-        if let Some(setting) = setting { document[key] = value(setting as i64); } else { document.remove(key); }
+pub fn test_anthropic_messages(
+    config: &Connection,
+    model: &str,
+    proxy: &ApiProxyConfigPayload,
+) -> Result<(), String> {
+    let model = validated_test_model(model)?;
+    let mut headers = HeaderMap::new();
+    headers.insert("x-api-key", api_key_header(&config.api_key)?);
+    headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+    headers.insert(
+        reqwest::header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    let value = response_json(
+        client(proxy)?
+            .post(endpoint(config, "v1/messages")?)
+            .headers(headers)
+            .json(&serde_json::json!({
+                "model": model,
+                "max_tokens": 1,
+                "messages": [{ "role": "user", "content": "hi" }],
+                "stream": false,
+            }))
+            .send()
+            .map_err(request_error)?,
+    )?;
+    (value.get("type").and_then(Value::as_str) == Some("message"))
+        .then_some(())
+        .ok_or_else(|| "newapi.errors.response".into())
+}
+
+fn validated_test_model(model: &str) -> Result<&str, String> {
+    let model = model.trim();
+    if model.is_empty() || model.len() > 200 || model.chars().any(char::is_control) {
+        return Err("newapi.errors.modelRequired".into());
     }
-    if document.get("model_providers").is_none() {
-        let mut providers = toml_edit::Table::new();
-        providers.set_implicit(true);
-        document["model_providers"] = toml_edit::Item::Table(providers);
-    }
-    let provider = &mut document["model_providers"]["agentharbor_newapi"];
-    *provider = toml_edit::Item::Table(toml_edit::Table::new());
-    provider["name"] = value("AgentHarbor New API");
-    provider["base_url"] = value(endpoint(config, "v1")?.as_str());
-    provider["wire_api"] = value("responses");
-    provider["env_key"] = value("AGENT_HARBOR_NEWAPI_KEY");
-    provider["requires_openai_auth"] = value(false);
-    Ok(())
+    Ok(model)
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AppliedConfig { pub path: String, pub backup_path: Option<String> }
-
-// Environment authentication is the default. Embedding a key is an explicit UI choice.
-pub fn apply_config(paths: &CodexPaths, config: &Connection, write_api_key: bool) -> Result<AppliedConfig, String> {
-    config_snippet(config)?;
-    let original = match std::fs::read_to_string(&paths.config_path) {
-        Ok(text) => Some(text), Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(_) => return Err("newapi.errors.configRead".into()),
-    };
-    let mut document = original.as_deref().unwrap_or("").parse::<toml_edit::DocumentMut>().map_err(|_| "newapi.errors.configParse")?;
-    // Reject scalar/array shapes instead of letting index_mut panic or erase data.
-    if document.get("model_providers").is_some_and(|i| !i.is_table()) { return Err("newapi.errors.configParse".into()); }
-    update_document(&mut document, config)?;
-    if write_api_key {
-        auth_header(&config.api_key)?;
-        let provider = document["model_providers"]["agentharbor_newapi"].as_table_mut().ok_or("newapi.errors.configParse")?;
-        provider.remove("env_key");
-        provider["experimental_bearer_token"] = toml_edit::value(config.api_key.trim().strip_prefix("Bearer ").unwrap_or(config.api_key.trim()));
-    }
-    let backup = if let Some(original) = original {
-        let path = paths.app_data_dir.join("config-backups").join(format!("{}.toml", uuid::Uuid::new_v4()));
-        storage::write_atomic(&path, original.as_bytes()).map_err(|_| "newapi.errors.storage")?;
-        Some(path.display().to_string())
-    } else { None };
-    storage::write_atomic(&paths.config_path, document.to_string().as_bytes()).map_err(|_| "newapi.errors.storage")?;
-    Ok(AppliedConfig { path: paths.config_path.display().to_string(), backup_path: backup })
+pub struct AppliedConfig {
+    pub path: String,
+    pub backup_path: Option<String>,
 }
 
 pub fn proxy_from_settings(path: &Path) -> ApiProxyConfigPayload {
-    std::fs::read(path).ok().and_then(|b| serde_json::from_slice::<super::repository::CodexMateSettings>(&b).ok())
-        .map(|s| s.api_proxy).unwrap_or_default()
+    std::fs::read(path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<super::repository::AgentHarborSettings>(&b).ok())
+        .map(|s| s.api_proxy)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -368,13 +519,21 @@ mod tests {
     use std::io::{Read, Write};
 
     fn connection() -> Connection {
-        Connection { base_url: "https://example.com/".into(), user_id: Some(42), access_token: "fixture-user-token".into(),
-            api_key: "sk-fixture-model-key".into(), model: "fixture-model".into(), ..Default::default() }
+        Connection {
+            base_url: "https://example.com/".into(),
+            user_id: Some(42),
+            access_token: "fixture-user-token".into(),
+            api_key: "sk-fixture-model-key".into(),
+            model: "fixture-model".into(),
+            ..Default::default()
+        }
     }
 
     fn request_is_complete(bytes: &[u8]) -> bool {
         let text = String::from_utf8_lossy(bytes);
-        let Some(header_end) = text.find("\r\n\r\n") else { return false };
+        let Some(header_end) = text.find("\r\n\r\n") else {
+            return false;
+        };
         let content_length = text[..header_end]
             .lines()
             .find_map(|line| {
@@ -395,14 +554,20 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
             let mut request = Vec::new();
             let mut chunk = [0u8; 4096];
             loop {
                 let count = stream.read(&mut chunk).unwrap();
-                if count == 0 { break }
+                if count == 0 {
+                    break;
+                }
                 request.extend_from_slice(&chunk[..count]);
-                if request_is_complete(&request) { break }
+                if request_is_complete(&request) {
+                    break;
+                }
             }
             let response = format!(
                 "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -425,18 +590,46 @@ mod tests {
         assert_eq!(raw.remaining, 750000.0);
         assert!(!raw.conversion_available);
         assert!(parse_balance(&user, None, 7).is_err());
-        assert!(parse_balance(&json!({"success":false,"message":"secret server text"}), None, 42).is_err());
+        assert!(parse_balance(
+            &json!({"success":false,"message":"secret server text"}),
+            None,
+            42
+        )
+        .is_err());
         let zero = json!({"success":true,"data":{"id":42,"quota":0}});
         assert_eq!(parse_balance(&zero, None, 42).unwrap().remaining, 0.0);
     }
 
     #[test]
-    fn models_preserve_unknown_limits_and_optional_metadata() {
+    fn models_fill_missing_limits_from_editable_local_defaults() {
         let result = parse_models(&json!({"data":[{"id":"a"},{"id":"b","context_length":128000,"max_output_tokens":8192,"supported_endpoint_types":["openai-response"]},{"id":"a"}]})).unwrap();
         assert_eq!(result.len(), 2);
-        assert_eq!(result[0].context_window, None);
+        assert_eq!(result[0].context_window, Some(128000));
+        assert_eq!(result[0].max_output_tokens, Some(8192));
+        assert_eq!(result[0].display_name, "a");
+        assert_eq!(result[0].metadata_source, "local");
         assert_eq!(result[1].context_window, Some(128000));
+        assert_eq!(result[1].metadata_source, "upstream");
         assert!(parse_models(&json!({"error":"not authorized"})).is_err());
+    }
+
+    #[test]
+    fn anthropic_model_listing_uses_api_key_and_version_headers() {
+        let (base_url, server) = chat_server(
+            "200 OK",
+            r#"{"data":[{"id":"claude-test","type":"model"}]}"#,
+        );
+        let mut connection = connection();
+        connection.base_url = base_url;
+
+        let models = anthropic_models(&connection, &ApiProxyConfigPayload::default()).unwrap();
+
+        assert_eq!(models[0].id, "claude-test");
+        let request = server.join().unwrap().to_ascii_lowercase();
+        assert!(request.starts_with("get /v1/models http/1.1"));
+        assert!(request.contains("x-api-key: sk-fixture-model-key"));
+        assert!(request.contains("anthropic-version: 2023-06-01"));
+        assert!(!request.contains("authorization: bearer"));
     }
 
     #[test]
@@ -460,104 +653,126 @@ mod tests {
         );
         let mut connection = connection();
         connection.base_url = base_url;
-        test_chat(&connection, "selected-model", &ApiProxyConfigPayload::default()).unwrap();
+        test_chat(
+            &connection,
+            "selected-model",
+            &ApiProxyConfigPayload::default(),
+        )
+        .unwrap();
 
         let request = server.join().unwrap();
         let (headers, body) = request.split_once("\r\n\r\n").unwrap();
         assert!(headers.starts_with("POST /v1/chat/completions HTTP/1.1"));
-        assert!(headers.to_ascii_lowercase().contains("authorization: bearer sk-fixture-model-key"));
+        assert!(headers
+            .to_ascii_lowercase()
+            .contains("authorization: bearer sk-fixture-model-key"));
         let body: Value = serde_json::from_str(body).unwrap();
-        assert_eq!(body.get("model").and_then(Value::as_str), Some("selected-model"));
-        assert_eq!(body.pointer("/messages/0/content").and_then(Value::as_str), Some("hi"));
+        assert_eq!(
+            body.get("model").and_then(Value::as_str),
+            Some("selected-model")
+        );
+        assert_eq!(
+            body.pointer("/messages/0/content").and_then(Value::as_str),
+            Some("hi")
+        );
         assert_eq!(body.get("stream").and_then(Value::as_bool), Some(false));
     }
 
     #[test]
+    fn responses_test_uses_responses_endpoint_and_shape() {
+        let (base_url, server) = chat_server(
+            "200 OK",
+            r#"{"id":"resp_test","object":"response","output":[]}"#,
+        );
+        let mut connection = connection();
+        connection.base_url = base_url;
+        test_responses(
+            &connection,
+            "selected-model",
+            &ApiProxyConfigPayload::default(),
+        )
+        .unwrap();
+
+        let request = server.join().unwrap();
+        let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+        assert!(headers.starts_with("POST /v1/responses HTTP/1.1"));
+        assert!(headers
+            .to_ascii_lowercase()
+            .contains("authorization: bearer sk-fixture-model-key"));
+        let body: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(
+            body.get("model").and_then(Value::as_str),
+            Some("selected-model")
+        );
+        assert_eq!(body.get("input").and_then(Value::as_str), Some("hi"));
+    }
+
+    #[test]
+    fn anthropic_test_uses_messages_headers_and_shape() {
+        let (base_url, server) = chat_server(
+            "200 OK",
+            r#"{"id":"msg_test","type":"message","content":[]}"#,
+        );
+        let mut connection = connection();
+        connection.base_url = base_url;
+        test_anthropic_messages(
+            &connection,
+            "claude-test",
+            &ApiProxyConfigPayload::default(),
+        )
+        .unwrap();
+
+        let request = server.join().unwrap();
+        let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+        let headers = headers.to_ascii_lowercase();
+        assert!(headers.starts_with("post /v1/messages http/1.1"));
+        assert!(headers.contains("x-api-key: sk-fixture-model-key"));
+        assert!(headers.contains("anthropic-version: 2023-06-01"));
+        assert!(!headers.contains("authorization: bearer"));
+        let body: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(
+            body.get("model").and_then(Value::as_str),
+            Some("claude-test")
+        );
+    }
+
+    #[test]
     fn chat_test_rejects_error_json_even_with_a_success_status() {
-        let (base_url, server) = chat_server("200 OK", r#"{"error":{"message":"model unavailable"}}"#);
+        let (base_url, server) =
+            chat_server("200 OK", r#"{"error":{"message":"model unavailable"}}"#);
         let mut connection = connection();
         connection.base_url = base_url;
         assert_eq!(
-            test_chat(&connection, "selected-model", &ApiProxyConfigPayload::default()).unwrap_err(),
+            test_chat(
+                &connection,
+                "selected-model",
+                &ApiProxyConfigPayload::default()
+            )
+            .unwrap_err(),
             "newapi.errors.response"
         );
         server.join().unwrap();
     }
 
     #[test]
-    fn saved_secrets_are_not_returned_and_do_not_follow_a_new_site() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = CodexPaths::from_home(dir.path().to_owned());
-        let c = connection();
-        let view = save(&paths, c.clone()).unwrap();
-        let encoded = serde_json::to_string(&view).unwrap();
-        assert!(!encoded.contains("fixture-user-token"));
-        assert!(!encoded.contains("sk-fixture-model-key"));
-        assert_eq!(load(&paths).unwrap().access_token, c.access_token);
-        #[cfg(windows)]
-        assert!(!String::from_utf8_lossy(&std::fs::read(paths.app_data_dir.join("newapi-connection.dat")).unwrap()).contains("fixture-user-token"));
-        let mut edit = c.clone(); edit.access_token.clear(); edit.api_key.clear();
-        save(&paths, edit.clone()).unwrap();
-        assert_eq!(load(&paths).unwrap().api_key, c.api_key);
-        edit.base_url = "https://other.example.com".into();
-        save(&paths, edit).unwrap();
-        assert!(load(&paths).unwrap().api_key.is_empty());
-        assert!(load(&paths).unwrap().access_token.is_empty());
-        forget(&paths).unwrap();
-        assert!(load(&paths).unwrap().base_url.is_empty());
-    }
-
-    #[test]
     fn rejects_bad_urls_tokens_and_context_settings() {
-        for url in ["file:///tmp/key", "https://user:secret@example.com", "https://example.com/?key=secret", "https://example.com/#token"] { assert!(base_url(url).is_err()); }
-        assert_eq!(base_url("https://example.com/sub/v1/").unwrap().as_str(), "https://example.com/sub/");
-        assert!(auth_header("token\r\nX-Secret: bad").is_err());
-        let mut c = connection(); c.context_window = Some(100); c.auto_compact_limit = Some(100);
-        assert!(config_snippet(&c).is_err());
-    }
-
-    #[test]
-    fn configuration_is_backed_up_and_preserves_other_settings() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = CodexPaths::from_home(dir.path().to_owned());
-        let original = "# keep this comment\nmodel = 'old'\nmodel_context_window = 12345\n[model_providers.other]\nname='Other'\n[mcp_servers.demo]\ncommand='node'\n";
-        std::fs::write(&paths.config_path, original).unwrap();
-        let mut c = connection(); c.context_window = Some(128000); c.auto_compact_limit = Some(100000);
-        let preview = config_snippet(&c).unwrap();
-        assert!(!preview.contains(&c.api_key));
-        let applied = apply_config(&paths, &c, false).unwrap();
-        assert_eq!(std::fs::read_to_string(applied.backup_path.unwrap()).unwrap(), original);
-        let text = std::fs::read_to_string(&paths.config_path).unwrap();
-        assert!(text.contains("# keep this comment"));
-        let parsed = text.parse::<toml::Value>().unwrap();
-        assert_eq!(parsed["mcp_servers"]["demo"]["command"].as_str(), Some("node"));
-        assert_eq!(parsed["model_providers"]["other"]["name"].as_str(), Some("Other"));
-        assert_eq!(parsed["model_context_window"].as_integer(), Some(128000));
-        assert_eq!(parsed["model_providers"]["agentharbor_newapi"]["env_key"].as_str(), Some("AGENT_HARBOR_NEWAPI_KEY"));
-        c.context_window = None; c.auto_compact_limit = None;
-        apply_config(&paths, &c, true).unwrap();
-        let text = std::fs::read_to_string(&paths.config_path).unwrap();
-        assert!(!text.contains("model_context_window"));
-        assert!(text.contains("experimental_bearer_token"));
-        for broken in ["[invalid", "model_providers = 3", "model_providers = { other = { name = 'Keep' } }"] {
-            std::fs::write(&paths.config_path, broken).unwrap();
-            assert!(apply_config(&paths, &c, false).is_err());
-            assert_eq!(std::fs::read_to_string(&paths.config_path).unwrap(), broken);
+        for url in [
+            "file:///tmp/key",
+            "https://user:secret@example.com",
+            "https://example.com/?key=secret",
+            "https://example.com/#token",
+        ] {
+            assert!(base_url(url).is_err());
         }
-    }
-
-    #[test]
-    fn preview_and_fresh_config_include_the_provider_table() {
-        let c = connection();
-        let preview = config_snippet(&c).unwrap();
-        let parsed = preview.parse::<toml::Value>().unwrap();
-        assert_eq!(parsed["model_providers"]["agentharbor_newapi"]["base_url"].as_str(), Some("https://example.com/v1"));
-        assert_eq!(parsed["model_providers"]["agentharbor_newapi"]["wire_api"].as_str(), Some("responses"));
-        let dir = tempfile::tempdir().unwrap();
-        let paths = CodexPaths::from_home(dir.path().to_owned());
-        let applied = apply_config(&paths, &c, false).unwrap();
-        assert!(applied.backup_path.is_none());
-        assert_eq!(std::fs::read_to_string(&paths.config_path).unwrap(), preview);
+        assert_eq!(
+            base_url("https://example.com/sub/v1/").unwrap().as_str(),
+            "https://example.com/sub/"
+        );
+        assert!(auth_header("token\r\nX-Secret: bad").is_err());
+        let mut c = connection();
+        c.context_window = Some(100);
+        c.auto_compact_limit = Some(100);
+        assert!(validate_limits(&c).is_err());
     }
 
     #[test]
@@ -566,7 +781,9 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
             let mut bytes = [0u8; 8192];
             let count = stream.read(&mut bytes).unwrap();
             let request = String::from_utf8_lossy(&bytes[..count]).to_lowercase();
@@ -575,22 +792,12 @@ mod tests {
             assert!(request.contains("new-api-user: 42"));
             stream.write_all(b"HTTP/1.1 302 Found\r\nLocation: https://example.net/steal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
         });
-        let mut c = connection(); c.base_url = format!("http://{address}/");
-        assert_eq!(balance(&c, &ApiProxyConfigPayload::default()).unwrap_err(), "newapi.errors.redirect");
+        let mut c = connection();
+        c.base_url = format!("http://{address}/");
+        assert_eq!(
+            balance(&c, &ApiProxyConfigPayload::default()).unwrap_err(),
+            "newapi.errors.redirect"
+        );
         server.join().unwrap();
-    }
-
-    #[test]
-    #[ignore = "Requires an explicitly provided local encrypted test connection"]
-    fn live_newapi_smoke() {
-        let home = std::env::var("AGENT_HARBOR_NEWAPI_TEST_HOME").expect("Set isolated test home");
-        let paths = CodexPaths::from_home(home.into());
-        let c = load(&paths).unwrap();
-        let proxy = proxy_from_settings(&paths.settings_path);
-        let b = balance(&c, &proxy).unwrap();
-        let m = models(&c, &proxy).unwrap();
-        assert!(b.conversion_available);
-        assert!(!m.is_empty());
-        println!("Live balance query and model listing passed; {} models, unit {}", m.len(), b.unit);
     }
 }

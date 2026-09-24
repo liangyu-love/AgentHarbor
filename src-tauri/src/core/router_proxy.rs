@@ -1,18 +1,18 @@
 use super::models::ApiProxyConfigPayload;
-use super::router;
+use super::{relay_usage, router};
 use crate::platform::paths::CodexPaths;
+use futures_util::StreamExt;
 use http_body_util::{combinators::BoxBody, BodyExt, Full, StreamBody};
 use hyper::body::{Bytes, Frame, Incoming};
 use hyper::header::{
-    HeaderMap, HeaderValue, ACCEPT_ENCODING, AUTHORIZATION, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE,
-    COOKIE, EXPECT, HOST, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, TE, TRAILER, TRANSFER_ENCODING,
-    UPGRADE,
+    HeaderMap, HeaderName, HeaderValue, ACCEPT_ENCODING, AUTHORIZATION, CONNECTION, CONTENT_LENGTH,
+    CONTENT_TYPE, COOKIE, EXPECT, HOST, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, TE, TRAILER,
+    TRANSFER_ENCODING, UPGRADE,
 };
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -43,11 +43,17 @@ fn start_lock() -> &'static tokio::sync::Mutex<()> {
 }
 
 pub fn is_running() -> bool {
-    handle_slot().lock().map(|guard| guard.is_some()).unwrap_or(false)
+    handle_slot()
+        .lock()
+        .map(|guard| guard.is_some())
+        .unwrap_or(false)
 }
 
 pub fn running_port() -> Option<u16> {
-    handle_slot().lock().ok().and_then(|guard| guard.as_ref().map(|handle| handle.port))
+    handle_slot()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|handle| handle.port))
 }
 
 pub fn stop() {
@@ -75,14 +81,21 @@ pub fn update_proxy(proxy: &ApiProxyConfigPayload) -> Result<(), String> {
 
 /// Bind the router on localhost. Returns the actually bound port.
 /// Called from async commands and app setup.
-pub async fn ensure_running(port: u16, paths: CodexPaths, proxy: ApiProxyConfigPayload) -> Result<u16, String> {
+pub async fn ensure_running(
+    port: u16,
+    paths: CodexPaths,
+    proxy: ApiProxyConfigPayload,
+) -> Result<u16, String> {
     let _start_guard = start_lock().lock().await;
     let next_outbound = outbound_client(&proxy)?;
     {
         let guard = handle_slot().lock().map_err(|_| "newapi.errors.storage")?;
         if let Some(handle) = guard.as_ref() {
             if handle.port == port {
-                *handle.outbound.write().map_err(|_| "newapi.errors.storage")? = next_outbound;
+                *handle
+                    .outbound
+                    .write()
+                    .map_err(|_| "newapi.errors.storage")? = next_outbound;
                 return Ok(handle.port);
             }
         }
@@ -91,33 +104,50 @@ pub async fn ensure_running(port: u16, paths: CodexPaths, proxy: ApiProxyConfigP
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
         .await
         .map_err(|e| -> String {
-            if e.kind() == std::io::ErrorKind::AddrInUse { "newapi.errors.portBusy".to_owned() } else { "newapi.errors.network".to_owned() }
+            if e.kind() == std::io::ErrorKind::AddrInUse {
+                "newapi.errors.portBusy".to_owned()
+            } else {
+                "newapi.errors.network".to_owned()
+            }
         })?;
-    let bound_port = listener.local_addr().map_err(|_| "newapi.errors.network".to_owned())?.port();
+    let bound_port = listener
+        .local_addr()
+        .map_err(|_| "newapi.errors.network".to_owned())?
+        .port();
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let outbound = Arc::new(RwLock::new(next_outbound));
     let context = Arc::new(ArcContext {
         store_path: paths.app_data_dir.join("newapi-providers.dat"),
         app_data_dir: paths.app_data_dir.clone(),
+        codex_home: paths.codex_home.clone(),
         auth_path: paths.auth_path.clone(),
         outbound: outbound.clone(),
         outbound_direct: outbound_client(&ApiProxyConfigPayload::default())?,
     });
     tokio::spawn(accept_loop(listener, shutdown_rx, context));
-    *handle_slot().lock().map_err(|_| "newapi.errors.storage")? = Some(ProxyHandle { port: bound_port, shutdown: shutdown_tx, outbound });
+    *handle_slot().lock().map_err(|_| "newapi.errors.storage")? = Some(ProxyHandle {
+        port: bound_port,
+        shutdown: shutdown_tx,
+        outbound,
+    });
     Ok(bound_port)
 }
 
 struct ArcContext {
     store_path: PathBuf,
     app_data_dir: PathBuf,
+    codex_home: PathBuf,
     auth_path: PathBuf,
     outbound: Arc<RwLock<Client>>,
     /// 供应商网络模式为 direct 时使用的无代理客户端。
     outbound_direct: Client,
 }
 
-async fn accept_loop(listener: tokio::net::TcpListener, mut shutdown: tokio::sync::watch::Receiver<bool>, context: Arc<ArcContext>) {
+async fn accept_loop(
+    listener: tokio::net::TcpListener,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+    context: Arc<ArcContext>,
+) {
     loop {
         tokio::select! {
             _ = shutdown.changed() => break,
@@ -135,7 +165,8 @@ async fn accept_loop(listener: tokio::net::TcpListener, mut shutdown: tokio::syn
 }
 
 fn outbound_client(proxy: &ApiProxyConfigPayload) -> Result<Client, String> {
-    let proxy = super::api_client::sanitize_proxy_config(proxy).map_err(|_| "newapi.errors.proxy")?;
+    let proxy =
+        super::api_client::sanitize_proxy_config(proxy).map_err(|_| "newapi.errors.proxy")?;
     let mut builder = Client::builder()
         .no_proxy()
         .connect_timeout(Duration::from_secs(10))
@@ -147,45 +178,111 @@ fn outbound_client(proxy: &ApiProxyConfigPayload) -> Result<Client, String> {
 }
 
 fn full_body(text: String) -> ResponseBody {
-    Full::new(Bytes::from(text)).map_err(|never| match never {}).boxed()
+    Full::new(Bytes::from(text))
+        .map_err(|never| match never {})
+        .boxed()
 }
 
 fn json_response(status: StatusCode, message: &str) -> Response<ResponseBody> {
     Response::builder()
         .status(status)
         .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
-        .body(full_body(json!({"error": {"message": message, "type": "agentharbor_local_router"}}).to_string()))
+        .body(full_body(
+            json!({"error": {"message": message, "type": "agentharbor_local_router"}}).to_string(),
+        ))
         .expect("static response parts")
 }
 
-async fn forward(request: Request<Incoming>, context: Arc<ArcContext>) -> Result<Response<ResponseBody>, std::convert::Infallible> {
-    Ok(handle(request, context).await.unwrap_or_else(|(status, message)| json_response(status, message)))
+async fn forward(
+    request: Request<Incoming>,
+    context: Arc<ArcContext>,
+) -> Result<Response<ResponseBody>, std::convert::Infallible> {
+    Ok(handle(request, context)
+        .await
+        .unwrap_or_else(|(status, message)| json_response(status, message)))
 }
 
-type ForwardResult = Result<Response<ResponseBody>, (StatusCode, &'static str)>;
+type ForwardResult<T = Response<ResponseBody>> = Result<T, (StatusCode, &'static str)>;
 
 enum Destination {
     /// Relay traffic: forward to this provider's base URL with its API key.
-    Provider { provider: Box<router::Provider>, model_override: Option<String> },
+    Provider {
+        provider: Box<router::Provider>,
+        model_override: Option<String>,
+    },
     /// Official OpenAI models: forward using the local Codex credentials.
     Official,
+}
+
+fn request_protocol(segments: &[&str]) -> Option<router::ModelProtocol> {
+    match segments {
+        ["codex", "v1", ..] | ["v1", "responses"] | ["p", _, "v1", "responses"] => {
+            Some(router::ModelProtocol::Responses)
+        }
+        ["v1", "chat", "completions"] | ["p", _, "v1", "chat", "completions"] => {
+            Some(router::ModelProtocol::ChatCompletions)
+        }
+        ["v1", "messages"] | ["p", _, "v1", "messages"] => {
+            Some(router::ModelProtocol::AnthropicMessages)
+        }
+        _ => None,
+    }
+}
+
+fn provider_destination(
+    store: &router::Store,
+    provider_id: &str,
+    required_protocol: Option<router::ModelProtocol>,
+    model_override: Option<String>,
+) -> ForwardResult<Destination> {
+    let Some(provider) = store
+        .providers
+        .iter()
+        .find(|provider| provider.id == provider_id)
+        .cloned()
+    else {
+        return Err((StatusCode::NOT_FOUND, "unknown provider"));
+    };
+    if required_protocol.is_some_and(|protocol| provider.protocol != protocol) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "provider protocol does not match request path",
+        ));
+    }
+    if !provider.is_routable() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "provider is not enabled for routing",
+        ));
+    }
+    Ok(Destination::Provider {
+        provider: Box::new(provider),
+        model_override,
+    })
 }
 
 async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> ForwardResult {
     let path = request.uri().path().to_owned();
     let query = request.uri().query().map(str::to_owned);
     if path == "/agentharbor/health" {
-        return Ok(Response::builder().status(StatusCode::OK).body(full_body("ok".to_owned())).expect("static body"));
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .body(full_body("ok".to_owned()))
+            .expect("static body"));
     }
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    let store = router::read_store(&context.store_path)
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "router storage unavailable"))?;
+    let store = router::read_store(&context.store_path).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "router storage unavailable",
+        )
+    })?;
     if !authorized(request.headers(), &store.router.bearer_token) {
         return Err((StatusCode::UNAUTHORIZED, "invalid local router token"));
     }
 
     let method = request.method().clone();
-    let has_body = !matches!(method, hyper::Method::GET | hyper::Method::HEAD | hyper::Method::DELETE);
+    let has_body = !matches!(method, hyper::Method::GET | hyper::Method::HEAD);
     let mut headers = request.headers().clone();
     if request
         .headers()
@@ -196,20 +293,14 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
     {
         return Err((StatusCode::PAYLOAD_TOO_LARGE, "request body too large"));
     }
+    remove_hop_by_hop_headers(&mut headers);
     for header in [
-        CONNECTION,
-        CONTENT_LENGTH,
-        TRANSFER_ENCODING,
-        UPGRADE,
         AUTHORIZATION,
         ACCEPT_ENCODING,
+        CONTENT_LENGTH,
         EXPECT,
         HOST,
         COOKIE,
-        PROXY_AUTHENTICATE,
-        PROXY_AUTHORIZATION,
-        TE,
-        TRAILER,
     ] {
         headers.remove(header);
     }
@@ -223,10 +314,24 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         None
     };
 
+    let requested_model = body
+        .as_deref()
+        .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())
+        .and_then(|value| {
+            value
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
+    let prefixed_model = requested_model
+        .as_deref()
+        .and_then(|model| model.split_once("::"));
+    let required_protocol = request_protocol(&segments);
+
     let destination = match segments.as_slice() {
         // Codex model catalog for the model picker (`model_catalog_json` mirror).
         ["codex", "v1", "models"] if !has_body => {
-            let catalog = router::catalog_value(&context.app_data_dir, &store);
+            let catalog = router::catalog_value(&context.app_data_dir, &context.codex_home, &store);
             let entries: Vec<Value> = catalog
                 .get("models")
                 .and_then(Value::as_array)
@@ -247,78 +352,198 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             return Ok(Response::builder()
                 .status(StatusCode::OK)
                 .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
-                .body(full_body(json!({"object": "list", "data": entries}).to_string()))
+                .body(full_body(
+                    json!({"object": "list", "data": entries}).to_string(),
+                ))
                 .expect("static response parts"));
         }
         // Codex protocol: model slug `<provider id>::<model>` decides the route.
-        ["codex", "v1", ..] => {
-            let model = body.as_deref().and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())
-                .and_then(|value| value.get("model").and_then(Value::as_str).map(str::to_owned));
-            match model.as_deref().and_then(|model| model.split_once("::")) {
-                Some((provider_id, model_id)) => {
-                    let provider = store.providers.iter().find(|p| p.id == provider_id).cloned();
-                    match provider {
-                        Some(provider) if provider.is_routable() => {
-                            Destination::Provider { provider: Box::new(provider), model_override: Some(model_id.to_owned()) }
-                        }
-                        Some(_) => return Err((StatusCode::SERVICE_UNAVAILABLE, "provider is not enabled for routing")),
-                        None => return Err((StatusCode::NOT_FOUND, "unknown provider")),
-                    }
-                }
-                // Official model slugs (and anything unprefixed) go to OpenAI with local credentials.
-                _ => Destination::Official,
-            }
-        }
+        ["codex", "v1", ..] => match prefixed_model {
+            Some((provider_id, model_id)) => provider_destination(
+                &store,
+                provider_id,
+                Some(router::ModelProtocol::Responses),
+                Some(model_id.to_owned()),
+            )?,
+            // Official model slugs (and anything unprefixed) go to OpenAI with local credentials.
+            _ => Destination::Official,
+        },
         // Legacy direct routes.
         ["p", id, "v1", ..] => {
-            let provider = store.providers.iter().find(|p| p.id == *id).cloned();
-            match provider {
-                Some(provider) if provider.is_routable() => Destination::Provider { provider: Box::new(provider), model_override: None },
-                Some(_) => return Err((StatusCode::SERVICE_UNAVAILABLE, "provider is not enabled for routing")),
-                None => return Err((StatusCode::NOT_FOUND, "unknown provider")),
+            let model_override = prefixed_model
+                .filter(|(provider_id, _)| provider_id == id)
+                .map(|(_, model_id)| model_id.to_owned());
+            provider_destination(&store, id, required_protocol, model_override)?
+        }
+        ["v1", ..] => {
+            if let Some((provider_id, model_id)) = prefixed_model {
+                provider_destination(
+                    &store,
+                    provider_id,
+                    required_protocol,
+                    Some(model_id.to_owned()),
+                )?
+            } else {
+                let provider = match required_protocol {
+                    Some(protocol) => router::effective_active_for(&store, protocol),
+                    None => router::effective_active(&store),
+                };
+                match provider {
+                    Some(provider) => Destination::Provider {
+                        provider: Box::new(provider.clone()),
+                        model_override: None,
+                    },
+                    None => {
+                        return Err((
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "no enabled provider for this protocol",
+                        ))
+                    }
+                }
             }
         }
-        ["v1", ..] => match router::effective_active(&store) {
-            Some(provider) => Destination::Provider { provider: Box::new(provider.clone()), model_override: None },
-            None => return Err((StatusCode::SERVICE_UNAVAILABLE, "no enabled provider for routing")),
-        },
         _ => return Err((StatusCode::NOT_FOUND, "unsupported path")),
     };
 
     let suffix = match segments.as_slice() {
-        ["p", _, "v1", rest @ ..] | ["codex", "v1", rest @ ..] | ["v1", rest @ ..] => rest.join("/"),
+        ["p", _, "v1", rest @ ..] | ["codex", "v1", rest @ ..] | ["v1", rest @ ..] => {
+            rest.join("/")
+        }
         _ => String::new(),
+    };
+
+    let relay_request = match (&destination, required_protocol) {
+        (
+            Destination::Provider {
+                provider,
+                model_override,
+            },
+            Some(_),
+        ) => Some(relay_usage::RelayUsageRequest::new(
+            context.app_data_dir.clone(),
+            provider.id.clone(),
+            provider.name.clone(),
+            model_override
+                .clone()
+                .or_else(|| requested_model.clone())
+                .unwrap_or_else(|| provider.model.clone()),
+            match provider.protocol {
+                router::ModelProtocol::Responses => "responses",
+                router::ModelProtocol::ChatCompletions => "chatCompletions",
+                router::ModelProtocol::AnthropicMessages => "anthropicMessages",
+            }
+            .to_owned(),
+        )),
+        _ => None,
     };
 
     let (url, headers) = match &destination {
         Destination::Provider { provider, .. } => {
-            headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", provider.api_key)).map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid provider key"))?);
-            (format!("{}v1/{}{}", provider.base_url, suffix, query.map(|q| format!("?{q}")).unwrap_or_default()), headers)
+            let endpoint = provider.model_endpoint();
+            let credential = provider.model_credential();
+            match endpoint.protocol {
+                router::ModelProtocol::Responses | router::ModelProtocol::ChatCompletions => {
+                    headers.remove("anthropic-version");
+                    headers.insert(
+                        AUTHORIZATION,
+                        HeaderValue::from_str(&format!("Bearer {}", credential.api_key)).map_err(
+                            |_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid provider key"),
+                        )?,
+                    );
+                }
+                router::ModelProtocol::AnthropicMessages => {
+                    headers.insert(
+                        "x-api-key",
+                        HeaderValue::from_str(credential.api_key).map_err(|_| {
+                            (StatusCode::INTERNAL_SERVER_ERROR, "invalid provider key")
+                        })?,
+                    );
+                    if !headers.contains_key("anthropic-version") {
+                        headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+                    }
+                }
+            }
+            (
+                format!(
+                    "{}v1/{}{}",
+                    endpoint.base_url,
+                    suffix,
+                    query.map(|q| format!("?{q}")).unwrap_or_default()
+                ),
+                headers,
+            )
         }
         Destination::Official => {
             let auth = crate::core::auth::load_auth_file(&context.auth_path).ok();
-            let access_token = auth.as_ref().and_then(|a| a.tokens.access_token.as_deref()).map(str::to_owned)
+            let access_token = auth
+                .as_ref()
+                .and_then(|a| a.tokens.access_token.as_deref())
+                .map(str::to_owned)
                 .filter(|t| !t.trim().is_empty());
             if let Some(token) = access_token {
-                headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid token"))?);
-                if let Some(account_id) = auth.as_ref().and_then(|a| a.tokens.account_id.as_deref()).filter(|s| !s.is_empty()) {
+                headers.insert(
+                    AUTHORIZATION,
+                    HeaderValue::from_str(&format!("Bearer {token}"))
+                        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid token"))?,
+                );
+                if let Some(account_id) = auth
+                    .as_ref()
+                    .and_then(|a| a.tokens.account_id.as_deref())
+                    .filter(|s| !s.is_empty())
+                {
                     if let Ok(value) = HeaderValue::from_str(account_id) {
                         headers.insert("chatgpt-account-id", value);
                     }
                 }
-                (format!("{CHATGPT_CODEX_BASE}{suffix}{}", query.map(|q| format!("?{q}")).unwrap_or_default()), headers)
-            } else if let Some(key) = auth.and_then(|a| a.openai_api_key).filter(|k| !k.trim().is_empty()) {
-                headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {key}")).map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid key"))?);
-                (format!("{OPENAI_API_BASE}{suffix}{}", query.map(|q| format!("?{q}")).unwrap_or_default()), headers)
+                (
+                    format!(
+                        "{CHATGPT_CODEX_BASE}{suffix}{}",
+                        query.map(|q| format!("?{q}")).unwrap_or_default()
+                    ),
+                    headers,
+                )
+            } else if let Some(key) = auth
+                .and_then(|a| a.openai_api_key)
+                .filter(|k| !k.trim().is_empty())
+            {
+                headers.insert(
+                    AUTHORIZATION,
+                    HeaderValue::from_str(&format!("Bearer {key}"))
+                        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid key"))?,
+                );
+                (
+                    format!(
+                        "{OPENAI_API_BASE}{suffix}{}",
+                        query.map(|q| format!("?{q}")).unwrap_or_default()
+                    ),
+                    headers,
+                )
             } else {
-                return Err((StatusCode::UNAUTHORIZED, "no OpenAI credentials found for official models"));
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    "no OpenAI credentials found for official models",
+                ));
             }
         }
     };
 
     let body = match (&destination, body) {
         (_, None) => None,
-        (Destination::Provider { model_override: Some(model_id), .. }, Some(bytes)) => Some(rewrite_model(&bytes, model_id)?),
+        (
+            Destination::Provider {
+                model_override,
+                provider,
+            },
+            Some(bytes),
+        ) if model_override.is_some()
+            || required_protocol == Some(router::ModelProtocol::ChatCompletions) =>
+        {
+            Some(prepare_relay_body(
+                &bytes,
+                model_override.as_deref(),
+                provider.protocol,
+            )?)
+        }
         (_, Some(bytes)) => Some(bytes),
     };
 
@@ -326,27 +551,66 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         Destination::Provider { provider, .. } if provider.network_mode() == "direct" => {
             context.outbound_direct.clone()
         }
-        _ => context.outbound.read()
-            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "router network state unavailable"))?
+        _ => context
+            .outbound
+            .read()
+            .map_err(|_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "router network state unavailable",
+                )
+            })?
             .clone(),
     };
     let mut outbound = outbound_client.request(method, url).headers(headers);
     if let Some(body) = body {
         outbound = outbound.body(body);
     }
-    let response = outbound.send().await.map_err(|_| (StatusCode::BAD_GATEWAY, "cannot reach the provider"))?;
-
-    let mut builder = Response::builder().status(response.status());
-    for (name, value) in response.headers() {
-        if matches!(*name, CONNECTION | CONTENT_LENGTH | TRANSFER_ENCODING | UPGRADE) {
-            continue;
+    let response = match outbound.send().await {
+        Ok(response) => response,
+        Err(_) => {
+            if let Some(request) = relay_request {
+                request.failed(StatusCode::BAD_GATEWAY.as_u16());
+            }
+            return Err((StatusCode::BAD_GATEWAY, "cannot reach the provider"));
         }
+    };
+
+    let response_status = response.status();
+    let is_event_stream = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().contains("text/event-stream"));
+    let mut response_headers = response.headers().clone();
+    remove_hop_by_hop_headers(&mut response_headers);
+    response_headers.remove(CONTENT_LENGTH);
+    let mut builder = Response::builder().status(response.status());
+    for (name, value) in &response_headers {
         builder = builder.header(name, value);
     }
-    let stream = response
-        .bytes_stream()
-        .map(|chunk| chunk.map(Frame::data).map_err(Into::into));
-    builder.body(BodyExt::boxed(StreamBody::new(stream))).map_err(|_| (StatusCode::BAD_GATEWAY, "invalid upstream response"))
+    let response_body = if let Some(request) = relay_request {
+        let mut observer = request.observe(response_status.as_u16(), is_event_stream);
+        let stream = response.bytes_stream().map(move |chunk| {
+            if let Ok(bytes) = &chunk {
+                observer.observe(bytes);
+            }
+            chunk
+                .map(Frame::data)
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
+        });
+        BodyExt::boxed(StreamBody::new(stream))
+    } else {
+        let stream = response.bytes_stream().map(|chunk| {
+            chunk
+                .map(Frame::data)
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
+        });
+        BodyExt::boxed(StreamBody::new(stream))
+    };
+    builder
+        .body(response_body)
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "invalid upstream response"))
 }
 
 fn authorized(headers: &HeaderMap, bearer_token: &str) -> bool {
@@ -357,6 +621,34 @@ fn authorized(headers: &HeaderMap, bearer_token: &str) -> bool {
         return false;
     };
     headers.get(AUTHORIZATION) == Some(&expected)
+        || headers
+            .get("x-api-key")
+            .and_then(|value| value.to_str().ok())
+            == Some(bearer_token)
+}
+
+fn remove_hop_by_hop_headers(headers: &mut HeaderMap) {
+    let nominated: Vec<HeaderName> = headers
+        .get_all(CONNECTION)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .filter_map(|name| HeaderName::from_bytes(name.trim().as_bytes()).ok())
+        .collect();
+    for name in nominated {
+        headers.remove(name);
+    }
+    for name in [
+        CONNECTION,
+        PROXY_AUTHENTICATE,
+        PROXY_AUTHORIZATION,
+        TE,
+        TRAILER,
+        TRANSFER_ENCODING,
+        UPGRADE,
+    ] {
+        headers.remove(name);
+    }
 }
 
 async fn read_limited_body(mut body: Incoming) -> Result<Bytes, (StatusCode, &'static str)> {
@@ -373,16 +665,39 @@ async fn read_limited_body(mut body: Incoming) -> Result<Bytes, (StatusCode, &'s
     Ok(Bytes::from(bytes))
 }
 
-fn rewrite_model(body: &Bytes, model_id: &str) -> Result<Bytes, (StatusCode, &'static str)> {
-    let mut value: Value = serde_json::from_slice(body).map_err(|_| (StatusCode::BAD_REQUEST, "request body is not JSON"))?;
-    value
+fn prepare_relay_body(
+    body: &Bytes,
+    model_id: Option<&str>,
+    protocol: router::ModelProtocol,
+) -> Result<Bytes, (StatusCode, &'static str)> {
+    let mut value: Value = serde_json::from_slice(body)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "request body is not JSON"))?;
+    let object = value
         .as_object_mut()
-        .ok_or((StatusCode::BAD_REQUEST, "request body is not an object"))?
-        .insert("model".to_owned(), json!(model_id));
-    let bytes = serde_json::to_vec(&value).map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "cannot re-encode request"))?;
+        .ok_or((StatusCode::BAD_REQUEST, "request body is not an object"))?;
+    if let Some(model_id) = model_id {
+        object.insert("model".to_owned(), json!(model_id));
+    }
+    if protocol == router::ModelProtocol::ChatCompletions
+        && object.get("stream") == Some(&Value::Bool(true))
+    {
+        let options = object.entry("stream_options").or_insert_with(|| json!({}));
+        if options.is_null() {
+            *options = json!({});
+        }
+        options
+            .as_object_mut()
+            .ok_or((StatusCode::BAD_REQUEST, "stream_options is not an object"))?
+            .insert("include_usage".into(), json!(true));
+    }
+    let bytes = serde_json::to_vec(&value).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "cannot re-encode request",
+        )
+    })?;
     Ok(Bytes::from(bytes))
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -392,8 +707,27 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
+    fn hop_by_hop_headers_include_connection_nominations() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONNECTION, HeaderValue::from_static("keep-alive, x-remove"));
+        headers.insert("keep-alive", HeaderValue::from_static("timeout=5"));
+        headers.insert("x-remove", HeaderValue::from_static("secret"));
+        headers.insert("x-keep", HeaderValue::from_static("ok"));
+
+        remove_hop_by_hop_headers(&mut headers);
+
+        assert!(!headers.contains_key(CONNECTION));
+        assert!(!headers.contains_key("keep-alive"));
+        assert!(!headers.contains_key("x-remove"));
+        assert_eq!(headers.get("x-keep"), Some(&HeaderValue::from_static("ok")));
+    }
+
+    #[test]
     fn proxy_serves_the_codex_catalog_and_routes_prefixed_models() {
-        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         runtime.block_on(async {
             let upstream = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
             let upstream_port = upstream.local_addr().unwrap().port();
@@ -403,21 +737,44 @@ mod tests {
                     let mut buffer = vec![0u8; 16384];
                     let Ok(count) = socket.read(&mut buffer).await else { break };
                     let request = String::from_utf8_lossy(&buffer[..count]).to_lowercase();
-                    assert!(request.contains("authorization: bearer sk-upstream"), "upstream must see the provider key");
-                    assert!(!request.contains("sk-codex-dummy"), "the inbound dummy key must be replaced");
+                    if request.contains(" /v1/messages ") {
+                        assert!(request.contains("x-api-key: sk-anthropic"));
+                        assert!(request.contains("anthropic-version: 2023-06-01"));
+                        assert!(!request.contains("authorization: bearer router-test-token"));
+                    } else if request.contains(" /v1/chat/completions ") {
+                        assert!(request.contains("authorization: bearer sk-chat"));
+                    } else {
+                        assert!(request.contains("authorization: bearer sk-upstream"), "upstream must see the provider key");
+                    }
+                    assert!(!request.contains("router-test-token"), "the inbound local token must be replaced");
                     assert!(request.contains("/v1/"), "path must be rewritten to the provider root");
-                    assert!(!request.contains("agentharbor_fixture"), "the model slug prefix must be stripped");
-                    socket.write_all(b"HTTP/1.1 200 OK
-content-type: application/json
-content-length: 22
-
-{\"object\":\"list\",\"n\":1}").await.unwrap();
+                    for prefix in ["agentharbor_fixture", "chat_fixture", "anthropic_fixture"] {
+                        assert!(!request.contains(prefix), "the model slug prefix must be stripped");
+                    }
+                    let streaming = request.contains("\"stream\":true");
+                    let (content_type, body) = if streaming {
+                        assert!(request.contains("\"include_usage\":true"));
+                        ("text/event-stream", "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":5,\"total_tokens\":25}}\n\ndata: [DONE]\n\n")
+                    } else {
+                        ("application/json", "{\"object\":\"list\",\"n\":1,\"usage\":{\"input_tokens\":20,\"output_tokens\":5,\"total_tokens\":25}}")
+                    };
+                    socket.write_all(format!("HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
                 }
             });
 
             let dir = tempfile::tempdir().unwrap();
             let paths = CodexPaths::from_home(dir.path().to_owned());
             std::fs::create_dir_all(&paths.app_data_dir).unwrap();
+            std::fs::write(
+                paths.codex_home.join("models_cache.json"),
+                serde_json::to_vec(&json!({"models": [{
+                    "slug": "gpt-official-fixture",
+                    "display_name": "Official Fixture",
+                    "context_window": 272000
+                }]}))
+                .unwrap(),
+            )
+            .unwrap();
             let provider = Provider {
                 id: "agentharbor_fixture".into(),
                 name: "Mock".into(),
@@ -426,12 +783,48 @@ content-length: 22
                 model: "mock-model".into(),
                 enabled: true,
                 test_status: "ok".into(),
-                models: vec![super::super::newapi::Model { id: "mock-model".into(), context_window: Some(128000), max_output_tokens: None, endpoint_types: vec![] }],
+                models: vec![super::super::newapi::Model { id: "mock-model".into(), context_window: Some(128000), ..Default::default() }],
                 ..Default::default()
             };
-            let store = Store {
-                version: 1,
-                providers: vec![provider],
+            let chat_provider = Provider {
+                id: "chat_fixture".into(),
+                name: "Chat Mock".into(),
+                base_url: format!("http://127.0.0.1:{upstream_port}/"),
+                api_key: "sk-chat".into(),
+                protocol: router::ModelProtocol::ChatCompletions,
+                model: "chat-model".into(),
+                enabled: true,
+                test_status: "ok".into(),
+                models: vec![super::super::newapi::Model {
+                    id: "chat-model".into(),
+                    context_window: None,
+                    max_output_tokens: None,
+                    endpoint_types: vec!["openai-chat".into()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let anthropic_provider = Provider {
+                id: "anthropic_fixture".into(),
+                name: "Anthropic Mock".into(),
+                base_url: format!("http://127.0.0.1:{upstream_port}/"),
+                api_key: "sk-anthropic".into(),
+                protocol: router::ModelProtocol::AnthropicMessages,
+                model: "claude-mock".into(),
+                enabled: true,
+                test_status: "ok".into(),
+                models: vec![super::super::newapi::Model {
+                    id: "claude-mock".into(),
+                    context_window: None,
+                    max_output_tokens: None,
+                    endpoint_types: vec!["anthropic-messages".into()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let mut store = Store {
+                version: 3,
+                providers: vec![provider, chat_provider, anthropic_provider],
                 active_provider_id: Some("agentharbor_fixture".into()),
                 router: RouterSettings { bearer_token: "router-test-token".into(), ..Default::default() },
             };
@@ -463,7 +856,14 @@ content-length: 22
                 .await
                 .unwrap();
             let entries = catalog.get("data").and_then(Value::as_array).unwrap();
-            assert_eq!(entries[0].get("id").and_then(Value::as_str), Some("agentharbor_fixture::mock-model"));
+            assert_eq!(entries.len(), 2, "Codex catalog must merge official and Responses relay models");
+            assert!(entries.iter().any(|entry| {
+                entry.get("id").and_then(Value::as_str) == Some("gpt-official-fixture")
+            }));
+            assert!(entries.iter().any(|entry| {
+                entry.get("id").and_then(Value::as_str)
+                    == Some("agentharbor_fixture::mock-model")
+            }));
 
             // Codex-style POST with a prefixed model is routed and the prefix stripped.
             let response = client
@@ -474,6 +874,7 @@ content-length: 22
                 .await
                 .unwrap();
             assert_eq!(response.status(), 200);
+            let _ = response.bytes().await.unwrap();
 
             // An official (unprefixed) model without local credentials fails clearly.
             let response = client
@@ -500,6 +901,36 @@ content-length: 22
                 .await
                 .unwrap();
             assert_eq!(response.status(), 200);
+
+            // OpenAI Chat Completions uses Bearer auth and stays in its own wire protocol.
+            let response = client
+                .post(format!("{base}/v1/chat/completions"))
+                .header(AUTHORIZATION, "Bearer router-test-token")
+                .json(&json!({"model": "chat_fixture::chat-model", "messages": [{"role": "user", "content": "hi"}]}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+
+            // Anthropic clients may authenticate to the local router with x-api-key.
+            // The proxy replaces it with the provider key and supplies the standard version.
+            let response = client
+                .post(format!("{base}/v1/messages"))
+                .header("x-api-key", "router-test-token")
+                .json(&json!({"model": "anthropic_fixture::claude-mock", "max_tokens": 32, "messages": [{"role": "user", "content": "hi"}]}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+
+            let response = client
+                .post(format!("{base}/v1/chat/completions"))
+                .header(AUTHORIZATION, "Bearer router-test-token")
+                .json(&json!({"model": "agentharbor_fixture::mock-model", "messages": []}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 400);
 
             // Changing the global proxy updates the running router without rebinding it.
             let unavailable_proxy = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -546,6 +977,71 @@ content-length: 22
 
             let health = client.get(format!("{base}/agentharbor/health")).send().await.unwrap();
             assert_eq!(health.status(), 200);
+            let usage = crate::core::relay_usage::load(&paths.app_data_dir).unwrap();
+            assert_eq!(usage.all_time.request_count, 3, "only inference requests are tracked");
+            assert!(usage
+                .by_provider
+                .iter()
+                .any(|entry| entry.provider_id == "agentharbor_fixture"));
+
+            // Exercise generated client configs through the real proxy, independently of Codex.
+            use crate::core::client_config::{ClientPaths, ConfigManager, ConfigRequest};
+            use crate::core::targets::TargetId;
+            use crate::core::routing_runtime;
+            store.router.port = port;
+            crate::core::secret_file::write(&paths.app_data_dir.join("newapi-providers.dat"), &serde_json::to_vec(&store).unwrap()).unwrap();
+            let client_paths = ClientPaths::from_home(&dir.path().join("clients"));
+            let claude_path = client_paths.claude.clone();
+            let opencode_path = client_paths.opencode.clone();
+            let manager = ConfigManager::new(&paths.app_data_dir, client_paths);
+            let mut config_request = ConfigRequest {
+                target_id: TargetId::ClaudeCode, provider_id: "anthropic_fixture".into(),
+                model: "claude-mock".into(), context_window: 200000, max_output_tokens: 8192,
+            };
+            let preview = manager.preview(&store, &config_request).unwrap();
+            manager.apply(&store, &config_request, &preview.revision).unwrap();
+            config_request.target_id = TargetId::OpenCode;
+            config_request.provider_id = "chat_fixture".into();
+            config_request.model = "chat-model".into();
+            let preview = manager.preview(&store, &config_request).unwrap();
+            manager.apply(&store, &config_request, &preview.revision).unwrap();
+
+            router::set_smart_routing(&paths, true).unwrap();
+            router::set_smart_routing(&paths, false).unwrap();
+            routing_runtime::reconcile(&paths).await.unwrap();
+            assert!(is_running(), "disabling Codex must not stop other clients");
+
+            stop();
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            routing_runtime::reconcile(&paths).await.unwrap();
+            assert!(is_running(), "client config alone restarts the router");
+
+            let claude: Value = serde_json::from_slice(&std::fs::read(claude_path).unwrap()).unwrap();
+            let response = client.post(format!("{}/v1/messages", claude["env"]["ANTHROPIC_BASE_URL"].as_str().unwrap()))
+                .bearer_auth(claude["env"]["ANTHROPIC_AUTH_TOKEN"].as_str().unwrap())
+                .json(&json!({"model": claude["model"], "max_tokens": 32, "messages": [{"role":"user", "content":"hi"}]}))
+                .send().await.unwrap();
+            assert_eq!(response.status(), 200);
+            response.bytes().await.unwrap();
+            manager.restore(TargetId::ClaudeCode).unwrap();
+            routing_runtime::reconcile(&paths).await.unwrap();
+            assert!(is_running(), "OpenCode still depends on the router");
+
+            let opencode: Value = serde_json::from_slice(&std::fs::read(opencode_path).unwrap()).unwrap();
+            let options = &opencode["provider"]["agentharbor_chat_fixture"]["options"];
+            let response = client.post(format!("{}/chat/completions", options["baseURL"].as_str().unwrap()))
+                .bearer_auth(options["apiKey"].as_str().unwrap())
+                .json(&json!({"model": "chat-model", "stream": true, "messages": [{"role":"user", "content":"hi"}]}))
+                .send().await.unwrap();
+            assert_eq!(response.status(), 200);
+            let body = response.text().await.unwrap();
+            assert!(body.contains("data: [DONE]"), "SSE is forwarded unchanged");
+            let usage = crate::core::relay_usage::load(&paths.app_data_dir).unwrap();
+            assert_eq!(usage.all_time.request_count, 5);
+            assert_eq!(usage.all_time.total_tokens, 125);
+            manager.restore(TargetId::OpenCode).unwrap();
+            routing_runtime::reconcile(&paths).await.unwrap();
+            assert!(!is_running(), "the router stops only when all clients release it");
             stop();
         });
     }
@@ -553,7 +1049,10 @@ content-length: 22
     #[test]
     #[ignore = "Requires an explicitly provided local encrypted test connection"]
     fn live_smart_routing_injection() {
-        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         runtime.block_on(async {
             let source_home = std::path::PathBuf::from(
                 std::env::var("AGENT_HARBOR_NEWAPI_TEST_HOME").expect("Set isolated test home"),
@@ -573,14 +1072,25 @@ content-length: 22
 
             let proxy = crate::core::newapi::proxy_from_settings(&paths.settings_path);
             let initial = router::load_store(&paths).unwrap();
-            let provider = initial.providers.first().cloned().expect("test relay connection");
+            let provider = initial
+                .providers
+                .first()
+                .cloned()
+                .expect("test relay connection");
             let models = {
                 let paths = paths.clone();
                 let provider_id = provider.id.clone();
                 let base_url = provider.base_url.clone();
                 let proxy = proxy.clone();
                 tokio::task::spawn_blocking(move || {
-                    router::fetch_models(&paths, Some(&provider_id), &base_url, "", &proxy)
+                    router::fetch_models(
+                        &paths,
+                        Some(&provider_id),
+                        &base_url,
+                        "",
+                        router::ModelProtocol::Responses,
+                        &proxy,
+                    )
                 })
                 .await
                 .unwrap()
@@ -635,7 +1145,9 @@ content-length: 22
                     user_id: provider.user_id,
                     access_token: provider.access_token,
                     api_key: provider.api_key,
+                    protocol: provider.protocol,
                     model,
+                    models: tested.models,
                     context_window: provider.context_window,
                     auto_compact_limit: provider.auto_compact_limit,
                     network_mode: provider.network_mode,
@@ -685,7 +1197,10 @@ content-length: 22
                 "accountless routing must not create auth.json"
             );
 
-            let client = Client::builder().timeout(Duration::from_secs(90)).build().unwrap();
+            let client = Client::builder()
+                .timeout(Duration::from_secs(90))
+                .build()
+                .unwrap();
             let base = format!("http://127.0.0.1:{port}");
             let catalog: Value = client
                 .get(format!("{base}/codex/v1/models"))
@@ -702,7 +1217,11 @@ content-length: 22
                 .as_array()
                 .unwrap()
                 .iter()
-                .find_map(|entry| entry["id"].as_str().filter(|id| id.starts_with(&provider.id)))
+                .find_map(|entry| {
+                    entry["id"]
+                        .as_str()
+                        .filter(|id| id.starts_with(&provider.id))
+                })
                 .expect("prefixed relay model")
                 .to_owned();
             let response = client
@@ -712,9 +1231,16 @@ content-length: 22
                 .send()
                 .await
                 .unwrap();
-            assert!(response.status().is_success(), "relay returned HTTP {}", response.status());
+            assert!(
+                response.status().is_success(),
+                "relay returned HTTP {}",
+                response.status()
+            );
             let body = response.text().await.unwrap();
-            assert!(body.contains("response.completed"), "response stream did not complete");
+            assert!(
+                body.contains("response.completed"),
+                "response stream did not complete"
+            );
             stop();
         });
     }

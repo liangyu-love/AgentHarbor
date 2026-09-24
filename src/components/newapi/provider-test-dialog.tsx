@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
+import { includedModelsForProtocol, supportsProtocol } from "@/lib/provider-models";
 import type { NewApiModel, NewApiProvider } from "@/types/newapi";
 
 const errorKey = (error: unknown) => {
@@ -43,13 +44,19 @@ export function ProviderTestDialog({ open, provider, onOpenChange, onTested, onF
     setLoadingModels(true);
     setError(null);
     try {
-      const loaded = await api.fetchNewApiModels(target.id, target.baseUrl, "");
+      const loaded = await api.providers.fetchModels(
+        target.id,
+        target.baseUrl,
+        "",
+        target.protocol,
+      );
       if (request !== modelRequest.current) return;
-      setModels(loaded);
+      const compatible = loaded.filter(model => supportsProtocol(model, target.protocol));
+      setModels(compatible);
       setSelectedModel(current => {
-        if (current && loaded.some(model => model.id === current)) return current;
-        if (target.model && loaded.some(model => model.id === target.model)) return target.model;
-        return loaded[0]?.id ?? "";
+        if (current && compatible.some(model => model.id === current)) return current;
+        if (target.model && compatible.some(model => model.id === target.model)) return target.model;
+        return compatible[0]?.id ?? "";
       });
     } catch (cause) {
       if (request !== modelRequest.current) return;
@@ -66,7 +73,7 @@ export function ProviderTestDialog({ open, provider, onOpenChange, onTested, onF
       setLoadingModels(false);
       return;
     }
-    const cached = provider.models;
+    const cached = includedModelsForProtocol(provider.models, provider.protocol);
     setModels(cached);
     setSelectedModel(
       provider.model && cached.some(model => model.id === provider.model)
@@ -86,7 +93,7 @@ export function ProviderTestDialog({ open, provider, onOpenChange, onTested, onF
     setTesting(true);
     setError(null);
     try {
-      const tested = await api.testNewApiProvider(provider.id, selectedModel);
+      const tested = await api.providers.test(provider.id, selectedModel);
       onTested(tested);
       if (request !== testRequest.current) return;
       onOpenChange(false);

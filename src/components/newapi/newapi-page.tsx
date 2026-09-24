@@ -23,9 +23,17 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ProviderDialog } from "@/components/newapi/provider-dialog";
 import { ProviderTestDialog } from "@/components/newapi/provider-test-dialog";
-import type { NewApiProvider, NewApiState, NewApiStateChange } from "@/types/newapi";
+import { ClientConfigs } from "@/components/newapi/client-configs";
+import { includedModelsForProtocol } from "@/lib/provider-models";
+import type { ModelProtocol, NewApiProvider, NewApiState, NewApiStateChange } from "@/types/newapi";
 
 const STATE_KEY = ["newapi-state"] as const;
+
+const protocolBadgeKey: Record<ModelProtocol, string> = {
+  responses: "newapi.protocolShortResponses",
+  chatCompletions: "newapi.protocolShortChat",
+  anthropicMessages: "newapi.protocolShortAnthropic",
+};
 
 const cardColors: GlowColor[] = ["blue", "purple", "green", "red"];
 const providerColor = (id: string): GlowColor => {
@@ -67,7 +75,7 @@ function StatusDot({ provider }: { provider: NewApiProvider }) {
 export function NewApiPage() {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
-  const state = useQuery({ queryKey: STATE_KEY, queryFn: api.loadNewApiState, refetchOnWindowFocus: false });
+  const state = useQuery({ queryKey: STATE_KEY, queryFn: api.providers.loadState, refetchOnWindowFocus: false });
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>("all");
@@ -138,7 +146,7 @@ export function NewApiPage() {
     run("import", async () => {
       const path = await pickImportFile();
       if (typeof path !== "string") return;
-      const result = await api.importNewApiProviders(path);
+      const result = await api.providers.import(path);
       applyChange(result);
       toast({ title: t("newapi.importedResult", { imported: result.imported, skipped: result.skipped }), variant: "success" });
     }, t("newapi.importFailed"));
@@ -147,7 +155,7 @@ export function NewApiPage() {
       const { save } = await import("@tauri-apps/plugin-dialog");
       const path = await save({ defaultPath: "agentharbor-relays.json", filters: [{ name: "JSON", extensions: ["json"] }] });
       if (typeof path !== "string") return;
-      await api.exportNewApiProviders(path);
+      await api.providers.export(path);
       toast({ title: t("newapi.exportedDone", { path }), variant: "success" });
     }, t("newapi.exportFailed"));
 
@@ -243,7 +251,7 @@ export function NewApiPage() {
               disabled={lock("routing") || providers.length === 0}
               onCheckedChange={value =>
                 void run("routing", async () => {
-                  const change = await api.setNewApiSmartRouting(value);
+                  const change = await api.routing.setEnabled(value);
                   applyChange(change);
                   toast({ title: t(value ? "newapi.routingApplied" : "newapi.routingRemoved"), description: change.applied?.backupPath ?? undefined, variant: "success" });
                 }, t("newapi.routingFailed"))
@@ -275,7 +283,7 @@ export function NewApiPage() {
               disabled={!routingEnabled || lock("accountless")}
               onCheckedChange={value =>
                 void run("accountless", async () => {
-                  const change = await api.setNewApiAccountless(value);
+                  const change = await api.routing.setAccountless(value);
                   applyChange(change);
                   toast({ title: t("newapi.accountlessApplied"), variant: "success" });
                 }, t("newapi.routingFailed"))
@@ -284,6 +292,8 @@ export function NewApiPage() {
           </div>
         </div>
       </AuroraCard>
+
+      <ClientConfigs providers={providers} />
 
       <section className="space-y-4" aria-labelledby="newapi-providers-title">
         <div className="flex flex-wrap items-center gap-3">
@@ -409,7 +419,7 @@ export function NewApiPage() {
                           disabled={lock(`enable:${provider.id}`)}
                           onCheckedChange={value =>
                             void run(`enable:${provider.id}`, async () => {
-                              const change = await api.setNewApiProviderEnabled(provider.id, value);
+                              const change = await api.providers.setEnabled(provider.id, value);
                               applyChange(change);
                             }, t("newapi.enableFailed"))
                           }
@@ -435,7 +445,7 @@ export function NewApiPage() {
                             aria-label={t("newapi.refreshBalance")}
                             disabled={lock(`balance:${provider.id}`) || !(provider.hasApiKey || provider.hasAccessToken)}
                             onClick={() =>
-                              void run(`balance:${provider.id}`, async () => patchProvider(await api.queryNewApiProviderBalance(provider.id)), t("newapi.balanceFailed"))
+                              void run(`balance:${provider.id}`, async () => patchProvider(await api.providers.queryBalance(provider.id)), t("newapi.balanceFailed"))
                             }
                           >
                             {busy === `balance:${provider.id}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
@@ -484,10 +494,10 @@ export function NewApiPage() {
                         </div>
                         <div className="mt-1 flex items-center justify-between gap-1 text-[10px] text-muted-foreground">
                           <span className="truncate">
-                            {t("newapi.modelCount", { count: provider.models.length })}
+                            {t("newapi.modelCount", { count: includedModelsForProtocol(provider.models, provider.protocol).length })}
                           </span>
                           <span className="shrink-0 rounded bg-muted px-1 py-0.2 font-mono text-[9px] text-muted-foreground">
-                            Responses
+                            {t(protocolBadgeKey[provider.protocol])}
                           </span>
                         </div>
                       </div>
@@ -526,7 +536,7 @@ export function NewApiPage() {
                               onValueChange={mode => {
                                 if (mode !== "proxy" && mode !== "direct") return;
                                 void run(`network:${provider.id}`, async () => {
-                                  applyChange(await api.setNewApiProviderNetwork(provider.id, mode));
+                                  applyChange(await api.providers.setNetwork(provider.id, mode));
                                   toast({
                                     title: t("newapi.networkUpdated"),
                                     description: t(mode === "direct" ? "newapi.networkDirectHint" : "newapi.networkProxyHint"),
@@ -621,7 +631,7 @@ export function NewApiPage() {
                 setRemoving(null);
                 if (provider) {
                   void run(`delete:${provider.id}`, async () => {
-                    const change = await api.deleteNewApiProvider(provider.id);
+                    const change = await api.providers.delete(provider.id);
                     applyChange(change);
                     if (filter === provider.id) setFilter("all");
                   }, t("newapi.deleteFailed"));

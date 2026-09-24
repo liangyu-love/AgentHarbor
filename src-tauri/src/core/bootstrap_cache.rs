@@ -14,10 +14,16 @@ pub struct BootstrapStatePayload {
 }
 
 pub fn load(path: &Path) -> BootstrapStatePayload {
-    std::fs::read(path).ok().and_then(|data| serde_json::from_slice(&data).ok()).unwrap_or_default()
+    std::fs::read(path)
+        .ok()
+        .and_then(|data| serde_json::from_slice(&data).ok())
+        .unwrap_or_default()
 }
 
-pub fn update(path: &Path, mut apply: impl FnMut(&mut BootstrapStatePayload)) -> Result<(), CoreError> {
+pub fn update(
+    path: &Path,
+    mut apply: impl FnMut(&mut BootstrapStatePayload),
+) -> Result<(), CoreError> {
     let mut cache = load(path);
     apply(&mut cache);
     super::storage::write_atomic(path, &serde_json::to_vec_pretty(&cache)?)

@@ -5,8 +5,13 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 
 #[tauri::command]
-pub fn load_snapshot(repo: State<'_, Mutex<Repository>>) -> Result<CoreEnvelope<CoreSnapshotPayload>, String> {
-    repo.lock().map_err(|e| e.to_string())?.load_snapshot_local().map_err(|e| e.to_string())
+pub fn load_snapshot(
+    repo: State<'_, Mutex<Repository>>,
+) -> Result<CoreEnvelope<CoreSnapshotPayload>, String> {
+    repo.lock()
+        .map_err(|e| e.to_string())?
+        .load_snapshot_local()
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -16,8 +21,14 @@ pub fn is_updater_configured(app: AppHandle) -> bool {
 
 pub(crate) fn updater_configured(config: &tauri::Config) -> bool {
     config.plugins.0.get("updater").map_or(false, |config| {
-        config.get("pubkey").and_then(|v| v.as_str()).map_or(false, |v| !v.is_empty())
-            && config.get("endpoints").and_then(|v| v.as_array()).map_or(false, |v| !v.is_empty())
+        config
+            .get("pubkey")
+            .and_then(|v| v.as_str())
+            .map_or(false, |v| !v.is_empty())
+            && config
+                .get("endpoints")
+                .and_then(|v| v.as_array())
+                .map_or(false, |v| !v.is_empty())
     })
 }
 
@@ -102,9 +113,8 @@ pub async fn test_api_proxy_config(
     url: Option<String>,
 ) -> Result<CoreEnvelope<ApiProxyTestPayload>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let payload = crate::core::api_client::test_api_connectivity(
-            &ApiProxyConfigPayload { mode, url },
-        );
+        let payload =
+            crate::core::api_client::test_api_connectivity(&ApiProxyConfigPayload { mode, url });
         Ok(CoreEnvelope::ok(payload))
     })
     .await
@@ -122,8 +132,7 @@ pub async fn detect_api_proxy_config() -> Result<CoreEnvelope<ApiProxyDetectPayl
 }
 
 #[tauri::command]
-pub fn run_daemon_once(
-) -> Result<CoreEnvelope<DaemonRunPayload>, String> {
+pub fn run_daemon_once() -> Result<CoreEnvelope<DaemonRunPayload>, String> {
     Err("Automatic account switching is not available in this source build".into())
 }
 

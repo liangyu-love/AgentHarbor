@@ -12,7 +12,7 @@ pub fn load_mcp_servers(
 ) -> Result<CoreEnvelope<McpServerListPayload>, String> {
     let repo = repo.lock().map_err(|e| e.to_string())?;
     let paths = repo.paths();
-    let items = mcp::load_mcp_servers(&paths.config_path).map_err(|e| e.to_string())?;
+    let items = mcp::load_mcp_servers(paths).map_err(|e| e.to_string())?;
     let payload = McpServerListPayload {
         total: items.len() as i32,
         source_path: paths.config_path.display().to_string(),
@@ -54,8 +54,8 @@ pub fn upsert_mcp_server(
         headers,
         environment,
     };
-    let saved = mcp::upsert_mcp_server(&paths.config_path, &server).map_err(|e| e.to_string())?;
-    let all = mcp::load_mcp_servers(&paths.config_path).map_err(|e| e.to_string())?;
+    let saved = mcp::upsert_mcp_server(paths, &server).map_err(|e| e.to_string())?;
+    let all = mcp::load_mcp_servers(paths).map_err(|e| e.to_string())?;
     Ok(CoreEnvelope::ok(McpServerMutationPayload {
         server: saved,
         total: all.len() as i32,
@@ -71,9 +71,8 @@ pub fn set_mcp_server_enabled(
 ) -> Result<CoreEnvelope<McpServerMutationPayload>, String> {
     let repo = repo.lock().map_err(|e| e.to_string())?;
     let paths = repo.paths();
-    let saved = mcp::set_mcp_server_enabled(&paths.config_path, &name, enabled)
-        .map_err(|e| e.to_string())?;
-    let all = mcp::load_mcp_servers(&paths.config_path).map_err(|e| e.to_string())?;
+    let saved = mcp::set_mcp_server_enabled(paths, &name, enabled).map_err(|e| e.to_string())?;
+    let all = mcp::load_mcp_servers(paths).map_err(|e| e.to_string())?;
     Ok(CoreEnvelope::ok(McpServerMutationPayload {
         server: saved,
         total: all.len() as i32,
@@ -88,8 +87,8 @@ pub fn remove_mcp_server(
 ) -> Result<CoreEnvelope<McpServerRemovePayload>, String> {
     let repo = repo.lock().map_err(|e| e.to_string())?;
     let paths = repo.paths();
-    mcp::remove_mcp_server(&paths.config_path, &name).map_err(|e| e.to_string())?;
-    let all = mcp::load_mcp_servers(&paths.config_path).map_err(|e| e.to_string())?;
+    mcp::remove_mcp_server(paths, &name).map_err(|e| e.to_string())?;
+    let all = mcp::load_mcp_servers(paths).map_err(|e| e.to_string())?;
     Ok(CoreEnvelope::ok(McpServerRemovePayload {
         removed_name: name,
         total: all.len() as i32,

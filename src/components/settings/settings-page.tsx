@@ -76,7 +76,6 @@ export function SettingsPage({
 }: SettingsPageProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const supportsHotspot = false;
 
   const statusQuery = useQuery({
     queryKey: RUNTIME_STATE_DISPLAY_QUERY_KEY,
@@ -174,33 +173,6 @@ export function SettingsPage({
     },
   });
 
-  const notchQuery = useQuery({
-    queryKey: ["has-notch"],
-    queryFn: () => api.hasNotch(),
-    staleTime: Infinity,
-    enabled: supportsHotspot,
-  });
-
-  const hasNotch = notchQuery.data ?? false;
-
-  const hotspotQuery = useQuery({
-    queryKey: ["hotspot-enabled"],
-    queryFn: () => api.getHotspotEnabled(),
-    enabled: supportsHotspot && hasNotch,
-  });
-
-  const hotspotMutation = useMutation({
-    mutationFn: (enabled: boolean) => api.setHotspotEnabled(enabled),
-    onSuccess: (_data, enabled) => {
-      queryClient.invalidateQueries({ queryKey: ["hotspot-enabled"] });
-      toast({
-        title: enabled ? t("settings.hotspotEnabled") : t("settings.hotspotDisabled"),
-        description: enabled ? t("settings.hotspotEnabledDesc") : t("settings.hotspotDisabledDesc"),
-        variant: "success",
-      });
-    },
-  });
-
   const checkingUpdate = updateCheckAction.busy;
   const handleCheckUpdate = async () => {
     await updateCheckAction.run(async () => {
@@ -291,7 +263,7 @@ export function SettingsPage({
             </div>
           </SettingRow>
 
-          <SettingRow label={t("settings.heatmapColor")} description={t("baseline.quotaUnavailable")}>
+          <SettingRow label={t("settings.heatmapColor")} description={t("settings.heatmapColorDesc")}>
             <div className="flex gap-2">
               {(Object.keys(HEATMAP_PRESETS) as HeatmapPreset[]).map((key) => (
                 <button
@@ -309,18 +281,6 @@ export function SettingsPage({
             </div>
           </SettingRow>
 
-          {supportsHotspot && (
-            <SettingRow
-              label={t("settings.hotspot")}
-              description={hasNotch ? t("settings.hotspotDesc") : t("settings.hotspotNotSupported")}
-            >
-              <Switch
-                checked={hasNotch && (hotspotQuery.data ?? false)}
-                onCheckedChange={(v) => hotspotMutation.mutate(v)}
-                disabled={!hasNotch || hotspotMutation.isPending}
-              />
-            </SettingRow>
-          )}
         </Section>
 
         {/* Right Column: Mode Switch & About */}
@@ -356,9 +316,8 @@ export function SettingsPage({
             </div>
             <SettingRow
               label={t("settings.refreshInterval")}
-              description={t("baseline.quotaUnavailable")}
+              description={t("settings.refreshIntervalDesc")}
             >
-              <fieldset disabled className="opacity-50">
               <SettingSegmentedControl
                 items={REFRESH_OPTIONS.map(({ value, labelKey }) => ({
                   value,
@@ -368,7 +327,6 @@ export function SettingsPage({
                 onChange={(v) => setRefreshInterval(v as RefreshInterval)}
                 compact
               />
-              </fieldset>
             </SettingRow>
           </Section>
 

@@ -1,6 +1,7 @@
+use crate::core::codex_config::CodexConfigRepository;
 use crate::core::models::*;
+use crate::platform::paths::CodexPaths;
 use std::collections::HashMap;
-use std::path::Path;
 
 const MANAGED_BLOCK_BEGIN_PREFIX: &str = "# --- AgentHarbor Managed";
 const MANAGED_BLOCK_END_SUFFIX: &str = "# --- End AgentHarbor Managed";
@@ -17,20 +18,20 @@ const BOTTOM_MANAGED_BLOCK_BEGIN: &str = "# --- AgentHarbor Managed Block (botto
 const LEGACY_TOP_MANAGED_BLOCK_BEGIN: &str = "# --- AgentHarbor Managed Block (top) ---";
 const ROUTER_TOP_MANAGED_BLOCK_BEGIN: &str = "# --- AgentHarbor Managed Block (router-top) ---";
 
-pub fn load_mcp_servers(config_path: &Path) -> Result<Vec<McpServerSummary>, CoreError> {
-    if !config_path.exists() {
+pub fn load_mcp_servers(paths: &CodexPaths) -> Result<Vec<McpServerSummary>, CoreError> {
+    let text = CodexConfigRepository::new(paths).read_text()?;
+    if text.is_empty() {
         return Ok(vec![]);
     }
-    let text = std::fs::read_to_string(config_path)?;
-    parse_mcp_servers(&text, &config_path.display().to_string())
+    parse_mcp_servers(&text, &paths.config_path.display().to_string())
 }
 
 pub fn upsert_mcp_server(
-    config_path: &Path,
+    paths: &CodexPaths,
     server: &McpServerSummary,
 ) -> Result<McpServerSummary, CoreError> {
-    write_mcp_server(config_path, server)?;
-    let servers = load_mcp_servers(config_path)?;
+    write_mcp_server(paths, server)?;
+    let servers = load_mcp_servers(paths)?;
     Ok(servers
         .into_iter()
         .find(|s| s.name == server.name)
@@ -38,73 +39,124 @@ pub fn upsert_mcp_server(
 }
 
 pub fn set_mcp_server_enabled(
-    config_path: &Path,
+    paths: &CodexPaths,
     name: &str,
     enabled: bool,
 ) -> Result<McpServerSummary, CoreError> {
-    let servers = load_mcp_servers(config_path)?;
-    let current = servers
-        .iter()
-        .find(|s| s.name == name)
-        .ok_or_else(|| CoreError::NotFound(format!("MCP server not found: {name}")))?;
-    let mut updated = current.clone();
-    updated.enabled = enabled;
-    upsert_mcp_server(config_path, &updated)
+    let source_path = paths.config_path.display().to_string();
+    let mut saved = None;
+    CodexConfigRepository::new(paths).update(|original| {
+        let current = parse_mcp_servers(original, &source_path)?
+            .into_iter()
+            .find(|server| server.name == name)
+            .ok_or_else(|| CoreError::NotFound(format!("MCP server not found: {name}")))?;
+        let mut updated = current;
+        updated.enabled = enabled;
+        let next = render_mcp_update(original, &updated)?;
+        saved = Some(updated);
+        Ok(next)
+    })?;
+    saved.ok_or_else(|| CoreError::OperationFailed("MCP server update produced no result".into()))
 }
 
-pub fn remove_mcp_server(config_path: &Path, name: &str) -> Result<(), CoreError> {
-    let original = load_config_text(config_path)?;
-    let _: toml::Value = original.parse()?;
-    let document = parse_mcp_document(&original);
-    let block = document
-        .blocks
-        .get(name)
-        .ok_or_else(|| CoreError::NotFound(format!("MCP server not found: {name}")))?;
-    let mut lines = document.lines.clone();
-    lines.drain(block.start..block.end);
-    // Remove trailing empty lines
-    while lines.len() >= 2
-        && lines.last().map_or(false, |l| l.trim().is_empty())
-        && lines[lines.len() - 2].trim().is_empty()
-    {
-        lines.pop();
-    }
-    save_config_text(config_path, &lines.join("\n"))?;
+pub fn remove_mcp_server(paths: &CodexPaths, name: &str) -> Result<(), CoreError> {
+    CodexConfigRepository::new(paths).update(|original| {
+        let _: toml::Value = original.parse()?;
+        let document = parse_mcp_document(original);
+        let block = document
+            .blocks
+            .get(name)
+            .ok_or_else(|| CoreError::NotFound(format!("MCP server not found: {name}")))?;
+        let mut lines = document.lines.clone();
+        lines.drain(block.start..block.end);
+        // Remove trailing empty lines
+        while lines.len() >= 2
+            && lines.last().is_some_and(|line| line.trim().is_empty())
+            && lines[lines.len() - 2].trim().is_empty()
+        {
+            lines.pop();
+        }
+        Ok(lines.join("\n"))
+    })?;
     Ok(())
 }
 
+fn write_mcp_server(paths: &CodexPaths, server: &McpServerSummary) -> Result<(), CoreError> {
+    CodexConfigRepository::new(paths).update(|original| render_mcp_update(original, server))?;
+    Ok(())
+}
 
-fn write_mcp_server(config_path: &Path, server: &McpServerSummary) -> Result<(), CoreError> {
+fn render_mcp_update(original: &str, server: &McpServerSummary) -> Result<String, CoreError> {
     if server.name.trim().is_empty() {
         return Err(CoreError::InvalidData("MCP server name is required".into()));
     }
     match server.transport {
-        McpTransport::Stdio if server.command.as_deref().map_or(true, |s| s.trim().is_empty()) =>
-            return Err(CoreError::InvalidData("MCP command is required".into())),
-        McpTransport::Http | McpTransport::Sse => {
-            let url = server.url.as_deref().and_then(|s| reqwest::Url::parse(s).ok())
-                .ok_or_else(|| CoreError::InvalidData("MCP URL is required".into()))?;
-            if !matches!(url.scheme(), "http" | "https") { return Err(CoreError::InvalidData("MCP URL must use HTTP or HTTPS".into())); }
+        McpTransport::Stdio
+            if server
+                .command
+                .as_deref()
+                .map_or(true, |s| s.trim().is_empty()) =>
+        {
+            return Err(CoreError::InvalidData("MCP command is required".into()))
         }
-        McpTransport::Unknown => return Err(CoreError::InvalidData("Unsupported MCP transport".into())),
+        McpTransport::Http | McpTransport::Sse => {
+            let url = server
+                .url
+                .as_deref()
+                .and_then(|s| reqwest::Url::parse(s).ok())
+                .ok_or_else(|| CoreError::InvalidData("MCP URL is required".into()))?;
+            if !matches!(url.scheme(), "http" | "https") {
+                return Err(CoreError::InvalidData(
+                    "MCP URL must use HTTP or HTTPS".into(),
+                ));
+            }
+        }
+        McpTransport::Unknown => {
+            return Err(CoreError::InvalidData("Unsupported MCP transport".into()))
+        }
         _ => {}
     }
-    let original = load_config_text(config_path)?;
     let original_value: toml::Value = original.parse()?;
-    let document = parse_mcp_document(&original);
+    let document = parse_mcp_document(original);
     let managed: toml::Value = render_mcp_block(server).join("\n").parse()?;
-    let mut preserved = original_value.get("mcp_servers").and_then(|v| v.get(&server.name))
-        .and_then(toml::Value::as_table).cloned().unwrap_or_default();
+    let mut preserved = original_value
+        .get("mcp_servers")
+        .and_then(|v| v.get(&server.name))
+        .and_then(toml::Value::as_table)
+        .cloned()
+        .unwrap_or_default();
     if !preserved.is_empty() && !document.blocks.contains_key(&server.name) {
-        return Err(CoreError::InvalidData("Expand inline MCP configuration into a table before editing".into()));
+        return Err(CoreError::InvalidData(
+            "Expand inline MCP configuration into a table before editing".into(),
+        ));
     }
-    for key in ["enabled", "transport", "type", "command", "args", "url", "env", "headers", "http_headers"] { preserved.remove(key); }
-    preserved.extend(managed["mcp_servers"][&server.name].as_table().unwrap().clone());
+    for key in [
+        "enabled",
+        "transport",
+        "type",
+        "command",
+        "args",
+        "url",
+        "env",
+        "headers",
+        "http_headers",
+    ] {
+        preserved.remove(key);
+    }
+    preserved.extend(
+        managed["mcp_servers"][&server.name]
+            .as_table()
+            .unwrap()
+            .clone(),
+    );
     let mut servers = toml::Table::new();
     servers.insert(server.name.clone(), toml::Value::Table(preserved));
     let mut wrapper = toml::Table::new();
     wrapper.insert("mcp_servers".into(), toml::Value::Table(servers));
-    let rendered = toml::to_string_pretty(&wrapper)?.lines().map(str::to_owned).collect();
+    let rendered = toml::to_string_pretty(&wrapper)?
+        .lines()
+        .map(str::to_owned)
+        .collect();
 
     let updated = if let Some(existing) = document.blocks.get(&server.name) {
         if should_relocate_mcp_block(&document.lines, existing) {
@@ -120,8 +172,7 @@ fn write_mcp_server(config_path: &Path, server: &McpServerSummary) -> Result<(),
         insert_mcp_block(document.lines.clone(), rendered)
     };
 
-    save_config_text(config_path, &updated.join("\n"))?;
-    Ok(())
+    Ok(updated.join("\n"))
 }
 
 fn insert_mcp_block(mut lines: Vec<String>, rendered: Vec<String>) -> Vec<String> {
@@ -384,25 +435,61 @@ fn strip_toml_comment(line: &str) -> &str {
 
 fn parse_mcp_servers(text: &str, source_path: &str) -> Result<Vec<McpServerSummary>, CoreError> {
     let document: toml::Value = text.parse()?;
-    let Some(servers) = document.get("mcp_servers").and_then(toml::Value::as_table) else { return Ok(vec![]); };
+    let Some(servers) = document.get("mcp_servers").and_then(toml::Value::as_table) else {
+        return Ok(vec![]);
+    };
     let string_map = |value: Option<&toml::Value>| -> HashMap<String, String> {
-        value.and_then(toml::Value::as_table).map(|table| table.iter().filter_map(|(key, value)| value.as_str().map(|s| (key.clone(), s.to_owned()))).collect()).unwrap_or_default()
+        value
+            .and_then(toml::Value::as_table)
+            .map(|table| {
+                table
+                    .iter()
+                    .filter_map(|(key, value)| value.as_str().map(|s| (key.clone(), s.to_owned())))
+                    .collect()
+            })
+            .unwrap_or_default()
     };
     let mut items = Vec::new();
     for (name, value) in servers {
-        let command = value.get("command").and_then(toml::Value::as_str).map(str::to_owned);
-        let url = value.get("url").and_then(toml::Value::as_str).map(str::to_owned);
-        let transport = match value.get("transport").or_else(|| value.get("type")).and_then(toml::Value::as_str) {
+        let command = value
+            .get("command")
+            .and_then(toml::Value::as_str)
+            .map(str::to_owned);
+        let url = value
+            .get("url")
+            .and_then(toml::Value::as_str)
+            .map(str::to_owned);
+        let transport = match value
+            .get("transport")
+            .or_else(|| value.get("type"))
+            .and_then(toml::Value::as_str)
+        {
             Some("sse") => McpTransport::Sse,
             _ if command.is_some() => McpTransport::Stdio,
             _ if url.is_some() => McpTransport::Http,
             _ => McpTransport::Unknown,
         };
         items.push(McpServerSummary {
-            name: name.clone(), transport, command, url,
-            enabled: value.get("enabled").and_then(toml::Value::as_bool).unwrap_or(true),
+            name: name.clone(),
+            transport,
+            command,
+            url,
+            enabled: value
+                .get("enabled")
+                .and_then(toml::Value::as_bool)
+                .unwrap_or(true),
             source_path: source_path.into(),
-            args: value.get("args").and_then(toml::Value::as_array).map(|values| values.iter().filter_map(toml::Value::as_str).map(str::to_owned).collect()).unwrap_or_default(),
+            args: value
+                .get("args")
+                .and_then(toml::Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(toml::Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default(),
             environment: string_map(value.get("env")),
             headers: string_map(value.get("http_headers").or_else(|| value.get("headers"))),
         });
@@ -411,33 +498,13 @@ fn parse_mcp_servers(text: &str, source_path: &str) -> Result<Vec<McpServerSumma
     Ok(items)
 }
 
-fn load_config_text(path: &Path) -> Result<String, CoreError> {
-    if !path.exists() {
-        return Ok(String::new());
-    }
-    Ok(std::fs::read_to_string(path)?)
-}
-
-fn save_config_text(path: &Path, text: &str) -> Result<(), CoreError> {
-    let _: toml::Value = text.parse()?;
-    let normalized = if text.is_empty() || text.ends_with('\n') {
-        text.to_string()
-    } else {
-        format!("{text}\n")
-    };
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    super::storage::write_atomic(path, normalized.as_bytes())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     const BOTTOM_MANAGED_BLOCK_END: &str = "# --- End AgentHarbor Managed Block (bottom) ---";
-    const ROUTER_TOP_MANAGED_BLOCK_END: &str = "# --- End AgentHarbor Managed Block (router-top) ---";
+    const ROUTER_TOP_MANAGED_BLOCK_END: &str =
+        "# --- End AgentHarbor Managed Block (router-top) ---";
 
     fn stdio_server(name: &str) -> McpServerSummary {
         McpServerSummary {
@@ -453,20 +520,16 @@ mod tests {
         }
     }
 
-    fn temp_config_path(test_name: &str) -> std::path::PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "agentharbor-mcp-{test_name}-{}-{nanos}.toml",
-            std::process::id()
-        ))
+    fn temp_paths() -> (tempfile::TempDir, CodexPaths) {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().join(".codex"));
+        std::fs::create_dir_all(&paths.codex_home).unwrap();
+        (dir, paths)
     }
 
     #[test]
     fn upsert_mcp_keeps_router_top_block_before_mcp_table() {
-        let path = temp_config_path("router-top");
+        let (_dir, paths) = temp_paths();
         let original = format!(
             "{ROUTER_TOP_MANAGED_BLOCK_BEGIN}\n\
              profile = \"aimai1\"\n\
@@ -477,10 +540,10 @@ mod tests {
              name = \"AgentHarbor 智能路由\"\n\
              {BOTTOM_MANAGED_BLOCK_END}\n"
         );
-        std::fs::write(&path, original).unwrap();
+        std::fs::write(&paths.config_path, original).unwrap();
 
-        upsert_mcp_server(&path, &stdio_server("context7")).unwrap();
-        let updated = std::fs::read_to_string(&path).unwrap();
+        upsert_mcp_server(&paths, &stdio_server("context7")).unwrap();
+        let updated = std::fs::read_to_string(&paths.config_path).unwrap();
 
         let top_pos = updated.find(ROUTER_TOP_MANAGED_BLOCK_BEGIN).unwrap();
         let mcp_pos = updated.find("[mcp_servers.context7]").unwrap();
@@ -494,13 +557,11 @@ mod tests {
             parsed["mcp_servers"]["context7"]["command"].as_str(),
             Some("npx")
         );
-
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn upsert_mcp_relocates_existing_block_out_of_managed_block() {
-        let path = temp_config_path("relocate");
+        let (_dir, paths) = temp_paths();
         let original = format!(
             "{BOTTOM_MANAGED_BLOCK_BEGIN}\n\
              [model_providers.test_provider]\n\
@@ -511,12 +572,12 @@ mod tests {
              model_provider = \"test_provider\"\n\
              {BOTTOM_MANAGED_BLOCK_END}\n"
         );
-        std::fs::write(&path, original).unwrap();
+        std::fs::write(&paths.config_path, original).unwrap();
 
         let mut server = stdio_server("context7");
         server.enabled = false;
-        upsert_mcp_server(&path, &server).unwrap();
-        let updated = std::fs::read_to_string(&path).unwrap();
+        upsert_mcp_server(&paths, &server).unwrap();
+        let updated = std::fs::read_to_string(&paths.config_path).unwrap();
 
         let mcp_pos = updated.find("[mcp_servers.context7]").unwrap();
         let bottom_pos = updated.find(BOTTOM_MANAGED_BLOCK_BEGIN).unwrap();
@@ -526,7 +587,5 @@ mod tests {
 
         let managed_block = &updated[bottom_pos..];
         assert!(!managed_block.contains("[mcp_servers.context7]"));
-
-        let _ = std::fs::remove_file(path);
     }
 }

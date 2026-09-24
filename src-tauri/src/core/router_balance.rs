@@ -90,7 +90,10 @@ fn detect_account_platform(
         .join("api/v1/settings/public")
         .ok()
         .and_then(|url| newapi::get(&client, url, HeaderMap::new()).ok());
-    if sub2api_settings.as_ref().is_some_and(is_sub2api_public_settings) {
+    if sub2api_settings
+        .as_ref()
+        .is_some_and(is_sub2api_public_settings)
+    {
         return Ok(AccountPlatform::Sub2Api);
     }
 
@@ -120,7 +123,10 @@ fn is_sub2api_public_settings(value: &Value) -> bool {
     };
     value.get("code").and_then(Value::as_i64) == Some(0)
         && data.get("site_name").and_then(Value::as_str).is_some()
-        && data.get("registration_enabled").and_then(Value::as_bool).is_some()
+        && data
+            .get("registration_enabled")
+            .and_then(Value::as_bool)
+            .is_some()
 }
 
 fn sub2api_balance(
@@ -129,7 +135,10 @@ fn sub2api_balance(
 ) -> Result<newapi::Balance, String> {
     let client = newapi::client(proxy)?;
     let mut headers = HeaderMap::new();
-    headers.insert(AUTHORIZATION, newapi::auth_header(&connection.access_token)?);
+    headers.insert(
+        AUTHORIZATION,
+        newapi::auth_header(&connection.access_token)?,
+    );
     let url = newapi::base_url(&connection.base_url)?
         .join("api/v1/auth/me")
         .map_err(|_| "newapi.errors.url".to_owned())?;
@@ -137,13 +146,22 @@ fn sub2api_balance(
     parse_sub2api_balance(&value, connection.user_id)
 }
 
-fn parse_sub2api_balance(value: &Value, expected_user_id: Option<u64>) -> Result<newapi::Balance, String> {
+fn parse_sub2api_balance(
+    value: &Value,
+    expected_user_id: Option<u64>,
+) -> Result<newapi::Balance, String> {
     if value.get("code").and_then(Value::as_i64) != Some(0) {
         return Err("newapi.errors.rejected".into());
     }
-    let data = value.get("data").and_then(Value::as_object).ok_or("newapi.errors.response")?;
+    let data = value
+        .get("data")
+        .and_then(Value::as_object)
+        .ok_or("newapi.errors.response")?;
     if let Some(expected) = expected_user_id {
-        let actual = data.get("id").and_then(Value::as_u64).ok_or("newapi.errors.response")?;
+        let actual = data
+            .get("id")
+            .and_then(Value::as_u64)
+            .ok_or("newapi.errors.response")?;
         if actual != expected {
             return Err("newapi.errors.userMismatch".into());
         }
@@ -164,9 +182,11 @@ fn parse_sub2api_balance(value: &Value, expected_user_id: Option<u64>) -> Result
 fn parse_number(value: Option<&Value>) -> Option<f64> {
     value
         .and_then(|value| {
-            value
-                .as_f64()
-                .or_else(|| value.as_str().and_then(|text| text.trim().parse::<f64>().ok()))
+            value.as_f64().or_else(|| {
+                value
+                    .as_str()
+                    .and_then(|text| text.trim().parse::<f64>().ok())
+            })
         })
         .filter(|value| value.is_finite())
 }
@@ -218,7 +238,9 @@ mod tests {
         time::Duration,
     };
 
-    fn mock_server(responses: Vec<(&'static str, &'static str)>) -> (String, Arc<Mutex<Vec<String>>>, std::thread::JoinHandle<()>) {
+    fn mock_server(
+        responses: Vec<(&'static str, &'static str)>,
+    ) -> (String, Arc<Mutex<Vec<String>>>, std::thread::JoinHandle<()>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -226,10 +248,15 @@ mod tests {
         let handle = std::thread::spawn(move || {
             for (status, body) in responses {
                 let (mut stream, _) = listener.accept().unwrap();
-                stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
                 let mut bytes = [0u8; 16 * 1024];
                 let count = stream.read(&mut bytes).unwrap();
-                captured.lock().unwrap().push(String::from_utf8_lossy(&bytes[..count]).to_string());
+                captured
+                    .lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&bytes[..count]).to_string());
                 let response = format!(
                     "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
@@ -246,7 +273,9 @@ mod tests {
             "success": true,
             "data": {"system_name": "Relay", "quota_per_unit": 500000}
         })));
-        assert!(!is_newapi_public_status(&json!({"success": true, "data": {}})));
+        assert!(!is_newapi_public_status(
+            &json!({"success": true, "data": {}})
+        ));
 
         assert!(is_sub2api_public_settings(&json!({
             "code": 0,
@@ -316,9 +345,18 @@ mod tests {
     #[test]
     fn newapi_adapter_detects_public_metadata_before_sending_account_credentials() {
         let (base_url, requests, server) = mock_server(vec![
-            ("200 OK", r#"{"success":true,"data":{"system_name":"Relay","quota_per_unit":500000}}"#),
-            ("200 OK", r#"{"success":true,"data":{"id":37,"quota":750000,"used_quota":250000}}"#),
-            ("200 OK", r#"{"success":true,"data":{"quota_per_unit":500000,"quota_display_type":"USD"}}"#),
+            (
+                "200 OK",
+                r#"{"success":true,"data":{"system_name":"Relay","quota_per_unit":500000}}"#,
+            ),
+            (
+                "200 OK",
+                r#"{"success":true,"data":{"id":37,"quota":750000,"used_quota":250000}}"#,
+            ),
+            (
+                "200 OK",
+                r#"{"success":true,"data":{"quota_per_unit":500000,"quota_display_type":"USD"}}"#,
+            ),
         ]);
         let connection = newapi::Connection {
             base_url,
@@ -335,15 +373,22 @@ mod tests {
         assert!(requests[0].starts_with("GET /api/status "));
         assert!(!requests[0].to_ascii_lowercase().contains("authorization:"));
         assert!(requests[1].starts_with("GET /api/user/self "));
-        assert!(requests[1].to_ascii_lowercase().contains("authorization: bearer account-token"));
-        assert!(requests[1].to_ascii_lowercase().contains("new-api-user: 37"));
+        assert!(requests[1]
+            .to_ascii_lowercase()
+            .contains("authorization: bearer account-token"));
+        assert!(requests[1]
+            .to_ascii_lowercase()
+            .contains("new-api-user: 37"));
     }
 
     #[test]
     fn sub2api_adapter_uses_auth_me_and_never_uses_the_model_key() {
         let (base_url, requests, server) = mock_server(vec![
             ("404 Not Found", r#"{}"#),
-            ("200 OK", r#"{"code":0,"data":{"site_name":"Sub2API","registration_enabled":true}}"#),
+            (
+                "200 OK",
+                r#"{"code":0,"data":{"site_name":"Sub2API","registration_enabled":true}}"#,
+            ),
             ("200 OK", r#"{"code":0,"data":{"id":37,"balance":9.25}}"#),
         ]);
         let connection = newapi::Connection {
@@ -359,8 +404,12 @@ mod tests {
         assert_eq!(balance.remaining, 9.25);
         let requests = requests.lock().unwrap();
         assert!(requests[2].starts_with("GET /api/v1/auth/me "));
-        assert!(requests[2].to_ascii_lowercase().contains("authorization: bearer sub2-account-token"));
-        assert!(requests.iter().all(|request| !request.contains("model-key-must-not-be-used")));
+        assert!(requests[2]
+            .to_ascii_lowercase()
+            .contains("authorization: bearer sub2-account-token"));
+        assert!(requests
+            .iter()
+            .all(|request| !request.contains("model-key-must-not-be-used")));
     }
 
     #[test]
@@ -383,8 +432,12 @@ mod tests {
         server.join().unwrap();
         let requests = requests.lock().unwrap();
         assert_eq!(requests.len(), 2);
-        assert!(requests.iter().all(|request| !request.to_ascii_lowercase().contains("authorization:")));
-        assert!(requests.iter().all(|request| !request.contains("must-not-leak")));
+        assert!(requests
+            .iter()
+            .all(|request| !request.to_ascii_lowercase().contains("authorization:")));
+        assert!(requests
+            .iter()
+            .all(|request| !request.contains("must-not-leak")));
     }
 
     #[test]
@@ -404,7 +457,9 @@ mod tests {
         assert_eq!(balance.remaining, 8.5);
         let requests = requests.lock().unwrap();
         assert!(requests[0].starts_with("GET /api/user/balance "));
-        assert!(requests[0].to_ascii_lowercase().contains("authorization: bearer deepseek-model-key"));
+        assert!(requests[0]
+            .to_ascii_lowercase()
+            .contains("authorization: bearer deepseek-model-key"));
         assert!(!requests[0].contains("account-token-must-not-be-used"));
     }
 }

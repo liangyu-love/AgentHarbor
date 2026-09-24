@@ -76,7 +76,7 @@ export function ThreadsPage() {
 
   const threadsQuery = useQuery({
     queryKey: THREADS_KEY,
-    queryFn: () => api.listCodexThreads(),
+    queryFn: () => api.conversations.list("codex"),
     staleTime: 30_000,
   });
 
@@ -182,7 +182,7 @@ export function ThreadsPage() {
     const targetDir = await open({ directory: true, multiple: false });
     if (typeof targetDir !== "string") return;
     try {
-      const result = await api.exportCodexThreads(keys, targetDir, format);
+      const result = await api.conversations.export("codex", keys, targetDir, format);
       const payload = result.data;
       if (payload.exported === 0) {
         throw new Error(t("threads.nothingExported"));
