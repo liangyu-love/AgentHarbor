@@ -2,6 +2,7 @@ pub mod accounts;
 pub mod client_config;
 pub mod custom_instructions;
 pub mod hotspot;
+pub mod image;
 pub mod mcp;
 pub mod newapi;
 pub mod skills;

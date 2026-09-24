@@ -18,7 +18,7 @@
     "output": "最大输出 Token",
     "claudeCodeHint": "使用 Anthropic Messages 供应商；默认模型及 Opus、Sonnet、Haiku 别名统一指向所选模型。",
     "opencodeHint": "加入全部已启用供应商的兼容模型，保留现有供应商；可在 OpenCode 的 /models 中切换。",
-    "limitsHint": "优先填入模型元数据；未知时使用 128000 / 8192，可按供应商实际限制修改。其他缺少元数据的模型使用此默认值。",
+    "limitsHint": "优先填入模型元数据；未知时使用 1M / 8192，可按供应商实际限制修改。其他缺少元数据的模型使用此默认值。",
     "noProviders": "请先启用兼容协议的供应商",
     "localHint": "请求经过 AgentHarbor 本地路由并记录中转 Token 用量。请保持 AgentHarbor 运行，重新打开客户端会话后生效。项目设置或启动参数可能覆盖全局配置。",
     "previewTitle": "将写入的字段（凭据已隐藏）",
@@ -62,6 +62,14 @@
     "accountlessApplied": "无账号登录模式已更新",
     "addProvider": "添加中转模型",
     "allProviders": "全部",
+    "groupCount": "{{count}} 个分组",
+    "groupMembers": "同站点分组",
+    "renameGroup": "设置别名",
+    "groupAliasPrompt": "请输入这个中转站的别名",
+    "groupAliasTitle": "设置中转站别名",
+    "groupAliasDescription": "同一站点下的多个模型分组会共用这个名称。",
+    "groupAliasPlaceholder": "例如：我的 GPT 中转",
+    "groupAliasSave": "保存别名",
     "importExport": "导入 / 导出",
     "importProviders": "导入中转",
     "exportProviders": "导出中转",
@@ -263,6 +271,29 @@
   },
   "app": {
     "name": "AgentHarbor"
+  },
+  "image": {
+    "title": "生图工作台",
+    "errors": {
+      "model": "请输入有效的生图模型 ID。",
+      "prompt": "请输入提示词，长度不能超过 20000 字。",
+      "size": "不支持的图片尺寸。",
+      "quality": "不支持的图片质量。",
+      "count": "一次最多生成 4 张图片。",
+      "input": "无法读取输入图片。",
+      "inputTooLarge": "输入图片过大。",
+      "config": "请填写站点地址和 API Key。",
+      "provider": "所选中转不存在。",
+      "apiKey": "所选中转没有 API Key。",
+      "storage": "无法读取本地中转配置。",
+      "network": "生图请求失败，请检查网络、中转地址和密钥。",
+      "auth": "生图鉴权失败，请检查密钥。",
+      "notFound": "生图接口不存在，请检查站点地址或模型协议。",
+      "rateLimit": "生图请求过于频繁，请稍后重试。",
+      "server": "生图服务返回错误。",
+      "response": "生图服务返回了无法识别的数据。",
+      "responseTooLarge": "生图响应过大。"
+    }
   },
   "accounts": {
     "title": "账号与用量",

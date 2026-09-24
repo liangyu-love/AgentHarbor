@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -21,6 +21,8 @@ import {
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { ProviderDialog } from "@/components/newapi/provider-dialog";
 import { ProviderTestDialog } from "@/components/newapi/provider-test-dialog";
 import { ClientConfigs } from "@/components/newapi/client-configs";
@@ -72,6 +74,26 @@ function StatusDot({ provider }: { provider: NewApiProvider }) {
   );
 }
 
+type RelayGroup = {
+  key: string;
+  url: string;
+  providers: NewApiProvider[];
+};
+
+function relayGroupKey(baseUrl: string) {
+  try {
+    const url = new URL(baseUrl);
+    url.hash = "";
+    url.search = "";
+    url.hostname = url.hostname.toLowerCase();
+    if ((url.protocol === "https:" && url.port === "443") || (url.protocol === "http:" && url.port === "80")) url.port = "";
+    url.pathname = url.pathname.replace(/\/+$/, "") || "/";
+    return url.toString();
+  } catch {
+    return baseUrl.trim().replace(/\/+$/, "").toLowerCase();
+  }
+}
+
 export function NewApiPage() {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
@@ -83,13 +105,33 @@ export function NewApiPage() {
   const [testDialog, setTestDialog] = useState<NewApiProvider | null>(null);
   const [removing, setRemoving] = useState<NewApiProvider | null>(null);
   const [appliedNote, setAppliedNote] = useState<NewApiStateChange["applied"]>(null);
+  const [groupAliases, setGroupAliases] = useState<Record<string, string>>(() => {
+    try {
+      const saved = localStorage.getItem("newapi-relay-group-aliases");
+      return saved ? JSON.parse(saved) as Record<string, string> : {};
+    } catch {
+      return {};
+    }
+  });
+  const [aliasGroup, setAliasGroup] = useState<RelayGroup | null>(null);
+  const [aliasDraft, setAliasDraft] = useState("");
 
   const providers = state.data?.providers ?? [];
   const router = state.data?.router;
   const routingEnabled = !!router?.enabled;
   const activeId = state.data?.activeProviderId ?? null;
   const proxyRunning = !!state.data?.proxyRunning;
-  const shown = filter === "all" ? providers : providers.filter(provider => provider.id === filter);
+  const groups = useMemo<RelayGroup[]>(() => {
+    const grouped = new Map<string, RelayGroup>();
+    for (const provider of providers) {
+      const key = relayGroupKey(provider.baseUrl);
+      const existing = grouped.get(key);
+      if (existing) existing.providers.push(provider);
+      else grouped.set(key, { key, url: provider.baseUrl, providers: [provider] });
+    }
+    return [...grouped.values()].sort((a, b) => a.key.localeCompare(b.key));
+  }, [providers]);
+  const shown = filter === "all" ? groups : groups.filter(group => group.key === filter);
 
   const replaceState = (next: NewApiState) => queryClient.setQueryData(STATE_KEY, next);
   const applyChange = (change: NewApiStateChange) => {
@@ -99,6 +141,20 @@ export function NewApiPage() {
   const patchProvider = (provider: NewApiProvider) => {
     const current = queryClient.getQueryData<NewApiState>(STATE_KEY);
     if (current) replaceState({ ...current, providers: current.providers.map(item => (item.id === provider.id ? provider : item)) });
+  };
+  const renameGroup = (group: RelayGroup) => {
+    const current = groupAliases[group.key] ?? hostOf(group.providers[0]);
+    setAliasGroup(group);
+    setAliasDraft(current);
+  };
+  const saveGroupAlias = () => {
+    if (!aliasGroup) return;
+    const next = aliasDraft.trim();
+    if (!next) return;
+    const updated = { ...groupAliases, [aliasGroup.key]: next };
+    setGroupAliases(updated);
+    localStorage.setItem("newapi-relay-group-aliases", JSON.stringify(updated));
+    setAliasGroup(null);
   };
   const run = async (key: string, action: () => Promise<void>, failureTitle: string) => {
     if (busy) return;
@@ -301,7 +357,7 @@ export function NewApiPage() {
             {t("newapi.providersSection")}
           </h2>
           <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium tabular-nums text-muted-foreground">
-            {providers.length}
+            {groups.length}
           </span>
           <div className="ml-auto flex items-center gap-2">
             <RainbowButton className="h-9 rounded-lg px-3.5 dark:text-black" onClick={() => setDialog({ open: true, provider: null })} disabled={lock("open-dialog")}>
@@ -332,10 +388,11 @@ export function NewApiPage() {
           <button type="button" onClick={() => setFilter("all")} className={chipClass(filter === "all")}>
             {t("newapi.allProviders")}
           </button>
-          {providers.map(provider => (
-            <button key={provider.id} type="button" onClick={() => setFilter(provider.id)} className={chipClass(filter === provider.id)}>
-              <StatusDot provider={provider} />
-              {provider.name}
+          {groups.map(group => (
+            <button key={group.key} type="button" onClick={() => setFilter(group.key)} className={chipClass(filter === group.key)}>
+              <span className="h-2 w-2 shrink-0 rounded-full bg-primary/70" />
+              {groupAliases[group.key] ?? hostOf(group.providers[0])}
+              <span className="text-[10px] text-muted-foreground">{group.providers.length}</span>
             </button>
           ))}
         </div>
@@ -374,15 +431,16 @@ export function NewApiPage() {
           </div>
         ) : (
           <div className="grid gap-4 sm:grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
-            {shown.map(provider => {
-              const active = provider.id === activeId && routingEnabled;
-              const selected = filter === provider.id;
+            {shown.map(group => {
+              const provider = group.providers.find(item => item.id === activeId) ?? group.providers[0];
+              const active = group.providers.some(item => item.id === activeId) && routingEnabled;
+              const selected = filter === group.key;
               const dsPeak = hostOf(provider) === "api.deepseek.com" ? deepSeekPeakNow() : null;
               const value = balanceValue(provider);
               const valuePositive = !!provider.balance && provider.balance.remaining > 0;
               return (
                 <AuroraCard
-                  key={provider.id}
+                  key={group.key}
                   color={providerColor(provider.id)}
                   shine={active || selected}
                   shineColor={active ? "#f59e0b" : ["#60a5fa", "#a78bfa", "#60a5fa"]}
@@ -393,7 +451,7 @@ export function NewApiPage() {
                   )}
                   onClick={e => {
                     if ((e.target as HTMLElement).closest("button, [role=switch], input, a")) return;
-                    setFilter(selected ? "all" : provider.id);
+                    setFilter(selected ? "all" : group.key);
                   }}
                 >
                   <div className="flex flex-1 flex-col p-3.5">
@@ -401,7 +459,8 @@ export function NewApiPage() {
                     <div className="flex items-center justify-between gap-2.5">
                       <div className="flex min-w-0 items-center gap-2">
                         <StatusDot provider={provider} />
-                        <h3 className="truncate text-[15px] font-semibold tracking-tight">{provider.name}</h3>
+                        <h3 className="truncate text-[15px] font-semibold tracking-tight">{groupAliases[group.key] ?? hostOf(provider)}</h3>
+                        {group.providers.length > 1 && <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">{t("newapi.groupCount", { count: group.providers.length })}</span>}
                         <span className="shrink-0 rounded bg-black/[0.04] px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground dark:bg-white/[0.06]">
                           {hostOf(provider)}
                         </span>
@@ -503,6 +562,25 @@ export function NewApiPage() {
                       </div>
                     </div>
 
+                    {group.providers.length > 1 && (
+                      <div className="mt-2.5 space-y-1.5 rounded-xl bg-black/[0.025] p-2 ring-1 ring-border/50 dark:bg-white/[0.03]">
+                        <div className="flex items-center justify-between gap-2 px-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                          <span>{t("newapi.groupMembers")}</span>
+                          <button type="button" className="rounded px-1.5 py-0.5 text-primary hover:bg-primary/10" onClick={() => renameGroup(group)}>{t("newapi.renameGroup")}</button>
+                        </div>
+                        {group.providers.map(item => (
+                          <div key={item.id} className="flex items-center gap-2 rounded-lg px-1.5 py-1.5 text-xs hover:bg-muted/60">
+                            <StatusDot provider={item} />
+                            <span className="min-w-0 flex-1 truncate font-medium" title={item.name}>{item.name}</span>
+                            <span className="max-w-[9rem] truncate font-mono text-[10px] text-muted-foreground" title={item.model}>{item.model || t("newapi.noModel")}</span>
+                            <Switch checked={item.enabled} disabled={lock(`enable:${item.id}`)} onCheckedChange={value => void run(`enable:${item.id}`, async () => applyChange(await api.providers.setEnabled(item.id, value)), t("newapi.enableFailed"))} />
+                            <button type="button" className={cardButton} title={t("newapi.edit")} aria-label={t("newapi.edit")} onClick={() => setDialog({ open: true, provider: item })}><SquarePen className="h-3 w-3" /></button>
+                            <button type="button" className={cn(cardButton, "hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400")} title={t("newapi.remove")} aria-label={t("newapi.remove")} onClick={() => setRemoving(item)}><Trash2 className="h-3 w-3" /></button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
                     {/* Footer: Status / Hint & Action Buttons */}
                     <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-border/40 pt-2">
                       <div className="flex min-w-0 items-center gap-1.5">
@@ -565,6 +643,15 @@ export function NewApiPage() {
                         <button
                           type="button"
                           className={cardButton}
+                          title={t("newapi.renameGroup")}
+                          aria-label={t("newapi.renameGroup")}
+                          onClick={() => renameGroup(group)}
+                        >
+                          <SquarePen className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          className={cardButton}
                           title={t("newapi.test")}
                           aria-label={t("newapi.test")}
                           disabled={lock(`test:${provider.id}`) || !provider.hasApiKey}
@@ -608,6 +695,20 @@ export function NewApiPage() {
         onOpenChange={open => setDialog(current => ({ ...current, open }))}
         onSaved={applyChange}
       />
+
+      <Dialog open={aliasGroup !== null} onOpenChange={open => !open && setAliasGroup(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("newapi.groupAliasTitle")}</DialogTitle>
+            <DialogDescription>{t("newapi.groupAliasDescription")}</DialogDescription>
+          </DialogHeader>
+          <Input autoFocus value={aliasDraft} placeholder={t("newapi.groupAliasPlaceholder")} onChange={event => setAliasDraft(event.target.value)} onKeyDown={event => { if (event.key === "Enter") saveGroupAlias(); }} />
+          <DialogFooter>
+            <Button type="button" variant="ghost" onClick={() => setAliasGroup(null)}>{t("common.cancel")}</Button>
+            <Button type="button" onClick={saveGroupAlias} disabled={!aliasDraft.trim()}>{t("newapi.groupAliasSave")}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <ProviderTestDialog
         open={testDialog !== null}

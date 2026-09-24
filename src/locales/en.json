@@ -18,7 +18,7 @@
     "output": "Max output tokens",
     "claudeCodeHint": "Uses an Anthropic Messages provider. The default model and Opus, Sonnet, and Haiku aliases all point to the selected model.",
     "opencodeHint": "Adds compatible models from all enabled providers while retaining existing providers. Switch with /models in OpenCode.",
-    "limitsHint": "Model metadata is preferred; unknown limits start at 128000 / 8192. Adjust to provider limits. Other models with missing metadata use these defaults.",
+    "limitsHint": "Model metadata is preferred; unknown limits start at 1M / 8192. Adjust to provider limits. Other models with missing metadata use these defaults.",
     "noProviders": "Enable a provider with a compatible protocol first.",
     "localHint": "Requests use AgentHarbor's local router and record relay token usage. Keep AgentHarbor running and reopen client sessions to apply changes. Project settings or launch arguments can override global settings.",
     "previewTitle": "Managed fields (credentials hidden)",
@@ -62,6 +62,14 @@
     "accountlessApplied": "Accountless login mode updated",
     "addProvider": "Add relay",
     "allProviders": "All",
+    "groupCount": "{{count}} groups",
+    "groupMembers": "Site groups",
+    "renameGroup": "Set alias",
+    "groupAliasPrompt": "Enter an alias for this relay site",
+    "groupAliasTitle": "Set relay site alias",
+    "groupAliasDescription": "All model groups under this site share the alias.",
+    "groupAliasPlaceholder": "e.g. My GPT relay",
+    "groupAliasSave": "Save alias",
     "importExport": "Import / export",
     "importProviders": "Import relays",
     "exportProviders": "Export relays",
@@ -263,6 +271,29 @@
   },
   "app": {
     "name": "AgentHarbor"
+  },
+  "image": {
+    "title": "Image Workbench",
+    "errors": {
+      "model": "Enter a valid image model ID.",
+      "prompt": "Enter a prompt no longer than 20000 characters.",
+      "size": "Unsupported image size.",
+      "quality": "Unsupported image quality.",
+      "count": "Generate at most 4 images at a time.",
+      "input": "Could not read the input image.",
+      "inputTooLarge": "The input image is too large.",
+      "config": "Enter a site URL and API key.",
+      "provider": "The selected relay no longer exists.",
+      "apiKey": "The selected relay has no API key.",
+      "storage": "Could not read local relay configuration.",
+      "network": "Image request failed. Check the network, relay URL, and key.",
+      "auth": "Image authentication failed. Check the key.",
+      "notFound": "The image endpoint was not found. Check the site URL or model protocol.",
+      "rateLimit": "Too many image requests. Try again later.",
+      "server": "The image service returned an error.",
+      "response": "The image service returned an unrecognized response.",
+      "responseTooLarge": "The image response is too large."
+    }
   },
   "accounts": {
     "title": "Accounts & Usage",

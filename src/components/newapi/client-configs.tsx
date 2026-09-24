@@ -105,7 +105,7 @@ function ConfigDialog({ client, providers, onClose, onApplied }: {
   const initial = compatible.find(p => p.id === client.providerId) ?? compatible[0];
   const defaults = (provider: NewApiProvider | undefined, model: string) => {
     const metadata = provider?.models.find(m => m.id === model);
-    const contextWindow = metadata?.contextWindow ?? provider?.contextWindow ?? 128000;
+    const contextWindow = metadata?.contextWindow ?? provider?.contextWindow ?? 1_048_576;
     return { contextWindow, maxOutputTokens: Math.min(metadata?.maxOutputTokens ?? 8192, contextWindow) };
   };
   const initialModel = initial?.id === client.providerId ? client.model ?? initial.model : initial?.model ?? "";

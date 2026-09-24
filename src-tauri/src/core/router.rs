@@ -24,7 +24,7 @@ const PREVIOUS_DIRECT_PROVIDER_KEY: &str = "codexharbor_newapi";
 const PREVIOUS_RELAY_MODEL_PREFIX: &str = "aimami_relay_";
 const MAX_PROVIDERS: usize = 64;
 const MAX_MODELS_PER_PROVIDER: usize = 512;
-const STORE_VERSION: u32 = 4;
+const STORE_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -370,7 +370,7 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
                 changed = true;
             }
         }
-        if store.version < 4 {
+        if store.version < STORE_VERSION {
             for provider in &mut store.providers {
                 for model in &mut provider.models {
                     *model = std::mem::take(model).with_local_defaults();

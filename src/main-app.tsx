@@ -50,6 +50,7 @@ const McpPage = lazy(() =>
 const OverviewPage = lazy(() => import("@/components/overview/overview-page").then((module) => ({ default: module.OverviewPage })));
 const AccountsPage = lazy(() => import("@/components/accounts/accounts-page").then((module) => ({ default: module.AccountsPage })));
 const NewApiPage = lazy(() => import("@/components/newapi/newapi-page").then((module) => ({ default: module.NewApiPage })));
+const ImageWorkbenchPage = lazy(() => import("@/components/image-workbench/image-workbench-page").then((module) => ({ default: module.ImageWorkbenchPage })));
 const ThreadsPage = lazy(() =>
   import("@/components/threads/threads-page").then((module) => ({ default: module.ThreadsPage })),
 );
@@ -128,6 +129,7 @@ function MainApp() {
       void Promise.allSettled([
         import("@/components/mcp/mcp-page"),
         import("@/components/accounts/accounts-page"),
+        import("@/components/image-workbench/image-workbench-page"),
         import("@/components/skills/skills-page"),
         import("@/components/custom-instructions/custom-instructions-page"),
         import("@/components/maintenance/maintenance-page"),
@@ -144,6 +146,8 @@ function MainApp() {
         return <AccountsPage refreshInterval={refreshInterval} />;
       case "newapi":
         return <NewApiPage />;
+      case "imageWorkbench":
+        return <ImageWorkbenchPage />;
       case "threads":
         return <ThreadsPage />;
       case "mcp":
@@ -184,6 +188,7 @@ function MainApp() {
     "overview",
     "accounts",
     "newapi",
+    "imageWorkbench",
     "threads",
     "customInstructions",
     "mcp",

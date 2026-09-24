@@ -30,6 +30,24 @@ import { isTauriRuntime } from "@/lib/tauri-runtime";
 import type { TargetId, ClientStatus, ClientConfigRequest, ClientConfigPreview, ClientConfigApplied } from "@/types/clients";
 import type { ModelProtocol, NewApiState, NewApiStateChange, NewApiImportResult, NewApiProvider, NewApiProviderInput, NewApiModel } from "@/types/newapi";
 
+export interface ImageGenerationRequest {
+  providerId: string | null;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  prompt: string;
+  size: string;
+  quality: string;
+  count: number;
+  imageData?: string | null;
+}
+
+export interface ImageGenerationResponse {
+  images: string[];
+  model: string;
+  revisedPrompts: string[];
+}
+
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (isTauriRuntime()) {
     const { invoke: tauriInvoke } = await import("@tauri-apps/api/core");
@@ -58,6 +76,11 @@ const providersApi = {
 const routingApi = {
   setEnabled: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_smart_routing", { enabled }),
   setAccountless: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_accountless", { enabled }),
+};
+
+const imageApi = {
+  generate: (request: ImageGenerationRequest) =>
+    invoke<ImageGenerationResponse>("generate_images", { request }),
 };
 
 const targetsApi = {
@@ -98,6 +121,7 @@ const accountsApi = {
 export const api = {
   providers: providersApi,
   routing: routingApi,
+  image: imageApi,
   targets: targetsApi,
   conversations: conversationsApi,
   accounts: accountsApi,

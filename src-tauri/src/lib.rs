@@ -136,6 +136,7 @@ pub fn run() {
             commands::newapi::set_newapi_accountless,
             commands::newapi::import_newapi_providers,
             commands::newapi::export_newapi_providers,
+            commands::image::generate_images,
             commands::system::load_snapshot,
             commands::system::is_updater_configured,
             commands::mcp::load_mcp_servers,
