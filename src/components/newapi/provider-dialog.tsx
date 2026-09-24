@@ -9,12 +9,27 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
-import { supportsProtocol } from "@/lib/provider-models";
+import { inferProtocolFromModels, supportsProtocol } from "@/lib/provider-models";
 import type { ModelProtocol, NewApiProvider, NewApiStateChange, NewApiModel } from "@/types/newapi";
 import { ProviderModelEditor } from "@/components/newapi/provider-model-editor";
 
-const emptyDraft = { name: "", baseUrl: "", userId: "", accessToken: "", apiKey: "", protocol: "responses" as ModelProtocol, model: "", contextWindow: "", autoCompactLimit: "" };
-const fromProvider = (provider: NewApiProvider) => ({
+// A relay usually speaks OpenAI-compatible Chat Completions unless it says
+// otherwise, and the Codex-specific Responses protocol is the less common case.
+// Fetching models refines this from the capabilities the relay advertises.
+const DEFAULT_PROTOCOL: ModelProtocol = "chatCompletions";
+interface ProviderDraft {
+  name: string;
+  baseUrl: string;
+  userId: string;
+  accessToken: string;
+  apiKey: string;
+  protocol: ModelProtocol;
+  model: string;
+  contextWindow: string;
+  autoCompactLimit: string;
+}
+const emptyDraft: ProviderDraft = { name: "", baseUrl: "", userId: "", accessToken: "", apiKey: "", protocol: DEFAULT_PROTOCOL, model: "", contextWindow: "", autoCompactLimit: "" };
+const fromProvider = (provider: NewApiProvider): ProviderDraft => ({
   name: provider.name,
   baseUrl: provider.baseUrl,
   userId: provider.userId?.toString() ?? "",
@@ -88,7 +103,7 @@ interface ProviderDialogProps {
 
 export function ProviderDialog({ open, provider, onOpenChange, onSaved }: ProviderDialogProps) {
   const { t } = useTranslation();
-  const [draft, setDraft] = useState(emptyDraft);
+  const [draft, setDraft] = useState<ProviderDraft>(emptyDraft);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -195,20 +210,36 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
         const merged = fetched.map(model => {
           const existing = current.find(item => item.id === model.id);
           if (!existing) return model;
-          const manualMetadata = existing.metadataSource === "manual";
+          // A re-fetch must never discard something the user typed. A fully manual
+          // row keeps everything. A locally backfilled row keeps its alias only once
+          // it stops being just a copy of the id, so untouched rows still pick up a
+          // richer name from the relay.
+          const edited = existing.metadataSource === "manual";
+          const renamed = existing.displayName.trim() !== "" &&
+            existing.displayName.trim() !== existing.id;
+          const keptAlias = edited || renamed ? existing.displayName : model.displayName;
           return {
             ...model,
             included: existing.included,
-            displayName: manualMetadata ? existing.displayName : model.displayName,
-            contextWindow: manualMetadata ? existing.contextWindow : model.contextWindow,
-            maxOutputTokens: manualMetadata ? existing.maxOutputTokens : model.maxOutputTokens,
-            metadataSource: manualMetadata ? "manual" as const : model.metadataSource,
+            displayName: keptAlias,
+            contextWindow: edited ? existing.contextWindow : model.contextWindow,
+            maxOutputTokens: edited ? existing.maxOutputTokens : model.maxOutputTokens,
+            metadataSource: edited ? "manual" as const : model.metadataSource,
           };
         });
         merged.push(...current.filter(model => !fetchedIds.has(model.id)));
         setDraft(value => {
-          const defaultAvailable = merged.some(model => model.id === value.model && model.included && supportsProtocol(model, value.protocol));
-          return defaultAvailable ? value : { ...value, model: merged.find(model => model.included && supportsProtocol(model, value.protocol))?.id ?? "" };
+          // A new relay refines its protocol from what it advertises; an existing
+          // one keeps whatever the user chose, since its routing already works.
+          const protocol = provider ? value.protocol : inferProtocolFromModels(merged);
+          const defaultAvailable = merged.some(model => model.id === value.model && model.included && supportsProtocol(model, protocol));
+          return {
+            ...value,
+            protocol,
+            model: defaultAvailable
+              ? value.model
+              : merged.find(model => model.included && supportsProtocol(model, protocol))?.id ?? "",
+          };
         });
         return merged;
       });
@@ -293,6 +324,7 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
           <div className="border-t border-border/50 pt-4">
             <ProviderModelEditor
               models={models}
+              providerName={draft.name}
               protocol={draft.protocol}
               defaultModel={draft.model}
               disabled={saving || fetchingModels}

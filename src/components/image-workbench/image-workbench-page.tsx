@@ -78,29 +78,30 @@ const POETIC_CATEGORIES = [
 
 type SavedImageConfig = {
   baseUrl: string;
-  apiKey: string;
   model: string;
   size: string;
   quality: string;
+  legacyApiKey?: string;
 };
 
 function loadSavedConfig(): SavedImageConfig {
+  const defaults = { baseUrl: "", model: "gpt-image-2", size: "1024x1024", quality: "auto" };
   try {
     const saved = localStorage.getItem("image-workbench-config");
     if (saved) {
-      return {
-        baseUrl: "",
-        apiKey: "",
-        model: "gpt-image-2",
-        size: "1024x1024",
-        quality: "auto",
-        ...JSON.parse(saved) as Partial<SavedImageConfig>,
+      const parsed = JSON.parse(saved) as Partial<SavedImageConfig> & { apiKey?: string };
+      const config = {
+        baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl : defaults.baseUrl,
+        model: typeof parsed.model === "string" ? parsed.model : defaults.model,
+        size: typeof parsed.size === "string" ? parsed.size : defaults.size,
+        quality: typeof parsed.quality === "string" ? parsed.quality : defaults.quality,
       };
+      return { ...config, legacyApiKey: parsed.apiKey };
     }
   } catch {
-    // Ignore malformed storage
+    try { localStorage.removeItem("image-workbench-config"); } catch { /* unavailable storage */ }
   }
-  return { baseUrl: "", apiKey: "", model: "gpt-image-2", size: "1024x1024", quality: "auto" };
+  return defaults;
 }
 
 function fileToDataUrl(file: File) {
@@ -130,7 +131,8 @@ export function ImageWorkbenchPage() {
   const [providerId, setProviderId] = useState<string>("");
   const savedConfig = useMemo(loadSavedConfig, []);
   const [baseUrl, setBaseUrl] = useState(savedConfig.baseUrl);
-  const [apiKey, setApiKey] = useState(savedConfig.apiKey);
+  const [apiKey, setApiKey] = useState(savedConfig.legacyApiKey ?? "");
+  const [keyStored, setKeyStored] = useState(false);
   const [model, setModel] = useState(savedConfig.model);
   const [prompt, setPrompt] = useState("");
   const [size, setSize] = useState(savedConfig.size);
@@ -147,12 +149,51 @@ export function ImageWorkbenchPage() {
   const availableModels = selectedProvider?.models.filter(item => /image|dall|gpt-image/i.test(item.id)) ?? [];
 
   useEffect(() => {
+    // Scrub the legacy plaintext value before sending it to protected storage.
+    try {
+      localStorage.setItem("image-workbench-config", JSON.stringify({
+        baseUrl: savedConfig.baseUrl, model: savedConfig.model,
+        size: savedConfig.size, quality: savedConfig.quality,
+      }));
+    } catch {
+      try { localStorage.removeItem("image-workbench-config"); } catch { /* unavailable storage */ }
+    }
+    if (!savedConfig.legacyApiKey || !savedConfig.baseUrl) return;
+    void api.image.saveKey(savedConfig.baseUrl, savedConfig.legacyApiKey)
+      .then(() => {
+        setKeyStored(true);
+        setApiKey(current => current === savedConfig.legacyApiKey ? "" : current);
+      })
+      .catch(() => setError("image.errors.storage"));
+  }, [savedConfig]);
+
+  useEffect(() => {
+    if (!baseUrl.trim()) { setKeyStored(false); return; }
+    let active = true;
+    void api.image.keyStatus(baseUrl).then(stored => {
+      if (active) setKeyStored(stored);
+    }).catch(() => {
+      if (active) setKeyStored(false);
+    });
+    return () => { active = false; };
+  }, [baseUrl]);
+
+  useEffect(() => {
     if (providerId) return;
     localStorage.setItem(
       "image-workbench-config",
-      JSON.stringify({ baseUrl, apiKey, model, size, quality } satisfies SavedImageConfig),
+      JSON.stringify({ baseUrl, model, size, quality } satisfies SavedImageConfig),
     );
-  }, [apiKey, baseUrl, model, providerId, quality, size]);
+  }, [baseUrl, model, providerId, quality, size]);
+
+  const saveKey = () => {
+    const pending = apiKey.trim();
+    if (!baseUrl.trim() || !pending) return;
+    void api.image.saveKey(baseUrl, pending).then(() => {
+      setKeyStored(true);
+      setApiKey(current => current === pending ? "" : current);
+    }).catch(() => setError("image.errors.storage"));
+  };
 
   useEffect(() => {
     if (providerId || baseUrl || apiKey || imageProviders.length === 0) return;
@@ -193,8 +234,7 @@ export function ImageWorkbenchPage() {
     setBusy(true);
     setError(null);
     try {
-      setResult(
-        await api.image.generate({
+      const generated = await api.image.generate({
           providerId: providerId || null,
           baseUrl,
           apiKey,
@@ -204,8 +244,12 @@ export function ImageWorkbenchPage() {
           quality,
           count,
           imageData,
-        }),
-      );
+        });
+      setResult(generated);
+      if (!providerId && apiKey.trim()) {
+        setKeyStored(true);
+        setApiKey("");
+      }
     } catch (cause) {
       const key =
         typeof cause === "string" ? cause : cause instanceof Error ? cause.message : "image.errors.network";
@@ -310,7 +354,8 @@ export function ImageWorkbenchPage() {
                       type="password"
                       value={apiKey}
                       onChange={event => setApiKey(event.target.value)}
-                      placeholder="sk-…"
+                      onBlur={saveKey}
+                      placeholder={keyStored ? "已保存密钥；留空则继续使用" : "sk-…"}
                       className="bg-background/90 font-mono"
                     />
                   </div>

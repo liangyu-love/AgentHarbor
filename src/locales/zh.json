@@ -40,6 +40,13 @@
       "changed": "预览后配置或供应商发生变化，请重新预览再应用。",
       "conflict": "客户端已修改 AgentHarbor 管理的字段。为保留这些修改，已暂停写入和恢复；请先核对配置文件。",
       "notConfigured": "该客户端尚未应用 AgentHarbor 配置。"
+    },
+    "noEligibleProviders": "暂无可用中转:",
+    "excluded": {
+      "protocol": "{{count}} 个协议不匹配本客户端",
+      "disabled": "{{count}} 个未启用",
+      "noApiKey": "{{count}} 个缺少 API Key",
+      "noModel": "{{count}} 个未选默认模型"
     }
   },
   "newapi": {
@@ -155,8 +162,8 @@
     "emptyModelLibrary": "拉取站点模型，或手动加入模型 ID。",
     "includeModel": "纳入清单",
     "includeModelAria": "将 {{model}} 纳入客户端模型清单",
-    "modelId": "模型 ID / 默认",
-    "menuDisplayName": "菜单显示名",
+    "modelId": "模型 ID",
+    "menuDisplayName": "别名（编码器菜单显示）",
     "menuDisplayNameFor": "{{model}} 的菜单显示名",
     "contextWindowShort": "上下文窗口",
     "contextFor": "{{model}} 的上下文窗口",
@@ -229,7 +236,10 @@
     "dialogSubtitle": "凭据只保存在本机：Windows 使用 DPAPI，macOS 和 Linux 使用仅当前用户可读的本地文件。",
     "expandAll": "展开同中转配置",
     "collapseStack": "收起层叠堆叠",
-    "stackDeckTip": "切换同中转下的不同模型配置"
+    "stackDeckTip": "切换同中转下的不同模型配置",
+    "setDefaultModel": "把 {{model}} 设为默认模型",
+    "driftedBadge": "路由已被覆盖",
+    "configDriftedHint": "检测到 Codex 的 config.toml 已被其他程序改写，当前注入未生效——Codex 仍在用之前的配置。请关闭其他管理同一文件的工具后，重新开关一次智能路由以恢复注入。"
   },
   "avatar": {
     "title": "应用头像",
@@ -285,10 +295,10 @@
       "count": "一次最多生成 4 张图片。",
       "input": "无法读取输入图片。",
       "inputTooLarge": "输入图片过大。",
-      "config": "请填写站点地址和 API Key。",
+      "config": "请填写站点地址。",
       "provider": "所选中转不存在。",
-      "apiKey": "所选中转没有 API Key。",
-      "storage": "无法读取本地中转配置。",
+      "apiKey": "请输入 API Key，或先为该站点保存密钥。",
+      "storage": "无法保存或读取受保护的生图密钥。",
       "network": "生图请求失败，请检查网络、中转地址和密钥。",
       "auth": "生图鉴权失败，请检查密钥。",
       "notFound": "生图接口不存在，请检查站点地址或模型协议。",

@@ -81,6 +81,8 @@ const routingApi = {
 const imageApi = {
   generate: (request: ImageGenerationRequest) =>
     invoke<ImageGenerationResponse>("generate_images", { request }),
+  keyStatus: (baseUrl: string) => invoke<boolean>("image_key_status", { baseUrl }),
+  saveKey: (baseUrl: string, apiKey: string) => invoke<void>("save_image_key", { baseUrl, apiKey }),
 };
 
 const targetsApi = {

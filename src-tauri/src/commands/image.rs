@@ -1,15 +1,54 @@
-use crate::core::{newapi, repository::Repository, router};
+use crate::core::{newapi, repository::Repository, router, secret_file};
 use crate::platform::paths::CodexPaths;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use reqwest::blocking::multipart;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::Mutex;
+use std::{
+    io::Read,
+    net::{IpAddr, ToSocketAddrs},
+    sync::Mutex,
+    time::Duration,
+};
 use tauri::State;
 
 const MAX_PROMPT_CHARS: usize = 20_000;
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+const MAX_RESPONSE_BYTES: usize = 120 * 1024 * 1024;
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedImageKey {
+    base_url: String,
+    api_key: String,
+}
+
+fn key_path(paths: &CodexPaths) -> std::path::PathBuf {
+    paths.app_data_dir.join("image-workbench-key.dat")
+}
+
+fn read_key(paths: &CodexPaths, base_url: &str) -> Result<Option<String>, String> {
+    let Some(bytes) = secret_file::read(&key_path(paths)).map_err(|_| "image.errors.storage")?
+    else {
+        return Ok(None);
+    };
+    let saved: SavedImageKey =
+        serde_json::from_slice(&bytes).map_err(|_| "image.errors.storage")?;
+    let base_url = newapi::base_url(base_url).map_err(|_| "image.errors.config")?;
+    Ok((saved.base_url == base_url.as_str()).then_some(saved.api_key))
+}
+
+fn write_key(paths: &CodexPaths, base_url: &str, api_key: &str) -> Result<(), String> {
+    let base_url = newapi::base_url(base_url).map_err(|_| "image.errors.config")?;
+    newapi::auth_header(api_key).map_err(|_| "image.errors.apiKey")?;
+    let saved = SavedImageKey {
+        base_url: base_url.to_string(),
+        api_key: api_key.trim().to_owned(),
+    };
+    let bytes = serde_json::to_vec(&saved).map_err(|_| "image.errors.storage")?;
+    secret_file::write(&key_path(paths), &bytes).map_err(|_| "image.errors.storage".to_owned())
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -114,14 +153,21 @@ fn decode_image_data(value: &str) -> Result<(Vec<u8>, String, String), String> {
     Ok((bytes, mime, extension.into()))
 }
 
-fn response_json(response: reqwest::blocking::Response) -> Result<Value, String> {
-    let status = response.status();
-    let body = response
-        .bytes()
-        .map_err(|_| "image.errors.network".to_owned())?;
-    if body.len() > 25 * 1024 * 1024 {
+fn read_limited(reader: impl Read, limit: usize) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    reader
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "image.errors.network")?;
+    if bytes.len() > limit {
         return Err("image.errors.responseTooLarge".into());
     }
+    Ok(bytes)
+}
+
+fn response_json(response: reqwest::blocking::Response) -> Result<Value, String> {
+    let status = response.status();
+    let body = read_limited(response, MAX_RESPONSE_BYTES)?;
     if !status.is_success() {
         return Err(match status.as_u16() {
             401 | 403 => "image.errors.auth",
@@ -134,15 +180,93 @@ fn response_json(response: reqwest::blocking::Response) -> Result<Value, String>
     serde_json::from_slice(&body).map_err(|_| "image.errors.response".into())
 }
 
-fn image_to_data_url(client: &reqwest::blocking::Client, value: &Value) -> Result<String, String> {
+fn public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let [a, b, c, _] = ip.octets();
+            !(a == 0
+                || a == 10
+                || a == 127
+                || a >= 224
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 169 && b == 254)
+                || (a == 172 && (16..=31).contains(&b))
+                || (a == 192 && (b == 168 || b == 0 || (b == 88 && c == 99)))
+                || (a == 198 && (b == 18 || b == 19 || (b == 51 && c == 100)))
+                || (a == 203 && b == 0 && c == 113))
+        }
+        IpAddr::V6(ip) => {
+            let segments = ip.segments();
+            (segments[0] & 0xe000) == 0x2000
+                && segments[0] != 0x2002
+                && !(segments[0] == 0x2001 && (segments[1] == 0 || segments[1] == 0x0db8))
+                && ip.to_ipv4_mapped().is_none()
+        }
+    }
+}
+
+fn download_client(url: &reqwest::Url) -> Result<reqwest::blocking::Client, String> {
+    let mut builder = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(8))
+        .redirect(reqwest::redirect::Policy::none());
+    let host = url.host_str().ok_or("image.errors.response")?;
+    let port = url.port_or_known_default().ok_or("image.errors.response")?;
+    if let Ok(ip) = host.trim_matches(&['[', ']'][..]).parse::<IpAddr>() {
+        if !public_ip(ip) {
+            return Err("image.errors.response".into());
+        }
+    } else {
+        let name = host.trim_end_matches('.').to_ascii_lowercase();
+        if !name.contains('.')
+            || [
+                ".localhost",
+                ".local",
+                ".internal",
+                ".test",
+                ".invalid",
+                ".example",
+                ".onion",
+            ]
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
+        {
+            return Err("image.errors.response".into());
+        }
+        let addresses: Vec<_> = (host, port)
+            .to_socket_addrs()
+            .map_err(|_| "image.errors.network")?
+            .collect();
+        if addresses.is_empty() || addresses.iter().any(|addr| !public_ip(addr.ip())) {
+            return Err("image.errors.response".into());
+        }
+        // Pin the validated DNS answer so the request cannot resolve to a local address later.
+        builder = builder.resolve_to_addrs(host, &addresses);
+    }
+    builder.build().map_err(|_| "image.errors.network".into())
+}
+
+fn image_to_data_url(value: &Value) -> Result<String, String> {
     if let Some(encoded) = value.get("b64_json").and_then(Value::as_str) {
+        if encoded.len() > MAX_IMAGE_BYTES * 4 / 3 + 8 {
+            return Err("image.errors.responseTooLarge".into());
+        }
         return Ok(format!("data:image/png;base64,{encoded}"));
     }
     let url = value
         .get("url")
         .and_then(Value::as_str)
-        .filter(|url| url.starts_with("https://") || url.starts_with("http://"))
         .ok_or("image.errors.response")?;
+    let url = reqwest::Url::parse(url).map_err(|_| "image.errors.response")?;
+    if !matches!(url.scheme(), "https" | "http")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
+        return Err("image.errors.response".into());
+    }
+    let client = download_client(&url)?;
     let response = client
         .get(url)
         .send()
@@ -160,12 +284,7 @@ fn image_to_data_url(client: &reqwest::blocking::Client, value: &Value) -> Resul
         .next()
         .unwrap_or("image/png")
         .to_owned();
-    let bytes = response
-        .bytes()
-        .map_err(|_| "image.errors.network".to_owned())?;
-    if bytes.len() > MAX_IMAGE_BYTES {
-        return Err("image.errors.responseTooLarge".into());
-    }
+    let bytes = read_limited(response, MAX_IMAGE_BYTES)?;
     Ok(format!("data:{mime};base64,{}", STANDARD.encode(bytes)))
 }
 
@@ -194,13 +313,19 @@ fn generate(
             provider.network_mode().to_owned(),
         )
     } else {
-        if request.base_url.trim().is_empty() || request.api_key.trim().is_empty() {
+        if request.base_url.trim().is_empty() {
             return Err("image.errors.config".into());
         }
+        let api_key = if request.api_key.trim().is_empty() {
+            read_key(paths, &request.base_url)?.ok_or("image.errors.apiKey")?
+        } else {
+            write_key(paths, &request.base_url, &request.api_key)?;
+            request.api_key.trim().to_owned()
+        };
         (
             newapi::Connection {
                 base_url: newapi::base_url(&request.base_url)?.to_string(),
-                api_key: request.api_key.trim().to_owned(),
+                api_key,
                 model: request.model.clone(),
                 ..Default::default()
             },
@@ -209,7 +334,7 @@ fn generate(
     };
     let proxy = newapi::proxy_from_settings(&paths.settings_path);
     let proxy = newapi::effective_proxy(&network_mode, &proxy);
-    let client = newapi::client(&proxy)?;
+    let client = newapi::client_with_timeout(&proxy, Duration::from_secs(300))?;
     let endpoint = newapi::endpoint(
         &connection,
         if request.image_data.is_some() {
@@ -266,10 +391,13 @@ fn generate(
         .get("data")
         .and_then(Value::as_array)
         .ok_or("image.errors.response")?;
+    if data.is_empty() || data.len() > request.count as usize {
+        return Err("image.errors.response".into());
+    }
     let mut images = Vec::with_capacity(data.len());
     let mut revised_prompts = Vec::with_capacity(data.len());
     for item in data {
-        images.push(image_to_data_url(&client, item)?);
+        images.push(image_to_data_url(item)?);
         revised_prompts.push(
             item.get("revised_prompt")
                 .and_then(Value::as_str)
@@ -296,4 +424,88 @@ pub async fn generate_images(
     tauri::async_runtime::spawn_blocking(move || generate(request, &paths))
         .await
         .map_err(|_| "image.errors.network".to_owned())?
+}
+
+#[tauri::command]
+pub fn image_key_status(
+    repo: State<'_, Mutex<Repository>>,
+    base_url: String,
+) -> Result<bool, String> {
+    if base_url.trim().is_empty() {
+        return Ok(false);
+    }
+    Ok(read_key(&paths(&repo)?, &base_url)?.is_some())
+}
+
+#[tauri::command]
+pub fn save_image_key(
+    repo: State<'_, Mutex<Repository>>,
+    base_url: String,
+    api_key: String,
+) -> Result<(), String> {
+    write_key(&paths(&repo)?, &base_url, &api_key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn image_key_is_bound_to_its_site() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().join("codex"));
+        write_key(&paths, "https://example.org/v1", "sk-test").unwrap();
+        assert_eq!(
+            read_key(&paths, "https://example.org/").unwrap().as_deref(),
+            Some("sk-test")
+        );
+        assert_eq!(
+            read_key(&paths, "https://other.example.org/").unwrap(),
+            None
+        );
+        let stored = std::fs::read(key_path(&paths)).unwrap();
+        assert!(!stored.is_empty());
+        #[cfg(windows)]
+        assert!(!stored
+            .windows(b"sk-test".len())
+            .any(|part| part == b"sk-test"));
+    }
+
+    #[test]
+    fn response_reader_rejects_oversize_without_reading_entire_stream() {
+        assert_eq!(
+            read_limited(&b"abc"[..], 2).unwrap_err(),
+            "image.errors.responseTooLarge"
+        );
+        assert_eq!(read_limited(&b"ab"[..], 2).unwrap(), b"ab");
+    }
+
+    #[test]
+    fn private_and_special_addresses_are_rejected() {
+        for address in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.0.1",
+            "100.64.0.1",
+            "[::1]",
+            "[fc00::1]",
+        ] {
+            let ip: IpAddr = address.trim_matches(&['[', ']'][..]).parse().unwrap();
+            assert!(!public_ip(ip), "{address}");
+        }
+        assert!(public_ip("8.8.8.8".parse().unwrap()));
+        for url in [
+            "http://127.0.0.1/image.png",
+            "http://192.168.1.4/image.png",
+            "https://localhost/image.png",
+        ] {
+            let item = serde_json::json!({"url": url});
+            assert_eq!(
+                image_to_data_url(&item).unwrap_err(),
+                "image.errors.response"
+            );
+        }
+    }
 }

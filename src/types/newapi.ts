@@ -15,7 +15,7 @@ export interface NewApiModel {
   maxOutputTokens: number | null;
   endpointTypes: string[];
   included: boolean;
-  metadataSource: "upstream" | "local" | "manual";
+  metadataSource: "upstream" | "local" | "catalog" | "manual";
 }
 export type ModelProtocol = "responses" | "chatCompletions" | "anthropicMessages";
 export interface NewApiProvider {
@@ -44,6 +44,9 @@ export interface NewApiRouterView {
   enabled: boolean;
   accountless: boolean;
   port: number;
+  // Another tool may rewrite Codex's config.toml and silently replace the router
+  // injection; this reports that the file no longer points at us.
+  configDrifted: boolean;
 }
 export interface NewApiState {
   providers: NewApiProvider[];

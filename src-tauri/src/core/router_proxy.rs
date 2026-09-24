@@ -1,5 +1,5 @@
 use super::models::ApiProxyConfigPayload;
-use super::{relay_usage, router};
+use super::{protocol, relay_usage, router};
 use crate::platform::paths::CodexPaths;
 use futures_util::StreamExt;
 use http_body_util::{combinators::BoxBody, BodyExt, Full, StreamBody};
@@ -209,9 +209,42 @@ enum Destination {
     Provider {
         provider: Box<router::Provider>,
         model_override: Option<String>,
+        /// Set when the caller spoke a different protocol than the provider
+        /// serves, so the body and the reply both need translating.
+        translation: Option<protocol::Translation>,
     },
     /// Official OpenAI models: forward using the local Codex credentials.
     Official,
+}
+
+/// The protocol a destination's request body is being rewritten into.
+fn translation_target(destination: &Destination) -> Option<router::ModelProtocol> {
+    match destination {
+        Destination::Provider {
+            translation: Some(translation),
+            ..
+        } => Some(translation.to),
+        _ => None,
+    }
+}
+
+/// Map a caller-facing endpoint onto the one the target protocol serves.
+///
+/// Only the protocol's core endpoints are rewritten; sub-paths such as
+/// `responses/{id}` keep their tail so follow-up calls still address the right
+/// resource.
+fn translate_endpoint(suffix: &str, target: router::ModelProtocol) -> String {
+    let replacement = match target {
+        router::ModelProtocol::Responses => "responses",
+        router::ModelProtocol::ChatCompletions => "chat/completions",
+        router::ModelProtocol::AnthropicMessages => "messages",
+    };
+    for source in ["responses", "chat/completions", "messages"] {
+        if let Some(tail) = suffix.strip_prefix(source) {
+            return format!("{replacement}{tail}");
+        }
+    }
+    suffix.to_owned()
 }
 
 fn request_protocol(segments: &[&str]) -> Option<router::ModelProtocol> {
@@ -243,21 +276,41 @@ fn provider_destination(
     else {
         return Err((StatusCode::NOT_FOUND, "unknown provider"));
     };
-    if required_protocol.is_some_and(|protocol| provider.protocol != protocol) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "provider protocol does not match request path",
-        ));
-    }
+    // A protocol mismatch is no longer fatal: the router translates Responses
+    // traffic outward, so any provider can back Codex. Only a pair with no
+    // translation is rejected, and identical protocols still pass through
+    // byte-for-byte.
+    let translation = match required_protocol {
+        Some(spoken) => match protocol::Translation::between(spoken, provider.protocol) {
+            Some(needed) if !needed.is_supported() => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "provider protocol cannot be translated for this request",
+                ))
+            }
+            other => other,
+        },
+        None => None,
+    };
     if !provider.is_routable() {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "provider is not enabled for routing",
         ));
     }
+    if model_override
+        .as_deref()
+        .is_some_and(|model| !provider.supports_model(model))
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "model does not support provider protocol",
+        ));
+    }
     Ok(Destination::Provider {
         provider: Box::new(provider),
         model_override,
+        translation,
     })
 }
 
@@ -389,10 +442,9 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                     None => router::effective_active(&store),
                 };
                 match provider {
-                    Some(provider) => Destination::Provider {
-                        provider: Box::new(provider.clone()),
-                        model_override: None,
-                    },
+                    Some(provider) => {
+                        provider_destination(&store, &provider.id, required_protocol, None)?
+                    }
                     None => {
                         return Err((
                             StatusCode::SERVICE_UNAVAILABLE,
@@ -411,12 +463,20 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         }
         _ => String::new(),
     };
+    // A translated request must reach the endpoint the provider's protocol
+    // actually serves: `responses` exists only on a Responses provider, so the
+    // path has to follow the protocol that the body was rewritten into.
+    let suffix = match translation_target(&destination) {
+        Some(protocol) => translate_endpoint(&suffix, protocol),
+        None => suffix,
+    };
 
     let relay_request = match (&destination, required_protocol) {
         (
             Destination::Provider {
                 provider,
                 model_override,
+                ..
             },
             Some(_),
         ) => Some(relay_usage::RelayUsageRequest::new(
@@ -527,22 +587,51 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         }
     };
 
+    // Provider-format messages for a translated turn, retained so the next
+    // follow-up can be rebuilt from the local history.
+    let mut translated_messages: Vec<Value> = Vec::new();
     let body = match (&destination, body) {
         (_, None) => None,
         (
             Destination::Provider {
                 model_override,
                 provider,
+                translation,
             },
             Some(bytes),
-        ) if model_override.is_some()
-            || required_protocol == Some(router::ModelProtocol::ChatCompletions) =>
-        {
-            Some(prepare_relay_body(
-                &bytes,
-                model_override.as_deref(),
-                provider.protocol,
-            )?)
+        ) => {
+            match translation {
+                // A translated request is rebuilt for the provider's protocol,
+                // with the slug prefix replaced by the provider's real model.
+                Some(translation) => {
+                    let mut value: Value = serde_json::from_slice(&bytes)
+                        .map_err(|_| (StatusCode::BAD_REQUEST, "request body is not JSON"))?;
+                    if let Some(model) = model_override.as_deref() {
+                        value["model"] = json!(model);
+                    }
+                    let rewritten = protocol::request_body(*translation, &value)
+                        .map_err(|_| (StatusCode::BAD_REQUEST, "cannot translate request"))?;
+                    translated_messages = protocol::request_messages(&rewritten);
+                    Some(Bytes::from(serde_json::to_vec(&rewritten).map_err(
+                        |_| {
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "cannot re-encode request",
+                            )
+                        },
+                    )?))
+                }
+                None if model_override.is_some()
+                    || provider.protocol == router::ModelProtocol::ChatCompletions =>
+                {
+                    Some(prepare_relay_body(
+                        &bytes,
+                        model_override.as_deref(),
+                        provider.protocol,
+                    )?)
+                }
+                None => Some(bytes),
+            }
         }
         (_, Some(bytes)) => Some(bytes),
     };
@@ -585,11 +674,141 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
     let mut response_headers = response.headers().clone();
     remove_hop_by_hop_headers(&mut response_headers);
     response_headers.remove(CONTENT_LENGTH);
+
+    // A translated stream is rebuilt as Responses events, so its length and any
+    // upstream content type no longer describe the bytes being sent.
+    let translation = match &destination {
+        Destination::Provider { translation, .. } => *translation,
+        Destination::Official => None,
+    };
     let mut builder = Response::builder().status(response.status());
     for (name, value) in &response_headers {
+        if translation.is_some() && response_status.is_success() && name == CONTENT_TYPE {
+            continue;
+        }
         builder = builder.header(name, value);
     }
-    let response_body = if let Some(request) = relay_request {
+    if translation.is_some() && response_status.is_success() {
+        // A translated stream is rebuilt as Responses events; a translated
+        // single body is JSON again, just in the Responses shape.
+        builder = builder.header(
+            CONTENT_TYPE,
+            if is_event_stream {
+                "text/event-stream"
+            } else {
+                "application/json"
+            },
+        );
+    }
+
+    let response_body = if let Some(translation) =
+        translation.filter(|_| is_event_stream && response_status.is_success())
+    {
+        // Translate frame by frame; the translator emits a terminal event if the
+        // upstream stops without one, so Codex never waits forever.
+        let mut observer =
+            relay_request.map(|request| request.observe(response_status.as_u16(), true));
+        // Shared so the same translator can still emit its closing events after
+        // the body stream itself has been moved into the response.
+        // The turn is recorded once it completes, so the next follow-up that
+        // quotes this response id can be rebuilt from it.
+        let recorded = translated_messages.clone();
+        let translator = Arc::new(Mutex::new(protocol::stream_translator(translation)));
+        let body_translator = Arc::clone(&translator);
+        let stream = response.bytes_stream().flat_map(move |chunk| {
+            let mut frames: Vec<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>> =
+                Vec::new();
+            match chunk {
+                Ok(bytes) => {
+                    if let Some(observer) = observer.as_mut() {
+                        observer.observe(&bytes);
+                    }
+                    if let Ok(mut translator) = body_translator.lock() {
+                        for event in translator.push(&bytes) {
+                            frames.push(Ok(Frame::data(Bytes::from(event))));
+                        }
+                    }
+                }
+                Err(error) => frames.push(Err(
+                    Box::new(error) as Box<dyn std::error::Error + Send + Sync>
+                )),
+            }
+            futures_util::stream::iter(frames)
+        });
+        // The closing events are emitted once, after the upstream stream ends.
+        let tail = futures_util::stream::once(async move {
+            let events = match translator.lock() {
+                Ok(mut translator) => {
+                    let events = translator.finish();
+                    protocol::history::remember(
+                        translator.response_id(),
+                        recorded,
+                        translator.completed_tool_calls(),
+                    );
+                    events
+                }
+                Err(_) => Vec::new(),
+            };
+            futures_util::stream::iter(
+                events
+                    .into_iter()
+                    .map(|event| Ok(Frame::data(Bytes::from(event)))),
+            )
+        })
+        .flatten();
+        let stream = stream.chain(tail);
+        BodyExt::boxed(StreamBody::new(stream))
+    } else if let Some(translation) = translation.filter(|_| response_status.is_success()) {
+        let bytes = match response.bytes().await {
+            Ok(bytes) => bytes,
+            Err(_) => return Err((StatusCode::BAD_GATEWAY, "cannot read provider response")),
+        };
+        if let Some(request) = relay_request {
+            request
+                .observe(response_status.as_u16(), false)
+                .observe(&bytes);
+        }
+        let value: Value = serde_json::from_slice(&bytes)
+            .map_err(|_| (StatusCode::BAD_GATEWAY, "invalid provider response"))?;
+        let converted = if protocol::is_responses_body(&value) {
+            value
+        } else {
+            protocol::response_body(translation, &value).map_err(|_| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    "cannot translate provider response",
+                )
+            })?
+        };
+        let calls = converted
+            .get("output")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|item| {
+                        item.get("type").and_then(Value::as_str) == Some("function_call")
+                    })
+                    .map(|item| {
+                        json!({
+                            "id": item.get("call_id").cloned().unwrap_or(json!("")),
+                            "type": "function",
+                            "function": {
+                                "name": item.get("name").cloned().unwrap_or(json!("")),
+                                "arguments": item.get("arguments").cloned().unwrap_or(json!("{}")),
+                            },
+                        })
+                    })
+                    .collect::<Vec<Value>>()
+            })
+            .unwrap_or_default();
+        if let Some(id) = converted.get("id").and_then(Value::as_str) {
+            protocol::history::remember(id, translated_messages, calls);
+        }
+        BodyExt::boxed(
+            Full::new(Bytes::from(converted.to_string())).map_err(|never| match never {}),
+        )
+    } else if let Some(request) = relay_request {
         let mut observer = request.observe(response_status.as_u16(), is_event_stream);
         let stream = response.bytes_stream().map(move |chunk| {
             if let Ok(bytes) = &chunk {
@@ -723,6 +942,45 @@ mod tests {
     }
 
     #[test]
+    fn fallback_provider_keeps_the_required_translation() {
+        let store = Store {
+            providers: vec![Provider {
+                id: "chat-only".into(),
+                api_key: "sk-test".into(),
+                model: "chat-model".into(),
+                enabled: true,
+                protocol: router::ModelProtocol::ChatCompletions,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let provider =
+            router::effective_active_for(&store, router::ModelProtocol::Responses).unwrap();
+        let destination = provider_destination(
+            &store,
+            &provider.id,
+            Some(router::ModelProtocol::Responses),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(
+            destination,
+            Destination::Provider {
+                translation: Some(protocol::Translation {
+                    from: router::ModelProtocol::Responses,
+                    to: router::ModelProtocol::ChatCompletions,
+                }),
+                ..
+            }
+        ));
+        let reverse = protocol::Translation {
+            from: router::ModelProtocol::ChatCompletions,
+            to: router::ModelProtocol::Responses,
+        };
+        assert!(!reverse.is_supported());
+    }
+
+    #[test]
     fn proxy_serves_the_codex_catalog_and_routes_prefixed_models() {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -754,7 +1012,11 @@ mod tests {
                     let streaming = request.contains("\"stream\":true");
                     let (content_type, body) = if streaming {
                         assert!(request.contains("\"include_usage\":true"));
-                        ("text/event-stream", "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":5,\"total_tokens\":25}}\n\ndata: [DONE]\n\n")
+                        ("text/event-stream", "data: {\"model\":\"chat-model\",\"choices\":[{\"delta\":{\"content\":\"hello stream\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":5,\"total_tokens\":25}}\n\ndata: [DONE]\n\n")
+                    } else if request.contains(" /v1/chat/completions ") {
+                        ("application/json", "{\"id\":\"chatcmpl-1\",\"model\":\"chat-model\",\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"hello from chat\"}}],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":5,\"total_tokens\":25}}")
+                    } else if request.contains(" /v1/messages ") {
+                        ("application/json", "{\"id\":\"msg_1\",\"model\":\"claude-mock\",\"content\":[{\"type\":\"text\",\"text\":\"hello from anthropic\"}],\"usage\":{\"input_tokens\":20,\"output_tokens\":5}}")
                     } else {
                         ("application/json", "{\"object\":\"list\",\"n\":1,\"usage\":{\"input_tokens\":20,\"output_tokens\":5,\"total_tokens\":25}}")
                     };
@@ -856,7 +1118,7 @@ mod tests {
                 .await
                 .unwrap();
             let entries = catalog.get("data").and_then(Value::as_array).unwrap();
-            assert_eq!(entries.len(), 2, "Codex catalog must merge official and Responses relay models");
+            assert_eq!(entries.len(), 4, "Codex catalog must merge official and all routable relay models");
             assert!(entries.iter().any(|entry| {
                 entry.get("id").and_then(Value::as_str) == Some("gpt-official-fixture")
             }));
@@ -864,6 +1126,8 @@ mod tests {
                 entry.get("id").and_then(Value::as_str)
                     == Some("agentharbor_fixture::mock-model")
             }));
+            assert!(entries.iter().any(|entry| entry["id"] == "chat_fixture::chat-model"));
+            assert!(entries.iter().any(|entry| entry["id"] == "anthropic_fixture::claude-mock"));
 
             // Codex-style POST with a prefixed model is routed and the prefix stripped.
             let response = client
@@ -875,6 +1139,34 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), 200);
             let _ = response.bytes().await.unwrap();
+
+            // Codex must receive Responses JSON even when the provider speaks
+            // Chat Completions or Anthropic Messages.
+            for (slug, answer) in [
+                ("chat_fixture::chat-model", "hello from chat"),
+                ("anthropic_fixture::claude-mock", "hello from anthropic"),
+            ] {
+                let response = client
+                    .post(format!("{base}/codex/v1/responses"))
+                    .header(AUTHORIZATION, "Bearer router-test-token")
+                    .json(&json!({"model": slug, "input": "hi", "stream": false}))
+                    .send().await.unwrap();
+                assert_eq!(response.status(), 200);
+                let response: Value = response.json().await.unwrap();
+                assert_eq!(response["object"], "response");
+                assert_eq!(response["output"][0]["content"][0]["text"], answer);
+            }
+            let response = client
+                .post(format!("{base}/codex/v1/responses"))
+                .header(AUTHORIZATION, "Bearer router-test-token")
+                .json(&json!({"model": "chat_fixture::chat-model", "input": "hi", "stream": true}))
+                .send().await.unwrap();
+            assert_eq!(response.status(), 200);
+            let stream = response.text().await.unwrap();
+            assert!(stream.contains("response.created"));
+            assert!(stream.contains("response.output_text.delta"));
+            assert!(stream.contains("hello stream"));
+            assert!(stream.contains("response.completed"));
 
             // An official (unprefixed) model without local credentials fails clearly.
             let response = client
@@ -978,7 +1270,7 @@ mod tests {
             let health = client.get(format!("{base}/agentharbor/health")).send().await.unwrap();
             assert_eq!(health.status(), 200);
             let usage = crate::core::relay_usage::load(&paths.app_data_dir).unwrap();
-            assert_eq!(usage.all_time.request_count, 3, "only inference requests are tracked");
+            assert_eq!(usage.all_time.request_count, 6, "only inference requests are tracked");
             assert!(usage
                 .by_provider
                 .iter()
@@ -1037,8 +1329,8 @@ mod tests {
             let body = response.text().await.unwrap();
             assert!(body.contains("data: [DONE]"), "SSE is forwarded unchanged");
             let usage = crate::core::relay_usage::load(&paths.app_data_dir).unwrap();
-            assert_eq!(usage.all_time.request_count, 5);
-            assert_eq!(usage.all_time.total_tokens, 125);
+            assert_eq!(usage.all_time.request_count, 8);
+            assert_eq!(usage.all_time.total_tokens, 200);
             manager.restore(TargetId::OpenCode).unwrap();
             routing_runtime::reconcile(&paths).await.unwrap();
             assert!(!is_running(), "the router stops only when all clients release it");

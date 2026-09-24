@@ -79,15 +79,23 @@ pub fn run() {
                 let paths = repo_state.lock().map(|r| r.paths().clone());
                 if let Ok(paths) = paths {
                     if let Ok(store) = core::router::load_store(&paths) {
-                        if store.router.enabled {
-                            if let Err(e) = core::router::ensure_routing_config(&paths, &store) {
-                                eprintln!("[AgentHarbor] router config repair failed: {e}");
-                            }
-                        }
                         tauri::async_runtime::spawn(async move {
                             let _guard = core::routing_runtime::mutation_guard().await;
-                            if let Err(e) = core::routing_runtime::reconcile(&paths).await {
-                                eprintln!("[AgentHarbor] router proxy startup failed: {e}");
+                            match core::routing_runtime::reconcile(&paths).await {
+                                Ok(()) if store.router.enabled => {
+                                    if let Err(e) =
+                                        core::router::ensure_routing_config(&paths, &store)
+                                    {
+                                        eprintln!("[AgentHarbor] router config repair failed: {e}");
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("[AgentHarbor] router proxy startup failed: {e}");
+                                    if store.router.enabled {
+                                        let _ = core::router::remove_routing_config(&paths, &store);
+                                    }
+                                }
+                                Ok(()) => {}
                             }
                         });
                     }
@@ -137,6 +145,8 @@ pub fn run() {
             commands::newapi::import_newapi_providers,
             commands::newapi::export_newapi_providers,
             commands::image::generate_images,
+            commands::image::image_key_status,
+            commands::image::save_image_key,
             commands::system::load_snapshot,
             commands::system::is_updater_configured,
             commands::mcp::load_mcp_servers,
@@ -196,6 +206,15 @@ pub fn run() {
 
     app.run(move |_app_handle, event| {
         if matches!(event, RunEvent::Exit) {
+            // The proxy lives in this process. Remove its Codex injection before
+            // exit so the next Codex launch can still use the official account.
+            if let Ok(store) = core::router::load_store(&shared_paths) {
+                if store.router.enabled {
+                    if let Err(error) = core::router::remove_routing_config(&shared_paths, &store) {
+                        eprintln!("[AgentHarbor] router config cleanup failed: {error}");
+                    }
+                }
+            }
             let _ = activation_watcher_guard_for_exit.borrow_mut().take();
             let _ = single_instance_guard_for_exit.borrow_mut().take();
         }

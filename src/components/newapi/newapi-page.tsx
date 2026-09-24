@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -121,6 +121,7 @@ export function NewApiPage() {
   const providers = state.data?.providers ?? [];
   const router = state.data?.router;
   const routingEnabled = !!router?.enabled;
+  const configDrifted = !!router?.configDrifted;
   const activeId = state.data?.activeProviderId ?? null;
   const proxyRunning = !!state.data?.proxyRunning;
   const groups = useMemo<RelayGroup[]>(() => {
@@ -133,6 +134,11 @@ export function NewApiPage() {
     }
     return [...grouped.values()].sort((a, b) => a.key.localeCompare(b.key));
   }, [providers]);
+  useEffect(() => {
+    if (state.isSuccess && filter !== "all" && !groups.some(group => group.key === filter)) {
+      setFilter("all");
+    }
+  }, [filter, groups, state.isSuccess]);
   const shown = filter === "all" ? groups : groups.filter(group => group.key === filter);
 
   const replaceState = (next: NewApiState) => queryClient.setQueryData(STATE_KEY, next);
@@ -299,7 +305,8 @@ export function NewApiPage() {
                     t("newapi.smartRouting")
                   )}
                 </h2>
-                {routingEnabled && <Badge className={softBadge("green")}>{t("newapi.enabledBadge")}</Badge>}
+                {routingEnabled && !configDrifted && <Badge className={softBadge("green")}>{t("newapi.enabledBadge")}</Badge>}
+                {configDrifted && <Badge className={softBadge("amber")}>{t("newapi.driftedBadge")}</Badge>}
               </div>
               <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{t("newapi.smartRoutingDesc")}</p>
             </div>
@@ -319,6 +326,11 @@ export function NewApiPage() {
           <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
             {t(routingEnabled ? "newapi.routingOnHint" : "newapi.routingOffHint")}
           </p>
+          {configDrifted && (
+            <p role="alert" className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/[0.07] px-3 py-2 text-[13px] leading-relaxed text-amber-700 dark:text-amber-300">
+              {t("newapi.configDriftedHint")}
+            </p>
+          )}
           {appliedNote && (
             <p className="mt-2 break-all font-mono text-[11px] text-muted-foreground/80">
               {appliedNote.path}
@@ -481,14 +493,10 @@ export function NewApiPage() {
                     shine={isGroupActive || selected}
                     shineColor={isGroupActive ? LIQUID_GOLD_SHINE : ["#60a5fa", "#a78bfa", "#60a5fa"]}
                     className={cn(
-                      "cursor-pointer transition-transform duration-200 ease-out motion-reduce:transition-none hover:-translate-y-0.5",
+                      "transition-transform duration-200 ease-out motion-reduce:transition-none hover:-translate-y-0.5",
                       selected && "rounded-2xl ring-2 ring-primary/40",
                       isGroupActive && "drop-shadow-[0_4px_22px_rgba(212,175,55,0.3)]",
                     )}
-                    onClick={e => {
-                      if ((e.target as HTMLElement).closest("button, [role=switch], input, a")) return;
-                      setFilter(selected ? "all" : group.key);
-                    }}
                   >
                     <div className="flex flex-1 flex-col p-3.5">
                       {/* Header: Title + Domain + Badges + Switch */}
@@ -898,7 +906,6 @@ export function NewApiPage() {
                   void run(`delete:${provider.id}`, async () => {
                     const change = await api.providers.delete(provider.id);
                     applyChange(change);
-                    if (filter === provider.id) setFilter("all");
                   }, t("newapi.deleteFailed"));
                 }
               }}

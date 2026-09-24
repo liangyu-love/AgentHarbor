@@ -40,6 +40,13 @@
       "changed": "Configuration or providers changed since preview. Preview again before applying.",
       "conflict": "The client changed fields managed by AgentHarbor. Writing and restoring are paused to preserve those edits; check the configuration file first.",
       "notConfigured": "AgentHarbor has not configured this client."
+    },
+    "noEligibleProviders": "No usable relay:",
+    "excluded": {
+      "protocol": "{{count}} with a protocol this client cannot use",
+      "disabled": "{{count}} disabled",
+      "noApiKey": "{{count}} missing an API key",
+      "noModel": "{{count}} without a default model"
     }
   },
   "newapi": {
@@ -155,8 +162,8 @@
     "emptyModelLibrary": "Fetch models from the site or add a model ID manually.",
     "includeModel": "Include",
     "includeModelAria": "Include {{model}} in client model catalogs",
-    "modelId": "Model ID / default",
-    "menuDisplayName": "Menu display name",
+    "modelId": "Model ID",
+    "menuDisplayName": "Alias (shown in the Codex menu)",
     "menuDisplayNameFor": "Menu display name for {{model}}",
     "contextWindowShort": "Context window",
     "contextFor": "Context window for {{model}}",
@@ -229,7 +236,10 @@
     "dialogSubtitle": "Credentials stay on this machine. Windows uses DPAPI; macOS and Linux use an owner-only local file.",
     "expandAll": "Expand relay configs",
     "collapseStack": "Collapse card stack",
-    "stackDeckTip": "Switch configs under this relay"
+    "stackDeckTip": "Switch configs under this relay",
+    "setDefaultModel": "Set {{model}} as the default model",
+    "driftedBadge": "Routing overridden",
+    "configDriftedHint": "Another program has rewritten Codex config.toml, so the router injection is not in effect and Codex still uses its previous configuration. Close the other tool that manages this file, then toggle smart routing off and on to reinstall it."
   },
   "avatar": {
     "title": "App avatar",
@@ -285,10 +295,10 @@
       "count": "Generate at most 4 images at a time.",
       "input": "Could not read the input image.",
       "inputTooLarge": "The input image is too large.",
-      "config": "Enter a site URL and API key.",
+      "config": "Enter a site URL.",
       "provider": "The selected relay no longer exists.",
-      "apiKey": "The selected relay has no API key.",
-      "storage": "Could not read local relay configuration.",
+      "apiKey": "Enter an API key or save one for this site.",
+      "storage": "Could not save or read the protected image API key.",
       "network": "Image request failed. Check the network, relay URL, and key.",
       "auth": "Image authentication failed. Check the key.",
       "notFound": "The image endpoint was not found. Check the site URL or model protocol.",

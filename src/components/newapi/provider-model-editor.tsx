@@ -17,6 +17,7 @@ const protocolKey: Record<ModelProtocol, string> = {
 
 interface Props {
   models: NewApiModel[];
+  providerName: string;
   protocol: ModelProtocol;
   defaultModel: string;
   disabled: boolean;
@@ -27,7 +28,7 @@ interface Props {
   onDefaultModelChange: (model: string) => void;
 }
 
-export function ProviderModelEditor({ models, protocol, defaultModel, disabled, fetching, fetchError, onFetch, onModelsChange, onDefaultModelChange }: Props) {
+export function ProviderModelEditor({ models, providerName, protocol, defaultModel, disabled, fetching, fetchError, onFetch, onModelsChange, onDefaultModelChange }: Props) {
   const { t } = useTranslation();
   const [newModel, setNewModel] = useState("");
   const compatible = models.filter(model => supportsProtocol(model, protocol));
@@ -143,16 +144,27 @@ export function ProviderModelEditor({ models, protocol, defaultModel, disabled, 
                     <Checkbox checked={model.included && supported} disabled={disabled || !supported || isDefault} onCheckedChange={value => setIncluded(model, value === true)} aria-label={t("newapi.includeModelAria", { model: model.id })} />
                     <span className="text-xs text-muted-foreground md:hidden">{t("newapi.includeModel")}</span>
                   </div>
-                  <button type="button" disabled={disabled || !supported || !model.included} onClick={() => onDefaultModelChange(model.id)} className="flex min-w-0 items-center gap-2 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                    {isDefault ? <CheckCircle2 className="h-4 w-4 shrink-0 text-primary" /> : <Circle className="h-4 w-4 shrink-0 text-muted-foreground" />}
-                    <span className="truncate font-mono text-xs" title={model.id}>{model.id}</span>
-                    {isDefault && <span className="shrink-0 text-[10px] font-medium text-primary">{t("newapi.defaultBadge")}</span>}
-                  </button>
-                  <Input className="h-8 text-xs" value={model.displayName} disabled={disabled} aria-label={t("newapi.menuDisplayNameFor", { model: model.id })} onChange={event => patch(model.id, { displayName: event.target.value, metadataSource: "manual" })} />
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={disabled || !supported || !model.included}
+                      onClick={() => onDefaultModelChange(model.id)}
+                      title={t("newapi.setDefaultModel", { model: model.id })}
+                      aria-label={t("newapi.setDefaultModel", { model: model.id })}
+                      aria-pressed={isDefault}
+                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-30"
+                    >
+                      {isDefault ? <CheckCircle2 className="h-4 w-4 text-primary" /> : <Circle className="h-4 w-4 text-muted-foreground" />}
+                    </button>
+                    <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <span className="truncate font-mono text-xs" title={model.id}>{model.id}</span>
+                      {isDefault && <span className="text-[10px] font-medium text-primary">{t("newapi.defaultBadge")}</span>}
+                    </div>
+                  </div>
+                  <Input className="h-8 text-xs" value={model.displayName === model.id && providerName.trim() ? `${providerName.trim()}/${model.id}` : model.displayName} disabled={disabled || !supported} aria-label={t("newapi.menuDisplayNameFor", { model: model.id })} onChange={event => patch(model.id, { displayName: event.target.value })} />
                   <Badge variant="secondary" className="w-fit text-[10px]">{t(protocolKey[protocol])}</Badge>
                   <div className="space-y-0.5">
-                    <Input className="h-8 text-xs tabular-nums" type="number" min={1024} max={100000000} inputMode="numeric" value={model.contextWindow ?? ""} placeholder="1048576" disabled={disabled} aria-label={t("newapi.contextFor", { model: model.id })} onChange={event => patch(model.id, { contextWindow: event.target.value ? Number(event.target.value) : null, metadataSource: "manual" })} />
-                    <p className="text-[9px] text-muted-foreground">{t(`newapi.metadataSource.${model.metadataSource}`)}</p>
+                    <Input className="h-8 text-xs tabular-nums" type="number" min={1024} max={100000000} inputMode="numeric" value={model.contextWindow ?? ""} disabled={disabled} aria-label={t("newapi.contextFor", { model: model.id })} onChange={event => patch(model.id, { contextWindow: event.target.value ? Number(event.target.value) : null, metadataSource: "manual" })} />
                   </div>
                   <button type="button" disabled={disabled || isDefault} onClick={() => removeModel(model.id)} className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-30" aria-label={t("newapi.removeModelAria", { model: model.id })}>
                     <Trash2 className="h-3.5 w-3.5" />

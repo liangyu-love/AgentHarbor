@@ -26,13 +26,29 @@ pub async fn load_newapi_state(repo: State<'_, Mutex<Repository>>) -> Result<New
     let paths = paths(&repo)?;
     let _guard = routing_runtime::mutation_guard().await;
     let store = router::load_store(&paths)?;
-    if store.router.enabled {
-        router::ensure_routing_config(&paths, &store)?;
+    match routing_runtime::reconcile(&paths).await {
+        Ok(()) if store.router.enabled => {
+            // Publish the Codex config only after the local route accepts requests.
+            if let Err(error) = router::ensure_routing_config(&paths, &store) {
+                eprintln!("[AgentHarbor] router config repair failed: {error}");
+            }
+        }
+        Err(error) => {
+            eprintln!("[AgentHarbor] router proxy startup failed: {error}");
+            if store.router.enabled {
+                let _ = router::remove_routing_config(&paths, &store);
+            }
+        }
+        Ok(()) => {}
     }
-    if let Err(error) = routing_runtime::reconcile(&paths).await {
-        eprintln!("[AgentHarbor] router proxy startup failed: {error}");
-    }
-    Ok(router::state_from_store(&store, router_proxy::is_running()))
+    // Read the store again: `ensure_routing_config` may have just rewritten the
+    // Codex config, and the drift flag must reflect the file's final state.
+    let store = router::load_store(&paths).unwrap_or(store);
+    Ok(router::state_from_store_at(
+        &store,
+        router_proxy::is_running(),
+        Some(&paths),
+    ))
 }
 
 #[tauri::command]
@@ -130,12 +146,16 @@ pub async fn set_newapi_smart_routing(
     if enabled {
         routing_runtime::ensure_available(&paths).await?;
     }
-    let result = router::set_smart_routing(&paths, enabled);
-    routing_runtime::reconcile(&paths).await?;
-    result.map(|mut change| {
-        change.state.proxy_running = router_proxy::is_running();
-        change
-    })
+    let mut change = router::set_smart_routing(&paths, enabled)?;
+    if let Err(error) = routing_runtime::reconcile(&paths).await {
+        if enabled {
+            let _ = router::set_smart_routing(&paths, false);
+            let _ = routing_runtime::reconcile(&paths).await;
+        }
+        return Err(error);
+    }
+    change.state.proxy_running = router_proxy::is_running();
+    Ok(change)
 }
 
 #[tauri::command]
