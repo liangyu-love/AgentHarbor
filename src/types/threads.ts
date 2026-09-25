@@ -32,6 +32,13 @@ export interface ThreadExportPayload {
   files: string[];
 }
 
+export interface ThreadDeleteResult {
+  deleted: number;
+  catalogRowsDeleted: number;
+  rolloutFilesDeleted: number;
+  backupPath: string;
+}
+
 export type ThreadRecoveryStatus =
   | "compatible"
   | "officialAccountUnverified"

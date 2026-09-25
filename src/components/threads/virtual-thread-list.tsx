@@ -53,6 +53,7 @@ export interface VirtualThreadListProps {
   onExport: (keys: string[]) => void;
   onOpenPath: (path: string) => void;
   onRecover: (thread: ThreadSummary) => void;
+  onDelete: (thread: ThreadSummary) => void;
   onCopyPath: (path: string, groupKey: string) => void;
   copiedGroupPath: string | null;
   t: (key: string, opts?: Record<string, unknown>) => string;
@@ -74,6 +75,7 @@ export function VirtualThreadList({
   onExport,
   onOpenPath,
   onRecover,
+  onDelete,
   onCopyPath,
   copiedGroupPath,
   t,
@@ -235,6 +237,7 @@ export function VirtualThreadList({
                         onExport={() => onExport([thread.key])}
                         onOpenRaw={() => onOpenPath(thread.filePath)}
                         onRecover={() => onRecover(thread)}
+                        onDelete={() => onDelete(thread)}
                         variant="grid"
                       />
                     ))}
@@ -289,6 +292,7 @@ export function VirtualThreadList({
                   onExport={() => onExport([row.thread.key])}
                   onOpenRaw={() => onOpenPath(row.thread.filePath)}
                   onRecover={() => onRecover(row.thread)}
+                  onDelete={() => onDelete(row.thread)}
                   variant="compact"
                 />
               </div>

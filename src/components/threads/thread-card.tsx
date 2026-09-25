@@ -14,6 +14,7 @@ import {
   RefreshCcw,
   Sparkles,
   Terminal,
+  Trash2,
   User,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -38,6 +39,7 @@ interface ThreadCardProps {
   onExport: () => void;
   onOpenRaw: () => void;
   onRecover: () => void;
+  onDelete: () => void;
   variant?: "grid" | "compact";
 }
 
@@ -48,6 +50,7 @@ export function ThreadCard({
   onExport,
   onOpenRaw,
   onRecover,
+  onDelete,
   variant = "grid",
 }: ThreadCardProps) {
   const { t } = useTranslation();
@@ -265,6 +268,24 @@ export function ThreadCard({
               <TooltipContent>
                 {hasRollout ? t("threads.openRawFile") : t("threads.rawUnavailable")}
               </TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="h-6 w-6 text-muted-foreground hover:bg-destructive/10 hover:text-destructive active:scale-95 transition-transform"
+                  aria-label={t("threads.deleteThread")}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDelete();
+                  }}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{t("threads.deleteThread")}</TooltipContent>
             </Tooltip>
           </div>
         </div>
@@ -489,6 +510,24 @@ export function ThreadCard({
               <TooltipContent>
                 {hasRollout ? t("threads.openRawFile") : t("threads.rawUnavailable")}
               </TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="h-5.5 w-5.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive active:scale-95 transition-transform"
+                  aria-label={t("threads.deleteThread")}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDelete();
+                  }}
+                >
+                  <Trash2 className="h-2.5 w-2.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{t("threads.deleteThread")}</TooltipContent>
             </Tooltip>
           </div>
         </div>

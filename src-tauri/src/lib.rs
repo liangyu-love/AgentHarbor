@@ -174,6 +174,7 @@ pub fn run() {
             commands::hotspot::focus_main_window,
             commands::threads::list_conversations,
             commands::threads::export_conversations,
+            commands::threads::delete_conversations,
             commands::threads::list_codex_threads,
             commands::threads::export_codex_threads,
             commands::thread_recovery::preview_codex_thread_recovery,

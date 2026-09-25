@@ -33,11 +33,11 @@ const BACKUP_DIR: &str = "thread-recovery-backups";
 
 static RECOVERY_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-fn recovery_guard() -> Result<MutexGuard<'static, ()>, CoreError> {
+pub(crate) fn thread_mutation_guard() -> Result<MutexGuard<'static, ()>, CoreError> {
     RECOVERY_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .map_err(|_| CoreError::OperationFailed("Thread recovery lock is poisoned".into()))
+        .map_err(|_| CoreError::OperationFailed("Thread mutation lock is poisoned".into()))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -451,7 +451,7 @@ fn apply_thread_recovery_inner(
     expected_revision: &str,
     check_writer_processes: bool,
 ) -> Result<ThreadRecoveryResult, CoreError> {
-    let _guard = recovery_guard()?;
+    let _guard = thread_mutation_guard()?;
     if check_writer_processes {
         process::ensure_no_codex_writer_processes()?;
     }

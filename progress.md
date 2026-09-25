@@ -48,3 +48,13 @@
 - 新增 OfficialAccountUnverified 状态，明确官方 openai 本地元数据正常但无法验证服务端 ChatGPT 账号归属，禁止自动应用。
 - 补充 missingCatalog 完整冻结字段与确认、JournalBlocked 打开恢复目录、官方账号只读提示的浏览器交互回归。
 - bundled Playwright + Chrome 回归全部通过；MSVC 串行结果为 265 passed、0 failed、1 ignored，另有 9 个 local_workflows 集成测试通过。
+
+## 2026-09-25 批量修复与会话删除
+
+- 新增会话页“修复全部”入口，逐个使用最新 preview revision，只应用服务端明确允许的修复。
+- 新增会话卡片删除和所选会话批量删除，界面仅保留简短确认及结果提示。
+- 删除后端按稳定 key 重新解析目标，拒绝重复 thread ID、路径越界、ID 漂移及所有已声明或已知目录引用。
+- 缺 rollout 会话只删除 SQLite 目录行；正常会话同时删除精确 rollout 文件和目录行。
+- 每次删除预先生成一致的 SQLite 快照、rollout 副本和 manifest，数据库提交失败时恢复文件。
+- 删除与恢复复用全局线程变更锁，避免并发写入互相覆盖。
+- 验证通过：MSVC lib 269 passed、1 ignored；local_workflows 9 passed；前端构建及 bundled Playwright + Chrome 回归通过。

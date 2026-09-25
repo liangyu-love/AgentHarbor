@@ -22,6 +22,7 @@ import {
   Search,
   Sparkles,
   Square,
+  Trash2,
   X,
 } from "lucide-react";
 import { api } from "@/lib/api";
@@ -83,6 +84,8 @@ export function ThreadsPage() {
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [copiedGroupPath, setCopiedGroupPath] = useState<string | null>(null);
   const [recoveryTarget, setRecoveryTarget] = useState<ThreadSummary | null>(null);
+  const [bulkRepairing, setBulkRepairing] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   const refreshAction = useBusyAction({ minVisibleMs: 800 });
 
@@ -208,6 +211,69 @@ export function ThreadsPage() {
     });
   };
 
+  const handleRepairAll = async () => {
+    const candidates = [...new Map(
+      threads.filter((thread) => thread.id).map((thread) => [thread.id, thread]),
+    ).values()];
+    if (candidates.length === 0 || bulkRepairing) return;
+    if (!window.confirm(t("threads.repairAllConfirm", { count: candidates.length }))) return;
+    setBulkRepairing(true);
+    let repaired = 0;
+    let skipped = 0;
+    let failed = 0;
+    try {
+      for (const thread of candidates) {
+        try {
+          const preview = (await api.conversations.previewRecovery(thread.id)).data;
+          if (!preview.canApply) {
+            skipped += 1;
+            continue;
+          }
+          const result = (await api.conversations.applyRecovery(thread.id, preview.revision)).data;
+          if (result.changed) repaired += 1;
+          else skipped += 1;
+        } catch {
+          failed += 1;
+        }
+      }
+      await threadsQuery.refetch();
+      toast({
+        title: t("threads.repairAllDone"),
+        description: t("threads.repairAllResult", { repaired, skipped, failed }),
+        variant: failed === 0 ? "success" : "default",
+      });
+    } finally {
+      setBulkRepairing(false);
+    }
+  };
+
+  const handleDelete = async (keys: string[]) => {
+    const uniqueKeys = [...new Set(keys)];
+    if (uniqueKeys.length === 0 || deleteBusy) return;
+    if (!window.confirm(t("threads.deleteConfirm", { count: uniqueKeys.length }))) return;
+    setDeleteBusy(true);
+    try {
+      const result = await api.conversations.delete("codex", uniqueKeys);
+      setSelected((previous) => {
+        const next = new Set(previous);
+        for (const key of uniqueKeys) next.delete(key);
+        return next;
+      });
+      await threadsQuery.refetch();
+      toast({
+        title: t("threads.deleteDone", { count: result.data.deleted }),
+        variant: "success",
+      });
+    } catch {
+      toast({
+        title: t("threads.deleteFailed"),
+        variant: "destructive",
+      });
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
   const handleExport = async (keys: string[]) => {
     const availableKeys = keys.filter((key) => exportableKeys.has(key));
     if (availableKeys.length === 0) {
@@ -300,6 +366,21 @@ export function ThreadsPage() {
               onChange={(value) => setFormat(value as ExportFormat)}
             />
 
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-9 gap-1.5 rounded-[10px] px-3 text-[13px]"
+              onClick={() => void handleRepairAll()}
+              disabled={bulkRepairing || threads.length === 0}
+            >
+              {bulkRepairing ? (
+                <RotateCw className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Sparkles className="h-3.5 w-3.5" />
+              )}
+              {bulkRepairing ? t("threads.repairingAll") : t("threads.repairAll")}
+            </Button>
+
             {/* Refresh Button */}
             <RainbowButton
               className="h-9 rounded-[10px] px-3.5 text-[13px] font-medium"
@@ -331,16 +412,11 @@ export function ThreadsPage() {
         )}
 
         {missingRolloutCount > 0 && (
-          <div role="status" className="flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
-            <div>
-              <p className="font-medium text-destructive">
-                {t("threads.rolloutMissingSummary", { count: missingRolloutCount })}
-              </p>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                {t("threads.rolloutMissingSummaryDesc")}
-              </p>
-            </div>
+          <div role="status" className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm">
+            <AlertTriangle className="h-4 w-4 shrink-0 text-destructive" />
+            <p className="font-medium text-destructive">
+              {t("threads.rolloutMissingSummary", { count: missingRolloutCount })}
+            </p>
           </div>
         )}
 
@@ -594,6 +670,20 @@ export function ThreadsPage() {
                 <Square className="h-3 w-3" />
                 {t("threads.clearSelection")}
               </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7.5 gap-1 px-2.5 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+                onClick={() => void handleDelete([...selected])}
+                disabled={deleteBusy}
+              >
+                {deleteBusy ? (
+                  <RotateCw className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="h-3.5 w-3.5" />
+                )}
+                {t("threads.deleteSelected", { count: selected.size })}
+              </Button>
               <RainbowButton
                 className="h-7.5 rounded-[8px] px-3 text-xs font-medium"
                 onClick={() => void handleExport([...selected])}
@@ -665,6 +755,7 @@ export function ThreadsPage() {
             onExport={keys => void handleExport(keys)}
             onOpenPath={path => void handleOpenPath(path)}
             onRecover={setRecoveryTarget}
+            onDelete={(thread) => void handleDelete([thread.key])}
             onCopyPath={handleCopyPath}
             copiedGroupPath={copiedGroupPath}
             t={t}
@@ -841,6 +932,7 @@ export function ThreadsPage() {
                         onExport={() => void handleExport([thread.key])}
                         onOpenRaw={() => void handleOpenPath(thread.filePath)}
                         onRecover={() => setRecoveryTarget(thread)}
+                        onDelete={() => void handleDelete([thread.key])}
                         variant={viewMode}
                       />
                     ))}

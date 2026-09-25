@@ -133,6 +133,17 @@
 - 增加备份浏览、手动还原入口和 Windows 锁行为专项测试。
 - 在 Linux CI 验证 preview-only/fail-closed 分支。
 
+## Phase 8：批量修复与会话删除
+
+**Status:** complete
+
+- 会话页新增“修复全部”，串行预览并只应用服务端明确允许的修复。
+- 新增单条和批量删除；缺 rollout 时只移除 SQLite 目录行，存在 rollout 时同步移除目录行和精确文件。
+- 删除前检查 Codex 写进程、稳定 key、路径边界、thread ID、重复 rollout 和目录引用。
+- 删除前生成 SQLite 快照、rollout 备份和 manifest；失败时恢复已经移除的文件。
+- 删除与恢复共享线程变更锁，避免两类写操作并发竞争。
+- 缺失原始记录提示缩减为单行状态，避免影响页面浏览。
+
 ## Errors Encountered
 
 | Error | Attempt | Resolution |

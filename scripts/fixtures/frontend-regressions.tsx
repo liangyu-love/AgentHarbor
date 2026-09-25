@@ -91,7 +91,7 @@ function ProviderFixture({ mixed = false }: { mixed?: boolean }) {
       onOpenChange={open => setDialog(current => ({ ...current, open }))} onSaved={noop} /></>;
 }
 
-type FixtureMode = "compact" | "grid" | "image" | "provider" | "warnings" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "recovery-missing" | "recovery-journal" | "recovery-official";
+type FixtureMode = "compact" | "grid" | "image" | "provider" | "warnings" | "thread-actions" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "recovery-missing" | "recovery-journal" | "recovery-official";
 
 function recoveryPreview(mode: FixtureMode) {
   const base = {
@@ -124,8 +124,28 @@ function mount(mode: FixtureMode) {
   const threads = Array.from({ length: 100 }, (_, i) => ({ key: "t" + i, id: "t" + i,
     cwd: "C:/synthetic", folderName: "synthetic", title: "Review thread " + i,
     createdAt: 0, updatedAt: 0, userMessages: 1, agentMessages: 1, fileSize: 100,
-    archived: false, source: "", cliVersion: "", filePath: "C:/synthetic/t" + i }));
-  if (mode.startsWith("recovery-")) {
+    archived: false, source: "", cliVersion: "", filePath: "C:/synthetic/t" + i,
+    modelProvider: "agentharbor_native", model: "gpt-6-sol", tokensUsed: 10,
+    threadSource: "sqlite", rolloutStatus: "available" }));
+  if (mode === "thread-actions") {
+    controls.review.recoveryApplyCalls = 0;
+    controls.review.deleteCalls = [];
+    api.conversations.previewRecovery = async threadId => ({ schemaVersion: 1, success: true, code: "ok", message: "", warnings: [],
+      data: { ...recoveryPreview("recovery-missing"), threadId, status: threadId === "t0" ? "providerMismatch" : "compatible",
+        canApply: threadId === "t0", catalogAnalysis: null, catalogFields: [] } as any });
+    api.conversations.applyRecovery = async () => {
+      controls.review.recoveryApplyCalls += 1;
+      const preview = recoveryPreview("recovery-missing") as any;
+      return { schemaVersion: 1, success: true, code: "ok", message: "", warnings: [],
+        data: { changed: true, backupPath: "C:/synthetic/recovery/backup.json", preview } };
+    };
+    api.conversations.delete = async (_target, keys) => {
+      controls.review.deleteCalls.push(keys);
+      return { schemaVersion: 1, success: true, code: "ok", message: "", warnings: [],
+        data: { deleted: keys.length, catalogRowsDeleted: keys.length, rolloutFilesDeleted: keys.length,
+          backupPath: "C:/synthetic/thread-delete-backups/fixture" } };
+    };
+  } else if (mode.startsWith("recovery-")) {
     api.conversations.previewRecovery = async () => ({ schemaVersion: 1, success: true, code: "ok", message: "", warnings: [], data: recoveryPreview(mode) as any });
     api.conversations.applyRecovery = async () => {
       controls.review.recoveryApplyCalls += 1;
@@ -137,7 +157,8 @@ function mount(mode: FixtureMode) {
   }
   api.conversations.list = async () => ({ schemaVersion: 1, success: true, code: "ok", message: "",
     warnings: [{ code: "thread_scan_skipped", message: "Skipped synthetic-corrupt-session.jsonl: invalid UTF-8" }],
-    data: { total: 1, lastScanAt: 0, items: threads.slice(0, 1) } });
+    data: { total: mode === "thread-actions" ? 2 : 1, lastScanAt: 0,
+      items: threads.slice(0, mode === "thread-actions" ? 2 : 1) } });
   const groups = Array.from({ length: 10 }, (_, i) => ({ key: "g" + i, cwd: "C:/synthetic/g" + i,
     folderName: "Workspace " + i, items: threads.slice(i * 10, i * 10 + 10), latestAt: 0,
     totalMessages: 20, totalSize: 1000, userMessages: 10, agentMessages: 10 }));
@@ -146,19 +167,19 @@ function mount(mode: FixtureMode) {
     <div style={{ position: "relative", height: 600 }}><PageStage state="active">
       {mode.startsWith("recovery-") ? <ThreadRecoveryDialog thread={threads[0] as any} onOpenChange={noop}
           onRecovered={() => { controls.review.recoveredCalls += 1; }} /> :
-        mode === "image" ? <ImageWorkbenchPage /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode === "warnings" ? <ThreadsPage /> :
+        mode === "image" ? <ImageWorkbenchPage /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode === "warnings" || mode === "thread-actions" ? <ThreadsPage /> :
         mode === "access" || mode === "incompatible" || mode === "native-invalid" ? <NewApiPage /> :
         mode === "test" ? <ProviderTestDialog open provider={mixedProvider} onOpenChange={noop} onTested={noop} onFailed={noop} /> :
         mode === "clients" || mode === "clients-existing" ? <ClientConfigs providers={[mixedProvider]} /> :
         <VirtualThreadList groups={groups} collapsedGroups={new Set()} selected={new Set()} viewMode={mode}
           onToggleSelect={noop} onToggleGroup={noop} onToggleCollapse={noop} onExport={noop}
-          onOpenPath={noop} onCopyPath={noop} copiedGroupPath={null} t={key => key} />}
+          onOpenPath={noop} onRecover={noop} onDelete={noop} onCopyPath={noop} copiedGroupPath={null} t={key => key} />}
     </PageStage></div>
   </TooltipProvider></QueryClientProvider>);
 }
 
 controls.review = { mount, getState: () => state, accessCalls: [], thumbnailCalls: [], originalCalls: [], thumbnailResolvers: [],
-  restartCalls: [], recoveryApplyCalls: 0, recoveredCalls: 0, openedPath: null,
+  restartCalls: [], recoveryApplyCalls: 0, recoveredCalls: 0, deleteCalls: [], openedPath: null,
   holdThumbnails: false, holdOriginal: false, labels: {
     fetchModels: i18n.t("newapi.fetchModels"), cancel: i18n.t("common.cancel"),
     galleryTitle: i18n.t("image.galleryTitle"),
@@ -181,5 +202,7 @@ controls.review = { mount, getState: () => state, accessCalls: [], thumbnailCall
     recoveryOfficialStatus: i18n.t("threads.recoveryStatus.officialAccountUnverified"),
     recoveryCoordinationTitle: i18n.t("threads.recoveryCoordinationTitle"),
     recoveryOpenDirectory: i18n.t("threads.recoveryOpenDirectory"),
+    repairAll: i18n.t("threads.repairAll"), deleteThread: i18n.t("threads.deleteThread"),
+    deleteSelected: i18n.t("threads.deleteSelected", { count: 1 }),
   } };
 mount("compact");

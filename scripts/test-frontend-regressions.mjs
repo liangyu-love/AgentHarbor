@@ -47,6 +47,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 1200, height: 700 } });
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
+  page.on("dialog", async dialog => { await dialog.accept(); });
   await page.route("**/*", route => route.request().url().startsWith(address + "/") ? route.continue() : route.abort());
   const reset = async mode => {
     await page.goto(address);
@@ -198,6 +199,18 @@ try {
   assert.equal(await page.getByRole("button", { name: labels.recoveryCatalogConfirm, exact: true }).count(), 0);
   assert.equal(await page.evaluate(() => window.review.recoveryApplyCalls), 0);
   console.log("PASS official threads disclose unverified server-account ownership and remain read-only");
+
+  await reset("thread-actions");
+  await page.getByRole("button", { name: labels.repairAll, exact: true }).click();
+  await page.waitForFunction(() => window.review.recoveryApplyCalls === 1);
+  await page.getByText("Review thread 0", { exact: true }).click();
+  await page.getByRole("button", { name: labels.deleteSelected, exact: true }).click();
+  await page.waitForFunction(() => window.review.deleteCalls.length === 1);
+  assert.deepEqual(await page.evaluate(() => window.review.deleteCalls[0]), ["t0"]);
+  await page.getByRole("button", { name: labels.deleteThread, exact: true }).last().click();
+  await page.waitForFunction(() => window.review.deleteCalls.length === 2);
+  assert.deepEqual(await page.evaluate(() => window.review.deleteCalls[1]), ["t1"]);
+  console.log("PASS thread page repairs all eligible threads and supports batch and single deletion");
 
   await reset("clients");
   await page.getByRole("button", { name: labels.configure, exact: true }).click();

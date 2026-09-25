@@ -22,5 +22,6 @@ pub(crate) mod secret_file;
 pub mod skills;
 pub mod storage;
 pub mod targets;
+pub mod thread_delete;
 pub mod thread_recovery;
 pub mod threads;

@@ -128,6 +128,11 @@ const conversationsApi = {
       targetDir,
       format,
       }),
+  delete: (targetId: TargetId, keys: string[]) =>
+    invoke<CoreEnvelope<import("@/types/threads").ThreadDeleteResult>>("delete_conversations", {
+      targetId,
+      keys,
+    }),
   previewRecovery: (threadId: string) =>
     invoke<CoreEnvelope<import("@/types/threads").ThreadRecoveryPreview>>(
       "preview_codex_thread_recovery",
