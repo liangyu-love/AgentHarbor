@@ -670,7 +670,7 @@ export function ImageWorkbenchPage() {
                   中转驿站 (供应商配置)
                 </Label>
                 <select
-                  className="h-9 w-full rounded-lg border border-input bg-background/90 px-3 text-sm transition-colors focus:border-primary focus:ring-1 focus:ring-primary/20"
+                  className="ink-select"
                   value={providerId}
                   onChange={event => chooseProvider(event.target.value)}
                   aria-label="中转驿站供应商"
@@ -763,7 +763,7 @@ export function ImageWorkbenchPage() {
                   尺幅规制 (长宽尺寸)
                 </Label>
                 <select
-                  className="h-9 w-full rounded-lg border border-input bg-background/90 px-3 text-sm transition-colors focus:border-primary focus:ring-1 focus:ring-primary/20"
+                  className="ink-select"
                   value={size}
                   onChange={event => setSize(event.target.value)}
                   aria-label="尺幅规制"
@@ -781,7 +781,7 @@ export function ImageWorkbenchPage() {
                   画质品阶 (精细度)
                 </Label>
                 <select
-                  className="h-9 w-full rounded-lg border border-input bg-background/90 px-3 text-sm transition-colors focus:border-primary focus:ring-1 focus:ring-primary/20"
+                  className="ink-select"
                   value={quality}
                   onChange={event => setQuality(event.target.value)}
                   aria-label="画质品阶"

@@ -703,9 +703,9 @@ export function ThreadsPage() {
             {Array.from({ length: 2 }).map((_, index) => (
               <div key={index} className="space-y-1.5">
                 <Skeleton className="h-7 w-56 rounded-lg" />
-                <div className="grid gap-2 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
+                <div className="grid gap-2.5 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
                   {Array.from({ length: 4 }).map((__, card) => (
-                    <Skeleton key={card} className="h-24 rounded-lg" />
+                    <Skeleton key={card} className="h-40 rounded-lg" />
                   ))}
                 </div>
               </div>
@@ -919,7 +919,7 @@ export function ThreadsPage() {
                   <div
                     className={
                       viewMode === "grid"
-                        ? "grid gap-2 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 animate-in fade-in duration-200"
+                        ? "grid gap-2.5 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 animate-in fade-in duration-200"
                         : "space-y-1 animate-in fade-in duration-200"
                     }
                   >

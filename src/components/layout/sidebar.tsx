@@ -55,7 +55,17 @@ export const SIDEBAR_COLLAPSED_WIDTH_PX = 64;
 const SIDEBAR_LOGO_TOP_OFFSET_PX = -21;
 
 const navButtonClassName =
-  "group-data-[state=expanded]:!rounded-[8px] group-data-[state=expanded]:!px-3 group-data-[state=expanded]:!py-2 group-data-[state=expanded]:gap-2.5";
+  "relative group-data-[state=expanded]:!rounded-[10px] group-data-[state=expanded]:!px-3 group-data-[state=expanded]:!py-2 group-data-[state=expanded]:gap-2.5 " +
+  // Complete selected pill: soft fill + left accent bar + clear icon/text, no half-drawn ring.
+  "data-[active=true]:!bg-primary/12 data-[active=true]:!text-foreground data-[active=true]:shadow-none " +
+  "data-[active=true]:hover:!bg-primary/16 " +
+  "data-[active=true]:before:absolute data-[active=true]:before:left-0 data-[active=true]:before:top-1/2 data-[active=true]:before:-translate-y-1/2 " +
+  "data-[active=true]:before:h-5 data-[active=true]:before:w-[3px] data-[active=true]:before:rounded-full data-[active=true]:before:bg-primary " +
+  "data-[active=true]:before:content-[''] data-[active=true]:before:shadow-[0_0_8px_hsl(var(--primary)/0.45)] " +
+  "group-data-[collapsible=icon]/sidebar:data-[active=true]:before:hidden " +
+  // Keyboard focus stays distinct from selected fill.
+  "focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-sidebar " +
+  "transition-colors duration-150";
 
 const footerNavButtonClassName = cn(
   navButtonClassName,
@@ -193,13 +203,20 @@ export function AppSidebar({
                     <Icon
                       strokeWidth={1.75}
                       className={cn(
-                        "size-4 shrink-0",
+                        "size-4 shrink-0 transition-colors duration-150",
                         isActive
-                          ? "text-primary"
+                          ? "text-primary drop-shadow-[0_0_6px_hsl(var(--primary)/0.35)]"
                           : "text-sidebar-foreground/80 group-hover/menu-item:text-sidebar-accent-foreground",
                       )}
                     />
-                    <span className="truncate">{t(labelKey)}</span>
+                    <span
+                      className={cn(
+                        "truncate transition-colors duration-150",
+                        isActive && "font-semibold text-foreground",
+                      )}
+                    >
+                      {t(labelKey)}
+                    </span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               );

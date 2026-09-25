@@ -24,7 +24,7 @@ import type {
   CustomInstructionPreviewPayload,
   CustomInstructionStatePayload,
   CodexAccountListPayload,
-  RelayUsagePayload,
+  TokenUsagePayload,
 } from "@/types";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
 import type { TargetId, ClientStatus, ClientConfigRequest, ClientConfigPreview, ClientConfigApplied } from "@/types/clients";
@@ -146,12 +146,11 @@ const conversationsApi = {
   };
 
 const usageApi = {
-  relay: () => invoke<RelayUsagePayload>("get_relay_usage"),
+  overview: () => invoke<TokenUsagePayload>("get_token_usage"),
 };
 
 const accountsApi = {
   list: () => invoke<CodexAccountListPayload>("list_codex_accounts"),
-  relayUsage: usageApi.relay,
   refresh: () => invoke<CodexAccountListPayload>("refresh_codex_accounts"),
   login: () => invoke<CodexAccountListPayload>("login_codex_account"),
   switch: (accountKey: string) =>

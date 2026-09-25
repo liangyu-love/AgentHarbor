@@ -6,6 +6,7 @@ pub mod bootstrap_cache;
 pub mod client_config;
 pub mod codex_config;
 pub mod custom_instructions;
+pub mod local_usage;
 pub mod mcp;
 pub mod model_defaults;
 pub mod models;

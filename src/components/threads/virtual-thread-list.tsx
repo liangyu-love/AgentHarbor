@@ -23,23 +23,22 @@ type VirtualRow =
     };
 
 const GROUP_ROW_HEIGHT = GROUP_HEADER_HEIGHT;
-const THREAD_ROW_HEIGHT = 40;
+const THREAD_ROW_HEIGHT = 52;
 const OVERSCAN = 8;
 
 function estimateGridColumns() {
   if (typeof window === "undefined") return 3;
   const width = window.innerWidth;
-  if (width >= 1536) return 5;
   if (width >= 1280) return 4;
   if (width >= 768) return 3;
-  return width >= 640 ? 2 : 1;
+  return 2;
 }
 
 function estimateGridBodyHeight(itemCount: number, columns: number) {
   if (itemCount <= 0) return 0;
   const rows = Math.ceil(itemCount / columns);
   // Card target height + gap, with slack for provider/model/source badges.
-  return rows * 132 + Math.max(0, rows - 1) * 8 + 8;
+  return rows * 168 + Math.max(0, rows - 1) * 10 + 8;
 }
 
 export interface VirtualThreadListProps {
@@ -222,7 +221,7 @@ export function VirtualThreadList({
                 />
                 {!collapsed && (
                   <div
-                    className="mt-1.5 grid gap-2 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5"
+                    className="mt-1.5 grid gap-2.5 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4"
                     style={{
                       contentVisibility: "auto",
                       containIntrinsicSize: `${Math.max(bodyHeight, 132)}px`,

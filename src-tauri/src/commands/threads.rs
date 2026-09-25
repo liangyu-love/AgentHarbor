@@ -20,7 +20,7 @@ pub async fn list_conversations(
     repo: State<'_, Mutex<Repository>>,
     target_id: TargetId,
 ) -> Result<CoreEnvelope<ThreadListPayload>, String> {
-    let (sessions_dir, archived_sessions_dir, state_database_path) = {
+    let (sessions_dir, archived_sessions_dir, state_database_path, thread_cache_path) = {
         let repo = repo.lock().map_err(|e| e.to_string())?;
         let source = repo
             .target_registry()
@@ -30,13 +30,17 @@ pub async fn list_conversations(
             source.sessions_dir().to_path_buf(),
             source.archived_sessions_dir().to_path_buf(),
             source.state_database_path().to_path_buf(),
+            repo.paths()
+                .app_data_dir
+                .join("thread-summary-cache.sqlite3"),
         )
     };
     let scan = tauri::async_runtime::spawn_blocking(move || {
-        threads::scan_threads_from_catalog_with_warnings(
+        threads::scan_threads_from_catalog_with_cache(
             &state_database_path,
             &sessions_dir,
             &archived_sessions_dir,
+            &thread_cache_path,
         )
     })
     .await

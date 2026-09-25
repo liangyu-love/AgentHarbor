@@ -1,13 +1,13 @@
 use crate::core::models::{CoreError, CoreWarning};
 use chrono::DateTime;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{params, Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -129,7 +129,7 @@ struct SeenMessage {
 
 #[derive(Clone)]
 struct CachedThread {
-    fingerprint: (u64, SystemTime),
+    fingerprint: (u64, i64),
     summary: Option<ThreadSummary>,
 }
 
@@ -139,6 +139,11 @@ static THREAD_CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedThread>>> = OnceLock:
 static ROLLOUT_ID_INDEX: OnceLock<
     Mutex<HashMap<(PathBuf, PathBuf), HashMap<String, Vec<PathBuf>>>>,
 > = OnceLock::new();
+
+struct PersistentThreadCache {
+    connection: Connection,
+    entries: HashMap<PathBuf, CachedThread>,
+}
 
 pub(super) fn indexed_rollout_paths(
     sessions_dir: &Path,
@@ -179,9 +184,183 @@ fn replace_rollout_id_index(sessions_dir: &Path, archived_dir: &Path, items: &[T
     }
 }
 
-fn file_fingerprint(path: &Path) -> Result<(u64, SystemTime), CoreError> {
+fn file_fingerprint(path: &Path) -> Result<(u64, i64), CoreError> {
     let metadata = std::fs::metadata(path)?;
-    Ok((metadata.len(), metadata.modified()?))
+    let modified_ns = metadata
+        .modified()?
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or(0);
+    Ok((metadata.len(), modified_ns))
+}
+
+fn remove_cache_files(path: &Path) {
+    let mut candidates = vec![path.to_path_buf()];
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let mut candidate = path.as_os_str().to_os_string();
+        candidate.push(suffix);
+        candidates.push(PathBuf::from(candidate));
+    }
+    for candidate in candidates {
+        let _ = std::fs::remove_file(candidate);
+    }
+}
+
+fn load_persistent_thread_cache_once(path: &Path) -> Result<PersistentThreadCache, CoreError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let connection =
+        Connection::open(path).map_err(|error| CoreError::OperationFailed(error.to_string()))?;
+    connection
+        .execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             CREATE TABLE IF NOT EXISTS thread_summaries(
+               path TEXT PRIMARY KEY, size INTEGER NOT NULL,
+               mtime_ns INTEGER NOT NULL, summary_json TEXT NOT NULL
+             );",
+        )
+        .map_err(|error| CoreError::OperationFailed(error.to_string()))?;
+    let mut entries = HashMap::new();
+    {
+        let mut statement = connection
+            .prepare("SELECT path,size,mtime_ns,summary_json FROM thread_summaries")
+            .map_err(|error| CoreError::OperationFailed(error.to_string()))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, u64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|error| CoreError::OperationFailed(error.to_string()))?;
+        for row in rows {
+            let Ok((path, size, mtime_ns, summary_json)) = row else {
+                continue;
+            };
+            let Ok(summary) = serde_json::from_str::<Option<ThreadSummary>>(&summary_json) else {
+                continue;
+            };
+            entries.insert(
+                PathBuf::from(path),
+                CachedThread {
+                    fingerprint: (size, mtime_ns),
+                    summary,
+                },
+            );
+        }
+    }
+    Ok(PersistentThreadCache {
+        connection,
+        entries,
+    })
+}
+
+fn load_persistent_thread_cache(path: &Path) -> Option<PersistentThreadCache> {
+    match load_persistent_thread_cache_once(path) {
+        Ok(cache) => Some(cache),
+        Err(_) => {
+            remove_cache_files(path);
+            load_persistent_thread_cache_once(path).ok()
+        }
+    }
+}
+
+fn save_persistent_thread_cache(
+    cache: &mut PersistentThreadCache,
+    updates: &HashMap<PathBuf, CachedThread>,
+    seen: &HashSet<PathBuf>,
+    sessions_dir: &Path,
+    archived_dir: &Path,
+) {
+    let stale = cache
+        .entries
+        .keys()
+        .filter(|path| {
+            (path.starts_with(sessions_dir) || path.starts_with(archived_dir))
+                && !seen.contains(*path)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let Ok(transaction) = cache.connection.transaction() else {
+        return;
+    };
+    for path in stale {
+        let _ = transaction.execute(
+            "DELETE FROM thread_summaries WHERE path=?1",
+            params![path.to_string_lossy()],
+        );
+    }
+    for (path, entry) in updates {
+        let Ok(summary_json) = serde_json::to_string(&entry.summary) else {
+            continue;
+        };
+        let _ = transaction.execute(
+            "INSERT INTO thread_summaries(path,size,mtime_ns,summary_json)
+             VALUES(?1,?2,?3,?4)
+             ON CONFLICT(path) DO UPDATE SET size=excluded.size,
+               mtime_ns=excluded.mtime_ns,summary_json=excluded.summary_json",
+            params![
+                path.to_string_lossy(),
+                entry.fingerprint.0,
+                entry.fingerprint.1,
+                summary_json
+            ],
+        );
+    }
+    let _ = transaction.commit();
+}
+
+type ParsedThreadFile = (
+    ThreadFile,
+    (u64, i64),
+    Result<Option<ThreadSummary>, CoreError>,
+    bool,
+);
+
+fn parse_thread_files_parallel(files: Vec<(ThreadFile, (u64, i64))>) -> Vec<ParsedThreadFile> {
+    if files.len() <= 1 {
+        return files
+            .into_iter()
+            .map(|(file, fingerprint)| {
+                let parsed = parse_thread(&file, false).map(|value| value.map(|item| item.summary));
+                let stable = file_fingerprint(&file.path).ok() == Some(fingerprint);
+                (file, fingerprint, parsed, stable)
+            })
+            .collect();
+    }
+    let workers = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(1)
+        .min(8)
+        .min(files.len());
+    let queue = Mutex::new(files.into_iter());
+    let output = Mutex::new(Vec::new());
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| loop {
+                let next = queue
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .next();
+                let Some((file, fingerprint)) = next else {
+                    break;
+                };
+                let parsed = parse_thread(&file, false).map(|value| value.map(|item| item.summary));
+                let stable = file_fingerprint(&file.path).ok() == Some(fingerprint);
+                output
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push((file, fingerprint, parsed, stable));
+            });
+        }
+    });
+    output
+        .into_inner()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn scan_warning(path: &Path, error: &CoreError) -> CoreWarning {
@@ -225,10 +404,34 @@ pub fn scan_threads_from_catalog_with_warnings(
     sessions_dir: &Path,
     archived_dir: &Path,
 ) -> Result<ThreadScanResult, CoreError> {
+    scan_threads_from_catalog_inner(state_database_path, sessions_dir, archived_dir, None)
+}
+
+pub fn scan_threads_from_catalog_with_cache(
+    state_database_path: &Path,
+    sessions_dir: &Path,
+    archived_dir: &Path,
+    cache_path: &Path,
+) -> Result<ThreadScanResult, CoreError> {
+    scan_threads_from_catalog_inner(
+        state_database_path,
+        sessions_dir,
+        archived_dir,
+        Some(cache_path),
+    )
+}
+
+fn scan_threads_from_catalog_inner(
+    state_database_path: &Path,
+    sessions_dir: &Path,
+    archived_dir: &Path,
+    cache_path: Option<&Path>,
+) -> Result<ThreadScanResult, CoreError> {
     match read_catalog_threads(state_database_path) {
-        Ok(catalog) => merge_catalog_with_rollouts(catalog, sessions_dir, archived_dir),
+        Ok(catalog) => merge_catalog_with_rollouts(catalog, sessions_dir, archived_dir, cache_path),
         Err(error) => {
-            let mut fallback = scan_threads_with_warnings(sessions_dir, archived_dir)?;
+            let mut fallback =
+                scan_threads_with_warnings_inner(sessions_dir, archived_dir, cache_path)?;
             fallback.warnings.insert(
                 0,
                 CoreWarning {
@@ -406,8 +609,9 @@ fn merge_catalog_with_rollouts(
     catalog: CatalogRead,
     sessions_dir: &Path,
     archived_dir: &Path,
+    cache_path: Option<&Path>,
 ) -> Result<ThreadScanResult, CoreError> {
-    let rollout_scan = scan_threads_with_warnings(sessions_dir, archived_dir)?;
+    let rollout_scan = scan_threads_with_warnings_inner(sessions_dir, archived_dir, cache_path)?;
     let mut warnings = rollout_scan.warnings;
     let rollout_items = rollout_scan.items;
     let mut by_path = HashMap::new();
@@ -536,6 +740,14 @@ pub fn scan_threads_with_warnings(
     sessions_dir: &Path,
     archived_dir: &Path,
 ) -> Result<ThreadScanResult, CoreError> {
+    scan_threads_with_warnings_inner(sessions_dir, archived_dir, None)
+}
+
+fn scan_threads_with_warnings_inner(
+    sessions_dir: &Path,
+    archived_dir: &Path,
+    cache_path: Option<&Path>,
+) -> Result<ThreadScanResult, CoreError> {
     let mut items = Vec::new();
     let mut warnings = Vec::new();
     let mut files = Vec::new();
@@ -543,44 +755,60 @@ pub fn scan_threads_with_warnings(
     collect_rollout_files(archived_dir, true, &mut files, Some(&mut warnings))?;
     let cache = THREAD_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let seen: HashSet<_> = files.iter().map(|file| file.path.clone()).collect();
+    let memory_entries = cache
+        .lock()
+        .map(|entries| entries.clone())
+        .unwrap_or_default();
+    let mut persistent = cache_path.and_then(load_persistent_thread_cache);
+    let mut memory_updates = HashMap::new();
+    let mut disk_updates = HashMap::new();
+    let mut misses = Vec::new();
     for file in files {
-        let parsed = (|| -> Result<Option<ThreadSummary>, CoreError> {
-            let fingerprint = file_fingerprint(&file.path)?;
-            let cached = cache
-                .lock()
-                .ok()
-                .and_then(|entries| entries.get(&file.path).cloned())
-                .filter(|entry| entry.fingerprint == fingerprint);
-            if let Some(cached) = cached {
-                return Ok(cached.summary.map(|mut summary| {
-                    summary.key = file.key.clone();
-                    summary.archived = file.archived;
-                    summary
-                }));
+        let fingerprint = match file_fingerprint(&file.path) {
+            Ok(value) => value,
+            Err(error) => {
+                warnings.push(scan_warning(&file.path, &error));
+                continue;
             }
-            let summary = parse_thread(&file, false)?.map(|parsed| parsed.summary);
-            // Do not cache a log being appended to or replaced during parsing.
-            if file_fingerprint(&file.path).ok() == Some(fingerprint) {
-                if let Ok(mut entries) = cache.lock() {
-                    if entries.len() >= THREAD_CACHE_LIMIT && !entries.contains_key(&file.path) {
-                        if let Some(key) = entries.keys().next().cloned() {
-                            entries.remove(&key);
-                        }
-                    }
-                    entries.insert(
-                        file.path.clone(),
-                        CachedThread {
-                            fingerprint,
-                            summary: summary.clone(),
-                        },
-                    );
+        };
+        let memory_hit = memory_entries
+            .get(&file.path)
+            .filter(|entry| entry.fingerprint == fingerprint)
+            .cloned();
+        let disk_hit = persistent
+            .as_ref()
+            .and_then(|cache| cache.entries.get(&file.path))
+            .filter(|entry| entry.fingerprint == fingerprint)
+            .cloned();
+        if let Some(cached) = memory_hit.clone().or_else(|| disk_hit.clone()) {
+            if let Some(mut summary) = cached.summary.clone() {
+                summary.key = file.key.clone();
+                summary.archived = file.archived;
+                items.push(summary);
+            }
+            memory_updates.insert(file.path.clone(), cached.clone());
+            if disk_hit.is_none() {
+                disk_updates.insert(file.path.clone(), cached);
+            }
+        } else {
+            misses.push((file, fingerprint));
+        }
+    }
+    for (file, fingerprint, parsed, stable) in parse_thread_files_parallel(misses) {
+        match parsed {
+            Ok(summary) => {
+                if let Some(value) = summary.clone() {
+                    items.push(value);
+                }
+                if stable {
+                    let cached = CachedThread {
+                        fingerprint,
+                        summary,
+                    };
+                    memory_updates.insert(file.path.clone(), cached.clone());
+                    disk_updates.insert(file.path, cached);
                 }
             }
-            Ok(summary)
-        })();
-        match parsed {
-            Ok(Some(summary)) => items.push(summary),
-            Ok(None) => {}
             Err(error) => warnings.push(scan_warning(&file.path, &error)),
         }
     }
@@ -589,8 +817,23 @@ pub fn scan_threads_with_warnings(
             (!path.starts_with(sessions_dir) && !path.starts_with(archived_dir))
                 || seen.contains(path)
         });
+        for (path, entry) in memory_updates {
+            if entries.len() >= THREAD_CACHE_LIMIT && !entries.contains_key(&path) {
+                if let Some(stale) = entries.keys().next().cloned() {
+                    entries.remove(&stale);
+                }
+            }
+            entries.insert(path, entry);
+        }
     }
-    items.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    if let Some(cache) = persistent.as_mut() {
+        save_persistent_thread_cache(cache, &disk_updates, &seen, sessions_dir, archived_dir);
+    }
+    items.sort_by(|a, b| {
+        b.updated_at
+            .cmp(&a.updated_at)
+            .then_with(|| a.file_path.cmp(&b.file_path))
+    });
     replace_rollout_id_index(sessions_dir, archived_dir, &items);
     Ok(ThreadScanResult { items, warnings })
 }
@@ -1387,6 +1630,77 @@ mod tests {
         assert_eq!(repaired.items[0].title, "Repaired");
         fs::remove_file(path).unwrap();
         assert!(scan_threads(&sessions, &archived).unwrap().is_empty());
+    }
+
+    #[test]
+    fn persistent_cache_survives_memory_reset_and_invalidates_changes_and_deletes() {
+        let root = tempdir().unwrap();
+        let sessions = root.path().join("sessions");
+        let archived = root.path().join("archived");
+        let cache_path = root.path().join("thread-cache.sqlite3");
+        fs::create_dir_all(&sessions).unwrap();
+        let rollout_path = sessions.join("rollout-a.jsonl");
+        fs::write(&rollout_path, rollout("id", "C:/work", "Original")).unwrap();
+
+        let first =
+            scan_threads_with_warnings_inner(&sessions, &archived, Some(&cache_path)).unwrap();
+        assert_eq!(first.items[0].title, "Original");
+
+        let db = Connection::open(&cache_path).unwrap();
+        let cached_json: String = db
+            .query_row(
+                "SELECT summary_json FROM thread_summaries WHERE path=?1",
+                [rollout_path.to_string_lossy().as_ref()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut cached_summary = serde_json::from_str::<Option<ThreadSummary>>(&cached_json)
+            .unwrap()
+            .unwrap();
+        cached_summary.title = "Loaded from disk cache".into();
+        db.execute(
+            "UPDATE thread_summaries SET summary_json=?2 WHERE path=?1",
+            params![
+                rollout_path.to_string_lossy(),
+                serde_json::to_string(&Some(cached_summary)).unwrap()
+            ],
+        )
+        .unwrap();
+        drop(db);
+        if let Some(cache) = THREAD_CACHE.get() {
+            cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&rollout_path);
+        }
+
+        let disk_hit =
+            scan_threads_with_warnings_inner(&sessions, &archived, Some(&cache_path)).unwrap();
+        assert_eq!(disk_hit.items[0].title, "Loaded from disk cache");
+
+        fs::write(
+            &rollout_path,
+            rollout("id", "C:/work", "Changed title with a different length"),
+        )
+        .unwrap();
+        let changed =
+            scan_threads_with_warnings_inner(&sessions, &archived, Some(&cache_path)).unwrap();
+        assert_eq!(
+            changed.items[0].title,
+            "Changed title with a different length"
+        );
+
+        fs::remove_file(&rollout_path).unwrap();
+        let deleted =
+            scan_threads_with_warnings_inner(&sessions, &archived, Some(&cache_path)).unwrap();
+        assert!(deleted.items.is_empty());
+        let db = Connection::open(cache_path).unwrap();
+        let remaining: u64 = db
+            .query_row("SELECT COUNT(*) FROM thread_summaries", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(remaining, 0);
     }
 
     #[test]

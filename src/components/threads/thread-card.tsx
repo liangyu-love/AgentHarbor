@@ -87,7 +87,7 @@ export function ThreadCard({
       <TooltipProvider delayDuration={200}>
         <div
           className={cn(
-            "group relative flex h-10 cursor-pointer items-center justify-between gap-2 overflow-hidden rounded-lg border border-border/60 bg-card/80 px-2 transition-all duration-150 hover:border-primary/45 hover:bg-muted/40",
+            "group relative flex h-12 cursor-pointer items-center justify-between gap-2.5 overflow-hidden rounded-lg border border-border/60 bg-card/80 px-2.5 transition-all duration-150 hover:border-primary/45 hover:bg-muted/40",
             selected
               ? "border-primary/60 bg-primary/[0.04] shadow-xs ring-1 ring-primary/35 dark:border-amber-400/50 dark:ring-amber-400/30 dark:bg-amber-400/[0.03]"
               : !hasRollout
@@ -111,28 +111,28 @@ export function ThreadCard({
 
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1.5">
-                <p className="truncate text-xs font-medium leading-none text-foreground group-hover:text-primary transition-colors">
+                <p className="truncate text-sm font-medium leading-none text-foreground group-hover:text-primary transition-colors">
                   {thread.title || t("threads.untitled")}
                 </p>
                 {thread.archived ? (
-                  <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-amber-500/10 px-1.5 py-px text-[9px] font-medium text-amber-600 dark:text-amber-400">
-                    <Archive className="h-2 w-2" />
+                  <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                    <Archive className="h-2.5 w-2.5" />
                     {t("threads.archivedBadge")}
                   </span>
                 ) : (
-                  <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-emerald-500/10 px-1.5 py-px text-[9px] font-medium text-emerald-600 dark:text-emerald-400">
-                    <span className="h-1 w-1 rounded-full bg-emerald-500 animate-pulse" />
+                  <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
                     {t("threads.activeBadge")}
                   </span>
                 )}
                 {!hasRollout && (
-                  <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-destructive/10 px-1.5 py-px text-[9px] font-medium text-destructive">
-                    <AlertTriangle className="h-2 w-2" />
+                  <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">
+                    <AlertTriangle className="h-2.5 w-2.5" />
                     {t("threads.rolloutMissing")}
                   </span>
                 )}
                 <span
-                  className="hidden max-w-32 shrink-0 truncate rounded-[4px] bg-primary/8 px-1 py-px font-mono text-[9px] text-primary md:inline-flex"
+                  className="hidden max-w-40 shrink-0 truncate rounded-[4px] bg-primary/8 px-1.5 py-0.5 font-mono text-[10px] text-primary md:inline-flex"
                   title={t("threads.providerAndModel", { provider: providerLabel, model: modelLabel })}
                 >
                   {providerLabel} · {modelLabel}
@@ -155,7 +155,7 @@ export function ThreadCard({
           </div>
 
           {/* Center: Turn counts & Time */}
-          <div className="hidden shrink-0 items-center gap-2.5 text-[10px] text-muted-foreground sm:flex">
+          <div className="hidden shrink-0 items-center gap-3 text-[11px] text-muted-foreground sm:flex">
             <div
               className="flex items-center gap-1 font-mono"
               title={t("threads.messagesTooltip")}
@@ -298,7 +298,7 @@ export function ThreadCard({
     <TooltipProvider delayDuration={200}>
       <BentoCard
         className={cn(
-          "group relative flex flex-col justify-between cursor-pointer p-2.5 transition-all duration-150 ease-out hover:-translate-y-px hover:border-primary/40 hover:shadow-sm",
+          "group relative flex min-h-[168px] flex-col justify-between cursor-pointer p-3.5 transition-all duration-150 ease-out hover:-translate-y-px hover:border-primary/40 hover:shadow-sm",
           selected
             ? "border-primary/60 bg-primary/[0.03] ring-1 ring-primary/35 shadow-xs dark:border-amber-400/60 dark:ring-amber-400/30 dark:bg-amber-400/[0.03]"
             : !hasRollout
@@ -322,7 +322,7 @@ export function ThreadCard({
             </span>
 
             <div className="min-w-0 flex-1">
-              <h3 className="line-clamp-1 text-xs font-semibold leading-snug tracking-tight text-foreground group-hover:text-primary transition-colors">
+              <h3 className="line-clamp-2 text-sm font-semibold leading-snug tracking-tight text-foreground group-hover:text-primary transition-colors">
                 {thread.title || t("threads.untitled")}
               </h3>
             </div>
@@ -371,15 +371,15 @@ export function ThreadCard({
         </div>
 
         {/* Middle: Dialogue breakdown — single compact line */}
-        <div className="mt-1.5 flex items-center justify-between gap-2 text-[10px]">
+        <div className="mt-2 flex items-center justify-between gap-2 text-[11px]">
           <div className="flex min-w-0 items-center gap-1.5 font-mono">
             <span className="flex items-center gap-0.5 text-sky-600 dark:text-sky-400">
-              <User className="h-2.5 w-2.5" />
+              <User className="h-3 w-3" />
               {thread.userMessages}
             </span>
             <span className="text-muted-foreground/40">/</span>
-            <span className="flex items-center gap-0.5 text-violet-600 dark:text-violet-400">
-              <Sparkles className="h-2.5 w-2.5" />
+            <span className="flex items-center gap-0.5 text-purple-600 dark:text-purple-400">
+              <Sparkles className="h-3 w-3" />
               {thread.agentMessages}
             </span>
             <span
@@ -403,7 +403,7 @@ export function ThreadCard({
         </div>
 
         {/* Bottom: Meta & Quick Actions */}
-        <div className="mt-1.5 flex items-center justify-between border-t border-border/30 pt-1.5 text-[10px] text-muted-foreground">
+        <div className="mt-2 flex items-center justify-between border-t border-border/30 pt-2 text-[11px] text-muted-foreground">
           <div className="flex min-w-0 items-center gap-2">
             <Tooltip>
               <TooltipTrigger asChild>

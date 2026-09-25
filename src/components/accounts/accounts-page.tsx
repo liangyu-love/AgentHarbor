@@ -46,12 +46,12 @@ import { cn } from "@/lib/utils";
 import type {
   AccountRateLimitWindow,
   CodexAccountSummary,
-  RelayUsagePayload,
-  RelayUsageTotals,
+  TokenUsagePayload,
+  TokenUsageTotals,
 } from "@/types";
 
 const QUERY_KEY = ["codex-accounts"] as const;
-const RELAY_USAGE_QUERY_KEY = ["relay-usage"] as const;
+const TOKEN_USAGE_QUERY_KEY = ["token-usage"] as const;
 
 function formatTokens(value: number) {
   return new Intl.NumberFormat(undefined, {
@@ -60,55 +60,127 @@ function formatTokens(value: number) {
   }).format(value);
 }
 
-function UsageTotalCard({ label, totals }: { label: string; totals: RelayUsageTotals }) {
-  const { t } = useTranslation();
+function formatPercent(value: number, total: number) {
+  if (total <= 0) return "0%";
+  return `${Math.round((value / total) * 100)}%`;
+}
+
+function CompositionBar({
+  input,
+  output,
+  cache,
+  className,
+}: {
+  input: number;
+  output: number;
+  cache: number;
+  className?: string;
+}) {
+  const total = Math.max(1, input + output + cache);
+  const parts = [
+    { key: "input", value: input, className: "bg-sky-500/75" },
+    { key: "output", value: output, className: "bg-primary/75" },
+    { key: "cache", value: cache, className: "bg-emerald-500/70" },
+  ];
   return (
-    <div className="rounded-xl border border-border/70 bg-background/65 p-4">
-      <p className="text-xs font-medium text-muted-foreground">{label}</p>
-      <p className="mt-1 text-2xl font-semibold tracking-tight">{formatTokens(totals.totalTokens)}</p>
-      <div className="mt-3 flex items-center justify-between gap-3 text-[11px] text-muted-foreground">
-        <span>{t("accounts.relayRequests", { count: totals.requestCount })}</span>
-        <span>
-          {t("accounts.relayReported", {
-            count: totals.reportedCount,
-          })}
+    <div className={cn("flex h-1.5 w-full overflow-hidden rounded-full bg-muted/80", className)}>
+      {parts.map((part) => (
+        <div
+          key={part.key}
+          className={cn("h-full transition-all duration-300", part.className)}
+          style={{ width: `${(part.value / total) * 100}%` }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function TokenTotalCard({
+  label,
+  totals,
+  emphasize,
+}: {
+  label: string;
+  totals: TokenUsageTotals;
+  emphasize?: boolean;
+}) {
+  const { t } = useTranslation();
+  const cache = totals.cacheReadTokens + totals.cacheWriteTokens;
+  return (
+    <div className={cn("min-w-0 p-3.5 sm:p-4", emphasize && "bg-primary/[0.04]")}>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-medium text-muted-foreground">{label}</p>
+        <span className="font-mono text-[10px] text-muted-foreground/80">
+          {t("accounts.agentTurns", { count: totals.turnCount })}
+        </span>
+      </div>
+      <p className="mt-1 text-2xl font-semibold tracking-tight tabular-nums sm:text-[28px] leading-none">
+        {formatTokens(totals.totalTokens)}
+        <span className="ml-1 text-xs font-normal text-muted-foreground">Token</span>
+      </p>
+      <CompositionBar
+        className="mt-2.5"
+        input={totals.inputTokens}
+        output={totals.outputTokens + totals.reasoningTokens}
+        cache={cache}
+      />
+      <div className="mt-2 grid grid-cols-3 gap-1 text-[10px] text-muted-foreground">
+        <span className="flex items-center gap-1">
+          <i className="h-1.5 w-1.5 rounded-full bg-sky-500/75" />
+          {t("accounts.inputShort")} {formatTokens(totals.inputTokens)}
+        </span>
+        <span className="flex items-center gap-1">
+          <i className="h-1.5 w-1.5 rounded-full bg-primary/75" />
+          {t("accounts.outputShort")} {formatTokens(totals.outputTokens + totals.reasoningTokens)}
+        </span>
+        <span className="flex items-center gap-1">
+          <i className="h-1.5 w-1.5 rounded-full bg-emerald-500/70" />
+          {t("accounts.cacheShort")} {formatTokens(cache)}
         </span>
       </div>
     </div>
   );
 }
 
-function UsageBreakdown({
-  title,
-  items,
-}: {
+type UsageMeasure = { totalTokens: number };
+
+function UsageBreakdown({ title, items, emptyLabel }: {
   title: string;
-  items: Array<{ key: string; title: string; subtitle?: string; totals: RelayUsageTotals }>;
+  items: Array<{ key: string; title: string; subtitle?: string; totals: UsageMeasure }>;
+  emptyLabel: string;
 }) {
-  const { t } = useTranslation();
   const max = Math.max(1, ...items.map((item) => item.totals.totalTokens));
+  const sum = items.reduce((acc, item) => acc + item.totals.totalTokens, 0);
   return (
     <div className="rounded-xl border border-border/70 bg-background/55 p-4">
-      <h4 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">{title}</h4>
+      <div className="flex items-center justify-between gap-2">
+        <h4 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">{title}</h4>
+        {items.length > 0 && (
+          <span className="font-mono text-[10px] text-muted-foreground">{formatTokens(sum)}</span>
+        )}
+      </div>
       {items.length === 0 ? (
-        <p className="py-8 text-center text-xs text-muted-foreground">{t("accounts.relayEmpty")}</p>
+        <p className="py-8 text-center text-xs text-muted-foreground">{emptyLabel}</p>
       ) : (
-        <div className="mt-3 space-y-3">
-          {items.slice(0, 5).map((item) => (
+        <div className="mt-3 space-y-2.5">
+          {items.slice(0, 6).map((item) => (
             <div key={item.key}>
               <div className="flex items-center justify-between gap-3 text-xs">
                 <div className="min-w-0">
                   <p className="truncate font-medium" title={item.title}>{item.title}</p>
                   {item.subtitle && <p className="truncate text-[10px] text-muted-foreground">{item.subtitle}</p>}
                 </div>
-                <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
-                  {formatTokens(item.totals.totalTokens)}
-                </span>
+                <div className="shrink-0 text-right">
+                  <span className="font-mono text-[11px] text-foreground">{formatTokens(item.totals.totalTokens)}</span>
+                  <span className="ml-1.5 font-mono text-[10px] text-muted-foreground">
+                    {formatPercent(item.totals.totalTokens, sum)}
+                  </span>
+                </div>
               </div>
               <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-muted">
                 <div
-                  className="h-full rounded-full bg-primary/70"
-                  style={{ width: `${Math.max(3, (item.totals.totalTokens / max) * 100)}%` }}
+                  className="h-full rounded-full bg-primary/70 transition-all duration-300"
+                  style={{ width: Math.max(3, (item.totals.totalTokens / max) * 100) + "%" }}
                 />
               </div>
             </div>
@@ -119,33 +191,119 @@ function UsageBreakdown({
   );
 }
 
-function RelayUsagePanel({ data, loading, error }: {
-  data: RelayUsagePayload | undefined;
-  loading: boolean;
-  error: unknown;
+function SourceUsageCard({
+  name,
+  badge,
+  totalTokens,
+  count,
+  countLabel,
+  inputTokens,
+  outputTokens,
+  cacheTokens,
+  share,
+  className,
+}: {
+  name: string;
+  badge: string;
+  totalTokens: number;
+  count: number;
+  countLabel?: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheTokens: number;
+  share?: number;
+  className?: string;
 }) {
   const { t } = useTranslation();
-  if (loading) return <Skeleton className="h-[430px] rounded-2xl" />;
-  if (error) {
-    return (
-      <section className="rounded-2xl border border-destructive/30 bg-destructive/5 p-5 text-sm text-destructive">
-        {String(error)}
-      </section>
-    );
-  }
+  return (
+    <div className={cn("rounded-xl border border-border/70 bg-background/65 p-4", className)}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate font-semibold">{name}</p>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            {countLabel ?? t("accounts.usageEvents", { count })}
+          </p>
+        </div>
+        <div className="shrink-0 text-right">
+          <p className="text-xl font-semibold tracking-tight tabular-nums">{formatTokens(totalTokens)}</p>
+          {typeof share === "number" && (
+            <p className="mt-0.5 font-mono text-[10px] text-muted-foreground">
+              占比 {formatPercent(totalTokens, share)}
+            </p>
+          )}
+        </div>
+      </div>
+      <CompositionBar
+        className="mt-3"
+        input={inputTokens}
+        output={outputTokens}
+        cache={cacheTokens}
+      />
+      <div className="mt-2.5 grid grid-cols-3 gap-2 text-[10px] text-muted-foreground">
+        <div>
+          <p>{t("accounts.inputShort")}</p>
+          <p className="mt-0.5 font-mono text-foreground">{formatTokens(inputTokens)}</p>
+        </div>
+        <div>
+          <p>{t("accounts.outputShort")}</p>
+          <p className="mt-0.5 font-mono text-foreground">{formatTokens(outputTokens)}</p>
+        </div>
+        <div>
+          <p>{t("accounts.cacheShort")}</p>
+          <p className="mt-0.5 font-mono text-foreground">{formatTokens(cacheTokens)}</p>
+        </div>
+      </div>
+      <div className="mt-2 truncate text-[10px] text-muted-foreground/80" title={badge}>
+        {badge}
+      </div>
+    </div>
+  );
+}
+
+function TokenUsagePanel({ data, loading, error, onRetry }: {
+  data: TokenUsagePayload | undefined;
+  loading: boolean;
+  error: unknown;
+  onRetry: () => void;
+}) {
+  const { t } = useTranslation();
+  if (loading) return <Skeleton className="h-[520px] rounded-2xl" />;
+  if (error) return (
+    <section className="rounded-2xl border border-destructive/30 bg-destructive/5 p-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h3 className="font-semibold text-destructive">{t("accounts.tokenUsageLoadFailed")}</h3>
+          <p className="mt-1 text-xs text-muted-foreground">{t("accounts.tokenUsageLoadFailedDesc")}</p>
+        </div>
+        <Button variant="outline" size="xs" onClick={onRetry}>
+          <RefreshCw />
+          {t("accounts.retry")}
+        </Button>
+      </div>
+      <details className="mt-3 text-[11px] text-muted-foreground">
+        <summary className="cursor-pointer">{t("accounts.technicalDetails")}</summary>
+        <p className="mt-2 break-all font-mono">{String(error)}</p>
+      </details>
+    </section>
+  );
   if (!data) return null;
-  const maxDaily = Math.max(1, ...data.daily.map((day) => day.totals.totalTokens));
-  const providerItems = data.byProvider.map((item) => ({
-    key: item.providerId,
-    title: item.providerName,
+
+  const local = data.local;
+  const relay = data.relay;
+  const maxDaily = Math.max(1, ...local.daily.map((day) => day.totals.totalTokens));
+  const localModels = local.byModel.map((item) => ({
+    key: item.sourceId + "::" + item.model,
+    title: item.model,
+    subtitle: item.sourceName,
     totals: item.totals,
   }));
-  const modelItems = data.byModel.map((item) => ({
-    key: `${item.providerId}::${item.model}`,
+  const relayModels = relay.byModel.map((item) => ({
+    key: item.providerId + "::" + item.model,
     title: item.model,
     subtitle: item.providerName,
     totals: item.totals,
   }));
+  const localShareBase = Math.max(1, local.allTime.totalTokens);
 
   return (
     <section className="overflow-hidden rounded-2xl border border-border/75 bg-card/75 shadow-sm">
@@ -154,78 +312,236 @@ function RelayUsagePanel({ data, loading, error }: {
           <div className="rounded-xl bg-primary/10 p-2.5 text-primary"><Activity className="h-5 w-5" /></div>
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <h3 className="font-semibold">{t("accounts.relayMonitor")}</h3>
+              <h3 className="font-semibold tracking-tight">{t("accounts.tokenMonitor")}</h3>
               <Badge variant="outline" className="border-primary/20 bg-primary/5 text-[10px] text-primary">
-                {t("accounts.relayOnly")}
+                Codex + Claude Code + Relay
               </Badge>
             </div>
-            <p className="mt-1 text-xs text-muted-foreground">{t("accounts.relayMonitorDesc")}</p>
+            <p className="mt-1 max-w-3xl text-xs leading-relaxed text-muted-foreground">
+              {t("accounts.tokenMonitorDesc")}
+            </p>
           </div>
         </div>
-        <div className="flex items-center gap-4 text-[11px] text-muted-foreground">
-          <span className="flex items-center gap-1.5"><Database className="h-3.5 w-3.5" />{t("accounts.localHistory")}</span>
-          <span>{t("accounts.inputShort")} {formatTokens(data.allTime.inputTokens)}</span>
-          <span>{t("accounts.outputShort")} {formatTokens(data.allTime.outputTokens)}</span>
-          <span>{t("accounts.reasoningShort")} {formatTokens(data.allTime.reasoningTokens)}</span>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+          <span className="flex items-center gap-1.5">
+            <Database className="h-3.5 w-3.5" />
+            {t("accounts.incrementalLedger")}
+          </span>
+          <span className="flex items-center gap-1.5">
+            <Clock3 className="h-3.5 w-3.5" />
+            {t("accounts.lastUpdated", { time: new Date(data.generatedAt * 1000).toLocaleString() })}
+          </span>
         </div>
       </div>
 
       <div className="space-y-4 p-4 sm:p-5">
-        <div className="grid gap-3 sm:grid-cols-3">
-          <UsageTotalCard label={t("accounts.todayUsage")} totals={data.today} />
-          <UsageTotalCard label={t("accounts.weekUsage")} totals={data.week} />
-          <UsageTotalCard label={t("accounts.allUsage")} totals={data.allTime} />
+        <div className="grid divide-y divide-border/70 overflow-hidden rounded-xl border border-border/70 bg-background/65 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+          <TokenTotalCard label={t("accounts.todayUsage")} totals={local.today} emphasize />
+          <TokenTotalCard label={t("accounts.weekUsage")} totals={local.week} />
+          <TokenTotalCard label={t("accounts.allUsage")} totals={local.allTime} />
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-[1.25fr_1fr_1fr]">
+        <div>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <h4 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+              {t("accounts.localAgentUsage")}
+            </h4>
+            <span className="font-mono text-[10px] text-muted-foreground">
+              {formatTokens(local.allTime.totalTokens)} Token
+            </span>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            {local.bySource.map((source) => (
+              <SourceUsageCard
+                key={source.sourceId}
+                name={source.sourceName}
+                badge={
+                  source.available
+                    ? t("accounts.filesScanned", { count: source.fileCount })
+                    : t("accounts.sourceNotFound")
+                }
+                totalTokens={source.totals.totalTokens}
+                count={source.totals.turnCount}
+                inputTokens={source.totals.inputTokens}
+                outputTokens={source.totals.outputTokens + source.totals.reasoningTokens}
+                cacheTokens={source.totals.cacheReadTokens + source.totals.cacheWriteTokens}
+                share={localShareBase}
+              />
+            ))}
+          </div>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-[1.35fr_1fr]">
           <div className="rounded-xl border border-border/70 bg-background/55 p-4">
             <div className="flex items-center justify-between gap-3">
               <h4 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                <BarChart3 className="h-3.5 w-3.5" />{t("accounts.dailyTrend")}
+                <BarChart3 className="h-3.5 w-3.5" />
+                {t("accounts.dailyTrend")}
               </h4>
-              <span className="text-[10px] text-muted-foreground">{t("accounts.last14Days")}</span>
+              <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
+                <span className="flex items-center gap-1">
+                  <i className="h-1.5 w-1.5 rounded-full bg-primary" />
+                  {t("accounts.last14Days")}
+                </span>
+                <span className="font-mono">峰值 {formatTokens(maxDaily)}</span>
+              </div>
             </div>
-            <div className="mt-4 flex h-36 items-end gap-1.5">
-              {data.daily.map((day) => (
-                <div key={day.date} className="group flex min-w-0 flex-1 flex-col items-center justify-end gap-1.5">
-                  <div className="relative flex h-28 w-full items-end">
-                    <div
-                      className="w-full min-w-1 rounded-t bg-primary/65 transition-colors group-hover:bg-primary"
-                      style={{ height: `${day.totals.totalTokens === 0 ? 2 : Math.max(6, day.totals.totalTokens / maxDaily * 100)}%` }}
-                      title={`${day.date} · ${formatTokens(day.totals.totalTokens)} Token · ${day.totals.requestCount} requests`}
-                    />
+            <div className="mt-4 flex h-40 items-end gap-1.5">
+              {local.daily.map((day, index) => {
+                const dayLabel =
+                  day.date +
+                  " · " +
+                  formatTokens(day.totals.totalTokens) +
+                  " Token · " +
+                  t("accounts.agentTurns", { count: day.totals.turnCount });
+                const isToday = index === local.daily.length - 1;
+                const height =
+                  day.totals.totalTokens === 0
+                    ? 2
+                    : Math.max(6, (day.totals.totalTokens / maxDaily) * 100);
+                return (
+                  <div
+                    key={day.date}
+                    className="group relative flex min-w-0 flex-1 flex-col items-center justify-end gap-1.5 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                    tabIndex={0}
+                    role="img"
+                    aria-label={dayLabel}
+                  >
+                    <div className="pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-10 w-max max-w-44 -translate-x-1/2 rounded-md bg-popover px-2 py-1 text-[10px] text-popover-foreground opacity-0 shadow-md transition-opacity group-hover:opacity-100 group-focus:opacity-100">
+                      {dayLabel}
+                    </div>
+                    <div className="relative flex h-28 w-full items-end">
+                      <div
+                        className={cn(
+                          "w-full min-w-1 rounded-t transition-colors",
+                          isToday
+                            ? "bg-primary shadow-[0_0_12px_hsl(var(--primary)/0.35)]"
+                            : "bg-primary/65 group-hover:bg-primary",
+                        )}
+                        style={{ height: height + "%" }}
+                        title={dayLabel}
+                      />
+                    </div>
+                    <span className="text-[9px] text-muted-foreground">
+                      {isToday ? "今" : Number(day.date.slice(-2)) % 2 === 0 ? day.date.slice(5) : ""}
+                    </span>
                   </div>
-                  <span className="text-[9px] text-muted-foreground">
-                    {Number(day.date.slice(-2)) % 2 === 0 ? day.date.slice(5) : ""}
-                  </span>
-                </div>
-              ))}
+                );
+              })}
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border/50 pt-3 text-[10px] text-muted-foreground">
+              <span className="flex items-center gap-1">
+                <i className="h-1.5 w-1.5 rounded-full bg-sky-500/75" />
+                {t("accounts.inputShort")}
+              </span>
+              <span className="flex items-center gap-1">
+                <i className="h-1.5 w-1.5 rounded-full bg-primary/75" />
+                {t("accounts.outputShort")}
+              </span>
+              <span className="flex items-center gap-1">
+                <i className="h-1.5 w-1.5 rounded-full bg-emerald-500/70" />
+                {t("accounts.cacheShort")}
+              </span>
             </div>
           </div>
-          <UsageBreakdown title={t("accounts.byProvider")} items={providerItems} />
-          <UsageBreakdown title={t("accounts.byModel")} items={modelItems} />
+          <UsageBreakdown
+            title={t("accounts.localModels")}
+            items={localModels}
+            emptyLabel={t("accounts.localUsageEmpty")}
+          />
         </div>
 
-        {data.recent.length > 0 && (
+        <div className="rounded-xl border border-dashed border-border/80 bg-muted/15 p-3 sm:p-4">
+          <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+            <h4 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+              {t("accounts.relayUsage")}
+            </h4>
+            <span className="text-[10px] leading-4 text-muted-foreground">
+              {t("accounts.relaySeparateHint")}
+            </span>
+          </div>
+          <div className="grid gap-3 lg:grid-cols-[1fr_1.2fr]">
+            <SourceUsageCard
+              name="AgentHarbor Relay"
+              badge={t("accounts.relayRequests", { count: relay.allTime.requestCount })}
+              totalTokens={relay.allTime.totalTokens}
+              count={relay.allTime.reportedCount}
+              countLabel={t("accounts.relayReported", { count: relay.allTime.reportedCount })}
+              inputTokens={relay.allTime.inputTokens}
+              outputTokens={relay.allTime.outputTokens}
+              cacheTokens={0}
+              share={Math.max(1, relay.allTime.totalTokens)}
+              className="bg-background/55"
+            />
+            <UsageBreakdown
+              title={t("accounts.relayModels")}
+              items={relayModels}
+              emptyLabel={t("accounts.relayEmpty")}
+            />
+          </div>
+        </div>
+
+        {local.recent.length > 0 && (
           <div className="overflow-hidden rounded-xl border border-border/70 bg-background/55">
-            <div className="border-b border-border/70 px-4 py-3 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-              {t("accounts.recentRelayRequests")}
+            <div className="flex items-center justify-between gap-2 border-b border-border/70 px-4 py-3">
+              <span className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                {t("accounts.recentAgentTurns")}
+              </span>
+              <span className="text-[10px] text-muted-foreground">
+                {t("accounts.recentAgentTurns")} · {Math.min(8, local.recent.length)}
+              </span>
+            </div>
+            <div className="hidden grid-cols-[120px_minmax(0,1fr)_170px_90px] gap-4 border-b border-border/60 bg-muted/20 px-4 py-2 text-[10px] font-medium text-muted-foreground sm:grid">
+              <span>{t("accounts.sourceColumn")}</span>
+              <span>{t("accounts.modelColumn")}</span>
+              <span>{t("accounts.timeColumn")}</span>
+              <span className="text-right">{t("accounts.tokenColumn")}</span>
             </div>
             <div className="divide-y divide-border/60">
-              {data.recent.slice(0, 5).map((item, index) => (
-                <div key={`${item.timestamp}-${item.providerId}-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-4 px-4 py-3 text-xs sm:grid-cols-[160px_minmax(0,1fr)_90px_100px]">
-                  <div className="truncate font-medium">{item.providerName}</div>
-                  <div className="truncate font-mono text-[11px] text-muted-foreground" title={item.model}>{item.model}</div>
-                  <div className={cn("hidden sm:block", item.success ? "text-emerald-600 dark:text-emerald-400" : "text-destructive")}>
-                    HTTP {item.statusCode}
+              {local.recent.slice(0, 8).map((item, index) => (
+                <div
+                  key={item.timestamp + "-" + item.sourceId + "-" + index}
+                  className="grid grid-cols-[minmax(0,1fr)_auto] gap-4 px-4 py-2.5 text-xs transition-colors hover:bg-muted/25 sm:grid-cols-[120px_minmax(0,1fr)_170px_90px]"
+                >
+                  <div className="min-w-0 sm:hidden">
+                    <p className="font-medium">{item.sourceName}</p>
+                    <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground" title={item.model}>
+                      {item.model}
+                    </p>
+                    <p className="mt-0.5 text-[10px] text-muted-foreground">
+                      {new Date(item.timestamp * 1000).toLocaleString()}
+                    </p>
                   </div>
-                  <div className="text-right font-mono text-muted-foreground">
-                    {item.usageReported ? formatTokens(item.totalTokens) : t("accounts.unreported")}
+                  <div className="hidden items-center gap-1.5 font-medium sm:flex">
+                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary/70" />
+                    <span className="truncate">{item.sourceName}</span>
+                  </div>
+                  <div className="hidden truncate font-mono text-[11px] text-muted-foreground sm:block" title={item.model}>
+                    {item.model}
+                  </div>
+                  <div className="hidden truncate text-muted-foreground sm:block">
+                    {new Date(item.timestamp * 1000).toLocaleString()}
+                  </div>
+                  <div className="text-right font-mono tabular-nums text-foreground">
+                    {formatTokens(item.totalTokens)}
                   </div>
                 </div>
               ))}
             </div>
           </div>
+        )}
+
+        {local.warningCount > 0 && (
+          <details className="rounded-xl border border-amber-500/25 bg-amber-500/5 px-4 py-3 text-xs text-amber-800 dark:text-amber-300">
+            <summary className="cursor-pointer font-medium">
+              {t("accounts.scanWarnings", { count: local.warningCount })}
+            </summary>
+            <ul className="mt-2 space-y-1 pl-4">
+              {local.warnings.map((warning) => (
+                <li key={warning} className="list-disc">{warning}</li>
+              ))}
+            </ul>
+          </details>
         )}
       </div>
     </section>
@@ -426,9 +742,9 @@ export function AccountsPage({ refreshInterval }: { refreshInterval: RefreshInte
     refetchIntervalInBackground: false,
     retry: false,
   });
-  const relayUsageQuery = useQuery({
-    queryKey: RELAY_USAGE_QUERY_KEY,
-    queryFn: api.usage.relay,
+  const tokenUsageQuery = useQuery({
+    queryKey: TOKEN_USAGE_QUERY_KEY,
+    queryFn: api.usage.overview,
     refetchInterval: REFRESH_INTERVAL_MS[refreshInterval],
     refetchIntervalInBackground: false,
     retry: false,
@@ -483,7 +799,7 @@ export function AccountsPage({ refreshInterval }: { refreshInterval: RefreshInte
   });
 
   const refresh = async () => {
-    const [accountsResult] = await Promise.all([accountsQuery.refetch(), relayUsageQuery.refetch()]);
+    const [accountsResult] = await Promise.all([accountsQuery.refetch(), tokenUsageQuery.refetch()]);
     if (accountsResult.data) toast({ title: t("accounts.refreshSuccess"), variant: "success" });
   };
 
@@ -522,9 +838,9 @@ export function AccountsPage({ refreshInterval }: { refreshInterval: RefreshInte
             <Button
               variant="outline"
               onClick={() => void refresh()}
-              disabled={accountsQuery.isFetching}
+              disabled={accountsQuery.isFetching || tokenUsageQuery.isFetching}
             >
-              <RefreshCw className={cn(accountsQuery.isFetching && "animate-spin")} />
+              <RefreshCw className={cn((accountsQuery.isFetching || tokenUsageQuery.isFetching) && "animate-spin")} />
               {t("common.refresh")}
             </Button>
             <Button onClick={() => loginMutation.mutate()} disabled={loginMutation.isPending}>
@@ -534,10 +850,11 @@ export function AccountsPage({ refreshInterval }: { refreshInterval: RefreshInte
           </div>
         </section>
 
-        <RelayUsagePanel
-          data={relayUsageQuery.data}
-          loading={relayUsageQuery.isPending}
-          error={relayUsageQuery.error}
+        <TokenUsagePanel
+          data={tokenUsageQuery.data}
+          loading={tokenUsageQuery.isPending}
+          error={tokenUsageQuery.error}
+          onRetry={() => void tokenUsageQuery.refetch()}
         />
 
         <section className="flex flex-col gap-3 rounded-2xl border border-border/70 bg-card/70 p-3 shadow-sm sm:flex-row sm:items-center">

@@ -346,6 +346,71 @@ export interface RelayUsagePayload {
   recent: RelayUsageRecord[];
 }
 
+export interface TokenUsageTotals {
+  turnCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+}
+
+export interface TokenUsageSource {
+  sourceId: string;
+  sourceName: string;
+  available: boolean;
+  fileCount: number;
+  updatedFileCount: number;
+  totals: TokenUsageTotals;
+}
+
+export interface TokenModelUsage {
+  sourceId: string;
+  sourceName: string;
+  model: string;
+  totals: TokenUsageTotals;
+}
+
+export interface TokenUsageDay {
+  date: string;
+  totals: TokenUsageTotals;
+}
+
+export interface RecentTokenUsage {
+  timestamp: number;
+  date: string;
+  sourceId: string;
+  sourceName: string;
+  model: string;
+  sessionId: string;
+  inputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+}
+
+export interface LocalTokenUsagePayload {
+  generatedAt: number;
+  today: TokenUsageTotals;
+  week: TokenUsageTotals;
+  allTime: TokenUsageTotals;
+  bySource: TokenUsageSource[];
+  byModel: TokenModelUsage[];
+  daily: TokenUsageDay[];
+  recent: RecentTokenUsage[];
+  warningCount: number;
+  warnings: string[];
+}
+
+export interface TokenUsagePayload {
+  generatedAt: number;
+  local: LocalTokenUsagePayload;
+  relay: RelayUsagePayload;
+}
+
 export interface BootstrapStatePayload {
   writtenAt: number | null;
   snapshotProgressive: CoreSnapshotPayload | null;

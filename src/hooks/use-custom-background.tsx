@@ -201,24 +201,13 @@ export function CustomBackgroundProvider({ children }: { children: ReactNode }) 
       return {
         backgroundImage: `url(${customImageUrl})`,
         backgroundSize: "cover",
-        backgroundPosition: "center",
+        backgroundPosition: "center center",
         backgroundRepeat: "no-repeat",
       };
     }
 
-    if (settings.presetId) {
-      const preset = WALLPAPER_PRESETS.find((p) => p.id === settings.presetId);
-      if (preset) {
-        return {
-          background: preset.gradient,
-          backgroundSize: "cover",
-          backgroundPosition: "center",
-        };
-      }
-    }
-
     return null;
-  }, [settings.enabled, settings.hasCustomUpload, customImageUrl, settings.presetId]);
+  }, [settings.enabled, settings.hasCustomUpload, customImageUrl]);
 
   const hasActiveBackground = Boolean(settings.enabled && activeBackgroundStyle);
 
@@ -371,7 +360,14 @@ export function useCustomBackground() {
 }
 
 export function CustomBackgroundLayer() {
-  const { enabled, activeBackgroundStyle, opacity, blur, overlayDim } = useCustomBackground();
+  const {
+    enabled,
+    activeBackgroundStyle,
+    opacity,
+    blur,
+    overlayDim,
+    customImageUrl,
+  } = useCustomBackground();
 
   if (!enabled || !activeBackgroundStyle) return null;
 
@@ -380,15 +376,33 @@ export function CustomBackgroundLayer() {
       aria-hidden="true"
       className="pointer-events-none fixed inset-0 z-0 overflow-hidden select-none"
     >
-      <div
-        className="absolute inset-0 transition-all duration-300 ease-out will-change-[opacity,filter,transform]"
-        style={{
-          ...activeBackgroundStyle,
-          opacity,
-          filter: `blur(${blur}px)`,
-          transform: blur > 0 ? "scale(1.05)" : "none",
-        }}
-      />
+      {/* Stretch & center across the entire window, like a desktop wallpaper. */}
+      {customImageUrl ? (
+        <img
+          src={customImageUrl}
+          alt=""
+          className="absolute inset-0 h-full w-full transition-opacity duration-300"
+          style={{
+            objectFit: "cover",
+            objectPosition: "center",
+            opacity,
+            filter: blur > 0 ? `blur(${blur}px)` : undefined,
+          }}
+          draggable={false}
+        />
+      ) : (
+        <div
+          className="absolute inset-0 transition-all duration-300 ease-out"
+          style={{
+            ...activeBackgroundStyle,
+            backgroundSize: "cover",
+            backgroundPosition: "center center",
+            backgroundRepeat: "no-repeat",
+            opacity,
+            filter: blur > 0 ? `blur(${blur}px)` : undefined,
+          }}
+        />
+      )}
       {overlayDim > 0 && (
         <div
           className="absolute inset-0 bg-background transition-opacity duration-300"
