@@ -13,7 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
-import { includedModelsForProtocol, supportsProtocol } from "@/lib/provider-models";
+import { effectiveModelProtocol, includedModels, mergeModelCatalog } from "@/lib/provider-models";
 import type { NewApiModel, NewApiProvider } from "@/types/newapi";
 
 const errorKey = (error: unknown) => {
@@ -51,7 +51,7 @@ export function ProviderTestDialog({ open, provider, onOpenChange, onTested, onF
         target.protocol,
       );
       if (request !== modelRequest.current) return;
-      const compatible = loaded.filter(model => supportsProtocol(model, target.protocol));
+      const compatible = includedModels(mergeModelCatalog(target.models, loaded));
       setModels(compatible);
       setSelectedModel(current => {
         if (current && compatible.some(model => model.id === current)) return current;
@@ -73,7 +73,7 @@ export function ProviderTestDialog({ open, provider, onOpenChange, onTested, onF
       setLoadingModels(false);
       return;
     }
-    const cached = includedModelsForProtocol(provider.models, provider.protocol);
+    const cached = includedModels(provider.models);
     setModels(cached);
     setSelectedModel(
       provider.model && cached.some(model => model.id === provider.model)
@@ -155,6 +155,7 @@ export function ProviderTestDialog({ open, provider, onOpenChange, onTested, onF
             ) : (
               models.map(model => {
                 const selected = selectedModel === model.id;
+                const protocol = effectiveModelProtocol(model, provider?.protocol ?? "responses");
                 return (
                   <button
                     key={model.id}
@@ -166,6 +167,7 @@ export function ProviderTestDialog({ open, provider, onOpenChange, onTested, onF
                     onClick={() => setSelectedModel(model.id)}
                   >
                     <span className="min-w-0 flex-1 truncate font-mono text-xs">{model.id}</span>
+                    <span className="text-[10px] text-muted-foreground">{t(`newapi.protocolShort${protocol === "responses" ? "Responses" : protocol === "chatCompletions" ? "Chat" : "Anthropic"}`)}</span>
                     {model.contextWindow && (
                       <span className="shrink-0 text-[10px] text-muted-foreground">
                         {Math.round(model.contextWindow / 1000)}K

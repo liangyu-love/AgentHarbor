@@ -1,26 +1,62 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Brush,
+  Check,
+  Copy,
   Download,
   Feather,
+  FolderOpen,
+  HardDriveDownload,
+  History,
   ImagePlus,
   Loader2,
   Palette,
+  Pin,
+  PinOff,
+  RefreshCw,
   Scroll,
+  Search,
+  Sparkles,
+  Star,
+  Trash2,
   Upload,
   X,
+  ZoomIn,
 } from "lucide-react";
-import { api, type ImageGenerationResponse } from "@/lib/api";
+import { api, type GalleryItem, type ImageGenerationResponse } from "@/lib/api";
+import {
+  PROMPT_LIBRARY,
+  loadPromptFavorites,
+  promptRecipeKey,
+  savePromptFavorites,
+  togglePromptFavorite,
+  type PromptRecipe,
+} from "@/lib/image-prompts";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { toast } from "@/hooks/use-toast";
+import { formatRelative } from "@/lib/format-time";
+import { isTauriRuntime } from "@/lib/tauri-runtime";
 import { cn } from "@/lib/utils";
 
 const IMAGE_KEY = ["newapi-state"] as const;
+const GALLERY_KEY = ["image-gallery"] as const;
+const GALLERY_THUMBNAIL_CACHE_LIMIT = 48;
 
 type AspectRatioOption = {
   label: string;
@@ -45,36 +81,7 @@ const QUALITIES = [
   { value: "low", label: "意笔写意 (low)", tip: "轻快随形，迅速成画" },
 ];
 
-const POETIC_CATEGORIES = [
-  {
-    category: "水墨山水",
-    prompts: [
-      "远山如黛，千峰积雪，孤舟蓑笠翁独钓寒江，大写意泼墨与留白，宋画气韵，清冷幽远，超高清宣纸肌理",
-      "烟雨江南，徽派古村落，白墙黛瓦，乌篷船划破碧波涟漪，淡彩水墨，细雨蒙蒙，水气氤氲，水墨国画",
-    ],
-  },
-  {
-    category: "工笔重彩",
-    prompts: [
-      "宋代院体工笔花鸟，一枝红杏青苔湿，双雀争鸣，线条劲细如铁线描，石青石绿矿物设色，真丝绢本古朴沉静",
-      "敦煌壁画飞天仙子，沥粉贴金，飘带翻飞于祥云彩霞间，斑驳矿彩质感，神圣庄严而灵动，千年壁画风韵",
-    ],
-  },
-  {
-    category: "赛博国风",
-    prompts: [
-      "新中式赛博朋克，云雾缥缈的飞檐古道观与全息霓虹相融，御剑行者独立于摩天飞檐，雨夜青石板反光，水墨与数码交融",
-      "国风机械青龙，盘旋于雷云紫霄之上，鎏金龙鳞与青铜机甲交错，云气吞吐，极具东方神话工业科幻感",
-    ],
-  },
-  {
-    category: "文房禅意",
-    prompts: [
-      "中式禅意极简摄影，古拙粗陶茶盏，一缕清烟袅袅升起，一瓣山茶花落在湿润青石板，静谧工作室柔光，高贵沉静",
-      "案头文房四宝，徽墨歙砚，羊毫狼毫笔锋毕现，一滴浓墨正在白宣纸上晕染扩散，微距特写，水墨艺术质感",
-    ],
-  },
-];
+type PromptCategory = (typeof PROMPT_LIBRARY)[number];
 
 type SavedImageConfig = {
   baseUrl: string;
@@ -113,6 +120,62 @@ function fileToDataUrl(file: File) {
   });
 }
 
+function GalleryThumbnail({ item, load, onPreview, opening }: {
+  item: GalleryItem;
+  load: (item: GalleryItem) => Promise<string>;
+  onPreview: () => void;
+  opening: boolean;
+}) {
+  const anchor = useRef<HTMLButtonElement>(null);
+  const [visible, setVisible] = useState(false);
+  const [src, setSrc] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    const element = anchor.current;
+    if (!element) return;
+    const stage = element.closest<HTMLElement>("[data-page-scroll-container]");
+    let intersecting = false;
+    const update = () => setVisible(intersecting && stage?.getAttribute("aria-hidden") !== "true");
+    const observer = new IntersectionObserver(entries => {
+      intersecting = entries[0]?.isIntersecting ?? false;
+      update();
+    }, { root: stage, rootMargin: "200px 0px" });
+    observer.observe(element);
+    const visibility = new MutationObserver(update);
+    if (stage) visibility.observe(stage, { attributes: true, attributeFilter: ["aria-hidden"] });
+    return () => { observer.disconnect(); visibility.disconnect(); };
+  }, []);
+
+  useEffect(() => {
+    setSrc(null);
+    setFailed(false);
+    if (!visible) return;
+    let active = true;
+    void load(item).then(value => {
+      if (active) setSrc(value);
+    }).catch(() => {
+      if (active) setFailed(true);
+    });
+    return () => { active = false; };
+  }, [visible, item.path, item.modifiedAt, item.size, load]);
+
+  return (
+    <button ref={anchor} type="button" className="relative block aspect-square w-full bg-muted/30"
+      onClick={onPreview} disabled={opening} title={item.name}>
+      {src ? (
+        <img src={src} alt={item.name} className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]" />
+      ) : (
+        <span className="flex h-full w-full items-center justify-center">
+          {failed ? <ImagePlus className="h-4 w-4 text-muted-foreground" /> :
+            <Loader2 className={cn("h-4 w-4 text-muted-foreground", visible && "animate-spin")} />}
+        </span>
+      )}
+      {opening && <Loader2 className="absolute left-1/2 top-1/2 h-5 w-5 animate-spin text-white" />}
+    </button>
+  );
+}
+
 export function ImageWorkbenchPage() {
   const { t } = useTranslation();
   const state = useQuery({ queryKey: IMAGE_KEY, queryFn: api.providers.loadState, refetchOnWindowFocus: false });
@@ -130,6 +193,9 @@ export function ImageWorkbenchPage() {
 
   const [providerId, setProviderId] = useState<string>("");
   const savedConfig = useMemo(loadSavedConfig, []);
+  const [providerChoiceInitialized, setProviderChoiceInitialized] = useState(
+    () => Boolean(savedConfig.baseUrl || savedConfig.legacyApiKey),
+  );
   const [baseUrl, setBaseUrl] = useState(savedConfig.baseUrl);
   const [apiKey, setApiKey] = useState(savedConfig.legacyApiKey ?? "");
   const [keyStored, setKeyStored] = useState(false);
@@ -142,7 +208,70 @@ export function ImageWorkbenchPage() {
   const [result, setResult] = useState<ImageGenerationResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [activeCategory, setActiveCategory] = useState<string>("水墨山水");
+  const [activeCategory, setActiveCategory] = useState<string>(PROMPT_LIBRARY[0]?.category ?? "");
+  const [promptQuery, setPromptQuery] = useState("");
+  const [promptFavorites, setPromptFavorites] = useState<string[]>(() => loadPromptFavorites());
+  const [savedGalleryDir, setSavedGalleryDir] = useState<string | null>(null);
+  const [copiedPrompt, setCopiedPrompt] = useState<string | null>(null);
+  const [expandedPrompt, setExpandedPrompt] = useState<string | null>(null);
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const thumbnailCache = useRef(new Map<string, string>());
+  const thumbnailLoads = useRef(new Map<string, Promise<string>>());
+  const gallerySession = useRef(0);
+  const previewRequest = useRef(0);
+  const [galleryPreviewPath, setGalleryPreviewPath] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<GalleryItem | null>(null);
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  const queryClient = useQueryClient();
+
+  const galleryQuery = useQuery({
+    queryKey: GALLERY_KEY,
+    queryFn: () => api.image.listGallery(),
+    enabled: isTauriRuntime() && galleryOpen,
+    staleTime: 5_000,
+  });
+  const galleryItems = useMemo(() => galleryQuery.data?.items ?? [], [galleryQuery.data]);
+
+  useEffect(() => {
+    if (!galleryOpen || !isTauriRuntime()) return;
+    if (galleryQuery.data?.directory) {
+      setSavedGalleryDir(galleryQuery.data.directory);
+    }
+  }, [galleryOpen, galleryQuery.data?.directory]);
+
+  useEffect(() => () => {
+    gallerySession.current += 1;
+    previewRequest.current += 1;
+    thumbnailCache.current.clear();
+    thumbnailLoads.current.clear();
+  }, [galleryOpen]);
+
+  const loadGalleryThumbnail = useCallback((item: GalleryItem) => {
+    const key = JSON.stringify([item.path, item.modifiedAt, item.size]);
+    const cache = thumbnailCache.current;
+    const cached = cache.get(key);
+    if (cached) {
+      cache.delete(key);
+      cache.set(key, cached);
+      return Promise.resolve(cached);
+    }
+    const pending = thumbnailLoads.current.get(key);
+    if (pending) return pending;
+    const session = gallerySession.current;
+    const request = api.image.loadGalleryThumbnail(item.path).then(src => {
+      if (session === gallerySession.current) {
+        cache.set(key, src);
+        while (cache.size > GALLERY_THUMBNAIL_CACHE_LIMIT) {
+          cache.delete(cache.keys().next().value!);
+        }
+      }
+      return src;
+    }).finally(() => {
+      if (thumbnailLoads.current.get(key) === request) thumbnailLoads.current.delete(key);
+    });
+    thumbnailLoads.current.set(key, request);
+    return request;
+  }, []);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const selectedProvider = providers.find(provider => provider.id === providerId);
@@ -196,7 +325,9 @@ export function ImageWorkbenchPage() {
   };
 
   useEffect(() => {
-    if (providerId || baseUrl || apiKey || imageProviders.length === 0) return;
+    if (providerChoiceInitialized || !state.isSuccess) return;
+    setProviderChoiceInitialized(true);
+    if (baseUrl || apiKey || imageProviders.length === 0) return;
     const provider = imageProviders[0];
     setProviderId(provider.id);
     setModel(
@@ -204,9 +335,10 @@ export function ImageWorkbenchPage() {
         provider.model ||
         "gpt-image-2",
     );
-  }, [apiKey, baseUrl, imageProviders, providerId]);
+  }, [apiKey, baseUrl, imageProviders, providerChoiceInitialized, state.isSuccess]);
 
   const chooseProvider = (id: string) => {
+    setProviderChoiceInitialized(true);
     setProviderId(id);
     const provider = providers.find(item => item.id === id);
     if (provider) {
@@ -214,8 +346,6 @@ export function ImageWorkbenchPage() {
         provider.models.find(item => /image|dall|gpt-image/i.test(item.id))?.id ||
           (/image|dall|gpt-image/i.test(provider.model) ? provider.model : "gpt-image-2"),
       );
-      setBaseUrl("");
-      setApiKey("");
     }
   };
 
@@ -226,6 +356,196 @@ export function ImageWorkbenchPage() {
       setError(null);
     } catch {
       setError("image.errors.input");
+    }
+  };
+
+  const filteredPromptCategories = useMemo(() => {
+    const q = promptQuery.trim().toLowerCase();
+    if (!q) return PROMPT_LIBRARY;
+    return PROMPT_LIBRARY.map(cat => ({
+      ...cat,
+      recipes: cat.recipes.filter(
+        recipe =>
+          recipe.title.toLowerCase().includes(q) ||
+          recipe.tip.toLowerCase().includes(q) ||
+          recipe.prompt.toLowerCase().includes(q) ||
+          cat.category.toLowerCase().includes(q),
+      ),
+    })).filter(cat => cat.recipes.length > 0);
+  }, [promptQuery]);
+
+  const favoriteRecipes = useMemo(() => {
+    const index = new Map<string, { category: string; recipe: PromptRecipe }>();
+    for (const cat of PROMPT_LIBRARY) {
+      for (const recipe of cat.recipes) {
+        index.set(promptRecipeKey(cat.category, recipe), { category: cat.category, recipe });
+      }
+    }
+    return promptFavorites
+      .map(key => index.get(key))
+      .filter((item): item is { category: string; recipe: PromptRecipe } => Boolean(item));
+  }, [promptFavorites]);
+
+  const visibleRecipes = useMemo(() => {
+    const attach = (category: string, recipe: PromptRecipe) => ({
+      category,
+      recipe,
+      key: promptRecipeKey(category, recipe),
+    });
+    if (promptQuery.trim()) {
+      return filteredPromptCategories.flatMap(cat => cat.recipes.map(recipe => attach(cat.category, recipe)));
+    }
+    const pinned = favoriteRecipes.map(item => attach(item.category, item.recipe));
+    const active = filteredPromptCategories.find(c => c.category === activeCategory)?.recipes ?? [];
+    const pinnedKeys = new Set(pinned.map(item => item.key));
+    const rest = active
+      .map(recipe => attach(activeCategory, recipe))
+      .filter(item => !pinnedKeys.has(item.key));
+    return [...pinned, ...rest];
+  }, [filteredPromptCategories, activeCategory, promptQuery, favoriteRecipes]);
+
+  const toggleFavorite = (category: string, recipe: PromptRecipe) => {
+    const key = promptRecipeKey(category, recipe);
+    const next = togglePromptFavorite(promptFavorites, key);
+    setPromptFavorites(next);
+    savePromptFavorites(next);
+  };
+
+  useEffect(() => {
+    if (promptQuery.trim()) return;
+    if (PROMPT_LIBRARY.some(c => c.category === activeCategory)) return;
+    setActiveCategory(PROMPT_LIBRARY[0]?.category ?? "");
+  }, [promptQuery, activeCategory]);
+
+  const canGenerate =
+    !busy &&
+    prompt.trim().length > 0 &&
+    model.trim().length > 0 &&
+    Boolean(providerId || (baseUrl.trim() && (apiKey.trim() || keyStored)));
+
+  const applyPromptRecipe = (recipe: PromptRecipe) => {
+    setPrompt(recipe.prompt);
+    setExpandedPrompt(recipe.prompt);
+  };
+
+  const copyPromptRecipe = async (recipe: PromptRecipe) => {
+    try {
+      await navigator.clipboard.writeText(recipe.prompt);
+      setCopiedPrompt(recipe.prompt);
+      setTimeout(() => setCopiedPrompt(null), 1600);
+    } catch {
+      applyPromptRecipe(recipe);
+    }
+  };
+
+  const persistToGallery = async (images: string[]): Promise<boolean> => {
+    if (!isTauriRuntime() || images.length === 0) return false;
+    try {
+      const saved = await api.image.saveToGallery(images);
+      setSavedGalleryDir(saved.directory);
+      toast({
+        title: t("image.savedToGallery"),
+        description: saved.directory,
+        variant: "success",
+      });
+      return true;
+    } catch (cause) {
+      const key =
+        typeof cause === "string" ? cause : cause instanceof Error ? cause.message : "image.errors.save";
+      toast({
+        title: t("image.saveFailed"),
+        description: t(key.startsWith("image.") ? key : "image.errors.save"),
+        variant: "destructive",
+      });
+      return false;
+    }
+  };
+
+  const saveImageAs = async (src: string, index: number) => {
+    if (!isTauriRuntime()) {
+      const link = document.createElement("a");
+      link.href = src;
+      link.download = `agentharbor-ink-art-${Date.now()}-${index + 1}.png`;
+      link.click();
+      return;
+    }
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const path = await save({
+        defaultPath: `agentharbor-ink-art-${Date.now()}-${index + 1}.png`,
+        filters: [{ name: "PNG", extensions: ["png"] }],
+      });
+      if (typeof path !== "string") return;
+      await api.image.saveFile(path, src);
+      toast({ title: t("image.saveLocal"), description: path, variant: "success" });
+    } catch (cause) {
+      const key =
+        typeof cause === "string" ? cause : cause instanceof Error ? cause.message : "image.errors.save";
+      toast({
+        title: t("image.saveFailed"),
+        description: t(key.startsWith("image.") ? key : "image.errors.save"),
+        variant: "destructive",
+      });
+    }
+  };
+
+  const openGallery = async () => {
+    setGalleryOpen(true);
+    void queryClient.invalidateQueries({ queryKey: GALLERY_KEY });
+  };
+
+  const showPreview = (src: string | null) => {
+    previewRequest.current += 1;
+    setGalleryPreviewPath(null);
+    setPreviewSrc(src);
+  };
+
+  const closeGallery = () => {
+    gallerySession.current += 1;
+    thumbnailCache.current.clear();
+    thumbnailLoads.current.clear();
+    showPreview(null);
+    setGalleryOpen(false);
+  };
+
+  const openGalleryImage = async (item: GalleryItem) => {
+    const request = ++previewRequest.current;
+    setGalleryPreviewPath(item.path);
+    setPreviewSrc(null);
+    try {
+      const src = await api.image.loadGalleryImage(item.path);
+      if (request === previewRequest.current) setPreviewSrc(src);
+    } catch {
+      if (request === previewRequest.current) {
+        toast({ title: t("common.error"), description: t("image.errors.notFound"), variant: "destructive" });
+      }
+    } finally {
+      if (request === previewRequest.current) setGalleryPreviewPath(null);
+    }
+  };
+
+  const saveGalleryImageAs = async (item: GalleryItem, index: number) => {
+    try {
+      await saveImageAs(await api.image.loadGalleryImage(item.path), index);
+    } catch {
+      toast({ title: t("image.saveFailed"), description: t("image.errors.notFound"), variant: "destructive" });
+    }
+  };
+
+  const deleteGalleryItem = async () => {
+    const item = pendingDelete;
+    if (!item) return;
+    try {
+      await api.image.deleteGalleryImage(item.path);
+      gallerySession.current += 1;
+      thumbnailCache.current.clear();
+      thumbnailLoads.current.clear();
+      void queryClient.invalidateQueries({ queryKey: GALLERY_KEY });
+      toast({ title: t("image.galleryDeleted"), description: item.name, variant: "success" });
+    } catch {
+      toast({ title: t("image.saveFailed"), description: item.name, variant: "destructive" });
+    } finally {
+      setPendingDelete(null);
     }
   };
 
@@ -246,6 +566,10 @@ export function ImageWorkbenchPage() {
           imageData,
         });
       setResult(generated);
+      // Gallery persistence is best-effort and reported separately from generation success.
+      void persistToGallery(generated.images).then(() => {
+        void queryClient.invalidateQueries({ queryKey: GALLERY_KEY });
+      });
       if (!providerId && apiKey.trim()) {
         setKeyStored(true);
         setApiKey("");
@@ -287,10 +611,36 @@ export function ImageWorkbenchPage() {
               落笔云烟，水墨天工 · 纳万象于方寸，融丹青于数字。支持 GPT Image 2 / 2.5 及兼容图像中转。
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 gap-1.5 font-serif text-xs"
+              onClick={() => void openGallery()}
+            >
+              <History className="h-3.5 w-3.5" />
+              {t("image.galleryTitle")}
+            </Button>
+            {savedGalleryDir && (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-8 gap-1.5 font-serif text-xs text-muted-foreground"
+                onClick={() => void api.openPath(savedGalleryDir).catch(() => undefined)}
+              >
+                <FolderOpen className="h-3.5 w-3.5" />
+                {t("image.openGallery")}
+              </Button>
+            )}
             <span className="inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-background/80 px-3 py-1 text-xs text-muted-foreground backdrop-blur-xs font-serif shadow-xs">
               <Feather className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
               本地私享调用 · 绝不外泄提示词
+            </span>
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-background/80 px-3 py-1 text-xs text-muted-foreground backdrop-blur-xs font-serif shadow-xs">
+              <HardDriveDownload className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+              成图自动存入本地画册
             </span>
           </div>
         </div>
@@ -323,14 +673,24 @@ export function ImageWorkbenchPage() {
                   className="h-9 w-full rounded-lg border border-input bg-background/90 px-3 text-sm transition-colors focus:border-primary focus:ring-1 focus:ring-primary/20"
                   value={providerId}
                   onChange={event => chooseProvider(event.target.value)}
+                  aria-label="中转驿站供应商"
                 >
-                  <option value="">独立配置 / 手动填写连接凭据</option>
+                  <option value="">
+                    {imageProviders.length === 0
+                      ? "暂无可用图像中转 · 手动填写连接凭据"
+                      : "独立配置 / 手动填写连接凭据"}
+                  </option>
                   {imageProviders.map(provider => (
                     <option key={provider.id} value={provider.id}>
-                      {provider.name} · {provider.model}
+                      {provider.name}
                     </option>
                   ))}
                 </select>
+                {imageProviders.length === 0 && (
+                  <p className="font-serif text-[11px] text-muted-foreground">
+                    可在「中转站」添加带图像模型的供应商，或在下方手动填写站点与密钥。
+                  </p>
+                )}
               </div>
 
               {!providerId && (
@@ -406,6 +766,7 @@ export function ImageWorkbenchPage() {
                   className="h-9 w-full rounded-lg border border-input bg-background/90 px-3 text-sm transition-colors focus:border-primary focus:ring-1 focus:ring-primary/20"
                   value={size}
                   onChange={event => setSize(event.target.value)}
+                  aria-label="尺幅规制"
                 >
                   {SIZES.map(item => (
                     <option key={item.value} value={item.value}>
@@ -423,6 +784,7 @@ export function ImageWorkbenchPage() {
                   className="h-9 w-full rounded-lg border border-input bg-background/90 px-3 text-sm transition-colors focus:border-primary focus:ring-1 focus:ring-primary/20"
                   value={quality}
                   onChange={event => setQuality(event.target.value)}
+                  aria-label="画质品阶"
                 >
                   {QUALITIES.map(item => (
                     <option key={item.value} value={item.value}>
@@ -452,43 +814,158 @@ export function ImageWorkbenchPage() {
             </div>
 
             {/* 锦囊诗意提示词预设 */}
-            <div className="space-y-2 rounded-xl bg-black/[0.025] p-3 ring-1 ring-border/50 dark:bg-white/[0.02]">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-serif font-semibold text-muted-foreground">
-                  锦囊画谱 · 灵感点题
+            <div className="space-y-3 rounded-xl bg-black/[0.025] p-3 ring-1 ring-border/50 dark:bg-white/[0.02]">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                <span className="inline-flex items-center gap-1.5 font-serif font-semibold text-muted-foreground">
+                  <Sparkles className="h-3.5 w-3.5 text-[#b83b38] dark:text-[#d94f4b]" />
+                  锦囊画谱 · 工业级灵感库
+                  {promptFavorites.length > 0 && (
+                    <span className="rounded-full bg-amber-500/15 px-1.5 py-px text-[10px] font-normal text-amber-700 dark:text-amber-300">
+                      已藏 {promptFavorites.length}
+                    </span>
+                  )}
                 </span>
-                <div className="flex gap-1">
-                  {POETIC_CATEGORIES.map(cat => (
+                <span className="font-serif text-[11px] text-muted-foreground/80">
+                  点选填入画题 · 复制可改写
+                </span>
+              </div>
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground/70" />
+                <input
+                  value={promptQuery}
+                  onChange={event => setPromptQuery(event.target.value)}
+                  placeholder="检索画谱：人物 / Cosplay / 海报…"
+                  className="h-8 w-full rounded-md border border-border/60 bg-background/80 pl-7 pr-7 text-xs outline-none transition-colors focus:border-[#b83b38]/40"
+                  aria-label="检索提示词画谱"
+                />
+                {promptQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setPromptQuery("")}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/70 hover:text-foreground"
+                    aria-label="清除检索"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+              {!promptQuery && (
+                <div className="-mx-0.5 flex gap-1 overflow-x-auto pb-1">
+                  {filteredPromptCategories.map((cat: PromptCategory) => (
                     <button
                       key={cat.category}
                       type="button"
                       onClick={() => setActiveCategory(cat.category)}
                       className={cn(
-                        "rounded-md px-2 py-0.5 font-serif text-[11px] transition-all",
+                        "shrink-0 rounded-md px-2.5 py-1 font-serif text-[11px] transition-all",
                         activeCategory === cat.category
                           ? "bg-[#b83b38]/10 text-[#b83b38] dark:bg-[#d94f4b]/15 dark:text-[#fca5a5] font-bold"
                           : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
                       )}
                     >
                       {cat.category}
+                      <span className="ml-1 opacity-60">{cat.recipes.length}</span>
                     </button>
                   ))}
                 </div>
-              </div>
-              <div className="flex flex-col gap-1.5 pt-1">
-                {POETIC_CATEGORIES.find(c => c.category === activeCategory)?.prompts.map(item => (
-                  <button
-                    key={item}
-                    type="button"
-                    className="group flex items-start gap-1.5 rounded-lg border border-border/60 bg-background/70 p-2 text-left text-xs transition-all hover:border-[#b83b38]/40 hover:bg-[#b83b38]/5"
-                    onClick={() => setPrompt(item)}
-                  >
-                    <Feather className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground group-hover:text-[#b83b38]" />
-                    <span className="line-clamp-2 font-serif text-muted-foreground group-hover:text-foreground">
-                      {item}
-                    </span>
-                  </button>
-                ))}
+              )}
+              <div className="flex max-h-[280px] flex-col gap-2 overflow-y-auto pr-0.5">
+                {visibleRecipes.length === 0 && (
+                  <p className="py-6 text-center font-serif text-xs text-muted-foreground">
+                    画谱中没有匹配「{promptQuery}」的条目
+                  </p>
+                )}
+                {visibleRecipes.map(({ category, recipe, key }) => {
+                  const expanded = expandedPrompt === recipe.prompt;
+                  const filled = prompt === recipe.prompt;
+                  const starred = promptFavorites.includes(key);
+                  return (
+                    <div
+                      key={key}
+                      className={cn(
+                        "rounded-lg border border-border/60 bg-background/70 p-2.5 transition-all",
+                        filled
+                          ? "border-[#b83b38]/45 bg-[#b83b38]/[0.04] dark:border-[#d94f4b]/40 dark:bg-[#d94f4b]/[0.06]"
+                          : "hover:border-[#b83b38]/35",
+                      )}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="flex items-center gap-1 font-serif text-xs font-semibold text-foreground/90">
+                            {starred && <Star className="h-3 w-3 fill-amber-400 text-amber-500" />}
+                            {recipe.title}
+                            {promptQuery.trim() && (
+                              <span className="ml-1 rounded bg-muted px-1 py-px text-[9px] font-normal text-muted-foreground">
+                                {category}
+                              </span>
+                            )}
+                          </p>
+                          <p className="mt-0.5 font-serif text-[11px] leading-snug text-muted-foreground/85">
+                            {recipe.tip}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-0.5">
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            className="h-7 w-7 text-muted-foreground hover:text-amber-500"
+                            title={starred ? "取消收藏" : "收藏并置顶"}
+                            aria-label={starred ? "取消收藏" : "收藏并置顶"}
+                            onClick={() => toggleFavorite(category, recipe)}
+                          >
+                            {starred ? (
+                              <PinOff className="h-3.5 w-3.5" />
+                            ) : (
+                              <Pin className="h-3.5 w-3.5" />
+                            )}
+                          </Button>
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            className="h-7 w-7 text-muted-foreground hover:text-[#b83b38] dark:hover:text-[#fca5a5]"
+                            title={filled ? "已填入" : "填入画题"}
+                            onClick={() => applyPromptRecipe(recipe)}
+                          >
+                            {filled ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Feather className="h-3.5 w-3.5" />}
+                          </Button>
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                            title="复制提示词"
+                            onClick={() => void copyPromptRecipe(recipe)}
+                          >
+                            {copiedPrompt === recipe.prompt ? (
+                              <Check className="h-3.5 w-3.5 text-emerald-500" />
+                            ) : (
+                              <Copy className="h-3.5 w-3.5" />
+                            )}
+                          </Button>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="mt-1.5 w-full text-left"
+                        onClick={() => setExpandedPrompt(expanded ? null : recipe.prompt)}
+                      >
+                        <p
+                          className={cn(
+                            "whitespace-pre-wrap break-words font-serif text-[11px] leading-relaxed text-muted-foreground transition-all",
+                            expanded ? "" : "line-clamp-2",
+                          )}
+                        >
+                          {recipe.prompt}
+                        </p>
+                        <span className="mt-0.5 inline-block font-serif text-[10px] text-muted-foreground/60">
+                          {expanded ? "收起" : "展开全文"}
+                        </span>
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             </div>
 
@@ -554,7 +1031,7 @@ export function ImageWorkbenchPage() {
             {/* 挥毫生图核心按钮 */}
             <Button
               className="w-full h-11 font-serif text-sm tracking-widest bg-gradient-to-r from-[#8b2323] via-[#b83b38] to-[#991b1b] hover:from-[#731c1c] hover:to-[#8b2323] text-white shadow-md hover:shadow-lg transition-all duration-300 dark:from-[#b83b38] dark:to-[#d94f4b]"
-              disabled={busy || !prompt.trim() || !model.trim()}
+              disabled={!canGenerate}
               onClick={() => void generate()}
             >
               {busy ? (
@@ -633,27 +1110,38 @@ export function ImageWorkbenchPage() {
                     className="group relative space-y-3 rounded-2xl border border-border/70 bg-card p-3 shadow-sm transition-all duration-300 hover:shadow-md dark:border-[#c5a059]/30"
                   >
                     {/* 装裱画框 */}
-                    <div className="relative overflow-hidden rounded-xl border border-border/80 bg-background/80 p-2 shadow-inner">
+                    <button
+                      type="button"
+                      className="relative block w-full overflow-hidden rounded-xl border border-border/80 bg-background/80 p-2 shadow-inner"
+                      onClick={() => showPreview(src)}
+                      title="点击放大预览"
+                    >
                       <img
                         src={src}
                         alt={`生成成果 ${index + 1}`}
                         className="w-full rounded-lg object-contain transition-transform duration-500 group-hover:scale-[1.01]"
                       />
-                    </div>
+                      <span className="absolute bottom-3 right-3 inline-flex items-center gap-1 rounded-md bg-black/55 px-2 py-1 text-[11px] text-white opacity-0 transition-opacity group-hover:opacity-100">
+                        <ZoomIn className="h-3 w-3" />
+                        放大
+                      </span>
+                    </button>
 
                     {/* 图片底部信息与下载操作 */}
                     <div className="flex flex-wrap items-center justify-between gap-2 px-1">
                       <span className="font-serif text-xs font-semibold text-muted-foreground">
                         画卷之 {index + 1}
                       </span>
-                      <a
-                        href={src}
-                        download={`aimami-ink-art-${Date.now()}-${index + 1}.png`}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-[#b83b38]/30 bg-[#b83b38]/10 px-3 py-1 font-serif text-xs font-semibold text-[#b83b38] transition-all hover:bg-[#b83b38]/20 dark:border-[#d94f4b]/30 dark:bg-[#d94f4b]/15 dark:text-[#fca5a5]"
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8 gap-1.5 border-[#b83b38]/30 bg-[#b83b38]/10 font-serif text-xs font-semibold text-[#b83b38] hover:bg-[#b83b38]/20 dark:border-[#d94f4b]/30 dark:bg-[#d94f4b]/15 dark:text-[#fca5a5]"
+                        onClick={() => void saveImageAs(src, index)}
                       >
                         <Download className="h-3.5 w-3.5" />
-                        保存画卷真迹
-                      </a>
+                        {t("image.saveAs")}
+                      </Button>
                     </div>
 
                     {result.revisedPrompts[index] && (
@@ -673,6 +1161,165 @@ export function ImageWorkbenchPage() {
           )}
         </div>
       </div>
+
+      {/* 历史画册 */}
+      {galleryOpen && (
+        <div className="ink-scroll-frame p-5 sm:p-6">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-border/50 pb-3">
+            <div className="flex items-center gap-2">
+              <History className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+              <h2 className="font-serif text-base font-bold tracking-wide text-foreground">
+                {t("image.galleryTitle")}
+              </h2>
+              <Badge variant="outline" className="font-mono text-[11px]">
+                {galleryItems.length}
+              </Badge>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-8 gap-1 text-xs"
+                onClick={() => void queryClient.invalidateQueries({ queryKey: GALLERY_KEY })}
+              >
+                <RefreshCw className={cn("h-3.5 w-3.5", galleryQuery.isFetching && "animate-spin")} />
+                {t("image.galleryRefresh")}
+              </Button>
+              {savedGalleryDir && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-8 gap-1 text-xs"
+                  onClick={() => void api.openPath(savedGalleryDir).catch(() => undefined)}
+                >
+                  <FolderOpen className="h-3.5 w-3.5" />
+                  {t("image.openGallery")}
+                </Button>
+              )}
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                className="h-8 w-8"
+                onClick={closeGallery}
+                aria-label="收起画册"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+
+          {galleryQuery.isLoading ? (
+            <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+              {Array.from({ length: 5 }).map((_, index) => (
+                <div
+                  key={index}
+                  className="aspect-square animate-pulse rounded-lg border border-border/50 bg-muted/40"
+                />
+              ))}
+            </div>
+          ) : galleryQuery.isError ? (
+            <p className="py-10 text-center font-serif text-sm text-destructive">
+              {t("image.galleryLoadFailed")}
+            </p>
+          ) : galleryItems.length === 0 ? (
+            <p className="py-10 text-center font-serif text-sm text-muted-foreground">
+              {t("image.galleryEmpty")}
+            </p>
+          ) : (
+            <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+              {galleryItems.map((item, index) => {
+                return (
+                  <div
+                    key={item.path}
+                    className="group relative overflow-hidden rounded-lg border border-border/60 bg-card/70"
+                  >
+                    <GalleryThumbnail
+                      item={item}
+                      load={loadGalleryThumbnail}
+                      onPreview={() => void openGalleryImage(item)}
+                      opening={galleryPreviewPath === item.path}
+                    />
+                    <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-1 bg-gradient-to-t from-black/70 to-transparent px-2 pb-1.5 pt-6 text-[10px] text-white">
+                      <span className="truncate font-mono" title={item.name}>
+                        {item.name}
+                      </span>
+                      <span className="shrink-0 opacity-90">{formatRelative(item.modifiedAt)}</span>
+                    </div>
+                    <div className="absolute right-1 top-1 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="secondary"
+                        className="h-7 w-7 bg-black/55 text-white hover:bg-black/75"
+                        title={t("image.saveAs")}
+                        onClick={() => void saveGalleryImageAs(item, index)}
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="secondary"
+                        className="h-7 w-7 bg-black/55 text-white hover:bg-destructive"
+                        title={t("image.galleryDelete")}
+                        onClick={() => setPendingDelete(item)}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      <AlertDialog open={pendingDelete !== null} onOpenChange={open => !open && setPendingDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("image.galleryDeleteConfirm")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("image.galleryDeleteConfirmDesc")}
+              {pendingDelete ? ` (${pendingDelete.name})` : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void deleteGalleryItem()}>
+              {t("image.galleryDelete")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {previewSrc && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-6"
+          role="dialog"
+          aria-modal="true"
+          aria-label="成图放大预览"
+          onClick={() => showPreview(null)}
+        >
+          <button
+            type="button"
+            className="absolute right-5 top-5 inline-flex h-9 w-9 items-center justify-center rounded-full bg-black/50 text-white hover:bg-black/70"
+            onClick={() => showPreview(null)}
+            aria-label="关闭预览"
+          >
+            <X className="h-4 w-4" />
+          </button>
+          <img
+            src={previewSrc}
+            alt="成图放大预览"
+            className="max-h-[85vh] max-w-[92vw] rounded-lg object-contain shadow-2xl"
+            onClick={event => event.stopPropagation()}
+          />
+        </div>
+      )}
     </div>
   );
 }

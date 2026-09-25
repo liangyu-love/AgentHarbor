@@ -2,16 +2,29 @@
 
 AgentHarbor 已从原始源码分离出独立的产品身份。应用名、进程、安装标识、单实例锁、本地数据目录和智能路由端口均与旧版隔离。
 
-## 已恢复的范围
+## 当前源码的功能范围
 
 - 概览：读取真实的 MCP、Skills、自定义指令状态和本地目录，展示读取错误。
+- 账号：通过 Codex 登录添加账号、查看和刷新额度、手动切换、移除已保存账号。
+- 会话：列出、搜索、筛选 Codex 会话，选择后导出为 Markdown 或 JSONL。
 - MCP：新增、编辑、启停、删除；支持 Windows 路径、多行参数、HTTP headers，保留其他服务器选项和非 MCP 配置。
 - Skills：扫描、导入、替换、删除前备份、恢复和删除备份；拒绝越界路径和符号链接复制。
 - 自定义指令：模板、编辑、预览、应用、清除、历史回滚；回滚保留受控区块之外的后续用户修改。
 - 设置与维护：主题、语言、本地设置、代理保存与无凭据连通性测试、本地诊断和维护入口。
-- 中转站：New API 账户余额、模型列表、上下文设置、Codex 配置预览与带备份的应用。
+- 中转站：多个供应商的逐模型协议、上下文、连通性测试、余额和导入导出；独立选择 Codex Router / Native 接入，另有 Claude Code / OpenCode 配置预览、应用和恢复。
+- 图片工作台：供应商图片生成与编辑、本地图册保存与管理。
 
-代理探测成功只表示网络可达，不代表账号鉴权或额度有效。智能路由默认监听 `127.0.0.1:43127`，只接受应用生成的本地 Bearer Token。
+自动切换账号、账号导入导出、会话批量删除及插件管理尚未实现。自动切换入口保持不可用；维护页的清理不包含会话删除。历史截图中的额度热力图、热力图颜色设置和 macOS 刘海额度展示不属于当前功能范围。
+
+账号额度刷新会在应用内互斥写回，并核对请求前后的凭据与账号身份，丢弃登录、切换或删除后的迟到结果。这个锁不能约束外部 Codex 进程；若 Codex 恰好在最终核对与文件替换之间改写登录文件，仍存在跨进程竞态，因此尚不能保证两个程序同时进行账号写入时的原子一致性。
+
+代理探测成功只表示网络可达，不代表账号鉴权或额度有效。本地路由默认监听 `127.0.0.1:43127`。Router 模式且无账号模式关闭时，已登录 Codex 使用独立的 `x-agentharbor-token` 本地凭据并保留官方认证；路由无账号模式及其他客户端可使用本地 Bearer Token。路由验证本地凭据后选择对应上游，供应商请求不会携带官方账号凭据。Native 的供应商密钥鉴权独立于路由无账号开关，详见下文。
+
+网络出口分为系统代理、手动代理和直连。系统模式使用环境变量或平台静态系统代理；PAC 需要先探测并保存为手动代理。代理设置立即作用于 AgentHarbor 自身请求和路由模型转发；单个供应商选择直连时不使用全局代理。Codex 自身的登录、账号请求及 Native 模型请求由 Codex 进程发出，不能靠本地模型路由代为设置出口。修改全局代理或原生接入的网络出口后，请使用 AgentHarbor 的“重启 Codex”应用相应进程设置；已有 Codex 进程不会因保存设置而自动更新。接入方式与网络出口是两个独立选项。
+
+图片生成结果中的下载链接沿用该供应商的有效网络出口，下载请求不携带供应商密钥。所有链接先检查 URL、公共 IP 和本机 DNS，拒绝跳转；直连时绑定已验证的 DNS 结果。HTTP / SOCKS5h 等代理可能自行重新解析目标域名，因此用户配置的代理必须可信，应用无法约束其远端 DNS 结果。本机 DNS 无法通过安全校验时仍会拒绝下载。
+
+图册列表加载最长边 256 像素的 PNG 缩略图，小图不放大；PNG、JPEG、WebP、GIF 均可预览，动画显示首帧。原图仅用于详情或导出。预览文件上限为 20 MiB，单边不超过 8192 像素、总像素不超过 16 × 1024²，解码预算为 128 MiB，最多并行处理两张；超限或损坏文件会报错，不会完整加载到图册列表。
 
 更新服务未配置公钥和端点，因此不加载更新插件，也不在启动时请求更新。后续发布时需要自行配置与签名。
 
@@ -23,22 +36,33 @@ AgentHarbor 已从原始源码分离出独立的产品身份。应用名、进�
 
 ## New API 中转站
 
-侧栏“中转站”支持保存一个站点连接，填写站点地址、数字用户 ID、用户访问令牌和模型 API Key 后点击“保存设置”。两种令牌用途不同：
+侧栏“中转站”支持管理多个供应商。为供应商填写名称、站点地址、模型 API Key、默认协议和默认模型；需要查询 New API 账户余额时再填写数字用户 ID 与用户访问令牌。两种令牌用途不同：
 
 - 用户访问令牌：站点个人设置／安全设置生成。通过 `Authorization: Bearer …` 和 `New-Api-User` 查询 `/api/user/self`。
 - 模型 API Key：站点“令牌”页生成的 `sk-` 密钥，通过 `/v1/models` 拉取该密钥可见的模型。
 
 余额使用站点 `/api/status` 返回的 `quota_per_unit` 和显示单位换算；状态接口不可用或规则缺失时显示原始 quota，不假定固定汇率。结果包含累计使用额度、请求数和查询时间。刷新失败保留旧结果并标记，不将失败当作余额为零。请求沿用“系统设置”的代理，禁止自动跟随跳转以免凭据发往其他地址。
 
-拉取模型后可选择默认模型、设置上下文长度与自动压缩阈值。未返回上下文元数据的模型明确显示“站点未提供”；留空时不写入覆盖值，由 Codex 决定默认值。选择新模型会清除上一个模型的长度覆盖值。Codex 配置使用 Responses 协议，模型出现在列表中并不保证它能用于 Codex。
+拉取模型后可选择默认模型、设置上下文长度与自动压缩阈值。每个模型的上游协议可选“跟随默认”、Responses、Chat Completions 或 Anthropic Messages；未设置或为 `null` 时继承供应商默认协议。默认协议不会筛掉其他协议的模型，同一站点可以维护混合协议目录。刷新列表会保留模型的协议覆盖、勾选状态及手动设置；默认模型、数量、连通性测试和客户端兼容性按模型的实际协议处理。模型元数据取决于供应商，列表中出现模型不代表已经通过请求测试。
 
-“保存并预览配置”只保存 AgentHarbor 偏好；“应用到 Codex”经过界面确认后才修改当前数据目录下的 `config.toml`，并将原文件备份到 `agentharbor/config-backups/`。其他提供方、MCP 配置及注释保留；无效 TOML 或不支持的内联提供方表拒绝写入。不会修改 `auth.json`，也不会自动重启 Codex。
+“Codex 接入”的方式独立于上游协议和网络出口：
 
-默认生成 `env_key = "AGENT_HARBOR_NEWAPI_KEY"`，需要在启动 Codex 的环境里设置该变量。勾选“将已保存的 API Key 明文写入 Codex 配置”可免去环境变量，但会使用 `experimental_bearer_token` 将密钥写进配置文件，后续备份也可能含有它。配置预览从不展示真实密钥。
+| 接入方式 | 模型与请求路径 | 运行要求 |
+| --- | --- | --- |
+| Router（本地路由） | Codex 连接本地 Responses 网关；网关按逐模型协议转发，并对 Chat Completions / Anthropic Messages 做协议转换。关闭无账号模式时可保留官方模型和官方账号显示。 | 使用路由模型期间保持 AgentHarbor 运行。 |
+| Native（原生提供方） | Codex 直接连接当前供应商，默认模型必须使用 Responses；目录仅包含当前供应商已选中的 Responses 模型，使用上游真实模型 ID，不使用本地路由别名。 | Codex 模型请求无需本地服务持续运行；其他使用本地路由的客户端仍需要它。 |
 
-AgentHarbor 连接保存在 `agentharbor/newapi-connection.dat`。Windows 使用当前用户的 DPAPI 加密，其他平台使用仅文件所有者可读的本地文件（0600，不承诺加密）。前端不读取已保存的明文凭据，密码框留空保留原值；更换站点时不会沿用旧站凭据。“移除连接”仅清除 AgentHarbor 的连接，已经应用的 Codex 配置保留。
+Native 不会为不兼容的默认模型自动换成其他模型或供应商，也不会把 Chat / Anthropic 直接当作 Responses 使用；请明确选择 Responses 模型或改用 Router。保存供应商、选择接入方式和启用接入是不同操作。启用后按所选方式写入当前 Codex `config.toml`，关闭接入时只撤回受管理字段、恢复此前配置。模式切换或模型配置修改后需要重启 Codex。
 
-接口与配置参考：[New API 认证](https://github.com/QuantumNous/new-api-docs-v1/blob/main/content/docs/en/api/management/auth.mdx)、[Codex 配置参考](https://developers.openai.com/codex/config-reference/)。
+Native 使用供应商 API Key 鉴权：密钥写入 Codex 主目录 `.env` 中的 AgentHarbor 专属随机变量，`config.toml` 通过 `env_key` 引用变量名，不写入明文密钥。`.env` 及其备份属于本地秘密文件，应保护文件权限、避免共享或提交到版本控制；这里不提供加密凭据库的保证。已有 `.env` 中无关条目会保留，退出 Native 后清理不再使用且仍由 AgentHarbor 管理的条目。真实密钥不显示在配置预览中，也不写入 `auth.json`。
+
+Native 明确设置 `requires_openai_auth=false`，由供应商密钥而非官方账号令牌为第三方请求鉴权。原有 `auth.json` 保留，Codex 可能因此不显示 ChatGPT 账号，并不表示被登出。需要官方模型、中转模型并存及官方账号显示时，请切回 Router、关闭无账号模式并重启 Codex。路由无账号开关不改变 Native 的鉴权方式。
+
+Claude Code / OpenCode 仍使用各自的预览、应用和恢复入口：当前这些客户端配置写入本地路由地址与本地凭据，不会自动重启客户端；这不适用于上面直接使用供应商密钥的 Codex Native 模式。客户端按所选模型的有效协议判断兼容性，详见 [多客户端配置](client-configuration.md)。
+
+供应商连接本身保存在 `agentharbor/newapi-providers.dat`，旧版单连接数据会迁移。Windows 对这个 AgentHarbor 数据文件使用当前用户的 DPAPI 加密，其他平台使用仅文件所有者可读的本地文件（0600，不承诺加密）；不要将这一说明误用于 Native 的 Codex `.env`。前端不读取已保存的明文凭据；编辑时留空保留原值，更换站点时不会沿用旧站凭据。导出供应商连接用于迁移时也应妥善保管。
+
+接口与配置参考：[New API 认证](https://github.com/QuantumNous/new-api-docs-v1/blob/main/content/docs/en/api/management/auth.mdx)、[Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)、[Codex 其他提供方鉴权](https://learn.chatgpt.com/docs/auth#alternative-model-providers)。
 
 ## Windows 开发环境
 
@@ -90,7 +114,13 @@ pnpm tauri build
 
 Rust 测试覆盖 Skills 导入替换备份恢复、路径边界、指令回滚和异常标记、MCP CRUD/Windows 参数/HTTP headers/未知字段保留、无效 TOML 拒绝写入、本地身份解析、代理参数和设置持久化。Mac 的系统集成功能尚未在本次 Windows 环境验证。
 
-## 本次验证记录（2026-09-19）
+前端回归测试使用真实页面组件和模拟接口，覆盖会话滚动、扫描警告、图片连接选择、过期模型请求、图册缩略图缓存、逐模型协议继承与刷新保留、Codex 接入方式和模型兼容性；测试期间禁止访问外部网络。先执行 `pnpm build`，再执行 `pnpm test:frontend`。测试需要可用的 Playwright 或 playwright-core 包及 Chromium；如果不在项目依赖搜索路径中，可通过 `PLAYWRIGHT_MODULE_PATH` 或 `--playwright-module=<包的绝对路径>` 指定已安装的包，通过 `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` 或 `--browser-executable=<浏览器绝对路径>` 指定浏览器。
+
+`src-tauri/tests/codex_router_auth.rs` 另提供真实 Codex CLI 的隔离兼容性测试，默认跳过。将 `AGENTHARBOR_TEST_CODEX_BIN` 指向已安装的 Codex CLI 可执行文件后，运行 `cargo +stable-x86_64-pc-windows-msvc test --manifest-path src-tauri/Cargo.toml --test codex_router_auth --offline -- --ignored --nocapture`。测试只使用临时目录、合成账号凭据和本地模拟上游，不读取或修改真实登录配置。
+
+## 历史验证记录（2026-09-19）
+
+以下记录对应当时的代码和测试环境，不代表后续源码已经重新打包、部署或完成真实账号与上游验证。当前改动需要重新执行上面的构建与检查；单元测试和模拟上游通过也不能代替真实桌面验证。
 
 - `pnpm install --frozen-lockfile`：通过。
 - `pnpm build`：TypeScript 检查和 Vite 生产构建通过。

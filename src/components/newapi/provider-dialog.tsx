@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, Eye, EyeOff, Loader2, Plug } from "lucide-react";
 import { api } from "@/lib/api";
@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
-import { inferProtocolFromModels, supportsProtocol } from "@/lib/provider-models";
+import { mergeModelCatalog } from "@/lib/provider-models";
 import type { ModelProtocol, NewApiProvider, NewApiStateChange, NewApiModel } from "@/types/newapi";
 import { ProviderModelEditor } from "@/components/newapi/provider-model-editor";
 
@@ -110,6 +110,17 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
   const [models, setModels] = useState<NewApiModel[]>([]);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const modelRequest = useRef(0);
+  const fetchScope = JSON.stringify([open, provider?.id, draft.baseUrl.trim(), draft.apiKey, draft.protocol]);
+  const currentFetchScope = useRef(fetchScope);
+  currentFetchScope.current = fetchScope;
+
+  useEffect(() => {
+    modelRequest.current += 1;
+    setFetchingModels(false);
+    return () => { modelRequest.current += 1; };
+  }, [fetchScope]);
+
   useEffect(() => {
     if (open) {
       setDraft(provider ? fromProvider(provider) : emptyDraft);
@@ -196,6 +207,9 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
       setFetchError("newapi.errors.url");
       return;
     }
+    const request = ++modelRequest.current;
+    const scope = currentFetchScope.current;
+    const isCurrent = () => request === modelRequest.current && scope === currentFetchScope.current;
     setFetchingModels(true);
     setFetchError(null);
     try {
@@ -205,49 +219,27 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
         draft.apiKey,
         draft.protocol,
       );
+      if (!isCurrent()) return;
       setModels(current => {
-        const fetchedIds = new Set(fetched.map(model => model.id));
-        const merged = fetched.map(model => {
-          const existing = current.find(item => item.id === model.id);
-          if (!existing) return model;
-          // A re-fetch must never discard something the user typed. A fully manual
-          // row keeps everything. A locally backfilled row keeps its alias only once
-          // it stops being just a copy of the id, so untouched rows still pick up a
-          // richer name from the relay.
-          const edited = existing.metadataSource === "manual";
-          const renamed = existing.displayName.trim() !== "" &&
-            existing.displayName.trim() !== existing.id;
-          const keptAlias = edited || renamed ? existing.displayName : model.displayName;
-          return {
-            ...model,
-            included: existing.included,
-            displayName: keptAlias,
-            contextWindow: edited ? existing.contextWindow : model.contextWindow,
-            maxOutputTokens: edited ? existing.maxOutputTokens : model.maxOutputTokens,
-            metadataSource: edited ? "manual" as const : model.metadataSource,
-          };
-        });
-        merged.push(...current.filter(model => !fetchedIds.has(model.id)));
+        if (!isCurrent()) return current;
+        const merged = mergeModelCatalog(current, fetched);
         setDraft(value => {
-          // A new relay refines its protocol from what it advertises; an existing
-          // one keeps whatever the user chose, since its routing already works.
-          const protocol = provider ? value.protocol : inferProtocolFromModels(merged);
-          const defaultAvailable = merged.some(model => model.id === value.model && model.included && supportsProtocol(model, protocol));
+          const defaultAvailable = merged.some(model => model.id === value.model && model.included);
           return {
             ...value,
-            protocol,
             model: defaultAvailable
               ? value.model
-              : merged.find(model => model.included && supportsProtocol(model, protocol))?.id ?? "",
+              : merged.find(model => model.included)?.id ?? "",
           };
         });
         return merged;
       });
     } catch (e) {
+      if (!isCurrent()) return;
       const key = typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
       setFetchError(key.startsWith("newapi.") ? key : "newapi.errors.unexpected");
     } finally {
-      setFetchingModels(false);
+      if (isCurrent()) setFetchingModels(false);
     }
   };
   return (
@@ -292,17 +284,14 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
 
             {/* Right Column: API Compatibility */}
             <div className="space-y-3">
-              <SectionLabel>{t("newapi.protocol")}</SectionLabel>
+              <SectionLabel>{t("newapi.defaultProtocol")}</SectionLabel>
               <div className="space-y-1.5">
-                <Label htmlFor="newapi-provider-protocol" className="text-[13px]">{t("newapi.protocol")}</Label>
+                <Label htmlFor="newapi-provider-protocol" className="text-[13px]">{t("newapi.defaultProtocol")}</Label>
                 <Select value={draft.protocol} onValueChange={value => {
                   const protocol = value as ModelProtocol;
                   setDraft(current => ({
                     ...current,
                     protocol,
-                    model: models.some(model => model.id === current.model && model.included && supportsProtocol(model, protocol))
-                      ? current.model
-                      : models.find(model => model.included && supportsProtocol(model, protocol))?.id ?? "",
                   }));
                 }} disabled={saving}>
                   <SelectTrigger id="newapi-provider-protocol">

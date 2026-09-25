@@ -145,8 +145,19 @@ pub fn diagnose(
 }
 
 #[tauri::command]
-pub fn restart_codex() -> Result<(), String> {
-    crate::platform::process::restart_codex_app().map_err(|e| e.to_string())
+pub async fn restart_codex(repo: State<'_, Mutex<Repository>>) -> Result<(), String> {
+    let (proxy, paths) = {
+        let repo = repo.lock().map_err(|e| e.to_string())?;
+        (
+            crate::core::newapi::proxy_from_settings(&repo.paths().settings_path),
+            repo.paths().clone(),
+        )
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::platform::process::restart_codex_app(&proxy, &paths).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

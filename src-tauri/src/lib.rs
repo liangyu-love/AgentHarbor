@@ -57,9 +57,6 @@ pub fn run() {
     let repository = Repository::from_paths((*shared_paths).clone());
     let app = builder
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_shell::init())
         .manage(Mutex::new(repository))
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
@@ -78,27 +75,12 @@ pub fn run() {
             {
                 let paths = repo_state.lock().map(|r| r.paths().clone());
                 if let Ok(paths) = paths {
-                    if let Ok(store) = core::router::load_store(&paths) {
-                        tauri::async_runtime::spawn(async move {
-                            let _guard = core::routing_runtime::mutation_guard().await;
-                            match core::routing_runtime::reconcile(&paths).await {
-                                Ok(()) if store.router.enabled => {
-                                    if let Err(e) =
-                                        core::router::ensure_routing_config(&paths, &store)
-                                    {
-                                        eprintln!("[AgentHarbor] router config repair failed: {e}");
-                                    }
-                                }
-                                Err(e) => {
-                                    eprintln!("[AgentHarbor] router proxy startup failed: {e}");
-                                    if store.router.enabled {
-                                        let _ = core::router::remove_routing_config(&paths, &store);
-                                    }
-                                }
-                                Ok(()) => {}
-                            }
-                        });
-                    }
+                    tauri::async_runtime::spawn(async move {
+                        let _guard = core::routing_runtime::mutation_guard().await;
+                        if let Err(error) = core::routing_runtime::refresh_config(&paths).await {
+                            eprintln!("[AgentHarbor] Codex connection repair failed: {error}");
+                        }
+                    });
                 }
             }
             let tray_menu = commands::tray_menu::create_bootstrap_tray_menu(app.handle())
@@ -141,12 +123,19 @@ pub fn run() {
             commands::newapi::fetch_newapi_models,
             commands::newapi::query_newapi_provider_balance,
             commands::newapi::set_newapi_smart_routing,
+            commands::newapi::set_newapi_access_mode,
             commands::newapi::set_newapi_accountless,
             commands::newapi::import_newapi_providers,
             commands::newapi::export_newapi_providers,
             commands::image::generate_images,
             commands::image::image_key_status,
             commands::image::save_image_key,
+            commands::image::save_image_file,
+            commands::image::save_images_to_gallery,
+            commands::image::list_gallery_images,
+            commands::image::load_gallery_image,
+            commands::image::load_gallery_thumbnail,
+            commands::image::delete_gallery_image,
             commands::system::load_snapshot,
             commands::system::is_updater_configured,
             commands::mcp::load_mcp_servers,

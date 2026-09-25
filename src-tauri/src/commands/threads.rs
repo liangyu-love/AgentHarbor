@@ -30,17 +30,20 @@ pub async fn list_conversations(
             source.archived_sessions_dir().to_path_buf(),
         )
     };
-    let items = tauri::async_runtime::spawn_blocking(move || {
-        threads::scan_threads(&sessions_dir, &archived_sessions_dir)
+    let scan = tauri::async_runtime::spawn_blocking(move || {
+        threads::scan_threads_with_warnings(&sessions_dir, &archived_sessions_dir)
     })
     .await
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())?;
-    Ok(CoreEnvelope::ok(ThreadListPayload {
-        total: items.len(),
-        last_scan_at: current_timestamp(),
-        items,
-    }))
+    Ok(CoreEnvelope::ok_with_warnings(
+        ThreadListPayload {
+            total: scan.items.len(),
+            last_scan_at: current_timestamp(),
+            items: scan.items,
+        },
+        scan.warnings,
+    ))
 }
 
 #[tauri::command]

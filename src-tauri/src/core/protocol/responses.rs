@@ -9,6 +9,71 @@ use crate::core::protocol::Translation;
 use crate::core::router::ModelProtocol;
 use serde_json::{json, Value};
 
+/// Shared completion semantics for streaming and single-body translations.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Completion {
+    Completed,
+    Incomplete(&'static str),
+    Failed(&'static str),
+}
+
+impl Completion {
+    pub(super) fn from_reason(protocol: ModelProtocol, reason: Option<&str>) -> Self {
+        match (protocol, reason) {
+            (ModelProtocol::ChatCompletions, Some("stop" | "tool_calls"))
+            | (ModelProtocol::AnthropicMessages, Some("end_turn" | "stop_sequence" | "tool_use")) => {
+                Self::Completed
+            }
+            (_, Some("length" | "max_tokens" | "model_context_window_exceeded")) => {
+                Self::Incomplete("max_output_tokens")
+            }
+            (_, Some("content_filter" | "refusal")) => Self::Incomplete("content_filter"),
+            (_, None) => Self::Failed("missing_finish_reason"),
+            _ => Self::Failed("unsupported_finish_reason"),
+        }
+    }
+
+    pub(super) fn status(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Incomplete(_) => "incomplete",
+            Self::Failed(_) => "failed",
+        }
+    }
+
+    pub(super) fn apply(self, response: &mut Value) {
+        response["status"] = json!(self.status());
+        match self {
+            Self::Completed => {}
+            Self::Incomplete(reason) => response["incomplete_details"] = json!({"reason":reason}),
+            Self::Failed(code) => {
+                response["error"] = json!({
+                    "code":code,
+                    "message": match code {
+                        "invalid_tool_arguments" => "Provider returned an invalid or incomplete function call",
+                        "upstream_stream_truncated" => "Provider stream ended before its terminal event",
+                        "invalid_stream_frame" => "Provider returned an invalid stream frame",
+                        "upstream_stream_error" => "Provider stream could not be read",
+                        _ => "Provider did not report a supported completion reason",
+                    },
+                })
+            }
+        }
+    }
+}
+
+pub(super) fn valid_function_call(item: &Value) -> bool {
+    ["call_id", "name"].iter().all(|key| {
+        item.get(key)
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.trim().is_empty())
+    }) && item
+        .get("arguments")
+        .and_then(Value::as_str)
+        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        .is_some_and(|value| value.is_object())
+}
+
 /// Convert a complete upstream response body into a Responses payload.
 pub fn response_body(translation: Translation, value: &Value) -> Result<Value, String> {
     match translation.to {
@@ -69,12 +134,33 @@ fn chat_to_responses(value: &Value) -> Result<Value, String> {
                 "type": "function_call",
                 "call_id": call.get("id").and_then(Value::as_str).unwrap_or_default(),
                 "name": function.get("name").and_then(Value::as_str).unwrap_or_default(),
-                "arguments": function.get("arguments").and_then(Value::as_str).unwrap_or("{}"),
+                "arguments": function.get("arguments").and_then(Value::as_str).unwrap_or(""),
                 "status": "completed",
             }));
         }
     }
-    Ok(finish(value, output, value.get("usage").map(openai_usage)))
+    let completion = if let Some(refusal) = message
+        .get("refusal")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+    {
+        output.push(json!({
+            "id":item_id("msg"),"type":"message","role":"assistant","status":"incomplete",
+            "content":[{"type":"refusal","refusal":refusal}],
+        }));
+        Completion::Incomplete("content_filter")
+    } else {
+        Completion::from_reason(
+            ModelProtocol::ChatCompletions,
+            choice.get("finish_reason").and_then(Value::as_str),
+        )
+    };
+    Ok(finish(
+        value,
+        output,
+        value.get("usage").map(openai_usage),
+        completion,
+    ))
 }
 
 fn anthropic_to_responses(value: &Value) -> Result<Value, String> {
@@ -109,14 +195,14 @@ fn anthropic_to_responses(value: &Value) -> Result<Value, String> {
             }
             Some("tool_use") => {
                 output.push(json!({
-                        "id": item_id("fc"),
-                        "type": "function_call",
-                        "call_id": block.get("id").and_then(Value::as_str).unwrap_or_default(),
-                        "name": block.get("name").and_then(Value::as_str).unwrap_or_default(),
-                        // Responses reports arguments as a JSON string.
-                        "arguments": block.get("input").map(Value::to_string).unwrap_or_else(|| "{}".into()),
-                        "status": "completed",
-                    }));
+                    "id": item_id("fc"),
+                    "type": "function_call",
+                    "call_id": block.get("id").and_then(Value::as_str).unwrap_or_default(),
+                    "name": block.get("name").and_then(Value::as_str).unwrap_or_default(),
+                    // Responses reports arguments as a JSON string.
+                    "arguments": block.get("input").map(Value::to_string).unwrap_or_default(),
+                    "status": "completed",
+                }));
             }
             _ => {}
         }
@@ -125,13 +211,37 @@ fn anthropic_to_responses(value: &Value) -> Result<Value, String> {
         value,
         output,
         value.get("usage").map(anthropic_usage),
+        Completion::from_reason(
+            ModelProtocol::AnthropicMessages,
+            value.get("stop_reason").and_then(Value::as_str),
+        ),
     ))
 }
 
 /// Assemble the envelope both upstreams share.
-fn finish(upstream: &Value, output: Vec<Value>, usage: Option<Value>) -> Value {
-    json!({
-        "id": format!("resp_{}", upstream.get("id").and_then(Value::as_str).unwrap_or("translated")),
+fn finish(
+    upstream: &Value,
+    mut output: Vec<Value>,
+    usage: Option<Value>,
+    mut completion: Completion,
+) -> Value {
+    if completion == Completion::Completed
+        && output.iter().any(|item| {
+            item.get("type").and_then(Value::as_str) == Some("function_call")
+                && !valid_function_call(item)
+        })
+    {
+        completion = Completion::Failed("invalid_tool_arguments");
+    }
+    if completion != Completion::Completed {
+        for item in &mut output {
+            if item.get("status").is_some() {
+                item["status"] = json!("incomplete");
+            }
+        }
+    }
+    let mut response = json!({
+        "id": item_id("resp"),
         "object": "response",
         "status": "completed",
         "model": upstream.get("model").and_then(Value::as_str).unwrap_or_default(),
@@ -141,10 +251,12 @@ fn finish(upstream: &Value, output: Vec<Value>, usage: Option<Value>) -> Value {
             "output_tokens": 0,
             "total_tokens": 0,
         })),
-    })
+    });
+    completion.apply(&mut response);
+    response
 }
 
-fn openai_usage(usage: &Value) -> Value {
+pub(super) fn openai_usage(usage: &Value) -> Value {
     let input = usage
         .get("prompt_tokens")
         .and_then(Value::as_u64)
@@ -199,7 +311,7 @@ mod tests {
             &json!({
                 "id": "chatcmpl-1",
                 "model": "gpt-x",
-                "choices": [{ "message": { "role": "assistant", "content": "Hello" } }],
+                "choices": [{ "finish_reason": "stop", "message": { "role": "assistant", "content": "Hello" } }],
                 "usage": { "prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6 }
             }),
         )
@@ -217,7 +329,7 @@ mod tests {
         let converted = response_body(
             translation(ModelProtocol::ChatCompletions),
             &json!({
-                "choices": [{ "message": {
+                "choices": [{ "finish_reason": "tool_calls", "message": {
                     "role": "assistant",
                     "content": null,
                     "tool_calls": [{
@@ -242,6 +354,7 @@ mod tests {
             &json!({
                 "id": "msg_1",
                 "model": "claude-x",
+                "stop_reason": "tool_use",
                 "content": [
                     { "type": "thinking", "thinking": "considering" },
                     { "type": "text", "text": "Answer" },
@@ -276,5 +389,120 @@ mod tests {
             &json!({"error":"bad key"})
         )
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod terminal_tests {
+    use super::*;
+
+    #[test]
+    fn nonstream_finish_reasons_match_streaming_states() {
+        for (target, reason, status, detail) in [
+            (ModelProtocol::ChatCompletions, "stop", "completed", None),
+            (
+                ModelProtocol::ChatCompletions,
+                "length",
+                "incomplete",
+                Some("max_output_tokens"),
+            ),
+            (
+                ModelProtocol::ChatCompletions,
+                "content_filter",
+                "incomplete",
+                Some("content_filter"),
+            ),
+            (
+                ModelProtocol::AnthropicMessages,
+                "end_turn",
+                "completed",
+                None,
+            ),
+            (
+                ModelProtocol::AnthropicMessages,
+                "max_tokens",
+                "incomplete",
+                Some("max_output_tokens"),
+            ),
+            (
+                ModelProtocol::AnthropicMessages,
+                "refusal",
+                "incomplete",
+                Some("content_filter"),
+            ),
+        ] {
+            let value = if target == ModelProtocol::ChatCompletions {
+                json!({"choices":[{"message":{"content":"answer"},"finish_reason":reason}]})
+            } else {
+                json!({"content":[{"type":"text","text":"answer"}],"stop_reason":reason})
+            };
+            let result = response_body(
+                Translation {
+                    from: ModelProtocol::Responses,
+                    to: target,
+                },
+                &value,
+            )
+            .unwrap();
+            assert_eq!(result["status"], status);
+            assert_eq!(result["incomplete_details"]["reason"].as_str(), detail);
+            assert_eq!(
+                result["output"][0]["status"],
+                if status == "completed" {
+                    "completed"
+                } else {
+                    "incomplete"
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn missing_terminal_reasons_and_malformed_tools_cannot_succeed() {
+        for target in [
+            ModelProtocol::ChatCompletions,
+            ModelProtocol::AnthropicMessages,
+        ] {
+            let body = if target == ModelProtocol::ChatCompletions {
+                json!({"choices":[{"message":{"content":"partial"}}]})
+            } else {
+                json!({"content":[{"type":"text","text":"partial"}]})
+            };
+            let result = response_body(
+                Translation {
+                    from: ModelProtocol::Responses,
+                    to: target,
+                },
+                &body,
+            )
+            .unwrap();
+            assert_eq!(result["status"], "failed");
+            let bad_tool = if target == ModelProtocol::ChatCompletions {
+                json!({"choices":[{"message":{"tool_calls":[{"id":"c","function":{"name":"f","arguments":"{"}}]},"finish_reason":"tool_calls"}]})
+            } else {
+                json!({"content":[{"type":"tool_use","id":"c","name":"f","input":"not an object"}],"stop_reason":"tool_use"})
+            };
+            let result = response_body(
+                Translation {
+                    from: ModelProtocol::Responses,
+                    to: target,
+                },
+                &bad_tool,
+            )
+            .unwrap();
+            assert_eq!(result["status"], "failed");
+            assert_eq!(result["error"]["code"], "invalid_tool_arguments");
+        }
+    }
+
+    #[test]
+    fn a_chat_refusal_is_preserved_and_never_an_empty_completed_answer() {
+        let result = response_body(Translation {from:ModelProtocol::Responses,to:ModelProtocol::ChatCompletions}, &json!({"choices":[{"message":{"content":null,"refusal":"Cannot comply"},"finish_reason":"stop"}]})).unwrap();
+        assert_eq!(result["status"], "incomplete");
+        assert_eq!(result["incomplete_details"]["reason"], "content_filter");
+        assert_eq!(
+            result["output"][0]["content"][0]["refusal"],
+            "Cannot comply"
+        );
     }
 }

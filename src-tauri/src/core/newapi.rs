@@ -87,16 +87,12 @@ pub(crate) fn client_with_timeout(
     proxy: &ApiProxyConfigPayload,
     timeout: Duration,
 ) -> Result<Client, String> {
-    let proxy =
-        super::api_client::sanitize_proxy_config(proxy).map_err(|_| "newapi.errors.proxy")?;
-    let mut builder = Client::builder()
-        .no_proxy()
+    let builder = Client::builder()
         .timeout(timeout)
         .connect_timeout(Duration::from_secs(8))
         .redirect(reqwest::redirect::Policy::none());
-    if let Some(url) = proxy.url {
-        builder = builder.proxy(reqwest::Proxy::all(url).map_err(|_| "newapi.errors.proxy")?);
-    }
+    let builder = super::api_client::configure_blocking_client(builder, proxy)
+        .map_err(|_| "newapi.errors.proxy")?;
     builder.build().map_err(|_| "newapi.errors.network".into())
 }
 
@@ -275,6 +271,8 @@ pub fn balance(config: &Connection, proxy: &ApiProxyConfigPayload) -> Result<Bal
 pub struct Model {
     pub id: String,
     pub display_name: String,
+    /// None inherits the provider default; an explicit value belongs to this model.
+    pub protocol: Option<super::router::ModelProtocol>,
     pub context_window: Option<u64>,
     pub max_output_tokens: Option<u64>,
     pub endpoint_types: Vec<String>,
@@ -288,6 +286,7 @@ impl Default for Model {
         Self {
             id: String::new(),
             display_name: String::new(),
+            protocol: None,
             context_window: None,
             max_output_tokens: None,
             endpoint_types: Vec::new(),
@@ -387,6 +386,7 @@ fn parse_models(value: &Value) -> Result<Vec<Model>, String> {
                 // The menu starts with a stable provider/model label. A user can
                 // replace it with an alias in the model editor.
                 display_name: id.to_owned(),
+                protocol: None,
                 context_window: upstream_context,
                 max_output_tokens: upstream_output,
                 endpoint_types: item
@@ -733,7 +733,10 @@ mod tests {
         assert_eq!(effective_proxy("proxy", &global), global);
         assert_eq!(
             effective_proxy("direct", &global),
-            ApiProxyConfigPayload::default()
+            ApiProxyConfigPayload {
+                mode: super::super::models::ApiProxyMode::Direct,
+                url: None
+            }
         );
     }
 

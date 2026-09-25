@@ -1,10 +1,12 @@
-use crate::core::models::CoreError;
+use crate::core::models::{CoreError, CoreWarning};
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -72,19 +74,117 @@ struct ParsedThread {
     messages: Vec<ChatMessage>,
 }
 
+pub struct ThreadScanResult {
+    pub items: Vec<ThreadSummary>,
+    pub warnings: Vec<CoreWarning>,
+}
+
+#[derive(Clone)]
+struct CachedThread {
+    fingerprint: (u64, SystemTime),
+    summary: Option<ThreadSummary>,
+}
+
+const THREAD_CACHE_LIMIT: usize = 4096;
+static THREAD_CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedThread>>> = OnceLock::new();
+
+fn file_fingerprint(path: &Path) -> Result<(u64, SystemTime), CoreError> {
+    let metadata = std::fs::metadata(path)?;
+    Ok((metadata.len(), metadata.modified()?))
+}
+
+fn scan_warning(path: &Path, error: &CoreError) -> CoreWarning {
+    CoreWarning {
+        code: "thread_scan_skipped".into(),
+        message: format!(
+            "Skipped unreadable conversation {}: {error}",
+            path.display()
+        ),
+    }
+}
+
+fn scan_error(
+    warnings: &mut Option<&mut Vec<CoreWarning>>,
+    path: &Path,
+    error: CoreError,
+) -> Result<(), CoreError> {
+    match warnings {
+        Some(warnings) => {
+            warnings.push(scan_warning(path, &error));
+            Ok(())
+        }
+        None => Err(error),
+    }
+}
+
 /// Scan active and archived Codex rollout files.
 pub fn scan_threads(
     sessions_dir: &Path,
     archived_dir: &Path,
 ) -> Result<Vec<ThreadSummary>, CoreError> {
+    Ok(scan_threads_with_warnings(sessions_dir, archived_dir)?.items)
+}
+
+pub fn scan_threads_with_warnings(
+    sessions_dir: &Path,
+    archived_dir: &Path,
+) -> Result<ThreadScanResult, CoreError> {
     let mut items = Vec::new();
-    for file in collect_thread_files(sessions_dir, archived_dir)? {
-        if let Some(parsed) = parse_thread(&file, false)? {
-            items.push(parsed.summary);
+    let mut warnings = Vec::new();
+    let mut files = Vec::new();
+    collect_rollout_files(sessions_dir, false, &mut files, Some(&mut warnings))?;
+    collect_rollout_files(archived_dir, true, &mut files, Some(&mut warnings))?;
+    let cache = THREAD_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let seen: HashSet<_> = files.iter().map(|file| file.path.clone()).collect();
+    for file in files {
+        let parsed = (|| -> Result<Option<ThreadSummary>, CoreError> {
+            let fingerprint = file_fingerprint(&file.path)?;
+            let cached = cache
+                .lock()
+                .ok()
+                .and_then(|entries| entries.get(&file.path).cloned())
+                .filter(|entry| entry.fingerprint == fingerprint);
+            if let Some(cached) = cached {
+                return Ok(cached.summary.map(|mut summary| {
+                    summary.key = file.key.clone();
+                    summary.archived = file.archived;
+                    summary
+                }));
+            }
+            let summary = parse_thread(&file, false)?.map(|parsed| parsed.summary);
+            // Do not cache a log being appended to or replaced during parsing.
+            if file_fingerprint(&file.path).ok() == Some(fingerprint) {
+                if let Ok(mut entries) = cache.lock() {
+                    if entries.len() >= THREAD_CACHE_LIMIT && !entries.contains_key(&file.path) {
+                        if let Some(key) = entries.keys().next().cloned() {
+                            entries.remove(&key);
+                        }
+                    }
+                    entries.insert(
+                        file.path.clone(),
+                        CachedThread {
+                            fingerprint,
+                            summary: summary.clone(),
+                        },
+                    );
+                }
+            }
+            Ok(summary)
+        })();
+        match parsed {
+            Ok(Some(summary)) => items.push(summary),
+            Ok(None) => {}
+            Err(error) => warnings.push(scan_warning(&file.path, &error)),
         }
     }
+    if let Ok(mut entries) = cache.lock() {
+        entries.retain(|path, _| {
+            (!path.starts_with(sessions_dir) && !path.starts_with(archived_dir))
+                || seen.contains(path)
+        });
+    }
     items.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    Ok(items)
+    Ok(ThreadScanResult { items, warnings })
 }
 
 fn collect_thread_files(
@@ -92,8 +192,8 @@ fn collect_thread_files(
     archived_dir: &Path,
 ) -> Result<Vec<ThreadFile>, CoreError> {
     let mut files = Vec::new();
-    collect_rollout_files(sessions_dir, false, &mut files)?;
-    collect_rollout_files(archived_dir, true, &mut files)?;
+    collect_rollout_files(sessions_dir, false, &mut files, None)?;
+    collect_rollout_files(archived_dir, true, &mut files, None)?;
     Ok(files)
 }
 
@@ -101,22 +201,46 @@ fn collect_rollout_files(
     root: &Path,
     archived: bool,
     out: &mut Vec<ThreadFile>,
+    mut warnings: Option<&mut Vec<CoreWarning>>,
 ) -> Result<(), CoreError> {
     if !root.exists() {
         return Ok(());
     }
     if !root.is_dir() {
-        return Err(CoreError::InvalidData(format!(
-            "thread source is not a directory: {}",
-            root.display()
-        )));
+        return scan_error(
+            &mut warnings,
+            root,
+            CoreError::InvalidData(format!(
+                "thread source is not a directory: {}",
+                root.display()
+            )),
+        );
     }
 
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir)? {
-            let entry = entry?;
-            let file_type = entry.file_type()?;
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) => {
+                scan_error(&mut warnings, &dir, error.into())?;
+                continue;
+            }
+        };
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    scan_error(&mut warnings, &dir, error.into())?;
+                    continue;
+                }
+            };
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(error) => {
+                    scan_error(&mut warnings, &entry.path(), error.into())?;
+                    continue;
+                }
+            };
             if file_type.is_symlink() {
                 continue;
             }
@@ -647,6 +771,86 @@ mod tests {
              {{\"timestamp\":\"2026-09-20T12:01:00+08:00\",\"payload\":{{\"type\":\"user_message\",\"message\":\"{title}\"}}}}\n\
              {{\"timestamp\":\"2026-09-20T12:02:00+08:00\",\"payload\":{{\"type\":\"agent_message\",\"message\":\"done\"}}}}\n"
         )
+    }
+
+    #[test]
+    fn scan_skips_unreadable_logs_and_reports_a_warning() {
+        let root = tempdir().unwrap();
+        let sessions = root.path().join("sessions");
+        let archived = root.path().join("archived");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::write(
+            sessions.join("rollout-good.jsonl"),
+            rollout("good", "C:/work", "Good"),
+        )
+        .unwrap();
+        fs::write(sessions.join("rollout-bad.jsonl"), [0xff]).unwrap();
+        let scan = scan_threads_with_warnings(&sessions, &archived).unwrap();
+        assert_eq!(scan.items.len(), 1);
+        assert_eq!(scan.items[0].id, "good");
+        assert_eq!(scan.warnings.len(), 1);
+        assert_eq!(scan.warnings[0].code, "thread_scan_skipped");
+        assert!(scan.warnings[0].message.contains("rollout-bad.jsonl"));
+        assert!(export_threads(
+            &sessions,
+            &archived,
+            &["active:rollout-bad.jsonl".into()],
+            &root.path().join("output"),
+            ThreadExportFormat::Markdown
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn scan_keeps_valid_source_when_other_source_is_not_a_directory() {
+        let root = tempdir().unwrap();
+        let sessions = root.path().join("sessions");
+        let archived = root.path().join("archived");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::write(
+            sessions.join("rollout-good.jsonl"),
+            rollout("good", "C:/work", "Good"),
+        )
+        .unwrap();
+        fs::write(&archived, "not a directory").unwrap();
+        let scan = scan_threads_with_warnings(&sessions, &archived).unwrap();
+        assert_eq!(scan.items.len(), 1);
+        assert_eq!(scan.warnings.len(), 1);
+    }
+
+    #[test]
+    fn cached_scan_observes_modified_removed_and_repaired_files() {
+        let root = tempdir().unwrap();
+        let sessions = root.path().join("sessions");
+        let archived = root.path().join("archived");
+        fs::create_dir_all(&sessions).unwrap();
+        let path = sessions.join("rollout-a.jsonl");
+        fs::write(&path, rollout("id", "C:/work", "Original")).unwrap();
+        let first = scan_threads(&sessions, &archived).unwrap();
+        assert_eq!(scan_threads(&sessions, &archived).unwrap(), first);
+        fs::write(
+            &path,
+            rollout("id", "C:/work", "Changed title with a different length"),
+        )
+        .unwrap();
+        assert_eq!(
+            scan_threads(&sessions, &archived).unwrap()[0].title,
+            "Changed title with a different length"
+        );
+        fs::write(&path, [0xff]).unwrap();
+        assert_eq!(
+            scan_threads_with_warnings(&sessions, &archived)
+                .unwrap()
+                .warnings
+                .len(),
+            1
+        );
+        fs::write(&path, rollout("id", "C:/work", "Repaired")).unwrap();
+        let repaired = scan_threads_with_warnings(&sessions, &archived).unwrap();
+        assert!(repaired.warnings.is_empty());
+        assert_eq!(repaired.items[0].title, "Repaired");
+        fs::remove_file(path).unwrap();
+        assert!(scan_threads(&sessions, &archived).unwrap().is_empty());
     }
 
     #[test]

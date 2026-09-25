@@ -289,7 +289,10 @@ impl ConfigManager {
     fn prepare(&self, store: &Store, request: &ConfigRequest) -> Result<Plan, String> {
         let adapter = adapter(request.target_id)?;
         let provider = selected_provider(store, request)?;
-        if !adapter.protocols().contains(&provider.protocol) {
+        if !adapter
+            .protocols()
+            .contains(&provider.protocol_for_model(&request.model))
+        {
             return Err("clients.errors.protocol".into());
         }
         if !provider.supports_model(&request.model) {
@@ -432,7 +435,7 @@ fn selected_provider<'a>(
     store
         .providers
         .iter()
-        .find(|p| p.id == request.provider_id && p.is_routable())
+        .find(|p| p.id == request.provider_id && p.has_route_credentials())
         .ok_or_else(|| "clients.errors.provider".into())
 }
 

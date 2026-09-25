@@ -26,20 +26,30 @@ AgentHarbor is built with **Tauri 2, React, and Rust**. Codex is the first suppo
 
 ## Core Capabilities
 
-| Module | Pain point addressed |
+| Module | Available in this source build |
 | --- | --- |
-| **Account management** | Switching accounts by editing `auth.json`; scattered quota views; cumbersome import/export |
-| **Auto-switch** | Work stops when 5-hour or weekly quota runs out; need automatic fallback and Codex restart |
-| **Smart router** | Use relay models inside Codex Desktop while keeping historical threads resumable |
-| **Relay management** | Provider setup, connectivity tests, import/export, and router diagnostics |
-| **Session management** | Safely inspect, analyze, and bulk-clean local threads from the real index |
+| **Account management** | Add accounts through Codex login, inspect quota, switch manually, and remove saved accounts |
+| **Codex access** | Choose local Router or direct Native access independently of model protocol and network settings |
+| **Relay management** | Provider defaults and per-model protocol overrides, connectivity tests, import/export, and diagnostics |
+| **Session management** | List, search, filter, and export selected Codex conversations as Markdown or JSONL |
 | **MCP / Skills** | Manage MCP entries and Skills lifecycle in the UI, with backup and restore |
-| **Plugins** | Unified toggles for built-in extensions (e.g. web tools, image support) |
+| **Client configuration** | Preview, apply, and restore Claude Code / OpenCode provider settings through the local router |
+| **Image workbench** | Generate or edit images with a configured provider and save results to a local gallery |
 | **Custom instructions** | Manage only the AgentHarbor-managed block in `~/.codex/AGENTS.md`, with preview and rollback |
-| **System maintenance** | Diagnose, clean, rebuild registry, force-quit Codex, fix common config issues |
-| **Settings & runtime** | Theme, language, quota refresh, API proxy, update checks; tray and macOS notch quota display |
+| **System maintenance** | Diagnose local state, clean redundant backups, rebuild the registry, and restart Codex |
+| **Settings & runtime** | Theme, language, quota refresh, network proxy, optional update checks, and a basic tray menu |
 
-**Smart router note:** Relay models are forwarded through AgentHarbor's local proxy. Keep AgentHarbor running while Codex uses relay models.
+**Not implemented in this source build:** automatic account switching, account import/export, bulk deletion of conversations, and plugin management. Disabled controls or historical screenshots do not enable these features. The maintenance cleanup action removes redundant local backups and stale registry entries; it does not delete conversations. Quota heatmaps and a macOS notch quota display are also unavailable. Update checks require a separately configured, signed release service.
+
+**Model protocols:** Each model can use Responses, Chat Completions, or Anthropic Messages. The provider protocol is only an inherited default for models without an override; it does not filter the catalog. Refreshing the model list preserves overrides. Upstream protocol, Codex access mode, and network route are separate settings.
+
+**Codex access modes:** Router forwards requests through AgentHarbor and converts Chat Completions / Anthropic Messages for the Codex Responses interface. It can combine official and enabled relay models; keep AgentHarbor running. Native connects directly to the current provider: the selected default must use Responses, and its catalog contains only included Responses models from that provider, using real upstream model IDs. An incompatible selection is rejected rather than silently changing the model or provider; Chat / Anthropic models require Router.
+
+**Native authentication:** AgentHarbor stores the provider API key under a dedicated, randomly named variable in the Codex home `.env` file and refers to it through `env_key`. Treat `.env` and its backups as local secret files: protect access and keep them out of source control; they are not an encrypted credential vault. The key is not written to `auth.json` or exposed in config previews. Native sets `requires_openai_auth=false`, so Codex may hide the ChatGPT account even though the existing `auth.json` is preserved. To use official and relay models together with official account display, switch to Router with accountless mode off and restart Codex.
+
+Restart Codex after changing access mode, model configuration, or its native network route. Use the AgentHarbor restart action to apply changed proxy settings to the Codex process. Native model requests do not require the local service to stay running; Claude Code / OpenCode configurations that use the local router still do.
+
+See [running instructions](docs/RUNNING.md) for current feature boundaries, network modes, and isolated validation.
 
 <p align="center">
   <img src="assets/console.png" alt="AgentHarbor" width="1200" height="812" />

@@ -220,6 +220,135 @@ fn jsonc_comments_are_backed_up_and_restored_exactly() {
 }
 
 #[test]
+fn claude_validates_the_requested_models_effective_protocol() {
+    let (_temp, manager, mut store, mut request) = fixture();
+    let provider = &mut store.providers[0];
+    provider.protocol = ModelProtocol::Responses;
+    provider.model = "unavailable-default".into();
+    provider.models = vec![
+        crate::core::newapi::Model {
+            id: "unavailable-default".into(),
+            endpoint_types: vec!["anthropic-messages".into()],
+            ..Default::default()
+        },
+        crate::core::newapi::Model {
+            id: "claude-test".into(),
+            protocol: Some(ModelProtocol::AnthropicMessages),
+            endpoint_types: vec!["anthropic-messages".into()],
+            ..Default::default()
+        },
+        crate::core::newapi::Model {
+            id: "responses-model".into(),
+            ..Default::default()
+        },
+    ];
+    assert!(!provider.is_routable());
+    apply(&manager, &store, &request);
+    assert_eq!(read(&manager.paths.claude)["model"], "claude-test");
+    let installed = std::fs::read(&manager.paths.claude).unwrap();
+    request.model = "responses-model".into();
+    assert_eq!(
+        manager.preview(&store, &request).err().as_deref(),
+        Some("clients.errors.protocol")
+    );
+    assert_eq!(std::fs::read(&manager.paths.claude).unwrap(), installed);
+    manager.restore(TargetId::ClaudeCode).unwrap();
+    assert!(!manager.paths.claude.exists());
+}
+
+#[test]
+fn opencode_groups_mixed_models_and_removes_obsolete_protocol_groups_on_reapply() {
+    let (_temp, manager, mut store, mut request) = fixture();
+    let provider = &mut store.providers[0];
+    provider.protocol = ModelProtocol::Responses;
+    provider.model = "responses-model".into();
+    provider.models = vec![
+        crate::core::newapi::Model {
+            id: "responses-model".into(),
+            ..Default::default()
+        },
+        crate::core::newapi::Model {
+            id: "chat-model".into(),
+            protocol: Some(ModelProtocol::ChatCompletions),
+            endpoint_types: vec!["openai-chat".into()],
+            ..Default::default()
+        },
+        crate::core::newapi::Model {
+            id: "claude-test".into(),
+            protocol: Some(ModelProtocol::AnthropicMessages),
+            endpoint_types: vec!["anthropic-messages".into()],
+            ..Default::default()
+        },
+    ];
+    request.target_id = TargetId::OpenCode;
+    request.model = "chat-model".into();
+    let original = json!({
+        "provider": {"openai": {"name": "Official"}},
+        "model": "openai/original",
+        "enabled_providers": ["openai"],
+        "disabled_providers": ["agentharbor_test-relay_chat", "unrelated"]
+    });
+    write(&manager.paths.opencode, &original);
+    apply(&manager, &store, &request);
+    let installed = read(&manager.paths.opencode);
+    assert_eq!(installed["model"], "agentharbor_test-relay_chat/chat-model");
+    for (key, npm, model) in [
+        (
+            "agentharbor_test-relay",
+            "@ai-sdk/openai",
+            "responses-model",
+        ),
+        (
+            "agentharbor_test-relay_chat",
+            "@ai-sdk/openai-compatible",
+            "chat-model",
+        ),
+        (
+            "agentharbor_test-relay_anthropic",
+            "@ai-sdk/anthropic",
+            "claude-test",
+        ),
+    ] {
+        let group = &installed["provider"][key];
+        assert_eq!(group["npm"], npm);
+        assert_eq!(group["models"].as_object().unwrap().len(), 1);
+        assert!(group["models"].get(model).is_some());
+        assert_eq!(
+            group["options"]["baseURL"],
+            "http://127.0.0.1:43127/p/test-relay/v1"
+        );
+        assert_eq!(group["options"]["apiKey"], "local-secret");
+    }
+    assert!(!installed.to_string().contains("upstream-secret"));
+    assert_eq!(installed["disabled_providers"], json!(["unrelated"]));
+    assert_eq!(installed["enabled_providers"].as_array().unwrap().len(), 4);
+    store.providers[0].models[1].protocol = Some(ModelProtocol::AnthropicMessages);
+    store.providers[0].models[1].endpoint_types = vec!["anthropic-messages".into()];
+    apply(&manager, &store, &request);
+    let updated = read(&manager.paths.opencode);
+    assert!(updated["provider"]
+        .get("agentharbor_test-relay_chat")
+        .is_none());
+    assert_eq!(
+        updated["model"],
+        "agentharbor_test-relay_anthropic/chat-model"
+    );
+    assert_eq!(
+        updated["provider"]["agentharbor_test-relay_anthropic"]["models"]
+            .as_object()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        updated["provider"]["openai"],
+        original["provider"]["openai"]
+    );
+    manager.restore(TargetId::OpenCode).unwrap();
+    assert_eq!(read(&manager.paths.opencode), original);
+}
+
+#[test]
 fn clients_have_independent_lifetimes_and_new_files_are_removed_on_restore() {
     let (temp, manager, store, mut request) = fixture();
     apply(&manager, &store, &request);

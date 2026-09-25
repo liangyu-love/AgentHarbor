@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 const REGISTRY_SCHEMA_VERSION: i32 = 2;
+const REGISTRY_BACKUP_LIMIT: usize = 20;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -266,17 +267,8 @@ impl Repository {
         registry.updated_at = current_timestamp();
         self.save_registry(&registry)?;
 
-        if enabled {
-            let daemon_binary = self.resolve_daemon_binary()?;
-            crate::platform::daemon::install_daemon(
-                &self.paths.launch_agent_path,
-                &daemon_binary,
-                &self.paths.codex_home,
-            )?;
-        } else {
-            crate::platform::daemon::uninstall_daemon(&self.paths.launch_agent_path)?;
-            let _ = self.clear_auto_switch_transient_state();
-        }
+        crate::platform::daemon::uninstall_daemon(&self.paths.launch_agent_path)?;
+        let _ = self.clear_auto_switch_transient_state();
 
         let payload = self.make_auto_switch_status(&registry);
         Ok(CoreEnvelope::ok(AutoSwitchConfigPayload {
@@ -494,6 +486,10 @@ impl Repository {
         self.persist_registry(registry, true)
     }
 
+    pub(crate) fn save_registry_cache(&self, registry: &RegistryFile) -> Result<(), CoreError> {
+        self.persist_registry(registry, false)
+    }
+
     fn persist_registry(
         &self,
         registry: &RegistryFile,
@@ -502,9 +498,14 @@ impl Repository {
         self.paths.ensure_directories()?;
 
         if create_backup && self.paths.registry_path.exists() {
-            let backup_name = format!("registry-{}.json", current_timestamp());
+            let backup_name = format!(
+                "registry-{}-{}.json",
+                current_timestamp(),
+                uuid::Uuid::new_v4()
+            );
             let backup_path = self.paths.registry_backups_dir.join(backup_name);
-            let _ = std::fs::copy(&self.paths.registry_path, &backup_path);
+            let original = std::fs::read(&self.paths.registry_path)?;
+            super::storage::write_atomic(&backup_path, &original)?;
         }
 
         let mut reg = registry.clone();
@@ -518,6 +519,11 @@ impl Repository {
 
         let data = serde_json::to_string_pretty(&reg)?;
         super::storage::write_atomic(&self.paths.registry_path, data.as_bytes())?;
+        // Cache writes also prune backups left by older builds without creating
+        // another full registry backup for every scheduled quota refresh.
+        if let Err(error) = trim_registry_backups(&self.paths.registry_backups_dir) {
+            log::warn!("Could not trim registry backups: {error}");
+        }
         Ok(())
     }
 
@@ -543,37 +549,41 @@ impl Repository {
                 .or(Some(ApiConfig::default())),
         };
 
-        if let Ok(auth_file) = load_auth_file(&self.paths.auth_path) {
-            if let Ok(snapshot) = make_auth_snapshot(&auth_file, &self.paths.auth_path) {
-                let snapshot_url = self.make_snapshot_path(&snapshot.account_key);
-                let _ = std::fs::copy(&self.paths.auth_path, &snapshot_url);
-                let mut item = RegistryItem {
-                    account_key: snapshot.account_key.clone(),
-                    snapshot_path: snapshot_url.display().to_string(),
-                    email: snapshot.email,
-                    alias: String::new(),
-                    account_name: snapshot.account_name,
-                    workspace_name: snapshot.workspace_name,
-                    profile_name: snapshot.profile_name,
-                    plan: format!("{:?}", snapshot.plan).to_lowercase(),
-                    auth_mode: format!("{:?}", snapshot.auth_mode).to_lowercase(),
-                    has_active_subscription: None,
-                    subscription_expires_at: None,
-                    subscription_will_renew: None,
-                    created_at: snapshot.created_at,
-                    last_used_at: Some(current_timestamp()),
-                    last_usage_at: None,
-                    cached_primary_window: None,
-                    cached_secondary_window: None,
-                    usage_status: default_usage_status(),
-                    last_usage_error: None,
-                };
-                carry_over_registry_state(
-                    &mut item,
-                    prev_item(prev.as_ref(), &snapshot.account_key),
-                );
-                registry.items.push(item);
-                registry.active_account_key = Some(snapshot.account_key);
+        if let Ok(auth_bytes) = std::fs::read(&self.paths.auth_path) {
+            if let Ok(auth_file) = serde_json::from_slice(&auth_bytes) {
+                if let Ok(snapshot) = make_auth_snapshot(&auth_file, &self.paths.auth_path) {
+                    let snapshot_url = self.make_snapshot_path(&snapshot.account_key);
+                    if std::fs::read(&snapshot_url).ok().as_deref() != Some(auth_bytes.as_slice()) {
+                        super::storage::write_atomic(&snapshot_url, &auth_bytes)?;
+                    }
+                    let mut item = RegistryItem {
+                        account_key: snapshot.account_key.clone(),
+                        snapshot_path: snapshot_url.display().to_string(),
+                        email: snapshot.email,
+                        alias: String::new(),
+                        account_name: snapshot.account_name,
+                        workspace_name: snapshot.workspace_name,
+                        profile_name: snapshot.profile_name,
+                        plan: format!("{:?}", snapshot.plan).to_lowercase(),
+                        auth_mode: format!("{:?}", snapshot.auth_mode).to_lowercase(),
+                        has_active_subscription: None,
+                        subscription_expires_at: None,
+                        subscription_will_renew: None,
+                        created_at: snapshot.created_at,
+                        last_used_at: Some(current_timestamp()),
+                        last_usage_at: None,
+                        cached_primary_window: None,
+                        cached_secondary_window: None,
+                        usage_status: default_usage_status(),
+                        last_usage_error: None,
+                    };
+                    carry_over_registry_state(
+                        &mut item,
+                        prev_item(prev.as_ref(), &snapshot.account_key),
+                    );
+                    registry.items.push(item);
+                    registry.active_account_key = Some(snapshot.account_key);
+                }
             }
         }
 
@@ -718,12 +728,6 @@ impl Repository {
         Ok(id)
     }
 
-    fn resolve_daemon_binary(&self) -> Result<PathBuf, CoreError> {
-        std::env::current_exe().map_err(|e| {
-            CoreError::OperationFailed(format!("Failed to resolve current executable: {e}"))
-        })
-    }
-
     fn clear_auto_switch_transient_state(&self) -> Result<(), CoreError> {
         let _ = std::fs::remove_file(&self.paths.auto_switch_pending_path);
         let _ = std::fs::remove_file(&self.paths.auto_switch_snooze_path);
@@ -734,6 +738,46 @@ impl Repository {
 // ---------------------------------------------------------------------------
 // Registry helpers
 // ---------------------------------------------------------------------------
+
+fn is_registry_backup_name(name: &str) -> bool {
+    let Some(stem) = name
+        .strip_prefix("registry-")
+        .and_then(|name| name.strip_suffix(".json"))
+    else {
+        return false;
+    };
+    let (timestamp, id) = stem
+        .split_once('-')
+        .map_or((stem, None), |(timestamp, id)| (timestamp, Some(id)));
+    if !timestamp
+        .parse::<i64>()
+        .is_ok_and(|value| value >= 0 && value.to_string() == timestamp)
+    {
+        return false;
+    }
+    // Older releases used only the timestamp; current releases add a UUID.
+    id.map_or(true, |id| {
+        uuid::Uuid::parse_str(id).is_ok_and(|value| value.hyphenated().to_string() == id)
+    })
+}
+
+fn trim_registry_backups(directory: &Path) -> Result<(), CoreError> {
+    let mut backups = Vec::new();
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !entry.file_type()?.is_file() || !is_registry_backup_name(&name) {
+            continue;
+        }
+        backups.push((entry.metadata()?.modified()?, entry.path()));
+    }
+    backups.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    for (_, path) in backups.into_iter().skip(REGISTRY_BACKUP_LIMIT) {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
+}
 
 fn prev_item<'a>(
     registry: Option<&'a RegistryFile>,
@@ -749,6 +793,12 @@ fn prev_item<'a>(
 
 fn carry_over_registry_state(item: &mut RegistryItem, previous: Option<&RegistryItem>) {
     let Some(previous) = previous else { return };
+
+    item.usage_status = previous.usage_status.clone();
+    item.last_usage_error = previous.last_usage_error.clone();
+    if item.plan == "unknown" {
+        item.plan = previous.plan.clone();
+    }
 
     if item.alias.is_empty() && !previous.alias.is_empty() {
         item.alias = previous.alias.clone();
@@ -853,6 +903,79 @@ mod tests {
         fs::read_dir(dir)
             .map(|entries| entries.count())
             .unwrap_or(0)
+    }
+
+    #[test]
+    fn registry_backup_names_match_only_generated_formats() {
+        for name in [
+            "registry-1720000000.json",
+            "registry-1720000000-550e8400-e29b-41d4-a716-446655440000.json",
+        ] {
+            assert!(is_registry_backup_name(name), "{name}");
+        }
+        for name in [
+            "registry-notes.json",
+            "registry-.json",
+            "registry-1720000000-notes.json",
+            "registry-notes-550e8400-e29b-41d4-a716-446655440000.json",
+            "registry-1720000000-550e8400e29b41d4a716446655440000.json",
+            "registry-+1720000000.json",
+            "registry-01720000000.json",
+        ] {
+            assert!(!is_registry_backup_name(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn registry_backups_are_unique_and_bounded() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = Repository::from_paths(CodexPaths::from_home(temp.path().join("codex")));
+        repo.paths.ensure_directories().unwrap();
+        let mut registry = repo.load_registry_or_empty().unwrap();
+        repo.save_registry_cache(&registry).unwrap();
+        let unrelated = [
+            "keep.txt",
+            "registry-notes.json",
+            "registry-1720000000-notes.json",
+            "registry-.json",
+        ];
+        for name in unrelated {
+            let path = repo.paths.registry_backups_dir.join(name);
+            fs::write(&path, "user file").unwrap();
+            fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(std::time::UNIX_EPOCH)
+                .unwrap();
+        }
+        for timestamp in 0..3 {
+            registry.updated_at = timestamp;
+            repo.save_registry(&registry).unwrap();
+        }
+        assert_eq!(
+            count_files(&repo.paths.registry_backups_dir),
+            3 + unrelated.len()
+        );
+        for timestamp in 3..(REGISTRY_BACKUP_LIMIT + 5) {
+            registry.updated_at = timestamp as i64;
+            repo.save_registry(&registry).unwrap();
+        }
+        assert_eq!(
+            count_files(&repo.paths.registry_backups_dir),
+            REGISTRY_BACKUP_LIMIT + unrelated.len()
+        );
+        for name in unrelated {
+            assert_eq!(
+                fs::read_to_string(repo.paths.registry_backups_dir.join(name)).unwrap(),
+                "user file",
+                "{name}"
+            );
+        }
+        assert_eq!(
+            repo.load_registry().unwrap().updated_at,
+            (REGISTRY_BACKUP_LIMIT + 4) as i64
+        );
     }
 
     #[test]

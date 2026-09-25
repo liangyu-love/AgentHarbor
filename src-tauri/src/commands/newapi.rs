@@ -3,8 +3,8 @@ use crate::{
         newapi,
         repository::Repository,
         router::{
-            self, ImportResult, ModelProtocol, NewApiState, ProviderInput, ProviderView,
-            StateChange,
+            self, CodexAccessMode, ImportResult, ModelProtocol, NewApiState, ProviderInput,
+            ProviderView, StateChange,
         },
         router_proxy, routing_runtime,
     },
@@ -25,25 +25,12 @@ fn paths(repo: &State<'_, Mutex<Repository>>) -> Result<CodexPaths, String> {
 pub async fn load_newapi_state(repo: State<'_, Mutex<Repository>>) -> Result<NewApiState, String> {
     let paths = paths(&repo)?;
     let _guard = routing_runtime::mutation_guard().await;
-    let store = router::load_store(&paths)?;
-    match routing_runtime::reconcile(&paths).await {
-        Ok(()) if store.router.enabled => {
-            // Publish the Codex config only after the local route accepts requests.
-            if let Err(error) = router::ensure_routing_config(&paths, &store) {
-                eprintln!("[AgentHarbor] router config repair failed: {error}");
-            }
-        }
-        Err(error) => {
-            eprintln!("[AgentHarbor] router proxy startup failed: {error}");
-            if store.router.enabled {
-                let _ = router::remove_routing_config(&paths, &store);
-            }
-        }
-        Ok(()) => {}
+    if let Err(error) = routing_runtime::refresh_config(&paths).await {
+        eprintln!("[AgentHarbor] Codex connection repair failed: {error}");
     }
     // Read the store again: `ensure_routing_config` may have just rewritten the
     // Codex config, and the drift flag must reflect the file's final state.
-    let store = router::load_store(&paths).unwrap_or(store);
+    let store = router::load_store(&paths)?;
     Ok(router::state_from_store_at(
         &store,
         router_proxy::is_running(),
@@ -52,37 +39,45 @@ pub async fn load_newapi_state(repo: State<'_, Mutex<Repository>>) -> Result<New
 }
 
 #[tauri::command]
-pub fn save_newapi_provider(
+pub async fn save_newapi_provider(
     repo: State<'_, Mutex<Repository>>,
     provider: ProviderInput,
 ) -> Result<StateChange, String> {
-    router::save_provider(&paths(&repo)?, provider)
+    let paths = paths(&repo)?;
+    let _guard = routing_runtime::mutation_guard().await;
+    router::save_provider(&paths, provider)
 }
 
 #[tauri::command]
-pub fn delete_newapi_provider(
+pub async fn delete_newapi_provider(
     repo: State<'_, Mutex<Repository>>,
     id: String,
 ) -> Result<StateChange, String> {
-    router::delete_provider(&paths(&repo)?, &id)
+    let paths = paths(&repo)?;
+    let _guard = routing_runtime::mutation_guard().await;
+    router::delete_provider(&paths, &id)
 }
 
 #[tauri::command]
-pub fn set_newapi_provider_enabled(
+pub async fn set_newapi_provider_enabled(
     repo: State<'_, Mutex<Repository>>,
     id: String,
     enabled: bool,
 ) -> Result<StateChange, String> {
-    router::set_enabled(&paths(&repo)?, &id, enabled)
+    let paths = paths(&repo)?;
+    let _guard = routing_runtime::mutation_guard().await;
+    router::set_enabled(&paths, &id, enabled)
 }
 
 #[tauri::command]
-pub fn set_newapi_provider_network(
+pub async fn set_newapi_provider_network(
     repo: State<'_, Mutex<Repository>>,
     id: String,
     mode: String,
 ) -> Result<StateChange, String> {
-    router::set_network_mode(&paths(&repo)?, &id, &mode)
+    let paths = paths(&repo)?;
+    let _guard = routing_runtime::mutation_guard().await;
+    router::set_network_mode(&paths, &id, &mode)
 }
 
 #[tauri::command]
@@ -143,35 +138,77 @@ pub async fn set_newapi_smart_routing(
 ) -> Result<StateChange, String> {
     let paths = paths(&repo)?;
     let _guard = routing_runtime::mutation_guard().await;
-    if enabled {
+    let previous = router::load_store(&paths)?;
+    if enabled && previous.codex_access_mode == CodexAccessMode::Router {
         routing_runtime::ensure_available(&paths).await?;
     }
-    let mut change = router::set_smart_routing(&paths, enabled)?;
-    if let Err(error) = routing_runtime::reconcile(&paths).await {
-        if enabled {
-            let _ = router::set_smart_routing(&paths, false);
+    let mut change = match router::set_smart_routing(&paths, enabled) {
+        Ok(change) => change,
+        Err(error) => {
             let _ = routing_runtime::reconcile(&paths).await;
+            return Err(error);
         }
-        return Err(error);
+    };
+    if let Err(error) = routing_runtime::reconcile(&paths).await {
+        if enabled && change.state.router.access_mode == CodexAccessMode::Router {
+            let _ = router::set_smart_routing(&paths, previous.router.enabled);
+            let _ = routing_runtime::reconcile(&paths).await;
+            return Err(error);
+        }
+        eprintln!("[AgentHarbor] local router for other clients is unavailable: {error}");
     }
     change.state.proxy_running = router_proxy::is_running();
     Ok(change)
 }
 
 #[tauri::command]
-pub fn set_newapi_accountless(
+pub async fn set_newapi_access_mode(
     repo: State<'_, Mutex<Repository>>,
-    enabled: bool,
+    mode: CodexAccessMode,
 ) -> Result<StateChange, String> {
-    router::set_accountless(&paths(&repo)?, enabled)
+    let paths = paths(&repo)?;
+    let _guard = routing_runtime::mutation_guard().await;
+    let previous = router::load_store(&paths)?;
+    if previous.router.enabled && mode == CodexAccessMode::Router {
+        routing_runtime::ensure_available(&paths).await?;
+    }
+    let mut change = match router::set_access_mode(&paths, mode) {
+        Ok(change) => change,
+        Err(error) => {
+            let _ = routing_runtime::reconcile(&paths).await;
+            return Err(error);
+        }
+    };
+    if let Err(error) = routing_runtime::reconcile(&paths).await {
+        if change.state.router.enabled && mode == CodexAccessMode::Router {
+            let _ = router::set_access_mode(&paths, previous.codex_access_mode);
+            let _ = routing_runtime::reconcile(&paths).await;
+            return Err(error);
+        }
+        eprintln!("[AgentHarbor] local router for other clients is unavailable: {error}");
+    }
+    change.state.proxy_running = router_proxy::is_running();
+    Ok(change)
 }
 
 #[tauri::command]
-pub fn import_newapi_providers(
+pub async fn set_newapi_accountless(
+    repo: State<'_, Mutex<Repository>>,
+    enabled: bool,
+) -> Result<StateChange, String> {
+    let paths = paths(&repo)?;
+    let _guard = routing_runtime::mutation_guard().await;
+    router::set_accountless(&paths, enabled)
+}
+
+#[tauri::command]
+pub async fn import_newapi_providers(
     repo: State<'_, Mutex<Repository>>,
     path: String,
 ) -> Result<ImportResult, String> {
-    router::import_providers(&paths(&repo)?, std::path::Path::new(&path))
+    let paths = paths(&repo)?;
+    let _guard = routing_runtime::mutation_guard().await;
+    router::import_providers(&paths, std::path::Path::new(&path))
 }
 
 #[tauri::command]

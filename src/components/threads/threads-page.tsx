@@ -49,6 +49,7 @@ import { toast } from "@/hooks/use-toast";
 import { useBusyAction } from "@/hooks/use-busy-action";
 import { formatRelative } from "@/lib/format-time";
 import { ThreadCard } from "@/components/threads/thread-card";
+import { VirtualThreadList } from "@/components/threads/virtual-thread-list";
 import {
   filterAndSortThreads,
   formatSize,
@@ -61,13 +62,18 @@ type ExportFormat = "markdown" | "jsonl";
 type ViewMode = "grid" | "compact";
 
 const THREADS_KEY = ["threads", "codex"] as const;
+/** Window the list once dense rows would thrash layout/paint. */
+const VIRTUALIZE_THRESHOLD = 80;
 
 export function ThreadsPage() {
   const { t } = useTranslation();
   const [status, setStatus] = useState<StatusFilter>("all");
   const [query, setQuery] = useState("");
   const [sortBy, setSortBy] = useState<SortOption>("updatedAt");
-  const [viewMode, setViewMode] = useState<ViewMode>("grid");
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    const saved = localStorage.getItem("threads_view_mode");
+    return saved === "grid" || saved === "compact" ? saved : "compact";
+  });
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [format, setFormat] = useState<ExportFormat>("markdown");
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
@@ -82,6 +88,7 @@ export function ThreadsPage() {
   });
 
   const threads = useMemo(() => threadsQuery.data?.data.items ?? [], [threadsQuery.data]);
+  const scanWarnings = threadsQuery.data?.warnings ?? [];
 
   // Filter and Sort
   const filtered = useMemo(
@@ -116,6 +123,7 @@ export function ThreadsPage() {
   }, [threads]);
 
   const totalInteractions = totalUserMsgs + totalAgentMsgs;
+  const useVirtualList = filtered.length >= VIRTUALIZE_THRESHOLD;
 
   // Clean stale selection when threads change
   useEffect(() => {
@@ -170,6 +178,10 @@ export function ThreadsPage() {
 
   const expandAllGroups = () => setCollapsedGroups(new Set());
   const collapseAllGroups = () => setCollapsedGroups(new Set(groups.map((g) => g.key)));
+
+  useEffect(() => {
+    localStorage.setItem("threads_view_mode", viewMode);
+  }, [viewMode]);
 
   const handleRefresh = async () => {
     await refreshAction.run(async () => {
@@ -239,15 +251,15 @@ export function ThreadsPage() {
 
   return (
     <TooltipProvider delayDuration={200}>
-      <div className="space-y-6">
+      <div className="space-y-3">
         {/* Page Header */}
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="space-y-1">
-            <h1 className="text-xl font-bold tracking-tight text-foreground flex items-center gap-2">
-              <MessagesSquare className="h-5 w-5 text-primary" />
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="space-y-0.5">
+            <h1 className="text-lg font-bold tracking-tight text-foreground flex items-center gap-2">
+              <MessagesSquare className="h-4.5 w-4.5 text-primary" />
               {t("threads.title")}
             </h1>
-            <p className="text-sm text-muted-foreground">{t("threads.subtitle")}</p>
+            <p className="text-xs text-muted-foreground">{t("threads.subtitle")}</p>
           </div>
 
           <div className="flex items-center gap-2.5">
@@ -276,16 +288,31 @@ export function ThreadsPage() {
           </div>
         </div>
 
+        {scanWarnings.length > 0 && (
+          <div role="status" className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-sm">
+            <details>
+              <summary className="cursor-pointer font-medium">
+                {t("threads.scanWarnings", { count: scanWarnings.length })}
+              </summary>
+              <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto break-words text-xs text-muted-foreground">
+                {scanWarnings.map((warning, index) => (
+                  <li key={index}>{warning.message}</li>
+                ))}
+              </ul>
+            </details>
+          </div>
+        )}
+
         {/* 4-Metric Mission Control HUD */}
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <AuroraCard color="blue" className="cursor-pointer transition-all duration-300 hover:-translate-y-0.5 hover:shadow-md" onClick={() => setStatus(status === "active" ? "all" : "active")}>
-            <div className="flex items-center justify-between p-4">
+        <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+          <AuroraCard color="blue" className="cursor-pointer transition-all duration-200 hover:-translate-y-px hover:shadow-sm" onClick={() => setStatus(status === "active" ? "all" : "active")}>
+            <div className="flex items-center justify-between p-2.5">
               <div className="space-y-0.5">
                 <span className="text-xs font-medium text-muted-foreground">
                   {t("threads.statsThreads")}
                 </span>
                 <div className="flex items-baseline gap-2">
-                  <span className="text-2xl font-bold tracking-tight text-blue-600 dark:text-blue-400 tabular-nums">
+                  <span className="text-xl font-bold tracking-tight text-blue-600 dark:text-blue-400 tabular-nums">
                     {threads.length}
                   </span>
                   <span className="text-[11px] text-muted-foreground">
@@ -299,14 +326,14 @@ export function ThreadsPage() {
             </div>
           </AuroraCard>
 
-          <AuroraCard color="purple" className="transition-all duration-300 hover:-translate-y-0.5 hover:shadow-md">
-            <div className="flex items-center justify-between p-4">
+          <AuroraCard color="purple" className="transition-all duration-200 hover:-translate-y-px hover:shadow-sm">
+            <div className="flex items-center justify-between p-2.5">
               <div className="space-y-0.5">
                 <span className="text-xs font-medium text-muted-foreground">
                   {t("threads.statsFolders")}
                 </span>
                 <div className="flex items-baseline gap-2">
-                  <span className="text-2xl font-bold tracking-tight text-purple-600 dark:text-purple-400 tabular-nums">
+                  <span className="text-xl font-bold tracking-tight text-purple-600 dark:text-purple-400 tabular-nums">
                     {groups.length}
                   </span>
                   <span className="text-[11px] text-muted-foreground">工作区目录</span>
@@ -318,14 +345,14 @@ export function ThreadsPage() {
             </div>
           </AuroraCard>
 
-          <AuroraCard color="green" className="transition-all duration-300 hover:-translate-y-0.5 hover:shadow-md">
-            <div className="flex items-center justify-between p-4">
+          <AuroraCard color="green" className="transition-all duration-200 hover:-translate-y-px hover:shadow-sm">
+            <div className="flex items-center justify-between p-2.5">
               <div className="space-y-0.5">
                 <span className="text-xs font-medium text-muted-foreground">
                   {t("threads.statsInteractions")}
                 </span>
                 <div className="flex items-baseline gap-2">
-                  <span className="text-2xl font-bold tracking-tight text-emerald-600 dark:text-emerald-400 tabular-nums">
+                  <span className="text-xl font-bold tracking-tight text-emerald-600 dark:text-emerald-400 tabular-nums">
                     {totalInteractions.toLocaleString()}
                   </span>
                   <span className="text-[11px] text-muted-foreground">
@@ -343,20 +370,20 @@ export function ThreadsPage() {
             color={selected.size > 0 ? "gold" : "amber"}
             shine={selected.size > 0}
             shineColor={LIQUID_GOLD_SHINE}
-            className="cursor-pointer transition-all duration-300 hover:-translate-y-0.5 hover:shadow-md"
+            className="cursor-pointer transition-all duration-200 hover:-translate-y-px hover:shadow-sm"
             onClick={() => {
               if (selected.size > 0) clearSelection();
               else selectFiltered();
             }}
           >
-            <div className="flex items-center justify-between p-4">
+            <div className="flex items-center justify-between p-2.5">
               <div className="space-y-0.5">
                 <span className="text-xs font-medium text-muted-foreground">
                   {selected.size > 0 ? t("threads.statsSelected", { count: selected.size }) : t("threads.statsStorage")}
                 </span>
                 <div className="flex items-baseline gap-2">
                   <span
-                    className={`text-2xl font-bold tracking-tight tabular-nums ${
+                    className={`text-xl font-bold tracking-tight tabular-nums ${
                       selected.size > 0
                         ? "text-amber-500 dark:text-[#fef08a]"
                         : "text-amber-600 dark:text-amber-400"
@@ -540,13 +567,13 @@ export function ThreadsPage() {
 
         {/* Content Section */}
         {threadsQuery.isLoading ? (
-          <div className="space-y-6">
+          <div className="space-y-3">
             {Array.from({ length: 2 }).map((_, index) => (
-              <div key={index} className="space-y-3">
-                <Skeleton className="h-9 w-72 rounded-xl" />
-                <div className="grid gap-3.5 md:grid-cols-2 xl:grid-cols-3">
-                  {Array.from({ length: 3 }).map((__, card) => (
-                    <Skeleton key={card} className="h-32 rounded-2xl" />
+              <div key={index} className="space-y-1.5">
+                <Skeleton className="h-7 w-56 rounded-lg" />
+                <div className="grid gap-2 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
+                  {Array.from({ length: 4 }).map((__, card) => (
+                    <Skeleton key={card} className="h-24 rounded-lg" />
                   ))}
                 </div>
               </div>
@@ -584,6 +611,21 @@ export function ThreadsPage() {
               </Button>
             )}
           </BentoCard>
+        ) : useVirtualList ? (
+          <VirtualThreadList
+            groups={groups}
+            collapsedGroups={collapsedGroups}
+            selected={selected}
+            viewMode={viewMode}
+            onToggleSelect={toggleSelect}
+            onToggleGroup={toggleGroupSelect}
+            onToggleCollapse={toggleGroupCollapse}
+            onExport={keys => void handleExport(keys)}
+            onOpenPath={path => void handleOpenPath(path)}
+            onCopyPath={handleCopyPath}
+            copiedGroupPath={copiedGroupPath}
+            t={t}
+          />
         ) : (
           groups.map((group) => {
             const isCollapsed = collapsedGroups.has(group.key);
@@ -592,11 +634,11 @@ export function ThreadsPage() {
             const someInGroupSelected = groupKeys.some((key) => selected.has(key)) && !allInGroupSelected;
 
             return (
-              <section key={group.key} className="space-y-3">
+              <section key={group.key} className="space-y-1.5">
                 {/* Workspace Folder Header Bar */}
                 <div className={cn(
-                  "flex flex-wrap items-center justify-between gap-2.5 rounded-xl border bg-card/75 p-2.5 px-3.5 backdrop-blur-sm transition-all duration-200 hover:border-primary/50 hover:shadow-xs",
-                  allInGroupSelected ? "border-primary/60 ring-1 ring-primary/25 bg-primary/[0.02]" : "border-border/70",
+                  "flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-card/75 p-1.5 px-2.5 backdrop-blur-sm transition-all duration-150 hover:border-primary/45",
+                  allInGroupSelected ? "border-primary/60 ring-1 ring-primary/25 bg-primary/[0.02]" : "border-border/60",
                 )}>
                   {/* Left: Fold button + Folder icon + Folder Info */}
                   <div className="flex min-w-0 flex-1 items-center gap-2.5">
@@ -604,7 +646,8 @@ export function ThreadsPage() {
                       type="button"
                       onClick={() => toggleGroupCollapse(group.key)}
                       className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-all duration-200"
-                      title={isCollapsed ? t("threads.expandAll") : t("threads.collapseAll")}
+                      title={isCollapsed ? t("threads.expandGroup") : t("threads.collapseGroup")}
+                      aria-label={isCollapsed ? t("threads.expandGroup") : t("threads.collapseGroup")}
                     >
                       <ChevronRight className={cn("h-4 w-4 transition-transform duration-200", !isCollapsed && "rotate-90")} />
                     </button>
@@ -734,8 +777,8 @@ export function ThreadsPage() {
                   <div
                     className={
                       viewMode === "grid"
-                        ? "grid gap-3.5 sm:grid-cols-1 md:grid-cols-2 xl:grid-cols-3 animate-in fade-in duration-200"
-                        : "space-y-2 animate-in fade-in duration-200"
+                        ? "grid gap-2 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 animate-in fade-in duration-200"
+                        : "space-y-1 animate-in fade-in duration-200"
                     }
                   >
                     {group.items.map((thread) => (

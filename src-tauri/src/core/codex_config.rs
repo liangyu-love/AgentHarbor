@@ -1,4 +1,7 @@
-use super::{models::CoreError, storage};
+use super::{
+    models::{ApiProxyConfigPayload, ApiProxyMode, CoreError},
+    storage,
+};
 use crate::platform::paths::CodexPaths;
 use std::{
     path::PathBuf,
@@ -121,6 +124,153 @@ fn normalize_config(mut text: String) -> String {
     text
 }
 
+const NETWORK_FEATURES: [&str; 2] = ["respect_system_proxy", "system_proxy_fallback"];
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct NetworkFeatureSnapshot {
+    profile: Option<String>,
+    key: String,
+    original: Option<bool>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct NetworkSnapshot {
+    config_path: PathBuf,
+    features: Vec<NetworkFeatureSnapshot>,
+}
+
+/// Called after Codex exits and before its desktop process starts. The desktop
+/// does not forward CLI -c flags to app-server, so explicit network modes need
+/// two local config overrides. System mode restores only our unchanged fields.
+pub fn prepare_network_config(
+    paths: &CodexPaths,
+    proxy: &ApiProxyConfigPayload,
+) -> Result<(), CoreError> {
+    super::api_client::sanitize_proxy_config(proxy)?;
+    let snapshot_path = paths.app_data_dir.join("codex-network-overrides.json");
+    let mut snapshot = match read_bytes(&snapshot_path)? {
+        Some(bytes) => serde_json::from_slice::<NetworkSnapshot>(&bytes)?,
+        None => NetworkSnapshot {
+            config_path: paths.config_path.clone(),
+            features: Vec::new(),
+        },
+    };
+    if snapshot.config_path != paths.config_path {
+        return Err(CoreError::InvalidData(
+            "Codex network snapshot belongs to another config".into(),
+        ));
+    }
+    if proxy.mode == ApiProxyMode::System && snapshot.features.is_empty() {
+        return Ok(());
+    }
+    CodexConfigRepository::new(paths).update(|original| {
+        let mut document = original
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|_| CoreError::InvalidData("Invalid Codex config TOML".into()))?;
+        if proxy.mode == ApiProxyMode::System {
+            for saved in &snapshot.features {
+                if !NETWORK_FEATURES.contains(&saved.key.as_str()) {
+                    return Err(CoreError::InvalidData(
+                        "Invalid Codex network snapshot".into(),
+                    ));
+                }
+                let features = match &saved.profile {
+                    None => document.get_mut("features"),
+                    Some(name) => document
+                        .get_mut("profiles")
+                        .and_then(|p| p.get_mut(name))
+                        .and_then(|p| p.get_mut("features")),
+                };
+                if let Some(features) = features.and_then(toml_edit::Item::as_table_like_mut) {
+                    // Preserve a field the user changed while the override was active.
+                    if features.get(&saved.key).and_then(toml_edit::Item::as_bool) == Some(false) {
+                        if let Some(value) = saved.original {
+                            set_network_flag(features, &saved.key, value);
+                        } else {
+                            features.remove(&saved.key);
+                        }
+                    }
+                }
+            }
+        } else {
+            let mut scopes = vec![None];
+            if let Some(profiles) = document
+                .get("profiles")
+                .and_then(toml_edit::Item::as_table_like)
+            {
+                for (name, profile) in profiles.iter() {
+                    if profile.get("features").is_some_and(|features| {
+                        NETWORK_FEATURES
+                            .iter()
+                            .any(|key| features.get(key).is_some())
+                    }) {
+                        scopes.push(Some(name.to_owned()));
+                    }
+                }
+            }
+            for profile in scopes {
+                let item = match &profile {
+                    None => &mut document["features"],
+                    Some(name) => &mut document["profiles"][name]["features"],
+                };
+                if item.is_none() {
+                    *item = toml_edit::Item::Table(toml_edit::Table::new());
+                }
+                let features = item.as_table_like_mut().ok_or_else(|| {
+                    CoreError::InvalidData("Codex features must be a TOML table".into())
+                })?;
+                for key in NETWORK_FEATURES {
+                    if profile.is_some() && features.get(key).is_none() {
+                        continue;
+                    }
+                    let original = match features.get(key) {
+                        Some(value) => Some(value.as_bool().ok_or_else(|| {
+                            CoreError::InvalidData(format!("Codex {key} must be a boolean"))
+                        })?),
+                        None => None,
+                    };
+                    if !snapshot
+                        .features
+                        .iter()
+                        .any(|saved| saved.profile == profile && saved.key == key)
+                    {
+                        snapshot.features.push(NetworkFeatureSnapshot {
+                            profile: profile.clone(),
+                            key: key.to_owned(),
+                            original,
+                        });
+                    }
+                    set_network_flag(features, key, false);
+                }
+            }
+            // Save only these nonsecret flags before installing their overrides.
+            // The repository separately backs up the complete original config.
+            storage::write_atomic(&snapshot_path, &serde_json::to_vec(&snapshot)?)?;
+        }
+        Ok(document.to_string())
+    })?;
+    if proxy.mode == ApiProxyMode::System {
+        match std::fs::remove_file(snapshot_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+fn set_network_flag(features: &mut dyn toml_edit::TableLike, key: &str, enabled: bool) {
+    let decor = features
+        .get(key)
+        .and_then(toml_edit::Item::as_value)
+        .map(|value| value.decor().clone());
+    let mut value = toml_edit::Value::from(enabled);
+    if let Some(decor) = decor {
+        *value.decor_mut() = decor;
+    }
+    features.insert(key, toml_edit::Item::Value(value));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,6 +279,60 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = CodexPaths::from_home(dir.path().join(".codex"));
         (dir, paths)
+    }
+
+    #[test]
+    fn network_overrides_restore_prior_features_and_preserve_user_edits() {
+        let (_dir, paths) = paths();
+        std::fs::create_dir_all(&paths.codex_home).unwrap();
+        std::fs::write(&paths.config_path, "model = 'fixture'\n[features]\nrespect_system_proxy = true # keep this comment\nuser_feature = true\n[profiles.office.features]\nsystem_proxy_fallback = true\n").unwrap();
+        let manual = ApiProxyConfigPayload {
+            mode: ApiProxyMode::Manual,
+            url: Some("http://127.0.0.1:10808".into()),
+        };
+        prepare_network_config(&paths, &manual).unwrap();
+        let installed = std::fs::read_to_string(&paths.config_path).unwrap();
+        let parsed: toml::Value = installed.parse().unwrap();
+        assert_eq!(
+            parsed["features"]["respect_system_proxy"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            parsed["features"]["system_proxy_fallback"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            parsed["profiles"]["office"]["features"]["system_proxy_fallback"].as_bool(),
+            Some(false)
+        );
+        prepare_network_config(&paths, &manual).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&paths.config_path).unwrap(),
+            installed
+        );
+        std::fs::write(
+            &paths.config_path,
+            installed.replace("user_feature = true", "user_feature = false"),
+        )
+        .unwrap();
+        prepare_network_config(&paths, &ApiProxyConfigPayload::default()).unwrap();
+        let restored = std::fs::read_to_string(&paths.config_path).unwrap();
+        let parsed: toml::Value = restored.parse().unwrap();
+        assert_eq!(
+            parsed["features"]["respect_system_proxy"].as_bool(),
+            Some(true)
+        );
+        assert!(parsed["features"].get("system_proxy_fallback").is_none());
+        assert_eq!(
+            parsed["profiles"]["office"]["features"]["system_proxy_fallback"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(parsed["features"]["user_feature"].as_bool(), Some(false));
+        assert!(restored.contains("# keep this comment"));
+        assert!(!paths
+            .app_data_dir
+            .join("codex-network-overrides.json")
+            .exists());
     }
 
     #[test]

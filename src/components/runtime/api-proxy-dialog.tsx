@@ -45,6 +45,7 @@ function formatProxyTestResult(
   result: ApiProxyTestPayload,
 ) {
   if (result.reachable) {
+    if (mode === "system") return t("settings.apiProxyTestReachableSystem");
     return mode === "manual"
       ? t("settings.apiProxyTestReachableManual")
       : t("settings.apiProxyTestReachableDirect");
@@ -89,7 +90,7 @@ export function ApiProxyDialog({
 }: ApiProxyDialogProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const proxy = currentProxy ?? { mode: "direct" as ApiProxyMode, url: null };
+  const proxy = currentProxy ?? { mode: "system" as ApiProxyMode, url: null };
   const [draftProxyMode, setDraftProxyMode] = useState<ApiProxyMode>(proxy.mode);
   const [draftProxyUrl, setDraftProxyUrl] = useState(proxy.url ?? "");
   const [proxyTestResult, setProxyTestResult] = useState<ApiProxyTestPayload | null>(null);
@@ -211,12 +212,13 @@ export function ApiProxyDialog({
             <div className="inline-flex rounded-full bg-muted p-0.5 dark:bg-white/[0.06]">
               <AnimatedSegmentedControl
                 items={[
+                  { value: "system", label: t("settings.apiProxyModeSystem") },
                   { value: "direct", label: t("settings.apiProxyModeDirect") },
                   { value: "manual", label: t("settings.apiProxyModeManual") },
                 ]}
                 value={draftProxyMode}
                 onValueChange={(nextValue) => {
-                  setDraftProxyMode(nextValue as "direct" | "manual");
+                  setDraftProxyMode(nextValue as ApiProxyMode);
                   setProxyTestResult(null);
                 }}
                 className="gap-0.5"

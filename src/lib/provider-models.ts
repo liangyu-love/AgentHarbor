@@ -1,4 +1,34 @@
-import type { ModelProtocol, NewApiModel } from "@/types/newapi";
+import type { ModelProtocol, NewApiModel, NewApiProvider } from "@/types/newapi";
+
+export const effectiveModelProtocol = (model: NewApiModel | undefined, defaultProtocol: ModelProtocol): ModelProtocol =>
+  model?.protocol ?? defaultProtocol;
+
+export const providerModelProtocol = (provider: NewApiProvider, modelId = provider.model): ModelProtocol =>
+  effectiveModelProtocol(provider.models.find(model => model.id === modelId), provider.protocol);
+
+export const includedModels = (models: NewApiModel[]) => models.filter(model => model.included);
+
+/** Keep catalog refreshes from replacing local inclusion, aliases, limits or protocol choices. */
+export const mergeModelCatalog = (current: NewApiModel[], fetched: NewApiModel[]): NewApiModel[] => {
+  const existingById = new Map(current.map(model => [model.id, model]));
+  const fetchedIds = new Set(fetched.map(model => model.id));
+  const merged = fetched.map(model => {
+    const existing = existingById.get(model.id);
+    if (!existing) return model;
+    const edited = existing.metadataSource === "manual";
+    const renamed = existing.displayName.trim() !== "" && existing.displayName.trim() !== existing.id;
+    return {
+      ...model,
+      protocol: existing.protocol ?? null,
+      included: existing.included,
+      displayName: edited || renamed ? existing.displayName : model.displayName,
+      contextWindow: edited ? existing.contextWindow : model.contextWindow,
+      maxOutputTokens: edited ? existing.maxOutputTokens : model.maxOutputTokens,
+      metadataSource: edited ? "manual" as const : model.metadataSource,
+    };
+  });
+  return [...merged, ...current.filter(model => !fetchedIds.has(model.id))];
+};
 
 export const supportsProtocol = (model: NewApiModel, protocol: ModelProtocol) => {
   const endpoints = model.endpointTypes.map(type => type.toLowerCase());
@@ -13,24 +43,4 @@ export const supportsProtocol = (model: NewApiModel, protocol: ModelProtocol) =>
   }
   return endpoints.some(type => type.includes("anthropic") || type.includes("message"))
     || !endpoints.some(type => type.includes("response") || type.includes("chat") || type.includes("completion"));
-};
-
-export const includedModelsForProtocol = (models: NewApiModel[], protocol: ModelProtocol) =>
-  models.filter(model => model.included && supportsProtocol(model, protocol));
-
-/**
- * Guess the protocol a relay serves from the capabilities it advertises.
- * Mirrors `core::protocol::infer_protocol` so the dialog and the router agree.
- */
-export const inferProtocol = (endpointTypes: string[]): ModelProtocol => {
-  const has = (needle: string) => endpointTypes.some(type => type.toLowerCase().includes(needle));
-  if (has("response")) return "responses";
-  if (has("anthropic") || has("message")) return "anthropicMessages";
-  if (has("chat") || has("completion")) return "chatCompletions";
-  return "chatCompletions";
-};
-
-export const inferProtocolFromModels = (models: NewApiModel[]): ModelProtocol => {
-  const advertised = models.find(model => model.endpointTypes.length > 0);
-  return advertised ? inferProtocol(advertised.endpointTypes) : "chatCompletions";
 };

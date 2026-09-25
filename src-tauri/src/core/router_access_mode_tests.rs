@@ -1,0 +1,402 @@
+use super::*;
+use std::{fs, path::Path};
+
+const ORIGINAL_CONFIG: &str = r#"# Existing user configuration
+model = 'original-model'
+model_provider = 'user-provider'
+model_catalog_json = 'original-catalog.json'
+model_context_window = 65536
+model_auto_compact_token_limit = 60000
+preferred_auth_method = 'chatgpt'
+user_setting = 'preserved'
+
+[model_providers.user-provider]
+name = 'User provider'
+base_url = 'https://original.example.invalid/v1'
+wire_api = 'responses'
+env_key = 'USER_PROVIDER_KEY'
+
+[unrelated]
+enabled = true
+"#;
+const ORIGINAL_ENV: &[u8] = b"# User-owned environment\r\nUSER_PROVIDER_KEY='synthetic-existing-key'\r\nUNCHANGED_SETTING=kept";
+const ORIGINAL_AUTH: &[u8] = b"{\r\n  \"auth_mode\": \"chatgpt\", \"tokens\": {\"access_token\": \"synthetic-preserved-token\"}\r\n}\r\n";
+const ROOT_FIELDS: [&str; 6] = [
+    "model",
+    "model_provider",
+    "model_catalog_json",
+    "model_context_window",
+    "model_auto_compact_token_limit",
+    "preferred_auth_method",
+];
+
+fn fixture() -> (tempfile::TempDir, CodexPaths) {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = CodexPaths::from_home(directory.path().join("codex"));
+    paths.ensure_directories().unwrap();
+    fs::write(&paths.config_path, ORIGINAL_CONFIG).unwrap();
+    fs::write(paths.codex_home.join(".env"), ORIGINAL_ENV).unwrap();
+    fs::write(&paths.auth_path, ORIGINAL_AUTH).unwrap();
+    let provider = Provider {
+        id: "access-mode-fixture".into(),
+        name: "Access mode fixture".into(),
+        base_url: "https://fixture.example.invalid/".into(),
+        api_key: "synthetic-native-mode-key".into(),
+        enabled: true,
+        protocol: ModelProtocol::Responses,
+        model: "fixture-model".into(),
+        context_window: Some(32768),
+        auto_compact_limit: Some(24000),
+        models: vec![newapi::Model {
+            id: "fixture-model".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let store = Store {
+        version: STORE_VERSION,
+        active_provider_id: Some(provider.id.clone()),
+        providers: vec![provider],
+        router: RouterSettings {
+            bearer_token: "agentharbor_synthetic_mode_token".into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    save_store_unlocked(&paths, &store).unwrap();
+    load_store(&paths).unwrap();
+    (directory, paths)
+}
+
+fn optional_bytes(path: &Path) -> Option<Vec<u8>> {
+    match fs::read(path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => panic!("failed to read isolated fixture: {error}"),
+    }
+}
+
+fn file_state(paths: &CodexPaths) -> [Option<Vec<u8>>; 4] {
+    [
+        optional_bytes(&store_path(paths)),
+        optional_bytes(&paths.config_path),
+        optional_bytes(&paths.codex_home.join(".env")),
+        optional_bytes(&paths.auth_path),
+    ]
+}
+
+fn config(paths: &CodexPaths) -> toml::Value {
+    fs::read_to_string(&paths.config_path)
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+fn assert_user_files_preserved(paths: &CodexPaths) {
+    assert_eq!(
+        fs::read(paths.codex_home.join(".env")).unwrap(),
+        ORIGINAL_ENV
+    );
+    assert_eq!(fs::read(&paths.auth_path).unwrap(), ORIGINAL_AUTH);
+}
+
+fn assert_original_config(paths: &CodexPaths) {
+    let original: toml::Value = ORIGINAL_CONFIG.parse().unwrap();
+    let restored = config(paths);
+    for field in ROOT_FIELDS {
+        assert_eq!(restored.get(field), original.get(field), "restore {field}");
+    }
+    assert_eq!(
+        restored, original,
+        "unrelated config must also be preserved"
+    );
+}
+
+#[test]
+fn changing_mode_while_disabled_only_updates_the_store() {
+    for with_existing_files in [true, false] {
+        let (_directory, paths) = fixture();
+        if !with_existing_files {
+            fs::remove_file(&paths.config_path).unwrap();
+            fs::remove_file(paths.codex_home.join(".env")).unwrap();
+        }
+        let before = file_state(&paths);
+        for mode in [CodexAccessMode::Native, CodexAccessMode::Router] {
+            let changed = set_access_mode(&paths, mode).unwrap();
+            assert!(changed.applied.is_none());
+            let stored = load_store(&paths).unwrap();
+            assert_eq!(stored.codex_access_mode, mode);
+            assert!(!stored.router.enabled);
+            let after = file_state(&paths);
+            assert_eq!(
+                after[1..],
+                before[1..],
+                "disabled mode changes must not write client files"
+            );
+            assert!(!config_snapshot::path(&paths).exists());
+        }
+    }
+}
+
+#[test]
+fn router_native_router_then_disable_restores_six_fields_and_user_files() {
+    let (_directory, paths) = fixture();
+    set_smart_routing(&paths, true).unwrap();
+    assert_eq!(
+        config(&paths)["model_provider"].as_str(),
+        Some(CATALOG_PROVIDER_KEY)
+    );
+    assert_user_files_preserved(&paths);
+    let native = set_access_mode(&paths, CodexAccessMode::Native).unwrap();
+    assert!(native.applied.is_some());
+    assert_eq!(native.state.router.access_mode, CodexAccessMode::Native);
+    let installed = config(&paths);
+    assert_eq!(
+        installed["model_provider"].as_str(),
+        Some(NATIVE_PROVIDER_KEY)
+    );
+    assert_eq!(installed["model"].as_str(), Some("fixture-model"));
+    assert_eq!(installed["preferred_auth_method"].as_str(), Some("apikey"));
+    let native_env = fs::read(paths.codex_home.join(".env")).unwrap();
+    assert!(native_env.starts_with(ORIGINAL_ENV));
+    assert!(String::from_utf8(native_env)
+        .unwrap()
+        .contains("synthetic-native-mode-key"));
+    assert_eq!(fs::read(&paths.auth_path).unwrap(), ORIGINAL_AUTH);
+    let routed = set_access_mode(&paths, CodexAccessMode::Router).unwrap();
+    assert!(routed.applied.is_some());
+    assert_eq!(
+        config(&paths)["model_provider"].as_str(),
+        Some(CATALOG_PROVIDER_KEY)
+    );
+    assert_user_files_preserved(&paths);
+    let disabled = set_smart_routing(&paths, false).unwrap();
+    assert!(!disabled.state.router.enabled);
+    assert_original_config(&paths);
+    assert_user_files_preserved(&paths);
+    assert!(!config_snapshot::path(&paths).exists());
+}
+
+#[test]
+fn repeated_mode_selection_does_not_rewrite_files_or_rotate_native_credentials() {
+    let (_directory, paths) = fixture();
+    set_smart_routing(&paths, true).unwrap();
+    for mode in [CodexAccessMode::Router, CodexAccessMode::Native] {
+        set_access_mode(&paths, mode).unwrap();
+        let before = file_state(&paths);
+        let repeated = set_access_mode(&paths, mode).unwrap();
+        assert!(repeated.applied.is_none());
+        assert_eq!(file_state(&paths), before);
+        if mode == CodexAccessMode::Native {
+            let store = load_store(&paths).unwrap();
+            assert!(ensure_routing_config(&paths, &store).unwrap().is_none());
+            apply_routing_config(&paths, &store).unwrap();
+            assert_eq!(
+                file_state(&paths),
+                before,
+                "idempotent Native reconciliation must retain its env_key"
+            );
+        }
+    }
+}
+
+#[test]
+fn incompatible_native_selection_preserves_store_config_environment_and_auth() {
+    for protocol in [
+        ModelProtocol::ChatCompletions,
+        ModelProtocol::AnthropicMessages,
+    ] {
+        let (_directory, paths) = fixture();
+        let mut store = load_store(&paths).unwrap();
+        let mut fallback = store.providers[0].clone();
+        fallback.id = "responses-fallback".into();
+        store.providers.push(fallback);
+        store.providers[0].models[0].protocol = Some(protocol);
+        save_store_unlocked(&paths, &store).unwrap();
+        set_smart_routing(&paths, true).unwrap();
+        let before = file_state(&paths);
+        assert_eq!(
+            set_access_mode(&paths, CodexAccessMode::Native)
+                .err()
+                .as_deref(),
+            Some("newapi.errors.nativeResponsesRequired")
+        );
+        assert_eq!(
+            file_state(&paths),
+            before,
+            "must neither fall back nor partially change modes"
+        );
+    }
+}
+
+#[test]
+fn entering_native_pins_the_provider_actually_used_after_router_fallback() {
+    let (_directory, paths) = fixture();
+    let mut store = load_store(&paths).unwrap();
+    let stale_id = store.providers[0].id.clone();
+    let mut replacement = store.providers[0].clone();
+    replacement.id = "replacement-provider".into();
+    replacement.model = "replacement-model".into();
+    replacement.models = vec![newapi::Model {
+        id: replacement.model.clone(),
+        ..Default::default()
+    }];
+    let replacement_id = replacement.id.clone();
+    store.providers[0].enabled = false;
+    store.providers.push(replacement);
+    save_store_unlocked(&paths, &store).unwrap();
+    assert_eq!(
+        effective_active_for(&store, ModelProtocol::Responses)
+            .unwrap()
+            .id,
+        replacement_id
+    );
+    let routed = set_smart_routing(&paths, true).unwrap();
+    assert_eq!(
+        routed.state.active_provider_id.as_deref(),
+        Some(replacement_id.as_str())
+    );
+    assert_eq!(
+        load_store(&paths).unwrap().active_provider_id.as_deref(),
+        Some(stale_id.as_str())
+    );
+    assert_eq!(
+        config(&paths)["model"].as_str(),
+        Some("replacement-provider::replacement-model")
+    );
+
+    let native = set_access_mode(&paths, CodexAccessMode::Native).unwrap();
+    assert!(native.applied.is_some());
+    assert_eq!(
+        native.state.active_provider_id.as_deref(),
+        Some(replacement_id.as_str())
+    );
+    assert_eq!(
+        load_store(&paths).unwrap().active_provider_id.as_deref(),
+        Some(replacement_id.as_str())
+    );
+    assert_eq!(
+        config(&paths)["model_provider"].as_str(),
+        Some(NATIVE_PROVIDER_KEY)
+    );
+    assert_eq!(config(&paths)["model"].as_str(), Some("replacement-model"));
+    set_smart_routing(&paths, false).unwrap();
+    assert_original_config(&paths);
+    assert_user_files_preserved(&paths);
+}
+
+#[test]
+fn enabling_a_native_provider_replaces_a_disabled_pin_before_connecting() {
+    let (_directory, paths) = fixture();
+    let mut store = load_store(&paths).unwrap();
+    let mut replacement = store.providers[0].clone();
+    replacement.id = "new-native-provider".into();
+    replacement.model = "new-native-model".into();
+    replacement.models = vec![newapi::Model {
+        id: replacement.model.clone(),
+        ..Default::default()
+    }];
+    replacement.enabled = false;
+    let replacement_id = replacement.id.clone();
+    store.codex_access_mode = CodexAccessMode::Native;
+    store.providers[0].enabled = false;
+    store.providers.push(replacement);
+    save_store_unlocked(&paths, &store).unwrap();
+    let before = file_state(&paths);
+
+    let enabled = set_enabled(&paths, &replacement_id, true).unwrap();
+    assert!(enabled.applied.is_none());
+    let saved = load_store(&paths).unwrap();
+    assert_eq!(saved.codex_access_mode, CodexAccessMode::Native);
+    assert!(!saved.router.enabled);
+    assert!(!saved.providers[0].enabled);
+    assert!(saved.providers[1].enabled);
+    assert_eq!(
+        saved.active_provider_id.as_deref(),
+        Some(replacement_id.as_str())
+    );
+    assert_eq!(
+        file_state(&paths)[1..],
+        before[1..],
+        "enabling a provider while disconnected must not write client files"
+    );
+
+    let connected = set_smart_routing(&paths, true).unwrap();
+    assert!(connected.applied.is_some());
+    assert!(connected.state.router.enabled);
+    assert_eq!(
+        connected.state.active_provider_id.as_deref(),
+        Some(replacement_id.as_str())
+    );
+    assert_eq!(
+        config(&paths)["model_provider"].as_str(),
+        Some(NATIVE_PROVIDER_KEY)
+    );
+    assert_eq!(config(&paths)["model"].as_str(), Some("new-native-model"));
+    set_smart_routing(&paths, false).unwrap();
+    assert_original_config(&paths);
+    assert_user_files_preserved(&paths);
+}
+
+#[test]
+fn invalid_toml_mode_switch_preserves_all_client_and_store_bytes() {
+    for current in [CodexAccessMode::Router, CodexAccessMode::Native] {
+        let (_directory, paths) = fixture();
+        set_access_mode(&paths, current).unwrap();
+        set_smart_routing(&paths, true).unwrap();
+        fs::write(&paths.config_path, b"# user edit in progress\nmodel = [\n").unwrap();
+        let before = file_state(&paths);
+        let target = if current == CodexAccessMode::Router {
+            CodexAccessMode::Native
+        } else {
+            CodexAccessMode::Router
+        };
+        assert!(set_access_mode(&paths, target).is_err());
+        assert_eq!(
+            file_state(&paths),
+            before,
+            "failed switch must not write config, store, env, or auth"
+        );
+    }
+}
+
+#[test]
+fn store_write_failure_rolls_back_native_configuration() {
+    for previously_enabled in [false, true] {
+        let (_directory, paths) = fixture();
+        if previously_enabled {
+            set_smart_routing(&paths, true).unwrap();
+        }
+        let previous = load_store(&paths).unwrap();
+        let previous_config = config(&paths);
+        let previous_store_bytes = fs::read(store_path(&paths)).unwrap();
+        let mut proposed = previous.clone();
+        proposed.codex_access_mode = CodexAccessMode::Native;
+        proposed.router.enabled = true;
+        apply_routing_config(&paths, &proposed).unwrap();
+        assert_eq!(
+            config(&paths)["model_provider"].as_str(),
+            Some(NATIVE_PROVIDER_KEY)
+        );
+        // Fail the final store commit after config application, without changing
+        // filesystem permissions or affecting any path outside the temp fixture.
+        let store_file = store_path(&paths);
+        fs::remove_file(&store_file).unwrap();
+        fs::create_dir(&store_file).unwrap();
+        assert!(persist_connection_change(&paths, &previous, &proposed, true).is_err());
+        assert!(store_file.is_dir());
+        assert_eq!(config(&paths), previous_config);
+        assert_user_files_preserved(&paths);
+        fs::remove_dir(&store_file).unwrap();
+        fs::write(&store_file, previous_store_bytes).unwrap();
+        assert_eq!(
+            load_store(&paths).unwrap().codex_access_mode,
+            CodexAccessMode::Router
+        );
+        if previously_enabled {
+            set_smart_routing(&paths, false).unwrap();
+        }
+        assert_original_config(&paths);
+        assert_user_files_preserved(&paths);
+    }
+}

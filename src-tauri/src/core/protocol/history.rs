@@ -1,35 +1,81 @@
-//! Recent Responses turns, kept so a Chat Completions upstream can continue a
-//! conversation it has no state for.
-//!
-//! The Responses API addresses prior turns with `previous_response_id`, but Chat
-//! Completions is stateless: the whole history must ride in `messages` every
-//! time. When Codex follows up a tool call it sends only the previous id plus the
-//! tool results, so the translator looks the earlier turns up here and rebuilds
-//! the message list. Without this the upstream receives tool results that answer
-//! a call it never saw, and the conversation cannot continue.
+//! Bounded, protocol-independent history for translated Responses requests.
+//! Request instructions are deliberately excluded: Responses does not carry
+//! them into a continuation. Explicit system/developer input items do persist.
 
-use crate::core::router::ModelProtocol;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
 
-/// Responses from the recent past are enough for any realistic agent loop; the
-/// bound keeps an idle app from growing without limit.
 const MAX_RESPONSES: usize = 512;
+const MAX_HISTORY_BYTES: usize = 16 * 1024 * 1024;
 
-/// One completed turn: the messages that produced it and the tool calls it made.
-#[derive(Clone)]
 struct Turn {
     response_id: String,
-    /// The conversation leading up to and including this turn's request.
-    messages: Vec<Value>,
-    /// Tool calls this turn's assistant message made, in Responses item form.
-    tool_calls: Vec<Value>,
+    // Store serialized input/output items so the byte budget bounds storage.
+    items: Vec<u8>,
 }
 
 #[derive(Default)]
 struct History {
     turns: VecDeque<Turn>,
+    bytes: usize,
+}
+
+impl History {
+    fn remember(&mut self, response: &Value, mut input: Vec<Value>) -> bool {
+        if response.get("status").and_then(Value::as_str) != Some("completed") {
+            return false;
+        }
+        let Some(id) = response
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        else {
+            return false;
+        };
+        let Some(output) = response.get("output").and_then(Value::as_array) else {
+            return false;
+        };
+        if output.iter().any(|item| {
+            item.get("status")
+                .and_then(Value::as_str)
+                .is_some_and(|status| status != "completed")
+                || (item.get("type").and_then(Value::as_str) == Some("function_call")
+                    && !super::responses::valid_function_call(item))
+        }) {
+            return false;
+        }
+        input.extend(output.iter().cloned());
+        let Ok(items) = serde_json::to_vec(&input) else {
+            return false;
+        };
+        let size = items.len() + id.len();
+        // Remove an older value even if its replacement cannot fit.
+        if let Some(index) = self.turns.iter().position(|turn| turn.response_id == id) {
+            let previous = self.turns.remove(index).unwrap();
+            self.bytes -= previous.items.len() + previous.response_id.len();
+        }
+        if size > MAX_HISTORY_BYTES {
+            return false;
+        }
+        while self.turns.len() >= MAX_RESPONSES || self.bytes + size > MAX_HISTORY_BYTES {
+            let Some(oldest) = self.turns.pop_front() else {
+                break;
+            };
+            self.bytes -= oldest.items.len() + oldest.response_id.len();
+        }
+        self.bytes += size;
+        self.turns.push_back(Turn {
+            response_id: id.to_owned(),
+            items,
+        });
+        true
+    }
+
+    fn replay(&self, id: &str) -> Option<Vec<Value>> {
+        let turn = self.turns.iter().find(|turn| turn.response_id == id)?;
+        serde_json::from_slice(&turn.items).ok()
+    }
 }
 
 static HISTORY: OnceLock<Mutex<History>> = OnceLock::new();
@@ -38,141 +84,100 @@ fn history() -> &'static Mutex<History> {
     HISTORY.get_or_init(|| Mutex::new(History::default()))
 }
 
-/// Record the messages used for a turn and the tool calls it returned.
-///
-/// Called after a translated turn completes so the next request can be
-/// reconstructed from it.
-pub fn remember(response_id: &str, messages: Vec<Value>, tool_calls: Vec<Value>) {
-    let Ok(mut history) = history().lock() else {
-        return;
-    };
-    // A repeated id supersedes the earlier entry rather than duplicating it.
-    history.turns.retain(|turn| turn.response_id != response_id);
-    history.turns.push_back(Turn {
-        response_id: response_id.to_owned(),
-        messages,
-        tool_calls,
-    });
-    while history.turns.len() > MAX_RESPONSES {
-        history.turns.pop_front();
-    }
-}
-
-/// Rebuild the message list a follow-up request implies.
-///
-/// Returns `None` when the referenced turn is unknown — after a restart, or once
-/// it has aged out — which leaves the caller to forward what it was given rather
-/// than inventing history.
-pub fn replay(previous_response_id: &str) -> Option<Vec<Value>> {
-    replay_for(previous_response_id, ModelProtocol::ChatCompletions)
-}
-
-pub fn replay_for(previous_response_id: &str, target: ModelProtocol) -> Option<Vec<Value>> {
-    let history = history().lock().ok()?;
-    let turn = history
-        .turns
-        .iter()
-        .find(|turn| turn.response_id == previous_response_id)?;
-    let mut messages = turn.messages.clone();
-    if !turn.tool_calls.is_empty() {
-        // The assistant turn must restate the calls before their results, which
-        // the follow-up request carries separately.
-        if target == ModelProtocol::AnthropicMessages {
-            let blocks: Vec<Value> = turn
-                .tool_calls
-                .iter()
-                .map(|call| {
-                    let arguments = call["function"]["arguments"]
-                        .as_str()
-                        .and_then(|text| serde_json::from_str::<Value>(text).ok())
-                        .unwrap_or_else(|| serde_json::json!({}));
-                    serde_json::json!({
-                        "type": "tool_use",
-                        "id": call["id"],
-                        "name": call["function"]["name"],
-                        "input": arguments,
-                    })
-                })
-                .collect();
-            messages.push(serde_json::json!({ "role": "assistant", "content": blocks }));
-        } else {
-            messages.push(serde_json::json!({
-                "role": "assistant",
-                "content": Value::Null,
-                "tool_calls": turn.tool_calls,
-            }));
-        }
-    }
-    Some(messages)
-}
-
-/// Drop all remembered turns. Used by tests and by an explicit user reset.
-pub fn clear() {
+/// Cache only a complete successful response, including ordinary assistant text.
+pub fn remember(response: &Value, input: Vec<Value>) {
     if let Ok(mut history) = history().lock() {
-        history.turns.clear();
+        history.remember(response, input);
     }
+}
+
+/// Expand a continuation before converting its items to an upstream protocol.
+/// An expired/missing response is an error, never a context-free continuation.
+pub(super) fn input_for_request(value: &Value) -> Result<Vec<Value>, String> {
+    let mut input = match value.get("previous_response_id") {
+        Some(Value::String(id)) if !id.is_empty() => history()
+            .lock()
+            .map_err(|_| "protocol.errors.historyUnavailable")?
+            .replay(id)
+            .ok_or("protocol.errors.unknownPreviousResponse")?,
+        None | Some(Value::Null) => Vec::new(),
+        _ => return Err("protocol.errors.invalidRequest".into()),
+    };
+    match value.get("input") {
+        Some(Value::String(text)) => input.push(json!({"role":"user", "content":text})),
+        Some(Value::Array(items)) => input.extend(items.iter().cloned()),
+        None => {}
+        _ => return Err("protocol.errors.invalidRequest".into()),
+    }
+    Ok(input)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
-    #[test]
-    fn a_recorded_turn_is_replayed_with_its_tool_calls() {
-        clear();
-        remember(
-            "resp_1",
-            vec![json!({ "role": "user", "content": "hi" })],
-            vec![
-                json!({ "id": "call_1", "type": "function", "function": { "name": "f", "arguments": "{}" } }),
-            ],
-        );
-
-        let replayed = replay("resp_1").expect("the turn must be found");
-        assert_eq!(replayed.len(), 2);
-        assert_eq!(replayed[0]["role"], "user");
-        assert_eq!(replayed[1]["role"], "assistant");
-        assert_eq!(replayed[1]["tool_calls"][0]["id"], "call_1");
+    fn response(id: &str, output: Vec<Value>) -> Value {
+        json!({"id":id, "status":"completed", "output":output})
     }
 
     #[test]
-    fn an_unknown_response_id_is_reported_rather_than_faked() {
-        clear();
-        assert!(replay("resp_missing").is_none());
+    fn ordinary_text_and_tools_are_both_replayed() {
+        let mut cache = History::default();
+        let output = vec![
+            json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"Checking"}]}),
+            json!({"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"}),
+        ];
+        assert!(cache.remember(
+            &response("r1", output.clone()),
+            vec![json!({"role":"user","content":"hi"})]
+        ));
+        let items = cache.replay("r1").unwrap();
+        assert_eq!(&items[1..], output.as_slice());
     }
 
     #[test]
-    fn recording_the_same_id_twice_replaces_the_earlier_turn() {
-        clear();
-        remember(
-            "resp_dup",
-            vec![json!({ "role": "user", "content": "one" })],
-            Vec::new(),
-        );
-        remember(
-            "resp_dup",
-            vec![json!({ "role": "user", "content": "two" })],
-            Vec::new(),
-        );
-
-        let replayed = replay("resp_dup").unwrap();
-        assert_eq!(replayed.len(), 1);
-        assert_eq!(replayed[0]["content"], "two");
-    }
-
-    #[test]
-    fn the_cache_is_bounded() {
-        clear();
-        for index in 0..(MAX_RESPONSES + 10) {
-            remember(
-                &format!("resp_{index}"),
-                vec![json!({ "role": "user", "content": index })],
-                Vec::new(),
-            );
+    fn failed_incomplete_and_invalid_tools_are_not_cached() {
+        let mut cache = History::default();
+        for status in ["failed", "incomplete", "in_progress"] {
+            assert!(!cache.remember(&json!({"id":status,"status":status,"output":[]}), vec![]));
         }
-        // The oldest entries are evicted, the newest are kept.
-        assert!(replay("resp_0").is_none());
-        assert!(replay(&format!("resp_{}", MAX_RESPONSES + 9)).is_some());
+        assert!(!cache.remember(
+            &response(
+                "bad",
+                vec![json!({"type":"function_call","call_id":"c","name":"f","arguments":"{"})]
+            ),
+            vec![]
+        ));
+        assert!(cache.turns.is_empty());
+    }
+
+    #[test]
+    fn duplicate_ids_replace_prior_history_and_account_for_bytes() {
+        let mut cache = History::default();
+        cache.remember(&response("r", vec![]), vec![json!("one")]);
+        cache.remember(&response("r", vec![]), vec![json!("two")]);
+        assert_eq!(cache.replay("r").unwrap(), vec![json!("two")]);
+        assert_eq!(cache.turns.len(), 1);
+        assert_eq!(cache.bytes, cache.turns[0].items.len() + 1);
+    }
+
+    #[test]
+    fn cache_is_bounded_by_count_and_serialized_bytes() {
+        let mut cache = History::default();
+        for index in 0..MAX_RESPONSES + 1 {
+            cache.remember(&response(&index.to_string(), vec![]), vec![]);
+        }
+        assert!(cache.replay("0").is_none());
+        assert_eq!(cache.turns.len(), MAX_RESPONSES);
+        let large = json!("x".repeat(MAX_HISTORY_BYTES / 2));
+        cache.remember(&response("large1", vec![]), vec![large.clone()]);
+        cache.remember(&response("large2", vec![]), vec![large]);
+        assert!(cache.replay("large1").is_none());
+        assert!(cache.replay("large2").is_some());
+        assert!(cache.bytes <= MAX_HISTORY_BYTES);
+        assert!(!cache.remember(
+            &response("oversized", vec![]),
+            vec![json!("x".repeat(MAX_HISTORY_BYTES))]
+        ));
     }
 }

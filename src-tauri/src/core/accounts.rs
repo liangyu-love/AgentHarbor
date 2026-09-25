@@ -35,9 +35,19 @@ pub struct CodexAccountListPayload {
 pub struct AccountCredential {
     pub account_key: String,
     pub snapshot_path: PathBuf,
+    pub active_auth_path: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone)]
+// Never serialize or log authentication bytes. RPC refreshes are applied under
+// the repository lock, after checking that their input has not been replaced.
+#[derive(Clone)]
+pub struct CredentialRefresh {
+    pub source_path: PathBuf,
+    pub original: Vec<u8>,
+    pub refreshed: Vec<u8>,
+}
+
+#[derive(Clone)]
 pub struct AccountUsageUpdate {
     pub account_key: String,
     pub primary_window: Option<RateLimitWindow>,
@@ -45,35 +55,46 @@ pub struct AccountUsageUpdate {
     pub plan: Option<String>,
     pub status: String,
     pub error: Option<String>,
+    pub credential_refresh: Option<CredentialRefresh>,
 }
 
-fn needs_registry_sync(repo: &Repository, registry: &RegistryFile) -> bool {
+fn needs_registry_sync(repo: &Repository, registry: &RegistryFile) -> Result<bool, CoreError> {
     if !repo.paths().registry_path.exists() {
-        return true;
+        return Ok(true);
     }
     if registry
         .items
         .iter()
         .any(|item| !Path::new(&item.snapshot_path).is_file())
     {
-        return true;
+        return Ok(true);
     }
-    let Ok(auth) = load_auth_file(&repo.paths().auth_path) else {
-        return false;
+    let bytes = match std::fs::read(&repo.paths().auth_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(registry.active_account_key.is_some());
+        }
+        Err(error) => return Err(error.into()),
     };
+    let auth = serde_json::from_slice(&bytes)?;
     let Ok(snapshot) = make_auth_snapshot(&auth, &repo.paths().auth_path) else {
-        return false;
+        return Ok(registry.active_account_key.is_some());
     };
-    registry.active_account_key.as_deref() != Some(snapshot.account_key.as_str())
-        || !registry
-            .items
-            .iter()
-            .any(|item| item.account_key == snapshot.account_key)
+    let current = registry
+        .items
+        .iter()
+        .find(|item| item.account_key == snapshot.account_key);
+    Ok(
+        registry.active_account_key.as_deref() != Some(snapshot.account_key.as_str())
+            || current.map_or(true, |item| {
+                std::fs::read(&item.snapshot_path).map_or(true, |stored| stored != bytes)
+            }),
+    )
 }
 
 fn synced_registry(repo: &Repository) -> Result<RegistryFile, CoreError> {
     let registry = repo.load_registry_or_empty()?;
-    if needs_registry_sync(repo, &registry) {
+    if needs_registry_sync(repo, &registry)? {
         repo.rebuild_registry_state()
     } else {
         Ok(registry)
@@ -145,6 +166,9 @@ pub fn credentials(
         .map(|item| AccountCredential {
             account_key: item.account_key.clone(),
             snapshot_path: PathBuf::from(&item.snapshot_path),
+            active_auth_path: (registry.active_account_key.as_deref()
+                == Some(item.account_key.as_str()))
+            .then(|| repo.paths().auth_path.clone()),
         })
         .collect();
     let proxy = super::newapi::proxy_from_settings(&repo.paths().settings_path);
@@ -166,7 +190,10 @@ pub fn register_login(
         .join(format!("{}.json", snapshot.account_key));
     storage::write_atomic(&snapshot_path, &bytes)?;
 
-    if !repo.paths().auth_path.exists() {
+    let replaces_active = load_auth_file(&repo.paths().auth_path)
+        .and_then(|auth| make_auth_snapshot(&auth, &repo.paths().auth_path))
+        .is_ok_and(|active| active.account_key == snapshot.account_key);
+    if !repo.paths().auth_path.exists() || replaces_active {
         storage::write_atomic(&repo.paths().auth_path, &bytes)?;
     }
 
@@ -244,6 +271,11 @@ pub fn apply_usage_updates(
     repo: &Repository,
     updates: Vec<AccountUsageUpdate>,
 ) -> Result<CodexAccountListPayload, CoreError> {
+    for update in &updates {
+        if let Some(refresh) = &update.credential_refresh {
+            apply_credential_refresh(repo, &update.account_key, refresh)?;
+        }
+    }
     let mut registry = synced_registry(repo)?;
     let checked_at = current_timestamp();
     for update in updates {
@@ -264,8 +296,63 @@ pub fn apply_usage_updates(
         }
     }
     registry.updated_at = checked_at;
-    repo.save_registry(&registry)?;
+    repo.save_registry_cache(&registry)?;
     Ok(payload(registry))
+}
+
+fn apply_credential_refresh(
+    repo: &Repository,
+    account_key: &str,
+    refresh: &CredentialRefresh,
+) -> Result<(), CoreError> {
+    let registry = repo.load_registry_or_empty()?;
+    let Some(item) = registry
+        .items
+        .iter()
+        .find(|item| item.account_key == account_key)
+    else {
+        return Ok(()); // The account was removed while the request was running.
+    };
+    let snapshot_path = Path::new(&item.snapshot_path);
+    if refresh.source_path != repo.paths().auth_path && refresh.source_path != snapshot_path {
+        return Err(CoreError::InvalidData(
+            "Unexpected credential refresh path".into(),
+        ));
+    }
+    // The caller holds the repository lock, serializing application commands.
+    // This comparison also rejects observed external changes, but it is not a
+    // cross-process compare-and-swap with Codex writing the same auth file.
+    if std::fs::read(&refresh.source_path).ok().as_deref() != Some(refresh.original.as_slice()) {
+        return Ok(());
+    }
+    let auth = serde_json::from_slice(&refresh.refreshed)?;
+    if make_auth_snapshot(&auth, &refresh.source_path)?.account_key != account_key {
+        return Err(CoreError::InvalidData(
+            "Refreshed account identity changed".into(),
+        ));
+    }
+    if refresh.source_path == repo.paths().auth_path {
+        storage::write_atomic(&refresh.source_path, &refresh.refreshed)?;
+    } else {
+        // If this account became active meanwhile, update the live credential
+        // only when it still has exactly the input used for this refresh.
+        let active = std::fs::read(&repo.paths().auth_path).ok();
+        if active.as_deref() == Some(refresh.original.as_slice()) {
+            storage::write_atomic(&repo.paths().auth_path, &refresh.refreshed)?;
+        } else if active.as_deref().is_some_and(|bytes| {
+            serde_json::from_slice(bytes)
+                .ok()
+                .and_then(|auth| make_auth_snapshot(&auth, &repo.paths().auth_path).ok())
+                .is_some_and(|auth| auth.account_key == account_key)
+        }) {
+            return Ok(());
+        }
+    }
+    // Never recreate a snapshot deleted or re-imported during the request.
+    if std::fs::read(snapshot_path).ok().as_deref() == Some(refresh.original.as_slice()) {
+        storage::write_atomic(snapshot_path, &refresh.refreshed)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -274,16 +361,218 @@ mod tests {
     use crate::platform::paths::CodexPaths;
 
     fn write_auth(path: &Path, account_id: &str) {
+        write_auth_token(path, account_id, "access");
+    }
+
+    fn write_auth_token(path: &Path, account_id: &str, access_token: &str) {
         let auth = serde_json::json!({
             "auth_mode": "chatgpt",
             "tokens": {
-                "access_token": "access",
+                "access_token": access_token,
                 "refresh_token": "refresh",
                 "account_id": account_id
             }
         });
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, serde_json::to_vec(&auth).unwrap()).unwrap();
+    }
+
+    fn usage_update(account_key: &str, refresh: Option<CredentialRefresh>) -> AccountUsageUpdate {
+        AccountUsageUpdate {
+            account_key: account_key.into(),
+            primary_window: None,
+            secondary_window: None,
+            plan: Some("plus".into()),
+            status: "healthy".into(),
+            error: None,
+            credential_refresh: refresh,
+        }
+    }
+
+    #[test]
+    fn relogin_active_account_keeps_the_new_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = Repository::from_paths(CodexPaths::from_home(temp.path().join("codex")));
+        let source = temp.path().join("source.json");
+        write_auth_token(&source, "account", "old-token");
+        let key = register_login(&repo, &source)
+            .unwrap()
+            .active_account_key
+            .unwrap();
+        write_auth_token(&source, "account", "new-token");
+        let expected = std::fs::read(&source).unwrap();
+        register_login(&repo, &source).unwrap();
+        let (credentials, _) = credentials(&repo).unwrap();
+        assert_eq!(std::fs::read(&repo.paths().auth_path).unwrap(), expected);
+        assert_eq!(
+            std::fs::read(&credentials[0].snapshot_path).unwrap(),
+            expected
+        );
+        assert_eq!(credentials[0].account_key, key);
+    }
+
+    #[test]
+    fn rotated_active_credentials_sync_and_logout_clears_the_active_account() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = Repository::from_paths(CodexPaths::from_home(temp.path().join("codex")));
+        let source = temp.path().join("source.json");
+        write_auth(&source, "account");
+        let key = register_login(&repo, &source)
+            .unwrap()
+            .active_account_key
+            .unwrap();
+        apply_usage_updates(&repo, vec![usage_update(&key, None)]).unwrap();
+        write_auth_token(&repo.paths().auth_path, "account", "rotated-token");
+        let (credentials, _) = credentials(&repo).unwrap();
+        assert_eq!(
+            credentials[0].active_auth_path.as_ref(),
+            Some(&repo.paths().auth_path)
+        );
+        assert_eq!(
+            std::fs::read(&credentials[0].snapshot_path).unwrap(),
+            std::fs::read(&repo.paths().auth_path).unwrap()
+        );
+        assert_eq!(list(&repo).unwrap().items[0].usage_status, "healthy");
+        std::fs::remove_file(&repo.paths().auth_path).unwrap();
+        let logged_out = list(&repo).unwrap();
+        assert!(logged_out.active_account_key.is_none());
+        assert!(!logged_out.items[0].is_active);
+        assert!(delete(&repo, &key).unwrap().items.is_empty());
+    }
+
+    #[test]
+    fn rpc_refresh_updates_active_auth_and_snapshot_together() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = Repository::from_paths(CodexPaths::from_home(temp.path().join("codex")));
+        let source = temp.path().join("source.json");
+        write_auth(&source, "account");
+        let key = register_login(&repo, &source)
+            .unwrap()
+            .active_account_key
+            .unwrap();
+        let original = std::fs::read(&repo.paths().auth_path).unwrap();
+        write_auth_token(&source, "account", "rpc-rotated");
+        let refreshed = std::fs::read(&source).unwrap();
+        let refresh = CredentialRefresh {
+            source_path: repo.paths().auth_path.clone(),
+            original,
+            refreshed: refreshed.clone(),
+        };
+        apply_usage_updates(&repo, vec![usage_update(&key, Some(refresh))]).unwrap();
+        let (credentials, _) = credentials(&repo).unwrap();
+        assert_eq!(std::fs::read(&repo.paths().auth_path).unwrap(), refreshed);
+        assert_eq!(
+            std::fs::read(&credentials[0].snapshot_path).unwrap(),
+            refreshed
+        );
+    }
+
+    #[test]
+    fn late_rpc_refresh_cannot_overwrite_relogin_logout_or_account_switch() {
+        for action in ["relogin", "logout", "switch", "delete"] {
+            let temp = tempfile::tempdir().unwrap();
+            let repo = Repository::from_paths(CodexPaths::from_home(temp.path().join("codex")));
+            let source = temp.path().join("source.json");
+            write_auth(&source, "account");
+            let key = register_login(&repo, &source)
+                .unwrap()
+                .active_account_key
+                .unwrap();
+            let original = std::fs::read(&repo.paths().auth_path).unwrap();
+            write_auth_token(&source, "account", "stale-rpc-result");
+            let refresh = CredentialRefresh {
+                source_path: repo.paths().auth_path.clone(),
+                original,
+                refreshed: std::fs::read(&source).unwrap(),
+            };
+            match action {
+                "relogin" => {
+                    write_auth_token(&source, "account", "new-login-wins");
+                    register_login(&repo, &source).unwrap();
+                }
+                "switch" => {
+                    write_auth(&source, "other-account");
+                    let accounts = register_login(&repo, &source).unwrap();
+                    let other = accounts
+                        .items
+                        .iter()
+                        .find(|item| item.account_key != key)
+                        .unwrap();
+                    switch(&repo, &other.account_key).unwrap();
+                }
+                _ => {
+                    std::fs::remove_file(&repo.paths().auth_path).unwrap();
+                    if action == "delete" {
+                        delete(&repo, &key).unwrap();
+                    }
+                }
+            }
+            let expected = std::fs::read(&repo.paths().auth_path).ok();
+            apply_usage_updates(&repo, vec![usage_update(&key, Some(refresh))]).unwrap();
+            assert_eq!(
+                std::fs::read(&repo.paths().auth_path).ok(),
+                expected,
+                "{action}"
+            );
+            if action == "delete" {
+                assert!(list(&repo).unwrap().items.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn inactive_rpc_refresh_follows_an_unchanged_account_that_became_active() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = Repository::from_paths(CodexPaths::from_home(temp.path().join("codex")));
+        let source = temp.path().join("source.json");
+        write_auth(&source, "first");
+        register_login(&repo, &source).unwrap();
+        write_auth(&source, "second");
+        register_login(&repo, &source).unwrap();
+        let (credentials, _) = credentials(&repo).unwrap();
+        let inactive = credentials
+            .iter()
+            .find(|item| item.active_auth_path.is_none())
+            .unwrap();
+        let original = std::fs::read(&inactive.snapshot_path).unwrap();
+        write_auth_token(&source, "second", "new-second-token");
+        let refreshed = std::fs::read(&source).unwrap();
+        let refresh = CredentialRefresh {
+            source_path: inactive.snapshot_path.clone(),
+            original,
+            refreshed: refreshed.clone(),
+        };
+        switch(&repo, &inactive.account_key).unwrap();
+        apply_usage_updates(
+            &repo,
+            vec![usage_update(&inactive.account_key, Some(refresh))],
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&repo.paths().auth_path).unwrap(), refreshed);
+    }
+
+    #[test]
+    fn quota_refreshes_do_not_create_registry_backups() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = Repository::from_paths(CodexPaths::from_home(temp.path().join("codex")));
+        let source = temp.path().join("source.json");
+        write_auth(&source, "account");
+        let key = register_login(&repo, &source)
+            .unwrap()
+            .active_account_key
+            .unwrap();
+        let before = std::fs::read_dir(&repo.paths().registry_backups_dir)
+            .unwrap()
+            .count();
+        for _ in 0..3 {
+            apply_usage_updates(&repo, vec![usage_update(&key, None)]).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_dir(&repo.paths().registry_backups_dir)
+                .unwrap()
+                .count(),
+            before
+        );
     }
 
     #[test]

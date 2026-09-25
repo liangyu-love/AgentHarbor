@@ -133,8 +133,23 @@ impl ProcessController for CodexTarget {
     }
 
     fn restart(&self) -> Result<(), CoreError> {
-        platform::process::restart_codex_app()
+        let global = super::newapi::proxy_from_settings(&self.paths.settings_path);
+        let store = super::router::load_store(&self.paths).map_err(CoreError::OperationFailed)?;
+        let proxy = codex_process_proxy(&store, &global);
+        platform::process::restart_codex_app(&proxy, &self.paths)
     }
+}
+
+fn codex_process_proxy(
+    store: &super::router::Store,
+    global: &super::models::ApiProxyConfigPayload,
+) -> super::models::ApiProxyConfigPayload {
+    if store.router.enabled && store.codex_access_mode == super::router::CodexAccessMode::Native {
+        if let Some(provider) = super::router::effective_active(store) {
+            return super::newapi::effective_proxy(provider.network_mode(), global);
+        }
+    }
+    global.clone()
 }
 
 pub struct TargetRegistry {
@@ -198,6 +213,41 @@ impl TargetRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_process_uses_selected_provider_egress_while_router_preserves_global_egress() {
+        use crate::core::{
+            models::{ApiProxyConfigPayload, ApiProxyMode},
+            router::{CodexAccessMode, Provider, Store},
+        };
+        let global = ApiProxyConfigPayload {
+            mode: ApiProxyMode::Manual,
+            url: Some("http://127.0.0.1:9000".into()),
+        };
+        let mut store = Store::default();
+        store.router.enabled = true;
+        store.codex_access_mode = CodexAccessMode::Native;
+        store.providers.push(Provider {
+            id: "selected".into(),
+            enabled: true,
+            api_key: "fixture-key".into(),
+            model: "fixture-model".into(),
+            network_mode: "direct".into(),
+            ..Default::default()
+        });
+        assert_eq!(
+            codex_process_proxy(&store, &global).mode,
+            ApiProxyMode::Direct
+        );
+        store.providers[0].network_mode = "proxy".into();
+        assert_eq!(codex_process_proxy(&store, &global), global);
+        store.providers[0].network_mode = "direct".into();
+        store.codex_access_mode = CodexAccessMode::Router;
+        assert_eq!(codex_process_proxy(&store, &global), global);
+        store.codex_access_mode = CodexAccessMode::Native;
+        store.router.enabled = false;
+        assert_eq!(codex_process_proxy(&store, &global), global);
+    }
 
     #[test]
     fn configuration_only_clients_do_not_fall_back_to_codex_capabilities() {

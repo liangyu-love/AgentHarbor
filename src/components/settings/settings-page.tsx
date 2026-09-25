@@ -23,9 +23,7 @@ import { BentoCard } from "@/components/ui/bento-card";
 import { Badge } from "@/components/ui/badge";
 import {
   ACCENT_PRESETS,
-  HEATMAP_PRESETS,
   type AccentPreset,
-  type HeatmapPreset,
 } from "@/hooks/use-accent-color";
 import type { Theme } from "@/hooks/use-theme";
 const RUNTIME_STATE_DISPLAY_QUERY_KEY = ["runtime-state", "display"] as const;
@@ -41,8 +39,6 @@ interface SettingsPageProps {
   onThemeChange: (theme: Theme) => void;
   accent: AccentPreset;
   setAccent: (accent: AccentPreset) => void;
-  heatmap: HeatmapPreset;
-  setHeatmap: (heatmap: HeatmapPreset) => void;
   language: string;
   setLanguage: (lang: string) => void;
   refreshInterval: RefreshInterval;
@@ -55,6 +51,7 @@ function proxyModeBadgeLabel(
   t: (key: string, options?: Record<string, unknown>) => string,
   mode: ApiProxyMode,
 ) {
+  if (mode === "system") return t("settings.apiProxyModeSystem");
   return mode === "manual"
     ? t("settings.apiProxyModeManual")
     : t("settings.apiProxyModeDirect");
@@ -65,8 +62,6 @@ export function SettingsPage({
   onThemeChange,
   accent,
   setAccent,
-  heatmap,
-  setHeatmap,
   language,
   setLanguage,
   refreshInterval,
@@ -211,10 +206,10 @@ export function SettingsPage({
       .catch(() => setAppVersion("unknown"));
   }, []);
 
-  const currentProxy = status?.api.proxy ?? { mode: "direct" as ApiProxyMode, url: null };
+  const currentProxy = status?.api.proxy ?? { mode: "system" as ApiProxyMode, url: null };
   const currentProxySummary = currentProxy.mode === "manual"
     ? t("settings.apiProxySummaryManual", { url: currentProxy.url ?? "" })
-    : t("settings.apiProxySummaryDirect");
+    : t(currentProxy.mode === "system" ? "settings.apiProxySummarySystem" : "settings.apiProxySummaryDirect");
 
   return (
     <div className="space-y-6">
@@ -258,24 +253,6 @@ export function SettingsPage({
                     accent === key ? "ring-foreground" : "ring-transparent",
                   )}
                   style={{ backgroundColor: ACCENT_PRESETS[key].hex }}
-                />
-              ))}
-            </div>
-          </SettingRow>
-
-          <SettingRow label={t("settings.heatmapColor")} description={t("settings.heatmapColorDesc")}>
-            <div className="flex gap-2">
-              {(Object.keys(HEATMAP_PRESETS) as HeatmapPreset[]).map((key) => (
-                <button
-                  key={key}
-                  onClick={() => setHeatmap(key)}
-                  disabled
-                  title={HEATMAP_PRESETS[key].label}
-                  className={cn(
-                    "h-6 w-6 rounded-full ring-2 ring-offset-2 ring-offset-card transition-transform hover:scale-110",
-                    heatmap === key ? "ring-foreground" : "ring-transparent",
-                  )}
-                  style={{ backgroundColor: HEATMAP_PRESETS[key].hex }}
                 />
               ))}
             </div>

@@ -94,11 +94,25 @@ impl Translation {
 ///
 /// Only the Responses protocol arrives here today: Codex is the sole caller that
 /// needs translating, and its `/v1/responses` path is the one the router injects.
-pub fn request_body(translation: Translation, value: &Value) -> Result<Value, String> {
+pub struct TranslatedRequest {
+    pub body: Value,
+    /// Canonical input without request-scoped instructions, ready for history.
+    pub input: Vec<Value>,
+}
+
+pub fn request_body(translation: Translation, value: &Value) -> Result<TranslatedRequest, String> {
     use crate::core::router::ModelProtocol::*;
     match (translation.from, translation.to) {
         (Responses, ChatCompletions) | (Responses, AnthropicMessages) => {
-            chat::request_from_responses(translation.to, value)
+            let input = history::input_for_request(value)?;
+            let mut expanded = value.clone();
+            let object = expanded
+                .as_object_mut()
+                .ok_or("protocol.errors.invalidRequest")?;
+            object.remove("previous_response_id");
+            object.insert("input".into(), Value::Array(input.clone()));
+            let body = chat::request_from_responses(translation.to, &expanded)?;
+            Ok(TranslatedRequest { body, input })
         }
         _ => Err("protocol.errors.unsupportedTranslation".into()),
     }
@@ -112,14 +126,121 @@ pub fn stream_translator(translation: Translation) -> sse::StreamTranslator {
     sse::StreamTranslator::new(translation)
 }
 
-/// The provider-format messages a translated request was built from.
-///
-/// Kept separate from [`request_body`] so the proxy can hand them to the
-/// translator without re-deriving them.
-pub fn request_messages(translated: &Value) -> Vec<Value> {
-    translated
-        .get("messages")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
+#[cfg(test)]
+mod continuation_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn pair(to: ModelProtocol) -> Translation {
+        Translation {
+            from: ModelProtocol::Responses,
+            to,
+        }
+    }
+    fn assistant(text: &str) -> Value {
+        json!({"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":text}]})
+    }
+    fn record(input: Vec<Value>, output: Vec<Value>) -> String {
+        let id = format!("resp_test_{}", uuid::Uuid::new_v4().simple());
+        history::remember(
+            &json!({"id":id,"status":"completed","output":output}),
+            input,
+        );
+        id
+    }
+
+    #[test]
+    fn ordinary_assistant_text_survives_a_continuation_in_both_protocols() {
+        let first = request_body(
+            pair(ModelProtocol::ChatCompletions),
+            &json!({"model":"m","input":"question"}),
+        )
+        .unwrap();
+        let id = record(first.input, vec![assistant("answer")]);
+        for target in [
+            ModelProtocol::ChatCompletions,
+            ModelProtocol::AnthropicMessages,
+        ] {
+            let next = request_body(
+                pair(target),
+                &json!({"model":"m","previous_response_id":id,"input":"follow-up"}),
+            )
+            .unwrap();
+            assert_eq!(next.body["messages"][0]["content"], "question");
+            assert_eq!(next.body["messages"][1]["role"], "assistant");
+            assert_eq!(next.body["messages"][1]["content"], "answer");
+            assert_eq!(next.body["messages"][2]["content"], "follow-up");
+        }
+    }
+
+    #[test]
+    fn mixed_text_and_tool_calls_replay_in_the_target_protocol() {
+        let id = record(
+            vec![json!({"role":"user","content":"question"})],
+            vec![
+                assistant("Checking"),
+                json!({"type":"function_call","call_id":"c1","name":"lookup","arguments":"{\"q\":1}","status":"completed"}),
+            ],
+        );
+        let request = json!({"model":"m","previous_response_id":id,"input":[{"type":"function_call_output","call_id":"c1","output":"result"}]});
+        let chat = request_body(pair(ModelProtocol::ChatCompletions), &request)
+            .unwrap()
+            .body;
+        assert_eq!(chat["messages"][1]["content"], "Checking");
+        assert_eq!(chat["messages"][1]["tool_calls"][0]["id"], "c1");
+        assert_eq!(chat["messages"][2]["role"], "tool");
+        let anthropic = request_body(pair(ModelProtocol::AnthropicMessages), &request)
+            .unwrap()
+            .body;
+        assert_eq!(anthropic["messages"][1]["content"][0]["text"], "Checking");
+        assert_eq!(anthropic["messages"][1]["content"][1]["type"], "tool_use");
+        assert_eq!(anthropic["messages"][1]["content"][1]["input"]["q"], 1);
+        assert_eq!(
+            anthropic["messages"][2]["content"][0]["type"],
+            "tool_result"
+        );
+    }
+
+    #[test]
+    fn request_instructions_are_replaced_without_removing_explicit_system_input() {
+        let first = request_body(pair(ModelProtocol::ChatCompletions), &json!({
+            "model":"m","instructions":"old instruction",
+            "input":[{"role":"system","content":[{"type":"input_text","text":"persistent system"}]},{"role":"user","content":"hi"}],
+        })).unwrap();
+        let id = record(first.input, vec![assistant("hello")]);
+        for target in [
+            ModelProtocol::ChatCompletions,
+            ModelProtocol::AnthropicMessages,
+        ] {
+            let next = request_body(pair(target), &json!({"model":"m","instructions":"new instruction","previous_response_id":id,"input":"again"})).unwrap().body;
+            assert!(!next.to_string().contains("old instruction"));
+            if target == ModelProtocol::ChatCompletions {
+                assert_eq!(next["messages"][0]["content"], "new instruction");
+                assert_eq!(next["messages"][1]["content"], "persistent system");
+                assert_eq!(next["messages"].as_array().unwrap().len(), 5);
+            } else {
+                assert_eq!(next["system"], "new instruction\npersistent system");
+                assert_eq!(next["messages"].as_array().unwrap().len(), 3);
+            }
+            let without = request_body(
+                pair(target),
+                &json!({"model":"m","previous_response_id":id,"input":"again"}),
+            )
+            .unwrap()
+            .body;
+            assert!(!without.to_string().contains("old instruction"));
+            assert!(without.to_string().contains("persistent system"));
+        }
+    }
+
+    #[test]
+    fn unknown_history_is_an_explicit_error() {
+        let error = request_body(
+            pair(ModelProtocol::ChatCompletions),
+            &json!({"model":"m","previous_response_id":"unrecorded-test-id","input":"again"}),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error, "protocol.errors.unknownPreviousResponse");
+    }
 }

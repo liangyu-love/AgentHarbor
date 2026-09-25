@@ -23,6 +23,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { api } from "@/lib/api";
+import { formatInvokeError } from "@/lib/invoke-error";
 import {
   builtinCustomInstructionTemplates,
   mergeCustomInstructionTemplates,
@@ -131,7 +132,7 @@ export function CustomInstructionsPage() {
     onError: (error) => {
       toast({
         title: t("customInstructions.previewFailed"),
-        description: error instanceof Error ? error.message : t("common.toastErrorGenericDesc"),
+        description: formatInvokeError(error, t("common.toastErrorGenericDesc")),
         variant: "destructive",
       });
     },
@@ -172,7 +173,7 @@ export function CustomInstructionsPage() {
       setPreviewOpen(false);
       toast({
         title: t("customInstructions.applyFailed"),
-        description: error instanceof Error ? error.message : t("common.toastErrorGenericDesc"),
+        description: formatInvokeError(error, t("common.toastErrorGenericDesc")),
         variant: "destructive",
       });
     },
@@ -192,7 +193,7 @@ export function CustomInstructionsPage() {
     onError: (error) => {
       toast({
         title: t("customInstructions.clearFailed"),
-        description: error instanceof Error ? error.message : t("common.toastErrorGenericDesc"),
+        description: formatInvokeError(error, t("common.toastErrorGenericDesc")),
         variant: "destructive",
       });
     },
@@ -211,7 +212,7 @@ export function CustomInstructionsPage() {
     onError: (error) => {
       toast({
         title: t("customInstructions.rollbackFailed"),
-        description: error instanceof Error ? error.message : t("common.toastErrorGenericDesc"),
+        description: formatInvokeError(error, t("common.toastErrorGenericDesc")),
         variant: "destructive",
       });
     },

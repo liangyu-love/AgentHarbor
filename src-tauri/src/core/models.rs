@@ -53,6 +53,7 @@ pub enum UsageSource {
 #[serde(rename_all = "lowercase")]
 pub enum ApiProxyMode {
     #[default]
+    System,
     Direct,
     Manual,
 }
@@ -138,7 +139,7 @@ pub struct ApiProxyConfigPayload {
 impl Default for ApiProxyConfigPayload {
     fn default() -> Self {
         Self {
-            mode: ApiProxyMode::Direct,
+            mode: ApiProxyMode::System,
             url: None,
         }
     }

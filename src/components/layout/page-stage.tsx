@@ -32,6 +32,7 @@ export function PageStage({
 
   return (
     <section
+      data-page-scroll-container={scrollable ? "" : undefined}
       aria-hidden={state !== "active"}
       style={shellTransitionStyle}
       className={cn(

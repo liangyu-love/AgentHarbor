@@ -9,15 +9,27 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{Mutex, MutexGuard, OnceLock},
 };
+#[cfg(test)]
+#[path = "router_access_mode_tests.rs"]
+mod access_mode_tests;
+#[path = "router_config_snapshot.rs"]
+mod config_snapshot;
+#[cfg(test)]
+#[path = "router_model_protocol_tests.rs"]
+mod model_protocol_tests;
+#[path = "codex_native.rs"]
+mod native_config;
 
 pub const DEFAULT_PORT: u16 = 43127;
 const PREVIOUS_DEFAULT_PORT: u16 = 25817;
 pub const PROVIDER_PREFIX: &str = "agentharbor_p";
 pub const CATALOG_PROVIDER_KEY: &str = "agentharbor_relay";
+pub const NATIVE_PROVIDER_KEY: &str = "agentharbor_native";
+pub(crate) const LOCAL_AUTH_HEADER: &str = "x-agentharbor-token";
 const DIRECT_PROVIDER_KEY: &str = "agentharbor_newapi";
 const PREVIOUS_PROVIDER_PREFIX: &str = "codexharbor_p";
 const PREVIOUS_CATALOG_PROVIDER_KEY: &str = "codexharbor_relay";
@@ -34,6 +46,14 @@ pub enum ModelProtocol {
     Responses,
     ChatCompletions,
     AnthropicMessages,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CodexAccessMode {
+    #[default]
+    Router,
+    Native,
 }
 
 pub struct ModelEndpoint<'a> {
@@ -111,6 +131,7 @@ pub struct Store {
     pub version: u32,
     pub providers: Vec<Provider>,
     pub router: RouterSettings,
+    pub codex_access_mode: CodexAccessMode,
     pub active_provider_id: Option<String>,
 }
 
@@ -166,20 +187,37 @@ impl Provider {
     }
 
     pub(crate) fn is_routable(&self) -> bool {
-        self.enabled
-            && !self.api_key.is_empty()
-            && !self.model.is_empty()
-            && self.model_supports_protocol()
+        self.can_route_model(&self.model)
+    }
+
+    pub(crate) fn has_route_credentials(&self) -> bool {
+        self.enabled && !self.api_key.is_empty()
+    }
+
+    pub(crate) fn can_route_model(&self, model: &str) -> bool {
+        self.has_route_credentials() && !model.is_empty() && self.supports_model(model)
+    }
+
+    pub fn protocol_for_model(&self, model: &str) -> ModelProtocol {
+        self.models
+            .iter()
+            .find(|entry| entry.id == model)
+            .and_then(|entry| entry.protocol)
+            .unwrap_or(self.protocol)
+    }
+
+    pub fn selected_protocol(&self) -> ModelProtocol {
+        self.protocol_for_model(&self.model)
     }
 
     pub(crate) fn is_routable_for(&self, protocol: ModelProtocol) -> bool {
-        self.protocol == protocol && self.is_routable()
+        self.selected_protocol() == protocol && self.is_routable()
     }
 
     pub fn model_endpoint(&self) -> ModelEndpoint<'_> {
         ModelEndpoint {
             base_url: &self.base_url,
-            protocol: self.protocol,
+            protocol: self.selected_protocol(),
         }
     }
 
@@ -212,7 +250,7 @@ impl Provider {
     pub(crate) fn supports_model(&self, model_id: &str) -> bool {
         match self.models.iter().find(|model| model.id == model_id) {
             None => true,
-            Some(model) => model_supports_protocol(model, self.protocol),
+            Some(model) => model_supports_protocol(model, self.protocol_for_model(model_id)),
         }
     }
 }
@@ -265,6 +303,7 @@ fn model_supports_protocol(model: &newapi::Model, protocol: ModelProtocol) -> bo
 #[serde(rename_all = "camelCase")]
 pub struct RouterView {
     pub enabled: bool,
+    pub access_mode: CodexAccessMode,
     pub accountless: bool,
     pub port: u16,
     /// Whether Codex's config still points at our router.
@@ -356,6 +395,16 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
         let mut migrated_previous_identity = store.router.port == PREVIOUS_DEFAULT_PORT
             || store.router.bearer_token.starts_with("aimami_")
             || store.router.bearer_token.starts_with("codexharbor_");
+        // Preserve provenance only when identity migration can change it.
+        // Ordinary store reads should not clone every cached model.
+        let cleanup_store = (store.router.enabled
+            && (migrated_previous_identity
+                || store.router.bearer_token.is_empty()
+                || store
+                    .providers
+                    .iter()
+                    .any(|provider| provider.id.starts_with("aimami_"))))
+        .then(|| store.clone());
         if store.router.bearer_token.is_empty() || migrated_previous_identity {
             store.router.bearer_token = new_router_bearer();
             changed = true;
@@ -466,7 +515,7 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
             changed = true;
         }
         if removed_incompatible_route {
-            remove_routing_config(paths, &store)?;
+            remove_routing_config(paths, cleanup_store.as_ref().unwrap_or(&store))?;
         }
         if changed {
             save_store_unlocked(paths, &store)?;
@@ -604,6 +653,7 @@ fn migrate_original_relay(paths: &CodexPaths) -> Result<Option<Store>, String> {
         .map(|provider| provider.id.clone());
     Ok(Some(Store {
         version: STORE_VERSION,
+        codex_access_mode: CodexAccessMode::Router,
         providers,
         active_provider_id,
         router: RouterSettings {
@@ -661,6 +711,7 @@ fn migrate_legacy_connection(paths: &CodexPaths) -> Result<Option<Store>, String
     };
     Ok(Some(Store {
         version: STORE_VERSION,
+        codex_access_mode: CodexAccessMode::Router,
         providers: vec![provider],
         ..Default::default()
     }))
@@ -684,14 +735,23 @@ pub(crate) fn state_from_store_at(
         providers: store.providers.iter().map(Provider::view).collect(),
         router: RouterView {
             enabled: store.router.enabled,
+            access_mode: store.codex_access_mode,
             accountless: store.router.accountless,
             port: store.router.port,
             config_drifted: store.router.enabled
-                && paths.is_some_and(|paths| !routing_config_intact(paths)),
+                && paths.is_some_and(|paths| match store.codex_access_mode {
+                    CodexAccessMode::Router => !routing_config_intact(paths),
+                    CodexAccessMode::Native => {
+                        !native_config::intact(paths, store).unwrap_or(false)
+                    }
+                }),
         },
         proxy_running,
-        active_provider_id: effective_active_for(store, ModelProtocol::Responses)
-            .map(|provider| provider.id.clone()),
+        active_provider_id: (match store.codex_access_mode {
+            CodexAccessMode::Router => effective_active_for(store, ModelProtocol::Responses),
+            CodexAccessMode::Native => effective_active(store),
+        })
+        .map(|provider| provider.id.clone()),
     }
 }
 
@@ -711,6 +771,25 @@ pub fn effective_active(store: &Store) -> Option<&Provider> {
 
 pub fn routable(store: &Store) -> Vec<&Provider> {
     store.providers.iter().filter(|p| p.is_routable()).collect()
+}
+
+/// Validate the user's selected model before any config or store write. Native
+/// Codex cannot translate a non-Responses model or silently pick another relay.
+pub(crate) fn validate_native_selection(store: &Store) -> Result<(), String> {
+    if store.codex_access_mode != CodexAccessMode::Native {
+        return Ok(());
+    }
+    let selected = match store.active_provider_id.as_deref() {
+        Some(id) => store.providers.iter().find(|provider| provider.id == id),
+        None => store
+            .providers
+            .iter()
+            .find(|provider| provider.has_route_credentials() && !provider.model.is_empty()),
+    };
+    if selected.is_some_and(|provider| provider.selected_protocol() != ModelProtocol::Responses) {
+        return Err("newapi.errors.nativeResponsesRequired".into());
+    }
+    Ok(())
 }
 
 fn validate_input(
@@ -837,6 +916,7 @@ pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<Sta
     let _guard = store_write_guard()?;
     let mut store = load_store_unlocked(paths)?;
     let timestamp = now();
+    let previous = store.clone();
     let applied;
     match input
         .id
@@ -890,6 +970,7 @@ pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<Sta
                 provider.test_status = "untested".into();
                 provider.test_at = None;
             }
+            validate_native_selection(&store)?;
             applied = apply_routing_if_enabled(paths, &store)?;
         }
         None => {
@@ -926,10 +1007,11 @@ pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<Sta
             store.providers.push(provider);
             // A new disabled provider cannot change routing, but re-apply is harmless and keeps
             // the config consistent with the store after the mutation path below.
+            validate_native_selection(&store)?;
             applied = apply_routing_if_enabled(paths, &store)?;
         }
     }
-    save_store_unlocked(paths, &store)?;
+    persist_connection_change(paths, &previous, &store, applied.is_some())?;
     Ok(StateChange {
         state: state_from_store_at(&store, super::router_proxy::is_running(), Some(paths)),
         applied,
@@ -939,6 +1021,7 @@ pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<Sta
 pub fn delete_provider(paths: &CodexPaths, id: &str) -> Result<StateChange, String> {
     let _guard = store_write_guard()?;
     let mut store = load_store_unlocked(paths)?;
+    let previous = store.clone();
     if !store.providers.iter().any(|p| p.id == id) {
         return Err("newapi.errors.notFound".into());
     }
@@ -946,8 +1029,9 @@ pub fn delete_provider(paths: &CodexPaths, id: &str) -> Result<StateChange, Stri
     if store.active_provider_id.as_deref() == Some(id) {
         store.active_provider_id = None;
     }
+    validate_native_selection(&store)?;
     let applied = apply_routing_if_enabled(paths, &store)?;
-    save_store_unlocked(paths, &store)?;
+    persist_connection_change(paths, &previous, &store, applied.is_some())?;
     Ok(StateChange {
         state: state_from_store_at(&store, super::router_proxy::is_running(), Some(paths)),
         applied,
@@ -957,6 +1041,7 @@ pub fn delete_provider(paths: &CodexPaths, id: &str) -> Result<StateChange, Stri
 pub fn set_enabled(paths: &CodexPaths, id: &str, enabled: bool) -> Result<StateChange, String> {
     let _guard = store_write_guard()?;
     let mut store = load_store_unlocked(paths)?;
+    let previous = store.clone();
     let provider = store
         .providers
         .iter_mut()
@@ -970,8 +1055,18 @@ pub fn set_enabled(paths: &CodexPaths, id: &str, enabled: bool) -> Result<StateC
     }
     provider.enabled = enabled;
     provider.updated_at = now();
+    if enabled
+        && store.codex_access_mode == CodexAccessMode::Native
+        && !store.providers.iter().any(|provider| {
+            Some(provider.id.as_str()) == store.active_provider_id.as_deref()
+                && provider.is_routable()
+        })
+    {
+        store.active_provider_id = Some(id.to_owned());
+    }
+    validate_native_selection(&store)?;
     let applied = apply_routing_if_enabled(paths, &store)?;
-    save_store_unlocked(paths, &store)?;
+    persist_connection_change(paths, &previous, &store, applied.is_some())?;
     Ok(StateChange {
         state: state_from_store_at(&store, super::router_proxy::is_running(), Some(paths)),
         applied,
@@ -988,6 +1083,7 @@ pub fn fetch_models(
 ) -> Result<Vec<newapi::Model>, String> {
     let mut key = api_key.trim().to_owned();
     let mut network_direct = false;
+    let mut saved_protocols = HashMap::new();
     if let Some(id) = provider_id {
         let store = load_store(paths)?;
         if let Some(provider) = store.providers.iter().find(|p| p.id == id) {
@@ -1000,6 +1096,11 @@ pub fn fetch_models(
                     key = provider.api_key.clone();
                 }
                 network_direct = provider.network_mode() == "direct";
+                saved_protocols = provider
+                    .models
+                    .iter()
+                    .filter_map(|model| model.protocol.map(|protocol| (model.id.clone(), protocol)))
+                    .collect();
             }
         }
     }
@@ -1022,7 +1123,12 @@ pub fn fetch_models(
     let catalog = model_defaults::Catalog::load(&paths.codex_home);
     Ok(models
         .into_iter()
-        .map(|model| model.with_catalog_defaults(&catalog).with_local_defaults())
+        .map(|mut model| {
+            if let Some(protocol) = saved_protocols.get(&model.id) {
+                model.protocol = Some(*protocol);
+            }
+            model.with_catalog_defaults(&catalog).with_local_defaults()
+        })
         .collect())
 }
 
@@ -1054,7 +1160,7 @@ pub fn test_provider(
     let provider_proxy = newapi::effective_proxy(snapshot.network_mode(), proxy);
     // 模型列表由选择弹窗预先拉取，这里只执行真正决定状态的模型请求。
     let test_model = model.trim();
-    let result = match snapshot.protocol {
+    let result = match snapshot.protocol_for_model(test_model) {
         ModelProtocol::Responses => {
             newapi::test_responses(&connection, test_model, &provider_proxy)
         }
@@ -1074,7 +1180,8 @@ pub fn test_provider(
         .ok_or("newapi.errors.notFound")?;
     if store.providers[index].base_url != snapshot.base_url
         || store.providers[index].api_key != snapshot.api_key
-        || store.providers[index].protocol != snapshot.protocol
+        || store.providers[index].protocol_for_model(test_model)
+            != snapshot.protocol_for_model(test_model)
         || store.providers[index].network_mode() != snapshot.network_mode()
     {
         return Err("newapi.errors.changed".into());
@@ -1176,8 +1283,10 @@ pub fn query_provider_balance(
 pub fn set_smart_routing(paths: &CodexPaths, enabled: bool) -> Result<StateChange, String> {
     let _guard = store_write_guard()?;
     let mut store = load_store_unlocked(paths)?;
+    let previous = store.clone();
     let applied;
     if enabled {
+        validate_native_selection(&store)?;
         if effective_active_for(&store, ModelProtocol::Responses).is_none() {
             return Err("newapi.errors.noActiveProvider".into());
         }
@@ -1187,19 +1296,72 @@ pub fn set_smart_routing(paths: &CodexPaths, enabled: bool) -> Result<StateChang
         applied = remove_routing_config(paths, &store)?;
         store.router.enabled = false;
     }
-    save_store_unlocked(paths, &store)?;
+    persist_connection_change(paths, &previous, &store, applied.is_some())?;
     Ok(StateChange {
         state: state_from_store_at(&store, super::router_proxy::is_running(), Some(paths)),
         applied,
     })
 }
 
+pub fn set_access_mode(paths: &CodexPaths, mode: CodexAccessMode) -> Result<StateChange, String> {
+    let _guard = store_write_guard()?;
+    let mut store = load_store_unlocked(paths)?;
+    if store.codex_access_mode == mode {
+        return Ok(StateChange {
+            state: state_from_store_at(&store, super::router_proxy::is_running(), Some(paths)),
+            applied: None,
+        });
+    }
+    let previous = store.clone();
+    if mode == CodexAccessMode::Native {
+        // Pin the provider currently shown/used by Codex before changing modes.
+        // Native validation must not choose a different provider by protocol.
+        store.active_provider_id = effective_active_for(&store, ModelProtocol::Responses)
+            .map(|provider| provider.id.clone());
+    }
+    store.codex_access_mode = mode;
+    validate_native_selection(&store)?;
+    let applied = apply_routing_if_enabled(paths, &store)?;
+    persist_connection_change(paths, &previous, &store, applied.is_some())?;
+    Ok(StateChange {
+        state: state_from_store_at(&store, super::router_proxy::is_running(), Some(paths)),
+        applied,
+    })
+}
+
+fn persist_connection_change(
+    paths: &CodexPaths,
+    previous: &Store,
+    store: &Store,
+    config_changed: bool,
+) -> Result<(), String> {
+    if let Err(error) = save_store_unlocked(paths, store) {
+        if config_changed {
+            let restored = if previous.router.enabled {
+                apply_routing_config(paths, previous).map(|_| ())
+            } else {
+                remove_routing_config(paths, previous).map(|_| ())
+            };
+            if restored.is_err() {
+                log::warn!("Codex connection rollback failed; persisted settings will be retried on next load");
+            }
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
 pub fn set_accountless(paths: &CodexPaths, accountless: bool) -> Result<StateChange, String> {
     let _guard = store_write_guard()?;
     let mut store = load_store_unlocked(paths)?;
+    let previous = store.clone();
     store.router.accountless = accountless;
-    let applied = apply_routing_if_enabled(paths, &store)?;
-    save_store_unlocked(paths, &store)?;
+    let applied = if store.codex_access_mode == CodexAccessMode::Router {
+        apply_routing_if_enabled(paths, &store)?
+    } else {
+        None
+    };
+    persist_connection_change(paths, &previous, &store, applied.is_some())?;
     Ok(StateChange {
         state: state_from_store_at(&store, super::router_proxy::is_running(), Some(paths)),
         applied,
@@ -1224,10 +1386,13 @@ pub fn effective_active_for(store: &Store, protocol: ModelProtocol) -> Option<&P
         .active_provider_id
         .as_ref()
         .and_then(|id| {
-            store
-                .providers
-                .iter()
-                .find(|provider| &provider.id == id && provider.is_routable_for(protocol))
+            store.providers.iter().find(|provider| {
+                &provider.id == id
+                    && provider.is_routable()
+                    && (provider.selected_protocol() == protocol
+                        || protocol::Translation::between(protocol, provider.selected_protocol())
+                            .is_some_and(|translation| translation.is_supported()))
+            })
         })
         .or_else(|| store.providers.iter().find(exact))
         // A provider speaking another protocol is still reachable through the
@@ -1290,6 +1455,7 @@ fn model_provider_is_ours(document: &toml_edit::DocumentMut) -> bool {
 
 fn managed_provider_key(key: &str) -> bool {
     key == DIRECT_PROVIDER_KEY
+        || key == NATIVE_PROVIDER_KEY
         || key == CATALOG_PROVIDER_KEY
         || key.starts_with(PROVIDER_PREFIX)
         || key == PREVIOUS_DIRECT_PROVIDER_KEY
@@ -1377,7 +1543,7 @@ pub(crate) fn catalog_value(
     for provider in store
         .providers
         .iter()
-        .filter(|provider| provider.is_routable())
+        .filter(|provider| provider.has_route_credentials())
     {
         let mut provider_models: Vec<(String, Option<u64>)> = provider
             .models
@@ -1396,6 +1562,7 @@ pub(crate) fn catalog_value(
             })
             .collect();
         if !provider.model.trim().is_empty()
+            && provider.supports_model(&provider.model)
             && !provider_models.iter().any(|(id, _)| id == &provider.model)
         {
             provider_models.push((provider.model.clone(), provider.context_window));
@@ -1473,13 +1640,33 @@ pub fn apply_routing_config(
     paths: &CodexPaths,
     store: &Store,
 ) -> Result<newapi::AppliedConfig, String> {
+    if store.codex_access_mode == CodexAccessMode::Native {
+        return native_config::apply(paths, store);
+    }
+    let applied = apply_local_router_config(paths, store)?;
+    cleanup_native_credentials(paths);
+    Ok(applied)
+}
+
+fn cleanup_native_credentials(paths: &CodexPaths) {
+    if native_config::cleanup_credentials(paths).is_err() {
+        log::warn!("Codex config updated; native credential cleanup will retry on next use");
+    }
+}
+
+fn apply_local_router_config(
+    paths: &CodexPaths,
+    store: &Store,
+) -> Result<newapi::AppliedConfig, String> {
     use toml_edit::value;
+    let _guard = config_snapshot::guard().map_err(config_update_error)?;
     if store.router.bearer_token.is_empty() {
         return Err("newapi.errors.storage".into());
     }
     let active = effective_active_for(store, ModelProtocol::Responses)
         .ok_or("newapi.errors.noActiveProvider")?;
-    let catalog = write_catalog(paths, store)?;
+    let catalog = catalog_path(paths);
+    let mut pending = None;
     let result = CodexConfigRepository::new(paths)
         .update(|original| {
             let mut document = original
@@ -1493,21 +1680,40 @@ pub fn apply_routing_config(
                     "model_providers must be a TOML table".into(),
                 ));
             }
+            let mut snapshot = match config_snapshot::load(paths, original)? {
+                Some(snapshot) => snapshot,
+                None if model_provider_is_ours(&document) => {
+                    config_snapshot::recover_legacy(paths, &document, store)?
+                }
+                None => config_snapshot::Snapshot::capture(paths, &document)?,
+            };
             remove_managed_provider_entries(&mut document);
-            document["model"] = value(format!("{}::{}", active.id, active.model));
-            document["model_provider"] = value(CATALOG_PROVIDER_KEY);
-            document["model_catalog_json"] = value(catalog.to_string_lossy().to_string());
+            config_snapshot::set_value(
+                &mut document,
+                "model",
+                Some(format!("{}::{}", active.id, active.model).into()),
+            );
+            config_snapshot::set_value(
+                &mut document,
+                "model_provider",
+                Some(CATALOG_PROVIDER_KEY.into()),
+            );
+            config_snapshot::set_value(
+                &mut document,
+                "model_catalog_json",
+                Some(catalog.to_string_lossy().to_string().into()),
+            );
             for (key, setting) in [
                 // Per-model defaults belong in the catalog. This global override
                 // is written only when the provider explicitly configured one.
                 ("model_context_window", active.context_window),
                 ("model_auto_compact_token_limit", active.auto_compact_limit),
             ] {
-                if let Some(setting) = setting {
-                    document[key] = value(setting as i64);
-                } else {
-                    document.remove(key);
-                }
+                config_snapshot::set_value(
+                    &mut document,
+                    key,
+                    setting.map(|setting| (setting as i64).into()),
+                );
             }
             if document.get("model_providers").is_none() {
                 let mut providers = toml_edit::Table::new();
@@ -1519,14 +1725,25 @@ pub fn apply_routing_config(
             entry["name"] = value("AgentHarbor 智能路由");
             entry["base_url"] = value(format!("http://127.0.0.1:{}/codex/v1", store.router.port));
             entry["wire_api"] = value("responses");
-            entry["experimental_bearer_token"] = value(&store.router.bearer_token);
-            entry["requires_openai_auth"] = value(false);
+            // Keep Codex's first-party auth pipeline (account display and token
+            // refresh) independent of authentication to this loopback router.
+            entry["requires_openai_auth"] = value(!store.router.accountless);
+            let mut headers = toml_edit::InlineTable::new();
+            headers.insert(LOCAL_AUTH_HEADER, store.router.bearer_token.clone().into());
+            entry["http_headers"] = value(headers);
             if store.router.accountless {
-                document["preferred_auth_method"] = value("apikey");
+                entry["experimental_bearer_token"] = value(&store.router.bearer_token);
             }
+            snapshot.apply_auth(&mut document, store.router.accountless)?;
+            write_catalog(paths, store).map_err(CoreError::OperationFailed)?;
+            snapshot.prepare(paths, original, &document, config_snapshot::Action::Apply)?;
+            pending = Some(snapshot);
             Ok(document.to_string())
         })
         .map_err(config_update_error)?;
+    if let Some(snapshot) = pending {
+        snapshot.finish(paths);
+    }
     Ok(applied_config(result))
 }
 
@@ -1538,6 +1755,13 @@ pub fn ensure_routing_config(
 ) -> Result<Option<newapi::AppliedConfig>, String> {
     if !store.router.enabled {
         return Ok(None);
+    }
+    if store.codex_access_mode == CodexAccessMode::Native {
+        return if native_config::intact(paths, store)? {
+            Ok(None)
+        } else {
+            native_config::apply(paths, store).map(Some)
+        };
     }
     let active = effective_active_for(store, ModelProtocol::Responses)
         .ok_or("newapi.errors.noActiveProvider")?;
@@ -1562,11 +1786,26 @@ pub fn ensure_routing_config(
             && provider
                 .get("requires_openai_auth")
                 .and_then(toml_edit::Item::as_bool)
-                == Some(false)
+                == Some(!store.router.accountless)
             && provider
-                .get("experimental_bearer_token")
+                .get("http_headers")
+                .and_then(|headers| headers.get(LOCAL_AUTH_HEADER))
                 .and_then(toml_edit::Item::as_str)
                 == Some(store.router.bearer_token.as_str())
+            && if store.router.accountless {
+                provider
+                    .get("experimental_bearer_token")
+                    .and_then(toml_edit::Item::as_str)
+                    == Some(store.router.bearer_token.as_str())
+                    && document
+                        .get("preferred_auth_method")
+                        .and_then(toml_edit::Item::as_str)
+                        == Some("apikey")
+            } else {
+                ["experimental_bearer_token", "env_key", "auth", "aws"]
+                    .iter()
+                    .all(|key| provider.get(key).is_none())
+            }
     }) && document
         .get("model_provider")
         .and_then(toml_edit::Item::as_str)
@@ -1578,11 +1817,16 @@ pub fn ensure_routing_config(
             .map(|value| value as u64)
             == active.context_window
         && document
+            .get("model_auto_compact_token_limit")
+            .and_then(toml_edit::Item::as_integer)
+            .map(|value| value as u64)
+            == active.auto_compact_limit
+        && document
             .get("model_catalog_json")
             .and_then(toml_edit::Item::as_str)
             == Some(expected_catalog.as_str())
         && catalog_current;
-    if current {
+    if current && config_snapshot::path(paths).is_file() {
         Ok(None)
     } else {
         apply_routing_config(paths, store).map(Some)
@@ -1593,10 +1837,22 @@ pub fn remove_routing_config(
     paths: &CodexPaths,
     store: &Store,
 ) -> Result<Option<newapi::AppliedConfig>, String> {
+    let applied = remove_connection_config(paths, store)?;
+    cleanup_native_credentials(paths);
+    Ok(applied)
+}
+
+fn remove_connection_config(
+    paths: &CodexPaths,
+    store: &Store,
+) -> Result<Option<newapi::AppliedConfig>, String> {
+    let _guard = config_snapshot::guard().map_err(config_update_error)?;
     if !paths.config_path.exists() {
+        config_snapshot::discard(paths).map_err(config_update_error)?;
         let _ = std::fs::remove_file(catalog_path(paths));
         return Ok(None);
     }
+    let mut pending = None;
     let result = CodexConfigRepository::new(paths)
         .update(|original| {
             let mut document = original
@@ -1610,20 +1866,25 @@ pub fn remove_routing_config(
                     "model_providers must be a TOML table".into(),
                 ));
             }
+            let snapshot = match config_snapshot::load(paths, original)? {
+                Some(snapshot) => Some(snapshot),
+                None if model_provider_is_ours(&document) => {
+                    Some(config_snapshot::recover_legacy(paths, &document, store)?)
+                }
+                None => None,
+            };
             remove_managed_provider_entries(&mut document);
-            if model_provider_is_ours(&document) {
-                document.remove("model_provider");
-                document.remove("model");
-                document.remove("model_catalog_json");
-                document.remove("model_context_window");
-                document.remove("model_auto_compact_token_limit");
-            }
-            if store.router.accountless {
-                document.remove("preferred_auth_method");
+            if let Some(mut snapshot) = snapshot {
+                snapshot.restore(paths, &mut document)?;
+                snapshot.prepare(paths, original, &document, config_snapshot::Action::Remove)?;
+                pending = Some(snapshot);
             }
             Ok(document.to_string())
         })
         .map_err(config_update_error)?;
+    if let Some(snapshot) = pending {
+        snapshot.finish(paths);
+    }
     let _ = std::fs::remove_file(catalog_path(paths));
     Ok(Some(applied_config(result)))
 }
@@ -1860,6 +2121,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         };
         let store = Store {
             version: 1,
+            codex_access_mode: CodexAccessMode::Router,
             providers: vec![provider],
             ..Default::default()
         };
@@ -2012,6 +2274,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             newapi::Model {
                 id: "model-fast".into(),
                 display_name: "Fast".into(),
+                protocol: None,
                 context_window: Some(200_000),
                 max_output_tokens: Some(16_384),
                 endpoint_types: vec!["openai-response".into()],
@@ -2021,6 +2284,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             newapi::Model {
                 id: "model-deep".into(),
                 display_name: "Deep reasoning".into(),
+                protocol: None,
                 context_window: Some(400_000),
                 max_output_tokens: Some(128_000),
                 endpoint_types: vec!["openai-response".into()],
@@ -2083,6 +2347,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         .unwrap();
         let store = Store {
             version: 5,
+            codex_access_mode: CodexAccessMode::Router,
             providers: vec![Provider {
                 id: "relay".into(),
                 name: "Relay".into(),
@@ -2119,6 +2384,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         let (_dir, paths) = paths();
         let store = Store {
             version: 1,
+            codex_access_mode: CodexAccessMode::Router,
             providers: vec![Provider {
                 id: "aimami_relay_fixture".into(),
                 name: "Previous relay".into(),
@@ -2154,6 +2420,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         let (_dir, paths) = paths();
         let store = Store {
             version: 1,
+            codex_access_mode: CodexAccessMode::Router,
             providers: vec![Provider {
                 id: "existing-provider-id".into(),
                 name: "Previous harbor relay".into(),
@@ -2349,7 +2616,74 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         };
         let store = Store {
             version: 1,
+            codex_access_mode: CodexAccessMode::Router,
             providers: vec![provider],
+            router: RouterSettings {
+                enabled: true,
+                bearer_token: "codexharbor_fixture_token".into(),
+                port: PREVIOUS_DEFAULT_PORT,
+                ..Default::default()
+            },
+            active_provider_id: Some("legacy-chat".into()),
+        };
+        let mut value = serde_json::to_value(&store).unwrap();
+        value["providers"][0]["wireApi"] = serde_json::json!("chat");
+        secret_file::write(&store_path(&paths), &serde_json::to_vec(&value).unwrap()).unwrap();
+        std::fs::create_dir_all(paths.config_path.parent().unwrap()).unwrap();
+        let original = "model = 'original-model'\nmodel_provider = 'original-provider'\npreferred_auth_method = 'chatgpt'\n[model_providers.original-provider]\nname = 'Original'\n[mcp_servers.tools]\ncommand = 'node'\n";
+        std::fs::write(&paths.config_path, original).unwrap();
+        write_catalog(&paths, &store).unwrap();
+        CodexConfigRepository::new(&paths)
+            .update(|original| {
+                let mut document = original.parse::<toml_edit::DocumentMut>().unwrap();
+                document["model"] = toml_edit::value("legacy-chat::chat-model");
+                document["model_provider"] = toml_edit::value(PREVIOUS_CATALOG_PROVIDER_KEY);
+                document["model_catalog_json"] =
+                    toml_edit::value(catalog_path(&paths).to_string_lossy().to_string());
+                let provider = &mut document["model_providers"][PREVIOUS_CATALOG_PROVIDER_KEY];
+                *provider = toml_edit::Item::Table(toml_edit::Table::new());
+                provider["base_url"] =
+                    toml_edit::value(format!("http://127.0.0.1:{}/codex/v1", store.router.port));
+                provider["wire_api"] = toml_edit::value("chat");
+                provider["requires_openai_auth"] = toml_edit::value(false);
+                provider["experimental_bearer_token"] =
+                    toml_edit::value(&store.router.bearer_token);
+                Ok(document.to_string())
+            })
+            .unwrap();
+
+        let migrated = load_store(&paths).unwrap();
+        assert!(migrated.providers[0].enabled);
+        assert_eq!(
+            migrated.providers[0].protocol,
+            ModelProtocol::ChatCompletions
+        );
+        assert!(!migrated.router.enabled);
+        assert_eq!(migrated.active_provider_id.as_deref(), Some("legacy-chat"));
+        assert!(migrated.router.bearer_token.starts_with("agentharbor_"));
+        assert_eq!(migrated.router.port, DEFAULT_PORT);
+        let restored: toml::Value = std::fs::read_to_string(&paths.config_path)
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(restored, original.parse::<toml::Value>().unwrap());
+    }
+
+    #[test]
+    fn unproven_legacy_chat_cleanup_preserves_config_and_store() {
+        let (_dir, paths) = paths();
+        let store = Store {
+            version: 1,
+            codex_access_mode: CodexAccessMode::Router,
+            providers: vec![Provider {
+                id: "legacy-chat".into(),
+                name: "Legacy Chat".into(),
+                base_url: "https://chat.example.com/".into(),
+                api_key: "fixture-chat-key".into(),
+                model: "chat-model".into(),
+                enabled: true,
+                ..Default::default()
+            }],
             router: RouterSettings {
                 enabled: true,
                 bearer_token: "old-router-token".into(),
@@ -2369,17 +2703,15 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         )
         .unwrap();
 
-        let migrated = load_store(&paths).unwrap();
-        assert!(migrated.providers[0].enabled);
-        assert_eq!(
-            migrated.providers[0].protocol,
-            ModelProtocol::ChatCompletions
-        );
-        assert!(!migrated.router.enabled);
-        assert_eq!(migrated.active_provider_id.as_deref(), Some("legacy-chat"));
-        let config = std::fs::read_to_string(&paths.config_path).unwrap();
-        assert!(!config.contains(CATALOG_PROVIDER_KEY));
-        assert!(!config.contains("model_provider"));
+        let config_before = std::fs::read(&paths.config_path).unwrap();
+        let store_before = std::fs::read(store_path(&paths)).unwrap();
+        let error = match load_store(&paths) {
+            Ok(_) => panic!("unproven route cleanup unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert_eq!(error, "newapi.errors.routerSnapshot");
+        assert_eq!(std::fs::read(&paths.config_path).unwrap(), config_before);
+        assert_eq!(std::fs::read(store_path(&paths)).unwrap(), store_before);
     }
 
     #[test]
@@ -2396,6 +2728,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         };
         let store = Store {
             version: 1,
+            codex_access_mode: CodexAccessMode::Router,
             providers: vec![provider],
             router: RouterSettings {
                 enabled: true,
@@ -2474,14 +2807,14 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         assert!(!text.contains("agentharbor_p_"));
         assert!(!catalog_path(&paths).exists());
         let parsed: toml::Value = text.parse().unwrap();
-        // Our routing keys are gone; foreign tables and settings survive.
+        // The original provider/model/auth preference and foreign tables survive.
         assert_eq!(
             parsed["model_providers"]["other"]["name"].as_str(),
             Some("Other")
         );
-        assert!(parsed.get("model").is_none());
-        assert!(parsed.get("model_provider").is_none());
-        assert!(parsed.get("preferred_auth_method").is_none());
+        assert_eq!(parsed["model"].as_str(), Some("gpt-x"));
+        assert_eq!(parsed["model_provider"].as_str(), Some("aimami_newapi"));
+        assert_eq!(parsed["preferred_auth_method"].as_str(), Some("chatgpt"));
     }
 
     #[test]
@@ -2489,6 +2822,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         let (_dir, paths) = paths();
         let store = Store {
             version: STORE_VERSION,
+            codex_access_mode: CodexAccessMode::Router,
             providers: vec![Provider {
                 id: "relay-one".into(),
                 name: "Woyao".into(),
@@ -2501,6 +2835,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
                     newapi::Model {
                         id: "model-default".into(),
                         display_name: "Default model".into(),
+                        protocol: None,
                         context_window: Some(128_000),
                         max_output_tokens: Some(8_192),
                         endpoint_types: vec!["openai-response".into()],
@@ -2510,6 +2845,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
                     newapi::Model {
                         id: "model-extra".into(),
                         display_name: "Extra model".into(),
+                        protocol: None,
                         context_window: Some(400_000),
                         max_output_tokens: Some(32_768),
                         endpoint_types: vec!["openai-response".into()],
@@ -2610,8 +2946,67 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         assert_eq!(relay["context_window"], 272_000);
         assert_eq!(
             config["model_providers"][CATALOG_PROVIDER_KEY]["requires_openai_auth"].as_bool(),
+            Some(true)
+        );
+        let provider = &config["model_providers"][CATALOG_PROVIDER_KEY];
+        assert!(provider.get("experimental_bearer_token").is_none());
+        assert_eq!(
+            provider["http_headers"][LOCAL_AUTH_HEADER].as_str(),
+            Some(store.router.bearer_token.as_str())
+        );
+    }
+
+    #[test]
+    fn routing_auth_migrates_legacy_config_and_switches_modes_without_touching_credentials() {
+        let (_dir, paths) = paths();
+        let state = save_provider(&paths, input("Relay", "https://relay.example.com")).unwrap();
+        set_enabled(&paths, &state.state.providers[0].id, true).unwrap();
+        let mut store = load_store(&paths).unwrap();
+        store.router.enabled = true;
+        let auth_bytes = br#"{"tokens":{"access_token":"fixture-preserve-token"}}"#;
+        std::fs::write(&paths.auth_path, auth_bytes).unwrap();
+        apply_routing_config(&paths, &store).unwrap();
+        let mut legacy = std::fs::read_to_string(&paths.config_path)
+            .unwrap()
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        let provider = &mut legacy["model_providers"][CATALOG_PROVIDER_KEY];
+        provider["requires_openai_auth"] = toml_edit::value(false);
+        provider["experimental_bearer_token"] = toml_edit::value(&store.router.bearer_token);
+        provider.as_table_mut().unwrap().remove("http_headers");
+        std::fs::write(&paths.config_path, legacy.to_string()).unwrap();
+        assert!(ensure_routing_config(&paths, &store).unwrap().is_some());
+        assert!(
+            ensure_routing_config(&paths, &store).unwrap().is_none(),
+            "repair must be idempotent"
+        );
+
+        store.router.accountless = true;
+        assert!(ensure_routing_config(&paths, &store).unwrap().is_some());
+        assert!(ensure_routing_config(&paths, &store).unwrap().is_none());
+        let (_, accountless) = open_config(&paths).unwrap();
+        assert_eq!(
+            accountless["model_providers"][CATALOG_PROVIDER_KEY]["requires_openai_auth"].as_bool(),
             Some(false)
         );
+        assert_eq!(
+            accountless["preferred_auth_method"].as_str(),
+            Some("apikey")
+        );
+
+        store.router.accountless = false;
+        assert!(ensure_routing_config(&paths, &store).unwrap().is_some());
+        assert!(ensure_routing_config(&paths, &store).unwrap().is_none());
+        let (_, signed_in) = open_config(&paths).unwrap();
+        assert_eq!(
+            signed_in["model_providers"][CATALOG_PROVIDER_KEY]["requires_openai_auth"].as_bool(),
+            Some(true)
+        );
+        assert!(signed_in["model_providers"][CATALOG_PROVIDER_KEY]
+            .get("experimental_bearer_token")
+            .is_none());
+        assert!(signed_in.get("preferred_auth_method").is_none());
+        assert_eq!(std::fs::read(&paths.auth_path).unwrap(), auth_bytes);
     }
 
     #[test]

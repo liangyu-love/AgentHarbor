@@ -117,18 +117,6 @@ fn messages_from_responses(
             }
         }
     }
-    // A follow-up carries only the new tool results, so the earlier turns have to
-    // be restored from the local cache before them.
-    if let Some(previous) = object
-        .get("previous_response_id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-    {
-        if let Some(replayed) = super::history::replay_for(previous, target) {
-            messages.extend(replayed);
-        }
-    }
-
     match object.get("input") {
         // Codex always sends an array, but a bare string is valid Responses too.
         Some(Value::String(text)) => messages.push(json!({ "role": "user", "content": text })),
@@ -149,7 +137,7 @@ fn messages_from_responses(
                         }));
                     }
                     Some("function_call_output") => {
-                        flush_calls(target, &mut messages, &mut pending_calls);
+                        flush_calls(target, &mut messages, &mut pending_calls)?;
                         let call_id = item
                             .get("call_id")
                             .and_then(Value::as_str)
@@ -171,10 +159,10 @@ fn messages_from_responses(
                         let Some(role) = item.get("role").and_then(Value::as_str) else {
                             continue;
                         };
-                        flush_calls(target, &mut messages, &mut pending_calls);
+                        flush_calls(target, &mut messages, &mut pending_calls)?;
                         let content = content_of(target, item.get("content"));
                         if role == "system" || role == "developer" {
-                            let text = text_of(item.get("content"));
+                            let text = system_text(item.get("content"));
                             if target == ModelProtocol::AnthropicMessages {
                                 system = Some(match system {
                                     Some(previous) => format!("{previous}\n{text}"),
@@ -189,7 +177,7 @@ fn messages_from_responses(
                     }
                 }
             }
-            flush_calls(target, &mut messages, &mut pending_calls);
+            flush_calls(target, &mut messages, &mut pending_calls)?;
         }
         None => {}
         _ => return Err("protocol.errors.invalidRequest".into()),
@@ -197,11 +185,23 @@ fn messages_from_responses(
     Ok((messages, system))
 }
 
-fn flush_calls(target: ModelProtocol, messages: &mut Vec<Value>, calls: &mut Vec<Value>) {
+fn flush_calls(
+    target: ModelProtocol,
+    messages: &mut Vec<Value>,
+    calls: &mut Vec<Value>,
+) -> Result<(), String> {
     if calls.is_empty() {
-        return;
+        return Ok(());
     }
     let calls = std::mem::take(calls);
+    if calls.iter().any(|call| {
+        !super::responses::valid_function_call(&json!({
+            "call_id":call["id"], "name":call["function"]["name"],
+            "arguments":call["function"]["arguments"],
+        }))
+    }) {
+        return Err("protocol.errors.invalidToolArguments".into());
+    }
     if target == ModelProtocol::AnthropicMessages {
         let blocks: Vec<Value> = calls
             .iter()
@@ -210,18 +210,58 @@ fn flush_calls(target: ModelProtocol, messages: &mut Vec<Value>, calls: &mut Vec
                 let input = function["arguments"]
                     .as_str()
                     .and_then(|text| serde_json::from_str::<Value>(text).ok())
-                    .unwrap_or_else(|| json!({}));
-                json!({
+                    .filter(Value::is_object)
+                    .ok_or("protocol.errors.invalidToolArguments")?;
+                Ok(json!({
                     "type": "tool_use",
                     "id": call["id"],
                     "name": function["name"],
                     "input": input,
-                })
+                }))
             })
-            .collect();
-        messages.push(json!({ "role": "assistant", "content": blocks }));
+            .collect::<Result<Vec<_>, &str>>()?;
+        if let Some(last) = messages
+            .last_mut()
+            .filter(|item| item["role"] == "assistant")
+        {
+            let mut content = match &last["content"] {
+                Value::Array(parts) => parts.clone(),
+                Value::String(text) => vec![json!({"type":"text","text":text})],
+                _ => Vec::new(),
+            };
+            content.extend(blocks);
+            last["content"] = json!(content);
+        } else {
+            messages.push(json!({ "role": "assistant", "content": blocks }));
+        }
     } else {
-        messages.push(json!({ "role": "assistant", "content": Value::Null, "tool_calls": calls }));
+        if let Some(last) = messages
+            .last_mut()
+            .filter(|item| item["role"] == "assistant")
+        {
+            let mut combined = last
+                .get("tool_calls")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            combined.extend(calls);
+            last["tool_calls"] = json!(combined);
+        } else {
+            messages
+                .push(json!({ "role": "assistant", "content": Value::Null, "tool_calls": calls }));
+        }
+    }
+    Ok(())
+}
+
+fn system_text(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => text_of(value),
     }
 }
 

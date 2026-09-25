@@ -10,6 +10,7 @@ export interface NewApiBalance {
 }
 export interface NewApiModel {
   id: string;
+  protocol?: ModelProtocol | null;
   displayName: string;
   contextWindow: number | null;
   maxOutputTokens: number | null;
@@ -18,6 +19,7 @@ export interface NewApiModel {
   metadataSource: "upstream" | "local" | "catalog" | "manual";
 }
 export type ModelProtocol = "responses" | "chatCompletions" | "anthropicMessages";
+export type CodexAccessMode = "router" | "native";
 export interface NewApiProvider {
   id: string;
   name: string;
@@ -42,6 +44,7 @@ export interface NewApiProvider {
 }
 export interface NewApiRouterView {
   enabled: boolean;
+  accessMode: CodexAccessMode;
   accountless: boolean;
   port: number;
   // Another tool may rewrite Codex's config.toml and silently replace the router

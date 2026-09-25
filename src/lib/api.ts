@@ -28,7 +28,7 @@ import type {
 } from "@/types";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
 import type { TargetId, ClientStatus, ClientConfigRequest, ClientConfigPreview, ClientConfigApplied } from "@/types/clients";
-import type { ModelProtocol, NewApiState, NewApiStateChange, NewApiImportResult, NewApiProvider, NewApiProviderInput, NewApiModel } from "@/types/newapi";
+import type { CodexAccessMode, ModelProtocol, NewApiState, NewApiStateChange, NewApiImportResult, NewApiProvider, NewApiProviderInput, NewApiModel } from "@/types/newapi";
 
 export interface ImageGenerationRequest {
   providerId: string | null;
@@ -75,14 +75,39 @@ const providersApi = {
 
 const routingApi = {
   setEnabled: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_smart_routing", { enabled }),
+  setAccessMode: (mode: CodexAccessMode) => invoke<NewApiStateChange>("set_newapi_access_mode", { mode }),
   setAccountless: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_accountless", { enabled }),
 };
+
+export interface SavedImagesPayload {
+  directory: string;
+  files: string[];
+}
+
+export interface GalleryItem {
+  name: string;
+  path: string;
+  size: number;
+  modifiedAt: number;
+}
+
+export interface GalleryListPayload {
+  directory: string;
+  items: GalleryItem[];
+}
 
 const imageApi = {
   generate: (request: ImageGenerationRequest) =>
     invoke<ImageGenerationResponse>("generate_images", { request }),
   keyStatus: (baseUrl: string) => invoke<boolean>("image_key_status", { baseUrl }),
   saveKey: (baseUrl: string, apiKey: string) => invoke<void>("save_image_key", { baseUrl, apiKey }),
+  saveFile: (path: string, dataUrl: string) => invoke<void>("save_image_file", { path, dataUrl }),
+  saveToGallery: (dataUrls: string[]) =>
+    invoke<SavedImagesPayload>("save_images_to_gallery", { dataUrls }),
+  listGallery: () => invoke<GalleryListPayload>("list_gallery_images"),
+  loadGalleryImage: (path: string) => invoke<string>("load_gallery_image", { path }),
+  loadGalleryThumbnail: (path: string) => invoke<string>("load_gallery_thumbnail", { path }),
+  deleteGalleryImage: (path: string) => invoke<void>("delete_gallery_image", { path }),
 };
 
 const targetsApi = {

@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Eye, Loader2, RotateCcw, Settings2, Terminal } from "lucide-react";
 import { api } from "@/lib/api";
+import { providerModelProtocol } from "@/lib/provider-models";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -19,16 +20,18 @@ const errorKey = (error: unknown) => {
   return /^(clients|newapi)\./.test(message) ? message : "clients.errors.storage";
 };
 
-/// Why a relay cannot serve this client. The client's accepted protocols are the
-/// hard gate: a Responses-only relay can never back Claude Code. Reporting the
-/// distinct causes is what keeps an empty picker from looking like a broken button.
+// A mixed catalog is eligible if it contains a selected model the client can use.
 type Exclusion = "protocol" | "disabled" | "noApiKey" | "noModel";
+const clientModels = (provider: NewApiProvider, protocols: ModelProtocol[]) => {
+  const ids = Array.from(new Set([provider.model, ...provider.models.filter(model => model.included).map(model => model.id)])).filter(Boolean);
+  return ids.filter(id => protocols.includes(providerModelProtocol(provider, id)));
+};
 
 const exclusionOf = (provider: NewApiProvider, protocols: ModelProtocol[]): Exclusion | null => {
-  if (!protocols.includes(provider.protocol)) return "protocol";
   if (!provider.enabled) return "disabled";
   if (!provider.hasApiKey) return "noApiKey";
   if (!provider.model) return "noModel";
+  if (clientModels(provider, protocols).length === 0) return "protocol";
   return null;
 };
 
@@ -85,7 +88,7 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
       <div className="grid gap-3 lg:grid-cols-2">
         {clients.data?.map(client => {
           const provider = providers.find(p => p.id === client.providerId);
-          const unavailable = client.configured && (!provider?.enabled || !provider.hasApiKey || !client.protocols.includes(provider.protocol));
+          const unavailable = client.configured && (!provider?.enabled || !provider.hasApiKey || !client.protocols.includes(providerModelProtocol(provider, client.model ?? provider.model)));
           const eligible = providers.filter(p => !exclusionOf(p, client.protocols));
           const reasons = eligible.length === 0 ? summarizeExclusions(providers, client.protocols, t) : [];
           return (
@@ -146,7 +149,8 @@ function ConfigDialog({ client, providers, onClose, onApplied }: {
     const contextWindow = metadata?.contextWindow ?? provider?.contextWindow ?? 1_048_576;
     return { contextWindow, maxOutputTokens: Math.min(metadata?.maxOutputTokens ?? 8192, contextWindow) };
   };
-  const initialModel = initial?.id === client.providerId ? client.model ?? initial.model : initial?.model ?? "";
+  const initialModels = initial ? clientModels(initial, client.protocols) : [];
+  const initialModel = initial?.id === client.providerId ? client.model ?? initialModels[0] ?? "" : initialModels[0] ?? "";
   const [request, setRequest] = useState<ClientConfigRequest>({
     targetId: client.targetId, providerId: initial?.id ?? "", model: initialModel, ...defaults(initial, initialModel),
   });
@@ -154,6 +158,8 @@ function ConfigDialog({ client, providers, onClose, onApplied }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const provider = compatible.find(p => p.id === request.providerId);
+  const selectedProtocol = provider ? providerModelProtocol(provider, request.model) : null;
+  const modelCompatible = selectedProtocol !== null && client.protocols.includes(selectedProtocol);
   const update = (patch: Partial<ClientConfigRequest>) => {
     setRequest(current => ({ ...current, ...patch }));
     setPreview(null);
@@ -161,6 +167,7 @@ function ConfigDialog({ client, providers, onClose, onApplied }: {
   };
   const run = async (apply: boolean) => {
     if (busy) return;
+    if (!modelCompatible) { setError("clients.errors.protocol"); return; }
     setBusy(true);
     setError(null);
     try {
@@ -191,16 +198,19 @@ function ConfigDialog({ client, providers, onClose, onApplied }: {
             <Label htmlFor="client-provider">{t("clients.provider")}</Label>
             <select id="client-provider" value={request.providerId} onChange={event => {
               const next = compatible.find(p => p.id === event.target.value);
-              update({ providerId: next?.id ?? "", model: next?.model ?? "", ...defaults(next, next?.model ?? "") });
+              const model = next ? clientModels(next, client.protocols)[0] ?? "" : "";
+              update({ providerId: next?.id ?? "", model, ...defaults(next, model) });
             }} className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
               {compatible.length === 0 && <option value="">{t("clients.noProviders")}</option>}
-              {compatible.map(p => <option key={p.id} value={p.id}>{p.name} · {t(`newapi.protocol${p.protocol === "responses" ? "Responses" : p.protocol === "chatCompletions" ? "ChatCompletions" : "AnthropicMessages"}`)}</option>)}
+              {compatible.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="client-model">{t("clients.model")}</Label>
             <Input id="client-model" list="client-model-list" value={request.model} onChange={event => update({ model: event.target.value, ...defaults(provider, event.target.value) })} />
-            <datalist id="client-model-list">{Array.from(new Set([provider?.model, ...(provider?.models.map(m => m.id) ?? [])])).filter(Boolean).map(id => <option key={id} value={id} />)}</datalist>
+            <datalist id="client-model-list">{(provider ? clientModels(provider, client.protocols) : []).map(id => <option key={id} value={id} />)}</datalist>
+            {provider && <p className="text-xs text-muted-foreground">{t(`newapi.protocol${selectedProtocol === "responses" ? "Responses" : selectedProtocol === "chatCompletions" ? "ChatCompletions" : "AnthropicMessages"}`)}</p>}
+            {provider && !modelCompatible && <p role="alert" className="text-xs text-destructive">{t("clients.errors.protocol")}</p>}
           </div>
           {client.targetId === "opencode" && <div className="space-y-2">
             <div className="grid grid-cols-2 gap-3">
@@ -220,7 +230,7 @@ function ConfigDialog({ client, providers, onClose, onApplied }: {
         {error && <p role="alert" className="text-sm text-destructive">{t(error)}</p>}
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={busy}>{t("common.cancel")}</Button>
-          <Button disabled={busy || !request.providerId || !request.model.trim()} onClick={() => void run(!!preview)}>
+          <Button disabled={busy || !request.providerId || !request.model.trim() || !modelCompatible} onClick={() => void run(!!preview)}>
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}{t(preview ? "clients.apply" : "clients.preview")}
           </Button>
         </DialogFooter>

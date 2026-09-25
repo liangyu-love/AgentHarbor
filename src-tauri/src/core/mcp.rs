@@ -61,22 +61,53 @@ pub fn set_mcp_server_enabled(
 
 pub fn remove_mcp_server(paths: &CodexPaths, name: &str) -> Result<(), CoreError> {
     CodexConfigRepository::new(paths).update(|original| {
-        let _: toml::Value = original.parse()?;
-        let document = parse_mcp_document(original);
-        let block = document
-            .blocks
-            .get(name)
+        let mut document = original
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| CoreError::InvalidData(error.to_string()))?;
+        // Establish the complete semantic deletion, including dotted keys
+        // and child tables that may occur elsewhere in the document.
+        document
+            .get_mut("mcp_servers")
+            .and_then(toml_edit::Item::as_table_like_mut)
+            .and_then(|servers| servers.remove(name))
             .ok_or_else(|| CoreError::NotFound(format!("MCP server not found: {name}")))?;
-        let mut lines = document.lines.clone();
-        lines.drain(block.start..block.end);
-        // Remove trailing empty lines
-        while lines.len() >= 2
-            && lines.last().is_some_and(|line| line.trim().is_empty())
-            && lines[lines.len() - 2].trim().is_empty()
-        {
-            lines.pop();
+        let semantic = document.to_string();
+        let expected: toml::Value = semantic.parse()?;
+        let source = parse_mcp_document(original)?;
+        if let Some(blocks) = source.blocks.get(name) {
+            // Keep managed-block boundary comments, which TOML associates
+            // with the following table even when they belong to another block.
+            let mut lines = source.lines.clone();
+            for block in blocks.iter().rev() {
+                lines.drain(block.start..block.end);
+            }
+            let updated = lines.join("\n");
+            if updated.parse::<toml::Value>().ok().as_ref() == Some(&expected) {
+                return Ok(updated);
+            }
         }
-        Ok(lines.join("\n"))
+        // Mixed dotted-key/table configurations can leave fields outside the
+        // header ranges. Use semantic removal only if its comments are safe.
+        for marker in original
+            .lines()
+            .map(str::trim)
+            .filter(|line| is_managed_block_begin(line) || is_managed_block_end(line))
+        {
+            if original
+                .lines()
+                .filter(|line| line.trim() == marker)
+                .count()
+                != semantic
+                    .lines()
+                    .filter(|line| line.trim() == marker)
+                    .count()
+            {
+                return Err(CoreError::InvalidData(
+                    "Expand mixed MCP configuration into tables before removing it".into(),
+                ));
+            }
+        }
+        Ok(semantic)
     })?;
     Ok(())
 }
@@ -117,7 +148,7 @@ fn render_mcp_update(original: &str, server: &McpServerSummary) -> Result<String
         _ => {}
     }
     let original_value: toml::Value = original.parse()?;
-    let document = parse_mcp_document(original);
+    let document = parse_mcp_document(original)?;
     let managed: toml::Value = render_mcp_block(server).join("\n").parse()?;
     let mut preserved = original_value
         .get("mcp_servers")
@@ -159,13 +190,17 @@ fn render_mcp_update(original: &str, server: &McpServerSummary) -> Result<String
         .collect();
 
     let updated = if let Some(existing) = document.blocks.get(&server.name) {
-        if should_relocate_mcp_block(&document.lines, existing) {
-            let mut lines = document.lines.clone();
-            lines.drain(existing.start..existing.end);
+        let relocate = existing
+            .iter()
+            .any(|block| should_relocate_mcp_block(&document.lines, block));
+        let mut lines = document.lines.clone();
+        for block in existing.iter().rev() {
+            lines.drain(block.start..block.end);
+        }
+        if relocate {
             insert_mcp_block(lines, rendered)
         } else {
-            let mut lines = document.lines.clone();
-            lines.splice(existing.start..existing.end, rendered);
+            lines.splice(existing[0].start..existing[0].start, rendered);
             lines
         }
     } else {
@@ -311,7 +346,7 @@ fn quote_toml(s: &str) -> String {
 
 struct McpDocument {
     lines: Vec<String>,
-    blocks: HashMap<String, McpBlock>,
+    blocks: HashMap<String, Vec<McpBlock>>,
 }
 
 struct McpBlock {
@@ -319,118 +354,111 @@ struct McpBlock {
     end: usize,
 }
 
-fn parse_mcp_document(text: &str) -> McpDocument {
+fn collect_value_spans(item: &toml_edit::Item, spans: &mut Vec<std::ops::Range<usize>>) {
+    match item {
+        toml_edit::Item::Value(value) => {
+            if let Some(span) = value.span() {
+                spans.push(span);
+            }
+        }
+        toml_edit::Item::Table(table) => {
+            for (_, child) in table.iter() {
+                collect_value_spans(child, spans);
+            }
+        }
+        toml_edit::Item::ArrayOfTables(tables) => {
+            for table in tables.iter() {
+                for (_, child) in table.iter() {
+                    collect_value_spans(child, spans);
+                }
+            }
+        }
+        toml_edit::Item::None => {}
+    }
+}
+
+fn parse_mcp_document(text: &str) -> Result<McpDocument, CoreError> {
+    let parsed = toml_edit::ImDocument::parse(text)
+        .map_err(|error| CoreError::InvalidData(error.to_string()))?;
+    let mut value_spans = Vec::new();
+    collect_value_spans(parsed.as_item(), &mut value_spans);
+    value_spans.sort_by_key(|span| span.start);
+    let mut value_spans = value_spans.into_iter().peekable();
+    let line_offsets: Vec<_> = text
+        .split_inclusive('\n')
+        .scan(0, |offset, line| {
+            let start = *offset;
+            *offset += line.len();
+            Some(start)
+        })
+        .collect();
     let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
-    let mut blocks: HashMap<String, McpBlock> = HashMap::new();
+    let mut blocks: HashMap<String, Vec<McpBlock>> = HashMap::new();
     let mut current_name: Option<String> = None;
     let mut current_start: Option<usize> = None;
 
     for (i, line) in lines.iter().enumerate() {
-        if is_managed_block_begin(line.trim()) || is_managed_block_end(line.trim()) {
-            if let (Some(name), Some(start)) = (current_name.take(), current_start.take()) {
-                blocks.insert(name, McpBlock { start, end: i });
-            }
+        let offset = line_offsets[i];
+        while value_spans.peek().is_some_and(|span| span.end <= offset) {
+            value_spans.next();
         }
-        let trimmed = strip_toml_comment(line).trim().to_string();
-        if !(trimmed.starts_with('[') && trimmed.ends_with(']')) {
+        // Header-like lines and managed markers inside multiline strings or
+        // arrays are values, not configuration boundaries.
+        if value_spans
+            .peek()
+            .is_some_and(|span| span.contains(&offset))
+        {
             continue;
         }
-        let header = &trimmed[1..trimmed.len() - 1];
-        let section = parse_mcp_section_header(header);
+        if is_managed_block_begin(line.trim()) || is_managed_block_end(line.trim()) {
+            if let (Some(name), Some(start)) = (current_name.take(), current_start.take()) {
+                blocks
+                    .entry(name)
+                    .or_default()
+                    .push(McpBlock { start, end: i });
+            }
+        }
+        let trimmed = line.trim();
+        if !trimmed.starts_with('[') {
+            continue;
+        }
+        // Let TOML handle quoted names, escapes and trailing comments.
+        let Ok(header) = trimmed.parse::<toml::Value>() else {
+            continue;
+        };
+        let section = header
+            .get("mcp_servers")
+            .and_then(toml::Value::as_table)
+            .and_then(|servers| servers.keys().next());
 
         if let (Some(ref name), Some(start)) = (&current_name, current_start) {
-            let continues = section.as_ref().map_or(false, |(sn, _)| sn == name);
+            let continues = section.is_some_and(|server_name| server_name == name);
             if !continues {
-                blocks.insert(name.clone(), McpBlock { start, end: i });
+                blocks
+                    .entry(name.clone())
+                    .or_default()
+                    .push(McpBlock { start, end: i });
                 current_name = None;
                 current_start = None;
             }
         }
 
-        if let Some((server_name, _)) = section {
+        if let Some(server_name) = section {
             if current_name.is_none() {
-                current_name = Some(server_name);
+                current_name = Some(server_name.clone());
                 current_start = Some(i);
             }
         }
     }
 
     if let (Some(name), Some(start)) = (current_name, current_start) {
-        blocks.insert(
-            name,
-            McpBlock {
-                start,
-                end: lines.len(),
-            },
-        );
+        blocks.entry(name).or_default().push(McpBlock {
+            start,
+            end: lines.len(),
+        });
     }
 
-    McpDocument { lines, blocks }
-}
-
-fn parse_mcp_section_header(header: &str) -> Option<(String, Option<String>)> {
-    let stripped = header.strip_prefix("mcp_servers.")?;
-    if stripped.is_empty() {
-        return None;
-    }
-
-    if stripped.starts_with('"') {
-        let mut name = String::new();
-        let mut escaped = false;
-        for ch in stripped[1..].chars() {
-            if escaped {
-                name.push(ch);
-                escaped = false;
-                continue;
-            }
-            if ch == '\\' {
-                escaped = true;
-                continue;
-            }
-            if ch == '"' {
-                let rest = &stripped[name.len() + 2..];
-                let sub = if rest.starts_with('.') {
-                    Some(rest[1..].to_string())
-                } else {
-                    None
-                };
-                return Some((name, sub));
-            }
-            name.push(ch);
-        }
-        return None;
-    }
-
-    let parts: Vec<&str> = stripped.splitn(2, '.').collect();
-    let name = parts[0].to_string();
-    if name.is_empty() {
-        return None;
-    }
-    let sub = parts.get(1).map(|s| s.to_string());
-    Some((name, sub))
-}
-
-fn strip_toml_comment(line: &str) -> &str {
-    let mut in_quotes = false;
-    let mut escaped = false;
-    for (i, ch) in line.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if ch == '\\' {
-            escaped = true;
-            continue;
-        }
-        if ch == '"' {
-            in_quotes = !in_quotes;
-            continue;
-        }
-        if ch == '#' && !in_quotes {
-            return &line[..i];
-        }
-    }
-    line
+    Ok(McpDocument { lines, blocks })
 }
 
 fn parse_mcp_servers(text: &str, source_path: &str) -> Result<Vec<McpServerSummary>, CoreError> {
@@ -525,6 +553,190 @@ mod tests {
         let paths = CodexPaths::from_home(dir.path().join(".codex"));
         std::fs::create_dir_all(&paths.codex_home).unwrap();
         (dir, paths)
+    }
+
+    #[test]
+    fn remove_mcp_removes_separated_child_tables_and_keeps_other_servers() {
+        let (_dir, paths) = temp_paths();
+        let original = "# User config\n[mcp_servers.foo]\ncommand = 'npx'\n\n[features]\nweb_search_request = true\n\n[mcp_servers.keep]\ncommand = 'node'\n\n[mcp_servers.foo.env]\nTOKEN = 'synthetic'\n";
+        std::fs::write(&paths.config_path, original).unwrap();
+        remove_mcp_server(&paths, "foo").unwrap();
+        let remaining = load_mcp_servers(&paths).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].name, "keep");
+        let updated = std::fs::read_to_string(&paths.config_path).unwrap();
+        assert!(updated.contains("# User config"));
+        let parsed: toml::Value = updated.parse().unwrap();
+        assert_eq!(
+            parsed["features"]["web_search_request"].as_bool(),
+            Some(true)
+        );
+        assert!(parsed["mcp_servers"].get("foo").is_none());
+    }
+
+    #[test]
+    fn remove_mcp_supports_literal_quoted_server_names() {
+        let (_dir, paths) = temp_paths();
+        std::fs::write(
+            &paths.config_path,
+            "[mcp_servers.'quoted.name']\ncommand = 'node'\n",
+        )
+        .unwrap();
+        remove_mcp_server(&paths, "quoted.name").unwrap();
+        assert!(load_mcp_servers(&paths).unwrap().is_empty());
+    }
+
+    #[test]
+    fn remove_mcp_removes_mixed_dotted_keys_and_explicit_child_tables() {
+        let (_dir, paths) = temp_paths();
+        std::fs::write(
+            &paths.config_path,
+            "mcp_servers.foo.command = 'node'\n\n[mcp_servers.foo.env]\nTOKEN = 'synthetic'\n\n[features]\nweb_search_request = true\n",
+        )
+        .unwrap();
+        remove_mcp_server(&paths, "foo").unwrap();
+        assert!(load_mcp_servers(&paths).unwrap().is_empty());
+        let updated = std::fs::read_to_string(&paths.config_path).unwrap();
+        let parsed: toml::Value = updated.parse().unwrap();
+        assert_eq!(
+            parsed["features"]["web_search_request"].as_bool(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn mcp_edits_preserve_separated_child_tables_unknown_fields_and_boundaries() {
+        let (_dir, paths) = temp_paths();
+        let original = format!(
+            "{ROUTER_TOP_MANAGED_BLOCK_BEGIN}\nmodel = 'original'\n{ROUTER_TOP_MANAGED_BLOCK_END}\n\n\
+             [mcp_servers.foo]\ncommand = 'old'\nstartup_timeout_sec = 30\n\n\
+             [features]\nweb_search_request = true\n\n\
+             [mcp_servers.keep]\ncommand = 'node'\n\n\
+             [mcp_servers.foo.env]\nTOKEN = 'synthetic'\n\n\
+             [projects.'D:/work']\ntrust_level = 'trusted'\n\n\
+             [mcp_servers.foo.extra]\nretries = 3\n\n\
+             {BOTTOM_MANAGED_BLOCK_BEGIN}\n[model_providers.relay]\nname = 'Relay'\n{BOTTOM_MANAGED_BLOCK_END}\n"
+        );
+        std::fs::write(&paths.config_path, original).unwrap();
+        let mut server = set_mcp_server_enabled(&paths, "foo", false).unwrap();
+        assert!(!server.enabled);
+        server.command = Some("updated".into());
+        upsert_mcp_server(&paths, &server).unwrap();
+        let updated = std::fs::read_to_string(&paths.config_path).unwrap();
+        let parsed: toml::Value = updated.parse().unwrap();
+        let foo = &parsed["mcp_servers"]["foo"];
+        assert_eq!(foo["command"].as_str(), Some("updated"));
+        assert_eq!(foo["enabled"].as_bool(), Some(false));
+        assert_eq!(foo["startup_timeout_sec"].as_integer(), Some(30));
+        assert_eq!(foo["env"]["TOKEN"].as_str(), Some("synthetic"));
+        assert_eq!(foo["extra"]["retries"].as_integer(), Some(3));
+        assert_eq!(parsed["model"].as_str(), Some("original"));
+        assert_eq!(
+            parsed["features"]["web_search_request"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            parsed["mcp_servers"]["keep"]["command"].as_str(),
+            Some("node")
+        );
+        assert_eq!(
+            parsed["projects"]["D:/work"]["trust_level"].as_str(),
+            Some("trusted")
+        );
+        for marker in [
+            ROUTER_TOP_MANAGED_BLOCK_BEGIN,
+            ROUTER_TOP_MANAGED_BLOCK_END,
+            BOTTOM_MANAGED_BLOCK_BEGIN,
+            BOTTOM_MANAGED_BLOCK_END,
+        ] {
+            assert_eq!(updated.matches(marker).count(), 1, "{marker}");
+        }
+    }
+
+    #[test]
+    fn mcp_edits_support_literal_quoted_and_escaped_server_names() {
+        for (header, name) in [
+            ("'quoted.name'", "quoted.name"),
+            ("'quoted.#name'", "quoted.#name"),
+            (r#""escaped\u002ename""#, "escaped.name"),
+            (r#""quote\"name""#, "quote\"name"),
+        ] {
+            let (_dir, paths) = temp_paths();
+            let original = format!(
+                "[mcp_servers.{header}] # server\ncommand = 'old'\nstartup_timeout_sec = 15\n\n\
+                 [features]\nweb_search_request = true\n\n\
+                 [mcp_servers.{header}.env] # child\nTOKEN = 'synthetic'\n"
+            );
+            std::fs::write(&paths.config_path, original).unwrap();
+            let mut server = set_mcp_server_enabled(&paths, name, false).unwrap();
+            server.command = Some("updated".into());
+            upsert_mcp_server(&paths, &server).unwrap();
+            let updated = std::fs::read_to_string(&paths.config_path).unwrap();
+            let parsed: toml::Value = updated.parse().unwrap();
+            let servers = parsed["mcp_servers"].as_table().unwrap();
+            assert_eq!(servers.len(), 1);
+            assert_eq!(servers[name]["command"].as_str(), Some("updated"));
+            assert_eq!(servers[name]["enabled"].as_bool(), Some(false));
+            assert_eq!(servers[name]["startup_timeout_sec"].as_integer(), Some(15));
+            assert_eq!(servers[name]["env"]["TOKEN"].as_str(), Some("synthetic"));
+        }
+    }
+
+    #[test]
+    fn remove_mcp_preserves_adjacent_managed_block_boundaries() {
+        let (_dir, paths) = temp_paths();
+        let original = format!(
+            "{ROUTER_TOP_MANAGED_BLOCK_BEGIN}\nmodel = 'original'\n{ROUTER_TOP_MANAGED_BLOCK_END}\n\n\
+             [mcp_servers.foo]\ncommand = 'old'\n\n\
+             {BOTTOM_MANAGED_BLOCK_BEGIN}\n[model_providers.relay]\nname = 'Relay'\n{BOTTOM_MANAGED_BLOCK_END}\n\n\
+             [mcp_servers.foo.env]\nTOKEN = 'synthetic'\n"
+        );
+        std::fs::write(&paths.config_path, original).unwrap();
+        remove_mcp_server(&paths, "foo").unwrap();
+        let updated = std::fs::read_to_string(&paths.config_path).unwrap();
+        let parsed: toml::Value = updated.parse().unwrap();
+        assert_eq!(parsed["model"].as_str(), Some("original"));
+        assert_eq!(
+            parsed["model_providers"]["relay"]["name"].as_str(),
+            Some("Relay")
+        );
+        assert!(parsed.get("mcp_servers").is_none());
+        for marker in [
+            ROUTER_TOP_MANAGED_BLOCK_BEGIN,
+            ROUTER_TOP_MANAGED_BLOCK_END,
+            BOTTOM_MANAGED_BLOCK_BEGIN,
+            BOTTOM_MANAGED_BLOCK_END,
+        ] {
+            assert_eq!(updated.matches(marker).count(), 1, "{marker}");
+        }
+    }
+
+    #[test]
+    fn mcp_edits_do_not_treat_multiline_values_as_table_headers() {
+        let (_dir, paths) = temp_paths();
+        let description = "[mcp_servers.ghost]\ncommand = 'not a real server'\n";
+        let original = format!(
+            "[mcp_servers.foo]\ncommand = 'old'\ndescription = '''\n{description}'''\n\n\
+             [features]\nweb_search_request = true\n\n\
+             [mcp_servers.foo.env]\nTOKEN = 'synthetic'\n"
+        );
+        std::fs::write(&paths.config_path, original).unwrap();
+        set_mcp_server_enabled(&paths, "foo", false).unwrap();
+        let updated = std::fs::read_to_string(&paths.config_path).unwrap();
+        let parsed: toml::Value = updated.parse().unwrap();
+        assert_eq!(
+            parsed["mcp_servers"]["foo"]["description"].as_str(),
+            Some(description)
+        );
+        assert_eq!(parsed["mcp_servers"].as_table().unwrap().len(), 1);
+        remove_mcp_server(&paths, "foo").unwrap();
+        let remaining = std::fs::read_to_string(&paths.config_path).unwrap();
+        let parsed: toml::Value = remaining.parse().unwrap();
+        assert!(parsed.get("mcp_servers").is_none());
+        assert_eq!(
+            parsed["features"]["web_search_request"].as_bool(),
+            Some(true)
+        );
     }
 
     #[test]

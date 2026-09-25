@@ -90,7 +90,7 @@ function MainApp() {
   const resolvedTheme = useThemeValue();
   const { activeBackgroundStyle } = useCustomBackground();
   const hasCustomBackground = Boolean(activeBackgroundStyle);
-  const { accent, setAccent, heatmap, setHeatmap } = useAccentColor();
+  const { accent, setAccent } = useAccentColor();
   const { i18n, t } = useTranslation();
   const [sidebarOpen, setSidebarOpen] = useState(
     () => localStorage.getItem("sidebar_collapsed") === "false",
@@ -165,8 +165,6 @@ function MainApp() {
             onThemeChange={handleThemeChange}
             accent={accent}
             setAccent={setAccent}
-            heatmap={heatmap}
-            setHeatmap={setHeatmap}
             language={i18n.language}
             setLanguage={(lang) => {
               i18n.changeLanguage(lang);

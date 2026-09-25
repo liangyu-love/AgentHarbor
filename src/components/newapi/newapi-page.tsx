@@ -23,11 +23,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ProviderDialog } from "@/components/newapi/provider-dialog";
 import { ProviderTestDialog } from "@/components/newapi/provider-test-dialog";
 import { ClientConfigs } from "@/components/newapi/client-configs";
-import { includedModelsForProtocol } from "@/lib/provider-models";
-import type { ModelProtocol, NewApiProvider, NewApiState, NewApiStateChange } from "@/types/newapi";
+import { includedModels, providerModelProtocol } from "@/lib/provider-models";
+import type { CodexAccessMode, ModelProtocol, NewApiProvider, NewApiState, NewApiStateChange } from "@/types/newapi";
 
 const STATE_KEY = ["newapi-state"] as const;
 
@@ -121,8 +123,14 @@ export function NewApiPage() {
   const providers = state.data?.providers ?? [];
   const router = state.data?.router;
   const routingEnabled = !!router?.enabled;
+  const accessMode = router?.accessMode ?? "router";
+  const nativeAccess = accessMode === "native";
   const configDrifted = !!router?.configDrifted;
   const activeId = state.data?.activeProviderId ?? null;
+  const selectedProvider = activeId
+    ? providers.find(provider => provider.id === activeId)
+    : providers.find(provider => provider.enabled && provider.hasApiKey && provider.model);
+  const nativeCompatible = !!selectedProvider && providerModelProtocol(selectedProvider) === "responses";
   const proxyRunning = !!state.data?.proxyRunning;
   const groups = useMemo<RelayGroup[]>(() => {
     const grouped = new Map<string, RelayGroup>();
@@ -248,7 +256,7 @@ export function NewApiPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-base text-foreground/90">{t("newapi.description")}</p>
-        <div className="flex items-center gap-2.5 rounded-full border bg-card py-1.5 pl-4 pr-2 text-sm shadow-sm">
+        {nativeAccess ? <Badge variant="outline">{t("newapi.nativeNoRouter")}</Badge> : <div className="flex items-center gap-2.5 rounded-full border bg-card py-1.5 pl-4 pr-2 text-sm shadow-sm">
           <span className="relative flex h-2.5 w-2.5 items-center justify-center">
             {proxyRunning && (
               <span aria-hidden className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60 motion-reduce:hidden" />
@@ -259,7 +267,7 @@ export function NewApiPage() {
           <span className="rounded-md bg-muted px-2 py-0.5 font-mono text-xs text-muted-foreground">
             http://127.0.0.1:{router?.port ?? 43127}
           </span>
-        </div>
+        </div>}
       </div>
 
       {(error || state.error) && (
@@ -299,21 +307,22 @@ export function NewApiPage() {
                 <h2 id="newapi-routing-title" className="text-base font-semibold tracking-tight">
                   {routingEnabled ? (
                     <AnimatedGradientText speed={1.4} colorFrom="#60a5fa" colorTo="#a78bfa">
-                      {t("newapi.smartRouting")}
+                      {t("newapi.codexAccess")}
                     </AnimatedGradientText>
                   ) : (
-                    t("newapi.smartRouting")
+                    t("newapi.codexAccess")
                   )}
                 </h2>
                 {routingEnabled && !configDrifted && <Badge className={softBadge("green")}>{t("newapi.enabledBadge")}</Badge>}
                 {configDrifted && <Badge className={softBadge("amber")}>{t("newapi.driftedBadge")}</Badge>}
               </div>
-              <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{t("newapi.smartRoutingDesc")}</p>
+              <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{t(nativeAccess ? "newapi.nativeAccessDesc" : "newapi.smartRoutingDesc")}</p>
             </div>
             <Switch
               className="mt-1"
+              aria-label={t("newapi.codexAccess")}
               checked={routingEnabled}
-              disabled={lock("routing") || providers.length === 0}
+              disabled={lock("routing") || (!routingEnabled && (providers.length === 0 || (nativeAccess && !nativeCompatible)))}
               onCheckedChange={value =>
                 void run("routing", async () => {
                   const change = await api.routing.setEnabled(value);
@@ -323,8 +332,26 @@ export function NewApiPage() {
               }
             />
           </div>
+          <div className="mt-4 space-y-2">
+            <Label htmlFor="codex-access-mode">{t("newapi.accessMode")}</Label>
+            <Select value={accessMode} disabled={lock("access-mode")} onValueChange={value => void run("access-mode", async () => {
+              applyChange(await api.routing.setAccessMode(value as CodexAccessMode));
+              toast({ title: t("newapi.accessModeApplied"), description: t("newapi.accessRestartHint"), variant: "success" });
+            }, t("newapi.routingFailed"))}>
+              <SelectTrigger id="codex-access-mode" className="max-w-sm"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="router">{t("newapi.accessRouter")}</SelectItem>
+                <SelectItem value="native" disabled={!nativeCompatible}>{t("newapi.accessNative")}</SelectItem>
+              </SelectContent>
+            </Select>
+            {selectedProvider && <p className="text-xs text-muted-foreground">{t("newapi.accessSelectedModel", { provider: selectedProvider.name, model: selectedProvider.model, protocol: t(protocolBadgeKey[providerModelProtocol(selectedProvider)]) })}</p>}
+            {!nativeCompatible && <p className="text-xs text-amber-700 dark:text-amber-300">{t(selectedProvider ? "newapi.nativeProtocolHint" : "newapi.nativeProviderHint")}</p>}
+            {nativeAccess && <p className="text-xs leading-relaxed text-muted-foreground">{t("newapi.nativeAuthHint")}</p>}
+            <p className="text-xs leading-relaxed text-muted-foreground">{t(nativeAccess ? "newapi.nativeNetworkHint" : "newapi.routerNetworkHint")}</p>
+            <p className="text-xs text-muted-foreground">{t("newapi.accessRestartHint")}</p>
+          </div>
           <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-            {t(routingEnabled ? "newapi.routingOnHint" : "newapi.routingOffHint")}
+            {t(routingEnabled ? (nativeAccess ? "newapi.nativeOnHint" : "newapi.routingOnHint") : "newapi.routingOffHint")}
           </p>
           {configDrifted && (
             <p role="alert" className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/[0.07] px-3 py-2 text-[13px] leading-relaxed text-amber-700 dark:text-amber-300">
@@ -337,7 +364,7 @@ export function NewApiPage() {
               {appliedNote.backupPath ? ` · ${t("newapi.backup")}: ${appliedNote.backupPath}` : ""}
             </p>
           )}
-          <div className="mt-4 flex items-center justify-between gap-4 rounded-xl bg-black/[0.03] p-3.5 ring-1 ring-border/60 dark:bg-white/[0.03]">
+          {!nativeAccess && <div className="mt-4 flex items-center justify-between gap-4 rounded-xl bg-black/[0.03] p-3.5 ring-1 ring-border/60 dark:bg-white/[0.03]">
             <div className="min-w-0">
               <div className="flex items-center gap-1.5">
                 <Settings2 className="h-3.5 w-3.5 text-muted-foreground" />
@@ -349,6 +376,7 @@ export function NewApiPage() {
               <p className="mt-0.5 text-[13px] text-muted-foreground">{t("newapi.accountlessHint")}</p>
             </div>
             <Switch
+              aria-label={t("newapi.accountless")}
               checked={!!router?.accountless}
               disabled={!routingEnabled || lock("accountless")}
               onCheckedChange={value =>
@@ -359,7 +387,7 @@ export function NewApiPage() {
                 }, t("newapi.routingFailed"))
               }
             />
-          </div>
+          </div>}
         </div>
       </AuroraCard>
 
@@ -656,10 +684,10 @@ export function NewApiPage() {
                           </div>
                           <div className="mt-1 flex items-center justify-between gap-1 text-[10px] text-muted-foreground">
                             <span className="truncate">
-                              {t("newapi.modelCount", { count: includedModelsForProtocol(provider.models, provider.protocol).length })}
+                              {t("newapi.modelCount", { count: includedModels(provider.models).length })}
                             </span>
                             <span className="shrink-0 rounded bg-muted px-1 py-0.2 font-mono text-[9px] text-muted-foreground">
-                              {t(protocolBadgeKey[provider.protocol])}
+                              {t(protocolBadgeKey[providerModelProtocol(provider)])}
                             </span>
                           </div>
                         </div>

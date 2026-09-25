@@ -1,4 +1,5 @@
-use crate::core::models::CoreError;
+use crate::core::api_client::{configure_codex_desktop, configure_command_network};
+use crate::core::models::{ApiProxyConfigPayload, CoreError};
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "windows")]
@@ -20,6 +21,9 @@ pub fn kill_process(name: &str) -> Result<(), CoreError> {
 
 #[cfg(target_os = "windows")]
 pub fn kill_process(name: &str) -> Result<(), CoreError> {
+    if name.eq_ignore_ascii_case("Codex") {
+        return signal_windows_codex_desktop(true);
+    }
     crate::platform::windows::background_command("taskkill")
         .args(["/F", "/IM", &format!("{name}.exe")])
         .output()
@@ -47,6 +51,7 @@ fn wait_for_process_exit(name: &str, timeout: Duration) -> bool {
     false
 }
 
+#[cfg(target_os = "macos")]
 fn wait_for_process_start(name: &str, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -69,7 +74,11 @@ fn is_process_running(name: &str) -> bool {
 
 #[cfg(target_os = "windows")]
 fn is_process_running(name: &str) -> bool {
-    win32_process::find_process_by_name(name).is_some()
+    if name.eq_ignore_ascii_case("Codex") {
+        !windows_codex_desktop_processes().is_empty()
+    } else {
+        !win32_process::find_processes_by_name(name).is_empty()
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -84,7 +93,13 @@ mod win32_process {
         OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
-    pub fn find_process_by_name(name: &str) -> Option<u32> {
+    pub struct Process {
+        pub pid: u32,
+        pub path: PathBuf,
+    }
+
+    pub fn find_processes_by_name(name: &str) -> Vec<Process> {
+        let mut processes = Vec::new();
         let target_lower: Vec<u16> = format!("{name}.exe")
             .to_ascii_lowercase()
             .encode_utf16()
@@ -94,7 +109,7 @@ mod win32_process {
         unsafe {
             let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
             if snapshot == INVALID_HANDLE_VALUE {
-                return None;
+                return processes;
             }
 
             let mut entry: PROCESSENTRY32W = std::mem::zeroed();
@@ -102,7 +117,7 @@ mod win32_process {
 
             if Process32FirstW(snapshot, &mut entry) == 0 {
                 CloseHandle(snapshot);
-                return None;
+                return processes;
             }
 
             loop {
@@ -122,8 +137,9 @@ mod win32_process {
 
                 if exe_name_lower == target_lower {
                     let pid = entry.th32ProcessID;
-                    CloseHandle(snapshot);
-                    return Some(pid);
+                    if let Some(path) = get_process_exe_path(pid) {
+                        processes.push(Process { pid, path });
+                    }
                 }
 
                 if Process32NextW(snapshot, &mut entry) == 0 {
@@ -133,18 +149,17 @@ mod win32_process {
 
             CloseHandle(snapshot);
         }
-        None
+        processes
     }
 
-    pub fn get_process_exe_path(name: &str) -> Option<PathBuf> {
-        let pid = find_process_by_name(name)?;
+    fn get_process_exe_path(pid: u32) -> Option<PathBuf> {
         unsafe {
             let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
             if handle.is_null() {
                 return None;
             }
 
-            let mut buf = [0u16; 1024];
+            let mut buf = [0u16; 32768];
             let mut size = buf.len() as u32;
             let ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size);
             CloseHandle(handle);
@@ -381,16 +396,26 @@ fn request_codex_app_quit() -> Result<(), CoreError> {
 
 #[cfg(target_os = "windows")]
 fn request_codex_app_quit() -> Result<(), CoreError> {
-    let output = crate::platform::windows::background_command("taskkill")
-        .args(["/IM", "Codex.exe"])
-        .output()
-        .map_err(|e| CoreError::OperationFailed(format!("taskkill Codex failed: {e}")))?;
-    if !output.status.success() {
-        return Err(CoreError::OperationFailed(format!(
-            "taskkill Codex failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
+    signal_windows_codex_desktop(false)
+}
+
+#[cfg(target_os = "windows")]
+fn signal_windows_codex_desktop(force: bool) -> Result<(), CoreError> {
+    // The CLI and Electron app have the same executable name on Windows.
+    // Only signal verified desktop PIDs; /IM Codex.exe would also kill an
+    // unrelated terminal session or an IDE's app-server.
+    for process in windows_codex_desktop_processes() {
+        let mut command = crate::platform::windows::background_command("taskkill");
+        command.args(["/PID", &process.pid.to_string()]);
+        if force {
+            command.args(["/F", "/T"]);
+        }
+        command.output().map_err(|error| {
+            CoreError::OperationFailed(format!("taskkill Codex desktop failed: {error}"))
+        })?;
     }
+    // Callers wait for the selected desktop processes, so an already-exited
+    // child or a nonzero taskkill status does not incorrectly fail the stop.
     Ok(())
 }
 
@@ -455,15 +480,16 @@ pub fn open_terminal_with_command(command: &str) -> Result<(), CoreError> {
 }
 
 #[cfg(target_os = "macos")]
-pub fn launch_codex_app() -> Result<(), CoreError> {
+pub fn launch_codex_app(proxy: &ApiProxyConfigPayload) -> Result<(), CoreError> {
     let launch_timeout = Duration::from_secs(3);
 
     let bundle_ids = ["com.openai.codex", "com.openai.Codex"];
     for _ in 0..2 {
         for bid in &bundle_ids {
-            let result = std::process::Command::new("open")
-                .args(["-b", bid])
-                .output();
+            let mut command = std::process::Command::new("open");
+            command.args(["-b", bid]);
+            configure_macos_open(&mut command, proxy)?;
+            let result = command.output();
             if let Ok(o) = result {
                 if o.status.success() && wait_for_process_start("Codex", launch_timeout) {
                     return Ok(());
@@ -480,8 +506,10 @@ pub fn launch_codex_app() -> Result<(), CoreError> {
         ];
         for path in &app_paths {
             if std::path::Path::new(path).exists() {
-                std::process::Command::new("open")
-                    .arg(path)
+                let mut command = std::process::Command::new("open");
+                command.arg(path);
+                configure_macos_open(&mut command, proxy)?;
+                command
                     .output()
                     .map_err(|e| CoreError::OperationFailed(format!("open app failed: {e}")))?;
                 if wait_for_process_start("Codex", launch_timeout) {
@@ -499,21 +527,128 @@ pub fn launch_codex_app() -> Result<(), CoreError> {
 }
 
 #[cfg(target_os = "macos")]
-pub fn restart_codex_app() -> Result<(), CoreError> {
+pub fn restart_codex_app(
+    proxy: &ApiProxyConfigPayload,
+    paths: &crate::platform::paths::CodexPaths,
+) -> Result<(), CoreError> {
     stop_codex_app_gracefully(Duration::from_secs(8))?;
-    launch_codex_app()
+    crate::core::codex_config::prepare_network_config(paths, proxy)?;
+    launch_codex_app(proxy)
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::*;
+
+    fn fixture_executable(root: &Path, relative: &str) -> PathBuf {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"fixture only; never execute").unwrap();
+        path
+    }
+
+    #[test]
+    fn windows_desktop_candidates_reject_npm_and_bundled_cli() {
+        let temp = tempfile::tempdir().unwrap();
+        let npm = fixture_executable(temp.path(), "node_modules/codex/bin/codex.exe");
+        let bundled = fixture_executable(temp.path(), "Codex/resources/codex.exe");
+        let desktop = fixture_executable(temp.path(), "Codex/Codex.exe");
+        fixture_executable(temp.path(), "Codex/resources/app.asar");
+
+        assert!(!is_windows_codex_desktop_path(&npm));
+        assert!(!is_windows_codex_desktop_path(&bundled));
+        assert!(is_windows_codex_desktop_path(&desktop));
+        let candidates = [npm, bundled, desktop.clone()];
+        assert_eq!(
+            candidates
+                .into_iter()
+                .find(|path| is_windows_codex_desktop_path(path)),
+            Some(desktop)
+        );
+    }
+
+    #[test]
+    fn windows_desktop_candidate_requires_both_executable_and_asar() {
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("Codex.exe");
+        fixture_executable(temp.path(), "resources/app.asar");
+        assert!(!is_windows_codex_desktop_path(&executable));
+        fixture_executable(temp.path(), "Codex.exe");
+        assert!(is_windows_codex_desktop_path(&executable));
+        let other = fixture_executable(temp.path(), "Other.exe");
+        assert!(!is_windows_codex_desktop_path(&other));
+        std::fs::remove_file(temp.path().join("resources/app.asar")).unwrap();
+        assert!(!is_windows_codex_desktop_path(&executable));
+    }
+
+    #[test]
+    fn windows_appx_candidates_preserve_package_order_and_spaces() {
+        let output = "\u{feff}C:\\Program Files\\WindowsApps\\OpenAI.Codex_new\r\n\r\n C:\\Program Files\\WindowsApps\\OpenAI.Codex_old \r\n";
+        let candidates = windows_appx_codex_candidates(output);
+        let latest = PathBuf::from(r"C:\Program Files\WindowsApps\OpenAI.Codex_new");
+        let older = PathBuf::from(r"C:\Program Files\WindowsApps\OpenAI.Codex_old");
+        assert_eq!(
+            candidates,
+            vec![
+                latest.join("app").join("Codex.exe"),
+                latest.join("Codex.exe"),
+                older.join("app").join("Codex.exe"),
+                older.join("Codex.exe")
+            ]
+        );
+        assert!(windows_appx_codex_candidates("\r\n  \n").is_empty());
+    }
+
+    #[test]
+    fn windows_executable_comparison_handles_case_slashes_and_extended_prefix() {
+        assert!(same_windows_executable(
+            Path::new(r"C:\Codex Fixture\Codex.exe"),
+            Path::new(r"\\?\c:\codex fixture\CODEX.EXE")
+        ));
+        assert!(same_windows_executable(
+            Path::new("C:/Codex Fixture/Codex.exe"),
+            Path::new(r"c:\codex fixture\codex.exe")
+        ));
+        assert!(!same_windows_executable(
+            Path::new(r"C:\Codex Fixture\Codex.exe"),
+            Path::new(r"C:\Codex Fixture\resources\codex.exe")
+        ));
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn configure_macos_open(
+    command: &mut std::process::Command,
+    proxy: &ApiProxyConfigPayload,
+) -> Result<(), CoreError> {
+    let mut child = std::process::Command::new("Codex");
+    configure_codex_desktop(&mut child, proxy)?;
+    // LaunchServices does not inherit `open`'s environment automatically.
+    for (key, value) in child.get_envs() {
+        command.arg("--env").arg(format!(
+            "{}={}",
+            key.to_string_lossy(),
+            value.unwrap_or_default().to_string_lossy()
+        ));
+    }
+    command.arg("--args").args(child.get_args());
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
-pub fn launch_codex_app() -> Result<(), CoreError> {
-    launch_windows_codex_app()
+pub fn launch_codex_app(proxy: &ApiProxyConfigPayload) -> Result<(), CoreError> {
+    launch_windows_codex_app(proxy)
 }
 
 #[cfg(target_os = "windows")]
-pub fn restart_codex_app() -> Result<(), CoreError> {
+pub fn restart_codex_app(
+    proxy: &ApiProxyConfigPayload,
+    paths: &crate::platform::paths::CodexPaths,
+) -> Result<(), CoreError> {
     snapshot_running_codex_path();
     stop_codex_app_gracefully(Duration::from_secs(8))?;
-    launch_windows_codex_app()
+    crate::core::codex_config::prepare_network_config(paths, proxy)?;
+    launch_windows_codex_app(proxy)
 }
 
 #[cfg(target_os = "windows")]
@@ -522,7 +657,7 @@ pub fn snapshot_codex_path_before_stop() {
 }
 
 /// Windows 路由 toggle / config 重写前的快路径：
-/// - Codex 未运行时直接返回，避免 PowerShell snapshot + writer probe 的开销
+/// - 桌面端与 CLI 均未运行时直接返回，避免 PowerShell writer probe 的开销
 ///   （AgentHarbor 用户经常在打开 Codex 之前就先在面板里切换路由）
 /// - Codex 在跑时按完整流程：snapshot 路径 + graceful stop +
 ///   ensure 写 ~/.codex 的进程都退出
@@ -534,7 +669,13 @@ pub fn snapshot_codex_path_before_stop() {
 #[cfg(target_os = "windows")]
 pub fn stop_codex_for_config_edit(timeout: Duration) -> Result<(), CoreError> {
     if !is_codex_app_running() {
-        return Ok(());
+        // A standalone CLI must never be stopped as though it were Electron,
+        // but it can still be a writer that makes a config edit unsafe.
+        return if win32_process::find_processes_by_name("Codex").is_empty() {
+            Ok(())
+        } else {
+            ensure_no_codex_writer_processes()
+        };
     }
     snapshot_running_codex_path();
     // Codex is running (checked above); skip the redundant is_codex_app_running()
@@ -553,7 +694,10 @@ pub fn stop_codex_for_config_edit(timeout: Duration) -> Result<(), CoreError> {
 
 #[cfg(target_os = "windows")]
 fn snapshot_running_codex_path() {
-    let path = get_running_process_path("Codex");
+    let path = windows_codex_desktop_processes()
+        .into_iter()
+        .next()
+        .map(|process| process.path);
     if let Some(ref p) = path {
         log::info!("[AgentHarbor] captured running Codex path: {}", p.display());
     }
@@ -563,48 +707,110 @@ fn snapshot_running_codex_path() {
 }
 
 #[cfg(target_os = "windows")]
-fn get_running_process_path(name: &str) -> Option<PathBuf> {
-    win32_process::get_process_exe_path(name)
+fn windows_codex_desktop_processes() -> Vec<win32_process::Process> {
+    win32_process::find_processes_by_name("Codex")
+        .into_iter()
+        .filter(|process| is_windows_codex_desktop_path(&process.path))
+        .collect()
 }
 
 #[cfg(target_os = "windows")]
-pub(crate) fn launch_windows_codex_app() -> Result<(), CoreError> {
+fn is_windows_codex_desktop_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("Codex.exe"))
+        && path.is_file()
+        && path
+            .parent()
+            .is_some_and(|parent| parent.join("resources").join("app.asar").is_file())
+}
+
+#[cfg(target_os = "windows")]
+fn same_windows_executable(left: &Path, right: &Path) -> bool {
+    let normalize = |path: &Path| {
+        let path = path.canonicalize().unwrap_or_else(|_| path.to_owned());
+        path.to_string_lossy()
+            .replace('/', "\\")
+            .trim_start_matches(r"\\?\")
+            .to_ascii_lowercase()
+    };
+    normalize(left) == normalize(right)
+}
+
+#[cfg(target_os = "windows")]
+fn wait_for_windows_codex_start(path: &Path, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if windows_codex_desktop_processes()
+            .iter()
+            .any(|process| same_windows_executable(&process.path, path))
+        {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(80));
+    }
+    false
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn launch_windows_codex_app(proxy: &ApiProxyConfigPayload) -> Result<(), CoreError> {
     let cached = LAST_KNOWN_CODEX_PATH
         .lock()
         .ok()
         .and_then(|guard| guard.clone())
-        .filter(|p| p.exists());
+        .filter(|path| is_windows_codex_desktop_path(path));
     let path = cached
         .or_else(find_windows_codex_exe)
         .ok_or_else(|| CoreError::NotFound("Codex.exe not found".to_string()))?;
-    launch_windows_codex_from_path(&path)
+    launch_windows_codex_from_path(&path, proxy)
 }
 
 #[cfg(target_os = "windows")]
-fn launch_windows_codex_from_path(path: &Path) -> Result<(), CoreError> {
+fn launch_windows_codex_from_path(
+    path: &Path,
+    proxy: &ApiProxyConfigPayload,
+) -> Result<(), CoreError> {
+    if !is_windows_codex_desktop_path(path) {
+        return Err(CoreError::InvalidData(
+            "Codex desktop executable is required; refusing to launch a CLI as Electron".into(),
+        ));
+    }
     let launch_timeout = Duration::from_secs(5);
 
     let mut direct = crate::platform::windows::background_command_path(path);
+    configure_codex_desktop(&mut direct, proxy)?;
     if let Some(parent) = path.parent() {
         direct.current_dir(parent);
     }
-    if direct.spawn().is_ok() && wait_for_process_start("Codex", launch_timeout) {
+    if direct.spawn().is_ok() && wait_for_windows_codex_start(path, launch_timeout) {
         return Ok(());
     }
 
     let path_literal = windows_powershell_literal(path.to_string_lossy().as_ref());
-    crate::platform::windows::background_command("powershell")
+    let arguments = direct
+        .get_args()
+        .map(|arg| format!("'{}'", windows_powershell_literal(&arg.to_string_lossy())))
+        .collect::<Vec<_>>()
+        .join(",");
+    let argument_list = if arguments.is_empty() {
+        String::new()
+    } else {
+        format!(" -ArgumentList @({arguments})")
+    };
+    let mut fallback = crate::platform::windows::background_command("powershell");
+    configure_command_network(&mut fallback, proxy)?;
+    fallback
         .args([
             "-NoProfile",
             "-WindowStyle",
             "Hidden",
             "-Command",
-            &format!("Start-Process -FilePath '{path_literal}'"),
+            &format!("Start-Process -FilePath '{path_literal}'{argument_list}"),
         ])
         .spawn()
         .map_err(|e| CoreError::OperationFailed(format!("launch failed: {e}")))?;
 
-    if wait_for_process_start("Codex", launch_timeout) {
+    if wait_for_windows_codex_start(path, launch_timeout) {
         return Ok(());
     }
 
@@ -617,7 +823,7 @@ fn launch_windows_codex_from_path(path: &Path) -> Result<(), CoreError> {
 #[cfg(target_os = "windows")]
 fn find_windows_codex_exe() -> Option<PathBuf> {
     for candidate in windows_codex_candidates() {
-        if candidate.exists() {
+        if is_windows_codex_desktop_path(&candidate) {
             return Some(candidate);
         }
     }
@@ -625,39 +831,56 @@ fn find_windows_codex_exe() -> Option<PathBuf> {
     if let Some(p) = find_codex_from_registry() {
         return Some(p);
     }
+    if let Some(path) = find_codex_from_appx() {
+        return Some(path);
+    }
 
-    crate::platform::windows::background_command("where")
-        .arg("Codex.exe")
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| {
-            String::from_utf8(output.stdout).ok().and_then(|stdout| {
-                stdout
-                    .lines()
-                    .map(str::trim)
-                    .find(|line| !line.is_empty())
-                    .map(PathBuf::from)
-                    .filter(|path| path.exists())
-            })
+    for name in ["Codex.exe", "Codex"] {
+        let output = crate::platform::windows::background_command("where")
+            .arg(name)
+            .output()
+            .ok();
+        if let Some(output) = output.filter(|output| output.status.success()) {
+            if let Some(path) = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(PathBuf::from)
+                .find(|path| is_windows_codex_desktop_path(path))
+            {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn find_codex_from_appx() -> Option<PathBuf> {
+    let output = crate::platform::windows::background_command("powershell")
+        .args(["-NoProfile", "-Command",
+            "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-AppxPackage -Name OpenAI.Codex -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -ExpandProperty InstallLocation"])
+        .output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    windows_appx_codex_candidates(&String::from_utf8_lossy(&output.stdout))
+        .into_iter()
+        .find(|path| is_windows_codex_desktop_path(path))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_appx_codex_candidates(output: &str) -> Vec<PathBuf> {
+    output
+        .trim_start_matches('\u{feff}')
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .flat_map(|location| {
+            let root = PathBuf::from(location);
+            [root.join("app").join("Codex.exe"), root.join("Codex.exe")]
         })
-        .or_else(|| {
-            crate::platform::windows::background_command("where")
-                .arg("Codex")
-                .output()
-                .ok()
-                .filter(|output| output.status.success())
-                .and_then(|output| {
-                    String::from_utf8(output.stdout).ok().and_then(|stdout| {
-                        stdout
-                            .lines()
-                            .map(str::trim)
-                            .find(|line| !line.is_empty())
-                            .map(PathBuf::from)
-                            .filter(|path| path.exists())
-                    })
-                })
-        })
+        .collect()
 }
 
 #[cfg(target_os = "windows")]
@@ -696,7 +919,7 @@ fn find_codex_from_registry() -> Option<PathBuf> {
     for reg_path in reg_paths {
         if let Some(p) = query_reg_default_value(reg_path) {
             let pb = PathBuf::from(&p);
-            if pb.exists() {
+            if is_windows_codex_desktop_path(&pb) {
                 return Some(pb);
             }
         }
@@ -766,7 +989,7 @@ fn find_codex_in_uninstall_entries(root: &str) -> Option<PathBuf> {
             continue;
         }
         let exe = PathBuf::from(dir).join("Codex.exe");
-        if exe.exists() {
+        if is_windows_codex_desktop_path(&exe) {
             return Some(exe);
         }
     }
@@ -779,15 +1002,21 @@ fn windows_powershell_literal(value: &str) -> String {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub fn launch_codex_app() -> Result<(), CoreError> {
-    std::process::Command::new("codex")
+pub fn launch_codex_app(proxy: &ApiProxyConfigPayload) -> Result<(), CoreError> {
+    let mut command = std::process::Command::new("codex");
+    configure_command_network(&mut command, proxy)?;
+    command
         .spawn()
         .map_err(|e| CoreError::OperationFailed(format!("launch failed: {e}")))?;
     Ok(())
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub fn restart_codex_app() -> Result<(), CoreError> {
+pub fn restart_codex_app(
+    proxy: &ApiProxyConfigPayload,
+    paths: &crate::platform::paths::CodexPaths,
+) -> Result<(), CoreError> {
     stop_codex_app_gracefully(Duration::from_secs(8))?;
-    launch_codex_app()
+    crate::core::codex_config::prepare_network_config(paths, proxy)?;
+    launch_codex_app(proxy)
 }

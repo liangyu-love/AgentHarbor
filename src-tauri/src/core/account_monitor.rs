@@ -1,6 +1,6 @@
-use super::accounts::{AccountCredential, AccountUsageUpdate};
-use super::auth::load_auth_file;
-use super::models::{ApiProxyConfigPayload, ApiProxyMode, RateLimitWindow};
+use super::accounts::{AccountCredential, AccountUsageUpdate, CredentialRefresh};
+use super::auth::{load_auth_file, make_auth_snapshot};
+use super::models::{ApiProxyConfigPayload, RateLimitWindow};
 use super::storage;
 use crate::platform::paths::CodexPaths;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
@@ -124,32 +124,12 @@ fn codex_command(args: &[&str]) -> Result<Command, String> {
     }
 }
 
-fn configure_network(command: &mut Command, proxy: &ApiProxyConfigPayload) {
-    const PROXY_KEYS: [&str; 8] = [
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "all_proxy",
-        "OPENAI_BASE_URL",
-        "OPENAI_API_BASE",
-    ];
-    for key in PROXY_KEYS {
+fn configure_network(command: &mut Command, proxy: &ApiProxyConfigPayload) -> Result<(), String> {
+    for key in ["OPENAI_BASE_URL", "OPENAI_API_BASE"] {
         command.env_remove(key);
     }
-    if proxy.mode == ApiProxyMode::Manual {
-        if let Some(url) = proxy
-            .url
-            .as_deref()
-            .map(str::trim)
-            .filter(|url| !url.is_empty())
-        {
-            command.env("HTTP_PROXY", url);
-            command.env("HTTPS_PROXY", url);
-            command.env("ALL_PROXY", url);
-        }
-    }
+    super::api_client::configure_codex_cli_network(command.as_std_mut(), proxy)
+        .map_err(|error| error.to_string())
 }
 
 pub async fn login(
@@ -172,7 +152,7 @@ pub async fn login(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    configure_network(&mut command, proxy);
+    configure_network(&mut command, proxy)?;
 
     let output = match tokio::time::timeout(LOGIN_TIMEOUT, command.output()).await {
         Ok(Ok(output)) => output,
@@ -198,24 +178,12 @@ pub async fn login(
 }
 
 fn http_client(proxy: &ApiProxyConfigPayload) -> Result<reqwest::Client, FetchFailure> {
-    let mut builder = reqwest::Client::builder()
+    let builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::none());
-    if proxy.mode == ApiProxyMode::Manual {
-        if let Some(url) = proxy
-            .url
-            .as_deref()
-            .map(str::trim)
-            .filter(|url| !url.is_empty())
-        {
-            let configured = reqwest::Proxy::all(url)
-                .map_err(|_| FetchFailure::Unavailable("代理地址无效".to_string()))?;
-            builder = builder.proxy(configured);
-        }
-    } else {
-        builder = builder.no_proxy();
-    }
+    let builder = super::api_client::configure_async_client(builder, proxy)
+        .map_err(|error| FetchFailure::Unavailable(error.to_string()))?;
     builder
         .build()
         .map_err(|error| FetchFailure::Unavailable(error.to_string()))
@@ -225,7 +193,8 @@ async fn fetch_usage_http(
     credential: &AccountCredential,
     proxy: &ApiProxyConfigPayload,
 ) -> Result<Value, FetchFailure> {
-    let auth = load_auth_file(&credential.snapshot_path)
+    let bytes = credential_bytes(credential).map_err(FetchFailure::Unavailable)?;
+    let auth: super::auth::AuthFile = serde_json::from_slice(&bytes)
         .map_err(|error| FetchFailure::Unavailable(error.to_string()))?;
     let access_token = auth
         .tokens
@@ -316,25 +285,46 @@ async fn rpc_request(
     }
 }
 
+fn credential_source(credential: &AccountCredential) -> &Path {
+    credential
+        .active_auth_path
+        .as_deref()
+        .unwrap_or(&credential.snapshot_path)
+}
+
+fn credential_bytes(credential: &AccountCredential) -> Result<Vec<u8>, String> {
+    let source = credential_source(credential);
+    let bytes = std::fs::read(source).map_err(|error| error.to_string())?;
+    let auth = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    if make_auth_snapshot(&auth, source)
+        .map_err(|error| error.to_string())?
+        .account_key
+        != credential.account_key
+    {
+        return Err("The active Codex account changed; refresh the account list".into());
+    }
+    Ok(bytes)
+}
+
 async fn fetch_usage_rpc(
     credential: &AccountCredential,
     proxy: &ApiProxyConfigPayload,
-) -> Result<Value, String> {
+) -> (Result<Value, String>, Option<CredentialRefresh>) {
+    let original = match credential_bytes(credential) {
+        Ok(bytes) => bytes,
+        Err(error) => return (Err(error), None),
+    };
     let runtime_root = credential
         .snapshot_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join(".runtime")
         .join(uuid::Uuid::new_v4().to_string());
-    std::fs::create_dir_all(&runtime_root).map_err(|error| error.to_string())?;
     let runtime_auth = runtime_root.join("auth.json");
-    storage::write_atomic(
-        &runtime_auth,
-        &std::fs::read(&credential.snapshot_path).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
 
     let result = async {
+        std::fs::create_dir_all(&runtime_root).map_err(|error| error.to_string())?;
+        storage::write_atomic(&runtime_auth, &original).map_err(|error| error.to_string())?;
         let mut command = codex_command(&["-s", "read-only", "-a", "never", "app-server"])?;
         command
             .env("CODEX_HOME", &runtime_root)
@@ -342,7 +332,7 @@ async fn fetch_usage_rpc(
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true);
-        configure_network(&mut command, proxy);
+        configure_network(&mut command, proxy)?;
         let mut child = command.spawn().map_err(|error| error.to_string())?;
         let mut stdin = child
             .stdin
@@ -380,13 +370,16 @@ async fn fetch_usage_rpc(
     }
     .await;
 
-    if runtime_auth.is_file() {
-        if let Ok(bytes) = std::fs::read(&runtime_auth) {
-            let _ = storage::write_atomic(&credential.snapshot_path, &bytes);
-        }
-    }
+    let credential_refresh = std::fs::read(&runtime_auth)
+        .ok()
+        .filter(|bytes| bytes != &original)
+        .map(|refreshed| CredentialRefresh {
+            source_path: credential_source(credential).to_path_buf(),
+            original,
+            refreshed,
+        });
     let _ = std::fs::remove_dir_all(&runtime_root);
-    result
+    (result, credential_refresh)
 }
 
 fn number(value: Option<&Value>) -> Option<f64> {
@@ -494,6 +487,7 @@ fn parse_usage(account_key: String, payload: &Value) -> Result<AccountUsageUpdat
         plan,
         status: "healthy".to_string(),
         error: None,
+        credential_refresh: None,
     })
 }
 
@@ -502,33 +496,70 @@ pub async fn refresh_account(
     proxy: ApiProxyConfigPayload,
 ) -> AccountUsageUpdate {
     let mut unauthorized = false;
-    let payload = match fetch_usage_http(&credential, &proxy).await {
-        Ok(payload) => Ok(payload),
-        Err(FetchFailure::RateLimited) => Err("官方用量接口请求过于频繁".to_string()),
+    let (payload, credential_refresh) = match fetch_usage_http(&credential, &proxy).await {
+        Ok(payload) => (Ok(payload), None),
+        Err(FetchFailure::RateLimited) => (Err("官方用量接口请求过于频繁".to_string()), None),
         Err(FetchFailure::Unauthorized) => {
             unauthorized = true;
             fetch_usage_rpc(&credential, &proxy).await
         }
-        Err(FetchFailure::Unavailable(message)) => fetch_usage_rpc(&credential, &proxy)
-            .await
-            .map_err(|rpc_error| format!("{message}；Codex CLI 回退失败：{rpc_error}")),
+        Err(FetchFailure::Unavailable(message)) => {
+            let (result, refresh) = fetch_usage_rpc(&credential, &proxy).await;
+            (
+                result.map_err(|rpc_error| format!("{message}；Codex CLI 回退失败：{rpc_error}")),
+                refresh,
+            )
+        }
     };
-    match payload.and_then(|payload| parse_usage(credential.account_key.clone(), &payload)) {
-        Ok(update) => update,
-        Err(error) => AccountUsageUpdate {
-            account_key: credential.account_key,
-            primary_window: None,
-            secondary_window: None,
-            plan: None,
-            status: if unauthorized { "expired" } else { "error" }.to_string(),
-            error: Some(error),
-        },
-    }
+    let mut update =
+        match payload.and_then(|payload| parse_usage(credential.account_key.clone(), &payload)) {
+            Ok(update) => update,
+            Err(error) => AccountUsageUpdate {
+                account_key: credential.account_key,
+                primary_window: None,
+                secondary_window: None,
+                plan: None,
+                status: if unauthorized { "expired" } else { "error" }.to_string(),
+                error: Some(error),
+                credential_refresh: None,
+            },
+        };
+    update.credential_refresh = credential_refresh;
+    update
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_usage_reads_current_credentials_and_rejects_a_changed_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let snapshot_path = temp.path().join("snapshot.json");
+        let auth_path = temp.path().join("auth.json");
+        let original = json!({"tokens": {"account_id": "account", "access_token": "old"}});
+        std::fs::write(&snapshot_path, original.to_string()).unwrap();
+        let key = make_auth_snapshot(&load_auth_file(&snapshot_path).unwrap(), &snapshot_path)
+            .unwrap()
+            .account_key;
+        let credential = AccountCredential {
+            account_key: key,
+            snapshot_path,
+            active_auth_path: Some(auth_path.clone()),
+        };
+        let current =
+            json!({"tokens": {"account_id": "account", "access_token": "new"}}).to_string();
+        std::fs::write(&auth_path, &current).unwrap();
+        assert_eq!(credential_bytes(&credential).unwrap(), current.as_bytes());
+        std::fs::write(
+            &auth_path,
+            json!({"tokens": {"account_id": "another", "access_token": "other"}}).to_string(),
+        )
+        .unwrap();
+        assert!(credential_bytes(&credential).is_err());
+        std::fs::remove_file(auth_path).unwrap();
+        assert!(credential_bytes(&credential).is_err());
+    }
 
     #[test]
     fn parses_wham_usage_windows() {

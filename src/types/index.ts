@@ -1,5 +1,5 @@
 export type UsageSource = "local" | "api";
-export type ApiProxyMode = "direct" | "manual";
+export type ApiProxyMode = "system" | "direct" | "manual";
 export type ApiReachabilityStatus = "unknown" | "reachable" | "unreachable";
 export type AutoSwitchRuntimeState = "running" | "stopped" | "notInstalled" | "unknown";
 export type McpTransport = "stdio" | "http" | "sse" | "unknown";
