@@ -106,6 +106,7 @@ export function NewApiPage() {
   const [dialog, setDialog] = useState<{ open: boolean; provider: NewApiProvider | null }>({ open: false, provider: null });
   const [testDialog, setTestDialog] = useState<NewApiProvider | null>(null);
   const [removing, setRemoving] = useState<NewApiProvider | null>(null);
+  const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
   const [appliedNote, setAppliedNote] = useState<NewApiStateChange["applied"]>(null);
   const [groupAliases, setGroupAliases] = useState<Record<string, string>>(() => {
     try {
@@ -336,7 +337,7 @@ export function NewApiPage() {
             <Label htmlFor="codex-access-mode">{t("newapi.accessMode")}</Label>
             <Select value={accessMode} disabled={lock("access-mode")} onValueChange={value => void run("access-mode", async () => {
               applyChange(await api.routing.setAccessMode(value as CodexAccessMode));
-              toast({ title: t("newapi.accessModeApplied"), description: t("newapi.accessRestartHint"), variant: "success" });
+              toast({ title: t("newapi.accessModeApplied"), variant: "success" });
             }, t("newapi.routingFailed"))}>
               <SelectTrigger id="codex-access-mode" className="max-w-sm"><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -348,7 +349,19 @@ export function NewApiPage() {
             {!nativeCompatible && <p className="text-xs text-amber-700 dark:text-amber-300">{t(selectedProvider ? "newapi.nativeProtocolHint" : "newapi.nativeProviderHint")}</p>}
             {nativeAccess && <p className="text-xs leading-relaxed text-muted-foreground">{t("newapi.nativeAuthHint")}</p>}
             <p className="text-xs leading-relaxed text-muted-foreground">{t(nativeAccess ? "newapi.nativeNetworkHint" : "newapi.routerNetworkHint")}</p>
-            <p className="text-xs text-muted-foreground">{t("newapi.accessRestartHint")}</p>
+            <div className="flex justify-end pt-1">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 shrink-0 gap-1.5"
+                disabled={!!busy}
+                onClick={() => setRestartConfirmOpen(true)}
+              >
+                {busy === "restart-codex" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                {t(busy === "restart-codex" ? "newapi.restartingCodex" : "newapi.restartCodex")}
+              </Button>
+            </div>
           </div>
           <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
             {t(routingEnabled ? (nativeAccess ? "newapi.nativeOnHint" : "newapi.routingOnHint") : "newapi.routingOffHint")}
@@ -917,6 +930,30 @@ export function NewApiPage() {
         onTested={patchProvider}
         onFailed={() => void state.refetch()}
       />
+
+      <AlertDialog open={restartConfirmOpen} onOpenChange={setRestartConfirmOpen}>
+        <AlertDialogContent className="max-w-sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("newapi.restartConfirmTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("newapi.restartConfirmDesc")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90"
+              onClick={() => {
+                setRestartConfirmOpen(false);
+                void run("restart-codex", async () => {
+                  await api.targets.restart("codex");
+                  toast({ title: t("newapi.restartCodexSuccess"), variant: "success" });
+                }, t("newapi.restartCodexFailed"));
+              }}
+            >
+              {t("newapi.restartCodex")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={removing !== null} onOpenChange={open => !open && setRemoving(null)}>
         <AlertDialogContent>

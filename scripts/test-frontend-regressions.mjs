@@ -135,6 +135,11 @@ try {
   await page.getByText(labels.nativeNoRouter, { exact: true }).waitFor();
   assert.equal(await page.getByRole("switch", { name: labels.accountless, exact: true }).count(), 0);
   assert.equal(await page.getByText(labels.nativeAuthHint, { exact: true }).count(), 1);
+  await page.getByRole("button", { name: labels.restartCodex, exact: true }).click();
+  await page.getByRole("heading", { name: labels.restartConfirmTitle, exact: true }).waitFor();
+  await page.getByRole("button", { name: labels.restartCodex, exact: true }).last().click();
+  await page.waitForFunction(() => window.review.restartCalls.length === 1);
+  assert.deepEqual(await page.evaluate(() => window.review.restartCalls), ["codex"]);
   await page.getByRole("switch", { name: labels.codexAccess, exact: true }).click();
   await page.waitForFunction(() => window.review.getState().router.enabled);
   assert.deepEqual(await page.evaluate(() => ({ modes: window.review.accessCalls,

@@ -49,6 +49,9 @@ api.routing.setEnabled = async enabled => {
   state = { ...state, router: { ...state.router, enabled } };
   return { state, applied: null };
 };
+api.targets.restart = async target => {
+  controls.review.restartCalls.push(target);
+};
 api.targets.configs = async () => [];
 api.targets.previewConfig = async request => {
   controls.review.previewed = request;
@@ -117,6 +120,7 @@ function mount(mode: "compact" | "grid" | "image" | "provider" | "warnings" | "m
 }
 
 controls.review = { mount, getState: () => state, accessCalls: [], thumbnailCalls: [], originalCalls: [], thumbnailResolvers: [],
+  restartCalls: [],
   holdThumbnails: false, holdOriginal: false, labels: {
     fetchModels: i18n.t("newapi.fetchModels"), cancel: i18n.t("common.cancel"),
     galleryTitle: i18n.t("image.galleryTitle"),
@@ -129,6 +133,7 @@ controls.review = { mount, getState: () => state, accessCalls: [], thumbnailCall
     inheritAnthropic: i18n.t("newapi.inheritProtocol", { protocol: i18n.t("newapi.protocolShortAnthropic") }),
     codexAccess: i18n.t("newapi.codexAccess"), accountless: i18n.t("newapi.accountless"),
     accessNative: i18n.t("newapi.accessNative"), accessRouter: i18n.t("newapi.accessRouter"), nativeNoRouter: i18n.t("newapi.nativeNoRouter"),
+    restartCodex: i18n.t("newapi.restartCodex"), restartConfirmTitle: i18n.t("newapi.restartConfirmTitle"),
     nativeProtocolHint: i18n.t("newapi.nativeProtocolHint"), nativeAuthHint: i18n.t("newapi.nativeAuthHint"),
     modelCount: i18n.t("newapi.modelCount", { count: 4 }), refreshModels: i18n.t("newapi.refreshModels"), sendTest: i18n.t("newapi.sendTest"),
     configure: i18n.t("clients.configure"), changeClient: i18n.t("clients.change"), preview: i18n.t("clients.preview"), incompatibleClient: i18n.t("clients.errors.protocol"),
