@@ -27,6 +27,7 @@ export interface ThreadGroupHeaderProps {
   onToggleCollapse: () => void;
   onToggleGroup: () => void;
   onExport: () => void;
+  exportDisabled?: boolean;
   onOpenPath: () => void;
   onCopyPath: () => void;
   copiedGroupPath: string | null;
@@ -41,6 +42,7 @@ export function ThreadGroupHeader({
   onToggleCollapse,
   onToggleGroup,
   onExport,
+  exportDisabled = false,
   onOpenPath,
   onCopyPath,
   copiedGroupPath,
@@ -136,15 +138,24 @@ export function ThreadGroupHeader({
             </Button>
           </>
         )}
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-6 gap-1 px-1.5 text-[11px]"
-          onClick={onExport}
-        >
-          <FileDown className="h-3 w-3" />
-          <span className="hidden sm:inline">{t("threads.exportFolder")}</span>
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-6 gap-1 px-1.5 text-[11px]"
+              onClick={onExport}
+              disabled={exportDisabled}
+              title={exportDisabled ? t("threads.exportUnavailable") : t("threads.exportFolder")}
+            >
+              <FileDown className="h-3 w-3" />
+              <span className="hidden sm:inline">{t("threads.exportFolder")}</span>
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            {exportDisabled ? t("threads.exportUnavailable") : t("threads.exportFolder")}
+          </TooltipContent>
+        </Tooltip>
       </div>
     </div>
   );

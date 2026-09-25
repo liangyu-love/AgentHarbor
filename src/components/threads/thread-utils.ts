@@ -22,6 +22,13 @@ export function formatSize(bytes: number): string {
   return `${bytes} B`;
 }
 
+export function formatTokenCount(tokens: number): string {
+  if (!tokens || tokens <= 0) return "0";
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens >= 10_000_000 ? 0 : 1)}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(tokens >= 100_000 ? 0 : 1)}K`;
+  return String(tokens);
+}
+
 export function filterAndSortThreads(
   threads: ThreadSummary[],
   status: StatusFilter,
@@ -37,7 +44,9 @@ export function filterAndSortThreads(
       (thread.title || "").toLowerCase().includes(keyword) ||
       (thread.cwd || "").toLowerCase().includes(keyword) ||
       (thread.folderName || "").toLowerCase().includes(keyword) ||
-      (thread.id || "").toLowerCase().includes(keyword)
+      (thread.id || "").toLowerCase().includes(keyword) ||
+      (thread.modelProvider || "").toLowerCase().includes(keyword) ||
+      (thread.model || "").toLowerCase().includes(keyword)
     );
   });
 

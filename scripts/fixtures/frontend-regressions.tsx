@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { PageStage } from "@/components/layout/page-stage";
 import { VirtualThreadList } from "@/components/threads/virtual-thread-list";
 import { ThreadsPage } from "@/components/threads/threads-page";
+import { ThreadRecoveryDialog } from "@/components/threads/thread-recovery-dialog";
 import { ImageWorkbenchPage } from "@/components/image-workbench/image-workbench-page";
 import { ProviderDialog } from "@/components/newapi/provider-dialog";
 import { ProviderTestDialog } from "@/components/newapi/provider-test-dialog";
@@ -90,7 +91,32 @@ function ProviderFixture({ mixed = false }: { mixed?: boolean }) {
       onOpenChange={open => setDialog(current => ({ ...current, open }))} onSaved={noop} /></>;
 }
 
-function mount(mode: "compact" | "grid" | "image" | "provider" | "warnings" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing") {
+type FixtureMode = "compact" | "grid" | "image" | "provider" | "warnings" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "recovery-missing" | "recovery-journal" | "recovery-official";
+
+function recoveryPreview(mode: FixtureMode) {
+  const base = {
+    threadId: "t0", revision: "recovery-revision", configuredProvider: "agentharbor_native",
+    targetProvider: "agentharbor_native", databaseProvider: "openai", rolloutProvider: "openai",
+    rolloutPath: "C:/synthetic/rollout-t0.jsonl", catalogAnalysis: null, catalogFields: [],
+    coordination: null, status: "providerMismatch", canApply: true,
+    reason: "Synthetic recovery preview", changes: [{ target: "database", path: "C:/synthetic/state.sqlite",
+      fromProvider: "openai", toProvider: "agentharbor_native" }],
+  };
+  if (mode === "recovery-missing") return { ...base, databaseProvider: null, status: "missingCatalog",
+    catalogAnalysis: { schemaSignature: "fixture-schema", ready: true, missingFields: [], unsupportedColumns: [],
+      relation: "topLevel", mappingErrors: [] },
+    catalogFields: [{ name: "id", value: "t0" }, { name: "model_provider", value: "agentharbor_native" },
+      { name: "rollout_path", value: "C:/synthetic/rollout-t0.jsonl" }] };
+  if (mode === "recovery-journal") return { ...base, status: "journalBlocked", canApply: false, changes: [],
+    coordination: { journalPath: "C:/synthetic/recovery/thread-recovery-journal.json",
+      directoryPath: "C:/synthetic/recovery", backupPath: "C:/synthetic/recovery/thread.backup.json",
+      detail: "Unsupported journal version" } };
+  return { ...base, configuredProvider: "openai", targetProvider: "openai", databaseProvider: "openai",
+    rolloutProvider: "openai", status: "officialAccountUnverified", canApply: false, changes: [],
+    reason: "Local metadata cannot identify the ChatGPT account that owns the server thread" };
+}
+
+function mount(mode: FixtureMode) {
   const selectedProvider = mode === "incompatible" || mode === "native-invalid" ? { ...mixedProvider, model: "chat-model" } : mixedProvider;
   state = { providers: mode === "image" ? [imageProvider] : [selectedProvider], router: { enabled: false, accessMode: mode === "native-invalid" ? "native" : "router", accountless: false, port: 43127, configDrifted: false }, proxyRunning: false, activeProviderId: mode === "image" ? null : selectedProvider.id };
   if (mode === "incompatible") state.providers.push(provider("alternate"));
@@ -99,6 +125,16 @@ function mount(mode: "compact" | "grid" | "image" | "provider" | "warnings" | "m
     cwd: "C:/synthetic", folderName: "synthetic", title: "Review thread " + i,
     createdAt: 0, updatedAt: 0, userMessages: 1, agentMessages: 1, fileSize: 100,
     archived: false, source: "", cliVersion: "", filePath: "C:/synthetic/t" + i }));
+  if (mode.startsWith("recovery-")) {
+    api.conversations.previewRecovery = async () => ({ schemaVersion: 1, success: true, code: "ok", message: "", warnings: [], data: recoveryPreview(mode) as any });
+    api.conversations.applyRecovery = async () => {
+      controls.review.recoveryApplyCalls += 1;
+      const preview = recoveryPreview(mode) as any;
+      return { schemaVersion: 1, success: true, code: "ok", message: "", warnings: [],
+        data: { changed: true, backupPath: "C:/synthetic/recovery/backup.json", preview } };
+    };
+    api.openPath = async path => { controls.review.openedPath = path; };
+  }
   api.conversations.list = async () => ({ schemaVersion: 1, success: true, code: "ok", message: "",
     warnings: [{ code: "thread_scan_skipped", message: "Skipped synthetic-corrupt-session.jsonl: invalid UTF-8" }],
     data: { total: 1, lastScanAt: 0, items: threads.slice(0, 1) } });
@@ -108,7 +144,9 @@ function mount(mode: "compact" | "grid" | "image" | "provider" | "warnings" | "m
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   root.render(<QueryClientProvider client={queryClient}><TooltipProvider>
     <div style={{ position: "relative", height: 600 }}><PageStage state="active">
-      {mode === "image" ? <ImageWorkbenchPage /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode === "warnings" ? <ThreadsPage /> :
+      {mode.startsWith("recovery-") ? <ThreadRecoveryDialog thread={threads[0] as any} onOpenChange={noop}
+          onRecovered={() => { controls.review.recoveredCalls += 1; }} /> :
+        mode === "image" ? <ImageWorkbenchPage /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode === "warnings" ? <ThreadsPage /> :
         mode === "access" || mode === "incompatible" || mode === "native-invalid" ? <NewApiPage /> :
         mode === "test" ? <ProviderTestDialog open provider={mixedProvider} onOpenChange={noop} onTested={noop} onFailed={noop} /> :
         mode === "clients" || mode === "clients-existing" ? <ClientConfigs providers={[mixedProvider]} /> :
@@ -120,7 +158,7 @@ function mount(mode: "compact" | "grid" | "image" | "provider" | "warnings" | "m
 }
 
 controls.review = { mount, getState: () => state, accessCalls: [], thumbnailCalls: [], originalCalls: [], thumbnailResolvers: [],
-  restartCalls: [],
+  restartCalls: [], recoveryApplyCalls: 0, recoveredCalls: 0, openedPath: null,
   holdThumbnails: false, holdOriginal: false, labels: {
     fetchModels: i18n.t("newapi.fetchModels"), cancel: i18n.t("common.cancel"),
     galleryTitle: i18n.t("image.galleryTitle"),
@@ -137,5 +175,11 @@ controls.review = { mount, getState: () => state, accessCalls: [], thumbnailCall
     nativeProtocolHint: i18n.t("newapi.nativeProtocolHint"), nativeAuthHint: i18n.t("newapi.nativeAuthHint"),
     modelCount: i18n.t("newapi.modelCount", { count: 4 }), refreshModels: i18n.t("newapi.refreshModels"), sendTest: i18n.t("newapi.sendTest"),
     configure: i18n.t("clients.configure"), changeClient: i18n.t("clients.change"), preview: i18n.t("clients.preview"), incompatibleClient: i18n.t("clients.errors.protocol"),
+    recoveryTitle: i18n.t("threads.recoveryTitle"), recoveryCatalogConfirm: i18n.t("threads.recoveryCatalogConfirm"),
+    recoveryMissingStatus: i18n.t("threads.recoveryStatus.missingCatalog"),
+    recoveryJournalStatus: i18n.t("threads.recoveryStatus.journalBlocked"),
+    recoveryOfficialStatus: i18n.t("threads.recoveryStatus.officialAccountUnverified"),
+    recoveryCoordinationTitle: i18n.t("threads.recoveryCoordinationTitle"),
+    recoveryOpenDirectory: i18n.t("threads.recoveryOpenDirectory"),
   } };
 mount("compact");

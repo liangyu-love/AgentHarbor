@@ -127,8 +127,18 @@ const conversationsApi = {
       keys,
       targetDir,
       format,
-    }),
-};
+      }),
+  previewRecovery: (threadId: string) =>
+    invoke<CoreEnvelope<import("@/types/threads").ThreadRecoveryPreview>>(
+      "preview_codex_thread_recovery",
+      { threadId },
+    ),
+  applyRecovery: (threadId: string, expectedRevision: string) =>
+    invoke<CoreEnvelope<import("@/types/threads").ThreadRecoveryResult>>(
+      "apply_codex_thread_recovery",
+      { threadId, expectedRevision },
+    ),
+  };
 
 const usageApi = {
   relay: () => invoke<RelayUsagePayload>("get_relay_usage"),

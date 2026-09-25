@@ -176,6 +176,29 @@ try {
   assert.deepEqual(await page.evaluate(() => window.review.tested), { id: "mixed", model: "anthropic-model" });
   console.log("PASS connectivity tests include every protocol and preserve model overrides after refresh");
 
+  await reset("recovery-missing");
+  await page.getByRole("heading", { name: labels.recoveryTitle, exact: true }).waitFor();
+  await page.getByText(labels.recoveryMissingStatus, { exact: true }).waitFor();
+  await page.getByText("model_provider", { exact: true }).waitFor();
+  await page.getByRole("button", { name: labels.recoveryCatalogConfirm, exact: true }).click();
+  await page.waitForFunction(() => window.review.recoveryApplyCalls === 1 && window.review.recoveredCalls === 1);
+  console.log("PASS missing-catalog recovery exposes frozen fields and applies through the confirmed preview");
+
+  await reset("recovery-journal");
+  await page.getByText(labels.recoveryJournalStatus, { exact: true }).waitFor();
+  await page.getByText(labels.recoveryCoordinationTitle, { exact: true }).waitFor();
+  await page.getByRole("button", { name: labels.recoveryOpenDirectory, exact: true }).click();
+  await page.waitForFunction(() => window.review.openedPath === "C:/synthetic/recovery");
+  assert.equal(await page.getByRole("button", { name: labels.recoveryCatalogConfirm, exact: true }).count(), 0);
+  console.log("PASS blocked recovery shows manual coordination details and opens the recovery directory");
+
+  await reset("recovery-official");
+  await page.getByText(labels.recoveryOfficialStatus, { exact: true }).waitFor();
+  assert.equal(await page.getByText("Local metadata cannot identify the ChatGPT account that owns the server thread", { exact: true }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: labels.recoveryCatalogConfirm, exact: true }).count(), 0);
+  assert.equal(await page.evaluate(() => window.review.recoveryApplyCalls), 0);
+  console.log("PASS official threads disclose unverified server-account ownership and remain read-only");
+
   await reset("clients");
   await page.getByRole("button", { name: labels.configure, exact: true }).click();
   assert.equal(await page.locator("#client-provider").inputValue(), "mixed");

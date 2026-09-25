@@ -293,22 +293,39 @@ fn list_codex_writer_processes() -> Result<Vec<String>, CoreError> {
         .collect())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(not(target_os = "windows"))]
 fn is_codex_writer_command(command: &str) -> bool {
-    if command.contains("/.cursor/extensions/") || command.contains("/Cursor.app/") {
-        return false;
-    }
+    let command = command.to_ascii_lowercase();
     // crashpad_handler 是 Electron 的崩溃报告子进程，主进程退出后可能残留数秒，
     // 不应被视为"Codex 仍在运行"。
     if command.contains("crashpad_handler") {
         return false;
     }
-    command.contains("Codex.app/")
-        || command.contains("Codex Helper")
+    command.contains("codex.app/")
+        || command.contains("codex helper")
+        || command.contains("chatgpt.app/")
+        || command.contains("chatgpt helper")
+        || command.contains("codex app-server")
+        || (command.contains("/extensions/") && command.contains("codex"))
         || command == "codex"
         || command.starts_with("codex ")
         || command.ends_with("/codex")
         || command.contains("/codex ")
+}
+
+#[cfg(target_os = "windows")]
+fn is_windows_codex_writer_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    matches!(
+        name.as_str(),
+        "codex.exe"
+            | "codex-cli.exe"
+            | "codex-app-server.exe"
+            | "codexappserver.exe"
+            | "chatgpt.exe"
+            | "openai.chatgpt.exe"
+    ) || (name.starts_with("codex-") && name.ends_with(".exe"))
+        || (name.starts_with("chatgpt-") && name.ends_with(".exe"))
 }
 
 #[cfg(target_os = "windows")]
@@ -325,15 +342,21 @@ fn list_codex_writer_processes() -> Result<Vec<String>, CoreError> {
     unsafe {
         let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if snapshot == INVALID_HANDLE_VALUE {
-            return Ok(result);
+            return Err(CoreError::OperationFailed(format!(
+                "CreateToolhelp32Snapshot failed: {}",
+                std::io::Error::last_os_error()
+            )));
         }
 
         let mut entry: PROCESSENTRY32W = std::mem::zeroed();
         entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
 
         if Process32FirstW(snapshot, &mut entry) == 0 {
+            let error = std::io::Error::last_os_error();
             CloseHandle(snapshot);
-            return Ok(result);
+            return Err(CoreError::OperationFailed(format!(
+                "Process32FirstW failed: {error}"
+            )));
         }
 
         loop {
@@ -343,11 +366,7 @@ fn list_codex_writer_processes() -> Result<Vec<String>, CoreError> {
                 .take_while(|&&c| c != 0)
                 .map(|&c| c as u8 as char)
                 .collect();
-            let exe_lower = exe_name.to_ascii_lowercase();
-
-            if entry.th32ProcessID != current_pid
-                && (exe_lower == "codex.exe" || exe_lower.starts_with("codex "))
-            {
+            if entry.th32ProcessID != current_pid && is_windows_codex_writer_name(&exe_name) {
                 result.push(format!("{} {}", entry.th32ProcessID, exe_name));
             }
 
@@ -363,20 +382,60 @@ fn list_codex_writer_processes() -> Result<Vec<String>, CoreError> {
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn list_codex_writer_processes() -> Result<Vec<String>, CoreError> {
-    let output = std::process::Command::new("pgrep")
-        .args(["-af", "codex"])
+    let output = std::process::Command::new("ps")
+        .args(["-eo", "pid=,args="])
         .output()
-        .map_err(|e| CoreError::OperationFailed(format!("pgrep failed: {e}")))?;
+        .map_err(|e| CoreError::OperationFailed(format!("ps failed: {e}")))?;
     if !output.status.success() {
-        return Ok(Vec::new());
+        return Err(CoreError::OperationFailed(format!(
+            "ps failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
     }
-    let current_pid = std::process::id().to_string();
+    let current_pid = std::process::id();
     let stdout = String::from_utf8_lossy(&output.stdout);
     Ok(stdout
         .lines()
-        .filter(|line| !line.starts_with(&current_pid))
-        .map(|line| line.trim().to_string())
+        .filter_map(|line| {
+            let trimmed = line.trim_start();
+            let (pid, command) = trimmed.split_once(char::is_whitespace)?;
+            let pid = pid.parse::<u32>().ok()?;
+            let command = command.trim_start();
+            if pid == current_pid || !is_codex_writer_command(command) {
+                return None;
+            }
+            Some(format!("{pid} {command}"))
+        })
         .collect())
+}
+
+#[cfg(test)]
+mod writer_detection_tests {
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_writer_names_include_desktop_cli_app_server_and_chatgpt() {
+        for name in [
+            "Codex.exe",
+            "codex-cli.exe",
+            "codex-app-server.exe",
+            "ChatGPT.exe",
+        ] {
+            assert!(super::is_windows_codex_writer_name(name), "{name}");
+        }
+        assert!(!super::is_windows_codex_writer_name("AgentHarbor.exe"));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn unix_writer_commands_include_ide_app_server_and_chatgpt() {
+        assert!(super::is_codex_writer_command(
+            "/home/u/.vscode/extensions/openai.chatgpt/bin/codex app-server"
+        ));
+        assert!(super::is_codex_writer_command(
+            "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"
+        ));
+        assert!(!super::is_codex_writer_command("crashpad_handler codex"));
+    }
 }
 
 #[cfg(target_os = "macos")]

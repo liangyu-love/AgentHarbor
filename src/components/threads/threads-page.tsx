@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import {
+  AlertTriangle,
   ArrowUpDown,
   Check,
   CheckSquare,
@@ -49,10 +50,13 @@ import { toast } from "@/hooks/use-toast";
 import { useBusyAction } from "@/hooks/use-busy-action";
 import { formatRelative } from "@/lib/format-time";
 import { ThreadCard } from "@/components/threads/thread-card";
+import { ThreadRecoveryDialog } from "@/components/threads/thread-recovery-dialog";
 import { VirtualThreadList } from "@/components/threads/virtual-thread-list";
+import type { ThreadSummary } from "@/types/threads";
 import {
   filterAndSortThreads,
   formatSize,
+  formatTokenCount,
   groupThreads,
   type SortOption,
   type StatusFilter,
@@ -78,6 +82,7 @@ export function ThreadsPage() {
   const [format, setFormat] = useState<ExportFormat>("markdown");
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [copiedGroupPath, setCopiedGroupPath] = useState<string | null>(null);
+  const [recoveryTarget, setRecoveryTarget] = useState<ThreadSummary | null>(null);
 
   const refreshAction = useBusyAction({ minVisibleMs: 800 });
 
@@ -89,6 +94,14 @@ export function ThreadsPage() {
 
   const threads = useMemo(() => threadsQuery.data?.data.items ?? [], [threadsQuery.data]);
   const scanWarnings = threadsQuery.data?.warnings ?? [];
+  const exportableKeys = useMemo(
+    () => new Set(threads.filter((thread) => thread.rolloutStatus !== "missing").map((thread) => thread.key)),
+    [threads],
+  );
+  const selectedExportableCount = useMemo(
+    () => [...selected].filter((key) => exportableKeys.has(key)).length,
+    [selected, exportableKeys],
+  );
 
   // Filter and Sort
   const filtered = useMemo(
@@ -103,22 +116,28 @@ export function ThreadsPage() {
   );
 
   // Global aggregate metrics
-  const { archivedCount, totalUserMsgs, totalAgentMsgs, totalBytes } = useMemo(() => {
+  const { archivedCount, totalUserMsgs, totalAgentMsgs, totalBytes, totalTokens, missingRolloutCount } = useMemo(() => {
     let archived = 0;
     let user = 0;
     let agent = 0;
     let bytes = 0;
+    let tokens = 0;
+    let missingRollouts = 0;
     for (const item of threads) {
       if (item.archived) archived++;
+      if (item.rolloutStatus === "missing") missingRollouts++;
       user += item.userMessages || 0;
       agent += item.agentMessages || 0;
       bytes += item.fileSize || 0;
+      tokens += item.tokensUsed || 0;
     }
     return {
       archivedCount: archived,
       totalUserMsgs: user,
       totalAgentMsgs: agent,
       totalBytes: bytes,
+      totalTokens: tokens,
+      missingRolloutCount: missingRollouts,
     };
   }, [threads]);
 
@@ -190,12 +209,20 @@ export function ThreadsPage() {
   };
 
   const handleExport = async (keys: string[]) => {
-    if (keys.length === 0) return;
+    const availableKeys = keys.filter((key) => exportableKeys.has(key));
+    if (availableKeys.length === 0) {
+      toast({
+        title: t("threads.exportUnavailable"),
+        description: t("threads.exportUnavailableDesc"),
+        variant: "destructive",
+      });
+      return;
+    }
     const { open } = await import("@tauri-apps/plugin-dialog");
     const targetDir = await open({ directory: true, multiple: false });
     if (typeof targetDir !== "string") return;
     try {
-      const result = await api.conversations.export("codex", keys, targetDir, format);
+      const result = await api.conversations.export("codex", availableKeys, targetDir, format);
       const payload = result.data;
       if (payload.exported === 0) {
         throw new Error(t("threads.nothingExported"));
@@ -207,7 +234,7 @@ export function ThreadsPage() {
       });
       setSelected((prev) => {
         const next = new Set(prev);
-        for (const key of keys) next.delete(key);
+        for (const key of availableKeys) next.delete(key);
         return next;
       });
     } catch (error) {
@@ -303,6 +330,20 @@ export function ThreadsPage() {
           </div>
         )}
 
+        {missingRolloutCount > 0 && (
+          <div role="status" className="flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+            <div>
+              <p className="font-medium text-destructive">
+                {t("threads.rolloutMissingSummary", { count: missingRolloutCount })}
+              </p>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                {t("threads.rolloutMissingSummaryDesc")}
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* 4-Metric Mission Control HUD */}
         <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
           <AuroraCard color="blue" className="cursor-pointer transition-all duration-200 hover:-translate-y-px hover:shadow-sm" onClick={() => setStatus(status === "active" ? "all" : "active")}>
@@ -356,7 +397,7 @@ export function ThreadsPage() {
                     {totalInteractions.toLocaleString()}
                   </span>
                   <span className="text-[11px] text-muted-foreground">
-                    U: {totalUserMsgs} · AI: {totalAgentMsgs}
+                    U: {totalUserMsgs} · AI: {totalAgentMsgs} · {formatTokenCount(totalTokens)} {t("threads.tokenUnit")}
                   </span>
                 </div>
               </div>
@@ -556,9 +597,10 @@ export function ThreadsPage() {
               <RainbowButton
                 className="h-7.5 rounded-[8px] px-3 text-xs font-medium"
                 onClick={() => void handleExport([...selected])}
+                disabled={selectedExportableCount === 0}
               >
                 <Download className="h-3.5 w-3.5" />
-                {t("threads.exportSelected", { count: selected.size })}
+                {t("threads.exportSelected", { count: selectedExportableCount })}
               </RainbowButton>
             </div>
           </BentoCard>
@@ -622,6 +664,7 @@ export function ThreadsPage() {
             onToggleCollapse={toggleGroupCollapse}
             onExport={keys => void handleExport(keys)}
             onOpenPath={path => void handleOpenPath(path)}
+            onRecover={setRecoveryTarget}
             onCopyPath={handleCopyPath}
             copiedGroupPath={copiedGroupPath}
             t={t}
@@ -630,6 +673,9 @@ export function ThreadsPage() {
           groups.map((group) => {
             const isCollapsed = collapsedGroups.has(group.key);
             const groupKeys = group.items.map((item) => item.key);
+            const groupExportKeys = group.items
+              .filter((item) => item.rolloutStatus !== "missing")
+              .map((item) => item.key);
             const allInGroupSelected = groupKeys.length > 0 && groupKeys.every((key) => selected.has(key));
             const someInGroupSelected = groupKeys.some((key) => selected.has(key)) && !allInGroupSelected;
 
@@ -761,13 +807,18 @@ export function ThreadsPage() {
                           variant="outline"
                           size="sm"
                           className="h-7 gap-1.5 px-2.5 text-xs"
-                          onClick={() => void handleExport(groupKeys)}
+                          onClick={() => void handleExport(groupExportKeys)}
+                          disabled={groupExportKeys.length === 0}
                         >
                           <FileDown className="h-3.5 w-3.5" />
                           <span className="hidden md:inline">{t("threads.exportFolder")}</span>
                         </Button>
                       </TooltipTrigger>
-                      <TooltipContent>{t("threads.exportFolder")}</TooltipContent>
+                      <TooltipContent>
+                        {groupExportKeys.length === 0
+                          ? t("threads.exportUnavailable")
+                          : t("threads.exportFolder")}
+                      </TooltipContent>
                     </Tooltip>
                   </div>
                 </div>
@@ -789,6 +840,7 @@ export function ThreadsPage() {
                         onToggleSelect={() => toggleSelect(thread.key)}
                         onExport={() => void handleExport([thread.key])}
                         onOpenRaw={() => void handleOpenPath(thread.filePath)}
+                        onRecover={() => setRecoveryTarget(thread)}
                         variant={viewMode}
                       />
                     ))}
@@ -798,6 +850,13 @@ export function ThreadsPage() {
             );
           })
         )}
+        <ThreadRecoveryDialog
+          thread={recoveryTarget}
+          onOpenChange={(open) => !open && setRecoveryTarget(null)}
+          onRecovered={async () => {
+            await threadsQuery.refetch();
+          }}
+        />
       </div>
     </TooltipProvider>
   );

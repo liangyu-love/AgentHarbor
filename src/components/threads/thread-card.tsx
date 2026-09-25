@@ -1,13 +1,17 @@
 import { useState } from "react";
 import {
+  AlertTriangle,
   Archive,
   Check,
   CheckSquare,
   Clock,
   Copy,
+  Coins,
+  Database,
   Download,
   FolderOpen,
   HardDrive,
+  RefreshCcw,
   Sparkles,
   Terminal,
   User,
@@ -25,7 +29,7 @@ import { formatDateTime, formatRelative } from "@/lib/format-time";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import type { ThreadSummary } from "@/types/threads";
-import { formatSize } from "./thread-utils";
+import { formatSize, formatTokenCount } from "./thread-utils";
 
 interface ThreadCardProps {
   thread: ThreadSummary;
@@ -33,6 +37,7 @@ interface ThreadCardProps {
   onToggleSelect: () => void;
   onExport: () => void;
   onOpenRaw: () => void;
+  onRecover: () => void;
   variant?: "grid" | "compact";
 }
 
@@ -42,6 +47,7 @@ export function ThreadCard({
   onToggleSelect,
   onExport,
   onOpenRaw,
+  onRecover,
   variant = "grid",
 }: ThreadCardProps) {
   const { t } = useTranslation();
@@ -50,6 +56,14 @@ export function ThreadCard({
   const totalMsgs = (thread.userMessages || 0) + (thread.agentMessages || 0);
   const userRatio =
     totalMsgs > 0 ? Math.round(((thread.userMessages || 0) / totalMsgs) * 100) : 50;
+  const hasRollout = thread.rolloutStatus !== "missing";
+  const canPreviewRecovery = thread.id.length > 0;
+  const providerLabel = thread.modelProvider || t("threads.unknownProvider");
+  const modelLabel = thread.model || t("threads.unknownModel");
+  const sourceLabel =
+    thread.threadSource === "sqlite"
+      ? t("threads.threadSourceSqlite")
+      : t("threads.threadSourceRollout");
 
   const handleCopyId = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -73,7 +87,9 @@ export function ThreadCard({
             "group relative flex h-10 cursor-pointer items-center justify-between gap-2 overflow-hidden rounded-lg border border-border/60 bg-card/80 px-2 transition-all duration-150 hover:border-primary/45 hover:bg-muted/40",
             selected
               ? "border-primary/60 bg-primary/[0.04] shadow-xs ring-1 ring-primary/35 dark:border-amber-400/50 dark:ring-amber-400/30 dark:bg-amber-400/[0.03]"
-              : "",
+              : !hasRollout
+                ? "border-destructive/45 bg-destructive/[0.025]"
+                : "",
           )}
           onClick={onToggleSelect}
         >
@@ -106,6 +122,25 @@ export function ThreadCard({
                     {t("threads.activeBadge")}
                   </span>
                 )}
+                {!hasRollout && (
+                  <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-destructive/10 px-1.5 py-px text-[9px] font-medium text-destructive">
+                    <AlertTriangle className="h-2 w-2" />
+                    {t("threads.rolloutMissing")}
+                  </span>
+                )}
+                <span
+                  className="hidden max-w-32 shrink-0 truncate rounded-[4px] bg-primary/8 px-1 py-px font-mono text-[9px] text-primary md:inline-flex"
+                  title={t("threads.providerAndModel", { provider: providerLabel, model: modelLabel })}
+                >
+                  {providerLabel} · {modelLabel}
+                </span>
+                <span
+                  className="hidden shrink-0 items-center gap-0.5 rounded-[4px] bg-muted/60 px-1 py-px text-[9px] text-muted-foreground lg:inline-flex"
+                  title={t("threads.threadSource")}
+                >
+                  <Database className="h-2 w-2 opacity-70" />
+                  {sourceLabel}
+                </span>
                 {(thread.cliVersion || thread.source) && (
                   <span className="hidden md:inline-flex items-center gap-0.5 rounded-[4px] bg-muted/60 px-1 py-px font-mono text-[9px] text-muted-foreground">
                     <Terminal className="h-2 w-2 opacity-70" />
@@ -132,6 +167,13 @@ export function ThreadCard({
                 {thread.agentMessages}
               </span>
             </div>
+            <span
+              className="flex items-center gap-0.5 font-mono"
+              title={t("threads.tokensUsed", { count: thread.tokensUsed || 0 })}
+            >
+              <Coins className="h-2.5 w-2.5 opacity-70" />
+              {formatTokenCount(thread.tokensUsed)}
+            </span>
 
             <span className="w-12 text-right font-mono">
               {formatSize(thread.fileSize)}
@@ -161,21 +203,46 @@ export function ThreadCard({
               <TooltipContent>{t("threads.copyId")}</TooltipContent>
             </Tooltip>
 
+            {canPreviewRecovery && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    className="h-6 w-6 text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-transform"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRecover();
+                    }}
+                    aria-label={t("threads.recoveryAction")}
+                  >
+                    <RefreshCcw className="h-3 w-3" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{t("threads.recoveryAction")}</TooltipContent>
+              </Tooltip>
+            )}
+
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
                   variant="ghost"
                   size="icon-sm"
                   className="h-6 w-6 text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-transform"
+                  disabled={!hasRollout}
+                  aria-label={hasRollout ? t("threads.exportThread") : t("threads.exportUnavailable")}
                   onClick={(e) => {
                     e.stopPropagation();
+                    if (!hasRollout) return;
                     onExport();
                   }}
                 >
                   <Download className="h-3 w-3" />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>{t("threads.exportThread")}</TooltipContent>
+              <TooltipContent>
+                {hasRollout ? t("threads.exportThread") : t("threads.exportUnavailable")}
+              </TooltipContent>
             </Tooltip>
 
             <Tooltip>
@@ -184,15 +251,20 @@ export function ThreadCard({
                   variant="ghost"
                   size="icon-sm"
                   className="h-6 w-6 text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-transform"
+                  disabled={!hasRollout}
+                  aria-label={hasRollout ? t("threads.openRawFile") : t("threads.rawUnavailable")}
                   onClick={(e) => {
                     e.stopPropagation();
+                    if (!hasRollout) return;
                     onOpenRaw();
                   }}
                 >
                   <FolderOpen className="h-3 w-3" />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>{t("threads.openRawFile")}</TooltipContent>
+              <TooltipContent>
+                {hasRollout ? t("threads.openRawFile") : t("threads.rawUnavailable")}
+              </TooltipContent>
             </Tooltip>
           </div>
         </div>
@@ -208,7 +280,9 @@ export function ThreadCard({
           "group relative flex flex-col justify-between cursor-pointer p-2.5 transition-all duration-150 ease-out hover:-translate-y-px hover:border-primary/40 hover:shadow-sm",
           selected
             ? "border-primary/60 bg-primary/[0.03] ring-1 ring-primary/35 shadow-xs dark:border-amber-400/60 dark:ring-amber-400/30 dark:bg-amber-400/[0.03]"
-            : "",
+            : !hasRollout
+              ? "border-destructive/45 bg-destructive/[0.025]"
+              : "",
         )}
         onClick={onToggleSelect}
       >
@@ -246,6 +320,25 @@ export function ThreadCard({
                 {t("threads.activeBadge")}
               </span>
             )}
+            {!hasRollout && (
+              <span className="inline-flex items-center gap-0.5 rounded-full bg-destructive/10 px-1.5 py-px text-[9px] font-medium text-destructive">
+                <AlertTriangle className="h-2 w-2" />
+                {t("threads.rolloutMissing")}
+              </span>
+            )}
+            <span
+              className="inline-flex max-w-full items-center rounded-[4px] bg-primary/8 px-1 py-px font-mono text-[9px] text-primary"
+              title={t("threads.providerAndModel", { provider: providerLabel, model: modelLabel })}
+            >
+              <span className="max-w-36 truncate">{providerLabel} · {modelLabel}</span>
+            </span>
+            <span
+              className="inline-flex items-center gap-0.5 rounded-[4px] bg-muted/60 px-1 py-px text-[9px] text-muted-foreground"
+              title={t("threads.threadSource")}
+            >
+              <Database className="h-2 w-2 opacity-70" />
+              {sourceLabel}
+            </span>
 
             {(thread.cliVersion || thread.source) && (
               <span className="inline-flex items-center gap-0.5 rounded-[4px] bg-muted/60 px-1 py-px font-mono text-[9px] text-muted-foreground">
@@ -267,6 +360,13 @@ export function ThreadCard({
             <span className="flex items-center gap-0.5 text-violet-600 dark:text-violet-400">
               <Sparkles className="h-2.5 w-2.5" />
               {thread.agentMessages}
+            </span>
+            <span
+              className="flex items-center gap-0.5 text-muted-foreground"
+              title={t("threads.tokensUsed", { count: thread.tokensUsed || 0 })}
+            >
+              <Coins className="h-2.5 w-2.5 opacity-70" />
+              {formatTokenCount(thread.tokensUsed)}
             </span>
           </div>
               <div className="h-1 w-16 shrink-0 overflow-hidden rounded-full bg-muted/70 flex" title={`用户提问占比: ${userRatio}%`}>
@@ -327,21 +427,46 @@ export function ThreadCard({
               <TooltipContent>{t("threads.copyId")}</TooltipContent>
             </Tooltip>
 
+            {canPreviewRecovery && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    className="h-5.5 w-5.5 text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-transform"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRecover();
+                    }}
+                    aria-label={t("threads.recoveryAction")}
+                  >
+                    <RefreshCcw className="h-2.5 w-2.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{t("threads.recoveryAction")}</TooltipContent>
+              </Tooltip>
+            )}
+
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
                   variant="ghost"
                   size="icon-sm"
                   className="h-5.5 w-5.5 text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-transform"
+                  disabled={!hasRollout}
+                  aria-label={hasRollout ? t("threads.exportThread") : t("threads.exportUnavailable")}
                   onClick={(e) => {
                     e.stopPropagation();
+                    if (!hasRollout) return;
                     onExport();
                   }}
                 >
                   <Download className="h-2.5 w-2.5" />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>{t("threads.exportThread")}</TooltipContent>
+              <TooltipContent>
+                {hasRollout ? t("threads.exportThread") : t("threads.exportUnavailable")}
+              </TooltipContent>
             </Tooltip>
 
             <Tooltip>
@@ -350,15 +475,20 @@ export function ThreadCard({
                   variant="ghost"
                   size="icon-sm"
                   className="h-5.5 w-5.5 text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-transform"
+                  disabled={!hasRollout}
+                  aria-label={hasRollout ? t("threads.openRawFile") : t("threads.rawUnavailable")}
                   onClick={(e) => {
                     e.stopPropagation();
+                    if (!hasRollout) return;
                     onOpenRaw();
                   }}
                 >
                   <FolderOpen className="h-2.5 w-2.5" />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>{t("threads.openRawFile")}</TooltipContent>
+              <TooltipContent>
+                {hasRollout ? t("threads.openRawFile") : t("threads.rawUnavailable")}
+              </TooltipContent>
             </Tooltip>
           </div>
         </div>

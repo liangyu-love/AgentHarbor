@@ -8,6 +8,7 @@ pub mod newapi;
 pub mod skills;
 pub mod system;
 pub mod targets;
+pub mod thread_recovery;
 pub mod threads;
 pub mod tray_menu;
 pub mod usage;

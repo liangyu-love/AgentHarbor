@@ -176,6 +176,8 @@ pub fn run() {
             commands::threads::export_conversations,
             commands::threads::list_codex_threads,
             commands::threads::export_codex_threads,
+            commands::thread_recovery::preview_codex_thread_recovery,
+            commands::thread_recovery::apply_codex_thread_recovery,
         ])
         .build(context)
         .expect("error while building AgentHarbor");

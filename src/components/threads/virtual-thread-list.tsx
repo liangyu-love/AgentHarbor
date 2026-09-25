@@ -38,8 +38,8 @@ function estimateGridColumns() {
 function estimateGridBodyHeight(itemCount: number, columns: number) {
   if (itemCount <= 0) return 0;
   const rows = Math.ceil(itemCount / columns);
-  // Card target height + gap, with a little slack for badge wrapping.
-  return rows * 112 + Math.max(0, rows - 1) * 8 + 8;
+  // Card target height + gap, with slack for provider/model/source badges.
+  return rows * 132 + Math.max(0, rows - 1) * 8 + 8;
 }
 
 export interface VirtualThreadListProps {
@@ -52,6 +52,7 @@ export interface VirtualThreadListProps {
   onToggleCollapse: (groupKey: string) => void;
   onExport: (keys: string[]) => void;
   onOpenPath: (path: string) => void;
+  onRecover: (thread: ThreadSummary) => void;
   onCopyPath: (path: string, groupKey: string) => void;
   copiedGroupPath: string | null;
   t: (key: string, opts?: Record<string, unknown>) => string;
@@ -72,6 +73,7 @@ export function VirtualThreadList({
   onToggleCollapse,
   onExport,
   onOpenPath,
+  onRecover,
   onCopyPath,
   copiedGroupPath,
   t,
@@ -182,6 +184,9 @@ export function VirtualThreadList({
         <div className="space-y-3">
           {gridLayout.blocks.map(({ group, collapsed, bodyHeight, blockHeight, offset }) => {
             const groupKeys = group.items.map(item => item.key);
+            const groupExportKeys = group.items
+              .filter(item => item.rolloutStatus !== "missing")
+              .map(item => item.key);
             const allInGroupSelected =
               groupKeys.length > 0 && groupKeys.every(key => selected.has(key));
             const visible =
@@ -206,7 +211,8 @@ export function VirtualThreadList({
                   compact
                   onToggleCollapse={() => onToggleCollapse(group.key)}
                   onToggleGroup={() => onToggleGroup(groupKeys)}
-                  onExport={() => onExport(groupKeys)}
+                  onExport={() => onExport(groupExportKeys)}
+                  exportDisabled={groupExportKeys.length === 0}
                   onOpenPath={() => onOpenPath(group.cwd)}
                   onCopyPath={() => onCopyPath(group.cwd, group.key)}
                   copiedGroupPath={copiedGroupPath}
@@ -217,7 +223,7 @@ export function VirtualThreadList({
                     className="mt-1.5 grid gap-2 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5"
                     style={{
                       contentVisibility: "auto",
-                      containIntrinsicSize: `${Math.max(bodyHeight, 112)}px`,
+                      containIntrinsicSize: `${Math.max(bodyHeight, 132)}px`,
                     }}
                   >
                     {group.items.map(thread => (
@@ -228,6 +234,7 @@ export function VirtualThreadList({
                         onToggleSelect={() => onToggleSelect(thread.key)}
                         onExport={() => onExport([thread.key])}
                         onOpenRaw={() => onOpenPath(thread.filePath)}
+                        onRecover={() => onRecover(thread)}
                         variant="grid"
                       />
                     ))}
@@ -244,6 +251,9 @@ export function VirtualThreadList({
             if (row.type === "group") {
               const group = row.group;
               const groupKeys = group.items.map(thread => thread.key);
+              const groupExportKeys = group.items
+                .filter(thread => thread.rolloutStatus !== "missing")
+                .map(thread => thread.key);
               return (
                 <div
                   key={row.key}
@@ -256,7 +266,8 @@ export function VirtualThreadList({
                     compact
                     onToggleCollapse={() => onToggleCollapse(group.key)}
                     onToggleGroup={() => onToggleGroup(groupKeys)}
-                    onExport={() => onExport(groupKeys)}
+                    onExport={() => onExport(groupExportKeys)}
+                    exportDisabled={groupExportKeys.length === 0}
                     onOpenPath={() => onOpenPath(group.cwd)}
                     onCopyPath={() => onCopyPath(group.cwd, group.key)}
                     copiedGroupPath={copiedGroupPath}
@@ -277,6 +288,7 @@ export function VirtualThreadList({
                   onToggleSelect={() => onToggleSelect(row.thread.key)}
                   onExport={() => onExport([row.thread.key])}
                   onOpenRaw={() => onOpenPath(row.thread.filePath)}
+                  onRecover={() => onRecover(row.thread)}
                   variant="compact"
                 />
               </div>
