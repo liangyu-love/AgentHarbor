@@ -3,8 +3,8 @@
 
 use super::{
     applied_config, config_snapshot, config_update_error, menu_display_name,
-    model_provider_is_ours, relay_catalog_entry, remove_managed_provider_entries, ModelProtocol,
-    Provider, Store,
+    model_provider_is_ours, reject_foreign_managed_provider_entries, relay_catalog_entry,
+    remove_managed_provider_entries, ModelProtocol, Provider, Store,
 };
 use crate::{
     core::{
@@ -458,14 +458,15 @@ pub(super) fn apply(paths: &CodexPaths, store: &Store) -> Result<newapi::Applied
                 .map_err(|_| CoreError::InvalidData("Invalid Codex config TOML".into()))?;
             if document
                 .get("model_providers")
-                .is_some_and(|item| !item.is_table())
+                .is_some_and(|item| !item.is_table_like())
             {
                 return Err(CoreError::InvalidData(
                     "model_providers must be a TOML table".into(),
                 ));
             }
             let mut snapshot = match config_snapshot::load(paths, original)? {
-                Some(snapshot) => snapshot,
+                Some(snapshot) if snapshot.selected_provider_is_ours(&document) => snapshot,
+                Some(_) => config_snapshot::Snapshot::capture(paths, &document)?,
                 None if document.get("model_provider").and_then(Item::as_str)
                     == Some(PROVIDER_KEY) =>
                 {
@@ -476,7 +477,10 @@ pub(super) fn apply(paths: &CodexPaths, store: &Store) -> Result<newapi::Applied
                 None if model_provider_is_ours(&document) => {
                     config_snapshot::recover_legacy(paths, &document, store)?
                 }
-                None => config_snapshot::Snapshot::capture(paths, &document)?,
+                None => {
+                    reject_foreign_managed_provider_entries(&document)?;
+                    config_snapshot::Snapshot::capture(paths, &document)?
+                }
             };
             remove_managed_provider_entries(&mut document);
             for (field, value) in [
@@ -506,8 +510,15 @@ pub(super) fn apply(paths: &CodexPaths, store: &Store) -> Result<newapi::Applied
                 table.set_implicit(true);
                 document["model_providers"] = Item::Table(table);
             }
+            let inline_providers = document["model_providers"]
+                .as_value()
+                .is_some_and(toml_edit::Value::is_inline_table);
             let entry = &mut document["model_providers"][PROVIDER_KEY];
-            *entry = Item::Table(toml_edit::Table::new());
+            *entry = if inline_providers {
+                Item::Value(toml_edit::Value::InlineTable(toml_edit::InlineTable::new()))
+            } else {
+                Item::Table(toml_edit::Table::new())
+            };
             entry["name"] = toml_edit::value(&provider.name);
             entry["base_url"] = toml_edit::value(&expected_base);
             entry["wire_api"] = toml_edit::value("responses");

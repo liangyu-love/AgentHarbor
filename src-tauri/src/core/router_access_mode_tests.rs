@@ -139,6 +139,67 @@ fn changing_mode_while_disabled_only_updates_the_store() {
 }
 
 #[test]
+fn loading_a_saved_toggle_and_exiting_without_injection_leave_codex_files_untouched() {
+    let (_directory, paths) = fixture();
+    let mut store = load_store(&paths).unwrap();
+    store.router.enabled = true;
+    save_store_unlocked(&paths, &store).unwrap();
+    let before = file_state(&paths);
+    let state = state_from_store_at(&load_store(&paths).unwrap(), false, Some(&paths));
+    assert!(state.router.config_drifted);
+    assert_eq!(file_state(&paths), before);
+
+    stop_smart_routing_on_exit(&paths).unwrap();
+    let after = file_state(&paths);
+    assert_eq!(after[1..], before[1..]);
+    assert!(!load_store(&paths).unwrap().router.enabled);
+    assert!(!config_snapshot::path(&paths).exists());
+}
+
+#[test]
+fn editing_a_provider_after_cc_switch_takes_over_does_not_reinject() {
+    let (_directory, paths) = fixture();
+    set_smart_routing(&paths, true).unwrap();
+    let mut external: toml_edit::DocumentMut = fs::read_to_string(&paths.config_path)
+        .unwrap()
+        .parse()
+        .unwrap();
+    external["model_provider"] = toml_edit::value("cc-switch");
+    external["model_providers"]["cc-switch"] = toml_edit::Item::Table(toml_edit::Table::new());
+    external["model_providers"]["cc-switch"]["base_url"] = toml_edit::value("https://cc.invalid");
+    fs::write(&paths.config_path, external.to_string()).unwrap();
+    let before = fs::read(&paths.config_path).unwrap();
+    let result = set_accountless(&paths, true).unwrap();
+    assert!(result.applied.is_none());
+    assert_eq!(fs::read(&paths.config_path).unwrap(), before);
+
+    stop_smart_routing_on_exit(&paths).unwrap();
+    let cleaned = config(&paths);
+    assert_eq!(cleaned["model_provider"].as_str(), Some("cc-switch"));
+    assert_eq!(
+        cleaned["model_providers"]["cc-switch"]["base_url"].as_str(),
+        Some("https://cc.invalid")
+    );
+    assert!(!load_store(&paths).unwrap().router.enabled);
+}
+
+#[test]
+fn foreign_entry_in_our_reserved_namespace_blocks_destructive_enable() {
+    let (_directory, paths) = fixture();
+    let original = fs::read_to_string(&paths.config_path).unwrap();
+    let collision = format!(
+        "{original}\n[model_providers.agentharbor_relay]\nbase_url = 'https://foreign.invalid'\n"
+    );
+    fs::write(&paths.config_path, &collision).unwrap();
+    assert_eq!(
+        set_smart_routing(&paths, true).unwrap_err(),
+        "newapi.errors.routerSnapshot"
+    );
+    assert_eq!(fs::read_to_string(&paths.config_path).unwrap(), collision);
+    assert!(!config_snapshot::path(&paths).exists());
+}
+
+#[test]
 fn router_native_router_then_disable_restores_six_fields_and_user_files() {
     let (_directory, paths) = fixture();
     set_smart_routing(&paths, true).unwrap();

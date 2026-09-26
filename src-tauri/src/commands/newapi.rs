@@ -24,12 +24,8 @@ fn paths(repo: &State<'_, Mutex<Repository>>) -> Result<CodexPaths, String> {
 #[tauri::command]
 pub async fn load_newapi_state(repo: State<'_, Mutex<Repository>>) -> Result<NewApiState, String> {
     let paths = paths(&repo)?;
-    let _guard = routing_runtime::mutation_guard().await;
-    if let Err(error) = routing_runtime::refresh_config(&paths).await {
-        eprintln!("[AgentHarbor] Codex connection repair failed: {error}");
-    }
-    // Read the store again: `ensure_routing_config` may have just rewritten the
-    // Codex config, and the drift flag must reflect the file's final state.
+    // Opening the page only observes Codex's live configuration. Injection is
+    // reserved for the explicit enable action.
     let store = router::load_store(&paths)?;
     Ok(router::state_from_store_at(
         &store,
@@ -139,6 +135,7 @@ pub async fn set_newapi_smart_routing(
     let paths = paths(&repo)?;
     let _guard = routing_runtime::mutation_guard().await;
     let previous = router::load_store(&paths)?;
+    let previously_owned = router::active_routing_config_is_ours(&paths);
     if enabled && previous.codex_access_mode == CodexAccessMode::Router {
         routing_runtime::ensure_available(&paths).await?;
     }
@@ -151,7 +148,7 @@ pub async fn set_newapi_smart_routing(
     };
     if let Err(error) = routing_runtime::reconcile(&paths).await {
         if enabled && change.state.router.access_mode == CodexAccessMode::Router {
-            let _ = router::set_smart_routing(&paths, previous.router.enabled);
+            let _ = router::set_smart_routing(&paths, previous.router.enabled && previously_owned);
             let _ = routing_runtime::reconcile(&paths).await;
             return Err(error);
         }
@@ -169,7 +166,10 @@ pub async fn set_newapi_access_mode(
     let paths = paths(&repo)?;
     let _guard = routing_runtime::mutation_guard().await;
     let previous = router::load_store(&paths)?;
-    if previous.router.enabled && mode == CodexAccessMode::Router {
+    if previous.router.enabled
+        && mode == CodexAccessMode::Router
+        && router::active_routing_config_is_ours(&paths)
+    {
         routing_runtime::ensure_available(&paths).await?;
     }
     let mut change = match router::set_access_mode(&paths, mode) {

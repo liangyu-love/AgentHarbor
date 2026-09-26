@@ -381,7 +381,6 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
         let mut store: Store =
             serde_json::from_slice(&bytes).map_err(|_| "newapi.errors.storage")?;
         let mut changed = false;
-        let mut removed_incompatible_route = false;
         if store.version < 2 {
             // Older builds treated a successful model-list request as a
             // connectivity test. Require one real chat request before showing
@@ -397,14 +396,6 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
             || store.router.bearer_token.starts_with("codexharbor_");
         // Preserve provenance only when identity migration can change it.
         // Ordinary store reads should not clone every cached model.
-        let cleanup_store = (store.router.enabled
-            && (migrated_previous_identity
-                || store.router.bearer_token.is_empty()
-                || store
-                    .providers
-                    .iter()
-                    .any(|provider| provider.id.starts_with("aimami_"))))
-        .then(|| store.clone());
         if store.router.bearer_token.is_empty() || migrated_previous_identity {
             store.router.bearer_token = new_router_bearer();
             changed = true;
@@ -476,7 +467,6 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
             // Import credentials and choices, but require an explicit enable in
             // AgentHarbor so the old application's active route is not replaced.
             store.router.enabled = false;
-            removed_incompatible_route = true;
             changed = true;
         }
         for provider in &mut store.providers {
@@ -490,7 +480,6 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
                         // Keep the imported provider, but require the user to
                         // enable the new Responses bridge explicitly.
                         store.router.enabled = false;
-                        removed_incompatible_route = true;
                     }
                     changed = true;
                 }
@@ -511,11 +500,7 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
         if store.router.enabled && effective_active_for(&store, ModelProtocol::Responses).is_none()
         {
             store.router.enabled = false;
-            removed_incompatible_route = true;
             changed = true;
-        }
-        if removed_incompatible_route {
-            remove_routing_config(paths, cleanup_store.as_ref().unwrap_or(&store))?;
         }
         if changed {
             save_store_unlocked(paths, &store)?;
@@ -901,11 +886,23 @@ fn apply_routing_if_enabled(
     paths: &CodexPaths,
     store: &Store,
 ) -> Result<Option<newapi::AppliedConfig>, String> {
-    if store.router.enabled {
-        Ok(Some(apply_routing_config(paths, store)?))
-    } else {
-        Ok(None)
+    // Provider edits may refresh an active injection, but must not reclaim
+    // config.toml after another tool has selected its own provider.
+    if !store.router.enabled || !config_snapshot::path(paths).is_file() {
+        return Ok(None);
     }
+    let (_, document) = open_config(paths)?;
+    if !model_provider_is_ours(&document) {
+        return Ok(None);
+    }
+    Ok(Some(apply_routing_config(paths, store)?))
+}
+
+pub(crate) fn active_routing_config_is_ours(paths: &CodexPaths) -> bool {
+    if !config_snapshot::path(paths).is_file() {
+        return false;
+    }
+    open_config(paths).is_ok_and(|(_, document)| model_provider_is_ours(&document))
 }
 
 pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<StateChange, String> {
@@ -1284,6 +1281,7 @@ pub fn set_smart_routing(paths: &CodexPaths, enabled: bool) -> Result<StateChang
     let _guard = store_write_guard()?;
     let mut store = load_store_unlocked(paths)?;
     let previous = store.clone();
+    let previously_owned = active_routing_config_is_ours(paths);
     let applied;
     if enabled {
         validate_native_selection(&store)?;
@@ -1296,11 +1294,36 @@ pub fn set_smart_routing(paths: &CodexPaths, enabled: bool) -> Result<StateChang
         applied = remove_routing_config(paths, &store)?;
         store.router.enabled = false;
     }
-    persist_connection_change(paths, &previous, &store, applied.is_some())?;
+    if let Err(error) = save_store_unlocked(paths, &store) {
+        if enabled {
+            let rollback = if previously_owned {
+                apply_routing_config(paths, &previous).map(|_| ())
+            } else {
+                remove_routing_config(paths, &store).map(|_| ())
+            };
+            if rollback.is_err() {
+                log::warn!("Codex connection rollback failed after store write error");
+            }
+        }
+        return Err(error);
+    }
     Ok(StateChange {
         state: state_from_store_at(&store, super::router_proxy::is_running(), Some(paths)),
         applied,
     })
+}
+
+/// A clean app exit ends this session's route. A previous run's saved toggle
+/// alone does not confer ownership of Codex's current config.
+pub fn stop_smart_routing_on_exit(paths: &CodexPaths) -> Result<(), String> {
+    let _guard = store_write_guard()?;
+    let mut store = load_store_unlocked(paths)?;
+    if !store.router.enabled && !config_snapshot::path(paths).is_file() {
+        return Ok(());
+    }
+    remove_routing_config(paths, &store)?;
+    store.router.enabled = false;
+    save_store_unlocked(paths, &store)
 }
 
 pub fn set_access_mode(paths: &CodexPaths, mode: CodexAccessMode) -> Result<StateChange, String> {
@@ -1337,7 +1360,7 @@ fn persist_connection_change(
 ) -> Result<(), String> {
     if let Err(error) = save_store_unlocked(paths, store) {
         if config_changed {
-            let restored = if previous.router.enabled {
+            let restored = if previous.router.enabled && active_routing_config_is_ours(paths) {
                 apply_routing_config(paths, previous).map(|_| ())
             } else {
                 remove_routing_config(paths, previous).map(|_| ())
@@ -1433,7 +1456,7 @@ fn applied_config(result: ConfigWriteResult) -> newapi::AppliedConfig {
 fn remove_managed_provider_entries(document: &mut toml_edit::DocumentMut) {
     if let Some(providers) = document
         .get_mut("model_providers")
-        .and_then(toml_edit::Item::as_table_mut)
+        .and_then(toml_edit::Item::as_table_like_mut)
     {
         let ours: Vec<String> = providers
             .iter()
@@ -1444,6 +1467,29 @@ fn remove_managed_provider_entries(document: &mut toml_edit::DocumentMut) {
             providers.remove(&key);
         }
     }
+}
+
+fn reject_foreign_managed_provider_entries(
+    document: &toml_edit::DocumentMut,
+) -> Result<(), CoreError> {
+    if document
+        .get("model_providers")
+        .and_then(toml_edit::Item::as_table_like)
+        .is_some_and(|providers| {
+            [
+                CATALOG_PROVIDER_KEY,
+                NATIVE_PROVIDER_KEY,
+                DIRECT_PROVIDER_KEY,
+            ]
+            .iter()
+            .any(|key| providers.contains_key(key))
+        })
+    {
+        return Err(CoreError::OperationFailed(
+            "newapi.errors.routerSnapshot".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn model_provider_is_ours(document: &toml_edit::DocumentMut) -> bool {
@@ -1467,19 +1513,18 @@ fn managed_provider_key(key: &str) -> bool {
 ///
 /// Any tool that rewrites the same `config.toml` replaces our managed keys, and
 /// Codex then talks to whatever provider it now names. This is a read-only probe
-/// used for reporting; [`ensure_routing_config`] performs the actual repair, and
-/// a missing or unparsable file reports as intact because there is nothing to
-/// contradict yet.
+/// used for reporting. A missing or unparsable config is drift, not a valid
+/// active injection.
 pub(crate) fn routing_config_intact(paths: &CodexPaths) -> bool {
     let Ok(Some(text)) = CodexConfigRepository::new(paths).read_optional_text() else {
-        return true;
+        return false;
     };
     let Ok(document) = text.parse::<toml_edit::DocumentMut>() else {
-        return true;
+        return false;
     };
     document
         .get("model_providers")
-        .and_then(toml_edit::Item::as_table)
+        .and_then(toml_edit::Item::as_table_like)
         .and_then(|providers| providers.get(CATALOG_PROVIDER_KEY))
         .is_some()
         && document
@@ -1674,18 +1719,24 @@ fn apply_local_router_config(
                 .map_err(|_| CoreError::InvalidData("Invalid Codex config TOML".into()))?;
             if document
                 .get("model_providers")
-                .is_some_and(|item| !item.is_table())
+                .is_some_and(|item| !item.is_table_like())
             {
                 return Err(CoreError::InvalidData(
                     "model_providers must be a TOML table".into(),
                 ));
             }
             let mut snapshot = match config_snapshot::load(paths, original)? {
-                Some(snapshot) => snapshot,
+                Some(snapshot) if snapshot.selected_provider_is_ours(&document) => snapshot,
+                // An explicit enable after cc-switch took over starts a new
+                // session, with cc-switch's live settings as its baseline.
+                Some(_) => config_snapshot::Snapshot::capture(paths, &document)?,
                 None if model_provider_is_ours(&document) => {
                     config_snapshot::recover_legacy(paths, &document, store)?
                 }
-                None => config_snapshot::Snapshot::capture(paths, &document)?,
+                None => {
+                    reject_foreign_managed_provider_entries(&document)?;
+                    config_snapshot::Snapshot::capture(paths, &document)?
+                }
             };
             remove_managed_provider_entries(&mut document);
             config_snapshot::set_value(
@@ -1720,8 +1771,15 @@ fn apply_local_router_config(
                 providers.set_implicit(true);
                 document["model_providers"] = toml_edit::Item::Table(providers);
             }
+            let inline_providers = document["model_providers"]
+                .as_value()
+                .is_some_and(toml_edit::Value::is_inline_table);
             let entry = &mut document["model_providers"][CATALOG_PROVIDER_KEY];
-            *entry = toml_edit::Item::Table(toml_edit::Table::new());
+            *entry = if inline_providers {
+                toml_edit::Item::Value(toml_edit::Value::InlineTable(toml_edit::InlineTable::new()))
+            } else {
+                toml_edit::Item::Table(toml_edit::Table::new())
+            };
             entry["name"] = value("AgentHarbor 智能路由");
             entry["base_url"] = value(format!("http://127.0.0.1:{}/codex/v1", store.router.port));
             entry["wire_api"] = value("responses");
@@ -1777,9 +1835,9 @@ pub fn ensure_routing_config(
         });
     let provider = document
         .get("model_providers")
-        .and_then(toml_edit::Item::as_table)
+        .and_then(toml_edit::Item::as_table_like)
         .and_then(|providers| providers.get(CATALOG_PROVIDER_KEY))
-        .and_then(toml_edit::Item::as_table);
+        .and_then(toml_edit::Item::as_table_like);
     let current = provider.is_some_and(|provider| {
         provider.get("base_url").and_then(toml_edit::Item::as_str) == Some(expected_base.as_str())
             && provider.get("wire_api").and_then(toml_edit::Item::as_str) == Some("responses")
@@ -1837,8 +1895,11 @@ pub fn remove_routing_config(
     paths: &CodexPaths,
     store: &Store,
 ) -> Result<Option<newapi::AppliedConfig>, String> {
+    let had_snapshot = config_snapshot::path(paths).is_file();
     let applied = remove_connection_config(paths, store)?;
-    cleanup_native_credentials(paths);
+    if had_snapshot || applied.is_some() {
+        cleanup_native_credentials(paths);
+    }
     Ok(applied)
 }
 
@@ -1847,12 +1908,26 @@ fn remove_connection_config(
     store: &Store,
 ) -> Result<Option<newapi::AppliedConfig>, String> {
     let _guard = config_snapshot::guard().map_err(config_update_error)?;
+    // No journal means no owned settings to restore. Only legacy installs
+    // whose live provider is still ours require the recovery path below.
+    if !config_snapshot::path(paths).is_file() {
+        let (_, document) = match open_config(paths) {
+            Ok(config) => config,
+            Err(_) => return Ok(None),
+        };
+        if !model_provider_is_ours(&document) {
+            return Ok(None);
+        }
+    }
     if !paths.config_path.exists() {
-        config_snapshot::discard(paths).map_err(config_update_error)?;
-        let _ = std::fs::remove_file(catalog_path(paths));
+        if config_snapshot::path(paths).is_file() {
+            config_snapshot::discard(paths).map_err(config_update_error)?;
+            let _ = std::fs::remove_file(catalog_path(paths));
+        }
         return Ok(None);
     }
     let mut pending = None;
+    let mut keep_catalog = false;
     let result = CodexConfigRepository::new(paths)
         .update(|original| {
             let mut document = original
@@ -1860,7 +1935,7 @@ fn remove_connection_config(
                 .map_err(|_| CoreError::InvalidData("Invalid Codex config TOML".into()))?;
             if document
                 .get("model_providers")
-                .is_some_and(|item| !item.is_table())
+                .is_some_and(|item| !item.is_table_like())
             {
                 return Err(CoreError::InvalidData(
                     "model_providers must be a TOML table".into(),
@@ -1873,19 +1948,27 @@ fn remove_connection_config(
                 }
                 None => None,
             };
+            let Some(mut snapshot) = snapshot else {
+                return Ok(original.to_owned());
+            };
             remove_managed_provider_entries(&mut document);
-            if let Some(mut snapshot) = snapshot {
-                snapshot.restore(paths, &mut document)?;
-                snapshot.prepare(paths, original, &document, config_snapshot::Action::Remove)?;
-                pending = Some(snapshot);
-            }
+            snapshot.restore(paths, &mut document)?;
+            keep_catalog = document
+                .get("model_catalog_json")
+                .and_then(toml_edit::Item::as_str)
+                == Some(catalog_path(paths).to_string_lossy().as_ref());
+            snapshot.prepare(paths, original, &document, config_snapshot::Action::Remove)?;
+            pending = Some(snapshot);
             Ok(document.to_string())
         })
         .map_err(config_update_error)?;
-    if let Some(snapshot) = pending {
-        snapshot.finish(paths);
+    let Some(snapshot) = pending else {
+        return Ok(None);
+    };
+    snapshot.finish(paths);
+    if !keep_catalog {
+        let _ = std::fs::remove_file(catalog_path(paths));
     }
-    let _ = std::fs::remove_file(catalog_path(paths));
     Ok(Some(applied_config(result)))
 }
 
@@ -2052,8 +2135,8 @@ mod tests {
         std::fs::create_dir_all(&paths.codex_home).unwrap();
         let repository = CodexConfigRepository::new(&paths);
 
-        // Nothing written yet: no contradiction, so no drift is reported.
-        assert!(routing_config_intact(&paths));
+        // A missing file cannot be an active route.
+        assert!(!routing_config_intact(&paths));
 
         // Our own injection reads as intact.
         repository
@@ -2085,11 +2168,11 @@ base_url = "http://127.0.0.1:43127/codex/v1"
     }
 
     #[test]
-    fn routing_config_intact_treats_unreadable_config_as_no_drift() {
+    fn routing_config_intact_treats_unreadable_config_as_drift() {
         let (_dir, paths) = paths();
         std::fs::create_dir_all(&paths.codex_home).unwrap();
         std::fs::write(&paths.config_path, "this is not = valid toml [[[").unwrap();
-        assert!(routing_config_intact(&paths));
+        assert!(!routing_config_intact(&paths));
     }
 
     fn mark_tested(paths: &CodexPaths, id: &str) {
@@ -2652,6 +2735,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             })
             .unwrap();
 
+        let injected_before = std::fs::read(&paths.config_path).unwrap();
         let migrated = load_store(&paths).unwrap();
         assert!(migrated.providers[0].enabled);
         assert_eq!(
@@ -2662,15 +2746,11 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         assert_eq!(migrated.active_provider_id.as_deref(), Some("legacy-chat"));
         assert!(migrated.router.bearer_token.starts_with("agentharbor_"));
         assert_eq!(migrated.router.port, DEFAULT_PORT);
-        let restored: toml::Value = std::fs::read_to_string(&paths.config_path)
-            .unwrap()
-            .parse()
-            .unwrap();
-        assert_eq!(restored, original.parse::<toml::Value>().unwrap());
+        assert_eq!(std::fs::read(&paths.config_path).unwrap(), injected_before);
     }
 
     #[test]
-    fn unproven_legacy_chat_cleanup_preserves_config_and_store() {
+    fn unproven_legacy_chat_migration_only_changes_the_store() {
         let (_dir, paths) = paths();
         let store = Store {
             version: 1,
@@ -2704,18 +2784,13 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         .unwrap();
 
         let config_before = std::fs::read(&paths.config_path).unwrap();
-        let store_before = std::fs::read(store_path(&paths)).unwrap();
-        let error = match load_store(&paths) {
-            Ok(_) => panic!("unproven route cleanup unexpectedly succeeded"),
-            Err(error) => error,
-        };
-        assert_eq!(error, "newapi.errors.routerSnapshot");
+        let migrated = load_store(&paths).unwrap();
+        assert!(!migrated.router.enabled);
         assert_eq!(std::fs::read(&paths.config_path).unwrap(), config_before);
-        assert_eq!(std::fs::read(store_path(&paths)).unwrap(), store_before);
     }
 
     #[test]
-    fn failed_route_cleanup_does_not_commit_store_migration() {
+    fn malformed_codex_config_does_not_block_store_migration_or_get_rewritten() {
         let (_dir, paths) = paths();
         let provider = Provider {
             id: "legacy-chat".into(),
@@ -2743,18 +2818,18 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         std::fs::create_dir_all(paths.config_path.parent().unwrap()).unwrap();
         std::fs::write(&paths.config_path, "[invalid").unwrap();
 
-        let error = match load_store(&paths) {
-            Ok(_) => panic!("migration unexpectedly succeeded"),
-            Err(error) => error,
-        };
-        assert_eq!(error, "newapi.errors.configParse");
+        let migrated = load_store(&paths).unwrap();
+        assert!(!migrated.router.enabled);
+        assert_eq!(
+            std::fs::read_to_string(&paths.config_path).unwrap(),
+            "[invalid"
+        );
 
         let stored: Value =
             serde_json::from_slice(&secret_file::read(&store_path(&paths)).unwrap().unwrap())
                 .unwrap();
-        assert_eq!(stored["version"].as_u64(), Some(1));
-        assert_eq!(stored["router"]["enabled"].as_bool(), Some(true));
-        assert_eq!(stored["providers"][0]["wireApi"].as_str(), Some("chat"));
+        assert_eq!(stored["version"].as_u64(), Some(STORE_VERSION as u64));
+        assert_eq!(stored["router"]["enabled"].as_bool(), Some(false));
     }
 
     #[test]

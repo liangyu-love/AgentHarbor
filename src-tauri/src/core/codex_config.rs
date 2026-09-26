@@ -60,10 +60,16 @@ impl CodexConfigRepository {
         let _guard = config_guard()?;
         let original_bytes = read_bytes(&self.config_path)?;
         let original_text = decode_config(original_bytes.clone())?.unwrap_or_default();
-        let updated = normalize_config(mutate(&original_text)?);
-
-        // Validate the complete document before replacing a user's config.
-        let _: toml::Value = updated.parse()?;
+        let proposed = mutate(&original_text)?;
+        let _: toml::Value = proposed.parse()?;
+        if proposed == original_text {
+            return Ok(ConfigWriteResult {
+                path: self.config_path.clone(),
+                backup_path: None,
+                changed: false,
+            });
+        }
+        let updated = normalize_config(proposed);
 
         if original_bytes.as_deref() == Some(updated.as_bytes())
             || (original_bytes.is_none() && updated.is_empty())
@@ -354,6 +360,20 @@ mod tests {
         let updated = std::fs::read_to_string(&paths.config_path).unwrap();
         assert!(updated.contains("theme = 'dark'"));
         assert!(updated.contains("model = 'gpt-test'"));
+    }
+
+    #[test]
+    fn no_op_update_preserves_exact_file_without_creating_a_backup() {
+        let (_dir, paths) = paths();
+        std::fs::create_dir_all(&paths.codex_home).unwrap();
+        let original = b"model_provider = 'cc-switch'";
+        std::fs::write(&paths.config_path, original).unwrap();
+        let result = CodexConfigRepository::new(&paths)
+            .update(|current| Ok(current.to_owned()))
+            .unwrap();
+        assert!(!result.changed);
+        assert!(result.backup_path.is_none());
+        assert_eq!(std::fs::read(&paths.config_path).unwrap(), original);
     }
 
     #[test]

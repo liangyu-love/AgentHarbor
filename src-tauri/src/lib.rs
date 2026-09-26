@@ -77,8 +77,8 @@ pub fn run() {
                 if let Ok(paths) = paths {
                     tauri::async_runtime::spawn(async move {
                         let _guard = core::routing_runtime::mutation_guard().await;
-                        if let Err(error) = core::routing_runtime::refresh_config(&paths).await {
-                            eprintln!("[AgentHarbor] Codex connection repair failed: {error}");
+                        if let Err(error) = core::routing_runtime::reconcile(&paths).await {
+                            eprintln!("[AgentHarbor] local router startup failed: {error}");
                         }
                     });
                 }
@@ -200,12 +200,8 @@ pub fn run() {
         if matches!(event, RunEvent::Exit) {
             // The proxy lives in this process. Remove its Codex injection before
             // exit so the next Codex launch can still use the official account.
-            if let Ok(store) = core::router::load_store(&shared_paths) {
-                if store.router.enabled {
-                    if let Err(error) = core::router::remove_routing_config(&shared_paths, &store) {
-                        eprintln!("[AgentHarbor] router config cleanup failed: {error}");
-                    }
-                }
+            if let Err(error) = core::router::stop_smart_routing_on_exit(&shared_paths) {
+                eprintln!("[AgentHarbor] router config cleanup failed: {error}");
             }
             let _ = activation_watcher_guard_for_exit.borrow_mut().take();
             let _ = single_instance_guard_for_exit.borrow_mut().take();

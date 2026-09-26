@@ -183,6 +183,17 @@ pub(super) fn load(paths: &CodexPaths, current: &str) -> Result<Option<Snapshot>
 }
 
 impl Snapshot {
+    pub(super) fn selected_provider_is_ours(&self, document: &DocumentMut) -> bool {
+        self.applied.as_ref().is_some_and(|applied| {
+            document
+                .get("model_provider")
+                .and_then(Item::as_str)
+                .is_some_and(|current| {
+                    applied.get("model_provider") == Some(&Some(Scalar::Text(current.into())))
+                })
+        })
+    }
+
     pub(super) fn capture(paths: &CodexPaths, document: &DocumentMut) -> Result<Self, CoreError> {
         fields(document)?;
         let mut original = DocumentMut::new();
@@ -233,6 +244,12 @@ impl Snapshot {
         let Some(applied) = &self.applied else {
             return Ok(());
         };
+        // A provider switch is an external takeover of the whole route. The
+        // six root settings form one choice; restoring individual old values
+        // here would mix our former model/catalog/auth with the new provider.
+        if !self.selected_provider_is_ours(document) {
+            return Ok(());
+        }
         let current = fields(document)?;
         let original = parse_original(self)?;
         let router_alias = is_installed_router_alias(paths, document);
@@ -335,8 +352,8 @@ fn unrelated_config(document: &DocumentMut) -> Result<toml::Value, CoreError> {
     remove_managed_provider_entries(&mut projected);
     if projected
         .get("model_providers")
-        .and_then(Item::as_table)
-        .is_some_and(toml_edit::Table::is_empty)
+        .and_then(Item::as_table_like)
+        .is_some_and(|table| table.iter().next().is_none())
     {
         projected.remove("model_providers");
     }
@@ -707,6 +724,105 @@ mod tests {
     }
 
     #[test]
+    fn disabling_without_an_owned_snapshot_never_rewrites_cc_switch_config() {
+        let foreign = "model = 'cc-model'\nmodel_provider = 'cc-switch'\n[model_providers.cc-switch]\nbase_url = 'https://cc.invalid'";
+        let (_directory, paths, store) = fixture(foreign);
+        let before = std::fs::read(&paths.config_path).unwrap();
+        assert!(remove_routing_config(&paths, &store).unwrap().is_none());
+        assert_eq!(std::fs::read(&paths.config_path).unwrap(), before);
+        assert!(!path(&paths).exists());
+    }
+
+    #[test]
+    fn cc_switch_before_and_during_injection_is_preserved_on_cleanup() {
+        let foreign = "model = 'cc-model'\nmodel_provider = 'cc-switch'\nmodel_catalog_json = 'cc-models.json'\npreferred_auth_method = 'chatgpt'\n[model_providers.cc-switch]\nbase_url = 'https://cc.invalid'\n";
+        let (_directory, paths, store) = fixture(foreign);
+        apply_routing_config(&paths, &store).unwrap();
+        remove_routing_config(&paths, &store).unwrap();
+        assert_eq!(
+            parsed(&std::fs::read_to_string(&paths.config_path).unwrap()),
+            parsed(foreign)
+        );
+
+        apply_routing_config(&paths, &store).unwrap();
+        let mut takeover = config(&paths);
+        set_value(&mut takeover, "model", Some("cc-new-model".into()));
+        set_value(&mut takeover, "model_provider", Some("cc-switch".into()));
+        set_value(
+            &mut takeover,
+            "model_catalog_json",
+            Some("cc-new-models.json".into()),
+        );
+        set_value(
+            &mut takeover,
+            "preferred_auth_method",
+            Some("cc-auth".into()),
+        );
+        takeover["model_providers"]["cc-switch"]["base_url"] =
+            toml_edit::value("https://cc-new.invalid");
+        write_config(&paths, &takeover);
+        remove_routing_config(&paths, &store).unwrap();
+        let cleaned = config(&paths);
+        assert_eq!(fields(&cleaned).unwrap(), fields(&takeover).unwrap());
+        assert_eq!(
+            cleaned["model_providers"]["cc-switch"]["base_url"].as_str(),
+            Some("https://cc-new.invalid")
+        );
+        assert!(cleaned["model_providers"]
+            .get(CATALOG_PROVIDER_KEY)
+            .is_none());
+    }
+
+    #[test]
+    fn cc_switch_inline_provider_map_round_trips_without_shape_loss() {
+        let foreign = "model = 'cc-model'\nmodel_provider = 'cc-switch'\nmodel_providers = { cc-switch = { base_url = 'https://cc.invalid', wire_api = 'responses' } }\n";
+        let (_directory, paths, store) = fixture(foreign);
+        apply_routing_config(&paths, &store).unwrap();
+        let injected = config(&paths);
+        assert!(injected["model_providers"]
+            .as_value()
+            .is_some_and(toml_edit::Value::is_inline_table));
+        assert_eq!(
+            injected["model_providers"]["cc-switch"]["base_url"].as_str(),
+            Some("https://cc.invalid")
+        );
+        remove_routing_config(&paths, &store).unwrap();
+        assert_eq!(
+            parsed(&std::fs::read_to_string(&paths.config_path).unwrap()),
+            parsed(foreign)
+        );
+        assert!(config(&paths)["model_providers"]
+            .as_value()
+            .is_some_and(toml_edit::Value::is_inline_table));
+    }
+
+    #[test]
+    fn explicit_reenable_after_cc_switch_takeover_restores_new_baseline() {
+        let (_directory, paths, store) = fixture(ORIGINAL);
+        apply_routing_config(&paths, &store).unwrap();
+        let mut takeover = config(&paths);
+        set_value(&mut takeover, "model", Some("cc-model".into()));
+        set_value(&mut takeover, "model_provider", Some("cc-switch".into()));
+        set_value(
+            &mut takeover,
+            "model_catalog_json",
+            Some("cc-catalog.json".into()),
+        );
+        takeover["model_providers"]["cc-switch"] = Item::Table(toml_edit::Table::new());
+        takeover["model_providers"]["cc-switch"]["base_url"] =
+            toml_edit::value("https://cc.invalid");
+        write_config(&paths, &takeover);
+        apply_routing_config(&paths, &store).unwrap();
+        remove_routing_config(&paths, &store).unwrap();
+        let restored = config(&paths);
+        assert_eq!(fields(&restored).unwrap(), fields(&takeover).unwrap());
+        assert_eq!(
+            restored["model_providers"]["cc-switch"]["base_url"].as_str(),
+            Some("https://cc.invalid")
+        );
+    }
+
+    #[test]
     fn malformed_or_foreign_snapshot_fails_without_changing_config() {
         let (_directory, paths, store) = fixture(ORIGINAL);
         apply_routing_config(&paths, &store).unwrap();
@@ -893,7 +1009,7 @@ mod tests {
             remove_routing_config(&paths, &store).unwrap();
             assert_eq!(config(&paths)["model"].as_str(), Some(expected));
             assert!(!path(&paths).exists());
-            assert!(!catalog_path(&paths).exists());
+            assert_eq!(catalog_path(&paths).exists(), external_provider);
         }
     }
 
