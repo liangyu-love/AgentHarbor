@@ -298,70 +298,85 @@ export function NewApiPage() {
           routingEnabled && "drop-shadow-[0_4px_22px_rgba(139,92,246,0.18)]",
         )}
       >
-        <div aria-labelledby="newapi-routing-title" className="p-5">
-          <div className="flex items-start gap-3.5">
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500/20 to-purple-500/10 ring-1 ring-inset ring-blue-500/15">
-              <Sparkles className="h-5 w-5 text-blue-500 dark:text-blue-400" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-2.5">
-                <h2 id="newapi-routing-title" className="text-base font-semibold tracking-tight">
-                  {routingEnabled ? (
-                    <AnimatedGradientText speed={1.4} colorFrom="#60a5fa" colorTo="#a78bfa">
-                      {t("newapi.codexAccess")}
-                    </AnimatedGradientText>
-                  ) : (
-                    t("newapi.codexAccess")
-                  )}
-                </h2>
-                {routingEnabled && !configDrifted && <Badge className={softBadge("green")}>{t("newapi.enabledBadge")}</Badge>}
-                {configDrifted && <Badge className={softBadge("amber")}>{t("newapi.driftedBadge")}</Badge>}
+        <div aria-labelledby="newapi-routing-title" className="p-5 sm:p-6">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex items-start gap-3.5">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500/20 to-purple-500/10 ring-1 ring-inset ring-blue-500/20 shadow-xs">
+                <Sparkles className="h-5 w-5 text-blue-500 dark:text-blue-400" />
               </div>
-              <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{t(nativeAccess ? "newapi.nativeAccessDesc" : "newapi.smartRoutingDesc")}</p>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <h2 id="newapi-routing-title" className="text-base font-semibold tracking-tight">
+                    {routingEnabled ? (
+                      <AnimatedGradientText speed={1.4} colorFrom="#60a5fa" colorTo="#a78bfa">
+                        {t("newapi.codexAccess")}
+                      </AnimatedGradientText>
+                    ) : (
+                      t("newapi.codexAccess")
+                    )}
+                  </h2>
+                  {routingEnabled && !configDrifted && <Badge className={softBadge("green")}>{t("newapi.enabledBadge")}</Badge>}
+                  {configDrifted && <Badge className={softBadge("amber")}>{t("newapi.driftedBadge")}</Badge>}
+                </div>
+                <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{t(nativeAccess ? "newapi.nativeAccessDesc" : "newapi.smartRoutingDesc")}</p>
+              </div>
             </div>
-            <Switch
-              className="mt-1"
-              aria-label={t("newapi.codexAccess")}
-              checked={routingEnabled}
-              disabled={lock("routing") || (!routingEnabled && (providers.length === 0 || (nativeAccess && !nativeCompatible)))}
-              onCheckedChange={value =>
-                void run("routing", async () => {
-                  const change = await api.routing.setEnabled(value);
-                  applyChange(change);
-                  toast({ title: t(value ? "newapi.routingApplied" : "newapi.routingRemoved"), description: change.applied?.backupPath ?? undefined, variant: "success" });
-                }, t("newapi.routingFailed"))
-              }
-            />
-          </div>
-          <div className="mt-4 space-y-2">
-            <Label htmlFor="codex-access-mode">{t("newapi.accessMode")}</Label>
-            <Select value={accessMode} disabled={lock("access-mode")} onValueChange={value => void run("access-mode", async () => {
-              applyChange(await api.routing.setAccessMode(value as CodexAccessMode));
-              toast({ title: t("newapi.accessModeApplied"), variant: "success" });
-            }, t("newapi.routingFailed"))}>
-              <SelectTrigger id="codex-access-mode" className="max-w-sm"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="router">{t("newapi.accessRouter")}</SelectItem>
-                <SelectItem value="native" disabled={!nativeCompatible}>{t("newapi.accessNative")}</SelectItem>
-              </SelectContent>
-            </Select>
-            {selectedProvider && <p className="text-xs text-muted-foreground">{t("newapi.accessSelectedModel", { provider: selectedProvider.name, model: selectedProvider.model, protocol: t(protocolBadgeKey[providerModelProtocol(selectedProvider)]) })}</p>}
-            {!nativeCompatible && <p className="text-xs text-amber-700 dark:text-amber-300">{t(selectedProvider ? "newapi.nativeProtocolHint" : "newapi.nativeProviderHint")}</p>}
-            {nativeAccess && <p className="text-xs leading-relaxed text-muted-foreground">{t("newapi.nativeAuthHint")}</p>}
-            <p className="text-xs leading-relaxed text-muted-foreground">{t(nativeAccess ? "newapi.nativeNetworkHint" : "newapi.routerNetworkHint")}</p>
-            <div className="flex justify-end pt-1">
+
+            <div className="flex items-center gap-3 self-end sm:self-auto shrink-0">
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                className="h-8 shrink-0 gap-1.5"
+                className="h-9 gap-2 rounded-xl border-border/80 bg-background/80 px-3.5 text-xs font-semibold shadow-xs backdrop-blur-md transition-all hover:border-primary/40 hover:bg-background hover:shadow-sm"
                 disabled={!!busy}
                 onClick={() => setRestartConfirmOpen(true)}
               >
-                {busy === "restart-codex" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                {t(busy === "restart-codex" ? "newapi.restartingCodex" : "newapi.restartCodex")}
+                {busy === "restart-codex" ? (
+                  <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                ) : (
+                  <RefreshCw className="h-4 w-4 text-primary" />
+                )}
+                <span>{t(busy === "restart-codex" ? "newapi.restartingCodex" : "newapi.restartCodex")}</span>
               </Button>
+              <Switch
+                aria-label={t("newapi.codexAccess")}
+                checked={routingEnabled}
+                disabled={lock("routing") || (!routingEnabled && (providers.length === 0 || (nativeAccess && !nativeCompatible)))}
+                onCheckedChange={value =>
+                  void run("routing", async () => {
+                    const change = await api.routing.setEnabled(value);
+                    applyChange(change);
+                    toast({ title: t(value ? "newapi.routingApplied" : "newapi.routingRemoved"), description: change.applied?.backupPath ?? undefined, variant: "success" });
+                  }, t("newapi.routingFailed"))
+                }
+              />
             </div>
+          </div>
+
+          <div className="mt-5 space-y-2.5 rounded-xl border border-border/60 bg-muted/20 p-4 backdrop-blur-xs">
+            <Label htmlFor="codex-access-mode" className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              {t("newapi.accessMode")}
+            </Label>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <Select value={accessMode} disabled={lock("access-mode")} onValueChange={value => void run("access-mode", async () => {
+                applyChange(await api.routing.setAccessMode(value as CodexAccessMode));
+                toast({ title: t("newapi.accessModeApplied"), variant: "success" });
+              }, t("newapi.routingFailed"))}>
+                <SelectTrigger id="codex-access-mode" className="w-full sm:max-w-xs bg-background/80"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="router">{t("newapi.accessRouter")}</SelectItem>
+                  <SelectItem value="native" disabled={!nativeCompatible}>{t("newapi.accessNative")}</SelectItem>
+                </SelectContent>
+              </Select>
+              {selectedProvider && (
+                <div className="text-xs text-muted-foreground truncate">
+                  {t("newapi.accessSelectedModel", { provider: selectedProvider.name, model: selectedProvider.model, protocol: t(protocolBadgeKey[providerModelProtocol(selectedProvider)]) })}
+                </div>
+              )}
+            </div>
+            {!nativeCompatible && <p className="text-xs text-amber-700 dark:text-amber-300">{t(selectedProvider ? "newapi.nativeProtocolHint" : "newapi.nativeProviderHint")}</p>}
+            {nativeAccess && <p className="text-xs leading-relaxed text-muted-foreground">{t("newapi.nativeAuthHint")}</p>}
+            <p className="text-xs leading-relaxed text-muted-foreground">{t(nativeAccess ? "newapi.nativeNetworkHint" : "newapi.routerNetworkHint")}</p>
           </div>
           <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
             {t(routingEnabled ? (nativeAccess ? "newapi.nativeOnHint" : "newapi.routingOnHint") : "newapi.routingOffHint")}
@@ -500,7 +515,7 @@ export function NewApiPage() {
               const cardColor = isGroupActive ? "gold" : providerColor(group.key);
 
               return (
-                <div key={group.key} className="group relative">
+                <div key={group.key} className="group relative flex flex-col h-full">
                   {/* 3D Physical Card Deck Peek Layers for Same-Relay Groups */}
                   {hasMultiple && !isExpanded && (
                     <>
@@ -534,268 +549,272 @@ export function NewApiPage() {
                     shine={isGroupActive || selected}
                     shineColor={isGroupActive ? LIQUID_GOLD_SHINE : ["#60a5fa", "#a78bfa", "#60a5fa"]}
                     className={cn(
-                      "transition-transform duration-200 ease-out motion-reduce:transition-none hover:-translate-y-0.5",
+                      "flex flex-1 flex-col h-full transition-transform duration-200 ease-out motion-reduce:transition-none hover:-translate-y-0.5",
                       selected && "rounded-2xl ring-2 ring-primary/40",
                       isGroupActive && "drop-shadow-[0_4px_22px_rgba(212,175,55,0.3)]",
                     )}
                   >
-                    <div className="flex flex-1 flex-col p-3.5">
-                      {/* Header: Title + Domain + Badges + Switch */}
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                          <StatusDot provider={provider} />
-                          <h3 className="truncate text-[15px] font-semibold tracking-tight" title={groupAliases[group.key] ?? hostOf(provider)}>
-                            {groupAliases[group.key] ?? hostOf(provider)}
-                          </h3>
-                          {hasMultiple && (
-                            <span
-                              className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary cursor-pointer hover:bg-primary/20"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setExpandedGroups(prev => ({ ...prev, [group.key]: !prev[group.key] }));
-                              }}
-                              title={isExpanded ? t("newapi.collapseStack") : t("newapi.expandAll")}
-                            >
-                              <Layers className="h-2.5 w-2.5" />
-                              {group.providers.length}
+                    <div className="flex flex-1 flex-col justify-between p-3.5 sm:p-4">
+                      <div className="flex flex-col flex-1">
+                        {/* Header: Title + Domain + Badges + Switch */}
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                            <StatusDot provider={provider} />
+                            <h3 className="truncate text-[15px] font-semibold tracking-tight" title={groupAliases[group.key] ?? hostOf(provider)}>
+                              {groupAliases[group.key] ?? hostOf(provider)}
+                            </h3>
+                            {hasMultiple && (
+                              <span
+                                className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary cursor-pointer hover:bg-primary/20"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setExpandedGroups(prev => ({ ...prev, [group.key]: !prev[group.key] }));
+                                }}
+                                title={isExpanded ? t("newapi.collapseStack") : t("newapi.expandAll")}
+                              >
+                                <Layers className="h-2.5 w-2.5" />
+                                {group.providers.length}
+                              </span>
+                            )}
+                            <span className="shrink-0 max-w-[100px] truncate rounded bg-black/[0.04] px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground dark:bg-white/[0.06]" title={hostOf(provider)}>
+                              {hostOf(provider)}
                             </span>
-                          )}
-                          <span className="shrink-0 max-w-[100px] truncate rounded bg-black/[0.04] px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground dark:bg-white/[0.06]" title={hostOf(provider)}>
-                            {hostOf(provider)}
-                          </span>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-1.5">
-                          {provider.enabled && routingEnabled && (
-                            <Badge className={softBadge("amber")}>{t("newapi.badgeLocked")}</Badge>
-                          )}
-                          {provider.enabled && !routingEnabled && (
-                            <Badge className={softBadge("green")}>{t("newapi.badgeEnabled")}</Badge>
-                          )}
-                          <Switch
-                            checked={provider.enabled}
-                            className={isCurrentActive ? "data-[state=checked]:bg-amber-500" : undefined}
-                            disabled={lock(`enable:${provider.id}`)}
-                            onCheckedChange={value =>
-                              void run(`enable:${provider.id}`, async () => {
-                                const change = await api.providers.setEnabled(provider.id, value);
-                                applyChange(change);
-                              }, t("newapi.enableFailed"))
-                            }
-                          />
-                        </div>
-                      </div>
-
-                      {/* Stack Deck Selector Tabs for Same-Relay Groups */}
-                      {hasMultiple && !isExpanded && (
-                        <div className="mt-2.5 flex items-center justify-between gap-1 rounded-xl bg-black/[0.03] p-1 ring-1 ring-border/50 dark:bg-white/[0.03]">
-                          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto scrollbar-hide py-0.5">
-                            {group.providers.map(item => {
-                              const isCur = item.id === provider.id;
-                              const isItemActive = item.id === activeId && routingEnabled;
-                              return (
-                                <button
-                                  key={item.id}
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setGroupMemberSelect(prev => ({ ...prev, [group.key]: item.id }));
-                                  }}
-                                  className={cn(
-                                    "flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-medium transition-all",
-                                    isCur
-                                      ? "bg-card text-foreground shadow-xs ring-1 ring-border"
-                                      : "text-muted-foreground hover:bg-black/[0.04] hover:text-foreground dark:hover:bg-white/[0.06]",
-                                  )}
-                                  title={item.name}
-                                >
-                                  <StatusDot provider={item} />
-                                  <span className="max-w-[80px] truncate">{item.name}</span>
-                                  {isItemActive && <PlugZap className="h-3 w-3 text-amber-500 shrink-0" />}
-                                </button>
-                              );
-                            })}
                           </div>
-                          <button
-                            type="button"
-                            className={cn(cardButton, "h-6 w-6 shrink-0")}
-                            title={t("newapi.expandAll")}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setExpandedGroups(prev => ({ ...prev, [group.key]: true }));
-                            }}
-                          >
-                            <Layers className="h-3 w-3" />
-                          </button>
+                          <div className="flex shrink-0 items-center gap-1.5">
+                            {provider.enabled && routingEnabled && (
+                              <Badge className={softBadge("amber")}>{t("newapi.badgeLocked")}</Badge>
+                            )}
+                            {provider.enabled && !routingEnabled && (
+                              <Badge className={softBadge("green")}>{t("newapi.badgeEnabled")}</Badge>
+                            )}
+                            <Switch
+                              checked={provider.enabled}
+                              className={isCurrentActive ? "data-[state=checked]:bg-amber-500" : undefined}
+                              disabled={lock(`enable:${provider.id}`)}
+                              onCheckedChange={value =>
+                                void run(`enable:${provider.id}`, async () => {
+                                  const change = await api.providers.setEnabled(provider.id, value);
+                                  applyChange(change);
+                                }, t("newapi.enableFailed"))
+                              }
+                            />
+                          </div>
                         </div>
-                      )}
 
-                      {/* Dual Info Cards: Balance (Left) & Model/Status (Right) */}
-                      <div className="mt-2.5 grid grid-cols-2 gap-2">
-                        {/* Left: Balance Box */}
-                        <div className={cn(
-                          "flex flex-col justify-between rounded-xl p-2.5 ring-1 transition-colors min-w-0",
-                          isCurrentActive
-                            ? "bg-amber-500/[0.08] ring-amber-500/30"
-                            : "bg-black/[0.025] ring-border/50 dark:bg-white/[0.03]",
-                        )}>
-                          <div className="flex items-center justify-between gap-1">
-                            <span className="text-[11px] font-medium text-muted-foreground truncate">{balanceLabel(provider)}</span>
+                        {/* Stack Deck Selector Tabs for Same-Relay Groups */}
+                        {hasMultiple && !isExpanded ? (
+                          <div className="mt-2.5 flex items-center justify-between gap-1 rounded-xl bg-black/[0.03] p-1 ring-1 ring-border/50 dark:bg-white/[0.03]">
+                            <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto scrollbar-hide py-0.5">
+                              {group.providers.map(item => {
+                                const isCur = item.id === provider.id;
+                                const isItemActive = item.id === activeId && routingEnabled;
+                                return (
+                                  <button
+                                    key={item.id}
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setGroupMemberSelect(prev => ({ ...prev, [group.key]: item.id }));
+                                    }}
+                                    className={cn(
+                                      "flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-medium transition-all",
+                                      isCur
+                                        ? "bg-card text-foreground shadow-xs ring-1 ring-border"
+                                        : "text-muted-foreground hover:bg-black/[0.04] hover:text-foreground dark:hover:bg-white/[0.06]",
+                                    )}
+                                    title={item.name}
+                                  >
+                                    <StatusDot provider={item} />
+                                    <span className="max-w-[80px] truncate">{item.name}</span>
+                                    {isItemActive && <PlugZap className="h-3 w-3 text-amber-500 shrink-0" />}
+                                  </button>
+                                );
+                              })}
+                            </div>
                             <button
                               type="button"
-                              className={iconButton}
-                              title={t("newapi.refreshBalance")}
-                              aria-label={t("newapi.refreshBalance")}
-                              disabled={lock(`balance:${provider.id}`) || !(provider.hasApiKey || provider.hasAccessToken)}
-                              onClick={() =>
-                                void run(`balance:${provider.id}`, async () => patchProvider(await api.providers.queryBalance(provider.id)), t("newapi.balanceFailed"))
-                              }
+                              className={cn(cardButton, "h-6 w-6 shrink-0")}
+                              title={t("newapi.expandAll")}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setExpandedGroups(prev => ({ ...prev, [group.key]: true }));
+                              }}
                             >
-                              {busy === `balance:${provider.id}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                              <Layers className="h-3 w-3" />
                             </button>
                           </div>
-                          <div className="mt-0.5">
-                            <span className={cn(
-                              "truncate text-base font-semibold tabular-nums tracking-tight block",
-                              isCurrentActive && valuePositive && "text-emerald-600 dark:text-emerald-400",
-                              cardColor === "gold" && "dark:text-[#fef08a]"
-                            )}>
-                              {value ?? "— —"}
-                            </span>
-                          </div>
-                          <p className="mt-1 truncate text-[10px] text-muted-foreground/80" title={balanceCaption(provider)}>
-                            {balanceCaption(provider)}
-                          </p>
-                        </div>
+                        ) : (
+                          <div className="h-2" />
+                        )}
 
-                        {/* Right: Model & Connection Box */}
-                        <div className={cn(
-                          "flex flex-col justify-between rounded-xl p-2.5 ring-1 transition-colors min-w-0",
-                          isCurrentActive
-                            ? "bg-amber-500/[0.08] ring-amber-500/30"
-                            : "bg-black/[0.025] ring-border/50 dark:bg-white/[0.03]",
-                        )}>
-                          <div className="flex items-center justify-between gap-1">
-                            <span className="text-[11px] font-medium text-muted-foreground truncate">
-                              {t("newapi.model")}
-                            </span>
-                            <div className="flex items-center gap-1 shrink-0">
-                              {provider.testStatus === "untested" && <Badge className={softBadge("gray")}>{t("newapi.badgeUntested")}</Badge>}
-                              {provider.testStatus === "ok" && <Badge className={softBadge("green")}>{t("newapi.badgeOk")}</Badge>}
-                              {provider.testStatus === "failed" && <Badge className={softBadge("red")}>{t("newapi.badgeFailed")}</Badge>}
-                              {dsPeak !== null && (
-                                <Badge className={softBadge(dsPeak ? "amber" : "green")} title={t("newapi.deepSeekPeakTip")}>
-                                  {t(dsPeak ? "newapi.peakNow" : "newapi.offPeakNow")}
-                                </Badge>
-                              )}
+                        {/* Dual Info Cards: Balance (Left) & Model/Status (Right) */}
+                        <div className="mt-2 grid grid-cols-2 gap-2 flex-1">
+                          {/* Left: Balance Box */}
+                          <div className={cn(
+                            "flex flex-col justify-between rounded-xl p-2.5 ring-1 transition-colors min-w-0 min-h-[92px]",
+                            isCurrentActive
+                              ? "bg-amber-500/[0.08] ring-amber-500/30"
+                              : "bg-black/[0.025] ring-border/50 dark:bg-white/[0.03]",
+                          )}>
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="text-[11px] font-medium text-muted-foreground truncate">{balanceLabel(provider)}</span>
+                              <button
+                                type="button"
+                                className={iconButton}
+                                title={t("newapi.refreshBalance")}
+                                aria-label={t("newapi.refreshBalance")}
+                                disabled={lock(`balance:${provider.id}`) || !(provider.hasApiKey || provider.hasAccessToken)}
+                                onClick={() =>
+                                  void run(`balance:${provider.id}`, async () => patchProvider(await api.providers.queryBalance(provider.id)), t("newapi.balanceFailed"))
+                                }
+                              >
+                                {busy === `balance:${provider.id}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                              </button>
+                            </div>
+                            <div className="my-auto py-0.5">
+                              <span className={cn(
+                                "truncate text-base font-semibold tabular-nums tracking-tight block",
+                                isCurrentActive && valuePositive && "text-emerald-600 dark:text-emerald-400",
+                                cardColor === "gold" && "dark:text-[#fef08a]"
+                              )}>
+                                {value ?? "— —"}
+                              </span>
+                            </div>
+                            <p className="truncate text-[10px] text-muted-foreground/80" title={balanceCaption(provider)}>
+                              {balanceCaption(provider)}
+                            </p>
+                          </div>
+
+                          {/* Right: Model & Connection Box */}
+                          <div className={cn(
+                            "flex flex-col justify-between rounded-xl p-2.5 ring-1 transition-colors min-w-0 min-h-[92px]",
+                            isCurrentActive
+                              ? "bg-amber-500/[0.08] ring-amber-500/30"
+                              : "bg-black/[0.025] ring-border/50 dark:bg-white/[0.03]",
+                          )}>
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="text-[11px] font-medium text-muted-foreground truncate">
+                                {t("newapi.model")}
+                              </span>
+                              <div className="flex items-center gap-1 shrink-0">
+                                {provider.testStatus === "untested" && <Badge className={softBadge("gray")}>{t("newapi.badgeUntested")}</Badge>}
+                                {provider.testStatus === "ok" && <Badge className={softBadge("green")}>{t("newapi.badgeOk")}</Badge>}
+                                {provider.testStatus === "failed" && <Badge className={softBadge("red")}>{t("newapi.badgeFailed")}</Badge>}
+                                {dsPeak !== null && (
+                                  <Badge className={softBadge(dsPeak ? "amber" : "green")} title={t("newapi.deepSeekPeakTip")}>
+                                    {t(dsPeak ? "newapi.peakNow" : "newapi.offPeakNow")}
+                                  </Badge>
+                                )}
+                              </div>
+                            </div>
+                            <div className="my-auto flex min-w-0 items-center gap-1.5 py-0.5">
+                              <List className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                              <span className="truncate font-mono text-xs font-medium" title={provider.model || t("newapi.noModel")}>
+                                {provider.model || t("newapi.noModel")}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between gap-1 text-[10px] text-muted-foreground">
+                              <span className="truncate">
+                                {t("newapi.modelCount", { count: includedModels(provider.models).length })}
+                              </span>
+                              <span className="shrink-0 rounded bg-muted px-1 py-0.2 font-mono text-[9px] text-muted-foreground">
+                                {t(protocolBadgeKey[providerModelProtocol(provider)])}
+                              </span>
                             </div>
                           </div>
-                          <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
-                            <List className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                            <span className="truncate font-mono text-xs font-medium" title={provider.model || t("newapi.noModel")}>
-                              {provider.model || t("newapi.noModel")}
-                            </span>
-                          </div>
-                          <div className="mt-1 flex items-center justify-between gap-1 text-[10px] text-muted-foreground">
-                            <span className="truncate">
-                              {t("newapi.modelCount", { count: includedModels(provider.models).length })}
-                            </span>
-                            <span className="shrink-0 rounded bg-muted px-1 py-0.2 font-mono text-[9px] text-muted-foreground">
-                              {t(protocolBadgeKey[providerModelProtocol(provider)])}
-                            </span>
-                          </div>
                         </div>
+
+                        {/* Expanded Mode: Cascaded clean cards for all providers in this relay */}
+                        {hasMultiple && isExpanded && (
+                          <div className="mt-3 space-y-2 rounded-xl bg-black/[0.025] p-2.5 ring-1 ring-border/50 dark:bg-white/[0.03]">
+                            <div className="flex items-center justify-between gap-2 px-1 text-[11px] font-medium text-muted-foreground">
+                              <div className="flex items-center gap-1.5">
+                                <Layers className="h-3.5 w-3.5 text-primary" />
+                                <span>{t("newapi.groupMembers")} ({group.providers.length})</span>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  className="rounded px-1.5 py-0.5 text-xs text-primary hover:bg-primary/10"
+                                  onClick={() => renameGroup(group)}
+                                >
+                                  {t("newapi.renameGroup")}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted"
+                                  onClick={() => setExpandedGroups(prev => ({ ...prev, [group.key]: false }))}
+                                >
+                                  {t("newapi.collapseStack")}
+                                </button>
+                              </div>
+                            </div>
+                            <div className="space-y-1.5">
+                              {group.providers.map(item => (
+                                <div
+                                  key={item.id}
+                                  className={cn(
+                                    "flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-card/80 p-2 text-xs transition-colors hover:bg-muted/50",
+                                    item.id === provider.id && "ring-1 ring-primary/40",
+                                  )}
+                                >
+                                  <div className="flex min-w-0 flex-1 items-center gap-2">
+                                    <StatusDot provider={item} />
+                                    <span className="font-semibold truncate max-w-[120px]" title={item.name}>{item.name}</span>
+                                    <span className="font-mono text-[11px] text-muted-foreground truncate max-w-[110px]" title={item.model}>{item.model || t("newapi.noModel")}</span>
+                                    {item.id === activeId && routingEnabled && (
+                                      <span className="inline-flex items-center gap-0.5 rounded bg-amber-500/10 px-1 py-0.2 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                                        <PlugZap className="h-2.5 w-2.5" />
+                                        {t("newapi.isCurrentRoute")}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="flex shrink-0 items-center gap-1.5">
+                                    <Switch
+                                      checked={item.enabled}
+                                      disabled={lock(`enable:${item.id}`)}
+                                      onCheckedChange={value =>
+                                        void run(`enable:${item.id}`, async () => applyChange(await api.providers.setEnabled(item.id, value)), t("newapi.enableFailed"))
+                                      }
+                                    />
+                                    <button
+                                      type="button"
+                                      className={cardButton}
+                                      title={t("newapi.test")}
+                                      aria-label={t("newapi.test")}
+                                      disabled={lock(`test:${item.id}`) || !item.hasApiKey}
+                                      onClick={() => setTestDialog(item)}
+                                    >
+                                      <RadioTower className="h-3 w-3" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={cardButton}
+                                      title={t("newapi.edit")}
+                                      aria-label={t("newapi.edit")}
+                                      onClick={() => setDialog({ open: true, provider: item })}
+                                    >
+                                      <SquarePen className="h-3 w-3" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={cn(cardButton, "hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400")}
+                                      title={t("newapi.remove")}
+                                      aria-label={t("newapi.remove")}
+                                      onClick={() => setRemoving(item)}
+                                    >
+                                      <Trash2 className="h-3 w-3" />
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
 
-                      {/* Expanded Mode: Cascaded clean cards for all providers in this relay */}
-                      {hasMultiple && isExpanded && (
-                        <div className="mt-3 space-y-2 rounded-xl bg-black/[0.025] p-2.5 ring-1 ring-border/50 dark:bg-white/[0.03]">
-                          <div className="flex items-center justify-between gap-2 px-1 text-[11px] font-medium text-muted-foreground">
-                            <div className="flex items-center gap-1.5">
-                              <Layers className="h-3.5 w-3.5 text-primary" />
-                              <span>{t("newapi.groupMembers")} ({group.providers.length})</span>
-                            </div>
-                            <div className="flex items-center gap-1">
-                              <button
-                                type="button"
-                                className="rounded px-1.5 py-0.5 text-xs text-primary hover:bg-primary/10"
-                                onClick={() => renameGroup(group)}
-                              >
-                                {t("newapi.renameGroup")}
-                              </button>
-                              <button
-                                type="button"
-                                className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted"
-                                onClick={() => setExpandedGroups(prev => ({ ...prev, [group.key]: false }))}
-                              >
-                                {t("newapi.collapseStack")}
-                              </button>
-                            </div>
-                          </div>
-                          <div className="space-y-1.5">
-                            {group.providers.map(item => (
-                              <div
-                                key={item.id}
-                                className={cn(
-                                  "flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-card/80 p-2 text-xs transition-colors hover:bg-muted/50",
-                                  item.id === provider.id && "ring-1 ring-primary/40",
-                                )}
-                              >
-                                <div className="flex min-w-0 flex-1 items-center gap-2">
-                                  <StatusDot provider={item} />
-                                  <span className="font-semibold truncate max-w-[120px]" title={item.name}>{item.name}</span>
-                                  <span className="font-mono text-[11px] text-muted-foreground truncate max-w-[110px]" title={item.model}>{item.model || t("newapi.noModel")}</span>
-                                  {item.id === activeId && routingEnabled && (
-                                    <span className="inline-flex items-center gap-0.5 rounded bg-amber-500/10 px-1 py-0.2 text-[10px] font-medium text-amber-600 dark:text-amber-400">
-                                      <PlugZap className="h-2.5 w-2.5" />
-                                      {t("newapi.isCurrentRoute")}
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="flex shrink-0 items-center gap-1.5">
-                                  <Switch
-                                    checked={item.enabled}
-                                    disabled={lock(`enable:${item.id}`)}
-                                    onCheckedChange={value =>
-                                      void run(`enable:${item.id}`, async () => applyChange(await api.providers.setEnabled(item.id, value)), t("newapi.enableFailed"))
-                                    }
-                                  />
-                                  <button
-                                    type="button"
-                                    className={cardButton}
-                                    title={t("newapi.test")}
-                                    aria-label={t("newapi.test")}
-                                    disabled={lock(`test:${item.id}`) || !item.hasApiKey}
-                                    onClick={() => setTestDialog(item)}
-                                  >
-                                    <RadioTower className="h-3 w-3" />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className={cardButton}
-                                    title={t("newapi.edit")}
-                                    aria-label={t("newapi.edit")}
-                                    onClick={() => setDialog({ open: true, provider: item })}
-                                  >
-                                    <SquarePen className="h-3 w-3" />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className={cn(cardButton, "hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400")}
-                                    title={t("newapi.remove")}
-                                    aria-label={t("newapi.remove")}
-                                    onClick={() => setRemoving(item)}
-                                  >
-                                    <Trash2 className="h-3 w-3" />
-                                  </button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
                       {/* Footer: Status / Hint & Action Buttons */}
-                      <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-border/40 pt-2">
+                      <div className="mt-3 flex items-center justify-between gap-2 border-t border-border/40 pt-2.5">
                         <div className="flex min-w-0 items-center gap-1.5">
                           {isCurrentActive ? (
                             <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-300">

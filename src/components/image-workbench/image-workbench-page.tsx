@@ -21,6 +21,8 @@ import {
   Sparkles,
   Star,
   Trash2,
+  ChevronDown,
+  ChevronUp,
   Upload,
   X,
   ZoomIn,
@@ -214,6 +216,7 @@ export function ImageWorkbenchPage() {
   const [savedGalleryDir, setSavedGalleryDir] = useState<string | null>(null);
   const [copiedPrompt, setCopiedPrompt] = useState<string | null>(null);
   const [expandedPrompt, setExpandedPrompt] = useState<string | null>(null);
+  const [libraryCollapsed, setLibraryCollapsed] = useState(false);
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const thumbnailCache = useRef(new Map<string, string>());
   const thumbnailLoads = useRef(new Map<string, Promise<string>>());
@@ -646,9 +649,9 @@ export function ImageWorkbenchPage() {
         </div>
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)]">
+      <div className="grid min-w-0 gap-4 sm:gap-6 xl:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)]">
         {/* 左侧：笔墨设色 · 设色法度 (创作参数) */}
-        <div className="ink-scroll-frame p-5 sm:p-6 transition-all duration-300">
+        <div className="ink-scroll-frame min-w-0 p-4 transition-all duration-300 sm:p-5 sm:p-6">
           <div className="space-y-5">
             {/* 栏目头部 */}
             <div className="flex items-center justify-between border-b border-border/50 pb-3">
@@ -814,159 +817,178 @@ export function ImageWorkbenchPage() {
             </div>
 
             {/* 锦囊诗意提示词预设 */}
-            <div className="space-y-3 rounded-xl bg-black/[0.025] p-3 ring-1 ring-border/50 dark:bg-white/[0.02]">
-              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                <span className="inline-flex items-center gap-1.5 font-serif font-semibold text-muted-foreground">
-                  <Sparkles className="h-3.5 w-3.5 text-[#b83b38] dark:text-[#d94f4b]" />
-                  锦囊画谱 · 工业级灵感库
-                  {promptFavorites.length > 0 && (
-                    <span className="rounded-full bg-amber-500/15 px-1.5 py-px text-[10px] font-normal text-amber-700 dark:text-amber-300">
-                      已藏 {promptFavorites.length}
-                    </span>
-                  )}
-                </span>
-                <span className="font-serif text-[11px] text-muted-foreground/80">
-                  点选填入画题 · 复制可改写
-                </span>
-              </div>
-              <div className="relative">
-                <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground/70" />
-                <input
-                  value={promptQuery}
-                  onChange={event => setPromptQuery(event.target.value)}
-                  placeholder="检索画谱：人物 / Cosplay / 海报…"
-                  className="h-8 w-full rounded-md border border-border/60 bg-background/80 pl-7 pr-7 text-xs outline-none transition-colors focus:border-[#b83b38]/40"
-                  aria-label="检索提示词画谱"
-                />
-                {promptQuery && (
-                  <button
-                    type="button"
-                    onClick={() => setPromptQuery("")}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/70 hover:text-foreground"
-                    aria-label="清除检索"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                )}
-              </div>
-              {!promptQuery && (
-                <div className="-mx-0.5 flex gap-1 overflow-x-auto pb-1">
-                  {filteredPromptCategories.map((cat: PromptCategory) => (
-                    <button
-                      key={cat.category}
-                      type="button"
-                      onClick={() => setActiveCategory(cat.category)}
-                      className={cn(
-                        "shrink-0 rounded-md px-2.5 py-1 font-serif text-[11px] transition-all",
-                        activeCategory === cat.category
-                          ? "bg-[#b83b38]/10 text-[#b83b38] dark:bg-[#d94f4b]/15 dark:text-[#fca5a5] font-bold"
-                          : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
-                      )}
-                    >
-                      {cat.category}
-                      <span className="ml-1 opacity-60">{cat.recipes.length}</span>
-                    </button>
-                  ))}
+            <div className="space-y-2.5 rounded-xl bg-black/[0.025] p-2.5 ring-1 ring-border/50 dark:bg-white/[0.02] sm:space-y-3 sm:p-3">
+              <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="inline-flex min-w-0 items-center gap-1.5 font-serif font-semibold text-muted-foreground">
+                    <Sparkles className="h-3.5 w-3.5 shrink-0 text-[#b83b38] dark:text-[#d94f4b]" />
+                    <span className="truncate">锦囊画谱 · 工业级灵感库</span>
+                    {promptFavorites.length > 0 && (
+                      <span className="shrink-0 rounded-full bg-amber-500/15 px-1.5 py-px text-[10px] font-normal text-amber-700 dark:text-amber-300">
+                        已藏 {promptFavorites.length}
+                      </span>
+                    )}
+                  </span>
                 </div>
-              )}
-              <div className="flex max-h-[280px] flex-col gap-2 overflow-y-auto pr-0.5">
-                {visibleRecipes.length === 0 && (
-                  <p className="py-6 text-center font-serif text-xs text-muted-foreground">
-                    画谱中没有匹配「{promptQuery}」的条目
-                  </p>
-                )}
-                {visibleRecipes.map(({ category, recipe, key }) => {
-                  const expanded = expandedPrompt === recipe.prompt;
-                  const filled = prompt === recipe.prompt;
-                  const starred = promptFavorites.includes(key);
-                  return (
-                    <div
-                      key={key}
-                      className={cn(
-                        "rounded-lg border border-border/60 bg-background/70 p-2.5 transition-all",
-                        filled
-                          ? "border-[#b83b38]/45 bg-[#b83b38]/[0.04] dark:border-[#d94f4b]/40 dark:bg-[#d94f4b]/[0.06]"
-                          : "hover:border-[#b83b38]/35",
-                      )}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="flex items-center gap-1 font-serif text-xs font-semibold text-foreground/90">
-                            {starred && <Star className="h-3 w-3 fill-amber-400 text-amber-500" />}
-                            {recipe.title}
-                            {promptQuery.trim() && (
-                              <span className="ml-1 rounded bg-muted px-1 py-px text-[9px] font-normal text-muted-foreground">
-                                {category}
-                              </span>
-                            )}
-                          </p>
-                          <p className="mt-0.5 font-serif text-[11px] leading-snug text-muted-foreground/85">
-                            {recipe.tip}
-                          </p>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-0.5">
-                          <Button
-                            type="button"
-                            size="icon"
-                            variant="ghost"
-                            className="h-7 w-7 text-muted-foreground hover:text-amber-500"
-                            title={starred ? "取消收藏" : "收藏并置顶"}
-                            aria-label={starred ? "取消收藏" : "收藏并置顶"}
-                            onClick={() => toggleFavorite(category, recipe)}
-                          >
-                            {starred ? (
-                              <PinOff className="h-3.5 w-3.5" />
-                            ) : (
-                              <Pin className="h-3.5 w-3.5" />
-                            )}
-                          </Button>
-                          <Button
-                            type="button"
-                            size="icon"
-                            variant="ghost"
-                            className="h-7 w-7 text-muted-foreground hover:text-[#b83b38] dark:hover:text-[#fca5a5]"
-                            title={filled ? "已填入" : "填入画题"}
-                            onClick={() => applyPromptRecipe(recipe)}
-                          >
-                            {filled ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Feather className="h-3.5 w-3.5" />}
-                          </Button>
-                          <Button
-                            type="button"
-                            size="icon"
-                            variant="ghost"
-                            className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                            title="复制提示词"
-                            onClick={() => void copyPromptRecipe(recipe)}
-                          >
-                            {copiedPrompt === recipe.prompt ? (
-                              <Check className="h-3.5 w-3.5 text-emerald-500" />
-                            ) : (
-                              <Copy className="h-3.5 w-3.5" />
-                            )}
-                          </Button>
-                        </div>
-                      </div>
+                <div className="flex items-center gap-2">
+                  <span className="hidden font-serif text-[11px] text-muted-foreground/80 sm:inline">
+                    点选填入画题 · 复制可改写
+                  </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="xs"
+                    className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+                    onClick={() => setLibraryCollapsed(!libraryCollapsed)}
+                  >
+                    <span>{libraryCollapsed ? "展开画谱" : "收起画谱"}</span>
+                    {libraryCollapsed ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronUp className="h-3.5 w-3.5" />}
+                  </Button>
+                </div>
+              </div>
+
+              {!libraryCollapsed && (
+                <>
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground/70" />
+                    <input
+                      value={promptQuery}
+                      onChange={event => setPromptQuery(event.target.value)}
+                      placeholder="检索画谱：人物 / Cosplay / 海报…"
+                      className="h-8 w-full min-w-0 rounded-md border border-border/60 bg-background/80 pl-7 pr-7 text-xs outline-none transition-colors focus:border-[#b83b38]/40"
+                      aria-label="检索提示词画谱"
+                    />
+                    {promptQuery && (
                       <button
                         type="button"
-                        className="mt-1.5 w-full text-left"
-                        onClick={() => setExpandedPrompt(expanded ? null : recipe.prompt)}
+                        onClick={() => setPromptQuery("")}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/70 hover:text-foreground"
+                        aria-label="清除检索"
                       >
-                        <p
+                        <X className="h-3 w-3" />
+                      </button>
+                    )}
+                  </div>
+                  {!promptQuery && (
+                    <div className="flex flex-wrap gap-1 pr-0.5 sm:flex-nowrap sm:overflow-x-auto sm:overflow-y-hidden sm:pb-1 scrollbar-hide">
+                      {filteredPromptCategories.map((cat: PromptCategory) => (
+                        <button
+                          key={cat.category}
+                          type="button"
+                          onClick={() => setActiveCategory(cat.category)}
                           className={cn(
-                            "whitespace-pre-wrap break-words font-serif text-[11px] leading-relaxed text-muted-foreground transition-all",
-                            expanded ? "" : "line-clamp-2",
+                            "shrink-0 rounded-md px-2 py-1 font-serif text-[11px] leading-none transition-all sm:px-2.5",
+                            activeCategory === cat.category
+                              ? "bg-[#b83b38]/10 text-[#b83b38] dark:bg-[#d94f4b]/15 dark:text-[#fca5a5] font-bold"
+                              : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
                           )}
                         >
-                          {recipe.prompt}
-                        </p>
-                        <span className="mt-0.5 inline-block font-serif text-[10px] text-muted-foreground/60">
-                          {expanded ? "收起" : "展开全文"}
-                        </span>
-                      </button>
+                          {cat.category}
+                          <span className="ml-1 opacity-60">{cat.recipes.length}</span>
+                        </button>
+                      ))}
                     </div>
-                  );
-                })}
-              </div>
+                  )}
+                  <div className="flex max-h-96 min-h-[9rem] flex-col gap-2 overflow-y-auto overscroll-contain pr-1">
+                    {visibleRecipes.length === 0 && (
+                      <p className="py-6 text-center font-serif text-xs text-muted-foreground">
+                        画谱中没有匹配「{promptQuery}」的条目
+                      </p>
+                    )}
+                    {visibleRecipes.map(({ category, recipe, key }) => {
+                      const expanded = expandedPrompt === recipe.prompt;
+                      const filled = prompt === recipe.prompt;
+                      const starred = promptFavorites.includes(key);
+                      return (
+                        <div
+                          key={key}
+                          className={cn(
+                            "shrink-0 rounded-lg border border-border/60 bg-background/70 p-2 transition-all sm:p-2.5",
+                            filled
+                              ? "border-[#b83b38]/45 bg-[#b83b38]/[0.04] dark:border-[#d94f4b]/40 dark:bg-[#d94f4b]/[0.06]"
+                              : "hover:border-[#b83b38]/35",
+                          )}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="flex items-center gap-1 font-serif text-xs font-semibold text-foreground/90">
+                                {starred && <Star className="h-3 w-3 fill-amber-400 text-amber-500" />}
+                                {recipe.title}
+                                {promptQuery.trim() && (
+                                  <span className="ml-1 rounded bg-muted px-1 py-px text-[9px] font-normal text-muted-foreground">
+                                    {category}
+                                  </span>
+                                )}
+                              </p>
+                              <p className="mt-0.5 font-serif text-[11px] leading-snug text-muted-foreground/85">
+                                {recipe.tip}
+                              </p>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-0.5">
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="ghost"
+                                className="h-7 w-7 text-muted-foreground hover:text-amber-500"
+                                title={starred ? "取消收藏" : "收藏并置顶"}
+                                aria-label={starred ? "取消收藏" : "收藏并置顶"}
+                                onClick={() => toggleFavorite(category, recipe)}
+                              >
+                                {starred ? (
+                                  <PinOff className="h-3.5 w-3.5" />
+                                ) : (
+                                  <Pin className="h-3.5 w-3.5" />
+                                )}
+                              </Button>
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="ghost"
+                                className="h-7 w-7 text-muted-foreground hover:text-[#b83b38] dark:hover:text-[#fca5a5]"
+                                title={filled ? "已填入" : "填入画题"}
+                                onClick={() => applyPromptRecipe(recipe)}
+                              >
+                                {filled ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Feather className="h-3.5 w-3.5" />}
+                              </Button>
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="ghost"
+                                className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                                title="复制提示词"
+                                onClick={() => void copyPromptRecipe(recipe)}
+                              >
+                                {copiedPrompt === recipe.prompt ? (
+                                  <Check className="h-3.5 w-3.5 text-emerald-500" />
+                                ) : (
+                                  <Copy className="h-3.5 w-3.5" />
+                                )}
+                              </Button>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            className="mt-1 w-full text-left"
+                            onClick={() => setExpandedPrompt(expanded ? null : recipe.prompt)}
+                          >
+                            <p
+                              className={cn(
+                                "whitespace-pre-wrap break-words font-serif text-[11px] leading-relaxed text-muted-foreground transition-all",
+                                expanded ? "" : "line-clamp-2",
+                              )}
+                            >
+                              {recipe.prompt}
+                            </p>
+                            <span className="mt-0.5 inline-block font-serif text-[10px] text-muted-foreground/60 hover:text-foreground">
+                              {expanded ? "收起" : "展开全文"}
+                            </span>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
             </div>
 
             {/* 图生图参考底本 */}
