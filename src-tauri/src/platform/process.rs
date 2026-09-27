@@ -92,6 +92,31 @@ mod win32_process {
     use windows_sys::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
     };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowThreadProcessId, IsWindowVisible,
+    };
+
+    pub fn has_visible_window(pid: u32) -> bool {
+        unsafe extern "system" fn check_window(
+            window: windows_sys::Win32::Foundation::HWND,
+            data: isize,
+        ) -> i32 {
+            let state = &mut *(data as *mut (u32, bool));
+            let mut owner = 0;
+            GetWindowThreadProcessId(window, &mut owner);
+            if owner == state.0 && IsWindowVisible(window) != 0 {
+                state.1 = true;
+                return 0;
+            }
+            1
+        }
+
+        let mut state = (pid, false);
+        unsafe {
+            EnumWindows(Some(check_window), &mut state as *mut _ as isize);
+        }
+        state.1
+    }
 
     pub struct Process {
         pub pid: u32,
@@ -460,9 +485,8 @@ fn request_codex_app_quit() -> Result<(), CoreError> {
 
 #[cfg(target_os = "windows")]
 fn signal_windows_codex_desktop(force: bool) -> Result<(), CoreError> {
-    // The CLI and Electron app have the same executable name on Windows.
-    // Only signal verified desktop PIDs; /IM Codex.exe would also kill an
-    // unrelated terminal session or an IDE's app-server.
+    // Only signal verified desktop PIDs: MSIX uses ChatGPT.exe, while older
+    // unpackaged builds use Codex.exe (also used by the CLI).
     for process in windows_codex_desktop_processes() {
         let mut command = crate::platform::windows::background_command("taskkill");
         command.args(["/PID", &process.pid.to_string()]);
@@ -641,6 +665,21 @@ mod tests {
     }
 
     #[test]
+    fn windows_msix_main_is_chatgpt_but_unrelated_chatgpt_is_not_codex() {
+        let temp = tempfile::tempdir().unwrap();
+        let packaged = temp.path().join("OpenAI.Codex_26.917.9434.0_x64__test");
+        let main = fixture_executable(&packaged, "app/ChatGPT.exe");
+        fixture_executable(&packaged, "app/resources/app.asar");
+        assert!(!is_windows_codex_desktop_path(&main));
+        fixture_executable(&packaged, "AppxManifest.xml");
+        assert!(is_windows_codex_desktop_path(&main));
+        let unrelated = fixture_executable(temp.path(), "ChatGPT/app/ChatGPT.exe");
+        fixture_executable(temp.path(), "ChatGPT/app/resources/app.asar");
+        fixture_executable(temp.path(), "ChatGPT/AppxManifest.xml");
+        assert!(!is_windows_codex_desktop_path(&unrelated));
+    }
+
+    #[test]
     fn windows_appx_candidates_preserve_package_order_and_spaces() {
         let output = "\u{feff}C:\\Program Files\\WindowsApps\\OpenAI.Codex_new\r\n\r\n C:\\Program Files\\WindowsApps\\OpenAI.Codex_old \r\n";
         let candidates = windows_appx_codex_candidates(output);
@@ -649,8 +688,10 @@ mod tests {
         assert_eq!(
             candidates,
             vec![
+                latest.join("app").join("ChatGPT.exe"),
                 latest.join("app").join("Codex.exe"),
                 latest.join("Codex.exe"),
+                older.join("app").join("ChatGPT.exe"),
                 older.join("app").join("Codex.exe"),
                 older.join("Codex.exe")
             ]
@@ -767,21 +808,43 @@ fn snapshot_running_codex_path() {
 
 #[cfg(target_os = "windows")]
 fn windows_codex_desktop_processes() -> Vec<win32_process::Process> {
-    win32_process::find_processes_by_name("Codex")
+    win32_process::find_processes_by_name("ChatGPT")
         .into_iter()
+        .chain(win32_process::find_processes_by_name("Codex"))
         .filter(|process| is_windows_codex_desktop_path(&process.path))
         .collect()
 }
 
 #[cfg(target_os = "windows")]
 fn is_windows_codex_desktop_path(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.eq_ignore_ascii_case("Codex.exe"))
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let packaged_main = name.eq_ignore_ascii_case("ChatGPT.exe")
+        && path.parent().is_some_and(|parent| {
+            parent
+                .file_name()
+                .is_some_and(|name| name.eq_ignore_ascii_case("app"))
+        })
+        && path.parent().and_then(Path::parent).is_some_and(|root| {
+            root.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("OpenAI.Codex_"))
+                && root.join("AppxManifest.xml").is_file()
+        });
+    let unpackaged_main = name.eq_ignore_ascii_case("Codex.exe");
+    (packaged_main || unpackaged_main)
         && path.is_file()
         && path
             .parent()
             .is_some_and(|parent| parent.join("resources").join("app.asar").is_file())
+}
+
+#[cfg(target_os = "windows")]
+fn is_windows_packaged_codex_main(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("ChatGPT.exe"))
 }
 
 #[cfg(target_os = "windows")]
@@ -800,10 +863,11 @@ fn same_windows_executable(left: &Path, right: &Path) -> bool {
 fn wait_for_windows_codex_start(path: &Path, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if windows_codex_desktop_processes()
-            .iter()
-            .any(|process| same_windows_executable(&process.path, path))
-        {
+        if windows_codex_desktop_processes().iter().any(|process| {
+            same_windows_executable(&process.path, path)
+                && (!is_windows_packaged_codex_main(path)
+                    || win32_process::has_visible_window(process.pid))
+        }) {
             return true;
         }
         std::thread::sleep(Duration::from_millis(80));
@@ -834,15 +898,29 @@ fn launch_windows_codex_from_path(
             "Codex desktop executable is required; refusing to launch a CLI as Electron".into(),
         ));
     }
-    let launch_timeout = Duration::from_secs(5);
+    let launch_timeout = if is_windows_packaged_codex_main(path) {
+        Duration::from_secs(15)
+    } else {
+        Duration::from_secs(5)
+    };
 
     let mut direct = crate::platform::windows::background_command_path(path);
     configure_codex_desktop(&mut direct, proxy)?;
     if let Some(parent) = path.parent() {
         direct.current_dir(parent);
     }
-    if direct.spawn().is_ok() && wait_for_windows_codex_start(path, launch_timeout) {
-        return Ok(());
+    if direct.spawn().is_ok() {
+        if wait_for_windows_codex_start(path, launch_timeout) {
+            return Ok(());
+        }
+        if windows_codex_desktop_processes()
+            .iter()
+            .any(|process| same_windows_executable(&process.path, path))
+        {
+            return Err(CoreError::OperationFailed(
+                "Codex desktop process started but no window appeared".into(),
+            ));
+        }
     }
 
     let path_literal = windows_powershell_literal(path.to_string_lossy().as_ref());
@@ -937,7 +1015,11 @@ fn windows_appx_codex_candidates(output: &str) -> Vec<PathBuf> {
         .filter(|line| !line.is_empty())
         .flat_map(|location| {
             let root = PathBuf::from(location);
-            [root.join("app").join("Codex.exe"), root.join("Codex.exe")]
+            [
+                root.join("app").join("ChatGPT.exe"),
+                root.join("app").join("Codex.exe"),
+                root.join("Codex.exe"),
+            ]
         })
         .collect()
 }

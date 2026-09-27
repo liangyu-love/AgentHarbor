@@ -16,6 +16,7 @@ dependencies = [
  "chrono",
  "dirs",
  "dotenvy",
+ "embed-resource",
  "futures-util",
  "hostname",
  "http-body-util",

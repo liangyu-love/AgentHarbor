@@ -13,7 +13,9 @@ custom-protocol = ["tauri/custom-protocol"]
 
 [lib]
 name = "agentharbor_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# Desktop binaries link this crate as an rlib. Building an unused Windows
+# cdylib exceeds MinGW's export ordinal limit and blocks cargo build/test.
+crate-type = ["rlib"]
 
 [[bin]]
 name = "AgentHarbor"
@@ -21,6 +23,7 @@ path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+embed-resource = "3"
 
 [dev-dependencies]
 tempfile = "3"
@@ -54,7 +57,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "process"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_Foundation", "Win32_Security_Cryptography", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.59", features = ["Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_Foundation", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
