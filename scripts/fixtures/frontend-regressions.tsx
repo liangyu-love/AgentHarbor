@@ -11,8 +11,11 @@ import { ImageWorkbenchPage } from "@/components/image-workbench/image-workbench
 import { ProviderDialog } from "@/components/newapi/provider-dialog";
 import { ProviderTestDialog } from "@/components/newapi/provider-test-dialog";
 import { NewApiPage } from "@/components/newapi/newapi-page";
+import { OverviewPage } from "@/components/overview/overview-page";
+import { TokenUsagePanel } from "@/components/accounts/accounts-page";
 import { ClientConfigs } from "@/components/newapi/client-configs";
 import type { NewApiProvider, NewApiState } from "@/types/newapi";
+import type { TokenUsagePayload } from "@/types";
 import type { ClientConfigRequest, ClientStatus } from "@/types/clients";
 import { api } from "@/lib/api";
 import i18n from "@/lib/i18n";
@@ -30,6 +33,12 @@ const provider = (id: string) => ({ id, name: "Provider " + id, model: "model-" 
   modelsFetchedAt: null, balance: null, balanceSource: null, testStatus: "untested" as const,
   testAt: null, createdAt: 0, updatedAt: 0 });
 const imageProvider = { ...provider("image"), model: "gpt-image-2", models: [model("gpt-image-2")] };
+const groupedProviders: NewApiProvider[] = [
+  { ...provider("group-a"), name: "Relay Alpha", baseUrl: "https://relay.invalid/v1", model: "alpha-model" },
+  { ...provider("group-b"), name: "Relay Beta", baseUrl: "https://relay.invalid/v1/", model: "beta-model" },
+  { ...provider("group-c"), name: "Relay Gamma", baseUrl: "https://relay.invalid/v1", model: "gamma-model" },
+  { ...provider("solo"), name: "Solo provider", baseUrl: "https://solo.invalid/v1" },
+];
 const mixedProvider: NewApiProvider = { ...provider("mixed"), protocol: "chatCompletions", model: "responses-model", models: [
   { ...model("responses-model"), protocol: "responses" },
   { ...model("chat-model"), protocol: null, endpointTypes: ["chat_completions"] },
@@ -44,8 +53,61 @@ const galleryItems = Array.from({ length: 100 }, (_, i) => ({
   name: "gallery-" + i + ".png", path: "C:/synthetic/gallery-" + i + ".png", size: 100, modifiedAt: i,
 }));
 const pixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+nmQAAAABJRU5ErkJggg==";
+const tokens = (totalTokens: number, inputTokens: number, outputTokens: number, cacheReadTokens = 0) => ({
+  turnCount: 10, totalTokens, inputTokens, outputTokens, reasoningTokens: 0, cacheReadTokens, cacheWriteTokens: 0,
+});
+const relayTotals = (totalTokens: number, inputTokens: number, outputTokens: number, requestCount = 8) => ({
+  totalTokens, inputTokens, outputTokens, reasoningTokens: 0, requestCount, successfulCount: requestCount, reportedCount: requestCount,
+});
+const usageFixture: TokenUsagePayload = {
+  generatedAt: Math.floor(Date.now() / 1000),
+  local: {
+    generatedAt: Math.floor(Date.now() / 1000), today: tokens(74_100_000, 2_030_000, 292_000, 71_778_000),
+    week: tokens(510_000_000, 15_790_000, 2_476_000, 491_734_000),
+    allTime: tokens(2_060_000_000, 170_000_000, 8_730_000, 1_881_270_000),
+    bySource: [
+      { sourceId: "codex", sourceName: "Codex", available: true, fileCount: 153, updatedFileCount: 4, totals: tokens(1_900_000_000, 170_000_000, 8_730_000, 1_721_270_000) },
+      { sourceId: "claude", sourceName: "Claude Code", available: true, fileCount: 5, updatedFileCount: 1, totals: tokens(160_000_000, 2_940_000, 397_000, 156_663_000) },
+    ],
+    byModel: [
+      { sourceId: "codex", sourceName: "Codex", model: "gpt-5.6-sol", totals: tokens(1_180_000_000, 80_000_000, 4_000_000, 1_096_000_000) },
+      { sourceId: "codex", sourceName: "Codex", model: "gpt-6-sol", totals: tokens(260_000_000, 20_000_000, 1_500_000, 238_500_000) },
+      { sourceId: "claude", sourceName: "Claude Code", model: "claude-opus-5.5", totals: tokens(160_000_000, 2_940_000, 397_000, 156_663_000) },
+      { sourceId: "codex", sourceName: "Codex", model: "gpt-6-astra", totals: tokens(100_000_000, 7_000_000, 300_000, 92_700_000) },
+    ],
+    daily: Array.from({ length: 14 }, (_, index) => {
+      const values = [26, 20, 2, 1, 1, 4, 35, 68, 4, 2, 3, 123, 78, 74];
+      const total = values[index] * 1_000_000;
+      return { date: `2026-09-${String(index + 14).padStart(2, "0")}`, totals: tokens(total, Math.round(total * .05), Math.round(total * .012), Math.round(total * .938)),
+        byModel: [
+          { sourceId: "codex", sourceName: "Codex", model: "gpt-5.6-sol", totals: tokens(Math.round(total * .62), 0, 0) },
+          { sourceId: "codex", sourceName: "Codex", model: "gpt-6-sol", totals: tokens(Math.round(total * .24), 0, 0) },
+          { sourceId: "claude", sourceName: "Claude Code", model: "claude-opus-5.5", totals: tokens(Math.round(total * .14), 0, 0) },
+        ] };
+    }),
+    recent: [], warningCount: 0, warnings: [],
+  },
+  relay: {
+    generatedAt: Math.floor(Date.now() / 1000), today: relayTotals(63_000, 62_988, 12, 1),
+    week: relayTotals(120_000, 116_000, 4_000, 3), allTime: relayTotals(330_000, 310_000, 20_000, 5),
+    byProvider: [{ providerId: "group-a", providerName: "Relay Alpha", totals: relayTotals(330_000, 310_000, 20_000, 5) }],
+    byModel: [{ providerId: "group-a", providerName: "Relay Alpha", model: "gpt-6-luna", totals: relayTotals(330_000, 310_000, 20_000, 5) }],
+    daily: Array.from({ length: 14 }, (_, index) => ({ date: `2026-09-${String(index + 14).padStart(2, "0")}`, totals: relayTotals(index === 13 ? 63_000 : index * 1_200, index === 13 ? 62_988 : index * 1_000, index === 13 ? 12 : index * 200, index === 13 ? 1 : 0) })),
+    recent: [{ timestamp: Math.floor(Date.now() / 1000), date: "2026-09-27", providerId: "group-a", providerName: "Relay Alpha", model: "gpt-6-luna", protocol: "responses", statusCode: 200, durationMs: 1140, firstTokenMs: 320, success: true, usageReported: true, inputTokens: 62_988, outputTokens: 12, reasoningTokens: 0, totalTokens: 63_000 }],
+  },
+};
 let state: NewApiState = { providers: [imageProvider], router: { enabled: false, accessMode: "router", accountless: false, port: 0, configDrifted: false }, proxyRunning: false, activeProviderId: null };
 api.providers.loadState = async () => state;
+api.loadSnapshot = async () => ({ data: { status: {
+  paths: { codexHome: "C:/synthetic/codex", authExists: true, registryExists: true, sessionsExists: true },
+  api: { proxy: { mode: "manual", url: "http://127.0.0.1:7890" } },
+  autoSwitch: { supported: true, enabled: false, threshold5hPercent: 15, thresholdWeeklyPercent: 10, serviceState: "stopped", serviceLabel: "" },
+} } }) as any;
+api.loadMcpServers = async () => ({ data: { items: Array.from({ length: 6 }, (_, i) => ({ id: "mcp-" + i, enabled: true })) } }) as any;
+api.loadInstalledSkills = async () => ({ data: { total: 36, items: [] } }) as any;
+api.loadSkillBackups = async () => ({ data: { total: 0, items: [] } }) as any;
+api.loadCustomInstructionState = async () => ({ data: { current: { managedBlockPresent: false, lastTemplateTitle: null } } }) as any;
+api.getSystemInfo = async () => ({ os: "Windows", arch: "x64" }) as any;
 api.providers.queryBalance = id => new Promise(resolve => {
   controls.review.balanceRequests.push(id);
   controls.review.balanceResolvers.push(() => resolve({ ...mixedProvider, id, balance: { remaining: 9, used: null, unit: "USD", rawQuota: 9,
@@ -79,7 +141,7 @@ api.providers.test = async (id, selectedModel) => {
 api.image.keyStatus = async () => false;
 api.image.generate = request => new Promise(resolve => {
   controls.review.imageRequests.push(request);
-  controls.review.imageResolvers.push(() => resolve({ images: [pixel], model: request.model, revisedPrompts: [] }));
+  controls.review.imageResolvers.push((images = [pixel]) => resolve({ images, model: request.model, revisedPrompts: [] }));
 });
 api.image.saveToGallery = async () => {
   controls.review.gallerySaves += 1;
@@ -114,7 +176,7 @@ function ProviderFixture({ mixed = false }: { mixed?: boolean }) {
       onOpenChange={open => setDialog(current => ({ ...current, open }))} onSaved={noop} /></>;
 }
 
-type FixtureMode = "compact" | "grid" | "image" | "provider" | "warnings" | "thread-actions" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-opencode" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official";
+type FixtureMode = "compact" | "grid" | "image" | "groups" | "overview" | "usage" | "provider" | "warnings" | "thread-actions" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-opencode" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official";
 
 function recoveryPreview(mode: FixtureMode) {
   const base = {
@@ -142,7 +204,7 @@ function recoveryPreview(mode: FixtureMode) {
 function mount(mode: FixtureMode) {
   const selectedProvider = mode.startsWith("clients-versions") ? versionedProvider
     : mode === "incompatible" || mode === "native-invalid" ? { ...mixedProvider, model: "chat-model" } : mixedProvider;
-  state = { providers: mode === "image" ? [imageProvider] : [selectedProvider], router: { enabled: false, accessMode: mode === "native-invalid" ? "native" : "router", accountless: false, port: 43127, configDrifted: false }, proxyRunning: false, activeProviderId: mode === "image" ? null : selectedProvider.id };
+  state = { providers: mode === "image" ? [imageProvider] : mode === "groups" ? groupedProviders : mode === "overview" ? [...groupedProviders, provider("extra-1"), provider("extra-2")] : mode === "usage" ? [{ ...groupedProviders[0], balance: { remaining: 12.5, used: 7.5, unit: "USD", rawQuota: 12.5, quotaPerUnit: null, requestCount: 5, checkedAt: Math.floor(Date.now() / 1000), conversionAvailable: true } }] : [selectedProvider], router: { enabled: false, accessMode: mode === "native-invalid" ? "native" : "router", accountless: false, port: 43127, configDrifted: false }, proxyRunning: false, activeProviderId: mode === "image" || mode === "groups" || mode === "overview" || mode === "usage" ? null : selectedProvider.id };
   if (mode === "incompatible") state.providers.push(provider("alternate"));
   const savedClient: ClientConfigRequest | null = mode === "clients-versions-existing" ? {
     targetId: "claudeCode", providerId: "versions", model: "claude-opus-4-8", contextWindow: 200000,
@@ -208,8 +270,8 @@ function mount(mode: FixtureMode) {
     <div style={{ position: "relative", height: 600 }}><PageStage state="active">
       {mode.startsWith("recovery-") ? <ThreadRecoveryDialog thread={threads[0] as any} onOpenChange={noop}
           onRecovered={() => { controls.review.recoveredCalls += 1; }} /> :
-        mode === "image" ? <ImageWorkbenchPage /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode === "warnings" || mode === "thread-actions" ? <ThreadsPage /> :
-        mode === "access" || mode === "incompatible" || mode === "native-invalid" ? <NewApiPage /> :
+        mode === "image" ? <ImageWorkbenchPage /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage" ? <TokenUsagePanel data={usageFixture} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode === "warnings" || mode === "thread-actions" ? <ThreadsPage /> :
+        mode === "access" || mode === "incompatible" || mode === "native-invalid" || mode === "groups" ? <NewApiPage /> :
         mode === "test" ? <ProviderTestDialog open provider={mixedProvider} onOpenChange={noop} onTested={noop} onFailed={noop} /> :
         mode.startsWith("clients") ? <ClientConfigs providers={openCode ? [mixedProvider, provider("alternate")] : [selectedProvider]} /> :
         <VirtualThreadList groups={groups} collapsedGroups={new Set()} selected={new Set()} viewMode={mode}
@@ -219,7 +281,8 @@ function mount(mode: FixtureMode) {
   </TooltipProvider></QueryClientProvider>);
 }
 
-controls.review = { mount, getState: () => state, accessCalls: [], thumbnailCalls: [], originalCalls: [], thumbnailResolvers: [],
+controls.review = { mount, getState: () => state, pixel, accessCalls: [], thumbnailCalls: [], originalCalls: [], thumbnailResolvers: [],
+  navigatedTo: null, proxySettingsOpened: false,
   imageRequests: [], imageResolvers: [], gallerySaves: 0, failGallerySave: false,
   balanceRequests: [], balanceResolvers: [],
   restartCalls: [], recoveryApplyCalls: 0, recoveredCalls: 0, deleteCalls: [], openedPath: null,

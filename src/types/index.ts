@@ -327,6 +327,7 @@ export interface RelayUsageRecord {
   protocol: string;
   statusCode: number;
   durationMs: number;
+  firstTokenMs?: number | null;
   success: boolean;
   usageReported: boolean;
   inputTokens: number;
@@ -375,6 +376,7 @@ export interface TokenModelUsage {
 export interface TokenUsageDay {
   date: string;
   totals: TokenUsageTotals;
+  byModel: TokenModelUsage[];
 }
 
 export interface RecentTokenUsage {

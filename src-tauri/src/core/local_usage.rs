@@ -74,6 +74,8 @@ pub struct TokenModelUsage {
 pub struct TokenUsageDay {
     pub date: String,
     pub totals: TokenUsageTotals,
+    #[serde(default)]
+    pub by_model: Vec<TokenModelUsage>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -651,6 +653,7 @@ fn aggregate(
     let mut sources = HashMap::<String, TokenUsageTotals>::new();
     let mut models = HashMap::<(String, String), (String, TokenUsageTotals)>::new();
     let mut days = HashMap::<String, TokenUsageTotals>::new();
+    let mut daily_models = HashMap::<(String, String, String), (String, TokenUsageTotals)>::new();
     for record in &records {
         all_time.add(record);
         if record.date == today.format("%Y-%m-%d").to_string() {
@@ -676,6 +679,11 @@ fn aggregate(
             .unwrap_or(false)
         {
             days.entry(record.date.clone()).or_default().add(record);
+            daily_models
+                .entry((record.date.clone(), record.source_id.clone(), record.model.clone()))
+                .or_insert_with(|| (record.source_name.clone(), TokenUsageTotals::default()))
+                .1
+                .add(record);
         }
     }
     let mut by_source = [("codex", "Codex"), ("claude", "Claude Code")]
@@ -709,9 +717,21 @@ fn aggregate(
         .map(|offset| first_day + ChronoDuration::days(offset))
         .map(|date| {
             let date = date.format("%Y-%m-%d").to_string();
+            let mut by_model = daily_models
+                .iter()
+                .filter(|((day, _, _), _)| day == &date)
+                .map(|((_, source_id, model), (source_name, totals))| TokenModelUsage {
+                    source_id: source_id.clone(),
+                    source_name: source_name.clone(),
+                    model: model.clone(),
+                    totals: *totals,
+                })
+                .collect::<Vec<_>>();
+            by_model.sort_by(|left, right| right.totals.total_tokens.cmp(&left.totals.total_tokens));
             TokenUsageDay {
                 totals: days.remove(&date).unwrap_or_default(),
                 date,
+                by_model,
             }
         })
         .collect();
@@ -850,6 +870,22 @@ fn modified_ns(metadata: &std::fs::Metadata) -> i64 {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn daily_totals_include_models_for_the_hovered_day() {
+        let date = Local::now().format("%Y-%m-%d").to_string();
+        let record = UsageRecord {
+            request_id: "turn-1".into(), timestamp: Utc::now().timestamp(), date: date.clone(),
+            source_id: "codex".into(), source_name: "Codex".into(), model: "gpt-test".into(),
+            session_id: "session-1".into(), input_tokens: 11, output_tokens: 3,
+            reasoning_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, total_tokens: 14,
+        };
+        let payload = aggregate(HashMap::from([(record.request_id.clone(), record)]), HashMap::new(), Vec::new());
+        let today = payload.daily.iter().find(|day| day.date == date).unwrap();
+        assert_eq!(today.by_model.len(), 1);
+        assert_eq!(today.by_model[0].model, "gpt-test");
+        assert_eq!(today.by_model[0].totals.total_tokens, 14);
+    }
 
     #[test]
     fn parses_codex_exclusive_dimensions_and_filters_lineage_copy() {

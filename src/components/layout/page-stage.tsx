@@ -23,13 +23,13 @@ export function PageStage({
   children,
 }: PageStageProps) {
   const shellTransitionStyle: CSSProperties = {
-    transitionDuration: state === "active" ? "140ms" : "170ms",
+    transitionDuration: state === "active" ? "180ms" : "150ms",
     transitionTimingFunction: "cubic-bezier(0.2, 0.82, 0.3, 1)",
   };
   const contentTransitionStyle: CSSProperties = {
-    transitionDuration: state === "active" ? "240ms" : "180ms",
-    transitionTimingFunction: "cubic-bezier(0.22, 0.84, 0.32, 1)",
-    transitionDelay: state === "active" ? "16ms" : "0ms",
+    transitionDuration: state === "active" ? "300ms" : "160ms",
+    transitionTimingFunction: "cubic-bezier(0.16, 1, 0.3, 1)",
+    transitionDelay: state === "active" ? "20ms" : "0ms",
   };
 
   return (
@@ -51,8 +51,8 @@ export function PageStage({
           className={cn(
             "h-full transform-gpu [will-change:transform,opacity] transition-[opacity,transform] motion-reduce:transition-none",
             state === "active" && "opacity-100 translate-y-0",
-            state === "exiting" && "opacity-0 -translate-y-px",
-            state === "idle" && "opacity-0 translate-y-0.5",
+            state === "exiting" && "opacity-0 -translate-y-1",
+            state === "idle" && "opacity-0 translate-y-2",
           )}
         >
           {padded ? (

@@ -226,7 +226,7 @@ export function McpPage() {
             <p className="mt-1 text-sm text-muted-foreground">{t("mcp.description")}</p>
           </div>
           <div className="flex items-center gap-2">
-            <RainbowButton size="sm" className="h-9 rounded-lg dark:text-black font-medium" onClick={() => setEditing("new")}>
+            <RainbowButton size="sm" className="h-9 rounded-lg font-medium" onClick={() => setEditing("new")}>
               <Plus className="h-4 w-4" />
               {t("mcp.addServer")}
             </RainbowButton>
@@ -248,7 +248,7 @@ export function McpPage() {
         </div>
 
         {/* Stats & Config path banner */}
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <div className="app-metric-grid grid grid-cols-1 gap-3 lg:grid-cols-3">
           <AuroraCard color="blue">
             <div className="p-4 flex items-center justify-between">
               <div>
@@ -285,7 +285,7 @@ export function McpPage() {
             </div>
           </AuroraCard>
 
-          <AuroraCard color="purple">
+          <AuroraCard color="blue">
             <div className="p-4 flex flex-col justify-between h-full">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-medium text-muted-foreground">{t("mcp.configFile")}</span>
@@ -390,7 +390,7 @@ export function McpPage() {
               <p className="mt-1 text-xs text-muted-foreground max-w-sm">
                 直接添加本地进程或远程 MCP 端点，Codex 即可在对话中随时调用工具能力。
               </p>
-              <RainbowButton size="sm" className="mt-4 rounded-lg dark:text-black" onClick={() => setEditing("new")}>
+              <RainbowButton size="sm" className="mt-4 rounded-lg" onClick={() => setEditing("new")}>
                 <Plus className="h-3.5 w-3.5" />
                 {t("mcp.addServer")}
               </RainbowButton>

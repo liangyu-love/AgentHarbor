@@ -27,6 +27,7 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  useSidebar,
 } from "@/components/ui/sidebar";
 import { AnimatedSegmentedControl } from "@/components/ui/animated-segmented-control";
 
@@ -55,7 +56,7 @@ export const SIDEBAR_COLLAPSED_WIDTH_PX = 64;
 const SIDEBAR_LOGO_TOP_OFFSET_PX = -21;
 
 const navButtonClassName =
-  "relative overflow-hidden group-data-[state=expanded]:!rounded-[10px] group-data-[state=expanded]:!px-3 group-data-[state=expanded]:!py-2 group-data-[state=expanded]:gap-2.5 " +
+  "app-nav-button relative overflow-hidden group-data-[state=expanded]:!rounded-[10px] group-data-[state=expanded]:!px-3 group-data-[state=expanded]:!py-2 group-data-[state=expanded]:gap-2.5 " +
   // Selected = filled pill. Kill any leftover ring/border that reads as a hollow orange box.
   "data-[active=true]:!border-transparent data-[active=true]:!bg-primary/12 data-[active=true]:!text-foreground " +
   "data-[active=true]:!shadow-none data-[active=true]:!ring-0 data-[active=true]:!outline-none " +
@@ -143,8 +144,14 @@ export function AppSidebar({
   onThemeChange,
 }: AppSidebarProps) {
   const { t } = useTranslation();
+  const { isMobile, setOpenMobile } = useSidebar();
   const resolvedTheme = useThemeValue();
   const avatar = useAppAvatar();
+
+  const handleNavigate = (route: Route) => {
+    onNavigate(route);
+    if (isMobile) setOpenMobile(false);
+  };
 
   const themeLabel =
     resolvedTheme === "dark" ? t("nav.sidebarDarkTheme") : t("nav.sidebarLightTheme");
@@ -176,7 +183,7 @@ export function AppSidebar({
               className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-sidebar"
             />
           </button>
-          <button type="button" onClick={() => onNavigate("overview")}
+          <button type="button" onClick={() => handleNavigate("overview")}
             className="flex min-w-0 flex-col items-start rounded-md text-left leading-tight hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
             <span className="truncate text-[15px] font-semibold text-sidebar-foreground">
               AgentHarbor
@@ -199,7 +206,7 @@ export function AppSidebar({
                     isActive={isActive}
                     tooltip={t(labelKey)}
                     className={navButtonClassName}
-                    onClick={() => onNavigate(route)}
+                    onClick={() => handleNavigate(route)}
                   >
                     <Icon
                       strokeWidth={1.75}

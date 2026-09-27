@@ -45,6 +45,8 @@ interface SettingsPageProps {
   setRefreshInterval: (v: RefreshInterval) => void;
   onCheckUpdate: () => Promise<"available" | "up-to-date" | "error" | "unconfigured">;
   onRefreshUsageStatus?: () => Promise<unknown>;
+  openProxySettingsRequested?: boolean;
+  onProxySettingsRequestHandled?: () => void;
 }
 
 function proxyModeBadgeLabel(
@@ -68,6 +70,8 @@ export function SettingsPage({
   setRefreshInterval,
   onCheckUpdate,
   onRefreshUsageStatus,
+  openProxySettingsRequested,
+  onProxySettingsRequestHandled,
 }: SettingsPageProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -86,6 +90,11 @@ export function SettingsPage({
   const [draftWeekly, setDraftWeekly] = useState(10);
   const [pendingEnable, setPendingEnable] = useState(false);
   const [proxyDialogOpen, setProxyDialogOpen] = useState(false);
+  useEffect(() => {
+    if (!openProxySettingsRequested) return;
+    setProxyDialogOpen(true);
+    onProxySettingsRequestHandled?.();
+  }, [openProxySettingsRequested, onProxySettingsRequestHandled]);
   const updateCheckAction = useBusyAction({ minVisibleMs: 600 });
 
   const openThresholdDialog = (enabling: boolean) => {
@@ -215,7 +224,7 @@ export function SettingsPage({
     <div className="space-y-6">
       <div className="grid gap-5 lg:grid-cols-2 items-start">
         {/* Left Column: Appearance */}
-        <Section title={t("settings.appearance")} glow="bg-blue-500/10">
+        <Section title={t("settings.appearance")}>
           <AvatarSettings />
           <BackgroundSettings />
           <SettingRow label={t("settings.theme")}>
@@ -262,7 +271,7 @@ export function SettingsPage({
 
         {/* Right Column: Mode Switch & About */}
         <div className="space-y-5">
-          <Section title={t("settings.modeSwitch")} glow="bg-purple-500/10">
+          <Section title={t("settings.modeSwitch")}>
             <div className="flex items-center justify-between px-5 py-4">
               <div>
                 <div className="flex items-center gap-2">
@@ -307,7 +316,7 @@ export function SettingsPage({
             </SettingRow>
           </Section>
 
-          <Section title={t("settings.networkAndProxy")} glow="bg-cyan-500/10">
+          <Section title={t("settings.networkAndProxy")}>
             <SettingRow
               label={
                 <div className="flex items-center gap-2">
@@ -332,7 +341,7 @@ export function SettingsPage({
             </SettingRow>
           </Section>
 
-          <Section title={t("settings.about")} glow="bg-green-500/10">
+          <Section title={t("settings.about")}>
             <SettingRow label={t("settings.version")}>
               <span className=" text-sm text-muted-foreground">
                 {appVersion}
@@ -427,11 +436,9 @@ export function SettingsPage({
 
 function Section({
   title,
-  glow,
   children,
 }: {
   title: string;
-  glow: string;
   children: React.ReactNode;
 }) {
   return (
@@ -439,7 +446,7 @@ function Section({
       <h2 className="px-1 text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
         {title}
       </h2>
-      <BentoCard glowColor={glow} className="p-0 [&>div]:divide-y [&>div]:divide-border">{children}</BentoCard>
+      <BentoCard className="p-0 [&>div]:divide-y [&>div]:divide-border">{children}</BentoCard>
     </div>
   );
 }

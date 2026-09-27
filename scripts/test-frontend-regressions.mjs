@@ -40,6 +40,8 @@ const server = http.createServer((request, response) => {
 });
 await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
 const address = "http://127.0.0.1:" + server.address().port;
+const captureDir = process.env.FRONTEND_QA_CAPTURE_DIR;
+if (captureDir) await mkdir(captureDir, { recursive: true });
 let browser;
 try {
   const executablePath = argument("--browser-executable") ?? process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
@@ -70,8 +72,8 @@ try {
   console.log("PASS virtual list follows the PageStage scroll container in compact and grid modes");
 
   await reset("image");
-  const providerSelect = page.getByRole("combobox", { name: "中转驿站供应商" });
-  await page.waitForFunction(() => document.querySelector('[role="combobox"][aria-label="中转驿站供应商"]')?.textContent.includes("Provider image"));
+  const providerSelect = page.getByRole("combobox", { name: "图像供应商" });
+  await page.waitForFunction(() => document.querySelector('[role="combobox"][aria-label="图像供应商"]')?.textContent.includes("Provider image"));
   const selectImageProvider = async name => {
     await providerSelect.click();
     await page.getByRole("option", { name, exact: true }).click();
@@ -86,7 +88,7 @@ try {
   console.log("PASS explicit manual image provider selection remains selected and preserves its address");
 
   await reset("image");
-  const imagePrompt = page.locator('textarea[placeholder^="在此泼墨意气"]');
+  const imagePrompt = page.locator('textarea[placeholder^="描述画面主体"]');
   const imageSubmit = page.locator('[data-image-generate]');
   await providerSelect.click();
   await page.getByRole("option", { name: "Provider image", exact: true }).click();
@@ -127,6 +129,102 @@ try {
   await page.waitForFunction(() => window.review.gallerySaves === 2);
   await retryCanvas.getByText("已存入本地画册").waitFor();
   console.log("PASS a failed gallery save remains on its canvas and can be retried");
+
+  await reset("image");
+  await providerSelect.click();
+  await page.getByRole("option", { name: "Provider image", exact: true }).click();
+  await imagePrompt.fill("Two images on one canvas");
+  await imageSubmit.click();
+  await page.evaluate(() => window.review.imageResolvers[0]([window.review.pixel, window.review.pixel]));
+  const imagePair = page.locator('[data-generation-job-status="completed"] .ink-result-images img');
+  await imagePair.nth(1).waitFor();
+  const imageLayout = await page.locator('[data-generation-job-status="completed"]').evaluate(job => {
+    const parent = job.parentElement;
+    const images = [...job.querySelectorAll(".ink-result-images img")].map(image => image.getBoundingClientRect());
+    return { jobWidth: job.getBoundingClientRect().width, parentWidth: parent.getBoundingClientRect().width,
+      firstTop: images[0].top, secondTop: images[1].top, firstLeft: images[0].left, secondLeft: images[1].left };
+  });
+  assert.ok(imageLayout.jobWidth >= imageLayout.parentWidth - 2, JSON.stringify(imageLayout));
+  assert.ok(Math.abs(imageLayout.firstTop - imageLayout.secondTop) < 2 && imageLayout.secondLeft > imageLayout.firstLeft,
+    JSON.stringify(imageLayout));
+  if (captureDir) {
+    await page.locator(".ink-jobs-grid").evaluate(element => element.scrollIntoView({ block: "center" }));
+    await page.screenshot({ path: path.join(captureDir, "image-pair.png") });
+  }
+  console.log("PASS one image canvas fills the result panel and displays two images side by side");
+
+  await reset("groups");
+  await page.getByRole("heading", { name: "relay.invalid" }).waitFor();
+  await page.getByRole("button", { name: "下一个站点配置" }).click();
+  await page.locator(".relay-member-name", { hasText: "Relay Beta" }).waitFor();
+  await page.getByText("beta-model", { exact: true }).waitFor();
+  const cardHeightsBefore = await page.locator(".group.relative.flex.min-w-0.flex-col").evaluateAll(cards => cards.map(card => card.getBoundingClientRect().height));
+  await page.getByRole("button", { name: "展开同中转配置" }).click();
+  const cardHeightsAfter = await page.locator(".group.relative.flex.min-w-0.flex-col").evaluateAll(cards => cards.map(card => card.getBoundingClientRect().height));
+  assert.equal(cardHeightsBefore.length, 2);
+  assert.ok(cardHeightsAfter[0] > cardHeightsBefore[0] + 40, JSON.stringify({ cardHeightsBefore, cardHeightsAfter }));
+  assert.ok(Math.abs(cardHeightsAfter[1] - cardHeightsBefore[1]) < 2, JSON.stringify({ cardHeightsBefore, cardHeightsAfter }));
+  if (captureDir) {
+    await page.getByRole("heading", { name: "relay.invalid" }).evaluate(element => element.scrollIntoView({ block: "start" }));
+    await page.screenshot({ path: path.join(captureDir, "group-expanded.png") });
+  }
+  await page.getByRole("button", { name: "收起层叠堆叠" }).first().click();
+  if (captureDir) await page.screenshot({ path: path.join(captureDir, "group-collapsed.png") });
+  await page.getByRole("button", { name: "上一个站点配置" }).click();
+  await page.locator(".relay-member-name", { hasText: "Relay Alpha" }).waitFor();
+  console.log("PASS grouped relay switches members and expands without stretching independent cards");
+
+  await reset("overview");
+  await page.getByText("http://127.0.0.1:7890").waitFor();
+  const capabilityWidths = await page.locator(".overview-capability").evaluateAll(cards => cards.map(card => card.getBoundingClientRect().width));
+  assert.equal(capabilityWidths.length, 4);
+  assert.ok(Math.max(...capabilityWidths) - Math.min(...capabilityWidths) < 2, JSON.stringify(capabilityWidths));
+  await page.getByRole("button", { name: "代理设置" }).click();
+  assert.equal(await page.evaluate(() => window.review.proxySettingsOpened), true);
+  if (captureDir) {
+    await page.waitForTimeout(550);
+    await page.screenshot({ path: path.join(captureDir, "overview-proxy.png") });
+  }
+  console.log("PASS overview uses four equal capability cards and exposes configured API proxy settings");
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await reset("usage");
+  await page.locator(".usage-today-card").first().waitFor();
+  assert.equal(await page.locator(".usage-today-card").count(), 2);
+  assert.equal(await page.locator(".usage-source-card .usage-metric-orange").count(), 2);
+  const usageWidth = await page.locator(".usage-trend-card").evaluate(element => ({
+    card: element.getBoundingClientRect().width, parent: element.parentElement.getBoundingClientRect().width,
+  }));
+  assert.ok(usageWidth.card >= usageWidth.parent - 44, JSON.stringify(usageWidth));
+  if (captureDir) {
+    await page.screenshot({ path: path.join(captureDir, "usage-today.png") });
+    await page.locator(".usage-trend-card").evaluate(element => element.scrollIntoView({ block: "start" }));
+    await page.screenshot({ path: path.join(captureDir, "usage-trend.png") });
+  }
+  await page.locator(".usage-trend-svg").first().hover({ position: { x: 420, y: 100 } });
+  assert.equal(await page.locator(".usage-model-chip").count(), 3);
+  await page.getByRole("tab", { name: "请求明细" }).click();
+  await page.getByText("1140 ms").waitFor();
+  await page.getByText("320 ms").waitFor();
+  assert.equal(await page.locator(".usage-request-table tbody tr").count(), 1);
+  if (captureDir) {
+    await page.locator(".usage-relay-panel").evaluate(element => element.scrollIntoView({ block: "start" }));
+    await page.screenshot({ path: path.join(captureDir, "usage-requests.png") });
+  }
+  await page.getByRole("tab", { name: "供应商与额度" }).click();
+  await page.getByText("12.5 USD").waitFor();
+  await page.getByRole("button", { name: "刷新余额 Relay Alpha" }).click();
+  await page.waitForFunction(() => window.review.balanceRequests.includes("group-a"));
+  await page.evaluate(() => window.review.balanceResolvers.at(-1)());
+  await page.getByText("9 USD").waitFor();
+  await page.getByRole("tab", { name: "模型" }).click();
+  await page.locator(".usage-relay-body .usage-model-row").first().hover();
+  assert.equal(await page.locator(".usage-relay-body .usage-donut-segment").first().getAttribute("stroke-width"), "16");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await reset("usage");
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+  console.log("PASS usage dashboard prioritizes today, gives trend full width, and switches relay details with interactive model segments");
+  await page.setViewportSize({ width: 1200, height: 700 });
 
   await reset("provider");
   const labels = await page.evaluate(() => window.review.labels);

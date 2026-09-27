@@ -70,8 +70,9 @@ export function SiteHeader({
         <button
           type="button"
           onClick={onOpenSpotlight}
-          className="hidden md:flex items-center gap-2 rounded-lg border border-border/80 bg-muted/40 hover:bg-muted px-3 py-1.5 text-xs text-muted-foreground transition-all hover:border-primary/40 hover:text-foreground group shadow-2xs max-w-xs w-full justify-between cursor-pointer"
+          className="app-search-trigger hidden md:flex items-center gap-2 rounded-lg border border-border/80 bg-muted/40 hover:bg-muted px-3 py-1.5 text-xs text-muted-foreground transition-all hover:border-primary/40 hover:text-foreground group shadow-2xs max-w-xs w-full justify-between cursor-pointer"
           title="打开全局命令搜索 (Spotlight)"
+          aria-label="打开全局命令搜索"
         >
           <div className="flex items-center gap-2 truncate">
             <Search className="h-3.5 w-3.5 text-muted-foreground group-hover:text-primary transition-colors shrink-0" />
@@ -111,11 +112,15 @@ export function SiteHeader({
           <Button
             variant="ghost"
             size="icon-sm"
-            className="h-8 w-8 text-muted-foreground hover:text-foreground"
+            className="h-8 w-8 text-muted-foreground hover:text-foreground active:scale-95 transition-transform"
             onClick={onThemeToggle}
             title={isDarkMode ? "切换为浅色模式" : "切换为深色模式"}
           >
-            {isDarkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+            {isDarkMode ? (
+              <Sun className="h-4 w-4 transition-transform duration-300 rotate-0 hover:rotate-45" />
+            ) : (
+              <Moon className="h-4 w-4 transition-transform duration-300 -rotate-12 hover:rotate-0" />
+            )}
           </Button>
         )}
       </div>

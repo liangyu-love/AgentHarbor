@@ -264,7 +264,7 @@ export function CustomInstructionsPage() {
           <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
             <div>
               <div className="flex items-center gap-2.5 text-sm font-medium">
-                <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-primary/15 to-primary/5 ring-1 ring-inset ring-primary/10">
+                <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
                   <Wand2 className="h-4 w-4 text-primary" />
                 </span>
                 {t("customInstructions.templatesTitle")}
@@ -346,7 +346,7 @@ export function CustomInstructionsPage() {
               <div className="mb-4 flex items-start justify-between gap-4">
                 <div>
                   <div className="flex items-center gap-2.5 text-sm font-medium">
-                    <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-primary/15 to-primary/5 ring-1 ring-inset ring-primary/10">
+                    <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
                       <FileCode2 className="h-4 w-4 text-primary" />
                     </span>
                     {t("customInstructions.currentTitle")}
@@ -441,7 +441,7 @@ export function CustomInstructionsPage() {
               <div className="mb-4 flex items-start justify-between gap-4">
                 <div>
                   <div className="flex items-center gap-2.5 text-sm font-medium">
-                    <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-primary/15 to-primary/5 ring-1 ring-inset ring-primary/10">
+                    <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
                       <PencilLine className="h-4 w-4 text-primary" />
                     </span>
                     {t("customInstructions.editorTitle")}
@@ -503,7 +503,7 @@ export function CustomInstructionsPage() {
             <div className="mb-4 flex items-start justify-between gap-4">
               <div>
                 <div className="flex items-center gap-2.5 text-sm font-medium">
-                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-primary/15 to-primary/5 ring-1 ring-inset ring-primary/10">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
                     <History className="h-4 w-4 text-primary" />
                   </span>
                   {t("customInstructions.historyTitle")}

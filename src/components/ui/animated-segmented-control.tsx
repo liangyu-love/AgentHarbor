@@ -168,7 +168,7 @@ export function AnimatedSegmentedControl({
       <div
         aria-hidden="true"
         className={cn(
-          "pointer-events-none absolute transition-[left,top,width,height,opacity] duration-250 ease-out",
+          "pointer-events-none absolute transition-[left,top,width,height,opacity] duration-300 [transition-timing-function:cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none",
           indicatorClassName,
         )}
         style={{
@@ -199,7 +199,7 @@ export function AnimatedSegmentedControl({
             }}
             onKeyDown={(event) => moveByKeyboard(event, itemValue)}
             className={cn(
-              "relative z-[1] flex items-center justify-center transition-colors",
+              "relative z-[1] flex items-center justify-center transition-colors active:scale-[0.97] motion-reduce:active:scale-100 motion-reduce:transition-none",
               itemClassName,
               active ? activeItemClassName : inactiveItemClassName,
             )}

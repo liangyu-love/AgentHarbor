@@ -139,7 +139,7 @@ export function MaintenancePage() {
     {
       key: "diagnose",
       icon: Stethoscope,
-      iconTile: "bg-blue-500/10 ring-blue-500/15 text-blue-500 dark:text-blue-400",
+      iconTile: "bg-primary/10 text-primary",
       label: t("maintenance.diagnose"),
       description: t("maintenance.diagnoseDesc"),
       actionLabel: t("maintenance.diagnoseAction"),
@@ -159,7 +159,7 @@ export function MaintenancePage() {
     {
       key: "rebuild",
       icon: RotateCw,
-      iconTile: "bg-violet-500/10 ring-violet-500/15 text-violet-500 dark:text-violet-400",
+      iconTile: "bg-primary/10 text-primary",
       label: t("maintenance.rebuild"),
       description: t("maintenance.rebuildDesc"),
       actionLabel: t("maintenance.rebuildAction"),

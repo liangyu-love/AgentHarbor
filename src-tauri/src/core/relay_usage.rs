@@ -10,7 +10,7 @@ use std::time::Instant;
 
 const USAGE_FILE: &str = "relay-usage.jsonl";
 const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
-const RECENT_LIMIT: usize = 30;
+const RECENT_LIMIT: usize = 200;
 const DAILY_WINDOW_DAYS: i64 = 14;
 
 fn file_lock() -> &'static Mutex<()> {
@@ -57,6 +57,8 @@ pub struct RelayUsageRecord {
     pub protocol: String,
     pub status_code: u16,
     pub duration_ms: u64,
+    #[serde(default)]
+    pub first_token_ms: Option<u64>,
     pub success: bool,
     pub usage_reported: bool,
     #[serde(flatten)]
@@ -164,7 +166,7 @@ impl RelayUsageRequest {
     }
 
     pub fn failed(self, status_code: u16) {
-        self.persist(status_code, false, TokenCounts::default());
+        self.persist(status_code, false, TokenCounts::default(), None);
     }
 
     pub fn observe(self, status_code: u16, is_event_stream: bool) -> RelayUsageObserver {
@@ -176,10 +178,11 @@ impl RelayUsageRequest {
             usage_reported: false,
             tokens: TokenCounts::default(),
             capture_truncated: false,
+            first_token_ms: None,
         }
     }
 
-    fn persist(self, status_code: u16, usage_reported: bool, mut tokens: TokenCounts) {
+    fn persist(self, status_code: u16, usage_reported: bool, mut tokens: TokenCounts, first_token_ms: Option<u64>) {
         tokens.normalize_total();
         let record = RelayUsageRecord {
             timestamp: self.timestamp,
@@ -190,6 +193,7 @@ impl RelayUsageRequest {
             protocol: self.protocol,
             status_code,
             duration_ms: self.started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+            first_token_ms,
             success: (200..300).contains(&status_code),
             usage_reported,
             tokens,
@@ -212,6 +216,7 @@ pub struct RelayUsageObserver {
     usage_reported: bool,
     tokens: TokenCounts,
     capture_truncated: bool,
+    first_token_ms: Option<u64>,
 }
 
 impl RelayUsageObserver {
@@ -253,6 +258,10 @@ impl RelayUsageObserver {
             return;
         }
         if let Ok(value) = serde_json::from_str::<Value>(&data) {
+            if self.first_token_ms.is_none() && contains_output_delta(&value) {
+                self.first_token_ms = self.request.as_ref().map(|request|
+                    request.started.elapsed().as_millis().min(u64::MAX as u128) as u64);
+            }
             self.merge_value(&value);
         }
     }
@@ -278,9 +287,20 @@ impl Drop for RelayUsageObserver {
             }
         }
         if let Some(request) = self.request.take() {
-            request.persist(self.status_code, self.usage_reported, self.tokens);
+            request.persist(self.status_code, self.usage_reported, self.tokens, self.first_token_ms);
         }
     }
+}
+
+fn contains_output_delta(value: &Value) -> bool {
+    let event_type = value.get("type").and_then(Value::as_str).unwrap_or_default();
+    if matches!(event_type, "response.output_text.delta" | "content_block_delta") {
+        return value.pointer("/delta/text").or_else(|| value.pointer("/delta/partial_json")).or_else(|| value.get("delta"))
+            .and_then(Value::as_str).is_some_and(|text| !text.is_empty());
+    }
+    value.pointer("/choices/0/delta/content")
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.is_empty())
 }
 
 fn event_boundary(bytes: &[u8]) -> Option<(usize, usize)> {
@@ -510,6 +530,14 @@ pub fn load(app_data_dir: &Path) -> Result<RelayUsagePayload, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_first_content_event_without_treating_usage_as_text() {
+        assert!(contains_output_delta(&serde_json::json!({"type":"response.output_text.delta","delta":"hello"})));
+        assert!(contains_output_delta(&serde_json::json!({"type":"content_block_delta","delta":{"text":"hello"}})));
+        assert!(contains_output_delta(&serde_json::json!({"choices":[{"delta":{"content":"hello"}}]})));
+        assert!(!contains_output_delta(&serde_json::json!({"type":"response.completed","response":{"usage":{"input_tokens":1}}})));
+    }
 
     #[test]
     fn parses_openai_and_anthropic_usage_without_counting_reasoning_twice() {

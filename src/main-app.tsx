@@ -96,6 +96,7 @@ function MainApp() {
     () => localStorage.getItem("sidebar_collapsed") === "false",
   );
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [proxySettingsRequested, setProxySettingsRequested] = useState(false);
   const { refreshInterval, setRefreshInterval } = useAutoRefresh();
   const update = useUpdateCheck();
   const showUpdateOverlay =
@@ -105,7 +106,7 @@ function MainApp() {
     update.status === "error";
 
   const installLocationPrompt = useInstallLocationPrompt();
-  const routeTransition = useRouteTransition(route, { durationMs: 240 });
+  const routeTransition = useRouteTransition(route, { durationMs: 300 });
   const [imageWorkbenchVisited, setImageWorkbenchVisited] = useState(route === "imageWorkbench");
   useEffect(() => {
     if (route === "imageWorkbench") setImageWorkbenchVisited(true);
@@ -114,6 +115,11 @@ function MainApp() {
   const handleThemeChange = useCallback((nextTheme: Theme) => {
     setTheme(nextTheme);
   }, [setTheme]);
+  const openProxySettings = useCallback(() => {
+    setProxySettingsRequested(true);
+    setRoute("settings");
+  }, []);
+  const clearProxySettingsRequest = useCallback(() => setProxySettingsRequested(false), []);
 
   // Global Ctrl+K / Cmd+K listener
   useEffect(() => {
@@ -145,9 +151,9 @@ function MainApp() {
   const renderPage = (targetRoute: Route) => {
     switch (targetRoute) {
       case "overview":
-        return <OverviewPage onNavigate={setRoute} />;
+        return <OverviewPage onNavigate={setRoute} onOpenProxySettings={openProxySettings} />;
       case "accounts":
-        return <AccountsPage refreshInterval={refreshInterval} />;
+        return <AccountsPage refreshInterval={refreshInterval} onManageProviders={() => setRoute("newapi")} />;
       case "newapi":
         return <NewApiPage />;
       case "imageWorkbench":
@@ -177,6 +183,8 @@ function MainApp() {
             refreshInterval={refreshInterval}
             setRefreshInterval={setRefreshInterval}
             onCheckUpdate={update.checkForUpdate}
+            openProxySettingsRequested={proxySettingsRequested}
+            onProxySettingsRequestHandled={clearProxySettingsRequest}
           />
         );
       default:

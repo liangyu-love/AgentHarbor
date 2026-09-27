@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  CircleHelp, FileDown, Layers, FileUp, List, Loader2, Network, Plus, PlugZap, RadioTower, RefreshCw, Settings2, Sparkles, SquarePen, Trash2, X,
+  ChevronLeft, ChevronRight, CircleHelp, FileDown, Layers, FileUp, List, Loader2, Network, Plus, PlugZap, RadioTower, RefreshCw, Settings2, Sparkles, SquarePen, Trash2, X,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -10,8 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
-import { AuroraCard, LIQUID_GOLD_SHINE } from "@/components/ui/aurora-card";
-import { AnimatedGradientText } from "@/components/ui/animated-gradient-text";
+import { AuroraCard } from "@/components/ui/aurora-card";
 import { RainbowButton } from "@/registry/magicui/rainbow-button";
 import type { GlowColor } from "@/components/ui/glow-card";
 import { toast } from "@/hooks/use-toast";
@@ -124,6 +123,7 @@ export function NewApiPage() {
   const [aliasGroup, setAliasGroup] = useState<RelayGroup | null>(null);
   const [aliasDraft, setAliasDraft] = useState("");
   const [groupMemberSelect, setGroupMemberSelect] = useState<Record<string, string>>({});
+  const [groupMemberDirection, setGroupMemberDirection] = useState<Record<string, "prev" | "next">>({});
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
 
   const providers = state.data?.providers ?? [];
@@ -328,30 +328,16 @@ export function NewApiPage() {
       <AuroraCard
         color="blue"
         shine={routingEnabled}
-        shineColor={["#60a5fa", "#a78bfa", "#60a5fa"]}
-        shineDuration={6}
-        className={cn(
-          "shadow-[0_2px_24px_rgba(59,130,246,0.07)] dark:shadow-none",
-          routingEnabled && "drop-shadow-[0_4px_22px_rgba(139,92,246,0.18)]",
-        )}
       >
         <div aria-labelledby="newapi-routing-title" className="p-5 sm:p-6">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div className="flex items-start gap-3.5">
-              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500/20 to-purple-500/10 ring-1 ring-inset ring-blue-500/20 shadow-xs">
-                <Sparkles className="h-5 w-5 text-blue-500 dark:text-blue-400" />
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                <Sparkles className="h-5 w-5" />
               </div>
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2.5">
-                  <h2 id="newapi-routing-title" className="text-base font-semibold tracking-tight">
-                    {routingEnabled ? (
-                      <AnimatedGradientText speed={1.4} colorFrom="#60a5fa" colorTo="#a78bfa">
-                        {t("newapi.codexAccess")}
-                      </AnimatedGradientText>
-                    ) : (
-                      t("newapi.codexAccess")
-                    )}
-                  </h2>
+                  <h2 id="newapi-routing-title" className="text-base font-semibold tracking-tight">{t("newapi.codexAccess")}</h2>
                   {routingEnabled && !configDrifted && <Badge className={softBadge("green")}>{t("newapi.enabledBadge")}</Badge>}
                   {configDrifted && <Badge className={softBadge("amber")}>{t("newapi.driftedBadge")}</Badge>}
                 </div>
@@ -467,7 +453,7 @@ export function NewApiPage() {
             {groups.length}
           </span>
           <div className="ml-auto flex items-center gap-2">
-            <RainbowButton className="h-9 rounded-lg px-3.5 dark:text-black" onClick={() => setDialog({ open: true, provider: null })} disabled={mutationLocked}>
+            <RainbowButton className="h-9 rounded-lg px-3.5" onClick={() => setDialog({ open: true, provider: null })} disabled={mutationLocked}>
               <Plus className="h-4 w-4" />
               {t("newapi.addProvider")}
             </RainbowButton>
@@ -505,7 +491,7 @@ export function NewApiPage() {
         </div>
 
         {state.isLoading ? (
-          <div className="grid gap-4 sm:grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid items-start gap-4 sm:grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
             {[0, 1, 2].map(i => (
               <AuroraCard key={i} color="blue" className="pointer-events-none opacity-70">
                 <div className="space-y-3 p-4">
@@ -537,7 +523,7 @@ export function NewApiPage() {
             </Button>
           </div>
         ) : (
-          <div className="grid gap-4 sm:grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid items-start gap-4 sm:grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
             {shown.map(group => {
               const activeMemberId = groupMemberSelect[group.key] ?? (group.providers.find(item => item.id === activeId)?.id ?? group.providers[0].id);
               const provider = group.providers.find(item => item.id === activeMemberId) ?? group.providers[0];
@@ -550,9 +536,15 @@ export function NewApiPage() {
               const hasMultiple = group.providers.length > 1;
               const isExpanded = !!expandedGroups[group.key];
               const cardColor = isGroupActive ? "gold" : providerColor(group.key);
+              const memberIndex = group.providers.findIndex(item => item.id === provider.id);
+              const switchMember = (offset: number) => {
+                const nextIndex = (memberIndex + offset + group.providers.length) % group.providers.length;
+                setGroupMemberDirection(prev => ({ ...prev, [group.key]: offset < 0 ? "prev" : "next" }));
+                setGroupMemberSelect(prev => ({ ...prev, [group.key]: group.providers[nextIndex].id }));
+              };
 
               return (
-                <div key={group.key} className="group relative flex flex-col h-full">
+                <div key={group.key} className="group relative flex min-w-0 flex-col">
                   {/* 3D Physical Card Deck Peek Layers for Same-Relay Groups */}
                   {hasMultiple && !isExpanded && (
                     <>
@@ -584,15 +576,13 @@ export function NewApiPage() {
                   <AuroraCard
                     color={cardColor}
                     shine={isGroupActive || selected}
-                    shineColor={isGroupActive ? LIQUID_GOLD_SHINE : ["#60a5fa", "#a78bfa", "#60a5fa"]}
                     className={cn(
-                      "flex flex-1 flex-col h-full transition-transform duration-200 ease-out motion-reduce:transition-none hover:-translate-y-0.5",
+                      "flex flex-col",
                       selected && "rounded-2xl ring-2 ring-primary/40",
-                      isGroupActive && "drop-shadow-[0_4px_22px_rgba(212,175,55,0.3)]",
                     )}
                   >
-                    <div className="flex flex-1 flex-col justify-between p-3.5 sm:p-4">
-                      <div className="flex flex-col flex-1">
+                    <div className="flex flex-col justify-between p-3.5 sm:p-4">
+                      <div className="flex flex-col">
                         {/* Header: Title + Domain + Badges + Switch */}
                         <div className="flex items-center justify-between gap-2">
                           <div className="flex min-w-0 flex-1 items-center gap-1.5">
@@ -601,28 +591,32 @@ export function NewApiPage() {
                               {groupAliases[group.key] ?? hostOf(provider)}
                             </h3>
                             {hasMultiple && (
-                              <span
-                                className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary cursor-pointer hover:bg-primary/20"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setExpandedGroups(prev => ({ ...prev, [group.key]: !prev[group.key] }));
-                                }}
+                              <button
+                                type="button"
+                                className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary hover:bg-primary/20"
+                                onClick={() => setExpandedGroups(prev => ({ ...prev, [group.key]: !prev[group.key] }))}
                                 title={isExpanded ? t("newapi.collapseStack") : t("newapi.expandAll")}
+                                aria-label={isExpanded ? t("newapi.collapseStack") : t("newapi.expandAll")}
+                                aria-expanded={isExpanded}
                               >
                                 <Layers className="h-2.5 w-2.5" />
                                 {group.providers.length}
-                              </span>
+                              </button>
                             )}
-                            <span className="shrink-0 max-w-[100px] truncate rounded bg-black/[0.04] px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground dark:bg-white/[0.06]" title={hostOf(provider)}>
-                              {hostOf(provider)}
-                            </span>
                           </div>
                           <div className="flex shrink-0 items-center gap-1.5">
-                            {provider.enabled && routingEnabled && (
-                              <Badge className={softBadge("amber")}>{t("newapi.badgeLocked")}</Badge>
-                            )}
-                            {provider.enabled && !routingEnabled && (
-                              <Badge className={softBadge("green")}>{t("newapi.badgeEnabled")}</Badge>
+                            {hasMultiple && (
+                              <div className="relay-member-nav" role="group" aria-label={t("newapi.groupMembers")}>
+                                <button type="button" onClick={() => switchMember(-1)} aria-label={t("newapi.previousGroupMember")} title={t("newapi.previousGroupMember")}>
+                                  <ChevronLeft className="h-3.5 w-3.5" />
+                                </button>
+                                <span key={provider.id} className={cn("relay-member-name", groupMemberDirection[group.key] === "prev" ? "relay-card-swap-prev" : "relay-card-swap-next")} title={provider.name} aria-live="polite">
+                                  {provider.name} <small>{memberIndex + 1}/{group.providers.length}</small>
+                                </span>
+                                <button type="button" onClick={() => switchMember(1)} aria-label={t("newapi.nextGroupMember")} title={t("newapi.nextGroupMember")}>
+                                  <ChevronRight className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
                             )}
                             <Switch
                               checked={provider.enabled}
@@ -638,66 +632,8 @@ export function NewApiPage() {
                           </div>
                         </div>
 
-                        {/* Card switcher for configs sharing the same relay URL */}
-                        {hasMultiple && !isExpanded ? (
-                          <div className="mt-2.5 rounded-xl bg-black/[0.025] p-2 ring-1 ring-border/50 dark:bg-white/[0.03]">
-                            <div className="mb-2 flex items-center justify-between gap-2 px-0.5">
-                              <span className="flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground">
-                                <Layers className="h-3 w-3 text-primary" />
-                                {t("newapi.groupMembers")}
-                              </span>
-                              <button
-                                type="button"
-                                className={cn(cardButton, "h-6 w-6 shrink-0")}
-                                title={t("newapi.expandAll")}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setExpandedGroups(prev => ({ ...prev, [group.key]: true }));
-                                }}
-                              >
-                                <Layers className="h-3 w-3" />
-                              </button>
-                            </div>
-                            <div className="grid auto-cols-[minmax(118px,1fr)] grid-flow-col gap-2 overflow-x-auto pb-0.5 scrollbar-hide">
-                              {group.providers.map(item => {
-                                const isCur = item.id === provider.id;
-                                const isItemActive = item.id === activeId && routingEnabled;
-                                return (
-                                  <button
-                                    key={item.id}
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setGroupMemberSelect(prev => ({ ...prev, [group.key]: item.id }));
-                                    }}
-                                    className={cn(
-                                      "flex min-w-0 flex-col gap-1.5 rounded-xl border px-2.5 py-2 text-left transition-all",
-                                      isCur
-                                        ? "border-primary/35 bg-primary/[0.06] text-foreground shadow-sm ring-1 ring-primary/10"
-                                        : "border-border/55 bg-background/45 text-muted-foreground hover:border-primary/25 hover:bg-background/75 hover:text-foreground",
-                                    )}
-                                    title={item.name}
-                                  >
-                                    <span className="flex min-w-0 items-center gap-1.5">
-                                      <StatusDot provider={item} />
-                                      <span className="truncate text-xs font-semibold">{item.name}</span>
-                                      {isItemActive && <PlugZap className="h-3 w-3 shrink-0 text-amber-500" />}
-                                    </span>
-                                    <span className="flex items-center justify-between gap-2 text-[9px] text-muted-foreground">
-                                      <span>{t("newapi.modelCount", { count: includedModels(item.models).length })}</span>
-                                      <span className="rounded bg-muted/70 px-1 py-0.5 font-mono">{t(protocolBadgeKey[providerModelProtocol(item)])}</span>
-                                    </span>
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="h-2" />
-                        )}
-
                         {/* Dual Info Cards: Balance (Left) & Model/Status (Right) */}
-                        <div className="mt-2 grid grid-cols-2 gap-2 flex-1">
+                        <div key={provider.id} className={cn("mt-3 grid grid-cols-2 gap-2", hasMultiple && (groupMemberDirection[group.key] === "prev" ? "relay-card-swap-prev" : "relay-card-swap-next"))}>
                           {/* Left: Balance Box */}
                           <div className={cn(
                             "flex flex-col justify-between rounded-xl p-2.5 ring-1 transition-colors min-w-0 min-h-[92px]",
@@ -807,7 +743,16 @@ export function NewApiPage() {
                                 >
                                   <div className="flex min-w-0 flex-1 items-center gap-2">
                                     <StatusDot provider={item} />
-                                    <span className="font-semibold truncate max-w-[120px]" title={item.name}>{item.name}</span>
+                                    <button
+                                      type="button"
+                                      className="max-w-[120px] truncate rounded font-semibold text-foreground hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
+                                      title={item.name}
+                                      onClick={() => {
+                                        setGroupMemberDirection(prev => ({ ...prev, [group.key]: group.providers.indexOf(item) < memberIndex ? "prev" : "next" }));
+                                        setGroupMemberSelect(prev => ({ ...prev, [group.key]: item.id }));
+                                        setExpandedGroups(prev => ({ ...prev, [group.key]: false }));
+                                      }}
+                                    >{item.name}</button>
                                     <span className="font-mono text-[11px] text-muted-foreground truncate max-w-[110px]" title={item.model}>{item.model || t("newapi.noModel")}</span>
                                     {item.id === activeId && routingEnabled && (
                                       <span className="inline-flex items-center gap-0.5 rounded bg-amber-500/10 px-1 py-0.2 text-[10px] font-medium text-amber-600 dark:text-amber-400">

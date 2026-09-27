@@ -200,7 +200,7 @@ export function SkillsPage() {
         <div className="flex items-center gap-2">
           <RainbowButton
             size="sm"
-            className="h-9 rounded-lg dark:text-black font-medium"
+            className="h-9 rounded-lg font-medium"
             onClick={() => importMutation.mutate()}
             disabled={importMutation.isPending}
           >
@@ -225,19 +225,18 @@ export function SkillsPage() {
       </div>
 
       {/* Stats & Quick directory access bar */}
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-        <AuroraCard color="purple">
+      <div className="app-metric-grid grid grid-cols-1 gap-3 md:grid-cols-3">
+        <AuroraCard color="blue">
           <div className="p-4 flex items-center justify-between">
             <div>
               <span className="text-xs font-medium text-muted-foreground">{t("skills.skillCount")}</span>
               <div className="mt-1 flex items-baseline gap-2">
-                <span className="text-2xl font-bold tracking-tight text-purple-600 dark:text-purple-400 tabular-nums">
+                <span className="text-2xl font-bold tracking-tight tabular-nums">
                   {skills.length}
                 </span>
-                <span className="text-xs text-muted-foreground font-mono">技能已就绪</span>
               </div>
             </div>
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-purple-500/10 text-purple-500 ring-1 ring-inset ring-purple-500/20">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
               <Sparkles className="h-5 w-5" />
             </div>
           </div>
@@ -249,16 +248,15 @@ export function SkillsPage() {
               <span className="text-xs font-medium text-muted-foreground">{t("skills.backupCount")}</span>
               <div className="mt-1 flex items-baseline gap-2">
                 <span className="text-2xl font-bold tracking-tight tabular-nums">{backups.length}</span>
-                <span className="text-xs text-muted-foreground font-mono">历史备份归档</span>
               </div>
             </div>
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-500/10 text-blue-500 ring-1 ring-inset ring-blue-500/20">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
               <Archive className="h-5 w-5" />
             </div>
           </div>
         </AuroraCard>
 
-        <AuroraCard color="green">
+        <AuroraCard color="blue">
           <div className="p-4 flex flex-col justify-between h-full">
             <div className="flex items-center justify-between">
               <span className="text-xs font-medium text-muted-foreground">
@@ -335,8 +333,8 @@ export function SkillsPage() {
         skills.length === 0 ? (
           <BentoCard>
             <div className="flex h-56 flex-col items-center justify-center text-center p-6">
-              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-purple-500/20 to-purple-500/5 ring-1 ring-inset ring-purple-500/15">
-                <Sparkles className="h-6 w-6 text-purple-500" />
+              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10">
+                <Sparkles className="h-6 w-6 text-primary" />
               </div>
               <p className="mt-3.5 text-base font-semibold text-foreground">{t("skills.empty")}</p>
               <p className="mt-1 text-xs text-muted-foreground max-w-sm">
@@ -344,7 +342,7 @@ export function SkillsPage() {
               </p>
               <RainbowButton
                 size="sm"
-                className="mt-4 rounded-lg dark:text-black font-medium"
+                className="mt-4 rounded-lg font-medium"
                 onClick={() => importMutation.mutate()}
               >
                 <Upload className="h-3.5 w-3.5" />
@@ -373,7 +371,7 @@ export function SkillsPage() {
                 <div>
                   {/* Card Header: Icon + Title + Slug */}
                   <div className="flex items-start gap-3">
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-purple-500/10 text-purple-600 dark:text-purple-400 ring-1 ring-inset ring-purple-500/20 transition-transform group-hover:scale-105">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary transition-transform group-hover:scale-105">
                       <Sparkles className="h-5 w-5" />
                     </div>
                     <div className="min-w-0 flex-1">
@@ -448,8 +446,8 @@ export function SkillsPage() {
       ) : backups.length === 0 ? (
         <BentoCard>
           <div className="flex h-56 flex-col items-center justify-center text-center p-6">
-            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500/20 to-blue-500/5 ring-1 ring-inset ring-blue-500/15">
-              <Archive className="h-6 w-6 text-blue-500" />
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10">
+              <Archive className="h-6 w-6 text-primary" />
             </div>
             <p className="mt-3.5 text-base font-semibold text-foreground">{t("skills.noBackups")}</p>
             <p className="mt-1 text-xs text-muted-foreground max-w-sm">
@@ -478,7 +476,7 @@ export function SkillsPage() {
               <div>
                 {/* Header */}
                 <div className="flex items-start gap-3">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-500/10 text-blue-500 ring-1 ring-inset ring-blue-500/20 transition-transform group-hover:scale-105">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary transition-transform group-hover:scale-105">
                     <Archive className="h-5 w-5" />
                   </div>
                   <div className="min-w-0 flex-1">

@@ -9,7 +9,6 @@ import {
   Download,
   Feather,
   FolderOpen,
-  HardDriveDownload,
   History,
   ImagePlus,
   Loader2,
@@ -85,10 +84,10 @@ const SIZES: AspectRatioOption[] = [
 ];
 
 const QUALITIES = [
-  { value: "auto", label: "自然点染 (auto)", tip: "标准平衡，适宜草绘" },
-  { value: "high", label: "重彩精研 (high)", tip: "高清细腻，纤毫毕现" },
-  { value: "medium", label: "雅致中品 (medium)", tip: "层次分明，质感均衡" },
-  { value: "low", label: "意笔写意 (low)", tip: "轻快随形，迅速成画" },
+  { value: "auto", label: "自动", tip: "由模型选择" },
+  { value: "high", label: "高", tip: "更多画面细节" },
+  { value: "medium", label: "中", tip: "平衡细节与速度" },
+  { value: "low", label: "低", tip: "优先生成速度" },
 ];
 
 type InkModelComboboxProps = {
@@ -174,7 +173,7 @@ function InkModelCombobox({ value, options, onChange }: InkModelComboboxProps) {
           aria-label="可用生图模型"
           className="ink-combobox-content"
         >
-          <div className="ink-combobox-heading">可用墨相</div>
+          <div className="ink-combobox-heading">可用模型</div>
           <div className="max-h-52 overflow-y-auto p-1.5 ink-combobox-scroll">
             {filteredOptions.length > 0 ? filteredOptions.map(option => (
               <button
@@ -641,6 +640,9 @@ export function ImageWorkbenchPage() {
   const openGallery = async () => {
     setGalleryOpen(true);
     void queryClient.invalidateQueries({ queryKey: GALLERY_KEY });
+    setTimeout(() => {
+      document.querySelector("[data-gallery-section]")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 50);
   };
 
   const showPreview = (src: string | null) => {
@@ -779,32 +781,20 @@ export function ImageWorkbenchPage() {
   };
 
   return (
-    <div className="space-y-6 overflow-y-auto pb-12">
-      {/* 卷首 · 题额与闲章 */}
-      <div className="relative overflow-hidden rounded-2xl border border-border/70 bg-gradient-to-r from-card via-card/90 to-card p-5 shadow-sm ink-paper-bg">
-        {/* 背景水墨晕染光晕 */}
-        <div
-          aria-hidden
-          className="pointer-events-none absolute -right-10 -top-20 h-64 w-64 rounded-full bg-gradient-to-bl from-amber-500/10 via-rose-500/5 to-transparent blur-3xl"
-        />
+    <div className="space-y-6 pb-12">
+      {/* 卷首 */}
+      <div className="relative overflow-hidden rounded-2xl border border-border/70 bg-card p-4 ink-paper-bg">
         <div className="relative z-10 flex flex-wrap items-center justify-between gap-4">
-          <div className="space-y-1.5">
+          <div className="space-y-1">
             <div className="flex items-center gap-3">
               <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-amber-600/30 bg-amber-500/10 text-amber-600 dark:border-amber-400/30 dark:bg-amber-400/10 dark:text-amber-400 shadow-xs">
                 <Brush className="h-5 w-5" />
               </div>
               <div>
-                <h1 className="font-serif text-xl font-bold tracking-wider text-foreground">
-                  墨韵丹青 · GPT Image 工坊
-                </h1>
+                <h1 className="font-serif text-xl font-bold tracking-wider text-foreground">墨韵丹青</h1>
               </div>
-              <span className="ink-seal px-2 py-0.5 text-[11px] rounded">
-                丹青妙笔
-              </span>
             </div>
-            <p className="font-serif text-xs text-muted-foreground tracking-wide sm:text-sm">
-              落笔云烟，水墨天工 · 纳万象于方寸，融丹青于数字。支持 GPT Image 2 / 2.5 及兼容图像中转。
-            </p>
+            <p className="font-serif text-xs text-muted-foreground sm:text-sm">GPT Image 2 / 2.5 · {t("image.promptSentToProvider")}</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -829,20 +819,12 @@ export function ImageWorkbenchPage() {
                 {t("image.openGallery")}
               </Button>
             )}
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-background/80 px-3 py-1 text-xs text-muted-foreground backdrop-blur-xs font-serif shadow-xs">
-              <Feather className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
-              {t("image.promptSentToProvider")}
-            </span>
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-background/80 px-3 py-1 text-xs text-muted-foreground backdrop-blur-xs font-serif shadow-xs">
-              <HardDriveDownload className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
-              成图自动存入本地画册
-            </span>
           </div>
         </div>
       </div>
 
       <div className="grid min-w-0 gap-4 sm:gap-6 xl:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)]">
-        {/* 左侧：笔墨设色 · 设色法度 (创作参数) */}
+        {/* 创作参数 */}
         <div className="ink-scroll-frame min-w-0 p-4 transition-all duration-300 sm:p-5 sm:p-6">
           <div className="space-y-5">
             {/* 栏目头部 */}
@@ -850,25 +832,22 @@ export function ImageWorkbenchPage() {
               <div className="flex items-center gap-2">
                 <Palette className="h-4 w-4 text-[#b83b38] dark:text-[#d94f4b]" />
                 <h2 className="font-serif text-base font-bold tracking-wide text-foreground">
-                  笔墨设色 · 创作法度
+                  笔墨设色
                 </h2>
               </div>
-              <span className="font-serif text-xs text-muted-foreground">
-                随心构思，妙契自然
-              </span>
             </div>
 
             {/* 参数网格 */}
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-1.5 sm:col-span-2">
                 <Label className="font-serif text-xs font-semibold text-foreground/90">
-                  中转驿站 (供应商配置)
+                  图像供应商
                 </Label>
                 <Select
                   value={providerId || "__manual__"}
                   onValueChange={value => chooseProvider(value === "__manual__" ? "" : value)}
                 >
-                  <SelectTrigger className="ink-select-trigger" aria-label="中转驿站供应商">
+                  <SelectTrigger className="ink-select-trigger" aria-label="图像供应商">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent className="ink-select-content" position="popper">
@@ -922,14 +901,14 @@ export function ImageWorkbenchPage() {
 
               <div className="space-y-1.5">
                 <Label className="font-serif text-xs font-semibold text-foreground/90">
-                  绘意墨相 (模型)
+                  模型
                 </Label>
                 <InkModelCombobox value={model} options={modelOptions} onChange={setModel} />
               </div>
 
               <div className="space-y-1.5">
                 <Label className="font-serif text-xs font-semibold text-foreground/90">
-                  出图点数 (生图张数)
+                  生成张数
                 </Label>
                 <Input
                   type="number"
@@ -945,10 +924,10 @@ export function ImageWorkbenchPage() {
 
               <div className="space-y-1.5">
                 <Label className="font-serif text-xs font-semibold text-foreground/90">
-                  尺幅规制 (长宽尺寸)
+                  画幅尺寸
                 </Label>
                 <Select value={size} onValueChange={setSize}>
-                  <SelectTrigger className="ink-select-trigger" aria-label="尺幅规制">
+                  <SelectTrigger className="ink-select-trigger" aria-label="画幅尺寸">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent className="ink-select-content" position="popper">
@@ -963,10 +942,10 @@ export function ImageWorkbenchPage() {
 
               <div className="space-y-1.5">
                 <Label className="font-serif text-xs font-semibold text-foreground/90">
-                  画质品阶 (精细度)
+                  画质
                 </Label>
                 <Select value={quality} onValueChange={setQuality}>
-                  <SelectTrigger className="ink-select-trigger" aria-label="画质品阶">
+                  <SelectTrigger className="ink-select-trigger" aria-label="画质">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent className="ink-select-content" position="popper">
@@ -987,7 +966,7 @@ export function ImageWorkbenchPage() {
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <Label className="font-serif text-xs font-semibold text-foreground/90">
-                  画题心象 (描绘词意)
+                  提示词
                 </Label>
                 <span className="font-mono text-[11px] text-muted-foreground">
                   {prompt.length}/20000 字符
@@ -996,18 +975,18 @@ export function ImageWorkbenchPage() {
               <Textarea
                 value={prompt}
                 onChange={event => setPrompt(event.target.value)}
-                placeholder="在此泼墨意气，描述画面主体、意境气韵、光影透视、构图章法与画派风格…"
+                placeholder="描述画面主体、构图、光线和风格…"
                 className="min-h-36 resize-y bg-background/90 font-serif leading-relaxed text-sm placeholder:text-muted-foreground/60 focus:border-[#b83b38]/50 focus:ring-1 focus:ring-[#b83b38]/30"
               />
             </div>
 
-            {/* 锦囊诗意提示词预设 */}
+            {/* 提示词预设 */}
             <div className="space-y-2.5 rounded-xl bg-black/[0.025] p-2.5 ring-1 ring-border/50 dark:bg-white/[0.02] sm:space-y-3 sm:p-3">
               <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-xs">
                 <div className="flex items-center gap-2">
                   <span className="inline-flex min-w-0 items-center gap-1.5 font-serif font-semibold text-muted-foreground">
                     <Sparkles className="h-3.5 w-3.5 shrink-0 text-[#b83b38] dark:text-[#d94f4b]" />
-                    <span className="truncate">锦囊画谱 · 工业级灵感库</span>
+                    <span className="truncate">画谱 · 提示词灵感</span>
                     {promptFavorites.length > 0 && (
                       <span className="shrink-0 rounded-full bg-amber-500/15 px-1.5 py-px text-[10px] font-normal text-amber-700 dark:text-amber-300">
                         已藏 {promptFavorites.length}
@@ -1017,7 +996,7 @@ export function ImageWorkbenchPage() {
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="hidden font-serif text-[11px] text-muted-foreground/80 sm:inline">
-                    点选填入画题 · 复制可改写
+                    点击填入，可继续编辑
                   </span>
                   <Button
                     type="button"
@@ -1251,7 +1230,7 @@ export function ImageWorkbenchPage() {
             {/* 挥毫生图核心按钮 */}
             <Button
               data-image-generate
-              className="w-full h-11 font-serif text-sm tracking-widest bg-gradient-to-r from-[#8b2323] via-[#b83b38] to-[#991b1b] hover:from-[#731c1c] hover:to-[#8b2323] text-white shadow-md hover:shadow-lg transition-all duration-300 dark:from-[#b83b38] dark:to-[#d94f4b]"
+              className="ink-generate-button h-11 w-full font-serif text-sm tracking-wider text-white"
               disabled={!canGenerate}
               onClick={() => void generate()}
             >
@@ -1259,13 +1238,13 @@ export function ImageWorkbenchPage() {
                 <>
                   <ImagePlus className="mr-2 h-4 w-4" />
                   {generationJobs.filter(job => job.status === "running").length >= 2
-                    ? "新建画布 · 自动排队"
-                    : "新建画布 · 并行生图"}
+                    ? "新建画布（排队）"
+                    : "新建画布"}
                 </>
               ) : (
                 <>
-                  <Brush className="mr-2 h-4 w-4 animate-pulse" />
-                  挥毫泼墨 · 显像生图
+                  <Brush className="mr-2 h-4 w-4" />
+                  开始生成
                 </>
               )}
             </Button>
@@ -1278,7 +1257,7 @@ export function ImageWorkbenchPage() {
             <div className="flex items-center gap-2">
               <Scroll className="h-4 w-4 text-amber-600 dark:text-amber-400" />
               <h2 className="font-serif text-base font-bold tracking-wide text-foreground">
-                丹青画卷 · 成果真迹
+                丹青画卷
               </h2>
             </div>
             {generationJobs.length > 0 && (
@@ -1302,18 +1281,18 @@ export function ImageWorkbenchPage() {
                 />
               </div>
               <p className="font-serif text-base font-semibold tracking-wider text-foreground">
-                素胚勾勒出青花，笔锋浓转淡
+                画布尚空
               </p>
               <p className="mt-1.5 font-serif text-xs text-muted-foreground max-w-xs leading-relaxed">
-                研墨停云，虚席以待。请于左席填写画题心象并挥毫生图，丹青佳作将在此徐徐展开。
+                输入提示词并开始生成，图片会显示在这里。
               </p>
             </div>
           )}
 
           {generationJobs.length > 0 && (
-            <div className="mt-3 grid flex-1 content-start gap-4 xl:grid-cols-2">
+            <div className="ink-jobs-grid mt-3 flex-1 content-start gap-4">
               {generationJobs.map(job => (
-                <section key={job.id} data-generation-job-status={job.status} className="min-w-0 space-y-3 rounded-2xl border border-border/70 bg-card/80 p-3 shadow-sm dark:border-[#c5a059]/30">
+                <section key={job.id} data-generation-job-status={job.status} className="min-w-0 space-y-3 rounded-2xl border border-border/70 bg-card/80 p-3 dark:border-[#c5a059]/30">
                   <div className="flex items-start justify-between gap-3 border-b border-border/50 pb-2">
                     <div className="min-w-0">
                       <p className="line-clamp-2 font-serif text-sm font-semibold">{job.prompt}</p>
@@ -1349,24 +1328,24 @@ export function ImageWorkbenchPage() {
                   {job.status === "queued" || job.status === "running" ? (
                     <div className="flex min-h-56 flex-col items-center justify-center rounded-xl border border-dashed border-amber-500/30 bg-amber-500/[0.03] p-6 text-center">
                       <Loader2 className={cn("mb-3 h-8 w-8 text-amber-600 dark:text-amber-400", job.status === "running" && "animate-spin")} />
-                      <p className="font-serif text-sm font-semibold">{job.status === "queued" ? "等待画位" : "墨韵晕染，点染丹青…"}</p>
-                      <p className="mt-1 text-xs text-muted-foreground">{job.status === "queued" ? "前面的画卷完成后自动开始" : "正在依题赋彩，其他画布可继续并行生成"}</p>
+                      <p className="font-serif text-sm font-semibold">{job.status === "queued" ? "排队中" : "正在生成"}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">{job.status === "queued" ? "前一个任务完成后自动开始" : "可以继续创建其他画布"}</p>
                     </div>
                   ) : job.status === "failed" ? (
                     <div role="alert" className="flex min-h-56 items-center justify-center rounded-xl border border-destructive/30 bg-destructive/5 p-6 text-center text-sm text-destructive">
                       {t(job.error ?? "image.errors.network")}
                     </div>
                   ) : (
-                    <div className="grid gap-3">
+                    <div className="ink-result-images gap-3">
                 {job.result?.images.map((src, index) => (
                   <div
                     key={`${src.slice(0, 24)}-${index}`}
-                    className="group relative space-y-3 rounded-2xl border border-border/70 bg-card p-3 shadow-sm transition-all duration-300 hover:shadow-md dark:border-[#c5a059]/30"
+                    className="group relative min-w-0 space-y-2"
                   >
                     {/* 装裱画框 */}
                     <button
                       type="button"
-                      className="relative block w-full overflow-hidden rounded-xl border border-border/80 bg-background/80 p-2 shadow-inner"
+                      className="relative block w-full overflow-hidden rounded-xl border border-border/80 bg-background/80 p-1.5 transition-[border-color,box-shadow] duration-200 hover:border-[#b83b38]/35 hover:shadow-sm"
                       onClick={() => showPreview(src)}
                       title="点击放大预览"
                     >
@@ -1382,9 +1361,9 @@ export function ImageWorkbenchPage() {
                     </button>
 
                     {/* 图片底部信息与下载操作 */}
-                    <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+                    <div className="flex flex-wrap items-center justify-between gap-2 px-0.5">
                       <span className="font-serif text-xs font-semibold text-muted-foreground">
-                        画卷之 {index + 1}
+                        图片 {index + 1}
                       </span>
                       <Button
                         type="button"
@@ -1401,7 +1380,7 @@ export function ImageWorkbenchPage() {
                     {job.result?.revisedPrompts[index] && (
                       <div className="rounded-lg bg-black/[0.025] p-2.5 text-xs text-muted-foreground ring-1 ring-border/40 dark:bg-white/[0.02]">
                         <p className="font-serif font-semibold text-foreground/80 mb-0.5">
-                          【画意题跋 · 润色提示词】
+                          修订后的提示词
                         </p>
                         <p className="font-serif leading-relaxed text-[11px]">
                           {job.result.revisedPrompts[index]}
@@ -1421,7 +1400,7 @@ export function ImageWorkbenchPage() {
 
       {/* 历史画册 */}
       {galleryOpen && (
-        <div className="ink-scroll-frame p-5 sm:p-6">
+        <div data-gallery-section className="ink-scroll-frame p-5 sm:p-6 scroll-mt-6">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-border/50 pb-3">
             <div className="flex items-center gap-2">
               <History className="h-4 w-4 text-amber-600 dark:text-amber-400" />
@@ -1558,7 +1537,7 @@ export function ImageWorkbenchPage() {
 
       {previewSrc && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-6"
+          className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 p-4 sm:p-6 backdrop-blur-sm animate-in fade-in-0 duration-200"
           role="dialog"
           aria-modal="true"
           aria-label="成图放大预览"
@@ -1566,7 +1545,7 @@ export function ImageWorkbenchPage() {
         >
           <button
             type="button"
-            className="absolute right-5 top-5 inline-flex h-9 w-9 items-center justify-center rounded-full bg-black/50 text-white hover:bg-black/70"
+            className="absolute right-5 top-5 inline-flex h-9 w-9 items-center justify-center rounded-full bg-black/60 text-white/80 hover:text-white hover:bg-black/80 transition-all hover:scale-105 active:scale-95"
             onClick={() => showPreview(null)}
             aria-label="关闭预览"
           >
@@ -1575,7 +1554,7 @@ export function ImageWorkbenchPage() {
           <img
             src={previewSrc}
             alt="成图放大预览"
-            className="max-h-[85vh] max-w-[92vw] rounded-lg object-contain shadow-2xl"
+            className="max-h-[88vh] max-w-[92vw] rounded-xl object-contain shadow-2xl transition-transform duration-200 animate-in zoom-in-95 duration-200"
             onClick={event => event.stopPropagation()}
           />
         </div>

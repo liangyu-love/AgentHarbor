@@ -28,7 +28,7 @@ import {
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { BentoCard } from "@/components/ui/bento-card";
-import { AuroraCard, LIQUID_GOLD_SHINE } from "@/components/ui/aurora-card";
+import { AuroraCard } from "@/components/ui/aurora-card";
 import { RainbowButton } from "@/registry/magicui/rainbow-button";
 import { Button } from "@/components/ui/button";
 import { ButtonBusyContent } from "@/components/ui/button-busy-content";
@@ -352,7 +352,6 @@ export function ThreadsPage() {
               <MessagesSquare className="h-4.5 w-4.5 text-primary" />
               {t("threads.title")}
             </h1>
-            <p className="text-xs text-muted-foreground">{t("threads.subtitle")}</p>
           </div>
 
           <div className="flex items-center gap-2.5">
@@ -421,15 +420,15 @@ export function ThreadsPage() {
         )}
 
         {/* 4-Metric Mission Control HUD */}
-        <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
-          <AuroraCard color="blue" className="cursor-pointer transition-all duration-200 hover:-translate-y-px hover:shadow-sm" onClick={() => setStatus(status === "active" ? "all" : "active")}>
+        <div className="app-metric-grid grid grid-cols-2 gap-2 lg:grid-cols-4">
+          <AuroraCard color="blue" className="cursor-pointer hover:border-primary/35" onClick={() => setStatus(status === "active" ? "all" : "active")}>
             <div className="flex items-center justify-between p-2.5">
               <div className="space-y-0.5">
                 <span className="text-xs font-medium text-muted-foreground">
                   {t("threads.statsThreads")}
                 </span>
                 <div className="flex items-baseline gap-2">
-                  <span className="text-xl font-bold tracking-tight text-blue-600 dark:text-blue-400 tabular-nums">
+                  <span className="text-xl font-bold tracking-tight tabular-nums">
                     {threads.length}
                   </span>
                   <span className="text-[11px] text-muted-foreground">
@@ -437,39 +436,38 @@ export function ThreadsPage() {
                   </span>
                 </div>
               </div>
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-500/10 text-blue-500 ring-1 ring-inset ring-blue-500/20">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
                 <MessagesSquare className="h-5 w-5" />
               </div>
             </div>
           </AuroraCard>
 
-          <AuroraCard color="purple" className="transition-all duration-200 hover:-translate-y-px hover:shadow-sm">
+          <AuroraCard color="blue">
             <div className="flex items-center justify-between p-2.5">
               <div className="space-y-0.5">
                 <span className="text-xs font-medium text-muted-foreground">
                   {t("threads.statsFolders")}
                 </span>
                 <div className="flex items-baseline gap-2">
-                  <span className="text-xl font-bold tracking-tight text-purple-600 dark:text-purple-400 tabular-nums">
+                  <span className="text-xl font-bold tracking-tight tabular-nums">
                     {groups.length}
                   </span>
-                  <span className="text-[11px] text-muted-foreground">工作区目录</span>
                 </div>
               </div>
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-purple-500/10 text-purple-500 ring-1 ring-inset ring-purple-500/20">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
                 <FolderTree className="h-5 w-5" />
               </div>
             </div>
           </AuroraCard>
 
-          <AuroraCard color="green" className="transition-all duration-200 hover:-translate-y-px hover:shadow-sm">
+          <AuroraCard color="blue">
             <div className="flex items-center justify-between p-2.5">
               <div className="space-y-0.5">
                 <span className="text-xs font-medium text-muted-foreground">
                   {t("threads.statsInteractions")}
                 </span>
                 <div className="flex items-baseline gap-2">
-                  <span className="text-xl font-bold tracking-tight text-emerald-600 dark:text-emerald-400 tabular-nums">
+                  <span className="text-xl font-bold tracking-tight tabular-nums">
                     {totalInteractions.toLocaleString()}
                   </span>
                   <span className="text-[11px] text-muted-foreground">
@@ -477,17 +475,16 @@ export function ThreadsPage() {
                   </span>
                 </div>
               </div>
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-500 ring-1 ring-inset ring-emerald-500/20">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
                 <Sparkles className="h-5 w-5" />
               </div>
             </div>
           </AuroraCard>
 
           <AuroraCard
-            color={selected.size > 0 ? "gold" : "amber"}
+            color="blue"
             shine={selected.size > 0}
-            shineColor={LIQUID_GOLD_SHINE}
-            className="cursor-pointer transition-all duration-200 hover:-translate-y-px hover:shadow-sm"
+            className="cursor-pointer hover:border-primary/35"
             onClick={() => {
               if (selected.size > 0) clearSelection();
               else selectFiltered();
@@ -499,27 +496,13 @@ export function ThreadsPage() {
                   {selected.size > 0 ? t("threads.statsSelected", { count: selected.size }) : t("threads.statsStorage")}
                 </span>
                 <div className="flex items-baseline gap-2">
-                  <span
-                    className={`text-xl font-bold tracking-tight tabular-nums ${
-                      selected.size > 0
-                        ? "text-amber-500 dark:text-[#fef08a]"
-                        : "text-amber-600 dark:text-amber-400"
-                    }`}
-                  >
+                  <span className="text-xl font-bold tracking-tight tabular-nums">
                     {selected.size > 0 ? selected.size : formatSize(totalBytes)}
                   </span>
-                  <span className="text-[11px] text-muted-foreground">
-                    {selected.size > 0 ? "点击取消全选" : "会话记录总大小"}
-                  </span>
+                  {selected.size > 0 && <span className="text-[11px] text-muted-foreground">点击取消全选</span>}
                 </div>
               </div>
-              <div
-                className={`flex h-10 w-10 items-center justify-center rounded-xl ring-1 ring-inset ${
-                  selected.size > 0
-                    ? "bg-amber-500/10 text-amber-500 ring-amber-500/30 dark:bg-[#d4af37]/20 dark:text-[#fef08a]"
-                    : "bg-amber-500/10 text-amber-500 ring-amber-500/20"
-                }`}
-              >
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
                 {selected.size > 0 ? <CheckSquare className="h-5 w-5" /> : <HardDrive className="h-5 w-5" />}
               </div>
             </div>
