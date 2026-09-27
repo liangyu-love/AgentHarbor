@@ -1,4 +1,5 @@
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageActiveContext } from "@/components/layout/page-stage";
@@ -361,6 +362,7 @@ export function ImageWorkbenchPage() {
   const [galleryPreviewPath, setGalleryPreviewPath] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<GalleryItem | null>(null);
   const [galleryOpen, setGalleryOpen] = useState(false);
+  const galleryRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
 
   const galleryQuery = useQuery({
@@ -637,12 +639,24 @@ export function ImageWorkbenchPage() {
     }
   };
 
+  const scrollToGallery = useCallback(() => {
+    const gallery = galleryRef.current;
+    const stage = gallery?.closest<HTMLElement>("[data-page-scroll-container]");
+    if (!gallery || !stage) return;
+    const top = stage.scrollTop + gallery.getBoundingClientRect().top - stage.getBoundingClientRect().top - 24;
+    stage.scrollTo({ top, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  }, []);
+
+  useEffect(() => {
+    if (!galleryOpen || !pageActive) return;
+    const frame = requestAnimationFrame(scrollToGallery);
+    return () => cancelAnimationFrame(frame);
+  }, [galleryOpen, pageActive, scrollToGallery]);
+
   const openGallery = async () => {
     setGalleryOpen(true);
     void queryClient.invalidateQueries({ queryKey: GALLERY_KEY });
-    setTimeout(() => {
-      document.querySelector("[data-gallery-section]")?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }, 50);
+    if (galleryOpen) scrollToGallery();
   };
 
   const showPreview = (src: string | null) => {
@@ -1400,7 +1414,7 @@ export function ImageWorkbenchPage() {
 
       {/* 历史画册 */}
       {galleryOpen && (
-        <div data-gallery-section className="ink-scroll-frame p-5 sm:p-6 scroll-mt-6">
+        <div ref={galleryRef} data-gallery-section className="ink-scroll-frame p-5 sm:p-6 scroll-mt-6">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-border/50 pb-3">
             <div className="flex items-center gap-2">
               <History className="h-4 w-4 text-amber-600 dark:text-amber-400" />
@@ -1535,16 +1549,18 @@ export function ImageWorkbenchPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {previewSrc && (
+      {previewSrc && pageActive && createPortal(
         <div
           className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 p-4 sm:p-6 backdrop-blur-sm animate-in fade-in-0 duration-200"
           role="dialog"
           aria-modal="true"
           aria-label="成图放大预览"
+          onKeyDown={event => { if (event.key === "Escape") showPreview(null); }}
           onClick={() => showPreview(null)}
         >
           <button
             type="button"
+            autoFocus
             className="absolute right-5 top-5 inline-flex h-9 w-9 items-center justify-center rounded-full bg-black/60 text-white/80 hover:text-white hover:bg-black/80 transition-all hover:scale-105 active:scale-95"
             onClick={() => showPreview(null)}
             aria-label="关闭预览"
@@ -1557,7 +1573,7 @@ export function ImageWorkbenchPage() {
             className="max-h-[88vh] max-w-[92vw] rounded-xl object-contain shadow-2xl transition-transform duration-200 animate-in zoom-in-95 duration-200"
             onClick={event => event.stopPropagation()}
           />
-        </div>
+        </div>, document.body
       )}
     </div>
   );

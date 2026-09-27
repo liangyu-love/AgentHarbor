@@ -514,7 +514,11 @@ try {
 
   await reset("image");
   await page.getByRole("button", { name: labels.galleryTitle, exact: true }).click();
-  await page.getByRole("heading", { name: labels.galleryTitle, exact: true }).scrollIntoViewIfNeeded();
+  await page.waitForFunction(() => {
+    const stage = document.querySelector('[data-page-scroll-container]');
+    const gallery = document.querySelector('[data-gallery-section]');
+    return stage && gallery && Math.abs(gallery.getBoundingClientRect().top - stage.getBoundingClientRect().top - 24) < 5;
+  });
   await page.waitForFunction(() => window.review.thumbnailCalls.length > 0);
   assert.ok(await page.evaluate(() => window.review.thumbnailCalls.length < 100));
   assert.equal(await page.evaluate(() => window.review.originalCalls.length), 0);
@@ -547,7 +551,19 @@ try {
   await page.evaluate(() => window.review.resolveOriginal());
   await page.waitForTimeout(50);
   assert.equal(await page.getByRole("dialog", { name: "成图放大预览", exact: true }).count(), 0);
-  console.log("PASS gallery loads visible thumbnails with bounded caching and ignores responses after closing");
+  await page.evaluate(() => { window.review.holdOriginal = false; });
+  await page.getByRole("button", { name: labels.galleryTitle, exact: true }).click();
+  await page.locator('button[title="gallery-0.png"]').click();
+  const galleryPreview = page.getByRole("dialog", { name: "成图放大预览", exact: true });
+  await galleryPreview.waitFor();
+  assert.deepEqual(await galleryPreview.evaluate(element => ({
+    parentIsBody: element.parentElement === document.body,
+    top: Math.round(element.getBoundingClientRect().top),
+    height: Math.round(element.getBoundingClientRect().height),
+    viewportHeight: window.innerHeight,
+  })), { parentIsBody: true, top: 0, height: 700, viewportHeight: 700 });
+  await page.getByRole("button", { name: "关闭预览" }).click();
+  console.log("PASS gallery scrolls into view, previews above the page, and ignores late image responses");
   await reset("warnings");
   await page.getByText("Review thread 0", { exact: true }).waitFor();
   const warning = page.getByRole("status");
