@@ -1,15 +1,12 @@
 import { useContext, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { PageActiveContext } from "@/components/layout/page-stage";
 import {
   Activity,
-  BarChart3,
   Calendar,
   Check,
   Clock3,
   Copy,
-  Database,
   Loader2,
   LogIn,
   RefreshCw,
@@ -21,6 +18,11 @@ import {
   User,
   UsersRound,
 } from "lucide-react";
+
+import { DailyTrendPanel } from "@/components/accounts/daily-trend-panel";
+import { UsageBreakdown } from "@/components/accounts/model-usage-breakdown";
+import { RecentTurnsPanel } from "@/components/accounts/recent-turns-panel";
+import { PageActiveContext } from "@/components/layout/page-stage";
 
 import {
   AlertDialog,
@@ -46,7 +48,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/hooks/use-toast";
 import { REFRESH_INTERVAL_MS, type RefreshInterval } from "@/hooks/use-auto-refresh";
 import { api } from "@/lib/api";
-import { formatRelative } from "@/lib/format-time";
 import { cn } from "@/lib/utils";
 import type {
   AccountRateLimitWindow,
@@ -143,95 +144,6 @@ function TokenTotalCard({
           {t("accounts.cacheShort")} {formatTokens(cache)}
         </span>
       </div>
-    </div>
-  );
-}
-
-type UsageMeasure = { totalTokens: number };
-
-function cleanModelTitle(title: string) {
-  if (title.startsWith("aimami_relay_")) {
-    const parts = title.split(" ");
-    if (parts.length > 1) {
-      return parts.slice(1).join(" ");
-    }
-  }
-  return title;
-}
-
-function UsageBreakdown({ title, items, emptyLabel }: {
-  title: string;
-  items: Array<{ key: string; title: string; subtitle?: string; totals: UsageMeasure }>;
-  emptyLabel: string;
-}) {
-  const max = Math.max(1, ...items.map((item) => item.totals.totalTokens));
-  const sum = items.reduce((acc, item) => acc + item.totals.totalTokens, 0);
-  return (
-    <div className="flex flex-col justify-between rounded-2xl border border-border/80 bg-card/85 p-4 sm:p-5 backdrop-blur-md shadow-xs">
-      <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-3">
-        <h4 className="text-xs font-semibold uppercase tracking-[0.12em] text-foreground/90">{title}</h4>
-        {items.length > 0 && (
-          <span className="rounded-md bg-muted px-2 py-0.5 font-mono text-[11px] font-semibold text-foreground">
-            {formatTokens(sum)}
-          </span>
-        )}
-      </div>
-      {items.length === 0 ? (
-        <p className="py-8 text-center text-xs text-muted-foreground">{emptyLabel}</p>
-      ) : (
-        <div className="mt-3 space-y-3">
-          {items.slice(0, 6).map((item, index) => {
-            const rank = index + 1;
-            const cleanedTitle = cleanModelTitle(item.title);
-            return (
-              <div key={item.key} className="group">
-                <div className="flex items-center justify-between gap-2 text-xs">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <span
-                      className={cn(
-                        "flex h-4 w-4 shrink-0 items-center justify-center rounded text-[10px] font-bold font-mono",
-                        rank === 1 && "bg-amber-500/20 text-amber-700 dark:text-amber-300 ring-1 ring-amber-500/35",
-                        rank === 2 && "bg-slate-300/40 text-slate-700 dark:text-slate-200 ring-1 ring-slate-400/30",
-                        rank === 3 && "bg-amber-700/15 text-amber-800 dark:text-amber-400 ring-1 ring-amber-700/30",
-                        rank > 3 && "bg-muted text-muted-foreground",
-                      )}
-                    >
-                      {rank}
-                    </span>
-                    <p className="truncate font-medium text-foreground/90" title={item.title}>
-                      {cleanedTitle}
-                    </p>
-                    {item.subtitle && (
-                      <span className="shrink-0 rounded bg-muted/70 px-1.5 py-0.2 text-[9px] font-mono text-muted-foreground">
-                        {item.subtitle}
-                      </span>
-                    )}
-                  </div>
-                  <div className="shrink-0 text-right">
-                    <span className="font-mono text-[11px] font-medium text-foreground">
-                      {formatTokens(item.totals.totalTokens)}
-                    </span>
-                    <span className="ml-1.5 rounded bg-primary/10 px-1 py-0.2 font-mono text-[10px] font-medium text-primary">
-                      {formatPercent(item.totals.totalTokens, sum)}
-                    </span>
-                  </div>
-                </div>
-                <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-muted/80 ring-1 ring-border/40">
-                  <div
-                    className={cn(
-                      "h-full rounded-full transition-all duration-300",
-                      rank === 1
-                        ? "bg-gradient-to-r from-primary to-amber-500 shadow-[0_0_8px_hsl(var(--primary)/0.35)]"
-                        : "bg-primary/75 group-hover:bg-primary",
-                    )}
-                    style={{ width: `${Math.max(3, (item.totals.totalTokens / max) * 100)}%` }}
-                  />
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
     </div>
   );
 }
@@ -335,7 +247,6 @@ function TokenUsagePanel({ data, loading, error, onRetry }: {
 
   const local = data.local;
   const relay = data.relay;
-  const maxDaily = Math.max(1, ...local.daily.map((day) => day.totals.totalTokens));
   const localModels = local.byModel.map((item) => ({
     key: item.sourceId + "::" + item.model,
     title: item.model,
@@ -353,30 +264,21 @@ function TokenUsagePanel({ data, loading, error, onRetry }: {
   return (
     <section className="overflow-hidden rounded-2xl border border-border/75 bg-card/75 shadow-sm">
       <div className="flex flex-col gap-3 border-b border-border/70 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-start gap-3">
-          <div className="rounded-xl bg-primary/10 p-2.5 text-primary"><Activity className="h-5 w-5" /></div>
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <h3 className="font-semibold tracking-tight">{t("accounts.tokenMonitor")}</h3>
-              <Badge variant="outline" className="border-primary/20 bg-primary/5 text-[10px] text-primary">
-                Codex + Claude Code + Relay
-              </Badge>
-            </div>
-            <p className="mt-1 max-w-3xl text-xs leading-relaxed text-muted-foreground">
-              {t("accounts.tokenMonitorDesc")}
-            </p>
+        <div className="flex items-center gap-3">
+          <div className="rounded-xl bg-primary/10 p-2.5 text-primary">
+            <Activity className="h-5 w-5" />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="font-semibold tracking-tight">{t("accounts.tokenMonitor")}</h3>
+            <Badge variant="outline" className="border-primary/20 bg-primary/5 text-[10px] text-primary">
+              Codex + Claude Code + Relay
+            </Badge>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
-          <span className="flex items-center gap-1.5">
-            <Database className="h-3.5 w-3.5" />
-            {t("accounts.incrementalLedger")}
-          </span>
-          <span className="flex items-center gap-1.5">
-            <Clock3 className="h-3.5 w-3.5" />
-            {t("accounts.lastUpdated", { time: new Date(data.generatedAt * 1000).toLocaleString() })}
-          </span>
-        </div>
+        <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <Clock3 className="h-3.5 w-3.5" />
+          {t("accounts.lastUpdated", { time: new Date(data.generatedAt * 1000).toLocaleString() })}
+        </span>
       </div>
 
       <div className="space-y-4 p-4 sm:p-5">
@@ -416,150 +318,8 @@ function TokenUsagePanel({ data, loading, error, onRetry }: {
           </div>
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-[1.35fr_1fr]">
-          <div className="flex flex-col justify-between rounded-2xl border border-border/80 bg-card/85 p-4 sm:p-5 backdrop-blur-md shadow-xs">
-            {/* Header with detailed hover info */}
-            <div>
-              <div className="flex items-center justify-between gap-3 border-b border-border/50 pb-3">
-                <h4 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-foreground/90">
-                  <BarChart3 className="h-4 w-4 text-primary" />
-                  {t("accounts.dailyTrend")}
-                </h4>
-                <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
-                  <span className="flex items-center gap-1.5 font-medium">
-                    <span className="h-2 w-2 rounded-full bg-primary" />
-                    {t("accounts.last14Days")}
-                  </span>
-                  <span className="rounded-md bg-muted px-2 py-0.5 font-mono text-[11px] font-semibold text-foreground">
-                    峰值 {formatTokens(maxDaily)}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Daily Stacked Bar Chart */}
-            <div className="mt-4 flex h-44 items-end gap-1.5 sm:gap-2">
-              {local.daily.map((day, index) => {
-                const isToday = index === local.daily.length - 1;
-                const total = day.totals.totalTokens;
-                const heightPercent = total === 0 ? 3 : Math.max(8, (total / maxDaily) * 100);
-                
-                const input = day.totals.inputTokens;
-                const output = day.totals.outputTokens + day.totals.reasoningTokens;
-                const cache = day.totals.cacheReadTokens + day.totals.cacheWriteTokens;
-                
-                const inputPct = total > 0 ? (input / total) * 100 : 0;
-                const outputPct = total > 0 ? (output / total) * 100 : 0;
-                const cachePct = total > 0 ? (cache / total) * 100 : 0;
-
-                const dayLabel = `${day.date} · 总量: ${formatTokens(total)} (入: ${formatTokens(input)} / 出: ${formatTokens(output)} / 缓: ${formatTokens(cache)}) · ${t("accounts.agentTurns", { count: day.totals.turnCount })}`;
-
-                return (
-                  <div
-                    key={day.date}
-                    className="group relative flex min-w-0 flex-1 flex-col items-center justify-end gap-1.5 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-                    tabIndex={0}
-                    role="img"
-                    aria-label={dayLabel}
-                  >
-                    {/* Floating Tooltip */}
-                    <div className="pointer-events-none absolute bottom-[calc(100%+8px)] left-1/2 z-30 hidden w-max max-w-56 -translate-x-1/2 flex-col gap-1 rounded-lg border border-border/80 bg-popover/95 p-2 text-[10px] text-popover-foreground shadow-xl backdrop-blur-md group-hover:flex group-focus:flex">
-                      <div className="flex items-center justify-between gap-2 border-b border-border/60 pb-1 font-semibold">
-                        <span>{day.date} {isToday && "(今日)"}</span>
-                        <span className="font-mono text-primary">{formatTokens(total)}</span>
-                      </div>
-                      <div className="space-y-0.5 font-mono text-[9px]">
-                        <div className="flex justify-between gap-3 text-sky-600 dark:text-sky-400">
-                          <span>输入</span>
-                          <span>{formatTokens(input)}</span>
-                        </div>
-                        <div className="flex justify-between gap-3 text-primary">
-                          <span>输出+思考</span>
-                          <span>{formatTokens(output)}</span>
-                        </div>
-                        <div className="flex justify-between gap-3 text-emerald-600 dark:text-emerald-400">
-                          <span>上下文缓存</span>
-                          <span>{formatTokens(cache)}</span>
-                        </div>
-                        <div className="mt-1 flex justify-between gap-3 border-t border-border/40 pt-1 text-muted-foreground">
-                          <span>对话回合</span>
-                          <span>{day.totals.turnCount} 轮</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Stacked Vertical Bar */}
-                    <div className="relative flex h-32 w-full items-end justify-center">
-                      <div
-                        className={cn(
-                          "relative flex w-full min-w-1.5 flex-col-reverse overflow-hidden rounded-t-md transition-all duration-200 group-hover:scale-x-105",
-                          isToday && "ring-2 ring-primary ring-offset-1 ring-offset-background shadow-[0_0_12px_hsl(var(--primary)/0.35)]",
-                          total === 0 && "bg-muted/40",
-                        )}
-                        style={{ height: `${heightPercent}%` }}
-                      >
-                        {total > 0 && (
-                          <>
-                            {/* Layer 1: Input Tokens (Bottom) */}
-                            <div
-                              className="w-full bg-sky-500/80 transition-colors group-hover:bg-sky-500"
-                              style={{ height: `${inputPct}%` }}
-                              title={`输入: ${formatTokens(input)}`}
-                            />
-                            {/* Layer 2: Output & Reasoning Tokens (Middle) */}
-                            <div
-                              className="w-full bg-primary/85 transition-colors group-hover:bg-primary"
-                              style={{ height: `${outputPct}%` }}
-                              title={`输出: ${formatTokens(output)}`}
-                            />
-                            {/* Layer 3: Cache Tokens (Top) */}
-                            <div
-                              className="w-full bg-emerald-500/80 transition-colors group-hover:bg-emerald-500"
-                              style={{ height: `${cachePct}%` }}
-                              title={`缓存: ${formatTokens(cache)}`}
-                            />
-                          </>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Date Axis Label */}
-                    <span
-                      className={cn(
-                        "text-[10px] font-mono tracking-tight",
-                        isToday
-                          ? "rounded bg-primary/15 px-1 font-bold text-primary"
-                          : "text-muted-foreground",
-                      )}
-                    >
-                      {isToday ? "今" : Number(day.date.slice(-2)) % 2 === 0 ? day.date.slice(5) : ""}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Legend bar */}
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 border-t border-border/50 pt-3 text-[11px] text-muted-foreground">
-              <div className="flex items-center gap-3">
-                <span className="flex items-center gap-1.5">
-                  <i className="h-2 w-2 rounded-full bg-sky-500" />
-                  {t("accounts.inputShort")}
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <i className="h-2 w-2 rounded-full bg-primary" />
-                  {t("accounts.outputShort")}
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <i className="h-2 w-2 rounded-full bg-emerald-500" />
-                  {t("accounts.cacheShort")}
-                </span>
-              </div>
-              <span className="font-mono text-[10px] text-muted-foreground/80">
-                按日聚合统计
-              </span>
-            </div>
-          </div>
+        <div className="grid gap-4 xl:grid-cols-[1.55fr_1fr]">
+          <DailyTrendPanel daily={local.daily} models={localModels} />
           <UsageBreakdown
             title={t("accounts.localModels")}
             items={localModels}
@@ -567,85 +327,62 @@ function TokenUsagePanel({ data, loading, error, onRetry }: {
           />
         </div>
 
-        <div className="rounded-xl border border-dashed border-border/80 bg-muted/15 p-3 sm:p-4">
-          <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-            <h4 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+        <section className="overflow-hidden rounded-2xl border border-border/75 bg-card/75 shadow-xs">
+          <div className="flex flex-col gap-2 border-b border-border/60 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <h4 className="text-xs font-semibold uppercase tracking-[0.12em] text-foreground/90">
               {t("accounts.relayUsage")}
             </h4>
-            <span className="text-[10px] leading-4 text-muted-foreground">
-              {t("accounts.relaySeparateHint")}
-            </span>
+            <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
+              <span className="rounded-md bg-muted/70 px-2 py-1">
+                {t("accounts.relayRequests", { count: relay.allTime.requestCount })}
+              </span>
+              <span className="rounded-md bg-muted/70 px-2 py-1">
+                {t("accounts.relayReported", { count: relay.allTime.reportedCount })}
+              </span>
+            </div>
           </div>
-          <div className="grid gap-3 lg:grid-cols-[1fr_1.2fr]">
-            <SourceUsageCard
-              name="AgentHarbor Relay"
-              badge={t("accounts.relayRequests", { count: relay.allTime.requestCount })}
-              totalTokens={relay.allTime.totalTokens}
-              count={relay.allTime.reportedCount}
-              countLabel={t("accounts.relayReported", { count: relay.allTime.reportedCount })}
-              inputTokens={relay.allTime.inputTokens}
-              outputTokens={relay.allTime.outputTokens}
-              cacheTokens={0}
-              share={Math.max(1, relay.allTime.totalTokens)}
-              className="bg-background/55"
-            />
+
+          <div className="grid divide-y divide-border/60 sm:grid-cols-[1.35fr_1fr_1fr] sm:divide-x sm:divide-y-0">
+            <div className="p-4 sm:p-5">
+              <p className="text-[11px] font-medium text-muted-foreground">{t("accounts.allUsage")}</p>
+              <div className="mt-1 flex items-baseline gap-1.5">
+                <strong className="font-mono text-2xl font-semibold tracking-tight tabular-nums">
+                  {formatTokens(relay.allTime.totalTokens)}
+                </strong>
+                <span className="text-[10px] text-muted-foreground">Token</span>
+              </div>
+
+              <CompositionBar
+                className="mt-4"
+                input={relay.allTime.inputTokens}
+                output={relay.allTime.outputTokens}
+                cache={0}
+              />
+
+            </div>
+            <div className="flex flex-col justify-center p-4 sm:p-5">
+              <p className="text-[11px] font-medium text-muted-foreground">{t("accounts.inputShort")}</p>
+              <strong className="mt-1 font-mono text-xl font-semibold tracking-tight tabular-nums">{formatTokens(relay.allTime.inputTokens)}</strong>
+              <span className="mt-1 text-[10px] text-muted-foreground">Token</span>
+            </div>
+            <div className="flex flex-col justify-center p-4 sm:p-5">
+              <p className="text-[11px] font-medium text-muted-foreground">{t("accounts.outputShort")}</p>
+              <strong className="mt-1 font-mono text-xl font-semibold tracking-tight tabular-nums">{formatTokens(relay.allTime.outputTokens)}</strong>
+              <span className="mt-1 text-[10px] text-muted-foreground">Token</span>
+            </div>
+          </div>
+          <div className="border-t border-border/60 p-4 sm:p-5">
             <UsageBreakdown
               title={t("accounts.relayModels")}
               items={relayModels}
               emptyLabel={t("accounts.relayEmpty")}
+              mergeDuplicateModels
+              embedded
             />
           </div>
-        </div>
+        </section>
 
-        {local.recent.length > 0 && (
-          <div className="overflow-hidden rounded-xl border border-border/70 bg-background/55">
-            <div className="flex items-center justify-between gap-2 border-b border-border/70 px-4 py-3">
-              <span className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                {t("accounts.recentAgentTurns")}
-              </span>
-              <span className="text-[10px] text-muted-foreground">
-                {t("accounts.recentAgentTurns")} · {Math.min(8, local.recent.length)}
-              </span>
-            </div>
-            <div className="hidden grid-cols-[120px_minmax(0,1fr)_170px_90px] gap-4 border-b border-border/60 bg-muted/20 px-4 py-2 text-[10px] font-medium text-muted-foreground sm:grid">
-              <span>{t("accounts.sourceColumn")}</span>
-              <span>{t("accounts.modelColumn")}</span>
-              <span>{t("accounts.timeColumn")}</span>
-              <span className="text-right">{t("accounts.tokenColumn")}</span>
-            </div>
-            <div className="divide-y divide-border/60">
-              {local.recent.slice(0, 8).map((item, index) => (
-                <div
-                  key={item.timestamp + "-" + item.sourceId + "-" + index}
-                  className="grid grid-cols-[minmax(0,1fr)_auto] gap-4 px-4 py-2.5 text-xs transition-colors hover:bg-muted/25 sm:grid-cols-[120px_minmax(0,1fr)_170px_90px]"
-                >
-                  <div className="min-w-0 sm:hidden">
-                    <p className="font-medium">{item.sourceName}</p>
-                    <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground" title={item.model}>
-                      {item.model}
-                    </p>
-                    <p className="mt-0.5 text-[10px] text-muted-foreground">
-                      {new Date(item.timestamp * 1000).toLocaleString()}
-                    </p>
-                  </div>
-                  <div className="hidden items-center gap-1.5 font-medium sm:flex">
-                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary/70" />
-                    <span className="truncate">{item.sourceName}</span>
-                  </div>
-                  <div className="hidden truncate font-mono text-[11px] text-muted-foreground sm:block" title={item.model}>
-                    {item.model}
-                  </div>
-                  <div className="hidden truncate text-muted-foreground sm:block">
-                    {new Date(item.timestamp * 1000).toLocaleString()}
-                  </div>
-                  <div className="text-right font-mono tabular-nums text-foreground">
-                    {formatTokens(item.totalTokens)}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        <RecentTurnsPanel items={local.recent} />
 
         {local.warningCount > 0 && (
           <details className="rounded-xl border border-amber-500/25 bg-amber-500/5 px-4 py-3 text-xs text-amber-800 dark:text-amber-300">
@@ -714,8 +451,8 @@ function QuotaRing({
   }
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col items-center justify-center p-2">
-      <div className="relative h-[82px] w-[82px]">
+    <div className="flex min-w-0 flex-1 flex-col items-center justify-center p-1">
+      <div className="relative h-[70px] w-[70px]">
         <svg viewBox="0 0 72 72" className="h-full w-full -rotate-90" aria-hidden>
           <circle cx="36" cy="36" r={radius} fill="none" strokeWidth="5.5" className="stroke-muted/50 dark:stroke-muted/30" />
           <circle
@@ -731,13 +468,13 @@ function QuotaRing({
           />
         </svg>
         <div className="absolute inset-0 flex items-center justify-center">
-          <span className={cn("text-base font-bold font-mono tracking-tight", tone)}>
+          <span className={cn("font-mono text-sm font-bold tracking-tight", tone)}>
             {value == null ? "—" : `${value}%`}
           </span>
         </div>
       </div>
-      <div className="mt-2 text-center">
-        <p className="text-xs font-semibold text-foreground/90 font-mono tracking-tight">
+      <div className="mt-1.5 text-center">
+        <p className="font-mono text-[11px] font-semibold tracking-tight text-foreground/90">
           <span className="font-bold">{label}</span>
           <span className="mx-1 text-muted-foreground/50">·</span>
           <span className="text-muted-foreground">{resetTimeFormatted}</span>
@@ -784,14 +521,14 @@ function AccountCard({
   return (
     <article
       className={cn(
-        "group relative flex flex-col justify-between overflow-hidden rounded-3xl border bg-card/90 backdrop-blur-md transition-all duration-300",
+        "group relative flex flex-col justify-between overflow-hidden rounded-2xl border bg-card/90 backdrop-blur-md transition-all duration-300",
         account.isActive
           ? "border-emerald-500/40 ring-1 ring-emerald-500/20 shadow-[0_12px_32px_-12px_rgba(16,185,129,0.18)]"
           : "border-border/80 hover:border-primary/40 hover:shadow-lg hover:-translate-y-0.5",
       )}
     >
       {/* Top Header: Email Title + Status Badge */}
-      <div className="p-4 sm:p-5 pb-3">
+      <div className="px-4 pb-2.5 pt-3.5">
         <div className="flex items-center justify-between gap-2.5">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <span
@@ -802,7 +539,7 @@ function AccountCard({
               )}
             />
             <h3
-              className="truncate text-[15px] font-bold tracking-tight text-foreground/95"
+              className="truncate text-sm font-bold tracking-tight text-foreground/95"
               title={title}
             >
               {title}
@@ -811,11 +548,11 @@ function AccountCard({
         </div>
 
         {/* Badges line: Plan Badge + Active Badge */}
-        <div className="mt-2.5 flex flex-wrap items-center gap-2">
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
           <Badge
             variant="outline"
             className={cn(
-              "gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold tracking-wide",
+              "gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold tracking-wide",
               isPlus && "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
               isTeamOrPro && "border-primary/30 bg-primary/10 text-primary",
               !isPlus && !isTeamOrPro && "border-border bg-muted/60 text-muted-foreground",
@@ -826,7 +563,7 @@ function AccountCard({
           </Badge>
 
           {account.isActive && (
-            <Badge className="gap-1 rounded-full border border-emerald-500/25 bg-emerald-500/15 px-2.5 py-0.5 text-xs font-medium text-emerald-700 shadow-none dark:text-emerald-300">
+            <Badge className="gap-1 rounded-full border border-emerald-500/25 bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-700 shadow-none dark:text-emerald-300">
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
               {t("accounts.current")}
             </Badge>
@@ -835,10 +572,10 @@ function AccountCard({
       </div>
 
       {/* Middle: 2x2 Info Grid with clean icons */}
-      <div className="grid grid-cols-2 gap-3 border-y border-border/50 bg-black/[0.015] dark:bg-white/[0.015] px-4 sm:px-5 py-3.5 text-xs">
+      <div className="grid grid-cols-2 gap-2.5 border-y border-border/50 bg-black/[0.015] px-4 py-2.5 text-xs dark:bg-white/[0.015]">
         {/* User Nickname */}
-        <div className="flex min-w-0 items-start gap-2.5">
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-muted/60 text-muted-foreground">
+        <div className="flex min-w-0 items-start gap-2">
+          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-muted/60 text-muted-foreground">
             <User className="h-3.5 w-3.5" />
           </div>
           <div className="min-w-0 flex-1">
@@ -850,8 +587,8 @@ function AccountCard({
         </div>
 
         {/* Auth Mode */}
-        <div className="flex min-w-0 items-start gap-2.5">
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-muted/60 text-muted-foreground">
+        <div className="flex min-w-0 items-start gap-2">
+          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-muted/60 text-muted-foreground">
             <Shield className="h-3.5 w-3.5" />
           </div>
           <div className="min-w-0 flex-1">
@@ -863,8 +600,8 @@ function AccountCard({
         </div>
 
         {/* Subscription Status */}
-        <div className="flex min-w-0 items-start gap-2.5">
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-muted/60 text-muted-foreground">
+        <div className="flex min-w-0 items-start gap-2">
+          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-muted/60 text-muted-foreground">
             <ShieldCheck className="h-3.5 w-3.5" />
           </div>
           <div className="min-w-0 flex-1">
@@ -876,15 +613,15 @@ function AccountCard({
         </div>
 
         {/* Expiry or Last checked */}
-        <div className="flex min-w-0 items-start gap-2.5">
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-muted/60 text-muted-foreground">
+        <div className="flex min-w-0 items-start gap-2">
+          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-muted/60 text-muted-foreground">
             <Calendar className="h-3.5 w-3.5" />
           </div>
           <div className="min-w-0 flex-1">
             <p className="text-[11px] text-muted-foreground">最近同步</p>
             <p className="truncate font-semibold text-foreground/90" title={account.lastUsageAt ? new Date(account.lastUsageAt * 1000).toLocaleString() : undefined}>
               {account.lastUsageAt
-                ? formatRelative(account.lastUsageAt)
+                ? new Date(account.lastUsageAt * 1000).toLocaleString()
                 : t("accounts.unknown")}
             </p>
           </div>
@@ -892,7 +629,7 @@ function AccountCard({
       </div>
 
       {/* Quota Ring Dual Displays */}
-      <div className="flex items-center justify-around divide-x divide-border/50 px-2 py-4">
+      <div className="flex items-center justify-around divide-x divide-border/50 px-2 py-2.5">
         <QuotaRing label="5小时" window={account.primaryWindow} />
         <QuotaRing label="1周" window={account.secondaryWindow} />
       </div>
@@ -904,7 +641,7 @@ function AccountCard({
       )}
 
       {/* Footer Actions */}
-      <div className="flex items-center justify-between border-t border-border/50 bg-black/[0.015] dark:bg-white/[0.015] px-4 py-3">
+      <div className="flex items-center justify-between border-t border-border/50 bg-black/[0.015] px-4 py-2.5 dark:bg-white/[0.015]">
         {/* Left: Active indicator or Set Active Button */}
         <div>
           {account.isActive ? (
@@ -916,7 +653,7 @@ function AccountCard({
             <Button
               variant="outline"
               size="xs"
-              className="h-8 gap-1.5 rounded-xl border-border/80 px-3 text-xs font-semibold hover:border-primary/40 hover:bg-primary/5 hover:text-primary transition-all shadow-2xs"
+              className="h-7 gap-1.5 rounded-lg border-border/80 px-2.5 text-[11px] font-semibold shadow-2xs transition-all hover:border-primary/40 hover:bg-primary/5 hover:text-primary"
               onClick={onSwitch}
               disabled={switching}
             >
@@ -979,6 +716,9 @@ export function AccountsPage({ refreshInterval }: { refreshInterval: RefreshInte
     enabled: pageActive,
     refetchInterval: pageActive ? REFRESH_INTERVAL_MS[refreshInterval] : false,
     refetchIntervalInBackground: false,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     retry: false,
   });
   const tokenUsageQuery = useQuery({
@@ -987,6 +727,9 @@ export function AccountsPage({ refreshInterval }: { refreshInterval: RefreshInte
     enabled: pageActive,
     refetchInterval: pageActive ? REFRESH_INTERVAL_MS[refreshInterval] : false,
     refetchIntervalInBackground: false,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     retry: false,
   });
 
@@ -999,7 +742,6 @@ export function AccountsPage({ refreshInterval }: { refreshInterval: RefreshInte
     onSuccess: (data) => {
       setData(data);
       toast({ title: t("accounts.loginSuccess"), variant: "success" });
-      void accountsQuery.refetch();
     },
     onError: (error) => {
       toast({ title: t("common.error"), description: String(error), variant: "destructive" });
@@ -1019,7 +761,6 @@ export function AccountsPage({ refreshInterval }: { refreshInterval: RefreshInte
     onSuccess: (data) => {
       setData(data);
       toast({ title: t("accounts.switchSuccess"), variant: "success" });
-      void accountsQuery.refetch();
     },
     onError: (error) => {
       toast({ title: t("common.error"), description: String(error), variant: "destructive" });
@@ -1072,19 +813,14 @@ export function AccountsPage({ refreshInterval }: { refreshInterval: RefreshInte
 
   return (
     <div className="mx-auto max-w-7xl space-y-5 pb-8">
-        <section className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <div className="flex items-center gap-2">
+        <section className="flex flex-col gap-3 rounded-2xl border border-border/70 bg-card/70 px-4 py-3 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-xl font-semibold tracking-tight">{t("accounts.title")}</h2>
               <Badge variant="outline" className="border-primary/25 bg-primary/5 text-[10px] text-primary">
                 {t("accounts.official")}
               </Badge>
-              <Badge variant="outline" className="text-[10px] text-muted-foreground">
-                {t("accounts.direct")}
-              </Badge>
             </div>
-            <p className="mt-1.5 text-sm text-muted-foreground">{t("accounts.description")}</p>
-            <p className="mt-1 text-xs text-muted-foreground/80">{t("accounts.loginHint")}</p>
           </div>
           <div className="flex shrink-0 gap-2">
             <Button
@@ -1097,7 +833,7 @@ export function AccountsPage({ refreshInterval }: { refreshInterval: RefreshInte
             </Button>
             <Button onClick={() => loginMutation.mutate()} disabled={loginMutation.isPending}>
               {loginMutation.isPending ? <Loader2 className="animate-spin" /> : <LogIn />}
-              {loginMutation.isPending ? t("accounts.adding") : t("accounts.add")}
+              {loginMutation.isPending ? t("accounts.adding") : t("accounts.oauthLogin")}
             </Button>
           </div>
         </section>
@@ -1144,7 +880,7 @@ export function AccountsPage({ refreshInterval }: { refreshInterval: RefreshInte
         {accountsQuery.isPending ? (
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {Array.from({ length: 3 }).map((_, index) => (
-              <Skeleton key={index} className="h-[390px] rounded-2xl" />
+            <Skeleton key={index} className="h-[330px] rounded-2xl" />
             ))}
           </div>
         ) : accountsQuery.isError ? (
