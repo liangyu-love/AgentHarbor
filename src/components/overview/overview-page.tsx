@@ -10,11 +10,16 @@ import {
   Cpu,
   FileCode2,
   FolderOpen,
+  Image as ImageIcon,
+  MessagesSquare,
   RotateCw,
   Server,
+  Settings,
   ShieldCheck,
   Sparkles,
+  UsersRound,
   Wallet,
+  Wrench,
   XCircle,
 } from "lucide-react";
 import { api } from "@/lib/api";
@@ -194,6 +199,98 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
             <span className="overview-capability-heading"><FileCode2 aria-hidden />{t("nav.customInstructions")}<ArrowRight aria-hidden className="overview-capability-arrow" /></span>
             <span className={cn("overview-capability-value", !instructions.data && "is-empty")}><strong>{instructions.isError || !instructions.data ? "—" : instructionManaged ? t("workspace.applied") : t("workspace.notApplied")}</strong></span>
             <span className="overview-capability-meta">{lastTemplateTitle ?? t("workspace.instructionsSummary")}</span>
+          </button>
+        </div>
+      </section>
+
+      <section aria-labelledby="overview-modules-title">
+        <div id="overview-modules-title">
+          <SectionHeading index="02" title={t("workspace.quickModules")} />
+        </div>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+          <button
+            type="button"
+            className="overview-quick-card group"
+            onClick={() => onNavigate("accounts")}
+          >
+            <div className="overview-quick-icon bg-blue-500/10 text-blue-500 group-hover:bg-blue-500/15">
+              <UsersRound className="h-5 w-5" />
+            </div>
+            <div className="min-w-0 text-left">
+              <div className="text-xs font-semibold text-foreground group-hover:text-primary transition-colors flex items-center gap-1">
+                {t("nav.accounts")}
+                <ArrowRight className="h-3 w-3 opacity-0 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all" />
+              </div>
+              <span className="text-[11px] text-muted-foreground truncate block">{t("workspace.accountsModule")}</span>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            className="overview-quick-card group"
+            onClick={() => onNavigate("imageWorkbench")}
+          >
+            <div className="overview-quick-icon bg-amber-500/10 text-amber-500 group-hover:bg-amber-500/15">
+              <ImageIcon className="h-5 w-5" />
+            </div>
+            <div className="min-w-0 text-left">
+              <div className="text-xs font-semibold text-foreground group-hover:text-primary transition-colors flex items-center gap-1">
+                {t("image.title")}
+                <ArrowRight className="h-3 w-3 opacity-0 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all" />
+              </div>
+              <span className="text-[11px] text-muted-foreground truncate block">{t("workspace.imageModule")}</span>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            className="overview-quick-card group"
+            onClick={() => onNavigate("threads")}
+          >
+            <div className="overview-quick-icon bg-purple-500/10 text-purple-500 group-hover:bg-purple-500/15">
+              <MessagesSquare className="h-5 w-5" />
+            </div>
+            <div className="min-w-0 text-left">
+              <div className="text-xs font-semibold text-foreground group-hover:text-primary transition-colors flex items-center gap-1">
+                {t("nav.threads")}
+                <ArrowRight className="h-3 w-3 opacity-0 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all" />
+              </div>
+              <span className="text-[11px] text-muted-foreground truncate block">{t("workspace.threadsModule")}</span>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            className="overview-quick-card group"
+            onClick={() => onNavigate("maintenance")}
+          >
+            <div className="overview-quick-icon bg-emerald-500/10 text-emerald-500 group-hover:bg-emerald-500/15">
+              <Wrench className="h-5 w-5" />
+            </div>
+            <div className="min-w-0 text-left">
+              <div className="text-xs font-semibold text-foreground group-hover:text-primary transition-colors flex items-center gap-1">
+                {t("nav.maintenance")}
+                <ArrowRight className="h-3 w-3 opacity-0 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all" />
+              </div>
+              <span className="text-[11px] text-muted-foreground truncate block">{t("workspace.maintenanceModule")}</span>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            className="overview-quick-card group"
+            onClick={() => onNavigate("settings")}
+          >
+            <div className="overview-quick-icon bg-slate-500/10 text-slate-500 dark:text-slate-400 group-hover:bg-slate-500/15">
+              <Settings className="h-5 w-5" />
+            </div>
+            <div className="min-w-0 text-left">
+              <div className="text-xs font-semibold text-foreground group-hover:text-primary transition-colors flex items-center gap-1">
+                {t("nav.settings")}
+                <ArrowRight className="h-3 w-3 opacity-0 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all" />
+              </div>
+              <span className="text-[11px] text-muted-foreground truncate block">{t("workspace.settingsModule")}</span>
+            </div>
           </button>
         </div>
       </section>

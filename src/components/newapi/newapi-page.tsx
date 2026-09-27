@@ -574,11 +574,15 @@ export function NewApiPage() {
                   )}
 
                   <AuroraCard
+                    key={provider.id}
+                    data-relay-card-face
                     color={cardColor}
                     shine={isGroupActive || selected}
                     className={cn(
                       "flex flex-col",
                       selected && "rounded-2xl ring-2 ring-primary/40",
+                      hasMultiple && !isExpanded && groupMemberDirection[group.key] &&
+                        (groupMemberDirection[group.key] === "prev" ? "relay-card-swap-prev" : "relay-card-swap-next"),
                     )}
                   >
                     <div className="flex flex-col justify-between p-3.5 sm:p-4">
@@ -610,7 +614,7 @@ export function NewApiPage() {
                                 <button type="button" onClick={() => switchMember(-1)} aria-label={t("newapi.previousGroupMember")} title={t("newapi.previousGroupMember")}>
                                   <ChevronLeft className="h-3.5 w-3.5" />
                                 </button>
-                                <span key={provider.id} className={cn("relay-member-name", groupMemberDirection[group.key] === "prev" ? "relay-card-swap-prev" : "relay-card-swap-next")} title={provider.name} aria-live="polite">
+                                <span className="relay-member-name" title={provider.name} aria-live="polite">
                                   {provider.name} <small>{memberIndex + 1}/{group.providers.length}</small>
                                 </span>
                                 <button type="button" onClick={() => switchMember(1)} aria-label={t("newapi.nextGroupMember")} title={t("newapi.nextGroupMember")}>
@@ -633,7 +637,7 @@ export function NewApiPage() {
                         </div>
 
                         {/* Dual Info Cards: Balance (Left) & Model/Status (Right) */}
-                        <div key={provider.id} className={cn("mt-3 grid grid-cols-2 gap-2", hasMultiple && (groupMemberDirection[group.key] === "prev" ? "relay-card-swap-prev" : "relay-card-swap-next"))}>
+                        <div className="mt-3 grid grid-cols-2 gap-2">
                           {/* Left: Balance Box */}
                           <div className={cn(
                             "flex flex-col justify-between rounded-xl p-2.5 ring-1 transition-colors min-w-0 min-h-[92px]",

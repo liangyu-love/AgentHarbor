@@ -157,33 +157,33 @@ export function ThreadCard({
           {/* Center: Turn counts & Time */}
           <div className="hidden shrink-0 items-center gap-3 text-[11px] text-muted-foreground sm:flex">
             <div
-              className="flex items-center gap-1 font-mono"
+              className="flex items-center gap-1 font-mono rounded bg-muted/40 px-1.5 py-0.5"
               title={t("threads.messagesTooltip")}
             >
-              <span className="flex items-center gap-0.5 text-sky-600 dark:text-sky-400">
+              <span className="flex items-center gap-0.5 text-sky-600 dark:text-sky-400 font-medium">
                 <User className="h-2.5 w-2.5" />
                 {thread.userMessages}
               </span>
-              <span className="text-muted-foreground/40">/</span>
-              <span className="flex items-center gap-0.5 text-purple-600 dark:text-purple-400">
+              <span className="text-muted-foreground/30">/</span>
+              <span className="flex items-center gap-0.5 text-purple-600 dark:text-purple-400 font-medium">
                 <Sparkles className="h-2.5 w-2.5" />
                 {thread.agentMessages}
               </span>
             </div>
             <span
-              className="flex items-center gap-0.5 font-mono"
+              className="flex items-center gap-0.5 font-mono text-[10.5px]"
               title={t("threads.tokensUsed", { count: thread.tokensUsed || 0 })}
             >
               <Coins className="h-2.5 w-2.5 opacity-70" />
               {formatTokenCount(thread.tokensUsed)}
             </span>
 
-            <span className="w-12 text-right font-mono">
+            <span className="w-12 text-right font-mono text-[10.5px]">
               {formatSize(thread.fileSize)}
             </span>
 
             <span
-              className="w-14 text-right"
+              className="w-14 text-right text-[10.5px]"
               title={formatDateTime(thread.updatedAt)}
             >
               {formatRelative(thread.updatedAt)}
@@ -371,26 +371,26 @@ export function ThreadCard({
         </div>
 
         {/* Middle: Dialogue breakdown — single compact line */}
-        <div className="mt-2 flex items-center justify-between gap-2 text-[11px]">
+        <div className="mt-2.5 flex items-center justify-between gap-2 rounded-lg bg-muted/30 px-2 py-1 text-[11px]">
           <div className="flex min-w-0 items-center gap-1.5 font-mono">
-            <span className="flex items-center gap-0.5 text-sky-600 dark:text-sky-400">
+            <span className="flex items-center gap-1 text-sky-600 dark:text-sky-400 font-medium">
               <User className="h-3 w-3" />
               {thread.userMessages}
             </span>
-            <span className="text-muted-foreground/40">/</span>
-            <span className="flex items-center gap-0.5 text-purple-600 dark:text-purple-400">
+            <span className="text-muted-foreground/30">/</span>
+            <span className="flex items-center gap-1 text-purple-600 dark:text-purple-400 font-medium">
               <Sparkles className="h-3 w-3" />
               {thread.agentMessages}
             </span>
             <span
-              className="flex items-center gap-0.5 text-muted-foreground"
+              className="flex items-center gap-1 text-muted-foreground/80 ml-1 border-l border-border/40 pl-2"
               title={t("threads.tokensUsed", { count: thread.tokensUsed || 0 })}
             >
               <Coins className="h-2.5 w-2.5 opacity-70" />
               {formatTokenCount(thread.tokensUsed)}
             </span>
           </div>
-              <div className="h-1 w-16 shrink-0 overflow-hidden rounded-full bg-muted/70 flex" title={`用户提问占比: ${userRatio}%`}>
+          <div className="h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-muted/80 flex ring-1 ring-border/20" title={`用户提问占比: ${userRatio}%`}>
             <div
               className="bg-gradient-to-r from-sky-500 to-sky-400"
               style={{ width: `${userRatio}%` }}

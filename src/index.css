@@ -456,17 +456,43 @@ body {
 .relay-member-nav > button:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 1px; }
 .relay-member-name { min-width: 0; flex: 1; overflow: hidden; font-size: 0.65rem; font-weight: 700; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
 .relay-member-name small { margin-left: 0.2rem; color: hsl(var(--muted-foreground)); font-size: 0.58rem; font-weight: 500; }
-.relay-card-swap-next { animation: relay-card-next 280ms cubic-bezier(0.16, 1, 0.3, 1) both; }
-.relay-card-swap-prev { animation: relay-card-prev 280ms cubic-bezier(0.16, 1, 0.3, 1) both; }
-
-@keyframes relay-card-next {
-  from { opacity: 0.48; transform: translateX(12px) rotate(0.45deg); }
-  to { opacity: 1; transform: translateX(0) rotate(0); }
+.relay-card-swap-next {
+  animation: relay-card-flip-next 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  transform-style: preserve-3d;
+}
+.relay-card-swap-prev {
+  animation: relay-card-flip-prev 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  transform-style: preserve-3d;
 }
 
-@keyframes relay-card-prev {
-  from { opacity: 0.48; transform: translateX(-12px) rotate(-0.45deg); }
-  to { opacity: 1; transform: translateX(0) rotate(0); }
+@keyframes relay-card-flip-next {
+  0% {
+    opacity: 0.35;
+    transform: perspective(700px) rotateY(-36deg) scale(0.96) translateZ(-16px);
+  }
+  60% {
+    opacity: 0.95;
+    transform: perspective(700px) rotateY(4deg) scale(1.01) translateZ(4px);
+  }
+  100% {
+    opacity: 1;
+    transform: perspective(700px) rotateY(0deg) scale(1) translateZ(0);
+  }
+}
+
+@keyframes relay-card-flip-prev {
+  0% {
+    opacity: 0.35;
+    transform: perspective(700px) rotateY(36deg) scale(0.96) translateZ(-16px);
+  }
+  60% {
+    opacity: 0.95;
+    transform: perspective(700px) rotateY(-4deg) scale(1.01) translateZ(4px);
+  }
+  100% {
+    opacity: 1;
+    transform: perspective(700px) rotateY(0deg) scale(1) translateZ(0);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1059,6 +1085,44 @@ body {
   .ink-generate-button { transition: none; }
 }
 
+.overview-quick-card {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 0.85rem;
+  border-radius: 0.85rem;
+  border: 1px solid var(--overview-line);
+  background: hsl(var(--card));
+  text-align: left;
+  transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.overview-quick-card:hover {
+  border-color: hsl(var(--primary) / 0.4);
+  background: hsl(var(--card));
+  transform: translateY(-2px);
+  box-shadow: 0 4px 14px -6px rgba(0, 0, 0, 0.1);
+}
+
+.overview-quick-card:active {
+  transform: translateY(0);
+}
+
+.overview-quick-icon {
+  display: flex;
+  height: 2.25rem;
+  width: 2.25rem;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.65rem;
+  transition: background-color 160ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overview-quick-card { transition: none !important; }
+}
+
 .app-nav-button:not([data-active="true"]):hover > svg {
   transform: translateX(2px);
 }
@@ -1117,7 +1181,7 @@ body {
 .usage-today-total { margin-top: 0.4rem; font-size: clamp(1.65rem, 2.4vw, 2.4rem); font-weight: 720; letter-spacing: -0.05em; line-height: 1.15; font-variant-numeric: tabular-nums; }
 .usage-today-total small { margin-left: 0.2rem; color: hsl(var(--muted-foreground)); font-size: 0.72rem; font-weight: 450; letter-spacing: 0; }
 .usage-metric-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.45rem; margin-top: 0.9rem; }
-.usage-metric { display: flex; min-width: 0; flex-direction: column; gap: 0.15rem; padding: 0.5rem 0.6rem; border-left: 2px solid var(--metric-color); border-radius: 0.3rem 0.55rem 0.55rem 0.3rem; background: hsl(var(--background) / 0.45); }
+.usage-metric { display: flex; min-width: 0; flex-direction: column; gap: 0.15rem; padding: 0.5rem 0.6rem; border-left: 1px solid var(--metric-color); border-radius: 0.3rem 0.55rem 0.55rem 0.3rem; background: hsl(var(--background) / 0.45); }
 .usage-metric-sky { --metric-color: #54a7d9; }
 .usage-metric-orange { --metric-color: #ed7c35; }
 .usage-metric-green { --metric-color: #54b98b; }

@@ -158,6 +158,7 @@ try {
   await page.getByRole("button", { name: "下一个站点配置" }).click();
   await page.locator(".relay-member-name", { hasText: "Relay Beta" }).waitFor();
   await page.getByText("beta-model", { exact: true }).waitFor();
+  assert.equal(await page.locator("[data-relay-card-face]").first().evaluate(element => getComputedStyle(element).animationName), "relay-card-flip-next");
   const cardHeightsBefore = await page.locator(".group.relative.flex.min-w-0.flex-col").evaluateAll(cards => cards.map(card => card.getBoundingClientRect().height));
   await page.getByRole("button", { name: "展开同中转配置" }).click();
   const cardHeightsAfter = await page.locator(".group.relative.flex.min-w-0.flex-col").evaluateAll(cards => cards.map(card => card.getBoundingClientRect().height));
@@ -172,6 +173,12 @@ try {
   if (captureDir) await page.screenshot({ path: path.join(captureDir, "group-collapsed.png") });
   await page.getByRole("button", { name: "上一个站点配置" }).click();
   await page.locator(".relay-member-name", { hasText: "Relay Alpha" }).waitFor();
+  assert.equal(await page.locator("[data-relay-card-face]").first().evaluate(element => getComputedStyle(element).animationName), "relay-card-flip-prev");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.getByRole("button", { name: "下一个站点配置" }).click();
+  await page.locator(".relay-member-name", { hasText: "Relay Beta" }).waitFor();
+  assert.equal(await page.locator("[data-relay-card-face]").first().evaluate(element => getComputedStyle(element).animationName), "none");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
   console.log("PASS grouped relay switches members and expands without stretching independent cards");
 
   await reset("overview");
@@ -179,6 +186,17 @@ try {
   const capabilityWidths = await page.locator(".overview-capability").evaluateAll(cards => cards.map(card => card.getBoundingClientRect().width));
   assert.equal(capabilityWidths.length, 4);
   assert.ok(Math.max(...capabilityWidths) - Math.min(...capabilityWidths) < 2, JSON.stringify(capabilityWidths));
+  assert.equal(await page.locator(".overview-quick-card").count(), 5);
+  assert.equal(await page.locator(".overview-quick-card").first().evaluate(element =>
+    Boolean(element.closest("section")?.compareDocumentPosition(document.querySelector(".overview-system")) & Node.DOCUMENT_POSITION_FOLLOWING)), true);
+  for (const [index, route] of ["accounts", "imageWorkbench", "threads", "maintenance", "settings"].entries()) {
+    await page.locator(".overview-quick-card").nth(index).click();
+    assert.equal(await page.evaluate(() => window.review.navigatedTo), route);
+  }
+  if (captureDir) {
+    await page.locator(".overview-quick-card").first().scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(captureDir, "overview-modules.png") });
+  }
   await page.getByRole("button", { name: "代理设置" }).click();
   assert.equal(await page.evaluate(() => window.review.proxySettingsOpened), true);
   if (captureDir) {
