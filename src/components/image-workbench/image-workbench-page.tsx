@@ -43,6 +43,13 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -84,6 +91,118 @@ const QUALITIES = [
   { value: "low", label: "意笔写意 (low)", tip: "轻快随形，迅速成画" },
 ];
 
+type InkModelComboboxProps = {
+  value: string;
+  options: string[];
+  onChange: (value: string) => void;
+};
+
+function InkModelCombobox({ value, options, onChange }: InkModelComboboxProps) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+
+  const filteredOptions = useMemo(() => {
+    const normalized = query.trim().toLocaleLowerCase();
+    if (!normalized) return options;
+    return options.filter(option => option.toLocaleLowerCase().includes(normalized));
+  }, [options, query]);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutsidePress = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePress);
+    return () => document.removeEventListener("pointerdown", closeOnOutsidePress);
+  }, [open]);
+
+  const choose = (option: string) => {
+    onChange(option);
+    setQuery("");
+    setOpen(false);
+  };
+
+  return (
+    <div ref={rootRef} className="relative">
+      <Input
+        value={value}
+        onChange={event => {
+          onChange(event.target.value);
+          setQuery(event.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => {
+          setQuery("");
+          setOpen(true);
+        }}
+        onKeyDown={event => {
+          if (event.key === "Escape") setOpen(false);
+          if (event.key === "Enter") setOpen(false);
+          if (event.key === "ArrowDown") {
+            event.preventDefault();
+            setOpen(true);
+            requestAnimationFrame(() => {
+              rootRef.current?.querySelector<HTMLButtonElement>('[role="option"]')?.focus();
+            });
+          }
+        }}
+        role="combobox"
+        aria-autocomplete="list"
+        aria-expanded={open}
+        aria-controls="image-model-options"
+        placeholder="gpt-image-2"
+        className="ink-model-input pr-10 font-mono text-sm"
+      />
+      <button
+        type="button"
+        aria-label={open ? "收起模型选项" : "展开模型选项"}
+        aria-expanded={open}
+        onMouseDown={event => event.preventDefault()}
+        onClick={() => {
+          setQuery("");
+          setOpen(current => !current);
+        }}
+        className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-[#685d50] outline-none transition-colors hover:text-[#b83b38] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#b83b38]/35 dark:text-[#cbbda8] dark:hover:text-[#efaaa7]"
+      >
+        <ChevronDown className={cn("h-4 w-4 transition-transform duration-200", open && "rotate-180")} />
+      </button>
+      {open && (
+        <div
+          id="image-model-options"
+          role="listbox"
+          aria-label="可用生图模型"
+          className="ink-combobox-content"
+        >
+          <div className="ink-combobox-heading">可用墨相</div>
+          <div className="max-h-52 overflow-y-auto p-1.5 ink-combobox-scroll">
+            {filteredOptions.length > 0 ? filteredOptions.map(option => (
+              <button
+                key={option}
+                type="button"
+                role="option"
+                aria-selected={option === value}
+                onClick={() => choose(option)}
+                className="ink-combobox-item"
+              >
+                <span className="min-w-0 flex-1 truncate font-mono text-sm">{option}</span>
+                {option === value && <Check className="h-4 w-4 shrink-0 text-[#b83b38] dark:text-[#efaaa7]" />}
+              </button>
+            )) : (
+              <p className="px-3 py-5 text-center font-serif text-xs text-muted-foreground">
+                无匹配模型，可直接使用当前输入
+              </p>
+            )}
+          </div>
+          {query.trim() && !options.some(option => option.toLocaleLowerCase() === query.trim().toLocaleLowerCase()) && (
+            <div className="ink-combobox-note">按 Enter 保留自定义模型名称</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 type PromptCategory = (typeof PROMPT_LIBRARY)[number];
 
 type SavedImageConfig = {
@@ -92,6 +211,16 @@ type SavedImageConfig = {
   size: string;
   quality: string;
   legacyApiKey?: string;
+};
+
+type GenerationJob = {
+  id: string;
+  prompt: string;
+  model: string;
+  status: "queued" | "running" | "completed" | "failed";
+  result?: ImageGenerationResponse;
+  error?: string;
+  galleryStatus?: "saving" | "saved" | "failed";
 };
 
 function loadSavedConfig(): SavedImageConfig {
@@ -212,9 +341,12 @@ export function ImageWorkbenchPage() {
   const [quality, setQuality] = useState(savedConfig.quality);
   const [count, setCount] = useState(1);
   const [imageData, setImageData] = useState<string | null>(null);
-  const [result, setResult] = useState<ImageGenerationResponse | null>(null);
+  const [generationJobs, setGenerationJobs] = useState<GenerationJob[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const queuedGenerations = useRef<Array<{ id: string; run: () => Promise<void> }>>([]);
+  const activeGenerations = useRef(0);
+  const gallerySaves = useRef(new Set<string>());
+  const pumpGenerations = useRef<() => void>(() => {});
   const [activeCategory, setActiveCategory] = useState<string>(PROMPT_LIBRARY[0]?.category ?? "");
   const [promptQuery, setPromptQuery] = useState("");
   const [promptFavorites, setPromptFavorites] = useState<string[]>(() => loadPromptFavorites());
@@ -284,6 +416,11 @@ export function ImageWorkbenchPage() {
 
   const selectedProvider = providers.find(provider => provider.id === providerId);
   const availableModels = selectedProvider?.models.filter(item => /image|dall|gpt-image/i.test(item.id)) ?? [];
+  const modelOptions = Array.from(new Set([
+    "gpt-image-2",
+    "gpt-image-2.5",
+    ...availableModels.map(item => item.id),
+  ]));
 
   useEffect(() => {
     if (!savedConfig.legacyApiKey || !savedConfig.baseUrl) return;
@@ -297,8 +434,8 @@ export function ImageWorkbenchPage() {
         } catch {
           try { localStorage.removeItem("image-workbench-config"); } catch { /* unavailable storage */ }
         }
-      setLegacyKeyMigrationPending(false);
-      setKeyStored(true);
+        setLegacyKeyMigrationPending(false);
+        setKeyStored(true);
         setApiKey(current => current === savedConfig.legacyApiKey ? "" : current);
       })
       .catch(() => setError("image.errors.storage"));
@@ -431,7 +568,6 @@ export function ImageWorkbenchPage() {
   }, [promptQuery, activeCategory]);
 
   const canGenerate =
-    !busy &&
     prompt.trim().length > 0 &&
     model.trim().length > 0 &&
     Boolean(providerId || (baseUrl.trim() && (apiKey.trim() || keyStored)));
@@ -562,38 +698,84 @@ export function ImageWorkbenchPage() {
     }
   };
 
-  const generate = async () => {
-    if (busy || !prompt.trim() || !model.trim()) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const generated = await api.image.generate({
-          providerId: providerId || null,
-          baseUrl,
-          apiKey,
-          model: model.trim(),
-          prompt: prompt.trim(),
-          size,
-          quality,
-          count,
-          imageData,
-        });
-      setResult(generated);
-      // Gallery persistence is best-effort and reported separately from generation success.
-      void persistToGallery(generated.images).then(saved => {
-        if (saved) void queryClient.invalidateQueries({ queryKey: GALLERY_KEY });
+  pumpGenerations.current = () => {
+    while (activeGenerations.current < 2 && queuedGenerations.current.length > 0) {
+      const next = queuedGenerations.current.shift();
+      if (!next) break;
+      activeGenerations.current += 1;
+      void next.run().finally(() => {
+        activeGenerations.current -= 1;
+        pumpGenerations.current();
       });
-      if (!providerId && apiKey.trim()) {
-        setKeyStored(true);
-        setApiKey("");
-      }
-    } catch (cause) {
-      const key =
-        typeof cause === "string" ? cause : cause instanceof Error ? cause.message : "image.errors.network";
-      setError(key.startsWith("image.") ? key : "image.errors.network");
-    } finally {
-      setBusy(false);
     }
+  };
+
+  const saveJobToGallery = async (id: string, images: string[]) => {
+    if (gallerySaves.current.has(id)) return;
+    gallerySaves.current.add(id);
+    setGenerationJobs(current => current.map(job => job.id === id ? { ...job, galleryStatus: "saving" } : job));
+    try {
+      const saved = await persistToGallery(images);
+      setGenerationJobs(current => current.map(job => job.id === id
+        ? { ...job, galleryStatus: saved ? "saved" : "failed" }
+        : job));
+      if (saved) void queryClient.invalidateQueries({ queryKey: GALLERY_KEY });
+    } finally {
+      gallerySaves.current.delete(id);
+    }
+  };
+
+  const generate = () => {
+    if (!prompt.trim() || !model.trim()) return;
+    const id = crypto.randomUUID();
+    const request = {
+      providerId: providerId || null,
+      baseUrl,
+      apiKey,
+      model: model.trim(),
+      prompt: prompt.trim(),
+      size,
+      quality,
+      count,
+      imageData,
+    };
+    const job: GenerationJob = {
+      id,
+      prompt: request.prompt,
+      model: request.model,
+      status: activeGenerations.current < 2 ? "running" : "queued",
+    };
+    setGenerationJobs(current => [job, ...current]);
+    queuedGenerations.current.push({ id, run: async () => {
+      setGenerationJobs(current => current.map(item => item.id === id ? { ...item, status: "running" } : item));
+      try {
+        const generated = await api.image.generate(request);
+        setGenerationJobs(current => current.map(item => item.id === id
+          ? { ...item, status: "completed", result: generated }
+          : item));
+        // A gallery failure stays visible on this canvas and can be retried.
+        void saveJobToGallery(id, generated.images);
+        if (!request.providerId && request.apiKey.trim()) {
+          setKeyStored(true);
+          setApiKey(current => current === request.apiKey ? "" : current);
+        }
+      } catch (cause) {
+        const key = typeof cause === "string" ? cause : cause instanceof Error ? cause.message : "image.errors.network";
+        setGenerationJobs(current => current.map(item => item.id === id
+          ? { ...item, status: "failed", error: key.startsWith("image.") ? key : "image.errors.network" }
+          : item));
+      }
+    } });
+    pumpGenerations.current();
+  };
+
+  const removeCanvas = (job: GenerationJob) => {
+    if (job.status === "running") return;
+    if (job.status === "queued") {
+      if (!queuedGenerations.current.some(queued => queued.id === job.id)) return;
+      queuedGenerations.current = queuedGenerations.current.filter(queued => queued.id !== job.id);
+    }
+    setGenerationJobs(current => current.filter(item => item.id !== job.id));
   };
 
   return (
@@ -682,23 +864,26 @@ export function ImageWorkbenchPage() {
                 <Label className="font-serif text-xs font-semibold text-foreground/90">
                   中转驿站 (供应商配置)
                 </Label>
-                <select
-                  className="ink-select"
-                  value={providerId}
-                  onChange={event => chooseProvider(event.target.value)}
-                  aria-label="中转驿站供应商"
+                <Select
+                  value={providerId || "__manual__"}
+                  onValueChange={value => chooseProvider(value === "__manual__" ? "" : value)}
                 >
-                  <option value="">
-                    {imageProviders.length === 0
-                      ? "暂无可用图像中转 · 手动填写连接凭据"
-                      : "独立配置 / 手动填写连接凭据"}
-                  </option>
-                  {imageProviders.map(provider => (
-                    <option key={provider.id} value={provider.id}>
-                      {provider.name}
-                    </option>
-                  ))}
-                </select>
+                  <SelectTrigger className="ink-select-trigger" aria-label="中转驿站供应商">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="ink-select-content" position="popper">
+                    <SelectItem value="__manual__" className="ink-select-item">
+                      {imageProviders.length === 0
+                        ? "暂无可用图像中转 · 手动填写连接凭据"
+                        : "独立配置 / 手动填写连接凭据"}
+                    </SelectItem>
+                    {imageProviders.map(provider => (
+                      <SelectItem key={provider.id} value={provider.id} className="ink-select-item">
+                        {provider.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 {imageProviders.length === 0 && (
                   <p className="font-serif text-[11px] text-muted-foreground">
                     可在「中转站」添加带图像模型的供应商，或在下方手动填写站点与密钥。
@@ -739,20 +924,7 @@ export function ImageWorkbenchPage() {
                 <Label className="font-serif text-xs font-semibold text-foreground/90">
                   绘意墨相 (模型)
                 </Label>
-                <Input
-                  list="image-model-list"
-                  value={model}
-                  onChange={event => setModel(event.target.value)}
-                  placeholder="gpt-image-2"
-                  className="bg-background/90 font-mono text-sm"
-                />
-                <datalist id="image-model-list">
-                  <option value="gpt-image-2" />
-                  <option value="gpt-image-2.5" />
-                  {availableModels.map(item => (
-                    <option key={item.id} value={item.id} />
-                  ))}
-                </datalist>
+                <InkModelCombobox value={model} options={modelOptions} onChange={setModel} />
               </div>
 
               <div className="space-y-1.5">
@@ -775,36 +947,39 @@ export function ImageWorkbenchPage() {
                 <Label className="font-serif text-xs font-semibold text-foreground/90">
                   尺幅规制 (长宽尺寸)
                 </Label>
-                <select
-                  className="ink-select"
-                  value={size}
-                  onChange={event => setSize(event.target.value)}
-                  aria-label="尺幅规制"
-                >
-                  {SIZES.map(item => (
-                    <option key={item.value} value={item.value}>
-                      {item.label} ({item.value})
-                    </option>
-                  ))}
-                </select>
+                <Select value={size} onValueChange={setSize}>
+                  <SelectTrigger className="ink-select-trigger" aria-label="尺幅规制">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="ink-select-content" position="popper">
+                    {SIZES.map(item => (
+                      <SelectItem key={item.value} value={item.value} className="ink-select-item">
+                        {item.label} ({item.value})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
               <div className="space-y-1.5">
                 <Label className="font-serif text-xs font-semibold text-foreground/90">
                   画质品阶 (精细度)
                 </Label>
-                <select
-                  className="ink-select"
-                  value={quality}
-                  onChange={event => setQuality(event.target.value)}
-                  aria-label="画质品阶"
-                >
-                  {QUALITIES.map(item => (
-                    <option key={item.value} value={item.value}>
-                      {item.label}
-                    </option>
-                  ))}
-                </select>
+                <Select value={quality} onValueChange={setQuality}>
+                  <SelectTrigger className="ink-select-trigger" aria-label="画质品阶">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="ink-select-content" position="popper">
+                    {QUALITIES.map(item => (
+                      <SelectItem key={item.value} value={item.value} className="ink-select-item">
+                        <span className="flex flex-col gap-0.5">
+                          <span>{item.label}</span>
+                          <span className="text-[10px] text-muted-foreground">{item.tip}</span>
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
 
@@ -880,21 +1055,34 @@ export function ImageWorkbenchPage() {
                     )}
                   </div>
                   {!promptQuery && (
-                    <div className="flex flex-wrap gap-1 pr-0.5 sm:flex-nowrap sm:overflow-x-auto sm:overflow-y-hidden sm:pb-1 scrollbar-hide">
+                    <div
+                      role="tablist"
+                      aria-label="提示词分类"
+                      className="flex flex-wrap gap-1 rounded-lg bg-background/45 p-1 ring-1 ring-border/45"
+                    >
                       {filteredPromptCategories.map((cat: PromptCategory) => (
                         <button
                           key={cat.category}
                           type="button"
+                          role="tab"
+                          aria-selected={activeCategory === cat.category}
                           onClick={() => setActiveCategory(cat.category)}
                           className={cn(
-                            "shrink-0 rounded-md px-2 py-1 font-serif text-[11px] leading-none transition-all sm:px-2.5",
+                            "inline-flex h-7 shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-md px-2.5 font-serif text-[11px] outline-none transition-[background-color,color,box-shadow] focus-visible:ring-2 focus-visible:ring-[#b83b38]/35 focus-visible:ring-offset-1",
                             activeCategory === cat.category
-                              ? "bg-[#b83b38]/10 text-[#b83b38] dark:bg-[#d94f4b]/15 dark:text-[#fca5a5] font-bold"
-                              : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                              ? "bg-background font-bold text-[#b83b38] shadow-xs ring-1 ring-[#b83b38]/20 dark:bg-white/[0.06] dark:text-[#fca5a5] dark:ring-[#d94f4b]/25"
+                              : "text-muted-foreground hover:bg-muted/70 hover:text-foreground",
                           )}
                         >
-                          {cat.category}
-                          <span className="ml-1 opacity-60">{cat.recipes.length}</span>
+                          <span>{cat.category}</span>
+                          <span
+                            className={cn(
+                              "min-w-3.5 text-center font-sans text-[9px] tabular-nums opacity-60",
+                              activeCategory === cat.category && "opacity-75",
+                            )}
+                          >
+                            {cat.recipes.length}
+                          </span>
                         </button>
                       ))}
                     </div>
@@ -1062,14 +1250,17 @@ export function ImageWorkbenchPage() {
 
             {/* 挥毫生图核心按钮 */}
             <Button
+              data-image-generate
               className="w-full h-11 font-serif text-sm tracking-widest bg-gradient-to-r from-[#8b2323] via-[#b83b38] to-[#991b1b] hover:from-[#731c1c] hover:to-[#8b2323] text-white shadow-md hover:shadow-lg transition-all duration-300 dark:from-[#b83b38] dark:to-[#d94f4b]"
               disabled={!canGenerate}
               onClick={() => void generate()}
             >
-              {busy ? (
+              {generationJobs.some(job => job.status === "running" || job.status === "queued") ? (
                 <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  丹青点染中… 研墨赋彩
+                  <ImagePlus className="mr-2 h-4 w-4" />
+                  {generationJobs.filter(job => job.status === "running").length >= 2
+                    ? "新建画布 · 自动排队"
+                    : "新建画布 · 并行生图"}
                 </>
               ) : (
                 <>
@@ -1090,9 +1281,9 @@ export function ImageWorkbenchPage() {
                 丹青画卷 · 成果真迹
               </h2>
             </div>
-            {result && (
+            {generationJobs.length > 0 && (
               <Badge variant="outline" className="font-mono text-xs border-amber-600/30 text-amber-600 dark:text-amber-400">
-                {result.model}
+                {generationJobs.length} 个画布
               </Badge>
             )}
           </div>
@@ -1101,7 +1292,7 @@ export function ImageWorkbenchPage() {
           <div className="my-2 h-0.5 w-full bg-gradient-to-r from-transparent via-[#c5a059]/40 to-transparent rounded-full" />
 
           {/* 结果展陈区 */}
-          {!result && !busy && (
+          {generationJobs.length === 0 && (
             <div className="flex flex-1 min-h-[460px] flex-col items-center justify-center rounded-xl border border-dashed border-border/70 p-8 text-center ink-paper-bg">
               <div className="relative mb-4 flex h-16 w-16 items-center justify-center rounded-2xl border border-amber-500/20 bg-amber-500/5 text-amber-600 dark:border-amber-400/20 dark:text-amber-400">
                 <ImagePlus className="h-8 w-8 stroke-[1.5]" />
@@ -1119,24 +1310,55 @@ export function ImageWorkbenchPage() {
             </div>
           )}
 
-          {busy && (
-            <div className="flex flex-1 min-h-[460px] flex-col items-center justify-center rounded-xl border border-dashed border-amber-500/30 p-8 text-center ink-paper-bg">
-              <div className="relative mb-5 flex h-16 w-16 items-center justify-center rounded-2xl border border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400">
-                <Loader2 className="h-8 w-8 animate-spin" />
-              </div>
-              <p className="font-serif text-base font-bold tracking-widest text-foreground animate-pulse">
-                墨韵晕染，点染丹青…
-              </p>
-              <p className="mt-1.5 font-serif text-xs text-muted-foreground">
-                大匠无名，正在依题赋彩构筑神工，稍待片刻
-              </p>
-            </div>
-          )}
-
-          {result && !busy && (
-            <div className="mt-3 flex-1 space-y-4">
-              <div className="grid gap-4 sm:grid-cols-1">
-                {result.images.map((src, index) => (
+          {generationJobs.length > 0 && (
+            <div className="mt-3 grid flex-1 content-start gap-4 xl:grid-cols-2">
+              {generationJobs.map(job => (
+                <section key={job.id} data-generation-job-status={job.status} className="min-w-0 space-y-3 rounded-2xl border border-border/70 bg-card/80 p-3 shadow-sm dark:border-[#c5a059]/30">
+                  <div className="flex items-start justify-between gap-3 border-b border-border/50 pb-2">
+                    <div className="min-w-0">
+                      <p className="line-clamp-2 font-serif text-sm font-semibold">{job.prompt}</p>
+                      <p className="mt-1 font-mono text-[11px] text-muted-foreground">{job.model}</p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <Badge variant="outline">
+                        {job.status === "queued" ? "排队中" : job.status === "running" ? "生成中" : job.status === "failed" ? "失败" : "完成"}
+                      </Badge>
+                      {job.status !== "running" && (
+                        <button type="button" onClick={() => removeCanvas(job)}
+                          aria-label={job.status === "queued" ? "取消排队" : "关闭画布"}
+                          title={job.status === "queued" ? "取消排队" : "关闭画布"}
+                          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground">
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  {job.status === "completed" && job.galleryStatus && (
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      {job.galleryStatus === "saving" ? t("image.gallerySaving")
+                        : job.galleryStatus === "saved" ? t("image.savedToGallery")
+                          : t("image.gallerySaveFailed")}
+                      {job.galleryStatus === "failed" && job.result && (
+                        <button type="button" className="font-semibold text-primary hover:underline"
+                          onClick={() => void saveJobToGallery(job.id, job.result!.images)}>
+                          {t("image.galleryRetrySave")}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {job.status === "queued" || job.status === "running" ? (
+                    <div className="flex min-h-56 flex-col items-center justify-center rounded-xl border border-dashed border-amber-500/30 bg-amber-500/[0.03] p-6 text-center">
+                      <Loader2 className={cn("mb-3 h-8 w-8 text-amber-600 dark:text-amber-400", job.status === "running" && "animate-spin")} />
+                      <p className="font-serif text-sm font-semibold">{job.status === "queued" ? "等待画位" : "墨韵晕染，点染丹青…"}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">{job.status === "queued" ? "前面的画卷完成后自动开始" : "正在依题赋彩，其他画布可继续并行生成"}</p>
+                    </div>
+                  ) : job.status === "failed" ? (
+                    <div role="alert" className="flex min-h-56 items-center justify-center rounded-xl border border-destructive/30 bg-destructive/5 p-6 text-center text-sm text-destructive">
+                      {t(job.error ?? "image.errors.network")}
+                    </div>
+                  ) : (
+                    <div className="grid gap-3">
+                {job.result?.images.map((src, index) => (
                   <div
                     key={`${src.slice(0, 24)}-${index}`}
                     className="group relative space-y-3 rounded-2xl border border-border/70 bg-card p-3 shadow-sm transition-all duration-300 hover:shadow-md dark:border-[#c5a059]/30"
@@ -1176,20 +1398,23 @@ export function ImageWorkbenchPage() {
                       </Button>
                     </div>
 
-                    {result.revisedPrompts[index] && (
+                    {job.result?.revisedPrompts[index] && (
                       <div className="rounded-lg bg-black/[0.025] p-2.5 text-xs text-muted-foreground ring-1 ring-border/40 dark:bg-white/[0.02]">
                         <p className="font-serif font-semibold text-foreground/80 mb-0.5">
                           【画意题跋 · 润色提示词】
                         </p>
                         <p className="font-serif leading-relaxed text-[11px]">
-                          {result.revisedPrompts[index]}
+                          {job.result.revisedPrompts[index]}
                         </p>
                       </div>
                     )}
                   </div>
                 ))}
+                    </div>
+                  )}
+                </section>
+              ))}
               </div>
-            </div>
           )}
         </div>
       </div>

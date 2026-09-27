@@ -428,18 +428,15 @@ body {
 }
 
 /* 水墨表单下拉 (Ink Wash Select) */
-.ink-select {
-  appearance: none;
-  -webkit-appearance: none;
+.ink-select-trigger,
+.ink-model-input {
   height: 2.35rem;
   width: 100%;
   border-radius: 0.65rem;
   border: 1px solid rgba(43, 45, 53, 0.18);
   background-color: rgba(251, 249, 245, 0.92);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236b5b4a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 0.85rem center;
-  padding: 0 2.25rem 0 0.85rem;
+  padding-left: 0.85rem;
+  padding-right: 0.85rem;
   font-family: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
   font-size: 0.875rem;
   color: #2b2722;
@@ -448,15 +445,21 @@ body {
     inset 0 1px 2px rgba(43, 45, 53, 0.04),
     0 1px 2px rgba(15, 23, 42, 0.03);
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ink-select-trigger {
   cursor: pointer;
 }
 
-.ink-select:hover {
+.ink-select-trigger:hover,
+.ink-model-input:hover {
   border-color: rgba(184, 59, 56, 0.35);
   background-color: rgba(252, 250, 247, 0.98);
 }
 
-.ink-select:focus {
+.ink-select-trigger:focus,
+.ink-select-trigger[data-state="open"],
+.ink-model-input:focus {
   outline: none;
   border-color: rgba(184, 59, 56, 0.55);
   box-shadow:
@@ -464,35 +467,158 @@ body {
     inset 0 1px 2px rgba(43, 45, 53, 0.04);
 }
 
-.ink-select option {
+.ink-select-content,
+.ink-combobox-content {
+  z-index: 300;
+  overflow: hidden;
+  border-radius: 0.8rem;
+  border: 1px solid rgba(77, 67, 55, 0.22);
+  background: #fbf8f0;
   color: #2b2722;
   background: #fbf9f5;
   font-family: "Noto Serif SC", "Songti SC", serif;
+  box-shadow:
+    0 4px 10px rgba(55, 45, 34, 0.08),
+    0 18px 36px -18px rgba(55, 45, 34, 0.34);
 }
 
-.dark .ink-select {
+.ink-select-content {
+  min-width: var(--radix-select-trigger-width);
+  max-height: min(20rem, var(--radix-select-content-available-height));
+}
+
+.ink-select-content [data-radix-select-viewport] {
+  height: auto !important;
+  padding: 0.35rem;
+}
+
+.ink-select-item,
+.ink-combobox-item {
+  min-height: 2.4rem;
+  border-radius: 0.55rem;
+  color: #39322a;
+  transition: background-color 0.14s ease, color 0.14s ease;
+}
+
+.ink-select-item {
+  padding: 0.55rem 2.2rem 0.55rem 0.75rem;
+}
+
+.ink-select-item:focus,
+.ink-select-item[data-highlighted],
+.ink-combobox-item:hover,
+.ink-combobox-item:focus-visible {
+  outline: none;
+  background: rgba(91, 82, 68, 0.08);
+  color: #201c18;
+}
+
+.ink-select-item[data-state="checked"],
+.ink-combobox-item[aria-selected="true"] {
+  background: rgba(184, 59, 56, 0.09);
+  color: #8f2d2a;
+}
+
+.ink-combobox-content {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 0.45rem);
+  animation: ink-menu-reveal 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.ink-combobox-heading {
+  border-bottom: 1px solid rgba(77, 67, 55, 0.1);
+  padding: 0.65rem 0.85rem 0.5rem;
+  color: #827565;
+  font-family: "Noto Serif SC", "Songti SC", serif;
+  font-size: 0.68rem;
+  letter-spacing: 0.16em;
+}
+
+.ink-combobox-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.55rem 0.7rem;
+  text-align: left;
+}
+
+.ink-combobox-note {
+  border-top: 1px solid rgba(77, 67, 55, 0.1);
+  padding: 0.55rem 0.85rem;
+  color: #827565;
+  font-family: "Noto Serif SC", "Songti SC", serif;
+  font-size: 0.68rem;
+}
+
+.ink-combobox-scroll {
+  scrollbar-color: rgba(91, 82, 68, 0.28) transparent;
+  scrollbar-width: thin;
+}
+
+@keyframes ink-menu-reveal {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.dark .ink-select-trigger,
+.dark .ink-model-input {
   border-color: rgba(212, 175, 55, 0.22);
   background-color: rgba(19, 20, 24, 0.92);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23c5a059' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   color: #f0e6d4;
   box-shadow:
     inset 0 1px 2px rgba(0, 0, 0, 0.25),
     0 1px 2px rgba(0, 0, 0, 0.2);
 }
 
-.dark .ink-select:hover {
+.dark .ink-select-trigger:hover,
+.dark .ink-model-input:hover {
   border-color: rgba(212, 175, 55, 0.45);
   background-color: rgba(24, 26, 32, 0.98);
 }
 
-.dark .ink-select:focus {
+.dark .ink-select-trigger:focus,
+.dark .ink-select-trigger[data-state="open"],
+.dark .ink-model-input:focus {
   border-color: rgba(212, 175, 55, 0.6);
   box-shadow:
     0 0 0 3px rgba(212, 175, 55, 0.16),
     inset 0 1px 2px rgba(0, 0, 0, 0.25);
 }
 
-.dark .ink-select option {
+.dark .ink-select-content,
+.dark .ink-combobox-content {
   color: #f0e6d4;
-  background: #1a1c22;
+  border-color: rgba(212, 175, 55, 0.24);
+  background: #17181d;
+  box-shadow:
+    0 5px 12px rgba(0, 0, 0, 0.36),
+    0 22px 42px -20px rgba(0, 0, 0, 0.8);
+}
+
+.dark .ink-select-item,
+.dark .ink-combobox-item {
+  color: #e8dece;
+}
+
+.dark .ink-select-item:focus,
+.dark .ink-select-item[data-highlighted],
+.dark .ink-combobox-item:hover,
+.dark .ink-combobox-item:focus-visible {
+  background: rgba(212, 175, 55, 0.09);
+  color: #fff7e8;
+}
+
+.dark .ink-select-item[data-state="checked"],
+.dark .ink-combobox-item[aria-selected="true"] {
+  background: rgba(184, 59, 56, 0.2);
+  color: #f4b2ae;
+}
+
+.dark .ink-combobox-heading,
+.dark .ink-combobox-note {
+  border-color: rgba(212, 175, 55, 0.12);
+  color: #b8aa94;
 }

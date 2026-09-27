@@ -2,7 +2,7 @@
 // Optional: --playwright-module=/path/to/playwright-core or PLAYWRIGHT_MODULE_PATH.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -70,16 +70,63 @@ try {
   console.log("PASS virtual list follows the PageStage scroll container in compact and grid modes");
 
   await reset("image");
-  const providerSelect = page.locator('select[aria-label="中转驿站供应商"]');
-  await page.waitForFunction(() => document.querySelector('select[aria-label="中转驿站供应商"]')?.value === "image");
-  await providerSelect.selectOption("");
+  const providerSelect = page.getByRole("combobox", { name: "中转驿站供应商" });
+  await page.waitForFunction(() => document.querySelector('[role="combobox"][aria-label="中转驿站供应商"]')?.textContent.includes("Provider image"));
+  const selectImageProvider = async name => {
+    await providerSelect.click();
+    await page.getByRole("option", { name, exact: true }).click();
+  };
+  await selectImageProvider("独立配置 / 手动填写连接凭据");
   await page.locator('input[type="password"]').waitFor();
-  assert.equal(await providerSelect.inputValue(), "");
+  assert.ok((await providerSelect.textContent()).includes("独立配置"));
   await page.locator('input[placeholder="https://example.com"]').fill("https://manual.invalid");
-  await providerSelect.selectOption("image");
-  await providerSelect.selectOption("");
+  await selectImageProvider("Provider image");
+  await selectImageProvider("独立配置 / 手动填写连接凭据");
   assert.equal(await page.locator('input[placeholder="https://example.com"]').inputValue(), "https://manual.invalid");
   console.log("PASS explicit manual image provider selection remains selected and preserves its address");
+
+  await reset("image");
+  const imagePrompt = page.locator('textarea[placeholder^="在此泼墨意气"]');
+  const imageSubmit = page.locator('[data-image-generate]');
+  await providerSelect.click();
+  await page.getByRole("option", { name: "Provider image", exact: true }).click();
+  await imagePrompt.fill("First canvas");
+  await imageSubmit.click();
+  await imagePrompt.fill("Second canvas");
+  await imageSubmit.click();
+  await imagePrompt.fill("Third canvas");
+  await imageSubmit.click();
+  await imagePrompt.fill("Cancelled canvas");
+  await imageSubmit.click();
+  await page.waitForFunction(() => window.review.imageRequests.length === 2);
+  assert.equal(await page.locator('[data-generation-job-status="queued"]').count(), 2);
+  await page.locator('[data-generation-job-status="queued"]').filter({ hasText: "Cancelled canvas" })
+    .getByRole("button", { name: "取消排队" }).click();
+  assert.equal(await page.locator('[data-generation-job-status]').count(), 3);
+  await page.evaluate(() => window.review.imageResolvers[1]());
+  await page.waitForFunction(() => window.review.imageRequests.length === 3);
+  assert.equal(await page.locator('[data-generation-job-status="running"]').filter({ hasText: "First canvas" }).count(), 1);
+  await page.locator('[data-generation-job-status="completed"]').filter({ hasText: "Second canvas" }).locator("img").waitFor();
+  await page.evaluate(() => window.review.imageResolvers[0]());
+  await page.evaluate(() => window.review.imageResolvers[2]());
+  await page.waitForFunction(() => window.review.gallerySaves === 3);
+  assert.equal(await page.locator('[data-generation-job-status="completed"]').count(), 3);
+  console.log("PASS image jobs run concurrently, keep separate canvases, queue and cancel independently");
+
+  await reset("image");
+  await providerSelect.click();
+  await page.getByRole("option", { name: "Provider image", exact: true }).click();
+  await page.evaluate(() => { window.review.failGallerySave = true; });
+  await imagePrompt.fill("Retry canvas");
+  await imageSubmit.click();
+  await page.evaluate(() => window.review.imageResolvers[0]());
+  const retryCanvas = page.locator('[data-generation-job-status="completed"]').filter({ hasText: "Retry canvas" });
+  await retryCanvas.getByRole("button", { name: "重试保存" }).waitFor();
+  await page.evaluate(() => { window.review.failGallerySave = false; });
+  await retryCanvas.getByRole("button", { name: "重试保存" }).click();
+  await page.waitForFunction(() => window.review.gallerySaves === 2);
+  await retryCanvas.getByText("已存入本地画册").waitFor();
+  console.log("PASS a failed gallery save remains on its canvas and can be retried");
 
   await reset("provider");
   const labels = await page.evaluate(() => window.review.labels);
@@ -163,6 +210,19 @@ try {
   assert.equal(await page.getByRole("switch", { name: labels.accountless, exact: true }).count(), 0);
   console.log("PASS Codex access mode is independent of protocol/network and rejects incompatible native selection");
 
+  await reset("access");
+  await page.getByRole("button", { name: "刷新余额", exact: true }).click();
+  await page.waitForFunction(() => window.review.balanceRequests.length === 1);
+  assert.equal(await page.getByRole("switch", { name: labels.codexAccess, exact: true }).isEnabled(), true);
+  await page.getByRole("switch", { name: labels.codexAccess, exact: true }).click();
+  await page.waitForFunction(() => window.review.getState().router.enabled);
+  await page.getByRole("button", { name: "导入 / 导出", exact: true }).click();
+  assert.equal(await page.getByRole("menuitem", { name: "导出中转", exact: true }).isEnabled(), true);
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => window.review.balanceResolvers[0]());
+  await page.getByText("$9").waitFor();
+  console.log("PASS balance refresh stays usable alongside routing and export controls");
+
   await reset("test");
   await page.getByRole("button", { name: /anthropic-model/ }).waitFor();
   await page.getByRole("button", { name: labels.refreshModels, exact: true }).click();
@@ -214,19 +274,145 @@ try {
 
   await reset("clients");
   await page.getByRole("button", { name: labels.configure, exact: true }).click();
-  assert.equal(await page.locator("#client-provider").inputValue(), "mixed");
-  assert.equal(await page.locator("#client-model").inputValue(), "anthropic-model");
+  const screenshots = path.join(root, ".playwright-cli", "client-config");
+  await mkdir(screenshots, { recursive: true });
+  const screenshotClient = async (name, scrollTop = 0) => {
+    await page.getByRole("listbox").waitFor({ state: "hidden" });
+    await page.getByRole("dialog").evaluate(async (element, scrollTop) => {
+      element.scrollTop = 0;
+      element.querySelector("[data-client-config-scroll]")?.scrollTo(0, scrollTop);
+      await document.fonts.ready;
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }, scrollTop);
+    await page.screenshot({ path: path.join(screenshots, name), animations: "disabled" });
+  };
+  assert.equal(await page.getByRole("button", { name: labels.clientNative, exact: true }).getAttribute("aria-pressed"), "true");
+  assert.equal(await page.locator("#client-model").textContent(), "anthropic-model");
+  await page.locator("#client-model").click();
+  assert.equal(await page.getByRole("option", { name: "responses-model", exact: true }).count(), 0);
+  await page.keyboard.press("Escape");
+  await screenshotClient("claude-native-light.png");
   await page.getByRole("button", { name: labels.preview, exact: true }).click();
   await page.waitForFunction(() => Boolean(window.review.previewed));
-  assert.equal(await page.evaluate(() => window.review.previewed.model), "anthropic-model");
-  await page.locator("#client-model").fill("responses-model");
-  await page.getByText(labels.incompatibleClient, { exact: true }).waitFor();
-  assert.equal(await page.getByRole("button", { name: labels.preview, exact: true }).isDisabled(), true);
+  assert.deepEqual(await page.evaluate(() => ({ mode: window.review.previewed.accessMode, ids: window.review.previewed.providerIds, model: window.review.previewed.model })),
+    { mode: "native", ids: ["mixed"], model: "anthropic-model" });
+  await page.getByRole("button", { name: labels.clientRouter, exact: true }).click();
+  assert.equal(await page.getByRole("button", { name: labels.clientApply, exact: true }).count(), 0);
+  await page.locator("#client-model").click();
+  await page.getByRole("option", { name: "responses-model", exact: true }).click();
+  await page.getByText(labels.clientAdvanced, { exact: true }).click();
+  await page.locator("#client-role-sonnet").click();
+  await page.getByRole("option", { name: "chat-model", exact: true }).click();
+  await page.locator("#client-auth").click();
+  await page.getByRole("option", { name: "ANTHROPIC_API_KEY", exact: true }).click();
+  await page.evaluate(() => document.documentElement.classList.add("dark"));
+  await screenshotClient("claude-router-dark.png");
+  assert.equal(await page.getByRole("button", { name: labels.preview, exact: true }).evaluate(element => {
+    const button = element.getBoundingClientRect();
+    const dialog = element.closest('[role="dialog"]').getBoundingClientRect();
+    return button.top >= dialog.top && button.bottom <= dialog.bottom && button.bottom <= innerHeight;
+  }), true);
+  await page.getByRole("button", { name: labels.preview, exact: true }).click();
+  await page.waitForFunction(() => window.review.previewed?.accessMode === "router");
+  assert.equal(await page.evaluate(() => window.review.previewed.claudeModels.sonnet), "chat-model");
+  assert.equal(await page.evaluate(() => window.review.previewed.authField), "apiKey");
+  await page.getByRole("button", { name: labels.clientApply, exact: true }).click();
+  await page.waitForFunction(() => Boolean(window.review.appliedClient));
+  assert.equal(await page.evaluate(() => window.review.appliedClient.request.model), "responses-model");
+  assert.deepEqual(await page.evaluate(() => window.review.accessCalls), []);
   await reset("clients-existing");
   await page.getByRole("button", { name: labels.changeClient, exact: true }).click();
-  assert.equal(await page.locator("#client-model").inputValue(), "responses-model");
-  assert.equal(await page.getByRole("button", { name: labels.preview, exact: true }).isDisabled(), true);
-  console.log("PASS client configuration compatibility follows each selected model protocol");
+  assert.equal(await page.locator("#client-model").textContent(), "responses-model");
+  assert.equal(await page.getByRole("button", { name: labels.clientRouter, exact: true }).getAttribute("aria-pressed"), "true");
+  await page.getByText(labels.clientAdvanced, { exact: true }).click();
+  assert.equal(await page.locator("#client-role-sonnet").textContent(), "chat-model");
+  assert.equal(await page.locator("#client-auth").textContent(), "ANTHROPIC_API_KEY");
+  console.log("PASS Claude defaults to native, filters models, supports independent routing, invalidates preview and restores advanced choices");
+
+  await reset("clients-versions");
+  await page.getByRole("button", { name: labels.configure, exact: true }).click();
+  const versionIds = ["claude-opus-5-5", "claude-fable-5-1", "claude-opus-4-8"];
+  const selectedVersion = id => page.locator('input[data-client-model-id="' + id + '"]');
+  for (const id of versionIds) assert.equal(await selectedVersion(id).isChecked(), true);
+  assert.ok((await page.locator("#client-role-opus").textContent()).includes("Opus 5.5"));
+  assert.ok((await page.locator("#client-role-fable").textContent()).includes("Fable 5.1"));
+  await page.locator("#client-role-opus").click();
+  await page.getByRole("option", { name: "Opus 4.8", exact: true }).click();
+  await screenshotClient("claude-models-light.png");
+  await page.evaluate(() => document.documentElement.classList.add("dark"));
+  await screenshotClient("claude-models-dark.png", Number.MAX_SAFE_INTEGER);
+  await page.getByRole("button", { name: labels.preview, exact: true }).click();
+  await page.waitForFunction(() => window.review.previewed?.claudeModelIds?.length === 3);
+  assert.deepEqual(await page.evaluate(() => window.review.previewed.claudeModelIds), versionIds);
+  assert.equal(await page.evaluate(() => window.review.previewed.claudeModels.opus), "claude-opus-4-8");
+  await page.locator("#client-model").click();
+  await page.getByRole("option", { name: "Opus 4.8", exact: true }).click();
+  assert.equal(await page.getByRole("button", { name: labels.clientApply, exact: true }).count(), 0);
+  await selectedVersion("claude-opus-4-8").uncheck();
+  assert.equal(await page.locator("#client-model").textContent(), "Opus 5.5");
+  assert.ok((await page.locator("#client-role-opus").textContent()).includes("Opus 5.5"));
+  await page.getByRole("button", { name: labels.preview, exact: true }).click();
+  await page.waitForFunction(() => window.review.previewed?.claudeModelIds?.length === 2);
+  assert.deepEqual(await page.evaluate(() => window.review.previewed.claudeModelIds), versionIds.slice(0, 2));
+  assert.equal(await page.evaluate(() => window.review.previewed.claudeModels.opus), "");
+  await selectedVersion("claude-opus-5-5").uncheck();
+  assert.equal(await page.locator("#client-model").textContent(), "Fable 5.1");
+  assert.equal(await selectedVersion("claude-fable-5-1").isDisabled(), true);
+  await page.getByRole("button", { name: labels.clientSelectAllModels, exact: true }).click();
+  for (const id of versionIds) assert.equal(await selectedVersion(id).isChecked(), true);
+  await page.getByRole("button", { name: labels.preview, exact: true }).click();
+  await page.waitForFunction(() => window.review.previewed?.claudeModelIds?.length === 3 && window.review.previewed.model === "claude-fable-5-1");
+  await page.getByRole("button", { name: labels.clientApply, exact: true }).click();
+  await page.waitForFunction(() => Boolean(window.review.appliedClient));
+  assert.deepEqual(await page.evaluate(() => window.review.appliedClient.request.claudeModelIds), versionIds);
+
+  await reset("clients-versions-existing");
+  await page.getByRole("button", { name: labels.changeClient, exact: true }).click();
+  assert.equal(await selectedVersion("claude-opus-5-5").isChecked(), true);
+  assert.equal(await selectedVersion("claude-opus-4-8").isChecked(), true);
+  assert.equal(await selectedVersion("claude-fable-5-1").isChecked(), false);
+  assert.equal(await page.locator("#client-model").textContent(), "Opus 4.8");
+  assert.equal(await page.locator("#client-role-opus").textContent(), "Opus 4.8");
+  await page.getByRole("button", { name: labels.preview, exact: true }).click();
+  await page.waitForFunction(() => window.review.previewed?.model === "claude-opus-4-8");
+  assert.deepEqual(await page.evaluate(() => window.review.previewed.claudeModelIds), [versionIds[0], versionIds[2]]);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await reset("clients-versions");
+  await page.getByRole("button", { name: labels.configure, exact: true }).click();
+  assert.equal(await page.getByRole("dialog").evaluate(element => element.scrollWidth <= element.clientWidth), true);
+  await screenshotClient("claude-models-narrow.png");
+  await page.setViewportSize({ width: 1200, height: 700 });
+  console.log("PASS Claude configures multiple versions together, repairs removed defaults and roles, and restores selected models");
+
+  await reset("clients-opencode");
+  await page.getByRole("button", { name: labels.configure, exact: true }).click();
+  await page.getByRole("button", { name: /Provider alternate/ }).click();
+  await page.locator("#client-model").click();
+  await page.getByRole("option", { name: "Provider alternate / model-alternate", exact: true }).click();
+  await page.getByText(labels.clientAdvanced, { exact: true }).click();
+  await page.locator("#client-context").fill("64000");
+  await page.locator("#client-output").fill("4096");
+  await screenshotClient("opencode-cards-light.png");
+  await page.getByRole("button", { name: labels.preview, exact: true }).click();
+  await page.waitForFunction(() => Boolean(window.review.previewed));
+  assert.deepEqual(await page.evaluate(() => ({ mode: window.review.previewed.accessMode, ids: window.review.previewed.providerIds,
+    provider: window.review.previewed.providerId, model: window.review.previewed.model, context: window.review.previewed.contextWindow })),
+    { mode: "native", ids: ["mixed", "alternate"], provider: "alternate", model: "model-alternate", context: 64000 });
+  await page.getByRole("button", { name: /Provider alternate/ }).click();
+  assert.equal(await page.getByRole("button", { name: labels.clientApply, exact: true }).count(), 0);
+  assert.equal(await page.locator("#client-model").textContent(), "responses-model");
+  await page.getByRole("button", { name: labels.preview, exact: true }).click();
+  await page.waitForFunction(() => window.review.previewed?.providerIds.length === 1);
+  assert.deepEqual(await page.evaluate(() => window.review.previewed.providerIds), ["mixed"]);
+  console.log("PASS OpenCode selects multiple cards, remembers limits and replaces a removed default provider");
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await reset("clients");
+  await page.getByRole("button", { name: labels.configure, exact: true }).click();
+  assert.equal(await page.getByRole("dialog").evaluate(element => element.scrollWidth <= element.clientWidth), true);
+  await screenshotClient("claude-native-narrow.png");
+  await page.setViewportSize({ width: 1200, height: 700 });
 
   await reset("image");
   await page.getByRole("button", { name: labels.galleryTitle, exact: true }).click();

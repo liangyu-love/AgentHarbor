@@ -106,6 +106,10 @@ function MainApp() {
 
   const installLocationPrompt = useInstallLocationPrompt();
   const routeTransition = useRouteTransition(route, { durationMs: 240 });
+  const [imageWorkbenchVisited, setImageWorkbenchVisited] = useState(route === "imageWorkbench");
+  useEffect(() => {
+    if (route === "imageWorkbench") setImageWorkbenchVisited(true);
+  }, [route]);
 
   const handleThemeChange = useCallback((nextTheme: Theme) => {
     setTheme(nextTheme);
@@ -243,7 +247,9 @@ function MainApp() {
           />
           <div className="relative min-h-0 flex-1 overflow-hidden">
             {routeOrder
-              .filter((candidate) => routeTransition.mountedRoutes.includes(candidate))
+              // Keep canvases and in-flight generation jobs alive after leaving the page.
+              .filter((candidate) => routeTransition.mountedRoutes.includes(candidate)
+                || (candidate === "imageWorkbench" && imageWorkbenchVisited))
               .map((candidate) => (
                 <PageStage
                   key={candidate}

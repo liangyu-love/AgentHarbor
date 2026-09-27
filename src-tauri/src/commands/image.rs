@@ -23,6 +23,15 @@ const MAX_THUMBNAIL_DIMENSION: u32 = 8192;
 const MAX_THUMBNAIL_PIXELS: u64 = 16 * 1024 * 1024;
 const MAX_THUMBNAIL_DECODE_BYTES: u64 = 128 * 1024 * 1024;
 static THUMBNAIL_JOBS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+static IMAGE_GENERATION_JOBS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+
+fn network_error(error: reqwest::Error) -> String {
+    if error.is_timeout() {
+        "image.errors.timeout".into()
+    } else {
+        "image.errors.network".into()
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -165,7 +174,13 @@ fn read_limited(reader: impl Read, limit: usize) -> Result<Vec<u8>, String> {
     reader
         .take(limit as u64 + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| "image.errors.network")?;
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::TimedOut {
+                "image.errors.timeout"
+            } else {
+                "image.errors.network"
+            }
+        })?;
     if bytes.len() > limit {
         return Err("image.errors.responseTooLarge".into());
     }
@@ -288,10 +303,7 @@ fn image_to_data_url(value: &Value, proxy: &ApiProxyConfigPayload) -> Result<Str
     }
     // This separate client has no provider headers, cookies, or credentials.
     let client = download_client(&url, proxy)?;
-    let response = client
-        .get(url)
-        .send()
-        .map_err(|_| "image.errors.network".to_owned())?;
+    let response = client.get(url).send().map_err(network_error)?;
     if !response.status().is_success() {
         return Err("image.errors.network".into());
     }
@@ -383,7 +395,7 @@ fn generate(
             .header(AUTHORIZATION, auth)
             .multipart(form)
             .send()
-            .map_err(|_| "image.errors.network".to_owned())?
+            .map_err(network_error)?
     } else {
         let mut body = serde_json::json!({
             "model": request.model,
@@ -405,7 +417,7 @@ fn generate(
             .headers(headers)
             .json(&body)
             .send()
-            .map_err(|_| "image.errors.network".to_owned())?
+            .map_err(network_error)?
     };
     let value = response_json(response)?;
     let data = value
@@ -442,9 +454,15 @@ pub async fn generate_images(
     request: ImageGenerationRequest,
 ) -> Result<ImageGenerationResponse, String> {
     let paths = paths(&repo)?;
-    tauri::async_runtime::spawn_blocking(move || generate(request, &paths))
-        .await
-        .map_err(|_| "image.errors.network".to_owned())?
+    let permit = IMAGE_GENERATION_JOBS
+        .try_acquire()
+        .map_err(|_| "image.errors.busy")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        generate(request, &paths)
+    })
+    .await
+    .map_err(|_| "image.errors.network".to_owned())?
 }
 
 #[tauri::command]

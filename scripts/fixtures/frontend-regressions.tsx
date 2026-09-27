@@ -13,6 +13,7 @@ import { ProviderTestDialog } from "@/components/newapi/provider-test-dialog";
 import { NewApiPage } from "@/components/newapi/newapi-page";
 import { ClientConfigs } from "@/components/newapi/client-configs";
 import type { NewApiProvider, NewApiState } from "@/types/newapi";
+import type { ClientConfigRequest, ClientStatus } from "@/types/clients";
 import { api } from "@/lib/api";
 import i18n from "@/lib/i18n";
 
@@ -35,12 +36,21 @@ const mixedProvider: NewApiProvider = { ...provider("mixed"), protocol: "chatCom
   { ...model("anthropic-model"), protocol: "anthropicMessages", endpointTypes: ["anthropic_messages"] },
   { ...model("inherited-model"), endpointTypes: [] },
 ] };
+const versionedProvider: NewApiProvider = { ...provider("versions"), protocol: "anthropicMessages",
+  model: "claude-opus-5-5", models: [
+    ["claude-opus-5-5", "Opus 5.5"], ["claude-fable-5-1", "Fable 5.1"], ["claude-opus-4-8", "Opus 4.8"],
+  ].map(([id, displayName]) => ({ ...model(id), displayName, protocol: "anthropicMessages", endpointTypes: ["anthropic_messages"] })) };
 const galleryItems = Array.from({ length: 100 }, (_, i) => ({
   name: "gallery-" + i + ".png", path: "C:/synthetic/gallery-" + i + ".png", size: 100, modifiedAt: i,
 }));
 const pixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+nmQAAAABJRU5ErkJggg==";
 let state: NewApiState = { providers: [imageProvider], router: { enabled: false, accessMode: "router", accountless: false, port: 0, configDrifted: false }, proxyRunning: false, activeProviderId: null };
 api.providers.loadState = async () => state;
+api.providers.queryBalance = id => new Promise(resolve => {
+  controls.review.balanceRequests.push(id);
+  controls.review.balanceResolvers.push(() => resolve({ ...mixedProvider, id, balance: { remaining: 9, used: null, unit: "USD", rawQuota: 9,
+    quotaPerUnit: null, requestCount: null, checkedAt: Date.now(), conversionAvailable: true }, balanceSource: "newapi" }));
+});
 api.routing.setAccessMode = async mode => {
   controls.review.accessCalls.push(mode);
   state = { ...state, router: { ...state.router, accessMode: mode } };
@@ -58,11 +68,24 @@ api.targets.previewConfig = async request => {
   controls.review.previewed = request;
   return { path: "C:/synthetic/config.json", revision: "mock-revision", content: JSON.stringify({ model: request.model }) };
 };
+api.targets.applyConfig = async (request, revision) => {
+  controls.review.appliedClient = { request, revision };
+  return { path: "C:/synthetic/config.json", backupPath: "C:/synthetic/config.backup" };
+};
 api.providers.test = async (id, selectedModel) => {
   controls.review.tested = { id, model: selectedModel };
   return { ...mixedProvider, testStatus: "ok" };
 };
 api.image.keyStatus = async () => false;
+api.image.generate = request => new Promise(resolve => {
+  controls.review.imageRequests.push(request);
+  controls.review.imageResolvers.push(() => resolve({ images: [pixel], model: request.model, revisedPrompts: [] }));
+});
+api.image.saveToGallery = async () => {
+  controls.review.gallerySaves += 1;
+  if (controls.review.failGallerySave) throw new Error("image.errors.save");
+  return { directory: "C:/synthetic", files: ["C:/synthetic/generated.png"] };
+};
 api.image.listGallery = async () => ({ directory: "C:/synthetic", items: galleryItems });
 api.image.loadGalleryThumbnail = path => {
   controls.review.thumbnailCalls.push(path);
@@ -91,7 +114,7 @@ function ProviderFixture({ mixed = false }: { mixed?: boolean }) {
       onOpenChange={open => setDialog(current => ({ ...current, open }))} onSaved={noop} /></>;
 }
 
-type FixtureMode = "compact" | "grid" | "image" | "provider" | "warnings" | "thread-actions" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "recovery-missing" | "recovery-journal" | "recovery-official";
+type FixtureMode = "compact" | "grid" | "image" | "provider" | "warnings" | "thread-actions" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-opencode" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official";
 
 function recoveryPreview(mode: FixtureMode) {
   const base = {
@@ -117,10 +140,28 @@ function recoveryPreview(mode: FixtureMode) {
 }
 
 function mount(mode: FixtureMode) {
-  const selectedProvider = mode === "incompatible" || mode === "native-invalid" ? { ...mixedProvider, model: "chat-model" } : mixedProvider;
+  const selectedProvider = mode.startsWith("clients-versions") ? versionedProvider
+    : mode === "incompatible" || mode === "native-invalid" ? { ...mixedProvider, model: "chat-model" } : mixedProvider;
   state = { providers: mode === "image" ? [imageProvider] : [selectedProvider], router: { enabled: false, accessMode: mode === "native-invalid" ? "native" : "router", accountless: false, port: 43127, configDrifted: false }, proxyRunning: false, activeProviderId: mode === "image" ? null : selectedProvider.id };
   if (mode === "incompatible") state.providers.push(provider("alternate"));
-  api.targets.configs = async () => mode === "clients" || mode === "clients-existing" ? [{ targetId: "claudeCode", name: "Claude Code", path: "C:/synthetic/settings.json", protocols: ["anthropicMessages"], configured: mode === "clients-existing", conflict: false, error: null, providerId: mode === "clients-existing" ? "mixed" : null, model: mode === "clients-existing" ? "responses-model" : null }] : [];
+  const savedClient: ClientConfigRequest | null = mode === "clients-versions-existing" ? {
+    targetId: "claudeCode", providerId: "versions", model: "claude-opus-4-8", contextWindow: 200000,
+    maxOutputTokens: 8192, accessMode: "native", providerIds: ["versions"], authField: "authToken",
+    claudeModels: { sonnet: "", opus: "claude-opus-4-8", fable: "", haiku: "", subagent: "" },
+    claudeModelIds: ["claude-opus-5-5", "claude-opus-4-8"],
+  } : mode === "clients-existing" ? {
+    targetId: "claudeCode", providerId: "mixed", model: "responses-model", contextWindow: 128000,
+    maxOutputTokens: 8192, accessMode: "router", providerIds: ["mixed"], authField: "apiKey",
+    claudeModels: { sonnet: "chat-model", opus: "", fable: "", haiku: "", subagent: "" },
+  } : null;
+  const openCode = mode === "clients-opencode";
+  const clientStatuses: ClientStatus[] = mode.startsWith("clients") ? [{
+    targetId: openCode ? "opencode" : "claudeCode", name: openCode ? "OpenCode" : "Claude Code",
+    path: "C:/synthetic/config.json", protocols: openCode ? ["responses", "chatCompletions", "anthropicMessages"] : ["anthropicMessages"],
+    configured: !!savedClient, conflict: false, error: null, providerId: savedClient?.providerId ?? null,
+    model: savedClient?.model ?? null, request: savedClient,
+  }] : [];
+  api.targets.configs = async () => clientStatuses;
   const threads = Array.from({ length: 100 }, (_, i) => ({ key: "t" + i, id: "t" + i,
     cwd: "C:/synthetic", folderName: "synthetic", title: "Review thread " + i,
     createdAt: 0, updatedAt: 0, userMessages: 1, agentMessages: 1, fileSize: 100,
@@ -170,7 +211,7 @@ function mount(mode: FixtureMode) {
         mode === "image" ? <ImageWorkbenchPage /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode === "warnings" || mode === "thread-actions" ? <ThreadsPage /> :
         mode === "access" || mode === "incompatible" || mode === "native-invalid" ? <NewApiPage /> :
         mode === "test" ? <ProviderTestDialog open provider={mixedProvider} onOpenChange={noop} onTested={noop} onFailed={noop} /> :
-        mode === "clients" || mode === "clients-existing" ? <ClientConfigs providers={[mixedProvider]} /> :
+        mode.startsWith("clients") ? <ClientConfigs providers={openCode ? [mixedProvider, provider("alternate")] : [selectedProvider]} /> :
         <VirtualThreadList groups={groups} collapsedGroups={new Set()} selected={new Set()} viewMode={mode}
           onToggleSelect={noop} onToggleGroup={noop} onToggleCollapse={noop} onExport={noop}
           onOpenPath={noop} onRecover={noop} onDelete={noop} onCopyPath={noop} copiedGroupPath={null} t={key => key} />}
@@ -179,6 +220,8 @@ function mount(mode: FixtureMode) {
 }
 
 controls.review = { mount, getState: () => state, accessCalls: [], thumbnailCalls: [], originalCalls: [], thumbnailResolvers: [],
+  imageRequests: [], imageResolvers: [], gallerySaves: 0, failGallerySave: false,
+  balanceRequests: [], balanceResolvers: [],
   restartCalls: [], recoveryApplyCalls: 0, recoveredCalls: 0, deleteCalls: [], openedPath: null,
   holdThumbnails: false, holdOriginal: false, labels: {
     fetchModels: i18n.t("newapi.fetchModels"), cancel: i18n.t("common.cancel"),
@@ -196,6 +239,9 @@ controls.review = { mount, getState: () => state, accessCalls: [], thumbnailCall
     nativeProtocolHint: i18n.t("newapi.nativeProtocolHint"), nativeAuthHint: i18n.t("newapi.nativeAuthHint"),
     modelCount: i18n.t("newapi.modelCount", { count: 4 }), refreshModels: i18n.t("newapi.refreshModels"), sendTest: i18n.t("newapi.sendTest"),
     configure: i18n.t("clients.configure"), changeClient: i18n.t("clients.change"), preview: i18n.t("clients.preview"), incompatibleClient: i18n.t("clients.errors.protocol"),
+    clientNative: i18n.t("clients.accessNative"), clientRouter: i18n.t("clients.accessRouter"),
+    clientAdvanced: i18n.t("clients.advanced"), clientApply: i18n.t("clients.apply"),
+    clientSelectAllModels: i18n.t("clients.selectAllModels"),
     recoveryTitle: i18n.t("threads.recoveryTitle"), recoveryCatalogConfirm: i18n.t("threads.recoveryCatalogConfirm"),
     recoveryMissingStatus: i18n.t("threads.recoveryStatus.missingCatalog"),
     recoveryJournalStatus: i18n.t("threads.recoveryStatus.journalBlocked"),
