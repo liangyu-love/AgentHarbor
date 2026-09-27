@@ -1,17 +1,11 @@
-//! Protocol translation between the OpenAI Responses API and the protocols a
-//! relay actually speaks.
-//!
-//! Codex only ever calls `/v1/responses` with `wire_api = "responses"`, but many
-//! relays expose Chat Completions or Anthropic Messages. Instead of forcing the
-//! provider to speak Responses, the local router accepts Codex's Responses
-//! traffic and translates it outward, then translates the upstream reply back
-//! into Responses events. Both directions share this module so the two halves of
-//! a stream cannot drift apart.
-//!
-//! Translation is only engaged when the provider's protocol differs from the
-//! protocol the caller spoke; identical protocols keep the fast byte-for-byte
-//! pass-through that the router has always had.
-
+//! Protocol translation for Codex Responses and Claude Messages callers.
+//! Identical protocols pass through unchanged. Cross-protocol requests and
+//! replies share explicit adapters, including incremental streaming and tools.
+//! Only Responses callers use the continuation history store.
+mod anthropic;
+mod anthropic_sse;
+#[cfg(test)]
+mod anthropic_tests;
 mod chat;
 pub mod history;
 mod responses;
@@ -20,7 +14,20 @@ mod sse;
 use crate::core::router::ModelProtocol;
 use serde_json::Value;
 
-pub use responses::{is_responses_body, response_body};
+pub use responses::is_responses_body;
+
+pub fn response_body(translation: Translation, value: &Value) -> Result<Value, String> {
+    let canonical = if is_responses_body(value) {
+        value.clone()
+    } else {
+        responses::response_body(translation, value)?
+    };
+    if translation.from == ModelProtocol::AnthropicMessages {
+        anthropic::response_body(&canonical)
+    } else {
+        Ok(canonical)
+    }
+}
 
 /// Pick the protocol a relay most likely serves, from the capabilities it
 /// advertises for its own models.
@@ -66,7 +73,7 @@ pub fn infer_protocol_from_models(models: &[crate::core::newapi::Model]) -> Mode
 /// The protocol pair a request needs translated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Translation {
-    /// What the caller sent — always Responses for Codex requests.
+    /// What the caller sent: Responses for Codex or Messages for Claude.
     pub from: crate::core::router::ModelProtocol,
     /// What the upstream provider expects.
     pub to: crate::core::router::ModelProtocol,
@@ -85,15 +92,17 @@ impl Translation {
         use crate::core::router::ModelProtocol::*;
         matches!(
             (self.from, self.to),
-            (Responses, ChatCompletions) | (Responses, AnthropicMessages)
+            (Responses, ChatCompletions)
+                | (Responses, AnthropicMessages)
+                | (AnthropicMessages, ChatCompletions)
+                | (AnthropicMessages, Responses)
         )
     }
 }
 
 /// Rewrite an inbound request body for the provider's protocol.
 ///
-/// Only the Responses protocol arrives here today: Codex is the sole caller that
-/// needs translating, and its `/v1/responses` path is the one the router injects.
+/// Responses callers expand continuation history; Messages callers carry their full conversation.
 pub struct TranslatedRequest {
     pub body: Value,
     /// Canonical input without request-scoped instructions, ready for history.
@@ -114,16 +123,70 @@ pub fn request_body(translation: Translation, value: &Value) -> Result<Translate
             let body = chat::request_from_responses(translation.to, &expanded)?;
             Ok(TranslatedRequest { body, input })
         }
+        (AnthropicMessages, ChatCompletions) | (AnthropicMessages, Responses) => {
+            Ok(TranslatedRequest {
+                body: anthropic::request_body(translation.to, value)?,
+                input: Vec::new(),
+            })
+        }
         _ => Err("protocol.errors.unsupportedTranslation".into()),
     }
 }
 
-/// Convert one upstream SSE chunk into zero or more Responses SSE events.
+/// Convert upstream SSE chunks into events in the caller's protocol.
 ///
 /// The translator stays free of side effects: the proxy records the completed
 /// turn itself, so no lock is taken while the body stream is being pumped.
-pub fn stream_translator(translation: Translation) -> sse::StreamTranslator {
-    sse::StreamTranslator::new(translation)
+pub struct StreamTranslator {
+    responses: Option<sse::StreamTranslator>,
+    anthropic: Option<anthropic_sse::StreamTranslator>,
+}
+
+impl StreamTranslator {
+    pub fn push(&mut self, chunk: &[u8]) -> Vec<String> {
+        if let Some(translator) = self.responses.as_mut() {
+            translator.push(chunk)
+        } else {
+            self.anthropic
+                .as_mut()
+                .expect("registered translator")
+                .push(chunk)
+        }
+    }
+    pub fn finish(&mut self) -> Vec<String> {
+        if let Some(translator) = self.responses.as_mut() {
+            translator.finish()
+        } else {
+            self.anthropic
+                .as_mut()
+                .expect("registered translator")
+                .finish()
+        }
+    }
+    pub fn fail(&mut self, code: &'static str) -> Vec<String> {
+        if let Some(translator) = self.responses.as_mut() {
+            translator.fail(code)
+        } else {
+            self.anthropic
+                .as_mut()
+                .expect("registered translator")
+                .fail(code)
+        }
+    }
+    pub fn completed_response(&self) -> Option<&Value> {
+        self.responses
+            .as_ref()
+            .and_then(sse::StreamTranslator::completed_response)
+    }
+}
+
+pub fn stream_translator(translation: Translation) -> StreamTranslator {
+    StreamTranslator {
+        responses: (translation.from == ModelProtocol::Responses)
+            .then(|| sse::StreamTranslator::new(translation)),
+        anthropic: (translation.from == ModelProtocol::AnthropicMessages)
+            .then(|| anthropic_sse::StreamTranslator::new(translation.to)),
+    }
 }
 
 #[cfg(test)]

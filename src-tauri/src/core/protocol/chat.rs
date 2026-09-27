@@ -160,7 +160,7 @@ fn messages_from_responses(
                             continue;
                         };
                         flush_calls(target, &mut messages, &mut pending_calls)?;
-                        let content = content_of(target, item.get("content"));
+                        let content = content_of(target, item.get("content"))?;
                         if role == "system" || role == "developer" {
                             let text = system_text(item.get("content"));
                             if target == ModelProtocol::AnthropicMessages {
@@ -266,35 +266,104 @@ fn system_text(value: Option<&Value>) -> String {
 }
 
 /// Responses content parts become plain text or a multimodal part array.
-fn content_of(target: ModelProtocol, content: Option<&Value>) -> Value {
+fn content_of(target: ModelProtocol, content: Option<&Value>) -> Result<Value, String> {
     match content {
-        Some(Value::String(text)) => json!(text),
+        Some(Value::String(text)) => Ok(json!(text)),
         Some(Value::Array(parts)) => {
             let converted: Vec<Value> = parts
                 .iter()
-                .filter_map(|part| match part.get("type").and_then(Value::as_str) {
+                .map(|part| match part.get("type").and_then(Value::as_str) {
                     Some("input_text") | Some("output_text") | Some("text") => {
-                        Some(json!({ "type": "text", "text": part.get("text").cloned().unwrap_or(json!("")) }))
+                        let text = part
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .ok_or("protocol.errors.invalidRequest")?;
+                        Ok(json!({ "type": "text", "text": text }))
                     }
-                    Some("input_image") => part.get("image_url").map(|url| {
-                        if target == ModelProtocol::AnthropicMessages {
-                            json!({ "type": "image", "source": { "type": "url", "url": url } })
+                    Some("input_image") => {
+                        if part.get("file_id").and_then(Value::as_str).is_some()
+                            && part.get("image_url").is_none()
+                        {
+                            // File IDs belong to the originating API account.
+                            return Err("protocol.errors.unsupportedContent".into());
+                        }
+                        let url = part
+                            .get("image_url")
+                            .and_then(Value::as_str)
+                            .ok_or("protocol.errors.invalidRequest")?;
+                        Ok(if target == ModelProtocol::AnthropicMessages {
+                            if let Some(data_uri) = url.strip_prefix("data:") {
+                                let (media_type, data) = data_uri
+                                    .split_once(";base64,")
+                                    .ok_or("protocol.errors.invalidRequest")?;
+                                if !matches!(media_type, "image/png" | "image/jpeg" | "image/gif" | "image/webp")
+                                    || data.is_empty()
+                                {
+                                    return Err("protocol.errors.invalidRequest".into());
+                                }
+                                json!({ "type": "image", "source": { "type": "base64", "media_type": media_type, "data": data } })
+                            } else if url.starts_with("https://") || url.starts_with("http://") {
+                                json!({ "type": "image", "source": { "type": "url", "url": url } })
+                            } else {
+                                return Err("protocol.errors.invalidRequest".into());
+                            }
                         } else {
                             json!({ "type": "image_url", "image_url": { "url": url } })
+                        })
+                    }
+                    Some("input_file") if target == ModelProtocol::AnthropicMessages => {
+                        if let Some(url) = part.get("file_url").and_then(Value::as_str) {
+                            Ok(json!({"type":"document","source":{"type":"url","url":url}}))
+                        } else if let Some(data_uri) = part.get("file_data").and_then(Value::as_str) {
+                            let (media_type, data) = data_uri
+                                .strip_prefix("data:")
+                                .and_then(|uri| uri.split_once(";base64,"))
+                                .ok_or("protocol.errors.invalidRequest")?;
+                            let mut document = json!({"type":"document","source":{"type":"base64","media_type":media_type,"data":data}});
+                            if let Some(title) = part.get("filename").and_then(Value::as_str) {
+                                document["title"] = json!(title);
+                            }
+                            Ok(document)
+                        } else {
+                            Err("protocol.errors.unsupportedContent".into())
                         }
-                    }),
-                    _ => None,
+                    }
+                    Some("input_file") if target == ModelProtocol::ChatCompletions => {
+                        if part.get("file_url").is_some() {
+                            return Err("protocol.errors.unsupportedContent".into());
+                        }
+                        let file_data = part
+                            .get("file_data")
+                            .and_then(Value::as_str)
+                            .ok_or("protocol.errors.invalidRequest")?;
+                        let mut file = json!({"type":"file","file":{"file_data":file_data}});
+                        if let Some(filename) = part.get("filename").and_then(Value::as_str) {
+                            file["file"]["filename"] = json!(filename);
+                        }
+                        Ok(file)
+                    }
+                    // Chat Completions uses the same input_audio wire shape as
+                    // Responses. Unknown Responses blocks cannot safely be sent
+                    // to a different protocol without an explicit mapping.
+                    Some("input_audio") if target == ModelProtocol::ChatCompletions => {
+                        Ok(part.clone())
+                    }
+                    Some("input_audio") => Err("protocol.errors.unsupportedContent".into()),
+                    Some(_) if target == ModelProtocol::ChatCompletions => Ok(part.clone()),
+                    Some(_) => Err("protocol.errors.unsupportedContent".into()),
+                    None => Err("protocol.errors.invalidRequest".into()),
                 })
-                .collect();
+                .collect::<Result<_, String>>()?;
             // A single text part is cheaper for upstreams to accept as a string.
             match converted.as_slice() {
                 [only] if only.get("type").and_then(Value::as_str) == Some("text") => {
-                    only.get("text").cloned().unwrap_or(json!(""))
+                    Ok(only.get("text").cloned().unwrap_or(json!("")))
                 }
-                _ => Value::Array(converted),
+                _ => Ok(Value::Array(converted)),
             }
         }
-        _ => json!(""),
+        None | Some(Value::Null) => Ok(json!("")),
+        Some(_) => Err("protocol.errors.invalidRequest".into()),
     }
 }
 
@@ -405,6 +474,84 @@ mod tests {
         );
         assert!(converted["tools"][0].get("input_schema").is_none());
         assert_eq!(converted["tool_choice"]["function"]["name"], "lookup");
+    }
+
+    #[test]
+    fn chat_translation_preserves_images_and_model_specific_modalities() {
+        let image = request_from_responses(
+            ModelProtocol::ChatCompletions,
+            &json!({"model":"m","input":[{"role":"user","content":[
+                {"type":"input_text","text":"describe"},
+                {"type":"input_image","image_url":"data:image/png;base64,YWJj"}
+            ]}]}),
+        )
+        .unwrap();
+        assert_eq!(
+            image["messages"][0]["content"][1]["image_url"]["url"],
+            "data:image/png;base64,YWJj"
+        );
+        let anthropic_image = request_from_responses(
+            ModelProtocol::AnthropicMessages,
+            &json!({"model":"m","input":[{"role":"user","content":[
+                {"type":"input_text","text":"describe"},
+                {"type":"input_image","image_url":"data:image/png;base64,YWJj"},
+                {"type":"input_image","image_url":"https://example.test/image.png"}
+            ]}]}),
+        )
+        .unwrap();
+        assert_eq!(
+            anthropic_image["messages"][0]["content"][1]["source"]["type"],
+            "base64"
+        );
+        assert_eq!(
+            anthropic_image["messages"][0]["content"][1]["source"]["data"],
+            "YWJj"
+        );
+        assert_eq!(
+            anthropic_image["messages"][0]["content"][2]["source"]["type"],
+            "url"
+        );
+
+        let audio = request_from_responses(
+            ModelProtocol::ChatCompletions,
+            &json!({"model":"m","input":[{"role":"user","content":[
+                {"type":"input_audio","input_audio":{"data":"YWJj","format":"wav"}}
+            ]}]}),
+        );
+        let audio = audio.unwrap();
+        assert_eq!(audio["messages"][0]["content"][0]["type"], "input_audio");
+        assert_eq!(
+            audio["messages"][0]["content"][0]["input_audio"]["format"],
+            "wav"
+        );
+        assert!(matches!(
+            request_from_responses(
+                ModelProtocol::AnthropicMessages,
+                &json!({"model":"m","input":[{"role":"user","content":[
+                    {"type":"input_audio","input_audio":{"data":"YWJj","format":"wav"}}
+                ]}]})
+            ),
+            Err(error) if error == "protocol.errors.unsupportedContent"
+        ));
+
+        let file = content_of(
+            ModelProtocol::ChatCompletions,
+            Some(&json!([{"type":"input_file","filename":"report.pdf","file_data":"data:application/pdf;base64,JVBERi0="}])),
+        ).unwrap();
+        assert_eq!(file[0]["type"], "file");
+        assert_eq!(file[0]["file"]["filename"], "report.pdf");
+        let file = content_of(
+            ModelProtocol::AnthropicMessages,
+            Some(&json!([{"type":"input_file","filename":"report.pdf","file_data":"data:application/pdf;base64,JVBERi0="}])),
+        ).unwrap();
+        assert_eq!(file[0]["type"], "document");
+        assert_eq!(file[0]["source"]["media_type"], "application/pdf");
+
+        let missing_image = request_from_responses(
+            ModelProtocol::ChatCompletions,
+            &json!({"model":"m","input":[{"role":"user","content":[{"type":"input_image"}]}]}),
+        );
+        assert!(matches!(missing_image, Err(error) if error == "protocol.errors.invalidRequest"));
     }
 
     #[test]

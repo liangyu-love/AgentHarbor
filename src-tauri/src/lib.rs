@@ -198,8 +198,15 @@ pub fn run() {
 
     app.run(move |_app_handle, event| {
         if matches!(event, RunEvent::Exit) {
-            // The proxy lives in this process. Remove its Codex injection before
-            // exit so the next Codex launch can still use the official account.
+            // The proxy lives in this process. Restore every client that points
+            // to it before exit; direct upstream configurations remain durable.
+            let client_manager = core::client_config::ConfigManager::new(
+                &shared_paths.app_data_dir,
+                core::client_config::ClientPaths::discover(),
+            );
+            for (target, error) in client_manager.restore_router_configs_on_exit() {
+                eprintln!("[AgentHarbor] {target:?} router config cleanup failed: {error}");
+            }
             if let Err(error) = core::router::stop_smart_routing_on_exit(&shared_paths) {
                 eprintln!("[AgentHarbor] router config cleanup failed: {error}");
             }

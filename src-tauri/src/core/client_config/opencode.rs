@@ -44,8 +44,24 @@ impl ClientAdapter for OpenCode {
         let providers: Vec<_> = store
             .providers
             .iter()
-            .filter(|p| p.has_route_credentials())
+            .filter(|p| {
+                p.has_route_credentials()
+                    && if request.options.provider_ids.is_empty() {
+                        request.needs_router() || p.id == request.provider_id
+                    } else {
+                        request.options.provider_ids.contains(&p.id)
+                    }
+            })
             .collect();
+        if !providers.iter().any(|p| p.id == request.provider_id)
+            || request
+                .options
+                .provider_ids
+                .iter()
+                .any(|id| !providers.iter().any(|p| &p.id == id))
+        {
+            return Err("clients.errors.provider".into());
+        }
         let mut keys = Vec::new();
         for provider in providers {
             for protocol in [
@@ -82,32 +98,72 @@ impl ClientAdapter for OpenCode {
                     } else {
                         metadata
                             .and_then(|m| m.context_window)
-                            .or(provider.context_window)
-                            .unwrap_or(request.context_window)
+                            .or_else(|| {
+                                if id == provider.model {
+                                    provider.context_window
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| {
+                                super::super::model_defaults::for_model(id).context_window
+                            })
                     };
                     let output = if selected {
                         request.max_output_tokens
                     } else {
                         metadata
                             .and_then(|m| m.max_output_tokens)
-                            .unwrap_or(request.max_output_tokens)
+                            .unwrap_or_else(|| {
+                                super::super::model_defaults::for_model(id).max_output_tokens
+                            })
                             .min(context)
                     };
                     models.insert(
                         id.to_owned(),
-                        json!({"name": id, "limit": {"context": context, "output": output}}),
+                        json!({"name": metadata.map(|model| model.display_name.as_str()).filter(|name| !name.is_empty()).unwrap_or(id), "limit": {"context": context, "output": output}}),
                     );
                 }
                 if models.is_empty() {
                     continue;
                 }
                 keys.push(json!(key));
-                edits.push(edit(&["provider", &key], json!({
-                "name": provider.name,
-                "npm": npm,
-                "options": {"baseURL": format!("http://127.0.0.1:{}/p/{}/v1", store.router.port, provider.id), "apiKey": store.router.bearer_token},
-                "models": models,
-            })));
+                let (base, credential) = if request.needs_router() {
+                    (
+                        format!(
+                            "http://127.0.0.1:{}/p/{}/v1",
+                            store.router.port, provider.id
+                        ),
+                        &store.router.bearer_token,
+                    )
+                } else {
+                    (native_base(provider, true)?, &provider.api_key)
+                };
+                // Own only generated leaves, so later user edits to headers, variants
+                // and custom models remain independent of this configuration session.
+                for (path, value) in [
+                    (vec!["provider", &key, "name"], json!(provider.name)),
+                    (vec!["provider", &key, "npm"], json!(npm)),
+                    (vec!["provider", &key, "options", "baseURL"], json!(base)),
+                    (
+                        vec!["provider", &key, "options", "apiKey"],
+                        json!(credential),
+                    ),
+                ] {
+                    edits.push(edit(&path, value));
+                }
+                for (id, model) in models {
+                    edits.push(edit(
+                        &["provider", &key, "models", &id, "name"],
+                        model["name"].clone(),
+                    ));
+                    for limit in ["context", "output"] {
+                        edits.push(edit(
+                            &["provider", &key, "models", &id, "limit", limit],
+                            model["limit"][limit].clone(),
+                        ));
+                    }
+                }
             }
         }
         let selected = selected_provider(store, request)?;

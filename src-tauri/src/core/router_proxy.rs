@@ -247,6 +247,28 @@ fn translate_endpoint(suffix: &str, target: router::ModelProtocol) -> String {
     suffix.to_owned()
 }
 
+fn provider_query(query: Option<&str>, translation: Option<protocol::Translation>) -> String {
+    let Some(query) = query else {
+        return String::new();
+    };
+    let query =
+        if translation.is_some_and(|pair| pair.from == router::ModelProtocol::AnthropicMessages) {
+            // The Anthropic SDK's beta flag does not belong to OpenAI endpoints.
+            query
+                .split('&')
+                .filter(|part| part.split('=').next() != Some("beta"))
+                .collect::<Vec<_>>()
+                .join("&")
+        } else {
+            query.to_owned()
+        };
+    if query.is_empty() {
+        String::new()
+    } else {
+        format!("?{query}")
+    }
+}
+
 fn request_protocol(segments: &[&str]) -> Option<router::ModelProtocol> {
     match segments {
         ["codex", "v1", ..] | ["v1", "responses"] | ["p", _, "v1", "responses"] => {
@@ -255,7 +277,7 @@ fn request_protocol(segments: &[&str]) -> Option<router::ModelProtocol> {
         ["v1", "chat", "completions"] | ["p", _, "v1", "chat", "completions"] => {
             Some(router::ModelProtocol::ChatCompletions)
         }
-        ["v1", "messages"] | ["p", _, "v1", "messages"] => {
+        ["v1", "messages", ..] | ["p", _, "v1", "messages", ..] => {
             Some(router::ModelProtocol::AnthropicMessages)
         }
         _ => None,
@@ -489,6 +511,15 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
     // A translated request must reach the endpoint the provider's protocol
     // actually serves: `responses` exists only on a Responses provider, so the
     // path has to follow the protocol that the body was rewritten into.
+    if required_protocol == Some(router::ModelProtocol::AnthropicMessages)
+        && translation_target(&destination).is_some()
+        && suffix != "messages"
+    {
+        return Err((
+            StatusCode::NOT_IMPLEMENTED,
+            "this endpoint requires a native Anthropic Messages provider",
+        ));
+    }
     let suffix = match translation_target(&destination) {
         Some(protocol) => translate_endpoint(&suffix, protocol),
         None => suffix,
@@ -525,6 +556,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         Destination::Provider {
             provider,
             upstream_protocol,
+            translation,
             ..
         } => {
             let endpoint = router::ModelEndpoint {
@@ -535,6 +567,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             match endpoint.protocol {
                 router::ModelProtocol::Responses | router::ModelProtocol::ChatCompletions => {
                     headers.remove("anthropic-version");
+                    headers.remove("anthropic-beta");
                     headers.insert(
                         AUTHORIZATION,
                         HeaderValue::from_str(&format!("Bearer {}", credential.api_key)).map_err(
@@ -559,7 +592,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                     "{}v1/{}{}",
                     endpoint.base_url,
                     suffix,
-                    query.map(|q| format!("?{q}")).unwrap_or_default()
+                    provider_query(query.as_deref(), *translation)
                 ),
                 headers,
             )
@@ -833,17 +866,15 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         }
         let value: Value = serde_json::from_slice(&bytes)
             .map_err(|_| (StatusCode::BAD_GATEWAY, "invalid provider response"))?;
-        let converted = if protocol::is_responses_body(&value) {
-            value
-        } else {
-            protocol::response_body(translation, &value).map_err(|_| {
-                (
-                    StatusCode::BAD_GATEWAY,
-                    "cannot translate provider response",
-                )
-            })?
-        };
-        protocol::history::remember(&converted, translated_input);
+        let converted = protocol::response_body(translation, &value).map_err(|_| {
+            (
+                StatusCode::BAD_GATEWAY,
+                "cannot translate provider response",
+            )
+        })?;
+        if translation.from == router::ModelProtocol::Responses {
+            protocol::history::remember(&converted, translated_input);
+        }
         BodyExt::boxed(
             Full::new(Bytes::from(converted.to_string())).map_err(|never| match never {}),
         )
@@ -1164,16 +1195,35 @@ mod tests {
                     assert!(!request.contains("chatgpt-private-token"));
                     assert!(!request.contains("private-account-id"));
                     assert!(!request.contains(router::LOCAL_AUTH_HEADER));
+                    if request.contains("x-fixture-claude: true") {
+                        assert!(!request.contains("anthropic-version:"));
+                        assert!(!request.contains("anthropic-beta:"));
+                        assert!(!request.lines().next().unwrap().contains("beta=true"));
+                    }
                     assert!(request.contains("/v1/"), "path must be rewritten to the provider root");
                     for prefix in ["agentharbor_fixture", "chat_fixture", "anthropic_fixture"] {
                         assert!(!request.contains(prefix), "the model slug prefix must be stripped");
                     }
                     let streaming = request.contains("\"stream\":true");
-                    let (content_type, body) = if streaming {
+                    let (content_type, body) = if request.contains("x-fixture-claude: true") && request.contains(" /v1/responses ") {
+                        assert!(payload["input"].is_array());
+                        assert_eq!(payload["max_output_tokens"], 32);
+                        let response = json!({"object":"response","id":"resp-claude-fixture","status":"completed","model":model,
+                            "output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hello from responses"}]}],
+                            "usage":{"input_tokens":20,"output_tokens":5,"total_tokens":25}});
+                        if streaming {
+                            let frames = [
+                                json!({"type":"response.created","response":{"model":model}}),
+                                json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"hello from responses"}),
+                                json!({"type":"response.completed","response":response}),
+                            ];
+                            ("text/event-stream", frames.iter().map(|value| format!("data: {value}\n\n")).collect::<String>())
+                        } else { ("application/json", response.to_string()) }
+                    } else if streaming {
                         assert!(request.contains("\"include_usage\":true"));
                         ("text/event-stream", "data: {\"model\":\"chat-model\",\"choices\":[{\"delta\":{\"content\":\"hello stream\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":5,\"total_tokens\":25}}\n\ndata: [DONE]\n\n".to_owned())
                     } else if request.contains(" /v1/chat/completions ") {
-                        ("application/json", json!({"id": "chatcmpl-1", "model": model, "choices": [{"message": {"role": "assistant", "content": "hello from chat"}}], "usage": {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25}}).to_string())
+                        ("application/json", json!({"id": "chatcmpl-1", "model": model, "choices": [{"finish_reason":"stop","message": {"role": "assistant", "content": "hello from chat"}}], "usage": {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25}}).to_string())
                     } else if request.contains(" /v1/messages ") {
                         ("application/json", json!({"id": "msg_1", "model": model, "content": [{"type": "text", "text": "hello from anthropic"}], "usage": {"input_tokens": 20, "output_tokens": 5}}).to_string())
                     } else {
@@ -1527,6 +1577,10 @@ mod tests {
             let mut config_request = ConfigRequest {
                 target_id: TargetId::ClaudeCode, provider_id: "anthropic_fixture".into(),
                 model: "claude-mock".into(), context_window: 200000, max_output_tokens: 8192,
+                options: crate::core::client_config::ClientOptions {
+                    access_mode: crate::core::client_config::ClientAccessMode::Router,
+                    ..Default::default()
+                },
             };
             let preview = manager.preview(&store, &config_request).unwrap();
             manager.apply(&store, &config_request, &preview.revision).unwrap();
@@ -1569,9 +1623,49 @@ mod tests {
             let usage = crate::core::relay_usage::load(&paths.app_data_dir).unwrap();
             assert_eq!(usage.all_time.request_count, 15);
             assert_eq!(usage.all_time.total_tokens, 375);
+            // Claude's separate provider route remains available with Codex disabled.
+            for (provider_id, model) in [("chat_fixture", "chat-model"), ("agentharbor_fixture", "mock-model")] {
+                for stream in [false, true] {
+                    let response = client.post(format!("{base}/p/{provider_id}/v1/messages?beta=true"))
+                        .bearer_auth("router-test-token")
+                        .header("anthropic-version", "2023-06-01")
+                        .header("anthropic-beta", "fixture-beta")
+                        .header("x-fixture-claude", "true")
+                        .json(&json!({"model":model,"max_tokens":32,"stream":stream,"messages":[{"role":"user","content":"hi"}]}))
+                        .send().await.unwrap();
+                    assert_eq!(response.status(),200,"{provider_id}, stream={stream}");
+                    if stream {
+                        let body = response.text().await.unwrap();
+                        assert!(body.contains("message_start"));
+                        assert!(body.contains("text_delta"));
+                        assert!(body.contains("message_stop"));
+                        assert!(!body.contains("response.completed"));
+                        assert!(!body.contains("event: error"));
+                    } else {
+                        let body: Value = response.json().await.unwrap();
+                        assert_eq!(body["type"],"message");
+                        assert_eq!(body["stop_reason"],"end_turn");
+                        assert_eq!(body["usage"]["output_tokens"],5);
+                    }
+                }
+            }
+            let response = client.post(format!("{base}/p/chat_fixture/v1/messages/count_tokens"))
+                .bearer_auth("router-test-token")
+                .json(&json!({"model":"chat-model","messages":[{"role":"user","content":"hi"}]}))
+                .send().await.unwrap();
+            assert_eq!(response.status(),501,"unsupported token counting must not be fabricated");
+            let usage = crate::core::relay_usage::load(&paths.app_data_dir).unwrap();
+            assert_eq!(usage.all_time.request_count,19);
+            assert_eq!(usage.all_time.total_tokens,475);
             manager.restore(TargetId::OpenCode).unwrap();
             routing_runtime::reconcile(&paths).await.unwrap();
             assert!(!is_running(), "the router stops only when all clients release it");
+            config_request.options.access_mode = crate::core::client_config::ClientAccessMode::Native;
+            let preview = manager.preview(&store, &config_request).unwrap();
+            manager.apply(&store, &config_request, &preview.revision).unwrap();
+            routing_runtime::reconcile(&paths).await.unwrap();
+            assert!(!is_running(), "a native client config must not restart the router");
+            manager.restore(TargetId::OpenCode).unwrap();
             stop();
         });
     }

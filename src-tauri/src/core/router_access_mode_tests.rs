@@ -185,18 +185,24 @@ fn editing_a_provider_after_cc_switch_takes_over_does_not_reinject() {
 
 #[test]
 fn foreign_entry_in_our_reserved_namespace_blocks_destructive_enable() {
-    let (_directory, paths) = fixture();
-    let original = fs::read_to_string(&paths.config_path).unwrap();
-    let collision = format!(
-        "{original}\n[model_providers.agentharbor_relay]\nbase_url = 'https://foreign.invalid'\n"
-    );
-    fs::write(&paths.config_path, &collision).unwrap();
-    assert_eq!(
-        set_smart_routing(&paths, true).unwrap_err(),
-        "newapi.errors.routerSnapshot"
-    );
-    assert_eq!(fs::read_to_string(&paths.config_path).unwrap(), collision);
-    assert!(!config_snapshot::path(&paths).exists());
+    for key in [
+        "agentharbor_relay",
+        "agentharbor_p_foreign",
+        "codexharbor_relay",
+        "codexharbor_p_foreign",
+    ] {
+        let (_directory, paths) = fixture();
+        let original = fs::read_to_string(&paths.config_path).unwrap();
+        let collision =
+            format!("{original}\n[model_providers.{key}]\nbase_url = 'https://foreign.invalid'\n");
+        fs::write(&paths.config_path, &collision).unwrap();
+        assert_eq!(
+            set_smart_routing(&paths, true).unwrap_err(),
+            "newapi.errors.routerSnapshot"
+        );
+        assert_eq!(fs::read_to_string(&paths.config_path).unwrap(), collision);
+        assert!(!config_snapshot::path(&paths).exists());
+    }
 }
 
 #[test]

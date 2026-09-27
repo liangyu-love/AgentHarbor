@@ -1,4 +1,8 @@
 use super::*;
+#[path = "native_tests.rs"]
+mod native_tests;
+#[path = "ownership_tests.rs"]
+mod ownership_tests;
 
 fn fixture() -> (tempfile::TempDir, ConfigManager, Store, ConfigRequest) {
     let temp = tempfile::tempdir().unwrap();
@@ -10,6 +14,7 @@ fn fixture() -> (tempfile::TempDir, ConfigManager, Store, ConfigRequest) {
         providers: vec![Provider {
             id: "test-relay".into(),
             name: "Relay".into(),
+            base_url: "https://relay.example/gateway/v1".into(),
             enabled: true,
             model: "claude-test".into(),
             api_key: "upstream-secret".into(),
@@ -28,6 +33,10 @@ fn fixture() -> (tempfile::TempDir, ConfigManager, Store, ConfigRequest) {
         model: "claude-test".into(),
         context_window: 200000,
         max_output_tokens: 8192,
+        options: ClientOptions {
+            access_mode: ClientAccessMode::Router,
+            ..Default::default()
+        },
     };
     (temp, manager, store, request)
 }
@@ -69,6 +78,39 @@ fn claude_preserves_settings_and_restores_exact_original() {
         std::fs::read_to_string(&manager.paths.claude).unwrap(),
         original
     );
+}
+
+#[test]
+fn exit_restores_local_router_clients_but_keeps_direct_claude_configuration() {
+    let (_temp, manager, store, mut request) = fixture();
+    request.options.access_mode = ClientAccessMode::Native;
+    apply(&manager, &store, &request);
+    let direct_claude = std::fs::read_to_string(&manager.paths.claude).unwrap();
+    request.target_id = TargetId::OpenCode;
+    request.options.access_mode = ClientAccessMode::Router;
+    apply(&manager, &store, &request);
+    assert!(manager.restore_router_configs_on_exit().is_empty());
+    assert_eq!(
+        std::fs::read_to_string(&manager.paths.claude).unwrap(),
+        direct_claude
+    );
+    assert!(!manager.paths.opencode.exists());
+    assert!(manager.list()[0].configured);
+    assert!(!manager.list()[1].configured);
+}
+
+#[test]
+fn exit_does_not_overwrite_an_external_claude_takeover() {
+    let (_temp, manager, store, request) = fixture();
+    apply(&manager, &store, &request);
+    let mut changed = read(&manager.paths.claude);
+    changed["env"]["ANTHROPIC_BASE_URL"] = json!("https://other-tool.example");
+    write(&manager.paths.claude, &changed);
+    let errors = manager.restore_router_configs_on_exit();
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].0, TargetId::ClaudeCode);
+    assert_eq!(errors[0].1, "clients.errors.conflict");
+    assert_eq!(read(&manager.paths.claude), changed);
 }
 
 #[test]
@@ -142,7 +184,8 @@ fn preview_revision_rejects_config_or_provider_changes() {
 
 #[test]
 fn rejects_wrong_protocol_disabled_provider_and_invalid_settings() {
-    let (_temp, manager, mut store, request) = fixture();
+    let (_temp, manager, mut store, mut request) = fixture();
+    request.options.access_mode = ClientAccessMode::Native;
     store.providers[0].protocol = ModelProtocol::ChatCompletions;
     assert!(manager.preview(&store, &request).is_err());
     store.providers[0].protocol = ModelProtocol::AnthropicMessages;
@@ -222,6 +265,7 @@ fn jsonc_comments_are_backed_up_and_restored_exactly() {
 #[test]
 fn claude_validates_the_requested_models_effective_protocol() {
     let (_temp, manager, mut store, mut request) = fixture();
+    request.options.access_mode = ClientAccessMode::Native;
     let provider = &mut store.providers[0];
     provider.protocol = ModelProtocol::Responses;
     provider.model = "unavailable-default".into();
@@ -350,15 +394,17 @@ fn opencode_groups_mixed_models_and_removes_obsolete_protocol_groups_on_reapply(
 
 #[test]
 fn clients_have_independent_lifetimes_and_new_files_are_removed_on_restore() {
-    let (temp, manager, store, mut request) = fixture();
+    let (_temp, manager, store, mut request) = fixture();
     apply(&manager, &store, &request);
     request.target_id = TargetId::OpenCode;
     apply(&manager, &store, &request);
     manager.restore(TargetId::ClaudeCode).unwrap();
     assert!(!manager.paths.claude.exists());
-    assert!(has_active_configs(&temp.path().join("data")).unwrap());
+    assert!(manager.session(TargetId::OpenCode).unwrap().is_some());
+    assert!(manager.session(TargetId::ClaudeCode).unwrap().is_none());
     assert!(manager.list()[1].configured);
     manager.restore(TargetId::OpenCode).unwrap();
-    assert!(!has_active_configs(&temp.path().join("data")).unwrap());
+    assert!(manager.session(TargetId::ClaudeCode).unwrap().is_none());
+    assert!(manager.session(TargetId::OpenCode).unwrap().is_none());
     assert!(!manager.paths.opencode.exists());
 }

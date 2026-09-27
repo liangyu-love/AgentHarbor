@@ -319,6 +319,22 @@ impl ConfigManager {
         self.commit(id, &session.path, current, restored, None)
     }
 
+    /// Local-router URLs stop working with this process. Direct client
+    /// configurations are persistent and remain in place across app restarts.
+    /// Attempt each client independently so one conflict cannot strand another.
+    pub fn restore_router_configs_on_exit(&self) -> Vec<(TargetId, String)> {
+        [TargetId::ClaudeCode, TargetId::OpenCode]
+            .into_iter()
+            .filter_map(|id| match self.session(id) {
+                Ok(Some(session)) if session.request.needs_router() => {
+                    self.restore(id).err().map(|error| (id, error))
+                }
+                Ok(_) => None,
+                Err(error) => Some((id, error)),
+            })
+            .collect()
+    }
+
     fn prepare(&self, store: &Store, request: &ConfigRequest) -> Result<Plan, String> {
         let adapter = adapter(request.target_id)?;
         let provider = selected_provider(store, request)?;
@@ -443,12 +459,6 @@ struct Plan {
     revision: String,
     current: Option<String>,
     session: Session,
-}
-
-pub fn has_active_configs(data_dir: &Path) -> Result<bool, String> {
-    let manager = ConfigManager::new(data_dir, ClientPaths::from_home(Path::new(".")));
-    Ok(manager.session(TargetId::ClaudeCode)?.is_some()
-        || manager.session(TargetId::OpenCode)?.is_some())
 }
 
 pub fn has_router_configs(data_dir: &Path) -> Result<bool, String> {

@@ -1268,6 +1268,7 @@ pub fn query_provider_balance(
         || provider.user_id != snapshot.user_id
         || provider.access_token != snapshot.access_token
         || provider.api_key != snapshot.api_key
+        || provider.network_mode() != snapshot.network_mode()
     {
         return Err("newapi.errors.changed".into());
     }
@@ -1475,15 +1476,7 @@ fn reject_foreign_managed_provider_entries(
     if document
         .get("model_providers")
         .and_then(toml_edit::Item::as_table_like)
-        .is_some_and(|providers| {
-            [
-                CATALOG_PROVIDER_KEY,
-                NATIVE_PROVIDER_KEY,
-                DIRECT_PROVIDER_KEY,
-            ]
-            .iter()
-            .any(|key| providers.contains_key(key))
-        })
+        .is_some_and(|providers| providers.iter().any(|(key, _)| managed_provider_key(key)))
     {
         return Err(CoreError::OperationFailed(
             "newapi.errors.routerSnapshot".into(),
@@ -2843,7 +2836,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         // The placeholder key above lives at top level; rewrite with a real one.
         std::fs::write(
             &paths.config_path,
-            "# keep\nmodel = 'gpt-x'\nmodel_provider = 'aimami_newapi'\npreferred_auth_method = 'chatgpt'\n[model_providers.other]\nname = 'Other'\n[model_providers.aimami_newapi]\nname = 'legacy'\n[model_providers.codexharbor_relay]\nname = 'Previous Harbor'\n",
+            "# keep\nmodel = 'gpt-x'\nmodel_provider = 'aimami_newapi'\npreferred_auth_method = 'chatgpt'\n[model_providers.other]\nname = 'Other'\n[model_providers.aimami_newapi]\nname = 'legacy'\n",
         )
         .unwrap();
         let state = save_provider(&paths, input("Relay A", "https://a.example.com")).unwrap();
@@ -2874,7 +2867,6 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         );
         assert!(text.contains("preferred_auth_method = \"apikey\""));
         assert!(text.contains(CATALOG_PROVIDER_KEY));
-        assert!(!text.contains(PREVIOUS_CATALOG_PROVIDER_KEY));
         let catalog = std::fs::read_to_string(catalog_path(&paths)).unwrap();
         assert!(catalog.contains(&format!("{id}::model-a")));
         remove_routing_config(&paths, &store).unwrap();

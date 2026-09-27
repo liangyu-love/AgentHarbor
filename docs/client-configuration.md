@@ -3,20 +3,32 @@
 中转页的「客户端配置」用于 Claude Code 和 OpenCode。Codex 继续使用上方的路由注入入口。
 
 1. 创建供应商，设置 API 密钥、协议和默认模型，然后启用供应商。
-2. 在客户端卡片中选择「配置」，选择供应商和模型。
+2. 在客户端卡片中选择「配置」，选择已有中转卡片。地址、凭据和可用模型自动带入；新配置默认原生直连。
 3. 预览待写入的字段，确认后应用。预览不返回本地路由令牌或供应商密钥。
-4. 保持 AgentHarbor 运行，重新打开客户端会话。
+4. 重新打开客户端会话。原生直连无需保持 AgentHarbor 运行；本地路由模式需要保持运行，AgentHarbor 正常退出时会撤回该模式的客户端配置。
 5. 使用「恢复原配置」撤回配置；原有官方供应商、权限和其他设置会保留。
 
 | 客户端 | 支持协议 | 写入内容 |
 | --- | --- | --- |
-| Claude Code | Anthropic Messages | `settings.json` 的网关环境变量和默认模型；Opus、Sonnet、Haiku 别名均固定到所选模型 |
-| OpenCode | Responses、Chat Completions、Anthropic Messages | 添加全部已启用供应商的兼容模型，并设置所选默认模型。已有供应商保留，可用 `/models` 切换 |
+| Claude Code 原生直连 | Anthropic Messages | 将中转地址及凭据写入 `settings.json`；自动匹配 Sonnet、Opus、Fable、Haiku，缺少对应模型时使用所选默认模型 |
+| Claude Code 本地路由 | Anthropic Messages、Responses、Chat Completions | 写入所选供应商的本地入口；非 Messages 上游由路由转换请求及响应 |
+| OpenCode | Responses、Chat Completions、Anthropic Messages | 可多选中转卡片，加入所选卡片的兼容模型，并设置一个默认模型；原生直连和本地路由均可选 |
 
-这里没有协议转换。Claude Code 不能直接使用仅支持 Chat Completions 的供应商。
+Claude Code 的角色映射与子代理模型可在模型映射表中调整，认证字段位于高级设置。认证只写入 `ANTHROPIC_AUTH_TOKEN` 或 `ANTHROPIC_API_KEY` 之一，另一字段会删除并纳入恢复记录，避免旧凭据覆盖新配置。
+Claude Code 选择中转卡片后默认勾选其中的全部兼容模型，也可只保留需要的模型。同一系列的不同版本分别保留，例如两个 Opus 版本与一个 Fable 版本可以同时配置。启动默认模型只决定新会话的初始选择；Sonnet、Opus、Fable、Haiku 和子代理的角色映射直接展示，可分别调整。取消选择默认模型时会改用仍选中的模型，指向被移除模型的角色映射会恢复为自动匹配。
+
+多个模型通过用户配置中的 `modelPicker.options` 写入 `/model` 菜单，需要 Claude Code **2.1.242 或更新版本**。列表保留已有的手动条目及其显示名称、描述和能力配置，并设置 `replaceBuiltInOptions`，使具体版本分别显示；已有 `availableModels` 限制会补入全部选中版本。重新应用会撤回上一轮管理的模型条目后重新生成，恢复操作会还原原始菜单设置。
+
 OpenCode 分别使用 `@ai-sdk/openai`、`@ai-sdk/openai-compatible` 和 `@ai-sdk/anthropic`。
 模型上下文及输出长度优先使用供应商返回的元数据，未知值的默认配置可以在应用前修改。
-新增供应商或修改协议、模型列表后，需再次应用 OpenCode 配置以更新模型列表；密钥和网络出口由路由实时读取。
+默认模型以外的模型使用各自的元数据或模型默认值，不会统一继承默认模型的上下文长度。
+中转地址、凭据、模型列表发生变化后，原生模式需要重新应用配置。路由模式的凭据及网络出口实时读取中转配置；客户端中的模型列表和角色映射仍需重新应用才能更新。
+
+## Claude Code 协议转换范围
+
+本地路由沿用 `/p/{providerId}/v1/messages`，独立于 Codex 接入开关。支持文本、图片、普通函数工具调用及结果、流式参数增量、结束原因和上游实际返回的用量；中途断流、错误或不完整工具参数不会被标记为正常完成。
+
+原生 Messages 同协议直通。转换模式不等同于原生 Anthropic 的全部能力：签名 thinking 不跨协议重放，原生服务器工具、文档块等无对应映射的内容明确报错；Responses 不支持的自定义停止序列也不会静默丢弃。`/messages/count_tokens` 等辅助端点只对原生 Messages 上游直通，不伪造 Token 计数。暂未实现 Gemini Native 协议。
 
 ## 路径与恢复
 
@@ -29,21 +41,43 @@ OpenCode 分别使用 `@ai-sdk/openai`、`@ai-sdk/openai-compatible` 和 `@ai-sd
 
 如果外部工具修改了管理字段，会报告冲突，避免覆盖。项目级配置、环境配置及启动参数仍可能覆盖全局配置；页面显示的是写入状态，不代表已完成模型连通性测试。
 
+正常退出时，Claude Code 和 OpenCode 的本地路由配置会逐个尝试恢复，防止它们继续指向已经停止的本地代理；原生直连配置像普通客户端设置一样保留。若 cc-switch 等工具已经修改了受管理字段，退出清理会保留外部改动并记录冲突，不会强行覆盖。强制结束进程无法执行退出清理，重新打开 AgentHarbor 会重新提供仍在配置中的本地路由。
+
+OpenCode 的管理范围精确到供应商名称、SDK、端点、凭据及模型名称/长度字段。应用后新增或修改的 headers、模型 options/variants、手动模型会在重新应用、取消选择卡片和恢复时保留；修改受管理的端点或凭据仍会触发冲突。恢复只清理本次创建且仍为空的对象，原有空对象会保留。旧版整块 provider 管理记录仍可读取，成功重新应用后改用字段级记录。
+
+预览只包含受管理字段，不复制无关自定义 headers；凭据脱敏兼容大小写、下划线、连字符及常见 token、secret、password、Authorization、Cookie 字段。
+
+## 与 cc-switch 的取舍
+
+对照本地 cc-switch 源码后，复用其保留用户配置、撤回注入字段、串行切换的思路。AgentHarbor 已使用字段恢复记录保留 hooks、权限及其他独立改动，因此无需再引入供应商配置 backfill 数据库和 common-config 模板。
+
+| 机制 | AgentHarbor 的处理 |
+| --- | --- |
+| Claude 单供应商、OpenCode 多供应商 | 两个适配器分别生成配置；OpenCode 按所选卡片共存，其他供应商保留 |
+| 切换前剥离旧注入 | 根据 before/after 记录撤回旧字段，再生成新配置；用户修改管理字段时报告冲突 |
+| 代理认证占位符 | 使用随机本地路由凭据，保留本地访问校验；上游真实凭据由转发层读取，不能直接换成固定 `PROXY_MANAGED` |
+| 模型别名 | 保留真实模型 ID 和现有角色映射；当前路由没有稳定角色别名解析，不引入硬编码别名 |
+| 请求级注入 | 已支持协议转换及 Chat Completions 流式 usage；自动缓存断点、会话缓存键、平台 thinking 方言应按上游能力单独实现和验证 |
+
+原分析中两处与本地源码不符：`opencode_config.rs` 的 `OPENCODE_DB` / `XDG_DATA_HOME` 用于数据库/数据目录，并非配置文件路径；`services/proxy.rs` 的托管 Copilot 默认使用 `AUTH_TOKEN`，仅显式选择 API Key 字段时改用 `API_KEY`。另外，cc-switch 普通第三方的保留策略可能替换多个已有认证键，单键约束主要用于其托管账号分支。cc-switch 不为 OpenCode 提供代理接管是其产品实现范围，AgentHarbor 已支持 OpenCode 本地路由，无需移除此能力。
+
 ## 模块边界
 
 - `core/client_config/claude.rs`、`opencode.rs`：客户端专属字段生成。
 - `core/client_config/mod.rs`：路径发现、协议验证、预览、备份、合并和恢复。只接收应用数据目录、客户端路径和供应商数据，不依赖 Codex 账号或进程。
 - `commands/client_config.rs` / `api.targets`：统一配置接口。
-- `core/routing_runtime.rs`：共享路由生命周期。Codex 注入、Claude Code 配置、OpenCode 配置都可独立保持路由运行。
+- `core/routing_runtime.rs`：共享路由生命周期。Codex、Claude Code、OpenCode 的路由模式各自独立保持服务；只有原生客户端配置时不会启动或占用本地路由。
 - `commands/usage.rs` / `api.usage`：客户端无关的中转用量接口。
 
-供应商密钥只存储在 AgentHarbor；客户端写入本地路由凭据。三种协议均复用已有路由和用量观察器。Chat Completions 流式请求会请求 `include_usage`；上游没有返回用量时仍标记为未报告，不估算 Token 数。
+原生模式把供应商凭据写入对应客户端本机配置；路由模式只写入本地路由凭据。预览均脱敏。路由模式复用现有用量观察器，Chat Completions 流式请求会请求 `include_usage`；上游没有返回用量时仍标记为未报告，不估算 Token 数。原生直连的请求不进入 AgentHarbor 中转统计，已有客户端本地日志统计独立工作。
+
+旧版已安装配置在读取时保留原有路由模式，不会自动改成直连。重新打开配置弹窗会还原此前保存的卡片、接入模式和高级选项。
 
 本次扩展的是模型供应商配置能力。账号登录、会话归档、MCP 和 Skills 当前仍按现有 Codex 能力提供，不会把其他客户端请求错误地转到 Codex。
 
 ## 验证
 
-`pnpm build`；`pnpm test:rust`；`pnpm tauri build --debug --no-bundle`。
+`pnpm build`；`pnpm test:rust`；`pnpm test:frontend`（需要本地 Playwright）。
 
 测试使用临时客户端目录和本地模拟上游，覆盖配置保留、恢复、并发变更检测、协议匹配、从生成配置发送请求、SSE 用量记录，以及独立启停和重启后的路由恢复。不修改正式客户端配置，不调用付费上游。
 

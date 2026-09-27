@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -101,6 +101,11 @@ export function NewApiPage() {
   const queryClient = useQueryClient();
   const state = useQuery({ queryKey: STATE_KEY, queryFn: api.providers.loadState, refetchOnWindowFocus: false });
   const [busy, setBusy] = useState<string | null>(null);
+  const mutationInFlight = useRef(false);
+  const balanceInFlight = useRef(new Set<string>());
+  const [balanceBusy, setBalanceBusy] = useState<Set<string>>(() => new Set());
+  const exportInFlight = useRef(false);
+  const [exportBusy, setExportBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>("all");
   const [dialog, setDialog] = useState<{ open: boolean; provider: NewApiProvider | null }>({ open: false, provider: null });
@@ -155,9 +160,17 @@ export function NewApiPage() {
     replaceState(change.state);
     if (change.applied) setAppliedNote(change.applied);
   };
-  const patchProvider = (provider: NewApiProvider) => {
+  const patchProviderBalance = (provider: NewApiProvider) => {
     const current = queryClient.getQueryData<NewApiState>(STATE_KEY);
-    if (current) replaceState({ ...current, providers: current.providers.map(item => (item.id === provider.id ? provider : item)) });
+    if (current) replaceState({ ...current, providers: current.providers.map(item => (item.id === provider.id
+      ? { ...item, balance: provider.balance, balanceSource: provider.balanceSource }
+      : item)) });
+  };
+  const patchProviderTest = (provider: NewApiProvider) => {
+    const current = queryClient.getQueryData<NewApiState>(STATE_KEY);
+    if (current) replaceState({ ...current, providers: current.providers.map(item => (item.id === provider.id
+      ? { ...item, testStatus: provider.testStatus, testAt: provider.testAt }
+      : item)) });
   };
   const renameGroup = (group: RelayGroup) => {
     const current = groupAliases[group.key] ?? hostOf(group.providers[0]);
@@ -174,7 +187,8 @@ export function NewApiPage() {
     setAliasGroup(null);
   };
   const run = async (key: string, action: () => Promise<void>, failureTitle: string) => {
-    if (busy) return;
+    if (mutationInFlight.current) return;
+    mutationInFlight.current = true;
     setBusy(key);
     setError(null);
     try {
@@ -185,10 +199,24 @@ export function NewApiPage() {
       // The backend may have persisted partial state (e.g. a failed test marker) before erroring.
       void state.refetch();
     } finally {
+      mutationInFlight.current = false;
       setBusy(null);
     }
   };
-  const lock = (key: string) => !!busy && busy !== key;
+  const mutationLocked = busy !== null;
+  const refreshBalance = async (id: string) => {
+    if (balanceInFlight.current.has(id)) return;
+    balanceInFlight.current.add(id);
+    setBalanceBusy(new Set(balanceInFlight.current));
+    try {
+      patchProviderBalance(await api.providers.queryBalance(id));
+    } catch (cause) {
+      toast({ title: t("newapi.balanceFailed"), description: t(errorMessage(cause)), variant: "destructive" });
+    } finally {
+      balanceInFlight.current.delete(id);
+      setBalanceBusy(new Set(balanceInFlight.current));
+    }
+  };
   const formatMoney = (value: number) => new Intl.NumberFormat(i18n.language, { maximumFractionDigits: 2 }).format(value);
   const balanceValue = (provider: NewApiProvider) => {
     const balance = provider.balance;
@@ -223,14 +251,23 @@ export function NewApiPage() {
       applyChange(result);
       toast({ title: t("newapi.importedResult", { imported: result.imported, skipped: result.skipped }), variant: "success" });
     }, t("newapi.importFailed"));
-  const exportProviders = () =>
-    run("export", async () => {
+  const exportProviders = async () => {
+    if (exportInFlight.current) return;
+    exportInFlight.current = true;
+    setExportBusy(true);
+    try {
       const { save } = await import("@tauri-apps/plugin-dialog");
       const path = await save({ defaultPath: "agentharbor-relays.json", filters: [{ name: "JSON", extensions: ["json"] }] });
       if (typeof path !== "string") return;
       await api.providers.export(path);
       toast({ title: t("newapi.exportedDone", { path }), variant: "success" });
-    }, t("newapi.exportFailed"));
+    } catch (cause) {
+      toast({ title: t("newapi.exportFailed"), description: t(errorMessage(cause)), variant: "destructive" });
+    } finally {
+      exportInFlight.current = false;
+      setExportBusy(false);
+    }
+  };
 
   const iconButton =
     "inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40 disabled:pointer-events-none";
@@ -341,7 +378,7 @@ export function NewApiPage() {
               <Switch
                 aria-label={t("newapi.codexAccess")}
                 checked={routingEnabled}
-                disabled={lock("routing") || (!routingEnabled && (providers.length === 0 || (nativeAccess && !nativeCompatible)))}
+                disabled={mutationLocked || (!routingEnabled && (providers.length === 0 || (nativeAccess && !nativeCompatible)))}
                 onCheckedChange={value =>
                   void run("routing", async () => {
                     const change = await api.routing.setEnabled(value);
@@ -358,7 +395,7 @@ export function NewApiPage() {
               {t("newapi.accessMode")}
             </Label>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <Select value={accessMode} disabled={lock("access-mode")} onValueChange={value => void run("access-mode", async () => {
+              <Select value={accessMode} disabled={mutationLocked} onValueChange={value => void run("access-mode", async () => {
                 applyChange(await api.routing.setAccessMode(value as CodexAccessMode));
                 toast({ title: t("newapi.accessModeApplied"), variant: "success" });
               }, t("newapi.routingFailed"))}>
@@ -406,7 +443,7 @@ export function NewApiPage() {
             <Switch
               aria-label={t("newapi.accountless")}
               checked={!!router?.accountless}
-              disabled={!routingEnabled || lock("accountless")}
+              disabled={!routingEnabled || mutationLocked}
               onCheckedChange={value =>
                 void run("accountless", async () => {
                   const change = await api.routing.setAccountless(value);
@@ -430,22 +467,22 @@ export function NewApiPage() {
             {groups.length}
           </span>
           <div className="ml-auto flex items-center gap-2">
-            <RainbowButton className="h-9 rounded-lg px-3.5 dark:text-black" onClick={() => setDialog({ open: true, provider: null })} disabled={lock("open-dialog")}>
+            <RainbowButton className="h-9 rounded-lg px-3.5 dark:text-black" onClick={() => setDialog({ open: true, provider: null })} disabled={mutationLocked}>
               <Plus className="h-4 w-4" />
               {t("newapi.addProvider")}
             </RainbowButton>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="icon" className="h-9 w-9 rounded-lg" disabled={lock("import")} aria-label={t("newapi.importExport")}>
+                <Button variant="outline" size="icon" className="h-9 w-9 rounded-lg" aria-label={t("newapi.importExport")}>
                   <FileUp className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => void importProviders()}>
+                <DropdownMenuItem onClick={() => void importProviders()} disabled={mutationLocked}>
                   <FileUp className="h-4 w-4" />
                   {t("newapi.importProviders")}
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => void exportProviders()} disabled={providers.length === 0}>
+                <DropdownMenuItem onClick={() => void exportProviders()} disabled={providers.length === 0 || exportBusy}>
                   <FileDown className="h-4 w-4" />
                   {t("newapi.exportProviders")}
                 </DropdownMenuItem>
@@ -590,7 +627,7 @@ export function NewApiPage() {
                             <Switch
                               checked={provider.enabled}
                               className={isCurrentActive ? "data-[state=checked]:bg-amber-500" : undefined}
-                              disabled={lock(`enable:${provider.id}`)}
+                              disabled={mutationLocked}
                               onCheckedChange={value =>
                                 void run(`enable:${provider.id}`, async () => {
                                   const change = await api.providers.setEnabled(provider.id, value);
@@ -601,10 +638,27 @@ export function NewApiPage() {
                           </div>
                         </div>
 
-                        {/* Stack Deck Selector Tabs for Same-Relay Groups */}
+                        {/* Card switcher for configs sharing the same relay URL */}
                         {hasMultiple && !isExpanded ? (
-                          <div className="mt-2.5 flex items-center justify-between gap-1 rounded-xl bg-black/[0.03] p-1 ring-1 ring-border/50 dark:bg-white/[0.03]">
-                            <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto scrollbar-hide py-0.5">
+                          <div className="mt-2.5 rounded-xl bg-black/[0.025] p-2 ring-1 ring-border/50 dark:bg-white/[0.03]">
+                            <div className="mb-2 flex items-center justify-between gap-2 px-0.5">
+                              <span className="flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground">
+                                <Layers className="h-3 w-3 text-primary" />
+                                {t("newapi.groupMembers")}
+                              </span>
+                              <button
+                                type="button"
+                                className={cn(cardButton, "h-6 w-6 shrink-0")}
+                                title={t("newapi.expandAll")}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setExpandedGroups(prev => ({ ...prev, [group.key]: true }));
+                                }}
+                              >
+                                <Layers className="h-3 w-3" />
+                              </button>
+                            </div>
+                            <div className="grid auto-cols-[minmax(118px,1fr)] grid-flow-col gap-2 overflow-x-auto pb-0.5 scrollbar-hide">
                               {group.providers.map(item => {
                                 const isCur = item.id === provider.id;
                                 const isItemActive = item.id === activeId && routingEnabled;
@@ -617,31 +671,26 @@ export function NewApiPage() {
                                       setGroupMemberSelect(prev => ({ ...prev, [group.key]: item.id }));
                                     }}
                                     className={cn(
-                                      "flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-medium transition-all",
+                                      "flex min-w-0 flex-col gap-1.5 rounded-xl border px-2.5 py-2 text-left transition-all",
                                       isCur
-                                        ? "bg-card text-foreground shadow-xs ring-1 ring-border"
-                                        : "text-muted-foreground hover:bg-black/[0.04] hover:text-foreground dark:hover:bg-white/[0.06]",
+                                        ? "border-primary/35 bg-primary/[0.06] text-foreground shadow-sm ring-1 ring-primary/10"
+                                        : "border-border/55 bg-background/45 text-muted-foreground hover:border-primary/25 hover:bg-background/75 hover:text-foreground",
                                     )}
                                     title={item.name}
                                   >
-                                    <StatusDot provider={item} />
-                                    <span className="max-w-[80px] truncate">{item.name}</span>
-                                    {isItemActive && <PlugZap className="h-3 w-3 text-amber-500 shrink-0" />}
+                                    <span className="flex min-w-0 items-center gap-1.5">
+                                      <StatusDot provider={item} />
+                                      <span className="truncate text-xs font-semibold">{item.name}</span>
+                                      {isItemActive && <PlugZap className="h-3 w-3 shrink-0 text-amber-500" />}
+                                    </span>
+                                    <span className="flex items-center justify-between gap-2 text-[9px] text-muted-foreground">
+                                      <span>{t("newapi.modelCount", { count: includedModels(item.models).length })}</span>
+                                      <span className="rounded bg-muted/70 px-1 py-0.5 font-mono">{t(protocolBadgeKey[providerModelProtocol(item)])}</span>
+                                    </span>
                                   </button>
                                 );
                               })}
                             </div>
-                            <button
-                              type="button"
-                              className={cn(cardButton, "h-6 w-6 shrink-0")}
-                              title={t("newapi.expandAll")}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setExpandedGroups(prev => ({ ...prev, [group.key]: true }));
-                              }}
-                            >
-                              <Layers className="h-3 w-3" />
-                            </button>
                           </div>
                         ) : (
                           <div className="h-2" />
@@ -663,12 +712,10 @@ export function NewApiPage() {
                                 className={iconButton}
                                 title={t("newapi.refreshBalance")}
                                 aria-label={t("newapi.refreshBalance")}
-                                disabled={lock(`balance:${provider.id}`) || !(provider.hasApiKey || provider.hasAccessToken)}
-                                onClick={() =>
-                                  void run(`balance:${provider.id}`, async () => patchProvider(await api.providers.queryBalance(provider.id)), t("newapi.balanceFailed"))
-                                }
+                                disabled={balanceBusy.has(provider.id) || !(provider.hasApiKey || provider.hasAccessToken)}
+                                onClick={() => void refreshBalance(provider.id)}
                               >
-                                {busy === `balance:${provider.id}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                                {balanceBusy.has(provider.id) ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
                               </button>
                             </div>
                             <div className="my-auto py-0.5">
@@ -772,7 +819,7 @@ export function NewApiPage() {
                                   <div className="flex shrink-0 items-center gap-1.5">
                                     <Switch
                                       checked={item.enabled}
-                                      disabled={lock(`enable:${item.id}`)}
+                                      disabled={mutationLocked}
                                       onCheckedChange={value =>
                                         void run(`enable:${item.id}`, async () => applyChange(await api.providers.setEnabled(item.id, value)), t("newapi.enableFailed"))
                                       }
@@ -782,7 +829,7 @@ export function NewApiPage() {
                                       className={cardButton}
                                       title={t("newapi.test")}
                                       aria-label={t("newapi.test")}
-                                      disabled={lock(`test:${item.id}`) || !item.hasApiKey}
+                                      disabled={!item.hasApiKey}
                                       onClick={() => setTestDialog(item)}
                                     >
                                       <RadioTower className="h-3 w-3" />
@@ -835,7 +882,7 @@ export function NewApiPage() {
                                 className={cardButton}
                                 title={t("newapi.networkMode")}
                                 aria-label={t("newapi.networkMode")}
-                                disabled={lock(`network:${provider.id}`)}
+                                disabled={mutationLocked}
                               >
                                 <Network className={cn("h-3.5 w-3.5", provider.networkMode === "direct" ? "text-emerald-600 dark:text-emerald-400" : "text-blue-600 dark:text-blue-400")} />
                               </button>
@@ -886,7 +933,7 @@ export function NewApiPage() {
                             className={cardButton}
                             title={t("newapi.test")}
                             aria-label={t("newapi.test")}
-                            disabled={lock(`test:${provider.id}`) || !provider.hasApiKey}
+                            disabled={!provider.hasApiKey}
                             onClick={() => setTestDialog(provider)}
                           >
                             <RadioTower className="h-3.5 w-3.5" />
@@ -896,7 +943,7 @@ export function NewApiPage() {
                             className={cardButton}
                             title={t("newapi.edit")}
                             aria-label={t("newapi.edit")}
-                            disabled={lock(`open-dialog`)}
+                            disabled={mutationLocked}
                             onClick={() => setDialog({ open: true, provider })}
                           >
                             <SquarePen className="h-3.5 w-3.5" />
@@ -906,7 +953,7 @@ export function NewApiPage() {
                             className={cn(cardButton, "hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400")}
                             title={t("newapi.remove")}
                             aria-label={t("newapi.remove")}
-                            disabled={lock(`delete:${provider.id}`)}
+                            disabled={mutationLocked}
                             onClick={() => setRemoving(provider)}
                           >
                             <Trash2 className="h-3.5 w-3.5" />
@@ -946,7 +993,7 @@ export function NewApiPage() {
         open={testDialog !== null}
         provider={testDialog}
         onOpenChange={open => !open && setTestDialog(null)}
-        onTested={patchProvider}
+        onTested={patchProviderTest}
         onFailed={() => void state.refetch()}
       />
 

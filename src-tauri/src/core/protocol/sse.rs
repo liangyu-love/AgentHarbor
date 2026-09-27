@@ -25,6 +25,7 @@ pub struct StreamTranslator {
     tool_initial_inputs: HashSet<usize>,
     usage: Option<Value>,
     completed_response: Option<Value>,
+    include_tool_metadata: bool,
 }
 
 impl StreamTranslator {
@@ -44,7 +45,14 @@ impl StreamTranslator {
             tool_initial_inputs: HashSet::new(),
             usage: None,
             completed_response: None,
+            include_tool_metadata: false,
         }
+    }
+
+    /// Include tool metadata only for the Messages stream adapter.
+    pub(super) fn with_tool_metadata(mut self) -> Self {
+        self.include_tool_metadata = true;
+        self
     }
 
     /// Only explicitly completed, validated responses may enter history.
@@ -434,6 +442,16 @@ impl StreamTranslator {
 
     fn argument_delta(&mut self, index: usize, delta: &str) -> String {
         append_string(&mut self.output[index]["arguments"], delta);
+        if self.include_tool_metadata {
+            return sse_frame(
+                "response.function_call_arguments.delta",
+                json!({
+                    "type":"response.function_call_arguments.delta","item_id":self.output[index]["id"],
+                    "output_index":index,"delta":delta,"name":self.output[index]["name"],
+                    "call_id":self.output[index]["call_id"],
+                }),
+            );
+        }
         sse_frame(
             "response.function_call_arguments.delta",
             json!({
@@ -521,7 +539,7 @@ fn sse_frame(event: &str, data: Value) -> String {
     format!("event: {event}\ndata: {data}\n\n")
 }
 
-fn find_separator(buffer: &[u8]) -> Option<(usize, usize)> {
+pub(super) fn find_separator(buffer: &[u8]) -> Option<(usize, usize)> {
     for (index, byte) in buffer.iter().enumerate() {
         if *byte == b'\n' {
             if buffer.get(index + 1) == Some(&b'\n') {

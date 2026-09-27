@@ -278,6 +278,7 @@ fn model_refresh_preserves_overrides_and_connection_tests_use_each_models_protoc
                     Err(error) => panic!("accept failed: {error}"),
                 }
             };
+            socket.set_nonblocking(false).unwrap();
             socket
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();

@@ -96,15 +96,16 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.path, "client.json");
-        assert_eq!(result.warning.as_deref(), Some("clients.errors.routerReconcile"));
+        assert_eq!(
+            result.warning.as_deref(),
+            Some("clients.errors.routerReconcile")
+        );
     }
 
     #[test]
     fn write_error_is_preserved_when_reconcile_also_fails() {
-        let result = attach_reconcile_warning(
-            Err("write failed".into()),
-            Err("proxy unavailable".into()),
-        );
+        let result =
+            attach_reconcile_warning(Err("write failed".into()), Err("proxy unavailable".into()));
 
         assert!(matches!(result, Err(error) if error == "write failed"));
     }

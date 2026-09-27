@@ -269,6 +269,7 @@ pub(super) fn openai_usage(usage: &Value) -> Value {
         "input_tokens": input,
         "output_tokens": output,
         "total_tokens": usage.get("total_tokens").and_then(Value::as_u64).unwrap_or(input + output),
+        "input_tokens_details": {"cached_tokens":usage["prompt_tokens_details"]["cached_tokens"].as_u64().unwrap_or(0)},
     })
 }
 
