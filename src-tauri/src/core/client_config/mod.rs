@@ -2,6 +2,9 @@
 //! This module depends on provider data, never on Codex paths, accounts or processes.
 mod claude;
 mod opencode;
+mod options;
+use options::{native_base, validate_model};
+pub use options::{ClaudeAuthField, ClaudeModels, ClientAccessMode, ClientOptions};
 #[cfg(test)]
 mod tests;
 
@@ -94,6 +97,8 @@ pub struct ConfigRequest {
     pub model: String,
     pub context_window: u64,
     pub max_output_tokens: u64,
+    #[serde(flatten)]
+    pub options: ClientOptions,
 }
 
 #[derive(Serialize)]
@@ -108,6 +113,7 @@ pub struct ClientStatus {
     pub error: Option<String>,
     pub provider_id: Option<String>,
     pub model: Option<String>,
+    pub request: Option<ConfigRequest>,
 }
 
 #[derive(Serialize)]
@@ -117,6 +123,7 @@ pub struct ConfigPreview {
     pub revision: String,
     /// Only the managed fields are returned; all credential values are redacted.
     pub content: String,
+    pub removed_fields: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -124,17 +131,26 @@ pub struct ConfigPreview {
 pub struct ConfigApplied {
     pub path: String,
     pub backup_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 struct Edit {
     path: Vec<String>,
-    value: Value,
+    value: Option<Value>,
 }
 
 fn edit(path: &[&str], value: Value) -> Edit {
     Edit {
         path: path.iter().map(|s| (*s).to_owned()).collect(),
-        value,
+        value: Some(value),
+    }
+}
+
+fn remove(path: &[&str]) -> Edit {
+    Edit {
+        path: path.iter().map(|key| (*key).to_owned()).collect(),
+        value: None,
     }
 }
 
@@ -142,7 +158,7 @@ fn edit(path: &[&str], value: Value) -> Edit {
 struct FieldChange {
     path: Vec<String>,
     before: Option<Value>,
-    after: Value,
+    after: Option<Value>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -182,6 +198,7 @@ impl ConfigManager {
                     error: None,
                     provider_id: None,
                     model: None,
+                    request: None,
                 };
                 let result = (|| -> Result<(), String> {
                     let session = self.session(id)?;
@@ -190,6 +207,7 @@ impl ConfigManager {
                         status.path = session.path.to_string_lossy().into();
                         status.provider_id = Some(session.request.provider_id.clone());
                         status.model = Some(session.request.model.clone());
+                        status.request = Some(session.request.clone());
                         let current = parse(read_text(&session.path)?.as_deref(), id)?;
                         status.conflict = verify_fields(&current, session).is_err();
                     } else {
@@ -214,7 +232,15 @@ impl ConfigManager {
     fn session(&self, id: TargetId) -> Result<Option<Session>, String> {
         secret_file::read(&self.session_path(id))?
             .map(|bytes| {
-                serde_json::from_slice(&bytes).map_err(|_| "clients.errors.storage".into())
+                let mut value: Value = serde_json::from_slice(&bytes)
+                    .map_err(|_| "clients.errors.storage".to_string())?;
+                // Existing installations used the gateway before access mode was explicit.
+                if let Some(request) = value.get_mut("request").and_then(Value::as_object_mut) {
+                    request
+                        .entry("accessMode")
+                        .or_insert_with(|| json!("router"));
+                }
+                serde_json::from_value(value).map_err(|_| "clients.errors.storage".into())
             })
             .transpose()
             .map(Option::flatten)
@@ -224,13 +250,20 @@ impl ConfigManager {
         let plan = self.prepare(store, request)?;
         let mut patch = json!({});
         for change in &plan.session.changes {
-            set_field(&mut patch, &change.path, Some(change.after.clone()))?;
+            set_field(&mut patch, &change.path, change.after.clone())?;
         }
         redact(&mut patch);
         Ok(ConfigPreview {
             path: plan.session.path.to_string_lossy().into(),
             revision: plan.revision,
             content: serde_json::to_string_pretty(&patch).map_err(|_| "clients.errors.storage")?,
+            removed_fields: plan
+                .session
+                .changes
+                .iter()
+                .filter(|change| change.after.is_none())
+                .map(|change| change.path.join("."))
+                .collect(),
         })
     }
 
@@ -289,28 +322,17 @@ impl ConfigManager {
     fn prepare(&self, store: &Store, request: &ConfigRequest) -> Result<Plan, String> {
         let adapter = adapter(request.target_id)?;
         let provider = selected_provider(store, request)?;
-        if !adapter
-            .protocols()
-            .contains(&provider.protocol_for_model(&request.model))
-        {
+        if !request.accepts_model(provider, &request.model) {
             return Err("clients.errors.protocol".into());
         }
-        if !provider.supports_model(&request.model) {
-            return Err("clients.errors.protocol".into());
-        }
-        if request.model.trim().is_empty()
-            || request.model.len() > 256
-            || request.model.contains(['\n', '\r'])
-        {
-            return Err("clients.errors.model".into());
-        }
+        validate_model(&request.model)?;
         if request.context_window < 1024
             || request.max_output_tokens == 0
             || request.max_output_tokens > request.context_window
         {
             return Err("clients.errors.limits".into());
         }
-        if store.router.bearer_token.is_empty() {
+        if request.needs_router() && store.router.bearer_token.is_empty() {
             return Err("clients.errors.router".into());
         }
         let previous = self.session(request.target_id)?;
@@ -340,7 +362,7 @@ impl ConfigManager {
         let mut changes = Vec::new();
         for edit in edits {
             let before = field(&document, &edit.path).cloned();
-            set_field(&mut document, &edit.path, Some(edit.value.clone()))?;
+            set_field(&mut document, &edit.path, edit.value.clone())?;
             changes.push(FieldChange {
                 path: edit.path,
                 before,
@@ -412,6 +434,7 @@ impl ConfigManager {
         Ok(ConfigApplied {
             path: path.to_string_lossy().into(),
             backup_path: backup_path.to_string_lossy().into(),
+            warning: None,
         })
     }
 }
@@ -426,6 +449,19 @@ pub fn has_active_configs(data_dir: &Path) -> Result<bool, String> {
     let manager = ConfigManager::new(data_dir, ClientPaths::from_home(Path::new(".")));
     Ok(manager.session(TargetId::ClaudeCode)?.is_some()
         || manager.session(TargetId::OpenCode)?.is_some())
+}
+
+pub fn has_router_configs(data_dir: &Path) -> Result<bool, String> {
+    let manager = ConfigManager::new(data_dir, ClientPaths::from_home(Path::new(".")));
+    for id in [TargetId::ClaudeCode, TargetId::OpenCode] {
+        if manager
+            .session(id)?
+            .is_some_and(|session| session.request.needs_router())
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn selected_provider<'a>(
@@ -491,7 +527,7 @@ fn verify_fields(document: &Value, session: &Session) -> Result<(), String> {
     if session
         .changes
         .iter()
-        .any(|c| field(document, &c.path) != Some(&c.after))
+        .any(|c| field(document, &c.path) != c.after.as_ref())
     {
         return Err("clients.errors.conflict".into());
     }
@@ -499,8 +535,21 @@ fn verify_fields(document: &Value, session: &Session) -> Result<(), String> {
 }
 
 fn undo(document: &mut Value, session: &Session) -> Result<(), String> {
+    let original = parse(session.original.as_deref(), session.request.target_id)?;
     for change in session.changes.iter().rev() {
         set_field(document, &change.path, change.before.clone())?;
+        // Remove containers introduced by our leaf edits only when still empty.
+        // Existing empty objects and siblings added by the user must survive.
+        for depth in (1..change.path.len()).rev() {
+            let parent = &change.path[..depth];
+            if field(&original, parent).is_none()
+                && field(document, parent)
+                    .and_then(Value::as_object)
+                    .is_some_and(|object| object.is_empty())
+            {
+                set_field(document, parent, None)?;
+            }
+        }
     }
     Ok(())
 }
@@ -509,7 +558,19 @@ fn redact(value: &mut Value) {
     match value {
         Value::Object(object) => {
             for (key, value) in object {
-                if key == "apiKey" || key.ends_with("AUTH_TOKEN") || key.ends_with("API_KEY") {
+                let normalized: String = key
+                    .chars()
+                    .filter(char::is_ascii_alphanumeric)
+                    .map(|c| c.to_ascii_lowercase())
+                    .collect();
+                if normalized.ends_with("apikey")
+                    || normalized.ends_with("token")
+                    || normalized.ends_with("authorization")
+                    || normalized.ends_with("cookie")
+                    || normalized.contains("secret")
+                    || normalized.contains("password")
+                    || normalized.contains("credential")
+                {
                     *value = json!("[managed locally]");
                 } else {
                     redact(value);

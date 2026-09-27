@@ -10,6 +10,20 @@ use crate::platform::paths::CodexPaths;
 use std::sync::Mutex;
 use tauri::State;
 
+fn attach_reconcile_warning(
+    result: Result<ConfigApplied, String>,
+    reconcile: Result<(), String>,
+) -> Result<ConfigApplied, String> {
+    match (result, reconcile) {
+        (Ok(mut applied), Err(error)) => {
+            log::warn!("client config was applied but router reconciliation failed: {error}");
+            applied.warning = Some("clients.errors.routerReconcile".into());
+            Ok(applied)
+        }
+        (result, _) => result,
+    }
+}
+
 fn paths(repo: &State<'_, Mutex<Repository>>) -> Result<CodexPaths, String> {
     Ok(repo
         .lock()
@@ -46,15 +60,12 @@ pub async fn apply_client_config(
 ) -> Result<ConfigApplied, String> {
     let paths = paths(&repo)?;
     let _guard = routing_runtime::mutation_guard().await;
-    routing_runtime::ensure_available(&paths).await?;
+    if request.needs_router() {
+        routing_runtime::ensure_available(&paths).await?;
+    }
     let result = router::load_store(&paths)
         .and_then(|store| manager(&paths).apply(&store, &request, &revision));
-    if let Err(error) = routing_runtime::reconcile(&paths).await {
-        if result.is_ok() {
-            return Err(error);
-        }
-    }
-    result
+    attach_reconcile_warning(result, routing_runtime::reconcile(&paths).await)
 }
 
 #[tauri::command]
@@ -65,10 +76,36 @@ pub async fn restore_client_config(
     let paths = paths(&repo)?;
     let _guard = routing_runtime::mutation_guard().await;
     let result = manager(&paths).restore(target_id);
-    if let Err(error) = routing_runtime::reconcile(&paths).await {
-        if result.is_ok() {
-            return Err(error);
-        }
+    attach_reconcile_warning(result, routing_runtime::reconcile(&paths).await)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn successful_write_remains_successful_when_reconcile_fails() {
+        let result = attach_reconcile_warning(
+            Ok(ConfigApplied {
+                path: "client.json".into(),
+                backup_path: "backup.dat".into(),
+                warning: None,
+            }),
+            Err("proxy unavailable".into()),
+        )
+        .unwrap();
+
+        assert_eq!(result.path, "client.json");
+        assert_eq!(result.warning.as_deref(), Some("clients.errors.routerReconcile"));
     }
-    result
+
+    #[test]
+    fn write_error_is_preserved_when_reconcile_also_fails() {
+        let result = attach_reconcile_warning(
+            Err("write failed".into()),
+            Err("proxy unavailable".into()),
+        );
+
+        assert!(matches!(result, Err(error) if error == "write failed"));
+    }
 }

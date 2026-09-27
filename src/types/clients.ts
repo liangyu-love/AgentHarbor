@@ -11,6 +11,15 @@ export interface ClientStatus {
   error: string | null;
   providerId: string | null;
   model: string | null;
+  request?: ClientConfigRequest | null;
+}
+export type ClientAccessMode = "native" | "router";
+export interface ClaudeModels {
+  sonnet: string;
+  opus: string;
+  fable: string;
+  haiku: string;
+  subagent: string;
 }
 export interface ClientConfigRequest {
   targetId: TargetId;
@@ -18,13 +27,20 @@ export interface ClientConfigRequest {
   model: string;
   contextWindow: number;
   maxOutputTokens: number;
+  accessMode: ClientAccessMode;
+  providerIds: string[];
+  claudeModels: ClaudeModels;
+  claudeModelIds?: string[] | null;
+  authField: "authToken" | "apiKey";
 }
 export interface ClientConfigPreview {
   path: string;
   revision: string;
   content: string;
+  removedFields?: string[];
 }
 export interface ClientConfigApplied {
   path: string;
   backupPath: string;
+  warning?: string;
 }
