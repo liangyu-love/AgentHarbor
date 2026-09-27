@@ -24,6 +24,7 @@ export interface ThreadListPayload {
   total: number;
   lastScanAt: number;
   items: ThreadSummary[];
+  pendingDeletionKeys: string[];
 }
 
 export interface ThreadExportPayload {
@@ -34,6 +35,7 @@ export interface ThreadExportPayload {
 
 export interface ThreadDeleteResult {
   deleted: number;
+  queued: number;
   catalogRowsDeleted: number;
   rolloutFilesDeleted: number;
   backupPath: string;

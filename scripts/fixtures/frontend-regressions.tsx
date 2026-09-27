@@ -233,6 +233,8 @@ function mount(mode: FixtureMode) {
   if (mode === "thread-actions") {
     controls.review.recoveryApplyCalls = 0;
     controls.review.deleteCalls = [];
+    controls.review.queueDeletes = false;
+    controls.review.pendingDeletionKeys = [];
     api.conversations.previewRecovery = async threadId => ({ schemaVersion: 1, success: true, code: "ok", message: "", warnings: [],
       data: { ...recoveryPreview("recovery-missing"), threadId, status: threadId === "t0" ? "providerMismatch" : "compatible",
         canApply: threadId === "t0", catalogAnalysis: null, catalogFields: [] } as any });
@@ -244,9 +246,16 @@ function mount(mode: FixtureMode) {
     };
     api.conversations.delete = async (_target, keys) => {
       controls.review.deleteCalls.push(keys);
+      if (controls.review.queueDeletes) controls.review.pendingDeletionKeys.push(...keys);
       return { schemaVersion: 1, success: true, code: "ok", message: "", warnings: [],
-        data: { deleted: keys.length, catalogRowsDeleted: keys.length, rolloutFilesDeleted: keys.length,
+        data: { deleted: controls.review.queueDeletes ? 0 : keys.length, queued: controls.review.queueDeletes ? keys.length : 0,
+          catalogRowsDeleted: controls.review.queueDeletes ? 0 : keys.length, rolloutFilesDeleted: controls.review.queueDeletes ? 0 : keys.length,
           backupPath: "C:/synthetic/thread-delete-backups/fixture" } };
+    };
+    api.conversations.cancelPendingDeletions = async () => {
+      const count = controls.review.pendingDeletionKeys.length;
+      controls.review.pendingDeletionKeys = [];
+      return { schemaVersion: 1, success: true, code: "ok", message: "", warnings: [], data: count };
     };
   } else if (mode.startsWith("recovery-")) {
     api.conversations.previewRecovery = async () => ({ schemaVersion: 1, success: true, code: "ok", message: "", warnings: [], data: recoveryPreview(mode) as any });
@@ -261,6 +270,7 @@ function mount(mode: FixtureMode) {
   api.conversations.list = async () => ({ schemaVersion: 1, success: true, code: "ok", message: "",
     warnings: [{ code: "thread_scan_skipped", message: "Skipped synthetic-corrupt-session.jsonl: invalid UTF-8" }],
     data: { total: mode === "thread-actions" ? 2 : 1, lastScanAt: 0,
+      pendingDeletionKeys: controls.review.pendingDeletionKeys ?? [],
       items: threads.slice(0, mode === "thread-actions" ? 2 : 1) } });
   const groups = Array.from({ length: 10 }, (_, i) => ({ key: "g" + i, cwd: "C:/synthetic/g" + i,
     folderName: "Workspace " + i, items: threads.slice(i * 10, i * 10 + 10), latestAt: 0,

@@ -86,6 +86,65 @@ fn absent_and_null_model_protocols_inherit_without_overwriting_explicit_values()
 }
 
 #[test]
+fn claude_model_ids_default_to_anthropic_messages_case_insensitively() {
+    let mut provider = provider();
+    provider.protocol = ModelProtocol::Responses;
+    provider.models.push(newapi::Model {
+        id: "Claude-vendor-alias".into(),
+        ..Default::default()
+    });
+    provider.models.push(newapi::Model {
+        id: "vendor-CLAUDE-sonnet".into(),
+        ..Default::default()
+    });
+    provider.models.push(newapi::Model {
+        id: "CLAUDE-openai-compatible".into(),
+        endpoint_types: vec!["openai-chat".into()],
+        ..Default::default()
+    });
+
+    assert_eq!(
+        provider.protocol_for_model("Claude-vendor-alias"),
+        ModelProtocol::AnthropicMessages
+    );
+    assert_eq!(
+        provider.protocol_for_model("vendor-CLAUDE-sonnet"),
+        ModelProtocol::AnthropicMessages
+    );
+    assert_eq!(
+        provider.protocol_for_model("CLAUDE-openai-compatible"),
+        ModelProtocol::ChatCompletions
+    );
+    assert!(provider.supports_model("CLAUDE-openai-compatible"));
+    assert_eq!(
+        provider.protocol_for_model("responses-model"),
+        ModelProtocol::Responses
+    );
+}
+
+#[test]
+fn provider_protocol_inference_uses_the_selected_model() {
+    let models = vec![
+        newapi::Model {
+            id: "claude-sonnet".into(),
+            ..Default::default()
+        },
+        newapi::Model {
+            id: "gpt-model".into(),
+            ..Default::default()
+        },
+    ];
+    assert_eq!(
+        super::protocol::infer_protocol_from_models(&models, "gpt-model"),
+        ModelProtocol::ChatCompletions
+    );
+    assert_eq!(
+        super::protocol::infer_protocol_from_models(&models, "claude-sonnet"),
+        ModelProtocol::AnthropicMessages
+    );
+}
+
+#[test]
 fn normalization_migration_and_export_keep_per_model_protocols() {
     let (directory, paths) = paths();
     let mut provider = provider();

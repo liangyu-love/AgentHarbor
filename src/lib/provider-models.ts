@@ -1,10 +1,22 @@
 import type { ModelProtocol, NewApiModel, NewApiProvider } from "@/types/newapi";
 
-export const effectiveModelProtocol = (model: NewApiModel | undefined, defaultProtocol: ModelProtocol): ModelProtocol =>
-  model?.protocol ?? defaultProtocol;
+const declaredModelProtocol = (model: NewApiModel | undefined): ModelProtocol | undefined => {
+  const endpoints = model?.endpointTypes.map(type => type.toLowerCase()) ?? [];
+  if (endpoints.some(type => type.includes("response"))) return "responses";
+  if (endpoints.some(type => type.includes("anthropic") || type.includes("message"))) return "anthropicMessages";
+  if (endpoints.some(type => type.includes("chat") || type.includes("completion"))) return "chatCompletions";
+  return undefined;
+};
 
-export const providerModelProtocol = (provider: NewApiProvider, modelId = provider.model): ModelProtocol =>
-  effectiveModelProtocol(provider.models.find(model => model.id === modelId), provider.protocol);
+export const effectiveModelProtocol = (model: NewApiModel | undefined, defaultProtocol: ModelProtocol): ModelProtocol =>
+  model?.protocol ?? (model?.id.toLowerCase().includes("claude")
+    ? declaredModelProtocol(model) ?? "anthropicMessages" : defaultProtocol);
+
+export const providerModelProtocol = (provider: NewApiProvider, modelId = provider.model): ModelProtocol => {
+  const model = provider.models.find(entry => entry.id === modelId);
+  return model?.protocol ?? (modelId.toLowerCase().includes("claude")
+    ? declaredModelProtocol(model) ?? "anthropicMessages" : provider.protocol);
+};
 
 export const includedModels = (models: NewApiModel[]) => models.filter(model => model.included);
 

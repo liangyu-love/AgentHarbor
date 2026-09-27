@@ -244,15 +244,26 @@ fn opencode_native_selects_cards_and_preserves_headers_and_custom_models() {
     second.protocol = ModelProtocol::ChatCompletions;
     second.model = "chat-model".into();
     second.context_window = Some(999999);
-    second.models = vec![crate::core::newapi::Model {
-        id: "responses-model".into(),
-        display_name: "Response model".into(),
-        included: true,
-        protocol: Some(ModelProtocol::Responses),
-        context_window: Some(64000),
-        max_output_tokens: Some(4096),
-        ..Default::default()
-    }];
+    second.models = vec![
+        crate::core::newapi::Model {
+            id: "responses-model".into(),
+            display_name: "Response model".into(),
+            included: true,
+            protocol: Some(ModelProtocol::Responses),
+            context_window: Some(64000),
+            max_output_tokens: Some(4096),
+            ..Default::default()
+        },
+        crate::core::newapi::Model {
+            id: "chat-model".into(),
+            display_name: "Chat model".into(),
+            included: true,
+            protocol: Some(ModelProtocol::ChatCompletions),
+            context_window: Some(96000),
+            max_output_tokens: Some(4096),
+            ..Default::default()
+        },
+    ];
     store.providers.push(second);
     store.providers.push(Provider {
         id: "unselected".into(),
@@ -261,6 +272,10 @@ fn opencode_native_selects_cards_and_preserves_headers_and_custom_models() {
     request.target_id = TargetId::OpenCode;
     request.options.access_mode = ClientAccessMode::Native;
     request.options.provider_ids = vec![request.provider_id.clone(), "second".into()];
+    request
+        .options
+        .provider_model_ids
+        .insert("second".into(), vec!["responses-model".into()]);
     store.router.bearer_token.clear();
     let original = json!({"provider":{"official":{"name":"Existing"},"agentharbor_second":{
         "options":{"headers":{"X-Custom":"keep"}},"models":{"manual":{"name":"Manual"},
@@ -277,7 +292,7 @@ fn opencode_native_selects_cards_and_preserves_headers_and_custom_models() {
     let providers = &installed["provider"];
     assert!(providers.get("agentharbor_unselected").is_none());
     assert_eq!(
-        providers["agentharbor_second"]["options"]["baseURL"],
+        providers["agentharbor_second_responses"]["options"]["baseURL"],
         "https://relay.example/gateway/v1"
     );
     assert_eq!(
@@ -304,6 +319,7 @@ fn opencode_native_selects_cards_and_preserves_headers_and_custom_models() {
         providers["agentharbor_second_responses"]["models"]["responses-model"]["limit"]["context"],
         64000
     );
+    assert!(providers["agentharbor_second"]["models"]["chat-model"]["limit"].is_null());
     assert!(!has_router_configs(manager.data_dir.parent().unwrap()).unwrap());
     manager.restore(TargetId::OpenCode).unwrap();
     assert_eq!(read(&manager.paths.opencode), original);
@@ -313,6 +329,9 @@ fn opencode_native_selects_cards_and_preserves_headers_and_custom_models() {
 fn claude_router_accepts_openai_protocols_but_native_rejects_them() {
     for protocol in [ModelProtocol::Responses, ModelProtocol::ChatCompletions] {
         let (_temp, manager, mut store, mut request) = fixture();
+        // A non-Claude alias lets the explicitly configured protocol decide.
+        store.providers[0].model = "custom-model".into();
+        request.model = "custom-model".into();
         store.providers[0].protocol = protocol;
         assert!(manager.preview(&store, &request).is_ok());
         request.options.access_mode = ClientAccessMode::Native;

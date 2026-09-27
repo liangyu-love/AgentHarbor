@@ -388,6 +388,16 @@ try {
   assert.deepEqual(await page.evaluate(() => window.review.deleteCalls[1]), ["t1"]);
   console.log("PASS thread page repairs all eligible threads and supports batch and single deletion");
 
+  await reset("thread-actions");
+  await page.evaluate(() => { window.review.queueDeletes = true; });
+  await page.getByRole("button", { name: labels.deleteThread, exact: true }).first().click();
+  await page.getByText(/1 个会话等待删除/).waitFor();
+  await page.screenshot({ path: path.join(root, ".playwright-cli", "pending-thread-delete.png"), animations: "disabled" });
+  await page.getByRole("button", { name: "取消待删除", exact: true }).click();
+  await page.getByText(/1 个会话等待删除/).waitFor({ state: "hidden" });
+  assert.deepEqual(await page.evaluate(() => window.review.pendingDeletionKeys), []);
+  console.log("PASS queued thread deletion is visible and can be cancelled from the page");
+
   await reset("clients");
   await page.getByRole("button", { name: labels.configure, exact: true }).click();
   const screenshots = path.join(root, ".playwright-cli", "client-config");
@@ -501,6 +511,49 @@ try {
   await page.setViewportSize({ width: 1200, height: 700 });
   console.log("PASS Claude configures multiple versions together, repairs removed defaults and roles, and restores selected models");
 
+  await reset("clients-versions");
+  await page.getByRole("button", { name: labels.configure, exact: true }).click();
+  await page.locator("#client-model").click();
+  await page.getByRole("option", { name: "Fable 5.1", exact: true }).click();
+  await page.getByRole("button", { name: "保存当前配置", exact: true }).click();
+  await page.getByRole("textbox", { name: "配置名称" }).fill("Regression profile");
+  await page.getByRole("button", { name: "保存配置", exact: true }).click();
+  await page.getByRole("button", { name: labels.cancel, exact: true }).click();
+  await page.getByRole("button", { name: labels.configure, exact: true }).click();
+  await screenshotClient("claude-saved-profile-light.png");
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.getByRole("dialog").evaluate(element => element.scrollWidth <= element.clientWidth), true);
+  await screenshotClient("claude-saved-profile-narrow.png");
+  await page.setViewportSize({ width: 1200, height: 700 });
+  await page.evaluate(() => { window.review.appliedClient = null; });
+  await page.locator("#claude-saved-profile").click();
+  await page.getByRole("option", { name: "Regression profile · Provider versions", exact: true }).click();
+  await page.waitForFunction(() => window.review.appliedClient?.request.model === "claude-fable-5-1");
+  assert.equal(await page.getByRole("dialog").count(), 0);
+  await page.evaluate(() => localStorage.removeItem("agentharbor.claude-code-profiles.v1"));
+  console.log("PASS selecting a saved Claude profile previews and applies it immediately");
+
+  await reset("clients-opencode");
+  await page.getByRole("button", { name: labels.configure, exact: true }).click();
+  await page.locator("details").filter({ hasText: "Provider mixed" }).locator("summary").click();
+  for (const id of ["chat-model", "anthropic-model", "inherited-model"]) {
+    await page.getByRole("checkbox", { name: "配置模型 " + id }).uncheck();
+  }
+  await screenshotClient("opencode-model-subset-light.png");
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.getByRole("dialog").evaluate(element => element.scrollWidth <= element.clientWidth), true);
+  await screenshotClient("opencode-model-subset-narrow.png");
+  await page.setViewportSize({ width: 1200, height: 700 });
+  await page.getByRole("button", { name: labels.clientRouter, exact: true }).click();
+  await page.getByRole("button", { name: labels.clientNative, exact: true }).click();
+  await page.getByRole("button", { name: /Provider alternate/ }).click();
+  await page.getByRole("button", { name: /Provider mixed/ }).click();
+  await page.getByRole("button", { name: /Provider mixed/ }).click();
+  await page.getByRole("button", { name: labels.preview, exact: true }).click();
+  await page.waitForFunction(() => window.review.previewed?.providerModelIds?.mixed?.length === 1);
+  assert.deepEqual(await page.evaluate(() => window.review.previewed.providerModelIds.mixed), ["responses-model"]);
+  console.log("PASS OpenCode keeps the selected model subset across access mode changes");
+
   await reset("clients-opencode");
   await page.getByRole("button", { name: labels.configure, exact: true }).click();
   await page.getByRole("button", { name: /Provider alternate/ }).click();
@@ -538,6 +591,15 @@ try {
     return stage && gallery && Math.abs(gallery.getBoundingClientRect().top - stage.getBoundingClientRect().top - 24) < 5;
   });
   await page.waitForFunction(() => window.review.thumbnailCalls.length > 0);
+  await page.screenshot({ path: path.join(root, ".playwright-cli", "image-gallery-location.png"), animations: "disabled" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.locator("[data-gallery-section]").evaluate(element => element.scrollWidth <= element.clientWidth), true);
+  await page.locator("[data-gallery-section]").evaluate(element => {
+    const stage = element.closest("[data-page-scroll-container]");
+    stage.scrollTop += element.getBoundingClientRect().top - stage.getBoundingClientRect().top - 16;
+  });
+  await page.screenshot({ path: path.join(root, ".playwright-cli", "image-gallery-location-narrow.png"), animations: "disabled" });
+  await page.setViewportSize({ width: 1200, height: 700 });
   assert.ok(await page.evaluate(() => window.review.thumbnailCalls.length < 100));
   assert.equal(await page.evaluate(() => window.review.originalCalls.length), 0);
   const galleryTop = await page.locator('button[title="gallery-0.png"]').evaluate(element =>

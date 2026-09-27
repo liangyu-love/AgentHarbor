@@ -105,6 +105,8 @@ const imageApi = {
   saveFile: (path: string, dataUrl: string) => invoke<void>("save_image_file", { path, dataUrl }),
   saveToGallery: (dataUrls: string[]) =>
     invoke<SavedImagesPayload>("save_images_to_gallery", { dataUrls }),
+  setGalleryDirectory: (directory: string) =>
+    invoke<string>("set_gallery_directory", { directory }),
   listGallery: () => invoke<GalleryListPayload>("list_gallery_images"),
   loadGalleryImage: (path: string) => invoke<string>("load_gallery_image", { path }),
   loadGalleryThumbnail: (path: string) => invoke<string>("load_gallery_thumbnail", { path }),
@@ -134,6 +136,8 @@ const conversationsApi = {
       targetId,
       keys,
     }),
+  cancelPendingDeletions: (targetId: TargetId) =>
+    invoke<CoreEnvelope<number>>("cancel_pending_conversation_deletions", { targetId }),
   previewRecovery: (threadId: string) =>
     invoke<CoreEnvelope<import("@/types/threads").ThreadRecoveryPreview>>(
       "preview_codex_thread_recovery",

@@ -372,6 +372,7 @@ export function ImageWorkbenchPage() {
     staleTime: 5_000,
   });
   const galleryItems = useMemo(() => galleryQuery.data?.items ?? [], [galleryQuery.data]);
+  const selectedQuality = QUALITIES.find(item => item.value === quality);
 
   useEffect(() => {
     if (!galleryOpen || !isTauriRuntime()) return;
@@ -608,6 +609,21 @@ export function ImageWorkbenchPage() {
         variant: "destructive",
       });
       return false;
+    }
+  };
+
+  const chooseGalleryDirectory = async () => {
+    if (!isTauriRuntime()) return;
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({ directory: true, multiple: false });
+      if (typeof selected !== "string") return;
+      const directory = await api.image.setGalleryDirectory(selected);
+      setSavedGalleryDir(directory);
+      await queryClient.invalidateQueries({ queryKey: GALLERY_KEY });
+    } catch (cause) {
+      const key = typeof cause === "string" ? cause : cause instanceof Error ? cause.message : "image.errors.save";
+      toast({ title: t("image.saveFailed"), description: t(key.startsWith("image.") ? key : "image.errors.save"), variant: "destructive" });
     }
   };
 
@@ -959,8 +975,8 @@ export function ImageWorkbenchPage() {
                   画质
                 </Label>
                 <Select value={quality} onValueChange={setQuality}>
-                  <SelectTrigger className="ink-select-trigger" aria-label="画质">
-                    <SelectValue />
+                  <SelectTrigger className="ink-select-trigger items-center" aria-label="画质">
+                    <SelectValue>{selectedQuality?.label ?? quality}</SelectValue>
                   </SelectTrigger>
                   <SelectContent className="ink-select-content" position="popper">
                     {QUALITIES.map(item => (
@@ -1434,23 +1450,21 @@ export function ImageWorkbenchPage() {
                 size="sm"
                 variant="ghost"
                 className="h-8 gap-1 text-xs"
+                onClick={() => void chooseGalleryDirectory()}
+              >
+                <FolderOpen className="h-3.5 w-3.5" />
+                {t("image.chooseGalleryDirectory")}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-8 gap-1 text-xs"
                 onClick={() => void queryClient.invalidateQueries({ queryKey: GALLERY_KEY })}
               >
                 <RefreshCw className={cn("h-3.5 w-3.5", galleryQuery.isFetching && "animate-spin")} />
                 {t("image.galleryRefresh")}
               </Button>
-              {savedGalleryDir && (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="h-8 gap-1 text-xs"
-                  onClick={() => void api.openPath(savedGalleryDir).catch(() => undefined)}
-                >
-                  <FolderOpen className="h-3.5 w-3.5" />
-                  {t("image.openGallery")}
-                </Button>
-              )}
               <Button
                 type="button"
                 size="icon"
@@ -1463,6 +1477,22 @@ export function ImageWorkbenchPage() {
               </Button>
             </div>
           </div>
+          {savedGalleryDir && (
+            <div className="mb-4 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5 text-xs text-muted-foreground">
+              <span className="shrink-0">{t("image.galleryCurrentDirectory")}</span>
+              <span className="min-w-0 flex-1 truncate text-foreground/80" title={savedGalleryDir}>{savedGalleryDir}</span>
+              <Button
+                type="button"
+                size="xs"
+                variant="ghost"
+                className="shrink-0"
+                onClick={() => void api.openPath(savedGalleryDir).catch(() => undefined)}
+              >
+                <FolderOpen className="h-3.5 w-3.5" />
+                {t("image.openGallery")}
+              </Button>
+            </div>
+          )}
 
           {galleryQuery.isLoading ? (
             <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">

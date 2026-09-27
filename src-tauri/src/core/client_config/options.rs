@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,6 +32,8 @@ pub struct ClaudeModels {
 pub struct ClientOptions {
     pub access_mode: ClientAccessMode,
     pub provider_ids: Vec<String>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub provider_model_ids: HashMap<String, Vec<String>>,
     pub claude_models: ClaudeModels,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_model_ids: Option<Vec<String>>,

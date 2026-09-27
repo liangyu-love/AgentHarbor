@@ -199,10 +199,18 @@ impl Provider {
     }
 
     pub fn protocol_for_model(&self, model: &str) -> ModelProtocol {
+        let claude_name = model.to_ascii_lowercase().contains("claude");
         self.models
             .iter()
             .find(|entry| entry.id == model)
-            .and_then(|entry| entry.protocol)
+            .and_then(|entry| {
+                entry.protocol.or_else(|| {
+                    claude_name
+                        .then(|| super::protocol::declared_protocol(&entry.endpoint_types))
+                        .flatten()
+                })
+            })
+            .or_else(|| claude_name.then_some(ModelProtocol::AnthropicMessages))
             .unwrap_or(self.protocol)
     }
 
@@ -2039,7 +2047,7 @@ pub fn import_providers(paths: &CodexPaths, path: &Path) -> Result<ImportResult,
             // instead of silently assuming the Codex-specific Responses protocol.
             protocol: entry
                 .protocol
-                .unwrap_or_else(|| protocol::infer_protocol_from_models(&models)),
+                .unwrap_or_else(|| protocol::infer_protocol_from_models(&models, &entry.model)),
             model: entry.model,
             models,
             context_window: entry.context_window,

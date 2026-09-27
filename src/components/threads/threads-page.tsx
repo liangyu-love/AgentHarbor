@@ -8,6 +8,7 @@ import {
   CheckSquare,
   ChevronDown,
   ChevronRight,
+  Clock3,
   Copy,
   Download,
   FileDown,
@@ -86,6 +87,7 @@ export function ThreadsPage() {
   const [recoveryTarget, setRecoveryTarget] = useState<ThreadSummary | null>(null);
   const [bulkRepairing, setBulkRepairing] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [cancelPendingBusy, setCancelPendingBusy] = useState(false);
 
   const refreshAction = useBusyAction({ minVisibleMs: 800 });
 
@@ -93,9 +95,11 @@ export function ThreadsPage() {
     queryKey: THREADS_KEY,
     queryFn: () => api.conversations.list("codex"),
     staleTime: 30_000,
+    refetchInterval: query => query.state.data?.data.pendingDeletionKeys?.length ? 20_000 : false,
   });
 
   const threads = useMemo(() => threadsQuery.data?.data.items ?? [], [threadsQuery.data]);
+  const pendingDeletionKeys = new Set(threadsQuery.data?.data.pendingDeletionKeys ?? []);
   const scanWarnings = threadsQuery.data?.warnings ?? [];
   const exportableKeys = useMemo(
     () => new Set(threads.filter((thread) => thread.rolloutStatus !== "missing").map((thread) => thread.key)),
@@ -248,7 +252,7 @@ export function ThreadsPage() {
   };
 
   const handleDelete = async (keys: string[]) => {
-    const uniqueKeys = [...new Set(keys)];
+    const uniqueKeys = [...new Set(keys)].filter(key => !pendingDeletionKeys.has(key));
     if (uniqueKeys.length === 0 || deleteBusy) return;
     if (!window.confirm(t("threads.deleteConfirm", { count: uniqueKeys.length }))) return;
     setDeleteBusy(true);
@@ -261,17 +265,36 @@ export function ThreadsPage() {
       });
       await threadsQuery.refetch();
       toast({
-        title: t("threads.deleteDone", { count: result.data.deleted }),
-        variant: "success",
+        title: t(result.data.queued ? "threads.deleteQueued" : "threads.deleteDone", {
+          count: result.data.queued || result.data.deleted,
+        }),
+        variant: result.data.queued ? "default" : "success",
       });
-    } catch {
+    } catch (cause) {
+      const message = typeof cause === "string" ? cause : cause instanceof Error ? cause.message : "";
       toast({
         title: t("threads.deleteFailed"),
+        description: message.includes("CODEX_WRITER_RUNNING")
+          ? t("threads.deleteWriterRunning")
+          : message.includes("THREAD_DELETE_ALREADY_QUEUED") ? t("threads.deleteAlreadyQueued")
+          : message || undefined,
         variant: "destructive",
       });
     } finally {
       setDeleteBusy(false);
     }
+  };
+
+  const cancelPendingDeletions = async () => {
+    if (cancelPendingBusy) return;
+    setCancelPendingBusy(true);
+    try {
+      const result = await api.conversations.cancelPendingDeletions("codex");
+      await threadsQuery.refetch();
+      toast({ title: t("threads.deleteQueueCancelled", { count: result.data }), variant: "success" });
+    } catch (cause) {
+      toast({ title: t("threads.deleteFailed"), description: String(cause), variant: "destructive" });
+    } finally { setCancelPendingBusy(false); }
   };
 
   const handleExport = async (keys: string[]) => {
@@ -407,6 +430,19 @@ export function ThreadsPage() {
                 ))}
               </ul>
             </details>
+          </div>
+        )}
+
+        {pendingDeletionKeys.size > 0 && (
+          <div role="status" className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 text-sm text-foreground motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-200">
+            <Clock3 className="h-4 w-4 shrink-0 text-amber-700 dark:text-amber-400" aria-hidden="true" />
+            <div className="min-w-0 flex-1">
+              <p className="font-medium">{t("threads.deletePending", { count: pendingDeletionKeys.size })}</p>
+              <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{t("threads.deletePendingDetail")}</p>
+            </div>
+            <Button type="button" size="sm" variant="outline" disabled={cancelPendingBusy} onClick={() => void cancelPendingDeletions()}>
+              {t("threads.cancelPendingDeletion")}
+            </Button>
           </div>
         )}
 

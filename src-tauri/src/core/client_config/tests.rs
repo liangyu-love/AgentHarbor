@@ -186,6 +186,10 @@ fn preview_revision_rejects_config_or_provider_changes() {
 fn rejects_wrong_protocol_disabled_provider_and_invalid_settings() {
     let (_temp, manager, mut store, mut request) = fixture();
     request.options.access_mode = ClientAccessMode::Native;
+    // Use a neutral alias so this test exercises the provider's explicit
+    // protocol instead of the Claude-name Anthropic default.
+    store.providers[0].model = "custom-model".into();
+    request.model = "custom-model".into();
     store.providers[0].protocol = ModelProtocol::ChatCompletions;
     assert!(manager.preview(&store, &request).is_err());
     store.providers[0].protocol = ModelProtocol::AnthropicMessages;
@@ -204,11 +208,13 @@ fn opencode_registers_each_protocol_without_removing_official_providers() {
         ("chat", ModelProtocol::ChatCompletions),
         ("responses", ModelProtocol::Responses),
     ] {
-        store.providers.push(Provider {
+        let mut provider = Provider {
             id: id.into(),
             protocol,
             ..store.providers[0].clone()
-        });
+        };
+        provider.model = format!("{id}-default");
+        store.providers.push(provider);
     }
     request.target_id = TargetId::OpenCode;
     write(

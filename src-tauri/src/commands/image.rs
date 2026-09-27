@@ -1,5 +1,6 @@
 use crate::core::{
     api_client, models::ApiProxyConfigPayload, newapi, repository::Repository, router, secret_file,
+    storage,
 };
 use crate::platform::paths::CodexPaths;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -607,8 +608,40 @@ pub fn save_images_to_gallery(
     })
 }
 
+#[tauri::command]
+pub fn set_gallery_directory(
+    repo: State<'_, Mutex<Repository>>,
+    directory: String,
+) -> Result<String, String> {
+    let paths = paths(&repo)?;
+    persist_gallery_directory(&paths, std::path::Path::new(&directory))
+}
+
+fn persist_gallery_directory(
+    paths: &CodexPaths,
+    directory: &std::path::Path,
+) -> Result<String, String> {
+    let canonical = directory
+        .canonicalize()
+        .map_err(|_| "image.errors.save".to_owned())?;
+    if !canonical.is_dir() {
+        return Err("image.errors.save".into());
+    }
+    let setting = paths.app_data_dir.join("image-gallery-directory.json");
+    let contents = serde_json::to_vec(&canonical.to_string_lossy().to_string())
+        .map_err(|_| "image.errors.save".to_owned())?;
+    storage::write_atomic(&setting, &contents).map_err(|_| "image.errors.save".to_owned())?;
+    Ok(canonical.to_string_lossy().into_owned())
+}
+
 fn gallery_dir(paths: &CodexPaths) -> std::path::PathBuf {
-    paths.app_data_dir.join("image-gallery")
+    let setting = paths.app_data_dir.join("image-gallery-directory.json");
+    std::fs::read(setting)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<String>(&bytes).ok())
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| paths.app_data_dir.join("image-gallery"))
 }
 
 fn is_gallery_image(path: &std::path::Path) -> bool {
@@ -1143,6 +1176,22 @@ mod tests {
             ensure_inside_gallery(&paths, &outside).unwrap_err(),
             "image.errors.notFound"
         );
+    }
+
+    #[test]
+    fn gallery_directory_can_be_changed_and_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().join("codex"));
+        let custom = dir.path().join("my-image-library");
+        std::fs::create_dir_all(&custom).unwrap();
+        let selected = persist_gallery_directory(&paths, &custom).unwrap();
+        let canonical = custom.canonicalize().unwrap();
+        assert_eq!(gallery_dir(&paths), canonical);
+        assert_eq!(selected, canonical.to_string_lossy());
+
+        let image = gallery_dir(&paths).join("saved.png");
+        std::fs::write(&image, b"png").unwrap();
+        assert!(ensure_inside_gallery(&paths, &image).is_ok());
     }
 
     #[test]

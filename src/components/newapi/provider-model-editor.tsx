@@ -164,7 +164,7 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
                   <Select value={model.protocol ?? "inherit"} disabled={disabled} onValueChange={value => patch(model.id, { protocol: value === "inherit" ? null : value as ModelProtocol })}>
                     <SelectTrigger className="h-8 min-w-0 text-xs" aria-label={t("newapi.protocolFor", { model: model.id })}><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="inherit">{t("newapi.inheritProtocol", { protocol: t(protocolKey[protocol]) })}</SelectItem>
+                      <SelectItem value="inherit">{t("newapi.inheritProtocol", { protocol: t(protocolKey[effectiveModelProtocol(model, protocol)]) })}</SelectItem>
                       <SelectItem value="responses">{t("newapi.protocolResponses")}</SelectItem>
                       <SelectItem value="chatCompletions">{t("newapi.protocolChatCompletions")}</SelectItem>
                       <SelectItem value="anthropicMessages">{t("newapi.protocolAnthropicMessages")}</SelectItem>

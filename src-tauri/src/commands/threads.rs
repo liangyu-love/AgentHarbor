@@ -35,24 +35,36 @@ pub async fn list_conversations(
                 .join("thread-summary-cache.sqlite3"),
         )
     };
-    let scan = tauri::async_runtime::spawn_blocking(move || {
-        threads::scan_threads_from_catalog_with_cache(
+    let (scan, pending) = tauri::async_runtime::spawn_blocking(move || {
+        let pending = thread_delete::process_pending_deletes(
+            &state_database_path,
+            &sessions_dir,
+            &archived_sessions_dir,
+        );
+        let scan = threads::scan_threads_from_catalog_with_cache(
             &state_database_path,
             &sessions_dir,
             &archived_sessions_dir,
             &thread_cache_path,
-        )
+        )?;
+        Ok::<_, CoreError>((scan, pending))
     })
     .await
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())?;
+    let mut warnings = scan.warnings;
+    warnings.extend(pending.warnings.into_iter().map(|message| CoreWarning {
+        code: "THREAD_DELETE_QUEUE".into(),
+        message,
+    }));
     Ok(CoreEnvelope::ok_with_warnings(
         ThreadListPayload {
             total: scan.items.len(),
             last_scan_at: current_timestamp(),
             items: scan.items,
+            pending_deletion_keys: pending.keys,
         },
-        scan.warnings,
+        warnings,
     ))
 }
 
@@ -135,4 +147,26 @@ pub async fn delete_conversations(
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())?;
     Ok(CoreEnvelope::ok(result))
+}
+
+#[tauri::command]
+pub async fn cancel_pending_conversation_deletions(
+    repo: State<'_, Mutex<Repository>>,
+    target_id: TargetId,
+) -> Result<CoreEnvelope<usize>, String> {
+    let state_database_path = {
+        let repo = repo.lock().map_err(|error| error.to_string())?;
+        repo.target_registry()
+            .conversations(target_id)
+            .ok_or_else(|| "Unsupported conversation target".to_owned())?
+            .state_database_path()
+            .to_path_buf()
+    };
+    let cancelled = tauri::async_runtime::spawn_blocking(move || {
+        thread_delete::cancel_pending_deletes(&state_database_path)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())?;
+    Ok(CoreEnvelope::ok(cancelled))
 }

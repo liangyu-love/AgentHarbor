@@ -29,6 +29,7 @@ export interface ClientConfigRequest {
   maxOutputTokens: number;
   accessMode: ClientAccessMode;
   providerIds: string[];
+  providerModelIds?: Record<string, string[]>;
   claudeModels: ClaudeModels;
   claudeModelIds?: string[] | null;
   authField: "authToken" | "apiKey";

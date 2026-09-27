@@ -1,10 +1,11 @@
-use super::{models::CoreError, threads};
+use super::{models::CoreError, storage, threads};
 use chrono::Utc;
 use rusqlite::{params, Connection, OpenFlags, TransactionBehavior};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use uuid::Uuid;
@@ -13,9 +14,29 @@ use uuid::Uuid;
 #[serde(rename_all = "camelCase")]
 pub struct ThreadDeleteResult {
     pub deleted: usize,
+    pub queued: usize,
     pub catalog_rows_deleted: usize,
     pub rollout_files_deleted: usize,
     pub backup_path: String,
+}
+
+#[derive(Debug, Default)]
+pub struct PendingDeleteStatus {
+    pub keys: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PendingDelete {
+    schema_version: u32,
+    entries: Vec<PendingDeleteEntry>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PendingDeleteEntry {
+    key: String,
+    thread_id: String,
+    rollout_sha256: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -51,8 +72,284 @@ pub fn delete_threads(
 ) -> Result<ThreadDeleteResult, CoreError> {
     let _guard = super::thread_recovery::thread_mutation_guard()?;
     #[cfg(target_os = "windows")]
-    crate::platform::process::ensure_no_codex_writer_processes()?;
+    if let Err(error) = crate::platform::process::ensure_no_codex_writer_processes() {
+        if error.to_string().contains("CODEX_WRITER_RUNNING") {
+            return queue_delete(state_database_path, sessions_dir, archived_dir, keys);
+        }
+        return Err(error);
+    }
     delete_threads_inner(state_database_path, sessions_dir, archived_dir, keys)
+}
+
+fn pending_dir(state_database_path: &Path) -> PathBuf {
+    state_database_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("thread-delete-queue")
+}
+
+fn pending_jobs(state_database_path: &Path) -> Result<Vec<(PathBuf, PendingDelete)>, CoreError> {
+    let directory = pending_dir(state_database_path);
+    if !directory.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut jobs = Vec::new();
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().is_none_or(|extension| extension != "json") || !path.is_file() {
+            continue;
+        }
+        if entry.metadata()?.len() > 1024 * 1024 {
+            return Err(CoreError::InvalidData(
+                "thread deletion queue entry is too large".into(),
+            ));
+        }
+        let job: PendingDelete = serde_json::from_slice(&std::fs::read(&path)?)
+            .map_err(|error| CoreError::InvalidData(format!("invalid queued deletion: {error}")))?;
+        if job.schema_version != 1 || job.entries.is_empty() {
+            return Err(CoreError::InvalidData("unsupported queued deletion".into()));
+        }
+        jobs.push((path, job));
+    }
+    jobs.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(jobs)
+}
+
+fn file_sha256(path: &Path) -> Result<String, CoreError> {
+    let before = std::fs::metadata(path)?;
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    let after = std::fs::metadata(path)?;
+    if before.len() != after.len() || before.modified()? != after.modified()? {
+        return Err(CoreError::OperationFailed(
+            "THREAD_DELETE_CHANGED: rollout changed while preparing deletion".into(),
+        ));
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn queue_delete(
+    state_database_path: &Path,
+    sessions_dir: &Path,
+    archived_dir: &Path,
+    keys: &[String],
+) -> Result<ThreadDeleteResult, CoreError> {
+    if keys.is_empty() || keys.iter().collect::<HashSet<_>>().len() != keys.len() {
+        return Err(CoreError::InvalidData(
+            "select distinct threads to delete".into(),
+        ));
+    }
+    let jobs = pending_jobs(state_database_path)?;
+    let existing: HashSet<&str> = jobs
+        .iter()
+        .flat_map(|(_, job)| job.entries.iter().map(|entry| entry.key.as_str()))
+        .collect();
+    if keys.iter().any(|key| existing.contains(key.as_str())) {
+        return Err(CoreError::InvalidData(
+            "THREAD_DELETE_ALREADY_QUEUED: one or more selected threads are already queued".into(),
+        ));
+    }
+    let scan = threads::scan_threads_from_catalog_with_warnings(
+        state_database_path,
+        sessions_dir,
+        archived_dir,
+    )?;
+    let mut rollout_counts: HashMap<String, usize> = HashMap::new();
+    for item in threads::scan_threads(sessions_dir, archived_dir)? {
+        *rollout_counts.entry(item.id).or_default() += 1;
+    }
+    let mut entries = Vec::with_capacity(keys.len());
+    let mut seen_ids = HashSet::new();
+    for key in keys {
+        let matches: Vec<_> = scan.items.iter().filter(|item| item.key == *key).collect();
+        if matches.len() != 1 || !seen_ids.insert(matches[0].id.as_str()) {
+            return Err(CoreError::NotFound(
+                "selected threads changed; refresh and try again".into(),
+            ));
+        }
+        let item = matches[0];
+        if rollout_counts.get(&item.id).copied().unwrap_or_default() > 1 {
+            return Err(CoreError::InvalidData(format!(
+                "thread {} has multiple rollout files; remove the duplicate before deleting",
+                item.id
+            )));
+        }
+        let rollout_sha256 = if item.rollout_status == "available" {
+            let path = validate_rollout(item, sessions_dir, archived_dir)?;
+            Some(file_sha256(&path)?)
+        } else {
+            None
+        };
+        entries.push(PendingDeleteEntry {
+            key: key.clone(),
+            thread_id: item.id.clone(),
+            rollout_sha256,
+        });
+    }
+    let job = PendingDelete {
+        schema_version: 1,
+        entries,
+    };
+    let path = pending_dir(state_database_path).join(format!("{}.json", Uuid::new_v4()));
+    storage::write_atomic(
+        &path,
+        &serde_json::to_vec(&job).map_err(|error| CoreError::OperationFailed(error.to_string()))?,
+    )?;
+    Ok(ThreadDeleteResult {
+        deleted: 0,
+        queued: keys.len(),
+        catalog_rows_deleted: 0,
+        rollout_files_deleted: 0,
+        backup_path: String::new(),
+    })
+}
+
+fn pending_matches(
+    job: &PendingDelete,
+    state_database_path: &Path,
+    sessions_dir: &Path,
+    archived_dir: &Path,
+) -> Result<bool, CoreError> {
+    let scan = threads::scan_threads_from_catalog_with_warnings(
+        state_database_path,
+        sessions_dir,
+        archived_dir,
+    )?;
+    for entry in &job.entries {
+        let Some(item) = scan.items.iter().find(|item| item.key == entry.key) else {
+            return Ok(false);
+        };
+        if item.id != entry.thread_id {
+            return Ok(false);
+        }
+        match &entry.rollout_sha256 {
+            Some(expected) if item.rollout_status == "available" => {
+                let path = validate_rollout(item, sessions_dir, archived_dir)?;
+                if &file_sha256(&path)? != expected {
+                    return Ok(false);
+                }
+            }
+            None if item.rollout_status == "missing" => {}
+            _ => return Ok(false),
+        }
+    }
+    Ok(true)
+}
+
+fn process_pending_deletes_inner(
+    state_database_path: &Path,
+    sessions_dir: &Path,
+    archived_dir: &Path,
+    jobs: Vec<(PathBuf, PendingDelete)>,
+    can_delete: bool,
+) -> PendingDeleteStatus {
+    let mut status = PendingDeleteStatus::default();
+    for (path, job) in jobs {
+        if can_delete {
+            match pending_matches(&job, state_database_path, sessions_dir, archived_dir) {
+                Ok(false) => {
+                    status
+                        .warnings
+                        .push("A queued thread changed, so its deletion was cancelled".into());
+                    if let Err(error) = std::fs::remove_file(&path) {
+                        status.warnings.push(error.to_string());
+                        status
+                            .keys
+                            .extend(job.entries.into_iter().map(|entry| entry.key));
+                    }
+                    continue;
+                }
+                Ok(true) => {
+                    let keys: Vec<String> =
+                        job.entries.iter().map(|entry| entry.key.clone()).collect();
+                    match delete_threads_inner(
+                        state_database_path,
+                        sessions_dir,
+                        archived_dir,
+                        &keys,
+                    ) {
+                        Ok(_) => {
+                            if let Err(error) = std::fs::remove_file(&path) {
+                                status.warnings.push(error.to_string());
+                            }
+                            continue;
+                        }
+                        Err(error) => status.warnings.push(error.to_string()),
+                    }
+                }
+                Err(error) => status.warnings.push(error.to_string()),
+            }
+        }
+        status
+            .keys
+            .extend(job.entries.into_iter().map(|entry| entry.key));
+    }
+    status
+}
+
+pub fn process_pending_deletes(
+    state_database_path: &Path,
+    sessions_dir: &Path,
+    archived_dir: &Path,
+) -> PendingDeleteStatus {
+    let _guard = match super::thread_recovery::thread_mutation_guard() {
+        Ok(guard) => guard,
+        Err(error) => {
+            return PendingDeleteStatus {
+                warnings: vec![error.to_string()],
+                ..Default::default()
+            }
+        }
+    };
+    let jobs = match pending_jobs(state_database_path) {
+        Ok(jobs) => jobs,
+        Err(error) => {
+            return PendingDeleteStatus {
+                warnings: vec![error.to_string()],
+                ..Default::default()
+            }
+        }
+    };
+    if jobs.is_empty() {
+        return PendingDeleteStatus::default();
+    }
+    #[cfg(target_os = "windows")]
+    let writer_check = crate::platform::process::ensure_no_codex_writer_processes();
+    #[cfg(not(target_os = "windows"))]
+    let writer_check: Result<(), CoreError> = Ok(());
+    let warning = writer_check.as_ref().err().and_then(|error| {
+        (!error.to_string().contains("CODEX_WRITER_RUNNING")).then(|| error.to_string())
+    });
+    let mut status = process_pending_deletes_inner(
+        state_database_path,
+        sessions_dir,
+        archived_dir,
+        jobs,
+        writer_check.is_ok(),
+    );
+    if let Some(warning) = warning {
+        status.warnings.push(warning);
+    }
+    status
+}
+
+pub fn cancel_pending_deletes(state_database_path: &Path) -> Result<usize, CoreError> {
+    let _guard = super::thread_recovery::thread_mutation_guard()?;
+    let mut cancelled = 0;
+    for (path, job) in pending_jobs(state_database_path)? {
+        std::fs::remove_file(path)?;
+        cancelled += job.entries.len();
+    }
+    Ok(cancelled)
 }
 
 fn delete_threads_inner(
@@ -260,6 +557,7 @@ fn delete_threads_inner(
     let _ = threads::scan_threads_with_warnings(sessions_dir, archived_dir);
     Ok(ThreadDeleteResult {
         deleted: selected.len(),
+        queued: 0,
         catalog_rows_deleted: catalog_ids.len(),
         rollout_files_deleted: removed_files.len(),
         backup_path: backup_dir.display().to_string(),
@@ -552,6 +850,110 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM threads", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn queued_deletion_waits_for_writers_then_deletes_the_same_rollout() {
+        let (_temp, sessions, archived, database) = fixture();
+        let path = sessions.join("rollout-one.jsonl");
+        std::fs::write(&path, rollout("one")).unwrap();
+        Connection::open(&database)
+            .unwrap()
+            .execute(
+                "INSERT INTO threads (id, rollout_path, title, cwd) VALUES (?1, ?2, 'One', 'C:/work')",
+                params!["one", path.display().to_string()],
+            )
+            .unwrap();
+        let queued = queue_delete(
+            &database,
+            &sessions,
+            &archived,
+            &["active:rollout-one.jsonl".into()],
+        )
+        .unwrap();
+        assert_eq!(queued.queued, 1);
+        let waiting = process_pending_deletes_inner(
+            &database,
+            &sessions,
+            &archived,
+            pending_jobs(&database).unwrap(),
+            false,
+        );
+        assert_eq!(waiting.keys, vec!["active:rollout-one.jsonl"]);
+        assert!(path.is_file());
+
+        let completed = process_pending_deletes_inner(
+            &database,
+            &sessions,
+            &archived,
+            pending_jobs(&database).unwrap(),
+            true,
+        );
+        assert!(completed.keys.is_empty());
+        assert!(pending_jobs(&database).unwrap().is_empty());
+        assert!(!path.exists());
+        let rows: i64 = Connection::open(&database)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM threads", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
+
+    #[test]
+    fn queued_deletion_is_cancelled_if_the_rollout_changes() {
+        let (_temp, sessions, archived, database) = fixture();
+        let path = sessions.join("rollout-one.jsonl");
+        std::fs::write(&path, rollout("one")).unwrap();
+        Connection::open(&database)
+            .unwrap()
+            .execute(
+                "INSERT INTO threads (id, rollout_path, title, cwd) VALUES (?1, ?2, 'One', 'C:/work')",
+                params!["one", path.display().to_string()],
+            )
+            .unwrap();
+        queue_delete(
+            &database,
+            &sessions,
+            &archived,
+            &["active:rollout-one.jsonl".into()],
+        )
+        .unwrap();
+        std::fs::write(&path, format!("{}{{}}\n", rollout("one"))).unwrap();
+        let status = process_pending_deletes_inner(
+            &database,
+            &sessions,
+            &archived,
+            pending_jobs(&database).unwrap(),
+            true,
+        );
+        assert!(status
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("changed")));
+        assert!(pending_jobs(&database).unwrap().is_empty());
+        assert!(path.is_file());
+        let rows: i64 = Connection::open(&database)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM threads", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+    }
+
+    #[test]
+    fn queued_deletion_can_be_cancelled_before_writers_exit() {
+        let (_temp, sessions, archived, database) = fixture();
+        let path = sessions.join("rollout-one.jsonl");
+        std::fs::write(&path, rollout("one")).unwrap();
+        queue_delete(
+            &database,
+            &sessions,
+            &archived,
+            &["active:rollout-one.jsonl".into()],
+        )
+        .unwrap();
+        assert_eq!(cancel_pending_deletes(&database).unwrap(), 1);
+        assert!(pending_jobs(&database).unwrap().is_empty());
+        assert!(path.is_file());
     }
 
     #[test]

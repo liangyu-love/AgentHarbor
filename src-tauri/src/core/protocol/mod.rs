@@ -38,36 +38,61 @@ pub fn response_body(translation: Translation, value: &Value) -> Result<Value, S
 /// as Responses, because guessing it wrongly makes Codex calls fail outright,
 /// whereas the OpenAI-compatible assumption is what such relays almost always
 /// accept.
-pub fn infer_protocol(endpoint_types: &[String]) -> ModelProtocol {
+pub fn declared_protocol(endpoint_types: &[String]) -> Option<ModelProtocol> {
     let has = |needle: &str| {
         endpoint_types
             .iter()
             .any(|value| value.to_ascii_lowercase().contains(needle))
     };
     if has("response") {
-        return ModelProtocol::Responses;
+        return Some(ModelProtocol::Responses);
     }
     if has("anthropic") || has("message") {
-        return ModelProtocol::AnthropicMessages;
+        return Some(ModelProtocol::AnthropicMessages);
     }
     if has("chat") || has("completion") {
-        return ModelProtocol::ChatCompletions;
+        return Some(ModelProtocol::ChatCompletions);
     }
-    // Nothing advertised: OpenAI-compatible is the broadest common denominator.
-    ModelProtocol::ChatCompletions
+    None
 }
 
-/// Infer a protocol from every model a relay reported.
-///
-/// Later models do not override an earlier answer, so a relay that advertises
-/// Responses on some models keeps it.
-pub fn infer_protocol_from_models(models: &[crate::core::newapi::Model]) -> ModelProtocol {
-    for model in models {
-        if !model.endpoint_types.is_empty() {
-            return infer_protocol(&model.endpoint_types);
-        }
+pub fn infer_protocol(endpoint_types: &[String]) -> ModelProtocol {
+    // Nothing advertised: OpenAI-compatible is the broadest common denominator.
+    declared_protocol(endpoint_types).unwrap_or(ModelProtocol::ChatCompletions)
+}
+
+/// Infer a provider default from its selected model. Other models can use
+/// their own protocol overrides without changing this default.
+pub fn infer_protocol_from_models(
+    models: &[crate::core::newapi::Model],
+    selected_model: &str,
+) -> ModelProtocol {
+    if let Some(model) = models.iter().find(|model| model.id == selected_model) {
+        return model
+            .protocol
+            .or_else(|| declared_protocol(&model.endpoint_types))
+            .unwrap_or_else(|| {
+                if selected_model.to_ascii_lowercase().contains("claude") {
+                    ModelProtocol::AnthropicMessages
+                } else {
+                    ModelProtocol::ChatCompletions
+                }
+            });
     }
-    ModelProtocol::ChatCompletions
+    models
+        .iter()
+        .find_map(|model| {
+            model
+                .protocol
+                .or_else(|| declared_protocol(&model.endpoint_types))
+        })
+        .unwrap_or_else(|| {
+            if selected_model.to_ascii_lowercase().contains("claude") {
+                ModelProtocol::AnthropicMessages
+            } else {
+                ModelProtocol::ChatCompletions
+            }
+        })
 }
 
 /// The protocol pair a request needs translated.

@@ -76,15 +76,38 @@ impl ClientAdapter for OpenCode {
                     ModelProtocol::AnthropicMessages => "@ai-sdk/anthropic",
                 };
                 let mut models = serde_json::Map::new();
-                let mut ids: Vec<_> = provider
-                    .models
-                    .iter()
-                    .filter(|m| m.included)
-                    .map(|m| m.id.as_str())
-                    .collect();
-                ids.push(&provider.model);
-                if provider.id == request.provider_id {
+                let configured_ids = request.options.provider_model_ids.get(&provider.id);
+                let mut ids: Vec<_> = if let Some(configured_ids) = configured_ids {
+                    configured_ids.iter().map(String::as_str).collect()
+                } else {
+                    provider
+                        .models
+                        .iter()
+                        .filter(|m| m.included)
+                        .map(|m| m.id.as_str())
+                        .chain(std::iter::once(provider.model.as_str()))
+                        .collect()
+                };
+                if provider.id == request.provider_id && configured_ids.is_none() {
                     ids.push(&request.model);
+                }
+                if let Some(configured_ids) = configured_ids {
+                    if configured_ids.is_empty()
+                        || configured_ids
+                            .iter()
+                            .any(|id| !request.accepts_model(provider, id))
+                        || configured_ids.iter().any(|id| {
+                            id != &provider.model
+                                && !provider
+                                    .models
+                                    .iter()
+                                    .any(|model| model.id == *id && model.included)
+                        })
+                        || (provider.id == request.provider_id
+                            && !configured_ids.iter().any(|id| id == &request.model))
+                    {
+                        return Err("clients.errors.modelSelection".into());
+                    }
                 }
                 for id in ids.into_iter().filter(|id| {
                     !id.is_empty()
