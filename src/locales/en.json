@@ -338,6 +338,7 @@
     "saveAs": "Save as…",
     "savedToGallery": "Saved to local gallery",
     "openGallery": "Open gallery folder",
+    "promptSentToProvider": "Prompts are sent to the selected provider",
     "saveFailed": "Save failed",
     "galleryTitle": "History gallery",
     "galleryEmpty": "No images yet. Generated art is saved here automatically.",
@@ -346,7 +347,8 @@
     "galleryDeleted": "Removed from gallery",
     "galleryDeleteConfirm": "Delete this image?",
     "galleryDeleteConfirmDesc": "This permanently removes the file from the local gallery. Generate again to recreate it.",
-    "galleryLoadFailed": "Could not load gallery"
+    "galleryLoadFailed": "Could not load gallery",
+    "galleryLimit": "Showing the latest 200; open the folder to view older images"
   },
   "accounts": {
     "title": "Accounts & Usage",

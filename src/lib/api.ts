@@ -94,6 +94,7 @@ export interface GalleryItem {
 export interface GalleryListPayload {
   directory: string;
   items: GalleryItem[];
+  hasMore: boolean;
 }
 
 const imageApi = {

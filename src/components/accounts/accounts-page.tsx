@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useContext, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { PageActiveContext } from "@/components/layout/page-stage";
 import {
   Activity,
   BarChart3,
@@ -966,6 +967,7 @@ function AccountCard({
 
 export function AccountsPage({ refreshInterval }: { refreshInterval: RefreshInterval }) {
   const { t } = useTranslation();
+  const pageActive = useContext(PageActiveContext);
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
   const [plan, setPlan] = useState("all");
@@ -974,14 +976,16 @@ export function AccountsPage({ refreshInterval }: { refreshInterval: RefreshInte
   const accountsQuery = useQuery({
     queryKey: QUERY_KEY,
     queryFn: api.accounts.refresh,
-    refetchInterval: REFRESH_INTERVAL_MS[refreshInterval],
+    enabled: pageActive,
+    refetchInterval: pageActive ? REFRESH_INTERVAL_MS[refreshInterval] : false,
     refetchIntervalInBackground: false,
     retry: false,
   });
   const tokenUsageQuery = useQuery({
     queryKey: TOKEN_USAGE_QUERY_KEY,
     queryFn: api.usage.overview,
-    refetchInterval: REFRESH_INTERVAL_MS[refreshInterval],
+    enabled: pageActive,
+    refetchInterval: pageActive ? REFRESH_INTERVAL_MS[refreshInterval] : false,
     refetchIntervalInBackground: false,
     retry: false,
   });

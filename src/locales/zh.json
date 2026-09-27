@@ -338,6 +338,7 @@
     "saveAs": "另存为…",
     "savedToGallery": "已存入本地画册",
     "openGallery": "打开画册目录",
+    "promptSentToProvider": "提示词会发送到所选服务商",
     "saveFailed": "保存失败",
     "galleryTitle": "历史画册",
     "galleryEmpty": "画册尚无成图，挥毫生成后会自动存入这里。",
@@ -346,7 +347,8 @@
     "galleryDeleted": "已从画册删除",
     "galleryDeleteConfirm": "删除这张成图？",
     "galleryDeleteConfirmDesc": "将从本地画册永久删除该文件，可重新生成但无法从画册恢复。",
-    "galleryLoadFailed": "画册读取失败"
+    "galleryLoadFailed": "画册读取失败",
+    "galleryLimit": "仅展示最新 200 张，打开目录查看更早的图片"
   },
   "accounts": {
     "title": "账号与用量",

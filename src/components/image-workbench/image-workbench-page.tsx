@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { PageActiveContext } from "@/components/layout/page-stage";
 import {
   Brush,
   Check,
@@ -180,6 +181,7 @@ function GalleryThumbnail({ item, load, onPreview, opening }: {
 
 export function ImageWorkbenchPage() {
   const { t } = useTranslation();
+  const pageActive = useContext(PageActiveContext);
   const state = useQuery({ queryKey: IMAGE_KEY, queryFn: api.providers.loadState, refetchOnWindowFocus: false });
   const providers = state.data?.providers ?? [];
   const imageProviders = useMemo(
@@ -195,6 +197,9 @@ export function ImageWorkbenchPage() {
 
   const [providerId, setProviderId] = useState<string>("");
   const savedConfig = useMemo(loadSavedConfig, []);
+  const [legacyKeyMigrationPending, setLegacyKeyMigrationPending] = useState(
+    () => Boolean(savedConfig.legacyApiKey),
+  );
   const [providerChoiceInitialized, setProviderChoiceInitialized] = useState(
     () => Boolean(savedConfig.baseUrl || savedConfig.legacyApiKey),
   );
@@ -281,19 +286,19 @@ export function ImageWorkbenchPage() {
   const availableModels = selectedProvider?.models.filter(item => /image|dall|gpt-image/i.test(item.id)) ?? [];
 
   useEffect(() => {
-    // Scrub the legacy plaintext value before sending it to protected storage.
-    try {
-      localStorage.setItem("image-workbench-config", JSON.stringify({
-        baseUrl: savedConfig.baseUrl, model: savedConfig.model,
-        size: savedConfig.size, quality: savedConfig.quality,
-      }));
-    } catch {
-      try { localStorage.removeItem("image-workbench-config"); } catch { /* unavailable storage */ }
-    }
     if (!savedConfig.legacyApiKey || !savedConfig.baseUrl) return;
     void api.image.saveKey(savedConfig.baseUrl, savedConfig.legacyApiKey)
       .then(() => {
-        setKeyStored(true);
+        try {
+          localStorage.setItem("image-workbench-config", JSON.stringify({
+            baseUrl: savedConfig.baseUrl, model: savedConfig.model,
+            size: savedConfig.size, quality: savedConfig.quality,
+          }));
+        } catch {
+          try { localStorage.removeItem("image-workbench-config"); } catch { /* unavailable storage */ }
+        }
+      setLegacyKeyMigrationPending(false);
+      setKeyStored(true);
         setApiKey(current => current === savedConfig.legacyApiKey ? "" : current);
       })
       .catch(() => setError("image.errors.storage"));
@@ -301,27 +306,32 @@ export function ImageWorkbenchPage() {
 
   useEffect(() => {
     if (!baseUrl.trim()) { setKeyStored(false); return; }
+    if (!pageActive) return;
     let active = true;
-    void api.image.keyStatus(baseUrl).then(stored => {
+    setKeyStored(false);
+    const timeout = window.setTimeout(() => void api.image.keyStatus(baseUrl.trim()).then(stored => {
       if (active) setKeyStored(stored);
     }).catch(() => {
       if (active) setKeyStored(false);
-    });
-    return () => { active = false; };
-  }, [baseUrl]);
+    }), 350);
+    return () => { active = false; window.clearTimeout(timeout); };
+  }, [baseUrl, pageActive]);
 
   useEffect(() => {
-    if (providerId) return;
-    localStorage.setItem(
-      "image-workbench-config",
-      JSON.stringify({ baseUrl, model, size, quality } satisfies SavedImageConfig),
-    );
-  }, [baseUrl, model, providerId, quality, size]);
+    if (providerId || legacyKeyMigrationPending) return;
+    try {
+      localStorage.setItem(
+        "image-workbench-config",
+        JSON.stringify({ baseUrl, model, size, quality } satisfies SavedImageConfig),
+      );
+    } catch { /* storage may be disabled */ }
+  }, [baseUrl, legacyKeyMigrationPending, model, providerId, quality, size]);
 
   const saveKey = () => {
     const pending = apiKey.trim();
     if (!baseUrl.trim() || !pending) return;
     void api.image.saveKey(baseUrl, pending).then(() => {
+      setLegacyKeyMigrationPending(false);
       setKeyStored(true);
       setApiKey(current => current === pending ? "" : current);
     }).catch(() => setError("image.errors.storage"));
@@ -570,8 +580,8 @@ export function ImageWorkbenchPage() {
         });
       setResult(generated);
       // Gallery persistence is best-effort and reported separately from generation success.
-      void persistToGallery(generated.images).then(() => {
-        void queryClient.invalidateQueries({ queryKey: GALLERY_KEY });
+      void persistToGallery(generated.images).then(saved => {
+        if (saved) void queryClient.invalidateQueries({ queryKey: GALLERY_KEY });
       });
       if (!providerId && apiKey.trim()) {
         setKeyStored(true);
@@ -639,7 +649,7 @@ export function ImageWorkbenchPage() {
             )}
             <span className="inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-background/80 px-3 py-1 text-xs text-muted-foreground backdrop-blur-xs font-serif shadow-xs">
               <Feather className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
-              本地私享调用 · 绝不外泄提示词
+              {t("image.promptSentToProvider")}
             </span>
             <span className="inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-background/80 px-3 py-1 text-xs text-muted-foreground backdrop-blur-xs font-serif shadow-xs">
               <HardDriveDownload className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
@@ -1196,6 +1206,9 @@ export function ImageWorkbenchPage() {
               <Badge variant="outline" className="font-mono text-[11px]">
                 {galleryItems.length}
               </Badge>
+              {galleryQuery.data?.hasMore && (
+                <span className="text-xs text-muted-foreground">{t("image.galleryLimit")}</span>
+              )}
             </div>
             <div className="flex items-center gap-1.5">
               <Button

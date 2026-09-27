@@ -1,8 +1,10 @@
-import type { CSSProperties, ReactNode } from "react";
+import { createContext, type CSSProperties, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 
 type PageStageState = "active" | "exiting" | "idle";
+
+export const PageActiveContext = createContext(true);
 
 interface PageStageProps {
   state: PageStageState;
@@ -43,28 +45,30 @@ export function PageStage({
         state === "idle" && "z-0 opacity-0 pointer-events-none",
       )}
     >
-      <div
-        style={contentTransitionStyle}
-        className={cn(
-          "h-full transform-gpu [will-change:transform,opacity] transition-[opacity,transform] motion-reduce:transition-none",
-          state === "active" && "opacity-100 translate-y-0",
-          state === "exiting" && "opacity-0 -translate-y-px",
-          state === "idle" && "opacity-0 translate-y-0.5",
-        )}
-      >
-        {padded ? (
-          <div
-            className={cn(
-              "w-full min-w-0 px-4 pb-6 pt-[9px] lg:px-6 lg:pt-[17px]",
-              fillHeight && "flex h-full min-h-0 flex-col",
-            )}
-          >
-            {children}
-          </div>
-        ) : (
-          children
-        )}
-      </div>
+      <PageActiveContext.Provider value={state === "active"}>
+        <div
+          style={contentTransitionStyle}
+          className={cn(
+            "h-full transform-gpu [will-change:transform,opacity] transition-[opacity,transform] motion-reduce:transition-none",
+            state === "active" && "opacity-100 translate-y-0",
+            state === "exiting" && "opacity-0 -translate-y-px",
+            state === "idle" && "opacity-0 translate-y-0.5",
+          )}
+        >
+          {padded ? (
+            <div
+              className={cn(
+                "w-full min-w-0 px-4 pb-6 pt-[9px] lg:px-6 lg:pt-[17px]",
+                fillHeight && "flex h-full min-h-0 flex-col",
+              )}
+            >
+              {children}
+            </div>
+          ) : (
+            children
+          )}
+        </div>
+      </PageActiveContext.Provider>
     </section>
   );
 }

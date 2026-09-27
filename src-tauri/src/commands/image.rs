@@ -617,6 +617,7 @@ pub struct GalleryItem {
 pub struct GalleryListPayload {
     pub directory: String,
     pub items: Vec<GalleryItem>,
+    pub has_more: bool,
 }
 
 /// List local gallery images newest-first (capped to keep the UI light).
@@ -631,6 +632,7 @@ pub fn list_gallery_images(
         return Ok(GalleryListPayload {
             directory: directory.to_string_lossy().into_owned(),
             items: Vec::new(),
+            has_more: false,
         });
     }
     let mut items = Vec::new();
@@ -662,10 +664,12 @@ pub fn list_gallery_images(
             .cmp(&a.modified_at)
             .then_with(|| b.name.cmp(&a.name))
     });
+    let has_more = items.len() > MAX_GALLERY_ITEMS;
     items.truncate(MAX_GALLERY_ITEMS);
     Ok(GalleryListPayload {
         directory: directory.to_string_lossy().into_owned(),
         items,
+        has_more,
     })
 }
 
