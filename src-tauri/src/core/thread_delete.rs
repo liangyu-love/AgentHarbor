@@ -235,31 +235,32 @@ fn pending_matches(
     state_database_path: &Path,
     sessions_dir: &Path,
     archived_dir: &Path,
-) -> Result<bool, CoreError> {
+) -> Result<(Vec<String>, Vec<String>), CoreError> {
     let scan = threads::scan_threads_from_catalog_with_warnings(
         state_database_path,
         sessions_dir,
         archived_dir,
     )?;
+    let (mut unchanged, mut changed) = (Vec::new(), Vec::new());
     for entry in &job.entries {
-        let Some(item) = scan.items.iter().find(|item| item.key == entry.key) else {
-            return Ok(false);
-        };
-        if item.id != entry.thread_id {
-            return Ok(false);
-        }
-        match &entry.rollout_sha256 {
-            Some(expected) if item.rollout_status == "available" => {
-                let path = validate_rollout(item, sessions_dir, archived_dir)?;
-                if &file_sha256(&path)? != expected {
-                    return Ok(false);
+        let matches = match scan.items.iter().find(|item| item.key == entry.key) {
+            Some(item) if item.id == entry.thread_id => match &entry.rollout_sha256 {
+                Some(expected) if item.rollout_status == "available" => {
+                    let path = validate_rollout(item, sessions_dir, archived_dir)?;
+                    &file_sha256(&path)? == expected
                 }
-            }
-            None if item.rollout_status == "missing" => {}
-            _ => return Ok(false),
+                None => item.rollout_status == "missing",
+                _ => false,
+            },
+            _ => false,
+        };
+        if matches {
+            unchanged.push(entry.key.clone());
+        } else {
+            changed.push(entry.key.clone());
         }
     }
-    Ok(true)
+    Ok((unchanged, changed))
 }
 
 fn process_pending_deletes_inner(
@@ -273,30 +274,27 @@ fn process_pending_deletes_inner(
     for (path, job) in jobs {
         if can_delete {
             match pending_matches(&job, state_database_path, sessions_dir, archived_dir) {
-                Ok(false) => {
-                    status
-                        .warnings
-                        .push("A queued thread changed, so its deletion was cancelled".into());
-                    if let Err(error) = std::fs::remove_file(&path) {
-                        status.warnings.push(error.to_string());
-                        status
-                            .keys
-                            .extend(job.entries.into_iter().map(|entry| entry.key));
+                Ok((unchanged, changed)) => {
+                    // A thread that changed since it was queued is kept; the rest of
+                    // the same request still goes ahead.
+                    if !changed.is_empty() {
+                        status.warnings.push(format!(
+                            "{} queued thread(s) changed and were kept: {}",
+                            changed.len(),
+                            changed.join(", ")
+                        ));
                     }
-                    continue;
-                }
-                Ok(true) => {
-                    let keys: Vec<String> =
-                        job.entries.iter().map(|entry| entry.key.clone()).collect();
-                    match delete_threads_inner(
-                        state_database_path,
-                        sessions_dir,
-                        archived_dir,
-                        &keys,
-                    ) {
-                        Ok(_) => {
+                    let result = if unchanged.is_empty() {
+                        Ok(())
+                    } else {
+                        delete_threads_inner(state_database_path, sessions_dir, archived_dir, &unchanged)
+                            .map(|_| ())
+                    };
+                    match result {
+                        Ok(()) => {
                             if let Err(error) = std::fs::remove_file(&path) {
                                 status.warnings.push(error.to_string());
+                                status.keys.extend(unchanged);
                             }
                             continue;
                         }
@@ -981,6 +979,48 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM threads", [], |row| row.get(0))
             .unwrap();
         assert_eq!(rows, 1);
+    }
+
+    #[test]
+    fn a_changed_thread_is_kept_while_the_rest_of_its_job_is_deleted() {
+        let (_temp, sessions, archived, database) = fixture();
+        let connection = Connection::open(&database).unwrap();
+        for id in ["one", "two"] {
+            let path = sessions.join(format!("rollout-{id}.jsonl"));
+            std::fs::write(&path, rollout(id)).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO threads (id, rollout_path, title, cwd) VALUES (?1, ?2, ?1, 'C:/work')",
+                    params![id, path.display().to_string()],
+                )
+                .unwrap();
+        }
+        drop(connection);
+        queue_delete(
+            &database,
+            &sessions,
+            &archived,
+            &["active:rollout-one.jsonl".into(), "active:rollout-two.jsonl".into()],
+        )
+        .unwrap();
+        let changed = sessions.join("rollout-one.jsonl");
+        std::fs::write(&changed, format!("{}{{}}\n", rollout("one"))).unwrap();
+        let status = process_pending_deletes_inner(
+            &database,
+            &sessions,
+            &archived,
+            pending_jobs(&database).unwrap().jobs,
+            true,
+        );
+        assert!(status.warnings.iter().any(|w| w.contains("active:rollout-one.jsonl")));
+        assert!(pending_jobs(&database).unwrap().jobs.is_empty());
+        assert!(changed.is_file(), "the changed thread is kept");
+        assert!(!sessions.join("rollout-two.jsonl").exists(), "the unchanged thread is deleted");
+        let remaining: String = Connection::open(&database)
+            .unwrap()
+            .query_row("SELECT id FROM threads", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, "one");
     }
 
     #[test]

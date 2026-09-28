@@ -282,11 +282,16 @@ pub fn delete(repo: &Repository, account_key: &str) -> Result<CodexAccountListPa
 
 pub fn apply_usage_updates(
     repo: &Repository,
-    updates: Vec<AccountUsageUpdate>,
+    mut updates: Vec<AccountUsageUpdate>,
 ) -> Result<CodexAccountListPayload, CoreError> {
-    for update in &updates {
+    // A refreshed credential that cannot be stored only affects its own account;
+    // the quota results fetched for every other account are still kept.
+    for update in &mut updates {
         if let Some(refresh) = &update.credential_refresh {
-            apply_credential_refresh(repo, &update.account_key, refresh)?;
+            if let Err(error) = apply_credential_refresh(repo, &update.account_key, refresh) {
+                update.status = "error".into();
+                update.error = Some(error.to_string());
+            }
         }
     }
     let mut registry = synced_registry(repo)?;
@@ -400,6 +405,42 @@ mod tests {
             error: None,
             credential_refresh: refresh,
         }
+    }
+
+    #[test]
+    fn one_rejected_credential_refresh_keeps_other_accounts_updates() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = Repository::from_paths(CodexPaths::from_home(temp.path().join("codex")));
+        let first = temp.path().join("first.json");
+        let second = temp.path().join("second.json");
+        write_auth(&first, "first");
+        write_auth(&second, "second");
+        register_login(&repo, &first).unwrap();
+        register_login(&repo, &second).unwrap();
+        let (credentials, _) = credentials(&repo).unwrap();
+        let bad = &credentials[0];
+        let original = std::fs::read(&bad.snapshot_path).unwrap();
+        // The "refreshed" credential belongs to another account: rejected.
+        let other = temp.path().join("other.json");
+        write_auth(&other, "someone-else");
+        let refresh = CredentialRefresh {
+            source_path: bad.snapshot_path.clone(),
+            original,
+            refreshed: std::fs::read(&other).unwrap(),
+        };
+        let listed = apply_usage_updates(
+            &repo,
+            vec![
+                usage_update(&bad.account_key, Some(refresh)),
+                usage_update(&credentials[1].account_key, None),
+            ],
+        )
+        .unwrap();
+        let status = |key: &str| {
+            listed.items.iter().find(|item| item.account_key == key).unwrap().usage_status.clone()
+        };
+        assert_eq!(status(&bad.account_key), "error");
+        assert_eq!(status(&credentials[1].account_key), "healthy");
     }
 
     #[test]

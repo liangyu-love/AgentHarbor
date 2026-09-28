@@ -600,6 +600,18 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             "this endpoint requires a native Anthropic Messages provider",
         ));
     }
+    // Only the core create endpoint is translated. Sub-resources such as
+    // `responses/compact` or `responses/{id}` have no equivalent on another
+    // protocol, and rewriting them would produce an endpoint that does not exist.
+    if required_protocol == Some(router::ModelProtocol::Responses)
+        && translation_target(&destination).is_some()
+        && suffix != "responses"
+    {
+        return Err((
+            StatusCode::NOT_IMPLEMENTED,
+            "this endpoint requires a native Responses provider",
+        ));
+    }
     let suffix = match translation_target(&destination) {
         Some(protocol) => translate_endpoint(&suffix, protocol),
         None => suffix,
@@ -858,17 +870,17 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
     };
     let mut builder = Response::builder().status(response.status());
     for (name, value) in &response_headers {
-        if translation.is_some() && response_status.is_success() && name == CONTENT_TYPE {
+        if translation.is_some() && name == CONTENT_TYPE {
             continue;
         }
         builder = builder.header(name, value);
     }
-    if translation.is_some() && response_status.is_success() {
+    if translation.is_some() {
         // A translated stream is rebuilt as Responses events; a translated
-        // single body is JSON again, just in the Responses shape.
+        // single body (including an error) is JSON in the caller's shape.
         builder = builder.header(
             CONTENT_TYPE,
-            if is_event_stream {
+            if is_event_stream && response_status.is_success() {
                 "text/event-stream"
             } else {
                 "application/json"
@@ -961,6 +973,15 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         BodyExt::boxed(
             Full::new(Bytes::from(converted.to_string())).map_err(|never| match never {}),
         )
+    } else if let Some(translation) = translation.filter(|_| !response_status.is_success()) {
+        // An upstream error must reach the caller in the caller's own error shape,
+        // otherwise SDKs report a parse failure instead of the real message.
+        let bytes = response.bytes().await.unwrap_or_default();
+        if let Some(request) = relay_request {
+            request.observe(response_status.as_u16(), false).observe(&bytes);
+        }
+        let body = translated_error_body(translation.from, response_status, &bytes);
+        BodyExt::boxed(Full::new(Bytes::from(body)).map_err(|never| match never {}))
     } else if let Some(request) = relay_request {
         let mut observer = request.observe(response_status.as_u16(), is_event_stream);
         let stream = response.bytes_stream().map(move |chunk| {
@@ -983,6 +1004,50 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
     builder
         .body(response_body)
         .map_err(|_| (StatusCode::BAD_GATEWAY, "invalid upstream response"))
+}
+
+/// Re-shape an upstream error body into the caller's protocol.
+fn translated_error_body(
+    caller: router::ModelProtocol,
+    status: StatusCode,
+    bytes: &[u8],
+) -> String {
+    let value: Option<Value> = serde_json::from_slice(bytes).ok();
+    let error = value.as_ref().and_then(|value| value.get("error"));
+    let message = error
+        .and_then(|error| error.get("message").or(Some(error)).and_then(Value::as_str))
+        .or_else(|| value.as_ref().and_then(|value| value.get("message")).and_then(Value::as_str))
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            let text = String::from_utf8_lossy(bytes);
+            let text = text.trim();
+            if text.is_empty() {
+                status.canonical_reason().unwrap_or("upstream error").to_owned()
+            } else {
+                text.chars().take(2000).collect()
+            }
+        });
+    let kind = error
+        .and_then(|error| error.get("type"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| match status.as_u16() {
+            400 => "invalid_request_error",
+            401 => "authentication_error",
+            403 => "permission_error",
+            404 => "not_found_error",
+            429 => "rate_limit_error",
+            529 => "overloaded_error",
+            _ => "api_error",
+        }
+        .to_owned());
+    match caller {
+        router::ModelProtocol::AnthropicMessages => {
+            json!({"type": "error", "error": {"type": kind, "message": message}})
+        }
+        _ => json!({"error": {"message": message, "type": kind, "code": status.as_u16()}}),
+    }
+    .to_string()
 }
 
 fn bearer_matches_chatgpt_auth(authorization: &HeaderValue, auth_path: &std::path::Path) -> bool {
@@ -1113,6 +1178,39 @@ mod tests {
     use crate::core::router::{Provider, ProviderInput, RouterSettings, Store};
     use crate::platform::paths::CodexPaths;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn upstream_errors_are_reshaped_for_the_caller() {
+        let openai = br#"{"error":{"message":"bad model","type":"invalid_request_error","code":"model_not_found"}}"#;
+        let anthropic: Value = serde_json::from_str(&translated_error_body(
+            router::ModelProtocol::AnthropicMessages,
+            StatusCode::BAD_REQUEST,
+            openai,
+        ))
+        .unwrap();
+        assert_eq!(anthropic["type"], "error");
+        assert_eq!(anthropic["error"]["type"], "invalid_request_error");
+        assert_eq!(anthropic["error"]["message"], "bad model");
+
+        let claude = br#"{"type":"error","error":{"type":"overloaded_error","message":"busy"}}"#;
+        let responses: Value = serde_json::from_str(&translated_error_body(
+            router::ModelProtocol::Responses,
+            StatusCode::from_u16(529).unwrap(),
+            claude,
+        ))
+        .unwrap();
+        assert_eq!(responses["error"]["message"], "busy");
+        assert_eq!(responses["error"]["type"], "overloaded_error");
+
+        let html: Value = serde_json::from_str(&translated_error_body(
+            router::ModelProtocol::Responses,
+            StatusCode::BAD_GATEWAY,
+            b"<html>Bad Gateway</html>",
+        ))
+        .unwrap();
+        assert_eq!(html["error"]["message"], "<html>Bad Gateway</html>");
+        assert_eq!(html["error"]["type"], "api_error");
+    }
 
     #[test]
     fn bind_waits_for_a_released_port_but_reports_a_held_one() {

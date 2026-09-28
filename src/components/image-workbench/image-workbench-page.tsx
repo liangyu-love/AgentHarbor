@@ -425,22 +425,32 @@ export function ImageWorkbenchPage() {
   ]));
 
   useEffect(() => {
-    if (!savedConfig.legacyApiKey || !savedConfig.baseUrl) return;
+    if (!savedConfig.legacyApiKey) return;
+    // Old builds kept the key in plain localStorage. Whatever happens next, the
+    // plaintext copy must not survive this load.
+    const scrubPlaintextKey = () => {
+      try {
+        localStorage.setItem("image-workbench-config", JSON.stringify({
+          baseUrl: savedConfig.baseUrl, model: savedConfig.model,
+          size: savedConfig.size, quality: savedConfig.quality,
+        } satisfies SavedImageConfig));
+      } catch {
+        try { localStorage.removeItem("image-workbench-config"); } catch { /* unavailable storage */ }
+      }
+      setLegacyKeyMigrationPending(false);
+    };
+    if (!savedConfig.baseUrl) {
+      // No endpoint to bind the key to: keep it in the input for this session only.
+      scrubPlaintextKey();
+      return;
+    }
     void api.image.saveKey(savedConfig.baseUrl, savedConfig.legacyApiKey)
       .then(() => {
-        try {
-          localStorage.setItem("image-workbench-config", JSON.stringify({
-            baseUrl: savedConfig.baseUrl, model: savedConfig.model,
-            size: savedConfig.size, quality: savedConfig.quality,
-          }));
-        } catch {
-          try { localStorage.removeItem("image-workbench-config"); } catch { /* unavailable storage */ }
-        }
-        setLegacyKeyMigrationPending(false);
         setKeyStored(true);
         setApiKey(current => current === savedConfig.legacyApiKey ? "" : current);
       })
-      .catch(() => setError("image.errors.storage"));
+      .catch(() => setError("image.errors.storage"))
+      .finally(scrubPlaintextKey);
   }, [savedConfig]);
 
   useEffect(() => {

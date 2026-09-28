@@ -55,6 +55,23 @@
 - [x] S8 (D6) 删除 105 个静态扫描确认未引用的 locale key（排除模板拼接前缀和复数后缀），中英文仍完全对齐。
 - [x] S9 更新 `CODEBASE_MAP.md`：删除已移除的命令，补充 `release_client_config`、备份保留、路径校验，并入 5 处勘误。
 
+## 阶段 6：需要设计的项（按优先级）
+
+- [x] G1 (M18a) 图片旧版明文 key：无论迁移成功、失败，还是 `baseUrl` 为空，加载后都从 localStorage 清除明文。`baseUrl` 为空时 key 只留在本次输入框里。
+- [x] G2 (M19) 账号额度：单个账号凭据回写失败只把该账号标为 `error`，其余结果照常保存；刷新改为最多 3 个账号并发（每个 RPC 使用独立的 `CODEX_HOME`）。
+- [x] G3 (M21) 删除队列：只保留发生变化的会话并在 warning 里列出 key，同批其余会话照常删除。
+- [x] G4 (M2) `relay-usage.jsonl`：超过 16MB 时把 35 天前的记录折叠成按供应商/模型的汇总行，all-time 与分供应商/模型统计保持精确；读取时只在读文件期间持锁，解析和聚合不持锁。
+- [x] G5 (M13) 上游非 2xx 错误体转换为调用方协议的错误格式（Anthropic `{"type":"error",...}` / OpenAI `{"error":{...}}`），Content-Type 统一为 JSON；需要翻译时，`/responses/*` 子路径（如 `compact`）返回 501，不再改写成不存在的 Chat 端点。
+- [-] G6 (M1) `config-backups/`：暂不清理。`router_config_snapshot::recover_legacy` 会扫描整个目录，为旧版安装寻找唯一的路由前基线，多个候选互相冲突时会故意报错。删除任意备份都可能删掉基线，或把“有歧义”变成“看似唯一”，导致恢复写入错误的值。需要先给基线加标记，再做保留策略。
+- [-] M18b/c 图片凭据多槽位、生成取消：涉及交互设计，留到图片页重构（C1）一起做。
+
+### 验证（阶段 6）
+
+- `cargo test --lib --test local_workflows`：lib 348 通过 / 1 ignored，集成 9 通过；`cargo check --all-targets` 无 warning。
+- `pnpm build` 通过；`pnpm test:frontend` 30 项 PASS。
+- 新增测试：多账号其中一个凭据回写被拒、同批删除部分会话变化、usage 账本压缩前后统计一致且可重复压缩、三种上游错误体转换。
+- G1（前端迁移逻辑）没有专门的自动化测试，只通过了构建与现有回归。
+
 ### 验证（阶段 5）
 
 - `cargo test --lib --test local_workflows`：lib 344 通过 / 1 ignored，集成 9 通过。

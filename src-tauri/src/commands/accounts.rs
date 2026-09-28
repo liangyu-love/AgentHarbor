@@ -27,10 +27,14 @@ pub async fn refresh_codex_accounts(
         let repo = lock_repo(&repo)?;
         accounts::credentials(&repo).map_err(|error| error.to_string())?
     };
-    let mut updates = Vec::with_capacity(credentials.len());
-    for credential in credentials {
-        updates.push(account_monitor::refresh_account(credential, proxy.clone()).await);
-    }
+    // Each account may start its own app-server with multi-second timeouts, so
+    // refresh a few at a time instead of one after another.
+    use futures_util::StreamExt;
+    let updates: Vec<_> = futures_util::stream::iter(credentials)
+        .map(|credential| account_monitor::refresh_account(credential, proxy.clone()))
+        .buffered(3)
+        .collect()
+        .await;
     let repo = lock_repo(&repo)?;
     accounts::apply_usage_updates(&repo, updates).map_err(|error| error.to_string())
 }

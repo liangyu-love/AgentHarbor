@@ -2,8 +2,8 @@ use chrono::{Datelike, Duration as ChronoDuration, Local, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -12,6 +12,13 @@ const USAGE_FILE: &str = "relay-usage.jsonl";
 const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 const RECENT_LIMIT: usize = 200;
 const DAILY_WINDOW_DAYS: i64 = 14;
+/// Compact the ledger once it grows past this size.
+const COMPACT_BYTES: u64 = 16 * 1024 * 1024;
+/// Records newer than this stay itemized; the daily and weekly views need them.
+const KEEP_DAYS: i64 = 35;
+
+static NEXT_COMPACT_AT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(COMPACT_BYTES);
 
 fn file_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -65,8 +72,8 @@ pub struct RelayUsageRecord {
     pub tokens: TokenCounts,
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct RelayUsageTotals {
     pub request_count: u64,
     pub successful_count: u64,
@@ -95,6 +102,33 @@ impl RelayUsageTotals {
             .saturating_add(record.tokens.reasoning_tokens);
         self.total_tokens = self.total_tokens.saturating_add(record.tokens.total_tokens);
     }
+
+    fn merge(&mut self, other: &Self) {
+        self.request_count = self.request_count.saturating_add(other.request_count);
+        self.successful_count = self.successful_count.saturating_add(other.successful_count);
+        self.reported_count = self.reported_count.saturating_add(other.reported_count);
+        self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
+        self.reasoning_tokens = self.reasoning_tokens.saturating_add(other.reasoning_tokens);
+        self.total_tokens = self.total_tokens.saturating_add(other.total_tokens);
+    }
+}
+
+/// Totals of records folded out of the ledger by compaction, per provider and model.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArchivedModel {
+    provider_id: String,
+    provider_name: String,
+    model: String,
+    totals: RelayUsageTotals,
+}
+
+/// First line of a compacted ledger. Records never carry an `archive` field, so
+/// the two line shapes cannot be confused.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct ArchiveLine {
+    archive: Vec<ArchivedModel>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -408,26 +442,103 @@ fn append_record(app_data_dir: &Path, record: &RelayUsageRecord) -> Result<(), S
         .map_err(|error| error.to_string())?;
     serde_json::to_writer(&mut file, record).map_err(|error| error.to_string())?;
     file.write_all(b"\n").map_err(|error| error.to_string())?;
-    file.flush().map_err(|error| error.to_string())
+    file.flush().map_err(|error| error.to_string())?;
+    let size = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+    drop(file);
+    if size >= NEXT_COMPACT_AT.load(std::sync::atomic::Ordering::Relaxed) {
+        if let Err(error) = compact_locked(app_data_dir) {
+            log::warn!("relay usage compaction failed: {error}");
+        }
+        // Even when little can be folded, do not retry on every request.
+        let size = std::fs::metadata(usage_path(app_data_dir)).map(|meta| meta.len()).unwrap_or(0);
+        NEXT_COMPACT_AT.store(size.max(COMPACT_BYTES) + COMPACT_BYTES / 2, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(())
 }
 
-fn read_records(app_data_dir: &Path) -> Result<Vec<RelayUsageRecord>, String> {
-    let _guard = file_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let path = usage_path(app_data_dir);
-    let file = match File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error.to_string()),
-    };
+/// Parsed ledger: archived totals from earlier compactions plus itemized records.
+#[derive(Default)]
+struct Ledger {
+    archive: Vec<ArchivedModel>,
+    records: Vec<RelayUsageRecord>,
+}
+
+fn parse_ledger(bytes: &[u8]) -> Ledger {
+    let mut ledger = Ledger::default();
     // Split on raw bytes: a crash can leave a line cut mid UTF-8 sequence, and that one
     // record must be skipped without dropping every record after it.
-    Ok(BufReader::new(file)
-        .split(b'\n')
-        .map_while(Result::ok)
-        .filter_map(|line| serde_json::from_slice::<RelayUsageRecord>(&line).ok())
-        .collect())
+    for line in bytes.split(|byte| *byte == b'\n') {
+        if let Ok(record) = serde_json::from_slice::<RelayUsageRecord>(line) {
+            ledger.records.push(record);
+        } else if let Ok(archive) = serde_json::from_slice::<ArchiveLine>(line) {
+            ledger.archive.extend(archive.archive);
+        }
+    }
+    ledger
+}
+
+fn read_ledger(app_data_dir: &Path) -> Result<Ledger, String> {
+    // Hold the lock only for the read; parsing and aggregation run without it so
+    // the proxy can keep appending usage while the dashboard loads.
+    let bytes = {
+        let _guard = file_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match std::fs::read(usage_path(app_data_dir)) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Ledger::default()),
+            Err(error) => return Err(error.to_string()),
+        }
+    };
+    Ok(parse_ledger(&bytes))
+}
+
+/// Fold records older than `KEEP_DAYS` into per-model archived totals, so the
+/// ledger stays bounded while all-time and per-provider/model totals stay exact.
+/// Caller holds the file lock.
+fn compact_locked(app_data_dir: &Path) -> Result<(), String> {
+    let path = usage_path(app_data_dir);
+    let ledger = parse_ledger(&std::fs::read(&path).map_err(|error| error.to_string())?);
+    let cutoff = (Local::now().date_naive() - ChronoDuration::days(KEEP_DAYS))
+        .format("%Y-%m-%d")
+        .to_string();
+    let mut archive: HashMap<(String, String), ArchivedModel> = HashMap::new();
+    for entry in ledger.archive {
+        archive
+            .entry((entry.provider_id.clone(), entry.model.clone()))
+            .or_insert_with(|| ArchivedModel { totals: RelayUsageTotals::default(), ..entry.clone() })
+            .totals
+            .merge(&entry.totals);
+    }
+    let mut kept = Vec::new();
+    for record in ledger.records {
+        if record.date >= cutoff {
+            kept.push(record);
+            continue;
+        }
+        let entry = archive
+            .entry((record.provider_id.clone(), record.model.clone()))
+            .or_insert_with(|| ArchivedModel {
+                provider_id: record.provider_id.clone(),
+                provider_name: record.provider_name.clone(),
+                model: record.model.clone(),
+                totals: RelayUsageTotals::default(),
+            });
+        entry.provider_name.clone_from(&record.provider_name);
+        entry.totals.add(&record);
+    }
+    let mut output = Vec::new();
+    if !archive.is_empty() {
+        let mut archive: Vec<_> = archive.into_values().collect();
+        archive.sort_by(|left, right| (&left.provider_id, &left.model).cmp(&(&right.provider_id, &right.model)));
+        serde_json::to_writer(&mut output, &ArchiveLine { archive }).map_err(|error| error.to_string())?;
+        output.push(b'\n');
+    }
+    for record in &kept {
+        serde_json::to_writer(&mut output, record).map_err(|error| error.to_string())?;
+        output.push(b'\n');
+    }
+    super::storage::write_atomic(&path, &output).map_err(|error| error.to_string())
 }
 
 fn sort_totals(left: &RelayUsageTotals, right: &RelayUsageTotals) -> std::cmp::Ordering {
@@ -438,7 +549,7 @@ fn sort_totals(left: &RelayUsageTotals, right: &RelayUsageTotals) -> std::cmp::O
 }
 
 pub fn load(app_data_dir: &Path) -> Result<RelayUsagePayload, String> {
-    let records = read_records(app_data_dir)?;
+    let Ledger { archive, records } = read_ledger(app_data_dir)?;
     let today = Local::now().date_naive();
     let week_start = today - ChronoDuration::days(today.weekday().num_days_from_monday() as i64);
     let first_day = today - ChronoDuration::days(DAILY_WINDOW_DAYS - 1);
@@ -449,6 +560,22 @@ pub fn load(app_data_dir: &Path) -> Result<RelayUsagePayload, String> {
     let mut provider_totals: HashMap<String, (String, RelayUsageTotals)> = HashMap::new();
     let mut model_totals: HashMap<(String, String), (String, RelayUsageTotals)> = HashMap::new();
     let mut daily_totals: HashMap<String, RelayUsageTotals> = HashMap::new();
+
+    // Compacted records are older than every time window, so they only count
+    // toward all-time and per-provider/model totals.
+    for entry in &archive {
+        all_time.merge(&entry.totals);
+        provider_totals
+            .entry(entry.provider_id.clone())
+            .or_insert_with(|| (entry.provider_name.clone(), RelayUsageTotals::default()))
+            .1
+            .merge(&entry.totals);
+        model_totals
+            .entry((entry.provider_id.clone(), entry.model.clone()))
+            .or_insert_with(|| (entry.provider_name.clone(), RelayUsageTotals::default()))
+            .1
+            .merge(&entry.totals);
+    }
 
     for record in &records {
         all_time.add(record);
@@ -532,6 +659,58 @@ pub fn load(app_data_dir: &Path) -> Result<RelayUsagePayload, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn record_on(date: &str, provider: &str, model: &str, tokens: u64) -> RelayUsageRecord {
+        RelayUsageRecord {
+            timestamp: 0,
+            date: date.into(),
+            provider_id: provider.into(),
+            provider_name: provider.to_uppercase(),
+            model: model.into(),
+            protocol: "responses".into(),
+            status_code: 200,
+            duration_ms: 1,
+            first_token_ms: None,
+            success: true,
+            usage_reported: true,
+            tokens: TokenCounts { input_tokens: tokens, output_tokens: 0, reasoning_tokens: 0, total_tokens: tokens },
+        }
+    }
+
+    #[test]
+    fn compaction_folds_old_records_without_changing_totals() {
+        let dir = tempfile::tempdir().unwrap();
+        let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
+        let old = (Local::now().date_naive() - ChronoDuration::days(KEEP_DAYS + 10))
+            .format("%Y-%m-%d")
+            .to_string();
+        for record in [
+            record_on(&old, "p", "m", 5),
+            record_on(&old, "p", "m", 7),
+            record_on(&old, "q", "n", 3),
+            record_on(&today, "p", "m", 11),
+        ] {
+            append_record(dir.path(), &record).unwrap();
+        }
+        // A crash-truncated line must not break the compacted file either.
+        std::fs::OpenOptions::new().append(true).open(usage_path(dir.path())).unwrap()
+            .write_all(b"{\"timestamp\":1,\"da\n").unwrap();
+        let before = load(dir.path()).unwrap();
+
+        compact_locked(dir.path()).unwrap();
+        let text = std::fs::read_to_string(usage_path(dir.path())).unwrap();
+        assert_eq!(text.lines().count(), 2, "one archive line plus the recent record: {text}");
+        let after = load(dir.path()).unwrap();
+        assert_eq!(after.all_time.total_tokens, before.all_time.total_tokens);
+        assert_eq!(after.all_time.request_count, 4);
+        assert_eq!(after.today.total_tokens, 11);
+        let p = after.by_provider.iter().find(|entry| entry.provider_id == "p").unwrap();
+        assert_eq!(p.totals.total_tokens, 23);
+
+        // Compacting again merges into the existing archive instead of duplicating it.
+        compact_locked(dir.path()).unwrap();
+        assert_eq!(load(dir.path()).unwrap().all_time.total_tokens, 26);
+    }
 
     #[test]
     fn detects_first_content_event_without_treating_usage_as_text() {
