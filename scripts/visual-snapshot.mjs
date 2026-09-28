@@ -96,6 +96,25 @@ const PAGES = [
     await page.getByRole("menu").waitFor();
   } },
   { name: "thread-queue-recovery", mode: "thread-queue-recovery" },
+  { name: "accounts-cards", mode: "accounts", async act(page) {
+    await page.locator("article").first().scrollIntoViewIfNeeded();
+  } },
+  { name: "accounts-search", mode: "accounts", async act(page) {
+    await page.getByPlaceholder("搜索邮箱或昵称").fill("beta");
+    await page.locator("article").first().scrollIntoViewIfNeeded();
+  } },
+  { name: "accounts-no-match", mode: "accounts", async act(page) {
+    await page.getByPlaceholder("搜索邮箱或昵称").fill("nobody");
+    await page.getByPlaceholder("搜索邮箱或昵称").scrollIntoViewIfNeeded();
+  } },
+  { name: "accounts-plan-menu", mode: "accounts", async act(page) {
+    await page.getByRole("combobox").click();
+    await page.getByRole("listbox").waitFor();
+  } },
+  { name: "accounts-remove", mode: "accounts", async act(page) {
+    await page.getByTitle("删除账号").first().click();
+    await page.getByRole("alertdialog").waitFor();
+  } },
   { name: "mcp-add", mode: "mcp", async act(page) {
     await page.getByRole("button", { name: "添加 MCP" }).first().click();
     await page.getByRole("dialog").waitFor();

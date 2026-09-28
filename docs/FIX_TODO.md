@@ -146,13 +146,14 @@
   - 后端没有改：把所有 `CoreError` 改成 key 改动面太大，且原始文本对排查有用；前端现在两种都能正确显示。
   - 测试：前端回归新增 10 个用例（key 翻译、原始文本保留、未知 key/空值回退、前缀过滤）。
 - [x] C2 `router_proxy::handle()` 从约 620 行拆到 123 行，只保留流程：`forwardable_headers`、`requested_model`、`codex_catalog_response`、`resolve_destination`、`upstream_suffix`、`relay_usage_request`、`provider_target`、`official_target`、`upstream_body`、`client_for`、`relay_response`、`translated_stream`。逻辑逐段搬移，未改行为；`relay_response` 的 if/else 链改成按 `(translation, status, stream)` 的 match，两条非翻译分支合并（observer 为 `Option`）。lib/集成测试各连续 3 次通过。
-- [ ] C1 拆分大组件（每页单独提交，拆前后截图逐像素对比，不新增 DOM 层级）：
+- [x] C1 拆分大组件（每页单独提交，拆前后截图逐像素对比，不新增 DOM 层级）：
   - [x] V0 `scripts/visual-snapshot.mjs capture|compare`：9 个页面 × 亮/暗 18 张，禁用动画、固定时间与随机数，按解码后像素逐个比较。fixture 新增 `mcp`、`accounts` 模式。验证：无改动时两次截图完全一致；给 `.ink-scroll-frame` 加 1px 边距能检测到差异。
   - [x] P1 `image-workbench-page.tsx` 1684 → 94 行：3 个 hook（`use-image-connection` 连接与凭据、`use-image-gallery` 画册、`use-generation-queue` 生成队列）+ 7 个组件（`workbench-header`、`generation-form`、`prompt-library`、`ink-model-combobox`、`generation-canvas`、`gallery-panel`、`gallery-thumbnail`）+ `workbench-types`。JSX 原样搬移，未加层级；快照新增生成画布、画册、放大预览 3 个交互状态（基线取自拆分前代码），24 张全部逐像素一致，前端回归 32 项通过。
   - [x] P2 `newapi-page.tsx` 1000 → 154 行：`use-provider-state`（查询 + 单飞 mutation、余额、导入导出）、`use-relay-view`（筛选、别名、组内切换与展开）、`relay-groups`（分组与样式工具）+ `codex-access-card`、`relay-list`、`relay-card`、`group-alias-dialog`、`status-dot`。快照新增展开、切换成员、筛选、别名、网络菜单、删除确认、重启确认 7 个交互状态（基线取自拆分前代码），38 张逐像素一致，前端回归 32 项通过。
   - [x] P3 `threads-page.tsx` 984 → 118 行：`use-thread-list`（扫描查询、筛选排序、选择、折叠、批量修复/删除/导出）+ `threads-header`、`thread-notices`、`thread-metrics`、`thread-toolbar`、`selection-bar`、`thread-group-section`。快照新增网格、全选、组选、折叠、搜索无结果、排序菜单、队列恢复 7 个状态；同时修掉快照 harness 的遮罩层偶发像素抖动（软件光栅 + 去 backdrop-filter + 状态间清 localStorage）。52 张逐像素一致，前端回归 32 项通过。
   - [x] P4 `mcp-page.tsx` 868 → 165 行：`use-mcp-servers`（查询、开关/删除 mutation、搜索筛选分页）+ `mcp-header`、`mcp-stats`、`mcp-toolbar`、`mcp-server-card`、`mcp-editor-dialog`、`mcp-form-fields`。快照新增添加、编辑 HTTP、删除确认、筛选、搜索无结果、ENV 提示 6 个状态，64 张逐像素一致，前端回归 32 项通过。
-  - [ ] P5 `accounts-page.tsx`（821 行）
+  - [x] P5 `accounts-page.tsx` 821 → 169 行：`use-accounts`（账号/用量查询、登录切换删除刷新 mutation、搜索与计划筛选）+ `token-usage-panel`（用量面板及卡片）+ `account-card`（账号卡、额度环、`planLabel`）。fixture 改从 `token-usage-panel` 引入 `TokenUsagePanel`。快照新增卡片区、搜索、无匹配、计划菜单、删除确认 5 个状态，76 张逐像素一致，前端回归 32 项通过。
+  - 结果：5 个大页面 5307 → 700 行（各页只剩组合），状态进 hook、视图进组件；每页 JSX 原样搬移，未新增 DOM 层级。快照 harness 覆盖 38 个状态 × 亮/暗 = 76 张，软件光栅，连续多轮无抖动。
 
 ### 验证（阶段 10）
 
