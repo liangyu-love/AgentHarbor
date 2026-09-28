@@ -64,9 +64,11 @@ import { toast } from "@/hooks/use-toast";
 import { formatRelative } from "@/lib/format-time";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
 import { cn } from "@/lib/utils";
+import { queryKeys } from "@/lib/query-keys";
+import { storageKeys } from "@/lib/storage-keys";
 
-const IMAGE_KEY = ["newapi-state"] as const;
-const GALLERY_KEY = ["image-gallery"] as const;
+const IMAGE_KEY = queryKeys.providers;
+const GALLERY_KEY = queryKeys.imageGallery;
 const GALLERY_THUMBNAIL_CACHE_LIMIT = 48;
 
 type AspectRatioOption = {
@@ -227,7 +229,7 @@ type GenerationJob = {
 function loadSavedConfig(): SavedImageConfig {
   const defaults = { baseUrl: "", model: "gpt-image-2", size: "1024x1024", quality: "auto" };
   try {
-    const saved = localStorage.getItem("image-workbench-config");
+    const saved = localStorage.getItem(storageKeys.imageWorkbenchConfig);
     if (saved) {
       const parsed = JSON.parse(saved) as Partial<SavedImageConfig> & { apiKey?: string };
       const config = {
@@ -239,7 +241,7 @@ function loadSavedConfig(): SavedImageConfig {
       return { ...config, legacyApiKey: parsed.apiKey };
     }
   } catch {
-    try { localStorage.removeItem("image-workbench-config"); } catch { /* unavailable storage */ }
+    try { localStorage.removeItem(storageKeys.imageWorkbenchConfig); } catch { /* unavailable storage */ }
   }
   return defaults;
 }
@@ -432,12 +434,12 @@ export function ImageWorkbenchPage() {
     // plaintext copy must not survive this load.
     const scrubPlaintextKey = () => {
       try {
-        localStorage.setItem("image-workbench-config", JSON.stringify({
+        localStorage.setItem(storageKeys.imageWorkbenchConfig, JSON.stringify({
           baseUrl: savedConfig.baseUrl, model: savedConfig.model,
           size: savedConfig.size, quality: savedConfig.quality,
         } satisfies SavedImageConfig));
       } catch {
-        try { localStorage.removeItem("image-workbench-config"); } catch { /* unavailable storage */ }
+        try { localStorage.removeItem(storageKeys.imageWorkbenchConfig); } catch { /* unavailable storage */ }
       }
       setLegacyKeyMigrationPending(false);
     };
@@ -472,7 +474,7 @@ export function ImageWorkbenchPage() {
     if (providerId || legacyKeyMigrationPending) return;
     try {
       localStorage.setItem(
-        "image-workbench-config",
+        storageKeys.imageWorkbenchConfig,
         JSON.stringify({ baseUrl, model, size, quality } satisfies SavedImageConfig),
       );
     } catch { /* storage may be disabled */ }

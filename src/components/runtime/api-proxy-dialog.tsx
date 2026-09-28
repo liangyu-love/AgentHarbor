@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { AnimatedSegmentedControl } from "@/components/ui/animated-segmented-control";
 import { toast } from "@/hooks/use-toast";
 import { useBusyAction } from "@/hooks/use-busy-action";
-const RUNTIME_STATE_DISPLAY_QUERY_KEY = ["runtime-state", "display"] as const;
+const RUNTIME_STATE_DISPLAY_QUERY_KEY = queryKeys.runtimeStateDisplay;
 import {
   Dialog,
   DialogContent,
@@ -24,6 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { queryKeys } from "@/lib/query-keys";
 
 type SnapshotEnvelope = Awaited<ReturnType<typeof api.loadSnapshot>>;
 

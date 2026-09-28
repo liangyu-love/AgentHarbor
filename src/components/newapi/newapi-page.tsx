@@ -29,8 +29,10 @@ import { ProviderTestDialog } from "@/components/newapi/provider-test-dialog";
 import { ClientConfigs } from "@/components/newapi/client-configs";
 import { includedModels, providerModelProtocol } from "@/lib/provider-models";
 import type { CodexAccessMode, ModelProtocol, NewApiProvider, NewApiState, NewApiStateChange } from "@/types/newapi";
+import { queryKeys } from "@/lib/query-keys";
+import { storageKeys } from "@/lib/storage-keys";
 
-const STATE_KEY = ["newapi-state"] as const;
+const STATE_KEY = queryKeys.providers;
 
 const protocolBadgeKey: Record<ModelProtocol, string> = {
   responses: "newapi.protocolShortResponses",
@@ -114,7 +116,7 @@ export function NewApiPage() {
   const [appliedNote, setAppliedNote] = useState<NewApiStateChange["applied"]>(null);
   const [groupAliases, setGroupAliases] = useState<Record<string, string>>(() => {
     try {
-      const saved = localStorage.getItem("newapi-relay-group-aliases");
+      const saved = localStorage.getItem(storageKeys.relayGroupAliases);
       return saved ? JSON.parse(saved) as Record<string, string> : {};
     } catch {
       return {};
@@ -183,7 +185,7 @@ export function NewApiPage() {
     if (!next) return;
     const updated = { ...groupAliases, [aliasGroup.key]: next };
     setGroupAliases(updated);
-    localStorage.setItem("newapi-relay-group-aliases", JSON.stringify(updated));
+    localStorage.setItem(storageKeys.relayGroupAliases, JSON.stringify(updated));
     setAliasGroup(null);
   };
   const run = async (key: string, action: () => Promise<void>, failureTitle: string) => {

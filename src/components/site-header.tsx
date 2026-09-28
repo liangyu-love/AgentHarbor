@@ -7,6 +7,7 @@ import { isMacPlatform } from "@/lib/platform";
 import { api } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import { queryKeys } from "@/lib/query-keys";
 
 interface SiteHeaderProps {
   title: string;
@@ -24,13 +25,13 @@ export function SiteHeader({
   hasCustomBackground,
 }: SiteHeaderProps) {
   const newapi = useQuery({
-    queryKey: ["newapi-state"],
+    queryKey: queryKeys.providers,
     queryFn: api.providers.loadState,
     staleTime: 5000,
   });
 
   const snapshot = useQuery({
-    queryKey: ["runtime-state", "display"],
+    queryKey: queryKeys.runtimeStateDisplay,
     queryFn: () => api.loadSnapshot(true),
     staleTime: 10000,
   });

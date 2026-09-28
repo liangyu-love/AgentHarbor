@@ -36,6 +36,7 @@ import {
   X,
   RotateCw,
 } from "lucide-react";
+import { queryKeys } from "@/lib/query-keys";
 
 type Tab = "installed" | "backups";
 
@@ -50,13 +51,13 @@ export function SkillsPage() {
   const refreshAction = useBusyAction({ minVisibleMs: 800 });
 
   const skillsQuery = useQuery({
-    queryKey: ["installed-skills"],
+    queryKey: queryKeys.installedSkills,
     queryFn: () => api.loadInstalledSkills(),
     staleTime: Infinity,
   });
 
   const backupsQuery = useQuery({
-    queryKey: ["skill-backups"],
+    queryKey: queryKeys.skillBackups,
     queryFn: () => api.loadSkillBackups(),
   });
 
@@ -76,8 +77,8 @@ export function SkillsPage() {
       throw new Error("cancelled");
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["installed-skills"] });
-      queryClient.invalidateQueries({ queryKey: ["skill-backups"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.installedSkills });
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillBackups });
       toast({
         title: t("common.success"),
         variant: "default",
@@ -97,16 +98,16 @@ export function SkillsPage() {
     mutationFn: (id: string) => api.removeSkill(id),
     onSuccess: () => {
       setRemoving(null);
-      queryClient.invalidateQueries({ queryKey: ["installed-skills"] });
-      queryClient.invalidateQueries({ queryKey: ["skill-backups"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.installedSkills });
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillBackups });
     },
   });
 
   const restoreMutation = useMutation({
     mutationFn: (id: string) => api.restoreSkillBackup(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["installed-skills"] });
-      queryClient.invalidateQueries({ queryKey: ["skill-backups"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.installedSkills });
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillBackups });
       toast({
         title: t("common.success"),
         variant: "default",
@@ -118,7 +119,7 @@ export function SkillsPage() {
     mutationFn: (id: string) => api.deleteSkillBackup(id),
     onSuccess: () => {
       setDeletingBackup(null);
-      queryClient.invalidateQueries({ queryKey: ["skill-backups"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillBackups });
     },
   });
 

@@ -232,7 +232,7 @@ IPC 命令必须同时在 Rust 命令文件中实现，并通过 `src-tauri/src/
 | 客户端配置恢复 | 应用数据 `client-config/` 下会话/恢复记录和备份（`backups/` 保留最近 20 份） | `core/client_config/mod.rs` |
 | 备份保留 | `accounts/backups/auth-*.json` 保留最近 20 份；Codex 主目录下 `thread-delete-backups/` 保留最近 10 份（`thread-delete-journal/` 中有未恢复的中断删除时暂停清理；中断删除在下次列表加载或删除前按 catalog 是否已提交自动回滚或收尾）；`config-backups/` 中新格式 `agentharbor-*.toml` 保留最近 30 份，旧版 `<uuid>.toml`（路由 legacy 恢复的基线来源）永不清理；`skill-backups/` 暂不自动清理 | `core/storage.rs` `prune_backups` |
 | MCP/Skills/指令历史 | Codex `config.toml`、`skills/`、`AGENTS.md`；Skills 备份位于应用数据 `skill-backups/`，指令历史位于 `custom-instructions/history/` | `core/mcp.rs`、`core/skills.rs`、`core/custom_instructions.rs` |
-| 浏览器偏好 | `localStorage`：主题、强调色、语言、刷新间隔、侧栏状态、头像/背景、图片工作台偏好与收藏提示词、会话视图、Claude Code 已保存方案、中转分组别名 | `src/hooks/`、相关页面组件 |
+| 浏览器偏好 | `localStorage`（键名集中在 `src/lib/storage-keys.ts`）：主题、强调色、语言、刷新间隔、侧栏状态、头像/背景、图片工作台偏好与收藏提示词、会话视图、Claude Code 已保存方案、中转分组别名 | `src/hooks/`、相关页面组件 |
 
 Windows 的 `secret_file` 使用 DPAPI；Unix 写入受限权限的原子文件。这个机制用于密钥文件，不意味着所有应用数据均加密。Claude Code/OpenCode 配置路径还受 `CLAUDE_CONFIG_DIR`、`OPENCODE_CONFIG`、`XDG_CONFIG_HOME` 影响；隔离测试可用 `AGENT_HARBOR_CLIENT_HOME`。
 

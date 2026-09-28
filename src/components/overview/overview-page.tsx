@@ -27,6 +27,7 @@ import { Button } from "@/components/ui/button";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import type { Route } from "@/types/navigation";
+import { queryKeys } from "@/lib/query-keys";
 
 function SectionHeading({ index, title }: { index: string; title: string }) {
   return (
@@ -60,13 +61,13 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
   const { t } = useTranslation();
   const [copiedHome, setCopiedHome] = useState(false);
 
-  const snapshot = useQuery({ queryKey: ["runtime-state", "display"], queryFn: () => api.loadSnapshot(true) });
-  const newapi = useQuery({ queryKey: ["newapi-state"], queryFn: api.providers.loadState });
-  const mcp = useQuery({ queryKey: ["mcp-servers"], queryFn: api.loadMcpServers });
-  const skills = useQuery({ queryKey: ["installed-skills"], queryFn: api.loadInstalledSkills });
-  const skillBackups = useQuery({ queryKey: ["skill-backups"], queryFn: api.loadSkillBackups });
-  const instructions = useQuery({ queryKey: ["custom-instructions", "state"], queryFn: api.loadCustomInstructionState });
-  const systemInfo = useQuery({ queryKey: ["system-info"], queryFn: api.getSystemInfo, staleTime: Infinity });
+  const snapshot = useQuery({ queryKey: queryKeys.runtimeStateDisplay, queryFn: () => api.loadSnapshot(true) });
+  const newapi = useQuery({ queryKey: queryKeys.providers, queryFn: api.providers.loadState });
+  const mcp = useQuery({ queryKey: queryKeys.mcpServers, queryFn: api.loadMcpServers });
+  const skills = useQuery({ queryKey: queryKeys.installedSkills, queryFn: api.loadInstalledSkills });
+  const skillBackups = useQuery({ queryKey: queryKeys.skillBackups, queryFn: api.loadSkillBackups });
+  const instructions = useQuery({ queryKey: queryKeys.customInstructionState, queryFn: api.loadCustomInstructionState });
+  const systemInfo = useQuery({ queryKey: queryKeys.systemInfo, queryFn: api.getSystemInfo, staleTime: Infinity });
 
   const status = snapshot.data?.data.status;
   const errors = [snapshot.error, newapi.error, mcp.error, skills.error, skillBackups.error, instructions.error].filter(Boolean);

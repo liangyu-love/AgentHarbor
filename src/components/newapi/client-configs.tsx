@@ -12,8 +12,9 @@ import { Badge } from "@/components/ui/badge";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import type { ClientStatus } from "@/types/clients";
 import type { ModelProtocol, NewApiProvider } from "@/types/newapi";
+import { queryKeys } from "@/lib/query-keys";
 
-const CLIENT_KEY = ["client-configs"] as const;
+const CLIENT_KEY = queryKeys.clientConfigs;
 const errorKey = (error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
   return /^(clients|newapi)\./.test(message) ? message : "clients.errors.storage";
@@ -47,7 +48,7 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
   const refresh = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: CLIENT_KEY }),
-      queryClient.invalidateQueries({ queryKey: ["newapi-state"] }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.providers }),
     ]);
   };
   const restore = async () => {

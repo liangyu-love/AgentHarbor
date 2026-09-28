@@ -1,3 +1,4 @@
+import { storageKeys } from "@/lib/storage-keys";
 export type PromptRecipe = {
   /** Short display title for the recipe card. */
   title: string;
@@ -31,7 +32,7 @@ function withStablePromptIds(library: PromptLibraryCategory[]): PromptLibraryCat
   }));
 }
 
-const FAVORITES_STORAGE_KEY = "image-prompt-favorites";
+const FAVORITES_STORAGE_KEY = storageKeys.imagePromptFavorites;
 
 export function loadPromptFavorites(): string[] {
   try {

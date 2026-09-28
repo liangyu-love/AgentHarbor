@@ -63,11 +63,13 @@ import {
   type SortOption,
   type StatusFilter,
 } from "@/components/threads/thread-utils";
+import { queryKeys } from "@/lib/query-keys";
+import { storageKeys } from "@/lib/storage-keys";
 
 type ExportFormat = "markdown" | "jsonl";
 type ViewMode = "grid" | "compact";
 
-const THREADS_KEY = ["threads", "codex"] as const;
+const THREADS_KEY = queryKeys.codexThreads;
 /** Window the list once dense rows would thrash layout/paint. */
 const VIRTUALIZE_THRESHOLD = 80;
 
@@ -77,7 +79,7 @@ export function ThreadsPage() {
   const [query, setQuery] = useState("");
   const [sortBy, setSortBy] = useState<SortOption>("updatedAt");
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
-    const saved = localStorage.getItem("threads_view_mode");
+    const saved = localStorage.getItem(storageKeys.threadsViewMode);
     return saved === "grid" || saved === "compact" ? saved : "compact";
   });
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -211,7 +213,7 @@ export function ThreadsPage() {
   const collapseAllGroups = () => setCollapsedGroups(new Set(groups.map((g) => g.key)));
 
   useEffect(() => {
-    localStorage.setItem("threads_view_mode", viewMode);
+    localStorage.setItem(storageKeys.threadsViewMode, viewMode);
   }, [viewMode]);
 
   const handleRefresh = async () => {

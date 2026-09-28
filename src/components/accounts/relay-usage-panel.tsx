@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
 import type { RelayUsagePayload } from "@/types";
 import type { NewApiState } from "@/types/newapi";
+import { queryKeys } from "@/lib/query-keys";
 
 type View = "trend" | "models" | "requests" | "providers";
 const CHART_WIDTH = 1000;
@@ -113,14 +114,14 @@ function ProviderQuota({ relay, onManageProviders }: { relay: RelayUsagePayload;
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
-  const providers = useQuery({ queryKey: ["newapi-state"], queryFn: api.providers.loadState, staleTime: 30_000 });
+  const providers = useQuery({ queryKey: queryKeys.providers, queryFn: api.providers.loadState, staleTime: 30_000 });
   const byId = new Map(providers.data?.providers.map(provider => [provider.id, provider]));
   const refreshBalance = async (providerId: string) => {
     if (refreshingId) return;
     setRefreshingId(providerId);
     try {
       const next = await api.providers.queryBalance(providerId);
-      queryClient.setQueryData<NewApiState>(["newapi-state"], current => current ? {
+      queryClient.setQueryData<NewApiState>(queryKeys.providers, current => current ? {
         ...current, providers: current.providers.map(provider => provider.id === providerId
           ? { ...provider, balance: next.balance, balanceSource: next.balanceSource } : provider),
       } : current);

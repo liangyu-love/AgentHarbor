@@ -44,6 +44,8 @@ import {
 } from "@/hooks/use-custom-background";
 import type { Route } from "@/types/navigation";
 import "./lib/i18n";
+import { queryKeys } from "@/lib/query-keys";
+import { storageKeys } from "@/lib/storage-keys";
 
 const McpPage = lazy(() =>
   import("@/components/mcp/mcp-page").then((module) => ({ default: module.McpPage })),
@@ -94,7 +96,7 @@ function MainApp() {
   const { accent, setAccent } = useAccentColor();
   const { i18n, t } = useTranslation();
   const [sidebarOpen, setSidebarOpen] = useState(
-    () => localStorage.getItem("sidebar_collapsed") === "false",
+    () => localStorage.getItem(storageKeys.sidebarCollapsed) === "false",
   );
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [proxySettingsRequested, setProxySettingsRequested] = useState(false);
@@ -181,7 +183,7 @@ function MainApp() {
             language={i18n.language}
             setLanguage={(lang) => {
               i18n.changeLanguage(lang);
-              localStorage.setItem("app_language", lang);
+              localStorage.setItem(storageKeys.language, lang);
             }}
             refreshInterval={refreshInterval}
             setRefreshInterval={setRefreshInterval}
@@ -228,7 +230,7 @@ function MainApp() {
         open={sidebarOpen}
         onOpenChange={(open) => {
           setSidebarOpen(open);
-          localStorage.setItem("sidebar_collapsed", String(!open));
+          localStorage.setItem(storageKeys.sidebarCollapsed, String(!open));
         }}
         style={
           {
@@ -311,9 +313,9 @@ function useAccountsChangedListener() {
     void listen("codex-accounts-changed", () => {
       // Read the stored result instead of refetching, which would query every account again.
       void api.accounts.list()
-        .then((data) => queryClient.setQueryData(["codex-accounts"], data))
+        .then((data) => queryClient.setQueryData(queryKeys.codexAccounts, data))
         .catch(() => undefined);
-      void queryClient.invalidateQueries({ queryKey: ["runtime-state"] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.runtimeState });
     })
       .then((stop) => {
         if (disposed) stop();

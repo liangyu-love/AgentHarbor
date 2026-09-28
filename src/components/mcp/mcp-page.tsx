@@ -64,6 +64,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { queryKeys } from "@/lib/query-keys";
 
 const transportStyles: Record<string, { dot: string; text: string }> = {
   stdio: { dot: "bg-blue-500 shadow-[0_0_0_2px_rgba(59,130,246,0.2)]", text: "text-blue-500" },
@@ -100,7 +101,7 @@ export function McpPage() {
   const refreshAction = useBusyAction({ minVisibleMs: 800 });
 
   const { data, refetch, error, isPending } = useQuery({
-    queryKey: ["mcp-servers"],
+    queryKey: queryKeys.mcpServers,
     queryFn: () => api.loadMcpServers(),
     staleTime: Infinity,
   });
@@ -116,14 +117,14 @@ export function McpPage() {
   const toggleMutation = useMutation({
     mutationFn: ({ name, enabled }: { name: string; enabled: boolean }) =>
       api.setMcpServerEnabled(name, enabled),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["mcp-servers"] }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.mcpServers }),
   });
 
   const removeMutation = useMutation({
     mutationFn: (name: string) => api.removeMcpServer(name),
     onSuccess: () => {
       setRemoving(null);
-      queryClient.invalidateQueries({ queryKey: ["mcp-servers"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.mcpServers });
     },
   });
 
@@ -731,7 +732,7 @@ function McpEditorDialog({
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["mcp-servers"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.mcpServers });
       onClose();
     },
   });

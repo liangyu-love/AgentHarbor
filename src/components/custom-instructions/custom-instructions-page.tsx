@@ -40,6 +40,7 @@ import { PreviewDialog } from "@/components/custom-instructions/preview-dialog";
 import { TemplateCard } from "@/components/custom-instructions/template-card";
 import { SegmentedOptions } from "@/components/ui/segmented-options";
 import { useBusyAction } from "@/hooks/use-busy-action";
+import { queryKeys } from "@/lib/query-keys";
 
 type CustomInstructionsTab = "configure" | "templates";
 
@@ -73,12 +74,12 @@ export function CustomInstructionsPage() {
   const refreshAction = useBusyAction({ minVisibleMs: 800 });
 
   const stateQuery = useQuery({
-    queryKey: ["custom-instructions", "state"],
+    queryKey: queryKeys.customInstructionState,
     queryFn: () => api.loadCustomInstructionState(),
   });
 
   const templatesQuery = useQuery({
-    queryKey: ["custom-instructions", "templates"],
+    queryKey: queryKeys.customInstructionTemplates,
     queryFn: async () => {
       return mergeCustomInstructionTemplates([]);
     },
@@ -139,7 +140,7 @@ export function CustomInstructionsPage() {
   });
 
   const syncAfterSuccess = (payload: CustomInstructionStatePayload) => {
-    queryClient.setQueryData(["custom-instructions", "state"], {
+    queryClient.setQueryData(queryKeys.customInstructionState, {
       schemaVersion: 1,
       success: true,
       code: "ok",

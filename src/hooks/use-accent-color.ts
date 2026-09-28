@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { storageKeys } from "@/lib/storage-keys";
 
 export type AccentPreset = "ocean" | "forest" | "sunset" | "lavender" | "slate";
 
@@ -12,7 +13,7 @@ export const ACCENT_PRESETS: Record<AccentPreset, { label: string; hsl: string; 
 
 export function useAccentColor() {
   const [accent, setAccentState] = useState<AccentPreset>(
-    () => (localStorage.getItem("accent_color") as AccentPreset) || "lavender",
+    () => (localStorage.getItem(storageKeys.accentColor) as AccentPreset) || "lavender",
   );
 
   useEffect(() => {
@@ -24,7 +25,7 @@ export function useAccentColor() {
     root.style.setProperty("--ring", hsl);
     root.style.setProperty("--sidebar-primary", hsl);
     root.style.setProperty("--sidebar-ring", hsl);
-    localStorage.setItem("accent_color", accent);
+    localStorage.setItem(storageKeys.accentColor, accent);
   }, [accent]);
 
   return {

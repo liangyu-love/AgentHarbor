@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { api } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
+import { storageKeys } from "@/lib/storage-keys";
 
 export type RefreshInterval = "30s" | "1m" | "3m" | "5m";
 
@@ -16,7 +17,7 @@ export function useAutoRefresh() {
   const { t } = useTranslation();
   const saveRequestIdRef = useRef(0);
   const [interval, setIntervalState] = useState<RefreshInterval>(() => {
-    const stored = localStorage.getItem("refresh_interval") as RefreshInterval;
+    const stored = localStorage.getItem(storageKeys.refreshInterval) as RefreshInterval;
     if (stored && stored in REFRESH_INTERVAL_MS) return stored;
     return "1m";
   });
@@ -27,7 +28,7 @@ export function useAutoRefresh() {
     }
     const next = value as RefreshInterval;
     setIntervalState(next);
-    localStorage.setItem("refresh_interval", next);
+    localStorage.setItem(storageKeys.refreshInterval, next);
   };
 
   const setInterval_ = (v: RefreshInterval) => {

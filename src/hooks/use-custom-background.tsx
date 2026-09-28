@@ -8,6 +8,7 @@ import React, {
   type ReactNode,
 } from "react";
 import { toast } from "@/hooks/use-toast";
+import { storageKeys } from "@/lib/storage-keys";
 
 export interface WallpaperPreset {
   id: string;
@@ -49,7 +50,7 @@ export const WALLPAPER_PRESETS: WallpaperPreset[] = [
   },
 ];
 
-const STORAGE_SETTINGS_KEY = "agentharbor_wallpaper_settings_v1";
+const STORAGE_SETTINGS_KEY = storageKeys.wallpaperSettings;
 const DB_NAME = "agentharbor_wallpaper_db";
 const STORE_NAME = "assets";
 const ACTIVE_WALLPAPER_KEY = "active_custom_wallpaper";

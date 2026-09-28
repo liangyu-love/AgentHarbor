@@ -55,9 +55,10 @@ import type {
   CodexAccountSummary,
   TokenUsagePayload,
 } from "@/types";
+import { queryKeys } from "@/lib/query-keys";
 
-const QUERY_KEY = ["codex-accounts"] as const;
-const TOKEN_USAGE_QUERY_KEY = ["token-usage"] as const;
+const QUERY_KEY = queryKeys.codexAccounts;
+const TOKEN_USAGE_QUERY_KEY = queryKeys.tokenUsage;
 
 function formatTokens(value: number) {
   return new Intl.NumberFormat(undefined, {

@@ -138,7 +138,7 @@
   - 附带修复阶段 10 新增的取消测试偶发卡死（10 次约 2 次）：fixture 的 `accept()` 改为带 deadline 的轮询、固定走直连（不经系统代理），并等上游真正收到连接后再取消。连续 13 次全量 lib 测试通过。
 - [x] C6 重 IO 同步 command 移出主线程：图库 6 个（保存/另存/设目录/列表/读原图/删除）、Skills 6 个（列表/备份列表/导入/删除/恢复/删除备份）、`clean`、`rebuild_registry`、`diagnose`、`export_newapi_providers`。新增 `commands::blocking`（spawn_blocking）与 `commands::with_repo`（仅在后台线程持有仓库锁）。前端调用签名不变。
   - 未改：MCP、自定义指令、账号列表/切换等只读写单个小文件的 command，仍是同步；`load_snapshot` 也保持同步（启动时就要，且只读 registry）。
-- [ ] C3 集中 query key 与 localStorage key。
+- [x] C3 新增 `src/lib/query-keys.ts`（14 个 TanStack Query key）与 `src/lib/storage-keys.ts`（12 个 localStorage key），替换 23 个文件里的字面量。存储值保持不变，已保存的偏好照常读取；`index.html` 启动脚本读 `theme` 早于 bundle，仍用字面量（注释已说明）。
 - [ ] C4 统一错误格式。
 - [ ] C2 拆分 `router_proxy::handle()`。
 - [ ] C1 拆分大组件。

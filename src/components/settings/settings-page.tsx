@@ -26,12 +26,13 @@ import {
   type AccentPreset,
 } from "@/hooks/use-accent-color";
 import type { Theme } from "@/hooks/use-theme";
-const RUNTIME_STATE_DISPLAY_QUERY_KEY = ["runtime-state", "display"] as const;
+const RUNTIME_STATE_DISPLAY_QUERY_KEY = queryKeys.runtimeStateDisplay;
 import { REFRESH_OPTIONS, type RefreshInterval } from "@/hooks/use-auto-refresh";
 import { useBusyAction } from "@/hooks/use-busy-action";
 import { ApiProxyDialog } from "@/components/runtime/api-proxy-dialog";
 import { AvatarSettings } from "@/components/settings/avatar-settings";
 import { BackgroundSettings } from "@/components/settings/background-settings";
+import { queryKeys } from "@/lib/query-keys";
 
 type SnapshotEnvelope = Awaited<ReturnType<typeof api.loadSnapshot>>;
 interface SettingsPageProps {

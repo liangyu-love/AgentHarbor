@@ -1,9 +1,10 @@
 import { createContext, useContext, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "@/hooks/use-toast";
+import { storageKeys } from "@/lib/storage-keys";
 
 export const DEFAULT_AVATAR = new URL("../../assets/app-icon.png", import.meta.url).href;
-const STORAGE_KEY = "agentharbor_avatar";
+const STORAGE_KEY = storageKeys.avatar;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const AVATAR_SIZE = 256;
 

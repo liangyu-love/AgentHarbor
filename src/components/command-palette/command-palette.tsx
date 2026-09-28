@@ -26,6 +26,7 @@ import { api } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
 import type { Route } from "@/types/navigation";
 import type { CoreEnvelope, CoreSnapshotPayload, McpServerListPayload, SkillListPayload } from "@/types";
+import { queryKeys } from "@/lib/query-keys";
 
 interface CommandPaletteProps {
   open: boolean;
@@ -69,16 +70,16 @@ export function CommandPalette({
   }, [open]);
 
   // Load snapshot data for paths
-  const snapshotData = queryClient.getQueryData<CoreEnvelope<CoreSnapshotPayload>>(["runtime-state", "display"]);
+  const snapshotData = queryClient.getQueryData<CoreEnvelope<CoreSnapshotPayload>>(queryKeys.runtimeStateDisplay);
   const codexHome = snapshotData?.data.status.paths.codexHome ?? "";
   const sessionsPath = snapshotData?.data.status.paths.sessionsPath ?? "";
 
   // Load MCP servers
-  const mcpData = queryClient.getQueryData<CoreEnvelope<McpServerListPayload>>(["mcp-servers"]);
+  const mcpData = queryClient.getQueryData<CoreEnvelope<McpServerListPayload>>(queryKeys.mcpServers);
   const mcpServers = mcpData?.data.items ?? [];
 
   // Load Skills
-  const skillsData = queryClient.getQueryData<CoreEnvelope<SkillListPayload>>(["installed-skills"]);
+  const skillsData = queryClient.getQueryData<CoreEnvelope<SkillListPayload>>(queryKeys.installedSkills);
   const skillsList = skillsData?.data.items ?? [];
 
   const handleOpenPath = async (path: string, label: string) => {

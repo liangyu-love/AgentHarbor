@@ -14,6 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import type { ClaudeModels, ClaudeOneM, ClientAccessMode, ClientConfigPreview, ClientConfigRequest, ClientStatus } from "@/types/clients";
 import type { NewApiProvider } from "@/types/newapi";
+import { storageKeys } from "@/lib/storage-keys";
 
 const errorKey = (cause: unknown) => {
   const message = cause instanceof Error ? cause.message : String(cause);
@@ -25,7 +26,7 @@ interface ClaudeConfigProfile {
   name: string;
   request: ClientConfigRequest;
 }
-const CLAUDE_PROFILES_KEY = "agentharbor.claude-code-profiles.v1";
+const CLAUDE_PROFILES_KEY = storageKeys.claudeCodeProfiles;
 const emptyOneM = (): ClaudeOneM => ({ startup: false, sonnet: false, opus: false, fable: false, subagent: false });
 
 function readClaudeProfiles(): ClaudeConfigProfile[] {

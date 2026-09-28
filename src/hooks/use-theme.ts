@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { storageKeys } from "@/lib/storage-keys";
 
 export type Theme = "light" | "dark" | "system";
 
@@ -11,7 +12,7 @@ function resolveTheme(theme: Theme): "light" | "dark" {
 
 export function useTheme() {
   const [theme, setThemeState] = useState<Theme>(
-    () => (localStorage.getItem("theme") as Theme) || "system"
+    () => (localStorage.getItem(storageKeys.theme) as Theme) || "system"
   );
 
   useEffect(() => {
@@ -21,7 +22,7 @@ export function useTheme() {
     };
 
     apply(theme);
-    localStorage.setItem("theme", theme);
+    localStorage.setItem(storageKeys.theme, theme);
 
     if (theme === "system") {
       const mq = window.matchMedia("(prefers-color-scheme: dark)");
