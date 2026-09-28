@@ -2,6 +2,7 @@ pub mod account_monitor;
 pub mod accounts;
 pub mod api_client;
 pub mod auth;
+pub mod auto_switch;
 pub mod client_config;
 pub mod codex_config;
 pub mod custom_instructions;

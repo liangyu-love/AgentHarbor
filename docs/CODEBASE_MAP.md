@@ -1,6 +1,6 @@
 # AgentHarbor 代码结构与功能接口总览
 
-> 依据仓库当前源码整理，日期：2026-09-28；已按 [CODE_REVIEW.md](CODE_REVIEW.md) 的勘误和随后的修复更新。本文描述代码中实际存在的页面、接口、主要数据流与能力边界；对自动切号等未完成能力会单独标出。
+> 依据仓库当前源码整理，日期：2026-09-28；已按 [CODE_REVIEW.md](CODE_REVIEW.md) 的勘误和随后的修复更新。本文描述代码中实际存在的页面、接口、主要数据流与能力边界；对能力边界会单独标出。
 
 ## 1. 项目概况
 
@@ -38,7 +38,7 @@ flowchart LR
 
 ### Rust/Tauri 启动链
 
-`src-tauri/src/main.rs` 进入 `agentharbor_lib::run()`。`src-tauri/src/lib.rs` 创建路径上下文和共享 `Mutex<Repository>`，注册 Tauri plugins 与 IPC commands，配置单实例、系统托盘和主窗口。托盘菜单与事件处理在 `src-tauri/src/commands/tray_menu.rs`，窗口聚焦在 `commands/hotspot.rs`。启动后异步协调本地路由与客户端配置；如果 Router 端口被其他进程占用，会把仍指向本地路由的客户端配置恢复原样，避免本地 token 发给占用端口的进程。退出（`RunEvent::Exit`）时恢复指向本地路由的 Claude Code/OpenCode 配置、撤销 Codex 路由注入并释放单实例资源。托盘退出、Windows 关机/注销（`WM_ENDSESSION`）、Unix 的 SIGTERM/SIGHUP/SIGINT 以及开发终端的 Ctrl+C 都会走这条退出路径；强杀（`kill -9`、任务管理器结束进程）或崩溃则不会，要等下次启动时协调。窗口关闭事件默认隐藏窗口，托盘可重新显示。
+`src-tauri/src/main.rs` 进入 `agentharbor_lib::run()`。`src-tauri/src/lib.rs` 创建路径上下文和共享 `Mutex<Repository>`，注册 Tauri plugins 与 IPC commands，配置单实例、系统托盘和主窗口。托盘菜单与事件处理在 `src-tauri/src/commands/tray_menu.rs`，窗口聚焦在 `commands/hotspot.rs`。启动后异步协调本地路由与客户端配置，并启动自动切号后台循环；如果 Router 端口被其他进程占用，会把仍指向本地路由的客户端配置恢复原样，避免本地 token 发给占用端口的进程。退出（`RunEvent::Exit`）时恢复指向本地路由的 Claude Code/OpenCode 配置、撤销 Codex 路由注入并释放单实例资源。托盘退出、Windows 关机/注销（`WM_ENDSESSION`）、Unix 的 SIGTERM/SIGHUP/SIGINT 以及开发终端的 Ctrl+C 都会走这条退出路径；强杀（`kill -9`、任务管理器结束进程）或崩溃则不会，要等下次启动时协调。窗口关闭事件默认隐藏窗口，托盘可重新显示。
 
 ### 前端数据与错误处理
 
@@ -154,8 +154,8 @@ IPC 命令必须同时在 Rust 命令文件中实现，并通过 `src-tauri/src/
 | `test_api_proxy_config` / `detect_api_proxy_config` | `mode`, `url?` / 无 | 测试指定代理或探测代理配置 | 同上、`core/api_client.rs` |
 | `get_usage_refresh_interval` / `set_usage_refresh_interval` | 无 / `interval` | 读取/保存额度刷新间隔 | `commands/system.rs` → `core/repository.rs` |
 | `diagnose` | 无 | 输出系统、registry、会话和请求诊断摘要 | 同上 |
-| `set_auto_switch` | `enabled` | 目前只允许关闭；请求启用会返回“Automatic account switching is not available in this source build” | 同上 |
-| `configure_auto_switch` | `threshold5hPercent?`, `thresholdWeeklyPercent?` | 保存阈值字段，不会启动自动切号 | 同上 |
+| `set_auto_switch` | `enabled` | 开启/关闭应用内自动切号（写入 registry 的 `autoSwitch.enabled`），并顺带清理旧版遗留的系统计划任务 | 同上、`platform/daemon.rs` |
+| `configure_auto_switch` | `threshold5hPercent?`, `thresholdWeeklyPercent?` | 保存阈值（0–100），后台循环下一轮生效 | 同上 |
 | `open_path` | `path` | 用系统文件管理器打开路径；要求存在的绝对路径，拒绝可执行文件扩展名 | `commands/system.rs` → `platform/` |
 | `is_updater_configured` | 无 | 检查 Tauri updater 是否配置了公钥与 endpoint | `commands/system.rs` |
 | `check_update_installability` | 无 | 检查应用安装位置是否可更新 | 同上、`platform/update.rs` |
@@ -196,7 +196,7 @@ IPC 命令必须同时在 Rust 命令文件中实现，并通过 `src-tauri/src/
 | 会话扫描/删除/恢复 | 解析 rollout、会话索引与 SQLite catalog；安全导出；删除队列；恢复 journal | `core/threads.rs`、`core/thread_delete.rs`、`core/thread_recovery.rs`、`core/thread_recovery/` |
 | 配置文件管理 | MCP、Skills、AgentHarbor 管理的 AGENTS.md 区块 | `core/mcp.rs`、`core/skills.rs`、`core/custom_instructions.rs` |
 | 存储安全 | 原子文件写入、durable remove、本地秘密文件加密/权限 | `core/storage.rs`、`core/secret_file.rs` |
-| 系统集成 | 进程、代理、守护进程探测、单实例、托盘、升级、平台入口 | `platform/process.rs`、`proxy.rs`、`daemon.rs`、`single_instance.rs`、`update.rs`、`windows.rs`、`macos_main_bundle.rs`、`dock.rs` |
+| 系统集成 | 进程、代理、旧版计划任务清理、单实例、托盘、升级、平台入口 | `platform/process.rs`、`proxy.rs`、`daemon.rs`、`single_instance.rs`、`update.rs`、`windows.rs`、`macos_main_bundle.rs`、`dock.rs` |
 
 `core/targets.rs` 定义客户端目标能力的接口（路由、会话、MCP、Skills、指令、进程）。当前注册表为 Codex 实现这些能力；Claude Code 与 OpenCode 目标用于客户端配置，Claude Code 另外是本地用量扫描来源。没有 OpenCode 本地会话用量来源；Router 用量记录只按供应商、模型和协议汇总，不归属到 Codex、Claude Code 或 OpenCode。不能据此认为 Claude Code/OpenCode 支持 Codex 的会话、MCP、Skills 或进程操作。
 
@@ -248,7 +248,7 @@ Windows 的 `secret_file` 使用 DPAPI；Unix 写入受限权限的原子文件�
 
 ## 9. 能力边界与阅读提示
 
-1. **自动切号尚不可用。** 账号登录、额度读取、手动切换/删除已存在；但 `AutoSwitchStatusPayload.supported` 当前固定为 `false`，启用 `set_auto_switch(true)` 会报错。阈值配置只能保存，不能据此判断自动切号已经工作。
+1. **自动切号只在 AgentHarbor 运行时工作。** `commands/auto_switch.rs` 在应用启动时起一个后台循环，按"刷新频率"（最少 60 秒）刷新全部账号额度；开启后，当前账号 5 小时或每周剩余额度 ≤ 阈值时，切换到本轮刷新成功、各窗口都高于阈值且最紧窗口剩余最多的账号（决策在 `core/auto_switch.rs`）。切换后若 Codex 桌面端在运行则重启它，并发系统通知、广播 `codex-accounts-changed` 事件让前端刷新；两次切换至少间隔 10 分钟，没有候选账号时每个耗尽账号只通知一次。应用退出后不会切换，没有系统计划任务。
 2. **客户端功能按目标拆分。** Codex 有账号、会话、MCP、Skills、指令及重启控制。Claude Code/OpenCode 有供应商注入、字段恢复；Claude Code 本地日志参与用量扫描，但未实现 Codex 等价的会话/MCP/Skills 操作。
 3. **Router 与原生直连不同。** Codex Router 支持代理与多供应商路由，需要进程保持运行；Codex Native 直接使用选定 Responses 供应商配置。Claude Code/OpenCode 可选择 Native 或 Router，Router 模式需要服务在线。修改细节见 [client-configuration.md](client-configuration.md)。
 4. **更新检查依赖发布配置。** `tauri.conf.json` 当前 `plugins` 配置为空；Updater 只有在公钥和 endpoint 配齐时才会启用。

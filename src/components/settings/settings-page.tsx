@@ -128,10 +128,11 @@ export function SettingsPage({
       });
       return { previous };
     },
-    onError: (_err, _v, context) => {
+    onError: (error, _v, context) => {
       if (context?.previous) {
         queryClient.setQueryData(RUNTIME_STATE_DISPLAY_QUERY_KEY, context.previous);
       }
+      toast({ title: t("common.error"), description: String(error), variant: "destructive" });
     },
     onSuccess: () => {
       toast({
@@ -144,10 +145,11 @@ export function SettingsPage({
 
   const saveThresholdsMutation = useMutation({
     mutationFn: async (params: { enable: boolean; t5h: number; tWeekly: number }) => {
-      if (params.enable) await api.setAutoSwitch(true);
-      return api.configureAutoSwitch(params.t5h, params.tWeekly);
+      // Save thresholds first so the background loop never runs with the old ones.
+      const result = await api.configureAutoSwitch(params.t5h, params.tWeekly);
+      return params.enable ? api.setAutoSwitch(true) : result;
     },
-    onSuccess: (_data, params) => {
+    onSuccess: (data, params) => {
       setThresholdDialogOpen(false);
       queryClient.setQueryData<SnapshotEnvelope>(RUNTIME_STATE_DISPLAY_QUERY_KEY, (old) => {
         if (!old) return old;
@@ -155,15 +157,7 @@ export function SettingsPage({
           ...old,
           data: {
             ...old.data,
-            status: {
-              ...old.data.status,
-              autoSwitch: {
-                ...old.data.status.autoSwitch,
-                enabled: true,
-                threshold5hPercent: params.t5h,
-                thresholdWeeklyPercent: params.tWeekly,
-              },
-            },
+            status: { ...old.data.status, autoSwitch: data.data.autoSwitch },
           },
         };
       });
@@ -171,9 +165,12 @@ export function SettingsPage({
         title: params.enable ? t("settings.autoSwitchEnabled") : t("settings.thresholdSavedTitle"),
         description: params.enable
           ? t("settings.autoSwitchEnabledDesc")
-          : t("settings.thresholdSavedDesc"),
+          : t(data.data.autoSwitch.enabled ? "settings.thresholdSavedActiveDesc" : "settings.thresholdSavedDesc"),
         variant: "success",
       });
+    },
+    onError: (error) => {
+      toast({ title: t("common.error"), description: String(error), variant: "destructive" });
     },
   });
 
@@ -286,7 +283,7 @@ export function SettingsPage({
                     </Badge>
                   )}
                 </div>
-                <p className="mt-0.5 text-xs text-muted-foreground">{t(status?.autoSwitch.supported ? "settings.autoSwitchDesc" : "baseline.autoSwitchUnavailable")}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">{t("settings.autoSwitchDesc")}</p>
               </div>
               <Switch
                 checked={status?.autoSwitch.enabled ?? false}

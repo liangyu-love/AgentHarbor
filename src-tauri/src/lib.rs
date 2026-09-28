@@ -57,6 +57,7 @@ pub fn run() {
     let repository = Repository::from_paths((*shared_paths).clone());
     let app = builder
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(Mutex::new(repository))
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
@@ -136,6 +137,7 @@ pub fn run() {
                 .build(app)?;
 
             schedule_startup_main_window_reveal(app.handle());
+            commands::auto_switch::spawn(app.handle().clone());
 
             Ok(())
         })

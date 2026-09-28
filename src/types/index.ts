@@ -1,7 +1,6 @@
 export type UsageSource = "local" | "api";
 export type ApiProxyMode = "system" | "direct" | "manual";
 export type ApiReachabilityStatus = "unknown" | "reachable" | "unreachable";
-export type AutoSwitchRuntimeState = "running" | "stopped" | "notInstalled" | "unknown";
 export type McpTransport = "stdio" | "http" | "sse" | "unknown";
 export type CustomInstructionProtectionState = "ready" | "unmanaged" | "protected";
 export type CustomInstructionHistoryAction = "apply" | "clear" | "rollback";
@@ -17,8 +16,6 @@ export interface AppPathState {
   authPath: string;
   registryPath: string;
   sessionsPath: string;
-  launchAgentPath: string;
-  autoSwitchLogPath: string;
   authExists: boolean;
   registryExists: boolean;
   sessionsExists: boolean;
@@ -29,8 +26,6 @@ export interface AutoSwitchStatusPayload {
   enabled: boolean;
   threshold5hPercent: number;
   thresholdWeeklyPercent: number;
-  serviceState: AutoSwitchRuntimeState;
-  serviceLabel: string;
 }
 
 export interface ApiConfigPayload {

@@ -230,24 +230,24 @@ impl Repository {
         }))
     }
 
+    /// Read by the in-app auto-switch loop each round.
+    pub fn auto_switch_config(&self) -> AutoSwitchConfig {
+        self.load_registry_or_empty()
+            .ok()
+            .and_then(|registry| registry.auto_switch)
+            .unwrap_or_default()
+    }
+
     pub fn set_auto_switch(
         &self,
         enabled: bool,
     ) -> Result<CoreEnvelope<AutoSwitchConfigPayload>, CoreError> {
-        if enabled {
-            return Err(CoreError::OperationFailed(
-                "Automatic account switching is not available in this source build".into(),
-            ));
-        }
         let mut registry = self.load_registry_or_empty()?;
         let mut config = registry.auto_switch.clone().unwrap_or_default();
         config.enabled = enabled;
         registry.auto_switch = Some(config);
         registry.updated_at = current_timestamp();
         self.save_registry(&registry)?;
-
-        crate::platform::daemon::uninstall_daemon(&self.paths.launch_agent_path)?;
-        let _ = self.clear_auto_switch_transient_state();
 
         let payload = self.make_auto_switch_status(&registry);
         Ok(CoreEnvelope::ok(AutoSwitchConfigPayload {
@@ -374,8 +374,6 @@ impl Repository {
             auth_path: self.paths.auth_path.display().to_string(),
             registry_path: self.paths.registry_path.display().to_string(),
             sessions_path: self.paths.sessions_dir.display().to_string(),
-            launch_agent_path: self.paths.launch_agent_path.display().to_string(),
-            auto_switch_log_path: self.paths.auto_switch_log_path.display().to_string(),
             auth_exists: self.paths.auth_path.exists(),
             registry_exists: self.paths.registry_path.exists(),
             sessions_exists: self.paths.sessions_dir.exists(),
@@ -394,16 +392,7 @@ impl Repository {
     }
 
     pub(crate) fn make_status_payload(&self, state: &LoadedState) -> AppStatusPayload {
-        self.make_status_payload_with_service_state(state, None)
-    }
-
-    pub(crate) fn make_status_payload_with_service_state(
-        &self,
-        state: &LoadedState,
-        service_state: Option<AutoSwitchRuntimeState>,
-    ) -> AppStatusPayload {
-        let auto_switch =
-            self.make_auto_switch_status_with_service_state(&state.registry, service_state);
+        let auto_switch = self.make_auto_switch_status(&state.registry);
         AppStatusPayload {
             paths: state.paths.clone(),
             last_scan_at: state.last_scan_at,
@@ -420,24 +409,13 @@ impl Repository {
     }
 
     fn make_auto_switch_status(&self, registry: &RegistryFile) -> AutoSwitchStatusPayload {
-        self.make_auto_switch_status_with_service_state(registry, None)
-    }
-
-    fn make_auto_switch_status_with_service_state(
-        &self,
-        registry: &RegistryFile,
-        service_state: Option<AutoSwitchRuntimeState>,
-    ) -> AutoSwitchStatusPayload {
         let config = registry.auto_switch.clone().unwrap_or_default();
         AutoSwitchStatusPayload {
-            supported: false,
-            enabled: false,
+            // Runs in-app on every platform (see `commands::auto_switch`).
+            supported: true,
+            enabled: config.enabled,
             threshold_5h_percent: config.threshold_5h_percent,
             threshold_weekly_percent: config.threshold_weekly_percent,
-            // Auto-switch is unsupported, so skip the per-snapshot scheduler probe
-            // (on Windows it spawned PowerShell every time).
-            service_state: service_state.unwrap_or(AutoSwitchRuntimeState::NotInstalled),
-            service_label: "dev.agentharbor.auto-switch".into(),
         }
     }
 
@@ -673,12 +651,6 @@ impl Repository {
         settings.device_id = Some(id.clone());
         self.save_settings(&settings)?;
         Ok(id)
-    }
-
-    fn clear_auto_switch_transient_state(&self) -> Result<(), CoreError> {
-        let _ = std::fs::remove_file(&self.paths.auto_switch_pending_path);
-        let _ = std::fs::remove_file(&self.paths.auto_switch_snooze_path);
-        Ok(())
     }
 }
 
@@ -975,6 +947,25 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(codex_home);
+    }
+
+    #[test]
+    fn auto_switch_can_be_enabled_and_disabled_with_thresholds_kept() {
+        let (repo, codex_home) = make_test_repo("auto-switch");
+        repo.configure_auto_switch(Some(20), Some(5)).unwrap();
+        let enabled = repo.set_auto_switch(true).unwrap().data.auto_switch;
+        assert!(enabled.supported && enabled.enabled);
+        assert_eq!((enabled.threshold_5h_percent, enabled.threshold_weekly_percent), (20, 5));
+        assert!(repo.auto_switch_config().enabled);
+
+        let status = repo.load_snapshot_local().unwrap().data.status.auto_switch;
+        assert!(status.enabled);
+
+        let disabled = repo.set_auto_switch(false).unwrap().data.auto_switch;
+        assert!(!disabled.enabled);
+        assert_eq!(disabled.threshold_5h_percent, 20);
+        assert!(!repo.auto_switch_config().enabled);
+        let _ = std::fs::remove_dir_all(codex_home);
     }
 
     #[test]

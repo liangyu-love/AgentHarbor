@@ -48,7 +48,7 @@
 
 ## 3. 死代码
 
-- D1 自动切号整条链路：`set_auto_switch`、`configure_auto_switch`、`run_daemon_once`、`platform/daemon.rs` 安装逻辑、设置页阈值 mutation；`load_snapshot` 在 Windows 上每次仍起 PowerShell 查计划任务。
+- D1 自动切号整条链路：`set_auto_switch`、`configure_auto_switch`、`run_daemon_once`、`platform/daemon.rs` 安装逻辑、设置页阈值 mutation；`load_snapshot` 在 Windows 上每次仍起 PowerShell 查计划任务。（已处理：改为在应用内实现自动切号，见 FIX_TODO 阶段 9。）
 - D2 前端无调用的已注册命令：`list_codex_threads`、`export_codex_threads`、`restart_codex`（代理逻辑已与 `restart_target` 分叉）、`load_bootstrap_state`、IPC 形式的 `focus_main_window`。
 - D3 约 20 个无组件调用的 facade 方法；alias `fetchNewApiModels` 写死 `responses` 协议。
 - D4 `CoreEnvelope::error` 无调用；`routable()`、`infer_protocol()`；`set_usage_refresh_interval` 的 `_interval_seconds`。

@@ -51,6 +51,8 @@ pub fn set_auto_switch(
     repo: State<'_, Mutex<Repository>>,
     enabled: bool,
 ) -> Result<CoreEnvelope<AutoSwitchConfigPayload>, String> {
+    // A scheduler entry from an older build would keep launching a removed entry point.
+    crate::platform::daemon::remove_legacy_scheduler();
     let repo = repo.lock().map_err(|e| e.to_string())?;
     repo.set_auto_switch(enabled).map_err(|e| e.to_string())
 }

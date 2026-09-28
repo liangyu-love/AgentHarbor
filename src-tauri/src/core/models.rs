@@ -59,15 +59,6 @@ pub enum ApiProxyMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "camelCase")]
-pub enum AutoSwitchRuntimeState {
-    Running,
-    Stopped,
-    NotInstalled,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum McpTransport {
     Stdio,
@@ -120,8 +111,6 @@ pub struct AppPathState {
     pub auth_path: String,
     pub registry_path: String,
     pub sessions_path: String,
-    pub launch_agent_path: String,
-    pub auto_switch_log_path: String,
     pub auth_exists: bool,
     pub registry_exists: bool,
     pub sessions_exists: bool,
@@ -152,8 +141,6 @@ pub struct AutoSwitchStatusPayload {
     pub enabled: bool,
     pub threshold_5h_percent: i32,
     pub threshold_weekly_percent: i32,
-    pub service_state: AutoSwitchRuntimeState,
-    pub service_label: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

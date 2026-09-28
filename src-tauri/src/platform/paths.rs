@@ -21,15 +21,11 @@ pub struct CodexPaths {
     pub snapshots_dir: PathBuf,
     pub auth_backups_dir: PathBuf,
     pub registry_backups_dir: PathBuf,
-    pub auto_switch_log_path: PathBuf,
     pub app_data_dir: PathBuf,
     pub skill_backups_dir: PathBuf,
     pub quota_history_path: PathBuf,
     pub quota_store_path: PathBuf,
     pub settings_path: PathBuf,
-    pub auto_switch_pending_path: PathBuf,
-    pub auto_switch_snooze_path: PathBuf,
-    pub launch_agent_path: PathBuf,
     pub global_agents_path: PathBuf,
     pub custom_instructions_dir: PathBuf,
     pub custom_instruction_history_dir: PathBuf,
@@ -52,7 +48,6 @@ impl CodexPaths {
     pub fn from_roots(codex_home: PathBuf, app_data_dir: PathBuf) -> Self {
         let accounts_dir = app_data_dir.join("accounts");
         let custom_instructions_dir = app_data_dir.join("custom-instructions");
-        let launch_agent_path = Self::resolve_launch_agent_path();
 
         // Copy the previous build's state once. Keeping the source intact lets
         // AgentHarbor and an installed AiMaMi run independently.
@@ -76,19 +71,15 @@ impl CodexPaths {
             snapshots_dir: accounts_dir.join("snapshots"),
             auth_backups_dir: accounts_dir.join("backups"),
             registry_backups_dir: accounts_dir.join("registry-backups"),
-            auto_switch_log_path: accounts_dir.join("auto-switch.log"),
             skill_backups_dir: app_data_dir.join("skill-backups"),
             quota_history_path: app_data_dir.join("quota-history.jsonl"),
             quota_store_path: app_data_dir.join("quota-store.json"),
             settings_path: app_data_dir.join("settings.json"),
-            auto_switch_pending_path: app_data_dir.join("auto-switch-pending.json"),
-            auto_switch_snooze_path: app_data_dir.join("auto-switch-snooze.json"),
             global_agents_path: codex_home.join("AGENTS.md"),
             custom_instruction_history_dir: custom_instructions_dir.join("history"),
             accounts_dir,
             app_data_dir,
             custom_instructions_dir,
-            launch_agent_path,
             codex_home,
         }
     }
@@ -120,18 +111,6 @@ impl CodexPaths {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".codex")
-    }
-
-    #[cfg(target_os = "macos")]
-    fn resolve_launch_agent_path() -> PathBuf {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("Library/LaunchAgents/dev.agentharbor.auto-switch.plist")
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    fn resolve_launch_agent_path() -> PathBuf {
-        PathBuf::new()
     }
 
     pub fn ensure_directories(&self) -> std::io::Result<()> {

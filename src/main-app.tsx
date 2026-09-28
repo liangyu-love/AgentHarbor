@@ -1,5 +1,6 @@
 import { Suspense, lazy, useCallback, useEffect, useState, type CSSProperties } from "react";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, useQueryClient } from "@tanstack/react-query";
+import { listen } from "@tauri-apps/api/event";
 import { useTranslation } from "react-i18next";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useTheme, useThemeValue, type Theme } from "@/hooks/use-theme";
@@ -120,6 +121,8 @@ function MainApp() {
     setRoute("settings");
   }, []);
   const clearProxySettingsRequest = useCallback(() => setProxySettingsRequested(false), []);
+
+  useAccountsChangedListener();
 
   // Global Ctrl+K / Cmd+K listener
   useEffect(() => {
@@ -297,6 +300,31 @@ function MainApp() {
       )}
     </div>
   );
+}
+
+/** The auto-switch loop refreshes quotas and may switch accounts in the background. */
+function useAccountsChangedListener() {
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen("codex-accounts-changed", () => {
+      // Read the stored result instead of refetching, which would query every account again.
+      void api.accounts.list()
+        .then((data) => queryClient.setQueryData(["codex-accounts"], data))
+        .catch(() => undefined);
+      void queryClient.invalidateQueries({ queryKey: ["runtime-state"] });
+    })
+      .then((stop) => {
+        if (disposed) stop();
+        else unlisten = stop;
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [queryClient]);
 }
 
 function useInstallLocationPrompt() {

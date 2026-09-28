@@ -101,7 +101,7 @@ api.providers.loadState = async () => state;
 api.loadSnapshot = async () => ({ data: { status: {
   paths: { codexHome: "C:/synthetic/codex", authExists: true, registryExists: true, sessionsExists: true },
   api: { proxy: { mode: "manual", url: "http://127.0.0.1:7890" } },
-  autoSwitch: { supported: true, enabled: false, threshold5hPercent: 15, thresholdWeeklyPercent: 10, serviceState: "stopped", serviceLabel: "" },
+  autoSwitch: { supported: true, enabled: false, threshold5hPercent: 15, thresholdWeeklyPercent: 10 },
 } } }) as any;
 api.loadMcpServers = async () => ({ data: { items: Array.from({ length: 6 }, (_, i) => ({ id: "mcp-" + i, enabled: true })) } }) as any;
 api.loadInstalledSkills = async () => ({ data: { total: 36, items: [] } }) as any;

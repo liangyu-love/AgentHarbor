@@ -41,7 +41,7 @@
 - [x] P4 (M11) `serde_json` 开启 `preserve_order`，写回客户端配置保持用户 key 顺序。
 - [x] P5 (D2–D4) 删除死代码：`list_codex_threads`、`export_codex_threads`、`restart_codex`、`run_daemon_once`、`load_bootstrap_state` 与整个只写不读的 bootstrap cache、IPC 形式的 `focus_main_window`、约 20 个无调用 facade、`routable`/`infer_protocol`/`usage_refresh_interval_seconds`；`load_snapshot` 不再每次探测计划任务。
 - [x] P6 (H5) Anthropic：工具循环中（最近 assistant 轮含 tool_use）不开 thinking，避免缺签名 thinking block 导致 400；开 thinking 时不透传 temperature/top_p；`max_tokens` 默认 4096 → 32000。
-- [-] 未做：M5 删除 journal、D1 自动切号剩余链路（`set_auto_switch`/`configure_auto_switch`/`platform/daemon.rs` 安装逻辑）、`config-backups`/`skill-backups` 保留策略（前者被旧版配置恢复逻辑读取、后者在 UI 中可见，需要单独设计）、C1–C6 大重构。
+- [-] 未做（M5 已在阶段 8、D1 已在阶段 9 完成）：`config-backups`/`skill-backups` 保留策略（前者被旧版配置恢复逻辑读取、后者在 UI 中可见，需要单独设计）、C1–C6 大重构。
 
 ## 阶段 5：小项
 
@@ -90,6 +90,25 @@
 - [x] J3 macOS/Linux 删除与队列也检测 Codex writer（原来只有 Windows）。
 - [x] J4 测试：未提交崩溃恢复、已提交崩溃、纯文件部分删除、备份丢失时 journal 保留，正常删除不留 journal。
 - 未验证：macOS/Linux 的 writer 检测路径本机无法运行（仅 Windows 编译测试）；真实进程崩溃未模拟，测试通过手工构造 journal 覆盖崩溃点。
+
+## 阶段 9：自动切号（D1 → 实现）
+
+方案（已与用户确认）：应用内后台任务，不用系统计划任务；触发后切换 `auth.json`，Codex 桌面端在运行时重启它，并发系统通知。
+
+- [x] A1 `core/auto_switch.rs` 纯决策：当前账号 5h 或每周剩余 ≤ 阈值时触发；候选账号需本轮刷新成功、各窗口都高于阈值，按最紧的窗口剩余取最大；切换后 10 分钟冷却；无候选时每轮额度耗尽只通知一次。
+- [x] A2 后台循环：按"刷新频率"设置（最少 60s）刷新全部账号 → 决策 → 在同一把仓库锁内切换 → 锁外重启正在运行的 Codex → 通知 + `codex-accounts-changed` 事件。刷新逻辑与 `refresh_codex_accounts` 共用。
+- [x] A3 开关：`set_auto_switch(true)` 放开；状态 `supported: true`、`enabled` 取配置。
+- [x] A4 删除 `daemon-run-once` 入口、schtasks/launchd 安装与状态探测、`launch_agent_path`/`auto_switch_*` 路径、transient state 与 `serviceState`/`serviceLabel` 字段；`platform/daemon.rs` 只保留切换开关时清理旧版计划任务。
+- [x] A5 前端：补齐缺失的 `settings.autoSwitch*` 文案，更新阈值说明；监听事件刷新账号列表和状态。
+- [x] A6 测试：决策函数 7 个单测、检查间隔单测、开关与阈值往返单测。
+- 新增依赖：`tauri-plugin-notification =2.3.3`（2.5.0 需要 tauri ^2.12，与当前 2.10 不兼容）；Cargo.lock 只新增包，不升级已有包。
+- 附带修复：设置页"保存阈值"原来会把 `enabled` 乐观置为 true、失败无提示；现在以后端返回为准并提示错误，启用时先存阈值再开开关。
+- 未验证：没有用真实多账号跑后台切换（需要真实 ChatGPT 账号和额度耗尽场景）；系统通知只在 Windows 编译，未在 macOS/Linux 上看过弹出效果；macOS 通知在开发构建中可能因未签名不显示。
+
+### 验证（阶段 9）
+
+- `cargo test --lib --test local_workflows`：lib 362 通过 / 1 ignored，集成 9 通过；`cargo check --all-targets` 无 warning。
+- `pnpm build` 通过；`pnpm test:frontend` 30 项 PASS。
 
 ### 验证（阶段 8）
 

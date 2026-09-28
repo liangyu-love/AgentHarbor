@@ -1,4 +1,5 @@
 pub mod accounts;
+pub mod auto_switch;
 pub mod client_config;
 pub mod custom_instructions;
 pub mod hotspot;

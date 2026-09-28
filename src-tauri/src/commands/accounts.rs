@@ -23,8 +23,15 @@ pub fn list_codex_accounts(
 pub async fn refresh_codex_accounts(
     repo: State<'_, Mutex<Repository>>,
 ) -> Result<CodexAccountListPayload, String> {
+    refresh_all(&repo).await
+}
+
+/// Shared by the accounts page and the auto-switch loop.
+pub(crate) async fn refresh_all(repo: &Mutex<Repository>) -> Result<CodexAccountListPayload, String> {
     let (credentials, proxy) = {
-        let repo = lock_repo(&repo)?;
+        let repo = repo
+            .lock()
+            .map_err(|_| "Repository lock poisoned".to_string())?;
         accounts::credentials(&repo).map_err(|error| error.to_string())?
     };
     // Each account may start its own app-server with multi-second timeouts, so
@@ -35,7 +42,9 @@ pub async fn refresh_codex_accounts(
         .buffered(3)
         .collect()
         .await;
-    let repo = lock_repo(&repo)?;
+    let repo = repo
+        .lock()
+        .map_err(|_| "Repository lock poisoned".to_string())?;
     accounts::apply_usage_updates(&repo, updates).map_err(|error| error.to_string())
 }
 
