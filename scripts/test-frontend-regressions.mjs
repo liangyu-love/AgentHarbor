@@ -50,7 +50,13 @@ try {
   const page = await browser.newPage({ viewport: { width: 1200, height: 700 } });
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
-  page.on("dialog", async dialog => { await dialog.accept(); });
+  // Native confirm/prompt would block the test silently; the app uses AlertDialog instead.
+  page.on("dialog", async dialog => { errors.push(`unexpected native dialog: ${dialog.message()}`); await dialog.dismiss(); });
+  const confirmAlert = async name => {
+    const alert = page.getByRole("alertdialog");
+    await alert.getByRole("button", { name, exact: true }).click();
+    await alert.waitFor({ state: "detached" });
+  };
   await page.route("**/*", route => route.request().url().startsWith(address + "/") ? route.continue() : route.abort());
   const reset = async mode => {
     await page.goto(address);
@@ -430,12 +436,15 @@ try {
 
   await reset("thread-actions");
   await page.getByRole("button", { name: labels.repairAll, exact: true }).click();
+  await confirmAlert(labels.repairAll);
   await page.waitForFunction(() => window.review.recoveryApplyCalls === 1);
   await page.getByText("Review thread 0", { exact: true }).click();
   await page.getByRole("button", { name: labels.deleteSelected, exact: true }).click();
+  await confirmAlert(labels.delete);
   await page.waitForFunction(() => window.review.deleteCalls.length === 1);
   assert.deepEqual(await page.evaluate(() => window.review.deleteCalls[0]), ["t0"]);
   await page.getByRole("button", { name: labels.deleteThread, exact: true }).last().click();
+  await confirmAlert(labels.delete);
   await page.waitForFunction(() => window.review.deleteCalls.length === 2);
   assert.deepEqual(await page.evaluate(() => window.review.deleteCalls[1]), ["t1"]);
   console.log("PASS thread page repairs all eligible threads and supports batch and single deletion");
@@ -443,6 +452,7 @@ try {
   await reset("thread-actions");
   await page.evaluate(() => { window.review.queueDeletes = true; });
   await page.getByRole("button", { name: labels.deleteThread, exact: true }).first().click();
+  await confirmAlert(labels.delete);
   await page.getByText(/1 个会话等待删除/).waitFor();
   await page.screenshot({ path: path.join(screenshotDir, "pending-thread-delete.png"), animations: "disabled" });
   await page.getByRole("button", { name: "取消待删除", exact: true }).click();
@@ -636,6 +646,7 @@ try {
   await page.getByRole("button", { name: labels.configure, exact: true }).click();
   await page.getByRole("button", { name: labels.manageProfiles, exact: true }).click();
   await page.getByRole("button", { name: labels.deleteProfile, exact: true }).click();
+  await confirmAlert(labels.delete);
   await page.waitForFunction(() => JSON.parse(localStorage.getItem("agentharbor.claude-code-profiles.v1") ?? "[]").length === 0);
   console.log("PASS saved Claude profiles apply, can be deleted, and stale entries remain blocked");
 

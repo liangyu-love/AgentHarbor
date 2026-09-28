@@ -16,6 +16,7 @@ import type { ClaudeModels, ClaudeOneM, ClientAccessMode, ClientConfigPreview, C
 import type { NewApiProvider } from "@/types/newapi";
 import { storageKeys } from "@/lib/storage-keys";
 import { errorKey } from "@/lib/invoke-error";
+import { ConfirmDialog, type ConfirmRequest } from "@/components/ui/confirm-dialog";
 
 const clientErrorKey = (cause: unknown) =>
   errorKey(cause, ["clients", "newapi"], "clients.errors.storage");
@@ -92,6 +93,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
   const [profileName, setProfileName] = useState("");
   const [editingProfile, setEditingProfile] = useState(false);
   const [managingProfiles, setManagingProfiles] = useState(false);
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const protocols = clientProtocols(client, request.accessMode);
   const compatible = providers.filter(provider => !exclusionOf(provider, protocols));
   const selected = compatible.filter(provider => request.providerIds.includes(provider.id));
@@ -209,7 +211,16 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
   };
   const deleteClaudeProfile = (id: string) => {
     const profile = claudeProfiles.find(item => item.id === id);
-    if (!profile || !window.confirm(t("clients.deleteProfileConfirm", { name: profile.name }))) return;
+    if (!profile) return;
+    setConfirmRequest({
+      title: t("clients.deleteProfile", { name: profile.name }),
+      description: t("clients.deleteProfileConfirm", { name: profile.name }),
+      confirmLabel: t("common.delete"),
+      destructive: true,
+      onConfirm: () => removeClaudeProfile(id),
+    });
+  };
+  const removeClaudeProfile = (id: string) => {
     const next = claudeProfiles.filter(item => item.id !== id);
     try {
       localStorage.setItem(CLAUDE_PROFILES_KEY, JSON.stringify(next));
@@ -464,6 +475,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}{t(preview ? "clients.apply" : "clients.preview")}
           </Button>
         </DialogFooter>
+        <ConfirmDialog request={confirmRequest} onClose={() => setConfirmRequest(null)} />
       </DialogContent>
     </Dialog>
   );

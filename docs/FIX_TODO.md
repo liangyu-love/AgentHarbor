@@ -155,6 +155,14 @@
   - [x] P5 `accounts-page.tsx` 821 → 169 行：`use-accounts`（账号/用量查询、登录切换删除刷新 mutation、搜索与计划筛选）+ `token-usage-panel`（用量面板及卡片）+ `account-card`（账号卡、额度环、`planLabel`）。fixture 改从 `token-usage-panel` 引入 `TokenUsagePanel`。快照新增卡片区、搜索、无匹配、计划菜单、删除确认 5 个状态，76 张逐像素一致，前端回归 32 项通过。
   - 结果：5 个大页面 5307 → 700 行（各页只剩组合），状态进 hook、视图进组件；每页 JSX 原样搬移，未新增 DOM 层级。快照 harness 覆盖 38 个状态 × 亮/暗 = 76 张，软件光栅，连续多轮无抖动。
 
+### UI 优化（阶段 11，i18n 暂缓）
+
+- [x] U1 错误显示统一走 `formatInvokeError` / `errorMessage`，去掉剩余 `String(err)`（维护页、Skills、命令面板、site-header、MCP、自定义背景、更新检查，及账号/会话/中转/Skills 加载失败），`site-header` 只换 description（标题文案随 i18n 暂缓）。构建、回归 32 项、76 张快照一致。
+- [x] U2 3 处 `window.confirm`（删除会话、全部修复、删除客户端配置）改为应用内 `AlertDialog`：新增通用 `ui/confirm-dialog`，handler 拆为“请求确认 / 执行”。回归改为点击应用内确认按钮，并把出现原生弹窗视为错误。回归 32 项、76 张快照一致。
+- [ ] U3 可点击的 div/p/卡片补键盘支持（`role`、`tabIndex`、Enter/Space）。
+- [ ] U4 纯图标按钮补 `aria-label`。
+- [ ] U5 账号卡额度圆环质感升级（方案待确认）。
+
 ### 验证（阶段 10）
 
 - `cargo test --lib --test local_workflows`：lib 366 通过 / 1 ignored，集成 9 通过；`cargo check --all-targets` 无 warning。

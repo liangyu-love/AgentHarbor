@@ -365,6 +365,7 @@ controls.review = { mount, errors: { errorKey, errorMessage, formatInvokeError }
     repairAll: i18n.t("threads.repairAll"), deleteThread: i18n.t("threads.deleteThread"),
     deleteSelected: i18n.t("threads.deleteSelected", { count: 1 }),
     clearDeletionQueue: i18n.t("threads.clearDeletionQueue"),
+    delete: i18n.t("common.delete"),
     openGallery: i18n.t("image.openGallery"),
     openGalleryFailed: i18n.t("image.openGalleryFailed"),
     manageProfiles: i18n.t("clients.manageProfiles"),

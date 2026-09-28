@@ -14,6 +14,7 @@ import {
 import { queryKeys } from "@/lib/query-keys";
 import { storageKeys } from "@/lib/storage-keys";
 import { formatInvokeError } from "@/lib/invoke-error";
+import type { ConfirmRequest } from "@/components/ui/confirm-dialog";
 
 export type ExportFormat = "markdown" | "jsonl";
 export type ViewMode = "grid" | "compact";
@@ -38,6 +39,7 @@ export function useThreadList() {
   const [copiedGroupPath, setCopiedGroupPath] = useState<string | null>(null);
   const [recoveryTarget, setRecoveryTarget] = useState<ThreadSummary | null>(null);
   const [bulkRepairing, setBulkRepairing] = useState(false);
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [cancelPendingBusy, setCancelPendingBusy] = useState(false);
 
@@ -177,7 +179,15 @@ export function useThreadList() {
       threads.filter((thread) => thread.id).map((thread) => [thread.id, thread]),
     ).values()];
     if (candidates.length === 0 || bulkRepairing) return;
-    if (!window.confirm(t("threads.repairAllConfirm", { count: candidates.length }))) return;
+    setConfirmRequest({
+      title: t("threads.repairAll"),
+      description: t("threads.repairAllConfirm", { count: candidates.length }),
+      confirmLabel: t("threads.repairAll"),
+      onConfirm: () => void repairAll(candidates),
+    });
+  };
+
+  const repairAll = async (candidates: ThreadSummary[]) => {
     setBulkRepairing(true);
     let repaired = 0;
     let skipped = 0;
@@ -211,7 +221,16 @@ export function useThreadList() {
   const handleDelete = async (keys: string[]) => {
     const uniqueKeys = [...new Set(keys)].filter(key => !pendingDeletionKeys.has(key));
     if (uniqueKeys.length === 0 || deleteBusy) return;
-    if (!window.confirm(t("threads.deleteConfirm", { count: uniqueKeys.length }))) return;
+    setConfirmRequest({
+      title: t("threads.deleteThread"),
+      description: t("threads.deleteConfirm", { count: uniqueKeys.length }),
+      confirmLabel: t("common.delete"),
+      destructive: true,
+      onConfirm: () => void deleteThreads(uniqueKeys),
+    });
+  };
+
+  const deleteThreads = async (uniqueKeys: string[]) => {
     setDeleteBusy(true);
     try {
       const result = await api.conversations.delete("codex", uniqueKeys);
@@ -329,7 +348,7 @@ export function useThreadList() {
     status, setStatus, query, setQuery, sortBy, setSortBy, sortLabels, viewMode, setViewMode, format, setFormat,
     selected, toggleSelect, selectFiltered, clearSelection, toggleGroupSelect,
     collapsedGroups, toggleGroupCollapse, expandAllGroups, collapseAllGroups,
-    copiedGroupPath, recoveryTarget, setRecoveryTarget, bulkRepairing, deleteBusy, cancelPendingBusy, refreshAction,
+    copiedGroupPath, recoveryTarget, setRecoveryTarget, confirmRequest, setConfirmRequest, bulkRepairing, deleteBusy, cancelPendingBusy, refreshAction,
     handleRefresh, handleRepairAll, handleDelete, cancelPendingDeletions, handleExport, handleOpenPath, handleCopyPath,
   };
 }

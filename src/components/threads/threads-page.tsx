@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThreadRecoveryDialog } from "@/components/threads/thread-recovery-dialog";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { VirtualThreadList } from "@/components/threads/virtual-thread-list";
 import { ThreadGroupSection } from "@/components/threads/thread-group-section";
 import { ThreadMetrics } from "@/components/threads/thread-metrics";
@@ -113,6 +114,7 @@ export function ThreadsPage() {
             await threadsQuery.refetch();
           }}
         />
+        <ConfirmDialog request={list.confirmRequest} onClose={() => list.setConfirmRequest(null)} />
       </div>
     </TooltipProvider>
   );
