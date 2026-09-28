@@ -145,7 +145,7 @@
   - 替换了 19 处 `String(error)` 和 5 个各页面自带的 `errorKey`/`errorMessage` 副本；之前 `String(new Error(key))` 会把未翻译的 `Error: newapi.errors.x` 直接显示给用户。
   - 后端没有改：把所有 `CoreError` 改成 key 改动面太大，且原始文本对排查有用；前端现在两种都能正确显示。
   - 测试：前端回归新增 10 个用例（key 翻译、原始文本保留、未知 key/空值回退、前缀过滤）。
-- [ ] C2 拆分 `router_proxy::handle()`。
+- [x] C2 `router_proxy::handle()` 从约 620 行拆到 123 行，只保留流程：`forwardable_headers`、`requested_model`、`codex_catalog_response`、`resolve_destination`、`upstream_suffix`、`relay_usage_request`、`provider_target`、`official_target`、`upstream_body`、`client_for`、`relay_response`、`translated_stream`。逻辑逐段搬移，未改行为；`relay_response` 的 if/else 链改成按 `(translation, status, stream)` 的 match，两条非翻译分支合并（observer 为 `Option`）。lib/集成测试各连续 3 次通过。
 - [ ] C1 拆分大组件。
 
 ### 验证（阶段 10）

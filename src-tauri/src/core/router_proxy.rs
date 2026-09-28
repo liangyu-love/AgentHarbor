@@ -424,7 +424,6 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
     let method = request.method().clone();
     let has_body = !matches!(method, hyper::Method::GET | hyper::Method::HEAD);
     let codex_auth = codex_request_auth(request.headers(), &store.router.bearer_token);
-    let mut headers = request.headers().clone();
     if request
         .headers()
         .get(CONTENT_LENGTH)
@@ -434,6 +433,97 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
     {
         return Err((StatusCode::PAYLOAD_TOO_LARGE, "request body too large"));
     }
+    let headers = forwardable_headers(request.headers());
+    let body: Option<Bytes> = if has_body {
+        Some(read_limited_body(request.into_body()).await?)
+    } else {
+        read_limited_body(request.into_body()).await?;
+        None
+    };
+
+    let required_protocol = request_protocol(&segments);
+    let (requested_model, one_m_context) = requested_model(body.as_deref(), required_protocol);
+
+    // Codex model catalog for the model picker (`model_catalog_json` mirror).
+    if matches!(segments.as_slice(), ["codex", "v1", "models"]) && !has_body {
+        return Ok(codex_catalog_response(&context, &store));
+    }
+    let destination = resolve_destination(
+        &store,
+        &segments,
+        required_protocol,
+        requested_model.as_deref(),
+    )?;
+    if one_m_context
+        && !matches!(
+            &destination,
+            Destination::Provider {
+                upstream_protocol: router::ModelProtocol::AnthropicMessages,
+                ..
+            }
+        )
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "1M context requires an Anthropic Messages provider",
+        ));
+    }
+    let suffix = upstream_suffix(&segments, &destination, required_protocol)?;
+    let relay_request = relay_usage_request(
+        &context,
+        &destination,
+        required_protocol,
+        requested_model.as_deref(),
+    );
+    let (url, mut headers) = match &destination {
+        Destination::Provider {
+            provider,
+            upstream_protocol,
+            translation,
+            ..
+        } => provider_target(
+            provider,
+            *upstream_protocol,
+            *translation,
+            &suffix,
+            query.as_deref(),
+            headers,
+        )?,
+        Destination::Official => {
+            official_target(&context, codex_auth, &suffix, query.as_deref(), headers)?
+        }
+    };
+    if one_m_context {
+        append_anthropic_beta(&mut headers);
+    }
+    let (body, translated_input) = upstream_body(&destination, body)?;
+
+    let mut outbound = client_for(&context, &destination)?
+        .request(method, url)
+        .headers(headers);
+    if let Some(body) = body {
+        outbound = outbound.body(body);
+    }
+    let response = match outbound.send().await {
+        Ok(response) => response,
+        Err(_) => {
+            if let Some(request) = relay_request {
+                request.failed(StatusCode::BAD_GATEWAY.as_u16());
+            }
+            return Err((StatusCode::BAD_GATEWAY, "cannot reach the provider"));
+        }
+    };
+    let translation = match &destination {
+        Destination::Provider { translation, .. } => *translation,
+        Destination::Official => None,
+    };
+    relay_response(response, translation, relay_request, translated_input).await
+}
+
+/// Inbound headers minus hop-by-hop, framing, and every local or client credential;
+/// the upstream's own credential is added per destination.
+fn forwardable_headers(inbound: &HeaderMap) -> HeaderMap {
+    let mut headers = inbound.clone();
     remove_hop_by_hop_headers(&mut headers);
     for header in [
         AUTHORIZATION,
@@ -448,15 +538,16 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
     for header in ["x-api-key", "chatgpt-account-id", router::LOCAL_AUTH_HEADER] {
         headers.remove(header);
     }
-    let body: Option<Bytes> = if has_body {
-        Some(read_limited_body(request.into_body()).await?)
-    } else {
-        read_limited_body(request.into_body()).await?;
-        None
-    };
+    headers
+}
 
-    let raw_requested_model = body
-        .as_deref()
+/// The body's `model`, with Claude's `[1m]` marker stripped for Messages callers,
+/// and whether that marker was present.
+fn requested_model(
+    body: Option<&[u8]>,
+    required_protocol: Option<router::ModelProtocol>,
+) -> (Option<String>, bool) {
+    let raw = body
         .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())
         .and_then(|value| {
             value
@@ -464,52 +555,57 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                 .and_then(Value::as_str)
                 .map(str::to_owned)
         });
-    let required_protocol = request_protocol(&segments);
-    let (requested_model, one_m_context) = raw_requested_model.map_or((None, false), |model| {
+    raw.map_or((None, false), |model| {
         if required_protocol == Some(router::ModelProtocol::AnthropicMessages) {
             let (base, enabled) = strip_claude_one_m_marker(&model);
             (Some(base.to_owned()), enabled)
         } else {
             (Some(model), false)
         }
-    });
-    let prefixed_model = requested_model
-        .as_deref()
-        .and_then(|model| model.split_once("::"));
+    })
+}
 
-    let destination = match segments.as_slice() {
-        // Codex model catalog for the model picker (`model_catalog_json` mirror).
-        ["codex", "v1", "models"] if !has_body => {
-            let catalog = router::catalog_value(&context.app_data_dir, &context.codex_home, &store);
-            let entries: Vec<Value> = catalog
-                .get("models")
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .map(|entry| {
-                            let mut entry = entry.clone();
-                            if let Some(slug) = entry.get("slug").and_then(Value::as_str) {
-                                entry["id"] = json!(slug);
-                                entry["object"] = json!("model");
-                            }
-                            entry
-                        })
-                        .collect()
+fn codex_catalog_response(context: &ArcContext, store: &router::Store) -> Response<ResponseBody> {
+    let catalog = router::catalog_value(&context.app_data_dir, &context.codex_home, store);
+    let entries: Vec<Value> = catalog
+        .get("models")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .map(|entry| {
+                    let mut entry = entry.clone();
+                    if let Some(slug) = entry.get("slug").and_then(Value::as_str) {
+                        entry["id"] = json!(slug);
+                        entry["object"] = json!("model");
+                    }
+                    entry
                 })
-                .unwrap_or_default();
-            return Ok(Response::builder()
-                .status(StatusCode::OK)
-                .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
-                .body(full_body(
-                    json!({"object": "list", "data": entries}).to_string(),
-                ))
-                .expect("static response parts"));
-        }
+                .collect()
+        })
+        .unwrap_or_default();
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+        .body(full_body(
+            json!({"object": "list", "data": entries}).to_string(),
+        ))
+        .expect("static response parts")
+}
+
+/// Picks the upstream for a request path and its `model`.
+fn resolve_destination(
+    store: &router::Store,
+    segments: &[&str],
+    required_protocol: Option<router::ModelProtocol>,
+    requested_model: Option<&str>,
+) -> ForwardResult<Destination> {
+    let prefixed_model = requested_model.and_then(|model| model.split_once("::"));
+    Ok(match segments {
         // Codex protocol: model slug `<provider id>::<model>` decides the route.
         ["codex", "v1", ..] => match prefixed_model {
             Some((provider_id, model_id)) => provider_destination(
-                &store,
+                store,
                 provider_id,
                 Some(router::ModelProtocol::Responses),
                 Some(model_id.to_owned()),
@@ -527,14 +623,14 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                         "model belongs to a different provider",
                     ))
                 }
-                None => requested_model.clone(),
+                None => requested_model.map(str::to_owned),
             };
-            provider_destination(&store, id, required_protocol, model_override)?
+            provider_destination(store, id, required_protocol, model_override)?
         }
         ["v1", ..] => {
             if let Some((provider_id, model_id)) = prefixed_model {
                 provider_destination(
-                    &store,
+                    store,
                     provider_id,
                     required_protocol,
                     Some(model_id.to_owned()),
@@ -542,7 +638,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             } else {
                 // The explicit model may override the pinned provider's default
                 // protocol. Resolve it before falling back to another provider.
-                let pinned = requested_model.as_deref().and_then(|model| {
+                let pinned = requested_model.and_then(|model| {
                     store.providers.iter().find(|provider| {
                         store.active_provider_id.as_deref() == Some(provider.id.as_str())
                             && provider.can_route_model(model)
@@ -555,15 +651,15 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                     })
                 });
                 let provider = pinned.or_else(|| match required_protocol {
-                    Some(protocol) => router::effective_active_for(&store, protocol),
-                    None => router::effective_active(&store),
+                    Some(protocol) => router::effective_active_for(store, protocol),
+                    None => router::effective_active(store),
                 });
                 match provider {
                     Some(provider) => provider_destination(
-                        &store,
+                        store,
                         &provider.id,
                         required_protocol,
-                        requested_model.clone(),
+                        requested_model.map(str::to_owned),
                     )?,
                     None => {
                         return Err((
@@ -575,24 +671,16 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             }
         }
         _ => return Err((StatusCode::NOT_FOUND, "unsupported path")),
-    };
+    })
+}
 
-    if one_m_context
-        && !matches!(
-            &destination,
-            Destination::Provider {
-                upstream_protocol: router::ModelProtocol::AnthropicMessages,
-                ..
-            }
-        )
-    {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "1M context requires an Anthropic Messages provider",
-        ));
-    }
-
-    let suffix = match segments.as_slice() {
+/// The path below the upstream's `/v1/`, rewritten for a translated protocol.
+fn upstream_suffix(
+    segments: &[&str],
+    destination: &Destination,
+    required_protocol: Option<router::ModelProtocol>,
+) -> ForwardResult<String> {
+    let suffix = match segments {
         ["p", _, "v1", rest @ ..] | ["codex", "v1", rest @ ..] | ["v1", rest @ ..] => {
             rest.join("/")
         }
@@ -602,7 +690,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
     // actually serves: `responses` exists only on a Responses provider, so the
     // path has to follow the protocol that the body was rewritten into.
     if required_protocol == Some(router::ModelProtocol::AnthropicMessages)
-        && translation_target(&destination).is_some()
+        && translation_target(destination).is_some()
         && suffix != "messages"
     {
         return Err((
@@ -614,7 +702,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
     // `responses/compact` or `responses/{id}` have no equivalent on another
     // protocol, and rewriting them would produce an endpoint that does not exist.
     if required_protocol == Some(router::ModelProtocol::Responses)
-        && translation_target(&destination).is_some()
+        && translation_target(destination).is_some()
         && suffix != "responses"
     {
         return Err((
@@ -622,12 +710,19 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             "this endpoint requires a native Responses provider",
         ));
     }
-    let suffix = match translation_target(&destination) {
+    Ok(match translation_target(destination) {
         Some(protocol) => translate_endpoint(&suffix, protocol),
         None => suffix,
-    };
+    })
+}
 
-    let relay_request = match (&destination, required_protocol) {
+fn relay_usage_request(
+    context: &ArcContext,
+    destination: &Destination,
+    required_protocol: Option<router::ModelProtocol>,
+    requested_model: Option<&str>,
+) -> Option<relay_usage::RelayUsageRequest> {
+    match (destination, required_protocol) {
         (
             Destination::Provider {
                 provider,
@@ -642,7 +737,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             provider.name.clone(),
             model_override
                 .clone()
-                .or_else(|| requested_model.clone())
+                .or_else(|| requested_model.map(str::to_owned))
                 .unwrap_or_else(|| provider.model.clone()),
             match upstream_protocol {
                 router::ModelProtocol::Responses => "responses",
@@ -652,188 +747,179 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             .to_owned(),
         )),
         _ => None,
-    };
+    }
+}
 
-    let (url, mut headers) = match &destination {
+/// URL and headers for a relay provider, carrying its own API key.
+fn provider_target(
+    provider: &router::Provider,
+    upstream_protocol: router::ModelProtocol,
+    translation: Option<protocol::Translation>,
+    suffix: &str,
+    query: Option<&str>,
+    mut headers: HeaderMap,
+) -> ForwardResult<(String, HeaderMap)> {
+    let endpoint = router::ModelEndpoint {
+        base_url: &provider.base_url,
+        protocol: upstream_protocol,
+    };
+    let credential = provider.model_credential();
+    match endpoint.protocol {
+        router::ModelProtocol::Responses | router::ModelProtocol::ChatCompletions => {
+            headers.remove("anthropic-version");
+            headers.remove("anthropic-beta");
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {}", credential.api_key))
+                    .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid provider key"))?,
+            );
+        }
+        router::ModelProtocol::AnthropicMessages => {
+            headers.insert(
+                "x-api-key",
+                HeaderValue::from_str(credential.api_key)
+                    .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid provider key"))?,
+            );
+            if !headers.contains_key("anthropic-version") {
+                headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+            }
+        }
+    }
+    Ok((
+        format!(
+            "{}v1/{}{}",
+            endpoint.base_url,
+            suffix,
+            provider_query(query, translation)
+        ),
+        headers,
+    ))
+}
+
+/// URL and headers for official OpenAI models, using Codex's own credentials.
+fn official_target(
+    context: &ArcContext,
+    codex_auth: Option<(HeaderValue, Option<HeaderValue>)>,
+    suffix: &str,
+    query: Option<&str>,
+    mut headers: HeaderMap,
+) -> ForwardResult<(String, HeaderMap)> {
+    let query = query.map(|q| format!("?{q}")).unwrap_or_default();
+    if let Some((authorization, account_id)) = codex_auth {
+        // Codex may have refreshed its token in memory or use a keyring.
+        // Its current credentials take precedence over a stale auth.json.
+        headers.insert(AUTHORIZATION, authorization);
+        let is_chatgpt = account_id.is_some()
+            || bearer_matches_chatgpt_auth(headers.get(AUTHORIZATION).unwrap(), &context.auth_path);
+        if let Some(account_id) = account_id {
+            headers.insert("chatgpt-account-id", account_id);
+        }
+        let base = if is_chatgpt {
+            CHATGPT_CODEX_BASE
+        } else {
+            OPENAI_API_BASE
+        };
+        return Ok((format!("{base}{suffix}{query}"), headers));
+    }
+    let auth = crate::core::auth::load_auth_file(&context.auth_path).ok();
+    let access_token = auth
+        .as_ref()
+        .and_then(|a| a.tokens.access_token.as_deref())
+        .map(str::to_owned)
+        .filter(|t| !t.trim().is_empty());
+    if let Some(token) = access_token {
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {token}"))
+                .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid token"))?,
+        );
+        if let Some(account_id) = auth
+            .as_ref()
+            .and_then(|a| a.tokens.account_id.as_deref())
+            .filter(|s| !s.is_empty())
+        {
+            if let Ok(value) = HeaderValue::from_str(account_id) {
+                headers.insert("chatgpt-account-id", value);
+            }
+        }
+        Ok((format!("{CHATGPT_CODEX_BASE}{suffix}{query}"), headers))
+    } else if let Some(key) = auth
+        .and_then(|a| a.openai_api_key)
+        .filter(|k| !k.trim().is_empty())
+    {
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {key}"))
+                .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid key"))?,
+        );
+        Ok((format!("{OPENAI_API_BASE}{suffix}{query}"), headers))
+    } else {
+        Err((
+            StatusCode::UNAUTHORIZED,
+            "no OpenAI credentials found for official models",
+        ))
+    }
+}
+
+/// The body to send upstream, and for a translated request the canonical
+/// Responses input (excluding request-scoped instructions) to remember afterwards.
+fn upstream_body(
+    destination: &Destination,
+    body: Option<Bytes>,
+) -> ForwardResult<(Option<Bytes>, Vec<Value>)> {
+    let (
         Destination::Provider {
-            provider,
+            model_override,
             upstream_protocol,
             translation,
             ..
-        } => {
-            let endpoint = router::ModelEndpoint {
-                base_url: &provider.base_url,
-                protocol: *upstream_protocol,
-            };
-            let credential = provider.model_credential();
-            match endpoint.protocol {
-                router::ModelProtocol::Responses | router::ModelProtocol::ChatCompletions => {
-                    headers.remove("anthropic-version");
-                    headers.remove("anthropic-beta");
-                    headers.insert(
-                        AUTHORIZATION,
-                        HeaderValue::from_str(&format!("Bearer {}", credential.api_key)).map_err(
-                            |_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid provider key"),
-                        )?,
-                    );
-                }
-                router::ModelProtocol::AnthropicMessages => {
-                    headers.insert(
-                        "x-api-key",
-                        HeaderValue::from_str(credential.api_key).map_err(|_| {
-                            (StatusCode::INTERNAL_SERVER_ERROR, "invalid provider key")
-                        })?,
-                    );
-                    if !headers.contains_key("anthropic-version") {
-                        headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
-                    }
-                }
+        },
+        Some(bytes),
+    ) = (destination, &body)
+    else {
+        return Ok((body, Vec::new()));
+    };
+    match translation {
+        // A translated request is rebuilt for the provider's protocol,
+        // with the slug prefix replaced by the provider's real model.
+        Some(translation) => {
+            let mut value: Value = serde_json::from_slice(bytes)
+                .map_err(|_| (StatusCode::BAD_REQUEST, "request body is not JSON"))?;
+            if let Some(model) = model_override.as_deref() {
+                value["model"] = json!(model);
             }
-            (
-                format!(
-                    "{}v1/{}{}",
-                    endpoint.base_url,
-                    suffix,
-                    provider_query(query.as_deref(), *translation)
-                ),
-                headers,
-            )
-        }
-        Destination::Official => {
-            if let Some((authorization, account_id)) = codex_auth {
-                // Codex may have refreshed its token in memory or use a keyring.
-                // Its current credentials take precedence over a stale auth.json.
-                headers.insert(AUTHORIZATION, authorization);
-                let is_chatgpt = account_id.is_some()
-                    || bearer_matches_chatgpt_auth(
-                        headers.get(AUTHORIZATION).unwrap(),
-                        &context.auth_path,
-                    );
-                if let Some(account_id) = account_id {
-                    headers.insert("chatgpt-account-id", account_id);
-                }
-                let base = if is_chatgpt {
-                    CHATGPT_CODEX_BASE
-                } else {
-                    OPENAI_API_BASE
-                };
+            let rewritten = protocol::request_body(*translation, &value).map_err(|error| {
                 (
-                    format!(
-                        "{base}{suffix}{}",
-                        query.map(|q| format!("?{q}")).unwrap_or_default()
-                    ),
-                    headers,
+                    StatusCode::BAD_REQUEST,
+                    if error == "protocol.errors.unknownPreviousResponse" {
+                        "previous_response_id is unknown or expired; resend the full conversation"
+                    } else {
+                        "cannot translate request"
+                    },
                 )
-            } else {
-                let auth = crate::core::auth::load_auth_file(&context.auth_path).ok();
-                let access_token = auth
-                    .as_ref()
-                    .and_then(|a| a.tokens.access_token.as_deref())
-                    .map(str::to_owned)
-                    .filter(|t| !t.trim().is_empty());
-                if let Some(token) = access_token {
-                    headers.insert(
-                        AUTHORIZATION,
-                        HeaderValue::from_str(&format!("Bearer {token}"))
-                            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid token"))?,
-                    );
-                    if let Some(account_id) = auth
-                        .as_ref()
-                        .and_then(|a| a.tokens.account_id.as_deref())
-                        .filter(|s| !s.is_empty())
-                    {
-                        if let Ok(value) = HeaderValue::from_str(account_id) {
-                            headers.insert("chatgpt-account-id", value);
-                        }
-                    }
-                    (
-                        format!(
-                            "{CHATGPT_CODEX_BASE}{suffix}{}",
-                            query.map(|q| format!("?{q}")).unwrap_or_default()
-                        ),
-                        headers,
-                    )
-                } else if let Some(key) = auth
-                    .and_then(|a| a.openai_api_key)
-                    .filter(|k| !k.trim().is_empty())
-                {
-                    headers.insert(
-                        AUTHORIZATION,
-                        HeaderValue::from_str(&format!("Bearer {key}"))
-                            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid key"))?,
-                    );
-                    (
-                        format!(
-                            "{OPENAI_API_BASE}{suffix}{}",
-                            query.map(|q| format!("?{q}")).unwrap_or_default()
-                        ),
-                        headers,
-                    )
-                } else {
-                    return Err((
-                        StatusCode::UNAUTHORIZED,
-                        "no OpenAI credentials found for official models",
-                    ));
-                }
-            }
+            })?;
+            let encoded = serde_json::to_vec(&rewritten.body).map_err(|_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "cannot re-encode request",
+                )
+            })?;
+            Ok((Some(Bytes::from(encoded)), rewritten.input))
         }
-    };
-    if one_m_context {
-        append_anthropic_beta(&mut headers);
+        None if model_override.is_some()
+            || *upstream_protocol == router::ModelProtocol::ChatCompletions =>
+        {
+            let prepared =
+                prepare_relay_body(bytes, model_override.as_deref(), *upstream_protocol)?;
+            Ok((Some(prepared), Vec::new()))
+        }
+        None => Ok((body, Vec::new())),
     }
+}
 
-    // Canonical Responses input, excluding request-scoped instructions.
-    let mut translated_input: Vec<Value> = Vec::new();
-    let body = match (&destination, body) {
-        (_, None) => None,
-        (
-            Destination::Provider {
-                model_override,
-                upstream_protocol,
-                translation,
-                ..
-            },
-            Some(bytes),
-        ) => {
-            match translation {
-                // A translated request is rebuilt for the provider's protocol,
-                // with the slug prefix replaced by the provider's real model.
-                Some(translation) => {
-                    let mut value: Value = serde_json::from_slice(&bytes)
-                        .map_err(|_| (StatusCode::BAD_REQUEST, "request body is not JSON"))?;
-                    if let Some(model) = model_override.as_deref() {
-                        value["model"] = json!(model);
-                    }
-                    let rewritten = protocol::request_body(*translation, &value)
-                        .map_err(|error| (StatusCode::BAD_REQUEST, if error == "protocol.errors.unknownPreviousResponse" {
-                            "previous_response_id is unknown or expired; resend the full conversation"
-                        } else { "cannot translate request" }))?;
-                    translated_input = rewritten.input;
-                    Some(Bytes::from(serde_json::to_vec(&rewritten.body).map_err(
-                        |_| {
-                            (
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                "cannot re-encode request",
-                            )
-                        },
-                    )?))
-                }
-                None if model_override.is_some()
-                    || *upstream_protocol == router::ModelProtocol::ChatCompletions =>
-                {
-                    Some(prepare_relay_body(
-                        &bytes,
-                        model_override.as_deref(),
-                        *upstream_protocol,
-                    )?)
-                }
-                None => Some(bytes),
-            }
-        }
-        (_, Some(bytes)) => Some(bytes),
-    };
-
-    let outbound_client = match &destination {
+/// Direct-mode providers bypass the configured proxy; everything else uses it.
+fn client_for(context: &ArcContext, destination: &Destination) -> ForwardResult<Client> {
+    Ok(match destination {
         Destination::Provider { provider, .. } if provider.network_mode() == "direct" => {
             context.outbound_direct.clone()
         }
@@ -847,21 +933,17 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                 )
             })?
             .clone(),
-    };
-    let mut outbound = outbound_client.request(method, url).headers(headers);
-    if let Some(body) = body {
-        outbound = outbound.body(body);
-    }
-    let response = match outbound.send().await {
-        Ok(response) => response,
-        Err(_) => {
-            if let Some(request) = relay_request {
-                request.failed(StatusCode::BAD_GATEWAY.as_u16());
-            }
-            return Err((StatusCode::BAD_GATEWAY, "cannot reach the provider"));
-        }
-    };
+    })
+}
 
+/// Streams the upstream response back, translating it into the caller's protocol
+/// when needed and recording relay usage along the way.
+async fn relay_response(
+    response: reqwest::Response,
+    translation: Option<protocol::Translation>,
+    relay_request: Option<relay_usage::RelayUsageRequest>,
+    translated_input: Vec<Value>,
+) -> ForwardResult {
     let response_status = response.status();
     let is_event_stream = response
         .headers()
@@ -874,11 +956,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
 
     // A translated stream is rebuilt as Responses events, so its length and any
     // upstream content type no longer describe the bytes being sent.
-    let translation = match &destination {
-        Destination::Provider { translation, .. } => *translation,
-        Destination::Official => None,
-    };
-    let mut builder = Response::builder().status(response.status());
+    let mut builder = Response::builder().status(response_status);
     for (name, value) in &response_headers {
         if translation.is_some() && name == CONTENT_TYPE {
             continue;
@@ -898,122 +976,127 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         );
     }
 
-    let response_body = if let Some(translation) =
-        translation.filter(|_| is_event_stream && response_status.is_success())
-    {
-        // Translate frame by frame; the translator emits a terminal event if the
-        // upstream stops without one, so Codex never waits forever.
-        let mut observer =
-            relay_request.map(|request| request.observe(response_status.as_u16(), true));
-        // Shared so the same translator can still emit its closing events after
-        // the body stream itself has been moved into the response.
-        // The turn is recorded once it completes, so the next follow-up that
-        // quotes this response id can be rebuilt from it.
-        let mut recorded = Some(translated_input);
-        let translator = Arc::new(Mutex::new(protocol::stream_translator(translation)));
-        let body_translator = Arc::clone(&translator);
-        let stream = response.bytes_stream().flat_map(move |chunk| {
-            let mut frames: Vec<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>> =
-                Vec::new();
-            match chunk {
-                Ok(bytes) => {
-                    if let Some(observer) = observer.as_mut() {
-                        observer.observe(&bytes);
-                    }
-                    if let Ok(mut translator) = body_translator.lock() {
-                        let events = translator.push(&bytes);
-                        // Record before exposing response.completed: a follow-up
-                        // can arrive before the upstream socket reaches EOF.
-                        if let Some(response) = translator.completed_response() {
-                            if let Some(input) = recorded.take() {
-                                protocol::history::remember(response, input);
-                            }
-                        }
-                        for event in events {
-                            frames.push(Ok(Frame::data(Bytes::from(event))));
-                        }
-                    }
-                }
-                Err(_) => {
-                    if let Ok(mut translator) = body_translator.lock() {
-                        for event in translator.fail("upstream_stream_error") {
-                            frames.push(Ok(Frame::data(Bytes::from(event))));
-                        }
-                    }
-                }
+    let response_body = match translation {
+        Some(translation) if response_status.is_success() && is_event_stream => {
+            translated_stream(response, translation, relay_request, translated_input)
+        }
+        Some(translation) if response_status.is_success() => {
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|_| (StatusCode::BAD_GATEWAY, "cannot read provider response"))?;
+            if let Some(request) = relay_request {
+                request
+                    .observe(response_status.as_u16(), false)
+                    .observe(&bytes);
             }
-            futures_util::stream::iter(frames)
-        });
-        // The closing events are emitted once, after the upstream stream ends.
-        let tail = futures_util::stream::once(async move {
-            let events = match translator.lock() {
-                Ok(mut translator) => translator.finish(),
-                Err(_) => Vec::new(),
-            };
-            futures_util::stream::iter(
-                events
-                    .into_iter()
-                    .map(|event| Ok(Frame::data(Bytes::from(event)))),
-            )
-        })
-        .flatten();
-        let stream = stream.chain(tail);
-        BodyExt::boxed(StreamBody::new(stream))
-    } else if let Some(translation) = translation.filter(|_| response_status.is_success()) {
-        let bytes = match response.bytes().await {
-            Ok(bytes) => bytes,
-            Err(_) => return Err((StatusCode::BAD_GATEWAY, "cannot read provider response")),
-        };
-        if let Some(request) = relay_request {
-            request
-                .observe(response_status.as_u16(), false)
-                .observe(&bytes);
-        }
-        let value: Value = serde_json::from_slice(&bytes)
-            .map_err(|_| (StatusCode::BAD_GATEWAY, "invalid provider response"))?;
-        let converted = protocol::response_body(translation, &value).map_err(|_| {
-            (
-                StatusCode::BAD_GATEWAY,
-                "cannot translate provider response",
-            )
-        })?;
-        if translation.from == router::ModelProtocol::Responses {
-            protocol::history::remember(&converted, translated_input);
-        }
-        BodyExt::boxed(
-            Full::new(Bytes::from(converted.to_string())).map_err(|never| match never {}),
-        )
-    } else if let Some(translation) = translation.filter(|_| !response_status.is_success()) {
-        // An upstream error must reach the caller in the caller's own error shape,
-        // otherwise SDKs report a parse failure instead of the real message.
-        let bytes = response.bytes().await.unwrap_or_default();
-        if let Some(request) = relay_request {
-            request.observe(response_status.as_u16(), false).observe(&bytes);
-        }
-        let body = translated_error_body(translation.from, response_status, &bytes);
-        BodyExt::boxed(Full::new(Bytes::from(body)).map_err(|never| match never {}))
-    } else if let Some(request) = relay_request {
-        let mut observer = request.observe(response_status.as_u16(), is_event_stream);
-        let stream = response.bytes_stream().map(move |chunk| {
-            if let Ok(bytes) = &chunk {
-                observer.observe(bytes);
+            let value: Value = serde_json::from_slice(&bytes)
+                .map_err(|_| (StatusCode::BAD_GATEWAY, "invalid provider response"))?;
+            let converted = protocol::response_body(translation, &value).map_err(|_| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    "cannot translate provider response",
+                )
+            })?;
+            if translation.from == router::ModelProtocol::Responses {
+                protocol::history::remember(&converted, translated_input);
             }
-            chunk
-                .map(Frame::data)
-                .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
-        });
-        BodyExt::boxed(StreamBody::new(stream))
-    } else {
-        let stream = response.bytes_stream().map(|chunk| {
-            chunk
-                .map(Frame::data)
-                .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
-        });
-        BodyExt::boxed(StreamBody::new(stream))
+            BodyExt::boxed(
+                Full::new(Bytes::from(converted.to_string())).map_err(|never| match never {}),
+            )
+        }
+        Some(translation) => {
+            // An upstream error must reach the caller in the caller's own error shape,
+            // otherwise SDKs report a parse failure instead of the real message.
+            let bytes = response.bytes().await.unwrap_or_default();
+            if let Some(request) = relay_request {
+                request.observe(response_status.as_u16(), false).observe(&bytes);
+            }
+            let body = translated_error_body(translation.from, response_status, &bytes);
+            BodyExt::boxed(Full::new(Bytes::from(body)).map_err(|never| match never {}))
+        }
+        None => {
+            let mut observer =
+                relay_request.map(|request| request.observe(response_status.as_u16(), is_event_stream));
+            let stream = response.bytes_stream().map(move |chunk| {
+                if let (Some(observer), Ok(bytes)) = (observer.as_mut(), &chunk) {
+                    observer.observe(bytes);
+                }
+                chunk
+                    .map(Frame::data)
+                    .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
+            });
+            BodyExt::boxed(StreamBody::new(stream))
+        }
     };
     builder
         .body(response_body)
         .map_err(|_| (StatusCode::BAD_GATEWAY, "invalid upstream response"))
+}
+
+/// Translate an upstream event stream frame by frame; the translator emits a
+/// terminal event if the upstream stops without one, so Codex never waits forever.
+fn translated_stream(
+    response: reqwest::Response,
+    translation: protocol::Translation,
+    relay_request: Option<relay_usage::RelayUsageRequest>,
+    translated_input: Vec<Value>,
+) -> ResponseBody {
+    let mut observer =
+        relay_request.map(|request| request.observe(response.status().as_u16(), true));
+    // The turn is recorded once it completes, so the next follow-up that
+    // quotes this response id can be rebuilt from it.
+    let mut recorded = Some(translated_input);
+    // Shared so the same translator can still emit its closing events after
+    // the body stream itself has been moved into the response.
+    let translator = Arc::new(Mutex::new(protocol::stream_translator(translation)));
+    let body_translator = Arc::clone(&translator);
+    let stream = response.bytes_stream().flat_map(move |chunk| {
+        let mut frames: Vec<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>> =
+            Vec::new();
+        match chunk {
+            Ok(bytes) => {
+                if let Some(observer) = observer.as_mut() {
+                    observer.observe(&bytes);
+                }
+                if let Ok(mut translator) = body_translator.lock() {
+                    let events = translator.push(&bytes);
+                    // Record before exposing response.completed: a follow-up
+                    // can arrive before the upstream socket reaches EOF.
+                    if let Some(response) = translator.completed_response() {
+                        if let Some(input) = recorded.take() {
+                            protocol::history::remember(response, input);
+                        }
+                    }
+                    for event in events {
+                        frames.push(Ok(Frame::data(Bytes::from(event))));
+                    }
+                }
+            }
+            Err(_) => {
+                if let Ok(mut translator) = body_translator.lock() {
+                    for event in translator.fail("upstream_stream_error") {
+                        frames.push(Ok(Frame::data(Bytes::from(event))));
+                    }
+                }
+            }
+        }
+        futures_util::stream::iter(frames)
+    });
+    // The closing events are emitted once, after the upstream stream ends.
+    let tail = futures_util::stream::once(async move {
+        let events = match translator.lock() {
+            Ok(mut translator) => translator.finish(),
+            Err(_) => Vec::new(),
+        };
+        futures_util::stream::iter(
+            events
+                .into_iter()
+                .map(|event| Ok(Frame::data(Bytes::from(event)))),
+        )
+    })
+    .flatten();
+    BodyExt::boxed(StreamBody::new(stream.chain(tail)))
 }
 
 /// Re-shape an upstream error body into the caller's protocol.
