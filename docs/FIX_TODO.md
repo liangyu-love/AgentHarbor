@@ -136,7 +136,8 @@
   - 协议可达判断统一为 `Translation::can_serve(from, to)`（同协议直通或受支持的翻译），替换 `router.rs`、`router_proxy.rs`、`client_config/options.rs` 三处各自的写法。
   - Claude Code / OpenCode adapter 的 base URL + 凭据选择合并为 `client_config::options::client_endpoint`。
   - 附带修复阶段 10 新增的取消测试偶发卡死（10 次约 2 次）：fixture 的 `accept()` 改为带 deadline 的轮询、固定走直连（不经系统代理），并等上游真正收到连接后再取消。连续 13 次全量 lib 测试通过。
-- [ ] C6 重 IO 同步 command 改为 async / spawn_blocking。
+- [x] C6 重 IO 同步 command 移出主线程：图库 6 个（保存/另存/设目录/列表/读原图/删除）、Skills 6 个（列表/备份列表/导入/删除/恢复/删除备份）、`clean`、`rebuild_registry`、`diagnose`、`export_newapi_providers`。新增 `commands::blocking`（spawn_blocking）与 `commands::with_repo`（仅在后台线程持有仓库锁）。前端调用签名不变。
+  - 未改：MCP、自定义指令、账号列表/切换等只读写单个小文件的 command，仍是同步；`load_snapshot` 也保持同步（启动时就要，且只读 registry）。
 - [ ] C3 集中 query key 与 localStorage key。
 - [ ] C4 统一错误格式。
 - [ ] C2 拆分 `router_proxy::handle()`。

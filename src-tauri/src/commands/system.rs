@@ -33,17 +33,18 @@ pub(crate) fn updater_configured(config: &tauri::Config) -> bool {
 }
 
 #[tauri::command]
-pub fn clean(repo: State<'_, Mutex<Repository>>) -> Result<CoreEnvelope<CleanPayload>, String> {
-    let repo = repo.lock().map_err(|e| e.to_string())?;
-    repo.clean().map_err(|e| e.to_string())
+pub async fn clean(app: AppHandle) -> Result<CoreEnvelope<CleanPayload>, String> {
+    super::with_repo(app, |repo| repo.clean().map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-pub fn rebuild_registry(
-    repo: State<'_, Mutex<Repository>>,
+pub async fn rebuild_registry(
+    app: AppHandle,
 ) -> Result<CoreEnvelope<RebuildRegistryPayload>, String> {
-    let repo = repo.lock().map_err(|e| e.to_string())?;
-    repo.rebuild_registry().map_err(|e| e.to_string())
+    super::with_repo(app, |repo| {
+        repo.rebuild_registry().map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -124,11 +125,8 @@ pub async fn detect_api_proxy_config() -> Result<CoreEnvelope<ApiProxyDetectPayl
 }
 
 #[tauri::command]
-pub fn diagnose(
-    repo: State<'_, Mutex<Repository>>,
-) -> Result<CoreEnvelope<DiagnosePayload>, String> {
-    let repo = repo.lock().map_err(|e| e.to_string())?;
-    repo.diagnose().map_err(|e| e.to_string())
+pub async fn diagnose(app: AppHandle) -> Result<CoreEnvelope<DiagnosePayload>, String> {
+    super::with_repo(app, |repo| repo.diagnose().map_err(|e| e.to_string())).await
 }
 
 #[derive(Serialize)]

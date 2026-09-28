@@ -722,54 +722,61 @@ pub struct SavedImagesPayload {
 
 /// Write one generated image to an explicit path chosen by the user.
 #[tauri::command]
-pub fn save_image_file(path: String, data_url: String) -> Result<(), String> {
-    let (bytes, _) = decode_data_url(&data_url)?;
-    // The path comes over IPC, so only ever write real image bytes to it.
-    image::guess_format(&bytes).map_err(|_| "image.errors.save".to_owned())?;
-    let target = resolve_save_path(&path)?;
-    if let Some(parent) = target.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|_| "image.errors.save".to_owned())?;
+pub async fn save_image_file(path: String, data_url: String) -> Result<(), String> {
+    super::blocking(move || {
+        let (bytes, _) = decode_data_url(&data_url)?;
+        // The path comes over IPC, so only ever write real image bytes to it.
+        image::guess_format(&bytes).map_err(|_| "image.errors.save".to_owned())?;
+        let target = resolve_save_path(&path)?;
+        if let Some(parent) = target.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|_| "image.errors.save".to_owned())?;
+            }
         }
-    }
-    std::fs::write(&target, bytes).map_err(|_| "image.errors.save".to_owned())
+        std::fs::write(&target, bytes).map_err(|_| "image.errors.save".to_owned())
+    })
+    .await
 }
 
 /// Persist generated images under the app gallery folder without a save dialog.
 #[tauri::command]
-pub fn save_images_to_gallery(
+pub async fn save_images_to_gallery(
     repo: State<'_, Mutex<Repository>>,
     data_urls: Vec<String>,
 ) -> Result<SavedImagesPayload, String> {
-    if data_urls.is_empty() {
-        return Err("image.errors.save".into());
-    }
     let paths = paths(&repo)?;
-    let directory = gallery_dir(&paths);
-    std::fs::create_dir_all(&directory).map_err(|_| "image.errors.save".to_owned())?;
-    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S%.3f");
-    let nonce = uuid::Uuid::new_v4().simple().to_string()[..8].to_owned();
-    let mut files = Vec::with_capacity(data_urls.len());
-    for (index, data_url) in data_urls.iter().enumerate() {
-        let (bytes, extension) = decode_data_url(data_url)?;
-        let file_name = format!("{}-{}-{:02}.{}", stamp, nonce, index + 1, extension);
-        let target = directory.join(&file_name);
-        std::fs::write(&target, bytes).map_err(|_| "image.errors.save".to_owned())?;
-        files.push(target.to_string_lossy().into_owned());
-    }
-    Ok(SavedImagesPayload {
-        directory: directory.to_string_lossy().into_owned(),
-        files,
+    super::blocking(move || {
+        if data_urls.is_empty() {
+            return Err("image.errors.save".into());
+        }
+        let directory = gallery_dir(&paths);
+        std::fs::create_dir_all(&directory).map_err(|_| "image.errors.save".to_owned())?;
+        let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S%.3f");
+        let nonce = uuid::Uuid::new_v4().simple().to_string()[..8].to_owned();
+        let mut files = Vec::with_capacity(data_urls.len());
+        for (index, data_url) in data_urls.iter().enumerate() {
+            let (bytes, extension) = decode_data_url(data_url)?;
+            let file_name = format!("{}-{}-{:02}.{}", stamp, nonce, index + 1, extension);
+            let target = directory.join(&file_name);
+            std::fs::write(&target, bytes).map_err(|_| "image.errors.save".to_owned())?;
+            files.push(target.to_string_lossy().into_owned());
+        }
+        Ok(SavedImagesPayload {
+            directory: directory.to_string_lossy().into_owned(),
+            files,
+        })
     })
+    .await
 }
 
 #[tauri::command]
-pub fn set_gallery_directory(
+pub async fn set_gallery_directory(
     repo: State<'_, Mutex<Repository>>,
     directory: String,
 ) -> Result<String, String> {
     let paths = paths(&repo)?;
-    persist_gallery_directory(&paths, std::path::Path::new(&directory))
+    super::blocking(move || persist_gallery_directory(&paths, std::path::Path::new(&directory)))
+        .await
 }
 
 fn persist_gallery_directory(
@@ -828,55 +835,58 @@ pub struct GalleryListPayload {
 
 /// List local gallery images newest-first (capped to keep the UI light).
 #[tauri::command]
-pub fn list_gallery_images(
+pub async fn list_gallery_images(
     repo: State<'_, Mutex<Repository>>,
 ) -> Result<GalleryListPayload, String> {
-    const MAX_GALLERY_ITEMS: usize = 200;
     let paths = paths(&repo)?;
-    let directory = gallery_dir(&paths);
-    if !directory.exists() {
-        return Ok(GalleryListPayload {
-            directory: directory.to_string_lossy().into_owned(),
-            items: Vec::new(),
-            has_more: false,
-        });
-    }
-    let mut items = Vec::new();
-    let entries = std::fs::read_dir(&directory).map_err(|_| "image.errors.save".to_owned())?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_file() || !is_gallery_image(&path) {
-            continue;
+    super::blocking(move || {
+        const MAX_GALLERY_ITEMS: usize = 200;
+        let directory = gallery_dir(&paths);
+        if !directory.exists() {
+            return Ok(GalleryListPayload {
+                directory: directory.to_string_lossy().into_owned(),
+                items: Vec::new(),
+                has_more: false,
+            });
         }
-        let meta = match entry.metadata() {
-            Ok(meta) => meta,
-            Err(_) => continue,
-        };
-        let modified_at = meta
-            .modified()
-            .ok()
-            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|duration| duration.as_millis() as i64)
-            .unwrap_or(0);
-        items.push(GalleryItem {
-            name: entry.file_name().to_string_lossy().into_owned(),
-            path: path.to_string_lossy().into_owned(),
-            size: meta.len(),
-            modified_at,
+        let mut items = Vec::new();
+        let entries = std::fs::read_dir(&directory).map_err(|_| "image.errors.save".to_owned())?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() || !is_gallery_image(&path) {
+                continue;
+            }
+            let meta = match entry.metadata() {
+                Ok(meta) => meta,
+                Err(_) => continue,
+            };
+            let modified_at = meta
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_millis() as i64)
+                .unwrap_or(0);
+            items.push(GalleryItem {
+                name: entry.file_name().to_string_lossy().into_owned(),
+                path: path.to_string_lossy().into_owned(),
+                size: meta.len(),
+                modified_at,
+            });
+        }
+        items.sort_by(|a, b| {
+            b.modified_at
+                .cmp(&a.modified_at)
+                .then_with(|| b.name.cmp(&a.name))
         });
-    }
-    items.sort_by(|a, b| {
-        b.modified_at
-            .cmp(&a.modified_at)
-            .then_with(|| b.name.cmp(&a.name))
-    });
-    let has_more = items.len() > MAX_GALLERY_ITEMS;
-    items.truncate(MAX_GALLERY_ITEMS);
-    Ok(GalleryListPayload {
-        directory: directory.to_string_lossy().into_owned(),
-        items,
-        has_more,
+        let has_more = items.len() > MAX_GALLERY_ITEMS;
+        items.truncate(MAX_GALLERY_ITEMS);
+        Ok(GalleryListPayload {
+            directory: directory.to_string_lossy().into_owned(),
+            items,
+            has_more,
+        })
     })
+    .await
 }
 
 /// Load one gallery image as a data URL for WebView display.
@@ -971,40 +981,46 @@ pub async fn load_gallery_thumbnail(
 
 /// Load the original image only for preview or export.
 #[tauri::command]
-pub fn load_gallery_image(
+pub async fn load_gallery_image(
     repo: State<'_, Mutex<Repository>>,
     path: String,
 ) -> Result<String, String> {
     let paths = paths(&repo)?;
-    let (target, bytes) = read_gallery_image(&paths, std::path::Path::new(&path))?;
-    let extension = target
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| value.to_ascii_lowercase())
-        .unwrap_or_else(|| "png".to_owned());
-    let mime = match extension.as_str() {
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "gif" => "image/gif",
-        _ => "image/png",
-    };
-    Ok(format!("data:{};base64,{}", mime, STANDARD.encode(bytes)))
+    super::blocking(move || {
+        let (target, bytes) = read_gallery_image(&paths, std::path::Path::new(&path))?;
+        let extension = target
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_ascii_lowercase())
+            .unwrap_or_else(|| "png".to_owned());
+        let mime = match extension.as_str() {
+            "jpg" | "jpeg" => "image/jpeg",
+            "webp" => "image/webp",
+            "gif" => "image/gif",
+            _ => "image/png",
+        };
+        Ok(format!("data:{};base64,{}", mime, STANDARD.encode(bytes)))
+    })
+    .await
 }
 
 /// Delete one gallery image.
 #[tauri::command]
-pub fn delete_gallery_image(
+pub async fn delete_gallery_image(
     repo: State<'_, Mutex<Repository>>,
     path: String,
 ) -> Result<(), String> {
     let paths = paths(&repo)?;
-    let target = std::path::PathBuf::from(&path);
-    let target = ensure_inside_gallery(&paths, &target)?;
-    // The gallery can point at any user directory; never delete non-image files there.
-    if !is_gallery_image(&target) {
-        return Err("image.errors.notFound".into());
-    }
-    std::fs::remove_file(&target).map_err(|_| "image.errors.save".to_owned())
+    super::blocking(move || {
+        let target = std::path::PathBuf::from(&path);
+        let target = ensure_inside_gallery(&paths, &target)?;
+        // The gallery can point at any user directory; never delete non-image files there.
+        if !is_gallery_image(&target) {
+            return Err("image.errors.notFound".into());
+        }
+        std::fs::remove_file(&target).map_err(|_| "image.errors.save".to_owned())
+    })
+    .await
 }
 
 #[cfg(test)]

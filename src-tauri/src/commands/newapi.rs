@@ -212,9 +212,10 @@ pub async fn import_newapi_providers(
 }
 
 #[tauri::command]
-pub fn export_newapi_providers(
+pub async fn export_newapi_providers(
     repo: State<'_, Mutex<Repository>>,
     path: String,
 ) -> Result<(), String> {
-    router::export_providers(&paths(&repo)?, std::path::Path::new(&path))
+    let paths = paths(&repo)?;
+    super::blocking(move || router::export_providers(&paths, std::path::Path::new(&path))).await
 }
