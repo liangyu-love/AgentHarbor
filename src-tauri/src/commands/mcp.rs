@@ -19,7 +19,6 @@ pub fn load_mcp_servers(
         last_scan_at: current_timestamp(),
         items,
     };
-    let _ = repo.store_bootstrap_mcp_servers(&payload);
     Ok(CoreEnvelope::ok(payload))
 }
 

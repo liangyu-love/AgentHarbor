@@ -56,11 +56,6 @@ pub fn declared_protocol(endpoint_types: &[String]) -> Option<ModelProtocol> {
     None
 }
 
-pub fn infer_protocol(endpoint_types: &[String]) -> ModelProtocol {
-    // Nothing advertised: OpenAI-compatible is the broadest common denominator.
-    declared_protocol(endpoint_types).unwrap_or(ModelProtocol::ChatCompletions)
-}
-
 /// Infer a provider default from its selected model. Other models can use
 /// their own protocol overrides without changing this default.
 pub fn infer_protocol_from_models(

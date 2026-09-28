@@ -10,7 +10,6 @@ import type {
   ApiProxyDetectPayload,
   ApiProxyTestPayload,
   UpdateInstallabilityPayload,
-  DaemonRunPayload,
   DiagnosePayload,
   McpServerListPayload,
   McpServerMutationPayload,
@@ -119,6 +118,7 @@ const targetsApi = {
   previewConfig: (request: ClientConfigRequest) => invoke<ClientConfigPreview>("preview_client_config", { request }),
   applyConfig: (request: ClientConfigRequest, revision: string) => invoke<ClientConfigApplied>("apply_client_config", { request, revision }),
   restoreConfig: (targetId: TargetId) => invoke<ClientConfigApplied>("restore_client_config", { targetId }),
+  releaseConfig: (targetId: TargetId) => invoke<void>("release_client_config", { targetId }),
 };
 
 const conversationsApi = {
@@ -173,20 +173,6 @@ export const api = {
   accounts: accountsApi,
   usage: usageApi,
 
-  // Compatibility aliases for extensions and older frontend modules.
-  loadNewApiState: providersApi.loadState,
-  saveNewApiProvider: providersApi.save,
-  deleteNewApiProvider: providersApi.delete,
-  setNewApiProviderEnabled: providersApi.setEnabled,
-  setNewApiProviderNetwork: providersApi.setNetwork,
-  testNewApiProvider: providersApi.test,
-  fetchNewApiModels: (providerId: string | null, baseUrl: string, apiKey: string) =>
-    providersApi.fetchModels(providerId, baseUrl, apiKey, "responses"),
-  queryNewApiProviderBalance: providersApi.queryBalance,
-  setNewApiSmartRouting: routingApi.setEnabled,
-  setNewApiAccountless: routingApi.setAccountless,
-  importNewApiProviders: providersApi.import,
-  exportNewApiProviders: providersApi.export,
   loadSnapshot: (localOnly = false) =>
     invoke<CoreEnvelope<CoreSnapshotPayload>>("load_snapshot", { localOnly }),
 
@@ -223,16 +209,8 @@ export const api = {
   checkUpdateInstallability: () =>
     invoke<UpdateInstallabilityPayload>("check_update_installability"),
 
-  runDaemonOnce: () =>
-    invoke<CoreEnvelope<DaemonRunPayload>>("run_daemon_once"),
-
   diagnose: () =>
     invoke<CoreEnvelope<DiagnosePayload>>("diagnose"),
-
-  restartCodex: () => targetsApi.restart("codex"),
-
-  gracefulRestartForUpdate: () =>
-    invoke<void>("graceful_restart_for_update"),
 
   loadMcpServers: () =>
     invoke<CoreEnvelope<McpServerListPayload>>("load_mcp_servers"),
@@ -283,17 +261,9 @@ export const api = {
 
   isUpdaterConfigured: () => invoke<boolean>("is_updater_configured"),
 
-  focusMainWindow: () =>
-    invoke<void>("focus_main_window"),
-
   openPath: (path: string) =>
     invoke<void>("open_path", { path }),
 
   getSystemInfo: () =>
     invoke<{ os: string; osVersion: string; arch: string; hostname: string }>("get_system_info"),
-
-  listCodexThreads: () => conversationsApi.list("codex"),
-
-  exportCodexThreads: (keys: string[], targetDir: string, format: "markdown" | "jsonl") =>
-    conversationsApi.export("codex", keys, targetDir, format),
 };

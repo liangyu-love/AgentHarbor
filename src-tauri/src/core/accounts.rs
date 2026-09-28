@@ -5,6 +5,8 @@ use super::storage;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+const AUTH_BACKUP_LIMIT: usize = 20;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexAccountSummary {
@@ -234,6 +236,12 @@ pub fn switch(repo: &Repository, account_key: &str) -> Result<CodexAccountListPa
         ));
         // Without a backup the current credentials could be lost, so abort the switch.
         std::fs::copy(&repo.paths().auth_path, backup)?;
+        // Each backup holds live tokens; keep a short recovery window, not every switch.
+        storage::prune_backups(&repo.paths().auth_backups_dir, AUTH_BACKUP_LIMIT, |path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("auth-") && name.ends_with(".json"))
+        });
     }
     storage::write_atomic(&repo.paths().auth_path, &target_bytes)?;
     Ok(payload(repo.rebuild_registry_state()?))

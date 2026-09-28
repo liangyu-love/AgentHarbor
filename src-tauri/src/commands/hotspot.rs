@@ -1,6 +1,6 @@
 use tauri::{AppHandle, Manager};
 
-#[tauri::command]
+/// Used by the tray menu; not exposed over IPC.
 pub fn focus_main_window(app: AppHandle) -> Result<(), String> {
     force_reveal_main_window(&app);
     Ok(())

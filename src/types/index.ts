@@ -228,12 +228,6 @@ export interface ApiProxyDetectPayload {
   probe: ApiProxyTestPayload;
 }
 
-export interface DaemonRunPayload {
-  executedAt: number;
-  runOnce: boolean;
-  autoSwitchEnabled: boolean;
-  serviceState: AutoSwitchRuntimeState;
-}
 
 export interface DiagnosePayload {
   paths: AppPathState;
@@ -411,14 +405,6 @@ export interface TokenUsagePayload {
   generatedAt: number;
   local: LocalTokenUsagePayload;
   relay: RelayUsagePayload;
-}
-
-export interface BootstrapStatePayload {
-  writtenAt: number | null;
-  snapshotProgressive: CoreSnapshotPayload | null;
-  usageAnalytics: UsageAnalyticsPayload | null;
-  mcpServers: McpServerListPayload | null;
-  installedSkills: SkillListPayload | null;
 }
 
 // ---------------------------------------------------------------------------

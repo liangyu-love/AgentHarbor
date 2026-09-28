@@ -18,7 +18,6 @@ pub fn load_installed_skills(
         last_scan_at: current_timestamp(),
         items,
     };
-    let _ = repo.store_bootstrap_installed_skills(&payload);
     Ok(CoreEnvelope::ok(payload))
 }
 

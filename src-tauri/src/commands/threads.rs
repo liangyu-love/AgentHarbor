@@ -9,13 +9,6 @@ use std::sync::Mutex;
 use tauri::State;
 
 #[tauri::command]
-pub async fn list_codex_threads(
-    repo: State<'_, Mutex<Repository>>,
-) -> Result<CoreEnvelope<ThreadListPayload>, String> {
-    list_conversations(repo, TargetId::Codex).await
-}
-
-#[tauri::command]
 pub async fn list_conversations(
     repo: State<'_, Mutex<Repository>>,
     target_id: TargetId,
@@ -67,16 +60,6 @@ pub async fn list_conversations(
         },
         warnings,
     ))
-}
-
-#[tauri::command]
-pub async fn export_codex_threads(
-    repo: State<'_, Mutex<Repository>>,
-    keys: Vec<String>,
-    target_dir: String,
-    format: String,
-) -> Result<CoreEnvelope<ThreadExportPayload>, String> {
-    export_conversations(repo, TargetId::Codex, keys, target_dir, format).await
 }
 
 #[tauri::command]

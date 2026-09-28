@@ -10,6 +10,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use uuid::Uuid;
 
+/// Each backup holds a full catalog database copy plus the deleted rollouts.
+const DELETE_BACKUP_LIMIT: usize = 10;
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadDeleteResult {
@@ -460,6 +463,8 @@ fn delete_threads_inner(
         Uuid::new_v4()
     ));
     std::fs::create_dir_all(&backup_dir)?;
+    // Every deletion snapshots the whole catalog database; keep the latest few only.
+    storage::prune_backups(&backup_root, DELETE_BACKUP_LIMIT, |path| path.is_dir());
 
     let mut manifest_entries = Vec::with_capacity(selected.len());
     let mut rollout_backups = Vec::new();

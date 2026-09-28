@@ -79,6 +79,21 @@ pub async fn restore_client_config(
     attach_reconcile_warning(result, routing_runtime::reconcile(&paths).await)
 }
 
+/// Drop AgentHarbor's management record, leaving the client file as it is.
+#[tauri::command]
+pub async fn release_client_config(
+    repo: State<'_, Mutex<Repository>>,
+    target_id: TargetId,
+) -> Result<(), String> {
+    let paths = paths(&repo)?;
+    let _guard = routing_runtime::mutation_guard().await;
+    manager(&paths).release(target_id)?;
+    if let Err(error) = routing_runtime::reconcile(&paths).await {
+        log::warn!("client config was released but router reconciliation failed: {error}");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

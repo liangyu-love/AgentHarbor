@@ -1,8 +1,8 @@
 use crate::core::models::*;
-use crate::core::repository::{usage_refresh_interval_seconds, Repository};
+use crate::core::repository::Repository;
 use serde::Serialize;
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 
 #[tauri::command]
 pub fn load_snapshot(
@@ -89,22 +89,12 @@ pub fn get_usage_refresh_interval(repo: State<'_, Mutex<Repository>>) -> Result<
 
 #[tauri::command]
 pub fn set_usage_refresh_interval(
-    app: AppHandle,
     repo: State<'_, Mutex<Repository>>,
     interval: String,
 ) -> Result<String, String> {
-    let normalized = {
-        let repo = repo.lock().map_err(|e| e.to_string())?;
-        repo.set_usage_refresh_interval(&interval)
-            .map_err(|e| e.to_string())?
-    };
-
-    let repo_state = app.state::<Mutex<Repository>>();
-    let _interval_seconds = {
-        let repo = repo_state.lock().map_err(|e| e.to_string())?;
-        usage_refresh_interval_seconds(&repo.get_usage_refresh_interval())
-    };
-    Ok(normalized)
+    let repo = repo.lock().map_err(|e| e.to_string())?;
+    repo.set_usage_refresh_interval(&interval)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -132,40 +122,11 @@ pub async fn detect_api_proxy_config() -> Result<CoreEnvelope<ApiProxyDetectPayl
 }
 
 #[tauri::command]
-pub fn run_daemon_once() -> Result<CoreEnvelope<DaemonRunPayload>, String> {
-    Err("Automatic account switching is not available in this source build".into())
-}
-
-#[tauri::command]
 pub fn diagnose(
     repo: State<'_, Mutex<Repository>>,
 ) -> Result<CoreEnvelope<DiagnosePayload>, String> {
     let repo = repo.lock().map_err(|e| e.to_string())?;
     repo.diagnose().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn restart_codex(repo: State<'_, Mutex<Repository>>) -> Result<(), String> {
-    let (proxy, paths) = {
-        let repo = repo.lock().map_err(|e| e.to_string())?;
-        (
-            crate::core::newapi::proxy_from_settings(&repo.paths().settings_path),
-            repo.paths().clone(),
-        )
-    };
-    tauri::async_runtime::spawn_blocking(move || {
-        crate::platform::process::restart_codex_app(&proxy, &paths).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-pub fn load_bootstrap_state(
-    repo: State<'_, Mutex<Repository>>,
-) -> Result<CoreEnvelope<crate::core::bootstrap_cache::BootstrapStatePayload>, String> {
-    let repo = repo.lock().map_err(|e| e.to_string())?;
-    Ok(CoreEnvelope::ok(repo.load_bootstrap_state()))
 }
 
 #[derive(Serialize)]

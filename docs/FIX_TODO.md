@@ -33,11 +33,18 @@
 - `pnpm test:frontend`：30 项 PASS。
 - zh/en locale key 完全对齐。
 
-## 阶段 4：需确认后再做
+## 阶段 4（按优先级）
 
-- [-] H4 conflict 出路："强制覆盖"入口涉及交互设计。
-- [-] H5 Anthropic thinking 回放：需要实测上游行为。
-- [-] M1 备份保留策略：需定保留数量或天数。
-- [-] M5 删除 journal、M6 崩溃恢复、M11 保序写回。
-- [-] D1–D5 死代码清理：会删除已注册的 IPC 命令。
-- [-] C1–C6 解耦重构。
+- [x] P1 (H4) conflict / 损坏记录出路：新增 `release_client_config`（"放弃接管"），只删除管理记录、不改配置文件，之后可基于当前文件重新配置。
+- [x] P2 (M1) 备份保留：客户端配置备份、auth 备份各保留最近 20 份，会话删除备份保留最近 10 份。
+- [x] P3 (M6) 单个客户端 `.dat` 损坏不再让 `reconcile` 失败、拖垮 Codex Router。
+- [x] P4 (M11) `serde_json` 开启 `preserve_order`，写回客户端配置保持用户 key 顺序。
+- [x] P5 (D2–D4) 删除死代码：`list_codex_threads`、`export_codex_threads`、`restart_codex`、`run_daemon_once`、`load_bootstrap_state` 与整个只写不读的 bootstrap cache、IPC 形式的 `focus_main_window`、约 20 个无调用 facade、`routable`/`infer_protocol`/`usage_refresh_interval_seconds`；`load_snapshot` 不再每次探测计划任务。
+- [x] P6 (H5) Anthropic：工具循环中（最近 assistant 轮含 tool_use）不开 thinking，避免缺签名 thinking block 导致 400；开 thinking 时不透传 temperature/top_p；`max_tokens` 默认 4096 → 32000。
+- [-] 未做：M5 删除 journal、D1 自动切号剩余链路（`set_auto_switch`/`configure_auto_switch`/`platform/daemon.rs` 安装逻辑）、`config-backups`/`skill-backups` 保留策略（前者被旧版配置恢复逻辑读取、后者在 UI 中可见，需要单独设计）、C1–C6 大重构。
+
+### 验证（阶段 4）
+
+- `cargo test --lib --test local_workflows`：lib 340 通过 / 1 ignored，集成 9 通过；`cargo check --all-targets` 无 warning。
+- `pnpm build` 通过；`pnpm test:frontend` 30 项 PASS。
+- P6 仅按 Anthropic 文档语义处理，未对真实上游实测。

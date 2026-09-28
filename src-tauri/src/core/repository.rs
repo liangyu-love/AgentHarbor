@@ -1,5 +1,4 @@
 use crate::core::auth::*;
-use crate::core::bootstrap_cache::{self, BootstrapStatePayload};
 use crate::core::models::*;
 use crate::core::quota_store::{self, QuotaStoreFile};
 use crate::{core::targets::TargetRegistry, platform::paths::CodexPaths};
@@ -101,16 +100,6 @@ fn normalize_usage_refresh_interval(interval: &str) -> Option<&'static str> {
         "3m" => Some("3m"),
         "5m" => Some("5m"),
         _ => None,
-    }
-}
-
-pub(crate) fn usage_refresh_interval_seconds(interval: &str) -> u64 {
-    match normalize_usage_refresh_interval(interval).unwrap_or("1m") {
-        "30s" => 30,
-        "1m" => 60,
-        "3m" => 180,
-        "5m" => 300,
-        _ => 60,
     }
 }
 
@@ -455,9 +444,9 @@ impl Repository {
             enabled: false,
             threshold_5h_percent: config.threshold_5h_percent,
             threshold_weekly_percent: config.threshold_weekly_percent,
-            service_state: service_state.unwrap_or_else(|| {
-                crate::platform::daemon::check_daemon_state(&self.paths.launch_agent_path)
-            }),
+            // Auto-switch is unsupported, so skip the per-snapshot scheduler probe
+            // (on Windows it spawned PowerShell every time).
+            service_state: service_state.unwrap_or(AutoSwitchRuntimeState::NotInstalled),
             service_label: "dev.agentharbor.auto-switch".into(),
         }
     }
@@ -660,38 +649,6 @@ impl Repository {
             Err(_) => return AgentHarborSettings::default(),
         };
         serde_json::from_value(v).unwrap_or_default()
-    }
-
-    pub(crate) fn load_bootstrap_state(&self) -> BootstrapStatePayload {
-        bootstrap_cache::load(&self.paths.bootstrap_cache_path)
-    }
-
-    fn update_bootstrap_state<F>(&self, apply: F) -> Result<(), CoreError>
-    where
-        F: FnMut(&mut BootstrapStatePayload),
-    {
-        self.paths.ensure_directories()?;
-        bootstrap_cache::update(&self.paths.bootstrap_cache_path, apply)
-    }
-
-    pub(crate) fn store_bootstrap_mcp_servers(
-        &self,
-        payload: &McpServerListPayload,
-    ) -> Result<(), CoreError> {
-        self.update_bootstrap_state(|cache| {
-            cache.written_at = Some(current_timestamp());
-            cache.mcp_servers = Some(payload.clone());
-        })
-    }
-
-    pub(crate) fn store_bootstrap_installed_skills(
-        &self,
-        payload: &SkillListPayload,
-    ) -> Result<(), CoreError> {
-        self.update_bootstrap_state(|cache| {
-            cache.written_at = Some(current_timestamp());
-            cache.installed_skills = Some(payload.clone());
-        })
     }
 
     fn save_settings(&self, settings: &AgentHarborSettings) -> Result<(), CoreError> {

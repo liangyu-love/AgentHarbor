@@ -451,3 +451,50 @@ fn reintroducing_a_removed_auth_key_creates_a_conflict() {
     assert!(manager.restore(TargetId::ClaudeCode).is_err());
     assert_eq!(read(&manager.paths.claude), changed);
 }
+
+#[test]
+fn release_leaves_a_conflicting_file_untouched_and_allows_reapply() {
+    let (_temp, manager, store, request) = fixture();
+    apply(&manager, &store, &request);
+    // The user edits a managed field, e.g. through Claude Code's /model.
+    let mut edited = read(&manager.paths.claude);
+    edited["model"] = json!("user-picked");
+    write(&manager.paths.claude, &edited);
+    assert!(manager.list()[0].conflict);
+    assert!(manager.restore(TargetId::ClaudeCode).is_err());
+
+    manager.release(TargetId::ClaudeCode).unwrap();
+    assert_eq!(read(&manager.paths.claude), edited, "release never rewrites the file");
+    let status = &manager.list()[0];
+    assert!(!status.configured && !status.conflict);
+
+    apply(&manager, &store, &request);
+    assert_eq!(read(&manager.paths.claude)["model"], request.model.as_str());
+}
+
+#[test]
+fn unreadable_session_does_not_block_router_reconcile() {
+    let (_temp, manager, _store, _request) = fixture();
+    std::fs::create_dir_all(&manager.data_dir).unwrap();
+    std::fs::write(manager.session_path(TargetId::ClaudeCode), b"corrupt").unwrap();
+    assert!(!has_router_configs(manager.data_dir.parent().unwrap()).unwrap());
+    assert!(manager.list()[0].error.is_some());
+    manager.release(TargetId::ClaudeCode).unwrap();
+    assert!(manager.list()[0].error.is_none());
+}
+
+#[test]
+fn apply_keeps_the_user_key_order() {
+    let (_temp, manager, store, request) = fixture();
+    storage::write_atomic(
+        &manager.paths.claude,
+        br#"{"zeta":1,"permissions":{"allow":["Read"]},"alpha":2}"#,
+    )
+    .unwrap();
+    apply(&manager, &store, &request);
+    let text = std::fs::read_to_string(&manager.paths.claude).unwrap();
+    let zeta = text.find("\"zeta\"").unwrap();
+    let permissions = text.find("\"permissions\"").unwrap();
+    let alpha = text.find("\"alpha\"").unwrap();
+    assert!(zeta < permissions && permissions < alpha, "{text}");
+}

@@ -319,6 +319,22 @@ impl ConfigManager {
         self.commit(id, &session.path, current, restored, None)
     }
 
+    /// Stop managing a client without touching its config file. This is the way out
+    /// of a conflict (the user edited managed fields) or an unreadable session record:
+    /// the file keeps whatever the user has now, and a later apply starts from it.
+    pub fn release(&self, id: TargetId) -> Result<(), String> {
+        let _guard = WRITE_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .map_err(|_| "clients.errors.storage")?;
+        adapter(id)?;
+        let journal = self.session_path(id);
+        if journal.exists() {
+            storage::remove_file_durable(&journal).map_err(|_| "clients.errors.storage")?;
+        }
+        Ok(())
+    }
+
     /// Local-router URLs stop working with this process. Direct client
     /// configurations are persistent and remain in place across app restarts.
     /// Attempt each client independently so one conflict cannot strand another.
@@ -422,6 +438,9 @@ impl ConfigManager {
             &backup_path,
             &serde_json::to_vec(&current).map_err(|_| "clients.errors.storage")?,
         )?;
+        storage::prune_backups(&self.data_dir.join("backups"), 20, |path| {
+            path.extension().is_some_and(|extension| extension == "dat")
+        });
         let previous_session = self.session(id)?;
         let journal = self.session_path(id);
         secret_file::write(
@@ -464,11 +483,12 @@ struct Plan {
 pub fn has_router_configs(data_dir: &Path) -> Result<bool, String> {
     let manager = ConfigManager::new(data_dir, ClientPaths::from_home(Path::new(".")));
     for id in [TargetId::ClaudeCode, TargetId::OpenCode] {
-        if manager
-            .session(id)?
-            .is_some_and(|session| session.request.needs_router())
-        {
-            return Ok(true);
+        match manager.session(id) {
+            Ok(Some(session)) if session.request.needs_router() => return Ok(true),
+            Ok(_) => {}
+            // One unreadable record must not keep Codex routing down; the client list
+            // reports it and offers release.
+            Err(error) => log::warn!("skipping unreadable {id:?} client session: {error}"),
         }
     }
     Ok(false)

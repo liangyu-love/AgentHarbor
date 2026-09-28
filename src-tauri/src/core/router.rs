@@ -762,9 +762,6 @@ pub fn effective_active(store: &Store) -> Option<&Provider> {
         .or_else(|| store.providers.iter().find(|p| p.is_routable()))
 }
 
-pub fn routable(store: &Store) -> Vec<&Provider> {
-    store.providers.iter().filter(|p| p.is_routable()).collect()
-}
 
 /// Validate the user's selected model before any config or store write. Native
 /// Codex cannot translate a non-Responses model or silently pick another relay.

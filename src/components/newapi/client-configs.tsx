@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { RotateCcw, Settings2, Terminal } from "lucide-react";
+import { RotateCcw, Settings2, Terminal, Unlink } from "lucide-react";
 import { api } from "@/lib/api";
 import { clientModels, clientProtocols, exclusionOf, type Exclusion } from "@/lib/client-config";
 import { ConfigDialog } from "./client-config-dialog";
@@ -41,6 +41,7 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
   const clients = useQuery({ queryKey: CLIENT_KEY, queryFn: api.targets.configs });
   const [selected, setSelected] = useState<ClientStatus | null>(null);
   const [restoring, setRestoring] = useState<ClientStatus | null>(null);
+  const [releasing, setReleasing] = useState<ClientStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const refresh = async () => {
@@ -57,6 +58,17 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
       const restored = await api.targets.restoreConfig(restoring.targetId);
       toast({ title: t("clients.restored"), description: restored.warning ? t(restored.warning) : undefined, variant: restored.warning ? "destructive" : "success" });
       setRestoring(null);
+    } catch (cause) { setError(errorKey(cause)); }
+    finally { setBusy(false); await refresh(); }
+  };
+  const release = async () => {
+    if (!releasing || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.targets.releaseConfig(releasing.targetId);
+      toast({ title: t("clients.released"), variant: "success" });
+      setReleasing(null);
     } catch (cause) { setError(errorKey(cause)); }
     finally { setBusy(false); await refresh(); }
   };
@@ -108,6 +120,11 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
                 {client.configured && <Button size="sm" variant="ghost" disabled={busy || client.conflict || !!client.error} onClick={() => setRestoring(client)}>
                   <RotateCcw className="h-3.5 w-3.5" />{t("clients.restore")}
                 </Button>}
+                {(client.conflict || (client.error && client.error !== "clients.errors.invalidConfig")) && (
+                  <Button size="sm" variant="ghost" disabled={busy} onClick={() => setReleasing(client)}>
+                    <Unlink className="h-3.5 w-3.5" />{t("clients.release")}
+                  </Button>
+                )}
               </div>
             </div>
           );
@@ -124,6 +141,19 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
           <AlertDialogFooter>
             <AlertDialogCancel disabled={busy}>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction disabled={busy} onClick={event => { event.preventDefault(); void restore(); }}>{t("clients.restore")}</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={!!releasing} onOpenChange={open => { if (!open && !busy) setReleasing(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("clients.releaseTitle", { name: releasing?.name })}</AlertDialogTitle>
+            <AlertDialogDescription>{t("clients.releaseDescription")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          {error && <p role="alert" className="text-sm text-destructive">{t(error)}</p>}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={busy}>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction disabled={busy} onClick={event => { event.preventDefault(); void release(); }}>{t("clients.release")}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

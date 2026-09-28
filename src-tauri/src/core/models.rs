@@ -432,14 +432,6 @@ pub struct UpdateInstallabilityPayload {
     pub quarantined: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct DaemonRunPayload {
-    pub executed_at: i64,
-    pub run_once: bool,
-    pub auto_switch_enabled: bool,
-    pub service_state: AutoSwitchRuntimeState,
-}
 
 // ---------------------------------------------------------------------------
 // Diagnose payload

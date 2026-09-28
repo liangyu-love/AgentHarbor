@@ -7,6 +7,9 @@
 use crate::core::router::ModelProtocol;
 use serde_json::{json, Map, Value};
 
+/// Used when a Responses request carries no `max_output_tokens`.
+const ANTHROPIC_DEFAULT_MAX_TOKENS: u64 = 32_000;
+
 /// Translate a Responses request body into the provider's protocol.
 pub(super) fn request_from_responses(
     target: ModelProtocol,
@@ -51,11 +54,15 @@ pub(super) fn request_from_responses(
         }
         ModelProtocol::AnthropicMessages => {
             // Anthropic carries the system prompt out of band and requires
-            // `max_tokens`, so fall back to a conservative cap.
+            // `max_tokens`. Codex usually omits a cap, so default to one large
+            // enough for agentic turns instead of truncating them.
             if let Some(system) = leading_system {
                 out.insert("system".into(), json!(system));
             }
-            out.insert("max_tokens".into(), json!(max_output.unwrap_or(4096)));
+            out.insert(
+                "max_tokens".into(),
+                json!(max_output.unwrap_or(ANTHROPIC_DEFAULT_MAX_TOKENS)),
+            );
         }
         _ => return Err("protocol.errors.unsupportedTranslation".into()),
     }
@@ -78,24 +85,54 @@ pub(super) fn request_from_responses(
     if !tools.is_empty() {
         out.insert("tools".into(), Value::Array(tools));
     }
-    for key in ["temperature", "top_p"] {
-        if let Some(setting) = object.get(key) {
-            out.insert(key.into(), setting.clone());
-        }
-    }
+    let mut thinking = false;
     if let Some(effort) = object.get("reasoning").and_then(|r| r.get("effort")) {
         // Both targets accept a reasoning effort hint under different names.
         match target {
             ModelProtocol::ChatCompletions => {
                 out.insert("reasoning_effort".into(), effort.clone());
             }
-            ModelProtocol::AnthropicMessages if max_output.unwrap_or(4096) > 1024 => {
-                out.insert("thinking".into(), json!({ "type": "enabled", "budget_tokens": 2048.min(max_output.unwrap_or(4096) - 1) }));
+            ModelProtocol::AnthropicMessages
+                if max_output.unwrap_or(ANTHROPIC_DEFAULT_MAX_TOKENS) > 1024
+                    && !continues_tool_turn(&out) =>
+            {
+                thinking = true;
+                let cap = max_output.unwrap_or(ANTHROPIC_DEFAULT_MAX_TOKENS);
+                out.insert("thinking".into(), json!({ "type": "enabled", "budget_tokens": 2048.min(cap - 1) }));
             }
             _ => {}
         }
     }
+    // Anthropic rejects custom sampling while extended thinking is enabled.
+    if !thinking {
+        for key in ["temperature", "top_p"] {
+            if let Some(setting) = object.get(key) {
+                out.insert(key.into(), setting.clone());
+            }
+        }
+    }
     Ok(Value::Object(out))
+}
+
+/// With thinking enabled, Anthropic requires the latest assistant turn of an
+/// in-progress tool loop to start with its signed thinking block. Responses
+/// reasoning items cannot be turned back into signed blocks, so such a request
+/// has to go without thinking instead of failing with a 400.
+fn continues_tool_turn(out: &Map<String, Value>) -> bool {
+    out.get("messages")
+        .and_then(Value::as_array)
+        .and_then(|messages| {
+            messages
+                .iter()
+                .rev()
+                .find(|message| message.get("role").and_then(Value::as_str) == Some("assistant"))
+        })
+        .and_then(|message| message.get("content").and_then(Value::as_array))
+        .is_some_and(|content| {
+            content
+                .iter()
+                .any(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
+        })
 }
 
 /// Flatten Responses `input` items into provider messages.
@@ -585,5 +622,41 @@ mod tests {
         assert_eq!(converted["tool_choice"]["type"], "tool");
         assert_eq!(converted["tool_choice"]["disable_parallel_tool_use"], true);
         assert!(converted.get("parallel_tool_calls").is_none());
+    }
+
+    #[test]
+    fn anthropic_thinking_is_skipped_inside_a_tool_loop_and_drops_sampling() {
+        let first_turn = request_from_responses(
+            ModelProtocol::AnthropicMessages,
+            &json!({
+                "model": "claude-model",
+                "reasoning": { "effort": "high" },
+                "temperature": 0.2,
+                "top_p": 0.5,
+                "input": [{ "role": "user", "content": "hi" }]
+            }),
+        )
+        .unwrap();
+        assert_eq!(first_turn["thinking"]["type"], "enabled");
+        assert!(first_turn.get("temperature").is_none());
+        assert!(first_turn.get("top_p").is_none());
+
+        let tool_loop = request_from_responses(
+            ModelProtocol::AnthropicMessages,
+            &json!({
+                "model": "claude-model",
+                "reasoning": { "effort": "high" },
+                "temperature": 0.2,
+                "input": [
+                    { "role": "user", "content": "hi" },
+                    { "type": "reasoning", "summary": [] },
+                    { "type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": "{}" },
+                    { "type": "function_call_output", "call_id": "call_1", "output": "found" }
+                ]
+            }),
+        )
+        .unwrap();
+        assert!(tool_loop.get("thinking").is_none());
+        assert_eq!(tool_loop["temperature"], 0.2);
     }
 }
