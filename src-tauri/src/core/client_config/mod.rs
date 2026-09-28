@@ -25,6 +25,7 @@ static WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static CLAUDE: claude::ClaudeCode = claude::ClaudeCode;
 static OPENCODE: opencode::OpenCode = opencode::OpenCode;
 
+#[derive(Clone)]
 pub struct ClientPaths {
     pub claude: PathBuf,
     pub opencode: PathBuf,

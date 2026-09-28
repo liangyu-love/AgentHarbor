@@ -65,6 +65,24 @@
 - [-] G6 (M1) `config-backups/`：暂不清理。`router_config_snapshot::recover_legacy` 会扫描整个目录，为旧版安装寻找唯一的路由前基线，多个候选互相冲突时会故意报错。删除任意备份都可能删掉基线，或把“有歧义”变成“看似唯一”，导致恢复写入错误的值。需要先给基线加标记，再做保留策略。
 - [-] M18b/c 图片凭据多槽位、生成取消：涉及交互设计，留到图片页重构（C1）一起做。
 
+## 阶段 7：崩溃 / 关机后的客户端配置（M6）
+
+- [x] R1 现状（读 tao 0.34.8 / tauri-runtime-wry 2.10.1 源码确认）：
+  - 托盘退出：`app.exit(0)` 会触发 `RunEvent::Exit`，已清理。
+  - Windows 关机/注销：tao 收到 `WM_ENDSESSION` 后调用 `loop_destroyed()`，最终触发 `RunEvent::Exit`，已清理。
+  - Unix SIGTERM/SIGHUP/SIGINT：没有处理，进程直接退出，不清理。
+  - 强杀或崩溃：不清理。下次启动时 `reconcile` 会重新拉起 Router，客户端恢复可用；但端口被其他进程占用时，客户端会一直指向那个进程，并把本地 token 发给它。
+- [x] R2 修复：
+  - Unix 下监听 SIGTERM/SIGHUP/SIGINT，Windows 下监听 Ctrl+C，收到后都调用 `app.exit(0)` 走正常清理。
+  - 启动时如果端口被占（`portBusy`），把指向本地路由的客户端恢复原样，并撤销 Codex 的路由注入。
+  - 退出清理的逻辑抽成 `routing_runtime::release_router_clients`。
+- [x] R3 测试与文档：
+  - 新增集成测试：客户端以 router 模式应用后，端口被其他 listener 占用，启动协调应把 `settings.json` 恢复成原始字节。
+  - 新增 `global_router_test_lock`，让操作全局 Router 单例的测试串行执行，修复了新测试和代理测试并行时的竞态。
+  - `CODEBASE_MAP.md` 启动链一节已更新。
+- 未验证：Unix 信号处理的代码无法在本机编译检查（交叉编译 Linux 需要 C 工具链，本机没有）。只对照 tokio 1.50 源码核对了 API 签名，需要在 macOS/Linux 上构建确认。
+- 仍未覆盖：`kill -9`、任务管理器结束进程、崩溃后端口空闲的情况。这些情况下下次启动会恢复可用，但在重新启动之前，客户端会一直连接失败。
+
 ### 验证（阶段 6）
 
 - `cargo test --lib --test local_workflows`：lib 348 通过 / 1 ignored，集成 9 通过；`cargo check --all-targets` 无 warning。

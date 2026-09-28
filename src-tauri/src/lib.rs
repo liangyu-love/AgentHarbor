@@ -77,12 +77,48 @@ pub fn run() {
                 if let Ok(paths) = paths {
                     tauri::async_runtime::spawn(async move {
                         let _guard = core::routing_runtime::mutation_guard().await;
-                        if let Err(error) = core::routing_runtime::reconcile(&paths).await {
+                        if let Err(error) = core::routing_runtime::reconcile_on_startup(&paths).await {
                             eprintln!("[AgentHarbor] local router startup failed: {error}");
                         }
                     });
                 }
             }
+            // SIGTERM (logout, `kill`), SIGHUP and Ctrl+C would otherwise end the
+            // process without RunEvent::Exit and leave clients aimed at a dead router.
+            #[cfg(unix)]
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    use tokio::signal::unix::{signal, SignalKind};
+                    let (Ok(mut term), Ok(mut hangup), Ok(mut interrupt)) = (
+                        signal(SignalKind::terminate()),
+                        signal(SignalKind::hangup()),
+                        signal(SignalKind::interrupt()),
+                    ) else {
+                        log::warn!("could not install termination signal handlers");
+                        return;
+                    };
+                    tokio::select! {
+                        _ = term.recv() => {}
+                        _ = hangup.recv() => {}
+                        _ = interrupt.recv() => {}
+                    }
+                    handle.exit(0);
+                });
+            }
+            // Release builds have no console; this covers Ctrl+C in a dev terminal.
+            // Shutdown/logoff arrives as WM_ENDSESSION and already ends in RunEvent::Exit.
+            #[cfg(windows)]
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Ok(mut ctrl_c) = tokio::signal::windows::ctrl_c() {
+                        ctrl_c.recv().await;
+                        handle.exit(0);
+                    }
+                });
+            }
+
             let tray_menu = commands::tray_menu::create_bootstrap_tray_menu(app.handle())
                 .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             let tray_icon = load_tray_template_icon()
@@ -197,16 +233,9 @@ pub fn run() {
         if matches!(event, RunEvent::Exit) {
             // The proxy lives in this process. Restore every client that points
             // to it before exit; direct upstream configurations remain durable.
-            let client_manager = core::client_config::ConfigManager::new(
-                &shared_paths.app_data_dir,
-                core::client_config::ClientPaths::discover(),
-            );
-            for (target, error) in client_manager.restore_router_configs_on_exit() {
-                eprintln!("[AgentHarbor] {target:?} router config cleanup failed: {error}");
-            }
-            if let Err(error) = core::router::stop_smart_routing_on_exit(&shared_paths) {
-                eprintln!("[AgentHarbor] router config cleanup failed: {error}");
-            }
+            // Tray quit, Windows shutdown/logoff (WM_ENDSESSION) and the Unix
+            // termination signals handled in setup all arrive here.
+            core::routing_runtime::release_router_clients(&shared_paths);
             let _ = activation_watcher_guard_for_exit.borrow_mut().take();
             let _ = single_instance_guard_for_exit.borrow_mut().take();
         }

@@ -38,6 +38,14 @@ fn handle_slot() -> &'static Mutex<Option<ProxyHandle>> {
     HANDLE.get_or_init(|| Mutex::new(None))
 }
 
+/// The router is a process-wide singleton; tests that start or stop it must not
+/// run at the same time as each other.
+#[cfg(test)]
+pub(crate) fn global_router_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn start_lock() -> &'static tokio::sync::Mutex<()> {
     START_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
@@ -1374,6 +1382,7 @@ mod tests {
 
     #[test]
     fn proxy_serves_the_codex_catalog_and_routes_prefixed_models() {
+        let _router = global_router_test_lock();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()

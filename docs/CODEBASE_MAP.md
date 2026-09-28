@@ -38,7 +38,7 @@ flowchart LR
 
 ### Rust/Tauri 启动链
 
-`src-tauri/src/main.rs` 进入 `agentharbor_lib::run()`。`src-tauri/src/lib.rs` 创建路径上下文和共享 `Mutex<Repository>`，注册 Tauri plugins 与 IPC commands，配置单实例、系统托盘和主窗口。托盘菜单与事件处理在 `src-tauri/src/commands/tray_menu.rs`，窗口聚焦在 `commands/hotspot.rs`。启动后异步协调本地路由与客户端配置；退出时尝试恢复指向本地路由的 Claude Code/OpenCode 配置、撤销路由注入并释放单实例资源。窗口关闭事件默认隐藏窗口，托盘可重新显示。
+`src-tauri/src/main.rs` 进入 `agentharbor_lib::run()`。`src-tauri/src/lib.rs` 创建路径上下文和共享 `Mutex<Repository>`，注册 Tauri plugins 与 IPC commands，配置单实例、系统托盘和主窗口。托盘菜单与事件处理在 `src-tauri/src/commands/tray_menu.rs`，窗口聚焦在 `commands/hotspot.rs`。启动后异步协调本地路由与客户端配置；如果 Router 端口被其他进程占用，会把仍指向本地路由的客户端配置恢复原样，避免本地 token 发给占用端口的进程。退出（`RunEvent::Exit`）时恢复指向本地路由的 Claude Code/OpenCode 配置、撤销 Codex 路由注入并释放单实例资源。托盘退出、Windows 关机/注销（`WM_ENDSESSION`）、Unix 的 SIGTERM/SIGHUP/SIGINT 以及开发终端的 Ctrl+C 都会走这条退出路径；强杀（`kill -9`、任务管理器结束进程）或崩溃则不会，要等下次启动时协调。窗口关闭事件默认隐藏窗口，托盘可重新显示。
 
 ### 前端数据与错误处理
 
