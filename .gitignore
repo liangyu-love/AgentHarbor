@@ -33,3 +33,5 @@ pnpm-debug.log*
 
 # TypeScript
 *.tsbuildinfo
+.visual-baseline/
+.visual-current/

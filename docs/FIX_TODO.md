@@ -146,7 +146,13 @@
   - 后端没有改：把所有 `CoreError` 改成 key 改动面太大，且原始文本对排查有用；前端现在两种都能正确显示。
   - 测试：前端回归新增 10 个用例（key 翻译、原始文本保留、未知 key/空值回退、前缀过滤）。
 - [x] C2 `router_proxy::handle()` 从约 620 行拆到 123 行，只保留流程：`forwardable_headers`、`requested_model`、`codex_catalog_response`、`resolve_destination`、`upstream_suffix`、`relay_usage_request`、`provider_target`、`official_target`、`upstream_body`、`client_for`、`relay_response`、`translated_stream`。逻辑逐段搬移，未改行为；`relay_response` 的 if/else 链改成按 `(translation, status, stream)` 的 match，两条非翻译分支合并（observer 为 `Option`）。lib/集成测试各连续 3 次通过。
-- [ ] C1 拆分大组件。
+- [ ] C1 拆分大组件（每页单独提交，拆前后截图逐像素对比，不新增 DOM 层级）：
+  - [x] V0 `scripts/visual-snapshot.mjs capture|compare`：9 个页面 × 亮/暗 18 张，禁用动画、固定时间与随机数，按解码后像素逐个比较。fixture 新增 `mcp`、`accounts` 模式。验证：无改动时两次截图完全一致；给 `.ink-scroll-frame` 加 1px 边距能检测到差异。
+  - [ ] P1 `image-workbench-page.tsx`（1684 行）
+  - [ ] P2 `newapi-page.tsx`（1000 行）
+  - [ ] P3 `threads-page.tsx`（984 行）
+  - [ ] P4 `mcp-page.tsx`（868 行）
+  - [ ] P5 `accounts-page.tsx`（821 行）
 
 ### 验证（阶段 10）
 

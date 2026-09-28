@@ -12,7 +12,8 @@ import { ProviderDialog } from "@/components/newapi/provider-dialog";
 import { ProviderTestDialog } from "@/components/newapi/provider-test-dialog";
 import { NewApiPage } from "@/components/newapi/newapi-page";
 import { OverviewPage } from "@/components/overview/overview-page";
-import { TokenUsagePanel } from "@/components/accounts/accounts-page";
+import { AccountsPage, TokenUsagePanel } from "@/components/accounts/accounts-page";
+import { McpPage } from "@/components/mcp/mcp-page";
 import { ClientConfigs } from "@/components/newapi/client-configs";
 import type { NewApiProvider, NewApiState } from "@/types/newapi";
 import type { TokenUsagePayload } from "@/types";
@@ -104,7 +105,23 @@ api.loadSnapshot = async () => ({ data: { status: {
   api: { proxy: { mode: "manual", url: "http://127.0.0.1:7890" } },
   autoSwitch: { supported: true, enabled: false, threshold5hPercent: 15, thresholdWeeklyPercent: 10 },
 } } }) as any;
-api.loadMcpServers = async () => ({ data: { items: Array.from({ length: 6 }, (_, i) => ({ id: "mcp-" + i, enabled: true })) } }) as any;
+const mcpServers = [
+  { name: "filesystem", transport: "stdio", enabled: true, sourcePath: "C:/synthetic/.codex/config.toml", command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "C:/work"], url: null, headers: {}, environment: { LOG_LEVEL: "info" } },
+  { name: "docs", transport: "http", enabled: true, sourcePath: "C:/synthetic/.codex/config.toml", command: null, args: [], url: "https://docs.example.invalid/mcp", headers: { Authorization: "Bearer synthetic" }, environment: {} },
+  { name: "legacy-sse", transport: "sse", enabled: false, sourcePath: "C:/synthetic/.codex/config.toml", command: null, args: [], url: "https://sse.example.invalid/events", headers: {}, environment: {} },
+  ...Array.from({ length: 3 }, (_, i) => ({ name: "tool-" + i, transport: "stdio", enabled: i !== 1, sourcePath: "C:/synthetic/.codex/config.toml", command: "uvx", args: ["tool-" + i], url: null, headers: {}, environment: {} })),
+];
+api.loadMcpServers = async () => ({ schemaVersion: 1, success: true, code: "ok", message: "", warnings: [],
+  data: { items: mcpServers, total: mcpServers.length, sourcePath: "C:/synthetic/.codex/config.toml", lastScanAt: 0 } }) as any;
+const quotaWindow = (remainingPercent: number, windowMinutes: number) => ({ usedPercent: 100 - remainingPercent, remainingPercent, windowMinutes, resetsAt: 1_900_000_000 });
+const accountList = { activeAccountKey: "acct-a", refreshedAt: 1_800_000_000, items: [
+  { accountKey: "acct-a", email: "alpha@example.invalid", displayName: "Alpha", plan: "pro", authMode: "chatgpt", isActive: true, createdAt: 1_700_000_000, lastUsedAt: 1_800_000_000, lastUsageAt: 1_800_000_000, primaryWindow: quotaWindow(72, 300), secondaryWindow: quotaWindow(40, 10080), usageStatus: "healthy", usageError: null },
+  { accountKey: "acct-b", email: "beta@example.invalid", displayName: "Beta", plan: "plus", authMode: "chatgpt", isActive: false, createdAt: 1_700_000_000, lastUsedAt: null, lastUsageAt: 1_800_000_000, primaryWindow: quotaWindow(8, 300), secondaryWindow: quotaWindow(90, 10080), usageStatus: "healthy", usageError: null },
+  { accountKey: "acct-c", email: "gamma@example.invalid", displayName: "Gamma", plan: "team", authMode: "chatgpt", isActive: false, createdAt: 1_700_000_000, lastUsedAt: null, lastUsageAt: null, primaryWindow: null, secondaryWindow: null, usageStatus: "expired", usageError: "token expired" },
+] };
+api.accounts.refresh = async () => accountList as any;
+api.accounts.list = async () => accountList as any;
+api.usage.overview = async () => usageFixture;
 api.loadInstalledSkills = async () => ({ data: { total: 36, items: [] } }) as any;
 api.loadSkillBackups = async () => ({ data: { total: 0, items: [] } }) as any;
 api.loadCustomInstructionState = async () => ({ data: { current: { managedBlockPresent: false, lastTemplateTitle: null } } }) as any;
@@ -188,7 +205,7 @@ function ProviderFixture({ mixed = false }: { mixed?: boolean }) {
       onOpenChange={open => setDialog(current => ({ ...current, open }))} onSaved={noop} /></>;
 }
 
-type FixtureMode = "compact" | "grid" | "image" | "groups" | "overview" | "usage" | "provider" | "warnings" | "thread-actions" | "thread-queue-recovery" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-opencode" | "clients-opencode-stale" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official";
+type FixtureMode = "compact" | "grid" | "image" | "mcp" | "accounts" | "groups" | "overview" | "usage" | "provider" | "warnings" | "thread-actions" | "thread-queue-recovery" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-opencode" | "clients-opencode-stale" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official";
 
 function recoveryPreview(mode: FixtureMode) {
   const base = {
@@ -299,7 +316,7 @@ function mount(mode: FixtureMode) {
     <div style={{ position: "relative", height: 600 }}><PageStage state="active">
       {mode.startsWith("recovery-") ? <ThreadRecoveryDialog thread={threads[0] as any} onOpenChange={noop}
           onRecovered={() => { controls.review.recoveredCalls += 1; }} /> :
-        mode === "image" ? <ImageWorkbenchPage /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage" ? <TokenUsagePanel data={usageFixture} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :
+        mode === "image" ? <ImageWorkbenchPage /> : mode === "mcp" ? <McpPage /> : mode === "accounts" ? <AccountsPage refreshInterval="5m" onManageProviders={noop} /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage" ? <TokenUsagePanel data={usageFixture} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :
         mode === "access" || mode === "incompatible" || mode === "native-invalid" || mode === "groups" ? <NewApiPage /> :
         mode === "test" ? <ProviderTestDialog open provider={mixedProvider} onOpenChange={noop} onTested={noop} onFailed={noop} /> :
         mode.startsWith("clients") ? <ClientConfigs providers={openCode ? [mixedProvider, provider("alternate")] : [selectedProvider]} /> :
