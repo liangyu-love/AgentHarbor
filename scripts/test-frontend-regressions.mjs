@@ -40,8 +40,9 @@ const server = http.createServer((request, response) => {
 });
 await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
 const address = "http://127.0.0.1:" + server.address().port;
-const captureDir = process.env.FRONTEND_QA_CAPTURE_DIR;
-if (captureDir) await mkdir(captureDir, { recursive: true });
+const screenshotDir = process.env.FRONTEND_QA_CAPTURE_DIR ?? path.join(root, ".playwright-cli");
+const captureDir = process.env.FRONTEND_QA_CAPTURE_DIR ? screenshotDir : null;
+await mkdir(screenshotDir, { recursive: true });
 let browser;
 try {
   const executablePath = argument("--browser-executable") ?? process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
@@ -128,6 +129,11 @@ try {
   await retryCanvas.getByRole("button", { name: "重试保存" }).click();
   await page.waitForFunction(() => window.review.gallerySaves === 2);
   await retryCanvas.getByText("已存入本地画册").waitFor();
+  await page.evaluate(() => { window.review.failOpenPath = true; });
+  await page.getByRole("button", { name: "打开画册目录", exact: true }).first().click();
+  await page.waitForFunction(() => window.review.openedPath === "C:/synthetic");
+  assert.equal(await page.evaluate(() => window.review.openedPath), "C:/synthetic");
+  assert.deepEqual(errors, []);
   console.log("PASS a failed gallery save remains on its canvas and can be retried");
 
   await reset("image");
@@ -376,6 +382,12 @@ try {
   assert.equal(await page.evaluate(() => window.review.recoveryApplyCalls), 0);
   console.log("PASS official threads disclose unverified server-account ownership and remain read-only");
 
+  await reset("thread-queue-recovery");
+  const queueRecoveryBanner = page.getByRole("status").filter({ hasText: "删除队列包含无法读取的记录" });
+  await queueRecoveryBanner.getByRole("button", { name: labels.clearDeletionQueue, exact: true }).click();
+  await queueRecoveryBanner.waitFor({ state: "detached" });
+  console.log("PASS a damaged pending-deletion queue exposes a working metadata-only recovery action");
+
   await reset("thread-actions");
   await page.getByRole("button", { name: labels.repairAll, exact: true }).click();
   await page.waitForFunction(() => window.review.recoveryApplyCalls === 1);
@@ -392,7 +404,7 @@ try {
   await page.evaluate(() => { window.review.queueDeletes = true; });
   await page.getByRole("button", { name: labels.deleteThread, exact: true }).first().click();
   await page.getByText(/1 个会话等待删除/).waitFor();
-  await page.screenshot({ path: path.join(root, ".playwright-cli", "pending-thread-delete.png"), animations: "disabled" });
+  await page.screenshot({ path: path.join(screenshotDir, "pending-thread-delete.png"), animations: "disabled" });
   await page.getByRole("button", { name: "取消待删除", exact: true }).click();
   await page.getByText(/1 个会话等待删除/).waitFor({ state: "hidden" });
   assert.deepEqual(await page.evaluate(() => window.review.pendingDeletionKeys), []);
@@ -400,7 +412,7 @@ try {
 
   await reset("clients");
   await page.getByRole("button", { name: labels.configure, exact: true }).click();
-  const screenshots = path.join(root, ".playwright-cli", "client-config");
+  const screenshots = path.join(screenshotDir, "client-config");
   await mkdir(screenshots, { recursive: true });
   const screenshotClient = async (name, scrollTop = 0) => {
     await page.getByRole("listbox").waitFor({ state: "hidden" });
@@ -503,6 +515,52 @@ try {
   await page.waitForFunction(() => window.review.previewed?.model === "claude-opus-4-8");
   assert.deepEqual(await page.evaluate(() => window.review.previewed.claudeModelIds), [versionIds[0], versionIds[2]]);
 
+  await reset("clients-versions");
+  await page.getByRole("button", { name: labels.configure, exact: true }).click();
+  await selectedVersion("claude-fable-5-1").uncheck();
+  await page.getByRole("button", { name: labels.clientRouter, exact: true }).click();
+  assert.equal(await selectedVersion("claude-fable-5-1").isChecked(), false);
+  await page.getByRole("button", { name: labels.preview, exact: true }).click();
+  await page.waitForFunction(() => window.review.previewed?.claudeModelIds?.length === 2);
+  assert.deepEqual(await page.evaluate(() => window.review.previewed.claudeModelIds), versionIds.filter(id => id !== "claude-fable-5-1"));
+  console.log("PASS explicit Claude model subsets survive access-mode changes");
+
+  await reset("clients-versions");
+  await page.getByRole("button", { name: labels.configure, exact: true }).click();
+  await page.getByRole("button", { name: labels.clientRouter, exact: true }).click();
+  const startupOneM = page.getByRole("checkbox", { name: labels.oneMStartup, exact: true });
+  const sonnetOneM = page.getByRole("checkbox", { name: labels.oneMSonnet, exact: true });
+  await startupOneM.check();
+  await sonnetOneM.check();
+  await page.getByRole("button", { name: labels.preview, exact: true }).click();
+  await page.waitForFunction(() => window.review.previewed?.claudeOneM?.startup === true);
+  assert.equal(await page.evaluate(() => window.review.previewed.claudeOneM.sonnet), true);
+  await page.locator("#client-model").click();
+  await page.getByRole("option", { name: "Fable 5.1", exact: true }).click();
+  assert.equal(await startupOneM.isChecked(), false);
+  await page.getByRole("button", { name: labels.preview, exact: true }).click();
+  await page.waitForFunction(() => window.review.previewed?.model === "claude-fable-5-1");
+  assert.equal(await page.evaluate(() => window.review.previewed.claudeOneM.startup), false);
+  assert.equal(await page.evaluate(() => window.review.previewed.claudeOneM.sonnet), true);
+  console.log("PASS Claude 1M settings follow the selected model and preserve role-specific choices");
+
+  const staleProfile = { id: "stale-profile", name: "Stale profile", request: {
+    targetId: "claudeCode", providerId: "versions", model: "claude-opus-5-5", contextWindow: 200000,
+    maxOutputTokens: 8192, accessMode: "router", providerIds: ["versions"],
+    claudeModelIds: ["claude-opus-5-5", "removed-model"],
+    claudeModels: { sonnet: "", opus: "", fable: "", haiku: "", subagent: "" },
+  } };
+  await page.evaluate(profile => localStorage.setItem("agentharbor.claude-code-profiles.v1", JSON.stringify([profile])), staleProfile);
+  await reset("clients-versions");
+  await page.evaluate(() => { window.review.appliedClient = null; });
+  await page.getByRole("button", { name: labels.configure, exact: true }).click();
+  await page.locator("#claude-saved-profile").click();
+  await page.getByRole("option", { name: "Stale profile · Provider versions", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: labels.profileModelsUnavailable }).waitFor();
+  assert.equal(await page.evaluate(() => window.review.appliedClient), null);
+  await page.evaluate(() => localStorage.removeItem("agentharbor.claude-code-profiles.v1"));
+  console.log("PASS a saved Claude profile with removed models is blocked without applying a changed selection");
+
   await page.setViewportSize({ width: 390, height: 844 });
   await reset("clients-versions");
   await page.getByRole("button", { name: labels.configure, exact: true }).click();
@@ -530,8 +588,12 @@ try {
   await page.getByRole("option", { name: "Regression profile · Provider versions", exact: true }).click();
   await page.waitForFunction(() => window.review.appliedClient?.request.model === "claude-fable-5-1");
   assert.equal(await page.getByRole("dialog").count(), 0);
-  await page.evaluate(() => localStorage.removeItem("agentharbor.claude-code-profiles.v1"));
-  console.log("PASS selecting a saved Claude profile previews and applies it immediately");
+  await reset("clients-versions");
+  await page.getByRole("button", { name: labels.configure, exact: true }).click();
+  await page.getByRole("button", { name: labels.manageProfiles, exact: true }).click();
+  await page.getByRole("button", { name: labels.deleteProfile, exact: true }).click();
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem("agentharbor.claude-code-profiles.v1") ?? "[]").length === 0);
+  console.log("PASS saved Claude profiles apply, can be deleted, and stale entries remain blocked");
 
   await reset("clients-opencode");
   await page.getByRole("button", { name: labels.configure, exact: true }).click();
@@ -553,6 +615,19 @@ try {
   await page.waitForFunction(() => window.review.previewed?.providerModelIds?.mixed?.length === 1);
   assert.deepEqual(await page.evaluate(() => window.review.previewed.providerModelIds.mixed), ["responses-model"]);
   console.log("PASS OpenCode keeps the selected model subset across access mode changes");
+
+  await reset("clients-opencode-stale");
+  await page.evaluate(() => { window.review.previewed = null; });
+  await page.getByRole("button", { name: labels.changeClient, exact: true }).click();
+  await page.getByRole("button", { name: labels.preview, exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: labels.openCodeModelsUnavailable }).waitFor();
+  assert.equal(await page.evaluate(() => window.review.previewed), null);
+  await page.locator("details").filter({ hasText: "Provider mixed" }).locator("summary").click();
+  await page.getByRole("checkbox", { name: "配置模型 anthropic-model" }).check();
+  await page.getByRole("button", { name: labels.preview, exact: true }).click();
+  await page.waitForFunction(() => window.review.previewed?.providerModelIds?.mixed?.includes("anthropic-model"));
+  assert.deepEqual(await page.evaluate(() => window.review.previewed.providerModelIds.mixed), ["responses-model", "anthropic-model"]);
+  console.log("PASS stale OpenCode model IDs require an explicit selection update before preview");
 
   await reset("clients-opencode");
   await page.getByRole("button", { name: labels.configure, exact: true }).click();
@@ -591,14 +666,14 @@ try {
     return stage && gallery && Math.abs(gallery.getBoundingClientRect().top - stage.getBoundingClientRect().top - 24) < 5;
   });
   await page.waitForFunction(() => window.review.thumbnailCalls.length > 0);
-  await page.screenshot({ path: path.join(root, ".playwright-cli", "image-gallery-location.png"), animations: "disabled" });
+  await page.screenshot({ path: path.join(screenshotDir, "image-gallery-location.png"), animations: "disabled" });
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.locator("[data-gallery-section]").evaluate(element => element.scrollWidth <= element.clientWidth), true);
   await page.locator("[data-gallery-section]").evaluate(element => {
     const stage = element.closest("[data-page-scroll-container]");
     stage.scrollTop += element.getBoundingClientRect().top - stage.getBoundingClientRect().top - 16;
   });
-  await page.screenshot({ path: path.join(root, ".playwright-cli", "image-gallery-location-narrow.png"), animations: "disabled" });
+  await page.screenshot({ path: path.join(screenshotDir, "image-gallery-location-narrow.png"), animations: "disabled" });
   await page.setViewportSize({ width: 1200, height: 700 });
   assert.ok(await page.evaluate(() => window.review.thumbnailCalls.length < 100));
   assert.equal(await page.evaluate(() => window.review.originalCalls.length), 0);

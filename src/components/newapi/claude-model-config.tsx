@@ -5,19 +5,21 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import type { ClaudeModels } from "@/types/clients";
+import type { ClaudeModels, ClaudeOneM } from "@/types/clients";
 import type { NewApiProvider } from "@/types/newapi";
 
 export function ClaudeModelConfig({ provider, models, selected, mapping, defaultModel, disabled,
-  onSelectedChange, onMappingChange }: {
+  oneM, onSelectedChange, onMappingChange, onOneMChange }: {
   provider?: NewApiProvider;
   models: string[];
   selected: string[];
   mapping: ClaudeModels;
   defaultModel: string;
   disabled: boolean;
+  oneM: ClaudeOneM;
   onSelectedChange: (ids: string[]) => void;
   onMappingChange: (mapping: ClaudeModels) => void;
+  onOneMChange: (oneM: ClaudeOneM) => void;
 }) {
   const { t } = useTranslation();
   const [search, setSearch] = useState("");
@@ -64,10 +66,13 @@ export function ClaudeModelConfig({ provider, models, selected, mapping, default
         <table className="w-full table-fixed text-sm">
           <thead className="bg-muted/30 text-left text-xs text-muted-foreground">
             <tr><th scope="col" className="w-24 px-3 py-2 font-medium">{t("clients.modelRole")}</th>
-              <th scope="col" className="px-3 py-2 font-medium">{t("clients.requestModel")}</th></tr>
+              <th scope="col" className="px-3 py-2 font-medium">{t("clients.requestModel")}</th>
+              <th scope="col" className="w-20 px-3 py-2 text-center font-medium">{t("clients.oneM")}</th></tr>
           </thead>
           <tbody>{claudeRoles.map(role => {
             const automatic = selected.find(id => role !== "subagent" && id.toLowerCase().includes(role)) ?? defaultModel;
+            const modelId = mapping[role] || automatic;
+            const oneMEnabled = role !== "haiku" && oneM[role as keyof ClaudeOneM] === true;
             return <tr key={role} className="border-t">
               <th scope="row" className="px-3 py-2 text-left font-medium">
                 <Label htmlFor={"client-role-" + role}>{role === "subagent" ? t("clients.subagent") : role[0].toUpperCase() + role.slice(1)}</Label>
@@ -82,10 +87,18 @@ export function ClaudeModelConfig({ provider, models, selected, mapping, default
                   </SelectContent>
                 </Select>
               </td>
+              <td className="p-2 text-center">
+                {role === "haiku" ? <span aria-hidden="true" className="text-muted-foreground">—</span> :
+                  <input type="checkbox" aria-label={t("clients.oneMForRole", { role: t("clients." + role) })}
+                    checked={oneMEnabled} disabled={disabled || (!modelId && !oneMEnabled)}
+                    className="h-4 w-4 accent-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-50"
+                    onChange={() => onOneMChange({ ...oneM, [role]: !oneMEnabled })} />}
+              </td>
             </tr>;
           })}</tbody>
         </table>
       </div>
+      <p className="text-xs text-muted-foreground">{t("clients.oneMHint")}</p>
     </section>
   </div>;
 }

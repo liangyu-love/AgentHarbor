@@ -39,8 +39,6 @@ impl ClientAdapter for ClaudeCode {
             edit(&["env", "ANTHROPIC_BASE_URL"], json!(base)),
             edit(&["env", auth], json!(credential)),
             remove(&["env", other_auth]),
-            edit(&["model"], json!(request.model)),
-            edit(&["env", "ANTHROPIC_MODEL"], json!(request.model)),
         ];
         let mapping = &request.options.claude_models;
         let mut available = request.models(provider);
@@ -82,13 +80,45 @@ impl ClientAdapter for ClaudeCode {
         if !models.contains(&request.model) {
             return Err("clients.errors.modelSelection".into());
         }
+        // Claude Code reads the [1m] suffix per variable and strips it before sending,
+        // so it works in native and router mode alike. Context-window env vars are left
+        // to the user: they are ignored for [1m] IDs and only affect unrecognized models.
+        let one_m = &request.options.claude_one_m;
+        let startup_model = marked_model(&request.model, one_m.startup);
+        edits.push(edit(&["model"], json!(startup_model)));
+        edits.push(edit(&["env", "ANTHROPIC_MODEL"], json!(startup_model)));
         let mut allowed_models = models.clone();
-        for (role, name, explicit) in [
-            ("sonnet", "ANTHROPIC_DEFAULT_SONNET_MODEL", &mapping.sonnet),
-            ("opus", "ANTHROPIC_DEFAULT_OPUS_MODEL", &mapping.opus),
-            ("fable", "ANTHROPIC_DEFAULT_FABLE_MODEL", &mapping.fable),
-            ("haiku", "ANTHROPIC_DEFAULT_HAIKU_MODEL", &mapping.haiku),
-            ("", "CLAUDE_CODE_SUBAGENT_MODEL", &mapping.subagent),
+        for (role, name, explicit, role_one_m) in [
+            (
+                "sonnet",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                &mapping.sonnet,
+                one_m.sonnet,
+            ),
+            (
+                "opus",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                &mapping.opus,
+                one_m.opus,
+            ),
+            (
+                "fable",
+                "ANTHROPIC_DEFAULT_FABLE_MODEL",
+                &mapping.fable,
+                one_m.fable,
+            ),
+            (
+                "haiku",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                &mapping.haiku,
+                false,
+            ),
+            (
+                "",
+                "CLAUDE_CODE_SUBAGENT_MODEL",
+                &mapping.subagent,
+                one_m.subagent,
+            ),
         ] {
             let model = if !explicit.is_empty() {
                 explicit
@@ -102,7 +132,7 @@ impl ClientAdapter for ClaudeCode {
             if !models.contains(model) {
                 return Err("clients.errors.protocol".into());
             }
-            edits.push(edit(&["env", name], json!(model)));
+            edits.push(edit(&["env", name], json!(marked_model(model, role_one_m))));
             // A previous gateway's display names must not describe a different model.
             if !role.is_empty() {
                 let display_name = provider
@@ -171,5 +201,13 @@ impl ClientAdapter for ClaudeCode {
             edits.push(edit(&["availableModels"], json!(allowed)));
         }
         Ok(edits)
+    }
+}
+
+fn marked_model(model: &str, one_m: bool) -> String {
+    if one_m {
+        format!("{model}[1m]")
+    } else {
+        model.to_owned()
     }
 }

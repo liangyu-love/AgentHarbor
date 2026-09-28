@@ -421,10 +421,12 @@ fn read_records(app_data_dir: &Path) -> Result<Vec<RelayUsageRecord>, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error.to_string()),
     };
+    // Split on raw bytes: a crash can leave a line cut mid UTF-8 sequence, and that one
+    // record must be skipped without dropping every record after it.
     Ok(BufReader::new(file)
-        .lines()
+        .split(b'\n')
         .map_while(Result::ok)
-        .filter_map(|line| serde_json::from_str::<RelayUsageRecord>(&line).ok())
+        .filter_map(|line| serde_json::from_slice::<RelayUsageRecord>(&line).ok())
         .collect())
 }
 

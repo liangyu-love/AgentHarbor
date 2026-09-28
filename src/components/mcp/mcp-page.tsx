@@ -658,6 +658,7 @@ export function McpPage() {
           key={editing === "new" ? "__new__" : editing?.name ?? "__closed__"}
           open={editing !== null}
           server={editing === "new" ? undefined : editing ?? undefined}
+          existingNames={servers.map((s) => s.name)}
           onClose={() => setEditing(null)}
         />
       </div>
@@ -668,10 +669,12 @@ export function McpPage() {
 function McpEditorDialog({
   open,
   server,
+  existingNames,
   onClose,
 }: {
   open: boolean;
   server?: McpServerSummary;
+  existingNames: string[];
   onClose: () => void;
 }) {
   const { t } = useTranslation();
@@ -700,6 +703,10 @@ function McpEditorDialog({
     }
   }, [open, server]);
 
+  const trimmedName = name.trim();
+  // Saving a new server under an existing name would silently replace that server.
+  const duplicateName = !server && existingNames.includes(trimmedName);
+
   const upsertMutation = useMutation({
     mutationFn: () => {
       const environment: Record<string, string> = {};
@@ -713,7 +720,7 @@ function McpEditorDialog({
         if (idx > 0) headers[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
       });
       return api.upsertMcpServer({
-        name,
+        name: trimmedName,
         transport,
         enabled: server?.enabled ?? true,
         command: transport === "stdio" ? command : null,
@@ -786,7 +793,10 @@ function McpEditorDialog({
           <Button variant="outline" size="sm" onClick={onClose}>
             {t("mcp.cancel")}
           </Button>
-          <Button size="sm" onClick={() => upsertMutation.mutate()} disabled={!name || upsertMutation.isPending}>
+          {duplicateName && (
+            <p role="alert" className="mr-auto self-center text-xs text-destructive">{t("mcp.duplicateName")}</p>
+          )}
+          <Button size="sm" onClick={() => upsertMutation.mutate()} disabled={!trimmedName || duplicateName || upsertMutation.isPending}>
             {t("mcp.save")}
           </Button>
         </DialogFooter>

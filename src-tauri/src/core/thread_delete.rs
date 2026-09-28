@@ -24,6 +24,13 @@ pub struct ThreadDeleteResult {
 pub struct PendingDeleteStatus {
     pub keys: Vec<String>,
     pub warnings: Vec<String>,
+    pub recovery_required: bool,
+}
+
+#[derive(Debug, Default)]
+struct PendingJobScan {
+    jobs: Vec<(PathBuf, PendingDelete)>,
+    invalid_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -88,32 +95,39 @@ fn pending_dir(state_database_path: &Path) -> PathBuf {
         .join("thread-delete-queue")
 }
 
-fn pending_jobs(state_database_path: &Path) -> Result<Vec<(PathBuf, PendingDelete)>, CoreError> {
+fn pending_jobs(state_database_path: &Path) -> Result<PendingJobScan, CoreError> {
     let directory = pending_dir(state_database_path);
     if !directory.is_dir() {
-        return Ok(Vec::new());
+        return Ok(PendingJobScan::default());
     }
-    let mut jobs = Vec::new();
+    let mut scan = PendingJobScan::default();
     for entry in std::fs::read_dir(directory)? {
         let entry = entry?;
         let path = entry.path();
         if path.extension().is_none_or(|extension| extension != "json") || !path.is_file() {
             continue;
         }
-        if entry.metadata()?.len() > 1024 * 1024 {
-            return Err(CoreError::InvalidData(
-                "thread deletion queue entry is too large".into(),
-            ));
+        let parsed = (|| -> Result<PendingDelete, String> {
+            if entry.metadata().map_err(|error| error.to_string())?.len() > 1024 * 1024 {
+                return Err("entry is too large".into());
+            }
+            let job = serde_json::from_slice::<PendingDelete>(
+                &std::fs::read(&path).map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+            if job.schema_version != 1 || job.entries.is_empty() {
+                return Err("unsupported or empty entry".into());
+            }
+            Ok(job)
+        })();
+        match parsed {
+            Ok(job) => scan.jobs.push((path, job)),
+            // Surfaced through `recovery_required`; the UI shows a dedicated recovery banner.
+            Err(_) => scan.invalid_paths.push(path),
         }
-        let job: PendingDelete = serde_json::from_slice(&std::fs::read(&path)?)
-            .map_err(|error| CoreError::InvalidData(format!("invalid queued deletion: {error}")))?;
-        if job.schema_version != 1 || job.entries.is_empty() {
-            return Err(CoreError::InvalidData("unsupported queued deletion".into()));
-        }
-        jobs.push((path, job));
     }
-    jobs.sort_by(|left, right| left.0.cmp(&right.0));
-    Ok(jobs)
+    scan.jobs.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(scan)
 }
 
 fn file_sha256(path: &Path) -> Result<String, CoreError> {
@@ -148,7 +162,7 @@ fn queue_delete(
             "select distinct threads to delete".into(),
         ));
     }
-    let jobs = pending_jobs(state_database_path)?;
+    let jobs = pending_jobs(state_database_path)?.jobs;
     let existing: HashSet<&str> = jobs
         .iter()
         .flat_map(|(_, job)| job.entries.iter().map(|entry| entry.key.as_str()))
@@ -310,17 +324,21 @@ pub fn process_pending_deletes(
             }
         }
     };
-    let jobs = match pending_jobs(state_database_path) {
-        Ok(jobs) => jobs,
+    let scan = match pending_jobs(state_database_path) {
+        Ok(scan) => scan,
         Err(error) => {
             return PendingDeleteStatus {
                 warnings: vec![error.to_string()],
+                recovery_required: true,
                 ..Default::default()
             }
         }
     };
-    if jobs.is_empty() {
-        return PendingDeleteStatus::default();
+    if scan.jobs.is_empty() {
+        return PendingDeleteStatus {
+            recovery_required: !scan.invalid_paths.is_empty(),
+            ..Default::default()
+        };
     }
     #[cfg(target_os = "windows")]
     let writer_check = crate::platform::process::ensure_no_codex_writer_processes();
@@ -333,9 +351,10 @@ pub fn process_pending_deletes(
         state_database_path,
         sessions_dir,
         archived_dir,
-        jobs,
+        scan.jobs,
         writer_check.is_ok(),
     );
+    status.recovery_required = !scan.invalid_paths.is_empty();
     if let Some(warning) = warning {
         status.warnings.push(warning);
     }
@@ -344,10 +363,21 @@ pub fn process_pending_deletes(
 
 pub fn cancel_pending_deletes(state_database_path: &Path) -> Result<usize, CoreError> {
     let _guard = super::thread_recovery::thread_mutation_guard()?;
+    let directory = pending_dir(state_database_path);
+    if !directory.is_dir() {
+        return Ok(0);
+    }
     let mut cancelled = 0;
-    for (path, job) in pending_jobs(state_database_path)? {
-        std::fs::remove_file(path)?;
-        cancelled += job.entries.len();
+    for entry in std::fs::read_dir(directory)? {
+        let path = entry?.path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+            && path.is_file()
+        {
+            std::fs::remove_file(path)?;
+            cancelled += 1;
+        }
     }
     Ok(cancelled)
 }
@@ -620,9 +650,10 @@ fn read_rollout_id(path: &Path) -> Result<String, CoreError> {
         if line.trim().is_empty() {
             continue;
         }
-        let value: serde_json::Value = serde_json::from_str(&line).map_err(|error| {
-            CoreError::InvalidData(format!("invalid rollout {}: {error}", path.display()))
-        })?;
+        // Match the scanner: a truncated or corrupt line must not make a listed thread undeletable.
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
         if value.get("type").and_then(|value| value.as_str()) != Some("session_meta") {
             continue;
         }
@@ -853,6 +884,14 @@ mod tests {
     }
 
     #[test]
+    fn rollout_id_ignores_truncated_lines_like_the_scanner() {
+        let (_temp, sessions, _archived, _database) = fixture();
+        let path = sessions.join("rollout-one.jsonl");
+        std::fs::write(&path, format!("{}{{\"type\":\"event\",\"payl", rollout("one"))).unwrap();
+        assert_eq!(read_rollout_id(&path).unwrap(), "one");
+    }
+
+    #[test]
     fn queued_deletion_waits_for_writers_then_deletes_the_same_rollout() {
         let (_temp, sessions, archived, database) = fixture();
         let path = sessions.join("rollout-one.jsonl");
@@ -876,7 +915,7 @@ mod tests {
             &database,
             &sessions,
             &archived,
-            pending_jobs(&database).unwrap(),
+            pending_jobs(&database).unwrap().jobs,
             false,
         );
         assert_eq!(waiting.keys, vec!["active:rollout-one.jsonl"]);
@@ -886,11 +925,11 @@ mod tests {
             &database,
             &sessions,
             &archived,
-            pending_jobs(&database).unwrap(),
+            pending_jobs(&database).unwrap().jobs,
             true,
         );
         assert!(completed.keys.is_empty());
-        assert!(pending_jobs(&database).unwrap().is_empty());
+        assert!(pending_jobs(&database).unwrap().jobs.is_empty());
         assert!(!path.exists());
         let rows: i64 = Connection::open(&database)
             .unwrap()
@@ -923,14 +962,14 @@ mod tests {
             &database,
             &sessions,
             &archived,
-            pending_jobs(&database).unwrap(),
+            pending_jobs(&database).unwrap().jobs,
             true,
         );
         assert!(status
             .warnings
             .iter()
             .any(|warning| warning.contains("changed")));
-        assert!(pending_jobs(&database).unwrap().is_empty());
+        assert!(pending_jobs(&database).unwrap().jobs.is_empty());
         assert!(path.is_file());
         let rows: i64 = Connection::open(&database)
             .unwrap()
@@ -952,8 +991,58 @@ mod tests {
         )
         .unwrap();
         assert_eq!(cancel_pending_deletes(&database).unwrap(), 1);
-        assert!(pending_jobs(&database).unwrap().is_empty());
+        assert!(pending_jobs(&database).unwrap().jobs.is_empty());
         assert!(path.is_file());
+    }
+
+    #[test]
+    fn corrupt_queue_record_does_not_hide_valid_records_and_can_be_cleared_safely() {
+        let (_temp, sessions, archived, database) = fixture();
+        let rollout_path = sessions.join("rollout-one.jsonl");
+        std::fs::write(&rollout_path, rollout("one")).unwrap();
+        Connection::open(&database)
+            .unwrap()
+            .execute(
+                "INSERT INTO threads (id, rollout_path, title, cwd) VALUES (?1, ?2, 'One', 'C:/work')",
+                params!["one", rollout_path.display().to_string()],
+            )
+            .unwrap();
+        queue_delete(
+            &database,
+            &sessions,
+            &archived,
+            &["active:rollout-one.jsonl".into()],
+        )
+        .unwrap();
+        let queue = pending_dir(&database);
+        std::fs::write(queue.join("broken.json"), b"not json").unwrap();
+
+        let scan = pending_jobs(&database).unwrap();
+        assert_eq!(scan.jobs.len(), 1);
+        assert_eq!(scan.invalid_paths.len(), 1);
+        assert_eq!(cancel_pending_deletes(&database).unwrap(), 2);
+        assert!(pending_jobs(&database).unwrap().jobs.is_empty());
+        assert!(rollout_path.is_file());
+        let rows: i64 = Connection::open(&database)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM threads", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+    }
+
+    #[test]
+    fn corrupt_queue_without_valid_jobs_requests_recovery() {
+        let (_temp, sessions, archived, database) = fixture();
+        let queue = pending_dir(&database);
+        std::fs::create_dir_all(&queue).unwrap();
+        std::fs::write(queue.join("broken.json"), b"not json").unwrap();
+
+        let status = process_pending_deletes(&database, &sessions, &archived);
+        assert!(status.recovery_required);
+        assert!(status.keys.is_empty());
+        assert!(status.warnings.is_empty(), "corrupt records use the recovery flag");
+        assert_eq!(cancel_pending_deletes(&database).unwrap(), 1);
+        assert!(!process_pending_deletes(&database, &sessions, &archived).recovery_required);
     }
 
     #[test]

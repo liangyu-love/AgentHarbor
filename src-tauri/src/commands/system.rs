@@ -305,8 +305,43 @@ pub fn check_update_installability() -> Result<UpdateInstallabilityPayload, Stri
     Ok(crate::platform::update::check_update_installability())
 }
 
+/// Extensions the OS shell would execute instead of opening for viewing.
+const EXECUTABLE_EXTENSIONS: &[&str] = &[
+    "app", "bat", "cmd", "com", "cpl", "exe", "hta", "jar", "js", "jse", "lnk", "msc", "msi",
+    "pif", "ps1", "reg", "scr", "sh", "url", "vbe", "vbs", "command", "wsf",
+];
+
+fn validate_open_path(path: &str) -> Result<std::path::PathBuf, String> {
+    let target = std::path::Path::new(path.trim());
+    if !target.is_absolute() {
+        return Err("Path must be absolute".into());
+    }
+    let target = target
+        .canonicalize()
+        .map_err(|_| format!("Path does not exist: {path}"))?;
+    let executable = target
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| EXECUTABLE_EXTENSIONS.contains(&value.to_ascii_lowercase().as_str()));
+    if executable {
+        return Err("Refusing to open an executable path".into());
+    }
+    Ok(target)
+}
+
 #[tauri::command]
 pub fn open_path(path: String) -> Result<(), String> {
+    let path = validate_open_path(&path)?;
+    // canonicalize adds a verbatim `\\?\` prefix on Windows, which explorer does not accept.
+    #[cfg(target_os = "windows")]
+    let path = {
+        let text = path.to_string_lossy();
+        std::path::PathBuf::from(if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            format!(r"\\{rest}")
+        } else {
+            text.strip_prefix(r"\\?\").unwrap_or(&text).to_owned()
+        })
+    };
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
@@ -329,4 +364,23 @@ pub fn open_path(path: String) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_open_path;
+
+    #[test]
+    fn open_path_rejects_relative_missing_and_executable_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(validate_open_path(dir.path().to_str().unwrap()).is_ok());
+        let doc = dir.path().join("notes.md");
+        std::fs::write(&doc, "x").unwrap();
+        assert!(validate_open_path(doc.to_str().unwrap()).is_ok());
+        let exe = dir.path().join("tool.EXE");
+        std::fs::write(&exe, "x").unwrap();
+        assert!(validate_open_path(exe.to_str().unwrap()).is_err());
+        assert!(validate_open_path("relative/dir").is_err());
+        assert!(validate_open_path(dir.path().join("missing").to_str().unwrap()).is_err());
+    }
 }

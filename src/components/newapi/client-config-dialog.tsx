@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { BookmarkPlus, Check, ChevronDown, Eye, Loader2 } from "lucide-react";
+import { BookmarkPlus, Check, ChevronDown, Eye, Loader2, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { claudeRoles as roles, emptyClaudeRoles as emptyRoles, clientDefaults, clientModels, clientProtocols, exclusionOf } from "@/lib/client-config";
 import { ClaudeModelConfig } from "./claude-model-config";
@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import type { ClaudeModels, ClientAccessMode, ClientConfigPreview, ClientConfigRequest, ClientStatus } from "@/types/clients";
+import type { ClaudeModels, ClaudeOneM, ClientAccessMode, ClientConfigPreview, ClientConfigRequest, ClientStatus } from "@/types/clients";
 import type { NewApiProvider } from "@/types/newapi";
 
 const errorKey = (cause: unknown) => {
@@ -26,6 +26,8 @@ interface ClaudeConfigProfile {
   request: ClientConfigRequest;
 }
 const CLAUDE_PROFILES_KEY = "agentharbor.claude-code-profiles.v1";
+const emptyOneM = (): ClaudeOneM => ({ startup: false, sonnet: false, opus: false, fable: false, subagent: false });
+
 function readClaudeProfiles(): ClaudeConfigProfile[] {
   try {
     const value: unknown = JSON.parse(localStorage.getItem(CLAUDE_PROFILES_KEY) ?? "[]");
@@ -39,8 +41,7 @@ function readClaudeProfiles(): ClaudeConfigProfile[] {
 
 function selectedProviderModels(provider: NewApiProvider, protocols: ReturnType<typeof clientProtocols>, saved?: string[]) {
   const available = clientModels(provider, protocols);
-  const retained = saved ? available.filter(id => saved.includes(id)) : available;
-  return retained.length ? retained : available;
+  return saved === undefined ? available : available.filter(id => saved.includes(id));
 }
 
 export function ConfigDialog({ client, providers, onClose, onApplied }: {
@@ -57,7 +58,8 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
     const models = initial ? clientModels(initial, protocols) : [];
     const restoredModels = isClaude && saved?.providerId === initial?.id && saved?.claudeModelIds
       ? models.filter(id => saved.claudeModelIds!.includes(id)) : models;
-    const selectedModels = restoredModels.length ? restoredModels : models;
+    const hasSavedModelSelection = isClaude && saved?.providerId === initial?.id && saved?.claudeModelIds != null;
+    const selectedModels = hasSavedModelSelection ? restoredModels : models;
     const model = initial?.id === client.providerId && selectedModels.includes(client.model ?? "")
       ? client.model! : selectedModels[0] ?? "";
     const selectedIds = saved?.providerIds?.length ? saved.providerIds.filter(id => available.some(provider => provider.id === id))
@@ -67,7 +69,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
       targetId: client.targetId, providerId: initial?.id ?? "", model, accessMode,
       providerIds: Array.from(new Set([...selectedIds, ...(initial ? [initial.id] : [])])),
       providerModelIds: isClaude ? undefined : Object.fromEntries(available.map(provider => [
-        provider.id, selectedProviderModels(provider, protocols, saved?.providerModelIds?.[provider.id]),
+        provider.id, saved?.providerModelIds?.[provider.id] ?? clientModels(provider, protocols),
       ])),
       ...clientDefaults(initial, model),
       ...(canRestore && saved ? { contextWindow: saved.contextWindow, maxOutputTokens: saved.maxOutputTokens } : {}),
@@ -76,7 +78,10 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
         if (value && selectedModels.includes(value)) mapping[role] = value;
         return mapping;
       }, emptyRoles()),
-      claudeModelIds: isClaude ? selectedModels : undefined,
+      claudeModelIds: isClaude
+        ? (saved?.providerId === initial?.id && saved.claudeModelIds != null ? saved.claudeModelIds : undefined)
+        : undefined,
+      claudeOneM: isClaude && canRestore ? saved?.claudeOneM ?? emptyOneM() : emptyOneM(),
       authField: saved?.authField ?? "authToken",
     };
   });
@@ -86,6 +91,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
   const [claudeProfiles, setClaudeProfiles] = useState<ClaudeConfigProfile[]>(() => isClaude ? readClaudeProfiles() : []);
   const [profileName, setProfileName] = useState("");
   const [editingProfile, setEditingProfile] = useState(false);
+  const [managingProfiles, setManagingProfiles] = useState(false);
   const protocols = clientProtocols(client, request.accessMode);
   const compatible = providers.filter(provider => !exclusionOf(provider, protocols));
   const selected = compatible.filter(provider => request.providerIds.includes(provider.id));
@@ -96,6 +102,10 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
   };
   const configuredModels = isClaude ? models.filter(id => request.claudeModelIds?.includes(id) ?? true) : models;
   const modelCompatible = !!provider && (isClaude ? configuredModels : modelIdsForProvider(provider)).includes(request.model);
+  const staleClaudeModelSelection = isClaude && !!provider
+    && (request.claudeModelIds ?? []).some(id => !models.includes(id));
+  const staleOpenCodeModelSelection = client.targetId === "opencode" && selected.some(entry =>
+    (request.providerModelIds?.[entry.id] ?? []).some(id => !clientModels(entry, protocols).includes(id)));
   const selectedProtocol = provider ? providerModelProtocol(provider, request.model) : null;
   const modelLabel = (p: NewApiProvider, id: string) => p.models.find(model => model.id === id)?.displayName || id;
   const update = (patch: Partial<ClientConfigRequest>) => {
@@ -111,8 +121,11 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
       : isClaude ? nextModels : next ? modelIdsForProvider(next) : [];
     const id = model ?? (sameProvider && available.includes(request.model) ? request.model : available[0]) ?? "";
     return { providerId: next?.id ?? "", model: id, ...clientDefaults(next, id),
-      claudeModelIds: isClaude ? available : undefined,
-      claudeModels: next?.id === request.providerId ? request.claudeModels : emptyRoles() };
+      claudeModelIds: isClaude ? (sameProvider ? request.claudeModelIds : undefined) : undefined,
+      claudeModels: next?.id === request.providerId ? request.claudeModels : emptyRoles(),
+      claudeOneM: next?.id === request.providerId
+        ? { ...(request.claudeOneM ?? emptyOneM()), startup: (request.claudeOneM?.startup ?? false) && id === request.model }
+        : emptyOneM() };
   };
   const selectClaudeModels = (next: string[]) => {
     const ids = models.filter(id => next.includes(id));
@@ -120,6 +133,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
     const model = ids.includes(request.model) ? request.model : ids[0];
     update({ claudeModelIds: ids, model,
       ...(model !== request.model ? clientDefaults(provider, model) : {}),
+      claudeOneM: { ...(request.claudeOneM ?? emptyOneM()), startup: (request.claudeOneM?.startup ?? false) && model === request.model },
       claudeModels: roles.reduce<ClaudeModels>((mapping, role) => {
         const value = request.claudeModels[role];
         if (ids.includes(value)) mapping[role] = value;
@@ -139,17 +153,31 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
     const nextProtocols = clientProtocols(client, accessMode);
     const eligible = providers.filter(p => !exclusionOf(p, nextProtocols));
     const next = eligible.find(p => p.id === request.providerId) ?? eligible[0];
-    const nextModels = next ? (isClaude ? clientModels(next, nextProtocols)
+    const availableModels = next ? (isClaude ? clientModels(next, nextProtocols)
       : selectedProviderModels(next, nextProtocols, request.providerModelIds?.[next.id])) : [];
+    const nextModels = isClaude && next?.id === request.providerId && request.claudeModelIds != null
+      ? availableModels.filter(id => request.claudeModelIds?.includes(id) ?? true) : availableModels;
     const model = nextModels.includes(request.model) ? request.model : nextModels[0] ?? "";
+    const changedProvider = next?.id !== request.providerId;
+    const claudeModels = !isClaude || changedProvider ? emptyRoles() : roles.reduce<ClaudeModels>((mapping, role) => {
+      const value = request.claudeModels[role];
+      if (value && nextModels.includes(value)) mapping[role] = value;
+      return mapping;
+    }, emptyRoles());
+    const claudeOneM = !isClaude || changedProvider ? emptyOneM() : {
+      ...(request.claudeOneM ?? emptyOneM()),
+      startup: (request.claudeOneM?.startup ?? false) && nextModels.includes(request.model),
+    };
+    const droppedSelections = isClaude && (request.claudeModelIds ?? []).some(id => !nextModels.includes(id));
     const ids = isClaude ? [] : request.providerIds.filter(id => eligible.some(p => p.id === id));
     update({ accessMode, providerId: next?.id ?? "", model,
       providerIds: Array.from(new Set([...ids, ...(next ? [next.id] : [])])),
       providerModelIds: isClaude ? undefined : Object.fromEntries(eligible.map(p => [
         p.id, selectedProviderModels(p, nextProtocols, request.providerModelIds?.[p.id]),
       ])),
-      claudeModelIds: isClaude ? nextModels : undefined,
-      claudeModels: emptyRoles(), ...clientDefaults(next, model) });
+      claudeModelIds: isClaude && request.claudeModelIds != null && !changedProvider ? nextModels : undefined,
+      claudeModels, claudeOneM, ...clientDefaults(next, model) });
+    if (droppedSelections) setError("clients.errors.modeDroppedModels");
   };
   const toggleProvider = (next: NewApiProvider) => {
     if (isClaude) { update({ ...chooseDefault(next), providerIds: [next.id] }); return; }
@@ -168,7 +196,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
     if (!provider || !modelCompatible) return;
     const profile: ClaudeConfigProfile = {
       id: crypto.randomUUID(), name,
-      request: { ...request, providerIds: [request.providerId], providerModelIds: undefined },
+      request: { ...request, claudeModelIds: configuredModels, providerIds: [request.providerId], providerModelIds: undefined },
     };
     const next = [...claudeProfiles.filter(item => !(item.name === name && item.request.providerId === request.providerId)), profile];
     try {
@@ -176,6 +204,16 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
       setClaudeProfiles(next);
       setProfileName(name);
       setEditingProfile(false);
+      setError(null);
+    } catch { setError("clients.errors.storage"); }
+  };
+  const deleteClaudeProfile = (id: string) => {
+    const profile = claudeProfiles.find(item => item.id === id);
+    if (!profile || !window.confirm(t("clients.deleteProfileConfirm", { name: profile.name }))) return;
+    const next = claudeProfiles.filter(item => item.id !== id);
+    try {
+      localStorage.setItem(CLAUDE_PROFILES_KEY, JSON.stringify(next));
+      setClaudeProfiles(next);
       setError(null);
     } catch { setError("clients.errors.storage"); }
   };
@@ -188,15 +226,23 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
     const nextProvider = providers.find(item => item.id === profile.request.providerId && !exclusionOf(item, profileProtocols));
     if (!nextProvider) { setError("clients.errors.provider"); return; }
     const availableModels = clientModels(nextProvider, profileProtocols);
-    const chosenModels = availableModels.filter(model => profile.request.claudeModelIds?.includes(model));
-    const modelIds = chosenModels.length ? chosenModels : availableModels;
-    const model = modelIds.includes(profile.request.model) ? profile.request.model : modelIds[0] ?? "";
-    if (!model) { setError("clients.errors.modelSelection"); return; }
+    const savedModelIds = profile.request.claudeModelIds;
+    const modelIds = savedModelIds == null ? availableModels : availableModels.filter(model => savedModelIds.includes(model));
+    if (modelIds.length === 0 || (savedModelIds != null && modelIds.length !== new Set(savedModelIds).size)) {
+      setError("clients.errors.profileModelsUnavailable"); return;
+    }
+    const model = profile.request.model;
+    if (!modelIds.includes(model)) { setError("clients.errors.profileModelsUnavailable"); return; }
     const claudeModels = roles.reduce<ClaudeModels>((mapping, role) => {
       const value = profile.request.claudeModels?.[role];
-      if (value && modelIds.includes(value)) mapping[role] = value;
+      if (value && !modelIds.includes(value)) return mapping;
+      if (value) mapping[role] = value;
       return mapping;
     }, emptyRoles());
+    if (roles.some(role => profile.request.claudeModels?.[role] && !modelIds.includes(profile.request.claudeModels[role]))) {
+      setError("clients.errors.profileModelsUnavailable"); return;
+    }
+    const oneM = profile.request.claudeOneM ?? emptyOneM();
     const defaults = clientDefaults(nextProvider, model);
     const savedContext = profile.request.contextWindow;
     const contextWindow = model === profile.request.model && Number.isSafeInteger(savedContext) && savedContext >= 1024
@@ -206,7 +252,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
       && savedOutput >= 1 && savedOutput <= contextWindow ? savedOutput : Math.min(defaults.maxOutputTokens, contextWindow);
     const profileRequest: ClientConfigRequest = { ...profile.request, targetId: client.targetId, accessMode, providerId: nextProvider.id,
       providerIds: [nextProvider.id], providerModelIds: undefined, claudeModelIds: modelIds, model,
-      claudeModels, contextWindow, maxOutputTokens,
+      claudeModels, claudeOneM: oneM, contextWindow, maxOutputTokens,
       authField: profile.request.authField === "apiKey" ? "apiKey" : "authToken" };
     setRequest(profileRequest);
     setPreview(null);
@@ -225,6 +271,9 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
   };
   const run = async () => {
     if (busy) return;
+    if (staleOpenCodeModelSelection) {
+      setError("clients.errors.openCodeModelsUnavailable"); return;
+    }
     if (!modelCompatible || request.providerIds.some(id => !compatible.some(p => p.id === id))) {
       setError("clients.errors.provider"); return;
     }
@@ -242,7 +291,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
     setBusy(true);
     setError(null);
     try {
-      const configuredRequest = isClaude ? request : { ...request, providerModelIds: Object.fromEntries(
+      const configuredRequest = isClaude ? { ...request, claudeModelIds: configuredModels } : { ...request, providerModelIds: Object.fromEntries(
         selected.map(entry => [entry.id, modelIdsForProvider(entry)]),
       ) };
       if (preview) {
@@ -278,6 +327,10 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
                 aria-expanded={editingProfile} aria-controls="claude-profile-editor" onClick={() => setEditingProfile(value => !value)}>
                 <BookmarkPlus className="h-4 w-4" />{editingProfile ? t("common.cancel") : t("clients.saveProfile")}
               </Button>
+              {claudeProfiles.length > 0 && <Button type="button" size="sm" variant="ghost" disabled={busy}
+                aria-expanded={managingProfiles} aria-controls="claude-profile-management" onClick={() => setManagingProfiles(value => !value)}>
+                {t(managingProfiles ? "common.cancel" : "clients.manageProfiles")}
+              </Button>}
             </div>
             {editingProfile && <div id="claude-profile-editor" className="flex flex-wrap gap-2 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-150">
               <Input aria-label={t("clients.profileName")} placeholder={provider?.name ?? t("clients.profileName")} value={profileName}
@@ -286,6 +339,18 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
                 {t("clients.confirmSaveProfile")}
               </Button>
             </div>}
+            {managingProfiles && <ul id="claude-profile-management" className="space-y-1 rounded-lg border bg-muted/20 p-2 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-150">
+              {claudeProfiles.map(item => <li key={item.id} className="flex min-w-0 items-center gap-2 px-1 py-1">
+                <span className="min-w-0 flex-1 truncate text-sm" title={item.name}>{item.name}</span>
+                <span className="max-w-[40%] truncate text-xs text-muted-foreground" title={providers.find(p => p.id === item.request.providerId)?.name ?? item.request.providerId}>
+                  {providers.find(p => p.id === item.request.providerId)?.name ?? item.request.providerId}
+                </span>
+                <Button type="button" size="icon-sm" variant="ghost" disabled={busy}
+                  aria-label={t("clients.deleteProfile", { name: item.name })} onClick={() => deleteClaudeProfile(item.id)}>
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </li>)}
+            </ul>}
           </section>}
           <div className="flex w-fit gap-1 rounded-lg border bg-muted/40 p-1" aria-label={t("clients.accessMode")}>
             {(["native", "router"] as const).map(mode => <Button key={mode} type="button" size="sm"
@@ -339,8 +404,16 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
           </section>}
           {isClaude && <ClaudeModelConfig key={request.providerId + ":" + request.accessMode}
             provider={provider} models={models} selected={configuredModels} mapping={request.claudeModels}
-            defaultModel={request.model} disabled={busy} onSelectedChange={selectClaudeModels}
-            onMappingChange={claudeModels => update({ claudeModels })} />}
+            defaultModel={request.model} disabled={busy} oneM={request.claudeOneM ?? emptyOneM()}
+            onSelectedChange={selectClaudeModels} onMappingChange={claudeModels => update({ claudeModels })}
+            onOneMChange={claudeOneM => update({ claudeOneM })} />}
+          {client.targetId === "opencode" && staleOpenCodeModelSelection &&
+            <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
+              {t("clients.staleOpenCodeModels")}
+            </p>}
+          {isClaude && staleClaudeModelSelection && <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
+            {t("clients.errors.profileModelsUnavailable")}
+          </p>}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between gap-2"><Label htmlFor="client-model">{t(isClaude ? "clients.startupModel" : "clients.model")}</Label>
               {selectedProtocol && <Badge variant="outline" className="text-[10px]">{t("newapi.protocol" + (selectedProtocol === "responses" ? "Responses" : selectedProtocol === "chatCompletions" ? "ChatCompletions" : "AnthropicMessages"))}</Badge>}
@@ -352,6 +425,13 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
                 {(!isClaude && selected.length > 1 ? p.name + " / " : "") + modelLabel(p, id)}
               </SelectItem>))}</SelectContent>
             </Select>
+            {isClaude && <label className="flex items-center gap-2 pt-1 text-xs text-muted-foreground">
+              <input type="checkbox" checked={request.claudeOneM?.startup ?? false}
+                disabled={busy || !request.model}
+                className="h-4 w-4 accent-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-50"
+                onChange={() => update({ claudeOneM: { ...(request.claudeOneM ?? emptyOneM()), startup: !(request.claudeOneM?.startup ?? false) } })} />
+              {t("clients.oneMStartup")}
+            </label>}
           </div>
           <details className="group rounded-lg border bg-muted/20">
             <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-2.5 text-sm font-medium">

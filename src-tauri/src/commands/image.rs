@@ -518,10 +518,6 @@ fn decode_data_url(value: &str) -> Result<(Vec<u8>, String), String> {
     Ok((bytes, extension.to_owned()))
 }
 
-fn is_safe_image_extension(path: &std::path::Path) -> bool {
-    is_gallery_image(path)
-}
-
 /// Resolve a user-chosen save path and reject empty / relative / extension-less targets.
 fn resolve_save_path(path: &str) -> Result<std::path::PathBuf, String> {
     let trimmed = path.trim();
@@ -529,7 +525,7 @@ fn resolve_save_path(path: &str) -> Result<std::path::PathBuf, String> {
         return Err("image.errors.save".into());
     }
     let target = std::path::PathBuf::from(trimmed);
-    if target.as_os_str().is_empty() || !is_safe_image_extension(&target) {
+    if !target.is_absolute() || !is_gallery_image(&target) {
         return Err("image.errors.save".into());
     }
     // Reject parent-directory escapes in the literal path before touching the FS.
@@ -571,6 +567,8 @@ pub struct SavedImagesPayload {
 #[tauri::command]
 pub fn save_image_file(path: String, data_url: String) -> Result<(), String> {
     let (bytes, _) = decode_data_url(&data_url)?;
+    // The path comes over IPC, so only ever write real image bytes to it.
+    image::guess_format(&bytes).map_err(|_| "image.errors.save".to_owned())?;
     let target = resolve_save_path(&path)?;
     if let Some(parent) = target.parent() {
         if !parent.as_os_str().is_empty() {
@@ -845,6 +843,10 @@ pub fn delete_gallery_image(
     let paths = paths(&repo)?;
     let target = std::path::PathBuf::from(&path);
     let target = ensure_inside_gallery(&paths, &target)?;
+    // The gallery can point at any user directory; never delete non-image files there.
+    if !is_gallery_image(&target) {
+        return Err("image.errors.notFound".into());
+    }
     std::fs::remove_file(&target).map_err(|_| "image.errors.save".to_owned())
 }
 
@@ -1148,7 +1150,9 @@ mod tests {
 
     #[test]
     fn save_path_rejects_traversal_and_unknown_extension() {
-        assert!(resolve_save_path("/tmp/ok.png").is_ok());
+        let absolute = std::env::temp_dir().join("ok.png");
+        assert!(resolve_save_path(absolute.to_str().unwrap()).is_ok());
+        assert_eq!(resolve_save_path("ok.png").unwrap_err(), "image.errors.save");
         assert_eq!(
             resolve_save_path("../escape.png").unwrap_err(),
             "image.errors.save"

@@ -282,9 +282,10 @@ fn parse_content(file_exists: bool, raw_content: String) -> Result<ParsedManaged
     }
 
     let content_start = block_start + MANAGED_START_MARKER.len();
+    // Managed content is always exposed with LF so CRLF files do not look edited.
     let content = raw_content[content_start..block_end_marker_start]
-        .trim_matches('\n')
-        .to_string();
+        .trim_matches(['\r', '\n'])
+        .replace("\r\n", "\n");
 
     Ok(ParsedManagedBlock {
         file_exists,
@@ -309,15 +310,22 @@ fn compose_with_managed_content(
         let mut next = String::with_capacity(parsed.raw_content.len() + rendered_block.len() + 8);
         next.push_str(&parsed.raw_content[..start]);
         next.push_str(&rendered_block);
-        next.push_str(&parsed.raw_content[end..]);
-        return Ok(next);
+        // The rendered block ends with its own line break; drop the one that followed
+        // the old end marker so repeated applies do not grow the file by a blank line.
+        let after = &parsed.raw_content[end..];
+        let after = after
+            .strip_prefix("\r\n")
+            .or_else(|| after.strip_prefix('\n'))
+            .unwrap_or(after);
+        next.push_str(after);
+        return Ok(match_line_endings(&parsed.raw_content, next));
     }
 
     if parsed.raw_content.trim().is_empty() {
         return Ok(rendered_block);
     }
 
-    let mut next = parsed.raw_content.clone();
+    let mut next = parsed.raw_content.replace("\r\n", "\n");
     if !next.ends_with('\n') {
         next.push('\n');
     }
@@ -325,7 +333,16 @@ fn compose_with_managed_content(
         next.push('\n');
     }
     next.push_str(&rendered_block);
-    Ok(next)
+    Ok(match_line_endings(&parsed.raw_content, next))
+}
+
+/// Keep a CRLF file CRLF: the managed block is rendered with LF internally.
+fn match_line_endings(original: &str, next: String) -> String {
+    if original.contains("\r\n") {
+        next.replace("\r\n", "\n").replace('\n', "\r\n")
+    } else {
+        next
+    }
 }
 
 fn clear_managed_content(parsed: &ParsedManagedBlock) -> Result<String, CoreError> {
@@ -334,8 +351,8 @@ fn clear_managed_content(parsed: &ParsedManagedBlock) -> Result<String, CoreErro
         _ => return Ok(parsed.raw_content.clone()),
     };
 
-    let before = parsed.raw_content[..start].trim_end_matches('\n');
-    let after = parsed.raw_content[end..].trim_start_matches('\n');
+    let before = parsed.raw_content[..start].trim_end_matches(['\r', '\n']);
+    let after = parsed.raw_content[end..].trim_start_matches(['\r', '\n']);
 
     let next = if before.is_empty() && after.is_empty() {
         String::new()
@@ -347,7 +364,7 @@ fn clear_managed_content(parsed: &ParsedManagedBlock) -> Result<String, CoreErro
         format!("{before}\n\n{after}")
     };
 
-    Ok(next)
+    Ok(match_line_endings(&parsed.raw_content, next))
 }
 
 fn render_managed_block(content: &str) -> String {
@@ -473,4 +490,36 @@ fn valid_history_id(id: &str) -> bool {
         && id
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn crlf_files_keep_crlf_and_managed_content_has_no_carriage_returns() {
+        let raw = format!(
+            "# Notes\r\n\r\n{MANAGED_START_MARKER}\r\nold\r\nline\r\n{MANAGED_END_MARKER}\r\ntail\r\n"
+        );
+        let parsed = parse_content(true, raw).unwrap();
+        assert_eq!(parsed.managed_content, "old\nline");
+
+        let next = compose_with_managed_content(&parsed, "new\nline").unwrap();
+        assert!(!next.replace("\r\n", "").contains('\n'), "no bare LF: {next:?}");
+        assert!(next.contains("new\r\nline"));
+        assert!(next.ends_with("tail\r\n"));
+
+        let cleared = clear_managed_content(&parsed).unwrap();
+        assert_eq!(cleared, "# Notes\r\n\r\ntail\r\n");
+    }
+
+    #[test]
+    fn lf_files_are_unchanged_by_line_ending_handling() {
+        let raw = format!("a\n\n{MANAGED_START_MARKER}\nold\n{MANAGED_END_MARKER}\n");
+        let parsed = parse_content(true, raw).unwrap();
+        let next = compose_with_managed_content(&parsed, "new").unwrap();
+        assert_eq!(next, format!("a\n\n{MANAGED_START_MARKER}\nnew\n{MANAGED_END_MARKER}\n"));
+        let again = compose_with_managed_content(&parse_content(true, next.clone()).unwrap(), "new").unwrap();
+        assert_eq!(again, next, "re-applying must be idempotent");
+    }
 }

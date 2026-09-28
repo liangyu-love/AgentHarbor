@@ -121,6 +121,11 @@ fn render_mcp_update(original: &str, server: &McpServerSummary) -> Result<String
     if server.name.trim().is_empty() {
         return Err(CoreError::InvalidData("MCP server name is required".into()));
     }
+    if server.name.trim() != server.name {
+        return Err(CoreError::InvalidData(
+            "MCP server name must not start or end with whitespace".into(),
+        ));
+    }
     match server.transport {
         McpTransport::Stdio
             if server

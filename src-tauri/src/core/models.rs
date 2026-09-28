@@ -561,6 +561,8 @@ pub struct ThreadListPayload {
     pub items: Vec<crate::core::threads::ThreadSummary>,
     #[serde(default)]
     pub pending_deletion_keys: Vec<String>,
+    #[serde(default)]
+    pub pending_deletion_recovery_needed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

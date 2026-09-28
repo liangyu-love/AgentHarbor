@@ -25,6 +25,7 @@ export interface ThreadListPayload {
   lastScanAt: number;
   items: ThreadSummary[];
   pendingDeletionKeys: string[];
+  pendingDeletionRecoveryNeeded?: boolean;
 }
 
 export interface ThreadExportPayload {

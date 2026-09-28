@@ -149,6 +149,10 @@ api.image.saveToGallery = async () => {
   return { directory: "C:/synthetic", files: ["C:/synthetic/generated.png"] };
 };
 api.image.listGallery = async () => ({ directory: "C:/synthetic", items: galleryItems });
+api.openPath = async path => {
+  controls.review.openedPath = path;
+  if (controls.review.failOpenPath) throw new Error("synthetic open path failure");
+};
 api.image.loadGalleryThumbnail = path => {
   controls.review.thumbnailCalls.push(path);
   return controls.review.holdThumbnails
@@ -176,7 +180,7 @@ function ProviderFixture({ mixed = false }: { mixed?: boolean }) {
       onOpenChange={open => setDialog(current => ({ ...current, open }))} onSaved={noop} /></>;
 }
 
-type FixtureMode = "compact" | "grid" | "image" | "groups" | "overview" | "usage" | "provider" | "warnings" | "thread-actions" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-opencode" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official";
+type FixtureMode = "compact" | "grid" | "image" | "groups" | "overview" | "usage" | "provider" | "warnings" | "thread-actions" | "thread-queue-recovery" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-opencode" | "clients-opencode-stale" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official";
 
 function recoveryPreview(mode: FixtureMode) {
   const base = {
@@ -206,7 +210,11 @@ function mount(mode: FixtureMode) {
     : mode === "incompatible" || mode === "native-invalid" ? { ...mixedProvider, model: "chat-model" } : mixedProvider;
   state = { providers: mode === "image" ? [imageProvider] : mode === "groups" ? groupedProviders : mode === "overview" ? [...groupedProviders, provider("extra-1"), provider("extra-2")] : mode === "usage" ? [{ ...groupedProviders[0], balance: { remaining: 12.5, used: 7.5, unit: "USD", rawQuota: 12.5, quotaPerUnit: null, requestCount: 5, checkedAt: Math.floor(Date.now() / 1000), conversionAvailable: true } }] : [selectedProvider], router: { enabled: false, accessMode: mode === "native-invalid" ? "native" : "router", accountless: false, port: 43127, configDrifted: false }, proxyRunning: false, activeProviderId: mode === "image" || mode === "groups" || mode === "overview" || mode === "usage" ? null : selectedProvider.id };
   if (mode === "incompatible") state.providers.push(provider("alternate"));
-  const savedClient: ClientConfigRequest | null = mode === "clients-versions-existing" ? {
+  const savedClient: ClientConfigRequest | null = mode === "clients-opencode-stale" ? {
+    targetId: "opencode", providerId: "mixed", model: "responses-model", contextWindow: 128000,
+    maxOutputTokens: 8192, accessMode: "router", providerIds: ["mixed"],
+    providerModelIds: { mixed: ["responses-model", "removed-model"] },
+  } : mode === "clients-versions-existing" ? {
     targetId: "claudeCode", providerId: "versions", model: "claude-opus-4-8", contextWindow: 200000,
     maxOutputTokens: 8192, accessMode: "native", providerIds: ["versions"], authField: "authToken",
     claudeModels: { sonnet: "", opus: "claude-opus-4-8", fable: "", haiku: "", subagent: "" },
@@ -216,7 +224,7 @@ function mount(mode: FixtureMode) {
     maxOutputTokens: 8192, accessMode: "router", providerIds: ["mixed"], authField: "apiKey",
     claudeModels: { sonnet: "chat-model", opus: "", fable: "", haiku: "", subagent: "" },
   } : null;
-  const openCode = mode === "clients-opencode";
+  const openCode = mode.startsWith("clients-opencode");
   const clientStatuses: ClientStatus[] = mode.startsWith("clients") ? [{
     targetId: openCode ? "opencode" : "claudeCode", name: openCode ? "OpenCode" : "Claude Code",
     path: "C:/synthetic/config.json", protocols: openCode ? ["responses", "chatCompletions", "anthropicMessages"] : ["anthropicMessages"],
@@ -230,11 +238,12 @@ function mount(mode: FixtureMode) {
     archived: false, source: "", cliVersion: "", filePath: "C:/synthetic/t" + i,
     modelProvider: "agentharbor_native", model: "gpt-6-sol", tokensUsed: 10,
     threadSource: "sqlite", rolloutStatus: "available" }));
-  if (mode === "thread-actions") {
+  if (mode === "thread-actions" || mode === "thread-queue-recovery") {
     controls.review.recoveryApplyCalls = 0;
     controls.review.deleteCalls = [];
     controls.review.queueDeletes = false;
     controls.review.pendingDeletionKeys = [];
+    controls.review.pendingDeletionRecoveryNeeded = mode === "thread-queue-recovery";
     api.conversations.previewRecovery = async threadId => ({ schemaVersion: 1, success: true, code: "ok", message: "", warnings: [],
       data: { ...recoveryPreview("recovery-missing"), threadId, status: threadId === "t0" ? "providerMismatch" : "compatible",
         canApply: threadId === "t0", catalogAnalysis: null, catalogFields: [] } as any });
@@ -255,6 +264,7 @@ function mount(mode: FixtureMode) {
     api.conversations.cancelPendingDeletions = async () => {
       const count = controls.review.pendingDeletionKeys.length;
       controls.review.pendingDeletionKeys = [];
+      controls.review.pendingDeletionRecoveryNeeded = false;
       return { schemaVersion: 1, success: true, code: "ok", message: "", warnings: [], data: count };
     };
   } else if (mode.startsWith("recovery-")) {
@@ -271,6 +281,7 @@ function mount(mode: FixtureMode) {
     warnings: [{ code: "thread_scan_skipped", message: "Skipped synthetic-corrupt-session.jsonl: invalid UTF-8" }],
     data: { total: mode === "thread-actions" ? 2 : 1, lastScanAt: 0,
       pendingDeletionKeys: controls.review.pendingDeletionKeys ?? [],
+      pendingDeletionRecoveryNeeded: controls.review.pendingDeletionRecoveryNeeded ?? false,
       items: threads.slice(0, mode === "thread-actions" ? 2 : 1) } });
   const groups = Array.from({ length: 10 }, (_, i) => ({ key: "g" + i, cwd: "C:/synthetic/g" + i,
     folderName: "Workspace " + i, items: threads.slice(i * 10, i * 10 + 10), latestAt: 0,
@@ -280,7 +291,7 @@ function mount(mode: FixtureMode) {
     <div style={{ position: "relative", height: 600 }}><PageStage state="active">
       {mode.startsWith("recovery-") ? <ThreadRecoveryDialog thread={threads[0] as any} onOpenChange={noop}
           onRecovered={() => { controls.review.recoveredCalls += 1; }} /> :
-        mode === "image" ? <ImageWorkbenchPage /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage" ? <TokenUsagePanel data={usageFixture} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode === "warnings" || mode === "thread-actions" ? <ThreadsPage /> :
+        mode === "image" ? <ImageWorkbenchPage /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage" ? <TokenUsagePanel data={usageFixture} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :
         mode === "access" || mode === "incompatible" || mode === "native-invalid" || mode === "groups" ? <NewApiPage /> :
         mode === "test" ? <ProviderTestDialog open provider={mixedProvider} onOpenChange={noop} onTested={noop} onFailed={noop} /> :
         mode.startsWith("clients") ? <ClientConfigs providers={openCode ? [mixedProvider, provider("alternate")] : [selectedProvider]} /> :
@@ -315,6 +326,10 @@ controls.review = { mount, getState: () => state, pixel, accessCalls: [], thumbn
     clientNative: i18n.t("clients.accessNative"), clientRouter: i18n.t("clients.accessRouter"),
     clientAdvanced: i18n.t("clients.advanced"), clientApply: i18n.t("clients.apply"),
     clientSelectAllModels: i18n.t("clients.selectAllModels"),
+    oneMStartup: i18n.t("clients.oneMStartup"),
+    oneMSonnet: i18n.t("clients.oneMForRole", { role: i18n.t("clients.sonnet") }),
+    openCodeModelsUnavailable: i18n.t("clients.errors.openCodeModelsUnavailable"),
+    profileModelsUnavailable: i18n.t("clients.errors.profileModelsUnavailable"),
     recoveryTitle: i18n.t("threads.recoveryTitle"), recoveryCatalogConfirm: i18n.t("threads.recoveryCatalogConfirm"),
     recoveryMissingStatus: i18n.t("threads.recoveryStatus.missingCatalog"),
     recoveryJournalStatus: i18n.t("threads.recoveryStatus.journalBlocked"),
@@ -323,5 +338,10 @@ controls.review = { mount, getState: () => state, pixel, accessCalls: [], thumbn
     recoveryOpenDirectory: i18n.t("threads.recoveryOpenDirectory"),
     repairAll: i18n.t("threads.repairAll"), deleteThread: i18n.t("threads.deleteThread"),
     deleteSelected: i18n.t("threads.deleteSelected", { count: 1 }),
+    clearDeletionQueue: i18n.t("threads.clearDeletionQueue"),
+    openGallery: i18n.t("image.openGallery"),
+    openGalleryFailed: i18n.t("image.openGalleryFailed"),
+    manageProfiles: i18n.t("clients.manageProfiles"),
+    deleteProfile: i18n.t("clients.deleteProfile", { name: "Regression profile" }),
   } };
 mount("compact");

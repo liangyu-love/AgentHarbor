@@ -63,6 +63,7 @@ pub async fn list_conversations(
             last_scan_at: current_timestamp(),
             items: scan.items,
             pending_deletion_keys: pending.keys,
+            pending_deletion_recovery_needed: pending.recovery_required,
         },
         warnings,
     ))

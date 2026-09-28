@@ -95,12 +95,16 @@ export function ThreadsPage() {
     queryKey: THREADS_KEY,
     queryFn: () => api.conversations.list("codex"),
     staleTime: 30_000,
-    refetchInterval: query => query.state.data?.data.pendingDeletionKeys?.length ? 20_000 : false,
+    refetchInterval: query => query.state.data?.data.pendingDeletionKeys?.length
+      || query.state.data?.data.pendingDeletionRecoveryNeeded ? 20_000 : false,
   });
 
   const threads = useMemo(() => threadsQuery.data?.data.items ?? [], [threadsQuery.data]);
   const pendingDeletionKeys = new Set(threadsQuery.data?.data.pendingDeletionKeys ?? []);
+  // Corrupt queue records arrive as `pendingDeletionRecoveryNeeded`; queue cancellations
+  // and failures stay visible here so users can see why a deletion did not run.
   const scanWarnings = threadsQuery.data?.warnings ?? [];
+  const pendingDeletionRecoveryNeeded = threadsQuery.data?.data.pendingDeletionRecoveryNeeded ?? false;
   const exportableKeys = useMemo(
     () => new Set(threads.filter((thread) => thread.rolloutStatus !== "missing").map((thread) => thread.key)),
     [threads],
@@ -151,14 +155,15 @@ export function ThreadsPage() {
   const totalInteractions = totalUserMsgs + totalAgentMsgs;
   const useVirtualList = filtered.length >= VIRTUALIZE_THRESHOLD;
 
-  // Clean stale selection when threads change
+  // Keep the selection limited to visible threads: batch delete/export must never
+  // act on threads hidden by the current filter or search.
   useEffect(() => {
-    const available = new Set(threads.map((thread) => thread.key));
+    const visible = new Set(filtered.map((thread) => thread.key));
     setSelected((previous) => {
-      const next = new Set([...previous].filter((key) => available.has(key)));
+      const next = new Set([...previous].filter((key) => visible.has(key)));
       return next.size === previous.size ? previous : next;
     });
-  }, [threads]);
+  }, [filtered]);
 
   const toggleSelect = (id: string) => {
     setSelected((prev) => {
@@ -433,15 +438,17 @@ export function ThreadsPage() {
           </div>
         )}
 
-        {pendingDeletionKeys.size > 0 && (
+        {(pendingDeletionKeys.size > 0 || pendingDeletionRecoveryNeeded) && (
           <div role="status" className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 text-sm text-foreground motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-200">
             <Clock3 className="h-4 w-4 shrink-0 text-amber-700 dark:text-amber-400" aria-hidden="true" />
             <div className="min-w-0 flex-1">
-              <p className="font-medium">{t("threads.deletePending", { count: pendingDeletionKeys.size })}</p>
-              <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{t("threads.deletePendingDetail")}</p>
+              <p className="font-medium">{pendingDeletionRecoveryNeeded
+                ? t("threads.deleteQueueRecoveryNeeded") : t("threads.deletePending", { count: pendingDeletionKeys.size })}</p>
+              <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{pendingDeletionRecoveryNeeded
+                ? t("threads.deleteQueueRecoveryDetail") : t("threads.deletePendingDetail")}</p>
             </div>
             <Button type="button" size="sm" variant="outline" disabled={cancelPendingBusy} onClick={() => void cancelPendingDeletions()}>
-              {t("threads.cancelPendingDeletion")}
+              {t(pendingDeletionRecoveryNeeded ? "threads.clearDeletionQueue" : "threads.cancelPendingDeletion")}
             </Button>
           </div>
         )}

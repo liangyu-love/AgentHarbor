@@ -22,6 +22,80 @@ fn claude_legacy_requests_keep_explicit_models_without_a_catalog() {
     assert!(!manager.paths.claude.exists());
 }
 
+#[test]
+fn claude_one_m_marks_only_enabled_models_and_leaves_context_env_alone() {
+    let (_temp, manager, store, mut request) = fixture();
+    request.options.claude_model_ids = Some(vec!["claude-test".into()]);
+    request.options.claude_models.opus = "claude-test".into();
+    request.options.claude_one_m.startup = true;
+    request.options.claude_one_m.sonnet = true;
+    request.options.claude_one_m.subagent = true;
+
+    apply(&manager, &store, &request);
+    let installed = read(&manager.paths.claude);
+    assert_eq!(installed["env"]["ANTHROPIC_MODEL"], "claude-test[1m]");
+    assert_eq!(installed["model"], "claude-test[1m]");
+    assert_eq!(
+        installed["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"],
+        "claude-test[1m]"
+    );
+    assert_eq!(
+        installed["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"],
+        "claude-test"
+    );
+    assert_eq!(
+        installed["env"]["CLAUDE_CODE_SUBAGENT_MODEL"],
+        "claude-test[1m]"
+    );
+    assert!(installed["env"]
+        .get("CLAUDE_CODE_MAX_CONTEXT_TOKENS")
+        .is_none());
+    assert!(installed["env"]
+        .get("CLAUDE_CODE_AUTO_COMPACT_WINDOW")
+        .is_none());
+    assert!(installed["modelPicker"]["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["model"] == "claude-test"));
+
+    request.options.claude_one_m = ClaudeOneM::default();
+    apply(&manager, &store, &request);
+    let installed = read(&manager.paths.claude);
+    assert_eq!(installed["env"]["ANTHROPIC_MODEL"], "claude-test");
+    assert_eq!(installed["model"], "claude-test");
+    assert_eq!(
+        installed["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"],
+        "claude-test"
+    );
+    assert_eq!(
+        installed["env"]["CLAUDE_CODE_SUBAGENT_MODEL"],
+        "claude-test"
+    );
+}
+
+#[test]
+fn claude_one_m_works_in_native_mode_and_keeps_user_context_env() {
+    let (_temp, manager, store, mut request) = fixture();
+    request.options.access_mode = ClientAccessMode::Native;
+    request.options.claude_one_m.startup = true;
+    write(
+        &manager.paths.claude,
+        &json!({"env": {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "400000"}}),
+    );
+
+    apply(&manager, &store, &request);
+    let installed = read(&manager.paths.claude);
+    let model = format!("{}[1m]", request.model);
+    assert_eq!(installed["env"]["ANTHROPIC_MODEL"], model.as_str());
+    assert_eq!(installed["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "400000");
+
+    request.options.claude_one_m = ClaudeOneM::default();
+    apply(&manager, &store, &request);
+    let installed = read(&manager.paths.claude);
+    assert_eq!(installed["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "400000");
+}
+
 fn versioned_claude_fixture() -> (tempfile::TempDir, ConfigManager, Store, ConfigRequest) {
     let (temp, manager, mut store, mut request) = fixture();
     request.options.access_mode = ClientAccessMode::Native;

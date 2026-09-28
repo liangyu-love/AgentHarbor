@@ -170,6 +170,10 @@ async fn accept_loop(
 fn outbound_client(proxy: &ApiProxyConfigPayload) -> Result<Client, String> {
     let builder = Client::builder()
         .connect_timeout(Duration::from_secs(10))
+        // Idle timeout per read (resets on every chunk), so long SSE streams keep working
+        // while a hung upstream no longer pins the connection forever. Generous because
+        // reasoning models can stay silent for minutes before the first token.
+        .read_timeout(Duration::from_secs(300))
         .redirect(reqwest::redirect::Policy::none());
     let builder = super::api_client::configure_async_client(builder, proxy)
         .map_err(|_| "newapi.errors.proxy")?;
@@ -202,6 +206,42 @@ async fn forward(
 }
 
 type ForwardResult<T = Response<ResponseBody>> = Result<T, (StatusCode, &'static str)>;
+
+fn is_unsafe_path_segment(segment: &str) -> bool {
+    let lower = segment.to_ascii_lowercase();
+    let decoded = lower.replace("%2e", ".");
+    decoded == "." || decoded == ".." || lower.contains("%2f") || lower.contains("%5c") || segment.contains('\\')
+}
+
+/// Claude Code normally strips this itself; the router only handles clients that forward it.
+const CLAUDE_ONE_M_MARKER: &str = "[1m]";
+const CLAUDE_ONE_M_BETA: &str = "context-1m-2025-08-07";
+
+fn strip_claude_one_m_marker(model: &str) -> (&str, bool) {
+    let split = model.len().saturating_sub(CLAUDE_ONE_M_MARKER.len());
+    match model.get(split..) {
+        Some(tail) if tail.eq_ignore_ascii_case(CLAUDE_ONE_M_MARKER) => (&model[..split], true),
+        _ => (model, false),
+    }
+}
+
+fn append_anthropic_beta(headers: &mut HeaderMap) {
+    let mut betas: Vec<String> = headers
+        .get_all("anthropic-beta")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if !betas.iter().any(|value| value == CLAUDE_ONE_M_BETA) {
+        betas.push(CLAUDE_ONE_M_BETA.to_owned());
+    }
+    if let Ok(value) = HeaderValue::from_str(&betas.join(", ")) {
+        headers.insert("anthropic-beta", value);
+    }
+}
 
 enum Destination {
     /// Relay traffic: forward to this provider's base URL with its API key.
@@ -346,6 +386,11 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             .expect("static body"));
     }
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    // The suffix is appended to upstream base URLs, which normalize dot segments;
+    // reject them so a request cannot climb out of the `/v1` prefix with real credentials.
+    if segments.iter().any(|segment| is_unsafe_path_segment(segment)) {
+        return Err((StatusCode::BAD_REQUEST, "invalid path"));
+    }
     let store = router::read_store(&context.store_path).map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -390,7 +435,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         None
     };
 
-    let requested_model = body
+    let raw_requested_model = body
         .as_deref()
         .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())
         .and_then(|value| {
@@ -399,10 +444,18 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                 .and_then(Value::as_str)
                 .map(str::to_owned)
         });
+    let required_protocol = request_protocol(&segments);
+    let (requested_model, one_m_context) = raw_requested_model.map_or((None, false), |model| {
+        if required_protocol == Some(router::ModelProtocol::AnthropicMessages) {
+            let (base, enabled) = strip_claude_one_m_marker(&model);
+            (Some(base.to_owned()), enabled)
+        } else {
+            (Some(model), false)
+        }
+    });
     let prefixed_model = requested_model
         .as_deref()
         .and_then(|model| model.split_once("::"));
-    let required_protocol = request_protocol(&segments);
 
     let destination = match segments.as_slice() {
         // Codex model catalog for the model picker (`model_catalog_json` mirror).
@@ -502,6 +555,21 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         _ => return Err((StatusCode::NOT_FOUND, "unsupported path")),
     };
 
+    if one_m_context
+        && !matches!(
+            &destination,
+            Destination::Provider {
+                upstream_protocol: router::ModelProtocol::AnthropicMessages,
+                ..
+            }
+        )
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "1M context requires an Anthropic Messages provider",
+        ));
+    }
+
     let suffix = match segments.as_slice() {
         ["p", _, "v1", rest @ ..] | ["codex", "v1", rest @ ..] | ["v1", rest @ ..] => {
             rest.join("/")
@@ -552,7 +620,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         _ => None,
     };
 
-    let (url, headers) = match &destination {
+    let (url, mut headers) = match &destination {
         Destination::Provider {
             provider,
             upstream_protocol,
@@ -676,6 +744,9 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             }
         }
     };
+    if one_m_context {
+        append_anthropic_beta(&mut headers);
+    }
 
     // Canonical Responses input, excluding request-scoped instructions.
     let mut translated_input: Vec<Value> = Vec::new();
@@ -1032,6 +1103,35 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
+    fn dot_and_encoded_separator_segments_are_rejected() {
+        for segment in ["..", ".", "%2e%2E", ".%2e", "a%2Fb", "a%5cb", "a\\b"] {
+            assert!(is_unsafe_path_segment(segment), "{segment}");
+        }
+        for segment in ["v1", "responses", "chat", "claude-opus-4.8", "..x"] {
+            assert!(!is_unsafe_path_segment(segment), "{segment}");
+        }
+    }
+
+    #[test]
+    fn one_m_marker_is_stripped_only_at_the_end_and_beta_is_preserved() {
+        assert_eq!(strip_claude_one_m_marker("model[1M]"), ("model", true));
+        assert_eq!(strip_claude_one_m_marker("model[1m]"), ("model", true));
+        assert_eq!(strip_claude_one_m_marker("模型"), ("模型", false));
+        assert_eq!(
+            strip_claude_one_m_marker("model[1M]suffix"),
+            ("model[1M]suffix", false)
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert("anthropic-beta", HeaderValue::from_static("existing-beta"));
+        append_anthropic_beta(&mut headers);
+        append_anthropic_beta(&mut headers);
+        assert_eq!(
+            headers["anthropic-beta"],
+            "existing-beta, context-1m-2025-08-07"
+        );
+    }
+
+    #[test]
     fn codex_auth_requires_a_local_token_and_preserves_current_credentials() {
         let fixture = tempfile::tempdir().unwrap();
         let auth_path = fixture.path().join("auth.json");
@@ -1179,6 +1279,10 @@ mod tests {
                         assert!(request.contains(&format!("x-api-key: {expected_key}")));
                         assert!(request.contains("anthropic-version: 2023-06-01"));
                         assert!(!request.contains("authorization:"));
+                        if request.contains("x-fixture-claude-one-m: true") {
+                            assert_eq!(payload["model"], "claude-mock");
+                            assert!(request.contains("anthropic-beta: existing-beta, context-1m-2025-08-07"));
+                        }
                     } else if request.contains(" /v1/chat/completions ") {
                         assert!(request.contains(&format!("authorization: bearer {expected_key}")));
                         assert!(!request.contains("x-api-key:"));
@@ -1442,6 +1546,17 @@ mod tests {
             assert_eq!(response.status(), 200);
 
             let response = client
+                .post(format!("{base}/v1/messages"))
+                .header("x-api-key", "router-test-token")
+                .header("anthropic-beta", "existing-beta")
+                .header("x-fixture-claude-one-m", "true")
+                .json(&json!({"model": "anthropic_fixture::claude-mock[1M]", "max_tokens": 32, "messages": [{"role": "user", "content": "hi"}]}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+
+            let response = client
                 .post(format!("{base}/v1/chat/completions"))
                 .header(AUTHORIZATION, "Bearer router-test-token")
                 .json(&json!({"model": "agentharbor_fixture::mock-model", "messages": []}))
@@ -1558,7 +1673,7 @@ mod tests {
             let health = client.get(format!("{base}/agentharbor/health")).send().await.unwrap();
             assert_eq!(health.status(), 200);
             let usage = crate::core::relay_usage::load(&paths.app_data_dir).unwrap();
-            assert_eq!(usage.all_time.request_count, 13, "only inference requests are tracked");
+            assert_eq!(usage.all_time.request_count, 14, "only inference requests are tracked");
             assert!(usage
                 .by_provider
                 .iter()
@@ -1621,8 +1736,8 @@ mod tests {
             let body = response.text().await.unwrap();
             assert!(body.contains("data: [DONE]"), "SSE is forwarded unchanged");
             let usage = crate::core::relay_usage::load(&paths.app_data_dir).unwrap();
-            assert_eq!(usage.all_time.request_count, 15);
-            assert_eq!(usage.all_time.total_tokens, 375);
+            assert_eq!(usage.all_time.request_count, 16);
+            assert_eq!(usage.all_time.total_tokens, 400);
             // Claude's separate provider route remains available with Codex disabled.
             for (provider_id, model) in [("chat_fixture", "chat-model"), ("agentharbor_fixture", "mock-model")] {
                 for stream in [false, true] {
@@ -1655,8 +1770,8 @@ mod tests {
                 .send().await.unwrap();
             assert_eq!(response.status(),501,"unsupported token counting must not be fabricated");
             let usage = crate::core::relay_usage::load(&paths.app_data_dir).unwrap();
-            assert_eq!(usage.all_time.request_count,19);
-            assert_eq!(usage.all_time.total_tokens,475);
+            assert_eq!(usage.all_time.request_count,20);
+            assert_eq!(usage.all_time.total_tokens,500);
             manager.restore(TargetId::OpenCode).unwrap();
             routing_runtime::reconcile(&paths).await.unwrap();
             assert!(!is_running(), "the router stops only when all clients release it");

@@ -4,7 +4,7 @@ mod claude;
 mod opencode;
 mod options;
 use options::{native_base, validate_model};
-pub use options::{ClaudeAuthField, ClaudeModels, ClientAccessMode, ClientOptions};
+pub use options::{ClaudeAuthField, ClaudeModels, ClaudeOneM, ClientAccessMode, ClientOptions};
 #[cfg(test)]
 mod tests;
 

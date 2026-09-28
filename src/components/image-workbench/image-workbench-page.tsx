@@ -612,6 +612,16 @@ export function ImageWorkbenchPage() {
     }
   };
 
+  const openGalleryDirectory = async () => {
+    const directory = savedGalleryDir;
+    if (!directory) return;
+    try {
+      await api.openPath(directory);
+    } catch {
+      toast({ title: t("image.openGalleryFailed"), description: t("image.openGalleryFailedDetail"), variant: "destructive" });
+    }
+  };
+
   const chooseGalleryDirectory = async () => {
     if (!isTauriRuntime()) return;
     try {
@@ -843,7 +853,7 @@ export function ImageWorkbenchPage() {
                 size="sm"
                 variant="ghost"
                 className="h-8 gap-1.5 font-serif text-xs text-muted-foreground"
-                onClick={() => void api.openPath(savedGalleryDir).catch(() => undefined)}
+                onClick={() => void openGalleryDirectory()}
               >
                 <FolderOpen className="h-3.5 w-3.5" />
                 {t("image.openGallery")}
@@ -1486,7 +1496,7 @@ export function ImageWorkbenchPage() {
                 size="xs"
                 variant="ghost"
                 className="shrink-0"
-                onClick={() => void api.openPath(savedGalleryDir).catch(() => undefined)}
+                onClick={() => void openGalleryDirectory()}
               >
                 <FolderOpen className="h-3.5 w-3.5" />
                 {t("image.openGallery")}

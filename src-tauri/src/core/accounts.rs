@@ -232,7 +232,8 @@ pub fn switch(repo: &Repository, account_key: &str) -> Result<CodexAccountListPa
             current_timestamp(),
             uuid::Uuid::new_v4()
         ));
-        let _ = std::fs::copy(&repo.paths().auth_path, backup);
+        // Without a backup the current credentials could be lost, so abort the switch.
+        std::fs::copy(&repo.paths().auth_path, backup)?;
     }
     storage::write_atomic(&repo.paths().auth_path, &target_bytes)?;
     Ok(payload(repo.rebuild_registry_state()?))

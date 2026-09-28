@@ -21,6 +21,13 @@ export interface ClaudeModels {
   haiku: string;
   subagent: string;
 }
+export interface ClaudeOneM {
+  startup: boolean;
+  sonnet: boolean;
+  opus: boolean;
+  fable: boolean;
+  subagent: boolean;
+}
 export interface ClientConfigRequest {
   targetId: TargetId;
   providerId: string;
@@ -32,6 +39,7 @@ export interface ClientConfigRequest {
   providerModelIds?: Record<string, string[]>;
   claudeModels: ClaudeModels;
   claudeModelIds?: string[] | null;
+  claudeOneM?: ClaudeOneM | null;
   authField: "authToken" | "apiKey";
 }
 export interface ClientConfigPreview {
