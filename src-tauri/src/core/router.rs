@@ -1418,9 +1418,7 @@ pub fn effective_active_for(store: &Store, protocol: ModelProtocol) -> Option<&P
             store.providers.iter().find(|provider| {
                 &provider.id == id
                     && provider.is_routable()
-                    && (provider.selected_protocol() == protocol
-                        || protocol::Translation::between(protocol, provider.selected_protocol())
-                            .is_some_and(|translation| translation.is_supported()))
+                    && protocol::Translation::can_serve(protocol, provider.selected_protocol())
             })
         })
         .or_else(|| store.providers.iter().find(exact))

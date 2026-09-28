@@ -127,6 +127,21 @@
 - [x] T1 删除没有调用方的 `RoutingTarget`、`McpConfigStore`、`SkillStore`、`InstructionStore` 及对应 registry 查询；保留实际使用的 `ConversationSource`（会话页）和 `ProcessController`（重启 Codex、自动切号），并去掉其中未使用的 `target_id`/`is_running`。MCP、Skills、指令直接用 `CodexPaths`，与现状一致。
 - 验证：lib 367 通过 / 1 ignored，集成 9 通过；`cargo check --all-targets` 无 warning。
 
+## 阶段 13：解耦重构（C1–C6）
+
+顺序（已与用户确认）：C5 → C6 → C3 → C4 → C2 → C1。
+
+- [x] C5 合并重复实现：
+  - `table_columns` 三份合一为 `threads::table_columns`（`thread_delete`、`thread_recovery`、`thread_recovery/journal` 共用）。原 `thread_recovery` 版本没有给表名加引号，现在统一转义；错误信息不再带 "SQLite error:" 前缀。
+  - 协议可达判断统一为 `Translation::can_serve(from, to)`（同协议直通或受支持的翻译），替换 `router.rs`、`router_proxy.rs`、`client_config/options.rs` 三处各自的写法。
+  - Claude Code / OpenCode adapter 的 base URL + 凭据选择合并为 `client_config::options::client_endpoint`。
+  - 附带修复阶段 10 新增的取消测试偶发卡死（10 次约 2 次）：fixture 的 `accept()` 改为带 deadline 的轮询、固定走直连（不经系统代理），并等上游真正收到连接后再取消。连续 13 次全量 lib 测试通过。
+- [ ] C6 重 IO 同步 command 改为 async / spawn_blocking。
+- [ ] C3 集中 query key 与 localStorage key。
+- [ ] C4 统一错误格式。
+- [ ] C2 拆分 `router_proxy::handle()`。
+- [ ] C1 拆分大组件。
+
 ### 验证（阶段 10）
 
 - `cargo test --lib --test local_workflows`：lib 366 通过 / 1 ignored，集成 9 通过；`cargo check --all-targets` 无 warning。

@@ -1150,7 +1150,7 @@ fn load_database_thread(
         return Ok(None);
     }
     let connection = open_database(database_path, true)?;
-    let columns = table_columns(&connection, "threads")?;
+    let columns = crate::core::threads::table_columns(&connection, "threads")?;
     if columns.is_empty() || !columns.contains("id") || !columns.contains("model_provider") {
         return Ok(None);
     }
@@ -1188,20 +1188,6 @@ fn query_database_provider(
         )
         .optional()
         .map_err(sqlite_error)
-}
-
-fn table_columns(connection: &Connection, table: &str) -> Result<HashSet<String>, CoreError> {
-    let mut statement = connection
-        .prepare(&format!("PRAGMA table_info({table})"))
-        .map_err(sqlite_error)?;
-    let rows = statement
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(sqlite_error)?;
-    let mut columns = HashSet::new();
-    for row in rows {
-        columns.insert(row.map_err(sqlite_error)?);
-    }
-    Ok(columns)
 }
 
 fn analyze_thread_catalog(
@@ -2109,7 +2095,7 @@ fn catalog_child_reference_evidence(
     thread_id: &str,
 ) -> Result<Vec<String>, CoreError> {
     let mut evidence = Vec::new();
-    let spawn_columns = table_columns(connection, "thread_spawn_edges")?;
+    let spawn_columns = crate::core::threads::table_columns(connection, "thread_spawn_edges")?;
     if spawn_columns.contains("child_thread_id") {
         let exists = connection
             .query_row(
@@ -2124,7 +2110,7 @@ fn catalog_child_reference_evidence(
             evidence.push("thread_spawn_edges.child_thread_id".into());
         }
     }
-    let job_columns = table_columns(connection, "agent_job_items")?;
+    let job_columns = crate::core::threads::table_columns(connection, "agent_job_items")?;
     if job_columns.contains("assigned_thread_id") {
         let exists = connection
             .query_row(

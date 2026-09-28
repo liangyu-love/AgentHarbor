@@ -69,8 +69,7 @@ impl ConfigRequest {
         }
         let protocol = provider.protocol_for_model(model);
         if self.target_id == TargetId::ClaudeCode && self.needs_router() {
-            super::super::protocol::Translation::between(ModelProtocol::AnthropicMessages, protocol)
-                .map_or(true, |pair| pair.is_supported())
+            super::super::protocol::Translation::can_serve(ModelProtocol::AnthropicMessages, protocol)
         } else {
             adapter(self.target_id).is_ok_and(|adapter| adapter.protocols().contains(&protocol))
         }
@@ -100,7 +99,30 @@ pub(super) fn validate_model(model: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub(super) fn native_base(provider: &Provider, with_version: bool) -> Result<String, String> {
+/// Base URL and credential a client uses for `provider`: the local router's
+/// per-provider path and bearer token in router mode, otherwise the provider itself.
+/// `with_version` appends `/v1` for clients (OpenCode) whose SDKs expect it.
+pub(super) fn client_endpoint<'a>(
+    store: &'a Store,
+    provider: &'a Provider,
+    request: &ConfigRequest,
+    with_version: bool,
+) -> Result<(String, &'a str), String> {
+    if request.needs_router() {
+        let version = if with_version { "/v1" } else { "" };
+        Ok((
+            format!(
+                "http://127.0.0.1:{}/p/{}{version}",
+                store.router.port, provider.id
+            ),
+            &store.router.bearer_token,
+        ))
+    } else {
+        Ok((native_base(provider, with_version)?, &provider.api_key))
+    }
+}
+
+fn native_base(provider: &Provider, with_version: bool) -> Result<String, String> {
     let base = super::super::newapi::base_url(&provider.base_url)?;
     if with_version {
         Ok(base

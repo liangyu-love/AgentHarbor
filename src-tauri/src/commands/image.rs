@@ -1427,16 +1427,33 @@ mod tests {
 
     #[test]
     fn cancelling_stops_a_hanging_generation_and_frees_its_slot() {
-        // Accepts the request and never answers.
+        // Accepts the request and never answers. Accept polls with a deadline so the
+        // test cannot hang if the connection never arrives.
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
         let base_url = format!("http://{}/", listener.local_addr().unwrap());
+        let (connected_tx, connected_rx) = std::sync::mpsc::channel();
         let hold = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            std::thread::sleep(Duration::from_secs(5));
-            drop(stream);
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while std::time::Instant::now() < deadline {
+                if let Ok((stream, _)) = listener.accept() {
+                    let _ = connected_tx.send(());
+                    std::thread::sleep(Duration::from_secs(5));
+                    drop(stream);
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
         });
         let dir = tempfile::tempdir().unwrap();
         let paths = CodexPaths::from_home(dir.path().join("codex"));
+        // Never route the fixture request through a system proxy.
+        std::fs::create_dir_all(&paths.app_data_dir).unwrap();
+        std::fs::write(
+            &paths.settings_path,
+            serde_json::json!({"apiProxy":{"mode":"direct"}}).to_string(),
+        )
+        .unwrap();
         let request = || ImageGenerationRequest {
             provider_id: None,
             base_url: base_url.clone(),
@@ -1451,13 +1468,16 @@ mod tests {
         let started = std::time::Instant::now();
         let result = tauri::async_runtime::block_on(async {
             let job = tokio::spawn(run_generation(Some("job-cancel".into()), request(), paths.clone()));
-            // Wait until the job has registered its cancel handle.
-            while !generation_jobs().lock().unwrap().contains_key("job-cancel") {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            // Cancel only once the request is actually in flight upstream.
+            tokio::task::spawn_blocking(move || connected_rx.recv_timeout(Duration::from_secs(10)))
+                .await
+                .unwrap()
+                .expect("the generation request reached the fixture upstream");
             assert!(cancel_image_generation("job-cancel".into()));
-            job.await.unwrap()
+            tokio::time::timeout(Duration::from_secs(10), job)
+                .await
+                .expect("cancelled generation settles")
+                .unwrap()
         });
         assert_eq!(result.unwrap_err(), "image.errors.cancelled");
         assert!(started.elapsed() < Duration::from_secs(4), "cancel must not wait for the upstream");

@@ -151,17 +151,7 @@ impl ClientAdapter for OpenCode {
                     continue;
                 }
                 keys.push(json!(key));
-                let (base, credential) = if request.needs_router() {
-                    (
-                        format!(
-                            "http://127.0.0.1:{}/p/{}/v1",
-                            store.router.port, provider.id
-                        ),
-                        &store.router.bearer_token,
-                    )
-                } else {
-                    (native_base(provider, true)?, &provider.api_key)
-                };
+                let (base, credential) = client_endpoint(store, provider, request, true)?;
                 // Own only generated leaves, so later user edits to headers, variants
                 // and custom models remain independent of this configuration session.
                 for (path, value) in [

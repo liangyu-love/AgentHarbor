@@ -271,7 +271,7 @@ pub(super) fn known_catalog_references(
         .map_err(sqlite_error)?;
     drop(statement);
     for table in tables {
-        let columns = table_columns(connection, &table)?;
+        let columns = crate::core::threads::table_columns(connection, &table)?;
         let mut candidates = columns
             .iter()
             .filter(|column| {

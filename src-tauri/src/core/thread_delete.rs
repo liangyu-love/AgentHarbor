@@ -831,7 +831,7 @@ fn normalize_relative_path(path: &Path) -> String {
 }
 
 fn validate_catalog_rows(connection: &Connection, thread_ids: &[String]) -> Result<(), CoreError> {
-    let columns = table_columns(connection, "threads")?;
+    let columns = threads::table_columns(connection, "threads")?;
     if !columns.contains("id") {
         return Err(CoreError::InvalidData(
             "Codex thread catalog has no threads.id column".into(),
@@ -915,24 +915,13 @@ fn declared_thread_references(connection: &Connection) -> Result<Vec<(String, St
     Ok(references)
 }
 
-fn table_columns(connection: &Connection, table: &str) -> Result<HashSet<String>, CoreError> {
-    let escaped = table.replace('"', "\"\"");
-    let mut statement = connection
-        .prepare(&format!("PRAGMA table_info(\"{escaped}\")"))
-        .map_err(sql_error)?;
-    let rows = statement
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(sql_error)?;
-    rows.collect::<Result<HashSet<_>, _>>().map_err(sql_error)
-}
-
 fn table_has_value(
     connection: &Connection,
     table: &str,
     column: &str,
     value: &str,
 ) -> Result<bool, CoreError> {
-    if !table_columns(connection, table)?.contains(column) {
+    if !threads::table_columns(connection, table)?.contains(column) {
         return Ok(false);
     }
     let sql = format!(

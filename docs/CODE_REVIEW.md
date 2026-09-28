@@ -61,7 +61,7 @@
 - C2 `router_proxy.rs` `handle()` 约 590 行。
 - C3 query key、localStorage key 为散落字面量。
 - C4 错误格式两套（i18n key / 原文），前端兜底不一致。
-- C5 重复实现：`table_columns` ×3、协议可翻译判断 ×2、两个客户端 adapter 的 base URL/凭据选择。
+- C5 重复实现：`table_columns` ×3、协议可翻译判断 ×2、两个客户端 adapter 的 base URL/凭据选择。（已处理：见 FIX_TODO 阶段 13。）
 - C6 重 IO 同步 command 可能阻塞 UI（图库、diagnose、clean）。
 
 ## 5. 代码地图勘误

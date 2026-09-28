@@ -23,14 +23,7 @@ impl ClientAdapter for ClaudeCode {
         request: &ConfigRequest,
     ) -> Result<Vec<Edit>, String> {
         let provider = selected_provider(store, request)?;
-        let (base, credential) = if request.needs_router() {
-            (
-                format!("http://127.0.0.1:{}/p/{}", store.router.port, provider.id),
-                &store.router.bearer_token,
-            )
-        } else {
-            (native_base(provider, false)?, &provider.api_key)
-        };
+        let (base, credential) = client_endpoint(store, provider, request, false)?;
         let (auth, other_auth) = match request.options.auth_field {
             ClaudeAuthField::AuthToken => ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"),
             ClaudeAuthField::ApiKey => ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),

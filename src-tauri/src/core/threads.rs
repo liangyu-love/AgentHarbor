@@ -447,7 +447,8 @@ fn scan_threads_from_catalog_inner(
     }
 }
 
-fn table_columns(connection: &Connection, table: &str) -> Result<HashSet<String>, CoreError> {
+/// Column names of `table`; empty when the table does not exist.
+pub(crate) fn table_columns(connection: &Connection, table: &str) -> Result<HashSet<String>, CoreError> {
     let sql = format!("PRAGMA table_info(\"{}\")", table.replace('"', "\"\""));
     let mut statement = connection
         .prepare(&sql)

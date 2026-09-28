@@ -108,6 +108,15 @@ impl Translation {
         (from != to).then_some(Self { from, to })
     }
 
+    /// True when a caller speaking `from` can reach an upstream speaking `to`,
+    /// either directly or through a supported translation.
+    pub fn can_serve(
+        from: crate::core::router::ModelProtocol,
+        to: crate::core::router::ModelProtocol,
+    ) -> bool {
+        Self::between(from, to).map_or(true, Self::is_supported)
+    }
+
     pub fn is_supported(self) -> bool {
         use crate::core::router::ModelProtocol::*;
         matches!(

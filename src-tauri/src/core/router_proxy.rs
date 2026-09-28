@@ -547,8 +547,10 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                         store.active_provider_id.as_deref() == Some(provider.id.as_str())
                             && provider.can_route_model(model)
                             && required_protocol.map_or(true, |from| {
-                                let to = provider.protocol_for_model(model);
-                                from == to || protocol::Translation { from, to }.is_supported()
+                                protocol::Translation::can_serve(
+                                    from,
+                                    provider.protocol_for_model(model),
+                                )
                             })
                     })
                 });
