@@ -227,7 +227,7 @@ IPC 命令必须同时在 Rust 命令文件中实现，并通过 `src-tauri/src/
 | Router 用量账本 | `relay-usage.jsonl` | `core/relay_usage.rs` |
 | 图片工作台 | 凭据 `image-workbench-key.dat`；图库默认 `image-gallery/`；目录覆写记录 `image-gallery-directory.json` | `commands/image.rs` |
 | 客户端配置恢复 | 应用数据 `client-config/` 下会话/恢复记录和备份（`backups/` 保留最近 20 份） | `core/client_config/mod.rs` |
-| 备份保留 | `accounts/backups/auth-*.json` 保留最近 20 份；Codex 主目录下 `thread-delete-backups/` 保留最近 10 份；`config-backups/`、`skill-backups/` 暂不自动清理 | `core/storage.rs` `prune_backups` |
+| 备份保留 | `accounts/backups/auth-*.json` 保留最近 20 份；Codex 主目录下 `thread-delete-backups/` 保留最近 10 份（`thread-delete-journal/` 中有未恢复的中断删除时暂停清理；中断删除在下次列表加载或删除前按 catalog 是否已提交自动回滚或收尾）；`config-backups/`、`skill-backups/` 暂不自动清理 | `core/storage.rs` `prune_backups` |
 | MCP/Skills/指令历史 | Codex `config.toml`、`skills/`、`AGENTS.md`；Skills 备份位于应用数据 `skill-backups/`，指令历史位于 `custom-instructions/history/` | `core/mcp.rs`、`core/skills.rs`、`core/custom_instructions.rs` |
 | 浏览器偏好 | `localStorage`：主题、强调色、语言、刷新间隔、侧栏状态、头像/背景、图片工作台偏好与收藏提示词、会话视图、Claude Code 已保存方案、中转分组别名 | `src/hooks/`、相关页面组件 |
 

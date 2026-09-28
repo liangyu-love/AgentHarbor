@@ -1,6 +1,6 @@
 use super::{models::CoreError, storage, threads};
 use chrono::Utc;
-use rusqlite::{params, Connection, OpenFlags, TransactionBehavior};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -68,10 +68,19 @@ struct DeleteManifestEntry {
     backup_rollout_path: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 struct RolloutBackup {
     original: PathBuf,
     backup: PathBuf,
+}
+
+/// Written before any rollout is removed and deleted once the deletion settles, so a
+/// crash between removing rollouts and committing the catalog can be rolled back.
+#[derive(Debug, Serialize, Deserialize)]
+struct DeleteJournal {
+    schema_version: u32,
+    catalog_ids: Vec<String>,
+    rollouts: Vec<RolloutBackup>,
 }
 
 pub fn delete_threads(
@@ -81,7 +90,10 @@ pub fn delete_threads(
     keys: &[String],
 ) -> Result<ThreadDeleteResult, CoreError> {
     let _guard = super::thread_recovery::thread_mutation_guard()?;
-    #[cfg(target_os = "windows")]
+    // Settle an interrupted deletion before its backup can be pruned by this one.
+    for warning in recover_journals(state_database_path) {
+        log::warn!("{warning}");
+    }
     if let Err(error) = crate::platform::process::ensure_no_codex_writer_processes() {
         if error.to_string().contains("CODEX_WRITER_RUNNING") {
             return queue_delete(state_database_path, sessions_dir, archived_dir, keys);
@@ -96,6 +108,108 @@ fn pending_dir(state_database_path: &Path) -> PathBuf {
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join("thread-delete-queue")
+}
+
+fn journal_dir(state_database_path: &Path) -> PathBuf {
+    state_database_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("thread-delete-journal")
+}
+
+/// Rolls back or finalizes deletions that were interrupted by a crash. Returns warnings
+/// for journals that could not be settled; those are kept and retried next time.
+fn recover_journals(state_database_path: &Path) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let Ok(entries) = std::fs::read_dir(journal_dir(state_database_path)) else {
+        return warnings;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|extension| extension != "json") || !path.is_file() {
+            continue;
+        }
+        let result = std::fs::read(&path)
+            .map_err(CoreError::from)
+            .and_then(|bytes| {
+                serde_json::from_slice::<DeleteJournal>(&bytes)
+                    .map_err(|error| CoreError::InvalidData(error.to_string()))
+            })
+            .and_then(|journal| settle_journal(state_database_path, &path, &journal));
+        if let Err(error) = result {
+            warnings.push(format!(
+                "interrupted thread deletion could not be recovered ({}): {error}",
+                path.display()
+            ));
+        }
+    }
+    warnings
+}
+
+fn has_journals(state_database_path: &Path) -> bool {
+    std::fs::read_dir(journal_dir(state_database_path)).is_ok_and(|entries| {
+        entries
+            .flatten()
+            .any(|entry| entry.path().extension().is_some_and(|extension| extension == "json"))
+    })
+}
+
+fn settle_journal(
+    state_database_path: &Path,
+    path: &Path,
+    journal: &DeleteJournal,
+) -> Result<(), CoreError> {
+    if journal.schema_version != 1 {
+        return Err(CoreError::InvalidData("unsupported journal version".into()));
+    }
+    // The catalog rows are deleted in one transaction, so their presence tells whether the
+    // deletion committed. Without catalog rows only a complete file removal counts as done.
+    let committed = if journal.catalog_ids.is_empty() {
+        journal.rollouts.iter().all(|item| !item.original.exists())
+    } else {
+        !catalog_has_any(state_database_path, &journal.catalog_ids)?
+    };
+    if !committed {
+        for item in &journal.rollouts {
+            if item.original.exists() {
+                continue;
+            }
+            if let Some(parent) = item.original.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&item.backup, &item.original)?;
+        }
+    }
+    storage::remove_file_durable(path)
+}
+
+fn catalog_has_any(state_database_path: &Path, thread_ids: &[String]) -> Result<bool, CoreError> {
+    if !state_database_path.is_file() {
+        // Cannot prove the commit happened; restoring the rollouts keeps the data.
+        return Ok(true);
+    }
+    let connection = Connection::open_with_flags(
+        state_database_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(sql_error)?;
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(sql_error)?;
+    for thread_id in thread_ids {
+        let found = connection
+            .query_row(
+                "SELECT 1 FROM threads WHERE id = ?1",
+                params![thread_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        if found.is_some() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn pending_jobs(state_database_path: &Path) -> Result<PendingJobScan, CoreError> {
@@ -325,26 +439,27 @@ pub fn process_pending_deletes(
             }
         }
     };
+    let journal_warnings = recover_journals(state_database_path);
     let scan = match pending_jobs(state_database_path) {
         Ok(scan) => scan,
         Err(error) => {
+            let mut warnings = journal_warnings;
+            warnings.push(error.to_string());
             return PendingDeleteStatus {
-                warnings: vec![error.to_string()],
+                warnings,
                 recovery_required: true,
                 ..Default::default()
-            }
+            };
         }
     };
     if scan.jobs.is_empty() {
         return PendingDeleteStatus {
+            warnings: journal_warnings,
             recovery_required: !scan.invalid_paths.is_empty(),
             ..Default::default()
         };
     }
-    #[cfg(target_os = "windows")]
     let writer_check = crate::platform::process::ensure_no_codex_writer_processes();
-    #[cfg(not(target_os = "windows"))]
-    let writer_check: Result<(), CoreError> = Ok(());
     let warning = writer_check.as_ref().err().and_then(|error| {
         (!error.to_string().contains("CODEX_WRITER_RUNNING")).then(|| error.to_string())
     });
@@ -356,6 +471,7 @@ pub fn process_pending_deletes(
         writer_check.is_ok(),
     );
     status.recovery_required = !scan.invalid_paths.is_empty();
+    status.warnings.splice(0..0, journal_warnings);
     if let Some(warning) = warning {
         status.warnings.push(warning);
     }
@@ -462,7 +578,10 @@ fn delete_threads_inner(
     ));
     std::fs::create_dir_all(&backup_dir)?;
     // Every deletion snapshots the whole catalog database; keep the latest few only.
-    storage::prune_backups(&backup_root, DELETE_BACKUP_LIMIT, |path| path.is_dir());
+    // An unsettled journal still needs its backup, so pruning waits until it is recovered.
+    if !has_journals(state_database_path) {
+        storage::prune_backups(&backup_root, DELETE_BACKUP_LIMIT, |path| path.is_dir());
+    }
 
     let mut manifest_entries = Vec::with_capacity(selected.len());
     let mut rollout_backups = Vec::new();
@@ -546,18 +665,55 @@ fn delete_threads_inner(
             .map_err(|error| CoreError::OperationFailed(error.to_string()))?,
     )?;
 
-    let removed_files = if let Some(connection) = connection.as_mut() {
+    let journal = DeleteJournal {
+        schema_version: 1,
+        catalog_ids: catalog_ids.clone(),
+        rollouts: rollout_backups,
+    };
+    let journal_path = journal_dir(state_database_path).join(format!("{}.json", Uuid::new_v4()));
+    storage::write_atomic(
+        &journal_path,
+        &serde_json::to_vec(&journal).map_err(|error| CoreError::OperationFailed(error.to_string()))?,
+    )?;
+    let outcome = remove_and_commit(connection.as_mut(), &catalog_ids, &journal.rollouts);
+    // On failure the rollouts were already put back; settling re-checks that from disk and
+    // keeps the journal for the next launch if anything is still missing.
+    let settled = match &outcome {
+        Ok(_) => storage::remove_file_durable(&journal_path),
+        Err(_) => settle_journal(state_database_path, &journal_path, &journal),
+    };
+    if let Err(error) = settled {
+        log::warn!(
+            "thread deletion journal was left for recovery ({}): {error}",
+            journal_path.display()
+        );
+    }
+    let removed_files = outcome?;
+
+    let _ = threads::scan_threads_with_warnings(sessions_dir, archived_dir);
+    Ok(ThreadDeleteResult {
+        deleted: selected.len(),
+        queued: 0,
+        catalog_rows_deleted: catalog_ids.len(),
+        rollout_files_deleted: removed_files.len(),
+        backup_path: backup_dir.display().to_string(),
+    })
+}
+
+fn remove_and_commit(
+    connection: Option<&mut Connection>,
+    catalog_ids: &[String],
+    rollout_backups: &[RolloutBackup],
+) -> Result<Vec<usize>, CoreError> {
+    if let Some(connection) = connection {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
-        validate_catalog_rows(&transaction, &catalog_ids)?;
-        let removed = match remove_rollouts(&rollout_backups) {
-            Ok(removed) => removed,
-            Err(error) => return Err(error),
-        };
+        validate_catalog_rows(&transaction, catalog_ids)?;
+        let removed = remove_rollouts(rollout_backups)?;
         let mutation = (|| -> Result<usize, CoreError> {
             let mut deleted = 0;
-            for thread_id in &catalog_ids {
+            for thread_id in catalog_ids {
                 let changed = transaction
                     .execute("DELETE FROM threads WHERE id = ?1", params![thread_id])
                     .map_err(sql_error)?;
@@ -573,28 +729,19 @@ fn delete_threads_inner(
         let catalog_deleted = match mutation {
             Ok(value) => value,
             Err(error) => {
-                restore_rollouts(&rollout_backups, &removed);
+                restore_rollouts(rollout_backups, &removed);
                 return Err(error);
             }
         };
         if let Err(error) = transaction.commit() {
-            restore_rollouts(&rollout_backups, &removed);
+            restore_rollouts(rollout_backups, &removed);
             return Err(sql_error(error));
         }
         debug_assert_eq!(catalog_deleted, catalog_ids.len());
-        removed
+        Ok(removed)
     } else {
-        remove_rollouts(&rollout_backups)?
-    };
-
-    let _ = threads::scan_threads_with_warnings(sessions_dir, archived_dir);
-    Ok(ThreadDeleteResult {
-        deleted: selected.len(),
-        queued: 0,
-        catalog_rows_deleted: catalog_ids.len(),
-        rollout_files_deleted: removed_files.len(),
-        backup_path: backup_dir.display().to_string(),
-    })
+        remove_rollouts(rollout_backups)
+    }
 }
 
 fn validate_rollout(
@@ -884,6 +1031,98 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM threads", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 0);
+        assert!(!has_journals(&database), "a finished deletion leaves no journal");
+    }
+
+    /// Simulates a crash after the rollout was removed: writes the journal the way
+    /// `delete_threads_inner` does and removes the original file.
+    fn crashed_journal(database: &Path, original: &Path, catalog_ids: Vec<String>) -> PathBuf {
+        let backup = database.parent().unwrap().join("backup-rollout.jsonl");
+        std::fs::copy(original, &backup).unwrap();
+        std::fs::remove_file(original).unwrap();
+        let journal = DeleteJournal {
+            schema_version: 1,
+            catalog_ids,
+            rollouts: vec![RolloutBackup {
+                original: original.to_path_buf(),
+                backup,
+            }],
+        };
+        let path = journal_dir(database).join("crash.json");
+        storage::write_atomic(&path, &serde_json::to_vec(&journal).unwrap()).unwrap();
+        path
+    }
+
+    fn insert_thread(database: &Path, id: &str, path: &Path) {
+        Connection::open(database)
+            .unwrap()
+            .execute(
+                "INSERT INTO threads (id, rollout_path, title, cwd) VALUES (?1, ?2, 'T', 'C:/work')",
+                params![id, path.display().to_string()],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn uncommitted_crash_restores_the_rollout() {
+        let (_temp, sessions, _archived, database) = fixture();
+        let path = sessions.join("rollout-one.jsonl");
+        std::fs::write(&path, rollout("one")).unwrap();
+        insert_thread(&database, "one", &path);
+        let journal = crashed_journal(&database, &path, vec!["one".into()]);
+
+        assert!(recover_journals(&database).is_empty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), rollout("one"));
+        assert!(!journal.exists());
+    }
+
+    #[test]
+    fn committed_crash_keeps_the_deletion() {
+        let (_temp, sessions, _archived, database) = fixture();
+        let path = sessions.join("rollout-one.jsonl");
+        std::fs::write(&path, rollout("one")).unwrap();
+        let journal = crashed_journal(&database, &path, vec!["one".into()]);
+
+        assert!(recover_journals(&database).is_empty());
+        assert!(!path.exists());
+        assert!(!journal.exists());
+    }
+
+    #[test]
+    fn partial_file_only_deletion_is_rolled_back() {
+        let (_temp, sessions, _archived, database) = fixture();
+        let removed = sessions.join("rollout-one.jsonl");
+        let kept = sessions.join("rollout-two.jsonl");
+        std::fs::write(&removed, rollout("one")).unwrap();
+        std::fs::write(&kept, rollout("two")).unwrap();
+        let journal = crashed_journal(&database, &removed, Vec::new());
+        // Add the second rollout to the journal as not yet removed.
+        let mut record: DeleteJournal =
+            serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
+        record.rollouts.push(RolloutBackup {
+            original: kept.clone(),
+            backup: database.parent().unwrap().join("unused.jsonl"),
+        });
+        std::fs::write(&journal, serde_json::to_vec(&record).unwrap()).unwrap();
+
+        assert!(recover_journals(&database).is_empty());
+        assert!(removed.is_file());
+        assert!(kept.is_file());
+        assert!(!journal.exists());
+    }
+
+    #[test]
+    fn unrecoverable_journal_is_kept_and_blocks_backup_pruning() {
+        let (_temp, sessions, _archived, database) = fixture();
+        let path = sessions.join("rollout-one.jsonl");
+        std::fs::write(&path, rollout("one")).unwrap();
+        insert_thread(&database, "one", &path);
+        let journal = crashed_journal(&database, &path, vec!["one".into()]);
+        std::fs::remove_file(database.parent().unwrap().join("backup-rollout.jsonl")).unwrap();
+
+        assert_eq!(recover_journals(&database).len(), 1);
+        assert!(journal.exists());
+        assert!(has_journals(&database));
     }
 
     #[test]

@@ -83,6 +83,18 @@
 - 未验证：Unix 信号处理的代码无法在本机编译检查（交叉编译 Linux 需要 C 工具链，本机没有）。只对照 tokio 1.50 源码核对了 API 签名，需要在 macOS/Linux 上构建确认。
 - 仍未覆盖：`kill -9`、任务管理器结束进程、崩溃后端口空闲的情况。这些情况下下次启动会恢复可用，但在重新启动之前，客户端会一直连接失败。
 
+## 阶段 8：会话删除 journal（M5）
+
+- [x] J1 删除 rollout 前写 `thread-delete-journal/<uuid>.json`（catalog id + 原路径/备份路径），成功或已回滚后删除。
+- [x] J2 列表加载和每次删除前先恢复遗留 journal：catalog 行仍在 → 未提交，从备份补回缺失 rollout；行已删除 → 已提交，只删 journal。无 catalog 行时文件全删视为完成，部分删除则补回。恢复失败的 journal 保留并以 `THREAD_DELETE_QUEUE` 警告显示；存在未恢复 journal 时暂停备份清理，避免删掉它需要的备份。
+- [x] J3 macOS/Linux 删除与队列也检测 Codex writer（原来只有 Windows）。
+- [x] J4 测试：未提交崩溃恢复、已提交崩溃、纯文件部分删除、备份丢失时 journal 保留，正常删除不留 journal。
+- 未验证：macOS/Linux 的 writer 检测路径本机无法运行（仅 Windows 编译测试）；真实进程崩溃未模拟，测试通过手工构造 journal 覆盖崩溃点。
+
+### 验证（阶段 8）
+
+- `cargo test --lib --test local_workflows`：lib 353 通过 / 1 ignored，集成 9 通过；`cargo check --all-targets` 无 warning。
+
 ### 验证（阶段 6）
 
 - `cargo test --lib --test local_workflows`：lib 348 通过 / 1 ignored，集成 9 通过；`cargo check --all-targets` 无 warning。
