@@ -63,7 +63,7 @@
 - [x] G4 (M2) `relay-usage.jsonl`：超过 16MB 时把 35 天前的记录折叠成按供应商/模型的汇总行，all-time 与分供应商/模型统计保持精确；读取时只在读文件期间持锁，解析和聚合不持锁。
 - [x] G5 (M13) 上游非 2xx 错误体转换为调用方协议的错误格式（Anthropic `{"type":"error",...}` / OpenAI `{"error":{...}}`），Content-Type 统一为 JSON；需要翻译时，`/responses/*` 子路径（如 `compact`）返回 501，不再改写成不存在的 Chat 端点。
 - [-] G6 (M1) `config-backups/`：暂不清理。`router_config_snapshot::recover_legacy` 会扫描整个目录，为旧版安装寻找唯一的路由前基线，多个候选互相冲突时会故意报错。删除任意备份都可能删掉基线，或把“有歧义”变成“看似唯一”，导致恢复写入错误的值。需要先给基线加标记，再做保留策略。
-- [-] M18b/c 图片凭据多槽位、生成取消：涉及交互设计，留到图片页重构（C1）一起做。
+- [x] M18b/c 图片凭据多槽位、生成取消：见阶段 10。
 
 ## 阶段 7：崩溃 / 关机后的客户端配置（M6）
 
@@ -104,6 +104,20 @@
 - 新增依赖：`tauri-plugin-notification =2.3.3`（2.5.0 需要 tauri ^2.12，与当前 2.10 不兼容）；Cargo.lock 只新增包，不升级已有包。
 - 附带修复：设置页"保存阈值"原来会把 `enabled` 乐观置为 true、失败无提示；现在以后端返回为准并提示错误，启用时先存阈值再开开关。
 - 未验证：没有用真实多账号跑后台切换（需要真实 ChatGPT 账号和额度耗尽场景）；系统通知只在 Windows 编译，未在 macOS/Linux 上看过弹出效果；macOS 通知在开发构建中可能因未签名不显示。
+
+## 阶段 10：图片凭据多槽位与取消生成（M18b/c）
+
+- [x] I1 `image-workbench-key.dat` 改为按站点保存的列表（最多 20 个，最近使用在前），兼容读取旧的单对象格式；新增 `list_image_key_sites`、`delete_image_key`。
+- [x] I2 生成改为 async reqwest（含下载与 DNS 校验），`generate_images` 带 `jobId`，新增 `cancel_image_generation`：取消时丢弃请求 future，连接立即关闭并释放并发名额。
+- [x] I3 前端：站点输入框提供已保存站点下拉、"忘记密钥"按钮；生成中画布可取消。
+- [x] I4 测试：多站点共存、旧格式兼容、删除、上限；取消会中断挂起的上游请求。
+- 界面：站点地址输入框用 `<datalist>` 提示已保存的站点；有已存密钥时显示"忘记此站点的密钥"；生成中画布右上角有停止按钮，取消后显示"已取消"而不是"失败"。
+- 未验证：没有对真实图片供应商测过取消（本地用一个只接受连接不回应的 socket 验证，取消 < 4 秒返回、名额释放）；取消只断开本地连接，供应商侧是否停止计费取决于对方实现。
+
+### 验证（阶段 10）
+
+- `cargo test --lib --test local_workflows`：lib 366 通过 / 1 ignored，集成 9 通过；`cargo check --all-targets` 无 warning。
+- `pnpm build` 通过；`pnpm test:frontend` 31 项 PASS（新增运行中画布取消用例）。
 
 ### 验证（阶段 9）
 

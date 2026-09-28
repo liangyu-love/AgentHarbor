@@ -139,10 +139,17 @@ api.providers.test = async (id, selectedModel) => {
   return { ...mixedProvider, testStatus: "ok" };
 };
 api.image.keyStatus = async () => false;
-api.image.generate = request => new Promise(resolve => {
+api.image.keySites = async () => [];
+api.image.generate = (request, jobId) => new Promise((resolve, reject) => {
   controls.review.imageRequests.push(request);
   controls.review.imageResolvers.push((images = [pixel]) => resolve({ images, model: request.model, revisedPrompts: [] }));
+  if (jobId) controls.review.imageCancels[jobId] = () => reject("image.errors.cancelled");
 });
+api.image.cancelGeneration = async jobId => {
+  controls.review.cancelledJobs.push(jobId);
+  controls.review.imageCancels[jobId]?.();
+  return true;
+};
 api.image.saveToGallery = async () => {
   controls.review.gallerySaves += 1;
   if (controls.review.failGallerySave) throw new Error("image.errors.save");
@@ -304,7 +311,7 @@ function mount(mode: FixtureMode) {
 
 controls.review = { mount, getState: () => state, pixel, accessCalls: [], thumbnailCalls: [], originalCalls: [], thumbnailResolvers: [],
   navigatedTo: null, proxySettingsOpened: false,
-  imageRequests: [], imageResolvers: [], gallerySaves: 0, failGallerySave: false,
+  imageRequests: [], imageResolvers: [], imageCancels: {}, cancelledJobs: [], gallerySaves: 0, failGallerySave: false,
   balanceRequests: [], balanceResolvers: [],
   restartCalls: [], recoveryApplyCalls: 0, recoveredCalls: 0, deleteCalls: [], openedPath: null,
   holdThumbnails: false, holdOriginal: false, labels: {

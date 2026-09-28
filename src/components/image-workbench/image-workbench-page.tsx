@@ -20,6 +20,7 @@ import {
   Scroll,
   Search,
   Sparkles,
+  Square,
   Star,
   Trash2,
   ChevronDown,
@@ -217,7 +218,7 @@ type GenerationJob = {
   id: string;
   prompt: string;
   model: string;
-  status: "queued" | "running" | "completed" | "failed";
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
   result?: ImageGenerationResponse;
   error?: string;
   galleryStatus?: "saving" | "saved" | "failed";
@@ -335,6 +336,7 @@ export function ImageWorkbenchPage() {
   const [baseUrl, setBaseUrl] = useState(savedConfig.baseUrl);
   const [apiKey, setApiKey] = useState(savedConfig.legacyApiKey ?? "");
   const [keyStored, setKeyStored] = useState(false);
+  const [keySites, setKeySites] = useState<string[]>([]);
   const [model, setModel] = useState(savedConfig.model);
   const [prompt, setPrompt] = useState("");
   const [size, setSize] = useState(savedConfig.size);
@@ -476,6 +478,13 @@ export function ImageWorkbenchPage() {
     } catch { /* storage may be disabled */ }
   }, [baseUrl, legacyKeyMigrationPending, model, providerId, quality, size]);
 
+  const refreshKeySites = useCallback(() => {
+    void api.image.keySites().then(setKeySites).catch(() => setKeySites([]));
+  }, []);
+  useEffect(() => {
+    if (pageActive) refreshKeySites();
+  }, [pageActive, refreshKeySites]);
+
   const saveKey = () => {
     const pending = apiKey.trim();
     if (!baseUrl.trim() || !pending) return;
@@ -483,6 +492,16 @@ export function ImageWorkbenchPage() {
       setLegacyKeyMigrationPending(false);
       setKeyStored(true);
       setApiKey(current => current === pending ? "" : current);
+      refreshKeySites();
+    }).catch(() => setError("image.errors.storage"));
+  };
+
+  const forgetKey = () => {
+    const site = baseUrl.trim();
+    if (!site) return;
+    void api.image.deleteKey(site).then(() => {
+      setKeyStored(false);
+      refreshKeySites();
     }).catch(() => setError("image.errors.storage"));
   };
 
@@ -801,7 +820,7 @@ export function ImageWorkbenchPage() {
     queuedGenerations.current.push({ id, run: async () => {
       setGenerationJobs(current => current.map(item => item.id === id ? { ...item, status: "running" } : item));
       try {
-        const generated = await api.image.generate(request);
+        const generated = await api.image.generate(request, id);
         setGenerationJobs(current => current.map(item => item.id === id
           ? { ...item, status: "completed", result: generated }
           : item));
@@ -810,15 +829,24 @@ export function ImageWorkbenchPage() {
         if (!request.providerId && request.apiKey.trim()) {
           setKeyStored(true);
           setApiKey(current => current === request.apiKey ? "" : current);
+          refreshKeySites();
         }
       } catch (cause) {
         const key = typeof cause === "string" ? cause : cause instanceof Error ? cause.message : "image.errors.network";
         setGenerationJobs(current => current.map(item => item.id === id
-          ? { ...item, status: "failed", error: key.startsWith("image.") ? key : "image.errors.network" }
+          ? key === "image.errors.cancelled"
+            ? { ...item, status: "cancelled" }
+            : { ...item, status: "failed", error: key.startsWith("image.") ? key : "image.errors.network" }
           : item));
       }
     } });
     pumpGenerations.current();
+  };
+
+  const cancelGeneration = (job: GenerationJob) => {
+    if (job.status !== "running") return;
+    // The job settles as "cancelled" through its own rejection; nothing to do if it already ended.
+    void api.image.cancelGeneration(job.id).catch(() => undefined);
   };
 
   const removeCanvas = (job: GenerationJob) => {
@@ -931,7 +959,13 @@ export function ImageWorkbenchPage() {
                       onChange={event => setBaseUrl(event.target.value)}
                       placeholder="https://example.com"
                       className="bg-background/90"
+                      list={keySites.length > 0 ? "image-key-sites" : undefined}
                     />
+                    {keySites.length > 0 && (
+                      <datalist id="image-key-sites">
+                        {keySites.map(site => <option key={site} value={site} />)}
+                      </datalist>
+                    )}
                   </div>
                   <div className="space-y-1.5">
                     <Label className="font-serif text-xs font-semibold text-foreground/90">
@@ -945,6 +979,12 @@ export function ImageWorkbenchPage() {
                       placeholder={keyStored ? "已保存密钥；留空则继续使用" : "sk-…"}
                       className="bg-background/90 font-mono"
                     />
+                    {keyStored && (
+                      <button type="button" onClick={forgetKey}
+                        className="text-[11px] text-muted-foreground hover:text-destructive hover:underline">
+                        忘记此站点的密钥
+                      </button>
+                    )}
                   </div>
                 </>
               )}
@@ -1350,8 +1390,15 @@ export function ImageWorkbenchPage() {
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
                       <Badge variant="outline">
-                        {job.status === "queued" ? "排队中" : job.status === "running" ? "生成中" : job.status === "failed" ? "失败" : "完成"}
+                        {job.status === "queued" ? "排队中" : job.status === "running" ? "生成中" : job.status === "failed" ? "失败" : job.status === "cancelled" ? "已取消" : "完成"}
                       </Badge>
+                      {job.status === "running" && (
+                        <button type="button" onClick={() => cancelGeneration(job)}
+                          aria-label="取消生成" title="取消生成"
+                          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-destructive">
+                          <Square className="h-3.5 w-3.5" />
+                        </button>
+                      )}
                       {job.status !== "running" && (
                         <button type="button" onClick={() => removeCanvas(job)}
                           aria-label={job.status === "queued" ? "取消排队" : "关闭画布"}
@@ -1379,7 +1426,11 @@ export function ImageWorkbenchPage() {
                     <div className="flex min-h-56 flex-col items-center justify-center rounded-xl border border-dashed border-amber-500/30 bg-amber-500/[0.03] p-6 text-center">
                       <Loader2 className={cn("mb-3 h-8 w-8 text-amber-600 dark:text-amber-400", job.status === "running" && "animate-spin")} />
                       <p className="font-serif text-sm font-semibold">{job.status === "queued" ? "排队中" : "正在生成"}</p>
-                      <p className="mt-1 text-xs text-muted-foreground">{job.status === "queued" ? "前一个任务完成后自动开始" : "可以继续创建其他画布"}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">{job.status === "queued" ? "前一个任务完成后自动开始" : "可以继续创建其他画布，或点右上角停止"}</p>
+                    </div>
+                  ) : job.status === "cancelled" ? (
+                    <div className="flex min-h-56 items-center justify-center rounded-xl border border-dashed border-border/70 p-6 text-center text-sm text-muted-foreground">
+                      已取消生成
                     </div>
                   ) : job.status === "failed" ? (
                     <div role="alert" className="flex min-h-56 items-center justify-center rounded-xl border border-destructive/30 bg-destructive/5 p-6 text-center text-sm text-destructive">

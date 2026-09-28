@@ -40,7 +40,7 @@
 - M15 MCP 新建同名会静默覆盖已有 server，名称未 trim（`mcp-page.tsx`，`core/mcp.rs:29`）。
 - M16 AGENTS.md 为 CRLF 时管理区块残留 `\r`（`core/custom_instructions.rs:292`）。
 - M17 会话筛选后选中项保留，批量删除会删到不可见会话（`threads-page.tsx:158`）。
-- M18 图片旧版明文 key 在 `baseUrl` 为空时永不迁移（`image-workbench-page.tsx:427-467`）；图片凭据单槽位；生成不可取消。
+- M18 图片旧版明文 key 在 `baseUrl` 为空时永不迁移（`image-workbench-page.tsx:427-467`）；图片凭据单槽位；生成不可取消。（已处理：见 FIX_TODO 阶段 6 G1 与阶段 10。）
 - M19 账号额度串行刷新；任一账号出错整批丢弃（`core/accounts.rs:274`，`commands/accounts.rs:31`）。
 - M20 加载 Claude profile 时直接 preview 后立即 apply，跳过确认（`client-config-dialog.tsx:280`）。
 - M21 同一 job 内一个会话变化，整批删除被丢弃（`thread_delete.rs:276`）。

@@ -97,10 +97,13 @@ export interface GalleryListPayload {
 }
 
 const imageApi = {
-  generate: (request: ImageGenerationRequest) =>
-    invoke<ImageGenerationResponse>("generate_images", { request }),
+  generate: (request: ImageGenerationRequest, jobId?: string) =>
+    invoke<ImageGenerationResponse>("generate_images", { request, jobId }),
+  cancelGeneration: (jobId: string) => invoke<boolean>("cancel_image_generation", { jobId }),
   keyStatus: (baseUrl: string) => invoke<boolean>("image_key_status", { baseUrl }),
   saveKey: (baseUrl: string, apiKey: string) => invoke<void>("save_image_key", { baseUrl, apiKey }),
+  keySites: () => invoke<string[]>("list_image_key_sites"),
+  deleteKey: (baseUrl: string) => invoke<void>("delete_image_key", { baseUrl }),
   saveFile: (path: string, dataUrl: string) => invoke<void>("save_image_file", { path, dataUrl }),
   saveToGallery: (dataUrls: string[]) =>
     invoke<SavedImagesPayload>("save_images_to_gallery", { dataUrls }),

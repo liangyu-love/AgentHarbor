@@ -139,6 +139,18 @@ try {
   await reset("image");
   await providerSelect.click();
   await page.getByRole("option", { name: "Provider image", exact: true }).click();
+  await imagePrompt.fill("Stopped canvas");
+  await imageSubmit.click();
+  const stoppedCanvas = page.locator('[data-generation-job-status="running"]').filter({ hasText: "Stopped canvas" });
+  await stoppedCanvas.getByRole("button", { name: "取消生成" }).click();
+  await page.locator('[data-generation-job-status="cancelled"]').filter({ hasText: "Stopped canvas" }).waitFor();
+  assert.equal(await page.evaluate(() => window.review.cancelledJobs.length), 1);
+  assert.equal(await page.locator('[data-generation-job-status="failed"]').count(), 0);
+  console.log("PASS a running image job can be cancelled and shows as cancelled, not failed");
+
+  await reset("image");
+  await providerSelect.click();
+  await page.getByRole("option", { name: "Provider image", exact: true }).click();
   await imagePrompt.fill("Two images on one canvas");
   await imageSubmit.click();
   await page.evaluate(() => window.review.imageResolvers[0]([window.review.pixel, window.review.pixel]));

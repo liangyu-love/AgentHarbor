@@ -4,14 +4,15 @@ use crate::core::{
 };
 use crate::platform::paths::CodexPaths;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use reqwest::blocking::multipart;
+use reqwest::multipart;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
+    collections::HashMap,
     io::{Cursor, Read},
-    net::{IpAddr, ToSocketAddrs},
-    sync::Mutex,
+    net::IpAddr,
+    sync::{Mutex, OnceLock},
     time::Duration,
 };
 use tauri::State;
@@ -34,6 +35,9 @@ fn network_error(error: reqwest::Error) -> String {
     }
 }
 
+/// Sites with a remembered key; the oldest is forgotten beyond this.
+const MAX_SAVED_KEYS: usize = 20;
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SavedImageKey {
@@ -41,30 +45,83 @@ struct SavedImageKey {
     api_key: String,
 }
 
+/// Most recently used site first.
+#[derive(Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct SavedImageKeys {
+    sites: Vec<SavedImageKey>,
+}
+
+/// Earlier builds stored a single key object; it reads as a one-site list.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StoredImageKeys {
+    Sites(SavedImageKeys),
+    Single(SavedImageKey),
+}
+
 fn key_path(paths: &CodexPaths) -> std::path::PathBuf {
     paths.app_data_dir.join("image-workbench-key.dat")
 }
 
-fn read_key(paths: &CodexPaths, base_url: &str) -> Result<Option<String>, String> {
+fn read_keys(paths: &CodexPaths) -> Result<SavedImageKeys, String> {
     let Some(bytes) = secret_file::read(&key_path(paths)).map_err(|_| "image.errors.storage")?
     else {
-        return Ok(None);
+        return Ok(SavedImageKeys::default());
     };
-    let saved: SavedImageKey =
-        serde_json::from_slice(&bytes).map_err(|_| "image.errors.storage")?;
-    let base_url = newapi::base_url(base_url).map_err(|_| "image.errors.config")?;
-    Ok((saved.base_url == base_url.as_str()).then_some(saved.api_key))
+    Ok(
+        match serde_json::from_slice(&bytes).map_err(|_| "image.errors.storage")? {
+            StoredImageKeys::Sites(keys) => keys,
+            StoredImageKeys::Single(key) => SavedImageKeys { sites: vec![key] },
+        },
+    )
+}
+
+fn write_keys(paths: &CodexPaths, keys: &SavedImageKeys) -> Result<(), String> {
+    let bytes = serde_json::to_vec(keys).map_err(|_| "image.errors.storage")?;
+    secret_file::write(&key_path(paths), &bytes).map_err(|_| "image.errors.storage".to_owned())
+}
+
+fn normalized_site(base_url: &str) -> Result<String, String> {
+    Ok(newapi::base_url(base_url)
+        .map_err(|_| "image.errors.config")?
+        .to_string())
+}
+
+fn read_key(paths: &CodexPaths, base_url: &str) -> Result<Option<String>, String> {
+    let base_url = normalized_site(base_url)?;
+    Ok(read_keys(paths)?
+        .sites
+        .into_iter()
+        .find(|site| site.base_url == base_url)
+        .map(|site| site.api_key))
 }
 
 fn write_key(paths: &CodexPaths, base_url: &str, api_key: &str) -> Result<(), String> {
-    let base_url = newapi::base_url(base_url).map_err(|_| "image.errors.config")?;
+    let base_url = normalized_site(base_url)?;
     newapi::auth_header(api_key).map_err(|_| "image.errors.apiKey")?;
-    let saved = SavedImageKey {
-        base_url: base_url.to_string(),
-        api_key: api_key.trim().to_owned(),
-    };
-    let bytes = serde_json::to_vec(&saved).map_err(|_| "image.errors.storage")?;
-    secret_file::write(&key_path(paths), &bytes).map_err(|_| "image.errors.storage".to_owned())
+    let mut keys = read_keys(paths)?;
+    keys.sites.retain(|site| site.base_url != base_url);
+    keys.sites.insert(
+        0,
+        SavedImageKey {
+            base_url,
+            api_key: api_key.trim().to_owned(),
+        },
+    );
+    keys.sites.truncate(MAX_SAVED_KEYS);
+    write_keys(paths, &keys)
+}
+
+fn delete_key(paths: &CodexPaths, base_url: &str) -> Result<(), String> {
+    let base_url = normalized_site(base_url)?;
+    let mut keys = read_keys(paths)?;
+    let before = keys.sites.len();
+    keys.sites.retain(|site| site.base_url != base_url);
+    if keys.sites.len() == before {
+        return Ok(());
+    }
+    write_keys(paths, &keys)
 }
 
 #[derive(Debug, Deserialize)]
@@ -188,9 +245,24 @@ fn read_limited(reader: impl Read, limit: usize) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn response_json(response: reqwest::blocking::Response) -> Result<Value, String> {
+/// Streams the body so an oversize response is rejected without buffering all of it.
+async fn read_limited_response(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(network_error)? {
+        if bytes.len() + chunk.len() > limit {
+            return Err("image.errors.responseTooLarge".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+async fn response_json(response: reqwest::Response) -> Result<Value, String> {
     let status = response.status();
-    let body = read_limited(response, MAX_RESPONSE_BYTES)?;
+    let body = read_limited_response(response, MAX_RESPONSE_BYTES).await?;
     if !status.is_success() {
         return Err(match status.as_u16() {
             401 | 403 => "image.errors.auth",
@@ -230,18 +302,18 @@ fn public_ip(ip: IpAddr) -> bool {
 
 fn download_client_builder(
     proxy: &ApiProxyConfigPayload,
-) -> Result<reqwest::blocking::ClientBuilder, String> {
-    let builder = reqwest::blocking::Client::builder()
+) -> Result<reqwest::ClientBuilder, String> {
+    let builder = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .connect_timeout(Duration::from_secs(8))
         .redirect(reqwest::redirect::Policy::none());
-    api_client::configure_blocking_client(builder, proxy).map_err(|_| "image.errors.network".into())
+    api_client::configure_async_client(builder, proxy).map_err(|_| "image.errors.network".into())
 }
 
-fn download_client(
+async fn download_client(
     url: &reqwest::Url,
     proxy: &ApiProxyConfigPayload,
-) -> Result<reqwest::blocking::Client, String> {
+) -> Result<reqwest::Client, String> {
     let mut builder = download_client_builder(proxy)?;
     let host = url.host_str().ok_or("image.errors.response")?;
     let port = url.port_or_known_default().ok_or("image.errors.response")?;
@@ -266,8 +338,8 @@ fn download_client(
         {
             return Err("image.errors.response".into());
         }
-        let addresses: Vec<_> = (host, port)
-            .to_socket_addrs()
+        let addresses: Vec<_> = tokio::net::lookup_host((host, port))
+            .await
             .map_err(|_| "image.errors.network")?
             .collect();
         if addresses.is_empty() || addresses.iter().any(|addr| !public_ip(addr.ip())) {
@@ -283,7 +355,10 @@ fn download_client(
     builder.build().map_err(|_| "image.errors.network".into())
 }
 
-fn image_to_data_url(value: &Value, proxy: &ApiProxyConfigPayload) -> Result<String, String> {
+async fn image_to_data_url(
+    value: &Value,
+    proxy: &ApiProxyConfigPayload,
+) -> Result<String, String> {
     if let Some(encoded) = value.get("b64_json").and_then(Value::as_str) {
         if encoded.len() > MAX_IMAGE_BYTES * 4 / 3 + 8 {
             return Err("image.errors.responseTooLarge".into());
@@ -303,8 +378,8 @@ fn image_to_data_url(value: &Value, proxy: &ApiProxyConfigPayload) -> Result<Str
         return Err("image.errors.response".into());
     }
     // This separate client has no provider headers, cookies, or credentials.
-    let client = download_client(&url, proxy)?;
-    let response = client.get(url).send().map_err(network_error)?;
+    let client = download_client(&url, proxy).await?;
+    let response = client.get(url).send().await.map_err(network_error)?;
     if !response.status().is_success() {
         return Err("image.errors.network".into());
     }
@@ -318,11 +393,11 @@ fn image_to_data_url(value: &Value, proxy: &ApiProxyConfigPayload) -> Result<Str
         .next()
         .unwrap_or("image/png")
         .to_owned();
-    let bytes = read_limited(response, MAX_IMAGE_BYTES)?;
+    let bytes = read_limited_response(response, MAX_IMAGE_BYTES).await?;
     Ok(format!("data:{mime};base64,{}", STANDARD.encode(bytes)))
 }
 
-fn generate(
+async fn generate(
     request: ImageGenerationRequest,
     paths: &CodexPaths,
 ) -> Result<ImageGenerationResponse, String> {
@@ -368,7 +443,16 @@ fn generate(
     };
     let proxy = newapi::proxy_from_settings(&paths.settings_path);
     let proxy = newapi::effective_proxy(&network_mode, &proxy);
-    let client = newapi::client_with_timeout(&proxy, Duration::from_secs(300))?;
+    let client = api_client::configure_async_client(
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(300))
+            .connect_timeout(Duration::from_secs(8))
+            .redirect(reqwest::redirect::Policy::none()),
+        &proxy,
+    )
+    .map_err(|_| "newapi.errors.proxy")?
+    .build()
+    .map_err(|_| "newapi.errors.network")?;
     let endpoint = newapi::endpoint(
         &connection,
         if request.image_data.is_some() {
@@ -396,6 +480,7 @@ fn generate(
             .header(AUTHORIZATION, auth)
             .multipart(form)
             .send()
+            .await
             .map_err(network_error)?
     } else {
         let mut body = serde_json::json!({
@@ -418,9 +503,10 @@ fn generate(
             .headers(headers)
             .json(&body)
             .send()
+            .await
             .map_err(network_error)?
     };
-    let value = response_json(response)?;
+    let value = response_json(response).await?;
     let data = value
         .get("data")
         .and_then(Value::as_array)
@@ -431,7 +517,7 @@ fn generate(
     let mut images = Vec::with_capacity(data.len());
     let mut revised_prompts = Vec::with_capacity(data.len());
     for item in data {
-        images.push(image_to_data_url(item, &proxy)?);
+        images.push(image_to_data_url(item, &proxy).await?);
         revised_prompts.push(
             item.get("revised_prompt")
                 .and_then(Value::as_str)
@@ -449,21 +535,92 @@ fn generate(
     })
 }
 
+/// Cancel handles of running generations, keyed by the caller's job id.
+fn generation_jobs() -> &'static Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>> {
+    static JOBS: OnceLock<Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>> =
+        OnceLock::new();
+    JOBS.get_or_init(Default::default)
+}
+
+/// Removes the job's cancel handle however the generation ends.
+struct JobRegistration(Option<String>);
+
+impl Drop for JobRegistration {
+    fn drop(&mut self) {
+        if let Some(id) = self.0.take() {
+            if let Ok(mut jobs) = generation_jobs().lock() {
+                jobs.remove(&id);
+            }
+        }
+    }
+}
+
+async fn run_generation(
+    job_id: Option<String>,
+    request: ImageGenerationRequest,
+    paths: CodexPaths,
+) -> Result<ImageGenerationResponse, String> {
+    let _permit = IMAGE_GENERATION_JOBS
+        .try_acquire()
+        .map_err(|_| "image.errors.busy")?;
+    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+    let _registration = match job_id {
+        Some(id) if !id.is_empty() && id.len() <= 64 => {
+            let mut jobs = generation_jobs()
+                .lock()
+                .map_err(|_| "image.errors.storage")?;
+            if jobs.contains_key(&id) {
+                return Err("image.errors.busy".into());
+            }
+            jobs.insert(id.clone(), cancel_tx);
+            JobRegistration(Some(id))
+        }
+        _ => JobRegistration(None),
+    };
+    // Dropping the losing future closes its connections, so a cancelled job stops
+    // uploading/downloading at once and frees its slot.
+    tokio::select! {
+        result = generate(request, &paths) => result,
+        Ok(()) = cancel_rx => Err("image.errors.cancelled".into()),
+    }
+}
+
 #[tauri::command]
 pub async fn generate_images(
     repo: State<'_, Mutex<Repository>>,
     request: ImageGenerationRequest,
+    job_id: Option<String>,
 ) -> Result<ImageGenerationResponse, String> {
     let paths = paths(&repo)?;
-    let permit = IMAGE_GENERATION_JOBS
-        .try_acquire()
-        .map_err(|_| "image.errors.busy")?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let _permit = permit;
-        generate(request, &paths)
-    })
-    .await
-    .map_err(|_| "image.errors.network".to_owned())?
+    run_generation(job_id, request, paths).await
+}
+
+/// Returns false when the job already finished or never existed.
+#[tauri::command]
+pub fn cancel_image_generation(job_id: String) -> bool {
+    let sender = generation_jobs()
+        .lock()
+        .ok()
+        .and_then(|mut jobs| jobs.remove(&job_id));
+    sender.is_some_and(|sender| sender.send(()).is_ok())
+}
+
+/// Sites with a saved key, most recently used first. Keys themselves never leave Rust.
+#[tauri::command]
+pub fn list_image_key_sites(repo: State<'_, Mutex<Repository>>) -> Result<Vec<String>, String> {
+    Ok(read_keys(&paths(&repo)?)?
+        .sites
+        .into_iter()
+        .map(|site| site.base_url)
+        .collect())
+}
+
+#[tauri::command]
+pub fn delete_image_key(
+    repo: State<'_, Mutex<Repository>>,
+    base_url: String,
+) -> Result<(), String> {
+    delete_key(&paths(&repo)?, &base_url)
 }
 
 #[tauri::command]
@@ -1021,7 +1178,7 @@ mod tests {
             serde_json::json!({"apiProxy":{"mode":"manual","url":proxy_url}}).to_string(),
         )
         .unwrap();
-        let result = generate(
+        let result = tauri::async_runtime::block_on(generate(
             ImageGenerationRequest {
                 provider_id: None,
                 base_url: "http://image-provider.invalid/".into(),
@@ -1034,7 +1191,7 @@ mod tests {
                 image_data: None,
             },
             &paths,
-        )
+        ))
         .unwrap();
         assert_eq!(
             result.images,
@@ -1063,10 +1220,10 @@ mod tests {
             url: Some(proxy_url),
         };
         assert_eq!(
-            image_to_data_url(
+            tauri::async_runtime::block_on(image_to_data_url(
                 &serde_json::json!({"url":"http://8.8.8.8/image.png"}),
                 &config
-            )
+            ))
             .unwrap_err(),
             "image.errors.network"
         );
@@ -1087,14 +1244,20 @@ mod tests {
         );
         // URL/DNS validation rejects local production downloads; this isolated
         // transport test uses a local origin to prove inherited proxies are off.
-        let response = download_client_builder(&config)
-            .unwrap()
-            .build()
-            .unwrap()
-            .get(url)
-            .send()
-            .unwrap();
-        assert_eq!(response.text().unwrap(), "direct-fixture");
+        let text = tauri::async_runtime::block_on(async {
+            download_client_builder(&config)
+                .unwrap()
+                .build()
+                .unwrap()
+                .get(url)
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap()
+        });
+        assert_eq!(text, "direct-fixture");
     }
 
     #[test]
@@ -1220,6 +1383,92 @@ mod tests {
     }
 
     #[test]
+    fn keys_for_several_sites_coexist_and_can_be_forgotten() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().join("codex"));
+        write_key(&paths, "https://a.example.org", "sk-a").unwrap();
+        write_key(&paths, "https://b.example.org", "sk-b").unwrap();
+        assert_eq!(read_key(&paths, "https://a.example.org").unwrap().as_deref(), Some("sk-a"));
+        assert_eq!(read_key(&paths, "https://b.example.org").unwrap().as_deref(), Some("sk-b"));
+        // Re-saving moves a site to the front and replaces its key.
+        write_key(&paths, "https://a.example.org/", "sk-a2").unwrap();
+        let sites: Vec<_> = read_keys(&paths).unwrap().sites.into_iter().map(|s| s.base_url).collect();
+        assert_eq!(sites, ["https://a.example.org/", "https://b.example.org/"]);
+        assert_eq!(read_key(&paths, "https://a.example.org").unwrap().as_deref(), Some("sk-a2"));
+
+        delete_key(&paths, "https://a.example.org").unwrap();
+        assert_eq!(read_key(&paths, "https://a.example.org").unwrap(), None);
+        assert_eq!(read_key(&paths, "https://b.example.org").unwrap().as_deref(), Some("sk-b"));
+        delete_key(&paths, "https://missing.example.org").unwrap();
+    }
+
+    #[test]
+    fn single_key_files_from_older_builds_still_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().join("codex"));
+        let legacy = serde_json::json!({"baseUrl":"https://old.example.org/","apiKey":"sk-old"});
+        secret_file::write(&key_path(&paths), legacy.to_string().as_bytes()).unwrap();
+        assert_eq!(read_key(&paths, "https://old.example.org").unwrap().as_deref(), Some("sk-old"));
+        write_key(&paths, "https://new.example.org", "sk-new").unwrap();
+        assert_eq!(read_key(&paths, "https://old.example.org").unwrap().as_deref(), Some("sk-old"));
+    }
+
+    #[test]
+    fn saved_sites_are_capped_dropping_the_least_recent() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().join("codex"));
+        for index in 0..=MAX_SAVED_KEYS {
+            write_key(&paths, &format!("https://s{index}.example.org"), "sk-x").unwrap();
+        }
+        assert_eq!(read_keys(&paths).unwrap().sites.len(), MAX_SAVED_KEYS);
+        assert_eq!(read_key(&paths, "https://s0.example.org").unwrap(), None);
+        assert!(read_key(&paths, &format!("https://s{MAX_SAVED_KEYS}.example.org")).unwrap().is_some());
+    }
+
+    #[test]
+    fn cancelling_stops_a_hanging_generation_and_frees_its_slot() {
+        // Accepts the request and never answers.
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let base_url = format!("http://{}/", listener.local_addr().unwrap());
+        let hold = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            std::thread::sleep(Duration::from_secs(5));
+            drop(stream);
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().join("codex"));
+        let request = || ImageGenerationRequest {
+            provider_id: None,
+            base_url: base_url.clone(),
+            api_key: "sk-cancel-fixture".into(),
+            model: "fixture-image".into(),
+            prompt: "fixture".into(),
+            size: default_size(),
+            quality: default_quality(),
+            count: 1,
+            image_data: None,
+        };
+        let started = std::time::Instant::now();
+        let result = tauri::async_runtime::block_on(async {
+            let job = tokio::spawn(run_generation(Some("job-cancel".into()), request(), paths.clone()));
+            // Wait until the job has registered its cancel handle.
+            while !generation_jobs().lock().unwrap().contains_key("job-cancel") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(cancel_image_generation("job-cancel".into()));
+            job.await.unwrap()
+        });
+        assert_eq!(result.unwrap_err(), "image.errors.cancelled");
+        assert!(started.elapsed() < Duration::from_secs(4), "cancel must not wait for the upstream");
+        assert!(!generation_jobs().lock().unwrap().contains_key("job-cancel"));
+        assert!(!cancel_image_generation("job-cancel".into()));
+        // Both generation slots are free again.
+        assert_eq!(IMAGE_GENERATION_JOBS.available_permits(), 2);
+        hold.join().unwrap();
+    }
+
+    #[test]
     fn response_reader_rejects_oversize_without_reading_entire_stream() {
         assert_eq!(
             read_limited(&b"abc"[..], 2).unwrap_err(),
@@ -1251,7 +1500,11 @@ mod tests {
         ] {
             let item = serde_json::json!({"url": url});
             assert_eq!(
-                image_to_data_url(&item, &ApiProxyConfigPayload::default()).unwrap_err(),
+                tauri::async_runtime::block_on(image_to_data_url(
+                    &item,
+                    &ApiProxyConfigPayload::default()
+                ))
+                .unwrap_err(),
                 "image.errors.response"
             );
         }

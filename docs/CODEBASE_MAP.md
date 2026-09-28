@@ -54,7 +54,7 @@ flowchart LR
 | 概览 | `src/components/overview/overview-page.tsx` | 显示路由、供应商、MCP、Skills、自定义指令和系统状态摘要；跳转常用功能、打开路径、重启 Codex、打开代理设置 | `loadSnapshot`、`providers.loadState`、`loadMcpServers`、`loadInstalledSkills`、`loadSkillBackups`、`loadCustomInstructionState`、`getSystemInfo`、`openPath`、`targets.restart` | `commands/system.rs`、`commands/newapi.rs`、`commands/mcp.rs`、`commands/skills.rs`、`commands/custom_instructions.rs`；对应 `core/repository.rs` 等 |
 | 账号与用量 | `src/components/accounts/accounts-page.tsx`、`daily-trend-panel.tsx`、`model-usage-breakdown.tsx`、`recent-turns-panel.tsx`、`relay-usage-panel.tsx` | Codex 账号登录、列表、额度刷新、切换和删除；合并展示 Codex/Claude Code 本地日志与经过本地代理的请求用量；供应商余额 | `accounts.list/refresh/login/switch/delete`、`usage.overview`、`providers.loadState/queryBalance`、`targets.restart` | `commands/accounts.rs`、`commands/usage.rs`、`core/accounts.rs`、`core/account_monitor.rs`、`core/local_usage.rs`、`core/relay_usage.rs` |
 | 中转与客户端配置 | `src/components/newapi/newapi-page.tsx`、`provider-dialog.tsx`、`provider-model-editor.tsx`、`provider-test-dialog.tsx`、`claude-model-config.tsx`、`client-configs.tsx`、`client-config-dialog.tsx` | 管理供应商、协议和单模型协议、模型列表、测试/余额、网络出口、Codex Router/Native 接入；配置 Claude Code、OpenCode 的原生或本地路由方式 | `providers.*`、`routing.*`、`targets.configs/previewConfig/applyConfig/restoreConfig/releaseConfig` | `commands/newapi.rs`、`commands/client_config.rs`；`core/router.rs`、`router_proxy.rs`、`routing_runtime.rs`、`protocol/`、`client_config/` |
-| 图片工作台 | `src/components/image-workbench/image-workbench-page.tsx`、`src/lib/image-prompts.ts` | 选择供应商与模型、生成/编辑图片、管理任务画布、本地图库、选择图库目录、查看/另存/删除成图 | `image.generate/keyStatus/saveKey/saveFile/saveToGallery/setGalleryDirectory/listGallery/loadGalleryImage/loadGalleryThumbnail/deleteGalleryImage` | `commands/image.rs`；凭据经 `core/secret_file.rs` 存储，图片目录配置和成图写入本地磁盘 |
+| 图片工作台 | `src/components/image-workbench/image-workbench-page.tsx`、`src/lib/image-prompts.ts` | 选择供应商与模型、生成/编辑图片、管理任务画布、本地图库、选择图库目录、查看/另存/删除成图 | `image.generate/cancelGeneration/keyStatus/saveKey/keySites/deleteKey/saveFile/saveToGallery/setGalleryDirectory/listGallery/loadGalleryImage/loadGalleryThumbnail/deleteGalleryImage` | `commands/image.rs`；凭据经 `core/secret_file.rs` 存储，图片目录配置和成图写入本地磁盘 |
 | 会话归档 | `src/components/threads/threads-page.tsx`、`thread-card.tsx`、`thread-group-header.tsx`、`virtual-thread-list.tsx`、`thread-recovery-dialog.tsx` | 扫描 Codex 会话、搜索筛选与分组、导出 Markdown/JSONL、删除会话、取消/恢复待处理删除、修复会话目录/索引状态 | `conversations.list/export/delete/cancelPendingDeletions/previewRecovery/applyRecovery` | `commands/threads.rs`、`commands/thread_recovery.rs`；`core/threads.rs`、`thread_delete.rs`、`thread_recovery.rs` |
 | MCP 管理 | `src/components/mcp/mcp-page.tsx` | 读取、添加/编辑、启用/停用、删除 MCP server，并定位源配置 | `loadMcpServers/upsertMcpServer/setMcpServerEnabled/removeMcpServer/openPath` | `commands/mcp.rs`、`core/mcp.rs`；读写 Codex `config.toml` |
 | Skills 管理 | `src/components/skills/skills-page.tsx` | 扫描已安装 Skills、导入、移除、浏览备份、恢复或删除备份 | `loadInstalledSkills/loadSkillBackups/importSkill/removeSkill/restoreSkillBackup/deleteSkillBackup/openPath` | `commands/skills.rs`、`core/skills.rs` |
@@ -110,9 +110,12 @@ IPC 命令必须同时在 Rust 命令文件中实现，并通过 `src-tauri/src/
 
 | 命令 | 参数 | 用途 | 实现 |
 | --- | --- | --- | --- |
-| `generate_images` | `request` | 调供应商图片接口生成/编辑图片 | `commands/image.rs` |
+| `generate_images` | `request`, `jobId?` | 调供应商图片接口生成/编辑图片（async reqwest，同时最多 2 个）；带 `jobId` 时可取消 | `commands/image.rs` |
+| `cancel_image_generation` | `jobId` | 取消进行中的生成：丢弃请求 future，连接立即关闭并释放名额；任务以 `image.errors.cancelled` 结束 | 同上 |
 | `image_key_status` | `baseUrl` | 检查该供应商地址是否有已保存图片凭据 | 同上 |
-| `save_image_key` | `baseUrl`, `apiKey` | 保存图片工作台凭据 | 同上、`core/secret_file.rs` |
+| `save_image_key` | `baseUrl`, `apiKey` | 保存该站点的图片凭据（按站点保存，最多 20 个，最近使用在前） | 同上、`core/secret_file.rs` |
+| `list_image_key_sites` | — | 列出已保存凭据的站点地址（不返回密钥） | 同上 |
+| `delete_image_key` | `baseUrl` | 忘记该站点的凭据 | 同上 |
 | `save_image_file` | `path`, `dataUrl` | 将当前结果保存为本地文件；要求绝对路径且内容为图片 | `commands/image.rs` |
 | `save_images_to_gallery` | `dataUrls` | 批量存入应用图库 | 同上 |
 | `set_gallery_directory` | `directory` | 设置并持久化图库目录 | 同上 |
@@ -120,7 +123,7 @@ IPC 命令必须同时在 Rust 命令文件中实现，并通过 `src-tauri/src/
 | `load_gallery_image` / `load_gallery_thumbnail` | `path` | 读取原图或缩略图供 WebView 展示 | 同上 |
 | `delete_gallery_image` | `path` | 删除图库中的一张图片；只允许图片扩展名 | 同上 |
 
-图片请求结构为 `ImageGenerationRequest`（`providerId/baseUrl/apiKey/model/prompt/size/quality/count/imageData`），TS 类型在 `src/lib/api.ts`，Rust 类型在 `commands/image.rs`。默认图库为应用数据目录下的 `image-gallery`；自定义目录记录在 `image-gallery-directory.json`。图片凭据写入 `image-workbench-key.dat`。图库读取和删除会验证目标路径属于图库目录。
+图片请求结构为 `ImageGenerationRequest`（`providerId/baseUrl/apiKey/model/prompt/size/quality/count/imageData`），TS 类型在 `src/lib/api.ts`，Rust 类型在 `commands/image.rs`。默认图库为应用数据目录下的 `image-gallery`；自定义目录记录在 `image-gallery-directory.json`。图片凭据按站点写入 `image-workbench-key.dat`（DPAPI/0600；兼容旧版单站点格式）。图库读取和删除会验证目标路径属于图库目录。
 
 ### 4.4 会话、MCP、Skills、自定义指令
 

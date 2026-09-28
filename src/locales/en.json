@@ -405,6 +405,7 @@
       "rateLimit": "Too many image requests. Try again later.",
       "server": "The image service returned an error.",
       "response": "The image service returned an unrecognized response.",
+      "cancelled": "Generation cancelled.",
       "responseTooLarge": "The image response is too large.",
       "save": "Could not save the image. Check the destination path and try again."
     },
