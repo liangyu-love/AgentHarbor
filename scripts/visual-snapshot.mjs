@@ -49,6 +49,33 @@ const PAGES = [
     await page.locator('button[title="点击放大预览"]').first().click();
     await page.getByRole("dialog", { name: "成图放大预览" }).waitFor();
   } },
+  { name: "groups-expanded", mode: "groups", async act(page) {
+    await page.getByRole("button", { name: "展开同中转配置" }).first().click();
+    await page.getByRole("button", { name: "收起层叠堆叠" }).last().scrollIntoViewIfNeeded();
+  } },
+  { name: "groups-next-member", mode: "groups", async act(page) {
+    await page.getByRole("button", { name: "下一个站点配置" }).first().click();
+    await page.locator("[data-relay-card-face]").first().scrollIntoViewIfNeeded();
+  } },
+  { name: "groups-filter", mode: "groups", async act(page) {
+    await page.getByRole("button", { name: /^solo\.invalid/ }).first().click();
+  } },
+  { name: "groups-alias", mode: "groups", async act(page) {
+    await page.locator("[data-relay-card-face]").first().getByRole("button", { name: "设置别名" }).click();
+    await page.getByRole("dialog").waitFor();
+  } },
+  { name: "groups-network", mode: "groups", async act(page) {
+    await page.locator("[data-relay-card-face]").first().getByRole("button", { name: "设置网络模式" }).click();
+    await page.getByRole("menu").waitFor();
+  } },
+  { name: "groups-remove", mode: "groups", async act(page) {
+    await page.locator("[data-relay-card-face]").first().getByRole("button", { name: "删除", exact: true }).click();
+    await page.getByRole("alertdialog").waitFor();
+  } },
+  { name: "access-restart", mode: "access", async act(page) {
+    await page.getByRole("button", { name: "重启 Codex Desktop" }).click();
+    await page.getByRole("alertdialog").waitFor();
+  } },
   ...["groups", "access", "warnings", "thread-actions", "mcp", "accounts", "usage", "overview"]
     .map(mode => ({ name: mode, mode })),
 ];
