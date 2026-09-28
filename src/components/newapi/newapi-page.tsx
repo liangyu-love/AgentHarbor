@@ -31,6 +31,7 @@ import { includedModels, providerModelProtocol } from "@/lib/provider-models";
 import type { CodexAccessMode, ModelProtocol, NewApiProvider, NewApiState, NewApiStateChange } from "@/types/newapi";
 import { queryKeys } from "@/lib/query-keys";
 import { storageKeys } from "@/lib/storage-keys";
+import { errorKey } from "@/lib/invoke-error";
 
 const STATE_KEY = queryKeys.providers;
 
@@ -47,10 +48,7 @@ const providerColor = (id: string): GlowColor => {
   return cardColors[hash % cardColors.length];
 };
 
-const errorMessage = (e: unknown) => {
-  const text = typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
-  return text.startsWith("newapi.") ? text : "newapi.errors.unexpected";
-};
+const providerErrorKey = (e: unknown) => errorKey(e, ["newapi"], "newapi.errors.unexpected");
 
 // DeepSeek peak/off-peak pricing windows in Beijing time: peak 9-12 & 14-18 on
 // weekdays, off-peak (half price) everywhere else including whole weekends.
@@ -196,8 +194,8 @@ export function NewApiPage() {
     try {
       await action();
     } catch (e) {
-      setError(errorMessage(e));
-      toast({ title: failureTitle, description: t(errorMessage(e)), variant: "destructive" });
+      setError(providerErrorKey(e));
+      toast({ title: failureTitle, description: t(providerErrorKey(e)), variant: "destructive" });
       // The backend may have persisted partial state (e.g. a failed test marker) before erroring.
       void state.refetch();
     } finally {
@@ -213,7 +211,7 @@ export function NewApiPage() {
     try {
       patchProviderBalance(await api.providers.queryBalance(id));
     } catch (cause) {
-      toast({ title: t("newapi.balanceFailed"), description: t(errorMessage(cause)), variant: "destructive" });
+      toast({ title: t("newapi.balanceFailed"), description: t(providerErrorKey(cause)), variant: "destructive" });
     } finally {
       balanceInFlight.current.delete(id);
       setBalanceBusy(new Set(balanceInFlight.current));
@@ -264,7 +262,7 @@ export function NewApiPage() {
       await api.providers.export(path);
       toast({ title: t("newapi.exportedDone", { path }), variant: "success" });
     } catch (cause) {
-      toast({ title: t("newapi.exportFailed"), description: t(errorMessage(cause)), variant: "destructive" });
+      toast({ title: t("newapi.exportFailed"), description: t(providerErrorKey(cause)), variant: "destructive" });
     } finally {
       exportInFlight.current = false;
       setExportBusy(false);

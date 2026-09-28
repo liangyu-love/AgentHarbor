@@ -59,6 +59,34 @@ try {
   };
 
   await reset("compact");
+  const errorCases = await page.evaluate(() => {
+    const { errorKey, errorMessage, formatInvokeError } = window.review.errors;
+    return {
+      keyString: formatInvokeError("image.errors.cancelled"),
+      keyError: formatInvokeError(new Error("image.errors.cancelled")),
+      unknownKey: formatInvokeError("image.errors.doesNotExist", "fallback"),
+      raw: formatInvokeError("SQLite error: database is locked"),
+      rawSentence: formatInvokeError("Codex config changed while AgentHarbor was updating it."),
+      empty: formatInvokeError("", "fallback"),
+      message: errorMessage(new Error("  boom  ")),
+      keyed: errorKey("newapi.errors.network", ["newapi"], "newapi.errors.unexpected"),
+      foreign: errorKey("clients.errors.provider", ["newapi"], "newapi.errors.unexpected"),
+      rawKeyed: errorKey("newapi. oops", ["newapi"], "newapi.errors.unexpected"),
+    };
+  });
+  assert.deepEqual(errorCases, {
+    keyString: "已取消生成。",
+    keyError: "已取消生成。",
+    unknownKey: "fallback",
+    raw: "SQLite error: database is locked",
+    rawSentence: "Codex config changed while AgentHarbor was updating it.",
+    empty: "fallback",
+    message: "boom",
+    keyed: "newapi.errors.network",
+    foreign: "newapi.errors.unexpected",
+    rawKeyed: "newapi.errors.unexpected",
+  });
+  console.log("PASS invoke errors translate i18n keys, keep raw text and fall back when empty");
   await page.getByText("Review thread 0", { exact: true }).waitFor();
   await page.locator("section").evaluate(element => { element.scrollTop = 2800; });
   await page.waitForFunction(() => [...document.querySelectorAll("p")].some(element => {

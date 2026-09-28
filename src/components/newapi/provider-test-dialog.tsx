@@ -15,11 +15,9 @@ import {
 import { toast } from "@/hooks/use-toast";
 import { effectiveModelProtocol, includedModels, mergeModelCatalog } from "@/lib/provider-models";
 import type { NewApiModel, NewApiProvider } from "@/types/newapi";
+import { errorKey } from "@/lib/invoke-error";
 
-const errorKey = (error: unknown) => {
-  const value = typeof error === "string" ? error : error instanceof Error ? error.message : String(error);
-  return value.startsWith("newapi.") ? value : "newapi.errors.unexpected";
-};
+const providerErrorKey = (error: unknown) => errorKey(error, ["newapi"], "newapi.errors.unexpected");
 
 interface ProviderTestDialogProps {
   open: boolean;
@@ -60,7 +58,7 @@ export function ProviderTestDialog({ open, provider, onOpenChange, onTested, onF
       });
     } catch (cause) {
       if (request !== modelRequest.current) return;
-      setError(errorKey(cause));
+      setError(providerErrorKey(cause));
     } finally {
       if (request === modelRequest.current) setLoadingModels(false);
     }
@@ -105,7 +103,7 @@ export function ProviderTestDialog({ open, provider, onOpenChange, onTested, onF
     } catch (cause) {
       onFailed();
       if (request !== testRequest.current) return;
-      setError(errorKey(cause));
+      setError(providerErrorKey(cause));
     } finally {
       if (request === testRequest.current) setTesting(false);
     }

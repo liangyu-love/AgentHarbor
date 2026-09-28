@@ -19,6 +19,7 @@ import type { TokenUsagePayload } from "@/types";
 import type { ClientConfigRequest, ClientStatus } from "@/types/clients";
 import { api } from "@/lib/api";
 import i18n from "@/lib/i18n";
+import { errorKey, errorMessage, formatInvokeError } from "@/lib/invoke-error";
 
 const controls = window as any;
 controls.__TAURI_INTERNALS__ = {};
@@ -309,7 +310,7 @@ function mount(mode: FixtureMode) {
   </TooltipProvider></QueryClientProvider>);
 }
 
-controls.review = { mount, getState: () => state, pixel, accessCalls: [], thumbnailCalls: [], originalCalls: [], thumbnailResolvers: [],
+controls.review = { mount, errors: { errorKey, errorMessage, formatInvokeError }, getState: () => state, pixel, accessCalls: [], thumbnailCalls: [], originalCalls: [], thumbnailResolvers: [],
   navigatedTo: null, proxySettingsOpened: false,
   imageRequests: [], imageResolvers: [], imageCancels: {}, cancelledJobs: [], gallerySaves: 0, failGallerySave: false,
   balanceRequests: [], balanceResolvers: [],

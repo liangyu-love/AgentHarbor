@@ -10,6 +10,7 @@ import { toast } from "@/hooks/use-toast";
 import type { RelayUsagePayload } from "@/types";
 import type { NewApiState } from "@/types/newapi";
 import { queryKeys } from "@/lib/query-keys";
+import { formatInvokeError } from "@/lib/invoke-error";
 
 type View = "trend" | "models" | "requests" | "providers";
 const CHART_WIDTH = 1000;
@@ -126,7 +127,7 @@ function ProviderQuota({ relay, onManageProviders }: { relay: RelayUsagePayload;
           ? { ...provider, balance: next.balance, balanceSource: next.balanceSource } : provider),
       } : current);
     } catch (error) {
-      toast({ title: t("newapi.balanceFailed"), description: String(error), variant: "destructive" });
+      toast({ title: t("newapi.balanceFailed"), description: formatInvokeError(error), variant: "destructive" });
     } finally {
       setRefreshingId(null);
     }

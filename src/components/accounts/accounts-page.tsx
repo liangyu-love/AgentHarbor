@@ -56,6 +56,7 @@ import type {
   TokenUsagePayload,
 } from "@/types";
 import { queryKeys } from "@/lib/query-keys";
+import { errorMessage, formatInvokeError } from "@/lib/invoke-error";
 
 const QUERY_KEY = queryKeys.codexAccounts;
 const TOKEN_USAGE_QUERY_KEY = queryKeys.tokenUsage;
@@ -170,7 +171,7 @@ export function TokenUsagePanel({ data, loading, error, onRetry, onManageProvide
       </div>
       <details className="mt-3 text-[11px] text-muted-foreground">
         <summary className="cursor-pointer">{t("accounts.technicalDetails")}</summary>
-        <p className="mt-2 break-all font-mono">{String(error)}</p>
+        <p className="mt-2 break-all font-mono">{errorMessage(error)}</p>
       </details>
     </section>
   );
@@ -620,7 +621,7 @@ export function AccountsPage({ refreshInterval, onManageProviders }: { refreshIn
       toast({ title: t("accounts.loginSuccess"), variant: "success" });
     },
     onError: (error) => {
-      toast({ title: t("common.error"), description: String(error), variant: "destructive" });
+      toast({ title: t("common.error"), description: formatInvokeError(error), variant: "destructive" });
     },
   });
 
@@ -639,7 +640,7 @@ export function AccountsPage({ refreshInterval, onManageProviders }: { refreshIn
       toast({ title: t("accounts.switchSuccess"), variant: "success" });
     },
     onError: (error) => {
-      toast({ title: t("common.error"), description: String(error), variant: "destructive" });
+      toast({ title: t("common.error"), description: formatInvokeError(error), variant: "destructive" });
     },
   });
 
@@ -651,7 +652,7 @@ export function AccountsPage({ refreshInterval, onManageProviders }: { refreshIn
       toast({ title: t("accounts.deleteSuccess"), variant: "success" });
     },
     onError: (error) => {
-      toast({ title: t("common.error"), description: String(error), variant: "destructive" });
+      toast({ title: t("common.error"), description: formatInvokeError(error), variant: "destructive" });
     },
   });
 
@@ -664,7 +665,7 @@ export function AccountsPage({ refreshInterval, onManageProviders }: { refreshIn
       toast({ title: "账号额度已刷新", variant: "success" });
     },
     onError: (error) => {
-      toast({ title: "刷新失败", description: String(error), variant: "destructive" });
+      toast({ title: "刷新失败", description: formatInvokeError(error), variant: "destructive" });
     },
   });
 

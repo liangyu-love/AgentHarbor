@@ -139,7 +139,12 @@
 - [x] C6 重 IO 同步 command 移出主线程：图库 6 个（保存/另存/设目录/列表/读原图/删除）、Skills 6 个（列表/备份列表/导入/删除/恢复/删除备份）、`clean`、`rebuild_registry`、`diagnose`、`export_newapi_providers`。新增 `commands::blocking`（spawn_blocking）与 `commands::with_repo`（仅在后台线程持有仓库锁）。前端调用签名不变。
   - 未改：MCP、自定义指令、账号列表/切换等只读写单个小文件的 command，仍是同步；`load_snapshot` 也保持同步（启动时就要，且只读 registry）。
 - [x] C3 新增 `src/lib/query-keys.ts`（14 个 TanStack Query key）与 `src/lib/storage-keys.ts`（12 个 localStorage key），替换 23 个文件里的字面量。存储值保持不变，已保存的偏好照常读取；`index.html` 启动脚本读 `theme` 早于 bundle，仍用字面量（注释已说明）。
-- [ ] C4 统一错误格式。
+- [x] C4 统一前端错误处理（`src/lib/invoke-error.ts`）：
+  - 约定：command 以字符串 reject，要么是 i18n key（`newapi.*`/`clients.*`/`image.*`），要么是原始文本（OS/SQLite/上游）。
+  - `errorMessage` 取出文本（去掉 `Error: ` 前缀）；`errorKey(error, prefixes, fallback)` 供存 key 的表单使用；`formatInvokeError` 翻译已知 key、原样显示原始文本、未知 key 或空错误回退到通用文案。
+  - 替换了 19 处 `String(error)` 和 5 个各页面自带的 `errorKey`/`errorMessage` 副本；之前 `String(new Error(key))` 会把未翻译的 `Error: newapi.errors.x` 直接显示给用户。
+  - 后端没有改：把所有 `CoreError` 改成 key 改动面太大，且原始文本对排查有用；前端现在两种都能正确显示。
+  - 测试：前端回归新增 10 个用例（key 翻译、原始文本保留、未知 key/空值回退、前缀过滤）。
 - [ ] C2 拆分 `router_proxy::handle()`。
 - [ ] C1 拆分大组件。
 

@@ -15,11 +15,10 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import type { ClaudeModels, ClaudeOneM, ClientAccessMode, ClientConfigPreview, ClientConfigRequest, ClientStatus } from "@/types/clients";
 import type { NewApiProvider } from "@/types/newapi";
 import { storageKeys } from "@/lib/storage-keys";
+import { errorKey } from "@/lib/invoke-error";
 
-const errorKey = (cause: unknown) => {
-  const message = cause instanceof Error ? cause.message : String(cause);
-  return /^(clients|newapi)\./.test(message) ? message : "clients.errors.storage";
-};
+const clientErrorKey = (cause: unknown) =>
+  errorKey(cause, ["clients", "newapi"], "clients.errors.storage");
 
 interface ClaudeConfigProfile {
   id: string;
@@ -265,7 +264,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
       // just like a manual edit.
       setPreview(await api.targets.previewConfig(profileRequest));
     } catch (cause) {
-      setError(errorKey(cause));
+      setError(clientErrorKey(cause));
     } finally { setBusy(false); }
   };
   const run = async () => {
@@ -300,7 +299,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
         onClose();
       } else { setPreview(await api.targets.previewConfig(configuredRequest)); }
     } catch (cause) {
-      setError(errorKey(cause)); setPreview(null); await onApplied();
+      setError(clientErrorKey(cause)); setPreview(null); await onApplied();
     } finally { setBusy(false); }
   };
 

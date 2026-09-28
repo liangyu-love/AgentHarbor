@@ -33,6 +33,7 @@ import { ApiProxyDialog } from "@/components/runtime/api-proxy-dialog";
 import { AvatarSettings } from "@/components/settings/avatar-settings";
 import { BackgroundSettings } from "@/components/settings/background-settings";
 import { queryKeys } from "@/lib/query-keys";
+import { formatInvokeError } from "@/lib/invoke-error";
 
 type SnapshotEnvelope = Awaited<ReturnType<typeof api.loadSnapshot>>;
 interface SettingsPageProps {
@@ -133,7 +134,7 @@ export function SettingsPage({
       if (context?.previous) {
         queryClient.setQueryData(RUNTIME_STATE_DISPLAY_QUERY_KEY, context.previous);
       }
-      toast({ title: t("common.error"), description: String(error), variant: "destructive" });
+      toast({ title: t("common.error"), description: formatInvokeError(error), variant: "destructive" });
     },
     onSuccess: () => {
       toast({
@@ -171,7 +172,7 @@ export function SettingsPage({
       });
     },
     onError: (error) => {
-      toast({ title: t("common.error"), description: String(error), variant: "destructive" });
+      toast({ title: t("common.error"), description: formatInvokeError(error), variant: "destructive" });
     },
   });
 

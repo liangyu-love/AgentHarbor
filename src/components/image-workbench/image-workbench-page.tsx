@@ -66,6 +66,7 @@ import { isTauriRuntime } from "@/lib/tauri-runtime";
 import { cn } from "@/lib/utils";
 import { queryKeys } from "@/lib/query-keys";
 import { storageKeys } from "@/lib/storage-keys";
+import { errorKey } from "@/lib/invoke-error";
 
 const IMAGE_KEY = queryKeys.providers;
 const GALLERY_KEY = queryKeys.imageGallery;
@@ -834,11 +835,11 @@ export function ImageWorkbenchPage() {
           refreshKeySites();
         }
       } catch (cause) {
-        const key = typeof cause === "string" ? cause : cause instanceof Error ? cause.message : "image.errors.network";
+        const key = errorKey(cause, ["image"], "image.errors.network");
         setGenerationJobs(current => current.map(item => item.id === id
           ? key === "image.errors.cancelled"
             ? { ...item, status: "cancelled" }
-            : { ...item, status: "failed", error: key.startsWith("image.") ? key : "image.errors.network" }
+            : { ...item, status: "failed", error: key }
           : item));
       }
     } });

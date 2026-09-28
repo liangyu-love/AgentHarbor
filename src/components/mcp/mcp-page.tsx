@@ -65,6 +65,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { queryKeys } from "@/lib/query-keys";
+import { formatInvokeError } from "@/lib/invoke-error";
 
 const transportStyles: Record<string, { dot: string; text: string }> = {
   stdio: { dot: "bg-blue-500 shadow-[0_0_0_2px_rgba(59,130,246,0.2)]", text: "text-blue-500" },
@@ -214,7 +215,7 @@ export function McpPage() {
     return range;
   }, [totalPages, safePage]);
 
-  if (error) return <div role="alert" className="space-y-3 p-4"><p>{t("baseline.readFailed")}</p><p className="text-sm text-muted-foreground">{String(error)}</p><Button onClick={() => void refetch()}>{t("common.refresh")}</Button></div>;
+  if (error) return <div role="alert" className="space-y-3 p-4"><p>{t("baseline.readFailed")}</p><p className="text-sm text-muted-foreground">{formatInvokeError(error)}</p><Button onClick={() => void refetch()}>{t("common.refresh")}</Button></div>;
   if (isPending) return <p role="status" className="p-4 text-muted-foreground">{t("baseline.loading")}</p>;
 
   return (

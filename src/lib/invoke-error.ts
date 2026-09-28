@@ -1,34 +1,57 @@
+import i18n from "@/lib/i18n";
+
 /**
- * 统一格式化 Tauri `invoke` / 其他异步调用抛出的错误。
+ * Error contract between Rust commands and the UI.
  *
- * Tauri 命令声明为 `Result<_, String>` 时，JS 侧 `invoke` 会以 **字符串** reject，
- * 不是 `Error` 实例。若直接用 `error instanceof Error ? error.message : fallback`
- * 判断，真实错误信息会被 fallback 吞掉。该函数做宽松兼容，保证任何常见形态
- * 的错误都能被转成可读文案显示给用户。
+ * A command rejects with a string (Tauri serializes `Result<_, String>` errors as
+ * the bare string, not an `Error`). That string is either an i18n key such as
+ * `newapi.errors.network`, or raw text from the OS, SQLite, or an upstream,
+ * which is kept as-is because it is what users and bug reports need. Every UI
+ * path should go through these helpers instead of `String(error)`, which prints
+ * `Error: ` prefixes and untranslated keys.
  */
-export function formatInvokeError(error: unknown, fallback = "请稍后重试。"): string {
-  if (error == null) return fallback;
 
-  if (typeof error === "string") {
-    return error.trim() || fallback;
-  }
+const I18N_KEY = /^[a-zA-Z][\w-]*(\.[\w-]+)+$/;
 
-  if (error instanceof Error) {
-    return error.message.trim() || fallback;
-  }
-
+/** The message carried by a rejected invoke or thrown value, trimmed. */
+export function errorMessage(error: unknown): string {
+  if (error == null) return "";
+  if (typeof error === "string") return error.trim();
+  if (error instanceof Error) return error.message.trim();
   if (typeof error === "object") {
-    const maybeMessage = (error as { message?: unknown }).message;
-    if (typeof maybeMessage === "string" && maybeMessage.trim()) {
-      return maybeMessage.trim();
-    }
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string") return message.trim();
     try {
       const text = String(error);
-      if (text && text !== "[object Object]") return text;
+      if (text !== "[object Object]") return text.trim();
     } catch {
-      // ignore
+      // not stringifiable
     }
   }
+  return "";
+}
 
-  return fallback;
+/**
+ * The i18n key an error carries when it starts with one of `prefixes`, otherwise
+ * `fallback`. For forms that store the key and render `t(key)` later.
+ */
+export function errorKey(error: unknown, prefixes: string[], fallback: string): string {
+  const message = errorMessage(error);
+  return prefixes.some(prefix => message.startsWith(`${prefix}.`)) && I18N_KEY.test(message)
+    ? message
+    : fallback;
+}
+
+/**
+ * Readable text for any error: a known i18n key is translated, raw text is shown
+ * unchanged, and an empty error or an unknown key falls back to `fallback`.
+ */
+export function formatInvokeError(error: unknown, fallback?: string): string {
+  const message = errorMessage(error);
+  const generic = fallback ?? i18n.t("common.toastErrorGenericDesc");
+  if (!message) return generic;
+  if (I18N_KEY.test(message)) {
+    return i18n.exists(message) ? i18n.t(message) : generic;
+  }
+  return message;
 }

@@ -25,6 +25,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { queryKeys } from "@/lib/query-keys";
+import { errorMessage, formatInvokeError } from "@/lib/invoke-error";
 
 type SnapshotEnvelope = Awaited<ReturnType<typeof api.loadSnapshot>>;
 
@@ -70,7 +71,7 @@ function formatProxySaveError(
   t: (key: string, options?: Record<string, unknown>) => string,
   error: unknown,
 ) {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = errorMessage(error);
   if (
     message.includes("Manual proxy mode requires a proxy URL") ||
     message.includes("Invalid proxy URL") ||
@@ -150,7 +151,7 @@ export function ApiProxyDialog({
         code: "network_error",
         reachable: false,
         statusCode: null,
-        message: error instanceof Error ? error.message : String(error),
+        message: formatInvokeError(error),
       });
     },
   });

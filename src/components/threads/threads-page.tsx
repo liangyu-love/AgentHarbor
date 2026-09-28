@@ -65,6 +65,7 @@ import {
 } from "@/components/threads/thread-utils";
 import { queryKeys } from "@/lib/query-keys";
 import { storageKeys } from "@/lib/storage-keys";
+import { formatInvokeError } from "@/lib/invoke-error";
 
 type ExportFormat = "markdown" | "jsonl";
 type ViewMode = "grid" | "compact";
@@ -300,7 +301,7 @@ export function ThreadsPage() {
       await threadsQuery.refetch();
       toast({ title: t("threads.deleteQueueCancelled", { count: result.data }), variant: "success" });
     } catch (cause) {
-      toast({ title: t("threads.deleteFailed"), description: String(cause), variant: "destructive" });
+      toast({ title: t("threads.deleteFailed"), description: formatInvokeError(cause), variant: "destructive" });
     } finally { setCancelPendingBusy(false); }
   };
 
@@ -336,7 +337,7 @@ export function ThreadsPage() {
     } catch (error) {
       toast({
         title: t("threads.exportFailed"),
-        description: String(error),
+        description: formatInvokeError(error),
         variant: "destructive",
       });
     }
@@ -348,7 +349,7 @@ export function ThreadsPage() {
     } catch (error) {
       toast({
         title: t("threads.openFailed"),
-        description: String(error),
+        description: formatInvokeError(error),
         variant: "destructive",
       });
     }

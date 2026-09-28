@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import type { UpdateInstallabilityPayload } from "@/types";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
 import { api } from "@/lib/api";
+import { errorMessage } from "@/lib/invoke-error";
 
 interface UpdateInfo {
   version: string;
@@ -140,7 +141,7 @@ function localizeUpdateInstallabilityError(
 }
 
 function localizeUpdateRuntimeError(t: (key: string) => string, error: unknown) {
-  const message = String(error);
+  const message = errorMessage(error);
   if (
     message.includes("Read-only file system") ||
     message.includes("os error 30")

@@ -23,6 +23,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import type { ThreadRecoveryPreview, ThreadSummary } from "@/types/threads";
+import { formatInvokeError } from "@/lib/invoke-error";
 
 interface ThreadRecoveryDialogProps {
   thread: ThreadSummary | null;
@@ -59,7 +60,7 @@ export function ThreadRecoveryDialog({
         if (!cancelled) setPreview(result.data);
       })
       .catch((cause) => {
-        if (!cancelled) setError(String(cause));
+        if (!cancelled) setError(formatInvokeError(cause));
       })
       .finally(() => {
         if (!cancelled) setPreviewLoading(false);
@@ -98,7 +99,7 @@ export function ThreadRecoveryDialog({
       await onRecovered();
       onOpenChange(false);
     } catch (cause) {
-      const message = String(cause);
+      const message = formatInvokeError(cause);
       setError(message);
       toast({
         title: t("threads.recoveryFailed"),
@@ -192,7 +193,7 @@ export function ThreadRecoveryDialog({
                     void api.openPath(preview.coordination!.directoryPath).catch((cause) => {
                       toast({
                         title: t("threads.recoveryOpenDirectoryFailed"),
-                        description: String(cause),
+                        description: formatInvokeError(cause),
                         variant: "destructive",
                       });
                     });

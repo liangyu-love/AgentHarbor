@@ -28,6 +28,7 @@ import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import type { Route } from "@/types/navigation";
 import { queryKeys } from "@/lib/query-keys";
+import { errorMessage, formatInvokeError } from "@/lib/invoke-error";
 
 function SectionHeading({ index, title }: { index: string; title: string }) {
   return (
@@ -88,7 +89,7 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
       window.setTimeout(() => setCopiedHome(false), 2000);
       toast({ title: t("workspace.pathCopied") });
     } catch (error) {
-      toast({ title: t("common.error"), description: String(error), variant: "destructive" });
+      toast({ title: t("common.error"), description: formatInvokeError(error), variant: "destructive" });
     }
   };
 
@@ -97,7 +98,7 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
     try {
       await api.openPath(path);
     } catch (error) {
-      toast({ title: t("common.error"), description: String(error), variant: "destructive" });
+      toast({ title: t("common.error"), description: formatInvokeError(error), variant: "destructive" });
     }
   };
 
@@ -106,7 +107,7 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
       await api.targets.restart("codex");
       toast({ title: t("workspace.restartSent") });
     } catch (error) {
-      toast({ title: t("common.error"), description: String(error), variant: "destructive" });
+      toast({ title: t("common.error"), description: formatInvokeError(error), variant: "destructive" });
     }
   };
 
@@ -170,7 +171,7 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
           <details>
             <summary>{t("workspace.errorDetails")}</summary>
             <div className="overview-error-details">
-              {errors.map((error, index) => <span key={index}>{String(error)}</span>)}
+              {errors.map((error, index) => <span key={index}>{errorMessage(error)}</span>)}
             </div>
           </details>
         </div>

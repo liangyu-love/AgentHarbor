@@ -13,12 +13,11 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import type { ClientStatus } from "@/types/clients";
 import type { ModelProtocol, NewApiProvider } from "@/types/newapi";
 import { queryKeys } from "@/lib/query-keys";
+import { errorKey } from "@/lib/invoke-error";
 
 const CLIENT_KEY = queryKeys.clientConfigs;
-const errorKey = (error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  return /^(clients|newapi)\./.test(message) ? message : "clients.errors.storage";
-};
+const clientErrorKey = (error: unknown) =>
+  errorKey(error, ["clients", "newapi"], "clients.errors.storage");
 
 const summarizeExclusions = (
   providers: NewApiProvider[],
@@ -59,7 +58,7 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
       const restored = await api.targets.restoreConfig(restoring.targetId);
       toast({ title: t("clients.restored"), description: restored.warning ? t(restored.warning) : undefined, variant: restored.warning ? "destructive" : "success" });
       setRestoring(null);
-    } catch (cause) { setError(errorKey(cause)); }
+    } catch (cause) { setError(clientErrorKey(cause)); }
     finally { setBusy(false); await refresh(); }
   };
   const release = async () => {
@@ -70,7 +69,7 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
       await api.targets.releaseConfig(releasing.targetId);
       toast({ title: t("clients.released"), variant: "success" });
       setReleasing(null);
-    } catch (cause) { setError(errorKey(cause)); }
+    } catch (cause) { setError(clientErrorKey(cause)); }
     finally { setBusy(false); await refresh(); }
   };
 
@@ -81,7 +80,7 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
 
       </div>
       {clients.isPending && <p className="text-sm text-muted-foreground">{t("common.loading")}</p>}
-      {(error || clients.error) && <p role="alert" className="text-sm text-destructive">{t(error ?? errorKey(clients.error))}</p>}
+      {(error || clients.error) && <p role="alert" className="text-sm text-destructive">{t(error ?? clientErrorKey(clients.error))}</p>}
       <div className="grid gap-3 lg:grid-cols-2">
         {clients.data?.map(client => {
           const provider = providers.find(p => p.id === client.providerId);
