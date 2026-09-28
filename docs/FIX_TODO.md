@@ -151,7 +151,7 @@
   - [x] P1 `image-workbench-page.tsx` 1684 → 94 行：3 个 hook（`use-image-connection` 连接与凭据、`use-image-gallery` 画册、`use-generation-queue` 生成队列）+ 7 个组件（`workbench-header`、`generation-form`、`prompt-library`、`ink-model-combobox`、`generation-canvas`、`gallery-panel`、`gallery-thumbnail`）+ `workbench-types`。JSX 原样搬移，未加层级；快照新增生成画布、画册、放大预览 3 个交互状态（基线取自拆分前代码），24 张全部逐像素一致，前端回归 32 项通过。
   - [x] P2 `newapi-page.tsx` 1000 → 154 行：`use-provider-state`（查询 + 单飞 mutation、余额、导入导出）、`use-relay-view`（筛选、别名、组内切换与展开）、`relay-groups`（分组与样式工具）+ `codex-access-card`、`relay-list`、`relay-card`、`group-alias-dialog`、`status-dot`。快照新增展开、切换成员、筛选、别名、网络菜单、删除确认、重启确认 7 个交互状态（基线取自拆分前代码），38 张逐像素一致，前端回归 32 项通过。
   - [x] P3 `threads-page.tsx` 984 → 118 行：`use-thread-list`（扫描查询、筛选排序、选择、折叠、批量修复/删除/导出）+ `threads-header`、`thread-notices`、`thread-metrics`、`thread-toolbar`、`selection-bar`、`thread-group-section`。快照新增网格、全选、组选、折叠、搜索无结果、排序菜单、队列恢复 7 个状态；同时修掉快照 harness 的遮罩层偶发像素抖动（软件光栅 + 去 backdrop-filter + 状态间清 localStorage）。52 张逐像素一致，前端回归 32 项通过。
-  - [ ] P4 `mcp-page.tsx`（868 行）
+  - [x] P4 `mcp-page.tsx` 868 → 165 行：`use-mcp-servers`（查询、开关/删除 mutation、搜索筛选分页）+ `mcp-header`、`mcp-stats`、`mcp-toolbar`、`mcp-server-card`、`mcp-editor-dialog`、`mcp-form-fields`。快照新增添加、编辑 HTTP、删除确认、筛选、搜索无结果、ENV 提示 6 个状态，64 张逐像素一致，前端回归 32 项通过。
   - [ ] P5 `accounts-page.tsx`（821 行）
 
 ### 验证（阶段 10）
