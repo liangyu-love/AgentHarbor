@@ -12,37 +12,15 @@ pub enum TargetId {
     OpenCode,
 }
 
-pub trait RoutingTarget {
-    fn target_id(&self) -> TargetId;
-    fn config_path(&self) -> &Path;
-    fn application_data_dir(&self) -> &Path;
-}
-
+/// Only Codex has conversations and a restartable desktop process; Claude Code
+/// and OpenCode are configuration-only targets, so these lookups return `None` for them.
 pub trait ConversationSource {
-    fn target_id(&self) -> TargetId;
     fn sessions_dir(&self) -> &Path;
     fn archived_sessions_dir(&self) -> &Path;
     fn state_database_path(&self) -> &Path;
 }
 
-pub trait McpConfigStore {
-    fn target_id(&self) -> TargetId;
-    fn config_path(&self) -> &Path;
-}
-
-pub trait SkillStore {
-    fn target_id(&self) -> TargetId;
-    fn skills_dir(&self) -> &Path;
-}
-
-pub trait InstructionStore {
-    fn target_id(&self) -> TargetId;
-    fn global_instructions_path(&self) -> &Path;
-}
-
 pub trait ProcessController {
-    fn target_id(&self) -> TargetId;
-    fn is_running(&self) -> bool;
     fn restart(&self) -> Result<(), CoreError>;
 }
 
@@ -61,25 +39,7 @@ impl CodexTarget {
     }
 }
 
-impl RoutingTarget for CodexTarget {
-    fn target_id(&self) -> TargetId {
-        TargetId::Codex
-    }
-
-    fn config_path(&self) -> &Path {
-        &self.paths.config_path
-    }
-
-    fn application_data_dir(&self) -> &Path {
-        &self.paths.app_data_dir
-    }
-}
-
 impl ConversationSource for CodexTarget {
-    fn target_id(&self) -> TargetId {
-        TargetId::Codex
-    }
-
     fn sessions_dir(&self) -> &Path {
         &self.paths.sessions_dir
     }
@@ -93,45 +53,7 @@ impl ConversationSource for CodexTarget {
     }
 }
 
-impl McpConfigStore for CodexTarget {
-    fn target_id(&self) -> TargetId {
-        TargetId::Codex
-    }
-
-    fn config_path(&self) -> &Path {
-        &self.paths.config_path
-    }
-}
-
-impl SkillStore for CodexTarget {
-    fn target_id(&self) -> TargetId {
-        TargetId::Codex
-    }
-
-    fn skills_dir(&self) -> &Path {
-        &self.paths.skills_dir
-    }
-}
-
-impl InstructionStore for CodexTarget {
-    fn target_id(&self) -> TargetId {
-        TargetId::Codex
-    }
-
-    fn global_instructions_path(&self) -> &Path {
-        &self.paths.global_agents_path
-    }
-}
-
 impl ProcessController for CodexTarget {
-    fn target_id(&self) -> TargetId {
-        TargetId::Codex
-    }
-
-    fn is_running(&self) -> bool {
-        platform::process::is_codex_app_running()
-    }
-
     fn restart(&self) -> Result<(), CoreError> {
         let global = super::newapi::proxy_from_settings(&self.paths.settings_path);
         let store = super::router::load_store(&self.paths).map_err(CoreError::OperationFailed)?;
@@ -167,35 +89,7 @@ impl TargetRegistry {
         &self.codex
     }
 
-    pub fn routing(&self, id: TargetId) -> Option<&dyn RoutingTarget> {
-        match id {
-            TargetId::Codex => Some(&self.codex),
-            _ => None,
-        }
-    }
-
     pub fn conversations(&self, id: TargetId) -> Option<&dyn ConversationSource> {
-        match id {
-            TargetId::Codex => Some(&self.codex),
-            _ => None,
-        }
-    }
-
-    pub fn mcp(&self, id: TargetId) -> Option<&dyn McpConfigStore> {
-        match id {
-            TargetId::Codex => Some(&self.codex),
-            _ => None,
-        }
-    }
-
-    pub fn skills(&self, id: TargetId) -> Option<&dyn SkillStore> {
-        match id {
-            TargetId::Codex => Some(&self.codex),
-            _ => None,
-        }
-    }
-
-    pub fn instructions(&self, id: TargetId) -> Option<&dyn InstructionStore> {
         match id {
             TargetId::Codex => Some(&self.codex),
             _ => None,
@@ -256,9 +150,6 @@ mod tests {
         for id in [TargetId::ClaudeCode, TargetId::OpenCode] {
             assert!(registry.process(id).is_none());
             assert!(registry.conversations(id).is_none());
-            assert!(registry.mcp(id).is_none());
-            assert!(registry.skills(id).is_none());
-            assert!(registry.instructions(id).is_none());
         }
     }
 
@@ -269,34 +160,12 @@ mod tests {
         let registry = TargetRegistry::new(paths.clone());
 
         assert_eq!(
-            registry.routing(TargetId::Codex).unwrap().config_path(),
-            paths.config_path
-        );
-        assert_eq!(
             registry
                 .conversations(TargetId::Codex)
                 .unwrap()
                 .sessions_dir(),
             paths.sessions_dir
         );
-        assert_eq!(
-            registry.mcp(TargetId::Codex).unwrap().config_path(),
-            paths.config_path
-        );
-        assert_eq!(
-            registry.skills(TargetId::Codex).unwrap().skills_dir(),
-            paths.skills_dir
-        );
-        assert_eq!(
-            registry
-                .instructions(TargetId::Codex)
-                .unwrap()
-                .global_instructions_path(),
-            paths.global_agents_path
-        );
-        assert_eq!(
-            registry.process(TargetId::Codex).unwrap().target_id(),
-            TargetId::Codex
-        );
+        assert!(registry.process(TargetId::Codex).is_some());
     }
 }

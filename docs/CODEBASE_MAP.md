@@ -201,7 +201,7 @@ IPC 命令必须同时在 Rust 命令文件中实现，并通过 `src-tauri/src/
 | 存储安全 | 原子文件写入、durable remove、本地秘密文件加密/权限 | `core/storage.rs`、`core/secret_file.rs` |
 | 系统集成 | 进程、代理、旧版计划任务清理、单实例、托盘、升级、平台入口 | `platform/process.rs`、`proxy.rs`、`daemon.rs`、`single_instance.rs`、`update.rs`、`windows.rs`、`macos_main_bundle.rs`、`dock.rs` |
 
-`core/targets.rs` 定义客户端目标能力的接口（路由、会话、MCP、Skills、指令、进程）。当前注册表为 Codex 实现这些能力；Claude Code 与 OpenCode 目标用于客户端配置，Claude Code 另外是本地用量扫描来源。没有 OpenCode 本地会话用量来源；Router 用量记录只按供应商、模型和协议汇总，不归属到 Codex、Claude Code 或 OpenCode。不能据此认为 Claude Code/OpenCode 支持 Codex 的会话、MCP、Skills 或进程操作。
+`core/targets.rs` 只定义两个按目标查询的能力接口：会话源（`ConversationSource`）和进程控制（`ProcessController`），当前都只有 Codex 实现；MCP、Skills、指令直接使用 `CodexPaths`。Claude Code 与 OpenCode 目标用于客户端配置，Claude Code 另外是本地用量扫描来源。没有 OpenCode 本地会话用量来源；Router 用量记录只按供应商、模型和协议汇总，不归属到 Codex、Claude Code 或 OpenCode。不能据此认为 Claude Code/OpenCode 支持 Codex 的会话、MCP、Skills 或进程操作。
 
 ## 7. 数据类型与持久化位置
 

@@ -122,6 +122,11 @@
 - [x] B4 测试：35 次写入后只剩 30 份新备份、最新一份保留、旧版 uuid 备份和无关文件不动；5 个 legacy 恢复测试改为先把新备份改名成旧格式来模拟旧安装。
 - 行为变化：新版本自己的备份不再参与 legacy 恢复。只有从未写过 sidecar 的旧安装才会走这条路径，而它们的基线本来就只存在于旧文件中。
 
+## 阶段 12：`targets.rs` trait 精简（D5）
+
+- [x] T1 删除没有调用方的 `RoutingTarget`、`McpConfigStore`、`SkillStore`、`InstructionStore` 及对应 registry 查询；保留实际使用的 `ConversationSource`（会话页）和 `ProcessController`（重启 Codex、自动切号），并去掉其中未使用的 `target_id`/`is_running`。MCP、Skills、指令直接用 `CodexPaths`，与现状一致。
+- 验证：lib 367 通过 / 1 ignored，集成 9 通过；`cargo check --all-targets` 无 warning。
+
 ### 验证（阶段 10）
 
 - `cargo test --lib --test local_workflows`：lib 366 通过 / 1 ignored，集成 9 通过；`cargo check --all-targets` 无 warning。

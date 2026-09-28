@@ -52,7 +52,7 @@
 - D2 前端无调用的已注册命令：`list_codex_threads`、`export_codex_threads`、`restart_codex`（代理逻辑已与 `restart_target` 分叉）、`load_bootstrap_state`、IPC 形式的 `focus_main_window`。
 - D3 约 20 个无组件调用的 facade 方法；alias `fetchNewApiModels` 写死 `responses` 协议。
 - D4 `CoreEnvelope::error` 无调用；`routable()`、`infer_protocol()`；`set_usage_refresh_interval` 的 `_interval_seconds`。
-- D5 `targets.rs` 6 个 capability trait 只用到 2 个。
+- D5 `targets.rs` 6 个 capability trait 只用到 2 个。（已处理：见 FIX_TODO 阶段 12。）
 - D6 en.json 约 100+ 未引用 key；`settings.bgUploadEmpty` 缺 en，`settings.bgPresetSelected` 缺 zh。
 
 ## 4. 解耦
