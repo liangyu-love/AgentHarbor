@@ -92,7 +92,8 @@ pub fn prune_backups(dir: &Path, keep: usize, owned: impl Fn(&Path) -> bool) {
     if backups.len() <= keep {
         return;
     }
-    backups.sort_by(|left, right| right.0.cmp(&left.0));
+    // Newest first; names break mtime ties (timestamped names sort chronologically).
+    backups.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
     for (_, path) in backups.into_iter().skip(keep) {
         let result = if path.is_dir() {
             std::fs::remove_dir_all(&path)

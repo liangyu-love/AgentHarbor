@@ -547,6 +547,19 @@ mod tests {
 
     const ORIGINAL: &str = "# user config\nmodel = 'original-model' # chosen model\nmodel_provider = 'custom'\nmodel_catalog_json = 'custom-models.json'\n# context note\nmodel_context_window = 90000 # original context\nmodel_auto_compact_token_limit = 80000\npreferred_auth_method = 'chatgpt' # login preference\ntheme = 'dark'\n[model_providers.custom]\nname = 'Custom'\nbase_url = 'https://fixture.invalid'\nexperimental_bearer_token = 'fixture-original-secret'\n[mcp_servers.tools]\ncommand = 'node' # MCP comment\n";
 
+    /// Builds before the sidecar existed wrote bare `<uuid>.toml` backups. Simulate
+    /// such an install by applying with this build, then giving the new backup the
+    /// legacy name and dropping the sidecar.
+    fn apply_as_legacy_install(paths: &CodexPaths, store: &Store) -> PathBuf {
+        let applied = apply_routing_config(paths, store).unwrap();
+        let backup = applied.backup_path.map(PathBuf::from).unwrap();
+        let legacy = backup
+            .with_file_name(format!("{}.toml", uuid::Uuid::new_v4()));
+        std::fs::rename(&backup, &legacy).unwrap();
+        std::fs::remove_file(path(paths)).unwrap();
+        legacy
+    }
+
     fn fixture(original: &str) -> (tempfile::TempDir, CodexPaths, Store) {
         let directory = tempfile::tempdir().unwrap();
         let paths = CodexPaths::from_home(directory.path().join("codex"));
@@ -907,8 +920,7 @@ mod tests {
     #[test]
     fn legacy_route_uses_a_unique_matching_backup_and_preserves_manual_values() {
         let (_directory, paths, store) = fixture(ORIGINAL);
-        apply_routing_config(&paths, &store).unwrap();
-        std::fs::remove_file(path(&paths)).unwrap();
+        apply_as_legacy_install(&paths, &store);
         let mut changed = config(&paths);
         set_value(
             &mut changed,
@@ -935,8 +947,7 @@ mod tests {
     fn legacy_route_removes_old_alias_after_provider_switch_deletion_or_model_change() {
         for change in ["switched", "deleted", "model-changed", "disabled"] {
             let (_directory, paths, mut store) = fixture(ORIGINAL);
-            apply_routing_config(&paths, &store).unwrap();
-            std::fs::remove_file(path(&paths)).unwrap();
+            apply_as_legacy_install(&paths, &store);
             match change {
                 "switched" => {
                     let mut next = store.providers[0].clone();
@@ -970,8 +981,7 @@ mod tests {
     #[test]
     fn legacy_route_keeps_an_unknown_user_selected_model() {
         let (_directory, paths, store) = fixture(ORIGINAL);
-        apply_routing_config(&paths, &store).unwrap();
-        std::fs::remove_file(path(&paths)).unwrap();
+        apply_as_legacy_install(&paths, &store);
         let mut changed = config(&paths);
         set_value(&mut changed, "model", Some("user-model".into()));
         write_config(&paths, &changed);
@@ -1048,8 +1058,7 @@ mod tests {
             for accountless in [false, true] {
                 let (_directory, paths, mut store) = fixture(&original);
                 store.router.accountless = accountless;
-                apply_routing_config(&paths, &store).unwrap();
-                std::fs::remove_file(path(&paths)).unwrap();
+                apply_as_legacy_install(&paths, &store);
                 let mut legacy = config(&paths);
                 set_value(&mut legacy, "preferred_auth_method", Some("apikey".into()));
                 let provider = &mut legacy["model_providers"][CATALOG_PROVIDER_KEY];
@@ -1079,8 +1088,7 @@ mod tests {
     fn missing_or_ambiguous_legacy_backup_cannot_overwrite_config() {
         for ambiguous in [false, true] {
             let (_directory, paths, store) = fixture(ORIGINAL);
-            let applied = apply_routing_config(&paths, &store).unwrap();
-            std::fs::remove_file(path(&paths)).unwrap();
+            let legacy_backup = apply_as_legacy_install(&paths, &store);
             if ambiguous {
                 std::fs::write(
                     paths
@@ -1091,7 +1099,7 @@ mod tests {
                 )
                 .unwrap();
             } else {
-                std::fs::remove_file(applied.backup_path.unwrap()).unwrap();
+                std::fs::remove_file(legacy_backup).unwrap();
             }
             let installed = std::fs::read(&paths.config_path).unwrap();
             assert_eq!(

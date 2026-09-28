@@ -17,6 +17,20 @@ fn config_guard() -> Result<MutexGuard<'static, ()>, CoreError> {
         .map_err(|_| CoreError::OperationFailed("Codex config lock is poisoned".into()))
 }
 
+/// Backups written by this build. Builds before the router sidecar wrote bare
+/// `<uuid>.toml` files; legacy router recovery searches only those for the
+/// pre-router baseline, so they are never pruned and never added to. Backups
+/// with this prefix are not recovery inputs and are kept to a bounded window.
+const BACKUP_PREFIX: &str = "agentharbor-";
+const BACKUP_LIMIT: usize = 30;
+
+fn is_rotating_backup(path: &std::path::Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(BACKUP_PREFIX) && name.ends_with(".toml"))
+        && path.is_file()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigWriteResult {
     pub path: PathBuf,
@@ -88,10 +102,13 @@ impl CodexConfigRepository {
         }
 
         let backup_path = if let Some(original) = original_bytes {
-            let path = self
-                .backup_dir
-                .join(format!("{}.toml", uuid::Uuid::new_v4()));
+            let path = self.backup_dir.join(format!(
+                "{BACKUP_PREFIX}{}-{}.toml",
+                chrono::Utc::now().format("%Y%m%dT%H%M%S%.3f"),
+                uuid::Uuid::new_v4()
+            ));
             storage::write_atomic(&path, &original)?;
+            storage::prune_backups(&self.backup_dir, BACKUP_LIMIT, is_rotating_backup);
             Some(path)
         } else {
             None
@@ -360,6 +377,37 @@ mod tests {
         let updated = std::fs::read_to_string(&paths.config_path).unwrap();
         assert!(updated.contains("theme = 'dark'"));
         assert!(updated.contains("model = 'gpt-test'"));
+    }
+
+    #[test]
+    fn backups_are_bounded_but_legacy_recovery_inputs_are_never_pruned() {
+        let (_dir, paths) = paths();
+        std::fs::create_dir_all(&paths.codex_home).unwrap();
+        std::fs::write(&paths.config_path, "version = 0\n").unwrap();
+        let backup_dir = paths.app_data_dir.join("config-backups");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        let legacy = backup_dir.join(format!("{}.toml", uuid::Uuid::new_v4()));
+        std::fs::write(&legacy, "model = 'pre-router'\n").unwrap();
+        let unrelated = backup_dir.join("notes.txt");
+        std::fs::write(&unrelated, "keep").unwrap();
+
+        let repository = CodexConfigRepository::new(&paths);
+        let mut last = None;
+        for version in 1..=BACKUP_LIMIT + 5 {
+            last = repository
+                .update(|_| Ok(format!("version = {version}\n")))
+                .unwrap()
+                .backup_path;
+        }
+        let rotating: Vec<_> = std::fs::read_dir(&backup_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| is_rotating_backup(path))
+            .collect();
+        assert_eq!(rotating.len(), BACKUP_LIMIT);
+        assert!(last.unwrap().is_file(), "the newest backup is kept");
+        assert_eq!(std::fs::read_to_string(&legacy).unwrap(), "model = 'pre-router'\n");
+        assert!(unrelated.is_file());
     }
 
     #[test]
