@@ -150,7 +150,7 @@
   - [x] V0 `scripts/visual-snapshot.mjs capture|compare`：9 个页面 × 亮/暗 18 张，禁用动画、固定时间与随机数，按解码后像素逐个比较。fixture 新增 `mcp`、`accounts` 模式。验证：无改动时两次截图完全一致；给 `.ink-scroll-frame` 加 1px 边距能检测到差异。
   - [x] P1 `image-workbench-page.tsx` 1684 → 94 行：3 个 hook（`use-image-connection` 连接与凭据、`use-image-gallery` 画册、`use-generation-queue` 生成队列）+ 7 个组件（`workbench-header`、`generation-form`、`prompt-library`、`ink-model-combobox`、`generation-canvas`、`gallery-panel`、`gallery-thumbnail`）+ `workbench-types`。JSX 原样搬移，未加层级；快照新增生成画布、画册、放大预览 3 个交互状态（基线取自拆分前代码），24 张全部逐像素一致，前端回归 32 项通过。
   - [x] P2 `newapi-page.tsx` 1000 → 154 行：`use-provider-state`（查询 + 单飞 mutation、余额、导入导出）、`use-relay-view`（筛选、别名、组内切换与展开）、`relay-groups`（分组与样式工具）+ `codex-access-card`、`relay-list`、`relay-card`、`group-alias-dialog`、`status-dot`。快照新增展开、切换成员、筛选、别名、网络菜单、删除确认、重启确认 7 个交互状态（基线取自拆分前代码），38 张逐像素一致，前端回归 32 项通过。
-  - [ ] P3 `threads-page.tsx`（984 行）
+  - [x] P3 `threads-page.tsx` 984 → 118 行：`use-thread-list`（扫描查询、筛选排序、选择、折叠、批量修复/删除/导出）+ `threads-header`、`thread-notices`、`thread-metrics`、`thread-toolbar`、`selection-bar`、`thread-group-section`。快照新增网格、全选、组选、折叠、搜索无结果、排序菜单、队列恢复 7 个状态；同时修掉快照 harness 的遮罩层偶发像素抖动（软件光栅 + 去 backdrop-filter + 状态间清 localStorage）。52 张逐像素一致，前端回归 32 项通过。
   - [ ] P4 `mcp-page.tsx`（868 行）
   - [ ] P5 `accounts-page.tsx`（821 行）
 
