@@ -148,7 +148,7 @@
 - [x] C2 `router_proxy::handle()` 从约 620 行拆到 123 行，只保留流程：`forwardable_headers`、`requested_model`、`codex_catalog_response`、`resolve_destination`、`upstream_suffix`、`relay_usage_request`、`provider_target`、`official_target`、`upstream_body`、`client_for`、`relay_response`、`translated_stream`。逻辑逐段搬移，未改行为；`relay_response` 的 if/else 链改成按 `(translation, status, stream)` 的 match，两条非翻译分支合并（observer 为 `Option`）。lib/集成测试各连续 3 次通过。
 - [ ] C1 拆分大组件（每页单独提交，拆前后截图逐像素对比，不新增 DOM 层级）：
   - [x] V0 `scripts/visual-snapshot.mjs capture|compare`：9 个页面 × 亮/暗 18 张，禁用动画、固定时间与随机数，按解码后像素逐个比较。fixture 新增 `mcp`、`accounts` 模式。验证：无改动时两次截图完全一致；给 `.ink-scroll-frame` 加 1px 边距能检测到差异。
-  - [ ] P1 `image-workbench-page.tsx`（1684 行）
+  - [x] P1 `image-workbench-page.tsx` 1684 → 94 行：3 个 hook（`use-image-connection` 连接与凭据、`use-image-gallery` 画册、`use-generation-queue` 生成队列）+ 7 个组件（`workbench-header`、`generation-form`、`prompt-library`、`ink-model-combobox`、`generation-canvas`、`gallery-panel`、`gallery-thumbnail`）+ `workbench-types`。JSX 原样搬移，未加层级；快照新增生成画布、画册、放大预览 3 个交互状态（基线取自拆分前代码），24 张全部逐像素一致，前端回归 32 项通过。
   - [ ] P2 `newapi-page.tsx`（1000 行）
   - [ ] P3 `threads-page.tsx`（984 行）
   - [ ] P4 `mcp-page.tsx`（868 行）

@@ -21,7 +21,37 @@ const baselineDir = path.join(root, ".visual-baseline");
 const currentDir = path.join(root, ".visual-current");
 
 // Pages under refactor; each renders from the regression fixture with synthetic data.
-const PAGES = ["image", "groups", "access", "warnings", "thread-actions", "mcp", "accounts", "usage", "overview"];
+// A state is a fixture mode plus optional interactions, so refactors are also checked
+// on views that only appear after user input.
+const PAGES = [
+  { name: "image", mode: "image" },
+  { name: "image-jobs", mode: "image", async act(page) {
+    await page.locator('textarea[placeholder^="描述画面主体"]').fill("Snapshot canvas");
+    await page.locator("[data-image-generate]").click();
+    await page.locator("[data-image-generate]").click();
+    await page.locator("[data-image-generate]").click();
+    await page.waitForFunction(() => window.review.imageRequests.length === 2);
+    await page.evaluate(() => window.review.imageResolvers[0]());
+    await page.locator('[data-generation-job-status="completed"] img').first().waitFor();
+    await page.locator("[data-page-scroll-container]").evaluate(element => { element.scrollTop = 0; });
+  } },
+  { name: "image-gallery", mode: "image", async act(page) {
+    await page.getByRole("button", { name: "历史画册", exact: true }).first().click();
+    await page.locator("[data-gallery-section]").waitFor();
+    await page.waitForFunction(() => window.review.thumbnailCalls.length > 0);
+    await page.evaluate(() => { for (const resolve of window.review.thumbnailResolvers) resolve(); });
+  } },
+  { name: "image-preview", mode: "image", async act(page) {
+    await page.locator('textarea[placeholder^="描述画面主体"]').fill("Snapshot preview");
+    await page.locator("[data-image-generate]").click();
+    await page.waitForFunction(() => window.review.imageRequests.length === 1);
+    await page.evaluate(() => window.review.imageResolvers[0]());
+    await page.locator('button[title="点击放大预览"]').first().click();
+    await page.getByRole("dialog", { name: "成图放大预览" }).waitFor();
+  } },
+  ...["groups", "access", "warnings", "thread-actions", "mcp", "accounts", "usage", "overview"]
+    .map(mode => ({ name: mode, mode })),
+];
 const THEMES = ["light", "dark"];
 
 const fixture = await readFile(path.join(root, "scripts/fixtures/frontend-regressions.tsx"), "utf8");
@@ -69,15 +99,19 @@ try {
     });
     const page = await context.newPage();
     await page.route("**/*", route => route.request().url().startsWith(address + "/") ? route.continue() : route.abort());
-    for (const name of PAGES) {
+    for (const { name, mode: fixtureMode, act } of PAGES) {
       await page.goto(address);
       await page.waitForFunction(() => Boolean(window.review));
       await page.evaluate(value => {
         document.documentElement.classList.toggle("dark", value === "dark");
       }, theme);
-      await page.evaluate(value => window.review.mount(value), name);
+      await page.evaluate(value => window.review.mount(value), fixtureMode);
       await page.waitForLoadState("networkidle");
       await page.waitForTimeout(600);
+      if (act) {
+        await act(page);
+        await page.waitForTimeout(400);
+      }
       const file = `${name}-${theme}.png`;
       const shot = await page.screenshot({ fullPage: false });
       if (mode === "capture") {
