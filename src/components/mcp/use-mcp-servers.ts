@@ -6,6 +6,7 @@ import { toast } from "@/hooks/use-toast";
 import type { McpServerSummary } from "@/types";
 import { useBusyAction } from "@/hooks/use-busy-action";
 import { queryKeys } from "@/lib/query-keys";
+import { formatInvokeError } from "@/lib/invoke-error";
 
 const PAGE_SIZE = 12;
 
@@ -79,7 +80,7 @@ export function useMcpServers() {
     } catch (err) {
       toast({
         title: t("common.error"),
-        description: String(err),
+        description: formatInvokeError(err),
         variant: "destructive",
       });
     }

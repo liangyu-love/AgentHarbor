@@ -8,6 +8,7 @@ import { api } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { queryKeys } from "@/lib/query-keys";
+import { formatInvokeError } from "@/lib/invoke-error";
 
 interface SiteHeaderProps {
   title: string;
@@ -46,7 +47,7 @@ export function SiteHeader({
       await api.openPath(codexHome);
       toast({ title: ".codex 目录已打开", variant: "default" });
     } catch (err) {
-      toast({ title: "打开失败", description: String(err), variant: "destructive" });
+      toast({ title: "打开失败", description: formatInvokeError(err), variant: "destructive" });
     }
   };
 

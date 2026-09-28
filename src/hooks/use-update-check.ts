@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import type { UpdateInstallabilityPayload } from "@/types";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
 import { api } from "@/lib/api";
-import { errorMessage } from "@/lib/invoke-error";
+import { errorMessage, formatInvokeError } from "@/lib/invoke-error";
 
 interface UpdateInfo {
   version: string;
@@ -53,7 +53,7 @@ export function useUpdateCheck() {
       setStatus("idle");
       return "up-to-date";
     } catch (e) {
-      setError(String(e));
+      setError(formatInvokeError(e));
       setStatus("error");
       return "error";
     }

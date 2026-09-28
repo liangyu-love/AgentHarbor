@@ -18,6 +18,7 @@ import { useProviderState } from "@/components/newapi/use-provider-state";
 import { useRelayView } from "@/components/newapi/use-relay-view";
 import { providerModelProtocol } from "@/lib/provider-models";
 import type { NewApiProvider } from "@/types/newapi";
+import { formatInvokeError } from "@/lib/invoke-error";
 
 export function NewApiPage() {
   const { t } = useTranslation();
@@ -62,7 +63,7 @@ export function NewApiPage() {
           role="alert"
           className="flex items-start justify-between gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
         >
-          <span>{error ? t(error) : String(state.error)}</span>
+          <span>{error ? t(error) : formatInvokeError(state.error)}</span>
           <button
             type="button"
             onClick={() => { setError(null); void state.refetch(); }}

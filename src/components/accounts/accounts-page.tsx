@@ -28,6 +28,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import type { RefreshInterval } from "@/hooks/use-auto-refresh";
 import { cn } from "@/lib/utils";
+import { formatInvokeError } from "@/lib/invoke-error";
 
 export function AccountsPage({ refreshInterval, onManageProviders }: { refreshInterval: RefreshInterval; onManageProviders: () => void }) {
   const { t } = useTranslation();
@@ -107,7 +108,7 @@ export function AccountsPage({ refreshInterval, onManageProviders }: { refreshIn
             <strong>{t("accounts.loadFailed")}</strong>
             <details className="mt-2 text-xs text-muted-foreground">
               <summary className="w-fit cursor-pointer">{t("accounts.technicalDetails")}</summary>
-              <p className="mt-2 break-all font-mono">{String(accountsQuery.error)}</p>
+              <p className="mt-2 break-all font-mono">{formatInvokeError(accountsQuery.error)}</p>
             </details>
           </div>
         ) : accounts.length === 0 ? (

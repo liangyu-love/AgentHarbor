@@ -9,6 +9,7 @@ import React, {
 } from "react";
 import { toast } from "@/hooks/use-toast";
 import { storageKeys } from "@/lib/storage-keys";
+import { formatInvokeError } from "@/lib/invoke-error";
 
 export interface WallpaperPreset {
   id: string;
@@ -278,7 +279,7 @@ export function CustomBackgroundProvider({ children }: { children: ReactNode }) 
       } catch (err) {
         toast({
           title: "保存壁纸失败",
-          description: String(err),
+          description: formatInvokeError(err),
           variant: "destructive",
         });
       }

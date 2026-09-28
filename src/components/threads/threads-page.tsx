@@ -13,6 +13,7 @@ import { ThreadToolbar } from "@/components/threads/thread-toolbar";
 import { ThreadsHeader } from "@/components/threads/threads-header";
 import { SelectionBar } from "@/components/threads/selection-bar";
 import { useThreadList } from "@/components/threads/use-thread-list";
+import { formatInvokeError } from "@/lib/invoke-error";
 
 export function ThreadsPage() {
   const { t } = useTranslation();
@@ -58,7 +59,7 @@ export function ThreadsPage() {
             <MessagesSquare className="h-10 w-10 text-destructive/70" />
             <p className="text-sm font-semibold">{t("threads.loadFailed")}</p>
             <p className="max-w-md text-xs text-muted-foreground font-mono">
-              {String(threadsQuery.error)}
+              {formatInvokeError(threadsQuery.error)}
             </p>
             <Button variant="outline" size="sm" onClick={() => void handleRefresh()}>
               {t("threads.retry")}

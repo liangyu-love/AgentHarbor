@@ -27,6 +27,7 @@ import { toast } from "@/hooks/use-toast";
 import type { Route } from "@/types/navigation";
 import type { CoreEnvelope, CoreSnapshotPayload, McpServerListPayload, SkillListPayload } from "@/types";
 import { queryKeys } from "@/lib/query-keys";
+import { formatInvokeError } from "@/lib/invoke-error";
 
 interface CommandPaletteProps {
   open: boolean;
@@ -88,7 +89,7 @@ export function CommandPalette({
       await api.openPath(path);
       toast({ title: `${label} 已打开`, variant: "default" });
     } catch (err) {
-      toast({ title: t("common.error"), description: String(err), variant: "destructive" });
+      toast({ title: t("common.error"), description: formatInvokeError(err), variant: "destructive" });
     }
   };
 
@@ -97,7 +98,7 @@ export function CommandPalette({
       await api.targets.restart("codex");
       toast({ title: "Codex 重启指令已发送", variant: "default" });
     } catch (err) {
-      toast({ title: t("common.error"), description: String(err), variant: "destructive" });
+      toast({ title: t("common.error"), description: formatInvokeError(err), variant: "destructive" });
     }
   };
 

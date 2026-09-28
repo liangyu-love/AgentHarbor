@@ -37,6 +37,7 @@ import {
   RotateCw,
 } from "lucide-react";
 import { queryKeys } from "@/lib/query-keys";
+import { errorMessage, formatInvokeError } from "@/lib/invoke-error";
 
 type Tab = "installed" | "backups";
 
@@ -85,10 +86,10 @@ export function SkillsPage() {
       });
     },
     onError: (err) => {
-      if (String(err).includes("cancelled")) return;
+      if (errorMessage(err).includes("cancelled")) return;
       toast({
         title: t("common.error"),
-        description: String(err),
+        description: formatInvokeError(err),
         variant: "destructive",
       });
     },
@@ -145,7 +146,7 @@ export function SkillsPage() {
     } catch (err) {
       toast({
         title: t("skills.openFolderFailed"),
-        description: String(err),
+        description: formatInvokeError(err),
         variant: "destructive",
       });
     }
@@ -179,7 +180,7 @@ export function SkillsPage() {
     return (
       <div role="alert" className="space-y-3 p-4">
         <p>{t("baseline.readFailed")}</p>
-        <p className="text-sm text-muted-foreground">{String(activeQuery.error)}</p>
+        <p className="text-sm text-muted-foreground">{formatInvokeError(activeQuery.error)}</p>
         <Button onClick={() => void activeQuery.refetch()}>{t("common.refresh")}</Button>
       </div>
     );

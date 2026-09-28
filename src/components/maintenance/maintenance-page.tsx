@@ -25,6 +25,7 @@ import {
   CheckCircle2,
   AlertCircle,
 } from "lucide-react";
+import { formatInvokeError } from "@/lib/invoke-error";
 
 const MIN_FEEDBACK_MS = 800;
 
@@ -59,7 +60,7 @@ export function MaintenancePage() {
         }),
       });
     },
-    onError: (err) => setActionResult("diagnose", { type: "error", message: String(err) }),
+    onError: (err) => setActionResult("diagnose", { type: "error", message: formatInvokeError(err) }),
   });
 
   const cleanMutation = useMutation({
@@ -76,7 +77,7 @@ export function MaintenancePage() {
         }),
       });
     },
-    onError: (err) => setActionResult("clean", { type: "error", message: String(err) }),
+    onError: (err) => setActionResult("clean", { type: "error", message: formatInvokeError(err) }),
   });
 
   const rebuildMutation = useMutation({
@@ -88,13 +89,13 @@ export function MaintenancePage() {
         message: t("maintenance.rebuildResult", { count: res.data.accountCount }),
       });
     },
-    onError: (err) => setActionResult("rebuild", { type: "error", message: String(err) }),
+    onError: (err) => setActionResult("rebuild", { type: "error", message: formatInvokeError(err) }),
   });
 
   const restartMutation = useMutation({
     mutationFn: () => api.targets.restart("codex"),
     onSuccess: () => setActionResult("restart", { type: "success", message: t("maintenance.codexRestarted") }),
-    onError: (err) => setActionResult("restart", { type: "error", message: String(err) }),
+    onError: (err) => setActionResult("restart", { type: "error", message: formatInvokeError(err) }),
   });
 
   const runAction = useCallback(async (key: string, mutateAsync: () => Promise<unknown>) => {
