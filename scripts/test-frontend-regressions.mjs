@@ -586,6 +586,10 @@ try {
   await page.evaluate(() => { window.review.appliedClient = null; });
   await page.locator("#claude-saved-profile").click();
   await page.getByRole("option", { name: "Regression profile · Provider versions", exact: true }).click();
+  // Loading a profile only previews it; nothing is written until Apply.
+  await page.getByRole("button", { name: labels.clientApply, exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => window.review.appliedClient), null);
+  await page.getByRole("button", { name: labels.clientApply, exact: true }).click();
   await page.waitForFunction(() => window.review.appliedClient?.request.model === "claude-fable-5-1");
   assert.equal(await page.getByRole("dialog").count(), 0);
   await reset("clients-versions");

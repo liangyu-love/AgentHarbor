@@ -78,7 +78,11 @@ fn needs_registry_sync(repo: &Repository, registry: &RegistryFile) -> Result<boo
         }
         Err(error) => return Err(error.into()),
     };
-    let auth = serde_json::from_slice(&bytes)?;
+    // A corrupt auth.json is treated like one that is not a saved account, so the
+    // account list, switching and deletion keep working and can repair it.
+    let Ok(auth) = serde_json::from_slice(&bytes) else {
+        return Ok(registry.active_account_key.is_some());
+    };
     let Ok(snapshot) = make_auth_snapshot(&auth, &repo.paths().auth_path) else {
         return Ok(registry.active_account_key.is_some());
     };
@@ -396,6 +400,33 @@ mod tests {
             error: None,
             credential_refresh: refresh,
         }
+    }
+
+    #[test]
+    fn corrupt_auth_json_keeps_the_account_list_usable() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = Repository::from_paths(CodexPaths::from_home(temp.path().join("codex")));
+        let source = temp.path().join("source.json");
+        write_auth_token(&source, "account", "token");
+        register_login(&repo, &source).unwrap();
+        std::fs::write(&repo.paths().auth_path, b"{ not json").unwrap();
+        let listed = list(&repo).unwrap();
+        assert_eq!(listed.items.len(), 1);
+    }
+
+    #[test]
+    fn clean_removes_only_owned_backup_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = Repository::from_paths(CodexPaths::from_home(temp.path().join("codex")));
+        repo.paths().ensure_directories().unwrap();
+        let dir = &repo.paths().auth_backups_dir;
+        std::fs::write(dir.join("auth-1-x.json"), b"{}").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"keep").unwrap();
+        std::fs::create_dir_all(dir.join("nested")).unwrap();
+        repo.clean().unwrap();
+        assert!(!dir.join("auth-1-x.json").exists());
+        assert!(dir.join("notes.txt").exists());
+        assert!(dir.join("nested").is_dir());
     }
 
     #[test]

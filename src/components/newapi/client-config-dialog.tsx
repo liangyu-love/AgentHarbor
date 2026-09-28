@@ -260,11 +260,9 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
     setBusy(true);
     setError(null);
     try {
-      const prepared = await api.targets.previewConfig(profileRequest);
-      const applied = await api.targets.applyConfig(profileRequest, prepared.revision);
-      await onApplied();
-      toast({ title: t("clients.applied"), description: t(applied.warning ?? "clients.restartHint"), variant: applied.warning ? "destructive" : "success" });
-      onClose();
+      // Show the change first; the user applies it with the regular Apply button,
+      // just like a manual edit.
+      setPreview(await api.targets.previewConfig(profileRequest));
     } catch (cause) {
       setError(errorKey(cause));
     } finally { setBusy(false); }

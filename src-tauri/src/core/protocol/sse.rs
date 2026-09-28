@@ -210,7 +210,13 @@ impl StreamTranslator {
                         self.output[output_index]["call_id"] = json!(id);
                     }
                     if let Some(name) = function.get("name").and_then(Value::as_str) {
-                        if !is_new {
+                        // Some relays repeat the whole call header (same id and full
+                        // name) on every chunk; that is not a new name fragment.
+                        let repeated_header = call.get("id").and_then(Value::as_str).is_some_and(|id| {
+                            self.output[output_index]["call_id"] == id
+                                && self.output[output_index]["name"] == name
+                        });
+                        if !is_new && !repeated_header {
                             append_string(&mut self.output[output_index]["name"], name);
                         }
                     }
@@ -886,5 +892,20 @@ mod tests {
             t.completed_response().unwrap()["output"][0]["name"],
             "testtest"
         );
+    }
+
+    #[test]
+    fn repeated_tool_call_headers_do_not_duplicate_the_name() {
+        let mut t = translator(ModelProtocol::ChatCompletions);
+        for arguments in ["{\"q\":", "1}"] {
+            feed(
+                &mut t,
+                json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c","function":{"name":"lookup","arguments":arguments}}]}}]}),
+            );
+        }
+        end(&mut t, "tool_calls");
+        let response = t.completed_response().unwrap();
+        assert_eq!(response["output"][0]["name"], "lookup");
+        assert_eq!(response["output"][0]["arguments"], "{\"q\":1}");
     }
 }

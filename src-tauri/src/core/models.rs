@@ -602,17 +602,6 @@ impl<T: Serialize> CoreEnvelope<T> {
             data,
         }
     }
-
-    pub fn error(code: &str, message: &str, data: T) -> Self {
-        Self {
-            schema_version: 1,
-            success: false,
-            code: code.to_string(),
-            message: message.to_string(),
-            warnings: vec![],
-            data,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

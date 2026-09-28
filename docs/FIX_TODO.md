@@ -43,6 +43,23 @@
 - [x] P6 (H5) Anthropic：工具循环中（最近 assistant 轮含 tool_use）不开 thinking，避免缺签名 thinking block 导致 400；开 thinking 时不透传 temperature/top_p；`max_tokens` 默认 4096 → 32000。
 - [-] 未做：M5 删除 journal、D1 自动切号剩余链路（`set_auto_switch`/`configure_auto_switch`/`platform/daemon.rs` 安装逻辑）、`config-backups`/`skill-backups` 保留策略（前者被旧版配置恢复逻辑读取、后者在 UI 中可见，需要单独设计）、C1–C6 大重构。
 
+## 阶段 5：小项
+
+- [x] S1 (M8) `clean` 只删除 AgentHarbor 写入的 `auth-*.json` / `registry-*.json`，跳过其他文件与子目录。
+- [x] S2 (M9) 登录流程 `load_auth_file` 失败时也清理临时目录。
+- [x] S3 (M10) `auth.json` 损坏时账号列表、切换、删除仍可用。
+- [x] S4 (M12) 中转每个 chunk 重复发送完整工具头（同 id + 同名）时不再拼接名字；无 id 的名字分片仍按原逻辑拼接。
+- [x] S5 (M20) 加载 profile 只生成预览，由用户点"应用"确认。
+- [x] S6 (M22) Router 重启时对 `AddrInUse` 短暂重试（约 0.5s），端口被其他进程持有时仍报 `portBusy`。
+- [x] S7 (D4) 删除未使用的 `CoreEnvelope::error`。
+- [x] S8 (D6) 删除 105 个静态扫描确认未引用的 locale key（排除模板拼接前缀和复数后缀），中英文仍完全对齐。
+- [x] S9 更新 `CODEBASE_MAP.md`：删除已移除的命令，补充 `release_client_config`、备份保留、路径校验，并入 5 处勘误。
+
+### 验证（阶段 5）
+
+- `cargo test --lib --test local_workflows`：lib 344 通过 / 1 ignored，集成 9 通过。
+- `pnpm build` 通过；`pnpm test:frontend` 30 项 PASS（profile 用例已改为"先预览、再应用"）。
+
 ### 验证（阶段 4）
 
 - `cargo test --lib --test local_workflows`：lib 340 通过 / 1 ignored，集成 9 通过；`cargo check --all-targets` 无 warning。

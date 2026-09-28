@@ -1,6 +1,6 @@
 # AgentHarbor 代码结构与功能接口总览
 
-> 依据仓库当前源码整理，日期：2026-09-28。本文描述代码中实际存在的页面、接口、主要数据流与能力边界；对自动切号等未完成能力会单独标出。除静态阅读外，本次未执行构建或运行测试。
+> 依据仓库当前源码整理，日期：2026-09-28；已按 [CODE_REVIEW.md](CODE_REVIEW.md) 的勘误和随后的修复更新。本文描述代码中实际存在的页面、接口、主要数据流与能力边界；对自动切号等未完成能力会单独标出。
 
 ## 1. 项目概况
 
@@ -44,7 +44,7 @@ flowchart LR
 
 - `src/lib/api.ts` 内部 `invoke<T>` 动态载入 `@tauri-apps/api/core`。浏览器预览模式没有本地命令能力，调用时会抛出 `Command ... is only available in Tauri runtime`。
 - `src/lib/query-client.ts` 集中配置 TanStack Query；页面以 query/mutation 维护加载、缓存、刷新和写操作状态。
-- Rust `CoreEnvelope<T>` 在一部分接口中提供 `schemaVersion / success / code / message / warnings / data`。供应商、图片、客户端配置等接口也有直接返回 DTO 或字符串错误的形式，接口封装并非所有命令都采用同一种 envelope。
+- Rust `CoreEnvelope<T>` 在一部分接口中提供 `schemaVersion / success / code / message / warnings / data`。失败一律走 `Err(String)`，所以返回的 envelope 总是成功值，前端实际只读 `data` 与 `warnings`。供应商、图片、客户端配置等接口直接返回 DTO，错误是 i18n key；其余命令的错误是原始文本。
 - 前端传入的 IPC 对象使用 camelCase；Rust 参数和字段采用 snake_case，并通过 Tauri/Serde 的命名规则对应。
 
 ## 3. 页面与功能索引
@@ -53,7 +53,7 @@ flowchart LR
 | --- | --- | --- | --- | --- |
 | 概览 | `src/components/overview/overview-page.tsx` | 显示路由、供应商、MCP、Skills、自定义指令和系统状态摘要；跳转常用功能、打开路径、重启 Codex、打开代理设置 | `loadSnapshot`、`providers.loadState`、`loadMcpServers`、`loadInstalledSkills`、`loadSkillBackups`、`loadCustomInstructionState`、`getSystemInfo`、`openPath`、`targets.restart` | `commands/system.rs`、`commands/newapi.rs`、`commands/mcp.rs`、`commands/skills.rs`、`commands/custom_instructions.rs`；对应 `core/repository.rs` 等 |
 | 账号与用量 | `src/components/accounts/accounts-page.tsx`、`daily-trend-panel.tsx`、`model-usage-breakdown.tsx`、`recent-turns-panel.tsx`、`relay-usage-panel.tsx` | Codex 账号登录、列表、额度刷新、切换和删除；合并展示 Codex/Claude Code 本地日志与经过本地代理的请求用量；供应商余额 | `accounts.list/refresh/login/switch/delete`、`usage.overview`、`providers.loadState/queryBalance`、`targets.restart` | `commands/accounts.rs`、`commands/usage.rs`、`core/accounts.rs`、`core/account_monitor.rs`、`core/local_usage.rs`、`core/relay_usage.rs` |
-| 中转与客户端配置 | `src/components/newapi/newapi-page.tsx`、`provider-dialog.tsx`、`provider-model-editor.tsx`、`provider-test-dialog.tsx`、`claude-model-config.tsx`、`client-configs.tsx`、`client-config-dialog.tsx` | 管理供应商、协议和单模型协议、模型列表、测试/余额、网络出口、Codex Router/Native 接入；配置 Claude Code、OpenCode 的原生或本地路由方式 | `providers.*`、`routing.*`、`targets.configs/previewConfig/applyConfig/restoreConfig` | `commands/newapi.rs`、`commands/client_config.rs`；`core/router.rs`、`router_proxy.rs`、`routing_runtime.rs`、`protocol/`、`client_config/` |
+| 中转与客户端配置 | `src/components/newapi/newapi-page.tsx`、`provider-dialog.tsx`、`provider-model-editor.tsx`、`provider-test-dialog.tsx`、`claude-model-config.tsx`、`client-configs.tsx`、`client-config-dialog.tsx` | 管理供应商、协议和单模型协议、模型列表、测试/余额、网络出口、Codex Router/Native 接入；配置 Claude Code、OpenCode 的原生或本地路由方式 | `providers.*`、`routing.*`、`targets.configs/previewConfig/applyConfig/restoreConfig/releaseConfig` | `commands/newapi.rs`、`commands/client_config.rs`；`core/router.rs`、`router_proxy.rs`、`routing_runtime.rs`、`protocol/`、`client_config/` |
 | 图片工作台 | `src/components/image-workbench/image-workbench-page.tsx`、`src/lib/image-prompts.ts` | 选择供应商与模型、生成/编辑图片、管理任务画布、本地图库、选择图库目录、查看/另存/删除成图 | `image.generate/keyStatus/saveKey/saveFile/saveToGallery/setGalleryDirectory/listGallery/loadGalleryImage/loadGalleryThumbnail/deleteGalleryImage` | `commands/image.rs`；凭据经 `core/secret_file.rs` 存储，图片目录配置和成图写入本地磁盘 |
 | 会话归档 | `src/components/threads/threads-page.tsx`、`thread-card.tsx`、`thread-group-header.tsx`、`virtual-thread-list.tsx`、`thread-recovery-dialog.tsx` | 扫描 Codex 会话、搜索筛选与分组、导出 Markdown/JSONL、删除会话、取消/恢复待处理删除、修复会话目录/索引状态 | `conversations.list/export/delete/cancelPendingDeletions/previewRecovery/applyRecovery` | `commands/threads.rs`、`commands/thread_recovery.rs`；`core/threads.rs`、`thread_delete.rs`、`thread_recovery.rs` |
 | MCP 管理 | `src/components/mcp/mcp-page.tsx` | 读取、添加/编辑、启用/停用、删除 MCP server，并定位源配置 | `loadMcpServers/upsertMcpServer/setMcpServerEnabled/removeMcpServer/openPath` | `commands/mcp.rs`、`core/mcp.rs`；读写 Codex `config.toml` |
@@ -80,7 +80,7 @@ IPC 命令必须同时在 Rust 命令文件中实现，并通过 `src-tauri/src/
 | `switch_codex_account` | `accountKey` | 切换当前账号 | `commands/accounts.rs` → `core/accounts.rs` |
 | `delete_codex_account` | `accountKey` | 删除已保存账号 | `commands/accounts.rs` → `core/accounts.rs` |
 | `get_token_usage` | 无 | Codex/Claude Code 本地用量与本地路由用量的组合 DTO | `commands/usage.rs` → `core/local_usage.rs`、`core/relay_usage.rs` |
-| `restart_target` | `targetId` | 重启支持的平台目标；当前仅 Codex 有进程控制器 | `commands/targets.rs` → `core/targets.rs`、`platform/process.rs` |
+| `restart_target` | `targetId` | 重启支持的平台目标；当前仅 Codex 有进程控制器。异步执行，不在重启期间持有 repo 锁 | `commands/targets.rs` → `core/targets.rs`、`platform/process.rs` |
 
 ### 4.2 供应商、路由和客户端配置
 
@@ -102,6 +102,7 @@ IPC 命令必须同时在 Rust 命令文件中实现，并通过 `src-tauri/src/
 | `preview_client_config` | `request` | 生成脱敏预览与 revision | 同上 |
 | `apply_client_config` | `request`, `revision` | 检查预览版本后应用配置 | 同上、`core/routing_runtime.rs` |
 | `restore_client_config` | `targetId` | 撤回 AgentHarbor 管理的客户端字段 | 同上 |
+| `release_client_config` | `targetId` | 放弃接管：只删除管理记录，不改配置文件；用于 conflict 或管理记录损坏 | 同上 |
 
 供应商协议枚举定义在 `src/types/newapi.ts` / `core/router.rs`：`responses`、`chatCompletions`、`anthropicMessages`。Claude Code/OpenCode 的请求与持久化模型定义在 `src/types/clients.ts` 与 `core/client_config/options.rs`。协议转换实现位于 `core/protocol/`。配置行为和注意事项另见 [client-configuration.md](client-configuration.md)。
 
@@ -112,12 +113,12 @@ IPC 命令必须同时在 Rust 命令文件中实现，并通过 `src-tauri/src/
 | `generate_images` | `request` | 调供应商图片接口生成/编辑图片 | `commands/image.rs` |
 | `image_key_status` | `baseUrl` | 检查该供应商地址是否有已保存图片凭据 | 同上 |
 | `save_image_key` | `baseUrl`, `apiKey` | 保存图片工作台凭据 | 同上、`core/secret_file.rs` |
-| `save_image_file` | `path`, `dataUrl` | 将当前结果保存为本地文件 | `commands/image.rs` |
+| `save_image_file` | `path`, `dataUrl` | 将当前结果保存为本地文件；要求绝对路径且内容为图片 | `commands/image.rs` |
 | `save_images_to_gallery` | `dataUrls` | 批量存入应用图库 | 同上 |
 | `set_gallery_directory` | `directory` | 设置并持久化图库目录 | 同上 |
-| `list_gallery_images` | 无 | 列出图库图片及分页/数量信息 | 同上 |
+| `list_gallery_images` | 无 | 列出图库图片，按修改时间截取前 200 张并返回 `hasMore`；没有分页参数 | 同上 |
 | `load_gallery_image` / `load_gallery_thumbnail` | `path` | 读取原图或缩略图供 WebView 展示 | 同上 |
-| `delete_gallery_image` | `path` | 删除图库中的一张图片 | 同上 |
+| `delete_gallery_image` | `path` | 删除图库中的一张图片；只允许图片扩展名 | 同上 |
 
 图片请求结构为 `ImageGenerationRequest`（`providerId/baseUrl/apiKey/model/prompt/size/quality/count/imageData`），TS 类型在 `src/lib/api.ts`，Rust 类型在 `commands/image.rs`。默认图库为应用数据目录下的 `image-gallery`；自定义目录记录在 `image-gallery-directory.json`。图片凭据写入 `image-workbench-key.dat`。图库读取和删除会验证目标路径属于图库目录。
 
@@ -127,7 +128,6 @@ IPC 命令必须同时在 Rust 命令文件中实现，并通过 `src-tauri/src/
 | --- | --- | --- | --- |
 | `list_conversations` | `targetId` | 列出会话并处理待删除队列；当前仅 `codex` 有会话源 | `commands/threads.rs` → `core/threads.rs`、`core/thread_delete.rs` |
 | `export_conversations` | `targetId`, `keys`, `targetDir`, `format` | 导出所选会话为 Markdown/JSONL | 同上 |
-| `list_codex_threads` / `export_codex_threads` | 与对应通用接口相同，但目标固定为 Codex | 兼容命令；当前前端 facade 通过 `list_conversations` / `export_conversations` 传 `targetId: "codex"` | `commands/threads.rs` |
 | `delete_conversations` | `targetId`, `keys` | 删除所选会话并登记删除/恢复状态 | 同上、`core/thread_delete.rs` |
 | `cancel_pending_conversation_deletions` | `targetId` | 取消尚待处理的删除任务 | 同上 |
 | `preview_codex_thread_recovery` | `threadId` | 生成会话恢复预览与 revision | `commands/thread_recovery.rs` → `core/thread_recovery/` |
@@ -148,7 +148,7 @@ IPC 命令必须同时在 Rust 命令文件中实现，并通过 `src-tauri/src/
 
 | 命令 | 参数 | 用途/说明 | 实现 |
 | --- | --- | --- | --- |
-| `clean` | 无 | 清理冗余账号备份及过期 registry 项；不是会话删除 | `commands/system.rs` → `core/repository.rs` |
+| `clean` | 无 | 清理 AgentHarbor 写入的账号备份（`auth-*.json`、`registry-*.json`）及过期 registry 项；不动目录里的其他文件，不是会话删除 | `commands/system.rs` → `core/repository.rs` |
 | `rebuild_registry` | 无 | 从现有认证数据重建账号 registry | 同上 |
 | `set_api_proxy_config` | `mode`, `url?` | 保存系统/直连/手动代理配置，并更新运行中 Router 的出口 | 同上、`core/api_client.rs`、`core/router_proxy.rs` |
 | `test_api_proxy_config` / `detect_api_proxy_config` | `mode`, `url?` / 无 | 测试指定代理或探测代理配置 | 同上、`core/api_client.rs` |
@@ -156,22 +156,18 @@ IPC 命令必须同时在 Rust 命令文件中实现，并通过 `src-tauri/src/
 | `diagnose` | 无 | 输出系统、registry、会话和请求诊断摘要 | 同上 |
 | `set_auto_switch` | `enabled` | 目前只允许关闭；请求启用会返回“Automatic account switching is not available in this source build” | 同上 |
 | `configure_auto_switch` | `threshold5hPercent?`, `thresholdWeeklyPercent?` | 保存阈值字段，不会启动自动切号 | 同上 |
-| `run_daemon_once` | 无 | 当前为不可用占位实现，直接返回上述自动切号错误 | `commands/system.rs` |
-| `load_bootstrap_state` | 无 | 返回启动缓存状态；已注册，但前端当前 API facade 没有对应方法 | `commands/system.rs` → `core/bootstrap_cache.rs` |
-| `open_path` | `path` | 用系统文件管理器打开路径 | `commands/system.rs` → `platform/` |
+| `open_path` | `path` | 用系统文件管理器打开路径；要求存在的绝对路径，拒绝可执行文件扩展名 | `commands/system.rs` → `platform/` |
 | `is_updater_configured` | 无 | 检查 Tauri updater 是否配置了公钥与 endpoint | `commands/system.rs` |
 | `check_update_installability` | 无 | 检查应用安装位置是否可更新 | 同上、`platform/update.rs` |
-| `graceful_restart_for_update` | 无 | 更新前准备并重启应用 | 同上 |
-| `focus_main_window` | 无 | 聚焦/显示主窗口 | `commands/hotspot.rs` |
-| `restart_codex` | 无 | 重启 Codex 的兼容命令 | `commands/system.rs`；当前 UI/API 主要使用 `restart_target` |
+| `graceful_restart_for_update` | 无 | 更新前准备并重启应用；由 `use-update-check.ts` 直接 invoke | 同上 |
 
-**两个接口约定需要留意：** `api.loadSnapshot(localOnly)` 会传 `localOnly`，当前 Rust `load_snapshot` 命令没有读取该参数，因而该参数目前不形成不同的数据读取模式；`run_daemon_once` 虽然在前端 facade 中有包装且已注册，实际仍是明确返回不可用错误的占位命令。
+**接口约定需要留意：** `api.loadSnapshot(localOnly)` 会传 `localOnly`，当前 Rust `load_snapshot` 命令没有读取该参数，因而该参数目前不形成不同的数据读取模式。`focus_main_window` 只供托盘菜单在 Rust 内部调用，不是 IPC 命令。
 
-`get_usage_refresh_interval` 和 `set_usage_refresh_interval` 已注册且在 TS facade 暴露，但当前设置页的自动刷新选择使用 `src/hooks/use-auto-refresh.ts` 写入 `localStorage`，并由账号页将刷新间隔传给查询；该页面没有调用这两个 Rust 命令。排查刷新间隔行为时应先沿前端 hook 查找，而不要误将两个同名概念视作一个设置链路。
+刷新间隔：设置页通过 `src/hooks/use-auto-refresh.ts` 调用 `get/set_usage_refresh_interval`，`localStorage` 只是本地缓存和回显；间隔作用于账号页的查询。后端保存该值，但没有后台调度读取它。
 
 ## 5. 本地路由 HTTP 接口
 
-`core/router_proxy.rs` 在本机回环地址上启动 HTTP 服务，默认端口为 `core/router.rs` 定义的 `DEFAULT_PORT = 43127`。当前没有 UI 或 IPC 接口用于修改该端口；和供应商状态一起保存在 `newapi-providers.dat` 中的 `RouterSettings.port` 是内部状态，Router 生命周期协调器读取它并传给监听器，前端只展示代理地址/状态。旧端口 `25817` 会迁移到 `43127`；端口被占用时启动失败并返回端口占用错误，不会自动改用其他端口。它是 Codex/客户端兼容入口，不是供远程访问的云服务。Router 仅绑定 `127.0.0.1`。
+`core/router_proxy.rs` 在本机回环地址上启动 HTTP 服务，默认端口为 `core/router.rs` 定义的 `DEFAULT_PORT = 43127`。当前没有 UI 或 IPC 接口用于修改该端口；和供应商状态一起保存在 `newapi-providers.dat` 中的 `RouterSettings.port` 是内部状态，Router 生命周期协调器读取它并传给监听器，前端只展示代理地址/状态。旧端口 `25817` 会迁移到 `43127`，迁移时会轮换 token 并关闭 Codex 路由，老用户需要手动重新启用。端口被占用时（重启时会短暂等待自身释放）启动失败并返回端口占用错误，不会自动改用其他端口。它是 Codex/客户端兼容入口，不是供远程访问的云服务。Router 仅绑定 `127.0.0.1`。
 
 | 路径族 | 典型路径 | 用途 |
 | --- | --- | --- |
@@ -180,7 +176,7 @@ IPC 命令必须同时在 Rust 命令文件中实现，并通过 `src-tauri/src/
 | 供应商定向入口 | `/p/{providerId}/v1/models`、`/p/{providerId}/v1/responses`、`/p/{providerId}/v1/chat/completions`、`/p/{providerId}/v1/messages` | 为 Claude Code/OpenCode 指定上游供应商，按供应商启用协议转换和鉴权 |
 | 通用兼容入口 | `/v1/models`、`/v1/responses`、`/v1/chat/completions`、`/v1/messages` | 按请求模型/路由选择转发；实际可用模型受已启用供应商和模型协议约束 |
 
-表中列出的是主要路径族。健康检查不要求 bearer token；其余请求先校验本地 token。携带有效 token 的未匹配路径返回 `404 unsupported path`；缺少或无效 token 则返回 `401`。
+表中列出的是主要路径族。健康检查不要求 bearer token；其余请求先校验本地 token，缺少或无效 token 返回 `401`。含 `.`/`..`（包括 `%2e` 编码）或编码分隔符的路径直接返回 `400`。三个前缀（`/v1`、`/p/{id}/v1`、`/codex/v1`）下的任意子路径和任意 method 都会转发到上游，只有前缀之外的路径返回 `404 unsupported path`。上游请求有 300s 读空闲超时。
 
 支持的协议转换核心在 `core/protocol/`：Responses、Chat Completions、Anthropic Messages 的请求、响应和 SSE 流式响应转换。上游原生协议可直通；转换不等于所有供应商特性的完全兼容，受各协议交集限制。`[1M]` Claude 模型标记在本地路由层处理：转发前剥除标记，并在适用请求上补充 Anthropic beta header。客户端具体行为见 [client-configuration.md](client-configuration.md)。
 
@@ -226,11 +222,12 @@ IPC 命令必须同时在 Rust 命令文件中实现，并通过 `src-tauri/src/
 | Codex 核心文件 | `auth.json`、`config.toml`、`state_5.sqlite`、`sessions/`、`archived_sessions/`、`skills/`、`AGENTS.md` 均位于 Codex 主目录 | `platform/paths.rs`、`core/targets.rs` |
 | 账号索引与备份 | 应用数据 `accounts/registry.json`、`snapshots/`、`backups/`、`registry-backups/` | `platform/paths.rs`、`core/repository.rs` |
 | 供应商和密钥 | 应用数据 `newapi-providers.dat`；旧版本凭据迁移逻辑在 `core/router.rs` | `core/router.rs`、`core/secret_file.rs` |
-| 设置/诊断/缓存 | `settings.json`、`bootstrap-cache.json`、`thread-summary-cache.sqlite3` | `core/repository.rs`、`core/threads.rs` |
+| 设置/诊断/缓存 | `settings.json`、`thread-summary-cache.sqlite3` | `core/repository.rs`、`core/threads.rs` |
 | 本地用量 ledger | `token-usage-ledger.sqlite3`；从 Codex `sessions/`、`archived_sessions/` 与 Claude Code `projects/` 增量扫描 | `core/local_usage.rs`、`commands/usage.rs` |
 | Router 用量账本 | `relay-usage.jsonl` | `core/relay_usage.rs` |
 | 图片工作台 | 凭据 `image-workbench-key.dat`；图库默认 `image-gallery/`；目录覆写记录 `image-gallery-directory.json` | `commands/image.rs` |
-| 客户端配置恢复 | 应用数据 `client-config/` 下会话/恢复记录和备份 | `core/client_config/mod.rs` |
+| 客户端配置恢复 | 应用数据 `client-config/` 下会话/恢复记录和备份（`backups/` 保留最近 20 份） | `core/client_config/mod.rs` |
+| 备份保留 | `accounts/backups/auth-*.json` 保留最近 20 份；Codex 主目录下 `thread-delete-backups/` 保留最近 10 份；`config-backups/`、`skill-backups/` 暂不自动清理 | `core/storage.rs` `prune_backups` |
 | MCP/Skills/指令历史 | Codex `config.toml`、`skills/`、`AGENTS.md`；Skills 备份位于应用数据 `skill-backups/`，指令历史位于 `custom-instructions/history/` | `core/mcp.rs`、`core/skills.rs`、`core/custom_instructions.rs` |
 | 浏览器偏好 | `localStorage`：主题、强调色、语言、刷新间隔、侧栏状态、头像/背景、图片工作台偏好与收藏提示词、会话视图、Claude Code 已保存方案、中转分组别名 | `src/hooks/`、相关页面组件 |
 
@@ -251,7 +248,7 @@ Windows 的 `secret_file` 使用 DPAPI；Unix 写入受限权限的原子文件�
 
 ## 9. 能力边界与阅读提示
 
-1. **自动切号尚不可用。** 账号登录、额度读取、手动切换/删除已存在；但 `AutoSwitchStatusPayload.supported` 当前固定为 `false`，启用 `set_auto_switch(true)` 会报错，`run_daemon_once` 也为错误占位。阈值配置只能保存，不能据此判断自动切号已经工作。
+1. **自动切号尚不可用。** 账号登录、额度读取、手动切换/删除已存在；但 `AutoSwitchStatusPayload.supported` 当前固定为 `false`，启用 `set_auto_switch(true)` 会报错。阈值配置只能保存，不能据此判断自动切号已经工作。
 2. **客户端功能按目标拆分。** Codex 有账号、会话、MCP、Skills、指令及重启控制。Claude Code/OpenCode 有供应商注入、字段恢复；Claude Code 本地日志参与用量扫描，但未实现 Codex 等价的会话/MCP/Skills 操作。
 3. **Router 与原生直连不同。** Codex Router 支持代理与多供应商路由，需要进程保持运行；Codex Native 直接使用选定 Responses 供应商配置。Claude Code/OpenCode 可选择 Native 或 Router，Router 模式需要服务在线。修改细节见 [client-configuration.md](client-configuration.md)。
 4. **更新检查依赖发布配置。** `tauri.conf.json` 当前 `plugins` 配置为空；Updater 只有在公钥和 endpoint 配齐时才会启用。

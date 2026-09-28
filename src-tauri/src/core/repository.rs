@@ -186,23 +186,13 @@ impl Repository {
         let mut auth_backups_removed = 0i32;
         let mut registry_backups_removed = 0i32;
 
-        if self.paths.auth_backups_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&self.paths.auth_backups_dir) {
-                for entry in entries.flatten() {
-                    std::fs::remove_file(entry.path())?;
-                    auth_backups_removed += 1;
-                }
-            }
-        }
-
-        if self.paths.registry_backups_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&self.paths.registry_backups_dir) {
-                for entry in entries.flatten() {
-                    std::fs::remove_file(entry.path())?;
-                    registry_backups_removed += 1;
-                }
-            }
-        }
+        // Only remove files AgentHarbor itself wrote; anything else in these
+        // directories (including subdirectories) is left alone.
+        auth_backups_removed += remove_owned_files(&self.paths.auth_backups_dir, |name| {
+            name.starts_with("auth-") && name.ends_with(".json")
+        })?;
+        registry_backups_removed +=
+            remove_owned_files(&self.paths.registry_backups_dir, is_registry_backup_name)?;
 
         if !registry
             .items
@@ -696,6 +686,22 @@ impl Repository {
 // Registry helpers
 // ---------------------------------------------------------------------------
 
+fn remove_owned_files(dir: &Path, owned: impl Fn(&str) -> bool) -> Result<i32, CoreError> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Ok(0);
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let is_file = entry.file_type().is_ok_and(|kind| kind.is_file());
+        let name = entry.file_name();
+        if is_file && name.to_str().is_some_and(&owned) {
+            std::fs::remove_file(entry.path())?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 fn is_registry_backup_name(name: &str) -> bool {
     let Some(stem) = name
         .strip_prefix("registry-")
@@ -951,14 +957,22 @@ mod tests {
         };
         repo.persist_registry(&registry, false).unwrap();
         fs::write(
-            repo.paths.registry_backups_dir.join("old-backup.json"),
+            repo.paths.registry_backups_dir.join(format!(
+                "registry-1700000000-{}.json",
+                uuid::Uuid::new_v4()
+            )),
             "{}",
         )
         .unwrap();
+        fs::write(repo.paths.registry_backups_dir.join("user-notes.json"), "{}").unwrap();
 
         let result = repo.clean().unwrap();
         assert_eq!(result.data.registry_backups_removed, 1);
-        assert_eq!(count_files(&repo.paths.registry_backups_dir), 0);
+        assert_eq!(
+            count_files(&repo.paths.registry_backups_dir),
+            1,
+            "files AgentHarbor did not write are kept"
+        );
 
         let _ = fs::remove_dir_all(codex_home);
     }

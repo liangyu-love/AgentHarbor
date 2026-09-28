@@ -64,6 +64,26 @@ pub fn stop() {
     }
 }
 
+/// `stop()` only signals the accept loop, which drops its listener a moment later.
+/// Retry briefly so an immediate restart on the same port is not reported as busy;
+/// a port held by another process still fails once the window passes.
+async fn bind_localhost(port: u16) -> Result<tokio::net::TcpListener, String> {
+    const ATTEMPTS: u32 = 20;
+    for attempt in 1..=ATTEMPTS {
+        match tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await {
+            Ok(listener) => return Ok(listener),
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                if attempt == ATTEMPTS || port == 0 {
+                    return Err("newapi.errors.portBusy".to_owned());
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Err(_) => return Err("newapi.errors.network".to_owned()),
+        }
+    }
+    unreachable!("the loop returns on its last attempt")
+}
+
 /// Replace the global outbound client used by an already-running router.
 /// Provider routes configured as `direct` keep using their dedicated direct client.
 pub fn update_proxy(proxy: &ApiProxyConfigPayload) -> Result<(), String> {
@@ -101,15 +121,7 @@ pub async fn ensure_running(
         }
     }
     stop();
-    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
-        .await
-        .map_err(|e| -> String {
-            if e.kind() == std::io::ErrorKind::AddrInUse {
-                "newapi.errors.portBusy".to_owned()
-            } else {
-                "newapi.errors.network".to_owned()
-            }
-        })?;
+    let listener = bind_localhost(port).await?;
     let bound_port = listener
         .local_addr()
         .map_err(|_| "newapi.errors.network".to_owned())?
@@ -1101,6 +1113,25 @@ mod tests {
     use crate::core::router::{Provider, ProviderInput, RouterSettings, Store};
     use crate::platform::paths::CodexPaths;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn bind_waits_for_a_released_port_but_reports_a_held_one() {
+        tauri::async_runtime::block_on(async {
+            let held = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                .await
+                .unwrap();
+            let port = held.local_addr().unwrap().port();
+            assert_eq!(bind_localhost(port).await.unwrap_err(), "newapi.errors.portBusy");
+
+            let release = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(60)).await;
+                drop(held);
+            });
+            let rebound = bind_localhost(port).await.unwrap();
+            assert_eq!(rebound.local_addr().unwrap().port(), port);
+            release.await.unwrap();
+        });
+    }
 
     #[test]
     fn dot_and_encoded_separator_segments_are_rejected() {

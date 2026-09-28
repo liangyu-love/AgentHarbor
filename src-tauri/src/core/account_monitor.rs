@@ -170,7 +170,11 @@ pub async fn login(
         let _ = std::fs::remove_dir_all(&home_path);
         return Err("Codex 官方登录未完成，请在浏览器中完成授权后重试。".to_string());
     }
-    load_auth_file(&auth_path).map_err(|error| error.to_string())?;
+    if let Err(error) = load_auth_file(&auth_path) {
+        // The temporary home can hold partial credentials; never leave it behind.
+        let _ = std::fs::remove_dir_all(&home_path);
+        return Err(error.to_string());
+    }
     Ok(LoginArtifact {
         home_path,
         auth_path,
