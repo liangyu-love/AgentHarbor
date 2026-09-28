@@ -76,6 +76,26 @@ const PAGES = [
     await page.getByRole("button", { name: "重启 Codex Desktop" }).click();
     await page.getByRole("alertdialog").waitFor();
   } },
+  { name: "threads-grid", mode: "thread-actions", async act(page) {
+    await page.getByTitle("网格视图").click();
+  } },
+  { name: "threads-selected", mode: "thread-actions", async act(page) {
+    await page.getByRole("button", { name: "全选当前" }).click();
+  } },
+  { name: "threads-group-selected", mode: "thread-actions", async act(page) {
+    await page.getByRole("button", { name: "全选本工程" }).click();
+  } },
+  { name: "threads-collapsed", mode: "thread-actions", async act(page) {
+    await page.getByRole("button", { name: "收起全部" }).click();
+  } },
+  { name: "threads-search-empty", mode: "thread-actions", async act(page) {
+    await page.getByPlaceholder("搜索标题、工程、会话 ID、提供商或模型…").fill("no-such-thread");
+  } },
+  { name: "threads-sort-menu", mode: "thread-actions", async act(page) {
+    await page.getByRole("button", { name: "最近活跃" }).click();
+    await page.getByRole("menu").waitFor();
+  } },
+  { name: "thread-queue-recovery", mode: "thread-queue-recovery" },
   ...["groups", "access", "warnings", "thread-actions", "mcp", "accounts", "usage", "overview"]
     .map(mode => ({ name: mode, mode })),
 ];
@@ -100,6 +120,8 @@ const server = http.createServer((request, response) => {
     response.setHeader("Content-Type", "text/html");
     response.end('<!doctype html><html><head><style>' + css
       + '*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}'
+      // backdrop-filter rasterizes nondeterministically under overlays; it is not what refactors change.
+      + '*,*::before,*::after{backdrop-filter:none!important}'
       + '</style></head><body style="margin:0;overflow:hidden"><div id="root"></div><script src="/fixture.js"></script></body></html>');
   }
 });
@@ -107,7 +129,9 @@ await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
 const address = "http://127.0.0.1:" + server.address().port;
 await mkdir(mode === "capture" ? baselineDir : currentDir, { recursive: true });
 
-const browser = await playwright.chromium.launch({ headless: true, channel: "chromium" });
+const browser = await playwright.chromium.launch({ headless: true, channel: "chromium",
+  // Tiled GPU raster occasionally shifts single pixels under overlays; keep raster deterministic.
+  args: ["--disable-gpu", "--disable-partial-raster", "--force-color-profile=srgb"] });
 const failures = [];
 try {
   for (const theme of THEMES) {
@@ -126,9 +150,13 @@ try {
     });
     const page = await context.newPage();
     await page.route("**/*", route => route.request().url().startsWith(address + "/") ? route.continue() : route.abort());
-    for (const { name, mode: fixtureMode, act } of PAGES) {
+    // SNAPSHOT_ONLY=name1,name2 limits a run to a few states when chasing a flaky one.
+    const only = process.env.SNAPSHOT_ONLY?.split(",");
+    for (const { name, mode: fixtureMode, act } of PAGES.filter(state => !only || only.includes(state.name))) {
       await page.goto(address);
       await page.waitForFunction(() => Boolean(window.review));
+      // States must not leak persisted UI choices (view mode, saved config) into each other.
+      await page.evaluate(() => localStorage.clear());
       await page.evaluate(value => {
         document.documentElement.classList.toggle("dark", value === "dark");
       }, theme);
@@ -163,13 +191,18 @@ try {
           context.clearRect(0, 0, left.width, left.height);
           context.drawImage(right, 0, 0); const y = context.getImageData(0, 0, left.width, left.height).data;
           let pixels = 0;
+          const box = [Infinity, Infinity, -1, -1];
           for (let i = 0; i < x.length; i += 4) {
-            if (x[i] !== y[i] || x[i + 1] !== y[i + 1] || x[i + 2] !== y[i + 2] || x[i + 3] !== y[i + 3]) pixels += 1;
+            if (x[i] !== y[i] || x[i + 1] !== y[i + 1] || x[i + 2] !== y[i + 2] || x[i + 3] !== y[i + 3]) {
+              pixels += 1;
+              const px = (i / 4) % left.width, py = Math.floor(i / 4 / left.width);
+              box[0] = Math.min(box[0], px); box[1] = Math.min(box[1], py); box[2] = Math.max(box[2], px); box[3] = Math.max(box[3], py);
+            }
           }
-          return { size: false, pixels };
+          return { size: false, pixels, box };
         }, ["data:image/png;base64," + baseline.toString("base64"), "data:image/png;base64," + shot.toString("base64")]);
         if (diff.size || diff.pixels > 0) {
-          failures.push(`${file}: ${diff.size ? "size differs" : diff.pixels + " pixels differ"}`);
+          failures.push(`${file}: ${diff.size ? "size differs" : `${diff.pixels} pixels differ in ${diff.box.join(",")}`}`);
           continue;
         }
       }
