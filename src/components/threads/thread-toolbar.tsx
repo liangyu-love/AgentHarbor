@@ -91,6 +91,7 @@ export function ThreadToolbar({ list }: { list: ThreadList }) {
             size="icon-sm"
             className="h-7 w-7 rounded-md"
             title={t("threads.viewGrid")}
+            aria-label={t("threads.viewGrid")}
             onClick={() => setViewMode("grid")}
           >
             <LayoutGrid className="h-3.5 w-3.5" />
@@ -100,6 +101,7 @@ export function ThreadToolbar({ list }: { list: ThreadList }) {
             size="icon-sm"
             className="h-7 w-7 rounded-md"
             title={t("threads.viewCompact")}
+            aria-label={t("threads.viewCompact")}
             onClick={() => setViewMode("compact")}
           >
             <List className="h-3.5 w-3.5" />

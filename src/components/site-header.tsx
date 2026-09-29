@@ -105,6 +105,7 @@ export function SiteHeader({
             className="h-8 w-8 text-muted-foreground hover:text-foreground"
             onClick={handleOpenCodexHome}
             title="打开 .codex 根目录"
+            aria-label="打开 .codex 根目录"
           >
             <FolderOpen className="h-4 w-4" />
           </Button>
@@ -117,6 +118,7 @@ export function SiteHeader({
             className="h-8 w-8 text-muted-foreground hover:text-foreground active:scale-95 transition-transform"
             onClick={onThemeToggle}
             title={isDarkMode ? "切换为浅色模式" : "切换为深色模式"}
+            aria-label={isDarkMode ? "切换为浅色模式" : "切换为深色模式"}
           >
             {isDarkMode ? (
               <Sun className="h-4 w-4 transition-transform duration-300 rotate-0 hover:rotate-45" />

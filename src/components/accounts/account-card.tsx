@@ -345,6 +345,7 @@ export function AccountCard({
             onClick={onRefresh}
             disabled={refreshing}
             title="刷新该账号额度"
+            aria-label="刷新该账号额度"
           >
             <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin text-primary")} />
           </Button>
@@ -355,6 +356,7 @@ export function AccountCard({
             className="h-7 w-7 rounded-xl text-muted-foreground hover:bg-background hover:text-foreground hover:shadow-xs transition-all"
             onClick={handleCopy}
             title="复制账号名称"
+            aria-label="复制账号名称"
           >
             {copied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
           </Button>
@@ -366,6 +368,7 @@ export function AccountCard({
             onClick={onDelete}
             disabled={account.isActive}
             title={account.isActive ? t("accounts.activeDeleteBlocked") : t("accounts.remove")}
+            aria-label={account.isActive ? t("accounts.activeDeleteBlocked") : t("accounts.remove")}
           >
             <Trash2 className="h-3.5 w-3.5" />
           </Button>

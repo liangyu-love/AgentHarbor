@@ -244,6 +244,7 @@ export function GenerationForm({
                   variant="ghost"
                   className="h-8 w-8 text-muted-foreground hover:text-destructive"
                   onClick={() => setImageData(null)}
+                  aria-label="移除画稿"
                 >
                   <X className="h-4 w-4" />
                 </Button>

@@ -59,6 +59,7 @@ export function McpStats({ mcp }: { mcp: McpServers }) {
                 size="icon-sm"
                 className="h-6 w-6 text-muted-foreground hover:text-foreground"
                 title={t("mcp.openFolder")}
+                aria-label={t("mcp.openFolder")}
                 onClick={handleOpenConfigFolder}
               >
                 <FolderOpen className="h-3.5 w-3.5" />
@@ -68,6 +69,7 @@ export function McpStats({ mcp }: { mcp: McpServers }) {
                 size="icon-sm"
                 className="h-6 w-6 text-muted-foreground hover:text-foreground"
                 title={t("mcp.copyCommand")}
+                aria-label={t("mcp.copyCommand")}
                 onClick={copyPath}
               >
                 <Copy className="h-3.5 w-3.5" />

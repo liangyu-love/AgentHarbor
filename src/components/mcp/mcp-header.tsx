@@ -30,6 +30,7 @@ export function McpHeader({ mcp }: { mcp: McpServers }) {
           disabled={refreshBusy}
           aria-busy={refreshBusy}
           title={refreshBusy ? t("common.refreshing") : t("common.refresh")}
+          aria-label={refreshBusy ? t("common.refreshing") : t("common.refresh")}
         >
           <ButtonBusyContent
             busy={refreshBusy}

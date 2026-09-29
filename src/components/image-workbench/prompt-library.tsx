@@ -241,6 +241,7 @@ export function PromptLibrary({ prompt, onPromptChange }: {
                         variant="ghost"
                         className="h-7 w-7 text-muted-foreground hover:text-[#b83b38] dark:hover:text-[#fca5a5]"
                         title={filled ? "已填入" : "填入画题"}
+                        aria-label={filled ? "已填入" : "填入画题"}
                         onClick={() => applyPromptRecipe(recipe)}
                       >
                         {filled ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Feather className="h-3.5 w-3.5" />}
@@ -251,6 +252,7 @@ export function PromptLibrary({ prompt, onPromptChange }: {
                         variant="ghost"
                         className="h-7 w-7 text-muted-foreground hover:text-foreground"
                         title="复制提示词"
+                        aria-label="复制提示词"
                         onClick={() => void copyPromptRecipe(recipe)}
                       >
                         {copiedPrompt === recipe.prompt ? (

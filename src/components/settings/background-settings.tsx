@@ -118,6 +118,7 @@ export function BackgroundSettings() {
                       variant="ghost"
                       className="h-7 w-7 rounded-lg bg-background/80 hover:bg-destructive/15 hover:text-destructive backdrop-blur-md ring-1 ring-border/50"
                       title={t("settings.bgClear")}
+                      aria-label={t("settings.bgClear")}
                       onClick={() => void clearCustomImage()}
                     >
                       <Trash2 className="h-3.5 w-3.5" />

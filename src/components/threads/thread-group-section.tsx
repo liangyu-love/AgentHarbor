@@ -140,6 +140,7 @@ export function ThreadGroupSection({ group, list }: { group: FolderGroup; list: 
                   size="icon-sm"
                   className="h-7 w-7 text-muted-foreground hover:bg-primary/10 hover:text-primary"
                   onClick={() => void handleOpenPath(group.cwd)}
+                  aria-label={t("threads.openFolder")}
                 >
                   <FolderOpen className="h-3.5 w-3.5" />
                 </Button>

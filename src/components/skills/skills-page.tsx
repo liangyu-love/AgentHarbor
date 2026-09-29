@@ -217,6 +217,7 @@ export function SkillsPage() {
             disabled={refreshBusy}
             aria-busy={refreshBusy}
             title={refreshBusy ? t("common.refreshing") : t("common.refresh")}
+            aria-label={refreshBusy ? t("common.refreshing") : t("common.refresh")}
           >
             <ButtonBusyContent
               busy={refreshBusy}
@@ -270,6 +271,7 @@ export function SkillsPage() {
                   size="icon-sm"
                   className="h-6 w-6 text-muted-foreground hover:text-foreground"
                   title={t("skills.openFolder")}
+                  aria-label={t("skills.openFolder")}
                   onClick={() => handleOpenFolder(currentRootPath)}
                 >
                   <FolderOpen className="h-3.5 w-3.5" />
@@ -279,6 +281,7 @@ export function SkillsPage() {
                   size="icon-sm"
                   className="h-6 w-6 text-muted-foreground hover:text-foreground"
                   title={t("skills.pathCopied")}
+                  aria-label={t("skills.pathCopied")}
                   onClick={() => copyPath(currentRootPath)}
                 >
                   <Copy className="h-3.5 w-3.5" />

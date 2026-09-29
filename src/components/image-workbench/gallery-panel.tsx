@@ -130,6 +130,7 @@ export function GalleryPanel({ gallery }: { gallery: ImageGallery }) {
                     variant="secondary"
                     className="h-7 w-7 bg-black/55 text-white hover:bg-black/75"
                     title={t("image.saveAs")}
+                    aria-label={t("image.saveAs")}
                     onClick={() => void gallery.saveGalleryImageAs(item, index)}
                   >
                     <Download className="h-3.5 w-3.5" />
@@ -140,6 +141,7 @@ export function GalleryPanel({ gallery }: { gallery: ImageGallery }) {
                     variant="secondary"
                     className="h-7 w-7 bg-black/55 text-white hover:bg-destructive"
                     title={t("image.galleryDelete")}
+                    aria-label={t("image.galleryDelete")}
                     onClick={() => gallery.setPendingDelete(item)}
                   >
                     <Trash2 className="h-3.5 w-3.5" />

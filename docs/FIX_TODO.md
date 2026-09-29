@@ -159,8 +159,8 @@
 
 - [x] U1 错误显示统一走 `formatInvokeError` / `errorMessage`，去掉剩余 `String(err)`（维护页、Skills、命令面板、site-header、MCP、自定义背景、更新检查，及账号/会话/中转/Skills 加载失败），`site-header` 只换 description（标题文案随 i18n 暂缓）。构建、回归 32 项、76 张快照一致。
 - [x] U2 3 处 `window.confirm`（删除会话、全部修复、删除客户端配置）改为应用内 `AlertDialog`：新增通用 `ui/confirm-dialog`，handler 拆为“请求确认 / 执行”。回归改为点击应用内确认按钮，并把出现原生弹窗视为错误。回归 32 项、76 张快照一致。
-- [ ] U3 可点击的 div/p/卡片补键盘支持（`role`、`tabIndex`、Enter/Space）。
-- [ ] U4 纯图标按钮补 `aria-label`。
+- [x] U3 可点击的非按钮元素补键盘支持：新增 `lib/a11y`（`pressable`、`onActivateKey`、`focusRing`）。会话行/卡片的勾选框改为 `role="checkbox"` + `aria-checked`，可 Tab 聚焦并用 Space/Enter 切换（整行点击不变）；会话数指标卡、设置页自动切换阈值徽章改为可聚焦按钮；命令面板补 combobox/listbox/option 与 `aria-activedescendant`（键盘导航原本已由输入框处理）。MCP/Skills 路径文字、会话分组路径旁边已有同功能按钮，不重复加 Tab 停靠点。新增键盘选择回归，33 项通过；76 张快照一致。
+- [x] U4 纯图标按钮补 `aria-label`：24 个只有 `title` 或 Tooltip 的按钮都加上与提示相同的 label（账号卡、画册、提示词库、参考图移除、MCP/Skills 刷新与目录、背景清除、顶栏、会话卡/分组/视图切换）。扫描脚本复查剩余命中均为带可见文字的按钮。76 张快照一致。
 - [x] U5 账号卡额度圆环质感升级：同色系渐变弧 + 淡光晕 + 内侧高光 + 末端白点，凹槽轨道与圆心淡底，等宽数字，700ms ease-out。仅账号页 4 状态 × 亮/暗 8 张快照变化（均在圆环行），已确认后重录基线；回归 32 项通过。
 
 ### 验证（阶段 10）
