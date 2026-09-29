@@ -31,6 +31,7 @@ import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import type { ThreadSummary } from "@/types/threads";
 import { formatSize, formatTokenCount } from "./thread-utils";
+import { focusRing, onActivateKey } from "@/lib/a11y";
 
 interface ThreadCardProps {
   thread: ThreadSummary;
@@ -99,8 +100,14 @@ export function ThreadCard({
           {/* Left: Checkbox + Title + Status */}
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <span
+              role="checkbox"
+              aria-checked={selected}
+              aria-label={thread.title || t("threads.untitled")}
+              tabIndex={0}
+              onKeyDown={onActivateKey(onToggleSelect)}
               className={cn(
                 "flex h-4 w-4 shrink-0 items-center justify-center rounded-[5px] border transition-all duration-150",
+                focusRing,
                 selected
                   ? "border-primary bg-primary text-primary-foreground shadow-xs"
                   : "border-border/80 bg-background text-transparent group-hover:border-primary/60",
@@ -199,6 +206,7 @@ export function ThreadCard({
                   size="icon-sm"
                   className="h-6 w-6 text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-transform"
                   onClick={handleCopyId}
+                  aria-label={t("threads.copyId")}
                 >
                   {copiedId ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
                 </Button>
@@ -311,8 +319,14 @@ export function ThreadCard({
         <div className="space-y-1.5">
           <div className="flex items-start gap-1.5">
             <span
+              role="checkbox"
+              aria-checked={selected}
+              aria-label={thread.title || t("threads.untitled")}
+              tabIndex={0}
+              onKeyDown={onActivateKey(onToggleSelect)}
               className={cn(
                 "mt-px flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[4px] border transition-all duration-150",
+                focusRing,
                 selected
                   ? "border-primary bg-primary text-primary-foreground shadow-xs"
                   : "border-border/80 bg-background text-transparent group-hover:border-primary/60",
@@ -437,6 +451,7 @@ export function ThreadCard({
                   size="icon-sm"
                   className="h-5.5 w-5.5 text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-transform"
                   onClick={handleCopyId}
+                  aria-label={t("threads.copyId")}
                 >
                   {copiedId ? (
                     <Check className="h-2.5 w-2.5 text-emerald-500" />

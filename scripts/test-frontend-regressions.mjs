@@ -450,6 +450,15 @@ try {
   console.log("PASS thread page repairs all eligible threads and supports batch and single deletion");
 
   await reset("thread-actions");
+  const threadCheckbox = page.getByRole("checkbox", { name: "Review thread 0", exact: true });
+  await threadCheckbox.focus();
+  await page.keyboard.press("Space");
+  assert.equal(await threadCheckbox.getAttribute("aria-checked"), "true");
+  await page.keyboard.press("Enter");
+  assert.equal(await threadCheckbox.getAttribute("aria-checked"), "false");
+  console.log("PASS thread selection works from the keyboard and exposes its checked state");
+
+  await reset("thread-actions");
   await page.evaluate(() => { window.review.queueDeletes = true; });
   await page.getByRole("button", { name: labels.deleteThread, exact: true }).first().click();
   await confirmAlert(labels.delete);

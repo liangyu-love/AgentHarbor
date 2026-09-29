@@ -34,6 +34,7 @@ import { AvatarSettings } from "@/components/settings/avatar-settings";
 import { BackgroundSettings } from "@/components/settings/background-settings";
 import { queryKeys } from "@/lib/query-keys";
 import { formatInvokeError } from "@/lib/invoke-error";
+import { focusRing, pressable } from "@/lib/a11y";
 
 type SnapshotEnvelope = Awaited<ReturnType<typeof api.loadSnapshot>>;
 interface SettingsPageProps {
@@ -278,8 +279,8 @@ export function SettingsPage({
                   {status?.autoSwitch.enabled && (
                     <Badge
                       variant="secondary"
-                      className="cursor-pointer text-[11px] font-normal hover:bg-secondary/60"
-                      onClick={() => openThresholdDialog(false)}
+                      className={cn("cursor-pointer text-[11px] font-normal hover:bg-secondary/60", focusRing)}
+                      {...pressable(() => openThresholdDialog(false))}
                     >
                       5h ≤{status.autoSwitch.threshold5hPercent ?? 15}% · 1w ≤{status.autoSwitch.thresholdWeeklyPercent ?? 10}%
                     </Badge>

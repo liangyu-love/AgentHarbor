@@ -3,6 +3,7 @@ import { CheckSquare, FolderTree, HardDrive, MessagesSquare, Sparkles } from "lu
 import { AuroraCard } from "@/components/ui/aurora-card";
 import { formatSize, formatTokenCount } from "@/components/threads/thread-utils";
 import type { ThreadList } from "@/components/threads/use-thread-list";
+import { focusRing, pressable } from "@/lib/a11y";
 
 export function ThreadMetrics({ list }: { list: ThreadList }) {
   const { t } = useTranslation();
@@ -13,7 +14,12 @@ export function ThreadMetrics({ list }: { list: ThreadList }) {
 
   return (
     <div className="app-metric-grid grid grid-cols-2 gap-2 lg:grid-cols-4">
-      <AuroraCard color="blue" className="cursor-pointer hover:border-primary/35" onClick={() => setStatus(status === "active" ? "all" : "active")}>
+      <AuroraCard
+        color="blue"
+        className={"cursor-pointer hover:border-primary/35 " + focusRing}
+        aria-pressed={status === "active"}
+        {...pressable(() => setStatus(status === "active" ? "all" : "active"))}
+      >
         <div className="flex items-center justify-between p-2.5">
           <div className="space-y-0.5">
             <span className="text-xs font-medium text-muted-foreground">

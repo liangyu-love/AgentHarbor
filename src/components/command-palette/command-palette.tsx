@@ -372,6 +372,11 @@ export function CommandPalette({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
+            role="combobox"
+            aria-expanded
+            aria-controls="command-palette-list"
+            aria-activedescendant={filteredItems.length > 0 ? `command-item-${selectedIndex}` : undefined}
+            aria-label="搜索页面、常用指令、MCP 或 Skill"
             placeholder="搜索页面、常用指令、MCP 或 Skill... (输入关键词)"
             className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground/70 focus:outline-none"
           />
@@ -381,7 +386,7 @@ export function CommandPalette({
         </div>
 
         {/* Results List */}
-        <div ref={listRef} className="max-h-[380px] overflow-y-auto p-2 space-y-3">
+        <div ref={listRef} id="command-palette-list" role="listbox" className="max-h-[380px] overflow-y-auto p-2 space-y-3">
           {filteredItems.length === 0 ? (
             <div className="py-12 text-center text-sm text-muted-foreground">
               <Search className="h-8 w-8 mx-auto text-muted-foreground/40 mb-2" />
@@ -389,8 +394,8 @@ export function CommandPalette({
             </div>
           ) : (
             categories.map((cat) => (
-              <div key={cat.label} className="space-y-1">
-                <div className="px-2 py-1 text-[11px] font-semibold text-muted-foreground/70 uppercase tracking-wider">
+              <div key={cat.label} role="group" aria-label={cat.label} className="space-y-1">
+                <div aria-hidden className="px-2 py-1 text-[11px] font-semibold text-muted-foreground/70 uppercase tracking-wider">
                   {cat.label}
                 </div>
                 {cat.items.map((item) => {
@@ -401,6 +406,9 @@ export function CommandPalette({
                   return (
                     <div
                       key={item.id}
+                      id={`command-item-${itemIndex}`}
+                      role="option"
+                      aria-selected={isSelected}
                       onClick={() => item.onSelect()}
                       onMouseEnter={() => setSelectedIndex(itemIndex)}
                       className={cn(
