@@ -93,6 +93,25 @@ try {
     rawKeyed: "newapi.errors.unexpected",
   });
   console.log("PASS invoke errors translate i18n keys, keep raw text and fall back when empty");
+  const retryCases = await page.evaluate(async () => {
+    const cases = [];
+    for (const failure of ["newapi.errors.network", "newapi.errors.timeout", "newapi.errors.auth", "newapi.errors.response", "newapi.errors.balanceUnsupported"]) {
+      let calls = 0;
+      window.__TAURI_INTERNALS__.invoke = async () => {
+        calls++;
+        if (calls === 1) throw failure;
+        return { id: "retry-provider" };
+      };
+      let succeeded = false;
+      try { await window.review.realBalanceQuery("retry-provider"); succeeded = true; } catch { /* expected deterministic failure */ }
+      cases.push({ calls, succeeded });
+    }
+    delete window.__TAURI_INTERNALS__.invoke;
+    return cases;
+  });
+  assert.deepEqual(retryCases, [{ calls: 2, succeeded: true }, { calls: 2, succeeded: true }, { calls: 1, succeeded: false }, { calls: 1, succeeded: false }, { calls: 1, succeeded: false }]);
+  console.log("PASS balance API retries only transport failures and never retries auth or invalid responses");
+
   await page.getByText("Review thread 0", { exact: true }).waitFor();
   await page.locator("section").evaluate(element => { element.scrollTop = 2800; });
   await page.waitForFunction(() => [...document.querySelectorAll("p")].some(element => {
@@ -222,6 +241,8 @@ try {
     await page.screenshot({ path: path.join(captureDir, "group-expanded.png") });
   }
   await page.getByRole("button", { name: "收起层叠堆叠" }).first().click();
+  assert.equal(await page.locator("[data-relay-card-face]").first().evaluate(element => getComputedStyle(element).animationName), "none", "Collapsing must not replay a completed flip");
+  assert.match(await page.locator(".relay-member-name").textContent(), /Relay Beta/);
   if (captureDir) await page.screenshot({ path: path.join(captureDir, "group-collapsed.png") });
   await page.getByRole("button", { name: "上一个站点配置" }).click();
   await page.locator(".relay-member-name", { hasText: "Relay Alpha" }).waitFor();
@@ -232,6 +253,68 @@ try {
   assert.equal(await page.locator("[data-relay-card-face]").first().evaluate(element => getComputedStyle(element).animationName), "none");
   await page.emulateMedia({ reducedMotion: "no-preference" });
   console.log("PASS grouped relay switches members and expands without stretching independent cards");
+
+  await reset("groups");
+  await page.getByRole("button", { name: "查询余额 Relay Alpha", exact: true }).click();
+  const balanceDialog = page.getByRole("dialog");
+  await balanceDialog.waitFor();
+  await balanceDialog.getByRole("button", { name: "刷新余额", exact: true }).click();
+  await page.waitForFunction(() => window.review.balanceRequests.length === 1);
+  await page.evaluate(() => window.review.balanceResolvers.at(-1)());
+  await balanceDialog.getByText("USD", { exact: true }).first().waitFor();
+  await balanceDialog.getByRole("button", { name: "刷新余额", exact: true }).click();
+  await page.waitForFunction(() => window.review.balanceRequests.length === 2);
+  await page.evaluate(() => window.review.balanceRejectors.at(-1)("newapi.errors.auth"));
+  await balanceDialog.getByText("查询未成功，保留上次查询结果。", { exact: true }).waitFor();
+  assert.ok((await balanceDialog.locator("strong").textContent()).includes("9"));
+  if (captureDir) await page.screenshot({ path: path.join(captureDir, "balance-dialog.png") });
+  if (!await balanceDialog.locator("details").getAttribute("open").then(value => value !== null)) await balanceDialog.locator("summary").click();
+  await balanceDialog.locator("#balance-user-id").fill("42");
+  await balanceDialog.locator("#balance-access-token").fill("synthetic-token");
+  await balanceDialog.getByRole("button", { name: "保存并查询", exact: true }).click();
+  await page.waitForFunction(() => window.review.balanceCredentialSaves.length === 1 && window.review.balanceRequests.length === 3);
+  assert.deepEqual(await page.evaluate(() => window.review.balanceCredentialSaves[0]), { id: "group-a", expectedBaseUrl: "https://relay.invalid/v1", userId: 42, accessToken: "synthetic-token" });
+  await page.evaluate(() => window.review.balanceResolvers.at(-1)());
+  await balanceDialog.getByRole("button", { name: "刷新余额", exact: true }).waitFor({ state: "visible" });
+  assert.equal(await balanceDialog.locator("#balance-access-token").inputValue(), "");
+  await balanceDialog.getByRole("checkbox", { name: "自定义余额脚本", exact: true }).check();
+  const scriptText = await balanceDialog.getByRole("textbox", { name: "自定义余额脚本", exact: true }).inputValue();
+  assert.match(scriptText, /extractor/);
+  assert.equal(await balanceDialog.getByRole("button", { name: "刷新余额", exact: true }).isDisabled(), true);
+  await balanceDialog.getByRole("button", { name: "保存并查询", exact: true }).first().click();
+  await page.waitForFunction(() => window.review.savedBalanceScript && window.review.balanceRequests.length === 4);
+  assert.equal(await page.evaluate(() => window.review.savedBalanceScript.script), scriptText);
+  await page.evaluate(() => window.review.balanceResolvers.at(-1)());
+  await balanceDialog.getByText("USD", { exact: true }).first().waitFor();
+  if (captureDir) await page.screenshot({ path: path.join(captureDir, "balance-script.png") });
+
+  await page.keyboard.press("Escape");
+  await balanceDialog.waitFor({ state: "hidden" });
+  assert.match(await page.locator(".relay-member-name").textContent(), /Relay Alpha/);
+  assert.equal(await page.locator("[data-relay-card-face]").first().evaluate(element => getComputedStyle(element).animationName), "none");
+  await page.getByRole("button", { name: "下一个站点配置" }).click();
+  await page.locator(".relay-member-name", { hasText: "Relay Beta" }).waitFor();
+  await page.getByRole("button", { name: "查询余额 Relay Beta", exact: true }).click();
+  await balanceDialog.getByText("与「Relay Alpha」共享余额。", { exact: true }).waitFor();
+  await balanceDialog.getByRole("button", { name: "单独查询" }).click();
+  await balanceDialog.getByRole("button", { name: "使用共享余额" }).waitFor();
+  await page.keyboard.press("Escape");
+  await balanceDialog.waitFor({ state: "hidden" });
+  await reset("provider");
+  assert.equal(await page.locator("#newapi-provider-userId, #newapi-provider-accessToken").count(), 0);
+  console.log("PASS card balance dialog saves credentials, preserves last good result and does not flip the stack");
+
+  await reset("accounts");
+  const accountCard = page.locator("article").filter({ has: page.getByText("Alpha", { exact: true }) }).first();
+  const showEmail = accountCard.getByRole("button", { name: "显示邮箱" });
+  await showEmail.waitFor();
+  assert.equal(await accountCard.getByRole("heading", { name: "alpha@example.invalid" }).count(), 0);
+  assert.match(await accountCard.locator("h3").innerText(), /^a•+a@example\.invalid$/);
+  await showEmail.click();
+  assert.equal(await accountCard.locator("h3").innerText(), "alpha@example.invalid");
+  await accountCard.getByRole("button", { name: "隐藏邮箱" }).click();
+  assert.equal(await accountCard.getByRole("heading", { name: "alpha@example.invalid" }).count(), 0);
+  console.log("PASS account email is masked by default and toggles without leaking through the title");
 
   await reset("overview");
   await page.getByText("http://127.0.0.1:7890").waitFor();
@@ -317,7 +400,7 @@ try {
 
   await reset("mixed");
   const chatProtocol = page.getByRole("combobox", { name: labels.chatProtocol, exact: true });
-  assert.equal(await chatProtocol.textContent(), labels.inheritChat);
+  assert.equal(await chatProtocol.textContent(), labels.chat);
   assert.equal(await page.getByRole("button", { name: labels.defaultResponses, exact: true }).getAttribute("aria-pressed"), "true");
   assert.equal(await page.getByRole("button", { name: labels.defaultChat, exact: true }).isEnabled(), true);
   await chatProtocol.click();
@@ -326,7 +409,7 @@ try {
   await page.getByRole("option", { name: labels.anthropic, exact: true }).click();
   assert.equal(await page.getByRole("button", { name: labels.defaultResponses, exact: true }).getAttribute("aria-pressed"), "true");
   assert.equal(await chatProtocol.textContent(), labels.responses);
-  assert.equal(await page.getByRole("combobox", { name: labels.inheritedProtocol, exact: true }).textContent(), labels.inheritAnthropic);
+  assert.equal(await page.getByRole("combobox", { name: labels.inheritedProtocol, exact: true }).textContent(), labels.anthropic);
   await page.getByRole("button", { name: labels.defaultChat, exact: true }).click();
   await page.getByRole("button", { name: labels.fetchModels, exact: true }).click();
   await page.evaluate(() => window.review.resolveModels([
@@ -392,18 +475,35 @@ try {
   console.log("PASS balance refresh stays usable alongside routing and export controls");
 
   await reset("test");
-  await page.getByRole("button", { name: /anthropic-model/ }).waitFor();
+  await page.getByRole("combobox").waitFor();
   await page.getByRole("button", { name: labels.refreshModels, exact: true }).click();
   await page.evaluate(() => window.review.resolveModels([
     { id: "responses-model", displayName: "responses-model", contextWindow: null, maxOutputTokens: null, endpointTypes: ["responses"], included: true, metadataSource: "upstream", protocol: "chatCompletions" },
   ]));
-  await page.getByRole("button", { name: /responses-model/ }).click();
-  assert.match(await page.getByRole("button", { name: /responses-model/ }).textContent(), /Responses/);
-  await page.getByRole("button", { name: /anthropic-model/ }).click();
+  await page.getByRole("combobox").selectOption("responses-model");
+  assert.match(await page.getByRole("option", { name: /responses-model/ }).textContent(), /responses/);
+  await page.getByRole("combobox").selectOption("anthropic-model");
   await page.getByRole("button", { name: labels.sendTest, exact: true }).click();
   await page.waitForFunction(() => Boolean(window.review.tested));
   assert.deepEqual(await page.evaluate(() => window.review.tested), { id: "mixed", model: "anthropic-model" });
-  console.log("PASS connectivity tests include every protocol and preserve model overrides after refresh");
+  assert.equal(await page.getByRole("button", { name: labels.sendTest, exact: true }).isDisabled(), true);
+  await page.getByText("HTTP 200", { exact: true }).waitFor();
+  await page.evaluate(() => window.review.finishProbe());
+  await page.getByRole("log").getByText("Hello from the streaming model.").waitFor();
+  assert.equal(await page.getByRole("dialog").isVisible(), true);
+  if (captureDir) {
+    await page.screenshot({ path: path.join(captureDir, "stream-probe.png") });
+    await page.setViewportSize({ width: 960, height: 640 });
+    await page.evaluate(() => document.documentElement.classList.add("dark"));
+    await page.screenshot({ path: path.join(captureDir, "stream-probe-dark.png") });
+    await page.evaluate(() => document.documentElement.classList.remove("dark"));
+    await page.setViewportSize({ width: 1200, height: 700 });
+  }
+  await page.getByRole("button", { name: labels.sendTest, exact: true }).click();
+  await page.evaluate(() => window.review.failProbe());
+  await page.getByRole("alert").waitFor();
+  assert.equal(await page.getByRole("button", { name: labels.sendTest, exact: true }).isEnabled(), true);
+  console.log("PASS connectivity tests stream real stages, retain results and recover after timeout");
 
   await reset("recovery-missing");
   await page.getByRole("heading", { name: labels.recoveryTitle, exact: true }).waitFor();

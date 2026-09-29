@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Loader2, RefreshCw, Wallet, Code2, KeyRound, CheckCircle2, AlertTriangle, ShieldCheck } from "lucide-react";
+import { Loader2, RefreshCw, Wallet, Code2, KeyRound, AlertTriangle, ShieldCheck } from "lucide-react";
 import { api } from "@/lib/api";
 import { formatInvokeError } from "@/lib/invoke-error";
 import { isOfficialBalanceSite, balanceSourceName, BALANCE_SCRIPT_TEMPLATE } from "@/lib/provider-balance";
@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import type { NewApiProvider, NewApiBalance } from "@/types/newapi";
 import type { ProviderState } from "./use-provider-state";
+import { relayGroupKey } from "./relay-groups";
 
 export function ProviderBalanceDialog({ provider, store, onClose }: {
   provider: NewApiProvider; store: ProviderState; onClose: () => void;
@@ -25,6 +26,12 @@ export function ProviderBalanceDialog({ provider, store, onClose }: {
   const saveInFlight = useRef(false);
   const initialUrl = useRef(provider.baseUrl);
   const official = isOfficialBalanceSite(provider.baseUrl);
+  const firstSiteCard = store.state.data?.providers.find(item => relayGroupKey(item.baseUrl) === relayGroupKey(provider.baseUrl));
+  const canShare = !!firstSiteCard && firstSiteCard.id !== provider.id;
+  const shared = !!provider.balanceSharedFrom;
+  const balanceCredentialReady = shared
+    ? !!firstSiteCard && (firstSiteCard.hasApiKey || firstSiteCard.hasAccessToken || !!firstSiteCard.balanceScript)
+    : provider.hasApiKey || provider.hasAccessToken || !!provider.balanceScript;
   const busy = saving || store.balanceBusy.has(provider.id);
   const error = saveError ?? (store.balanceErrors[provider.id] ? t(store.balanceErrors[provider.id]!) : null);
   const balance = provider.balance;
@@ -38,8 +45,9 @@ export function ProviderBalanceDialog({ provider, store, onClose }: {
   useEffect(() => {
     if (started.current) return;
     started.current = true;
-    if (provider.balanceScript || provider.hasAccessToken || (official && provider.hasApiKey)) void store.refreshBalance(provider.id);
-  }, [provider.id, provider.hasAccessToken, provider.hasApiKey, official, store.refreshBalance]);
+    if (provider.balanceScript || provider.hasAccessToken || (official && balanceCredentialReady)) void store.refreshBalance(provider.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider.id, provider.hasAccessToken, balanceCredentialReady, official]);
 
   const saveAndQuery = async () => {
     if (saveInFlight.current || busy) return;
@@ -85,10 +93,25 @@ export function ProviderBalanceDialog({ provider, store, onClose }: {
           {official && (
             <span className="hidden sm:inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400 ring-1 ring-inset ring-emerald-500/20">
               <ShieldCheck className="h-3 w-3" />
-              官方接口
+              {t("newapi.officialEndpoint")}
             </span>
           )}
         </div>
+
+        {canShare && <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs">
+          <span>{shared
+            ? t("newapi.balanceSharedHint", { name: firstSiteCard?.name })
+            : t("newapi.balanceIndependentHint", { name: firstSiteCard?.name })}</span>
+          <Button size="sm" variant="outline" disabled={busy} onClick={async () => {
+            setSaving(true);
+            setSaveError(null);
+            try {
+              store.patchBalanceCredentials(await api.providers.setBalanceSharing(provider.id, initialUrl.current, !shared));
+              if (!shared) onClose();
+            } catch (cause) { setSaveError(formatInvokeError(cause)); }
+            finally { setSaving(false); }
+          }}>{t(shared ? "newapi.useOwnBalance" : "newapi.useSharedBalance")}</Button>
+        </div>}
 
         {/* Balance Status Cards */}
         <div className="space-y-2.5 pt-1" aria-busy={busy}>
@@ -261,7 +284,7 @@ export function ProviderBalanceDialog({ provider, store, onClose }: {
                 {t("newapi.balanceCredentials")}
               </span>
               <span className="text-[11px] text-muted-foreground font-normal group-open:hidden">
-                点击展开配置
+                {t("newapi.clickToExpand")}
               </span>
             </summary>
             <div className="mt-3 space-y-3 pt-2 border-t border-border/40">
@@ -309,7 +332,7 @@ export function ProviderBalanceDialog({ provider, store, onClose }: {
           <Button
             variant="outline"
             size="sm"
-            disabled={busy || dirty || !(provider.hasApiKey || provider.hasAccessToken)}
+            disabled={busy || dirty || !balanceCredentialReady}
             onClick={() => {
               setSaveError(null);
               void store.refreshBalance(provider.id);

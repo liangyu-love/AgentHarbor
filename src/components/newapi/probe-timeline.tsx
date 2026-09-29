@@ -3,13 +3,16 @@ import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { ProviderProbeEvent } from "@/types/newapi";
 
+// Maximum response content length to display in terminal (16KB)
+const MAX_CONTENT_LENGTH = 16000;
+
 export function ProbeTimeline({ events, testing, failed }: { events: ProviderProbeEvent[]; testing: boolean; failed: boolean }) {
   const { t } = useTranslation();
   const steps = ["request", "headers", "firstByte", "complete"] as const;
   const terminal = [...events].reverse().find(event => event.stage === "complete" || event.stage === "failed");
   const status = events.find(event => event.stage === "headers")?.status;
   const request = events.find(event => event.stage === "request")?.text;
-  const content = events.filter(event => event.stage === "content").map(event => event.text).join("").slice(0, 16000);
+  const content = events.filter(event => event.stage === "content").map(event => event.text).join("").slice(0, MAX_CONTENT_LENGTH);
   const next = steps.findIndex(step => !events.some(event => event.stage === step));
 
   return (

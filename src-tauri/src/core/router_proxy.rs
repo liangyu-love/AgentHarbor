@@ -230,7 +230,11 @@ type ForwardResult<T = Response<ResponseBody>> = Result<T, (StatusCode, &'static
 fn is_unsafe_path_segment(segment: &str) -> bool {
     let lower = segment.to_ascii_lowercase();
     let decoded = lower.replace("%2e", ".");
-    decoded == "." || decoded == ".." || lower.contains("%2f") || lower.contains("%5c") || segment.contains('\\')
+    decoded == "."
+        || decoded == ".."
+        || lower.contains("%2f")
+        || lower.contains("%5c")
+        || segment.contains('\\')
 }
 
 /// Claude Code normally strips this itself; the router only handles clients that forward it.
@@ -408,7 +412,10 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     // The suffix is appended to upstream base URLs, which normalize dot segments;
     // reject them so a request cannot climb out of the `/v1` prefix with real credentials.
-    if segments.iter().any(|segment| is_unsafe_path_segment(segment)) {
+    if segments
+        .iter()
+        .any(|segment| is_unsafe_path_segment(segment))
+    {
         return Err((StatusCode::BAD_REQUEST, "invalid path"));
     }
     let store = router::read_store(&context.store_path).map_err(|_| {
@@ -787,9 +794,9 @@ fn provider_target(
     }
     Ok((
         format!(
-            "{}v1/{}{}",
-            endpoint.base_url,
-            suffix,
+            "{}{}",
+            super::newapi::provider_endpoint(&endpoint.base_url, &format!("v1/{suffix}"))
+                .map_err(|_| (StatusCode::BAD_GATEWAY, "invalid provider URL"))?,
             provider_query(query, translation)
         ),
         headers,
@@ -1010,14 +1017,16 @@ async fn relay_response(
             // otherwise SDKs report a parse failure instead of the real message.
             let bytes = response.bytes().await.unwrap_or_default();
             if let Some(request) = relay_request {
-                request.observe(response_status.as_u16(), false).observe(&bytes);
+                request
+                    .observe(response_status.as_u16(), false)
+                    .observe(&bytes);
             }
             let body = translated_error_body(translation.from, response_status, &bytes);
             BodyExt::boxed(Full::new(Bytes::from(body)).map_err(|never| match never {}))
         }
         None => {
-            let mut observer =
-                relay_request.map(|request| request.observe(response_status.as_u16(), is_event_stream));
+            let mut observer = relay_request
+                .map(|request| request.observe(response_status.as_u16(), is_event_stream));
             let stream = response.bytes_stream().map(move |chunk| {
                 if let (Some(observer), Ok(bytes)) = (observer.as_mut(), &chunk) {
                     observer.observe(bytes);
@@ -1109,13 +1118,21 @@ fn translated_error_body(
     let error = value.as_ref().and_then(|value| value.get("error"));
     let message = error
         .and_then(|error| error.get("message").or(Some(error)).and_then(Value::as_str))
-        .or_else(|| value.as_ref().and_then(|value| value.get("message")).and_then(Value::as_str))
+        .or_else(|| {
+            value
+                .as_ref()
+                .and_then(|value| value.get("message"))
+                .and_then(Value::as_str)
+        })
         .map(str::to_owned)
         .unwrap_or_else(|| {
             let text = String::from_utf8_lossy(bytes);
             let text = text.trim();
             if text.is_empty() {
-                status.canonical_reason().unwrap_or("upstream error").to_owned()
+                status
+                    .canonical_reason()
+                    .unwrap_or("upstream error")
+                    .to_owned()
             } else {
                 text.chars().take(2000).collect()
             }
@@ -1124,16 +1141,18 @@ fn translated_error_body(
         .and_then(|error| error.get("type"))
         .and_then(Value::as_str)
         .map(str::to_owned)
-        .unwrap_or_else(|| match status.as_u16() {
-            400 => "invalid_request_error",
-            401 => "authentication_error",
-            403 => "permission_error",
-            404 => "not_found_error",
-            429 => "rate_limit_error",
-            529 => "overloaded_error",
-            _ => "api_error",
-        }
-        .to_owned());
+        .unwrap_or_else(|| {
+            match status.as_u16() {
+                400 => "invalid_request_error",
+                401 => "authentication_error",
+                403 => "permission_error",
+                404 => "not_found_error",
+                429 => "rate_limit_error",
+                529 => "overloaded_error",
+                _ => "api_error",
+            }
+            .to_owned()
+        });
     match caller {
         router::ModelProtocol::AnthropicMessages => {
             json!({"type": "error", "error": {"type": kind, "message": message}})
@@ -1312,7 +1331,10 @@ mod tests {
                 .await
                 .unwrap();
             let port = held.local_addr().unwrap().port();
-            assert_eq!(bind_localhost(port).await.unwrap_err(), "newapi.errors.portBusy");
+            assert_eq!(
+                bind_localhost(port).await.unwrap_err(),
+                "newapi.errors.portBusy"
+            );
 
             let release = tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(60)).await;

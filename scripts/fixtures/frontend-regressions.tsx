@@ -23,6 +23,7 @@ import { api } from "@/lib/api";
 import i18n from "@/lib/i18n";
 import { errorKey, errorMessage, formatInvokeError } from "@/lib/invoke-error";
 
+const realBalanceQuery = api.providers.queryBalance;
 const controls = window as any;
 controls.__TAURI_INTERNALS__ = {};
 const root = createRoot(document.getElementById("root")!);
@@ -38,8 +39,8 @@ const provider = (id: string) => ({ id, name: "Provider " + id, model: "model-" 
 const imageProvider = { ...provider("image"), model: "gpt-image-2", models: [model("gpt-image-2")] };
 const groupedProviders: NewApiProvider[] = [
   { ...provider("group-a"), name: "Relay Alpha", baseUrl: "https://relay.invalid/v1", model: "alpha-model" },
-  { ...provider("group-b"), name: "Relay Beta", baseUrl: "https://relay.invalid/v1/", model: "beta-model" },
-  { ...provider("group-c"), name: "Relay Gamma", baseUrl: "https://relay.invalid/v1", model: "gamma-model" },
+  { ...provider("group-b"), name: "Relay Beta", baseUrl: "https://relay.invalid/v1/", model: "beta-model", balanceSharedFrom: "group-a" },
+  { ...provider("group-c"), name: "Relay Gamma", baseUrl: "https://relay.invalid/v1", model: "gamma-model", balanceSharedFrom: "group-a" },
   { ...provider("solo"), name: "Solo provider", baseUrl: "https://solo.invalid/v1" },
 ];
 const mixedProvider: NewApiProvider = { ...provider("mixed"), protocol: "chatCompletions", model: "responses-model", models: [
@@ -127,11 +128,25 @@ api.loadInstalledSkills = async () => ({ data: { total: 36, items: [] } }) as an
 api.loadSkillBackups = async () => ({ data: { total: 0, items: [] } }) as any;
 api.loadCustomInstructionState = async () => ({ data: { current: { managedBlockPresent: false, lastTemplateTitle: null } } }) as any;
 api.getSystemInfo = async () => ({ os: "Windows", arch: "x64" }) as any;
-api.providers.queryBalance = id => new Promise(resolve => {
+api.providers.queryBalance = id => new Promise((resolve, reject) => {
+  controls.review.balanceRejectors.push(reject);
   controls.review.balanceRequests.push(id);
-  controls.review.balanceResolvers.push(() => resolve({ ...mixedProvider, id, balance: { remaining: 9, used: null, unit: "USD", rawQuota: 9,
-    quotaPerUnit: null, requestCount: null, checkedAt: Date.now(), conversionAvailable: true }, balanceSource: "newapi" }));
+  controls.review.balanceResolvers.push(() => resolve({ ...(state.providers.find(provider => provider.id === id) ?? mixedProvider), id, balance: { remaining: 9, used: null, unit: "USD", rawQuota: 9,
+    quotaPerUnit: null, requestCount: null, checkedAt: Math.floor(Date.now() / 1000), conversionAvailable: true }, balanceSource: "newapi" }));
 });
+api.providers.saveBalanceCredentials = async (id, expectedBaseUrl, userId, accessToken) => {
+  controls.review.balanceCredentialSaves.push({ id, expectedBaseUrl, userId, accessToken });
+  const current = state.providers.find(provider => provider.id === id)!;
+  const updated = { ...current, userId, hasAccessToken: current.hasAccessToken || !!accessToken, balance: null };
+  state = { ...state, providers: state.providers.map(provider => provider.id === id ? updated : provider) };
+  return updated;
+};
+api.providers.setBalanceSharing = async (id, _expectedBaseUrl, shared) => {
+  const current = state.providers.find(provider => provider.id === id)!;
+  const updated = { ...current, balanceSharedFrom: shared ? "group-a" : null };
+  state = { ...state, providers: state.providers.map(provider => provider.id === id ? updated : provider) };
+  return updated;
+};
 api.routing.setAccessMode = async mode => {
   controls.review.accessCalls.push(mode);
   state = { ...state, router: { ...state.router, accessMode: mode } };
@@ -153,9 +168,27 @@ api.targets.applyConfig = async (request, revision) => {
   controls.review.appliedClient = { request, revision };
   return { path: "C:/synthetic/config.json", backupPath: "C:/synthetic/config.backup" };
 };
-api.providers.test = async (id, selectedModel) => {
+api.providers.test = async (id, selectedModel, onProgress) => {
   controls.review.tested = { id, model: selectedModel };
+  onProgress?.({ stage: "request", elapsedMs: 0, status: null, text: "POST /v1/messages\nHost: synthetic.invalid\nAccept: text/event-stream" });
+  onProgress?.({ stage: "headers", elapsedMs: 120, status: 200, text: "" });
+  await new Promise<void>((resolve, reject) => {
+    controls.review.finishProbe = () => {
+      onProgress?.({ stage: "firstByte", elapsedMs: 320, status: null, text: "" });
+      onProgress?.({ stage: "content", elapsedMs: 330, status: null, text: "Hello from the streaming model." });
+      onProgress?.({ stage: "complete", elapsedMs: 380, status: null, text: "" });
+      resolve();
+    };
+    controls.review.failProbe = () => { onProgress?.({ stage: "failed", elapsedMs: 900, status: null, text: "newapi.errors.timeout" }); reject("newapi.errors.timeout"); };
+  });
   return { ...mixedProvider, testStatus: "ok" };
+};
+api.providers.saveBalanceScript = async (id, expectedBaseUrl, script) => {
+  controls.review.savedBalanceScript = { id, expectedBaseUrl, script };
+  const current = state.providers.find(item => item.id === id)!;
+  const next = { ...current, balanceScript: script, balance: null, balanceSource: null };
+  state = { ...state, providers: state.providers.map(item => item.id === id ? next : item) };
+  return next;
 };
 api.image.keyStatus = async () => false;
 api.image.keySites = async () => [];
@@ -328,10 +361,10 @@ function mount(mode: FixtureMode) {
   </TooltipProvider></QueryClientProvider>);
 }
 
-controls.review = { mount, errors: { errorKey, errorMessage, formatInvokeError }, getState: () => state, pixel, accessCalls: [], thumbnailCalls: [], originalCalls: [], thumbnailResolvers: [],
+controls.review = { mount, realBalanceQuery, errors: { errorKey, errorMessage, formatInvokeError }, getState: () => state, pixel, accessCalls: [], thumbnailCalls: [], originalCalls: [], thumbnailResolvers: [],
   navigatedTo: null, proxySettingsOpened: false,
   imageRequests: [], imageResolvers: [], imageCancels: {}, cancelledJobs: [], gallerySaves: 0, failGallerySave: false,
-  balanceRequests: [], balanceResolvers: [],
+  balanceRequests: [], balanceResolvers: [], balanceRejectors: [], balanceCredentialSaves: [],
   restartCalls: [], recoveryApplyCalls: 0, recoveredCalls: 0, deleteCalls: [], openedPath: null,
   holdThumbnails: false, holdOriginal: false, labels: {
     fetchModels: i18n.t("newapi.fetchModels"), cancel: i18n.t("common.cancel"),

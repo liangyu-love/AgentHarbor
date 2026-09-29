@@ -537,7 +537,7 @@ fn real_codex_sends_separate_router_auth_and_router_strips_it_upstream() {
     fs::write(&paths.auth_path, &auth).unwrap();
     let input = serde_json::from_value(json!({
         "name": "Synthetic response endpoint", "baseUrl": format!("http://127.0.0.1:{}", mock.port),
-        "accessToken": "", "apiKey": "synthetic-upstream-key", "model": "fixture-model",
+        "accessToken": "", "apiKey": "synthetic-upstream-key", "model": "gpt-6-astra",
         "networkMode": "direct"
     }))
     .unwrap();
@@ -623,7 +623,7 @@ fn real_codex_sends_separate_router_auth_and_router_strips_it_upstream() {
     assert!(upstream.header("chatgpt-account-id").is_none());
     assert!(!upstream.headers.iter().any(|(_, value)| value == &bearer));
     let body: Value = serde_json::from_slice(&upstream.body).unwrap();
-    assert_eq!(body["model"], "fixture-model");
+    assert_eq!(body["model"], "gpt-6-astra");
     assert_eq!(fs::read(&paths.auth_path).unwrap(), auth);
     eprintln!("real CLI sends separate local/OpenAI auth; actual router strips both and substitutes the provider key");
 }

@@ -69,7 +69,10 @@ impl ConfigRequest {
         }
         let protocol = provider.protocol_for_model(model);
         if self.target_id == TargetId::ClaudeCode && self.needs_router() {
-            super::super::protocol::Translation::can_serve(ModelProtocol::AnthropicMessages, protocol)
+            super::super::protocol::Translation::can_serve(
+                ModelProtocol::AnthropicMessages,
+                protocol,
+            )
         } else {
             adapter(self.target_id).is_ok_and(|adapter| adapter.protocols().contains(&protocol))
         }
@@ -125,10 +128,11 @@ pub(super) fn client_endpoint<'a>(
 fn native_base(provider: &Provider, with_version: bool) -> Result<String, String> {
     let base = super::super::newapi::base_url(&provider.base_url)?;
     if with_version {
-        Ok(base
-            .join("v1")
-            .map_err(|_| "newapi.errors.url")?
-            .to_string())
+        Ok(
+            super::super::newapi::provider_endpoint(&provider.base_url, "v1")
+                .map_err(|_| "newapi.errors.url")?
+                .to_string(),
+        )
     } else {
         Ok(base.as_str().trim_end_matches('/').to_owned())
     }

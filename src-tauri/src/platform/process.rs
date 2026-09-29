@@ -904,6 +904,27 @@ fn launch_windows_codex_from_path(
         Duration::from_secs(5)
     };
 
+    if is_windows_packaged_codex_main(path) {
+        // MSIX apps need package activation. Starting app/ChatGPT.exe directly
+        // loses package identity and fails before Electron can create a window.
+        let app_id = windows_codex_app_user_model_id(path).ok_or_else(|| {
+            CoreError::OperationFailed("Codex package activation ID was not found".into())
+        })?;
+        crate::platform::windows::background_command("explorer.exe")
+            .arg(format!(r"shell:AppsFolder\{app_id}"))
+            .spawn()
+            .map_err(|error| {
+                CoreError::OperationFailed(format!("Codex activation failed: {error}"))
+            })?;
+        return if wait_for_windows_codex_start(path, launch_timeout) {
+            Ok(())
+        } else {
+            Err(CoreError::OperationFailed(
+                "Codex did not open after package activation".into(),
+            ))
+        };
+    }
+
     let mut direct = crate::platform::windows::background_command_path(path);
     configure_codex_desktop(&mut direct, proxy)?;
     if let Some(parent) = path.parent() {
@@ -955,6 +976,27 @@ fn launch_windows_codex_from_path(
         "Codex did not start after launch: {}",
         path.display()
     )))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_codex_app_user_model_id(path: &Path) -> Option<String> {
+    let root = path.parent()?.parent()?;
+    let root = windows_powershell_literal(root.to_string_lossy().as_ref());
+    let script = format!(
+        "$p = Get-AppxPackage -Name OpenAI.Codex | Where-Object {{ $_.InstallLocation -eq '{root}' }} | Select-Object -First 1; if ($p) {{ (Get-AppxPackageManifest $p).Package.Applications.Application | Where-Object {{ $_.Executable -eq 'app/ChatGPT.exe' }} | ForEach-Object {{ $p.PackageFamilyName + '!' + $_.Id }} }}"
+    );
+    let output = crate::platform::windows::background_command("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|id| id.starts_with("OpenAI.Codex_") && id.ends_with("!App"))
+        .map(str::to_owned)
 }
 
 #[cfg(target_os = "windows")]

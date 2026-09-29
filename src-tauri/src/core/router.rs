@@ -37,7 +37,7 @@ const PREVIOUS_DIRECT_PROVIDER_KEY: &str = "codexharbor_newapi";
 const PREVIOUS_RELAY_MODEL_PREFIX: &str = "aimami_relay_";
 const MAX_PROVIDERS: usize = 64;
 const MAX_MODELS_PER_PROVIDER: usize = 512;
-const STORE_VERSION: u32 = 6;
+const STORE_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -92,6 +92,9 @@ pub struct Provider {
     pub models_fetched_at: Option<i64>,
     pub balance: Option<newapi::Balance>,
     pub balance_source: Option<String>,
+    pub balance_script: String,
+    /// Cards on the same site share the first card's balance until customized.
+    pub balance_independent: bool,
     pub test_status: String,
     pub test_at: Option<i64>,
     /// Read only during migration from builds that exposed the removed Chat wire protocol.
@@ -154,6 +157,8 @@ pub struct ProviderView {
     pub models_fetched_at: Option<i64>,
     pub balance: Option<newapi::Balance>,
     pub balance_source: Option<String>,
+    pub balance_script: String,
+    pub balance_shared_from: Option<String>,
     pub test_status: String,
     pub test_at: Option<i64>,
     pub created_at: i64,
@@ -179,6 +184,8 @@ impl Provider {
             models_fetched_at: self.models_fetched_at,
             balance: self.balance.clone(),
             balance_source: self.balance_source.clone(),
+            balance_script: self.balance_script.clone(),
+            balance_shared_from: None,
             test_status: self.test_status.clone(),
             test_at: self.test_at,
             created_at: self.created_at,
@@ -425,7 +432,7 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
                 changed = true;
             }
         }
-        if store.version < STORE_VERSION {
+        if store.version < 6 {
             for provider in &mut store.providers {
                 for model in &mut provider.models {
                     *model = std::mem::take(model).with_local_defaults();
@@ -449,6 +456,21 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
                         }
                         .with_local_defaults(),
                     );
+                }
+            }
+            changed = true;
+        }
+        if store.version < 7 {
+            // Existing per-card account credentials/scripts were intentional.
+            // Only cards without their own balance setup adopt the first card.
+            let mut seen_sites = HashSet::new();
+            for provider in &mut store.providers {
+                if !seen_sites.insert(provider.base_url.clone())
+                    && (provider.user_id.is_some()
+                        || !provider.access_token.is_empty()
+                        || !provider.balance_script.is_empty())
+                {
+                    provider.balance_independent = true;
                 }
             }
             changed = true;
@@ -725,7 +747,11 @@ pub(crate) fn state_from_store_at(
     paths: Option<&CodexPaths>,
 ) -> NewApiState {
     NewApiState {
-        providers: store.providers.iter().map(Provider::view).collect(),
+        providers: store
+            .providers
+            .iter()
+            .map(|provider| balance_view(store, provider))
+            .collect(),
         router: RouterView {
             enabled: store.router.enabled,
             access_mode: store.codex_access_mode,
@@ -748,6 +774,31 @@ pub(crate) fn state_from_store_at(
     }
 }
 
+fn balance_owner<'a>(store: &'a Store, provider: &'a Provider) -> &'a Provider {
+    if provider.balance_independent {
+        return provider;
+    }
+    store
+        .providers
+        .iter()
+        .find(|candidate| candidate.base_url == provider.base_url)
+        .unwrap_or(provider)
+}
+
+fn balance_view(store: &Store, provider: &Provider) -> ProviderView {
+    let owner = balance_owner(store, provider);
+    let mut view = provider.view();
+    if owner.id != provider.id {
+        view.user_id = owner.user_id;
+        view.has_access_token = !owner.access_token.is_empty();
+        view.balance = owner.balance.clone();
+        view.balance_source = owner.balance_source.clone();
+        view.balance_script = owner.balance_script.clone();
+        view.balance_shared_from = Some(owner.id.clone());
+    }
+    view
+}
+
 /// The provider traffic is routed to: the pinned one, else the first enabled.
 pub fn effective_active(store: &Store) -> Option<&Provider> {
     store
@@ -761,7 +812,6 @@ pub fn effective_active(store: &Store) -> Option<&Provider> {
         })
         .or_else(|| store.providers.iter().find(|p| p.is_routable()))
 }
-
 
 /// Validate the user's selected model before any config or store write. Native
 /// Codex cannot translate a non-Responses model or silently pick another relay.
@@ -1140,6 +1190,16 @@ pub fn test_provider(
     model: &str,
     proxy: &ApiProxyConfigPayload,
 ) -> Result<ProviderView, String> {
+    test_provider_with_progress(paths, id, model, proxy, None)
+}
+
+pub fn test_provider_with_progress(
+    paths: &CodexPaths,
+    id: &str,
+    model: &str,
+    proxy: &ApiProxyConfigPayload,
+    on_event: Option<&dyn Fn(super::provider_probe::ProbeEvent)>,
+) -> Result<ProviderView, String> {
     let snapshot = {
         let _guard = store_write_guard()?;
         let store = load_store_unlocked(paths)?;
@@ -1162,15 +1222,20 @@ pub fn test_provider(
     let provider_proxy = newapi::effective_proxy(snapshot.network_mode(), proxy);
     // 模型列表由选择弹窗预先拉取，这里只执行真正决定状态的模型请求。
     let test_model = model.trim();
-    let result = match snapshot.protocol_for_model(test_model) {
-        ModelProtocol::Responses => {
-            newapi::test_responses(&connection, test_model, &provider_proxy)
-        }
-        ModelProtocol::ChatCompletions => {
-            newapi::test_chat(&connection, test_model, &provider_proxy)
-        }
-        ModelProtocol::AnthropicMessages => {
-            newapi::test_anthropic_messages(&connection, test_model, &provider_proxy)
+    let protocol = snapshot.protocol_for_model(test_model);
+    let result = if let Some(emit) = on_event {
+        super::provider_probe::run(&connection, test_model, protocol, &provider_proxy, emit)
+    } else {
+        match protocol {
+            ModelProtocol::Responses => {
+                newapi::test_responses(&connection, test_model, &provider_proxy)
+            }
+            ModelProtocol::ChatCompletions => {
+                newapi::test_chat(&connection, test_model, &provider_proxy)
+            }
+            ModelProtocol::AnthropicMessages => {
+                newapi::test_anthropic_messages(&connection, test_model, &provider_proxy)
+            }
         }
     };
     let _guard = store_write_guard()?;
@@ -1237,6 +1302,123 @@ pub fn set_network_mode(paths: &CodexPaths, id: &str, mode: &str) -> Result<Stat
 
 // 余额适配由 router_balance 隔离：官方域名走官方协议，自定义域名先通过
 // 无凭据公开接口识别 NewAPI / Sub2API，再发送对应的账户访问令牌。
+pub fn set_balance_credentials(
+    paths: &CodexPaths,
+    id: &str,
+    expected_base_url: &str,
+    user_id: Option<u64>,
+    access_token: &str,
+) -> Result<ProviderView, String> {
+    if user_id == Some(0) {
+        return Err("newapi.errors.userId".into());
+    }
+    let _guard = store_write_guard()?;
+    let mut store = load_store_unlocked(paths)?;
+    let owner = store
+        .providers
+        .iter()
+        .find(|provider| provider.id == id)
+        .ok_or("newapi.errors.notFound")?;
+    if owner.base_url != expected_base_url {
+        return Err("newapi.errors.changed".into());
+    }
+    let owner = balance_owner(&store, owner).clone();
+    let provider = store.providers.iter_mut().find(|p| p.id == id).unwrap();
+    if !provider.balance_independent && owner.id != provider.id {
+        provider.balance_script = owner.balance_script;
+        provider.access_token = owner.access_token;
+    }
+    provider.balance_independent = true;
+    provider.user_id = user_id;
+    if !access_token.trim().is_empty() || provider.access_token.is_empty() {
+        provider.access_token = access_token.trim().to_owned();
+    }
+    provider.balance = None;
+    provider.balance_source = None;
+    provider.updated_at = now();
+    save_store_unlocked(paths, &store)?;
+    Ok(balance_view(
+        &store,
+        store.providers.iter().find(|p| p.id == id).unwrap(),
+    ))
+}
+
+pub fn set_balance_script(
+    paths: &CodexPaths,
+    id: &str,
+    expected_base_url: &str,
+    script: &str,
+) -> Result<ProviderView, String> {
+    super::balance_script::validate(script)?;
+    let _guard = store_write_guard()?;
+    let mut store = load_store_unlocked(paths)?;
+    let provider = store
+        .providers
+        .iter()
+        .find(|provider| provider.id == id)
+        .ok_or("newapi.errors.notFound")?;
+    if provider.base_url != expected_base_url {
+        return Err("newapi.errors.changed".into());
+    }
+    let owner = balance_owner(&store, provider).clone();
+    let provider = store.providers.iter_mut().find(|p| p.id == id).unwrap();
+    if !provider.balance_independent && owner.id != provider.id {
+        provider.user_id = owner.user_id;
+        provider.access_token = owner.access_token;
+    }
+    provider.balance_independent = true;
+    provider.balance_script = script.trim().to_owned();
+    provider.balance = None;
+    provider.balance_source = None;
+    provider.updated_at = now();
+    save_store_unlocked(paths, &store)?;
+    Ok(balance_view(
+        &store,
+        store.providers.iter().find(|p| p.id == id).unwrap(),
+    ))
+}
+
+pub fn set_balance_sharing(
+    paths: &CodexPaths,
+    id: &str,
+    expected_base_url: &str,
+    shared: bool,
+) -> Result<ProviderView, String> {
+    let _guard = store_write_guard()?;
+    let mut store = load_store_unlocked(paths)?;
+    let requested = store
+        .providers
+        .iter()
+        .find(|p| p.id == id)
+        .ok_or("newapi.errors.notFound")?;
+    if requested.base_url != expected_base_url {
+        return Err("newapi.errors.changed".into());
+    }
+    let owner = balance_owner(&store, requested).clone();
+    let provider = store
+        .providers
+        .iter_mut()
+        .find(|provider| provider.id == id)
+        .unwrap();
+    if !shared && owner.id != provider.id {
+        provider.user_id = owner.user_id;
+        provider.access_token = owner.access_token;
+        provider.balance_script = owner.balance_script;
+        provider.balance = owner.balance;
+        provider.balance_source = owner.balance_source;
+    } else if shared && owner.id != provider.id {
+        provider.balance = None;
+        provider.balance_source = None;
+    }
+    provider.balance_independent = !shared;
+    provider.updated_at = now();
+    save_store_unlocked(paths, &store)?;
+    Ok(balance_view(
+        &store,
+        store.providers.iter().find(|p| p.id == id).unwrap(),
+    ))
+}
+
 pub fn query_provider_balance(
     paths: &CodexPaths,
     id: &str,
@@ -1245,12 +1427,12 @@ pub fn query_provider_balance(
     let snapshot = {
         let _guard = store_write_guard()?;
         let store = load_store_unlocked(paths)?;
-        store
+        let requested = store
             .providers
             .iter()
             .find(|p| p.id == id)
-            .cloned()
-            .ok_or("newapi.errors.notFound")?
+            .ok_or("newapi.errors.notFound")?;
+        balance_owner(&store, requested).clone()
     };
     let connection = newapi::Connection {
         base_url: snapshot.base_url.clone(),
@@ -1260,19 +1442,35 @@ pub fn query_provider_balance(
         ..Default::default()
     };
     let provider_proxy = newapi::effective_proxy(snapshot.network_mode(), proxy);
-    let (balance, source) = router_balance::query(&connection, &provider_proxy)?;
+    let (balance, source) = if snapshot.balance_script.is_empty() {
+        router_balance::query(&connection, &provider_proxy)?
+    } else {
+        (
+            super::balance_script::query(&connection, &provider_proxy, &snapshot.balance_script)?,
+            "custom",
+        )
+    };
     let _guard = store_write_guard()?;
     let mut store = load_store_unlocked(paths)?;
+    let requested = store
+        .providers
+        .iter()
+        .find(|p| p.id == id)
+        .ok_or("newapi.errors.notFound")?;
+    if balance_owner(&store, requested).id != snapshot.id {
+        return Err("newapi.errors.changed".into());
+    }
     let index = store
         .providers
         .iter()
-        .position(|p| p.id == id)
-        .ok_or("newapi.errors.notFound")?;
+        .position(|p| p.id == snapshot.id)
+        .unwrap();
     let provider = &mut store.providers[index];
     if provider.base_url != snapshot.base_url
         || provider.user_id != snapshot.user_id
         || provider.access_token != snapshot.access_token
         || provider.api_key != snapshot.api_key
+        || provider.balance_script != snapshot.balance_script
         || provider.network_mode() != snapshot.network_mode()
     {
         return Err("newapi.errors.changed".into());
@@ -1280,7 +1478,10 @@ pub fn query_provider_balance(
     provider.balance = Some(balance);
     provider.balance_source = Some(source.into());
     save_store_unlocked(paths, &store)?;
-    Ok(store.providers[index].view())
+    Ok(balance_view(
+        &store,
+        store.providers.iter().find(|p| p.id == id).unwrap(),
+    ))
 }
 
 pub fn set_smart_routing(paths: &CodexPaths, enabled: bool) -> Result<StateChange, String> {
@@ -1645,6 +1846,30 @@ fn relay_catalog_entry(
     // These fields are required by Codex's model catalog parser. In
     // particular, an entry without instructions is rejected by config/read.
     // Keep the capability declaration conservative for unknown relay models.
+
+    // Determine if this model supports reasoning levels (thinking effort).
+    // Claude models (Opus, Sonnet, Fable, Mythos) support reasoning levels.
+    let model_id_lower = slug.to_ascii_lowercase();
+    let compact: String = model_id_lower
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    let supports_reasoning = compact.contains("claude")
+        && (compact.contains("opus")
+            || compact.contains("sonnet")
+            || compact.contains("fable")
+            || compact.contains("mythos"));
+
+    let reasoning_levels = if supports_reasoning {
+        vec![
+            serde_json::json!({"effort":"low","description":"Fast responses with lighter reasoning"}),
+            serde_json::json!({"effort":"medium","description":"Balanced reasoning"}),
+            serde_json::json!({"effort":"high","description":"Deeper reasoning for complex tasks"}),
+        ]
+    } else {
+        Vec::new()
+    };
+
     serde_json::json!({
         "slug": slug,
         "display_name": display_name,
@@ -1654,7 +1879,8 @@ fn relay_catalog_entry(
         "visibility": "list",
         "supported_in_api": true,
         "priority": 100,
-        "supported_reasoning_levels": [],
+        "supported_reasoning_levels": reasoning_levels,
+        "default_reasoning_level": if supports_reasoning { Some("medium") } else { None },
         "shell_type": "unified_exec",
         "support_verbosity": false,
         "truncation_policy": { "mode": "tokens", "limit": 10000 },
@@ -2980,6 +3206,157 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         };
         let catalog = catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
         assert_eq!(catalog["models"][0]["context_window"], 128_000);
+    }
+
+    #[test]
+    fn claude_relay_catalog_uses_codex_reasoning_level_shape() {
+        let claude = relay_catalog_entry(
+            "provider::claude-opus-4-8".into(),
+            "Relay/Claude Opus 4.8".into(),
+            "Claude".into(),
+            1_000_000,
+            Some(128_000),
+        );
+        assert_eq!(claude["default_reasoning_level"], "medium");
+        let levels = claude["supported_reasoning_levels"].as_array().unwrap();
+        assert_eq!(levels.len(), 3);
+        assert_eq!(levels[0]["effort"], "low");
+        assert!(levels[0]["description"].as_str().is_some());
+
+        let plain = relay_catalog_entry(
+            "provider::gemini".into(),
+            "Gemini".into(),
+            "".into(),
+            1_000_000,
+            None,
+        );
+        assert!(plain["supported_reasoning_levels"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn balance_settings_update_only_the_selected_provider() {
+        let (_dir, paths) = paths();
+        let state = save_provider(&paths, input("Relay", "https://relay.example.com")).unwrap();
+        let id = &state.state.providers[0].id;
+        let url = "https://relay.example.com/";
+        assert_eq!(
+            set_balance_credentials(
+                &paths,
+                id,
+                "https://other.example.com/",
+                Some(42),
+                "account-token"
+            )
+            .unwrap_err(),
+            "newapi.errors.changed"
+        );
+        let view = set_balance_credentials(&paths, id, url, Some(42), "account-token").unwrap();
+        assert!(view.has_access_token);
+        let script = r#"({request:{url:"{{baseUrl}}/v1/usage",method:"GET"},extractor:r=>r})"#;
+        let view = set_balance_script(&paths, id, url, script).unwrap();
+        assert_eq!(view.balance_script, script);
+        let stored = load_store(&paths).unwrap();
+        assert_eq!(stored.providers[0].access_token, "account-token");
+        assert_eq!(stored.providers[0].balance_script, script);
+    }
+
+    #[test]
+    fn same_site_balance_defaults_to_first_card_and_can_be_overridden() {
+        let (_dir, paths) = paths();
+        let first = save_provider(&paths, input("First", "https://relay.example.com")).unwrap();
+        let first_id = first.state.providers[0].id.clone();
+        let second = save_provider(&paths, input("Second", "https://relay.example.com")).unwrap();
+        let second_id = second.state.providers[1].id.clone();
+        let mut store = load_store(&paths).unwrap();
+        store.providers[0].balance = Some(newapi::Balance {
+            remaining: 12.5,
+            ..Default::default()
+        });
+        store.providers[0].balance_source = Some("custom".into());
+        store.providers[1].balance = Some(newapi::Balance {
+            remaining: 99.0,
+            ..Default::default()
+        });
+        save_store_unlocked(&paths, &store).unwrap();
+
+        let view = state_from_store_at(&store, false, None);
+        assert_eq!(
+            view.providers[1].balance_shared_from.as_deref(),
+            Some(first_id.as_str())
+        );
+        assert_eq!(view.providers[1].balance.as_ref().unwrap().remaining, 12.5);
+
+        let own = set_balance_credentials(
+            &paths,
+            &second_id,
+            "https://relay.example.com/",
+            Some(42),
+            "own-token",
+        )
+        .unwrap();
+        assert_eq!(own.balance_shared_from, None);
+        assert_eq!(own.user_id, Some(42));
+        let store = load_store(&paths).unwrap();
+        assert_eq!(store.providers[0].access_token, "token-a");
+        assert_eq!(store.providers[1].access_token, "own-token");
+
+        let shared =
+            set_balance_sharing(&paths, &second_id, "https://relay.example.com/", true).unwrap();
+        assert_eq!(
+            shared.balance_shared_from.as_deref(),
+            Some(first_id.as_str())
+        );
+        assert_eq!(shared.user_id, Some(7));
+        assert_eq!(shared.balance.unwrap().remaining, 12.5);
+
+        let own =
+            set_balance_sharing(&paths, &second_id, "https://relay.example.com/", false).unwrap();
+        assert_eq!(own.balance_shared_from, None);
+        assert_eq!(own.user_id, Some(7));
+        assert_eq!(own.balance.unwrap().remaining, 12.5);
+    }
+
+    #[test]
+    fn balance_migration_preserves_existing_per_card_credentials() {
+        let (_dir, paths) = paths();
+        let mut store = Store {
+            version: 6,
+            providers: vec![
+                Provider {
+                    id: "first".into(),
+                    base_url: "https://relay.example.com/".into(),
+                    access_token: "first-token".into(),
+                    ..Default::default()
+                },
+                Provider {
+                    id: "custom".into(),
+                    base_url: "https://relay.example.com/".into(),
+                    access_token: "own-token".into(),
+                    ..Default::default()
+                },
+                Provider {
+                    id: "shared".into(),
+                    base_url: "https://relay.example.com/".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        store.router.bearer_token = "agentharbor_test".into();
+        save_store_unlocked(&paths, &store).unwrap();
+        let upgraded = load_store(&paths).unwrap();
+        assert_eq!(upgraded.version, STORE_VERSION);
+        assert!(upgraded.providers[1].balance_independent);
+        assert!(!upgraded.providers[2].balance_independent);
+        let view = state_from_store_at(&upgraded, false, None);
+        assert_eq!(view.providers[1].balance_shared_from, None);
+        assert_eq!(
+            view.providers[2].balance_shared_from.as_deref(),
+            Some("first")
+        );
     }
 
     #[test]

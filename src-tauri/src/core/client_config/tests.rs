@@ -55,6 +55,17 @@ fn read(path: &Path) -> Value {
 }
 
 #[test]
+fn first_claude_apply_reopens_without_a_false_conflict() {
+    let (_temp, manager, store, request) = fixture();
+    apply(&manager, &store, &request);
+    let status = &manager.list()[0];
+    assert!(status.configured);
+    assert!(!status.conflict);
+    assert!(status.error.is_none());
+    assert_eq!(status.model.as_deref(), Some("claude-test"));
+}
+
+#[test]
 fn claude_preserves_settings_and_restores_exact_original() {
     let (_temp, manager, store, request) = fixture();
     let original = "{\n  \"permissions\": {\"allow\": [\"Read\"]}, \"env\": {\"ANTHROPIC_API_KEY\": \"existing-secret\", \"CUSTOM\": \"kept\"}\n}";

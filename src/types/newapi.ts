@@ -39,6 +39,7 @@ export interface NewApiProvider {
   balance: NewApiBalance | null;
   balanceSource: string | null;
   balanceScript?: string;
+  balanceSharedFrom?: string | null;
   testStatus: "untested" | "ok" | "failed";
   testAt: number | null;
   createdAt: number;

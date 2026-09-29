@@ -81,12 +81,18 @@ pub async fn test_newapi_provider(
     repo: State<'_, Mutex<Repository>>,
     id: String,
     model: String,
+    on_event: tauri::ipc::Channel<crate::core::provider_probe::ProbeEvent>,
 ) -> Result<ProviderView, String> {
     let paths = paths(&repo)?;
     let proxy = newapi::proxy_from_settings(&paths.settings_path);
-    tauri::async_runtime::spawn_blocking(move || router::test_provider(&paths, &id, &model, &proxy))
-        .await
-        .map_err(|_| "newapi.errors.network")?
+    tauri::async_runtime::spawn_blocking(move || {
+        let emit = |event| {
+            let _ = on_event.send(event);
+        };
+        router::test_provider_with_progress(&paths, &id, &model, &proxy, Some(&emit))
+    })
+    .await
+    .map_err(|_| "newapi.errors.network")?
 }
 
 #[tauri::command]
@@ -111,6 +117,45 @@ pub async fn fetch_newapi_models(
     })
     .await
     .map_err(|_| "newapi.errors.network".to_string())?
+}
+
+#[tauri::command]
+pub async fn set_newapi_balance_credentials(
+    repo: State<'_, Mutex<Repository>>,
+    id: String,
+    expected_base_url: String,
+    user_id: Option<u64>,
+    access_token: String,
+) -> Result<ProviderView, String> {
+    let paths = paths(&repo)?;
+    super::blocking(move || {
+        router::set_balance_credentials(&paths, &id, &expected_base_url, user_id, &access_token)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_newapi_balance_script(
+    repo: State<'_, Mutex<Repository>>,
+    id: String,
+    expected_base_url: String,
+    script: String,
+) -> Result<ProviderView, String> {
+    let paths = paths(&repo)?;
+    super::blocking(move || router::set_balance_script(&paths, &id, &expected_base_url, &script))
+        .await
+}
+
+#[tauri::command]
+pub async fn set_newapi_balance_sharing(
+    repo: State<'_, Mutex<Repository>>,
+    id: String,
+    expected_base_url: String,
+    shared: bool,
+) -> Result<ProviderView, String> {
+    let paths = paths(&repo)?;
+    super::blocking(move || router::set_balance_sharing(&paths, &id, &expected_base_url, shared))
+        .await
 }
 
 #[tauri::command]

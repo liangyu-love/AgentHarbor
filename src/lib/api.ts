@@ -26,6 +26,7 @@ import type {
   TokenUsagePayload,
 } from "@/types";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
+import { errorMessage } from "@/lib/invoke-error";
 import type { TargetId, ClientStatus, ClientConfigRequest, ClientConfigPreview, ClientConfigApplied } from "@/types/clients";
 import type { CodexAccessMode, ModelProtocol, NewApiState, NewApiStateChange, NewApiImportResult, NewApiProvider, NewApiProviderInput, NewApiModel } from "@/types/newapi";
 
@@ -64,10 +65,29 @@ const providersApi = {
   setEnabled: (id: string, enabled: boolean) => invoke<NewApiStateChange>("set_newapi_provider_enabled", { id, enabled }),
   setNetwork: (id: string, mode: "proxy" | "direct") =>
     invoke<NewApiStateChange>("set_newapi_provider_network", { id, mode }),
-  test: (id: string, model: string) => invoke<NewApiProvider>("test_newapi_provider", { id, model }),
+  test: async (id: string, model: string, onProgress?: (event: import("@/types/newapi").ProviderProbeEvent) => void) => {
+    const { Channel } = await import("@tauri-apps/api/core");
+    const onEvent = new Channel<import("@/types/newapi").ProviderProbeEvent>();
+    onEvent.onmessage = event => onProgress?.(event);
+    return invoke<NewApiProvider>("test_newapi_provider", { id, model, onEvent });
+  },
+  saveBalanceScript: (id: string, expectedBaseUrl: string, script: string) =>
+    invoke<NewApiProvider>("set_newapi_balance_script", { id, expectedBaseUrl, script }),
+  setBalanceSharing: (id: string, expectedBaseUrl: string, shared: boolean) =>
+    invoke<NewApiProvider>("set_newapi_balance_sharing", { id, expectedBaseUrl, shared }),
   fetchModels: (providerId: string | null, baseUrl: string, apiKey: string, protocol: ModelProtocol) =>
     invoke<NewApiModel[]>("fetch_newapi_models", { providerId, baseUrl, apiKey, protocol }),
-  queryBalance: (id: string) => invoke<NewApiProvider>("query_newapi_provider_balance", { id }),
+  queryBalance: async (id: string): Promise<NewApiProvider> => {
+    try {
+      return await invoke<NewApiProvider>("query_newapi_provider_balance", { id });
+    } catch (error) {
+      // Retry transport failures once; auth, malformed data and unsupported sites are final.
+      if (!["newapi.errors.network", "newapi.errors.timeout"].includes(errorMessage(error))) throw error;
+      return invoke<NewApiProvider>("query_newapi_provider_balance", { id });
+    }
+  },
+  saveBalanceCredentials: (id: string, expectedBaseUrl: string, userId: number | null, accessToken: string) =>
+    invoke<NewApiProvider>("set_newapi_balance_credentials", { id, expectedBaseUrl, userId, accessToken }),
   import: (path: string) => invoke<NewApiImportResult>("import_newapi_providers", { path }),
   export: (path: string) => invoke<void>("export_newapi_providers", { path }),
 };

@@ -53,6 +53,9 @@ export function RelayCard({ group, store, view, onEdit, onTest, onRemove, onBala
 
   const activeMemberId = memberSelection[group.key] ?? (group.providers.find(item => item.id === activeId)?.id ?? group.providers[0].id);
   const provider = group.providers.find(item => item.id === activeMemberId) ?? group.providers[0];
+  const balanceOwner = provider.balanceSharedFrom
+    ? store.state.data?.providers.find(item => item.id === provider.balanceSharedFrom) : provider;
+  const balanceReady = !!balanceOwner && (balanceOwner.hasApiKey || balanceOwner.hasAccessToken || !!balanceOwner.balanceScript);
   const isGroupActive = group.providers.some(item => item.id === activeId) && routingEnabled;
   const isCurrentActive = provider.id === activeId && routingEnabled;
   const selected = filter === group.key;
@@ -178,7 +181,7 @@ export function RelayCard({ group, store, view, onEdit, onTest, onRemove, onBala
                     className={iconButton}
                     title={t("newapi.refreshBalance")}
                     aria-label={t("newapi.refreshBalance")}
-                    disabled={balanceBusy.has(provider.id) || !(provider.hasApiKey || provider.hasAccessToken)}
+                    disabled={balanceBusy.has(provider.id) || !balanceReady}
                     onClick={() => void refreshBalance(provider.id)}
                   >
                     {balanceBusy.has(provider.id) ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}

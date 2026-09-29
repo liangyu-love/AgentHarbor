@@ -9,12 +9,6 @@ import { effectiveModelProtocol, supportsProtocol } from "@/lib/provider-models"
 import { cn } from "@/lib/utils";
 import type { ModelProtocol, NewApiModel } from "@/types/newapi";
 
-const protocolKey: Record<ModelProtocol, string> = {
-  responses: "newapi.protocolShortResponses",
-  chatCompletions: "newapi.protocolShortChat",
-  anthropicMessages: "newapi.protocolShortAnthropic",
-};
-
 interface Props {
   models: NewApiModel[];
   providerName: string;
@@ -161,10 +155,9 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
                     </div>
                   </div>
                   <Input className="h-8 text-xs" value={model.displayName === model.id && providerName.trim() ? `${providerName.trim()}/${model.id}` : model.displayName} disabled={disabled} aria-label={t("newapi.menuDisplayNameFor", { model: model.id })} onChange={event => patch(model.id, { displayName: event.target.value })} />
-                  <Select value={model.protocol ?? "inherit"} disabled={disabled} onValueChange={value => patch(model.id, { protocol: value === "inherit" ? null : value as ModelProtocol })}>
+                  <Select value={effectiveModelProtocol(model, protocol)} disabled={disabled} onValueChange={value => patch(model.id, { protocol: value as ModelProtocol })}>
                     <SelectTrigger className="h-8 min-w-0 text-xs" aria-label={t("newapi.protocolFor", { model: model.id })}><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="inherit">{t("newapi.inheritProtocol", { protocol: t(protocolKey[effectiveModelProtocol(model, protocol)]) })}</SelectItem>
                       <SelectItem value="responses">{t("newapi.protocolResponses")}</SelectItem>
                       <SelectItem value="chatCompletions">{t("newapi.protocolChatCompletions")}</SelectItem>
                       <SelectItem value="anthropicMessages">{t("newapi.protocolAnthropicMessages")}</SelectItem>

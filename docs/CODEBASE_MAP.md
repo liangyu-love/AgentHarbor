@@ -1,6 +1,6 @@
 # AgentHarbor 代码结构与功能接口总览
 
-> 依据仓库当前源码整理，日期：2026-09-28；已按 [CODE_REVIEW.md](CODE_REVIEW.md) 的勘误和随后的修复更新。本文描述代码中实际存在的页面、接口、主要数据流与能力边界；对能力边界会单独标出。
+> 依据 `fix/code-review-phase1-3` 分支当前源码整理，日期：2026-09-29；结合 [CODE_REVIEW.md](CODE_REVIEW.md) 与 [FIX_TODO.md](FIX_TODO.md) 中已完成的修复和重构更新。本文描述实际存在的页面、接口、主要数据流与能力边界；历史修复记录以 FIX_TODO 为准。
 
 ## 1. 项目概况
 
@@ -43,8 +43,9 @@ flowchart LR
 ### 前端数据与错误处理
 
 - `src/lib/api.ts` 内部 `invoke<T>` 动态载入 `@tauri-apps/api/core`。浏览器预览模式没有本地命令能力，调用时会抛出 `Command ... is only available in Tauri runtime`。
-- `src/lib/query-client.ts` 集中配置 TanStack Query；页面以 query/mutation 维护加载、缓存、刷新和写操作状态。
-- Rust `CoreEnvelope<T>` 在一部分接口中提供 `schemaVersion / success / code / message / warnings / data`。失败一律走 `Err(String)`，所以返回的 envelope 总是成功值，前端实际只读 `data` 与 `warnings`。供应商、图片、客户端配置等接口直接返回 DTO，错误是 i18n key；其余命令的错误是原始文本。
+- `src/lib/query-client.ts` 集中配置 TanStack Query；`src/lib/query-keys.ts` 集中维护查询键，页面以 query/mutation 维护加载、缓存、刷新和写操作状态。浏览器偏好的 localStorage 键集中在 `src/lib/storage-keys.ts`。
+- Rust `CoreEnvelope<T>` 在一部分接口中提供 `schemaVersion / success / code / message / warnings / data`；command 出错时以 `Err(String)` reject，`CoreEnvelope` 只承载成功结果和 warnings，前端消费 `data` 与 `warnings`。直接返回 DTO 的接口也通过字符串错误 reject。`src/lib/invoke-error.ts` 的 `formatInvokeError` 翻译已知 i18n key、保留 OS/SQLite/上游原始错误文本并为未知 key 或空错误提供通用回退；表单需要保存错误 key 时用 `errorKey`。
+- `src-tauri/src/commands/mod.rs` 提供 `blocking` 与 `with_repo`：图片图库、Skills、`clean`、`rebuild_registry`、`diagnose` 和供应商配置导出等重 IO 通过 `spawn_blocking` 离开主线程，`with_repo` 也只在后台线程获取 Repository 锁；`load_snapshot` 和轻量命令保持同步。
 - 前端传入的 IPC 对象使用 camelCase；Rust 参数和字段采用 snake_case，并通过 Tauri/Serde 的命名规则对应。
 
 ## 3. 页面与功能索引
@@ -52,17 +53,19 @@ flowchart LR
 | 页面/功能 | 界面入口 | 主要用途 | 前端 API | Rust 命令/领域实现 |
 | --- | --- | --- | --- | --- |
 | 概览 | `src/components/overview/overview-page.tsx` | 显示路由、供应商、MCP、Skills、自定义指令和系统状态摘要；跳转常用功能、打开路径、重启 Codex、打开代理设置 | `loadSnapshot`、`providers.loadState`、`loadMcpServers`、`loadInstalledSkills`、`loadSkillBackups`、`loadCustomInstructionState`、`getSystemInfo`、`openPath`、`targets.restart` | `commands/system.rs`、`commands/newapi.rs`、`commands/mcp.rs`、`commands/skills.rs`、`commands/custom_instructions.rs`；对应 `core/repository.rs` 等 |
-| 账号与用量 | `src/components/accounts/accounts-page.tsx`、`daily-trend-panel.tsx`、`model-usage-breakdown.tsx`、`recent-turns-panel.tsx`、`relay-usage-panel.tsx` | Codex 账号登录、列表、额度刷新、切换和删除；合并展示 Codex/Claude Code 本地日志与经过本地代理的请求用量；供应商余额 | `accounts.list/refresh/login/switch/delete`、`usage.overview`、`providers.loadState/queryBalance`、`targets.restart` | `commands/accounts.rs`、`commands/usage.rs`、`core/accounts.rs`、`core/account_monitor.rs`、`core/local_usage.rs`、`core/relay_usage.rs` |
-| 中转与客户端配置 | `src/components/newapi/newapi-page.tsx`、`provider-dialog.tsx`、`provider-model-editor.tsx`、`provider-test-dialog.tsx`、`claude-model-config.tsx`、`client-configs.tsx`、`client-config-dialog.tsx` | 管理供应商、协议和单模型协议、模型列表、测试/余额、网络出口、Codex Router/Native 接入；配置 Claude Code、OpenCode 的原生或本地路由方式 | `providers.*`、`routing.*`、`targets.configs/previewConfig/applyConfig/restoreConfig/releaseConfig` | `commands/newapi.rs`、`commands/client_config.rs`；`core/router.rs`、`router_proxy.rs`、`routing_runtime.rs`、`protocol/`、`client_config/` |
-| 图片工作台 | `src/components/image-workbench/image-workbench-page.tsx`、`src/lib/image-prompts.ts` | 选择供应商与模型、生成/编辑图片、管理任务画布、本地图库、选择图库目录、查看/另存/删除成图 | `image.generate/cancelGeneration/keyStatus/saveKey/keySites/deleteKey/saveFile/saveToGallery/setGalleryDirectory/listGallery/loadGalleryImage/loadGalleryThumbnail/deleteGalleryImage` | `commands/image.rs`；凭据经 `core/secret_file.rs` 存储，图片目录配置和成图写入本地磁盘 |
-| 会话归档 | `src/components/threads/threads-page.tsx`、`thread-card.tsx`、`thread-group-header.tsx`、`virtual-thread-list.tsx`、`thread-recovery-dialog.tsx` | 扫描 Codex 会话、搜索筛选与分组、导出 Markdown/JSONL、删除会话、取消/恢复待处理删除、修复会话目录/索引状态 | `conversations.list/export/delete/cancelPendingDeletions/previewRecovery/applyRecovery` | `commands/threads.rs`、`commands/thread_recovery.rs`；`core/threads.rs`、`thread_delete.rs`、`thread_recovery.rs` |
-| MCP 管理 | `src/components/mcp/mcp-page.tsx` | 读取、添加/编辑、启用/停用、删除 MCP server，并定位源配置 | `loadMcpServers/upsertMcpServer/setMcpServerEnabled/removeMcpServer/openPath` | `commands/mcp.rs`、`core/mcp.rs`；读写 Codex `config.toml` |
+| 账号与用量 | `src/components/accounts/accounts-page.tsx`、`use-accounts.ts`、`account-card.tsx`、`token-usage-panel.tsx`、`daily-trend-panel.tsx`、`model-usage-breakdown.tsx`、`recent-turns-panel.tsx`、`relay-usage-panel.tsx` | Codex 账号登录、列表、额度刷新、切换和删除；合并展示 Codex/Claude Code 本地日志与经过本地代理的请求用量；供应商余额 | `accounts.list/refresh/login/switch/delete`、`usage.overview`、`providers.loadState/queryBalance`、`targets.restart` | `commands/accounts.rs`、`commands/usage.rs`、`core/accounts.rs`、`core/account_monitor.rs`、`core/local_usage.rs`、`core/relay_usage.rs` |
+| 中转与客户端配置 | `src/components/newapi/newapi-page.tsx`、`use-provider-state.ts`、`use-relay-view.ts`、`relay-groups.ts`、`codex-access-card.tsx`、`relay-list.tsx`、`relay-card.tsx`、`provider-dialog.tsx`、`provider-model-editor.tsx`、`provider-test-dialog.tsx`、`probe-timeline.tsx`、`provider-balance-dialog.tsx`、`client-configs.tsx`、`client-config-dialog.tsx`、`claude-model-config.tsx` | 管理供应商、协议和单模型协议、模型列表、测试/余额、网络出口、Codex Router/Native 接入；配置 Claude Code、OpenCode 的原生或本地路由方式 | `providers.*`、`routing.*`、`targets.configs/previewConfig/applyConfig/restoreConfig/releaseConfig` | `commands/newapi.rs`、`commands/client_config.rs`；`core/router.rs`、`router_proxy.rs`、`routing_runtime.rs`、`protocol/`、`client_config/` |
+| 图片工作台 | `src/components/image-workbench/image-workbench-page.tsx`、`use-image-connection.ts`、`use-image-gallery.ts`、`use-generation-queue.ts`、`generation-form.tsx`、`generation-canvas.tsx`、`gallery-panel.tsx`、`gallery-thumbnail.tsx`、`src/lib/image-prompts.ts` | 选择供应商与模型、生成/编辑图片、管理任务画布、本地图库、选择图库目录、查看/另存/删除成图 | `image.generate/cancelGeneration/keyStatus/saveKey/keySites/deleteKey/saveFile/saveToGallery/setGalleryDirectory/listGallery/loadGalleryImage/loadGalleryThumbnail/deleteGalleryImage` | `commands/image.rs`；凭据经 `core/secret_file.rs` 存储，图片目录配置和成图写入本地磁盘 |
+| 会话归档 | `src/components/threads/threads-page.tsx`、`use-thread-list.ts`、`thread-card.tsx`、`thread-group-header.tsx`、`thread-group-section.tsx`、`virtual-thread-list.tsx`、`thread-recovery-dialog.tsx`、`selection-bar.tsx` | 扫描 Codex 会话、搜索筛选与分组、导出 Markdown/JSONL、删除会话、取消/恢复待处理删除、修复会话目录/索引状态 | `conversations.list/export/delete/cancelPendingDeletions/previewRecovery/applyRecovery` | `commands/threads.rs`、`commands/thread_recovery.rs`；`core/threads.rs`、`thread_delete.rs`、`thread_recovery.rs` |
+| MCP 管理 | `src/components/mcp/mcp-page.tsx`、`use-mcp-servers.ts`、`mcp-editor-dialog.tsx`、`mcp-server-card.tsx`、`mcp-toolbar.tsx` | 读取、添加/编辑、启用/停用、删除 MCP server，并定位源配置 | `loadMcpServers/upsertMcpServer/setMcpServerEnabled/removeMcpServer/openPath` | `commands/mcp.rs`、`core/mcp.rs`；读写 Codex `config.toml` |
 | Skills 管理 | `src/components/skills/skills-page.tsx` | 扫描已安装 Skills、导入、移除、浏览备份、恢复或删除备份 | `loadInstalledSkills/loadSkillBackups/importSkill/removeSkill/restoreSkillBackup/deleteSkillBackup/openPath` | `commands/skills.rs`、`core/skills.rs` |
 | 自定义指令 | `src/components/custom-instructions/custom-instructions-page.tsx`、`history-list.tsx`、`preview-dialog.tsx`、`template-card.tsx`、`src/lib/custom-instruction-templates.ts` | 管理 `AGENTS.md` 中 AgentHarbor 标记的指令区块；模板预览、应用、清除和历史回滚 | `loadCustomInstructionState/previewCustomInstructionApply/applyCustomInstruction/clearCustomInstructionBlock/rollbackCustomInstruction` | `commands/custom_instructions.rs`、`core/custom_instructions.rs` |
 | 系统维护 | `src/components/maintenance/maintenance-page.tsx` | 诊断本地环境、清理冗余账号备份/过期索引、重建账号 registry、重启 Codex | `diagnose/clean/rebuildRegistry/targets.restart` | `commands/system.rs`、`commands/targets.rs`、`core/repository.rs`、`platform/process.rs` |
-| 设置 | `src/components/settings/settings-page.tsx`、`api-proxy-dialog.tsx`、`avatar-settings.tsx`、`background-settings.tsx` | 主题、强调色、语言、前端刷新间隔、代理配置/检测、头像、背景、自动切号阈值设置、升级检查 | `loadSnapshot/setApiProxyConfig/testApiProxyConfig/detectApiProxyConfig/setAutoSwitch/configureAutoSwitch`；大部分外观偏好写入 `localStorage` | `commands/system.rs`、`core/repository.rs`、`core/api_client.rs`、`platform/update.rs` |
+| 设置 | `src/components/settings/settings-page.tsx`、`api-proxy-dialog.tsx`、`avatar-settings.tsx`、`background-settings.tsx` | 主题、强调色、语言、前端刷新间隔、代理配置/检测、头像、背景、自动切号阈值设置、升级检查 | `loadSnapshot/getUsageRefreshInterval/setUsageRefreshInterval/setApiProxyConfig/testApiProxyConfig/detectApiProxyConfig/setAutoSwitch/configureAutoSwitch/checkUpdateInstallability`、`isUpdaterConfigured`；升级重启由 `use-update-check.ts` 直接 invoke `graceful_restart_for_update`；大部分外观偏好写入 `localStorage` | `commands/system.rs`、`core/repository.rs`、`core/api_client.rs`、`platform/update.rs` |
 
-可复用组件在 `src/components/ui/`；全局样式与设计 token 在 `src/index.css`、`tailwind.config.ts`。布局/动画 hooks 在 `src/hooks/`，i18n 初始化和中英文词条在 `src/lib/i18n.ts`、`src/locales/zh.json`、`src/locales/en.json`。
+可复用组件在 `src/components/ui/`；全局样式与设计 token 在 `src/index.css`、`tailwind.config.ts`。布局/动画 hooks 在 `src/hooks/`，`src/lib/a11y.ts` 提供键盘激活与焦点环辅助，`src/components/ui/confirm-dialog.tsx` 提供应用内确认框。i18n 初始化和中英文词条在 `src/lib/i18n.ts`、`src/locales/zh.json`、`src/locales/en.json`。
+
+大型页面按职责拆分为组合页、状态 hook 和视图组件：账号、图片工作台、中转、会话、MCP 页面都把主要数据/交互状态放进各自的 `use-*.ts`，再由页面组合独立组件。回归 fixture 在 `scripts/fixtures/frontend-regressions.tsx`；`scripts/visual-snapshot.mjs` 对页面状态做截图像素比较。
 
 ## 4. Tauri IPC 接口目录
 
@@ -92,8 +95,10 @@ IPC 命令必须同时在 Rust 命令文件中实现，并通过 `src-tauri/src/
 | `set_newapi_provider_enabled` | `id`, `enabled` | 启停供应商 | 同上 |
 | `set_newapi_provider_network` | `id`, `mode` | 配置该供应商跟随系统代理或直连 | 同上、`core/newapi.rs` |
 | `fetch_newapi_models` | `providerId`, `baseUrl`, `apiKey`, `protocol` | 查询模型与元数据；未保存的供应商可传空 ID | `commands/newapi.rs` → `core/router.rs`、`core/newapi.rs` |
-| `test_newapi_provider` | `id`, `model` | 对选择模型发出协议测试请求 | 同上 |
-| `query_newapi_provider_balance` | `id` | 查询站点余额 | 同上 |
+| `test_newapi_provider` | `id`, `model`, `onEvent`（Tauri Channel） | 发出流式推理请求；实时发送 request / headers / firstByte / content / complete / failed 阶段、HTTP 状态及实际耗时；最终返回 ProviderView | `commands/newapi.rs` → `core/router.rs`、`core/provider_probe.rs` |
+| `query_newapi_provider_balance` | `id` | 按站点识别官方余额或 New API/Sub2API；统一返回余额和可选多币种 entries，失败保留原值 | `commands/newapi.rs` → `core/router.rs`、`core/router_balance.rs` |
+| `set_newapi_balance_script` | `id`, `expectedBaseUrl`, `script` | 保存并验证查询脚本；空字符串恢复内置适配；站点变化拒绝保存 | `commands/newapi.rs` → `core/router.rs`、`core/balance_script.rs` |
+| `set_newapi_balance_credentials` | `id`, `expectedBaseUrl`, `userId`, `accessToken` | 卡片余额弹窗独立保存账户查询凭据；校验站点未变化，留空 token 保留旧值，不修改模型和接入配置 | 同上 |
 | `set_newapi_smart_routing` | `enabled` | 设置路由注入开关并协调路由服务 | `commands/newapi.rs` → `core/router.rs`、`core/routing_runtime.rs` |
 | `set_newapi_access_mode` | `mode` (`router` / `native`) | 切换 Codex Router 或 Native 接入 | 同上 |
 | `set_newapi_accountless` | `enabled` | 配置 Codex Router 无账号模式 | 同上 |
@@ -104,6 +109,10 @@ IPC 命令必须同时在 Rust 命令文件中实现，并通过 `src-tauri/src/
 | `restore_client_config` | `targetId` | 撤回 AgentHarbor 管理的客户端字段 | 同上 |
 | `release_client_config` | `targetId` | 放弃接管：只删除管理记录，不改配置文件；用于 conflict 或管理记录损坏 | 同上 |
 
+官方预设在 `src/lib/provider-presets.ts`，添加弹窗自动填入渠道地址、协议及部分种子模型；仍支持在线刷新模型与逐模型覆盖协议。非标准官方 API 路径经 `newapi::provider_endpoint` 统一处理，供获取模型、测试、转发与原生配置共用。
+
+余额入口在中转卡片的“查询余额”按钮，账户凭据移至独立弹窗。官方适配支持 DeepSeek、StepFun、SiliconFlow（国内/国际）、OpenRouter、Novita AI；按完整域名匹配并使用模型 API Key。自定义站点通过公开元数据识别 New API/Sub2API 后才发送账户令牌，New API 另需用户 ID。多币种不相加，缺失/非法金额报错；API facade 只对网络或超时重试一次。新增 OpenCode Go、Kimi Coding、MiniMax、GLM/Z.AI 的套餐配额窗口（含可用的重置时间）；OpenCode Zen 不等同于 Go，未内置其余额查询。`api.iiiiitoken.com` 支持 API Key `/v1/usage`。卡片弹窗支持 `request + extractor` 自定义 JavaScript：QuickJS 隔离执行，无文件/网络宿主接口，16 MiB 内存、300 ms 每阶段上限；Rust 执行同源 GET/POST，请求头占位符注入凭据，失败保留旧结果。脚本随供应商加密保存，换站清除，导出不包含脚本。此入口不提供 OAuth 订阅登录。
+
 供应商协议枚举定义在 `src/types/newapi.ts` / `core/router.rs`：`responses`、`chatCompletions`、`anthropicMessages`。Claude Code/OpenCode 的请求与持久化模型定义在 `src/types/clients.ts` 与 `core/client_config/options.rs`。协议转换实现位于 `core/protocol/`。配置行为和注意事项另见 [client-configuration.md](client-configuration.md)。
 
 ### 4.3 图片工作台
@@ -111,7 +120,7 @@ IPC 命令必须同时在 Rust 命令文件中实现，并通过 `src-tauri/src/
 | 命令 | 参数 | 用途 | 实现 |
 | --- | --- | --- | --- |
 | `generate_images` | `request`, `jobId?` | 调供应商图片接口生成/编辑图片（async reqwest，同时最多 2 个）；带 `jobId` 时可取消 | `commands/image.rs` |
-| `cancel_image_generation` | `jobId` | 取消进行中的生成：丢弃请求 future，连接立即关闭并释放名额；任务以 `image.errors.cancelled` 结束 | 同上 |
+| `cancel_image_generation` | `jobId` | 取消进行中的生成：丢弃请求 future，关闭本地连接并释放名额；任务以 `image.errors.cancelled` 结束，上游是否停止计费由供应商决定 | 同上 |
 | `image_key_status` | `baseUrl` | 检查该供应商地址是否有已保存图片凭据 | 同上 |
 | `save_image_key` | `baseUrl`, `apiKey` | 保存该站点的图片凭据（按站点保存，最多 20 个，最近使用在前） | 同上、`core/secret_file.rs` |
 | `list_image_key_sites` | — | 列出已保存凭据的站点地址（不返回密钥） | 同上 |
@@ -191,17 +200,20 @@ IPC 命令必须同时在 Rust 命令文件中实现，并通过 `src-tauri/src/
 | --- | --- | --- |
 | 状态与路径 | 构造 `CodexPaths`、读写设置/账号 registry、健康状态、清理和诊断 | `core/repository.rs`、`core/models.rs`、`platform/paths.rs` |
 | 账号与认证 | 认证快照、账号列表/切换/删除、登录和额度刷新 | `core/auth.rs`、`core/accounts.rs`、`core/account_monitor.rs` |
-| 供应商与模型 | Provider 数据、协议、模型目录、余额、测试、导入导出、Codex 配置注入 | `core/router.rs`、`core/newapi.rs`、`core/model_defaults.rs`、`core/codex_config.rs`、`core/codex_native.rs` |
-| HTTP Router | 本机监听、认证、供应商选择、转发、协议适配与流式输出 | `core/router_proxy.rs`、`core/protocol/` |
+| 供应商与模型 | Provider 数据、协议、模型目录、余额、测试、导入导出、Codex 配置注入 | `core/router.rs`、`core/newapi.rs`、`core/router_balance.rs`、`core/balance_script.rs`、`core/provider_probe.rs`、`core/model_defaults.rs`、`core/codex_config.rs`、`core/codex_native.rs` |
+| HTTP Router | 本机监听、认证、供应商选择、转发、协议适配与流式输出；`router_proxy::handle` 保留转发主流程，细节由同文件的具名 helper 承担 | `core/router_proxy.rs`、`core/protocol/` |
 | 服务生命周期 | 计算 Codex/Claude Code/OpenCode 当前是否需要 Router，安全协调启动/停止 | `core/routing_runtime.rs`、`core/client_config/mod.rs` |
 | 客户端配置适配 | Claude Code 与 OpenCode 各自的配置生成、字段级备份/恢复、revision 校验 | `core/client_config/claude.rs`、`opencode.rs`、`options.rs`、`mod.rs` |
-| 用量统计 | 从 Codex/Claude Code 会话日志提取本地 Token；记录并按供应商/模型/协议聚合 Router 请求（不按客户端归因） | `core/local_usage.rs`、`core/relay_usage.rs`、`commands/usage.rs` |
+| 自动切号 | 账号额度刷新、纯决策和应用内后台循环；仅应用运行时执行 | `core/auto_switch.rs`、`commands/auto_switch.rs`、`platform/daemon.rs`（只清理旧版计划任务） |
+| 用量统计 | 从 Codex/Claude Code 会话日志提取本地 Token；按供应商/模型/协议记录 Router 请求（不按客户端归因）；账本超过 16 MB 时将 35 天前明细折叠为汇总，保持累计数精确 | `core/local_usage.rs`、`core/relay_usage.rs`、`commands/usage.rs` |
 | 会话扫描/删除/恢复 | 解析 rollout、会话索引与 SQLite catalog；安全导出；删除队列；恢复 journal | `core/threads.rs`、`core/thread_delete.rs`、`core/thread_recovery.rs`、`core/thread_recovery/` |
 | 配置文件管理 | MCP、Skills、AgentHarbor 管理的 AGENTS.md 区块 | `core/mcp.rs`、`core/skills.rs`、`core/custom_instructions.rs` |
 | 存储安全 | 原子文件写入、durable remove、本地秘密文件加密/权限 | `core/storage.rs`、`core/secret_file.rs` |
 | 系统集成 | 进程、代理、旧版计划任务清理、单实例、托盘、升级、平台入口 | `platform/process.rs`、`proxy.rs`、`daemon.rs`、`single_instance.rs`、`update.rs`、`windows.rs`、`macos_main_bundle.rs`、`dock.rs` |
 
 `core/targets.rs` 只定义两个按目标查询的能力接口：会话源（`ConversationSource`）和进程控制（`ProcessController`），当前都只有 Codex 实现；MCP、Skills、指令直接使用 `CodexPaths`。Claude Code 与 OpenCode 目标用于客户端配置，Claude Code 另外是本地用量扫描来源。没有 OpenCode 本地会话用量来源；Router 用量记录只按供应商、模型和协议汇总，不归属到 Codex、Claude Code 或 OpenCode。不能据此认为 Claude Code/OpenCode 支持 Codex 的会话、MCP、Skills 或进程操作。
+
+跨模块共用的实现集中在 `core/threads.rs::table_columns`（删除与恢复共用 SQLite 表结构查询）、`core/protocol::Translation::can_serve`（协议直通/转换可达性）和 `core/client_config/options.rs::client_endpoint`（Claude Code/OpenCode 的上游地址与凭据选择）。
 
 ## 7. 数据类型与持久化位置
 
@@ -245,6 +257,7 @@ Windows 的 `secret_file` 使用 DPAPI；Unix 写入受限权限的原子文件�
 | `pnpm tauri <args>` | `package.json`、`scripts/tauri.mjs` | 调用本仓库 Tauri CLI；Windows 包装器默认选择 MSVC Rust toolchain |
 | `pnpm test:rust` | `package.json`、`scripts/tauri.mjs` | 调用 Cargo 库单元测试及 `local_workflows` 集成测试 |
 | `pnpm test:frontend` | `package.json`、`scripts/test-frontend-regressions.mjs` | Playwright 前端回归测试；用例夹具在 `scripts/fixtures/frontend-regressions.tsx` |
+| `pnpm build` 后运行 `node scripts/visual-snapshot.mjs capture|compare` | `scripts/visual-snapshot.mjs` | 对 9 个页面的亮/暗外观及交互状态进行逐像素截图检查；`capture` 更新基线，`compare` 对比已有基线 |
 | Rust 单元/集成测试 | 各 `src-tauri/src/core/*`、`src-tauri/tests/` | 覆盖具体领域；代理、客户端配置、线程恢复/删除等测试与实现相邻 |
 
 桌面打包配置在 `src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`；图标与品牌资源在 `src-tauri/icons/`、`assets/`。Windows 和 macOS 系统差异适配主要在 `src-tauri/src/platform/`。

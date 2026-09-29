@@ -553,8 +553,7 @@ mod tests {
     fn apply_as_legacy_install(paths: &CodexPaths, store: &Store) -> PathBuf {
         let applied = apply_routing_config(paths, store).unwrap();
         let backup = applied.backup_path.map(PathBuf::from).unwrap();
-        let legacy = backup
-            .with_file_name(format!("{}.toml", uuid::Uuid::new_v4()));
+        let legacy = backup.with_file_name(format!("{}.toml", uuid::Uuid::new_v4()));
         std::fs::rename(&backup, &legacy).unwrap();
         std::fs::remove_file(path(paths)).unwrap();
         legacy

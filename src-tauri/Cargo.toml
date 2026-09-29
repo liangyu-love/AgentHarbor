@@ -37,6 +37,7 @@ tauri-plugin-notification = "=2.3.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 json5 = "0.4"
+rquickjs = "0.11"
 toml = "0.8"
 toml_edit = "0.22"
 rusqlite = { version = "0.32", features = ["bundled"] }

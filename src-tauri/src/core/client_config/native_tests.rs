@@ -88,12 +88,18 @@ fn claude_one_m_works_in_native_mode_and_keeps_user_context_env() {
     let installed = read(&manager.paths.claude);
     let model = format!("{}[1m]", request.model);
     assert_eq!(installed["env"]["ANTHROPIC_MODEL"], model.as_str());
-    assert_eq!(installed["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "400000");
+    assert_eq!(
+        installed["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"],
+        "400000"
+    );
 
     request.options.claude_one_m = ClaudeOneM::default();
     apply(&manager, &store, &request);
     let installed = read(&manager.paths.claude);
-    assert_eq!(installed["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "400000");
+    assert_eq!(
+        installed["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"],
+        "400000"
+    );
 }
 
 fn versioned_claude_fixture() -> (tempfile::TempDir, ConfigManager, Store, ConfigRequest) {
@@ -183,6 +189,43 @@ fn claude_reapplying_a_subset_removes_previously_managed_model_versions() {
     );
     manager.restore(TargetId::ClaudeCode).unwrap();
     assert!(!manager.paths.claude.exists());
+}
+
+#[test]
+fn claude_removes_legacy_generated_picker_rows_from_other_relays() {
+    let (_temp, manager, store, request) = versioned_claude_fixture();
+    let original = json!({"availableModels": ["claude-opus-5-kiro", "manual-deployment"], "modelPicker": {"options": [
+        {"model": "claude-opus-5-kiro", "label": "claude-opus-5-kiro"},
+        {"model": "claude-opus-5-5", "label": "claude-opus-5-5"},
+        {"model": "manual-deployment", "label": "My own model"},
+        {"model": "manual-with-metadata", "label": "manual-with-metadata", "description": "Keep"}
+    ]}});
+    write(&manager.paths.claude, &original);
+    apply(&manager, &store, &request);
+    let installed = read(&manager.paths.claude);
+    let entries = installed["modelPicker"]["options"].as_array().unwrap();
+    assert!(!entries
+        .iter()
+        .any(|entry| entry["model"] == "claude-opus-5-kiro"));
+    assert!(entries
+        .iter()
+        .any(|entry| entry["model"] == "manual-deployment"));
+    assert!(entries
+        .iter()
+        .any(|entry| entry["model"] == "manual-with-metadata"));
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|entry| entry["model"] == "claude-opus-5-5")
+            .count(),
+        1
+    );
+    assert!(!installed["availableModels"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("claude-opus-5-kiro")));
+    manager.restore(TargetId::ClaudeCode).unwrap();
+    assert_eq!(read(&manager.paths.claude), original);
 }
 
 #[test]
@@ -464,7 +507,11 @@ fn release_leaves_a_conflicting_file_untouched_and_allows_reapply() {
     assert!(manager.restore(TargetId::ClaudeCode).is_err());
 
     manager.release(TargetId::ClaudeCode).unwrap();
-    assert_eq!(read(&manager.paths.claude), edited, "release never rewrites the file");
+    assert_eq!(
+        read(&manager.paths.claude),
+        edited,
+        "release never rewrites the file"
+    );
     let status = &manager.list()[0];
     assert!(!status.configured && !status.conflict);
 

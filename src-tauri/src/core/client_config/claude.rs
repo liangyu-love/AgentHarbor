@@ -154,6 +154,25 @@ impl ClientAdapter for ClaudeCode {
                 .clone(),
             None => Vec::new(),
         };
+        // Older builds left their plain model/label rows behind when switching
+        // relays. Keep user-authored rows (custom labels or metadata), but do not
+        // carry those generated rows into an unrelated relay's picker.
+        let mut stale_generated = Vec::new();
+        entries.retain(|entry| {
+            let Some(object) = entry.as_object() else {
+                return true;
+            };
+            let Some(model) = object.get("model").and_then(Value::as_str) else {
+                return true;
+            };
+            let stale = object.len() == 2
+                && object.get("label").and_then(Value::as_str) == Some(model)
+                && !models.iter().any(|selected| selected == model);
+            if stale {
+                stale_generated.push(model.to_owned());
+            }
+            !stale
+        });
         for model in &models {
             if entries
                 .iter()
@@ -185,6 +204,11 @@ impl ClientAdapter for ClaudeCode {
                 .as_array()
                 .ok_or("clients.errors.invalidConfig")?
                 .clone();
+            allowed.retain(|value| {
+                !value
+                    .as_str()
+                    .is_some_and(|id| stale_generated.iter().any(|stale| stale == id))
+            });
             for model in allowed_models {
                 let model = json!(model);
                 if !allowed.contains(&model) {

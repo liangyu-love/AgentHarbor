@@ -30,17 +30,37 @@ export function useProviderState() {
     replaceState(change.state);
     if (change.applied) setAppliedNote(change.applied);
   };
+
+  // Check if provider matches balance query context
+  const matchesBalanceContext = (item: NewApiProvider, provider: NewApiProvider) =>
+    item.id === provider.id
+    && item.baseUrl === provider.baseUrl
+    && item.userId === provider.userId
+    && item.networkMode === provider.networkMode
+    && (item.balanceScript ?? "") === (provider.balanceScript ?? "");
+
   const patchProviderBalance = (provider: NewApiProvider) => {
     const current = queryClient.getQueryData<NewApiState>(STATE_KEY);
-    if (current) replaceState({ ...current, providers: current.providers.map(item => (item.id === provider.id && item.baseUrl === provider.baseUrl && item.userId === provider.userId && item.networkMode === provider.networkMode && (item.balanceScript ?? "") === (provider.balanceScript ?? "")
-      ? { ...item, balance: provider.balance, balanceSource: provider.balanceSource }
-      : item)) });
+    const ownerId = provider.balanceSharedFrom ?? provider.id;
+    if (current) replaceState({
+      ...current,
+      providers: current.providers.map(item => item.baseUrl === provider.baseUrl
+        && (matchesBalanceContext(item, provider) || item.id === ownerId || item.balanceSharedFrom === ownerId)
+        ? { ...item, balance: provider.balance, balanceSource: provider.balanceSource,
+            ...(item.id === provider.id ? { balanceSharedFrom: provider.balanceSharedFrom } : {}) }
+        : item
+      )
+    });
   };
-  const patchBalanceCredentials = (provider: NewApiProvider) => queryClient.setQueryData<NewApiState>(STATE_KEY, current => current && ({
-    ...current, providers: current.providers.map(item => item.id === provider.id && item.baseUrl === provider.baseUrl
-      ? { ...item, userId: provider.userId, hasAccessToken: provider.hasAccessToken, balance: provider.balance, balanceSource: provider.balanceSource, balanceScript: provider.balanceScript }
-      : item),
-  }));
+  const patchBalanceCredentials = (provider: NewApiProvider) => {
+    queryClient.setQueryData<NewApiState>(STATE_KEY, current => current && ({
+      ...current, providers: current.providers.map(item => item.id === provider.id && item.baseUrl === provider.baseUrl
+        ? { ...item, userId: provider.userId, hasAccessToken: provider.hasAccessToken, balance: provider.balance, balanceSource: provider.balanceSource, balanceScript: provider.balanceScript, balanceSharedFrom: provider.balanceSharedFrom }
+        : item.balanceSharedFrom === provider.id && item.baseUrl === provider.baseUrl
+        ? { ...item, userId: provider.userId, hasAccessToken: provider.hasAccessToken, balance: provider.balance, balanceSource: provider.balanceSource, balanceScript: provider.balanceScript }
+        : item),
+    }));
+  };
   const patchProviderTest = (provider: NewApiProvider) => {
     const current = queryClient.getQueryData<NewApiState>(STATE_KEY);
     if (current) replaceState({ ...current, providers: current.providers.map(item => (item.id === provider.id

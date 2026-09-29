@@ -4,6 +4,8 @@ import {
   Calendar,
   Check,
   Copy,
+  Eye,
+  EyeOff,
   Loader2,
   LogIn,
   RefreshCw,
@@ -174,14 +176,20 @@ export function AccountCard({
 }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
+  const [emailVisible, setEmailVisible] = useState(false);
   const statusText = t(`accounts.${account.usageStatus}`);
-  const title = account.email || account.displayName;
+  const email = account.email;
+  const [localPart, domain] = email.split("@");
+  const maskedEmail = domain
+    ? `${localPart.slice(0, 1)}${"•".repeat(Math.max(3, localPart.length - 2))}${localPart.length > 1 ? localPart.slice(-1) : ""}@${domain}`
+    : email ? "••••" : "";
+  const title = email ? (emailVisible ? email : maskedEmail) : account.displayName;
 
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(account.email || account.displayName);
       setCopied(true);
-      toast({ title: "已复制账号", description: account.email || account.displayName });
+      toast({ title: "已复制账号" });
       setTimeout(() => setCopied(false), 2000);
     } catch {
       toast({ title: "复制失败", variant: "destructive" });
@@ -218,6 +226,20 @@ export function AccountCard({
               {title}
             </h3>
           </div>
+          {email && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="h-7 w-7 shrink-0 text-muted-foreground"
+              onClick={() => setEmailVisible(visible => !visible)}
+              aria-label={t(emailVisible ? "accounts.hideEmail" : "accounts.showEmail")}
+              aria-pressed={emailVisible}
+              title={t(emailVisible ? "accounts.hideEmail" : "accounts.showEmail")}
+            >
+              {emailVisible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </Button>
+          )}
         </div>
 
         {/* Badges line: Plan Badge + Active Badge */}

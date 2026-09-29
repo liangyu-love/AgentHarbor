@@ -78,7 +78,9 @@ pub fn run() {
                 if let Ok(paths) = paths {
                     tauri::async_runtime::spawn(async move {
                         let _guard = core::routing_runtime::mutation_guard().await;
-                        if let Err(error) = core::routing_runtime::reconcile_on_startup(&paths).await {
+                        if let Err(error) =
+                            core::routing_runtime::reconcile_on_startup(&paths).await
+                        {
                             eprintln!("[AgentHarbor] local router startup failed: {error}");
                         }
                     });
@@ -161,6 +163,9 @@ pub fn run() {
             commands::newapi::test_newapi_provider,
             commands::newapi::fetch_newapi_models,
             commands::newapi::query_newapi_provider_balance,
+            commands::newapi::set_newapi_balance_credentials,
+            commands::newapi::set_newapi_balance_script,
+            commands::newapi::set_newapi_balance_sharing,
             commands::newapi::set_newapi_smart_routing,
             commands::newapi::set_newapi_access_mode,
             commands::newapi::set_newapi_accountless,

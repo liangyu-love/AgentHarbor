@@ -467,6 +467,24 @@ impl ConfigManager {
             )?;
             return Err(error);
         }
+        // Update session.installed to match what was actually written and will be read back.
+        // This prevents false conflict detection due to JSON serialization/deserialization differences.
+        if let Some(mut updated_session) = session.cloned() {
+            if let Ok(written_text) = read_text(path) {
+                if let Ok(reparsed) = parse(written_text.as_deref(), id) {
+                    updated_session.installed = reparsed;
+                    // Update the changes' after values to match the reparsed document
+                    for change in &mut updated_session.changes {
+                        change.after = field(&updated_session.installed, &change.path).cloned();
+                    }
+                    let _ = secret_file::write(
+                        &journal,
+                        &serde_json::to_vec(&updated_session)
+                            .map_err(|_| "clients.errors.storage")?,
+                    );
+                }
+            }
+        }
         Ok(ConfigApplied {
             path: path.to_string_lossy().into(),
             backup_path: backup_path.to_string_lossy().into(),

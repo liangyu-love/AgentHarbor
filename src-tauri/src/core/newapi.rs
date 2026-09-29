@@ -120,7 +120,7 @@ pub(crate) fn get(client: &Client, url: Url, headers: HeaderMap) -> Result<Value
     response_json(response)
 }
 
-fn request_error(error: reqwest::Error) -> String {
+pub(crate) fn request_error(error: reqwest::Error) -> String {
     if error.is_timeout() {
         "newapi.errors.timeout"
     } else {
@@ -129,7 +129,7 @@ fn request_error(error: reqwest::Error) -> String {
     .into()
 }
 
-fn status_error(status: StatusCode) -> String {
+pub(crate) fn status_error(status: StatusCode) -> String {
     match status.as_u16() {
         401 | 403 => "newapi.errors.auth",
         404 => "newapi.errors.notFound",
@@ -140,7 +140,7 @@ fn status_error(status: StatusCode) -> String {
     .into()
 }
 
-fn response_json(response: Response) -> Result<Value, String> {
+pub(crate) fn response_json(response: Response) -> Result<Value, String> {
     let status = response.status();
     if !status.is_success() {
         return Err(status_error(status));
@@ -157,9 +157,29 @@ fn response_json(response: Response) -> Result<Value, String> {
 }
 
 pub(crate) fn endpoint(config: &Connection, path: &str) -> Result<Url, String> {
-    base_url(&config.base_url)?
-        .join(path)
-        .map_err(|_| "newapi.errors.url".into())
+    provider_endpoint(&config.base_url, path)
+}
+
+pub(crate) fn provider_endpoint(base: &str, path: &str) -> Result<Url, String> {
+    let root = base_url(base)?;
+    let non_v1 = matches!(
+        (root.host_str().unwrap_or_default(), root.path()),
+        ("api.novita.ai", "/v3/openai/")
+            | (
+                "open.bigmodel.cn" | "api.z.ai",
+                "/api/coding/paas/v4/" | "/api/paas/v4/"
+            )
+    );
+    let path = if non_v1 {
+        if path == "v1" {
+            ""
+        } else {
+            path.strip_prefix("v1/").unwrap_or(path)
+        }
+    } else {
+        path
+    };
+    root.join(path).map_err(|_| "newapi.errors.url".into())
 }
 
 fn data(value: &Value) -> Result<&Value, String> {
@@ -175,6 +195,8 @@ fn data(value: &Value) -> Result<&Value, String> {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Balance {
+    #[serde(default)]
+    pub entries: Vec<BalanceEntry>,
     pub remaining: f64,
     pub used: Option<f64>,
     pub unit: String,
@@ -183,6 +205,20 @@ pub struct Balance {
     pub request_count: Option<u64>,
     pub checked_at: i64,
     pub conversion_available: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BalanceEntry {
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub resets_at: Option<String>,
+    pub remaining: f64,
+    pub used: Option<f64>,
+    pub total: Option<f64>,
+    pub unit: String,
+    pub valid: bool,
 }
 
 fn number(value: &Value, key: &str) -> Option<f64> {
@@ -238,6 +274,7 @@ fn parse_balance(user: &Value, status: Option<&Value>, user_id: u64) -> Result<B
         None => (1.0, 1.0, "quota".into(), false),
     };
     Ok(Balance {
+        entries: vec![],
         remaining: quota / divisor * rate,
         used: used.map(|v| v / divisor * rate),
         unit,
@@ -307,6 +344,17 @@ impl Model {
         // catalog only fill what is still absent.
         if self.display_name.trim().is_empty() {
             self.display_name = self.id.clone();
+        }
+        // Refresh the old 200K heuristic for newer Claude models. Explicit
+        // manual values and limits reported by the provider remain authoritative.
+        if self.metadata_source == "local"
+            && defaults.context_window == 1_000_000
+            && self.context_window == Some(200_000)
+        {
+            self.context_window = Some(defaults.context_window);
+            if self.max_output_tokens == Some(64_000) {
+                self.max_output_tokens = Some(defaults.max_output_tokens);
+            }
         }
         if self.context_window.is_none() {
             self.context_window = Some(defaults.context_window);
@@ -563,6 +611,35 @@ mod tests {
     use serde_json::json;
     use std::io::{Read, Write};
 
+    #[test]
+    fn official_presets_preserve_nonstandard_api_paths() {
+        for (base, expected) in [
+            (
+                "https://opencode.ai/zen/go/v1",
+                "https://opencode.ai/zen/go/v1/chat/completions",
+            ),
+            (
+                "https://api.novita.ai/v3/openai",
+                "https://api.novita.ai/v3/openai/chat/completions",
+            ),
+            (
+                "https://api.z.ai/api/coding/paas/v4",
+                "https://api.z.ai/api/coding/paas/v4/chat/completions",
+            ),
+            (
+                "https://relay.invalid/prefix/v1",
+                "https://relay.invalid/prefix/v1/chat/completions",
+            ),
+        ] {
+            assert_eq!(
+                provider_endpoint(base, "v1/chat/completions")
+                    .unwrap()
+                    .as_str(),
+                expected
+            );
+        }
+    }
+
     fn connection() -> Connection {
         Connection {
             base_url: "https://example.com/".into(),
@@ -668,6 +745,26 @@ mod tests {
         }
         .with_local_defaults();
         assert_eq!(model.context_window, Some(128_000));
+    }
+
+    #[test]
+    fn old_local_claude_guess_moves_to_one_m_but_manual_limit_stays() {
+        let old = Model {
+            id: "claude-opus-4-8".into(),
+            context_window: Some(200_000),
+            max_output_tokens: Some(64_000),
+            metadata_source: "local".into(),
+            ..Default::default()
+        };
+        let updated = old.clone().with_local_defaults();
+        assert_eq!(updated.context_window, Some(1_000_000));
+        assert_eq!(updated.max_output_tokens, Some(128_000));
+        let manual = Model {
+            metadata_source: "manual".into(),
+            ..old
+        }
+        .with_local_defaults();
+        assert_eq!(manual.context_window, Some(200_000));
     }
 
     #[test]

@@ -27,8 +27,12 @@ export const exclusionOf = (provider: NewApiProvider, protocols: ModelProtocol[]
 
 export const clientDefaults = (provider: NewApiProvider | undefined, model: string) => {
   const metadata = provider?.models.find(entry => entry.id === model);
+  const compact = model.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const claudeOneM = compact.includes("claude")
+    && ["opus5", "opus48", "opus47", "opus46", "sonnet5", "sonnet46", "fable5", "mythos5"]
+      .some(family => compact.includes(family));
   const contextWindow = metadata?.contextWindow
     ?? (provider?.model === model ? provider.contextWindow : null)
-    ?? (model.toLowerCase().includes("claude") ? 200_000 : 128_000);
+    ?? (claudeOneM ? 1_000_000 : compact.includes("claude") ? 200_000 : 128_000);
   return { contextWindow, maxOutputTokens: Math.min(metadata?.maxOutputTokens ?? 8192, contextWindow) };
 };
