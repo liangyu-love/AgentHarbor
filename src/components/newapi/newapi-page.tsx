@@ -8,6 +8,7 @@ import { toast } from "@/hooks/use-toast";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { ProviderBalanceDialog } from "@/components/newapi/provider-balance-dialog";
 import { ProviderDialog } from "@/components/newapi/provider-dialog";
 import { ProviderTestDialog } from "@/components/newapi/provider-test-dialog";
 import { ClientConfigs } from "@/components/newapi/client-configs";
@@ -26,6 +27,7 @@ export function NewApiPage() {
   const { state, run, error, setError, applyChange, patchProviderTest } = store;
   const [dialog, setDialog] = useState<{ open: boolean; provider: NewApiProvider | null }>({ open: false, provider: null });
   const [testDialog, setTestDialog] = useState<NewApiProvider | null>(null);
+  const [balanceId, setBalanceId] = useState<string | null>(null);
   const [removing, setRemoving] = useState<NewApiProvider | null>(null);
   const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
 
@@ -80,7 +82,7 @@ export function NewApiPage() {
       <ClientConfigs providers={providers} />
 
       <RelayList store={store} view={view} providers={providers}
-        onEdit={provider => setDialog({ open: true, provider })} onTest={setTestDialog} onRemove={setRemoving} />
+        onEdit={provider => setDialog({ open: true, provider })} onTest={setTestDialog} onRemove={setRemoving} onBalance={provider => setBalanceId(provider.id)} />
 
       <ProviderDialog
         open={dialog.open}
@@ -89,6 +91,9 @@ export function NewApiPage() {
         onSaved={applyChange}
       />
 
+      {balanceId && providers.find(provider => provider.id === balanceId) && <ProviderBalanceDialog
+        key={balanceId} provider={providers.find(provider => provider.id === balanceId)!} store={store}
+        onClose={() => setBalanceId(null)} />}
       <GroupAliasDialog view={view} />
 
       <ProviderTestDialog

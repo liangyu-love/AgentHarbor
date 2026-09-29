@@ -14,13 +14,14 @@ import type { RelayView } from "@/components/newapi/use-relay-view";
 import type { NewApiProvider } from "@/types/newapi";
 
 // Relay section: header with add / import / export, filter chips and the card grid.
-export function RelayList({ store, view, providers, onEdit, onTest, onRemove }: {
+export function RelayList({ store, view, providers, onEdit, onTest, onRemove, onBalance }: {
   store: ProviderState;
   view: RelayView;
   providers: NewApiProvider[];
   onEdit: (provider: NewApiProvider | null) => void;
   onTest: (provider: NewApiProvider) => void;
   onRemove: (provider: NewApiProvider) => void;
+  onBalance: (provider: NewApiProvider) => void;
 }) {
   const { t } = useTranslation();
   const { state, mutationLocked, exportBusy, importProviders, exportProviders } = store;
@@ -108,7 +109,7 @@ export function RelayList({ store, view, providers, onEdit, onTest, onRemove }: 
       ) : (
         <div className="grid items-start gap-4 sm:grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
           {shown.map(group => (
-            <RelayCard key={group.key} group={group} store={store} view={view} onEdit={onEdit} onTest={onTest} onRemove={onRemove} />
+            <RelayCard key={group.key} group={group} store={store} view={view} onEdit={onEdit} onTest={onTest} onRemove={onRemove} onBalance={onBalance} />
           ))}          </div>
       )}
     </section>

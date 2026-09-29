@@ -12,6 +12,7 @@ import { toast } from "@/hooks/use-toast";
 import { mergeModelCatalog } from "@/lib/provider-models";
 import type { ModelProtocol, NewApiProvider, NewApiStateChange, NewApiModel } from "@/types/newapi";
 import { ProviderModelEditor } from "@/components/newapi/provider-model-editor";
+import { PROVIDER_PRESETS } from "@/lib/provider-presets";
 
 // A relay usually speaks OpenAI-compatible Chat Completions unless it says
 // otherwise, and the Codex-specific Responses protocol is the less common case.
@@ -20,20 +21,16 @@ const DEFAULT_PROTOCOL: ModelProtocol = "chatCompletions";
 interface ProviderDraft {
   name: string;
   baseUrl: string;
-  userId: string;
-  accessToken: string;
   apiKey: string;
   protocol: ModelProtocol;
   model: string;
   contextWindow: string;
   autoCompactLimit: string;
 }
-const emptyDraft: ProviderDraft = { name: "", baseUrl: "", userId: "", accessToken: "", apiKey: "", protocol: DEFAULT_PROTOCOL, model: "", contextWindow: "", autoCompactLimit: "" };
+const emptyDraft: ProviderDraft = { name: "", baseUrl: "", apiKey: "", protocol: DEFAULT_PROTOCOL, model: "", contextWindow: "", autoCompactLimit: "" };
 const fromProvider = (provider: NewApiProvider): ProviderDraft => ({
   name: provider.name,
   baseUrl: provider.baseUrl,
-  userId: provider.userId?.toString() ?? "",
-  accessToken: "",
   apiKey: "",
   protocol: provider.protocol,
   model: provider.model,
@@ -177,8 +174,8 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
         id: provider?.id ?? null,
         name: draft.name,
         baseUrl: draft.baseUrl,
-        userId: optionalNumber(draft.userId, "newapi.errors.userId"),
-        accessToken: draft.accessToken,
+        userId: provider?.userId ?? null,
+        accessToken: "",
         apiKey: draft.apiKey,
         protocol: draft.protocol,
         model: draft.model,
@@ -192,14 +189,13 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
     } catch (e) {
       const key = typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
       setError(key);
-      if (key === "newapi.errors.userId" || key === "newapi.errors.context") setShowAdvanced(true);
+      if (key === "newapi.errors.context") setShowAdvanced(true);
     } finally {
       setSaving(false);
     }
   };
   const hasAdvancedConfigured =
-    (!!provider && (!!provider.userId || provider.hasAccessToken || !!provider.contextWindow || !!provider.autoCompactLimit)) ||
-    !!draft.contextWindow || !!draft.autoCompactLimit || !!draft.userId || !!draft.accessToken;
+    !!draft.contextWindow || !!draft.autoCompactLimit;
 
   const fetchModels = async () => {
     if (fetchingModels || saving) return;
@@ -262,6 +258,47 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
         </div>
 
         <form className="relative space-y-4 pt-1" onSubmit={e => { e.preventDefault(); void submit(); }}>
+          {!provider && (
+            <div className="rounded-xl border border-primary/15 bg-gradient-to-r from-primary/[0.04] via-primary/[0.01] to-transparent p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="provider-preset" className="text-xs font-semibold text-foreground/90">
+                  {t("newapi.officialPreset")}
+                </Label>
+                <span className="text-[11px] text-muted-foreground">
+                  一键填入常用官方与专线配置
+                </span>
+              </div>
+              <select id="provider-preset" defaultValue="" disabled={saving} className="h-9 w-full rounded-lg border border-border/70 bg-background/90 px-3 text-xs font-medium shadow-xs transition-colors hover:border-primary/40 focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring" onChange={event => {
+              const preset = PROVIDER_PRESETS.find(item => item.name === event.target.value);
+              if (!preset) return;
+              setDraft({ ...emptyDraft, name: preset.name, baseUrl: preset.baseUrl, protocol: preset.protocol, model: preset.models?.[0]?.id ?? "" });
+              setModels(preset.models ?? []); setFetchError(null);
+            }}>
+              <option value="">{t("newapi.customProvider")} (手动填写)</option>
+              <optgroup label="代码与直连专线 (Coding / Direct)">
+                {PROVIDER_PRESETS.filter(p => p.category === "coding" || p.category === "direct").map(preset => (
+                  <option key={preset.name} value={preset.name}>
+                    {preset.name} — {preset.baseUrl}
+                  </option>
+                ))}
+              </optgroup>
+              <optgroup label="模型聚合平台 (Aggregators)">
+                {PROVIDER_PRESETS.filter(p => p.category === "aggregator").map(preset => (
+                  <option key={preset.name} value={preset.name}>
+                    {preset.name} — {preset.baseUrl}
+                  </option>
+                ))}
+              </optgroup>
+              <optgroup label="官方原厂标准协议 (Official)">
+                {PROVIDER_PRESETS.filter(p => p.category === "official").map(preset => (
+                  <option key={preset.name} value={preset.name}>
+                    {preset.name} — {preset.baseUrl}
+                  </option>
+                ))}
+              </optgroup>
+</select>
+            </div>
+          )}
           {error && (
             <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-2.5 text-[13px] text-destructive">
               {t(error)}
@@ -325,7 +362,7 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
             />
           </div>
 
-          {/* Collapsible Advanced & Balance Settings */}
+          {/* Advanced model settings */}
           <div className="space-y-2.5 pt-1 border-t border-border/50">
             <button
               type="button"
@@ -335,7 +372,7 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
             >
               <div className="flex items-center gap-2">
                 <span className="text-[11px] font-semibold uppercase tracking-wider text-primary/80">
-                  {t("newapi.sectionAdvanced")} & {t("newapi.sectionBalance")}
+                  {t("newapi.sectionAdvanced")}
                 </span>
                 {!showAdvanced && hasAdvancedConfigured && (
                   <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">
@@ -350,12 +387,6 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
               <div className="grid gap-3 sm:grid-cols-2 rounded-xl bg-black/[0.02] p-3 ring-1 ring-border/50 dark:bg-white/[0.02]">
                 {field("contextWindow", "newapi.contextWindow", { numeric: true, placeholder: t("newapi.useDefault") })}
                 {field("autoCompactLimit", "newapi.autoCompact", { numeric: true, placeholder: t("newapi.useDefault") })}
-                {field("userId", "newapi.userId", { numeric: true, hint: t("newapi.userIdHint") })}
-                {field("accessToken", "newapi.accessToken", {
-                  password: true,
-                  placeholder: provider?.hasAccessToken ? t("newapi.keepSecret") : "",
-                  hint: t("newapi.accessTokenHint"),
-                })}
               </div>
             )}
           </div>

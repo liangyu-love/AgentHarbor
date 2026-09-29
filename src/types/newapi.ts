@@ -1,4 +1,5 @@
 export interface NewApiBalance {
+  entries?: { remaining: number; used: number | null; total: number | null; unit: string; valid: boolean; label?: string | null; resetsAt?: string | null }[];
   remaining: number;
   used: number | null;
   unit: string;
@@ -37,10 +38,17 @@ export interface NewApiProvider {
   modelsFetchedAt: number | null;
   balance: NewApiBalance | null;
   balanceSource: string | null;
+  balanceScript?: string;
   testStatus: "untested" | "ok" | "failed";
   testAt: number | null;
   createdAt: number;
   updatedAt: number;
+}
+export interface ProviderProbeEvent {
+  stage: "request" | "headers" | "firstByte" | "content" | "complete" | "failed";
+  elapsedMs: number;
+  status: number | null;
+  text: string;
 }
 export interface NewApiRouterView {
   enabled: boolean;

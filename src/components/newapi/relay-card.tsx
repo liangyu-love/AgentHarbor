@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
-import { ChevronLeft, ChevronRight, Layers, List, Loader2, Network, PlugZap, RadioTower, RefreshCw, SquarePen, Trash2 } from "lucide-react";
+import { Wallet, ChevronLeft, ChevronRight, Layers, List, Loader2, Network, PlugZap, RadioTower, RefreshCw, SquarePen, Trash2 } from "lucide-react";
+import { balanceSourceName } from "@/lib/provider-balance";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -20,17 +21,18 @@ import type { NewApiProvider } from "@/types/newapi";
 
 // One relay: the current member's card face, stacked peek layers for the other
 // members, and the expanded member list.
-export function RelayCard({ group, store, view, onEdit, onTest, onRemove }: {
+export function RelayCard({ group, store, view, onEdit, onTest, onRemove, onBalance }: {
   group: RelayGroup;
   store: ProviderState;
   view: RelayView;
   onEdit: (provider: NewApiProvider) => void;
   onTest: (provider: NewApiProvider) => void;
   onRemove: (provider: NewApiProvider) => void;
+  onBalance: (provider: NewApiProvider) => void;
 }) {
   const { t, i18n } = useTranslation();
   const { mutationLocked, run, applyChange, balanceBusy, refreshBalance } = store;
-  const { filter, groupLabel, renameGroup, memberSelection, memberDirection, expandedGroups, selectMember, setExpanded, toggleExpanded } = view;
+  const { filter, groupLabel, renameGroup, memberSelection, memberDirection, expandedGroups, selectMember, setExpanded, toggleExpanded, finishFlip } = view;
   const routingEnabled = !!store.state.data?.router?.enabled;
   const activeId = store.state.data?.activeProviderId ?? null;
 
@@ -46,12 +48,7 @@ export function RelayCard({ group, store, view, onEdit, onTest, onRemove }: {
     provider.balance && provider.balanceSource !== "deepseek" ? t("newapi.balanceRemaining") : t("newapi.balance");
   const balanceCaption = (provider: NewApiProvider) => {
     if (!provider.balance) return t("newapi.balanceNotQueried");
-    switch (provider.balanceSource) {
-      case "newapi": return t("newapi.sourceNewApi");
-      case "sub2api": return t("newapi.sourceSub2Api");
-      case "deepseek": return t("newapi.sourceDeepSeek");
-      default: return t("newapi.balanceUndetected");
-    }
+    return balanceSourceName(provider.balanceSource) || t("newapi.balanceUndetected");
   };
 
   const activeMemberId = memberSelection[group.key] ?? (group.providers.find(item => item.id === activeId)?.id ?? group.providers[0].id);
@@ -103,6 +100,7 @@ export function RelayCard({ group, store, view, onEdit, onTest, onRemove }: {
 
       <AuroraCard
         key={provider.id}
+        onAnimationEnd={event => { if (event.target === event.currentTarget) finishFlip(group); }}
         data-relay-card-face
         color={cardColor}
         shine={isGroupActive || selected}
@@ -195,8 +193,8 @@ export function RelayCard({ group, store, view, onEdit, onTest, onRemove }: {
                     {value ?? "— —"}
                   </span>
                 </div>
-                <p className="truncate text-[10px] text-muted-foreground/80" title={balanceCaption(provider)}>
-                  {balanceCaption(provider)}
+                <p className="truncate text-[10px] text-muted-foreground/80" title={provider.balance ? `${balanceCaption(provider)} · ${new Date(provider.balance.checkedAt * 1000).toLocaleString()}` : balanceCaption(provider)}>
+                  {store.balanceErrors[provider.id] ? t("newapi.balanceFailed") : balanceCaption(provider)}
                 </p>
               </div>
 
@@ -280,7 +278,7 @@ export function RelayCard({ group, store, view, onEdit, onTest, onRemove }: {
                           className="max-w-[120px] truncate rounded font-semibold text-foreground hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
                           title={item.name}
                           onClick={() => {
-                            selectMember(group, item.id, group.providers.indexOf(item) < memberIndex ? "prev" : "next");
+                            if (item.id !== provider.id) selectMember(group, item.id, group.providers.indexOf(item) < memberIndex ? "prev" : "next");
                             setExpanded(group, false);
                           }}
                         >{item.name}</button>
@@ -293,6 +291,7 @@ export function RelayCard({ group, store, view, onEdit, onTest, onRemove }: {
                         )}
                       </div>
                       <div className="flex shrink-0 items-center gap-1.5">
+                        <button type="button" className={cardButton} aria-label={`${t("newapi.queryBalance")} ${item.name}`} onClick={() => onBalance(item)}><Wallet className="h-3 w-3" /></button>
                         <Switch
                           checked={item.enabled}
                           disabled={mutationLocked}
@@ -351,6 +350,9 @@ export function RelayCard({ group, store, view, onEdit, onTest, onRemove }: {
               )}
             </div>
             <div className="flex shrink-0 items-center gap-1">
+              <button type="button" className={cn(cardButton, "w-auto gap-1.5 whitespace-nowrap px-2")} onClick={() => onBalance(provider)} aria-label={`${t("newapi.queryBalance")} ${provider.name}`}>
+                <Wallet className="h-3.5 w-3.5" /><span className="text-[11px]">{t("newapi.queryBalance")}</span>
+              </button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <button

@@ -22,6 +22,14 @@ export function useRelayView(providers: NewApiProvider[], loaded: boolean) {
   const [groupMemberDirection, setGroupMemberDirection] = useState<Record<string, "prev" | "next">>({});
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
 
+  // Reduced-motion mode does not dispatch animationend. Expire that intent too,
+  // so filtering/remounting a card cannot replay an old member selection.
+  useEffect(() => {
+    if (!Object.keys(groupMemberDirection).length) return;
+    const timer = window.setTimeout(() => setGroupMemberDirection({}), 400);
+    return () => window.clearTimeout(timer);
+  }, [groupMemberDirection]);
+
   const groups = useMemo(() => groupProviders(providers), [providers]);
   useEffect(() => {
     if (loaded && filter !== "all" && !groups.some(group => group.key === filter)) {
@@ -49,16 +57,25 @@ export function useRelayView(providers: NewApiProvider[], loaded: boolean) {
     setGroupMemberDirection(prev => ({ ...prev, [group.key]: direction }));
     setGroupMemberSelect(prev => ({ ...prev, [group.key]: id }));
   };
-  const setExpanded = (group: RelayGroup, expanded: boolean) =>
+  const finishFlip = (group: RelayGroup) => setGroupMemberDirection(prev => {
+    const next = { ...prev };
+    delete next[group.key];
+    return next;
+  });
+  const setExpanded = (group: RelayGroup, expanded: boolean) => {
+    if (expanded) finishFlip(group);
     setExpandedGroups(prev => ({ ...prev, [group.key]: expanded }));
-  const toggleExpanded = (group: RelayGroup) =>
+  };
+  const toggleExpanded = (group: RelayGroup) => {
+    finishFlip(group);
     setExpandedGroups(prev => ({ ...prev, [group.key]: !prev[group.key] }));
+  };
 
   return {
     filter, setFilter, groups, shown, groupLabel,
     aliasGroup, setAliasGroup, aliasDraft, setAliasDraft, renameGroup, saveGroupAlias,
     memberSelection: groupMemberSelect, memberDirection: groupMemberDirection, expandedGroups,
-    selectMember, setExpanded, toggleExpanded,
+    selectMember, setExpanded, toggleExpanded, finishFlip,
   };
 }
 

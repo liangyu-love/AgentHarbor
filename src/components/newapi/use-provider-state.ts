@@ -19,6 +19,7 @@ export function useProviderState() {
   const mutationInFlight = useRef(false);
   const balanceInFlight = useRef(new Set<string>());
   const [balanceBusy, setBalanceBusy] = useState<Set<string>>(() => new Set());
+  const [balanceErrors, setBalanceErrors] = useState<Record<string, string | undefined>>({});
   const exportInFlight = useRef(false);
   const [exportBusy, setExportBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -31,10 +32,15 @@ export function useProviderState() {
   };
   const patchProviderBalance = (provider: NewApiProvider) => {
     const current = queryClient.getQueryData<NewApiState>(STATE_KEY);
-    if (current) replaceState({ ...current, providers: current.providers.map(item => (item.id === provider.id
+    if (current) replaceState({ ...current, providers: current.providers.map(item => (item.id === provider.id && item.baseUrl === provider.baseUrl && item.userId === provider.userId && item.networkMode === provider.networkMode && (item.balanceScript ?? "") === (provider.balanceScript ?? "")
       ? { ...item, balance: provider.balance, balanceSource: provider.balanceSource }
       : item)) });
   };
+  const patchBalanceCredentials = (provider: NewApiProvider) => queryClient.setQueryData<NewApiState>(STATE_KEY, current => current && ({
+    ...current, providers: current.providers.map(item => item.id === provider.id && item.baseUrl === provider.baseUrl
+      ? { ...item, userId: provider.userId, hasAccessToken: provider.hasAccessToken, balance: provider.balance, balanceSource: provider.balanceSource, balanceScript: provider.balanceScript }
+      : item),
+  }));
   const patchProviderTest = (provider: NewApiProvider) => {
     const current = queryClient.getQueryData<NewApiState>(STATE_KEY);
     if (current) replaceState({ ...current, providers: current.providers.map(item => (item.id === provider.id
@@ -62,9 +68,11 @@ export function useProviderState() {
     if (balanceInFlight.current.has(id)) return;
     balanceInFlight.current.add(id);
     setBalanceBusy(new Set(balanceInFlight.current));
+    setBalanceErrors(errors => ({ ...errors, [id]: undefined }));
     try {
       patchProviderBalance(await api.providers.queryBalance(id));
     } catch (cause) {
+      setBalanceErrors(errors => ({ ...errors, [id]: providerErrorKey(cause) }));
       toast({ title: t("newapi.balanceFailed"), description: t(providerErrorKey(cause)), variant: "destructive" });
     } finally {
       balanceInFlight.current.delete(id);
@@ -103,7 +111,7 @@ export function useProviderState() {
 
   return {
     state, busy, mutationLocked: busy !== null, error, setError, appliedNote, balanceBusy, exportBusy,
-    run, applyChange, patchProviderTest, refreshBalance, importProviders, exportProviders,
+    run, applyChange, patchProviderTest, patchBalanceCredentials, balanceErrors, refreshBalance, importProviders, exportProviders,
   };
 }
 
