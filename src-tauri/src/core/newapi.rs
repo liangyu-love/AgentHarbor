@@ -304,6 +304,51 @@ pub fn balance(config: &Connection, proxy: &ApiProxyConfigPayload) -> Result<Bal
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReasoningLevel {
+    pub effort: String,
+    pub description: String,
+}
+
+impl ReasoningLevel {
+    fn valid(&self) -> bool {
+        !self.effort.is_empty()
+            && self.effort.len() <= 32
+            && self
+                .effort
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            && self.description.len() <= 1024
+    }
+}
+
+// Do not turn a malformed/absent declaration into an explicit "unsupported".
+fn parse_reasoning_levels(value: &Value) -> Option<Vec<ReasoningLevel>> {
+    let levels = value.as_array().filter(|levels| levels.len() <= 32)?;
+    let mut parsed = Vec::new();
+    for level in levels {
+        let effort = level.as_str().or_else(|| level.get("effort")?.as_str())?;
+        let description = level
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or(effort);
+        let level = ReasoningLevel {
+            effort: effort.into(),
+            description: description.into(),
+        };
+        if !level.valid() {
+            return None;
+        }
+        if !parsed
+            .iter()
+            .any(|existing: &ReasoningLevel| existing.effort == level.effort)
+        {
+            parsed.push(level);
+        }
+    }
+    Some(parsed)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Model {
     pub id: String,
@@ -316,6 +361,11 @@ pub struct Model {
     #[serde(default = "model_included_by_default")]
     pub included: bool,
     pub metadata_source: String,
+    /// None means unknown; Some([]) is an explicit provider declaration.
+    #[serde(alias = "supported_reasoning_levels")]
+    pub supported_reasoning_levels: Option<Vec<ReasoningLevel>>,
+    #[serde(alias = "default_reasoning_level")]
+    pub default_reasoning_level: Option<String>,
 }
 
 impl Default for Model {
@@ -329,6 +379,8 @@ impl Default for Model {
             endpoint_types: Vec::new(),
             included: true,
             metadata_source: String::new(),
+            supported_reasoning_levels: None,
+            default_reasoning_level: None,
         }
     }
 }
@@ -338,19 +390,36 @@ fn model_included_by_default() -> bool {
 }
 
 impl Model {
+    /// Only this provider's reasoning declaration, never inherited context provenance.
+    pub(crate) fn reasoning_metadata(&self) -> Option<Value> {
+        let levels = self.supported_reasoning_levels.as_ref()?;
+        if levels.len() > 32 || !levels.iter().all(ReasoningLevel::valid) {
+            return None;
+        }
+        Some(serde_json::json!({
+            "supported_reasoning_levels": levels,
+            "default_reasoning_level": self.default_reasoning_level,
+        }))
+    }
+
     pub fn with_local_defaults(mut self) -> Self {
         let defaults = super::model_defaults::for_model(&self.id);
-        // A locally edited value is authoritative; relay metadata and the local
-        // catalog only fill what is still absent.
         if self.display_name.trim().is_empty() {
             self.display_name = self.id.clone();
         }
-        // Product policy: all relay Claude contexts default to 1M, even if an
-        // upstream lists an older limit. Only a manual override opts out. Do not
-        // increase output limits when upgrading the context window.
-        if self.metadata_source != "manual" && self.id.to_ascii_lowercase().contains("claude") {
-            self.context_window = Some(defaults.context_window);
-            self.metadata_source = "local".into();
+        // Known model limits are shared by every channel. Explicit user edits
+        // and a synced model catalog take priority over the offline definition.
+        if self.metadata_source != "manual" {
+            if self.id.to_ascii_lowercase().contains("claude") {
+                self.context_window = Some(defaults.context_window);
+            }
+            if self.metadata_source != "catalog"
+                && super::model_defaults::named_defaults(&self.id).is_some()
+            {
+                self.context_window = Some(defaults.context_window);
+                self.max_output_tokens = Some(defaults.max_output_tokens);
+                self.metadata_source = "local".into();
+            }
         }
         if self.context_window.is_none() {
             self.context_window = Some(defaults.context_window);
@@ -368,42 +437,22 @@ impl Model {
         self
     }
 
-    /// Prefer the signed-in Codex catalog over our heuristic limits.
-    ///
-    /// Codex keeps `models_cache.json` freshly synced with the signed-in account,
-    /// so it is the most accurate local source. Values a relay reported, and any
-    /// value the user edited, always win over this.
+    /// Resolve the model's shared limits before channel-reported values.
+    /// Only an explicit manual override may differ between saved configurations.
     pub(crate) fn with_catalog_defaults(
         mut self,
         catalog: &super::model_defaults::Catalog,
     ) -> Self {
-        if let Some(entry) = catalog.get(&self.id) {
-            let guess = super::model_defaults::for_model(&self.id);
-            let replace_context = self.context_window.is_none()
-                || self.metadata_source == "catalog"
-                || (self.metadata_source == "local"
-                    && self.context_window == Some(guess.context_window));
-            if replace_context {
+        if self.metadata_source != "manual" {
+            if let Some(entry) = catalog.get(&self.id) {
+                let defaults = super::model_defaults::for_model(&self.id);
                 self.context_window = entry.context_window;
-                if self.max_output_tokens.is_none()
-                    || (matches!(self.metadata_source.as_str(), "local" | "catalog")
-                        && self.max_output_tokens == Some(guess.max_output_tokens))
-                {
-                    self.max_output_tokens = entry.max_output_tokens.or_else(|| {
-                        entry
-                            .context_window
-                            .map(|limit| guess.max_output_tokens.min(limit))
-                    });
-                }
-                if let (Some(context), Some(output)) = (self.context_window, self.max_output_tokens)
-                {
-                    if output > context {
-                        self.max_output_tokens = Some(context);
-                    }
-                }
+                self.max_output_tokens = entry.max_output_tokens.or_else(|| {
+                    entry
+                        .context_window
+                        .map(|limit| defaults.max_output_tokens.min(limit))
+                });
                 self.metadata_source = "catalog".into();
-            } else if self.max_output_tokens.is_none() {
-                self.max_output_tokens = entry.max_output_tokens;
             }
         }
         self
@@ -454,6 +503,14 @@ fn parse_models(value: &Value) -> Result<Vec<Model>, String> {
             } else {
                 "local".into()
             },
+            supported_reasoning_levels: item
+                .get("supported_reasoning_levels")
+                .and_then(parse_reasoning_levels),
+            default_reasoning_level: item
+                .get("default_reasoning_level")
+                .and_then(Value::as_str)
+                .filter(|value| value.len() <= 32)
+                .map(str::to_owned),
         }
         .with_local_defaults();
         if let (Some(context), Some(output)) = (model.context_window, model.max_output_tokens) {
@@ -489,40 +546,19 @@ pub fn anthropic_models(
     )?)
 }
 
-/// 真实连通性测试：向用户选择的模型发送一条 "hi" 聊天请求。
-/// 仅 2xx 且返回有效 Chat Completions choices 才算通过。
+/// All probe entry points share the streaming engine, validation and errors.
 pub fn test_chat(
     config: &Connection,
     model: &str,
     proxy: &ApiProxyConfigPayload,
 ) -> Result<(), String> {
-    let model = validated_test_model(model)?;
-    let mut headers = HeaderMap::new();
-    headers.insert(AUTHORIZATION, auth_header(&config.api_key)?);
-    headers.insert(
-        reqwest::header::CONTENT_TYPE,
-        HeaderValue::from_static("application/json"),
-    );
-    let body = serde_json::json!({
-        "model": model,
-        "messages": [{ "role": "user", "content": "hi" }],
-        "max_tokens": 1,
-        "stream": false,
-    });
-    let value = response_json(
-        client(proxy)?
-            .post(endpoint(config, "v1/chat/completions")?)
-            .headers(headers)
-            .json(&body)
-            .send()
-            .map_err(request_error)?,
-    )?;
-    value
-        .get("choices")
-        .and_then(Value::as_array)
-        .filter(|choices| !choices.is_empty())
-        .map(|_| ())
-        .ok_or_else(|| "newapi.errors.response".into())
+    super::provider_probe::run(
+        config,
+        model,
+        super::router::ModelProtocol::ChatCompletions,
+        proxy,
+        &|_| {},
+    )
 }
 
 pub fn test_responses(
@@ -530,29 +566,13 @@ pub fn test_responses(
     model: &str,
     proxy: &ApiProxyConfigPayload,
 ) -> Result<(), String> {
-    let model = validated_test_model(model)?;
-    let mut headers = HeaderMap::new();
-    headers.insert(AUTHORIZATION, auth_header(&config.api_key)?);
-    headers.insert(
-        reqwest::header::CONTENT_TYPE,
-        HeaderValue::from_static("application/json"),
-    );
-    let value = response_json(
-        client(proxy)?
-            .post(endpoint(config, "v1/responses")?)
-            .headers(headers)
-            .json(&serde_json::json!({
-                "model": model,
-                "input": "hi",
-                "max_output_tokens": 1,
-                "stream": false,
-            }))
-            .send()
-            .map_err(request_error)?,
-    )?;
-    (value.get("object").and_then(Value::as_str) == Some("response"))
-        .then_some(())
-        .ok_or_else(|| "newapi.errors.response".into())
+    super::provider_probe::run(
+        config,
+        model,
+        super::router::ModelProtocol::Responses,
+        proxy,
+        &|_| {},
+    )
 }
 
 pub fn test_anthropic_messages(
@@ -560,33 +580,16 @@ pub fn test_anthropic_messages(
     model: &str,
     proxy: &ApiProxyConfigPayload,
 ) -> Result<(), String> {
-    let model = validated_test_model(model)?;
-    let mut headers = HeaderMap::new();
-    headers.insert("x-api-key", api_key_header(&config.api_key)?);
-    headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
-    headers.insert(
-        reqwest::header::CONTENT_TYPE,
-        HeaderValue::from_static("application/json"),
-    );
-    let value = response_json(
-        client(proxy)?
-            .post(endpoint(config, "v1/messages")?)
-            .headers(headers)
-            .json(&serde_json::json!({
-                "model": model,
-                "max_tokens": 1,
-                "messages": [{ "role": "user", "content": "hi" }],
-                "stream": false,
-            }))
-            .send()
-            .map_err(request_error)?,
-    )?;
-    (value.get("type").and_then(Value::as_str) == Some("message"))
-        .then_some(())
-        .ok_or_else(|| "newapi.errors.response".into())
+    super::provider_probe::run(
+        config,
+        model,
+        super::router::ModelProtocol::AnthropicMessages,
+        proxy,
+        &|_| {},
+    )
 }
 
-fn validated_test_model(model: &str) -> Result<&str, String> {
+pub(crate) fn validated_test_model(model: &str) -> Result<&str, String> {
     let model = model.trim();
     if model.is_empty() || model.len() > 200 || model.chars().any(char::is_control) {
         return Err("newapi.errors.modelRequired".into());
@@ -727,7 +730,7 @@ mod tests {
     }
 
     #[test]
-    fn relay_claude_one_m_policy_preserves_manual_limits_and_output_caps() {
+    fn model_defaults_are_channel_independent_and_preserve_manual_limits() {
         for id in [
             "claude-haiku-4-5",
             "claude-sonnet-4",
@@ -751,7 +754,14 @@ mod tests {
                     }),
                     "{id}/{source}"
                 );
-                assert_eq!(model.max_output_tokens, Some(4096));
+                assert_eq!(
+                    model.max_output_tokens,
+                    Some(if matches!(source, "manual" | "catalog") {
+                        4096
+                    } else {
+                        64_000
+                    })
+                );
                 assert_eq!(model.clone().with_local_defaults(), model);
             }
         }
@@ -766,13 +776,127 @@ mod tests {
             {"id":"zero", "context_window":0, "context_length":-1, "max_input_tokens":16000, "max_output_tokens":0, "max_tokens":99999}
         ]})).unwrap();
         assert_eq!(result[0].context_window, Some(1_000_000));
-        assert_eq!(result[0].max_output_tokens, Some(8192));
+        assert_eq!(result[0].max_output_tokens, Some(64_000));
         assert_eq!(result[1].context_window, Some(32000));
         assert_eq!(result[1].max_output_tokens, Some(4096));
         assert_eq!(result[2].context_window, Some(64000));
         assert_eq!(result[2].max_output_tokens, Some(2048));
         assert_eq!(result[3].context_window, Some(16000));
         assert_eq!(result[3].max_output_tokens, Some(16000));
+    }
+
+    #[test]
+    fn reasoning_declarations_distinguish_unknown_empty_and_string_levels() {
+        for declaration in [
+            Value::Null,
+            json!("low"),
+            json!([{}]),
+            json!(["low", null]),
+            json!([""]),
+        ] {
+            let models = parse_models(
+                &json!({"data":[{"id":"model", "supported_reasoning_levels":declaration}]}),
+            )
+            .unwrap();
+            assert!(models[0].supported_reasoning_levels.is_none());
+        }
+        let models = parse_models(&json!({"data":[
+            {"id":"a", "supported_reasoning_levels":[]},
+            {"id":"b", "supported_reasoning_levels":["low", "high", "low"], "default_reasoning_level":"high"},
+            {"id":"c", "supported_reasoning_levels":[{"effort":"medium"}]},
+            {"id":"d"}
+        ]})).unwrap();
+        assert_eq!(models[0].supported_reasoning_levels, Some(vec![]));
+        let levels = models[1].supported_reasoning_levels.as_ref().unwrap();
+        assert_eq!(
+            levels
+                .iter()
+                .map(|level| level.effort.as_str())
+                .collect::<Vec<_>>(),
+            ["low", "high"]
+        );
+        assert_eq!(models[1].default_reasoning_level.as_deref(), Some("high"));
+        assert_eq!(
+            models[2].supported_reasoning_levels.as_ref().unwrap()[0].description,
+            "medium"
+        );
+        assert!(models[3].supported_reasoning_levels.is_none());
+        let legacy: Model = serde_json::from_value(json!({"id":"old-saved-model"})).unwrap();
+        assert!(legacy.reasoning_metadata().is_none());
+    }
+
+    #[test]
+    fn fetched_reasoning_survives_storage_and_router_catalog() {
+        let (base_url, server) = chat_server(
+            "200 OK",
+            r#"{"data":[
+            {"id":"review-model","supported_reasoning_levels":[{"effort":"low","description":"Low only"}],"default_reasoning_level":"low"},
+            {"id":"gpt-6-astra","supported_reasoning_levels":[]},
+            {"id":"unknown-model"}
+        ]}"#,
+        );
+        let fetched = models(
+            &Connection {
+                base_url,
+                ..connection()
+            },
+            &ApiProxyConfigPayload {
+                mode: super::super::models::ApiProxyMode::Direct,
+                url: None,
+            },
+        )
+        .unwrap();
+        assert!(server.join().unwrap().starts_with("GET /v1/models "));
+        let persisted = serde_json::to_value(&fetched).unwrap();
+        let review = persisted
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["id"] == "review-model")
+            .unwrap();
+        assert_eq!(
+            review["supportedReasoningLevels"],
+            json!([{"effort":"low","description":"Low only"}])
+        );
+        let restored: Vec<Model> = serde_json::from_value(persisted).unwrap();
+        let store = super::super::router::Store {
+            providers: vec![super::super::router::Provider {
+                id: "review".into(),
+                name: "Review".into(),
+                api_key: "synthetic-key".into(),
+                base_url: "http://127.0.0.1".into(),
+                model: "review-model".into(),
+                models: restored,
+                enabled: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let catalog =
+            super::super::router::catalog_value(directory.path(), directory.path(), &store);
+        let entries = catalog["models"].as_array().unwrap();
+        let review = entries
+            .iter()
+            .find(|entry| entry["slug"] == "review::review-model")
+            .unwrap();
+        assert_eq!(
+            review["supported_reasoning_levels"],
+            json!([{"effort":"low","description":"Low only"}])
+        );
+        assert_eq!(review["default_reasoning_level"], "low");
+        let disabled = entries
+            .iter()
+            .find(|entry| entry["slug"] == "review::gpt-6-astra")
+            .unwrap();
+        assert_eq!(
+            disabled["supported_reasoning_levels"]
+                .as_array()
+                .unwrap()
+                .len(),
+            6
+        );
+        assert_eq!(disabled["default_reasoning_level"], "low");
     }
 
     #[test]
@@ -811,7 +935,7 @@ mod tests {
         };
         let updated = old.clone().with_local_defaults();
         assert_eq!(updated.context_window, Some(1_000_000));
-        assert_eq!(updated.max_output_tokens, Some(64_000));
+        assert_eq!(updated.max_output_tokens, Some(128_000));
         let manual = Model {
             metadata_source: "manual".into(),
             ..old
@@ -852,7 +976,7 @@ mod tests {
             ..guessed
         }
         .with_catalog_defaults(&catalog);
-        assert_eq!(upstream.context_window, Some(400_000));
+        assert_eq!(upstream.context_window, Some(272_000));
     }
 
     #[test]
@@ -918,9 +1042,10 @@ mod tests {
         );
         assert_eq!(
             body.pointer("/messages/0/content").and_then(Value::as_str),
-            Some("hi")
+            Some("Say hi.")
         );
-        assert_eq!(body.get("stream").and_then(Value::as_bool), Some(false));
+        assert_eq!(body.get("stream").and_then(Value::as_bool), Some(true));
+        assert_eq!(body["max_tokens"], 64);
     }
 
     #[test]
@@ -949,7 +1074,8 @@ mod tests {
             body.get("model").and_then(Value::as_str),
             Some("selected-model")
         );
-        assert_eq!(body.get("input").and_then(Value::as_str), Some("hi"));
+        assert_eq!(body.get("input").and_then(Value::as_str), Some("Say hi."));
+        assert_eq!(body["max_output_tokens"], 64);
     }
 
     #[test]
@@ -994,7 +1120,7 @@ mod tests {
                 &ApiProxyConfigPayload::default()
             )
             .unwrap_err(),
-            "newapi.errors.response"
+            "model unavailable"
         );
         server.join().unwrap();
     }

@@ -1,5 +1,5 @@
-//! Editable relay defaults. Claude context uses the product's 1M policy;
-//! other limits are fallbacks, not an upstream capability guarantee.
+//! Model capabilities are keyed by model identity, independently of its channel.
+//! Claude context retains the product's 1M default and manual opt-out.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -16,6 +16,39 @@ pub struct CatalogEntry {
     pub max_output_tokens: Option<u64>,
 }
 
+/// Remove routing namespaces and channel annotations only for capability lookup.
+/// The original model ID is retained when sending requests upstream.
+pub(super) fn model_key(model_id: &str) -> String {
+    let id = model_id.trim().to_ascii_lowercase();
+    let id = id.rsplit("::").next().unwrap_or(&id);
+    let id = id.rsplit('/').next().unwrap_or(id);
+    let id = id.rsplit("__").next().unwrap_or(id);
+    let id = id.strip_prefix("anthropic.").unwrap_or(id);
+    let id = id.split([':', '@', '[']).next().unwrap_or(id).trim();
+    // Kiro identifies the channel, while numeric versions (including 5-5) and
+    // unknown suffixes remain part of the model identity.
+    id.strip_suffix("-kiro").unwrap_or(id).to_owned()
+}
+
+pub(super) fn channel_entry(model_id: &str) -> bool {
+    model_id.contains("::") || model_id.starts_with("aimami_relay_")
+}
+
+/// Offline fallback for exact OpenAI IDs, from the unprefixed official Codex
+/// cache observed on 2026-09-30. Live official metadata takes precedence.
+/// Do not extrapolate these levels to unknown GPT variants.
+pub(super) fn reasoning(model_id: &str) -> Option<(&'static [&'static str], &'static str)> {
+    let full: &[&str] = &["low", "medium", "high", "xhigh", "max", "ultra"];
+    let standard: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+    match model_key(model_id).as_str() {
+        "gpt-6.1-sol" | "gpt-6-astra" | "gpt-5.6-sol" => Some((full, "low")),
+        "gpt-6-sol" | "gpt-5.6-terra" => Some((full, "medium")),
+        "gpt-6-luna" | "gpt-5.6-luna" => Some((standard, "medium")),
+        "gpt-5.5" => Some((&["low", "medium", "high", "xhigh"], "medium")),
+        _ => None,
+    }
+}
+
 /// Limits a signed-in Codex account has already synced for its own models.
 ///
 /// `models_cache.json` is the most accurate local source for model metadata, so
@@ -28,20 +61,24 @@ pub struct Catalog {
 
 impl Catalog {
     pub fn load(codex_home: &Path) -> Self {
-        let Ok(bytes) = std::fs::read(codex_home.join("models_cache.json")) else {
-            return Self::default();
-        };
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-            return Self::default();
-        };
-        let Some(models) = value.get("models").and_then(serde_json::Value::as_array) else {
-            return Self::default();
-        };
+        Self::from_models(
+            &super::model_catalog::load(&codex_home.join("models_cache.json"), None).models,
+        )
+    }
+
+    pub fn load_with_backup(codex_home: &Path, app_data: &Path) -> Self {
+        Self::from_models(&super::model_catalog::official(codex_home, app_data).models)
+    }
+
+    pub(super) fn from_models(models: &[serde_json::Value]) -> Self {
         let mut entries = HashMap::new();
         for model in models {
             let Some(slug) = model.get("slug").and_then(serde_json::Value::as_str) else {
                 continue;
             };
+            if channel_entry(slug) {
+                continue;
+            }
             let positive = |key: &str| {
                 model
                     .get(key)
@@ -52,42 +89,39 @@ impl Catalog {
             let max_output_tokens = positive("max_output_tokens");
             // A positive context is required for output to be meaningful.
             if context_window.is_some() {
-                entries.insert(
-                    slug.to_owned(),
-                    CatalogEntry {
-                        context_window,
-                        max_output_tokens: max_output_tokens
-                            .filter(|output| Some(*output) <= context_window),
-                    },
-                );
+                entries.entry(model_key(slug)).or_insert(CatalogEntry {
+                    context_window,
+                    max_output_tokens: max_output_tokens
+                        .filter(|output| Some(*output) <= context_window),
+                });
             }
         }
         Self { entries }
     }
 
     pub fn get(&self, model_id: &str) -> Option<CatalogEntry> {
-        self.entries.get(model_id).copied()
+        self.entries.get(&model_key(model_id)).copied()
     }
 }
 
 pub fn for_model(model_id: &str) -> ModelDefaults {
-    // Relays frequently decorate model ids with a provider prefix/suffix
-    // (for example `relay/gpt-4o:free` or `claude-sonnet-4@fast`).  Matching
-    // against a compact form keeps the local catalog useful without needing
-    // a per-relay alias table.
-    let id = model_id.trim().to_ascii_lowercase();
+    named_defaults(model_id).unwrap_or_else(|| defaults(128_000, 8_192))
+}
+
+pub(super) fn named_defaults(model_id: &str) -> Option<ModelDefaults> {
+    let id = model_key(model_id);
     let compact: String = id.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
     if compact.contains("gemini") {
-        return defaults(1_048_576, 65_536);
+        return Some(defaults(1_048_576, 65_536));
     }
     if compact.contains("gpt41") {
-        return defaults(1_048_576, 32_768);
+        return Some(defaults(1_048_576, 32_768));
     }
     if compact.contains("gpt6") || compact.contains("gpt5") {
-        return defaults(400_000, 128_000);
+        return Some(defaults(400_000, 128_000));
     }
     if compact.contains("gpt4") || compact.contains("gpt3") || compact.contains("gpt") {
-        return defaults(128_000, 16_384);
+        return Some(defaults(128_000, 16_384));
     }
     if compact.contains("claude") {
         // All relay Claude models default to 1M, independently of output caps.
@@ -96,32 +130,34 @@ pub fn for_model(model_id: &str) -> ModelDefaults {
         ]
         .iter()
         .any(|family| compact.contains(family));
-        return defaults(1_000_000, if larger_output { 128_000 } else { 64_000 });
+        return Some(defaults(
+            1_000_000,
+            if larger_output { 128_000 } else { 64_000 },
+        ));
     }
     if compact.contains("minimax") {
-        return defaults(204_800, 16_384);
+        return Some(defaults(204_800, 16_384));
     }
     if compact.contains("qwen3coder") {
-        return defaults(262_144, 65_536);
+        return Some(defaults(262_144, 65_536));
     }
     if compact.contains("glm") {
-        return defaults(202_752, 32_768);
+        return Some(defaults(202_752, 32_768));
     }
     if compact.contains("qwen") {
-        return defaults(131_072, 32_768);
+        return Some(defaults(131_072, 32_768));
     }
     if compact.contains("deepseek") {
-        return defaults(128_000, 8_192);
+        return Some(defaults(128_000, 8_192));
     }
     if compact == "o3"
         || compact.starts_with("o3")
         || compact == "o4mini"
         || compact.starts_with("o4mini")
     {
-        return defaults(200_000, 100_000);
+        return Some(defaults(200_000, 100_000));
     }
-    // An unknown model's actual limit is unknown. Use a conservative editable fallback.
-    defaults(128_000, 8_192)
+    None
 }
 
 const fn defaults(context_window: u64, max_output_tokens: u64) -> ModelDefaults {
@@ -134,6 +170,46 @@ const fn defaults(context_window: u64, max_output_tokens: u64) -> ModelDefaults 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capability_identity_ignores_channel_names_and_annotations() {
+        for id in [
+            "gpt-6.1-sol",
+            "OpenAI/GPT-6.1-SOL",
+            "relay::gpt-6.1-sol",
+            "channel__gpt-6.1-sol:free",
+            "gpt-6.1-sol@fast",
+        ] {
+            assert_eq!(model_key(id), "gpt-6.1-sol");
+            assert_eq!(for_model(id), for_model("gpt-6.1-sol"));
+            assert_eq!(reasoning(id), reasoning("gpt-6.1-sol"));
+        }
+        assert_ne!(model_key("gpt-6.1-sol-preview"), model_key("gpt-6.1-sol"));
+        assert_eq!(model_key("Claude-Opus-5-5-KIRO"), "claude-opus-5-5");
+        assert_eq!(
+            model_key("anthropic/claude-opus-5-5-kiro@fast"),
+            "claude-opus-5-5"
+        );
+        assert_ne!(
+            model_key("claude-opus-5-5-kiro"),
+            model_key("claude-opus-5")
+        );
+        assert_ne!(
+            model_key("claude-opus-5-5-preview"),
+            model_key("claude-opus-5-5")
+        );
+        let catalog = Catalog::from_models(&[
+            serde_json::json!({"slug":"gpt-6.1-sol","context_window":900000,"max_output_tokens":64000}),
+            serde_json::json!({"slug":"relay::gpt-6.1-sol","context_window":32000,"max_output_tokens":1000}),
+        ]);
+        assert_eq!(
+            catalog.get("OpenAI/GPT-6.1-SOL@fast"),
+            Some(CatalogEntry {
+                context_window: Some(900_000),
+                max_output_tokens: Some(64_000),
+            })
+        );
+    }
 
     #[test]
     fn known_families_and_unknown_models_have_editable_local_defaults() {

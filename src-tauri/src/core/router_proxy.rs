@@ -1,5 +1,5 @@
 use super::models::ApiProxyConfigPayload;
-use super::{protocol, relay_usage, router};
+use super::{protocol, relay_usage, route_trace, router};
 use crate::platform::paths::CodexPaths;
 use futures_util::StreamExt;
 use http_body_util::{combinators::BoxBody, BodyExt, Full, StreamBody};
@@ -19,6 +19,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
+mod failover;
+#[cfg(test)]
+#[path = "router_proxy/failover_tests.rs"]
+mod failover_tests;
 mod session_compat;
 
 const MAX_REQUEST_BODY: usize = 64 * 1024 * 1024;
@@ -173,9 +177,23 @@ async fn accept_loop(
     mut shutdown: tokio::sync::watch::Receiver<bool>,
     context: Arc<ArcContext>,
 ) {
+    // Observe Codex's locally synced catalog in the background. No extra network
+    // endpoint or credential is introduced, and failed refreshes keep last-good.
+    let period = Duration::from_secs(30);
+    let mut refresh = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+    refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut refreshing: Option<tokio::task::JoinHandle<()>> = None;
     loop {
         tokio::select! {
             _ = shutdown.changed() => break,
+            _ = refresh.tick() => {
+                if refreshing.as_ref().is_none_or(|task| task.is_finished()) {
+                    let context = context.clone();
+                    refreshing = Some(tokio::task::spawn_blocking(move || {
+                        super::model_catalog::official(&context.codex_home, &context.app_data_dir);
+                    }));
+                }
+            }
             accepted = listener.accept() => {
                 let Ok((stream, _)) = accepted else { continue };
                 let context = context.clone();
@@ -457,83 +475,244 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
     if matches!(segments.as_slice(), ["codex", "v1", "models"]) && !has_body {
         return Ok(codex_catalog_response(&context, &store));
     }
-    let destination = resolve_destination(
-        &store,
-        &segments,
-        required_protocol,
-        requested_model.as_deref(),
-    )?;
-    if one_m_context
-        && !matches!(
-            &destination,
-            Destination::Provider {
-                upstream_protocol: router::ModelProtocol::AnthropicMessages,
-                ..
-            }
-        )
-    {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "1M context requires an Anthropic Messages provider",
-        ));
-    }
-    let suffix = upstream_suffix(&segments, &destination, required_protocol)?;
-    let relay_request = relay_usage_request(
-        &context,
-        &destination,
-        required_protocol,
-        requested_model.as_deref(),
+    let trace = route_trace::Trace::begin(
+        requested_model.as_deref().unwrap_or_default(),
+        body.as_deref(),
     );
-    let (url, mut headers) = match &destination {
-        Destination::Provider {
-            provider,
-            upstream_protocol,
-            translation,
-            ..
-        } => provider_target(
-            provider,
-            *upstream_protocol,
-            *translation,
-            &suffix,
-            query.as_deref(),
-            headers,
-        )?,
-        Destination::Official => {
-            official_target(&context, codex_auth, &suffix, query.as_deref(), headers)?
+    let result = async {
+        let mut destination = resolve_destination(
+            &store,
+            &segments,
+            required_protocol,
+            requested_model.as_deref(),
+        )?;
+        if one_m_context
+            && !matches!(
+                &destination,
+                Destination::Provider {
+                    upstream_protocol: router::ModelProtocol::AnthropicMessages,
+                    ..
+                }
+            )
+        {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "1M context requires an Anthropic Messages provider",
+            ));
         }
-    };
-    if one_m_context {
-        append_anthropic_beta(&mut headers);
-    }
-    let body = if required_protocol == Some(router::ModelProtocol::Responses) {
-        session_compat::prepare_reasoning(body, || {
-            router::catalog_value(&context.app_data_dir, &context.codex_home, &store)
-        })?
-    } else {
-        body
-    };
-    let (body, translated_input) = upstream_body(&destination, body)?;
-
-    let mut outbound = client_for(&context, &destination)?
-        .request(method, url)
-        .headers(headers);
-    if let Some(body) = body {
-        outbound = outbound.body(body);
-    }
-    let response = match outbound.send().await {
-        Ok(response) => response,
-        Err(_) => {
-            if let Some(request) = relay_request {
-                request.failed(StatusCode::BAD_GATEWAY.as_u16());
+        let affinity_key = matches!(&destination, Destination::Provider { .. })
+            .then(|| {
+                failover::key(
+                    &context.store_path,
+                    &headers,
+                    requested_model.as_deref().unwrap_or_default(),
+                )
+            })
+            .flatten();
+        let _decision = if let Some(key) = &affinity_key {
+            Some(failover::decision_lock(key).await)
+        } else {
+            None
+        };
+        let binding = affinity_key.as_deref().and_then(failover::bound);
+        if let (
+            Some(binding),
+            Destination::Provider {
+                provider,
+                model_override,
+                ..
+            },
+        ) = (&binding, &destination)
+        {
+            let model = model_override
+                .clone()
+                .unwrap_or_else(|| provider.model.clone());
+            // A disabled/deleted bound channel fails closed instead of moving a tool turn.
+            destination =
+                provider_destination(&store, &binding.provider_id, required_protocol, Some(model))?;
+            if !failover::agrees(binding, &destination) {
+                return Err((
+                    StatusCode::CONFLICT,
+                    "conversation channel changed; start a new conversation",
+                ));
             }
-            return Err((StatusCode::BAD_GATEWAY, "cannot reach the provider"));
         }
-    };
-    let translation = match &destination {
-        Destination::Provider { translation, .. } => *translation,
-        Destination::Official => None,
-    };
-    relay_response(response, translation, relay_request, translated_input).await
+        let stateless = store.router.same_model_failover
+            && binding.is_none()
+            && affinity_key.is_some()
+            && failover::stateless(body.as_deref());
+        if store.router.same_model_failover
+            && affinity_key.is_some()
+            && binding.is_none()
+            && failover::continuation(body.as_deref())
+        {
+            return Err((
+                StatusCode::CONFLICT,
+                "conversation channel is unknown; disable failover or start a new conversation",
+            ));
+        }
+        let reserved = (store.router.same_model_failover || binding.is_some())
+            && affinity_key
+                .as_deref()
+                .is_some_and(|key| failover::bind(key, &destination));
+        let can_retry = store.router.same_model_failover
+            && binding.is_none()
+            && reserved
+            && method == hyper::Method::POST
+            && stateless
+            && matches!(
+                segments.last(),
+                Some(&"responses" | &"messages" | &"completions")
+            );
+        trace.stage("build");
+        let body = if required_protocol == Some(router::ModelProtocol::Responses) {
+            session_compat::prepare_reasoning(body, || {
+                router::catalog_value(&context.app_data_dir, &context.codex_home, &store)
+            })?
+        } else {
+            body
+        };
+        for attempt in 0..2 {
+            let started = std::time::Instant::now();
+            let suffix = upstream_suffix(&segments, &destination, required_protocol)?;
+            let relay_request = relay_usage_request(
+                &context,
+                &destination,
+                required_protocol,
+                requested_model.as_deref(),
+            );
+            let (url, mut attempt_headers) = match &destination {
+                Destination::Provider {
+                    provider,
+                    model_override,
+                    upstream_protocol,
+                    translation,
+                } => {
+                    trace.attempt(
+                        &provider.id,
+                        &provider.name,
+                        model_override.as_deref().unwrap_or(&provider.model),
+                        match upstream_protocol {
+                            router::ModelProtocol::Responses => "responses",
+                            router::ModelProtocol::ChatCompletions => "chatCompletions",
+                            router::ModelProtocol::AnthropicMessages => "anthropicMessages",
+                        },
+                    );
+                    provider_target(
+                        provider,
+                        *upstream_protocol,
+                        *translation,
+                        &suffix,
+                        query.as_deref(),
+                        headers.clone(),
+                    )?
+                }
+                Destination::Official => {
+                    trace.attempt(
+                        "official",
+                        "OpenAI",
+                        requested_model.as_deref().unwrap_or_default(),
+                        "responses",
+                    );
+                    official_target(
+                        &context,
+                        codex_auth.clone(),
+                        &suffix,
+                        query.as_deref(),
+                        headers.clone(),
+                    )?
+                }
+            };
+            if one_m_context {
+                append_anthropic_beta(&mut attempt_headers);
+            }
+            let (sent, translated_input) = upstream_body(&destination, body.clone())?;
+            trace.sent(sent.as_deref());
+            let mut outbound = client_for(&context, &destination)?
+                .request(method.clone(), url)
+                .headers(attempt_headers);
+            if let Some(sent) = sent {
+                outbound = outbound.body(sent);
+            }
+            let alternative = (can_retry && attempt == 0)
+                .then(|| failover::alternative(&store, &destination, required_protocol))
+                .flatten();
+            let response = match outbound.send().await {
+                Ok(response) => response,
+                Err(error) => {
+                    if let Some(request) = relay_request {
+                        request.failed(StatusCode::BAD_GATEWAY.as_u16());
+                    }
+                    trace.failed_attempt(
+                        "connect",
+                        if error.is_timeout() {
+                            "timeout"
+                        } else {
+                            "transport_error"
+                        },
+                        started.elapsed().as_millis() as u64,
+                    );
+                    // A timeout or broken established connection may already have executed.
+                    if error.is_connect() && !error.is_timeout() {
+                        if let Some(next) = alternative {
+                            destination = next;
+                            if let Some(key) = &affinity_key {
+                                failover::bind(key, &destination);
+                            }
+                            continue;
+                        }
+                    }
+                    trace.fail(
+                        "connect",
+                        if error.is_timeout() {
+                            "timeout"
+                        } else {
+                            "transport_error"
+                        },
+                    );
+                    return Err((StatusCode::BAD_GATEWAY, "cannot reach the provider"));
+                }
+            };
+            trace.status(response.status().as_u16());
+            // Only explicit admission rejection, never an ambiguous 5xx response.
+            if response.status() == StatusCode::TOO_MANY_REQUESTS {
+                if let Some(next) = alternative {
+                    if let Some(request) = relay_request {
+                        request.failed(429);
+                    }
+                    trace.failed_attempt(
+                        "headers",
+                        "rate_limited",
+                        started.elapsed().as_millis() as u64,
+                    );
+                    destination = next;
+                    if let Some(key) = &affinity_key {
+                        failover::bind(key, &destination);
+                    }
+                    continue;
+                }
+            }
+            drop(_decision);
+            let translation = match &destination {
+                Destination::Provider { translation, .. } => *translation,
+                Destination::Official => None,
+            };
+            return relay_response(
+                response,
+                translation,
+                relay_request,
+                translated_input,
+                trace.clone(),
+            )
+            .await;
+        }
+        unreachable!("at most one failover")
+    }
+    .await;
+    if let Err((status, message)) = &result {
+        trace.reject(status.as_u16(), message);
+    }
+    result
 }
 
 /// Inbound headers minus hop-by-hop, framing, and every local or client credential;
@@ -964,6 +1143,7 @@ async fn relay_response(
     translation: Option<protocol::Translation>,
     relay_request: Option<relay_usage::RelayUsageRequest>,
     translated_input: Vec<Value>,
+    trace: route_trace::Trace,
 ) -> ForwardResult {
     let response_status = response.status();
     let is_event_stream = response
@@ -998,9 +1178,13 @@ async fn relay_response(
     }
 
     let response_body = match translation {
-        Some(translation) if response_status.is_success() && is_event_stream => {
-            translated_stream(response, translation, relay_request, translated_input)
-        }
+        Some(translation) if response_status.is_success() && is_event_stream => translated_stream(
+            response,
+            translation,
+            relay_request,
+            translated_input,
+            trace,
+        ),
         Some(translation) if response_status.is_success() => {
             let bytes = response
                 .bytes()
@@ -1019,6 +1203,10 @@ async fn relay_response(
                     "cannot translate provider response",
                 )
             })?;
+            let mut diagnostic =
+                route_trace::Observation::new(trace, false, response_status.as_u16());
+            diagnostic.push(&bytes);
+            diagnostic.finish();
             if translation.from == router::ModelProtocol::Responses {
                 protocol::history::remember(&converted, translated_input);
             }
@@ -1036,12 +1224,13 @@ async fn relay_response(
                     .observe(&bytes);
             }
             let body = translated_error_body(translation.from, response_status, &bytes);
+            trace.fail("headers", "upstream_http_error");
             BodyExt::boxed(Full::new(Bytes::from(body)).map_err(|never| match never {}))
         }
         None => {
             let mut observer = relay_request
                 .map(|request| request.observe(response_status.as_u16(), is_event_stream));
-            let stream = response.bytes_stream().map(move |chunk| {
+            let stream = observed_stream(response, trace, is_event_stream).map(move |chunk| {
                 if let (Some(observer), Ok(bytes)) = (observer.as_mut(), &chunk) {
                     observer.observe(bytes);
                 }
@@ -1064,6 +1253,7 @@ fn translated_stream(
     translation: protocol::Translation,
     relay_request: Option<relay_usage::RelayUsageRequest>,
     translated_input: Vec<Value>,
+    trace: route_trace::Trace,
 ) -> ResponseBody {
     let mut observer =
         relay_request.map(|request| request.observe(response.status().as_u16(), true));
@@ -1074,7 +1264,7 @@ fn translated_stream(
     // the body stream itself has been moved into the response.
     let translator = Arc::new(Mutex::new(protocol::stream_translator(translation)));
     let body_translator = Arc::clone(&translator);
-    let stream = response.bytes_stream().flat_map(move |chunk| {
+    let stream = observed_stream(response, trace, true).flat_map(move |chunk| {
         let mut frames: Vec<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>> =
             Vec::new();
         match chunk {
@@ -1120,6 +1310,32 @@ fn translated_stream(
     })
     .flatten();
     BodyExt::boxed(StreamBody::new(stream.chain(tail)))
+}
+
+fn observed_stream(
+    response: reqwest::Response,
+    trace: route_trace::Trace,
+    sse: bool,
+) -> impl futures_util::Stream<Item = Result<Bytes, reqwest::Error>> + Send {
+    let observer = route_trace::Observation::new(trace, sse, response.status().as_u16());
+    futures_util::stream::unfold(
+        (response.bytes_stream(), observer),
+        |(mut stream, mut observer)| async move {
+            match stream.next().await {
+                Some(chunk) => {
+                    match &chunk {
+                        Ok(bytes) => observer.push(bytes),
+                        Err(_) => observer.error(),
+                    }
+                    Some((chunk, (stream, observer)))
+                }
+                None => {
+                    observer.finish();
+                    None
+                }
+            }
+        },
+    )
 }
 
 /// Re-shape an upstream error body into the caller's protocol.

@@ -111,6 +111,16 @@ const usageFixture: TokenUsagePayload = {
 };
 let state: NewApiState = { providers: [imageProvider], router: { enabled: false, accessMode: "router", accountless: false, port: 0, configDrifted: false }, proxyRunning: false, activeProviderId: null };
 api.providers.loadState = async () => state;
+api.routing.diagnostics = async () => [{ id: "synthetic-route", timestamp: 1_790_740_800, requestedModel: "relay::claude-opus-5-5-kiro",
+  requested: { "reasoning.effort": "high" }, stage: "complete", done: true, status: 200, failureStage: null, error: null, durationMs: 840, firstTokenMs: 230,
+  attempts: [{ providerId: "relay", providerName: "Synthetic channel", upstreamModel: "claude-opus-5-5-kiro", matchedModel: "claude-opus-5-5", protocol: "anthropicMessages",
+    sent: { "thinking.type": "adaptive", "output_config.effort": "high", max_tokens: 8192 }, status: 200, failureStage: null, error: null, durationMs: 830 }] }];
+api.routing.capabilities = async () => ({ stale: true, error: "catalog_unavailable_or_invalid", updatedAt: 1_790_740_800, models: [{
+  providerId: "relay", providerName: "Synthetic channel", displayName: "My custom alias", upstreamModel: "claude-opus-5-5-kiro", matchedModel: "claude-opus-5-5",
+  reasoning: { value: [{ effort: "low", description: "Low" }, { effort: "high", description: "High" }], source: "catalog", updatedAt: 1_790_740_800 }, defaultReasoning: "low",
+  context: { value: 1_000_000, source: "local", updatedAt: null }, output: { value: 128_000, source: "catalog", updatedAt: 1_790_740_800 },
+}] });
+api.routing.setFailover = async enabled => { state = { ...state, router: { ...state.router, sameModelFailover: enabled } }; return { state, applied: null }; };
 api.loadSnapshot = async () => ({ data: { status: {
   paths: { codexHome: "C:/synthetic/codex", authExists: true, registryExists: true, sessionsExists: true },
   api: { proxy: { mode: "manual", url: "http://127.0.0.1:7890" } },
@@ -410,29 +420,31 @@ function mount(mode: FixtureMode) {
       items: mode === "thread-tree" ? controls.review.threadItems : mode === "thread-details-missing" ? [{ ...threads[0], rolloutStatus: "missing" as const }] : threads.slice(0, mode === "thread-actions" ? 2 : 1) } });
   controls.review.detailCalls = 0;
   controls.review.messageOffsets = [];
+  controls.review.messageRequests = [];
   const diagnostics = { invalidLines: 1, oversizedLines: 0, encryptedRecords: 2, compactions: 1, counterResets: 0, lastUsageOnly: 0, undatedUsage: 0, inheritedSessions: 0 };
   const usage = { input: 33100000, cached: 29400000, output: 201900, reasoning: 68600, total: 33301900 };
   api.conversations.details = async () => {
     controls.review.detailCalls += 1;
     if (controls.review.detailError || mode === "thread-details-error") throw new Error("Synthetic rollout identity mismatch");
     return { schemaVersion: 1, success: true, code: "ok", message: "", warnings: [], data: {
-      snapshotBytes: 12345, usage: mode === "thread-details-unknown" ? null : usage,
+      snapshotBytes: controls.review.snapshotBytes ?? 12345, usage: mode === "thread-details-unknown" ? null : usage,
       byModel: [{ label: "aimami_relay_2d66f8bc24::gpt-6-astra", usage: { ...usage, total: 27401900 } }, { label: "gpt-6.1-sol", usage: { ...usage, total: 5900000 } }],
       byDate: [{ label: "2026-09-29", usage: { ...usage, total: 14000000 } }, { label: "2026-09-30", usage: { ...usage, total: 19301900 } }],
       tools: [{ name: "exec_command", calls: 12 }, { name: "apply_patch", calls: 3 }], diagnostics,
     } };
   };
-  api.conversations.messages = async (_target, _key, _id, _snapshot, offset) => {
+  api.conversations.messages = async (_target, _key, _id, snapshot, offset) => {
     controls.review.messageOffsets.push(offset);
+    controls.review.messageRequests.push({ snapshot, offset });
     if (controls.review.messageError) throw new Error("Synthetic stale snapshot; refresh");
     return { schemaVersion: 1, success: true, code: "ok", message: "", warnings: [], data: { diagnostics,
       nextOffset: offset === 0 ? 50 : null,
-      messages: offset === 0 ? [
+      messages: controls.review.messageFixtures?.[offset] ?? (offset === 0 ? [
         { role: "user", timestamp: "2026-09-30T08:00:00Z", text: "合成的用户问题", truncated: false },
         { role: "assistant", timestamp: "2026-09-30T08:00:01Z", text: "<script>never execute this</script>\n" + "可读长消息。".repeat(500), truncated: true },
         { role: "toolCall", timestamp: "2026-09-30T08:00:02Z", text: "exec_command\npwd", truncated: false },
         { role: "toolResult", timestamp: "2026-09-30T08:00:03Z", text: "C:/synthetic/workspace", truncated: false },
-      ] : [{ role: "assistant", timestamp: "", text: "第二页的合成消息", truncated: false }],
+      ] : [{ role: "assistant", timestamp: "", text: "第二页的合成消息", truncated: false }]),
     } };
   };
   const groups = Array.from({ length: 10 }, (_, i) => ({ key: "g" + i, cwd: "C:/synthetic/g" + i,

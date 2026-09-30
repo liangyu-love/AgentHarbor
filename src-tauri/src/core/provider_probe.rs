@@ -33,21 +33,22 @@ pub fn run(
         })
     };
     let result = (|| {
-        if model.trim().is_empty() || model.len() > 200 {
-            return Err("newapi.errors.model".into());
-        }
+        let model = newapi::validated_test_model(model)?;
+        let mut budget = 64;
+        let mut retried = false;
+        let mut response = loop {
         let (path, body) = match protocol {
             ModelProtocol::Responses => (
                 "v1/responses",
-                json!({"model":model,"input":"Say hi.","max_output_tokens":64,"stream":true}),
+                json!({"model":model,"input":"Say hi.","max_output_tokens":budget,"stream":true}),
             ),
             ModelProtocol::ChatCompletions => (
                 "v1/chat/completions",
-                json!({"model":model,"messages":[{"role":"user","content":"Say hi."}],"max_tokens":64,"stream":true}),
+                json!({"model":model,"messages":[{"role":"user","content":"Say hi."}],"max_tokens":budget,"stream":true}),
             ),
             ModelProtocol::AnthropicMessages => (
                 "v1/messages",
-                json!({"model":model,"messages":[{"role":"user","content":"Say hi."}],"max_tokens":64,"stream":true}),
+                json!({"model":model,"messages":[{"role":"user","content":"Say hi."}],"max_tokens":budget,"stream":true}),
             ),
         };
         let url = newapi::endpoint(config, path)?;
@@ -70,24 +71,33 @@ pub fn run(
             "request",
             None,
             format!(
-                "POST {}\nHost: {}\nAccept: text/event-stream\nModel: {}",
+                "POST {}\nHost: {}\nAccept: text/event-stream\nModel: {}\nOutput budget: {}",
                 url.path(),
                 url.host_str().unwrap_or_default(),
-                model
+                model, budget
             ),
         );
-        let mut response = request.send().map_err(newapi::request_error)?;
+        let response = request.send().map_err(newapi::request_error)?;
         let status = response.status();
         event("headers", Some(status.as_u16()), String::new());
         if !status.is_success() {
             let mut bytes = Vec::new();
             let _ = response.take(8192).read_to_end(&mut bytes);
-            if !bytes.is_empty() {
-                let text = String::from_utf8_lossy(&bytes).replace(&config.api_key, "[redacted]");
-                event("content", None, text);
+            let message = error_message(&bytes);
+            let detail = format!("HTTP {}: {}", status.as_u16(), message.as_deref().unwrap_or(status.canonical_reason().unwrap_or("request rejected")));
+            event("content", None, redact(&detail, config));
+            if !retried && matches!(status.as_u16(), 400 | 422) {
+                if let Some(minimum) = message.as_deref().and_then(|m| minimum_budget(m, budget)) {
+                    budget = minimum;
+                    retried = true;
+                    event("retry", Some(status.as_u16()), format!("Retry once with output budget {budget}"));
+                    continue;
+                }
             }
-            return Err(newapi::status_error(status));
+            return Err(detail);
         }
+        break response;
+        };
         let sse = response
             .headers()
             .get("content-type")
@@ -142,6 +152,9 @@ pub fn run(
         } else {
             let value: Value =
                 serde_json::from_slice(&pending).map_err(|_| "newapi.errors.response")?;
+            if !value["error"].is_null() || value["status"] == "failed" || value["type"] == "error" {
+                return Err(error_message(&pending).unwrap_or_else(|| "newapi.errors.server".into()));
+            }
             let valid = match protocol {
                 ModelProtocol::Responses => {
                     value["object"] == "response"
@@ -168,13 +181,76 @@ pub fn run(
             );
         }
         Ok(())
-    })();
+    })().map_err(|error: String| redact(&error, config));
     event(
         if result.is_ok() { "complete" } else { "failed" },
         None,
         result.as_ref().err().cloned().unwrap_or_default(),
     );
     result
+}
+
+fn redact(text: &str, config: &newapi::Connection) -> String {
+    let mut text = text.to_owned();
+    for secret in [&config.api_key, &config.access_token] {
+        for token in [
+            secret.as_str(),
+            secret
+                .trim()
+                .strip_prefix("Bearer ")
+                .unwrap_or(secret.trim()),
+        ] {
+            if !token.is_empty() {
+                text = text.replace(token, "[redacted]");
+            }
+        }
+    }
+    text.chars()
+        .filter(|c| !c.is_control() || *c == '\n')
+        .take(8192)
+        .collect()
+}
+
+fn error_message(bytes: &[u8]) -> Option<String> {
+    let value = serde_json::from_slice::<Value>(bytes).ok();
+    let message = value
+        .as_ref()
+        .and_then(|v| {
+            v.pointer("/error/message")
+                .or_else(|| v.pointer("/response/error/message"))
+                .or_else(|| v.get("message"))
+                .or_else(|| v.get("error"))
+        })
+        .and_then(Value::as_str);
+    let raw = String::from_utf8_lossy(bytes);
+    let message = message.unwrap_or(raw.trim());
+    (!message.is_empty()).then(|| message.chars().take(2048).collect())
+}
+
+/// An explicit lower bound, not quota exhaustion, a context error or a guess.
+fn minimum_budget(message: &str, current: u64) -> Option<u64> {
+    let lower = message.to_ascii_lowercase();
+    let param = ["max_output_tokens", "max_completion_tokens", "max_tokens"]
+        .iter()
+        .find_map(|p| lower.find(p))?;
+    let tail = &lower[param..];
+    let minimum = [
+        "must be at least ",
+        "minimum value is ",
+        "greater than or equal to ",
+        "minimum is ",
+    ]
+    .iter()
+    .find_map(|phrase| tail.find(phrase).map(|i| &tail[i + phrase.len()..]))?;
+    let digits: String = minimum
+        .trim_start()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits
+        .parse::<u64>()
+        .ok()
+        .filter(|n| *n > current && *n <= 4096)
 }
 
 #[derive(Default)]
@@ -195,7 +271,9 @@ impl ProbeStream {
         let value: Value = serde_json::from_str(data).map_err(|_| "newapi.errors.response")?;
         let kind = value["type"].as_str().unwrap_or_default();
         if !value["error"].is_null() || matches!(kind, "error" | "response.failed") {
-            return Err("newapi.errors.server".into());
+            return Err(
+                error_message(data.as_bytes()).unwrap_or_else(|| "newapi.errors.server".into())
+            );
         }
         let text = match protocol {
             ModelProtocol::ChatCompletions => {
@@ -239,6 +317,108 @@ impl ProbeStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn budget_retry_requires_a_specific_bounded_minimum() {
+        assert_eq!(
+            minimum_budget("max_tokens must be at least 128", 64),
+            Some(128)
+        );
+        assert_eq!(
+            minimum_budget("max_output_tokens must be greater than or equal to 256", 64),
+            Some(256)
+        );
+        for message in [
+            "insufficient quota",
+            "max_tokens must be at most 32",
+            "max_tokens must be at least 1000000",
+            "max_tokens must be at least 32",
+            "context length minimum is 128",
+            "max_tokens exceeded output limit",
+        ] {
+            assert_eq!(minimum_budget(message, 64), None, "{message}");
+        }
+        let config = newapi::Connection {
+            api_key: "Bearer sk-secret".into(),
+            access_token: "access-secret".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            redact("sk-secret access-secret", &config),
+            "[redacted] [redacted]"
+        );
+    }
+
+    #[test]
+    fn both_probe_paths_share_one_bounded_retry_and_preserve_final_errors() {
+        use std::{
+            io::{BufRead, BufReader, Write},
+            net::TcpListener,
+            sync::Mutex,
+        };
+        for progress in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let mut budgets = Vec::new();
+                for _ in 0..2 {
+                    let (mut socket, _) = listener.accept().unwrap();
+                    socket
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    let mut reader = BufReader::new(socket.try_clone().unwrap());
+                    let mut len = 0;
+                    loop {
+                        let mut line = String::new();
+                        reader.read_line(&mut line).unwrap();
+                        if line == "\r\n" {
+                            break;
+                        }
+                        if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                            len = v.trim().parse::<usize>().unwrap();
+                        }
+                    }
+                    let mut body = vec![0; len];
+                    reader.read_exact(&mut body).unwrap();
+                    let v: Value = serde_json::from_slice(&body).unwrap();
+                    budgets.push(v["max_output_tokens"].as_u64().unwrap());
+                    let error = r#"{"error":{"message":"max_output_tokens must be at least 128; sk-secret"}}"#;
+                    write!(socket,"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{error}",error.len()).unwrap();
+                }
+                listener.set_nonblocking(true).unwrap();
+                assert!(
+                    listener.accept().is_err(),
+                    "must not attempt a third request"
+                );
+                budgets
+            });
+            let config = newapi::Connection {
+                base_url: format!("http://{address}"),
+                api_key: "sk-secret".into(),
+                ..Default::default()
+            };
+            let proxy = newapi::effective_proxy("direct", &ApiProxyConfigPayload::default());
+            let events = Mutex::new(Vec::new());
+            let result = if progress {
+                run(&config, "test", ModelProtocol::Responses, &proxy, &|e| {
+                    events.lock().unwrap().push(e)
+                })
+            } else {
+                newapi::test_responses(&config, "test", &proxy)
+            };
+            let error = result.unwrap_err();
+            assert!(error.contains("at least 128"));
+            assert!(!error.contains("sk-secret"));
+            assert_eq!(server.join().unwrap(), vec![64, 128]);
+            if progress {
+                let events = events.lock().unwrap();
+                assert_eq!(events.iter().filter(|e| e.stage == "retry").count(), 1);
+                assert_eq!(events.last().unwrap().stage, "failed");
+                assert!(!serde_json::to_string(&*events)
+                    .unwrap()
+                    .contains("sk-secret"));
+            }
+        }
+    }
     #[test]
     fn rejects_error_events_and_does_not_accept_done_without_response() {
         let mut parser = ProbeStream::default();

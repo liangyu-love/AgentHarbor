@@ -93,6 +93,9 @@ const providersApi = {
 };
 
 const routingApi = {
+  capabilities: () => invoke<import("@/types/newapi").ModelCapabilities>("load_model_capabilities"),
+  diagnostics: () => invoke<import("@/types/newapi").RouteDiagnostic[]>("load_route_diagnostics"),
+  setFailover: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_failover", { enabled }),
   setEnabled: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_smart_routing", { enabled }),
   setAccessMode: (mode: CodexAccessMode) => invoke<NewApiStateChange>("set_newapi_access_mode", { mode }),
   setAccountless: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_accountless", { enabled }),
@@ -147,8 +150,8 @@ const targetsApi = {
 const conversationsApi = {
   details: (targetId: TargetId, key: string, threadId: string) =>
     invoke<CoreEnvelope<import("@/types/threads").ThreadDetails>>("get_conversation_details", { targetId, key, threadId }),
-  messages: (targetId: TargetId, key: string, threadId: string, snapshotBytes: number, offset: number) =>
-    invoke<CoreEnvelope<import("@/types/threads").ThreadMessagePage>>("get_conversation_messages", { targetId, key, threadId, snapshotBytes, offset }),
+  messages: (targetId: TargetId, key: string, threadId: string, snapshotBytes: number, offset: number, snapshotId?: string) =>
+    invoke<CoreEnvelope<import("@/types/threads").ThreadMessagePage>>("get_conversation_messages", { targetId, key, threadId, snapshotBytes, offset, snapshotId }),
   list: (targetId: TargetId) =>
     invoke<CoreEnvelope<import("@/types/threads").ThreadListPayload>>("list_conversations", { targetId }),
   export: (targetId: TargetId, keys: string[], targetDir: string, format: "markdown" | "jsonl") =>

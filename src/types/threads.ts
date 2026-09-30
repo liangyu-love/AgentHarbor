@@ -49,6 +49,7 @@ export interface ThreadDiagnostics {
 
 export interface ThreadDetails {
   snapshotBytes: number;
+  snapshotId?: string;
   usage: ThreadUsage | null;
   byModel: { label: string; usage: ThreadUsage }[];
   byDate: { label: string; usage: ThreadUsage }[];

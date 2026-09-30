@@ -19,6 +19,7 @@ import { formatRelative } from "@/lib/format-time";
 import { ThreadCard } from "@/components/threads/thread-card";
 import { formatSize, type FolderGroup } from "@/components/threads/thread-utils";
 import type { ThreadList } from "@/components/threads/use-thread-list";
+import { threadGridStyle } from "./thread-grid-layout";
 
 // One workspace folder in the non-virtual list: header bar plus its thread cards.
 export function ThreadGroupSection({
@@ -219,9 +220,10 @@ export function ThreadGroupSection({
         <div
           className={
             viewMode === "grid"
-              ? "grid grid-cols-[repeat(auto-fit,minmax(min(100%,250px),1fr))] gap-3 animate-in fade-in duration-200"
+              ? "grid animate-in fade-in duration-200"
               : "space-y-1.5 animate-in fade-in duration-200"
           }
+          style={viewMode === "grid" ? threadGridStyle : undefined}
         >
           {group.items.map((thread) => (
             <ThreadCard

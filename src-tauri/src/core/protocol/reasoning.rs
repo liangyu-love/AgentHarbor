@@ -42,13 +42,10 @@ pub(super) fn anthropic(out: &mut Map<String, Value>, model: &str, effort: &str)
 }
 
 fn adaptive(model: &str) -> bool {
-    let lower = model.to_ascii_lowercase();
-    let Some((prefix, name)) = lower.split_once("claude-") else {
+    let identity = super::super::model_defaults::model_key(model);
+    let Some(name) = identity.strip_prefix("claude-") else {
         return false;
     };
-    if !prefix.is_empty() && !prefix.ends_with(['/', '.', ':']) {
-        return false;
-    }
     // Known adaptive families only: don't extrapolate to future generations,
     // Haiku, or arbitrary providers that also speak the Messages protocol.
     [
@@ -80,6 +77,8 @@ mod tests {
             "anthropic.claude-opus-4-7-v1:0",
             "claude-fable-5-1",
             "claude-mythos-5",
+            "claude-opus-5-5-kiro",
+            "channel__Claude-Opus-5-5-kiro:free",
         ] {
             assert!(adaptive(name), "{name}");
         }

@@ -48,16 +48,18 @@ pub async fn get_conversation_messages(
     thread_id: String,
     snapshot_bytes: u64,
     offset: usize,
+    snapshot_id: Option<String>,
 ) -> Result<CoreEnvelope<threads::details::MessagePage>, String> {
     let (sessions, archived) = conversation_roots(&repo, target_id)?;
     let page = tauri::async_runtime::spawn_blocking(move || {
-        threads::details::read_messages(
+        threads::details::read_messages_versioned(
             &sessions,
             &archived,
             &key,
             &thread_id,
             snapshot_bytes,
             offset,
+            snapshot_id.as_deref(),
         )
     })
     .await

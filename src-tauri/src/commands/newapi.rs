@@ -22,6 +22,34 @@ fn paths(repo: &State<'_, Mutex<Repository>>) -> Result<CodexPaths, String> {
 }
 
 #[tauri::command]
+pub fn load_route_diagnostics() -> Vec<crate::core::route_trace::Route> {
+    crate::core::route_trace::recent()
+}
+
+#[tauri::command]
+pub async fn load_model_capabilities(
+    repo: State<'_, Mutex<Repository>>,
+) -> Result<crate::core::capability_preview::CatalogView, String> {
+    let paths = paths(&repo)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = router::load_store(&paths)?;
+        Ok(crate::core::capability_preview::preview(&paths, &store))
+    })
+    .await
+    .map_err(|_| "newapi.errors.storage".to_owned())?
+}
+
+#[tauri::command]
+pub async fn set_newapi_failover(
+    repo: State<'_, Mutex<Repository>>,
+    enabled: bool,
+) -> Result<StateChange, String> {
+    let paths = paths(&repo)?;
+    let _guard = routing_runtime::mutation_guard().await;
+    router::set_same_model_failover(&paths, enabled)
+}
+
+#[tauri::command]
 pub async fn load_newapi_state(repo: State<'_, Mutex<Repository>>) -> Result<NewApiState, String> {
     let paths = paths(&repo)?;
     // Opening the page only observes Codex's live configuration. Injection is

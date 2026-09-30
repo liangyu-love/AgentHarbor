@@ -129,6 +129,7 @@ export function ThreadCard({
                     "truncate text-left text-sm font-semibold leading-none text-foreground hover:text-primary transition-colors",
                     focusRing,
                   )}
+                  title={thread.title || t("threads.untitled")}
                   aria-label={t("threads.details.open", {
                     title: thread.title || t("threads.untitled"),
                   })}
@@ -349,7 +350,7 @@ export function ThreadCard({
     <TooltipProvider delayDuration={200}>
       <BentoCard
         className={cn(
-          "group relative flex min-h-[174px] flex-col justify-between cursor-pointer rounded-2xl p-4 transition-all duration-200 ease-out hover:-translate-y-1 hover:border-primary/50 hover:shadow-md",
+          "group relative flex min-h-[180px] flex-col justify-between cursor-pointer rounded-2xl p-3.5 transition-all duration-200 ease-out hover:-translate-y-1 hover:border-primary/50 hover:shadow-md",
           selected
             ? "border-primary/70 bg-primary/[0.04] ring-2 ring-primary/30 shadow-md dark:border-amber-400/60 dark:ring-amber-400/30 dark:bg-amber-400/[0.03]"
             : !hasRollout
@@ -384,9 +385,10 @@ export function ThreadCard({
                   type="button"
                   data-thread-title
                   className={cn(
-                    "line-clamp-2 text-left text-sm font-bold leading-snug tracking-tight text-foreground hover:text-primary transition-colors",
+                    "line-clamp-3 text-left text-sm font-bold leading-snug tracking-tight text-foreground hover:text-primary transition-colors",
                     focusRing,
                   )}
+                  title={thread.title || t("threads.untitled")}
                   aria-label={t("threads.details.open", {
                     title: thread.title || t("threads.untitled"),
                   })}
@@ -402,7 +404,7 @@ export function ThreadCard({
           </div>
 
           {/* Badges bar */}
-          <div className="flex flex-wrap items-center gap-1.5 pl-6">
+          <div className="flex flex-wrap items-center gap-1.5">
             {thread.archived ? (
               <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[9.5px] font-medium text-amber-600 dark:text-amber-400">
                 <Archive className="h-2.5 w-2.5" />
@@ -429,7 +431,7 @@ export function ThreadCard({
                 model: modelLabel,
               })}
             >
-              <span className="max-w-40 truncate">
+              <span className="max-w-[180px] sm:max-w-[220px] truncate">
                 {providerLabel} · {modelLabel}
               </span>
             </span>

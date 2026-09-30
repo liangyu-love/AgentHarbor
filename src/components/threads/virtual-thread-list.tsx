@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ThreadSummary } from "@/types/threads";
 import type { FolderGroup } from "@/components/threads/thread-utils";
 import { ThreadCard } from "@/components/threads/thread-card";
+import { estimateThreadGridHeight, threadGridStyle } from "./thread-grid-layout";
 import {
   GROUP_HEADER_HEIGHT,
   ThreadGroupHeader,
@@ -26,19 +27,6 @@ const GROUP_ROW_HEIGHT = GROUP_HEADER_HEIGHT;
 const THREAD_ROW_HEIGHT = 52;
 const OVERSCAN = 8;
 
-function estimateGridColumns(width: number) {
-  // Match the 240px auto-fit grid in the actual list, not the whole window:
-  // both the app sidebar and project navigator reduce the available width.
-  return Math.max(1, Math.floor((width + 10) / 250));
-}
-
-function estimateGridBodyHeight(itemCount: number, columns: number) {
-  if (itemCount <= 0) return 0;
-  const rows = Math.ceil(itemCount / columns);
-  // Card target height + gap, with slack for provider/model/source badges.
-  return rows * 174 + Math.max(0, rows - 1) * 12 + 8;
-}
-
 export interface VirtualThreadListProps {
   groups: FolderGroup[];
   collapsedGroups: Set<string>;
@@ -60,7 +48,7 @@ export interface VirtualThreadListProps {
 /**
  * Windowed thread list using the page scroll container.
  * Compact mode flattens groups into fixed-height rows;
- * grid mode keeps group blocks and skips offscreen paint via content-visibility.
+ * grid mode uses normal-flow groups and skips offscreen work via content-visibility.
  */
 export function VirtualThreadList({
   groups,
@@ -84,9 +72,10 @@ export function VirtualThreadList({
   const [viewportHeight, setViewportHeight] = useState(
     () => (typeof window === "undefined" ? 640 : window.innerHeight),
   );
-  const [columns, setColumns] = useState(1);
+  const [width, setWidth] = useState(0);
 
   const rows = useMemo<VirtualRow[]>(() => {
+    if (viewMode === "grid") return [];
     const list: VirtualRow[] = [];
     for (const group of groups) {
       const groupKeys = group.items.map(item => item.key);
@@ -97,7 +86,7 @@ export function VirtualThreadList({
         collapsed: collapsedGroups.has(group.key),
         allSelected: groupKeys.length > 0 && groupKeys.every(key => selected.has(key)),
       });
-      if (collapsedGroups.has(group.key) || viewMode === "grid") continue;
+      if (collapsedGroups.has(group.key)) continue;
       for (const thread of group.items) {
         list.push({
           type: "thread",
@@ -113,22 +102,7 @@ export function VirtualThreadList({
   const rowHeight = (row: VirtualRow) =>
     row.type === "group" ? GROUP_ROW_HEIGHT : THREAD_ROW_HEIGHT;
 
-  const gridLayout = useMemo(() => {
-    let offset = 0;
-    const blocks = groups.map(group => {
-      const collapsed = collapsedGroups.has(group.key);
-      const bodyHeight = collapsed ? 0 : estimateGridBodyHeight(group.items.length, columns);
-      const blockHeight = GROUP_ROW_HEIGHT + bodyHeight + 12;
-      const block = { group, collapsed, bodyHeight, blockHeight, offset };
-      offset += blockHeight;
-      return block;
-    });
-    return { blocks, totalHeight: offset };
-  }, [groups, collapsedGroups, columns]);
-
-  const totalHeight = viewMode === "grid"
-    ? gridLayout.totalHeight
-    : rows.reduce((sum, row) => sum + rowHeight(row), 0);
+  const totalHeight = rows.reduce((sum, row) => sum + rowHeight(row), 0);
 
   const windowRange = useMemo(() => {
     const start = Math.max(0, scrollTop - OVERSCAN * THREAD_ROW_HEIGHT);
@@ -137,7 +111,6 @@ export function VirtualThreadList({
   }, [scrollTop, viewportHeight]);
 
   const visibleRows = useMemo(() => {
-    if (viewMode === "grid") return [] as Array<{ row: VirtualRow; offset: number; height: number }>;
     let offset = 0;
     const visible: Array<{ row: VirtualRow; offset: number; height: number }> = [];
     for (const row of rows) {
@@ -149,7 +122,7 @@ export function VirtualThreadList({
       visible.push({ row, offset: rowStart, height });
     }
     return visible;
-  }, [rows, windowRange, viewMode]);
+  }, [rows, windowRange]);
 
   useEffect(() => {
     const anchor = anchorRef.current;
@@ -157,15 +130,18 @@ export function VirtualThreadList({
     const container = anchor.closest<HTMLElement>("[data-page-scroll-container]");
     const scrollTarget = container ?? window;
     const measure = () => {
+      if (viewMode === "grid") {
+        setWidth(anchor.clientWidth);
+        return;
+      }
       const viewportTop = container
         ? container.getBoundingClientRect().top + container.clientTop
         : 0;
       setScrollTop(Math.max(0, viewportTop - anchor.getBoundingClientRect().top));
       setViewportHeight(container?.clientHeight ?? window.innerHeight);
-      setColumns(estimateGridColumns(anchor.clientWidth));
     };
     measure();
-    scrollTarget.addEventListener("scroll", measure, { passive: true });
+    if (viewMode === "compact") scrollTarget.addEventListener("scroll", measure, { passive: true });
     window.addEventListener("resize", measure);
     container?.addEventListener("transitionend", measure);
     const observer = new ResizeObserver(measure);
@@ -180,30 +156,26 @@ export function VirtualThreadList({
   }, [viewMode, groups, collapsedGroups]);
 
   return (
-    <div ref={anchorRef} className="relative" style={{ height: totalHeight }}>
+    <div
+      ref={anchorRef}
+      data-thread-list
+      className="relative"
+      style={viewMode === "compact" ? { height: totalHeight } : undefined}
+    >
       {viewMode === "grid" ? (
         <div className="space-y-3">
-          {gridLayout.blocks.map(({ group, collapsed, bodyHeight, blockHeight, offset }) => {
+          {groups.map(group => {
+            const collapsed = collapsedGroups.has(group.key);
             const groupKeys = group.items.map(item => item.key);
             const groupExportKeys = group.items
               .filter(item => item.rolloutStatus !== "missing")
               .map(item => item.key);
             const allInGroupSelected =
               groupKeys.length > 0 && groupKeys.every(key => selected.has(key));
-            const visible =
-              offset + blockHeight >= windowRange.start && offset <= windowRange.end;
             return (
               <div
                 key={group.key}
-                style={{
-                  position: "absolute",
-                  top: offset,
-                  left: 0,
-                  right: 0,
-                  minHeight: blockHeight,
-                  visibility: visible ? "visible" : "hidden",
-                }}
-                aria-hidden={!visible}
+                data-thread-group={group.key}
               >
                 <ThreadGroupHeader
                   group={group}
@@ -221,10 +193,12 @@ export function VirtualThreadList({
                 />
                 {!collapsed && (
                   <div
-                    className="mt-2 grid grid-cols-[repeat(auto-fit,minmax(min(100%,250px),1fr))] gap-3"
+                    data-thread-grid
+                    className="mt-2 grid"
                     style={{
+                      ...threadGridStyle,
                       contentVisibility: "auto",
-                      containIntrinsicSize: `${Math.max(bodyHeight, 132)}px`,
+                      containIntrinsicSize: `auto ${estimateThreadGridHeight(group.items.length, width)}px`,
                     }}
                   >
                     {group.items.map(thread => (

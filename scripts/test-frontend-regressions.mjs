@@ -8,6 +8,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { testAccountThreadNavigation } from "./test-account-thread-navigation.mjs";
 import { testThreadDetails } from "./test-thread-details.mjs";
+import { testThreadUiFixes } from "./test-thread-ui-fixes.mjs";
+import { testMagpieOptimizations } from "./test-magpie-optimizations.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -66,7 +68,11 @@ try {
     await page.evaluate(value => window.review.mount(value), mode);
   };
 
-  if (process.env.FRONTEND_QA_SCOPE === "account-thread-navigation") {
+  if (process.env.FRONTEND_QA_SCOPE === "magpie-optimizations") {
+    await testMagpieOptimizations({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "ui-review-fixes") {
+    await testThreadUiFixes({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "account-thread-navigation") {
     await testAccountThreadNavigation({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "thread-details") {
     await testThreadDetails({ page, reset, captureDir });
@@ -128,8 +134,11 @@ try {
   assert.equal(await page.evaluate(() => window.scrollY), 0);
   await page.evaluate(() => window.review.mount("grid"));
   await page.locator("section").evaluate(element => { element.scrollTop = 1800; });
-  await page.waitForFunction(() => [...document.querySelectorAll("h2")].some(element =>
-    element.textContent === "Workspace 3" && element.closest("[aria-hidden]")?.getAttribute("aria-hidden") === "false"));
+  await page.waitForFunction(() => [...document.querySelectorAll("h2")].some(element => {
+    const bounds = element.getBoundingClientRect();
+    const viewport = element.closest("[data-page-scroll-container]")?.getBoundingClientRect();
+    return element.textContent === "Workspace 3" && viewport && bounds.top < viewport.bottom && bounds.bottom > viewport.top;
+  }));
   console.log("PASS virtual list follows the PageStage scroll container in compact and grid modes");
 
   await reset("image");
@@ -420,8 +429,8 @@ try {
   await page.getByRole("button", { name: labels.defaultChat, exact: true }).click();
   await page.getByRole("button", { name: labels.fetchModels, exact: true }).click();
   await page.evaluate(() => window.review.resolveModels([
-    { id: "chat-model", displayName: "refreshed", contextWindow: 64000, maxOutputTokens: null, endpointTypes: ["chat_completions"], included: false, metadataSource: "upstream", protocol: "chatCompletions" },
-    { id: "inherited-model", displayName: "inherited-model", contextWindow: null, maxOutputTokens: null, endpointTypes: [], included: true, metadataSource: "upstream", protocol: "responses" },
+    { id: "chat-model", displayName: "refreshed", contextWindow: 64000, maxOutputTokens: null, endpointTypes: ["chat_completions"], included: false, metadataSource: "upstream", protocol: "chatCompletions", supportedReasoningLevels: [{ effort: "low", description: "Provider low" }], defaultReasoningLevel: "low" },
+    { id: "inherited-model", displayName: "inherited-model", contextWindow: null, maxOutputTokens: null, endpointTypes: [], included: true, metadataSource: "upstream", protocol: "responses", supportedReasoningLevels: [], defaultReasoningLevel: null },
   ]));
   await page.locator('button[type="submit"]').click();
   await page.waitForFunction(() => Boolean(window.review.saved));
@@ -430,6 +439,20 @@ try {
     chatIncluded: window.review.saved.models.find(model => model.id === "chat-model").included })),
   { protocol: "anthropicMessages", model: "chat-model", overrides: { "chat-model": "responses", "inherited-model": null, "responses-model": "responses", "anthropic-model": "anthropicMessages" }, chatIncluded: true });
   console.log("PASS model protocols inherit independently, cross-protocol defaults work, and refresh preserves overrides");
+  assert.deepEqual(await page.evaluate(() => window.review.saved.models.slice(0, 2).map(model => ({
+    levels: model.supportedReasoningLevels, default: model.defaultReasoningLevel,
+  }))), [
+    { levels: [{ effort: "low", description: "Provider low" }], default: "low" },
+    { levels: [], default: null },
+  ]);
+  const refreshedReasoning = await page.evaluate(() => {
+    const previous = { ...window.review.saved.models[0], metadataSource: "manual", contextWindow: 200000 };
+    const fetched = { ...previous, metadataSource: "upstream", contextWindow: 64000, supportedReasoningLevels: [], defaultReasoningLevel: null };
+    const refreshed = window.review.mergeModelCatalog([previous], [fetched])[0];
+    return { context: refreshed.contextWindow, levels: refreshed.supportedReasoningLevels, default: refreshed.defaultReasoningLevel };
+  });
+  assert.deepEqual(refreshedReasoning, { context: 200000, levels: [], default: null });
+  console.log("PASS provider reasoning survives fetch, refresh, manual context overrides and the save payload, including explicit empty levels");
 
   await reset("access");
   await page.getByText(labels.modelCount, { exact: true }).waitFor();
@@ -1013,6 +1036,8 @@ try {
   console.log("PASS gallery scrolls into view, previews above the page, and ignores late image responses");
   await testAccountThreadNavigation({ page, reset, captureDir });
   await testThreadDetails({ page, reset, captureDir });
+  await testThreadUiFixes({ page, reset, captureDir });
+  await testMagpieOptimizations({ page, reset, captureDir });
   await reset("warnings");
   await page.getByText("Review thread 0", { exact: true }).waitFor();
   const warning = page.getByRole("status");

@@ -50,7 +50,7 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   await reset("thread-tree");
   const tree = page.getByRole("navigation", { name: "项目线程树", exact: true });
   const results = page.locator("[data-thread-results]");
-  await tree.getByRole("button", { name: "全部线程 100", exact: true }).waitFor();
+  await tree.getByRole("button", { name: "所有项目 100", exact: true }).waitFor();
   assert.equal(await tree.getByRole("button", { name: "展开或收起 AiMaMi", exact: true }).count(), 2);
   const project = tree.locator('button[title="C:/work/AiMaMi"]');
   const other = tree.locator('button[title="D:/work/AiMaMi"]');
@@ -72,16 +72,16 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   assert.equal(await results.getByRole("checkbox").count(), 5, "Same-name projects stay isolated by path");
   await page.getByPlaceholder(/搜索.*标题/).fill("Review thread 91");
   assert.equal(await results.getByRole("checkbox").count(), 1);
-  await tree.getByRole("button", { name: "全部线程 1/100", exact: true }).waitFor();
+  await tree.getByRole("button", { name: "所有项目 1/100", exact: true }).waitFor();
   await project.click();
   await results.getByText("未找到匹配的会话", { exact: true }).waitFor();
   await page.getByPlaceholder(/搜索.*标题/).fill("");
-  await page.getByRole("radio", { name: "已归档 50", exact: true }).click();
+  await page.getByRole("radio", { name: "已归档 45", exact: true }).click();
   assert.equal(await results.getByRole("checkbox").count(), 45);
   assert.match(await project.textContent(), /45\/90/);
-  await page.getByRole("radio", { name: "全部 100", exact: true }).click();
+  await page.getByRole("radio", { name: "全部 90", exact: true }).click();
   await tree.getByRole("button", { name: "Review thread 42", exact: true }).click();
-  await page.getByRole("radio", { name: "进行中 50", exact: true }).click();
+  await page.getByRole("radio", { name: "进行中 45", exact: true }).click();
   assert.equal(await results.getByRole("checkbox").count(), 45, "Archived focus is cleared by the active filter");
   await other.click();
   await tree.getByRole("button", { name: "展开或收起 AiMaMi", exact: true }).nth(1).click();
@@ -93,8 +93,57 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   });
   await page.getByRole("button", { name: "刷新", exact: true }).click();
   await page.waitForFunction(() => !document.querySelector('nav button[title="D:/work/AiMaMi"]'));
-  assert.equal(await tree.getByRole("button", { name: /全部线程/ }).getAttribute("aria-current"), "page", "Removed project falls back to all threads");
+  assert.equal(await tree.getByRole("button", { name: /所有项目/ }).getAttribute("aria-current"), "page", "Removed project falls back to all threads");
   assert.ok(await results.getByRole("checkbox").count() > 1, "A moved thread must not leave an invisible single-thread focus");
+
+  await reset("thread-tree");
+  await page.evaluate(() => {
+    window.review.threadItems = window.review.threadItems.slice(0, 7).map((thread, index) => ({
+      ...thread,
+      cwd: ["D:/workspace/AiMaMi", "\\\\?\\D:\\workspace\\AiMaMi", "d:/WORKSPACE/aimami/",
+        "C:/Users/demo/Documents/Codex/2026-09-30/new-chat",
+        "\\\\?\\C:\\Users\\demo\\Documents\\Codex\\2026-09-29\\renamed-chat",
+        "C:/work/new-chat", "C:/work/AiMaMi"][index],
+      folderName: ["AiMaMi", "AiMaMi", "aimami", "new-chat", "renamed-chat", "new-chat", "AiMaMi"][index],
+      userMessages: index + 1, agentMessages: (index + 1) * 2,
+    }));
+  });
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  await tree.getByRole("button", { name: "所有项目 7", exact: true }).waitFor();
+  const metrics = page.locator("[data-thread-metrics]");
+  const metric = name => metrics.locator(`[data-metric="${name}"]`);
+  assert.equal(await metric("threads").textContent(), "7");
+  assert.equal(await metric("projects").textContent(), "3", "Direct chats do not count as workspaces");
+  assert.equal(await tree.getByRole("button", { name: "展开或收起 AiMaMi", exact: true }).count(), 2, "Windows aliases merge but different paths remain separate");
+  await tree.locator('button[title="D:/workspace/AiMaMi"]').click();
+  assert.equal(await metric("threads").textContent(), "3");
+  assert.equal(await metric("input").textContent(), "6");
+  assert.equal(await metric("output").textContent(), "12");
+  assert.equal(await metric("tokens").textContent(), "Token 总量：30");
+  assert.equal(await metric("storage").textContent(), "300 B");
+  assert.equal(await results.getByRole("checkbox").count(), 3, "Project filtering uses the normalized identity too");
+  await page.getByPlaceholder(/搜索.*标题/).fill("no-such-thread");
+  await results.getByText("未找到匹配的会话", { exact: true }).waitFor();
+  assert.equal(await metric("threads").textContent(), "3", "Search does not silently change project totals");
+  await page.getByPlaceholder(/搜索.*标题/).fill("");
+  await tree.getByRole("button", { name: "直接对话 2", exact: true }).click();
+  assert.equal(await results.getByRole("checkbox").count(), 2);
+  assert.equal(await metric("projects").textContent(), "0");
+  assert.equal(await metric("input").textContent(), "9");
+  assert.equal(await metric("output").textContent(), "18");
+  await tree.getByRole("button", { name: "展开或收起 直接对话", exact: true }).click();
+  await tree.getByRole("button", { name: "Review thread 4", exact: true }).click();
+  assert.equal(await results.getByRole("checkbox").count(), 1);
+  assert.equal(await metric("threads").textContent(), "2", "Thread focus preserves the selected folder overview");
+  await tree.getByRole("button", { name: "所有项目 7", exact: true }).click();
+  assert.equal(await metric("input").textContent(), "28");
+  assert.equal(await metric("output").textContent(), "56");
+  await capture("thread-project-overview-desktop.png");
+  await page.setViewportSize({ width: 390, height: 700 });
+  await capture("thread-project-overview-mobile.png");
+  assert.equal(await page.locator("[data-page-scroll-container]").evaluate(element => element.scrollWidth <= element.clientWidth), true);
+  await page.setViewportSize({ width: 1440, height: 800 });
+  console.log("PASS Windows aliases merge, direct chats share a folder, and input/output/storage totals follow project selection");
 
   await reset("thread-tree");
   await tree.getByRole("button", { name: "展开或收起 AiMaMi", exact: true }).first().click();

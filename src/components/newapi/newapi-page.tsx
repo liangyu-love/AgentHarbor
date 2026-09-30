@@ -13,6 +13,8 @@ import { ProviderDialog } from "@/components/newapi/provider-dialog";
 import { ProviderTestDialog } from "@/components/newapi/provider-test-dialog";
 import { ClientConfigs } from "@/components/newapi/client-configs";
 import { CodexAccessCard } from "@/components/newapi/codex-access-card";
+import { RoutingDiagnostics } from "@/components/newapi/routing-diagnostics";
+import { ModelCapabilities } from "@/components/newapi/model-capabilities";
 import { GroupAliasDialog } from "@/components/newapi/group-alias-dialog";
 import { RelayList } from "@/components/newapi/relay-list";
 import { useProviderState } from "@/components/newapi/use-provider-state";
@@ -80,6 +82,10 @@ export function NewApiPage() {
       <CodexAccessCard store={store} providers={providers} selectedProvider={selectedProvider} nativeCompatible={nativeCompatible} onRestart={() => setRestartConfirmOpen(true)} />
 
       <ClientConfigs providers={providers} />
+
+      <RoutingDiagnostics failover={router?.sameModelFailover ?? false} disabled={nativeAccess || !state.isSuccess || store.mutationLocked}
+        onFailover={enabled => { void run("failover", async () => applyChange(await api.routing.setFailover(enabled)), t("newapi.traceSettingsFailed")); }} />
+      <ModelCapabilities />
 
       <RelayList store={store} view={view} providers={providers}
         onEdit={provider => setDialog({ open: true, provider })} onTest={setTestDialog} onRemove={setRemoving} onBalance={provider => setBalanceId(provider.id)} />

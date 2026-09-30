@@ -9,6 +9,9 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Component, Path, PathBuf};
 
+#[path = "details_index.rs"]
+mod index;
+
 const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_TEXT_CHARS: usize = 20_000;
@@ -92,7 +95,7 @@ pub struct ToolCount {
     pub calls: usize,
 }
 
-#[derive(Default, Debug, Serialize)]
+#[derive(Clone, Default, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Diagnostics {
     pub invalid_lines: usize,
@@ -109,6 +112,7 @@ pub struct Diagnostics {
 #[serde(rename_all = "camelCase")]
 pub struct ThreadDetails {
     pub snapshot_bytes: u64,
+    pub snapshot_id: String,
     pub usage: Option<Usage>,
     pub by_model: Vec<UsageBucket>,
     pub by_date: Vec<UsageBucket>,
@@ -187,14 +191,15 @@ fn open_snapshot(
 }
 
 // Discard oversized lines without allocating their full body.
-fn read_line(reader: &mut impl BufRead, line: &mut Vec<u8>) -> std::io::Result<(bool, bool)> {
+fn read_line(reader: &mut impl BufRead, line: &mut Vec<u8>) -> std::io::Result<(bool, bool, u64)> {
     line.clear();
     let mut oversized = false;
     let mut read = false;
+    let mut consumed = 0;
     loop {
         let buffer = reader.fill_buf()?;
         if buffer.is_empty() {
-            return Ok((read, oversized));
+            return Ok((read, oversized, consumed));
         }
         read = true;
         let end = buffer.iter().position(|b| *b == b'\n').map(|i| i + 1);
@@ -206,8 +211,9 @@ fn read_line(reader: &mut impl BufRead, line: &mut Vec<u8>) -> std::io::Result<(
             line.clear();
         }
         reader.consume(count);
+        consumed += count as u64;
         if end.is_some() {
-            return Ok((true, oversized));
+            return Ok((true, oversized, consumed));
         }
     }
 }
@@ -216,13 +222,16 @@ fn visit(
     reader: &mut impl BufRead,
     id: &str,
     diagnostics: &mut Diagnostics,
-    mut callback: impl FnMut(&Value, &mut Diagnostics) -> bool,
+    mut callback: impl FnMut(&Value, &mut Diagnostics, u64) -> bool,
 ) -> Result<(), CoreError> {
     let mut line = Vec::new();
     let mut final_session_id = None;
     let mut visiting = true;
+    let mut position = 0;
     loop {
-        let (read, oversized) = read_line(reader, &mut line)?;
+        let start = position;
+        let (read, oversized, consumed) = read_line(reader, &mut line)?;
+        position += consumed;
         if !read {
             break;
         }
@@ -257,7 +266,7 @@ fn visit(
             diagnostics.compactions += 1;
         }
         if visiting {
-            visiting = callback(&value, diagnostics);
+            visiting = callback(&value, diagnostics, start);
         }
     }
     if final_session_id.as_deref() != Some(id) {
@@ -300,123 +309,145 @@ pub fn read_details(
     let mut by_model = BTreeMap::<String, Usage>::new();
     let mut by_date = BTreeMap::<String, Usage>::new();
     let mut tools = BTreeMap::<String, usize>::new();
-    visit(&mut reader, id, &mut diagnostics, |value, diagnostics| {
-        if let Some(name) = tool_name(value) {
-            let name: String = name.chars().take(200).collect();
-            if tools.len() < 1000 || tools.contains_key(&name) {
-                *tools.entry(name).or_default() += 1;
+    let fingerprint = index::stamp(reader.get_ref().get_ref())?;
+    let mut parser = MessageParser::default();
+    let mut positions = Vec::new();
+    visit(
+        &mut reader,
+        id,
+        &mut diagnostics,
+        |value, diagnostics, position| {
+            if parser.candidate(value).is_some() {
+                positions.push(position);
             }
-        }
-        let record_type = value.get("type").and_then(Value::as_str);
-        if record_type == Some("session_meta") {
-            model = "unknown".into();
-        }
-        if matches!(record_type, Some("turn_context" | "session_meta")) {
-            if let Some(next) = value.pointer("/payload/model").and_then(Value::as_str) {
-                model = next.chars().take(200).collect();
+            if let Some(name) = tool_name(value) {
+                let name: String = name.chars().take(200).collect();
+                if tools.len() < 1000 || tools.contains_key(&name) {
+                    *tools.entry(name).or_default() += 1;
+                }
             }
-        }
-        if value.pointer("/payload/type").and_then(Value::as_str) == Some("thread_settings_applied")
-        {
-            if let Some(next) = value
-                .pointer("/payload/thread_settings/model")
-                .and_then(Value::as_str)
+            let record_type = value.get("type").and_then(Value::as_str);
+            if record_type == Some("session_meta") {
+                model = "unknown".into();
+            }
+            if matches!(record_type, Some("turn_context" | "session_meta")) {
+                if let Some(next) = value.pointer("/payload/model").and_then(Value::as_str) {
+                    model = next.chars().take(200).collect();
+                }
+            }
+            if value.pointer("/payload/type").and_then(Value::as_str)
+                == Some("thread_settings_applied")
             {
+                if let Some(next) = value
+                    .pointer("/payload/thread_settings/model")
+                    .and_then(Value::as_str)
+                {
+                    model = next.chars().take(200).collect();
+                }
+            }
+            if value.pointer("/payload/type").and_then(Value::as_str) != Some("token_count") {
+                return true;
+            }
+            if let Some(next) = value.pointer("/payload/info/model").and_then(Value::as_str) {
                 model = next.chars().take(200).collect();
             }
-        }
-        if value.pointer("/payload/type").and_then(Value::as_str) != Some("token_count") {
-            return true;
-        }
-        if let Some(next) = value.pointer("/payload/info/model").and_then(Value::as_str) {
-            model = next.chars().take(200).collect();
-        }
-        if value
-            .pointer("/payload/info/total_token_usage")
-            .is_none_or(Value::is_null)
-            && value
-                .pointer("/payload/info/last_token_usage")
+            if value
+                .pointer("/payload/info/total_token_usage")
                 .is_none_or(Value::is_null)
-        {
-            return true;
-        }
-        let delta = if let Some(total) = value
-            .pointer("/payload/info/total_token_usage")
-            .and_then(Usage::parse)
-        {
-            if previous.as_ref() == Some(&total) {
+                && value
+                    .pointer("/payload/info/last_token_usage")
+                    .is_none_or(Value::is_null)
+            {
                 return true;
             }
-            let delta = match &previous {
-                Some(old)
-                    if total.total >= old.total
-                        && total.input >= old.input
-                        && total.output >= old.output =>
-                {
-                    total.delta(old)
+            let delta = if let Some(total) = value
+                .pointer("/payload/info/total_token_usage")
+                .and_then(Usage::parse)
+            {
+                if previous.as_ref() == Some(&total) {
+                    return true;
                 }
-                Some(_) => {
-                    diagnostics.counter_resets += 1;
-                    total.clone()
+                let delta = match &previous {
+                    Some(old)
+                        if total.total >= old.total
+                            && total.input >= old.input
+                            && total.output >= old.output =>
+                    {
+                        total.delta(old)
+                    }
+                    Some(_) => {
+                        diagnostics.counter_resets += 1;
+                        total.clone()
+                    }
+                    None => total.clone(),
+                };
+                previous = Some(total);
+                delta
+            } else if let Some(last) = value
+                .pointer("/payload/info/last_token_usage")
+                .and_then(Usage::parse)
+            {
+                let fingerprint = (timestamp(value).to_owned(), last.clone());
+                if last_only.as_ref() == Some(&fingerprint) {
+                    return true;
                 }
-                None => total.clone(),
+                last_only = Some(fingerprint);
+                diagnostics.last_usage_only += 1;
+                // A later cumulative snapshot includes these already-accounted calls.
+                match &mut previous {
+                    Some(sum) => sum.add(&last),
+                    None => previous = Some(last.clone()),
+                }
+                last
+            } else {
+                diagnostics.invalid_lines += 1;
+                return true;
             };
-            previous = Some(total);
-            delta
-        } else if let Some(last) = value
-            .pointer("/payload/info/last_token_usage")
-            .and_then(Usage::parse)
-        {
-            let fingerprint = (timestamp(value).to_owned(), last.clone());
-            if last_only.as_ref() == Some(&fingerprint) {
+            if delta.total == 0 {
                 return true;
             }
-            last_only = Some(fingerprint);
-            diagnostics.last_usage_only += 1;
-            // A later cumulative snapshot includes these already-accounted calls.
-            match &mut previous {
-                Some(sum) => sum.add(&last),
-                None => previous = Some(last.clone()),
+            match &mut usage {
+                Some(sum) => sum.add(&delta),
+                None => usage = Some(delta.clone()),
             }
-            last
-        } else {
-            diagnostics.invalid_lines += 1;
-            return true;
-        };
-        if delta.total == 0 {
-            return true;
-        }
-        match &mut usage {
-            Some(sum) => sum.add(&delta),
-            None => usage = Some(delta.clone()),
-        }
-        let model_key = if by_model.len() < 1000 || by_model.contains_key(&model) {
-            model.clone()
-        } else {
-            "unknown".into()
-        };
-        by_model
-            .entry(model_key)
-            .and_modify(|sum| sum.add(&delta))
-            .or_insert_with(|| delta.clone());
-        let date = chrono::DateTime::parse_from_rfc3339(timestamp(value))
-            .ok()
-            .map(|t| t.date_naive().to_string());
-        let date = date.unwrap_or_else(|| {
-            diagnostics.undated_usage += 1;
-            "unknown".into()
-        });
-        let date = if by_date.len() < 5000 || by_date.contains_key(&date) {
-            date
-        } else {
-            "unknown".into()
-        };
-        by_date
-            .entry(date)
-            .and_modify(|sum| sum.add(&delta))
-            .or_insert(delta);
-        true
-    })?;
+            let model_key = if by_model.len() < 1000 || by_model.contains_key(&model) {
+                model.clone()
+            } else {
+                "unknown".into()
+            };
+            by_model
+                .entry(model_key)
+                .and_modify(|sum| sum.add(&delta))
+                .or_insert_with(|| delta.clone());
+            let date = chrono::DateTime::parse_from_rfc3339(timestamp(value))
+                .ok()
+                .map(|t| t.date_naive().to_string());
+            let date = date.unwrap_or_else(|| {
+                diagnostics.undated_usage += 1;
+                "unknown".into()
+            });
+            let date = if by_date.len() < 5000 || by_date.contains_key(&date) {
+                date
+            } else {
+                "unknown".into()
+            };
+            by_date
+                .entry(date)
+                .and_modify(|sum| sum.add(&delta))
+                .or_insert(delta);
+            true
+        },
+    )?;
+    index::ensure_unchanged(&path, reader.get_ref().get_ref(), &fingerprint)?;
+    let snapshot_id = index::token(&fingerprint);
+    index::remember(
+        &path,
+        fingerprint,
+        snapshot_bytes,
+        id,
+        positions,
+        diagnostics.clone(),
+    );
     let buckets = |map: BTreeMap<String, Usage>| {
         map.into_iter()
             .map(|(label, usage)| UsageBucket { label, usage })
@@ -424,6 +455,7 @@ pub fn read_details(
     };
     Ok(ThreadDetails {
         snapshot_bytes,
+        snapshot_id,
         usage,
         by_model: buckets(by_model),
         by_date: buckets(by_date),
@@ -435,25 +467,16 @@ pub fn read_details(
     })
 }
 
-pub fn read_messages(
-    sessions: &Path,
-    archived: &Path,
-    key: &str,
-    id: &str,
-    snapshot_bytes: u64,
-    offset: usize,
-) -> Result<MessagePage, CoreError> {
-    let path = resolve_path(sessions, archived, key)?;
-    let (mut reader, _) = open_snapshot(&path, Some(snapshot_bytes))?;
-    let mut diagnostics = Diagnostics::default();
-    let mut messages = Vec::new();
-    let mut seen = Vec::<SeenMessage>::new();
-    let mut parsed = Vec::new();
-    let mut title = None;
-    let (mut users, mut agents) = (0, 0);
-    let mut index = 0;
-    let mut next_offset = None;
-    visit(&mut reader, id, &mut diagnostics, |value, _| {
+#[derive(Default)]
+struct MessageParser {
+    seen: Vec<SeenMessage>,
+    parsed: Vec<super::ChatMessage>,
+    title: Option<String>,
+    users: usize,
+    agents: usize,
+}
+impl MessageParser {
+    fn candidate(&mut self, value: &Value) -> Option<(String, String)> {
         let mut candidate = None;
         if let Some((role, text, format)) = extract_chat_message(value) {
             record_message(
@@ -462,17 +485,17 @@ pub fn read_messages(
                 text,
                 format,
                 true,
-                &mut seen,
-                &mut title,
-                &mut users,
-                &mut agents,
-                &mut parsed,
+                &mut self.seen,
+                &mut self.title,
+                &mut self.users,
+                &mut self.agents,
+                &mut self.parsed,
             );
-            if let Some(message) = parsed.pop() {
+            if let Some(message) = self.parsed.pop() {
                 candidate = Some((message.role.to_owned(), message.text));
             }
-            if seen.len() > 512 {
-                seen.drain(..seen.len() - 512);
+            if self.seen.len() > 512 {
+                self.seen.drain(..self.seen.len() - 512);
             }
         } else if let Some(payload) = value.get("payload") {
             let kind = payload.get("type").and_then(Value::as_str).unwrap_or("");
@@ -531,29 +554,32 @@ pub fn read_messages(
                 }
             }
         }
-        if let Some((role, text)) = candidate {
-            if index >= offset {
-                if messages.len() == PAGE_SIZE {
-                    next_offset = Some(index);
-                    return false;
-                }
-                let truncated = text.chars().nth(MAX_TEXT_CHARS).is_some();
-                messages.push(Message {
-                    role,
-                    timestamp: timestamp(value).into(),
-                    text: text.chars().take(MAX_TEXT_CHARS).collect(),
-                    truncated,
-                });
-            }
-            index += 1;
-        }
-        true
-    })?;
-    Ok(MessagePage {
-        messages,
-        next_offset,
-        diagnostics,
-    })
+        candidate
+    }
+}
+
+pub fn read_messages(
+    sessions: &Path,
+    archived: &Path,
+    key: &str,
+    id: &str,
+    snapshot_bytes: u64,
+    offset: usize,
+) -> Result<MessagePage, CoreError> {
+    read_messages_versioned(sessions, archived, key, id, snapshot_bytes, offset, None)
+}
+
+pub fn read_messages_versioned(
+    sessions: &Path,
+    archived: &Path,
+    key: &str,
+    id: &str,
+    snapshot_bytes: u64,
+    offset: usize,
+    snapshot_id: Option<&str>,
+) -> Result<MessagePage, CoreError> {
+    let path = resolve_path(sessions, archived, key)?;
+    index::page(&path, id, snapshot_bytes, offset, snapshot_id)
 }
 
 #[cfg(test)]
@@ -582,6 +608,154 @@ mod tests {
     }
     fn context(model: &str) -> Value {
         json!({"type":"turn_context","payload":{"model":model}})
+    }
+    #[test]
+    fn indexed_pages_invalidate_truncation_replacement_and_same_length_edits() {
+        use std::io::Write;
+        let (_dir,s,a)=fixture((0..120).map(|i| json!({"type":"event_msg","payload":{"type":"user_message","message":format!("message {i:03}")}})).collect());
+        let path = s.join("rollout-test.jsonl");
+        let detail = read_details(&s, &a, "active:rollout-test.jsonl", "test").unwrap();
+        let page = read_messages_versioned(
+            &s,
+            &a,
+            "active:rollout-test.jsonl",
+            "test",
+            detail.snapshot_bytes,
+            100,
+            Some(&detail.snapshot_id),
+        )
+        .unwrap();
+        assert_eq!(page.messages[0].text, "message 100");
+        assert_eq!(page.messages.len(), 20);
+        let original = fs::read(&path).unwrap();
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        let changed = String::from_utf8(original.clone())
+            .unwrap()
+            .replace("message 100", "CHANGED 100");
+        assert_eq!(changed.len(), original.len());
+        fs::write(&path, changed).unwrap();
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        assert!(read_messages_versioned(
+            &s,
+            &a,
+            "active:rollout-test.jsonl",
+            "test",
+            detail.snapshot_bytes,
+            100,
+            Some(&detail.snapshot_id)
+        )
+        .is_err());
+        let next = read_details(&s, &a, "active:rollout-test.jsonl", "test").unwrap();
+        assert_eq!(
+            read_messages_versioned(
+                &s,
+                &a,
+                "active:rollout-test.jsonl",
+                "test",
+                next.snapshot_bytes,
+                100,
+                Some(&next.snapshot_id)
+            )
+            .unwrap()
+            .messages[0]
+                .text,
+            "CHANGED 100"
+        );
+        let replacement = s.join("replacement.tmp");
+        fs::write(&replacement, &original).unwrap();
+        File::options()
+            .write(true)
+            .open(&replacement)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        fs::rename(&path, s.join("old.tmp")).unwrap();
+        fs::rename(&replacement, &path).unwrap();
+        assert!(read_messages_versioned(
+            &s,
+            &a,
+            "active:rollout-test.jsonl",
+            "test",
+            next.snapshot_bytes,
+            100,
+            Some(&next.snapshot_id)
+        )
+        .is_err());
+        let replaced = read_details(&s, &a, "active:rollout-test.jsonl", "test").unwrap();
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"{}\n").unwrap();
+        drop(file);
+        assert!(read_messages_versioned(
+            &s,
+            &a,
+            "active:rollout-test.jsonl",
+            "test",
+            replaced.snapshot_bytes,
+            100,
+            Some(&replaced.snapshot_id)
+        )
+        .is_err());
+        fs::write(&path, b"{}\n").unwrap();
+        assert!(read_messages(
+            &s,
+            &a,
+            "active:rollout-test.jsonl",
+            "test",
+            replaced.snapshot_bytes,
+            100
+        )
+        .is_err());
+    }
+
+    #[test]
+    #[ignore = "Synthetic large history benchmark; no user transcript access"]
+    fn indexed_history_paging_benchmark() {
+        let records=(0..10_000).map(|i| json!({"type":"event_msg","payload":{"type":"user_message","message":format!("message {i}: {}", "x".repeat(2000))}})).collect();
+        let (_dir, s, a) = fixture(records);
+        let key = "active:rollout-test.jsonl";
+        let started = std::time::Instant::now();
+        let detail = read_details(&s, &a, key, "test").unwrap();
+        let build = started.elapsed();
+        let started = std::time::Instant::now();
+        for offset in (9000..10000).step_by(PAGE_SIZE) {
+            let page = read_messages_versioned(
+                &s,
+                &a,
+                key,
+                "test",
+                detail.snapshot_bytes,
+                offset,
+                Some(&detail.snapshot_id),
+            )
+            .unwrap();
+            assert_eq!(page.messages.len(), PAGE_SIZE);
+            assert!(page.messages[0]
+                .text
+                .starts_with(&format!("message {offset}:")));
+        }
+        let indexed = started.elapsed();
+        let started = std::time::Instant::now();
+        for _ in (9000..10000).step_by(PAGE_SIZE) {
+            let (mut reader, _) =
+                open_snapshot(&s.join("rollout-test.jsonl"), Some(detail.snapshot_bytes)).unwrap();
+            let mut parser = MessageParser::default();
+            visit(
+                &mut reader,
+                "test",
+                &mut Diagnostics::default(),
+                |v, _, _| {
+                    parser.candidate(v);
+                    true
+                },
+            )
+            .unwrap();
+        }
+        println!("history benchmark: bytes={}, build_ms={}, twenty_late_pages_ms={}, twenty_full_rescans_ms={}",detail.snapshot_bytes,build.as_millis(),indexed.as_millis(),started.elapsed().as_millis());
     }
     #[test]
     fn snapshots_are_deduplicated_and_attributed_to_recorded_context() {

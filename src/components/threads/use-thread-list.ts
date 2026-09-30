@@ -8,6 +8,8 @@ import type { ThreadSummary } from "@/types/threads";
 import {
   filterAndSortThreads,
   groupThreads,
+  threadProjectKey,
+  DIRECT_CHATS_KEY,
   type SortOption,
   type StatusFilter,
 } from "@/components/threads/thread-utils";
@@ -78,13 +80,13 @@ export function useThreadList() {
     () => filterAndSortThreads(threads, status, query, sortBy),
     [threads, status, query, sortBy],
   );
-  const projects = useMemo(() => groupThreads(threads, t("threads.unknownFolder")), [threads, t]);
+  const projects = useMemo(() => groupThreads(threads, t("threads.unknownFolder"), t("threads.directChats")), [threads, t]);
   const matchingKeys = useMemo(() => new Set(matching.map(thread => thread.key)), [matching]);
   const activeProject = projects.find(project => project.key === projectKey) ?? null;
   const focusCandidate = matching.find(thread => thread.key === focusedThreadKey);
-  const focusedThread = focusCandidate && activeProject && focusCandidate.cwd === activeProject.cwd ? focusCandidate : null;
+  const focusedThread = focusCandidate && activeProject && threadProjectKey(focusCandidate) === activeProject.key ? focusCandidate : null;
   const filtered = useMemo(() => matching.filter(thread =>
-    (!activeProject || thread.cwd === activeProject.cwd)
+    (!activeProject || threadProjectKey(thread) === activeProject.key)
     && (!focusedThread || thread.key === focusedThread.key)), [matching, activeProject, focusedThread]);
   // Filters/refetch may remove the focused item or its project; never leave a stale target.
   useEffect(() => {
@@ -104,21 +106,23 @@ export function useThreadList() {
 
   // Group by Workspace
   const groups = useMemo(
-    () => groupThreads(filtered, t("threads.unknownFolder")),
+    () => groupThreads(filtered, t("threads.unknownFolder"), t("threads.directChats")),
     [filtered, t],
   );
 
-  // Global aggregate metrics
-  const { archivedCount, totalUserMsgs, totalAgentMsgs, totalBytes, totalTokens, missingRolloutCount } = useMemo(() => {
+  // The overview follows project selection, independent of list search/status/focus.
+  const scopedThreads = activeProject?.items ?? threads;
+  const workspaceCount = (activeProject ? [activeProject] : projects)
+    .filter(project => project.key !== DIRECT_CHATS_KEY && project.cwd).length;
+  const missingRolloutCount = threads.filter(thread => thread.rolloutStatus === "missing").length;
+  const { archivedCount, totalUserMsgs, totalAgentMsgs, totalBytes, totalTokens } = useMemo(() => {
     let archived = 0;
     let user = 0;
     let agent = 0;
     let bytes = 0;
     let tokens = 0;
-    let missingRollouts = 0;
-    for (const item of threads) {
+    for (const item of scopedThreads) {
       if (item.archived) archived++;
-      if (item.rolloutStatus === "missing") missingRollouts++;
       user += item.userMessages || 0;
       agent += item.agentMessages || 0;
       bytes += item.fileSize || 0;
@@ -130,9 +134,8 @@ export function useThreadList() {
       totalAgentMsgs: agent,
       totalBytes: bytes,
       totalTokens: tokens,
-      missingRolloutCount: missingRollouts,
     };
-  }, [threads]);
+  }, [scopedThreads]);
 
   const totalInteractions = totalUserMsgs + totalAgentMsgs;
   const useVirtualList = filtered.length >= VIRTUALIZE_THRESHOLD;
@@ -371,7 +374,7 @@ export function useThreadList() {
 
   return {
     threadsQuery, threads, pendingDeletionKeys, scanWarnings, pendingDeletionRecoveryNeeded,
-    filtered, groups, projects, matchingKeys, activeProject, focusedThread, selectProject, focusThread,
+    filtered, groups, projects, matchingKeys, activeProject, focusedThread, selectProject, focusThread, scopedThreads, workspaceCount,
     selectedExportableCount, useVirtualList,
     archivedCount, totalUserMsgs, totalAgentMsgs, totalBytes, totalTokens, missingRolloutCount, totalInteractions,
     status, setStatus, query, setQuery, sortBy, setSortBy, sortLabels, viewMode, setViewMode, format, setFormat,

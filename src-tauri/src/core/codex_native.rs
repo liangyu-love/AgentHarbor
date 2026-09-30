@@ -249,6 +249,8 @@ fn catalog(paths: &CodexPaths, provider: &Provider) -> serde_json::Value {
     // Only the selected provider's own models are emitted below.
     let official_catalog =
         super::catalog_value(&paths.app_data_dir, &paths.codex_home, &Store::default());
+    let official_models = official_catalog["models"].as_array().expect("catalog model array");
+    let capability_catalog = model_defaults::Catalog::from_models(official_models);
     let mut seen = HashSet::new();
     let mut ids: Vec<_> = provider
         .models
@@ -265,27 +267,19 @@ fn catalog(paths: &CodexPaths, provider: &Provider) -> serde_json::Value {
         .into_iter()
         .filter(|id| seen.insert(*id))
         .map(|id| {
-            let metadata = provider.models.iter().find(|model| model.id == id);
-            let alias = metadata
-                .map(|model| model.display_name.trim())
-                .filter(|name| !name.is_empty())
-                .unwrap_or(id);
-            let official = official_catalog["models"].as_array().and_then(|models| {
-                models
-                    .iter()
-                    .find(|model| model["slug"].as_str() == Some(id))
-            });
+            let metadata = super::resolved_model_metadata(provider, id, &capability_catalog);
+            let alias = metadata.display_name.trim();
+            let official = super::matched_official_model(official_models, id);
+            let provider_reasoning = metadata.reasoning_metadata();
             relay_catalog_entry(
                 id.to_owned(),
                 menu_display_name(&provider.name, alias, id),
                 format!("{} → {id}", provider.name),
-                metadata
-                    .and_then(|model| model.context_window)
-                    .or(provider.context_window)
+                metadata.context_window
                     .unwrap_or_else(|| model_defaults::for_model(id).context_window),
-                metadata.and_then(|model| model.max_output_tokens),
+                metadata.max_output_tokens,
                 id,
-                official,
+                super::model_reasoning_source(id, official, provider_reasoning.as_ref()),
             )
         })
         .collect();
@@ -757,6 +751,108 @@ mod tests {
     }
 
     #[test]
+    fn kiro_capability_matching_preserves_routing_id_and_menu_alias() {
+        let (_directory, paths, mut store) = fixture();
+        let provider = &mut store.providers[0];
+        provider.model = "claude-opus-5-5-kiro".into();
+        provider.models = vec![newapi::Model {
+            id: provider.model.clone(), display_name: "Opus 自定义别名".into(),
+            protocol: Some(ModelProtocol::Responses),
+            context_window: Some(32000), max_output_tokens: Some(1024),
+            metadata_source: "upstream".into(), supported_reasoning_levels: Some(vec![]),
+            ..Default::default()
+        }];
+        let official = serde_json::json!({"models":[{
+            "slug":"claude-opus-5-5", "context_window":1000000, "max_output_tokens":128000,
+            "supported_reasoning_levels":[{"effort":"high","description":"Model high"},{"effort":"max","description":"Model max"}],
+            "default_reasoning_level":"high"
+        }]});
+        std::fs::write(paths.codex_home.join("models_cache.json"), official.to_string()).unwrap();
+        let native = catalog(&paths, provider);
+        let router = super::super::catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
+        assert_eq!(native["models"][0]["slug"], "claude-opus-5-5-kiro");
+        assert_eq!(router["models"][1]["slug"], "fixture-native::claude-opus-5-5-kiro");
+        for entry in [&native["models"][0], &router["models"][1]] {
+            assert_eq!(entry["display_name"], "Fixture native/Opus 自定义别名");
+            for field in ["context_window", "max_output_tokens", "supported_reasoning_levels", "default_reasoning_level"] {
+                assert_eq!(entry[field], official["models"][0][field]);
+            }
+        }
+        assert_eq!(store.providers[0].models[0].id, "claude-opus-5-5-kiro");
+    }
+
+    #[test]
+    fn model_identity_unifies_context_output_and_reasoning_across_channels() {
+        let (_directory, paths, mut store) = fixture();
+        let official = serde_json::json!({"models":[{
+            "slug":"gpt-6.1-sol", "context_window":900000, "max_output_tokens":64000,
+            "supported_reasoning_levels":[{"effort":"high","description":"Model high"}],
+            "default_reasoning_level":"high"
+        }]});
+        std::fs::write(paths.codex_home.join("models_cache.json"), official.to_string()).unwrap();
+        let template = store.providers[0].clone();
+        store.providers = ["gpt-6.1-sol", "OpenAI/GPT-6.1-SOL@fast", "channel__gpt-6.1-sol:free"]
+            .iter().enumerate().map(|(index, id)| {
+                let mut provider = template.clone();
+                provider.id = format!("channel-{index}");
+                provider.model = (*id).into();
+                provider.models = vec![newapi::Model {
+                    id: (*id).into(), context_window: Some(32000 + index as u64), max_output_tokens: Some(1024),
+                    metadata_source: "upstream".into(), supported_reasoning_levels: Some(vec![]),
+                    ..Default::default()
+                }];
+                provider
+            }).collect();
+        let router = super::super::catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
+        for (index, provider) in store.providers.iter().enumerate() {
+            let native = catalog(&paths, provider);
+            assert_eq!(native["models"][0]["slug"], provider.model, "Routing ID is preserved");
+            for entry in [&native["models"][0], &router["models"][index + 1]] {
+                for field in ["context_window", "max_output_tokens", "supported_reasoning_levels", "default_reasoning_level"] {
+                    assert_eq!(entry[field], official["models"][0][field], "channel {index}: {field}");
+                }
+            }
+        }
+        let metadata = &mut store.providers[0].models[0];
+        metadata.metadata_source = "manual".into();
+        metadata.context_window = Some(200000);
+        metadata.max_output_tokens = Some(8192);
+        let native = catalog(&paths, &store.providers[0]);
+        assert_eq!(native["models"][0]["context_window"], 200000);
+        assert_eq!(native["models"][0]["max_output_tokens"], 8192);
+        assert_eq!(native["models"][0]["supported_reasoning_levels"], official["models"][0]["supported_reasoning_levels"]);
+    }
+
+    #[test]
+    fn model_reasoning_wins_over_channel_declarations_in_both_catalogs() {
+        let (_directory, paths, mut store) = fixture();
+        let provider = &mut store.providers[0];
+        provider.model = "gpt-6-astra".into();
+        provider.models = vec![model("gpt-6-astra", ModelProtocol::Responses, 240_000)];
+        let official = serde_json::json!({"models":[{
+            "slug":"gpt-6-astra", "supported_reasoning_levels":[{"effort":"high","description":"Official high"}],
+            "default_reasoning_level":"high"
+        }]});
+        std::fs::write(paths.codex_home.join("models_cache.json"), official.to_string()).unwrap();
+        for (levels, default) in [
+            (Some(vec![newapi::ReasoningLevel { effort:"low".into(), description:"Provider low".into() }]),
+                Some("high")),
+            (Some(vec![]), Some("high")),
+            (None, Some("low")),
+        ] {
+            store.providers[0].models[0].supported_reasoning_levels = levels;
+            store.providers[0].models[0].default_reasoning_level = default.map(str::to_owned);
+            let native = catalog(&paths, &store.providers[0]);
+            let router = super::super::catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
+            for entry in [&native["models"][0], &router["models"][1]] {
+                assert_eq!(entry["supported_reasoning_levels"], official["models"][0]["supported_reasoning_levels"]);
+                assert_eq!(entry["default_reasoning_level"], "high");
+            }
+            assert_eq!(router["models"][0], official["models"][0], "Official model stays untouched");
+        }
+    }
+
+    #[test]
     fn native_catalog_borrows_exact_reasoning_without_official_ids_or_flags() {
         let (_directory, paths, mut store) = fixture();
         let provider = &mut store.providers[0];
@@ -786,7 +882,7 @@ mod tests {
         assert_eq!(models.len(), 2);
         assert_eq!(models[0]["slug"], "gpt-6-astra");
         assert_eq!(models[0]["display_name"], "Fixture native/gpt-6-astra");
-        assert_eq!(models[0]["context_window"], 240_000);
+        assert_eq!(models[0]["context_window"], 400_000);
         assert_eq!(models[0]["supported_reasoning_levels"], levels);
         assert_eq!(models[0]["default_reasoning_level"], "low");
         assert!(models[0].get("comp_hash").is_none());

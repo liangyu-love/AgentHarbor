@@ -267,7 +267,7 @@ export function ThreadProjectTree({ list }: { list: ProjectNavigation }) {
                   !list.activeProject ? "text-primary-foreground" : "text-primary",
                 )}
               />
-              <span className="truncate">{t("threads.allThreads")}</span>
+              <span className="truncate">{t("threads.allProjects")}</span>
             </span>
             <span
               className={cn(
@@ -284,7 +284,7 @@ export function ThreadProjectTree({ list }: { list: ProjectNavigation }) {
           </button>
 
           {/* Project List */}
-          <ul className="space-y-1 pt-1">
+          <ul className="ml-3 space-y-1 border-l border-border pl-1 pt-1">
             {list.projects.map((project) => (
               <ProjectBranch
                 key={project.key}

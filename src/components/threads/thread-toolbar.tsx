@@ -16,7 +16,7 @@ import type { ThreadList } from "@/components/threads/use-thread-list";
 export function ThreadToolbar({ list }: { list: ThreadList }) {
   const { t } = useTranslation();
   const {
-    query, setQuery, threads, archivedCount, status, setStatus, sortBy, setSortBy, sortLabels, viewMode, setViewMode,
+    query, setQuery, scopedThreads: threads, archivedCount, status, setStatus, sortBy, setSortBy, sortLabels, viewMode, setViewMode,
     collapsedGroups, expandAllGroups, collapseAllGroups, selectFiltered,
   } = list;
 

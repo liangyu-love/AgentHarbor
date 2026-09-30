@@ -1147,6 +1147,53 @@ fn real_codex_completes_anthropic_stream_through_actual_router() {
 
 #[test]
 #[ignore = "requires AGENTHARBOR_TEST_CODEX_BIN pointing to an installed Codex CLI"]
+fn real_codex_reasoning_menu_uses_model_identity_across_channels() {
+    let _serial = ROUTER_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let binary = PathBuf::from(std::env::var_os("AGENTHARBOR_TEST_CODEX_BIN").expect("installed binary"));
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path().join("workspace");
+    fs::create_dir_all(&cwd).unwrap();
+    let paths = CodexPaths::from_home(temp.path().join("codex"));
+    paths.ensure_directories().unwrap();
+    let proxy = RejectingProxy::start();
+    fs::write(&paths.config_path, "check_for_update_on_startup = false\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[features]\napps = false\nplugins = false\n").unwrap();
+    let mut store = Store {
+        providers: vec![serde_json::from_value(json!({
+            "id": "synthetic-reasoning", "name": "Reasoning fixture",
+            "baseUrl": "http://127.0.0.1:1", "apiKey": "synthetic-key",
+            "protocol": "responses", "model": "gpt-6.1-sol", "enabled": true,
+            "models": [
+                {"id":"gpt-6.1-sol"},
+                {"id":"gpt-6-sol", "supportedReasoningLevels":[{"effort":"low","description":"Provider low"}], "defaultReasoningLevel":"low"},
+                {"id":"gpt-6-luna", "supportedReasoningLevels":[]}
+            ]
+        })).unwrap()],
+        active_provider_id: Some("synthetic-reasoning".into()),
+        router: RouterSettings { enabled: true, accountless: true, bearer_token: LOCAL_TOKEN.into(), ..Default::default() },
+        ..Default::default()
+    };
+    for mode in [CodexAccessMode::Router, CodexAccessMode::Native] {
+        store.codex_access_mode = mode;
+        router::apply_routing_config(&paths, &store).unwrap();
+        let mut server = AppServer::start(&binary, &paths, &cwd, &proxy);
+        let menu = server.request(2, "model/list", json!({}));
+        for (id, expected) in [
+            ("gpt-6.1-sol", vec!["low", "medium", "high", "xhigh", "max", "ultra"]),
+            ("gpt-6-sol", vec!["low", "medium", "high", "xhigh", "max", "ultra"]),
+            ("gpt-6-luna", vec!["low", "medium", "high", "xhigh", "max"]),
+        ] {
+            let id = if mode == CodexAccessMode::Router { format!("synthetic-reasoning::{id}") } else { id.to_owned() };
+            let model = menu["data"].as_array().unwrap().iter().find(|model| model["id"] == id)
+                .unwrap_or_else(|| panic!("Missing {id} in {menu}"));
+            let efforts: Vec<_> = model["supportedReasoningEfforts"].as_array().unwrap().iter()
+                .map(|level| level["reasoningEffort"].as_str().unwrap()).collect();
+            assert_eq!(efforts, expected, "{id}: {model}");
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires AGENTHARBOR_TEST_CODEX_BIN pointing to an installed Codex CLI"]
 fn real_codex_adopts_same_thread_and_switches_relays_without_changing_provider() {
     fn turn(server: &mut AppServer, thread_id: &str, model: &str, text: &str) {
         server

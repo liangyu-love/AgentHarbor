@@ -74,10 +74,32 @@ export function filterThreads(
   return filterAndSortThreads(threads, status, query, "updatedAt");
 }
 
-export function groupThreads(threads: ThreadSummary[], unknownFolder: string): FolderGroup[] {
+export const DIRECT_CHATS_KEY = "virtual:direct-chats";
+
+// Normalize identity only; keep the original cwd on threads for file operations.
+export function normalizeProjectPath(cwd: string): string {
+  let path = cwd.replace(/\\/g, "/");
+  if (/^\/\/\?\/UNC\//i.test(path)) path = "//" + path.slice(8);
+  else if (path.startsWith("//?/")) path = path.slice(4);
+  path = path.replace(/\/+$/, "");
+  if (/^[a-z]:/i.test(path) || path.startsWith("//")) path = path.toLowerCase();
+  return path || (cwd.startsWith("/") ? "/" : "");
+}
+
+export function threadProjectKey(thread: Pick<ThreadSummary, "cwd">): string {
+  const path = normalizeProjectPath(thread.cwd);
+  // Codex's dated scratch workspaces are direct chats, including renamed ones.
+  // A real project named new-chat outside this location remains a project.
+  if (/(?:^|\/)documents\/codex\/\d{4}-\d{2}-\d{2}\/[^/]+(?:\/.*)?$/i.test(path)) {
+    return DIRECT_CHATS_KEY;
+  }
+  return path || "virtual:unknown-workspace";
+}
+
+export function groupThreads(threads: ThreadSummary[], unknownFolder: string, directChats = "Direct chats"): FolderGroup[] {
   const groups = new Map<string, FolderGroup>();
   for (const thread of threads) {
-    const key = thread.cwd || unknownFolder;
+    const key = threadProjectKey(thread);
     const existing = groups.get(key);
     const msgCount = (thread.userMessages || 0) + (thread.agentMessages || 0);
     if (existing) {
@@ -91,8 +113,8 @@ export function groupThreads(threads: ThreadSummary[], unknownFolder: string): F
     }
     groups.set(key, {
       key,
-      cwd: thread.cwd,
-      folderName: thread.folderName || key,
+      cwd: key === DIRECT_CHATS_KEY ? "" : thread.cwd,
+      folderName: key === DIRECT_CHATS_KEY ? directChats : thread.folderName || thread.cwd || unknownFolder,
       items: [thread],
       latestAt: thread.updatedAt,
       totalMessages: msgCount,

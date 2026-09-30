@@ -60,6 +60,7 @@ const tabs = ["usage", "tools", "metadata", "conversation"] as const;
 type Tab = typeof tabs[number];
 type RoleFilter = "all" | "user" | "assistant" | "tools" | "reasoning";
 const MESSAGE_PAGE_SIZE = 50;
+const EMPTY_MESSAGES: ThreadMessagePage["messages"] = [];
 const number = (value: number) => value.toLocaleString();
 
 // Filter buttons and their active styling, in display order. Each role uses the
@@ -711,9 +712,8 @@ export function ThreadDetailSheet({
   const content = useRef<HTMLDivElement>(null);
   const [tab, setTab] = useState<Tab>("usage");
   const [offset, setOffset] = useState(0);
-  const [roleFilter, setRoleFilter] = useState<
-    "all" | "user" | "assistant" | "tools" | "reasoning"
-  >("all");
+  const [roleFilter, setRoleFilter] = useState<RoleFilter>("all");
+  const [titleExpanded, setTitleExpanded] = useState(false);
   const available = thread.rolloutStatus !== "missing";
 
   useEffect(() => {
@@ -731,11 +731,11 @@ export function ThreadDetailSheet({
   const detail = detailQuery.data?.data;
 
   const messageQuery = useQuery({
-    queryKey: queryKeys.threadMessages(
+    queryKey: [...queryKeys.threadMessages(
       thread.key,
       detail?.snapshotBytes ?? 0,
       offset,
-    ),
+    ), detail?.snapshotId],
     queryFn: () =>
       api.conversations.messages(
         "codex",
@@ -743,6 +743,7 @@ export function ThreadDetailSheet({
         thread.id,
         detail!.snapshotBytes,
         offset,
+        detail!.snapshotId,
       ),
     enabled: tab === "conversation" && !!detail,
     gcTime: 0,
@@ -750,7 +751,7 @@ export function ThreadDetailSheet({
     refetchOnWindowFocus: false,
   });
 
-  const rawMessages = messageQuery.data?.data.messages ?? [];
+  const rawMessages = messageQuery.data?.data.messages ?? EMPTY_MESSAGES;
 
   // A message counts as a "tool" message only for the two tool roles; reasoning
   // and compaction summaries are their own bucket. The filter buttons and their
@@ -773,13 +774,15 @@ export function ThreadDetailSheet({
   );
 
   const filteredMessages = useMemo(() => {
-    if (roleFilter === "user") return rawMessages.filter((m) => m.role === "user");
+    // Preserve the position in this frozen page, not the position after filtering.
+    const indexed = rawMessages.map((message, index) => ({ message, index }));
+    if (roleFilter === "user") return indexed.filter(({ message }) => message.role === "user");
     if (roleFilter === "assistant")
-      return rawMessages.filter((m) => m.role === "assistant");
-    if (roleFilter === "tools") return rawMessages.filter((m) => isToolMessage(m.role));
+      return indexed.filter(({ message }) => message.role === "assistant");
+    if (roleFilter === "tools") return indexed.filter(({ message }) => isToolMessage(message.role));
     if (roleFilter === "reasoning")
-      return rawMessages.filter((m) => isReasoningMessage(m.role));
-    return rawMessages;
+      return indexed.filter(({ message }) => isReasoningMessage(message.role));
+    return indexed;
   }, [rawMessages, roleFilter]);
 
   const copyId = async () => {
@@ -810,34 +813,51 @@ export function ThreadDetailSheet({
 
   return (
     <Sheet open onOpenChange={(open) => !open && onClose()}>
-      {/* The `sm:w-*` / `sm:max-w-*` pair overrides the variant's `sm:max-w-sm`
-          via `cn`'s tailwind-merge pass. 95% opacity made `backdrop-blur-xl`
-          invisible while still paying for the compositing layer, so the ground
-          is slightly more open. */}
+      {/* The width pair overrides `sm:max-w-sm`. Surface transparency belongs
+          to the wallpaper token; an extra opacity modifier would invalidate it. */}
       <SheetContent
         closeLabel={t("common.close")}
-        className="flex h-[100dvh] w-full flex-col gap-0 border-l border-border/80 bg-background/90 p-0 shadow-2xl backdrop-blur-xl sm:w-[560px] sm:max-w-[560px] md:w-[620px] md:max-w-[620px] xl:w-[700px] xl:max-w-[700px]"
+        className="flex h-[100dvh] w-full flex-col gap-0 border-l border-border/80 bg-background p-0 shadow-2xl backdrop-blur-xl sm:w-[560px] sm:max-w-[560px] md:w-[620px] md:max-w-[620px] xl:w-[700px] xl:max-w-[700px]"
         onCloseAutoFocus={(event) => {
           event.preventDefault();
           if (opener.current?.isConnected) opener.current.focus();
         }}
       >
         {/* Sheet Header */}
-        <SheetHeader className="shrink-0 space-y-2 border-b border-border/60 bg-muted/20 px-6 pb-4 pt-5 text-left">
-          <div className="flex items-start justify-between gap-3 pr-8">
-            <SheetTitle className="text-base font-bold leading-snug tracking-tight text-foreground [overflow-wrap:anywhere]">
+        <SheetHeader className="shrink-0 space-y-1.5 border-b border-border/60 bg-muted/20 px-5 py-3 text-left">
+          <div className="pr-8">
+            <SheetTitle
+              className={cn(
+                "text-sm sm:text-base font-bold leading-snug tracking-tight text-foreground [overflow-wrap:anywhere]",
+                !titleExpanded && "line-clamp-2",
+              )}
+            >
               {thread.title || t("threads.untitled")}
             </SheetTitle>
+            {thread.title && thread.title.length > 60 && (
+              <button
+                type="button"
+                onClick={() => setTitleExpanded((v) => !v)}
+                className="mt-0.5 inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
+              >
+                <span>{titleExpanded ? "收起完整标题" : "展开完整标题"}</span>
+                {titleExpanded ? (
+                  <ChevronUp className="h-3 w-3" />
+                ) : (
+                  <ChevronDown className="h-3 w-3" />
+                )}
+              </button>
+            )}
           </div>
-          <SheetDescription className="text-xs text-muted-foreground">
-            {t("threads.details.readOnly")}
-          </SheetDescription>
-
-          <div className="flex flex-wrap items-center gap-2 pt-1 text-xs">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <SheetDescription className="text-[11px] text-muted-foreground shrink-0">
+              {t("threads.details.readOnly")}
+            </SheetDescription>
+            <span className="text-muted-foreground/40">·</span>
             {thread.archived ? (
               <Badge
                 variant="outline"
-                className="gap-1 border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400 text-[10px]"
+                className="gap-1 border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400 text-[10px] px-1.5 py-0"
               >
                 <Archive className="h-2.5 w-2.5" />
                 {t("threads.archivedBadge")}
@@ -845,21 +865,21 @@ export function ThreadDetailSheet({
             ) : (
               <Badge
                 variant="outline"
-                className="gap-1 border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px]"
+                className="gap-1 border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] px-1.5 py-0"
               >
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
                 {t("threads.activeBadge")}
               </Badge>
             )}
 
-            <span className="rounded-md bg-muted px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
+            <span className="rounded bg-muted px-1.5 py-0 font-mono text-[10px] text-muted-foreground">
               {t("threads.details.messages", {
                 count: thread.userMessages + thread.agentMessages,
               })}
             </span>
 
             {detail && (
-              <span className="rounded-md bg-muted px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
+              <span className="rounded bg-muted px-1.5 py-0 font-mono text-[10px] text-muted-foreground">
                 {t("threads.details.modelCount", {
                   count: detail.byModel.length,
                 })}
@@ -1107,9 +1127,9 @@ export function ThreadDetailSheet({
                         <>
                           {filteredMessages.length ? (
                             <div className="space-y-3">
-                              {filteredMessages.map((message, index) => (
+                              {filteredMessages.map(({ message, index }) => (
                                 <MessageItem
-                                  key={`${offset}-${index}`}
+                                  key={`${detail.snapshotBytes}-${offset}-${index}`}
                                   message={message}
                                 />
                               ))}
