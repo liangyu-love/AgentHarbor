@@ -5,8 +5,8 @@ import {
   Check,
   CheckSquare,
   Clock,
-  Copy,
   Coins,
+  Copy,
   Database,
   Download,
   FolderOpen,
@@ -61,7 +61,9 @@ export function ThreadCard({
 
   const totalMsgs = (thread.userMessages || 0) + (thread.agentMessages || 0);
   const userRatio =
-    totalMsgs > 0 ? Math.round(((thread.userMessages || 0) / totalMsgs) * 100) : 50;
+    totalMsgs > 0
+      ? Math.round(((thread.userMessages || 0) / totalMsgs) * 100)
+      : 50;
   const hasRollout = thread.rolloutStatus !== "missing";
   const canPreviewRecovery = thread.id.length > 0;
   const providerLabel = thread.modelProvider || t("threads.unknownProvider");
@@ -84,15 +86,15 @@ export function ThreadCard({
     setTimeout(() => setCopiedId(false), 2000);
   };
 
-  // Compact Row View — fixed height so virtualization can measure rows.
+  // Compact Row View — fixed height so virtualization can measure rows
   if (variant === "compact") {
     return (
       <TooltipProvider delayDuration={200}>
         <div
           className={cn(
-            "group relative flex h-12 cursor-pointer items-center justify-between gap-2.5 overflow-hidden rounded-lg border border-border/60 bg-card/80 px-2.5 transition-all duration-150 hover:border-primary/45 hover:bg-muted/40",
+            "group relative flex h-13 cursor-pointer items-center justify-between gap-3 overflow-hidden rounded-xl border border-border/60 bg-card/85 px-3 backdrop-blur-sm transition-all duration-150 hover:border-primary/50 hover:bg-muted/40",
             selected
-              ? "border-primary/60 bg-primary/[0.04] shadow-xs ring-1 ring-primary/35 dark:border-amber-400/50 dark:ring-amber-400/30 dark:bg-amber-400/[0.03]"
+              ? "border-primary/70 bg-primary/[0.04] shadow-xs ring-1 ring-primary/40 dark:border-amber-400/50 dark:ring-amber-400/30 dark:bg-amber-400/[0.03]"
               : !hasRollout
                 ? "border-destructive/45 bg-destructive/[0.025]"
                 : "",
@@ -100,7 +102,7 @@ export function ThreadCard({
           onClick={onToggleSelect}
         >
           {/* Left: Checkbox + Title + Status */}
-          <div className="flex min-w-0 flex-1 items-center gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-2.5">
             <span
               role="checkbox"
               aria-checked={selected}
@@ -108,56 +110,76 @@ export function ThreadCard({
               tabIndex={0}
               onKeyDown={onActivateKey(onToggleSelect)}
               className={cn(
-                "flex h-4 w-4 shrink-0 items-center justify-center rounded-[5px] border transition-all duration-150",
+                "flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-md border transition-all duration-150",
                 focusRing,
                 selected
                   ? "border-primary bg-primary text-primary-foreground shadow-xs"
                   : "border-border/80 bg-background text-transparent group-hover:border-primary/60",
               )}
             >
-              <CheckSquare className="h-2.5 w-2.5" />
+              <CheckSquare className="h-3 w-3" />
             </span>
 
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-1.5">
-                <button type="button" data-thread-title className={cn("truncate text-left text-sm font-medium leading-none text-foreground hover:text-primary", focusRing)}
-                  aria-label={t("threads.details.open", { title: thread.title || t("threads.untitled") })}
-                  onClick={e => { e.stopPropagation(); onDetails?.(); }}>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  data-thread-title
+                  className={cn(
+                    "truncate text-left text-sm font-semibold leading-none text-foreground hover:text-primary transition-colors",
+                    focusRing,
+                  )}
+                  aria-label={t("threads.details.open", {
+                    title: thread.title || t("threads.untitled"),
+                  })}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDetails?.();
+                  }}
+                >
                   {thread.title || t("threads.untitled")}
                 </button>
+
                 {thread.archived ? (
-                  <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
                     <Archive className="h-2.5 w-2.5" />
                     {t("threads.archivedBadge")}
                   </span>
                 ) : (
-                  <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
                     <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
                     {t("threads.activeBadge")}
                   </span>
                 )}
+
                 {!hasRollout && (
-                  <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">
+                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-destructive/10 px-2 py-0.5 text-[10px] font-medium text-destructive">
                     <AlertTriangle className="h-2.5 w-2.5" />
                     {t("threads.rolloutMissing")}
                   </span>
                 )}
+
                 <span
-                  className="hidden max-w-40 shrink-0 truncate rounded-[4px] bg-primary/8 px-1.5 py-0.5 font-mono text-[10px] text-primary md:inline-flex"
-                  title={t("threads.providerAndModel", { provider: providerLabel, model: modelLabel })}
+                  className="hidden max-w-44 shrink-0 truncate rounded-md bg-primary/10 px-2 py-0.5 font-mono text-[10px] font-medium text-primary md:inline-flex"
+                  title={t("threads.providerAndModel", {
+                    provider: providerLabel,
+                    model: modelLabel,
+                  })}
                 >
                   {providerLabel} · {modelLabel}
                 </span>
+
                 <span
-                  className="hidden shrink-0 items-center gap-0.5 rounded-[4px] bg-muted/60 px-1 py-px text-[9px] text-muted-foreground lg:inline-flex"
+                  className="hidden shrink-0 items-center gap-1 rounded-md bg-muted/70 px-1.5 py-0.5 text-[9.5px] text-muted-foreground lg:inline-flex"
                   title={t("threads.threadSource")}
                 >
-                  <Database className="h-2 w-2 opacity-70" />
+                  <Database className="h-2.5 w-2.5 opacity-70" />
                   {sourceLabel}
                 </span>
+
                 {(thread.cliVersion || thread.source) && (
-                  <span className="hidden md:inline-flex items-center gap-0.5 rounded-[4px] bg-muted/60 px-1 py-px font-mono text-[9px] text-muted-foreground">
-                    <Terminal className="h-2 w-2 opacity-70" />
+                  <span className="hidden md:inline-flex items-center gap-1 rounded-md bg-muted/70 px-1.5 py-0.5 font-mono text-[9.5px] text-muted-foreground">
+                    <Terminal className="h-2.5 w-2.5 opacity-70" />
                     {thread.cliVersion ? `v${thread.cliVersion}` : thread.source}
                   </span>
                 )}
@@ -166,35 +188,36 @@ export function ThreadCard({
           </div>
 
           {/* Center: Turn counts & Time */}
-          <div className="hidden shrink-0 items-center gap-3 text-[11px] text-muted-foreground sm:flex">
+          <div className="hidden shrink-0 items-center gap-3.5 text-xs text-muted-foreground sm:flex">
             <div
-              className="flex items-center gap-1 font-mono rounded bg-muted/40 px-1.5 py-0.5"
+              className="flex items-center gap-1.5 font-mono rounded-lg bg-muted/50 px-2 py-1"
               title={t("threads.messagesTooltip")}
             >
-              <span className="flex items-center gap-0.5 text-sky-600 dark:text-sky-400 font-medium">
-                <User className="h-2.5 w-2.5" />
+              <span className="flex items-center gap-1 text-sky-600 dark:text-sky-400 font-semibold">
+                <User className="h-3 w-3" />
                 {thread.userMessages}
               </span>
-              <span className="text-muted-foreground/30">/</span>
-              <span className="flex items-center gap-0.5 text-purple-600 dark:text-purple-400 font-medium">
-                <Sparkles className="h-2.5 w-2.5" />
+              <span className="text-muted-foreground/40">/</span>
+              <span className="flex items-center gap-1 text-purple-600 dark:text-purple-400 font-semibold">
+                <Sparkles className="h-3 w-3" />
                 {thread.agentMessages}
               </span>
             </div>
+
             <span
-              className="flex items-center gap-0.5 font-mono text-[10.5px]"
+              className="flex items-center gap-1 font-mono text-[11px]"
               title={t("threads.tokensUsed", { count: thread.tokensUsed || 0 })}
             >
-              <Coins className="h-2.5 w-2.5 opacity-70" />
+              <Coins className="h-3 w-3 opacity-70" />
               {formatTokenCount(thread.tokensUsed)}
             </span>
 
-            <span className="w-12 text-right font-mono text-[10.5px]">
+            <span className="w-13 text-right font-mono text-[11px]">
               {formatSize(thread.fileSize)}
             </span>
 
             <span
-              className="w-14 text-right text-[10.5px]"
+              className="w-16 text-right text-[11px]"
               title={formatDateTime(thread.updatedAt)}
             >
               {formatRelative(thread.updatedAt)}
@@ -202,17 +225,21 @@ export function ThreadCard({
           </div>
 
           {/* Right: Actions */}
-          <div className="flex shrink-0 items-center gap-0.5 opacity-70 group-hover:opacity-100">
+          <div className="flex shrink-0 items-center gap-1 opacity-70 group-hover:opacity-100 transition-opacity">
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
                   variant="ghost"
                   size="icon-sm"
-                  className="h-6 w-6 text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-transform"
+                  className="h-7 w-7 rounded-lg text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-all"
                   onClick={handleCopyId}
                   aria-label={t("threads.copyId")}
                 >
-                  {copiedId ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
+                  {copiedId ? (
+                    <Check className="h-3.5 w-3.5 text-emerald-500" />
+                  ) : (
+                    <Copy className="h-3.5 w-3.5" />
+                  )}
                 </Button>
               </TooltipTrigger>
               <TooltipContent>{t("threads.copyId")}</TooltipContent>
@@ -224,7 +251,296 @@ export function ThreadCard({
                   <Button
                     variant="ghost"
                     size="icon-sm"
-                    className="h-6 w-6 text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-transform"
+                    className="h-7 w-7 rounded-lg text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-all"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRecover();
+                    }}
+                    aria-label={t("threads.recoveryAction")}
+                  >
+                    <RefreshCcw className="h-3.5 w-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{t("threads.recoveryAction")}</TooltipContent>
+              </Tooltip>
+            )}
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="h-7 w-7 rounded-lg text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-all"
+                  disabled={!hasRollout}
+                  aria-label={
+                    hasRollout
+                      ? t("threads.exportThread")
+                      : t("threads.exportUnavailable")
+                  }
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (!hasRollout) return;
+                    onExport();
+                  }}
+                >
+                  <Download className="h-3.5 w-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {hasRollout
+                  ? t("threads.exportThread")
+                  : t("threads.exportUnavailable")}
+              </TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="h-7 w-7 rounded-lg text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-all"
+                  disabled={!hasRollout}
+                  aria-label={
+                    hasRollout
+                      ? t("threads.openRawFile")
+                      : t("threads.rawUnavailable")
+                  }
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (!hasRollout) return;
+                    onOpenRaw();
+                  }}
+                >
+                  <FolderOpen className="h-3.5 w-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {hasRollout
+                  ? t("threads.openRawFile")
+                  : t("threads.rawUnavailable")}
+              </TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="h-7 w-7 rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive active:scale-95 transition-all"
+                  aria-label={t("threads.deleteThread")}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDelete();
+                  }}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{t("threads.deleteThread")}</TooltipContent>
+            </Tooltip>
+          </div>
+        </div>
+      </TooltipProvider>
+    );
+  }
+
+  // Bento Card Grid View (Default) — high-craft interactive card
+  return (
+    <TooltipProvider delayDuration={200}>
+      <BentoCard
+        className={cn(
+          "group relative flex min-h-[174px] flex-col justify-between cursor-pointer rounded-2xl p-4 transition-all duration-200 ease-out hover:-translate-y-1 hover:border-primary/50 hover:shadow-md",
+          selected
+            ? "border-primary/70 bg-primary/[0.04] ring-2 ring-primary/30 shadow-md dark:border-amber-400/60 dark:ring-amber-400/30 dark:bg-amber-400/[0.03]"
+            : !hasRollout
+              ? "border-destructive/45 bg-destructive/[0.025]"
+              : "border-border/70 bg-gradient-to-b from-card/95 via-card/85 to-card/65 backdrop-blur-md shadow-2xs",
+        )}
+        onClick={onToggleSelect}
+      >
+        {/* Top: Checkbox, Title & Status */}
+        <div className="space-y-2">
+          <div className="flex items-start gap-2">
+            <span
+              role="checkbox"
+              aria-checked={selected}
+              aria-label={thread.title || t("threads.untitled")}
+              tabIndex={0}
+              onKeyDown={onActivateKey(onToggleSelect)}
+              className={cn(
+                "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-md border transition-all duration-150",
+                focusRing,
+                selected
+                  ? "border-primary bg-primary text-primary-foreground shadow-xs"
+                  : "border-border/80 bg-background text-transparent group-hover:border-primary/60",
+              )}
+            >
+              <CheckSquare className="h-3 w-3" />
+            </span>
+
+            <div className="min-w-0 flex-1">
+              <h3>
+                <button
+                  type="button"
+                  data-thread-title
+                  className={cn(
+                    "line-clamp-2 text-left text-sm font-bold leading-snug tracking-tight text-foreground hover:text-primary transition-colors",
+                    focusRing,
+                  )}
+                  aria-label={t("threads.details.open", {
+                    title: thread.title || t("threads.untitled"),
+                  })}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDetails?.();
+                  }}
+                >
+                  {thread.title || t("threads.untitled")}
+                </button>
+              </h3>
+            </div>
+          </div>
+
+          {/* Badges bar */}
+          <div className="flex flex-wrap items-center gap-1.5 pl-6">
+            {thread.archived ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[9.5px] font-medium text-amber-600 dark:text-amber-400">
+                <Archive className="h-2.5 w-2.5" />
+                {t("threads.archivedBadge")}
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[9.5px] font-medium text-emerald-600 dark:text-emerald-400">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                {t("threads.activeBadge")}
+              </span>
+            )}
+
+            {!hasRollout && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-destructive/10 px-2 py-0.5 text-[9.5px] font-medium text-destructive">
+                <AlertTriangle className="h-2.5 w-2.5" />
+                {t("threads.rolloutMissing")}
+              </span>
+            )}
+
+            <span
+              className="inline-flex max-w-full items-center rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-[9.5px] font-medium text-primary"
+              title={t("threads.providerAndModel", {
+                provider: providerLabel,
+                model: modelLabel,
+              })}
+            >
+              <span className="max-w-40 truncate">
+                {providerLabel} · {modelLabel}
+              </span>
+            </span>
+
+            <span
+              className="inline-flex items-center gap-1 rounded-md bg-muted/70 px-1.5 py-0.5 text-[9.5px] text-muted-foreground"
+              title={t("threads.threadSource")}
+            >
+              <Database className="h-2.5 w-2.5 opacity-70" />
+              {sourceLabel}
+            </span>
+
+            {(thread.cliVersion || thread.source) && (
+              <span className="inline-flex items-center gap-1 rounded-md bg-muted/70 px-1.5 py-0.5 font-mono text-[9.5px] text-muted-foreground">
+                <Terminal className="h-2.5 w-2.5 opacity-70" />
+                {thread.cliVersion ? `v${thread.cliVersion}` : thread.source}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Middle: Dialogue breakdown capsule */}
+        <div className="mt-3 flex items-center justify-between gap-2 rounded-xl bg-muted/35 px-2.5 py-1.5 text-[11px] border border-border/30">
+          <div className="flex min-w-0 items-center gap-2 font-mono">
+            <span className="flex items-center gap-1 text-sky-600 dark:text-sky-400 font-semibold">
+              <User className="h-3 w-3" />
+              {thread.userMessages}
+            </span>
+            <span className="text-muted-foreground/30">/</span>
+            <span className="flex items-center gap-1 text-purple-600 dark:text-purple-400 font-semibold">
+              <Sparkles className="h-3 w-3" />
+              {thread.agentMessages}
+            </span>
+            <span
+              className="flex items-center gap-1 text-muted-foreground/80 ml-1 border-l border-border/50 pl-2"
+              title={t("threads.tokensUsed", { count: thread.tokensUsed || 0 })}
+            >
+              <Coins className="h-3 w-3 opacity-70" />
+              {formatTokenCount(thread.tokensUsed)}
+            </span>
+          </div>
+
+          <div
+            className="h-2 w-16 shrink-0 overflow-hidden rounded-full bg-muted/80 flex ring-1 ring-border/20 shadow-2xs"
+            title={`用户提问占比: ${userRatio}%`}
+          >
+            <div
+              className="bg-gradient-to-r from-sky-500 to-sky-400"
+              style={{ width: `${userRatio}%` }}
+            />
+            <div
+              className="bg-gradient-to-r from-fuchsia-500 to-purple-400"
+              style={{ width: `${100 - userRatio}%` }}
+            />
+          </div>
+        </div>
+
+        {/* Bottom: Meta & Quick Actions */}
+        <div className="mt-2.5 flex items-center justify-between border-t border-border/40 pt-2 text-[11px] text-muted-foreground">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="flex items-center gap-1 hover:text-foreground transition-colors cursor-help">
+                  <Clock className="h-3 w-3 opacity-70" />
+                  {formatRelative(thread.updatedAt)}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent className="text-xs space-y-0.5">
+                <div>活跃时间: {formatDateTime(thread.updatedAt)}</div>
+                {thread.createdAt && (
+                  <div className="text-muted-foreground">
+                    创建时间: {formatDateTime(thread.createdAt)}
+                  </div>
+                )}
+              </TooltipContent>
+            </Tooltip>
+
+            <span className="flex items-center gap-1 font-mono">
+              <HardDrive className="h-3 w-3 opacity-70" />
+              {formatSize(thread.fileSize)}
+            </span>
+          </div>
+
+          {/* Action dock */}
+          <div className="flex items-center gap-0.5">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="h-6 w-6 rounded-md text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-all"
+                  onClick={handleCopyId}
+                  aria-label={t("threads.copyId")}
+                >
+                  {copiedId ? (
+                    <Check className="h-3 w-3 text-emerald-500" />
+                  ) : (
+                    <Copy className="h-3 w-3" />
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{t("threads.copyId")}</TooltipContent>
+            </Tooltip>
+
+            {canPreviewRecovery && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    className="h-6 w-6 rounded-md text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-all"
                     onClick={(e) => {
                       e.stopPropagation();
                       onRecover();
@@ -243,9 +559,13 @@ export function ThreadCard({
                 <Button
                   variant="ghost"
                   size="icon-sm"
-                  className="h-6 w-6 text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-transform"
+                  className="h-6 w-6 rounded-md text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-all"
                   disabled={!hasRollout}
-                  aria-label={hasRollout ? t("threads.exportThread") : t("threads.exportUnavailable")}
+                  aria-label={
+                    hasRollout
+                      ? t("threads.exportThread")
+                      : t("threads.exportUnavailable")
+                  }
                   onClick={(e) => {
                     e.stopPropagation();
                     if (!hasRollout) return;
@@ -256,7 +576,9 @@ export function ThreadCard({
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
-                {hasRollout ? t("threads.exportThread") : t("threads.exportUnavailable")}
+                {hasRollout
+                  ? t("threads.exportThread")
+                  : t("threads.exportUnavailable")}
               </TooltipContent>
             </Tooltip>
 
@@ -265,9 +587,13 @@ export function ThreadCard({
                 <Button
                   variant="ghost"
                   size="icon-sm"
-                  className="h-6 w-6 text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-transform"
+                  className="h-6 w-6 rounded-md text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-all"
                   disabled={!hasRollout}
-                  aria-label={hasRollout ? t("threads.openRawFile") : t("threads.rawUnavailable")}
+                  aria-label={
+                    hasRollout
+                      ? t("threads.openRawFile")
+                      : t("threads.rawUnavailable")
+                  }
                   onClick={(e) => {
                     e.stopPropagation();
                     if (!hasRollout) return;
@@ -278,7 +604,9 @@ export function ThreadCard({
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
-                {hasRollout ? t("threads.openRawFile") : t("threads.rawUnavailable")}
+                {hasRollout
+                  ? t("threads.openRawFile")
+                  : t("threads.rawUnavailable")}
               </TooltipContent>
             </Tooltip>
 
@@ -287,7 +615,7 @@ export function ThreadCard({
                 <Button
                   variant="ghost"
                   size="icon-sm"
-                  className="h-6 w-6 text-muted-foreground hover:bg-destructive/10 hover:text-destructive active:scale-95 transition-transform"
+                  className="h-6 w-6 rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive active:scale-95 transition-all"
                   aria-label={t("threads.deleteThread")}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -295,257 +623,6 @@ export function ThreadCard({
                   }}
                 >
                   <Trash2 className="h-3 w-3" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{t("threads.deleteThread")}</TooltipContent>
-            </Tooltip>
-          </div>
-        </div>
-      </TooltipProvider>
-    );
-  }
-
-  // Bento Card Grid View (Default) — dense card
-  return (
-    <TooltipProvider delayDuration={200}>
-      <BentoCard
-        className={cn(
-          "group relative flex min-h-[168px] flex-col justify-between cursor-pointer p-3.5 transition-all duration-150 ease-out hover:-translate-y-px hover:border-primary/40 hover:shadow-sm",
-          selected
-            ? "border-primary/60 bg-primary/[0.03] ring-1 ring-primary/35 shadow-xs dark:border-amber-400/60 dark:ring-amber-400/30 dark:bg-amber-400/[0.03]"
-            : !hasRollout
-              ? "border-destructive/45 bg-destructive/[0.025]"
-              : "",
-        )}
-        onClick={onToggleSelect}
-      >
-        {/* Top: Checkbox, Title & Status */}
-        <div className="space-y-1.5">
-          <div className="flex items-start gap-1.5">
-            <span
-              role="checkbox"
-              aria-checked={selected}
-              aria-label={thread.title || t("threads.untitled")}
-              tabIndex={0}
-              onKeyDown={onActivateKey(onToggleSelect)}
-              className={cn(
-                "mt-px flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[4px] border transition-all duration-150",
-                focusRing,
-                selected
-                  ? "border-primary bg-primary text-primary-foreground shadow-xs"
-                  : "border-border/80 bg-background text-transparent group-hover:border-primary/60",
-              )}
-            >
-              <CheckSquare className="h-2.5 w-2.5" />
-            </span>
-
-            <div className="min-w-0 flex-1">
-              <h3><button type="button" data-thread-title className={cn("line-clamp-2 text-left text-sm font-semibold leading-snug tracking-tight text-foreground hover:text-primary", focusRing)}
-                aria-label={t("threads.details.open", { title: thread.title || t("threads.untitled") })}
-                onClick={e => { e.stopPropagation(); onDetails?.(); }}>
-                {thread.title || t("threads.untitled")}
-              </button></h3>
-            </div>
-          </div>
-
-          {/* Tags bar */}
-          <div className="flex flex-wrap items-center gap-1 pl-5">
-            {thread.archived ? (
-              <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-500/10 px-1.5 py-px text-[9px] font-medium text-amber-600 dark:text-amber-400">
-                <Archive className="h-2 w-2" />
-                {t("threads.archivedBadge")}
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-0.5 rounded-full bg-emerald-500/10 px-1.5 py-px text-[9px] font-medium text-emerald-600 dark:text-emerald-400">
-                <span className="h-1 w-1 rounded-full bg-emerald-500 animate-pulse" />
-                {t("threads.activeBadge")}
-              </span>
-            )}
-            {!hasRollout && (
-              <span className="inline-flex items-center gap-0.5 rounded-full bg-destructive/10 px-1.5 py-px text-[9px] font-medium text-destructive">
-                <AlertTriangle className="h-2 w-2" />
-                {t("threads.rolloutMissing")}
-              </span>
-            )}
-            <span
-              className="inline-flex max-w-full items-center rounded-[4px] bg-primary/8 px-1 py-px font-mono text-[9px] text-primary"
-              title={t("threads.providerAndModel", { provider: providerLabel, model: modelLabel })}
-            >
-              <span className="max-w-36 truncate">{providerLabel} · {modelLabel}</span>
-            </span>
-            <span
-              className="inline-flex items-center gap-0.5 rounded-[4px] bg-muted/60 px-1 py-px text-[9px] text-muted-foreground"
-              title={t("threads.threadSource")}
-            >
-              <Database className="h-2 w-2 opacity-70" />
-              {sourceLabel}
-            </span>
-
-            {(thread.cliVersion || thread.source) && (
-              <span className="inline-flex items-center gap-0.5 rounded-[4px] bg-muted/60 px-1 py-px font-mono text-[9px] text-muted-foreground">
-                <Terminal className="h-2 w-2 opacity-70" />
-                {thread.cliVersion ? `v${thread.cliVersion}` : thread.source}
-              </span>
-            )}
-          </div>
-        </div>
-
-        {/* Middle: Dialogue breakdown — single compact line */}
-        <div className="mt-2.5 flex items-center justify-between gap-2 rounded-lg bg-muted/30 px-2 py-1 text-[11px]">
-          <div className="flex min-w-0 items-center gap-1.5 font-mono">
-            <span className="flex items-center gap-1 text-sky-600 dark:text-sky-400 font-medium">
-              <User className="h-3 w-3" />
-              {thread.userMessages}
-            </span>
-            <span className="text-muted-foreground/30">/</span>
-            <span className="flex items-center gap-1 text-purple-600 dark:text-purple-400 font-medium">
-              <Sparkles className="h-3 w-3" />
-              {thread.agentMessages}
-            </span>
-            <span
-              className="flex items-center gap-1 text-muted-foreground/80 ml-1 border-l border-border/40 pl-2"
-              title={t("threads.tokensUsed", { count: thread.tokensUsed || 0 })}
-            >
-              <Coins className="h-2.5 w-2.5 opacity-70" />
-              {formatTokenCount(thread.tokensUsed)}
-            </span>
-          </div>
-          <div className="h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-muted/80 flex ring-1 ring-border/20" title={`用户提问占比: ${userRatio}%`}>
-            <div
-              className="bg-gradient-to-r from-sky-500 to-sky-400"
-              style={{ width: `${userRatio}%` }}
-            />
-            <div
-              className="bg-gradient-to-r from-fuchsia-500 to-purple-400"
-              style={{ width: `${100 - userRatio}%` }}
-            />
-          </div>
-        </div>
-
-        {/* Bottom: Meta & Quick Actions */}
-        <div className="mt-2 flex items-center justify-between border-t border-border/30 pt-2 text-[11px] text-muted-foreground">
-          <div className="flex min-w-0 items-center gap-2">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="flex items-center gap-0.5 hover:text-foreground transition-colors cursor-help">
-                  <Clock className="h-2.5 w-2.5 opacity-70" />
-                  {formatRelative(thread.updatedAt)}
-                </span>
-              </TooltipTrigger>
-              <TooltipContent className="text-xs space-y-0.5">
-                <div>活跃时间: {formatDateTime(thread.updatedAt)}</div>
-                {thread.createdAt && (
-                  <div className="text-muted-foreground">
-                    创建时间: {formatDateTime(thread.createdAt)}
-                  </div>
-                )}
-              </TooltipContent>
-            </Tooltip>
-
-            <span className="flex items-center gap-0.5 font-mono">
-              <HardDrive className="h-2.5 w-2.5 opacity-70" />
-              {formatSize(thread.fileSize)}
-            </span>
-          </div>
-
-          {/* Action dock */}
-          <div className="flex items-center gap-0.5">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  className="h-5.5 w-5.5 text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-transform"
-                  onClick={handleCopyId}
-                  aria-label={t("threads.copyId")}
-                >
-                  {copiedId ? (
-                    <Check className="h-2.5 w-2.5 text-emerald-500" />
-                  ) : (
-                    <Copy className="h-2.5 w-2.5" />
-                  )}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{t("threads.copyId")}</TooltipContent>
-            </Tooltip>
-
-            {canPreviewRecovery && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    className="h-5.5 w-5.5 text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-transform"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onRecover();
-                    }}
-                    aria-label={t("threads.recoveryAction")}
-                  >
-                    <RefreshCcw className="h-2.5 w-2.5" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>{t("threads.recoveryAction")}</TooltipContent>
-              </Tooltip>
-            )}
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  className="h-5.5 w-5.5 text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-transform"
-                  disabled={!hasRollout}
-                  aria-label={hasRollout ? t("threads.exportThread") : t("threads.exportUnavailable")}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (!hasRollout) return;
-                    onExport();
-                  }}
-                >
-                  <Download className="h-2.5 w-2.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                {hasRollout ? t("threads.exportThread") : t("threads.exportUnavailable")}
-              </TooltipContent>
-            </Tooltip>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  className="h-5.5 w-5.5 text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-transform"
-                  disabled={!hasRollout}
-                  aria-label={hasRollout ? t("threads.openRawFile") : t("threads.rawUnavailable")}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (!hasRollout) return;
-                    onOpenRaw();
-                  }}
-                >
-                  <FolderOpen className="h-2.5 w-2.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                {hasRollout ? t("threads.openRawFile") : t("threads.rawUnavailable")}
-              </TooltipContent>
-            </Tooltip>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  className="h-5.5 w-5.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive active:scale-95 transition-transform"
-                  aria-label={t("threads.deleteThread")}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onDelete();
-                  }}
-                >
-                  <Trash2 className="h-2.5 w-2.5" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>{t("threads.deleteThread")}</TooltipContent>

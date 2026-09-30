@@ -51,32 +51,35 @@ export function ThreadGroupHeader({
   return (
     <div
       className={cn(
-        "flex items-center justify-between gap-2 rounded-lg border bg-card/80 backdrop-blur-sm",
-        compact ? "h-[44px] px-2.5" : "p-1.5 px-2.5",
-        allSelected ? "border-primary/50" : "border-border/60",
+        "flex items-center justify-between gap-2.5 rounded-xl border bg-card/85 backdrop-blur-md transition-all duration-200 shadow-2xs hover:border-primary/50",
+        compact ? "h-[44px] px-3" : "p-2 px-3",
+        allSelected ? "border-primary/70 ring-1 ring-primary/30 bg-primary/[0.03]" : "border-border/70",
       )}
     >
-      <div className="flex min-w-0 flex-1 items-center gap-2">
+      <div className="flex min-w-0 flex-1 items-center gap-2.5">
         <button
           type="button"
           onClick={onToggleCollapse}
-          className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-all duration-200 active:scale-95"
           title={collapsed ? t("threads.expandGroup") : t("threads.collapseGroup")}
           aria-label={collapsed ? t("threads.expandGroup") : t("threads.collapseGroup")}
         >
           <ChevronRight
-            className={cn("h-3.5 w-3.5 transition-transform", !collapsed && "rotate-90")}
+            className={cn(
+              "h-4 w-4 transition-transform duration-200",
+              !collapsed && "rotate-90 text-foreground",
+            )}
           />
         </button>
-        <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-          <Folder className="h-3 w-3" />
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+          <Folder className="h-3.5 w-3.5" />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            <h2 className="truncate text-xs font-semibold text-foreground">
+          <div className="flex items-center gap-2">
+            <h2 className="truncate text-xs font-bold tracking-tight text-foreground">
               {group.folderName}
             </h2>
-            <span className="rounded bg-muted px-1 py-px text-[10px] text-muted-foreground">
+            <span className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
               {t("threads.threadCount", { count: group.items.length })}
             </span>
             <span className="hidden text-[10px] text-muted-foreground/80 sm:inline">
@@ -86,7 +89,7 @@ export function ThreadGroupHeader({
           </div>
           {group.cwd && (
             <p
-              className="truncate font-mono text-[10px] text-muted-foreground/70"
+              className="truncate font-mono text-[10px] text-muted-foreground/75"
               title={group.cwd}
             >
               {group.cwd}
@@ -94,13 +97,13 @@ export function ThreadGroupHeader({
           )}
         </div>
       </div>
-      <div className="flex shrink-0 items-center gap-0.5">
+      <div className="flex shrink-0 items-center gap-1">
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
               variant={allSelected ? "secondary" : "ghost"}
               size="sm"
-              className="h-6 px-1.5 text-[11px]"
+              className="h-7 rounded-lg px-2 text-[11px] font-semibold"
               onClick={onToggleGroup}
             >
               {allSelected ? t("threads.deselectGroup") : t("threads.selectGroup")}
@@ -115,26 +118,26 @@ export function ThreadGroupHeader({
             <Button
               variant="ghost"
               size="icon-sm"
-              className="h-6 w-6 text-muted-foreground"
+              className="h-7 w-7 rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
               onClick={onCopyPath}
               title={t("threads.copyPath")}
               aria-label={t("threads.copyPath")}
             >
               {copiedGroupPath === group.key ? (
-                <Check className="h-3 w-3 text-emerald-500" />
+                <Check className="h-3.5 w-3.5 text-emerald-500" />
               ) : (
-                <Copy className="h-3 w-3" />
+                <Copy className="h-3.5 w-3.5" />
               )}
             </Button>
             <Button
               variant="ghost"
               size="icon-sm"
-              className="h-6 w-6 text-muted-foreground"
+              className="h-7 w-7 rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
               onClick={onOpenPath}
               title={t("threads.openFolder")}
               aria-label={t("threads.openFolder")}
             >
-              <FolderOpen className="h-3 w-3" />
+              <FolderOpen className="h-3.5 w-3.5" />
             </Button>
           </>
         )}
@@ -143,7 +146,7 @@ export function ThreadGroupHeader({
             <Button
               variant="outline"
               size="sm"
-              className="h-6 gap-1 px-1.5 text-[11px]"
+              className="h-7 gap-1.5 rounded-lg px-2 text-[11px] font-semibold"
               onClick={onExport}
               disabled={exportDisabled}
               title={exportDisabled ? t("threads.exportUnavailable") : t("threads.exportFolder")}

@@ -36,7 +36,7 @@ function estimateGridBodyHeight(itemCount: number, columns: number) {
   if (itemCount <= 0) return 0;
   const rows = Math.ceil(itemCount / columns);
   // Card target height + gap, with slack for provider/model/source badges.
-  return rows * 168 + Math.max(0, rows - 1) * 10 + 8;
+  return rows * 174 + Math.max(0, rows - 1) * 12 + 8;
 }
 
 export interface VirtualThreadListProps {
@@ -221,7 +221,7 @@ export function VirtualThreadList({
                 />
                 {!collapsed && (
                   <div
-                    className="mt-1.5 grid grid-cols-[repeat(auto-fit,minmax(min(100%,240px),1fr))] gap-2.5"
+                    className="mt-2 grid grid-cols-[repeat(auto-fit,minmax(min(100%,250px),1fr))] gap-3"
                     style={{
                       contentVisibility: "auto",
                       containIntrinsicSize: `${Math.max(bodyHeight, 132)}px`,
