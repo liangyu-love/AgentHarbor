@@ -18,7 +18,10 @@ const config: Config = {
   			},
   			secondary: {
   				DEFAULT: 'hsl(var(--secondary))',
-  				foreground: 'hsl(var(--secondary-foreground))'
+  				foreground: 'hsl(var(--secondary-foreground))',
+  				// Already carries its own alpha, so it must not be wrapped in
+  				// `hsl(...)` again -- see the `--accent` note in index.css.
+  				overlay: 'hsl(var(--secondary-overlay))'
   			},
   			destructive: {
   				DEFAULT: 'hsl(var(--destructive))',
@@ -30,7 +33,9 @@ const config: Config = {
   			},
   			accent: {
   				DEFAULT: 'hsl(var(--accent))',
-  				foreground: 'hsl(var(--accent-foreground))'
+  				foreground: 'hsl(var(--accent-foreground))',
+  				// Translucent twin; see the `--accent` note in index.css.
+  				overlay: 'hsl(var(--accent-overlay))'
   			},
   			popover: {
   				DEFAULT: 'hsl(var(--popover))',
@@ -55,13 +60,45 @@ const config: Config = {
   			lg: 'var(--radius)',
   			md: 'calc(var(--radius) - 4px)',
   			sm: 'calc(var(--radius) - 8px)',
+  			// Tailwind 4's `rounded-xs`. Tailwind 3 renamed it to `rounded-sm`,
+  			// so the call site using it compiled to no rule at all.
+  			xs: '0.125rem',
   			'2xl': '1rem',
   			'3xl': '1.25rem'
   		},
   		boxShadow: {
   			bento: '0 8px 30px -10px rgba(0,0,0,0.45)',
   			'bento-light': '0 2px 16px -4px rgba(0,0,0,0.07)',
-  			'bento-inner': 'inset 0 1px 0 rgba(255,255,255,0.04)'
+  			'bento-inner': 'inset 0 1px 0 rgba(255,255,255,0.04)',
+  			// Tailwind 4 renamed `shadow-sm` -> `shadow-xs` and added a new,
+  			// even lighter `shadow-2xs`. Tailwind 3 has neither name, so every
+  			// `shadow-xs` / `shadow-2xs` in this codebase compiled to no rule at
+  			// all and the cards lost their elevation. Both names are restored
+  			// with their Tailwind 4 values; `2xs` sits one step below `xs`.
+  			'2xs': '0 1px rgb(0 0 0 / 0.05)',
+  			xs: '0 1px 2px 0 rgb(0 0 0 / 0.05)'
+  		},
+  		// Fractional and sub-`4` steps used throughout the UI (`h-4.5`, `w-7.5`,
+  		// `py-0.2`, `h-13`, `w-84`, ...). Tailwind 3 ships only 0.5/1.5/2.5/3.5
+  		// and even integers, so everything else compiled to nothing.
+  		spacing: {
+  			'0.2': '0.05rem',
+  			'4.5': '1.125rem',
+  			'5.5': '1.375rem',
+  			'6.5': '1.625rem',
+  			'7.5': '1.875rem',
+  			'8.5': '2.125rem',
+  			'13': '3.25rem',
+  			'84': '21rem'
+  		},
+  		transitionDuration: {
+  			// `duration-400` is not in the Tailwind 3 scale; the sheet open
+  			// animation silently fell back to `duration-150`.
+  			'400': '400ms'
+  		},
+  		backdropBlur: {
+  			// Tailwind 4's `backdrop-blur-xs`; Tailwind 3 starts at `sm`.
+  			xs: '2px'
   		},
   		backgroundImage: {
   			'glass-gradient': 'linear-gradient(135deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0) 100%)',

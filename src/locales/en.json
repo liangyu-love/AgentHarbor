@@ -860,6 +860,18 @@
       "refresh": "Reload records",
       "copied": "Message copied",
       "copyMessage": "Copy message",
+      "copiedCode": "Code block copied",
+      "copyCode": "Copy code",
+      "copyCodeFailed": "Failed to copy code",
+      "toolIdentifier": "Tool identifier",
+      "callFrequency": "Call frequency",
+      "roleFilter": {
+        "all": "All ({{count}})",
+        "user": "User ({{count}})",
+        "assistant": "Assistant ({{count}})",
+        "tools": "Tools ({{count}})",
+        "reasoning": "Reasoning ({{count}})"
+      },
       "collapse": "Collapse text",
       "expand": "Expand text",
       "truncated": "Preview limited to 20,000 characters. Export or open the original file for full content.",

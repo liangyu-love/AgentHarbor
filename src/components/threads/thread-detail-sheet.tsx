@@ -58,7 +58,26 @@ import type {
 
 const tabs = ["usage", "tools", "metadata", "conversation"] as const;
 type Tab = typeof tabs[number];
+type RoleFilter = "all" | "user" | "assistant" | "tools" | "reasoning";
+const MESSAGE_PAGE_SIZE = 50;
 const number = (value: number) => value.toLocaleString();
+
+// Filter buttons and their active styling, in display order. Each role uses the
+// same tint family as the message bubbles below, so a filter button and the
+// cards it selects read as one colour system instead of two.
+const roleFilterOptions: { key: RoleFilter; active: string }[] = [
+  { key: "all", active: "bg-primary text-primary-foreground font-semibold" },
+  { key: "user", active: "bg-sky-500/20 text-sky-700 font-semibold dark:text-sky-300" },
+  {
+    key: "assistant",
+    active: "bg-purple-500/20 text-purple-700 font-semibold dark:text-purple-300",
+  },
+  { key: "tools", active: "bg-muted text-foreground font-semibold ring-1 ring-border" },
+  {
+    key: "reasoning",
+    active: "bg-amber-500/20 text-amber-700 font-semibold dark:text-amber-300",
+  },
+];
 
 function Diagnostics({ data }: { data: ThreadDiagnostics }) {
   const { t } = useTranslation();
@@ -126,10 +145,14 @@ function UsageBreakdown({ usage }: { usage: ThreadUsage }) {
     },
   ];
 
+  // Explicit null checks rather than non-null assertions: `.every()` does not
+  // narrow the individual fields, and `null <= number` coerces to `false`
+  // silently, which would report a thread as incomplete with no visible cause.
   const complete =
-    parts.every((part) => part.value !== null) &&
-    usage.cached! <= usage.input &&
-    usage.reasoning! <= usage.output &&
+    usage.cached !== null &&
+    usage.reasoning !== null &&
+    usage.cached <= usage.input &&
+    usage.reasoning <= usage.output &&
     usage.total === usage.input + usage.output;
 
   return (
@@ -175,7 +198,7 @@ function UsageBreakdown({ usage }: { usage: ThreadUsage }) {
         </div>
       )}
 
-      {/* 2x2 Grid of Token Items */}
+      {/* Token items: one column on narrow drawers, two from `sm` up */}
       <dl className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
         {parts.map((part) => (
           <div
@@ -224,7 +247,10 @@ function UsageHistory({ detail }: { detail: ThreadDetails }) {
     .filter((item) => item.label !== "unknown")
     .map((item) => ({ ...item, cumulative: (cumulative += item.usage.total) }));
   const recent = dates.slice(-30);
-  const max = Math.max(1, cumulative);
+  // Scale to the *visible* window, not the all-time total. Using the grand
+  // total squashed every curve against the baseline once a thread spanned more
+  // than 30 days, and mislabelled all three axis ticks.
+  const max = Math.max(1, recent[recent.length - 1]?.cumulative ?? 0);
   const point = (value: number, index: number) => [
     recent.length === 1 ? 176 : 44 + (index / (recent.length - 1)) * 264,
     108 - (value / max) * 92,
@@ -460,6 +486,7 @@ function parseMessageContent(text: string): ContentBlock[] {
 }
 
 function CodeBlockItem({ code, lang }: { code: string; lang: string }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
 
   const copyCode = async (e: React.MouseEvent) => {
@@ -467,10 +494,14 @@ function CodeBlockItem({ code, lang }: { code: string; lang: string }) {
     try {
       await navigator.clipboard.writeText(code);
       setCopied(true);
-      toast({ title: "已复制代码块" });
+      toast({ title: t("threads.details.copiedCode") });
       setTimeout(() => setCopied(false), 2000);
-    } catch {
-      toast({ title: "复制代码失败", variant: "destructive" });
+    } catch (error) {
+      toast({
+        title: t("threads.details.copyCodeFailed"),
+        description: formatInvokeError(error),
+        variant: "destructive",
+      });
     }
   };
 
@@ -498,7 +529,9 @@ function CodeBlockItem({ code, lang }: { code: string; lang: string }) {
           ) : (
             <Copy className="h-3 w-3" />
           )}
-          <span>{copied ? "已复制" : "复制代码"}</span>
+          <span>
+            {t(copied ? "threads.details.copiedCode" : "threads.details.copyCode")}
+          </span>
         </button>
       </div>
       <pre className="overflow-x-auto p-3 font-mono text-[12px] leading-relaxed text-zinc-200 selection:bg-primary/30">
@@ -678,7 +711,9 @@ export function ThreadDetailSheet({
   const content = useRef<HTMLDivElement>(null);
   const [tab, setTab] = useState<Tab>("usage");
   const [offset, setOffset] = useState(0);
-  const [roleFilter, setRoleFilter] = useState<"all" | "user" | "assistant" | "tools">("all");
+  const [roleFilter, setRoleFilter] = useState<
+    "all" | "user" | "assistant" | "tools" | "reasoning"
+  >("all");
   const available = thread.rolloutStatus !== "missing";
 
   useEffect(() => {
@@ -716,18 +751,34 @@ export function ThreadDetailSheet({
   });
 
   const rawMessages = messageQuery.data?.data.messages ?? [];
+
+  // A message counts as a "tool" message only for the two tool roles; reasoning
+  // and compaction summaries are their own bucket. The filter buttons and their
+  // counts both read from these predicates, so the label can never disagree
+  // with what the list actually shows.
+  const isToolMessage = (role: string) =>
+    role === "toolCall" || role === "toolResult";
+  const isReasoningMessage = (role: string) =>
+    role === "reasoning" || role === "compaction";
+
+  const roleCounts = useMemo(
+    () => ({
+      all: rawMessages.length,
+      user: rawMessages.filter((m) => m.role === "user").length,
+      assistant: rawMessages.filter((m) => m.role === "assistant").length,
+      tools: rawMessages.filter((m) => isToolMessage(m.role)).length,
+      reasoning: rawMessages.filter((m) => isReasoningMessage(m.role)).length,
+    }),
+    [rawMessages],
+  );
+
   const filteredMessages = useMemo(() => {
-    if (roleFilter === "all") return rawMessages;
     if (roleFilter === "user") return rawMessages.filter((m) => m.role === "user");
-    if (roleFilter === "assistant") return rawMessages.filter((m) => m.role === "assistant");
-    if (roleFilter === "tools")
-      return rawMessages.filter(
-        (m) =>
-          m.role === "toolCall" ||
-          m.role === "toolResult" ||
-          m.role === "reasoning" ||
-          m.role === "compaction",
-      );
+    if (roleFilter === "assistant")
+      return rawMessages.filter((m) => m.role === "assistant");
+    if (roleFilter === "tools") return rawMessages.filter((m) => isToolMessage(m.role));
+    if (roleFilter === "reasoning")
+      return rawMessages.filter((m) => isReasoningMessage(m.role));
     return rawMessages;
   }, [rawMessages, roleFilter]);
 
@@ -759,9 +810,13 @@ export function ThreadDetailSheet({
 
   return (
     <Sheet open onOpenChange={(open) => !open && onClose()}>
+      {/* The `sm:w-*` / `sm:max-w-*` pair overrides the variant's `sm:max-w-sm`
+          via `cn`'s tailwind-merge pass. 95% opacity made `backdrop-blur-xl`
+          invisible while still paying for the compositing layer, so the ground
+          is slightly more open. */}
       <SheetContent
         closeLabel={t("common.close")}
-        className="flex h-[100dvh] w-full flex-col gap-0 p-0 sm:w-[560px] sm:max-w-[560px] md:w-[620px] md:max-w-[620px] xl:w-[700px] xl:max-w-[700px] shadow-2xl border-l border-border/80 bg-background/95 backdrop-blur-xl"
+        className="flex h-[100dvh] w-full flex-col gap-0 border-l border-border/80 bg-background/90 p-0 shadow-2xl backdrop-blur-xl sm:w-[560px] sm:max-w-[560px] md:w-[620px] md:max-w-[620px] xl:w-[700px] xl:max-w-[700px]"
         onCloseAutoFocus={(event) => {
           event.preventDefault();
           if (opener.current?.isConnected) opener.current.focus();
@@ -950,8 +1005,8 @@ export function ThreadDetailSheet({
                   (detail.tools.length ? (
                     <div className="space-y-2">
                       <div className="flex items-center justify-between text-xs text-muted-foreground px-1 pb-1">
-                        <span>工具标识符</span>
-                        <span>调用频次</span>
+                        <span>{t("threads.details.toolIdentifier")}</span>
+                        <span>{t("threads.details.callFrequency")}</span>
                       </div>
                       <dl className="space-y-2 text-xs">
                         {detail.tools.map((tool) => (
@@ -959,8 +1014,14 @@ export function ThreadDetailSheet({
                             key={tool.name}
                             className="flex items-center justify-between gap-3 rounded-xl border border-border/70 bg-card/70 p-3 shadow-xs"
                           >
-                            <dt className="flex min-w-0 items-center gap-2 font-mono font-medium text-foreground [overflow-wrap:anywhere]">
+                            <dt
+                              className="flex min-w-0 items-center gap-2 font-mono font-medium text-foreground"
+                              title={tool.name}
+                            >
                               <Terminal className="h-3.5 w-3.5 text-primary shrink-0" />
+                              {/* `truncate` forces nowrap, which cancels any
+                                  `overflow-wrap`, so the full name is exposed
+                                  through `title` instead of being silently cut. */}
                               <span className="truncate">{tool.name}</span>
                             </dt>
                             <dd className="shrink-0 rounded-full bg-primary/10 px-2.5 py-0.5 font-mono text-xs font-bold tabular-nums text-primary">
@@ -987,60 +1048,32 @@ export function ThreadDetailSheet({
                     {/* Role Filter Bar */}
                     {rawMessages.length > 0 && (
                       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/40 pb-2">
-                        <div className="flex items-center gap-1 text-xs">
+                        <div className="flex flex-wrap items-center gap-1 text-xs">
                           <Filter className="h-3 w-3 text-muted-foreground mr-1" />
-                          <button
-                            type="button"
-                            onClick={() => setRoleFilter("all")}
-                            className={cn(
-                              "rounded-lg px-2 py-0.5 text-xs font-medium transition-colors",
-                              roleFilter === "all"
-                                ? "bg-primary text-primary-foreground font-semibold"
-                                : "text-muted-foreground hover:text-foreground hover:bg-muted/60",
-                            )}
-                          >
-                            全部 ({rawMessages.length})
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setRoleFilter("user")}
-                            className={cn(
-                              "rounded-lg px-2 py-0.5 text-xs font-medium transition-colors",
-                              roleFilter === "user"
-                                ? "bg-sky-500 text-white font-semibold"
-                                : "text-muted-foreground hover:text-foreground hover:bg-muted/60",
-                            )}
-                          >
-                            用户 ({rawMessages.filter((m) => m.role === "user").length})
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setRoleFilter("assistant")}
-                            className={cn(
-                              "rounded-lg px-2 py-0.5 text-xs font-medium transition-colors",
-                              roleFilter === "assistant"
-                                ? "bg-purple-500 text-white font-semibold"
-                                : "text-muted-foreground hover:text-foreground hover:bg-muted/60",
-                            )}
-                          >
-                            助手 ({rawMessages.filter((m) => m.role === "assistant").length})
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setRoleFilter("tools")}
-                            className={cn(
-                              "rounded-lg px-2 py-0.5 text-xs font-medium transition-colors",
-                              roleFilter === "tools"
-                                ? "bg-zinc-700 text-white font-semibold"
-                                : "text-muted-foreground hover:text-foreground hover:bg-muted/60",
-                            )}
-                          >
-                            工具 ({rawMessages.filter((m) => m.role !== "user" && m.role !== "assistant").length})
-                          </button>
+                          {roleFilterOptions.map(({ key, active }) => (
+                            <button
+                              key={key}
+                              type="button"
+                              aria-pressed={roleFilter === key}
+                              onClick={() => setRoleFilter(key)}
+                              className={cn(
+                                "rounded-lg px-2 py-0.5 text-xs font-medium transition-colors",
+                                roleFilter === key
+                                  ? active
+                                  : "text-muted-foreground hover:text-foreground hover:bg-muted/60",
+                              )}
+                            >
+                              {t(`threads.details.roleFilter.${key}`, {
+                                count: roleCounts[key],
+                              })}
+                            </button>
+                          ))}
                         </div>
 
                         <span className="font-mono text-[11px] text-muted-foreground">
-                          第 {offset / 50 + 1} 页
+                          {t("threads.details.page", {
+                            page: offset / MESSAGE_PAGE_SIZE + 1,
+                          })}
                         </span>
                       </div>
                     )}
@@ -1097,13 +1130,15 @@ export function ThreadDetailSheet({
                               size="sm"
                               disabled={offset === 0}
                               className="rounded-xl px-3.5 text-xs font-semibold"
-                              onClick={() => setOffset(Math.max(0, offset - 50))}
+                              onClick={() =>
+                                setOffset(Math.max(0, offset - MESSAGE_PAGE_SIZE))
+                              }
                             >
                               {t("threads.details.previous")}
                             </Button>
                             <span className="rounded-full bg-muted px-3 py-1 font-mono text-xs tabular-nums text-muted-foreground font-semibold">
                               {t("threads.details.page", {
-                                page: offset / 50 + 1,
+                                page: offset / MESSAGE_PAGE_SIZE + 1,
                               })}
                             </span>
                             <Button
@@ -1159,10 +1194,13 @@ export function ThreadDetailSheet({
                   disabled={!available || detailQuery.isFetching}
                   aria-label={t("threads.details.refresh")}
                   onClick={() => {
+                    // Reset to page 1 and refetch unconditionally. Testing
+                    // `offset === 0` here read the *pre-reset* value, so
+                    // refreshing from page 3 left the old page's messages on
+                    // screen while the indicator claimed page 1.
                     setOffset(0);
                     void detailQuery.refetch();
-                    if (tab === "conversation" && offset === 0)
-                      void messageQuery.refetch();
+                    if (tab === "conversation") void messageQuery.refetch();
                   }}
                 >
                   <RefreshCw

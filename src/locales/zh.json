@@ -860,6 +860,18 @@
       "refresh": "重新读取记录",
       "copied": "已复制消息",
       "copyMessage": "复制消息",
+      "copiedCode": "已复制代码块",
+      "copyCode": "复制代码",
+      "copyCodeFailed": "复制代码失败",
+      "toolIdentifier": "工具标识符",
+      "callFrequency": "调用频次",
+      "roleFilter": {
+        "all": "全部 ({{count}})",
+        "user": "用户 ({{count}})",
+        "assistant": "助手 ({{count}})",
+        "tools": "工具 ({{count}})",
+        "reasoning": "推理 ({{count}})"
+      },
       "collapse": "收起正文",
       "expand": "展开正文",
       "truncated": "此消息仅预览前 20,000 字符；完整内容可导出或打开原文件。",

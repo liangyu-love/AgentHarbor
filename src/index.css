@@ -19,8 +19,20 @@
     /* spec: --accent-bg: rgba(0,0,0,0.04) */
     --muted: 240 5% 94%;
     --muted-foreground: 0 0% 40%;
-    --accent: 0 0% 0% / 0.04;
+    /* `--accent` / `--secondary` must stay alpha-free. Tailwind's `/opacity`
+       modifier appends its own slot (`hsl(var(--accent) / 0.8)`), so a value
+       that already carries `/ a` evaluates to `hsl(H S% L% / a / b)` -- invalid
+       CSS, and the whole declaration is dropped. Both are pre-blended against
+       the page background to the opaque colour they used to composite to, so
+       bare (`bg-accent`) and modified (`bg-accent/80`) forms behave the same.
+       Use the `*-overlay` twins when a genuinely translucent layer is wanted. */
+    --accent: 240 2% 94%;
     --accent-foreground: 0 0% 6.7%;
+
+    /* Translucent variants, for effects that must show the layer beneath
+       (glassmorphism, stacked overlays). Not consumed by the `accent-*`
+       utilities above; reference them directly. */
+    --accent-overlay: 0 0% 0% / 0.04;
     --destructive: 0 72% 60%;
     --destructive-foreground: 0 0% 100%;
     /* 内容区卡片 / 输入 / 列表描边：#e5e5e5 */
@@ -67,13 +79,19 @@
     --primary: 217 91% 60%;
     --primary-foreground: 0 0% 100%;
     /* spec: segmented/secondary bg */
-    --secondary: 0 0% 100% / 0.05;
+    /* Alpha-free for the same reason as the light theme: see the `--accent`
+       note there. Pre-blended against the dark page background. */
+    --secondary: 240 5% 11%;
     --secondary-foreground: 240 20% 96%;
     --muted: 240 5% 8%;
     --muted-foreground: 0 0% 63%;
     /* spec: --accent-bg: rgba(255,255,255,0.04) */
-    --accent: 0 0% 100% / 0.04;
+    --accent: 240 6% 10%;
     --accent-foreground: 240 20% 96%;
+
+    /* Translucent variants; see the light theme note. */
+    --secondary-overlay: 0 0% 100% / 0.05;
+    --accent-overlay: 0 0% 100% / 0.04;
     --destructive: 0 72% 60%;
     --destructive-foreground: 0 0% 100%;
     /* 内容区卡片 / 输入 / 列表描边：#2f2f2d */
