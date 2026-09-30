@@ -58,3 +58,29 @@
 - 每次删除预先生成一致的 SQLite 快照、rollout 副本和 manifest，数据库提交失败时恢复文件。
 - 删除与恢复复用全局线程变更锁，避免并发写入互相覆盖。
 - 验证通过：MSVC lib 269 passed、1 ignored；local_workflows 9 passed；前端构建及 bundled Playwright + Chrome 回归通过。
+
+## 2026-09-30 Magpie 借鉴实测与最小优化
+
+- 完成 Codex 0.159.0 的两种接入方式对照；内置 provider 入口重启后保持原 ID/历史/完整菜单，但旧实例只改配置仍发向旧地址，且此入口实际使用 zstd 请求。
+- 真实中转基线复现 none/low/high 被转换成相同2048预算；新增2个先失败的回归，拆出 reasoning 适配并保留历史/工具保护。
+- 真实 Claude Opus4.6、Haiku4.5 转换后各3个请求成功；GPT-6-Astra 本次 none/low/high 都被接受，没有复现历史报错，不做跨供应商泛化。
+- 真实 Codex + 生产 Router + GPT→Claude→GPT 三轮同线程成功，后两轮返回首轮随机标记。
+- 全量 Rust 400 passed/1 ignored、安装版隔离集成6 passed、前端构建和全部回归通过；Clippy无错误，未批量修改既有告警。
+- 审查后报告改为仅创建新文件；复用现有 app-server 测试辅助代码，未叠加网关/依赖/生产重试，保持有损历史拒绝策略。
+- 实验/工具错误记录：首个新增 live 测试 fixture 缺 accessToken，修正空字段后实测通过；初次 patch 上下文与 pub mod history 不匹配，未改文件，调整后应用；单元红灯为有意记录旧缺陷。
+- 详细范围和复现命令：docs/MAGPIE_VALIDATION.md。未改真实用户配置/会话，未替换应用，未提交。
+
+## 2026-09-30：中转 Claude 默认 1M 与可持久取消
+
+- 所有中转 Claude 默认 1M，保留手动上下文和输出 cap；补现代 store 加载刷新、Anthropic 原生 token 字段解析。
+- Claude Code 启动/角色 1M 默认开启，补 Haiku；关闭后切换模型/模式、应用/重开和 profile 恢复不复活。
+- 审查并清理重复前端型号表、切换重置分支、旧序列化省略判断；复用原测试基础，无新依赖。
+- 405 项 Rust lib 回归、6 项安装版 Codex 隔离回归、前端构建及浏览器全量回归通过；Clippy 无错误、37 既有警告。
+- 实际 Codex 运行时确认 1M/200K 分别可用 950K/190K。详见 docs/MAGPIE_VALIDATION.md 与 .runtime-test/claude-one-m/。
+
+## 2026-09-30：提交与 Windows 打包准备
+
+- 提交前重新运行 MSVC Rust 全量测试：405 单元通过、9 集成通过；6 项真实安装 Codex 隔离回归通过；前端构建和浏览器回归通过。
+- 汇总实现与后续优化到 docs/MAGPIE_VALIDATION.md。修正 docs/RUNNING.md 的 real_codex 测试过滤，区分隔离测试与显式授权的计费测试。
+- 仅提交本次源码、回归和文档；不纳入本地截图、临时实验、brainstorm.md、test-checklist.md、update_probe.js。
+- 使用现有 1.0.0 Windows x64 NSIS 配置打包；不推送远程、不执行安装、不重启真实客户端。打包日志与产物校验另存 .runtime-test/release-20260930-133636/。

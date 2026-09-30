@@ -61,3 +61,27 @@
 - 官方账号的认证快照可以生成账号散列，但 threads 行和 rollout session_meta 不保存可验证的账号标识，无法建立本地线程 ID 到 ChatGPT 账号的可信关系。
 - 因此官方 openai 线程分为两部分：本地 rollout/SQLite 可正常读取；切换账号后能否继续服务端线程取决于官方服务端权限，当前应用既无法验证也不会伪造归属。
 - 自定义 provider、Router 与 Native 的本地恢复闭环已通过完整 Rust 与浏览器回归；官方账号边界现以 OfficialAccountUnverified 明确展示并保持只读。
+# 2026-09-30 Magpie 实测优化
+
+- 基线：已安装 Codex 0.159.0，既有 6 个隔离 app-server/Router 集成测试全部通过（合成认证＋本地上游，不是服务商实测）。
+- 真实 Claude Opus 4.6 中转：当前 Responses→Messages 转换把 none/low/high 全发成 thinking enabled、budget_tokens=2048；三者 HTTP 200。原生 adaptive+low/high 均 HTTP 200/end_turn。不能从这两个简单 OK 请求推断模型内部推理强度。
+- 真实 GPT-6-Astra 中转：none/low/high 三个档位本次均 HTTP 200/completed；未复现用户之前的 none 错误，因此不能把某次错误推广到所有中转。
+- 新增回归先失败：none 不应开启 thinking、档位应映射到不同参数；两项已在旧实现复现。
+- Context7 官方源码确认 openai_base_url 设置进入内置 provider；Anthropic SDK 参数定义确认预算下限1024且小于max_tokens，adaptive/output_config 独立。但运行时支持必须用当前客户端及具体上游验证。
+- 脱敏原始结果在 .runtime-test/magpie-proof/；未更改真实配置、凭据文件或会话。
+
+## 2026-09-30 Claude 1M 复核（只读调查，尚未实施）
+
+- Context7 获取的 Claude 官方 context-windows 文档：Opus4.6/4.7/4.8/5、Sonnet4.6/5、Fable5/5.1、Mythos5/5.1 等默认1M，无需beta；Haiku4.5、Sonnet4.5等仍200K。官方2026-04-30发布说明旧Sonnet4/4.5的1M beta已退役。
+- 对当前配置的 Claude 中转 GET /v1/models 返回HTTP200，15个Claude模型条目均未报告context_window/context_length/max_input_tokens或输出限制；只确认可列出，不证明1M可用。
+- 只读源加密store：这些Claude条目contextWindow均200000、metadataSource均local，包括Opus4.6/4.7/4.8/5、Sonnet4.6/5。不能把旧本地估计解释成上游限制。
+- 发现值得回归验证的读取遗漏：router::load_store_unlocked 对local/catalog只调用with_catalog_defaults；该函数本身不调用with_local_defaults。现代store中的Claude旧200K估计可能绕过已实现的1M更新逻辑，需要优先写持久化旧store加载回归。
+- parse_models 当前只读context_window/context_length/max_output_tokens，没有读取Anthropic ModelInfo的max_input_tokens/max_tokens。建议补字段并区分各字段来源，不覆盖manual或上游明确限制。
+- 还应让客户端上下文/目录/压缩阈值一致，按实际模型能力而非角色名决定1M；新模型默认1M不应被表述为API必须手动开beta。此轮未改业务代码或真实配置，未做大上下文生成。
+
+## 2026-09-30：中转 Claude 1M 默认策略与取消持久化
+
+- 旧 store 的正常加载只刷新 Codex 缓存，没补 local defaults；现在当前 schema 的旧默认也会升级。手动 metadataSource=manual 不覆盖。
+- ClaudeOneM 全 false 曾不序列化；默认改为 on 后会丢失取消意图。已移除省略，补 Haiku，缺字段默认 on、显式 false 保留。
+- 实际安装 Codex + 生产 Router + loopback 流式服务：Haiku 1M → runtime effective_context=950000；手动 200K → 190000，非 Claude 128K → 121600。不是只检查生成的 JSON。
+- 百万 token 容量、真实官方↔中转往返及加密压缩仍未验证；本轮仅实现用户指定默认策略，没有修改真实配置或计费请求。

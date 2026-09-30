@@ -19,9 +19,12 @@ import { ClientConfigs } from "@/components/newapi/client-configs";
 import type { NewApiProvider, NewApiState } from "@/types/newapi";
 import type { TokenUsagePayload } from "@/types";
 import type { ClientConfigRequest, ClientStatus } from "@/types/clients";
+import type { ThreadSummary } from "@/types/threads";
 import { api } from "@/lib/api";
 import i18n from "@/lib/i18n";
 import { errorKey, errorMessage, formatInvokeError } from "@/lib/invoke-error";
+import { claudeOneMDefaults, clientDefaults } from "@/lib/client-config";
+import { mergeModelCatalog } from "@/lib/provider-models";
 
 const realBalanceQuery = api.providers.queryBalance;
 const controls = window as any;
@@ -164,10 +167,6 @@ api.targets.previewConfig = async request => {
   controls.review.previewed = request;
   return { path: "C:/synthetic/config.json", revision: "mock-revision", content: JSON.stringify({ model: request.model }) };
 };
-api.targets.applyConfig = async (request, revision) => {
-  controls.review.appliedClient = { request, revision };
-  return { path: "C:/synthetic/config.json", backupPath: "C:/synthetic/config.backup" };
-};
 api.providers.test = async (id, selectedModel, onProgress) => {
   controls.review.tested = { id, model: selectedModel };
   onProgress?.({ stage: "request", elapsedMs: 0, status: null, text: "POST /v1/messages\nHost: synthetic.invalid\nAccept: text/event-stream" });
@@ -239,7 +238,16 @@ function ProviderFixture({ mixed = false }: { mixed?: boolean }) {
       onOpenChange={open => setDialog(current => ({ ...current, open }))} onSaved={noop} /></>;
 }
 
-type FixtureMode = "compact" | "grid" | "image" | "mcp" | "accounts" | "groups" | "overview" | "usage" | "provider" | "warnings" | "thread-actions" | "thread-queue-recovery" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-opencode" | "clients-opencode-stale" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official";
+type FixtureMode = "compact" | "grid" | "image" | "mcp" | "accounts" | "groups" | "overview" | "usage" | "provider" | "warnings" | "thread-actions" | "thread-queue-recovery" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-opencode" | "clients-opencode-stale" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official" | "recovery-long" | "recovery-router";
+
+function RecoveryFixture({ thread }: { thread: ThreadSummary }) {
+  const [open, setOpen] = useState(true);
+  return <ThreadRecoveryDialog thread={open ? thread : null} onOpenChange={setOpen}
+    onRecovered={() => {
+      controls.review.recoveredCalls += 1;
+      if (controls.review.recoveryRefreshError) throw new Error("Synthetic refresh failed");
+    }} />;
+}
 
 function recoveryPreview(mode: FixtureMode) {
   const base = {
@@ -250,6 +258,13 @@ function recoveryPreview(mode: FixtureMode) {
     reason: "Synthetic recovery preview", changes: [{ target: "database", path: "C:/synthetic/state.sqlite",
       fromProvider: "openai", toProvider: "agentharbor_native" }],
   };
+  if (mode === "recovery-router") return { ...base,
+    configuredProvider: "agentharbor_relay", targetProvider: "agentharbor_relay",
+    changes: base.changes.map(change => ({ ...change, toProvider: "agentharbor_relay" })) };
+  if (mode === "recovery-long") return { ...base, changes: [base.changes[0], {
+    target: "rollout", path: "C:/synthetic/sessions/2026/09/30/" + "long-workspace-name-".repeat(30) + ".jsonl",
+    fromProvider: "openai", toProvider: "agentharbor_native",
+  }] };
   if (mode === "recovery-missing") return { ...base, databaseProvider: null, status: "missingCatalog",
     catalogAnalysis: { schemaSignature: "fixture-schema", ready: true, missingFields: [], unsupportedColumns: [],
       relation: "topLevel", mappingErrors: [] },
@@ -291,12 +306,21 @@ function mount(mode: FixtureMode) {
     model: savedClient?.model ?? null, request: savedClient,
   }] : [];
   api.targets.configs = async () => clientStatuses;
+  api.targets.applyConfig = async (request, revision) => {
+    controls.review.appliedClient = { request, revision };
+    Object.assign(clientStatuses[0], { configured: true, providerId: request.providerId,
+      model: request.model, request: JSON.parse(JSON.stringify(request)) });
+    return { path: "C:/synthetic/config.json", backupPath: "C:/synthetic/config.backup" };
+  };
   const threads = Array.from({ length: 100 }, (_, i) => ({ key: "t" + i, id: "t" + i,
     cwd: "C:/synthetic", folderName: "synthetic", title: "Review thread " + i,
     createdAt: 0, updatedAt: 0, userMessages: 1, agentMessages: 1, fileSize: 100,
     archived: false, source: "", cliVersion: "", filePath: "C:/synthetic/t" + i,
     modelProvider: "agentharbor_native", model: "gpt-6-sol", tokensUsed: 10,
     threadSource: "sqlite", rolloutStatus: "available" }));
+  if (mode === "recovery-long") threads[0].title = (
+    "恢复已有会话：检查模型切换与长路径 C:/synthetic/" + "unbroken-title".repeat(30) + "。"
+  ).repeat(3);
   if (mode === "thread-actions" || mode === "thread-queue-recovery") {
     controls.review.recoveryApplyCalls = 0;
     controls.review.deleteCalls = [];
@@ -328,11 +352,22 @@ function mount(mode: FixtureMode) {
     };
   } else if (mode.startsWith("recovery-")) {
     api.conversations.previewRecovery = async () => ({ schemaVersion: 1, success: true, code: "ok", message: "", warnings: [], data: recoveryPreview(mode) as any });
-    api.conversations.applyRecovery = async () => {
+    api.conversations.applyRecovery = async (threadId, revision) => {
       controls.review.recoveryApplyCalls += 1;
+      controls.review.recoveryApplyArguments = { threadId, revision };
+      if (controls.review.holdRecoveryApply) {
+        await new Promise<void>(resolve => { controls.review.finishRecoveryApply = resolve; });
+      }
+      if (controls.review.recoveryApplyError) throw new Error(controls.review.recoveryApplyError);
       const preview = recoveryPreview(mode) as any;
       return { schemaVersion: 1, success: true, code: "ok", message: "", warnings: [],
         data: { changed: true, backupPath: "C:/synthetic/recovery/backup.json", preview } };
+    };
+    api.conversations.adoptRouter = async (threadId, revision) => {
+      controls.review.routerAdoptionCalls = (controls.review.routerAdoptionCalls ?? 0) + 1;
+      const result = await api.conversations.applyRecovery(threadId, revision);
+      return { ...result, warnings: controls.review.recoveryLaunchWarning
+        ? [{ code: "CODEX_REOPEN_FAILED", message: "Synthetic launch failure" }] : [] };
     };
     api.openPath = async path => { controls.review.openedPath = path; };
   }
@@ -348,8 +383,7 @@ function mount(mode: FixtureMode) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   root.render(<QueryClientProvider client={queryClient}><TooltipProvider>
     <div style={{ position: "relative", height: 600 }}><PageStage state="active">
-      {mode.startsWith("recovery-") ? <ThreadRecoveryDialog thread={threads[0] as any} onOpenChange={noop}
-          onRecovered={() => { controls.review.recoveredCalls += 1; }} /> :
+      {mode.startsWith("recovery-") ? <RecoveryFixture thread={threads[0] as ThreadSummary} /> :
         mode === "image" ? <ImageWorkbenchPage /> : mode === "mcp" ? <McpPage /> : mode === "accounts" ? <AccountsPage refreshInterval="5m" onManageProviders={noop} /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage" ? <TokenUsagePanel data={usageFixture} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :
         mode === "access" || mode === "incompatible" || mode === "native-invalid" || mode === "groups" ? <NewApiPage /> :
         mode === "test" ? <ProviderTestDialog open provider={mixedProvider} onOpenChange={noop} onTested={noop} onFailed={noop} /> :
@@ -361,13 +395,13 @@ function mount(mode: FixtureMode) {
   </TooltipProvider></QueryClientProvider>);
 }
 
-controls.review = { mount, realBalanceQuery, errors: { errorKey, errorMessage, formatInvokeError }, getState: () => state, pixel, accessCalls: [], thumbnailCalls: [], originalCalls: [], thumbnailResolvers: [],
+controls.review = { mount, realBalanceQuery, clientDefaults, claudeOneMDefaults, mergeModelCatalog, errors: { errorKey, errorMessage, formatInvokeError }, getState: () => state, pixel, accessCalls: [], thumbnailCalls: [], originalCalls: [], thumbnailResolvers: [],
   navigatedTo: null, proxySettingsOpened: false,
   imageRequests: [], imageResolvers: [], imageCancels: {}, cancelledJobs: [], gallerySaves: 0, failGallerySave: false,
   balanceRequests: [], balanceResolvers: [], balanceRejectors: [], balanceCredentialSaves: [],
   restartCalls: [], recoveryApplyCalls: 0, recoveredCalls: 0, deleteCalls: [], openedPath: null,
   holdThumbnails: false, holdOriginal: false, labels: {
-    fetchModels: i18n.t("newapi.fetchModels"), cancel: i18n.t("common.cancel"),
+    fetchModels: i18n.t("newapi.fetchModels"), cancel: i18n.t("common.cancel"), close: i18n.t("common.close"),
     galleryTitle: i18n.t("image.galleryTitle"),
     chatProtocol: i18n.t("newapi.protocolFor", { model: "chat-model" }),
     inheritedProtocol: i18n.t("newapi.protocolFor", { model: "inherited-model" }),
@@ -386,10 +420,13 @@ controls.review = { mount, realBalanceQuery, errors: { errorKey, errorMessage, f
     clientAdvanced: i18n.t("clients.advanced"), clientApply: i18n.t("clients.apply"),
     clientSelectAllModels: i18n.t("clients.selectAllModels"),
     oneMStartup: i18n.t("clients.oneMStartup"),
-    oneMSonnet: i18n.t("clients.oneMForRole", { role: i18n.t("clients.sonnet") }),
+    oneMRoles: ["sonnet", "opus", "fable", "haiku", "subagent"].map(role => i18n.t("clients.oneMForRole", { role: i18n.t("clients." + role) })),
     openCodeModelsUnavailable: i18n.t("clients.errors.openCodeModelsUnavailable"),
     profileModelsUnavailable: i18n.t("clients.errors.profileModelsUnavailable"),
     recoveryTitle: i18n.t("threads.recoveryTitle"), recoveryCatalogConfirm: i18n.t("threads.recoveryCatalogConfirm"),
+    recoveryConfirm: i18n.t("threads.recoveryConfirm"), recoveryApplying: i18n.t("threads.recoveryApplying"),
+    routerAdoptionConfirm: i18n.t("threads.routerAdoptionConfirm"),
+    routerAdoptionDescription: i18n.t("threads.routerAdoptionDescription"),
     recoveryMissingStatus: i18n.t("threads.recoveryStatus.missingCatalog"),
     recoveryJournalStatus: i18n.t("threads.recoveryStatus.journalBlocked"),
     recoveryOfficialStatus: i18n.t("threads.recoveryStatus.officialAccountUnverified"),

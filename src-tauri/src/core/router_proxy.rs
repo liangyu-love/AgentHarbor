@@ -19,6 +19,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
+mod session_compat;
+
 const MAX_REQUEST_BODY: usize = 64 * 1024 * 1024;
 const CHATGPT_CODEX_BASE: &str = "https://chatgpt.com/backend-api/codex/";
 const OPENAI_API_BASE: &str = "https://api.openai.com/v1/";
@@ -335,7 +337,7 @@ fn provider_query(query: Option<&str>, translation: Option<protocol::Translation
 
 fn request_protocol(segments: &[&str]) -> Option<router::ModelProtocol> {
     match segments {
-        ["codex", "v1", ..] | ["v1", "responses"] | ["p", _, "v1", "responses"] => {
+        ["codex", "v1", ..] | ["v1", "responses", ..] | ["p", _, "v1", "responses", ..] => {
             Some(router::ModelProtocol::Responses)
         }
         ["v1", "chat", "completions"] | ["p", _, "v1", "chat", "completions"] => {
@@ -503,6 +505,13 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
     if one_m_context {
         append_anthropic_beta(&mut headers);
     }
+    let body = if required_protocol == Some(router::ModelProtocol::Responses) {
+        session_compat::prepare_reasoning(body, || {
+            router::catalog_value(&context.app_data_dir, &context.codex_home, &store)
+        })?
+    } else {
+        body
+    };
     let (body, translated_input) = upstream_body(&destination, body)?;
 
     let mut outbound = client_for(&context, &destination)?
@@ -905,6 +914,11 @@ fn upstream_body(
                     },
                 )
             })?;
+            if translation.from == router::ModelProtocol::Responses {
+                // Check the expanded history too: a cached continuation may carry
+                // items that the target protocol cannot represent without loss.
+                session_compat::validate_translated_input(&rewritten.input)?;
+            }
             let encoded = serde_json::to_vec(&rewritten.body).map_err(|_| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -1485,6 +1499,284 @@ mod tests {
             to: router::ModelProtocol::Responses,
         };
         assert!(!reverse.is_supported());
+    }
+
+    #[test]
+    fn responses_subroutes_keep_the_protocol_and_reject_lossy_translation() {
+        let store = Store {
+            providers: vec![Provider {
+                id: "chat".into(),
+                api_key: "synthetic-key".into(),
+                model: "model".into(),
+                enabled: true,
+                protocol: router::ModelProtocol::ChatCompletions,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        for segments in [
+            vec!["codex", "v1", "responses", "compact"],
+            vec!["v1", "responses", "compact"],
+            vec!["p", "chat", "v1", "responses", "compact"],
+        ] {
+            let required = request_protocol(&segments);
+            assert_eq!(required, Some(router::ModelProtocol::Responses));
+            let destination =
+                resolve_destination(&store, &segments, required, Some("chat::model")).unwrap();
+            assert_eq!(
+                upstream_suffix(&segments, &destination, required)
+                    .unwrap_err()
+                    .0,
+                StatusCode::NOT_IMPLEMENTED
+            );
+        }
+        let destination = provider_destination(
+            &store,
+            "chat",
+            Some(router::ModelProtocol::Responses),
+            Some("model".into()),
+        )
+        .unwrap();
+        for item in [
+            json!({"type":"compaction","encrypted_content":"opaque"}),
+            json!({"type":"reasoning","encrypted_content":"opaque","summary":[]}),
+            json!({"type":"item_reference","id":"provider-item"}),
+        ] {
+            let body = Bytes::from(
+                json!({"model":"chat::model","input":[item,{"role":"user","content":"continue"}]})
+                    .to_string(),
+            );
+            let error = upstream_body(&destination, Some(body)).unwrap_err();
+            assert_eq!(error.0, StatusCode::BAD_REQUEST);
+            assert!(error.1.contains("without loss"));
+        }
+        let body = Bytes::from(json!({"model":"chat::model","previous_response_id":"unknown-official-id","input":"continue"}).to_string());
+        assert_eq!(
+            upstream_body(&destination, Some(body)).unwrap_err(),
+            (
+                StatusCode::BAD_REQUEST,
+                "previous_response_id is unknown or expired; resend the full conversation"
+            )
+        );
+
+        // Cached output must not bypass the history-loss check on the next turn.
+        let response_id = format!("compat-{}", uuid::Uuid::new_v4());
+        protocol::history::remember(
+            &json!({
+                "id": response_id, "status":"completed", "output":[
+                    {"type":"reasoning","encrypted_content":"opaque","summary":[]}
+                ]
+            }),
+            vec![],
+        );
+        let body = Bytes::from(
+            json!({"model":"chat::model","previous_response_id":response_id,"input":"continue"})
+                .to_string(),
+        );
+        assert!(upstream_body(&destination, Some(body))
+            .unwrap_err()
+            .1
+            .contains("without loss"));
+    }
+
+    #[test]
+    fn translated_continuations_preserve_plain_reasoning_summaries() {
+        for target in [
+            router::ModelProtocol::ChatCompletions,
+            router::ModelProtocol::AnthropicMessages,
+        ] {
+            let response_id = format!("summary-{}", uuid::Uuid::new_v4());
+            protocol::history::remember(
+                &json!({"id":response_id,"status":"completed","output":[
+                    {"type":"reasoning","summary":[{"type":"summary_text","text":"Preserve this conclusion"}]},
+                    {"type":"message","role":"assistant","content":[{"type":"output_text","text":"Earlier answer"}]}
+                ]}),
+                vec![json!({"role":"user","content":"Original question"})],
+            );
+            let store = Store {
+                providers: vec![Provider {
+                    id: "relay".into(),
+                    api_key: "fixture-key".into(),
+                    model: "model".into(),
+                    enabled: true,
+                    protocol: target,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let destination = provider_destination(
+                &store,
+                "relay",
+                Some(router::ModelProtocol::Responses),
+                Some("model".into()),
+            )
+            .unwrap();
+            let body = Bytes::from(json!({"model":"relay::model","previous_response_id":response_id,"input":"Follow-up"}).to_string());
+            let (body, _) = upstream_body(&destination, Some(body)).unwrap();
+            let translated: Value = serde_json::from_slice(&body.unwrap()).unwrap();
+            let messages = translated["messages"].to_string();
+            for text in [
+                "Original question",
+                "Preserve this conclusion",
+                "Earlier answer",
+                "Follow-up",
+            ] {
+                assert!(messages.contains(text), "{target:?}: {messages}");
+            }
+        }
+    }
+
+    #[test]
+    fn official_requests_keep_provider_specific_history_and_the_official_route() {
+        let store = Store::default();
+        for endpoint in ["responses", "responses/compact"] {
+            let path = format!("codex/v1/{endpoint}");
+            let segments: Vec<_> = path.split('/').collect();
+            let required = request_protocol(&segments);
+            let destination =
+                resolve_destination(&store, &segments, required, Some("official-model")).unwrap();
+            assert!(matches!(destination, Destination::Official));
+            assert_eq!(
+                upstream_suffix(&segments, &destination, required).unwrap(),
+                endpoint
+            );
+            let body = Bytes::from_static(br#"{ "model":"official-model", "previous_response_id":"relay-response", "input":[{"type":"compaction","encrypted_content":"relay-opaque"}] }"#);
+            assert_eq!(
+                upstream_body(&destination, Some(body.clone()))
+                    .unwrap()
+                    .0
+                    .unwrap(),
+                body
+            );
+        }
+    }
+
+    async fn echo_relay(label: &'static str) -> (u16, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let task = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let _ = http1::Builder::new().serve_connection(TokioIo::new(stream), service_fn(move |request: Request<Incoming>| async move {
+                        let (parts, body) = request.into_parts();
+                        let headers: serde_json::Map<String, Value> = parts.headers.iter().map(|(name, value)| {
+                            (name.to_string(), json!(value.to_str().unwrap()))
+                        }).collect();
+                        let bytes = body.collect().await.unwrap().to_bytes();
+                        let body: Value = serde_json::from_slice(&bytes).unwrap();
+                        Ok::<_, std::convert::Infallible>(Response::builder()
+                            .header(CONTENT_TYPE, "application/json")
+                            .body(full_body(json!({"relay":label,"path":parts.uri.to_string(),"headers":headers,"body":body}).to_string())).unwrap())
+                    })).await;
+                });
+            }
+        });
+        (port, task)
+    }
+
+    #[test]
+    fn http_model_switch_and_compaction_route_to_matching_relays_without_official_credentials() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let fixture = tempfile::tempdir().unwrap();
+            let app_data_dir = fixture.path().join("app");
+            std::fs::create_dir_all(&app_data_dir).unwrap();
+            let auth_path = fixture.path().join("auth.json");
+            let auth = br#"{"tokens":{"access_token":"fixture-official-file-token","account_id":"fixture-file-account"},"OPENAI_API_KEY":"fixture-official-api-key"}"#;
+            std::fs::write(&auth_path, auth).unwrap();
+            // Synthetic exact model metadata exercises both valid `none` and a
+            // target that rejects it, independently of family-name heuristics.
+            std::fs::write(fixture.path().join("models_cache.json"), json!({"models":[
+                {"slug":"model-a","supported_reasoning_levels":[{"effort":"none","description":"Off"}]},
+                {"slug":"model-b","supported_reasoning_levels":[{"effort":"high","description":"High"}]}
+            ]}).to_string()).unwrap();
+            let (port_a, relay_a) = echo_relay("relay-a").await;
+            let (port_b, relay_b) = echo_relay("relay-b").await;
+            let mut store = Store {
+                codex_access_mode: router::CodexAccessMode::Router,
+                active_provider_id: Some("relay-a".into()),
+                router: RouterSettings { bearer_token:"fixture-local-secret".into(), ..Default::default() },
+                ..Default::default()
+            };
+            for (id, port, model, key) in [
+                ("relay-a", port_a, "model-a", "fixture-relay-a-key"),
+                ("relay-b", port_b, "model-b", "fixture-relay-b-key"),
+            ] {
+                store.providers.push(Provider {
+                    id:id.into(), name:id.into(), base_url:format!("http://127.0.0.1:{port}"),
+                    api_key:key.into(), model:model.into(), enabled:true, ..Default::default()
+                });
+            }
+            let store_path = app_data_dir.join("newapi-providers.dat");
+            crate::core::secret_file::write(&store_path, &serde_json::to_vec(&store).unwrap()).unwrap();
+            let client = Client::builder().no_proxy().timeout(Duration::from_secs(5)).build().unwrap();
+            let context = Arc::new(ArcContext {
+                store_path, app_data_dir, codex_home:fixture.path().to_owned(), auth_path:auth_path.clone(),
+                outbound:Arc::new(RwLock::new(client.clone())), outbound_direct:client.clone()
+            });
+            let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let (shutdown, receiver) = tokio::sync::watch::channel(false);
+            let router = tokio::spawn(accept_loop(listener, receiver, context));
+            let history = json!([
+                {"role":"user","content":"Original question"},
+                {"type":"message","role":"assistant","content":[{"type":"output_text","text":"Original answer"}]},
+                {"type":"reasoning","summary":[{"type":"summary_text","text":"Retained summary"}],"encrypted_content":"fixture-opaque-reasoning"},
+                {"type":"compaction","encrypted_content":"fixture-opaque-compaction"},
+                {"type":"function_call","call_id":"call_fixture","name":"lookup","arguments":"{}"},
+                {"type":"function_call_output","call_id":"call_fixture","output":"Retained tool result"},
+                {"role":"user","content":"Continue the same conversation"}
+            ]);
+            // Switch A -> B -> A on one thread, including both native and legacy
+            // compaction URLs. The pinned provider remains A throughout.
+            for (prefix, endpoint, id, model, key, effort) in [
+                ("codex/v1", "responses", "relay-a", "model-a", "fixture-relay-a-key", "none"),
+                ("codex/v1", "responses", "relay-b", "model-b", "fixture-relay-b-key", "none"),
+                ("codex/v1", "responses/compact", "relay-b", "model-b", "fixture-relay-b-key", "high"),
+                ("v1", "responses/compact", "relay-b", "model-b", "fixture-relay-b-key", "none"),
+                ("p/relay-b/v1", "responses/compact", "relay-b", "model-b", "fixture-relay-b-key", "high"),
+                ("codex/v1", "responses", "relay-a", "model-a", "fixture-relay-a-key", "none"),
+            ] {
+                let mut body = json!({
+                    "model":format!("{id}::{model}"), "input":history, "previous_response_id":"fixture-provider-response",
+                    "reasoning":{"effort":effort,"summary":"auto"}, "store":false
+                });
+                let response = client.post(format!("http://127.0.0.1:{port}/{prefix}/{endpoint}?fixture=1"))
+                    .header(router::LOCAL_AUTH_HEADER, "fixture-local-secret")
+                    .bearer_auth("fixture-current-official-token")
+                    .header("chatgpt-account-id", "fixture-current-official-account")
+                    .header("x-api-key", "fixture-client-api-key")
+                    .header(COOKIE, "fixture-official-cookie")
+                    .header(PROXY_AUTHORIZATION, "fixture-proxy-credential")
+                    .header("x-codex-turn-metadata", "fixture-same-conversation")
+                    .json(&body).send().await.unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                let observed: Value = response.json().await.unwrap();
+                assert_eq!(observed["relay"], id);
+                assert_eq!(observed["path"], format!("/v1/{endpoint}?fixture=1"));
+                assert_eq!(observed["headers"]["authorization"], format!("Bearer {key}"));
+                assert_eq!(observed["headers"]["x-codex-turn-metadata"], "fixture-same-conversation");
+                for header in ["chatgpt-account-id", "x-api-key", "cookie", "proxy-authorization", router::LOCAL_AUTH_HEADER] {
+                    assert!(observed["headers"].get(header).is_none(), "leaked {header}");
+                }
+                body["model"] = json!(model);
+                if model == "model-b" && effort == "none" {
+                    body["reasoning"].as_object_mut().unwrap().remove("effort");
+                }
+                assert_eq!(observed["body"], body, "history and continuation id must survive model switches");
+            }
+            assert_eq!(std::fs::read(&auth_path).unwrap(), auth);
+            shutdown.send(true).unwrap();
+            router.await.unwrap();
+            relay_a.abort();
+            relay_b.abort();
+        });
     }
 
     #[test]

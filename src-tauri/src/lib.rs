@@ -222,6 +222,7 @@ pub fn run() {
             commands::threads::cancel_pending_conversation_deletions,
             commands::thread_recovery::preview_codex_thread_recovery,
             commands::thread_recovery::apply_codex_thread_recovery,
+            commands::thread_recovery::adopt_codex_thread_router,
         ])
         .build(context)
         .expect("error while building AgentHarbor");

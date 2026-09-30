@@ -1,6 +1,51 @@
 use super::*;
 
 #[test]
+fn claude_one_m_defaults_on_and_explicit_off_survives_serialization_and_reopen() {
+    let (temp, manager, store, mut request) = fixture();
+    request.options = serde_json::from_value(json!({})).unwrap();
+    apply(&manager, &store, &request);
+    let installed = read(&manager.paths.claude);
+    assert_eq!(installed["model"], "claude-test[1m]");
+    assert_eq!(
+        installed["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"],
+        "claude-test[1m]"
+    );
+    let disabled = json!({"startup":false,"sonnet":false,"opus":false,"fable":false,"haiku":false,"subagent":false});
+    request.options.claude_one_m = serde_json::from_value(disabled.clone()).unwrap();
+    apply(&manager, &store, &request);
+    let reopened = ConfigManager::new(
+        &temp.path().join("data"),
+        ClientPaths::from_home(temp.path()),
+    );
+    let saved = reopened.list()[0].request.clone().unwrap();
+    assert_eq!(
+        serde_json::to_value(&saved).unwrap()["claudeOneM"],
+        disabled
+    );
+    apply(&reopened, &store, &saved);
+    assert_eq!(read(&manager.paths.claude)["model"], "claude-test");
+    assert_eq!(
+        read(&manager.paths.claude)["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"],
+        "claude-test"
+    );
+}
+
+#[test]
+fn legacy_claude_one_m_choices_remain_off_while_missing_haiku_defaults_on() {
+    let options: ClientOptions = serde_json::from_value(json!({"claudeOneM": {
+        "startup":false,"sonnet":false,"opus":false,"fable":false,"subagent":false
+    }}))
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(options).unwrap()["claudeOneM"],
+        json!({
+            "startup":false,"sonnet":false,"opus":false,"fable":false,"haiku":true,"subagent":false
+        })
+    );
+}
+
+#[test]
 fn claude_legacy_requests_keep_explicit_models_without_a_catalog() {
     let (_temp, manager, store, mut request) = fixture();
     assert!(store.providers[0].models.is_empty());
@@ -59,7 +104,7 @@ fn claude_one_m_marks_only_enabled_models_and_leaves_context_env_alone() {
         .iter()
         .any(|entry| entry["model"] == "claude-test"));
 
-    request.options.claude_one_m = ClaudeOneM::default();
+    request.options.claude_one_m = disabled_one_m();
     apply(&manager, &store, &request);
     let installed = read(&manager.paths.claude);
     assert_eq!(installed["env"]["ANTHROPIC_MODEL"], "claude-test");
@@ -93,7 +138,7 @@ fn claude_one_m_works_in_native_mode_and_keeps_user_context_env() {
         "400000"
     );
 
-    request.options.claude_one_m = ClaudeOneM::default();
+    request.options.claude_one_m = disabled_one_m();
     apply(&manager, &store, &request);
     let installed = read(&manager.paths.claude);
     assert_eq!(

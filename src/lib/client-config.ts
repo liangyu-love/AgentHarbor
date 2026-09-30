@@ -1,10 +1,16 @@
 import { providerModelProtocol, supportsProtocol } from "./provider-models";
-import type { ClaudeModels, ClientAccessMode, ClientStatus } from "@/types/clients";
+import type { ClaudeModels, ClaudeOneM, ClientAccessMode, ClientStatus } from "@/types/clients";
 import type { ModelProtocol, NewApiProvider } from "@/types/newapi";
 
 export type Exclusion = "protocol" | "disabled" | "noApiKey" | "noModel";
 export const claudeRoles: (keyof ClaudeModels)[] = ["sonnet", "opus", "fable", "haiku", "subagent"];
 export const emptyClaudeRoles = (): ClaudeModels => ({ sonnet: "", opus: "", fable: "", haiku: "", subagent: "" });
+// Missing fields adopt the new default; explicit false in old profiles stays off.
+export const claudeOneMDefaults = (saved?: Partial<ClaudeOneM> | null): ClaudeOneM => ({
+  startup: saved?.startup ?? true, sonnet: saved?.sonnet ?? true,
+  opus: saved?.opus ?? true, fable: saved?.fable ?? true,
+  haiku: saved?.haiku ?? true, subagent: saved?.subagent ?? true,
+});
 export const clientProtocols = (client: ClientStatus, mode: ClientAccessMode): ModelProtocol[] =>
   client.targetId === "claudeCode" && mode === "router"
     ? ["anthropicMessages", "responses", "chatCompletions"] : client.protocols;
@@ -28,11 +34,8 @@ export const exclusionOf = (provider: NewApiProvider, protocols: ModelProtocol[]
 export const clientDefaults = (provider: NewApiProvider | undefined, model: string) => {
   const metadata = provider?.models.find(entry => entry.id === model);
   const compact = model.toLowerCase().replace(/[^a-z0-9]/g, "");
-  const claudeOneM = compact.includes("claude")
-    && ["opus5", "opus48", "opus47", "opus46", "sonnet5", "sonnet46", "fable5", "mythos5"]
-      .some(family => compact.includes(family));
   const contextWindow = metadata?.contextWindow
     ?? (provider?.model === model ? provider.contextWindow : null)
-    ?? (claudeOneM ? 1_000_000 : compact.includes("claude") ? 200_000 : 128_000);
+    ?? (compact.includes("claude") ? 1_000_000 : 128_000);
   return { contextWindow, maxOutputTokens: Math.min(metadata?.maxOutputTokens ?? 8192, contextWindow) };
 };

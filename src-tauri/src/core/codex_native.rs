@@ -244,7 +244,11 @@ fn api_key(provider: &Provider) -> Result<String, String> {
         .map_err(|_| "newapi.errors.token".into())
 }
 
-fn catalog(provider: &Provider) -> serde_json::Value {
+fn catalog(paths: &CodexPaths, provider: &Provider) -> serde_json::Value {
+    // Reuse the router's read-only official catalog loading and cache precedence.
+    // Only the selected provider's own models are emitted below.
+    let official_catalog =
+        super::catalog_value(&paths.app_data_dir, &paths.codex_home, &Store::default());
     let mut seen = HashSet::new();
     let mut ids: Vec<_> = provider
         .models
@@ -266,6 +270,11 @@ fn catalog(provider: &Provider) -> serde_json::Value {
                 .map(|model| model.display_name.trim())
                 .filter(|name| !name.is_empty())
                 .unwrap_or(id);
+            let official = official_catalog["models"].as_array().and_then(|models| {
+                models
+                    .iter()
+                    .find(|model| model["slug"].as_str() == Some(id))
+            });
             relay_catalog_entry(
                 id.to_owned(),
                 menu_display_name(&provider.name, alias, id),
@@ -275,6 +284,8 @@ fn catalog(provider: &Provider) -> serde_json::Value {
                     .or(provider.context_window)
                     .unwrap_or_else(|| model_defaults::for_model(id).context_window),
                 metadata.and_then(|model| model.max_output_tokens),
+                id,
+                official,
             )
         })
         .collect();
@@ -381,7 +392,7 @@ fn intact_unlocked(paths: &CodexPaths, store: &Store) -> Result<bool, String> {
     let catalog_matches = std::fs::read(&expected_catalog)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .is_some_and(|value| value == catalog(provider));
+        .is_some_and(|value| value == catalog(paths, provider));
     Ok(credential.key == expected_key
         && document.get("model_provider").and_then(Item::as_str) == Some(PROVIDER_KEY)
         && document.get("model").and_then(Item::as_str) == Some(provider.model.as_str())
@@ -450,7 +461,7 @@ pub(super) fn apply(paths: &CodexPaths, store: &Store) -> Result<newapi::Applied
     let result = (|| -> Result<_, CoreError> {
         storage::write_atomic(
             &catalog_path,
-            &serde_json::to_vec_pretty(&catalog(provider))?,
+            &serde_json::to_vec_pretty(&catalog(paths, provider))?,
         )?;
         CodexConfigRepository::new(paths).update(|original| {
             let mut document = original
@@ -743,6 +754,56 @@ mod tests {
             Some(150000)
         );
         assert!(intact(&paths, &store).unwrap());
+    }
+
+    #[test]
+    fn native_catalog_borrows_exact_reasoning_without_official_ids_or_flags() {
+        let (_directory, paths, mut store) = fixture();
+        let provider = &mut store.providers[0];
+        provider.model = "gpt-6-astra".into();
+        provider.models = vec![
+            model("gpt-6-astra", ModelProtocol::Responses, 240_000),
+            model("gpt-6-astra-preview", ModelProtocol::Responses, 160_000),
+        ];
+        let levels = serde_json::json!([
+            {"effort": "low", "description": "Cached low"},
+            {"effort": "ultra", "description": "Cached ultra"}
+        ]);
+        let cache = serde_json::to_vec(&serde_json::json!({"models": [
+            {
+                "slug": "gpt-6-astra",
+                "default_reasoning_level": "low",
+                "supported_reasoning_levels": levels,
+                "comp_hash": "official-only-id",
+                "use_responses_lite": true
+            },
+            {"slug": "official-only-model"}
+        ]}))
+        .unwrap();
+        std::fs::write(paths.codex_home.join("models_cache.json"), &cache).unwrap();
+        let value = catalog(&paths, provider);
+        let models = value["models"].as_array().unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0]["slug"], "gpt-6-astra");
+        assert_eq!(models[0]["display_name"], "Fixture native/gpt-6-astra");
+        assert_eq!(models[0]["context_window"], 240_000);
+        assert_eq!(models[0]["supported_reasoning_levels"], levels);
+        assert_eq!(models[0]["default_reasoning_level"], "low");
+        assert!(models[0].get("comp_hash").is_none());
+        assert!(models[0].get("use_responses_lite").is_none());
+        assert_eq!(models[1]["slug"], "gpt-6-astra-preview");
+        assert_eq!(
+            models[1]["supported_reasoning_levels"],
+            serde_json::json!([])
+        );
+        assert!(models[1]["default_reasoning_level"].is_null());
+        assert_eq!(
+            std::fs::read(paths.codex_home.join("models_cache.json")).unwrap(),
+            cache
+        );
+        assert_eq!(text(&paths), ORIGINAL);
+        assert!(!env_path(&paths).exists());
+        assert!(!config_snapshot::path(&paths).exists());
     }
 
     #[test]

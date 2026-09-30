@@ -228,6 +228,23 @@ pub fn is_codex_app_running() -> bool {
     is_process_running(codex_process_name())
 }
 
+/// Thread adoption must not kill a desktop that is still flushing history.
+pub fn stop_codex_for_thread_adoption() -> Result<(), CoreError> {
+    if !is_codex_app_running() {
+        return Ok(());
+    }
+    #[cfg(target_os = "windows")]
+    snapshot_codex_path_before_stop();
+    let _ = request_codex_app_quit();
+    if wait_for_process_exit(codex_process_name(), Duration::from_secs(8)) {
+        Ok(())
+    } else {
+        Err(CoreError::OperationFailed(
+            "CODEX_APP_QUIT_TIMEOUT: finish active tasks and quit Codex manually before adopting this thread".into(),
+        ))
+    }
+}
+
 pub fn stop_codex_app_gracefully(timeout: Duration) -> Result<(), CoreError> {
     if !is_codex_app_running() {
         return Ok(());

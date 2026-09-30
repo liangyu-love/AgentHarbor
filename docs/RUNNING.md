@@ -116,7 +116,7 @@ Rust 测试覆盖 Skills 导入替换备份恢复、路径边界、指令回滚�
 
 前端回归测试使用真实页面组件和模拟接口，覆盖会话滚动、扫描警告、图片连接选择、过期模型请求、图册缩略图缓存、逐模型协议继承与刷新保留、Codex 接入方式和模型兼容性；测试期间禁止访问外部网络。先执行 `pnpm build`，再执行 `pnpm test:frontend`。测试需要可用的 Playwright 或 playwright-core 包及 Chromium；如果不在项目依赖搜索路径中，可通过 `PLAYWRIGHT_MODULE_PATH` 或 `--playwright-module=<包的绝对路径>` 指定已安装的包，通过 `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` 或 `--browser-executable=<浏览器绝对路径>` 指定浏览器。
 
-`src-tauri/tests/codex_router_auth.rs` 另提供真实 Codex CLI 的隔离兼容性测试，默认跳过。将 `AGENTHARBOR_TEST_CODEX_BIN` 指向已安装的 Codex CLI 可执行文件后，运行 `cargo +stable-x86_64-pc-windows-msvc test --manifest-path src-tauri/Cargo.toml --test codex_router_auth --offline -- --ignored --nocapture`。测试只使用临时目录、合成账号凭据和本地模拟上游，不读取或修改真实登录配置。
+`src-tauri/tests/codex_router_auth.rs` 另提供真实 Codex CLI 的隔离兼容性测试，默认跳过。将 `AGENTHARBOR_TEST_CODEX_BIN` 指向已安装的 Codex CLI 可执行文件后，运行 `cargo +stable-x86_64-pc-windows-msvc test --manifest-path src-tauri/Cargo.toml --test codex_router_auth real_codex --offline -- --ignored --nocapture`。保留 `real_codex` 过滤：这些测试只使用临时目录、合成账号凭据和本地模拟上游，不读取或修改真实登录配置；同文件另有需要显式授权的真实计费上游测试，详见 `MAGPIE_VALIDATION.md`。
 
 ## 历史验证记录（2026-09-19）
 

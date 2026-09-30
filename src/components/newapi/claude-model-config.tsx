@@ -72,7 +72,7 @@ export function ClaudeModelConfig({ provider, models, selected, mapping, default
           <tbody>{claudeRoles.map(role => {
             const automatic = selected.find(id => role !== "subagent" && id.toLowerCase().includes(role)) ?? defaultModel;
             const modelId = mapping[role] || automatic;
-            const oneMEnabled = role !== "haiku" && oneM[role as keyof ClaudeOneM] === true;
+            const oneMEnabled = oneM[role];
             return <tr key={role} className="border-t">
               <th scope="row" className="px-3 py-2 text-left font-medium">
                 <Label htmlFor={"client-role-" + role}>{role === "subagent" ? t("clients.subagent") : role[0].toUpperCase() + role.slice(1)}</Label>
@@ -88,11 +88,10 @@ export function ClaudeModelConfig({ provider, models, selected, mapping, default
                 </Select>
               </td>
               <td className="p-2 text-center">
-                {role === "haiku" ? <span aria-hidden="true" className="text-muted-foreground">—</span> :
-                  <input type="checkbox" aria-label={t("clients.oneMForRole", { role: t("clients." + role) })}
+                <input type="checkbox" aria-label={t("clients.oneMForRole", { role: t("clients." + role) })}
                     checked={oneMEnabled} disabled={disabled || (!modelId && !oneMEnabled)}
                     className="h-4 w-4 accent-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-50"
-                    onChange={() => onOneMChange({ ...oneM, [role]: !oneMEnabled })} />}
+                    onChange={event => onOneMChange({ ...oneM, [role]: event.target.checked })} />
               </td>
             </tr>;
           })}</tbody>

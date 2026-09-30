@@ -104,7 +104,7 @@ impl ClientAdapter for ClaudeCode {
                 "haiku",
                 "ANTHROPIC_DEFAULT_HAIKU_MODEL",
                 &mapping.haiku,
-                false,
+                one_m.haiku,
             ),
             (
                 "",

@@ -26,6 +26,7 @@ export interface ClaudeOneM {
   sonnet: boolean;
   opus: boolean;
   fable: boolean;
+  haiku: boolean;
   subagent: boolean;
 }
 export interface ClientConfigRequest {

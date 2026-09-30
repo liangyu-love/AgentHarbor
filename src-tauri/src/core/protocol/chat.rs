@@ -92,13 +92,10 @@ pub(super) fn request_from_responses(
             ModelProtocol::ChatCompletions => {
                 out.insert("reasoning_effort".into(), effort.clone());
             }
-            ModelProtocol::AnthropicMessages
-                if max_output.unwrap_or(ANTHROPIC_DEFAULT_MAX_TOKENS) > 1024
-                    && !continues_tool_turn(&out) =>
-            {
-                thinking = true;
-                let cap = max_output.unwrap_or(ANTHROPIC_DEFAULT_MAX_TOKENS);
-                out.insert("thinking".into(), json!({ "type": "enabled", "budget_tokens": 2048.min(cap - 1) }));
+            ModelProtocol::AnthropicMessages if !continues_tool_turn(&out) => {
+                if let Some(effort) = effort.as_str() {
+                    thinking = super::reasoning::anthropic(&mut out, &model, effort);
+                }
             }
             _ => {}
         }
@@ -190,7 +187,26 @@ fn messages_from_responses(
                             }));
                         }
                     }
-                    Some("reasoning") | Some("item_reference") => {}
+                    Some("reasoning") => {
+                        // Plain summaries can cross protocols as assistant text;
+                        // do not invent Anthropic signatures or silently lose them.
+                        // Opaque reasoning is rejected by the Router before send.
+                        let summary = item
+                            .get("summary")
+                            .and_then(Value::as_array)
+                            .map(|parts| {
+                                parts
+                                    .iter()
+                                    .filter_map(|part| part.get("text").and_then(Value::as_str))
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            })
+                            .unwrap_or_default();
+                        if !summary.is_empty() {
+                            messages.push(json!({"role":"assistant", "content":format!("[Previous reasoning summary]\n{summary}")}));
+                        }
+                    }
+                    Some("item_reference") => {}
                     // A `message` item, or anything carrying a role.
                     _ => {
                         let Some(role) = item.get("role").and_then(Value::as_str) else {
@@ -622,6 +638,44 @@ mod tests {
         assert_eq!(converted["tool_choice"]["type"], "tool");
         assert_eq!(converted["tool_choice"]["disable_parallel_tool_use"], true);
         assert!(converted.get("parallel_tool_calls").is_none());
+    }
+
+    #[test]
+    fn anthropic_none_does_not_enable_thinking() {
+        let body = request_from_responses(
+            ModelProtocol::AnthropicMessages,
+            &json!({
+                "model":"claude-opus-4-6", "reasoning":{"effort":"none"},
+                "temperature":0.2, "input":"hi"
+            }),
+        )
+        .unwrap();
+        assert!(body.get("thinking").is_none());
+        assert!(body.get("output_config").is_none());
+        assert_eq!(body["temperature"], 0.2);
+    }
+
+    #[test]
+    fn anthropic_effort_reaches_the_wire_instead_of_one_fixed_budget() {
+        for (effort, budget) in [("low", 4096), ("medium", 10000), ("high", 24000)] {
+            let body = request_from_responses(
+                ModelProtocol::AnthropicMessages,
+                &json!({
+                    "model":"claude-haiku-4-5-20251001", "reasoning":{"effort":effort}, "input":"hi"
+                }),
+            )
+            .unwrap();
+            assert_eq!(body["thinking"]["budget_tokens"], budget);
+            let body = request_from_responses(
+                ModelProtocol::AnthropicMessages,
+                &json!({
+                    "model":"claude-opus-4-6", "reasoning":{"effort":effort}, "input":"hi"
+                }),
+            )
+            .unwrap();
+            assert_eq!(body["thinking"], json!({"type":"adaptive"}));
+            assert_eq!(body["output_config"]["effort"], effort);
+        }
     }
 
     #[test]

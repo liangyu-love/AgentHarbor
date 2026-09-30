@@ -56,7 +56,7 @@ flowchart LR
 | 账号与用量 | `src/components/accounts/accounts-page.tsx`、`use-accounts.ts`、`account-card.tsx`、`token-usage-panel.tsx`、`daily-trend-panel.tsx`、`model-usage-breakdown.tsx`、`recent-turns-panel.tsx`、`relay-usage-panel.tsx` | Codex 账号登录、列表、额度刷新、切换和删除；合并展示 Codex/Claude Code 本地日志与经过本地代理的请求用量；供应商余额 | `accounts.list/refresh/login/switch/delete`、`usage.overview`、`providers.loadState/queryBalance`、`targets.restart` | `commands/accounts.rs`、`commands/usage.rs`、`core/accounts.rs`、`core/account_monitor.rs`、`core/local_usage.rs`、`core/relay_usage.rs` |
 | 中转与客户端配置 | `src/components/newapi/newapi-page.tsx`、`use-provider-state.ts`、`use-relay-view.ts`、`relay-groups.ts`、`codex-access-card.tsx`、`relay-list.tsx`、`relay-card.tsx`、`provider-dialog.tsx`、`provider-model-editor.tsx`、`provider-test-dialog.tsx`、`probe-timeline.tsx`、`provider-balance-dialog.tsx`、`client-configs.tsx`、`client-config-dialog.tsx`、`claude-model-config.tsx` | 管理供应商、协议和单模型协议、模型列表、测试/余额、网络出口、Codex Router/Native 接入；配置 Claude Code、OpenCode 的原生或本地路由方式 | `providers.*`、`routing.*`、`targets.configs/previewConfig/applyConfig/restoreConfig/releaseConfig` | `commands/newapi.rs`、`commands/client_config.rs`；`core/router.rs`、`router_proxy.rs`、`routing_runtime.rs`、`protocol/`、`client_config/` |
 | 图片工作台 | `src/components/image-workbench/image-workbench-page.tsx`、`use-image-connection.ts`、`use-image-gallery.ts`、`use-generation-queue.ts`、`generation-form.tsx`、`generation-canvas.tsx`、`gallery-panel.tsx`、`gallery-thumbnail.tsx`、`src/lib/image-prompts.ts` | 选择供应商与模型、生成/编辑图片、管理任务画布、本地图库、选择图库目录、查看/另存/删除成图 | `image.generate/cancelGeneration/keyStatus/saveKey/keySites/deleteKey/saveFile/saveToGallery/setGalleryDirectory/listGallery/loadGalleryImage/loadGalleryThumbnail/deleteGalleryImage` | `commands/image.rs`；凭据经 `core/secret_file.rs` 存储，图片目录配置和成图写入本地磁盘 |
-| 会话归档 | `src/components/threads/threads-page.tsx`、`use-thread-list.ts`、`thread-card.tsx`、`thread-group-header.tsx`、`thread-group-section.tsx`、`virtual-thread-list.tsx`、`thread-recovery-dialog.tsx`、`selection-bar.tsx` | 扫描 Codex 会话、搜索筛选与分组、导出 Markdown/JSONL、删除会话、取消/恢复待处理删除、修复会话目录/索引状态 | `conversations.list/export/delete/cancelPendingDeletions/previewRecovery/applyRecovery` | `commands/threads.rs`、`commands/thread_recovery.rs`；`core/threads.rs`、`thread_delete.rs`、`thread_recovery.rs` |
+| 会话归档 | `src/components/threads/threads-page.tsx`、`use-thread-list.ts`、`thread-card.tsx`、`thread-group-header.tsx`、`thread-group-section.tsx`、`virtual-thread-list.tsx`、`thread-recovery-dialog.tsx`、`selection-bar.tsx` | 扫描 Codex 会话、搜索筛选与分组、导出 Markdown/JSONL、删除会话、取消/恢复待处理删除、修复会话目录/索引状态 | `conversations.list/export/delete/cancelPendingDeletions/previewRecovery/applyRecovery/adoptRouter` | `commands/threads.rs`、`commands/thread_recovery.rs`；`core/threads.rs`、`thread_delete.rs`、`thread_recovery.rs` |
 | MCP 管理 | `src/components/mcp/mcp-page.tsx`、`use-mcp-servers.ts`、`mcp-editor-dialog.tsx`、`mcp-server-card.tsx`、`mcp-toolbar.tsx` | 读取、添加/编辑、启用/停用、删除 MCP server，并定位源配置 | `loadMcpServers/upsertMcpServer/setMcpServerEnabled/removeMcpServer/openPath` | `commands/mcp.rs`、`core/mcp.rs`；读写 Codex `config.toml` |
 | Skills 管理 | `src/components/skills/skills-page.tsx` | 扫描已安装 Skills、导入、移除、浏览备份、恢复或删除备份 | `loadInstalledSkills/loadSkillBackups/importSkill/removeSkill/restoreSkillBackup/deleteSkillBackup/openPath` | `commands/skills.rs`、`core/skills.rs` |
 | 自定义指令 | `src/components/custom-instructions/custom-instructions-page.tsx`、`history-list.tsx`、`preview-dialog.tsx`、`template-card.tsx`、`src/lib/custom-instruction-templates.ts` | 管理 `AGENTS.md` 中 AgentHarbor 标记的指令区块；模板预览、应用、清除和历史回滚 | `loadCustomInstructionState/previewCustomInstructionApply/applyCustomInstruction/clearCustomInstructionBlock/rollbackCustomInstruction` | `commands/custom_instructions.rs`、`core/custom_instructions.rs` |
@@ -144,6 +144,7 @@ IPC 命令必须同时在 Rust 命令文件中实现，并通过 `src-tauri/src/
 | `cancel_pending_conversation_deletions` | `targetId` | 取消尚待处理的删除任务 | 同上 |
 | `preview_codex_thread_recovery` | `threadId` | 生成会话恢复预览与 revision | `commands/thread_recovery.rs` → `core/thread_recovery/` |
 | `apply_codex_thread_recovery` | `threadId`, `expectedRevision` | revision 校验后应用恢复计划 | 同上 |
+| `adopt_codex_thread_router` | `threadId`, `expectedRevision` | 旧会话一次性接入统一 Router：只读目标校验、正常关闭桌面端、无写入进程与 revision 复核、复用备份事务、重新打开；打开失败以 warning 返回，不撤销已完成的接入 | `commands/thread_recovery.rs` → `core/thread_recovery/router_adoption.rs` |
 | `load_mcp_servers` | 无 | 读取 Codex MCP 配置 | `commands/mcp.rs` → `core/mcp.rs` |
 | `upsert_mcp_server` | `name`, `transport`, `enabled`, `command`, `args`, `url`, `headers`, `environment` | 添加/更新 MCP server | 同上 |
 | `set_mcp_server_enabled` / `remove_mcp_server` | `name`, `enabled` / `name` | 启停或移除 MCP server | 同上 |
@@ -194,6 +195,8 @@ IPC 命令必须同时在 Rust 命令文件中实现，并通过 `src-tauri/src/
 
 用量记录由代理观察真实请求返回的用量字段写入；若上游没有报告 Token 数，记录不会伪造 Token 估算。统计文件是 `relay-usage.jsonl`。
 
+Responses→Messages 的思考参数适配独立在 `core/protocol/reasoning.rs`，负责 adaptive/预算式 thinking、none、预算 cap；历史与工具回合仍由 `chat.rs` 处理。安装版 Codex 与真实中转的验证范围、复现方式和未验证边界见 [MAGPIE_VALIDATION.md](MAGPIE_VALIDATION.md)。
+
 ## 6. 核心后端模块职责
 
 | 模块 | 作用 | 关键文件 |
@@ -201,7 +204,7 @@ IPC 命令必须同时在 Rust 命令文件中实现，并通过 `src-tauri/src/
 | 状态与路径 | 构造 `CodexPaths`、读写设置/账号 registry、健康状态、清理和诊断 | `core/repository.rs`、`core/models.rs`、`platform/paths.rs` |
 | 账号与认证 | 认证快照、账号列表/切换/删除、登录和额度刷新 | `core/auth.rs`、`core/accounts.rs`、`core/account_monitor.rs` |
 | 供应商与模型 | Provider 数据、协议、模型目录、余额、测试、导入导出、Codex 配置注入 | `core/router.rs`、`core/newapi.rs`、`core/router_balance.rs`、`core/balance_script.rs`、`core/provider_probe.rs`、`core/model_defaults.rs`、`core/codex_config.rs`、`core/codex_native.rs` |
-| HTTP Router | 本机监听、认证、供应商选择、转发、协议适配与流式输出；`router_proxy::handle` 保留转发主流程，细节由同文件的具名 helper 承担 | `core/router_proxy.rs`、`core/protocol/` |
+| HTTP Router | 本机监听、认证、供应商选择、转发、协议适配与流式输出；`router_proxy::handle` 保留转发主流程，细节由同文件的具名 helper 承担 | `core/router_proxy.rs`、`core/router_proxy/session_compat.rs`、`core/protocol/` |
 | 服务生命周期 | 计算 Codex/Claude Code/OpenCode 当前是否需要 Router，安全协调启动/停止 | `core/routing_runtime.rs`、`core/client_config/mod.rs` |
 | 客户端配置适配 | Claude Code 与 OpenCode 各自的配置生成、字段级备份/恢复、revision 校验 | `core/client_config/claude.rs`、`opencode.rs`、`options.rs`、`mod.rs` |
 | 自动切号 | 账号额度刷新、纯决策和应用内后台循环；仅应用运行时执行 | `core/auto_switch.rs`、`commands/auto_switch.rs`、`platform/daemon.rs`（只清理旧版计划任务） |

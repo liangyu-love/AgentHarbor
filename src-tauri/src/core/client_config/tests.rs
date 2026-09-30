@@ -4,6 +4,17 @@ mod native_tests;
 #[path = "ownership_tests.rs"]
 mod ownership_tests;
 
+fn disabled_one_m() -> ClaudeOneM {
+    ClaudeOneM {
+        startup: false,
+        sonnet: false,
+        opus: false,
+        fable: false,
+        haiku: false,
+        subagent: false,
+    }
+}
+
 fn fixture() -> (tempfile::TempDir, ConfigManager, Store, ConfigRequest) {
     let temp = tempfile::tempdir().unwrap();
     let manager = ConfigManager::new(
@@ -35,6 +46,8 @@ fn fixture() -> (tempfile::TempDir, ConfigManager, Store, ConfigRequest) {
         max_output_tokens: 8192,
         options: ClientOptions {
             access_mode: ClientAccessMode::Router,
+            // These legacy-configuration fixtures explicitly opt out of 1M.
+            claude_one_m: disabled_one_m(),
             ..Default::default()
         },
     };

@@ -1,5 +1,5 @@
-//! Conservative local metadata used when a relay's `/v1/models` response only
-//! returns ids. Every value is editable in the provider model editor.
+//! Editable relay defaults. Claude context uses the product's 1M policy;
+//! other limits are fallbacks, not an upstream capability guarantee.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -90,17 +90,13 @@ pub fn for_model(model_id: &str) -> ModelDefaults {
         return defaults(128_000, 16_384);
     }
     if compact.contains("claude") {
-        // Current Opus/Sonnet/Fable/Mythos generations have a 1M window.
-        // Older models and Haiku still need their smaller documented limit.
-        let one_m = [
+        // All relay Claude models default to 1M, independently of output caps.
+        let larger_output = [
             "opus5", "opus48", "opus47", "opus46", "sonnet5", "sonnet46", "fable5", "mythos5",
         ]
         .iter()
         .any(|family| compact.contains(family));
-        if one_m {
-            return defaults(1_000_000, 128_000);
-        }
-        return defaults(200_000, 64_000);
+        return defaults(1_000_000, if larger_output { 128_000 } else { 64_000 });
     }
     if compact.contains("minimax") {
         return defaults(204_800, 16_384);
@@ -141,16 +137,16 @@ mod tests {
 
     #[test]
     fn known_families_and_unknown_models_have_editable_local_defaults() {
-        assert_eq!(for_model("claude-sonnet-4").context_window, 200_000);
+        assert_eq!(for_model("claude-sonnet-4"), defaults(1_000_000, 64_000));
         assert_eq!(for_model("claude-opus-4-8").context_window, 1_000_000);
         assert_eq!(for_model("claude-sonnet-5").context_window, 1_000_000);
-        assert_eq!(for_model("claude-haiku-4-5").context_window, 200_000);
+        assert_eq!(for_model("claude-haiku-4-5"), defaults(1_000_000, 64_000));
         assert_eq!(for_model("Gemini-2.5-Pro").context_window, 1_048_576);
         assert_eq!(for_model("unknown-relay-model"), defaults(128_000, 8_192));
         assert_eq!(for_model("vendor/gpt-4o:free").context_window, 128_000);
         assert_eq!(
             for_model("proxy__Claude-Sonnet-4-fast").context_window,
-            200_000
+            1_000_000
         );
     }
 

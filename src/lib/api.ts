@@ -171,6 +171,11 @@ const conversationsApi = {
       "apply_codex_thread_recovery",
       { threadId, expectedRevision },
     ),
+  adoptRouter: (threadId: string, expectedRevision: string) =>
+    invoke<CoreEnvelope<import("@/types/threads").ThreadRecoveryResult>>(
+      "adopt_codex_thread_router",
+      { threadId, expectedRevision },
+    ),
   };
 
 const usageApi = {

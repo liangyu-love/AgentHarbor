@@ -345,22 +345,22 @@ impl Model {
         if self.display_name.trim().is_empty() {
             self.display_name = self.id.clone();
         }
-        // Refresh the old 200K heuristic for newer Claude models. Explicit
-        // manual values and limits reported by the provider remain authoritative.
-        if self.metadata_source == "local"
-            && defaults.context_window == 1_000_000
-            && self.context_window == Some(200_000)
-        {
+        // Product policy: all relay Claude contexts default to 1M, even if an
+        // upstream lists an older limit. Only a manual override opts out. Do not
+        // increase output limits when upgrading the context window.
+        if self.metadata_source != "manual" && self.id.to_ascii_lowercase().contains("claude") {
             self.context_window = Some(defaults.context_window);
-            if self.max_output_tokens == Some(64_000) {
-                self.max_output_tokens = Some(defaults.max_output_tokens);
-            }
+            self.metadata_source = "local".into();
         }
         if self.context_window.is_none() {
             self.context_window = Some(defaults.context_window);
         }
         if self.max_output_tokens.is_none() {
-            self.max_output_tokens = Some(defaults.max_output_tokens);
+            self.max_output_tokens = Some(
+                defaults
+                    .max_output_tokens
+                    .min(self.context_window.unwrap_or(defaults.context_window)),
+            );
         }
         if self.metadata_source.trim().is_empty() {
             self.metadata_source = "local".into();
@@ -426,36 +426,40 @@ fn parse_models(value: &Value) -> Result<Vec<Model>, String> {
             continue;
         }
         let positive = |key| item.get(key).and_then(Value::as_u64).filter(|v| *v > 0);
-        let upstream_context = positive("context_window").or_else(|| positive("context_length"));
-        let upstream_output = positive("max_output_tokens");
-        models.push(
-            Model {
-                id: id.into(),
-                // The menu starts with a stable provider/model label. A user can
-                // replace it with an alias in the model editor.
-                display_name: id.to_owned(),
-                protocol: None,
-                context_window: upstream_context,
-                max_output_tokens: upstream_output,
-                endpoint_types: item
-                    .get("supported_endpoint_types")
-                    .and_then(Value::as_array)
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(Value::as_str)
-                            .map(str::to_owned)
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                included: true,
-                metadata_source: if upstream_context.is_some() {
-                    "upstream".into()
-                } else {
-                    "local".into()
-                },
-            }
-            .with_local_defaults(),
-        );
+        let upstream_context = positive("context_window")
+            .or_else(|| positive("context_length"))
+            .or_else(|| positive("max_input_tokens"));
+        let upstream_output = positive("max_output_tokens").or_else(|| positive("max_tokens"));
+        let mut model = Model {
+            id: id.into(),
+            // The menu starts with a stable provider/model label. A user can
+            // replace it with an alias in the model editor.
+            display_name: id.to_owned(),
+            protocol: None,
+            context_window: upstream_context,
+            max_output_tokens: upstream_output,
+            endpoint_types: item
+                .get("supported_endpoint_types")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            included: true,
+            metadata_source: if upstream_context.is_some() {
+                "upstream".into()
+            } else {
+                "local".into()
+            },
+        }
+        .with_local_defaults();
+        if let (Some(context), Some(output)) = (model.context_window, model.max_output_tokens) {
+            model.max_output_tokens = Some(output.min(context));
+        }
+        models.push(model);
     }
     models.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(models)
@@ -723,6 +727,55 @@ mod tests {
     }
 
     #[test]
+    fn relay_claude_one_m_policy_preserves_manual_limits_and_output_caps() {
+        for id in [
+            "claude-haiku-4-5",
+            "claude-sonnet-4",
+            "vendor/claude-custom",
+        ] {
+            for source in ["", "local", "catalog", "upstream", "manual"] {
+                let model = Model {
+                    id: id.into(),
+                    context_window: Some(200_000),
+                    max_output_tokens: Some(4096),
+                    metadata_source: source.into(),
+                    ..Default::default()
+                }
+                .with_local_defaults();
+                assert_eq!(
+                    model.context_window,
+                    Some(if source == "manual" {
+                        200_000
+                    } else {
+                        1_000_000
+                    }),
+                    "{id}/{source}"
+                );
+                assert_eq!(model.max_output_tokens, Some(4096));
+                assert_eq!(model.clone().with_local_defaults(), model);
+            }
+        }
+    }
+
+    #[test]
+    fn models_accept_native_token_fields_without_overriding_relay_claude_policy() {
+        let result = parse_models(&json!({"data":[
+            {"id":"claude-haiku-4-5", "max_input_tokens":200000, "max_tokens":8192},
+            {"id":"native-model", "max_input_tokens":32000, "max_tokens":4096},
+            {"id":"priority", "context_window":64000, "context_length":32000, "max_input_tokens":16000, "max_output_tokens":2048, "max_tokens":4096},
+            {"id":"zero", "context_window":0, "context_length":-1, "max_input_tokens":16000, "max_output_tokens":0, "max_tokens":99999}
+        ]})).unwrap();
+        assert_eq!(result[0].context_window, Some(1_000_000));
+        assert_eq!(result[0].max_output_tokens, Some(8192));
+        assert_eq!(result[1].context_window, Some(32000));
+        assert_eq!(result[1].max_output_tokens, Some(4096));
+        assert_eq!(result[2].context_window, Some(64000));
+        assert_eq!(result[2].max_output_tokens, Some(2048));
+        assert_eq!(result[3].context_window, Some(16000));
+        assert_eq!(result[3].max_output_tokens, Some(16000));
+    }
+
+    #[test]
     fn models_fill_missing_limits_from_editable_local_defaults() {
         let result = parse_models(&json!({"data":[{"id":"a"},{"id":"b","context_length":128000,"max_output_tokens":8192,"supported_endpoint_types":["openai-response"]},{"id":"a"}]})).unwrap();
         assert_eq!(result.len(), 2);
@@ -740,7 +793,7 @@ mod tests {
         let model = Model {
             id: "claude-custom".into(),
             context_window: Some(128_000),
-            metadata_source: "local".into(),
+            metadata_source: "manual".into(),
             ..Default::default()
         }
         .with_local_defaults();
@@ -758,7 +811,7 @@ mod tests {
         };
         let updated = old.clone().with_local_defaults();
         assert_eq!(updated.context_window, Some(1_000_000));
-        assert_eq!(updated.max_output_tokens, Some(128_000));
+        assert_eq!(updated.max_output_tokens, Some(64_000));
         let manual = Model {
             metadata_source: "manual".into(),
             ..old

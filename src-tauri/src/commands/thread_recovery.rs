@@ -1,4 +1,4 @@
-use crate::core::models::CoreEnvelope;
+use crate::core::models::{CoreEnvelope, CoreWarning};
 use crate::core::repository::Repository;
 use crate::core::thread_recovery::{self, ThreadRecoveryPreview, ThreadRecoveryResult};
 use std::sync::Mutex;
@@ -41,4 +41,31 @@ pub async fn apply_codex_thread_recovery(
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())?;
     Ok(CoreEnvelope::ok(result))
+}
+
+#[tauri::command]
+pub async fn adopt_codex_thread_router(
+    repo: State<'_, Mutex<Repository>>,
+    thread_id: String,
+    expected_revision: String,
+) -> Result<CoreEnvelope<ThreadRecoveryResult>, String> {
+    let paths = repo
+        .lock()
+        .map_err(|error| error.to_string())?
+        .paths()
+        .clone();
+    let (result, restart_warning) = tauri::async_runtime::spawn_blocking(move || {
+        thread_recovery::adopt_thread_into_router(&paths, &thread_id, &expected_revision)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())?;
+    let warnings = restart_warning
+        .into_iter()
+        .map(|message| CoreWarning {
+            code: "CODEX_REOPEN_FAILED".into(),
+            message,
+        })
+        .collect();
+    Ok(CoreEnvelope::ok_with_warnings(result, warnings))
 }

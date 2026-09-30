@@ -1,9 +1,11 @@
 //! Opt-in compatibility checks against an installed Codex CLI.
 //!
 //! Set AGENTHARBOR_TEST_CODEX_BIN to the absolute executable path, then run:
-//! cargo test --test codex_router_auth -- --ignored --nocapture
+//! cargo test --test codex_router_auth real_codex -- --ignored --nocapture
 //! All credentials are synthetic, all writable paths are temporary, and any
-//! non-loopback HTTP traffic is sent to a local rejecting proxy.
+//! non-loopback HTTP traffic is sent to a local rejecting proxy. The separate
+//! `live_codex_switches_configured_relays` test requires explicit live opt-in;
+//! its Router (not the child CLI) can reach the two selected providers.
 
 use agentharbor_lib::core::router::{
     self, CodexAccessMode, ModelProtocol, Provider, RouterSettings, Store,
@@ -331,6 +333,59 @@ impl AppServer {
         serde_json::to_writer(&mut *stdin, &message).unwrap();
         stdin.write_all(b"\n").unwrap();
         stdin.flush().unwrap();
+    }
+
+    fn turn(
+        &mut self,
+        thread_id: &str,
+        model: &str,
+        effort: &str,
+        text: &str,
+        timeout: Duration,
+    ) -> Result<String, Value> {
+        self.send(json!({"id":30,"method":"turn/start","params":{
+            "threadId":thread_id,"model":model,"effort":effort,
+            "input":[{"type":"text","text":text,"text_elements":[]}]
+        }}));
+        let deadline = Instant::now() + timeout;
+        let mut text = String::new();
+        loop {
+            let message = self
+                .messages
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .map_err(|_| json!({"error":"turn timeout"}))?
+                .map_err(|_| json!({"error":"invalid app-server output"}))?;
+            if let Some(error) = message.get("error") {
+                return Err(error.clone());
+            }
+            if message["params"]["threadId"] != thread_id {
+                continue;
+            }
+            if message["method"] == "item/started"
+                && matches!(
+                    message["params"]["item"]["type"].as_str(),
+                    Some("commandExecution" | "fileChange" | "mcpToolCall" | "dynamicToolCall")
+                )
+            {
+                return Err(json!({"error":"unexpected tool in text-only test"}));
+            }
+            if message["method"] == "item/completed"
+                && message["params"]["item"]["type"] == "agentMessage"
+            {
+                text.push_str(
+                    message["params"]["item"]["text"]
+                        .as_str()
+                        .unwrap_or_default(),
+                );
+            }
+            if message["method"] == "turn/completed" {
+                return if message["params"]["turn"]["status"] == "completed" {
+                    Ok(text)
+                } else {
+                    Err(message["params"]["turn"]["error"].clone())
+                };
+            }
+        }
     }
 
     fn request(&mut self, id: u64, method: &str, params: Value) -> Value {
@@ -918,7 +973,7 @@ fn mock_stream(protocol: ModelProtocol) -> String {
     }
 }
 
-fn assert_real_codex_translated_text(protocol: ModelProtocol) {
+fn assert_real_codex_translated_text(protocol: ModelProtocol, context_override: Option<u64>) {
     let _serial = ROUTER_TEST_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
@@ -939,9 +994,15 @@ fn assert_real_codex_translated_text(protocol: ModelProtocol) {
     )).unwrap();
     let auth = synthetic_auth();
     fs::write(&paths.auth_path, &auth).unwrap();
+    let model = if protocol == ModelProtocol::AnthropicMessages {
+        "claude-haiku-4-5"
+    } else {
+        "fixture-model"
+    };
     let input = serde_json::from_value(json!({
         "name":"Synthetic streaming endpoint", "baseUrl":format!("http://127.0.0.1:{}", mock.port),
-        "accessToken":"", "apiKey":"synthetic-upstream-key", "model":"fixture-model",
+        "accessToken":"", "apiKey":"synthetic-upstream-key", "model":model,
+        "models":[{"id":model,"contextWindow":context_override,"metadataSource":if context_override.is_some() { "manual" } else { "local" }}],
         "networkMode":"direct", "protocol":protocol,
     }))
     .unwrap();
@@ -985,7 +1046,8 @@ fn assert_real_codex_translated_text(protocol: ModelProtocol) {
     let mut completed_id = None;
     let mut deltas = String::new();
     let mut final_text = String::new();
-    while turn_id.is_none() || completed_id.is_none() {
+    let mut effective_context = None;
+    while turn_id.is_none() || completed_id.is_none() || effective_context.is_none() {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let message = server.messages.recv_timeout(remaining).unwrap_or_else(|error| {
             panic!("Codex {protocol:?} stream did not complete: {error}; deltas={deltas:?}; stderr: {}", server.stderr.lock().unwrap())
@@ -1008,6 +1070,9 @@ fn assert_real_codex_translated_text(protocol: ModelProtocol) {
             continue;
         }
         match message.get("method").and_then(Value::as_str) {
+            Some("thread/tokenUsage/updated") => {
+                effective_context = params["tokenUsage"]["modelContextWindow"].as_u64();
+            }
             Some("item/agentMessage/delta") => {
                 deltas.push_str(params["delta"].as_str().expect("text delta"))
             }
@@ -1049,7 +1114,7 @@ fn assert_real_codex_translated_text(protocol: ModelProtocol) {
     assert_eq!(final_text, STREAM_TEXT, "{protocol:?} completed text");
     let upstream = mock.requests.recv_timeout(RPC_TIMEOUT).unwrap();
     let body: Value = serde_json::from_slice(&upstream.body).unwrap();
-    assert_eq!(body["model"], "fixture-model");
+    assert_eq!(body["model"], model);
     assert_eq!(body["stream"], true);
     assert!(!body["messages"]
         .as_array()
@@ -1057,17 +1122,365 @@ fn assert_real_codex_translated_text(protocol: ModelProtocol) {
         .is_empty());
     assert!(upstream.header("x-agentharbor-token").is_none());
     assert_eq!(fs::read(&paths.auth_path).unwrap(), auth);
-    eprintln!("real CLI completed {protocol:?} through actual router and received {STREAM_TEXT:?}");
+    let context = context_override.unwrap_or(if protocol == ModelProtocol::AnthropicMessages {
+        1_000_000
+    } else {
+        128_000
+    });
+    // The installed Codex applies its 95% usable-context margin to catalog limits.
+    assert_eq!(effective_context, Some(context * 95 / 100));
+    eprintln!("real CLI completed {protocol:?} through actual router: model={model}, context={context}, effective_context={effective_context:?}, text={STREAM_TEXT:?}");
 }
 
 #[test]
 #[ignore = "requires AGENTHARBOR_TEST_CODEX_BIN pointing to an installed Codex CLI"]
 fn real_codex_completes_chat_stream_through_actual_router() {
-    assert_real_codex_translated_text(ModelProtocol::ChatCompletions);
+    assert_real_codex_translated_text(ModelProtocol::ChatCompletions, None);
 }
 
 #[test]
 #[ignore = "requires AGENTHARBOR_TEST_CODEX_BIN pointing to an installed Codex CLI"]
 fn real_codex_completes_anthropic_stream_through_actual_router() {
-    assert_real_codex_translated_text(ModelProtocol::AnthropicMessages);
+    assert_real_codex_translated_text(ModelProtocol::AnthropicMessages, None);
+    assert_real_codex_translated_text(ModelProtocol::AnthropicMessages, Some(200_000));
+}
+
+#[test]
+#[ignore = "requires AGENTHARBOR_TEST_CODEX_BIN pointing to an installed Codex CLI"]
+fn real_codex_adopts_same_thread_and_switches_relays_without_changing_provider() {
+    fn turn(server: &mut AppServer, thread_id: &str, model: &str, text: &str) {
+        server
+            .turn(thread_id, model, "none", text, RPC_TIMEOUT)
+            .unwrap();
+    }
+
+    let _serial = ROUTER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let binary =
+        PathBuf::from(std::env::var_os("AGENTHARBOR_TEST_CODEX_BIN").expect("installed binary"));
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path().join("workspace");
+    fs::create_dir_all(&cwd).unwrap();
+    let paths = CodexPaths::from_home(temp.path().join("codex"));
+    paths.ensure_directories().unwrap();
+    let proxy = RejectingProxy::start();
+    let direct = MockResponses::start();
+    let relay_a = MockResponses::start();
+    let relay_b = MockResponses::start();
+    fs::write(&paths.config_path, format!(
+        "model = 'gpt-6-astra'\nmodel_provider = 'fixture_direct'\ncli_auth_credentials_store = 'file'\ncheck_for_update_on_startup = false\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[features]\napps = false\nplugins = false\n[model_providers.fixture_direct]\nname = 'Synthetic direct'\nbase_url = 'http://127.0.0.1:{}/v1'\nwire_api = 'responses'\nrequires_openai_auth = false\nexperimental_bearer_token = 'synthetic-direct-key'\n", direct.port
+    )).unwrap();
+    let auth = synthetic_auth();
+    fs::write(&paths.auth_path, &auth).unwrap();
+    let thread_id = {
+        let mut server = AppServer::start(&binary, &paths, &cwd, &proxy);
+        let started = server.request(
+            2,
+            "thread/start",
+            json!({
+                "cwd":cwd.to_string_lossy(),"approvalPolicy":"never","sandbox":"read-only"
+            }),
+        );
+        let id = started["thread"]["id"].as_str().unwrap().to_owned();
+        turn(
+            &mut server,
+            &id,
+            "gpt-6-astra",
+            "SYNTHETIC_ORIGINAL_CONTEXT",
+        );
+        direct.requests.recv_timeout(RPC_TIMEOUT).unwrap();
+        id
+    };
+    let mut aliases = Vec::new();
+    for (index, mock) in [&relay_a, &relay_b].into_iter().enumerate() {
+        let saved = router::save_provider(&paths, serde_json::from_value(json!({
+            "name":format!("Relay {index}"),"baseUrl":format!("http://127.0.0.1:{}", mock.port),
+            "apiKey":format!("synthetic-relay-{index}"),"accessToken":"","model":"gpt-6-astra","networkMode":"direct",
+            "contextWindow":(index == 0).then_some(400_000),"autoCompactLimit":(index == 0).then_some(350_000)
+        })).unwrap()).unwrap();
+        let provider = saved
+            .state
+            .providers
+            .iter()
+            .find(|p| p.name == format!("Relay {index}"))
+            .unwrap();
+        router::set_enabled(&paths, &provider.id, true).unwrap();
+        aliases.push(format!("{}::gpt-6-astra", provider.id));
+    }
+    router::set_smart_routing(&paths, true).unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let port = runtime
+        .block_on(router_proxy::ensure_running(
+            0,
+            paths.clone(),
+            ApiProxyConfigPayload {
+                mode: ApiProxyMode::Manual,
+                url: Some(proxy.url.clone()),
+            },
+        ))
+        .unwrap();
+    let _router_guard = StopRouter;
+    let mut store = router::load_store(&paths).unwrap();
+    store.router.port = port;
+    router::apply_routing_config(&paths, &store).unwrap();
+
+    // A complete synthetic official cache entry verifies menu coexistence
+    // without contacting a model service or reading the user's real cache.
+    let config: toml::Value = fs::read_to_string(&paths.config_path)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let catalog: Value =
+        serde_json::from_slice(&fs::read(config["model_catalog_json"].as_str().unwrap()).unwrap())
+            .unwrap();
+    let mut official = catalog["models"][0].clone();
+    official["slug"] = json!("gpt-6-astra");
+    official["display_name"] = json!("Synthetic official Astra");
+    fs::write(
+        paths.codex_home.join("models_cache.json"),
+        json!({"models":[official]}).to_string(),
+    )
+    .unwrap();
+    router::apply_routing_config(&paths, &store).unwrap();
+
+    // Simulate only the two provider writes of guarded recovery in this temp
+    // fixture. Production backup/rollback is exercised by thread_recovery's
+    // unit tests; never bypass real process guards to run an integration test.
+    let connection = rusqlite::Connection::open(&paths.codex_state_db_path).unwrap();
+    let rollout: String = connection
+        .query_row(
+            "SELECT rollout_path FROM threads WHERE id=?1",
+            [&thread_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let history = fs::read_to_string(&rollout).unwrap();
+    let mut rewritten = String::new();
+    for line in history.split_inclusive('\n') {
+        let mut value: Value = serde_json::from_str(line).unwrap();
+        if value["type"] == "session_meta" {
+            value["payload"]["model_provider"] = json!(router::CATALOG_PROVIDER_KEY);
+            rewritten.push_str(&value.to_string());
+            rewritten.push('\n');
+        } else {
+            rewritten.push_str(line);
+        }
+    }
+    fs::write(&rollout, &rewritten).unwrap();
+    assert_eq!(
+        connection
+            .execute(
+                "UPDATE threads SET model_provider=?1 WHERE id=?2",
+                [router::CATALOG_PROVIDER_KEY, thread_id.as_str()]
+            )
+            .unwrap(),
+        1
+    );
+    drop(connection);
+    assert!(rewritten.contains("SYNTHETIC_ORIGINAL_CONTEXT"));
+
+    {
+        let mut server = AppServer::start(&binary, &paths, &cwd, &proxy);
+        let resumed = server.request(2, "thread/resume", json!({"threadId":thread_id}));
+        assert_eq!(resumed["thread"]["id"], thread_id);
+        assert_eq!(resumed["modelProvider"], router::CATALOG_PROVIDER_KEY);
+        let menu = server.request(3, "model/list", json!({}));
+        assert!(
+            menu["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|model| model["id"] == "gpt-6-astra"),
+            "{menu}"
+        );
+        for alias in &aliases {
+            let model = menu["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|model| model["id"].as_str() == Some(alias.as_str()))
+                .unwrap_or_else(|| panic!("missing relay model in Codex menu: {menu}"));
+            let efforts: Vec<_> = model["supportedReasoningEfforts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|level| level["reasoningEffort"].as_str().unwrap())
+                .collect();
+            for effort in ["low", "medium", "high", "xhigh", "max"] {
+                assert!(efforts.contains(&effort), "{model}");
+            }
+            assert!(!efforts.contains(&"none"));
+        }
+        for index in [0, 1, 0] {
+            turn(
+                &mut server,
+                &thread_id,
+                &aliases[index],
+                "Continue the same synthetic history.",
+            );
+            let mock = if index == 0 { &relay_a } else { &relay_b };
+            let captured = mock.requests.recv_timeout(RPC_TIMEOUT).unwrap();
+            let body: Value = serde_json::from_slice(&captured.body).unwrap();
+            assert_eq!(body["model"], "gpt-6-astra");
+            assert_ne!(body["reasoning"]["effort"], "none");
+            assert!(body["input"]
+                .to_string()
+                .contains("SYNTHETIC_ORIGINAL_CONTEXT"));
+            assert!(body.get("previous_response_id").is_none());
+            assert_eq!(
+                captured.header("authorization"),
+                Some(format!("Bearer synthetic-relay-{index}").as_str())
+            );
+            assert!(captured.header("x-agentharbor-token").is_none());
+            assert!(captured.header("chatgpt-account-id").is_none());
+        }
+    }
+    // A later cold resume still uses Router; changing models never rewrites the provider.
+    let mut server = AppServer::start(&binary, &paths, &cwd, &proxy);
+    let resumed = server.request(2, "thread/resume", json!({"threadId":thread_id}));
+    assert_eq!(resumed["thread"]["id"], thread_id);
+    assert_eq!(resumed["modelProvider"], router::CATALOG_PROVIDER_KEY);
+    assert_eq!(fs::read(&paths.auth_path).unwrap(), auth);
+    assert!(
+        direct.requests.try_recv().is_err(),
+        "adopted turns must not reach the old endpoint"
+    );
+}
+
+/// This test sends three small, billable synthetic turns through the production
+/// Router. Real credentials exist only in its temporary encrypted provider store;
+/// the source store/config/history are never written. No official auth is copied.
+#[test]
+#[ignore = "requires explicit live provider/model pairs and AGENTHARBOR_LIVE_ROUTING=1"]
+fn live_codex_switches_configured_relays() {
+    assert_eq!(
+        std::env::var("AGENTHARBOR_LIVE_ROUTING").as_deref(),
+        Ok("1")
+    );
+    let _serial = ROUTER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let binary =
+        PathBuf::from(std::env::var_os("AGENTHARBOR_TEST_CODEX_BIN").expect("installed binary"));
+    let source_path =
+        PathBuf::from(std::env::var_os("AGENTHARBOR_PROBE_STORE").expect("explicit source store"));
+    let before = fs::read(&source_path).unwrap();
+    let source = router::read_store(&source_path).unwrap();
+    let selections: Vec<(String, String)> = serde_json::from_str(
+        &std::env::var("AGENTHARBOR_LIVE_MODELS").expect("two [provider ID, model] pairs"),
+    )
+    .unwrap();
+    assert_eq!(selections.len(), 2);
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path().join("workspace");
+    fs::create_dir(&cwd).unwrap();
+    let paths = CodexPaths::from_home(temp.path().join("codex"));
+    paths.ensure_directories().unwrap();
+    fs::write(&paths.config_path, "cli_auth_credentials_store='file'\ncheck_for_update_on_startup=false\n[features]\napps=false\nplugins=false\n[analytics]\nenabled=false\n[feedback]\nenabled=false\n").unwrap();
+    fs::write(&paths.auth_path, synthetic_auth()).unwrap();
+    let mut aliases = Vec::new();
+    for (index, (id, model)) in selections.iter().enumerate() {
+        let provider = source
+            .providers
+            .iter()
+            .find(|p| p.id == *id && p.enabled)
+            .expect("enabled configured provider");
+        assert!(provider.models.iter().any(|m| m.id == *model && m.included));
+        assert!(provider.base_url.starts_with("https://"));
+        let saved = router::save_provider(&paths, serde_json::from_value(json!({
+            "name":format!("Live fixture {index}"),"baseUrl":provider.base_url,
+            "apiKey":provider.api_key,"accessToken":"","model":model,"networkMode":provider.network_mode,
+            "protocol":provider.protocol_for_model(model)
+        })).unwrap()).unwrap();
+        let id = &saved
+            .state
+            .providers
+            .iter()
+            .find(|p| p.name == format!("Live fixture {index}"))
+            .unwrap()
+            .id;
+        router::set_enabled(&paths, id, true).unwrap();
+        aliases.push(format!("{id}::{model}"));
+    }
+    router::set_smart_routing(&paths, true).unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let outbound = std::env::var("AGENTHARBOR_PROBE_PROXY").ok();
+    let port = runtime
+        .block_on(router_proxy::ensure_running(
+            0,
+            paths.clone(),
+            ApiProxyConfigPayload {
+                mode: if outbound.is_some() {
+                    ApiProxyMode::Manual
+                } else {
+                    ApiProxyMode::System
+                },
+                url: outbound,
+            },
+        ))
+        .unwrap();
+    let _guard = StopRouter;
+    let mut store = router::load_store(&paths).unwrap();
+    store.router.port = port;
+    router::apply_routing_config(&paths, &store).unwrap();
+    let proxy = RejectingProxy::start();
+    let mut server = AppServer::start(&binary, &paths, &cwd, &proxy);
+    let started = server.request(2, "thread/start", json!({
+        "cwd":cwd,"model":aliases[0],"approvalPolicy":"never","sandbox":"read-only",
+        "baseInstructions":"This is a synthetic connectivity test. Answer only in plain text. Never use tools or read files."
+    }));
+    let id = started["thread"]["id"].as_str().unwrap();
+    assert_eq!(started["modelProvider"], router::CATALOG_PROVIDER_KEY);
+    let marker = format!("PROBE_{}", uuid::Uuid::new_v4().simple());
+    let mut result = Vec::new();
+    for (turn, index) in [0, 1, 0].into_iter().enumerate() {
+        let prompt = if turn == 0 {
+            format!("Remember the synthetic marker {marker}. Reply with only OK. Do not use tools.")
+        } else {
+            "What was the synthetic marker in my first message? Reply with only that marker. Do not use tools.".into()
+        };
+        let outcome = server.turn(id, &aliases[index], "low", &prompt, Duration::from_secs(60));
+        let mut row = json!({"turn":turn,"model":selections[index].1,"completed":outcome.is_ok(),"marker_retained":outcome.as_ref().is_ok_and(|text| text.contains(&marker))});
+        if let Err(error) = &outcome {
+            let mut error = error.to_string();
+            for provider in &source.providers {
+                for secret in [&provider.api_key, &provider.access_token] {
+                    if !secret.is_empty() {
+                        error = error.replace(secret, "[redacted]");
+                    }
+                }
+            }
+            row["error"] = json!(error.chars().take(700).collect::<String>());
+        }
+        eprintln!("LIVE_ROUTING {row}");
+        let success = outcome.is_ok()
+            && (turn == 0 || outcome.as_ref().is_ok_and(|text| text.contains(&marker)));
+        result.push(row);
+        if !success {
+            break;
+        }
+    }
+    assert_eq!(
+        fs::read(source_path).unwrap(),
+        before,
+        "source provider store changed"
+    );
+    if let Some(path) = std::env::var_os("AGENTHARBOR_PROBE_REPORT") {
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .expect("choose a new report path; never overwrite an existing file");
+        serde_json::to_writer_pretty(
+            file,
+            &json!({"same_thread_id":id,"provider":started["modelProvider"],"turns":result}),
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        result.len(),
+        3,
+        "a live turn failed; inspect the sanitized report"
+    );
+    assert!(result.iter().all(|row| row["completed"] == true));
+    assert!(result[1..].iter().all(|row| row["marker_retained"] == true));
 }

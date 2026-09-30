@@ -27,19 +27,27 @@ pub struct ClaudeModels {
     pub subagent: String,
 }
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ClaudeOneM {
     pub startup: bool,
     pub sonnet: bool,
     pub opus: bool,
     pub fable: bool,
+    pub haiku: bool,
     pub subagent: bool,
 }
 
-impl ClaudeOneM {
-    pub fn is_empty(&self) -> bool {
-        !self.startup && !self.sonnet && !self.opus && !self.fable && !self.subagent
+impl Default for ClaudeOneM {
+    fn default() -> Self {
+        Self {
+            startup: true,
+            sonnet: true,
+            opus: true,
+            fable: true,
+            haiku: true,
+            subagent: true,
+        }
     }
 }
 
@@ -51,7 +59,7 @@ pub struct ClientOptions {
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub provider_model_ids: HashMap<String, Vec<String>>,
     pub claude_models: ClaudeModels,
-    #[serde(skip_serializing_if = "ClaudeOneM::is_empty")]
+    // Explicit false values must survive saving now that missing values mean on.
     pub claude_one_m: ClaudeOneM,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_model_ids: Option<Vec<String>>,

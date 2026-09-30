@@ -505,6 +505,96 @@ try {
   assert.equal(await page.getByRole("button", { name: labels.sendTest, exact: true }).isEnabled(), true);
   console.log("PASS connectivity tests stream real stages, retain results and recover after timeout");
 
+  for (const [width, height, action] of [
+    [1200, 700, "close"], [995, 640, "cancel"], [390, 560, "escape"], [640, 320, "apply"],
+  ]) {
+    await page.setViewportSize({ width, height });
+    await reset("recovery-long");
+    const recovery = page.getByRole("alertdialog");
+    const apply = recovery.getByRole("button", { name: labels.recoveryConfirm, exact: true });
+    await apply.waitFor();
+    const layout = await recovery.evaluate(element => {
+      const rect = element.getBoundingClientRect();
+      const buttons = Array.from(element.querySelectorAll("button"));
+      return {
+        withinViewport: rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight,
+        noHorizontalOverflow: element.scrollWidth <= element.clientWidth &&
+          Array.from(element.querySelectorAll("div")).every(child => child.scrollWidth <= child.clientWidth + 1),
+        buttonsReachable: buttons.every(button => {
+          const box = button.getBoundingClientRect();
+          return box.top >= rect.top && box.bottom <= rect.bottom && box.left >= rect.left && box.right <= rect.right &&
+            button.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+        }),
+      };
+    });
+    assert.deepEqual(layout, { withinViewport: true, noHorizontalOverflow: true, buttonsReachable: true }, `${width}x${height} recovery layout`);
+    const body = recovery.locator(":scope > .overflow-y-auto");
+    assert.equal(await body.evaluate(element => element.scrollHeight > element.clientHeight), true);
+    const before = await apply.boundingBox();
+    await body.evaluate(element => { element.scrollTop = element.scrollHeight; });
+    const after = await apply.boundingBox();
+    assert.equal(after.y, before.y, "recovery actions stay fixed while the details scroll");
+    if (captureDir) await page.screenshot({ path: path.join(captureDir, `thread-recovery-${width}x${height}.png`), animations: "disabled" });
+    if (action === "escape") await page.keyboard.press("Escape");
+    else await recovery.getByRole("button", {
+      name: action === "apply" ? labels.recoveryConfirm : action === "cancel" ? labels.cancel : labels.close, exact: true,
+    }).click();
+    await recovery.waitFor({ state: "detached" });
+    assert.equal(await page.evaluate(() => window.review.recoveryApplyCalls), action === "apply" ? 1 : 0);
+  }
+  console.log("PASS long recovery titles and paths fit desktop/narrow/short windows; close, cancel, Escape and repair remain reachable");
+
+  await page.setViewportSize({ width: 1200, height: 700 });
+  await reset("recovery-long");
+  const recovery = page.getByRole("alertdialog");
+  const recoveryFailure = "Synthetic recovery failed: active writer process C:/synthetic/" + "busy-writer-".repeat(50);
+  await page.evaluate(message => {
+    window.review.holdRecoveryApply = true;
+    window.review.recoveryApplyError = message;
+  }, recoveryFailure);
+  await recovery.getByRole("button", { name: labels.recoveryConfirm, exact: true }).click();
+  assert.equal(await recovery.getByRole("button", { name: labels.recoveryApplying, exact: true }).isDisabled(), true);
+  assert.equal(await recovery.getByRole("button", { name: labels.close, exact: true }).isDisabled(), true);
+  await page.keyboard.press("Escape");
+  assert.equal(await recovery.count(), 1, "pending repairs cannot be dismissed mid-write");
+  await page.evaluate(() => window.review.finishRecoveryApply());
+  await recovery.getByRole("button", { name: labels.recoveryConfirm, exact: true }).waitFor();
+  assert.equal(await recovery.getByRole("alert").textContent(), recoveryFailure);
+  await page.setViewportSize({ width: 390, height: 320 });
+  assert.equal(await recovery.getByRole("alert").evaluate(element => element.scrollHeight > element.clientHeight), true);
+  for (const name of [labels.close, labels.cancel, labels.recoveryConfirm]) {
+    const rect = await recovery.getByRole("button", { name, exact: true }).boundingBox();
+    assert.ok(rect && rect.y >= 0 && rect.y + rect.height <= 320, `long repair errors must not hide ${name}: ${JSON.stringify(rect)}`);
+  }
+  await page.evaluate(() => { window.review.holdRecoveryApply = false; window.review.recoveryApplyError = null; });
+  await recovery.getByRole("button", { name: labels.recoveryConfirm, exact: true }).click();
+  await recovery.waitFor({ state: "detached" });
+  assert.equal(await page.evaluate(() => window.review.recoveryApplyCalls), 2);
+  assert.deepEqual(await page.evaluate(() => window.review.recoveryApplyArguments), { threadId: "t0", revision: "recovery-revision" });
+  console.log("PASS recovery errors survive preview refresh, permit retry, and keep in-flight writes protected");
+
+  await reset("recovery-router");
+  await page.getByText(labels.routerAdoptionDescription, { exact: true }).waitFor();
+  const adopt = page.getByRole("button", { name: labels.routerAdoptionConfirm, exact: true });
+  const adoptRect = await adopt.boundingBox();
+  assert.ok(adoptRect && adoptRect.y >= 0 && adoptRect.y + adoptRect.height <= 320,
+    "one-time adoption action must remain reachable in a short viewport");
+  await adopt.click();
+  await page.waitForFunction(() => window.review.routerAdoptionCalls === 1 && window.review.recoveredCalls === 1);
+  assert.deepEqual(await page.evaluate(() => window.review.recoveryApplyArguments), { threadId: "t0", revision: "recovery-revision" });
+  console.log("PASS Router adoption explicitly confirms restart and uses the dedicated command with the frozen revision");
+
+  for (const flag of ["recoveryLaunchWarning", "recoveryRefreshError"]) {
+    await reset("recovery-router");
+    await page.evaluate(key => { window.review[key] = true; }, flag);
+    await page.getByRole("button", { name: labels.routerAdoptionConfirm, exact: true }).click();
+    await page.getByRole("alertdialog").waitFor({ state: "detached" });
+    assert.equal(await page.evaluate(() => window.review.routerAdoptionCalls), 1);
+    assert.equal(await page.evaluate(() => window.review.recoveredCalls), 1);
+  }
+  console.log("PASS successful adoption stays successful when reopening Codex or refreshing the list fails");
+
+  await page.setViewportSize({ width: 1200, height: 700 });
   await reset("recovery-missing");
   await page.getByRole("heading", { name: labels.recoveryTitle, exact: true }).waitFor();
   await page.getByText(labels.recoveryMissingStatus, { exact: true }).waitFor();
@@ -688,20 +778,48 @@ try {
   await page.getByRole("button", { name: labels.configure, exact: true }).click();
   await page.getByRole("button", { name: labels.clientRouter, exact: true }).click();
   const startupOneM = page.getByRole("checkbox", { name: labels.oneMStartup, exact: true });
-  const sonnetOneM = page.getByRole("checkbox", { name: labels.oneMSonnet, exact: true });
-  await startupOneM.check();
-  await sonnetOneM.check();
+  const oneMCheckboxes = [labels.oneMStartup, ...labels.oneMRoles].map(name => page.getByRole("checkbox", { name, exact: true }));
+  for (const checkbox of oneMCheckboxes) assert.equal(await checkbox.isChecked(), true);
   await page.getByRole("button", { name: labels.preview, exact: true }).click();
   await page.waitForFunction(() => window.review.previewed?.claudeOneM?.startup === true);
+  assert.equal(await page.evaluate(() => window.review.previewed.contextWindow), 1_000_000);
   assert.equal(await page.evaluate(() => window.review.previewed.claudeOneM.sonnet), true);
   await page.locator("#client-model").click();
   await page.getByRole("option", { name: "Fable 5.1", exact: true }).click();
-  assert.equal(await startupOneM.isChecked(), false);
+  assert.equal(await startupOneM.isChecked(), true);
+  for (const checkbox of oneMCheckboxes) await checkbox.uncheck();
+  await page.getByRole("button", { name: labels.clientNative, exact: true }).click();
+  await page.getByRole("button", { name: labels.clientRouter, exact: true }).click();
   await page.getByRole("button", { name: labels.preview, exact: true }).click();
   await page.waitForFunction(() => window.review.previewed?.model === "claude-fable-5-1");
   assert.equal(await page.evaluate(() => window.review.previewed.claudeOneM.startup), false);
-  assert.equal(await page.evaluate(() => window.review.previewed.claudeOneM.sonnet), true);
-  console.log("PASS Claude 1M settings follow the selected model and preserve role-specific choices");
+  assert.equal(await page.evaluate(() => Object.values(window.review.previewed.claudeOneM).every(value => value === false)), true);
+  await selectedVersion("claude-fable-5-1").uncheck();
+  for (const checkbox of oneMCheckboxes) assert.equal(await checkbox.isChecked(), false);
+  await page.getByRole("button", { name: labels.preview, exact: true }).click();
+  await page.getByRole("button", { name: labels.clientApply, exact: true }).click();
+  await page.getByRole("button", { name: labels.changeClient, exact: true }).click();
+  for (const checkbox of oneMCheckboxes) assert.equal(await checkbox.isChecked(), false);
+  console.log("PASS all six Claude 1M choices default on and explicit off survives model/mode/subset changes, apply and reopen");
+
+  const defaultChecks = await page.evaluate(() => {
+    const { clientDefaults, claudeOneMDefaults, mergeModelCatalog } = window.review;
+    const id = "claude-haiku-4-5";
+    const manual = { id, displayName: id, contextWindow: 200000, maxOutputTokens: 4096, metadataSource: "manual", included: true, endpointTypes: [] };
+    const fetched = { ...manual, contextWindow: 1000000, maxOutputTokens: 64000, metadataSource: "local" };
+    const merged = mergeModelCatalog([manual], [fetched])[0];
+    return {
+      haiku: clientDefaults(undefined, id).contextWindow,
+      oldClaude: clientDefaults(undefined, "claude-sonnet-4").contextWindow,
+      other: clientDefaults(undefined, "unknown-model").contextWindow,
+      manual: clientDefaults({ model: id, models: [merged] }, id),
+      legacy: claudeOneMDefaults({ startup: false, sonnet: false, opus: false, fable: false, subagent: false }),
+    };
+  });
+  assert.deepEqual(defaultChecks, { haiku: 1000000, oldClaude: 1000000, other: 128000,
+    manual: { contextWindow: 200000, maxOutputTokens: 4096 },
+    legacy: { startup: false, sonnet: false, opus: false, fable: false, haiku: true, subagent: false } });
+  console.log("PASS all relay Claude fallbacks are 1M, manual context survives catalog refresh, old profile false values survive adding Haiku");
 
   const staleProfile = { id: "stale-profile", name: "Stale profile", request: {
     targetId: "claudeCode", providerId: "versions", model: "claude-opus-5-5", contextWindow: 200000,
@@ -732,6 +850,7 @@ try {
   await page.getByRole("button", { name: labels.configure, exact: true }).click();
   await page.locator("#client-model").click();
   await page.getByRole("option", { name: "Fable 5.1", exact: true }).click();
+  for (const checkbox of oneMCheckboxes) await checkbox.uncheck();
   await page.getByRole("button", { name: "保存当前配置", exact: true }).click();
   await page.getByRole("textbox", { name: "配置名称" }).fill("Regression profile");
   await page.getByRole("button", { name: "保存配置", exact: true }).click();
@@ -748,8 +867,10 @@ try {
   // Loading a profile only previews it; nothing is written until Apply.
   await page.getByRole("button", { name: labels.clientApply, exact: true }).waitFor();
   assert.equal(await page.evaluate(() => window.review.appliedClient), null);
+  for (const checkbox of oneMCheckboxes) assert.equal(await checkbox.isChecked(), false);
   await page.getByRole("button", { name: labels.clientApply, exact: true }).click();
   await page.waitForFunction(() => window.review.appliedClient?.request.model === "claude-fable-5-1");
+  assert.equal(await page.evaluate(() => Object.values(window.review.appliedClient.request.claudeOneM).every(value => value === false)), true);
   assert.equal(await page.getByRole("dialog").count(), 0);
   await reset("clients-versions");
   await page.getByRole("button", { name: labels.configure, exact: true }).click();

@@ -8,6 +8,7 @@ mod anthropic_sse;
 mod anthropic_tests;
 mod chat;
 pub mod history;
+mod reasoning;
 mod responses;
 mod sse;
 

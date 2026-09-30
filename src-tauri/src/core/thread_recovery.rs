@@ -21,6 +21,9 @@ use std::time::{Duration, SystemTime};
 mod journal;
 mod policy;
 mod rollout;
+mod router_adoption;
+
+pub use router_adoption::adopt_thread_into_router;
 
 use journal::*;
 use policy::*;
@@ -452,6 +455,15 @@ fn apply_thread_recovery_inner(
     check_writer_processes: bool,
 ) -> Result<ThreadRecoveryResult, CoreError> {
     let _guard = thread_mutation_guard()?;
+    apply_thread_recovery_locked(paths, thread_id, expected_revision, check_writer_processes)
+}
+
+fn apply_thread_recovery_locked(
+    paths: &CodexPaths,
+    thread_id: &str,
+    expected_revision: &str,
+    check_writer_processes: bool,
+) -> Result<ThreadRecoveryResult, CoreError> {
     if check_writer_processes {
         process::ensure_no_codex_writer_processes()?;
     }
@@ -492,6 +504,13 @@ fn apply_thread_recovery_inner(
             "THREAD_RECOVERY_NOT_APPLICABLE: {}",
             plan.preview.reason
         )));
+    }
+
+    // Bulk/offline repair must not bypass the same Router ownership checks as
+    // the explicit adoption action. Never take over an external configuration.
+    if check_writer_processes && plan.preview.target_provider == super::router::CATALOG_PROVIDER_KEY
+    {
+        router_adoption::validate_router_target(paths, &plan.preview)?;
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -2136,7 +2155,7 @@ fn sqlite_error(error: rusqlite::Error) -> CoreError {
 mod tests {
     use super::*;
 
-    const THREAD_ID: &str = "01999999-1111-7222-8333-444444444444";
+    pub(super) const THREAD_ID: &str = "01999999-1111-7222-8333-444444444444";
 
     fn config_for(provider: &str) -> String {
         if provider == "openai" {
@@ -2148,7 +2167,7 @@ mod tests {
         }
     }
 
-    fn fixture(
+    pub(super) fn fixture(
         configured_provider: &str,
         stored_provider: &str,
     ) -> (tempfile::TempDir, CodexPaths) {

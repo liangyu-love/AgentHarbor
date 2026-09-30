@@ -476,13 +476,16 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
             changed = true;
         }
         // Codex may sync an exact model catalog after this provider was saved.
-        // Upgrade only limits derived from our guesses; upstream and user-edited
-        // limits remain authoritative.
+        // Also refresh relay defaults in current-version stores (not just schema
+        // migrations). Claude's 1M policy never replaces manual limits.
         let catalog = model_defaults::Catalog::load(&paths.codex_home);
         for provider in &mut store.providers {
             for model in &mut provider.models {
-                if matches!(model.metadata_source.as_str(), "local" | "catalog") {
-                    let refreshed = model.clone().with_catalog_defaults(&catalog);
+                if model.metadata_source != "manual" {
+                    let refreshed = model
+                        .clone()
+                        .with_catalog_defaults(&catalog)
+                        .with_local_defaults();
                     if refreshed != *model {
                         *model = refreshed;
                         changed = true;
@@ -1780,6 +1783,9 @@ pub(crate) fn catalog_value(
             }
         }
     }
+    // Only unprefixed official entries can supply relay capabilities. Keep this
+    // boundary as relay entries are appended, with the fresh cache taking priority.
+    let official_models_len = models.len();
     // Any routable provider can back Codex: a non-Responses relay is reached
     // through the router's protocol translation, so it belongs in the menu.
     for provider in store
@@ -1820,17 +1826,28 @@ pub(crate) fn catalog_value(
                 .filter(|name| !name.is_empty())
                 .unwrap_or(&model_id);
             let display_name = menu_display_name(&provider.name, alias, &model_id);
+            let official = models[..official_models_len]
+                .iter()
+                .find(|entry| entry.get("slug").and_then(Value::as_str) == Some(model_id.as_str()));
             // Codex parses every entry in model_catalog_json as a complete
             // model definition during config/read. A short display-only entry
             // makes that RPC fail, which also blocks the desktop sign-in page.
-            models.push(relay_catalog_entry(
+            let mut entry = relay_catalog_entry(
                 slug,
                 display_name,
                 format!("{} → {model_id}", provider.name),
                 context_window
                     .unwrap_or_else(|| model_defaults::for_model(&model_id).context_window),
                 metadata.and_then(|model| model.max_output_tokens),
-            ));
+                &model_id,
+                official,
+            );
+            // A unified menu must not apply one provider's compaction threshold
+            // globally to unrelated official/relay models.
+            if let Some(limit) = provider.auto_compact_limit {
+                entry["auto_compact_token_limit"] = serde_json::json!(limit);
+            }
+            models.push(entry);
         }
     }
     serde_json::json!({ "models": models })
@@ -1842,33 +1859,14 @@ fn relay_catalog_entry(
     description: String,
     context_window: u64,
     max_output_tokens: Option<u64>,
+    model_id: &str,
+    official: Option<&Value>,
 ) -> Value {
     // These fields are required by Codex's model catalog parser. In
     // particular, an entry without instructions is rejected by config/read.
     // Keep the capability declaration conservative for unknown relay models.
-
-    // Determine if this model supports reasoning levels (thinking effort).
-    // Claude models (Opus, Sonnet, Fable, Mythos) support reasoning levels.
-    let model_id_lower = slug.to_ascii_lowercase();
-    let compact: String = model_id_lower
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .collect();
-    let supports_reasoning = compact.contains("claude")
-        && (compact.contains("opus")
-            || compact.contains("sonnet")
-            || compact.contains("fable")
-            || compact.contains("mythos"));
-
-    let reasoning_levels = if supports_reasoning {
-        vec![
-            serde_json::json!({"effort":"low","description":"Fast responses with lighter reasoning"}),
-            serde_json::json!({"effort":"medium","description":"Balanced reasoning"}),
-            serde_json::json!({"effort":"high","description":"Deeper reasoning for complex tasks"}),
-        ]
-    } else {
-        Vec::new()
-    };
+    let (reasoning_levels, default_reasoning_level) =
+        relay_reasoning_capabilities(model_id, official);
 
     serde_json::json!({
         "slug": slug,
@@ -1880,13 +1878,85 @@ fn relay_catalog_entry(
         "supported_in_api": true,
         "priority": 100,
         "supported_reasoning_levels": reasoning_levels,
-        "default_reasoning_level": if supports_reasoning { Some("medium") } else { None },
+        "default_reasoning_level": default_reasoning_level,
         "shell_type": "unified_exec",
         "support_verbosity": false,
         "truncation_policy": { "mode": "tokens", "limit": 10000 },
         "experimental_supported_tools": [],
         "base_instructions": "You are a coding assistant. Follow the developer and user instructions, use available tools when needed, and report your changes and verification clearly."
     })
+}
+
+/// Shared by Router and native catalogs. `model_id` is unprefixed; `official`, when
+/// present, must be its exact official catalog match. Performs no I/O.
+pub(super) fn relay_reasoning_capabilities(
+    model_id: &str,
+    official: Option<&Value>,
+) -> (Vec<Value>, Option<String>) {
+    // Borrow only reasoning metadata, never official routing IDs, instructions,
+    // tools or account-only flags. An explicit empty list is authoritative too.
+    let reasoning_levels = official
+        .and_then(|entry| entry.get("supported_reasoning_levels"))
+        .and_then(Value::as_array)
+        .filter(|levels| {
+            levels.iter().all(|level| {
+                level
+                    .get("effort")
+                    .and_then(Value::as_str)
+                    .is_some_and(|effort| !effort.is_empty())
+                    && level.get("description").and_then(Value::as_str).is_some()
+            })
+        })
+        .cloned()
+        .unwrap_or_else(|| relay_reasoning_fallback(model_id));
+    let supports = |effort: &str| {
+        reasoning_levels
+            .iter()
+            .any(|level| level["effort"].as_str() == Some(effort))
+    };
+    // Never manufacture an unsupported default (including "none" or "medium").
+    let default_reasoning_level = official
+        .and_then(|entry| entry.get("default_reasoning_level"))
+        .and_then(Value::as_str)
+        .filter(|effort| supports(effort))
+        .or_else(|| supports("medium").then_some("medium"))
+        .or_else(|| reasoning_levels.first()?.get("effort")?.as_str())
+        .map(str::to_owned);
+    (reasoning_levels, default_reasoning_level)
+}
+
+fn relay_reasoning_fallback(model_id: &str) -> Vec<Value> {
+    let model_id_lower = model_id.to_ascii_lowercase();
+    let compact: String = model_id_lower
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    let efforts: &[&str] = if model_id_lower == "gpt-6-astra" {
+        // Observed upstream validation lists these five levels. Do not extend
+        // this to every GPT/Codex name; exact cached metadata wins when present.
+        &["low", "medium", "high", "xhigh", "max"]
+    } else if ["claudeopus", "claudesonnet", "claudefable", "claudemythos"]
+        .iter()
+        .any(|family| compact.starts_with(family))
+    {
+        &["low", "medium", "high"]
+    } else {
+        &[]
+    };
+    efforts
+        .iter()
+        .map(|effort| {
+            let description = match *effort {
+                "low" => "Fast responses with lighter reasoning",
+                "medium" => "Balanced reasoning",
+                "high" => "Deeper reasoning for complex tasks",
+                "xhigh" => "Extra high reasoning for complex tasks",
+                "max" => "Maximum reasoning depth",
+                _ => unreachable!(),
+            };
+            serde_json::json!({"effort": effort, "description": description})
+        })
+        .collect()
 }
 
 fn menu_display_name(provider_name: &str, alias: &str, model_id: &str) -> String {
@@ -1976,17 +2046,10 @@ fn apply_local_router_config(
                 "model_catalog_json",
                 Some(catalog.to_string_lossy().to_string().into()),
             );
-            for (key, setting) in [
-                // Per-model defaults belong in the catalog. This global override
-                // is written only when the provider explicitly configured one.
-                ("model_context_window", active.context_window),
-                ("model_auto_compact_token_limit", active.auto_compact_limit),
-            ] {
-                config_snapshot::set_value(
-                    &mut document,
-                    key,
-                    setting.map(|setting| (setting as i64).into()),
-                );
+            // Context and compaction follow the selected catalog model, not the
+            // provider that happened to be active when Router was enabled.
+            for key in ["model_context_window", "model_auto_compact_token_limit"] {
+                config_snapshot::set_value(&mut document, key, None);
             }
             if document.get("model_providers").is_none() {
                 let mut providers = toml_edit::Table::new();
@@ -2043,6 +2106,21 @@ pub fn ensure_routing_config(
             native_config::apply(paths, store).map(Some)
         };
     }
+    if routing_config_matches(paths, store)? && config_snapshot::path(paths).is_file() {
+        Ok(None)
+    } else {
+        apply_routing_config(paths, store).map(Some)
+    }
+}
+
+/// Read-only validation shared by config repair and one-time thread adoption.
+pub(crate) fn routing_config_matches(paths: &CodexPaths, store: &Store) -> Result<bool, String> {
+    if !store.router.enabled
+        || store.codex_access_mode != CodexAccessMode::Router
+        || store.router.bearer_token.is_empty()
+    {
+        return Ok(false);
+    }
     let active = effective_active_for(store, ModelProtocol::Responses)
         .ok_or("newapi.errors.noActiveProvider")?;
     let (_, document) = open_config(paths)?;
@@ -2091,26 +2169,14 @@ pub fn ensure_routing_config(
         .and_then(toml_edit::Item::as_str)
         == Some(CATALOG_PROVIDER_KEY)
         && document.get("model").and_then(toml_edit::Item::as_str) == Some(expected_model.as_str())
-        && document
-            .get("model_context_window")
-            .and_then(toml_edit::Item::as_integer)
-            .map(|value| value as u64)
-            == active.context_window
-        && document
-            .get("model_auto_compact_token_limit")
-            .and_then(toml_edit::Item::as_integer)
-            .map(|value| value as u64)
-            == active.auto_compact_limit
+        && document.get("model_context_window").is_none()
+        && document.get("model_auto_compact_token_limit").is_none()
         && document
             .get("model_catalog_json")
             .and_then(toml_edit::Item::as_str)
             == Some(expected_catalog.as_str())
         && catalog_current;
-    if current && config_snapshot::path(paths).is_file() {
-        Ok(None)
-    } else {
-        apply_routing_config(paths, store).map(Some)
-    }
+    Ok(current)
 }
 
 pub fn remove_routing_config(
@@ -2640,6 +2706,46 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         assert_eq!(model.context_window, Some(400_000));
         assert_eq!(model.max_output_tokens, Some(128_000));
         assert_eq!(model.metadata_source, "local");
+    }
+
+    #[test]
+    fn current_store_refreshes_all_relay_claude_defaults_and_keeps_manual_overrides() {
+        let (_dir, paths) = paths();
+        let models = [
+            ("claude-haiku-4-5", "local"),
+            ("claude-sonnet-4", "upstream"),
+            ("claude-opus-4-8", "manual"),
+            ("gpt-6-luna", "upstream"),
+        ]
+        .into_iter()
+        .map(|(id, source)| newapi::Model {
+            id: id.into(),
+            context_window: Some(200_000),
+            max_output_tokens: Some(4096),
+            metadata_source: source.into(),
+            ..Default::default()
+        })
+        .collect();
+        let store = Store {
+            providers: vec![Provider {
+                id: "relay".into(),
+                models,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        secret_file::write(&store_path(&paths), &serde_json::to_vec(&store).unwrap()).unwrap();
+        let loaded = load_store(&paths).unwrap();
+        let models = &loaded.providers[0].models;
+        assert_eq!(
+            models
+                .iter()
+                .map(|m| m.context_window.unwrap())
+                .collect::<Vec<_>>(),
+            vec![1_000_000, 1_000_000, 200_000, 200_000]
+        );
+        assert!(models.iter().all(|m| m.max_output_tokens == Some(4096)));
+        assert_eq!(&load_store(&paths).unwrap().providers[0].models, models);
     }
 
     #[test]
@@ -3216,6 +3322,8 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             "Claude".into(),
             1_000_000,
             Some(128_000),
+            "claude-opus-4-8",
+            None,
         );
         assert_eq!(claude["default_reasoning_level"], "medium");
         let levels = claude["supported_reasoning_levels"].as_array().unwrap();
@@ -3229,11 +3337,236 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             "".into(),
             1_000_000,
             None,
+            "gemini",
+            None,
         );
         assert!(plain["supported_reasoning_levels"]
             .as_array()
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn relay_catalog_preserves_models_and_borrows_only_exact_official_reasoning() {
+        let (_dir, paths) = paths();
+        std::fs::create_dir_all(&paths.app_data_dir).unwrap();
+        let official = serde_json::json!([
+            {
+                "slug": "gpt-6-astra",
+                "display_name": "Official Astra",
+                "default_reasoning_level": "low",
+                "supported_reasoning_levels": [
+                    {"effort": "low", "description": "Cached low"},
+                    {"effort": "medium", "description": "Cached medium"},
+                    {"effort": "high", "description": "Cached high"},
+                    {"effort": "xhigh", "description": "Cached xhigh"},
+                    {"effort": "max", "description": "Cached max"},
+                    {"effort": "ultra", "description": "Cached ultra"}
+                ],
+                "context_window": 999_000,
+                "base_instructions": "Official-only instructions",
+                "shell_type": "official-shell",
+                "experimental_supported_tools": ["official-tool"],
+                "comp_hash": "official-internal-id",
+                "use_responses_lite": true,
+                "supports_reasoning_effort_updates": true
+            },
+            {
+                "slug": "gpt-5.5",
+                "default_reasoning_level": "medium",
+                "supported_reasoning_levels": [
+                    {"effort": "medium", "description": "Cached medium"},
+                    {"effort": "high", "description": "Cached high"}
+                ]
+            },
+            {
+                "slug": "codex-cache-model",
+                "default_reasoning_level": "high",
+                "supported_reasoning_levels": [{"effort": "high", "description": "Only high"}]
+            }
+        ]);
+        let cache_bytes = serde_json::to_vec(&serde_json::json!({"models": official})).unwrap();
+        std::fs::write(paths.codex_home.join("models_cache.json"), &cache_bytes).unwrap();
+        let previous_only =
+            serde_json::json!({"slug": "previous-only", "display_name": "Previous"});
+        std::fs::write(
+            paths.app_data_dir.join("previous-router-catalog.json"),
+            serde_json::to_vec(&serde_json::json!({"models": [
+                {"slug": "gpt-6-astra", "supported_reasoning_levels": [], "default_reasoning_level": "none"},
+                previous_only,
+                {"slug": "old-provider::stale-model"},
+                {"slug": "aimami_relay_stale-model"}
+            ]}))
+            .unwrap(),
+        )
+        .unwrap();
+        let relay_ids = [
+            "gpt-6-astra",
+            "gpt-5.5",
+            "codex-cache-model",
+            "unknown-relay-model",
+            "gpt-6-astra-preview",
+        ];
+        let store = Store {
+            providers: vec![Provider {
+                id: "relay-one".into(),
+                name: "Relay".into(),
+                base_url: "https://relay.example.com".into(),
+                api_key: "sk-test".into(),
+                model: "gpt-6-astra".into(),
+                enabled: true,
+                models: relay_ids
+                    .iter()
+                    .map(|id| newapi::Model {
+                        id: (*id).into(),
+                        display_name: format!("Alias {id}"),
+                        included: true,
+                        context_window: Some(128_000),
+                        max_output_tokens: Some(8_192),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let catalog = catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
+        let models = catalog["models"].as_array().unwrap();
+        assert_eq!(models.len(), 4 + relay_ids.len());
+        assert_eq!(&models[..3], official.as_array().unwrap());
+        assert_eq!(models[3], previous_only);
+        for (index, id) in relay_ids.iter().enumerate() {
+            let relay = &models[4 + index];
+            assert_eq!(relay["slug"], format!("relay-one::{id}"));
+            assert_eq!(relay["display_name"], format!("Relay/Alias {id}"));
+            assert_eq!(relay["context_window"], 128_000);
+            assert_eq!(relay["max_output_tokens"], 8_192);
+            assert_eq!(relay["shell_type"], "unified_exec");
+            assert_eq!(relay["visibility"], "list");
+            assert_eq!(relay["supported_in_api"], true);
+            assert_eq!(relay["experimental_supported_tools"], serde_json::json!([]));
+            assert!(relay["base_instructions"].as_str().is_some());
+            assert_ne!(relay["base_instructions"], official[0]["base_instructions"]);
+            assert_eq!(relay["truncation_policy"]["mode"], "tokens");
+            for key in [
+                "comp_hash",
+                "use_responses_lite",
+                "supports_reasoning_effort_updates",
+            ] {
+                assert!(relay.get(key).is_none(), "{key} leaked into {id}");
+            }
+            if index < 3 {
+                assert_eq!(
+                    relay["supported_reasoning_levels"],
+                    official[index]["supported_reasoning_levels"]
+                );
+                assert_eq!(
+                    relay["default_reasoning_level"],
+                    official[index]["default_reasoning_level"]
+                );
+            } else {
+                assert_eq!(relay["supported_reasoning_levels"], serde_json::json!([]));
+                assert!(relay["default_reasoning_level"].is_null());
+            }
+        }
+        assert_eq!(
+            std::fs::read(paths.codex_home.join("models_cache.json")).unwrap(),
+            cache_bytes
+        );
+        assert!(!paths.config_path.exists());
+        assert!(!catalog_path(&paths).exists());
+    }
+
+    #[test]
+    fn relay_catalog_default_reasoning_is_always_supported() {
+        for (efforts, default, expected) in [
+            (vec!["low", "medium", "high"], Some("low"), Some("low")),
+            (vec!["high", "medium"], Some("none"), Some("medium")),
+            (vec!["max", "high"], Some("medium"), Some("max")),
+            (vec!["high"], None, Some("high")),
+            (vec!["none", "high"], Some("none"), Some("none")),
+            (vec![], Some("high"), None),
+        ] {
+            let levels: Vec<_> = efforts
+                .iter()
+                .map(|effort| serde_json::json!({"effort": effort, "description": effort}))
+                .collect();
+            let official = serde_json::json!({
+                "supported_reasoning_levels": levels,
+                "default_reasoning_level": default,
+            });
+            let relay = relay_catalog_entry(
+                "relay::gpt-6-astra".into(),
+                "Astra".into(),
+                "".into(),
+                128_000,
+                None,
+                "gpt-6-astra",
+                Some(&official),
+            );
+            assert_eq!(
+                relay["supported_reasoning_levels"],
+                official["supported_reasoning_levels"]
+            );
+            assert_eq!(
+                relay["default_reasoning_level"],
+                serde_json::json!(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn relay_catalog_fallback_does_not_guess_unknown_gpt_or_provider_capabilities() {
+        for model_id in [
+            "gpt-6-astra",
+            "unknown-model",
+            "gpt-6-unknown",
+            "gpt-5-unknown",
+            "codex-unknown",
+            "gpt-4o",
+            "vendor/gpt-6-astra",
+            "gpt-6-astra-preview",
+        ] {
+            for official in [
+                None,
+                Some(serde_json::json!({"default_reasoning_level": "none"})),
+                Some(serde_json::json!({"supported_reasoning_levels": null})),
+                Some(serde_json::json!({"supported_reasoning_levels": "high"})),
+                Some(serde_json::json!({"supported_reasoning_levels": ["high"]})),
+                Some(serde_json::json!({"supported_reasoning_levels": [{"effort": "high"}]})),
+                Some(
+                    serde_json::json!({"supported_reasoning_levels": [{"effort": "", "description": "Invalid"}]}),
+                ),
+            ] {
+                let relay = relay_catalog_entry(
+                    format!("claude-opus-provider::{model_id}"),
+                    "Claude Opus Alias".into(),
+                    "".into(),
+                    128_000,
+                    None,
+                    model_id,
+                    official.as_ref(),
+                );
+                let levels = relay["supported_reasoning_levels"].as_array().unwrap();
+                let efforts: Vec<_> = levels
+                    .iter()
+                    .map(|level| level["effort"].as_str().unwrap())
+                    .collect();
+                if model_id == "gpt-6-astra" {
+                    assert_eq!(efforts, ["low", "medium", "high", "xhigh", "max"]);
+                    assert_eq!(relay["default_reasoning_level"], "medium");
+                    assert!(levels
+                        .iter()
+                        .all(|level| level["description"].as_str().is_some()));
+                } else {
+                    assert!(
+                        efforts.is_empty(),
+                        "invented reasoning support for {model_id}"
+                    );
+                    assert!(relay["default_reasoning_level"].is_null());
+                }
+            }
+        }
     }
 
     #[test]
@@ -3365,6 +3698,8 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         std::fs::write(&paths.config_path, "preferred_auth_method = 'chatgpt'\n").unwrap();
         let mut draft = input("Relay", "https://relay.example.com");
         draft.model = "gpt-6-luna".into();
+        draft.context_window = Some(400_000);
+        draft.auto_compact_limit = Some(250_000);
         draft.models = vec![newapi::Model {
             id: "gpt-6-luna".into(),
             context_window: Some(272_000),
@@ -3382,6 +3717,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             .unwrap();
         assert_eq!(config["preferred_auth_method"].as_str(), Some("chatgpt"));
         assert!(config.get("model_context_window").is_none());
+        assert!(config.get("model_auto_compact_token_limit").is_none());
         let catalog: Value =
             serde_json::from_slice(&std::fs::read(catalog_path(&paths)).unwrap()).unwrap();
         let relay = catalog["models"]
@@ -3391,6 +3727,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             .find(|model| model["slug"] == format!("{id}::gpt-6-luna"))
             .unwrap();
         assert_eq!(relay["context_window"], 272_000);
+        assert_eq!(relay["auto_compact_token_limit"], 250_000);
         assert_eq!(
             config["model_providers"][CATALOG_PROVIDER_KEY]["requires_openai_auth"].as_bool(),
             Some(true)
@@ -3400,6 +3737,69 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         assert_eq!(
             provider["http_headers"][LOCAL_AUTH_HEADER].as_str(),
             Some(store.router.bearer_token.as_str())
+        );
+    }
+
+    #[test]
+    fn unified_router_limits_do_not_leak_between_models_and_restore_on_disable() {
+        let (_dir, paths) = paths();
+        let original = "model_context_window = 65536\nmodel_auto_compact_token_limit = 60000\n";
+        std::fs::write(&paths.config_path, original).unwrap();
+        let store = Store {
+            codex_access_mode: CodexAccessMode::Router,
+            router: RouterSettings {
+                enabled: true,
+                bearer_token: "synthetic-token".into(),
+                ..Default::default()
+            },
+            active_provider_id: Some("astra".into()),
+            providers: vec![
+                Provider {
+                    id: "astra".into(),
+                    name: "Astra".into(),
+                    api_key: "key-a".into(),
+                    model: "gpt-6-astra".into(),
+                    enabled: true,
+                    context_window: Some(400_000),
+                    auto_compact_limit: Some(350_000),
+                    ..Default::default()
+                },
+                Provider {
+                    id: "claude".into(),
+                    name: "Claude".into(),
+                    api_key: "key-b".into(),
+                    model: "claude-sonnet-4-6".into(),
+                    enabled: true,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        apply_routing_config(&paths, &store).unwrap();
+        let (_, config) = open_config(&paths).unwrap();
+        assert!(config.get("model_context_window").is_none());
+        assert!(config.get("model_auto_compact_token_limit").is_none());
+        let catalog = catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
+        let models = catalog["models"].as_array().unwrap();
+        let astra = models
+            .iter()
+            .find(|model| model["slug"] == "astra::gpt-6-astra")
+            .unwrap();
+        let claude = models
+            .iter()
+            .find(|model| model["slug"] == "claude::claude-sonnet-4-6")
+            .unwrap();
+        assert_eq!(astra["context_window"], 400_000);
+        assert_eq!(astra["auto_compact_token_limit"], 350_000);
+        assert_eq!(claude["context_window"], 1_000_000);
+        assert!(claude.get("auto_compact_token_limit").is_none());
+        assert!(routing_config_matches(&paths, &store).unwrap());
+        remove_routing_config(&paths, &store).unwrap();
+        let (_, restored) = open_config(&paths).unwrap();
+        assert_eq!(restored["model_context_window"].as_integer(), Some(65_536));
+        assert_eq!(
+            restored["model_auto_compact_token_limit"].as_integer(),
+            Some(60_000)
         );
     }
 
