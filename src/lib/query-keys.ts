@@ -16,5 +16,7 @@ export const queryKeys = {
   customInstructionTemplates: ["custom-instructions", "templates"],
   imageGallery: ["image-gallery"],
   codexThreads: ["threads", "codex"],
+  threadDetails: (key: string) => ["threads", "codex", "details", key],
+  threadMessages: (key: string, snapshot: number, offset: number) => ["threads", "codex", "messages", key, snapshot, offset],
   systemInfo: ["system-info"],
 } as const;

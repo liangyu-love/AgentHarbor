@@ -217,6 +217,8 @@ pub fn run() {
             commands::system::get_system_info,
             commands::targets::restart_target,
             commands::threads::list_conversations,
+            commands::threads::get_conversation_details,
+            commands::threads::get_conversation_messages,
             commands::threads::export_conversations,
             commands::threads::delete_conversations,
             commands::threads::cancel_pending_conversation_deletions,

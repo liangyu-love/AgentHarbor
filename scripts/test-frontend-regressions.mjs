@@ -6,6 +6,8 @@ import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { testAccountThreadNavigation } from "./test-account-thread-navigation.mjs";
+import { testThreadDetails } from "./test-thread-details.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -64,6 +66,11 @@ try {
     await page.evaluate(value => window.review.mount(value), mode);
   };
 
+  if (process.env.FRONTEND_QA_SCOPE === "account-thread-navigation") {
+    await testAccountThreadNavigation({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "thread-details") {
+    await testThreadDetails({ page, reset, captureDir });
+  } else {
   await reset("compact");
   const errorCases = await page.evaluate(() => {
     const { errorKey, errorMessage, formatInvokeError } = window.review.errors;
@@ -114,7 +121,7 @@ try {
 
   await page.getByText("Review thread 0", { exact: true }).waitFor();
   await page.locator("section").evaluate(element => { element.scrollTop = 2800; });
-  await page.waitForFunction(() => [...document.querySelectorAll("p")].some(element => {
+  await page.waitForFunction(() => [...document.querySelectorAll("[data-thread-title]")].some(element => {
     const bounds = element.getBoundingClientRect();
     return /^Review thread [5-9][0-9]$/.test(element.textContent ?? "") && bounds.top < 600 && bounds.bottom > 0;
   }));
@@ -628,7 +635,7 @@ try {
   await page.getByRole("button", { name: labels.repairAll, exact: true }).click();
   await confirmAlert(labels.repairAll);
   await page.waitForFunction(() => window.review.recoveryApplyCalls === 1);
-  await page.getByText("Review thread 0", { exact: true }).click();
+  await page.getByRole("checkbox", { name: "Review thread 0", exact: true }).click();
   await page.getByRole("button", { name: labels.deleteSelected, exact: true }).click();
   await confirmAlert(labels.delete);
   await page.waitForFunction(() => window.review.deleteCalls.length === 1);
@@ -1004,6 +1011,8 @@ try {
   })), { parentIsBody: true, top: 0, height: 700, viewportHeight: 700 });
   await page.getByRole("button", { name: "关闭预览" }).click();
   console.log("PASS gallery scrolls into view, previews above the page, and ignores late image responses");
+  await testAccountThreadNavigation({ page, reset, captureDir });
+  await testThreadDetails({ page, reset, captureDir });
   await reset("warnings");
   await page.getByText("Review thread 0", { exact: true }).waitFor();
   const warning = page.getByRole("status");
@@ -1011,6 +1020,7 @@ try {
   assert.equal(await warning.getByText("Skipped synthetic-corrupt-session.jsonl: invalid UTF-8", { exact: true }).isVisible(), true);
   assert.equal(await page.getByText("Review thread 0", { exact: true }).isVisible(), true);
   console.log("PASS unreadable conversation warnings remain visible alongside usable conversations");
+  }
   assert.deepEqual(errors, [], "Unexpected browser errors");
 } finally {
   if (browser) await browser.close();

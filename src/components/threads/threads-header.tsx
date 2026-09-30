@@ -22,7 +22,7 @@ export function ThreadsHeader({ list }: { list: ThreadList }) {
         </h1>
       </div>
 
-      <div className="flex items-center gap-2.5">
+      <div className="flex flex-wrap items-center gap-2.5">
         {/* Format Selector */}
         <SegmentedOptions
           items={[

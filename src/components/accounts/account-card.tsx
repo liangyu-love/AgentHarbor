@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { AccountResetCreditsBadge } from "@/components/accounts/account-reset-credits";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
@@ -263,6 +264,7 @@ export function AccountCard({
               {t("accounts.current")}
             </Badge>
           )}
+          <AccountResetCreditsBadge account={account} refreshing={refreshing} onRefresh={onRefresh} />
         </div>
       </div>
 

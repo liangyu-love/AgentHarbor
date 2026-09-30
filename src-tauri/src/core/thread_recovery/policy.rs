@@ -756,7 +756,7 @@ pub(super) fn ensure_allowed_keys(
 ) -> Result<(), String> {
     if let Some(key) = object
         .keys()
-        .find(|key| !allowed.iter().any(|allowed| key.as_str() == *allowed))
+        .find(|key| !allowed.contains(&key.as_str()))
     {
         return Err(format!("{context} contains unsupported field: {key}"));
     }

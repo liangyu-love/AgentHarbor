@@ -177,7 +177,7 @@ export function ThreadGroupSection({ group, list }: { group: FolderGroup; list: 
         <div
           className={
             viewMode === "grid"
-              ? "grid gap-2.5 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 animate-in fade-in duration-200"
+              ? "grid grid-cols-[repeat(auto-fit,minmax(min(100%,240px),1fr))] gap-2.5 animate-in fade-in duration-200"
               : "space-y-1 animate-in fade-in duration-200"
           }
         >
@@ -190,6 +190,7 @@ export function ThreadGroupSection({ group, list }: { group: FolderGroup; list: 
               onExport={() => void handleExport([thread.key])}
               onOpenRaw={() => void handleOpenPath(thread.filePath)}
               onRecover={() => setRecoveryTarget(thread)}
+              onDetails={() => list.setDetailKey(thread.key)}
               onDelete={() => void handleDelete([thread.key])}
               variant={viewMode}
             />

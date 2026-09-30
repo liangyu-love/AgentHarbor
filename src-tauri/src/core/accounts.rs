@@ -1,5 +1,5 @@
 use super::auth::{current_timestamp, load_auth_file, make_auth_snapshot};
-use super::models::{ApiProxyConfigPayload, CoreError, RateLimitWindow};
+use super::models::{AccountResetCredits, ApiProxyConfigPayload, CoreError, RateLimitWindow};
 use super::repository::{RegistryFile, RegistryItem, Repository};
 use super::storage;
 use serde::{Deserialize, Serialize};
@@ -21,6 +21,8 @@ pub struct CodexAccountSummary {
     pub last_usage_at: Option<i64>,
     pub primary_window: Option<RateLimitWindow>,
     pub secondary_window: Option<RateLimitWindow>,
+    #[serde(default)]
+    pub reset_credits: Option<AccountResetCredits>,
     pub usage_status: String,
     pub usage_error: Option<String>,
 }
@@ -54,6 +56,7 @@ pub struct AccountUsageUpdate {
     pub account_key: String,
     pub primary_window: Option<RateLimitWindow>,
     pub secondary_window: Option<RateLimitWindow>,
+    pub reset_credits: Option<AccountResetCredits>,
     pub plan: Option<String>,
     pub status: String,
     pub error: Option<String>,
@@ -140,6 +143,7 @@ fn payload(registry: RegistryFile) -> CodexAccountListPayload {
             last_usage_at: item.last_usage_at,
             primary_window: item.cached_primary_window,
             secondary_window: item.cached_secondary_window,
+            reset_credits: item.cached_reset_credits,
             usage_status: item.usage_status,
             usage_error: item.last_usage_error,
         })
@@ -306,6 +310,7 @@ pub fn apply_usage_updates(
         };
         item.cached_primary_window = update.primary_window;
         item.cached_secondary_window = update.secondary_window;
+        item.cached_reset_credits = update.reset_credits;
         item.last_usage_at = Some(checked_at);
         item.usage_status = update.status;
         item.last_usage_error = update.error;
@@ -400,11 +405,36 @@ mod tests {
             account_key: account_key.into(),
             primary_window: None,
             secondary_window: None,
+            reset_credits: None,
             plan: Some("plus".into()),
             status: "healthy".into(),
             error: None,
             credential_refresh: refresh,
         }
+    }
+
+    #[test]
+    fn reset_credits_survive_registry_sync_and_clear_when_not_reported() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = Repository::from_paths(CodexPaths::from_home(temp.path().join("codex")));
+        let auth_path = temp.path().join("auth.json");
+        write_auth(&auth_path, "reset-account");
+        register_login(&repo, &auth_path).unwrap();
+        let key = credentials(&repo).unwrap().0[0].account_key.clone();
+        let credits = AccountResetCredits {
+            available_count: 2,
+            credits: None,
+        };
+        let mut update = usage_update(&key, None);
+        update.reset_credits = Some(credits.clone());
+        apply_usage_updates(&repo, vec![update]).unwrap();
+        repo.rebuild_registry_state().unwrap();
+        assert_eq!(
+            list(&repo).unwrap().items[0].reset_credits.as_ref(),
+            Some(&credits)
+        );
+        apply_usage_updates(&repo, vec![usage_update(&key, None)]).unwrap();
+        assert!(list(&repo).unwrap().items[0].reset_credits.is_none());
     }
 
     #[test]

@@ -12,6 +12,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
+const RESET_CREDITS_URL: &str = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const RPC_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -197,6 +198,14 @@ async fn fetch_usage_http(
     credential: &AccountCredential,
     proxy: &ApiProxyConfigPayload,
 ) -> Result<Value, FetchFailure> {
+    fetch_account_http(credential, proxy, USAGE_URL).await
+}
+
+async fn fetch_account_http(
+    credential: &AccountCredential,
+    proxy: &ApiProxyConfigPayload,
+    url: &str,
+) -> Result<Value, FetchFailure> {
     let bytes = credential_bytes(credential).map_err(FetchFailure::Unavailable)?;
     let auth: super::auth::AuthFile = serde_json::from_slice(&bytes)
         .map_err(|error| FetchFailure::Unavailable(error.to_string()))?;
@@ -208,11 +217,10 @@ async fn fetch_usage_http(
         .filter(|token| !token.is_empty())
         .ok_or(FetchFailure::Unauthorized)?;
     let mut headers = HeaderMap::new();
-    headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {access_token}"))
-            .map_err(|_| FetchFailure::Unauthorized)?,
-    );
+    let mut authorization = HeaderValue::from_str(&format!("Bearer {access_token}"))
+        .map_err(|_| FetchFailure::Unauthorized)?;
+    authorization.set_sensitive(true);
+    headers.insert(AUTHORIZATION, authorization);
     headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
     headers.insert(USER_AGENT, HeaderValue::from_static("AgentHarbor/1.0"));
     if let Some(account_id) = auth
@@ -222,14 +230,18 @@ async fn fetch_usage_http(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        headers.insert(
-            "chatgpt-account-id",
-            HeaderValue::from_str(account_id).map_err(|_| FetchFailure::Unauthorized)?,
-        );
+        let mut account_header =
+            HeaderValue::from_str(account_id).map_err(|_| FetchFailure::Unauthorized)?;
+        account_header.set_sensitive(true);
+        headers.insert("chatgpt-account-id", account_header);
     }
-    let response = http_client(proxy)?
-        .get(USAGE_URL)
-        .headers(headers)
+    let request = http_client(proxy)?.get(url).headers(headers);
+    let request = if url == RESET_CREDITS_URL {
+        request.timeout(Duration::from_secs(8))
+    } else {
+        request
+    };
+    let response = request
         .send()
         .await
         .map_err(|error| FetchFailure::Unavailable(error.to_string()))?;
@@ -488,6 +500,7 @@ fn parse_usage(account_key: String, payload: &Value) -> Result<AccountUsageUpdat
         account_key,
         primary_window: primary,
         secondary_window: secondary,
+        reset_credits: super::account_resets::parse_count(payload),
         plan,
         status: "healthy".to_string(),
         error: None,
@@ -519,9 +532,10 @@ pub async fn refresh_account(
         match payload.and_then(|payload| parse_usage(credential.account_key.clone(), &payload)) {
             Ok(update) => update,
             Err(error) => AccountUsageUpdate {
-                account_key: credential.account_key,
+                account_key: credential.account_key.clone(),
                 primary_window: None,
                 secondary_window: None,
+                reset_credits: None,
                 plan: None,
                 status: if unauthorized { "expired" } else { "error" }.to_string(),
                 error: Some(error),
@@ -529,12 +543,120 @@ pub async fn refresh_account(
             },
         };
     update.credential_refresh = credential_refresh;
+    if let Some(credits) = &mut update.reset_credits {
+        // Zero may still have redeemed grants in the 30-day history.
+        if let Ok(details) = fetch_account_http(&credential, &proxy, RESET_CREDITS_URL).await {
+            let _ = super::account_resets::apply_details(credits, &details);
+        }
+    }
     update
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn account_metadata_get_preserves_credentials_and_headers() {
+        use std::{
+            io::{Read, Write},
+            net::TcpListener,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let snapshot_path = temp.path().join("auth.json");
+        let original =
+            json!({"tokens":{"account_id":"synthetic-account","access_token":"synthetic-token"}})
+                .to_string();
+        std::fs::write(&snapshot_path, &original).unwrap();
+        let account_key =
+            make_auth_snapshot(&load_auth_file(&snapshot_path).unwrap(), &snapshot_path)
+                .unwrap()
+                .account_key;
+        let credential = AccountCredential {
+            account_key,
+            snapshot_path: snapshot_path.clone(),
+            active_auth_path: None,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut bytes = [0u8; 8192];
+            let count = socket.read(&mut bytes).unwrap();
+            let request = String::from_utf8_lossy(&bytes[..count]).to_lowercase();
+            assert!(request.starts_with("get /backend-api/wham/rate-limit-reset-credits "));
+            assert!(request.contains("authorization: bearer synthetic-token"));
+            assert!(request.contains("chatgpt-account-id: synthetic-account"));
+            let body = r#"{"available_count":2,"credits":[]}"#;
+            write!(socket,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        });
+        let proxy = ApiProxyConfigPayload {
+            mode: super::super::models::ApiProxyMode::Direct,
+            url: None,
+        };
+        let result = fetch_account_http(
+            &credential,
+            &proxy,
+            &format!("http://{address}/backend-api/wham/rate-limit-reset-credits"),
+        )
+        .await;
+        assert!(result.is_ok());
+        server.join().unwrap();
+        assert_eq!(std::fs::read_to_string(snapshot_path).unwrap(), original);
+    }
+
+    #[tokio::test]
+    #[ignore = "read-only official GET; requires an explicit auth snapshot path"]
+    async fn live_official_reset_credits_read_only() {
+        let path = PathBuf::from(
+            std::env::var_os("AGENTHARBOR_TEST_ACCOUNT_AUTH_PATH")
+                .expect("Explicit auth path required"),
+        );
+        let original = std::fs::read(&path).unwrap();
+        let account_key = make_auth_snapshot(&load_auth_file(&path).unwrap(), &path)
+            .unwrap()
+            .account_key;
+        let credential = AccountCredential {
+            account_key,
+            snapshot_path: path.clone(),
+            active_auth_path: None,
+        };
+        let proxy = ApiProxyConfigPayload::default();
+        let payload = match fetch_usage_http(&credential, &proxy).await {
+            Ok(value) => value,
+            Err(FetchFailure::Unauthorized) => {
+                panic!("Official usage GET unauthorized; credentials were not refreshed")
+            }
+            Err(FetchFailure::RateLimited) => panic!("Official usage GET rate limited"),
+            Err(FetchFailure::Unavailable(message)) => {
+                panic!("Official usage GET unavailable: {message}")
+            }
+        };
+        let mut update = parse_usage(credential.account_key.clone(), &payload).unwrap();
+        let details = fetch_account_http(&credential, &proxy, RESET_CREDITS_URL).await;
+        let detail_keys = details
+            .as_ref()
+            .ok()
+            .and_then(Value::as_object)
+            .map(|v| v.keys().cloned().collect::<Vec<_>>());
+        let parsed = match (&mut update.reset_credits, details) {
+            (Some(credits), Ok(details)) => {
+                super::super::account_resets::apply_details(credits, &details).is_ok()
+            }
+            _ => false,
+        };
+        println!(
+            "{}",
+            json!({"usageRead":true,"primaryWindow":update.primary_window.is_some(),"detailKeys":detail_keys,
+            "detailsParsed":parsed,"resetCredits":update.reset_credits})
+        );
+        assert_eq!(
+            std::fs::read(path).unwrap(),
+            original,
+            "Read-only test must not change credentials"
+        );
+        assert!(parsed, "Official reset-credit details were not validated");
+    }
 
     #[test]
     fn active_usage_reads_current_credentials_and_rejects_a_changed_identity() {

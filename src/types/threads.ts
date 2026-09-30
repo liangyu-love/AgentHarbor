@@ -28,6 +28,40 @@ export interface ThreadListPayload {
   pendingDeletionRecoveryNeeded?: boolean;
 }
 
+export interface ThreadUsage {
+  input: number;
+  output: number;
+  cached: number | null;
+  reasoning: number | null;
+  total: number;
+}
+
+export interface ThreadDiagnostics {
+  invalidLines: number;
+  oversizedLines: number;
+  encryptedRecords: number;
+  compactions: number;
+  counterResets: number;
+  lastUsageOnly: number;
+  undatedUsage: number;
+  inheritedSessions: number;
+}
+
+export interface ThreadDetails {
+  snapshotBytes: number;
+  usage: ThreadUsage | null;
+  byModel: { label: string; usage: ThreadUsage }[];
+  byDate: { label: string; usage: ThreadUsage }[];
+  tools: { name: string; calls: number }[];
+  diagnostics: ThreadDiagnostics;
+}
+
+export interface ThreadMessagePage {
+  messages: { role: string; timestamp: string; text: string; truncated: boolean }[];
+  nextOffset: number | null;
+  diagnostics: ThreadDiagnostics;
+}
+
 export interface ThreadExportPayload {
   exported: number;
   directory: string;

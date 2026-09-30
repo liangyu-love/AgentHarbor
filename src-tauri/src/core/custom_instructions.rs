@@ -421,7 +421,7 @@ fn trim_history(paths: &CodexPaths) -> Result<(), CoreError> {
     if items.len() <= HISTORY_LIMIT {
         return Ok(());
     }
-    items.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    items.sort_by_key(|item| std::cmp::Reverse(item.created_at));
     for snapshot in items.into_iter().skip(HISTORY_LIMIT) {
         let path = paths
             .custom_instruction_history_dir
@@ -456,7 +456,7 @@ fn load_history(paths: &CodexPaths) -> Result<Vec<CustomInstructionHistorySnapsh
             }
         }
     }
-    items.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    items.sort_by_key(|item| std::cmp::Reverse(item.created_at));
     Ok(items)
 }
 

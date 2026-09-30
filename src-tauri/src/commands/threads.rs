@@ -8,6 +8,64 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::State;
 
+fn conversation_roots(
+    repo: &Mutex<Repository>,
+    target_id: TargetId,
+) -> Result<(PathBuf, PathBuf), String> {
+    let repo = repo.lock().map_err(|e| e.to_string())?;
+    let source = repo
+        .target_registry()
+        .conversations(target_id)
+        .ok_or_else(|| "Unsupported conversation target".to_owned())?;
+    Ok((
+        source.sessions_dir().to_path_buf(),
+        source.archived_sessions_dir().to_path_buf(),
+    ))
+}
+
+#[tauri::command]
+pub async fn get_conversation_details(
+    repo: State<'_, Mutex<Repository>>,
+    target_id: TargetId,
+    key: String,
+    thread_id: String,
+) -> Result<CoreEnvelope<threads::details::ThreadDetails>, String> {
+    let (sessions, archived) = conversation_roots(&repo, target_id)?;
+    let detail = tauri::async_runtime::spawn_blocking(move || {
+        threads::details::read_details(&sessions, &archived, &key, &thread_id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    Ok(CoreEnvelope::ok(detail))
+}
+
+#[tauri::command]
+pub async fn get_conversation_messages(
+    repo: State<'_, Mutex<Repository>>,
+    target_id: TargetId,
+    key: String,
+    thread_id: String,
+    snapshot_bytes: u64,
+    offset: usize,
+) -> Result<CoreEnvelope<threads::details::MessagePage>, String> {
+    let (sessions, archived) = conversation_roots(&repo, target_id)?;
+    let page = tauri::async_runtime::spawn_blocking(move || {
+        threads::details::read_messages(
+            &sessions,
+            &archived,
+            &key,
+            &thread_id,
+            snapshot_bytes,
+            offset,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    Ok(CoreEnvelope::ok(page))
+}
+
 #[tauri::command]
 pub async fn list_conversations(
     repo: State<'_, Mutex<Repository>>,

@@ -2,12 +2,15 @@ use crate::core::models::{CoreError, CoreWarning};
 use chrono::DateTime;
 use rusqlite::{params, Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
+
+pub mod details;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -120,7 +123,7 @@ enum MessageFormat {
 #[derive(Debug)]
 struct SeenMessage {
     role: &'static str,
-    normalized_text: String,
+    normalized_hash: [u8; 32],
     timestamp: String,
     timestamp_millis: Option<i64>,
     format: MessageFormat,
@@ -448,7 +451,10 @@ fn scan_threads_from_catalog_inner(
 }
 
 /// Column names of `table`; empty when the table does not exist.
-pub(crate) fn table_columns(connection: &Connection, table: &str) -> Result<HashSet<String>, CoreError> {
+pub(crate) fn table_columns(
+    connection: &Connection,
+    table: &str,
+) -> Result<HashSet<String>, CoreError> {
     let sql = format!("PRAGMA table_info(\"{}\")", table.replace('"', "\"\""));
     let mut statement = connection
         .prepare(&sql)
@@ -957,6 +963,56 @@ fn extract_item_text(item: &serde_json::Value) -> String {
     parts.join("\n\n")
 }
 
+fn session_metadata_id(payload: &serde_json::Value) -> Option<&str> {
+    payload
+        .get("session_id")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| payload.get("id").and_then(serde_json::Value::as_str))
+}
+
+// Shared by summary/export and the bounded conversation reader.
+fn extract_chat_message(
+    value: &serde_json::Value,
+) -> Option<(&'static str, String, MessageFormat)> {
+    let payload = value.get("payload")?;
+    let kind = payload.get("type")?.as_str()?;
+    let (role, text, format) = if value.get("type").and_then(serde_json::Value::as_str)
+        == Some("response_item")
+        && kind == "message"
+    {
+        (
+            payload.get("role")?.as_str()?,
+            extract_item_text(payload),
+            MessageFormat::ResponseItem,
+        )
+    } else if kind == "item_completed" {
+        let item = payload.get("item")?;
+        let role = match item.get("type")?.as_str()? {
+            "UserMessage" => "user",
+            "AgentMessage" => "assistant",
+            _ => return None,
+        };
+        (role, extract_item_text(item), MessageFormat::ItemCompleted)
+    } else {
+        let role = match kind {
+            "user_message" => "user",
+            "agent_message" => "assistant",
+            _ => return None,
+        };
+        (
+            role,
+            payload.get("message")?.as_str()?.to_owned(),
+            MessageFormat::Direct,
+        )
+    };
+    let role = match role {
+        "user" => "user",
+        "assistant" => "assistant",
+        _ => return None,
+    };
+    Some((role, text, format))
+}
+
 fn set_title_once(title: &mut Option<String>, text: &str) {
     if title.is_some() {
         return;
@@ -983,11 +1039,17 @@ fn record_message(
     if text.is_empty() {
         return;
     }
-    let normalized_text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Keep fingerprints, not a second copy of every long message.
+    let mut digest = Sha256::new();
+    for word in text.split_whitespace() {
+        digest.update((word.len() as u64).to_be_bytes());
+        digest.update(word.as_bytes());
+    }
+    let normalized_hash: [u8; 32] = digest.finalize().into();
     let timestamp_millis = timestamp_millis(timestamp);
     if seen.iter().any(|previous| {
         previous.role == role
-            && previous.normalized_text == normalized_text
+            && previous.normalized_hash == normalized_hash
             && previous.format == format
             && previous.timestamp == timestamp
     }) {
@@ -1000,7 +1062,7 @@ fn record_message(
         for (index, previous) in seen.iter().enumerate() {
             if previous.paired
                 || previous.role != role
-                || previous.normalized_text != normalized_text
+                || previous.normalized_hash != normalized_hash
                 || previous.format == format
             {
                 continue;
@@ -1019,7 +1081,7 @@ fn record_message(
         seen[index].paired = true;
         seen.push(SeenMessage {
             role,
-            normalized_text,
+            normalized_hash,
             timestamp: timestamp.to_owned(),
             timestamp_millis,
             format,
@@ -1029,7 +1091,7 @@ fn record_message(
     }
     seen.push(SeenMessage {
         role,
-        normalized_text,
+        normalized_hash,
         timestamp: timestamp.to_owned(),
         timestamp_millis,
         format,
@@ -1100,12 +1162,7 @@ fn parse_thread(
         let record_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
         let payload_type = payload.get("type").and_then(|t| t.as_str()).unwrap_or("");
         if record_type == "session_meta" || payload_type == "session_meta" {
-            session_id = payload
-                .get("session_id")
-                .or_else(|| payload.get("id"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+            session_id = session_metadata_id(payload).unwrap_or("").to_string();
             cwd = payload
                 .get("cwd")
                 .and_then(|v| v.as_str())
@@ -1134,87 +1191,19 @@ fn parse_thread(
             continue;
         }
 
-        if record_type == "response_item" && payload_type == "message" {
-            let role = match payload.get("role").and_then(|value| value.as_str()) {
-                Some("user") => Some("user"),
-                Some("assistant") => Some("assistant"),
-                _ => None,
-            };
-            if let Some(role) = role {
-                record_message(
-                    role,
-                    timestamp,
-                    extract_item_text(payload),
-                    MessageFormat::ResponseItem,
-                    include_messages,
-                    &mut seen_messages,
-                    &mut title,
-                    &mut user_messages,
-                    &mut agent_messages,
-                    &mut messages,
-                );
-            }
-            continue;
-        }
-
-        match payload_type {
-            "item_completed" => {
-                let Some(item) = payload.get("item") else {
-                    continue;
-                };
-                let role = match item.get("type").and_then(|t| t.as_str()).unwrap_or("") {
-                    "UserMessage" => Some("user"),
-                    "AgentMessage" => Some("assistant"),
-                    _ => None,
-                };
-                if let Some(role) = role {
-                    record_message(
-                        role,
-                        timestamp,
-                        extract_item_text(item),
-                        MessageFormat::ItemCompleted,
-                        include_messages,
-                        &mut seen_messages,
-                        &mut title,
-                        &mut user_messages,
-                        &mut agent_messages,
-                        &mut messages,
-                    );
-                }
-            }
-            "user_message" => {
-                if let Some(text) = payload.get("message").and_then(|m| m.as_str()) {
-                    record_message(
-                        "user",
-                        timestamp,
-                        text.to_owned(),
-                        MessageFormat::Direct,
-                        include_messages,
-                        &mut seen_messages,
-                        &mut title,
-                        &mut user_messages,
-                        &mut agent_messages,
-                        &mut messages,
-                    );
-                }
-            }
-            "agent_message" => {
-                if let Some(text) = payload.get("message").and_then(|m| m.as_str()) {
-                    record_message(
-                        "assistant",
-                        timestamp,
-                        text.to_owned(),
-                        MessageFormat::Direct,
-                        include_messages,
-                        &mut seen_messages,
-                        &mut title,
-                        &mut user_messages,
-                        &mut agent_messages,
-                        &mut messages,
-                    );
-                }
-            }
-            _ => {}
+        if let Some((role, text, format)) = extract_chat_message(&value) {
+            record_message(
+                role,
+                timestamp,
+                text,
+                format,
+                include_messages,
+                &mut seen_messages,
+                &mut title,
+                &mut user_messages,
+                &mut agent_messages,
+                &mut messages,
+            );
         }
     }
 

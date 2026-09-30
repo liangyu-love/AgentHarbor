@@ -105,6 +105,21 @@ pub struct RateLimitWindow {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct AccountResetCredit {
+    pub status: String,
+    pub granted_at: Option<i64>,
+    pub expires_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountResetCredits {
+    pub available_count: u32,
+    pub credits: Option<Vec<AccountResetCredit>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct AppPathState {
     pub codex_home: String,
     pub accounts_path: String,

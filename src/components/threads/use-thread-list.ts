@@ -28,6 +28,8 @@ export function useThreadList() {
   const { t } = useTranslation();
   const [status, setStatus] = useState<StatusFilter>("all");
   const [query, setQuery] = useState("");
+  const [projectKey, setProjectKey] = useState<string | null>(null);
+  const [focusedThreadKey, setFocusedThreadKey] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<SortOption>("updatedAt");
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     const saved = localStorage.getItem(storageKeys.threadsViewMode);
@@ -38,6 +40,7 @@ export function useThreadList() {
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [copiedGroupPath, setCopiedGroupPath] = useState<string | null>(null);
   const [recoveryTarget, setRecoveryTarget] = useState<ThreadSummary | null>(null);
+  const [detailKey, setDetailKey] = useState<string | null>(null);
   const [bulkRepairing, setBulkRepairing] = useState(false);
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
@@ -54,6 +57,8 @@ export function useThreadList() {
   });
 
   const threads = useMemo(() => threadsQuery.data?.data.items ?? [], [threadsQuery.data]);
+  const detailTarget = threads.find(thread => thread.key === detailKey) ?? null;
+  useEffect(() => { if (detailKey && !detailTarget) setDetailKey(null); }, [detailKey, detailTarget]);
   const pendingDeletionKeys = new Set(threadsQuery.data?.data.pendingDeletionKeys ?? []);
   // Corrupt queue records arrive as `pendingDeletionRecoveryNeeded`; queue cancellations
   // and failures stay visible here so users can see why a deletion did not run.
@@ -69,10 +74,33 @@ export function useThreadList() {
   );
 
   // Filter and Sort
-  const filtered = useMemo(
+  const matching = useMemo(
     () => filterAndSortThreads(threads, status, query, sortBy),
     [threads, status, query, sortBy],
   );
+  const projects = useMemo(() => groupThreads(threads, t("threads.unknownFolder")), [threads, t]);
+  const matchingKeys = useMemo(() => new Set(matching.map(thread => thread.key)), [matching]);
+  const activeProject = projects.find(project => project.key === projectKey) ?? null;
+  const focusCandidate = matching.find(thread => thread.key === focusedThreadKey);
+  const focusedThread = focusCandidate && activeProject && focusCandidate.cwd === activeProject.cwd ? focusCandidate : null;
+  const filtered = useMemo(() => matching.filter(thread =>
+    (!activeProject || thread.cwd === activeProject.cwd)
+    && (!focusedThread || thread.key === focusedThread.key)), [matching, activeProject, focusedThread]);
+  // Filters/refetch may remove the focused item or its project; never leave a stale target.
+  useEffect(() => {
+    if (projectKey && !activeProject) setProjectKey(null);
+    if (focusedThreadKey && !focusedThread) setFocusedThreadKey(null);
+  }, [projectKey, activeProject, focusedThreadKey, focusedThread]);
+  const selectProject = (key: string | null) => {
+    setProjectKey(key);
+    setFocusedThreadKey(null);
+    setCollapsedGroups(new Set());
+  };
+  const focusThread = (project: string, key: string) => {
+    setProjectKey(project);
+    setFocusedThreadKey(key);
+    setCollapsedGroups(new Set());
+  };
 
   // Group by Workspace
   const groups = useMemo(
@@ -343,12 +371,13 @@ export function useThreadList() {
 
   return {
     threadsQuery, threads, pendingDeletionKeys, scanWarnings, pendingDeletionRecoveryNeeded,
-    filtered, groups, selectedExportableCount, useVirtualList,
+    filtered, groups, projects, matchingKeys, activeProject, focusedThread, selectProject, focusThread,
+    selectedExportableCount, useVirtualList,
     archivedCount, totalUserMsgs, totalAgentMsgs, totalBytes, totalTokens, missingRolloutCount, totalInteractions,
     status, setStatus, query, setQuery, sortBy, setSortBy, sortLabels, viewMode, setViewMode, format, setFormat,
     selected, toggleSelect, selectFiltered, clearSelection, toggleGroupSelect,
     collapsedGroups, toggleGroupCollapse, expandAllGroups, collapseAllGroups,
-    copiedGroupPath, recoveryTarget, setRecoveryTarget, confirmRequest, setConfirmRequest, bulkRepairing, deleteBusy, cancelPendingBusy, refreshAction,
+    copiedGroupPath, recoveryTarget, setRecoveryTarget, detailTarget, setDetailKey, confirmRequest, setConfirmRequest, bulkRepairing, deleteBusy, cancelPendingBusy, refreshAction,
     handleRefresh, handleRepairAll, handleDelete, cancelPendingDeletions, handleExport, handleOpenPath, handleCopyPath,
   };
 }

@@ -145,6 +145,10 @@ const targetsApi = {
 };
 
 const conversationsApi = {
+  details: (targetId: TargetId, key: string, threadId: string) =>
+    invoke<CoreEnvelope<import("@/types/threads").ThreadDetails>>("get_conversation_details", { targetId, key, threadId }),
+  messages: (targetId: TargetId, key: string, threadId: string, snapshotBytes: number, offset: number) =>
+    invoke<CoreEnvelope<import("@/types/threads").ThreadMessagePage>>("get_conversation_messages", { targetId, key, threadId, snapshotBytes, offset }),
   list: (targetId: TargetId) =>
     invoke<CoreEnvelope<import("@/types/threads").ThreadListPayload>>("list_conversations", { targetId }),
   export: (targetId: TargetId, keys: string[], targetDir: string, format: "markdown" | "jsonl") =>

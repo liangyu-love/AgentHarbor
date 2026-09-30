@@ -700,7 +700,7 @@ fn aggregate(
             }
         })
         .collect::<Vec<_>>();
-    by_source.sort_by(|left, right| right.totals.total_tokens.cmp(&left.totals.total_tokens));
+    by_source.sort_by_key(|item| std::cmp::Reverse(item.totals.total_tokens));
     let mut by_model = models
         .into_iter()
         .map(
@@ -712,7 +712,7 @@ fn aggregate(
             },
         )
         .collect::<Vec<_>>();
-    by_model.sort_by(|left, right| right.totals.total_tokens.cmp(&left.totals.total_tokens));
+    by_model.sort_by_key(|item| std::cmp::Reverse(item.totals.total_tokens));
     let daily = (0..DAILY_DAYS)
         .map(|offset| first_day + ChronoDuration::days(offset))
         .map(|date| {
@@ -727,7 +727,7 @@ fn aggregate(
                     totals: *totals,
                 })
                 .collect::<Vec<_>>();
-            by_model.sort_by(|left, right| right.totals.total_tokens.cmp(&left.totals.total_tokens));
+            by_model.sort_by_key(|item| std::cmp::Reverse(item.totals.total_tokens));
             TokenUsageDay {
                 totals: days.remove(&date).unwrap_or_default(),
                 date,

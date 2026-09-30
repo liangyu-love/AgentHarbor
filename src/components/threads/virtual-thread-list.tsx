@@ -26,12 +26,10 @@ const GROUP_ROW_HEIGHT = GROUP_HEADER_HEIGHT;
 const THREAD_ROW_HEIGHT = 52;
 const OVERSCAN = 8;
 
-function estimateGridColumns() {
-  if (typeof window === "undefined") return 3;
-  const width = window.innerWidth;
-  if (width >= 1280) return 4;
-  if (width >= 768) return 3;
-  return 2;
+function estimateGridColumns(width: number) {
+  // Match the 240px auto-fit grid in the actual list, not the whole window:
+  // both the app sidebar and project navigator reduce the available width.
+  return Math.max(1, Math.floor((width + 10) / 250));
 }
 
 function estimateGridBodyHeight(itemCount: number, columns: number) {
@@ -52,6 +50,7 @@ export interface VirtualThreadListProps {
   onExport: (keys: string[]) => void;
   onOpenPath: (path: string) => void;
   onRecover: (thread: ThreadSummary) => void;
+  onDetails?: (thread: ThreadSummary) => void;
   onDelete: (thread: ThreadSummary) => void;
   onCopyPath: (path: string, groupKey: string) => void;
   copiedGroupPath: string | null;
@@ -74,6 +73,7 @@ export function VirtualThreadList({
   onExport,
   onOpenPath,
   onRecover,
+  onDetails,
   onDelete,
   onCopyPath,
   copiedGroupPath,
@@ -84,7 +84,7 @@ export function VirtualThreadList({
   const [viewportHeight, setViewportHeight] = useState(
     () => (typeof window === "undefined" ? 640 : window.innerHeight),
   );
-  const [columns, setColumns] = useState(() => estimateGridColumns());
+  const [columns, setColumns] = useState(1);
 
   const rows = useMemo<VirtualRow[]>(() => {
     const list: VirtualRow[] = [];
@@ -162,7 +162,7 @@ export function VirtualThreadList({
         : 0;
       setScrollTop(Math.max(0, viewportTop - anchor.getBoundingClientRect().top));
       setViewportHeight(container?.clientHeight ?? window.innerHeight);
-      setColumns(estimateGridColumns());
+      setColumns(estimateGridColumns(anchor.clientWidth));
     };
     measure();
     scrollTarget.addEventListener("scroll", measure, { passive: true });
@@ -221,7 +221,7 @@ export function VirtualThreadList({
                 />
                 {!collapsed && (
                   <div
-                    className="mt-1.5 grid gap-2.5 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4"
+                    className="mt-1.5 grid grid-cols-[repeat(auto-fit,minmax(min(100%,240px),1fr))] gap-2.5"
                     style={{
                       contentVisibility: "auto",
                       containIntrinsicSize: `${Math.max(bodyHeight, 132)}px`,
@@ -236,6 +236,7 @@ export function VirtualThreadList({
                         onExport={() => onExport([thread.key])}
                         onOpenRaw={() => onOpenPath(thread.filePath)}
                         onRecover={() => onRecover(thread)}
+                        onDetails={() => onDetails?.(thread)}
                         onDelete={() => onDelete(thread)}
                         variant="grid"
                       />
@@ -291,6 +292,7 @@ export function VirtualThreadList({
                   onExport={() => onExport([row.thread.key])}
                   onOpenRaw={() => onOpenPath(row.thread.filePath)}
                   onRecover={() => onRecover(row.thread)}
+                  onDetails={() => onDetails?.(row.thread)}
                   onDelete={() => onDelete(row.thread)}
                   variant="compact"
                 />

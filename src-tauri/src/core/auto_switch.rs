@@ -137,6 +137,7 @@ mod tests {
             last_usage_at: None,
             primary_window: window(five_hour),
             secondary_window: window(weekly),
+            reset_credits: None,
             usage_status: "healthy".into(),
             usage_error: None,
         }

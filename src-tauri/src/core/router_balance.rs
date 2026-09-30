@@ -127,7 +127,7 @@ fn detect_account_platform(
     );
     if newapi_status
         .as_ref()
-        .is_ok_and(|value| is_newapi_public_status(value))
+        .is_ok_and(is_newapi_public_status)
     {
         return Ok(AccountPlatform::NewApi);
     }
@@ -140,7 +140,7 @@ fn detect_account_platform(
     );
     if sub2api_settings
         .as_ref()
-        .is_ok_and(|value| is_sub2api_public_settings(value))
+        .is_ok_and(is_sub2api_public_settings)
     {
         return Ok(AccountPlatform::Sub2Api);
     }

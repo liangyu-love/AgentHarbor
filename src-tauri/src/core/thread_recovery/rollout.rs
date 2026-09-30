@@ -30,9 +30,8 @@ pub(super) fn select_rollout(
         thread_id,
     ) {
         if !paths_by_id.is_empty() {
-            match read_rollout_candidates(paths, thread_id, paths_by_id) {
-                Ok(Some(found)) => return Ok(Some(found)),
-                Ok(None) | Err(_) => {}
+            if let Ok(Some(found)) = read_rollout_candidates(paths, thread_id, paths_by_id) {
+                return Ok(Some(found));
             }
         }
     }

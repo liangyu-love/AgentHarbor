@@ -41,6 +41,7 @@ interface ThreadCardProps {
   onOpenRaw: () => void;
   onRecover: () => void;
   onDelete: () => void;
+  onDetails?: () => void;
   variant?: "grid" | "compact";
 }
 
@@ -52,6 +53,7 @@ export function ThreadCard({
   onOpenRaw,
   onRecover,
   onDelete,
+  onDetails,
   variant = "grid",
 }: ThreadCardProps) {
   const { t } = useTranslation();
@@ -118,9 +120,11 @@ export function ThreadCard({
 
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1.5">
-                <p className="truncate text-sm font-medium leading-none text-foreground group-hover:text-primary transition-colors">
+                <button type="button" data-thread-title className={cn("truncate text-left text-sm font-medium leading-none text-foreground hover:text-primary", focusRing)}
+                  aria-label={t("threads.details.open", { title: thread.title || t("threads.untitled") })}
+                  onClick={e => { e.stopPropagation(); onDetails?.(); }}>
                   {thread.title || t("threads.untitled")}
-                </p>
+                </button>
                 {thread.archived ? (
                   <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
                     <Archive className="h-2.5 w-2.5" />
@@ -336,9 +340,11 @@ export function ThreadCard({
             </span>
 
             <div className="min-w-0 flex-1">
-              <h3 className="line-clamp-2 text-sm font-semibold leading-snug tracking-tight text-foreground group-hover:text-primary transition-colors">
+              <h3><button type="button" data-thread-title className={cn("line-clamp-2 text-left text-sm font-semibold leading-snug tracking-tight text-foreground hover:text-primary", focusRing)}
+                aria-label={t("threads.details.open", { title: thread.title || t("threads.untitled") })}
+                onClick={e => { e.stopPropagation(); onDetails?.(); }}>
                 {thread.title || t("threads.untitled")}
-              </h3>
+              </button></h3>
             </div>
           </div>
 

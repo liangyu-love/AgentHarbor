@@ -12,6 +12,19 @@ export default defineConfig(async () => ({
     },
   },
   clearScreen: false,
+  build: {
+    rollupOptions: {
+      output: {
+        // Separate the stable React runtime for caching; keep feature libraries
+        // with their lazy routes rather than eagerly loading all dependencies.
+        manualChunks(id) {
+          if (/node_modules\/(?:\.pnpm\/[^/]+\/node_modules\/)?(?:react|react-dom|scheduler)\//.test(id.replace(/\\/g, "/"))) {
+            return "react-runtime";
+          }
+        },
+      },
+    },
+  },
   server: {
     // Dev-only port — keep in sync with tauri.conf.json `devUrl`.
     port: 3417,

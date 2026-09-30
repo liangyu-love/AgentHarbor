@@ -85,3 +85,18 @@
 - ClaudeOneM 全 false 曾不序列化；默认改为 on 后会丢失取消意图。已移除省略，补 Haiku，缺字段默认 on、显式 false 保留。
 - 实际安装 Codex + 生产 Router + loopback 流式服务：Haiku 1M → runtime effective_context=950000；手动 200K → 190000，非 Claude 128K → 121600。不是只检查生成的 JSON。
 - 百万 token 容量、真实官方↔中转往返及加密压缩仍未验证；本轮仅实现用户指定默认策略，没有修改真实配置或计费请求。
+
+## 2026-09-30：官方重置卡与总体线程树
+- 重置卡不是中转数据。Magpie 的 wham/usage `rate_limit_reset_credits.available_count` 与 wham/rate-limit-reset-credits 详情 GET 在当前账号真实读取成功，2 张 available 卡，与用户截图概念一致。
+- 官方字段属于私有客户端接口，未提供不代表 0；详情错误必须保留次数和健康用量，不触发过期登录判定。只展示，不实现 consume。
+- 详情返回的 credits 可据 granted_at 筛近 30 天，但不将它宣称为完整独立历史；当前真实样本只有 available，redeemed/expired 仅用 fixture 测试。
+- 线程树使用现有 cwd 项目分组，不推测父子/子 Agent 关系；同名项目按全路径区分。原网格虚拟化按 window.innerWidth 估算，加入侧栏后错误，应与容器 CSS 列宽统一。
+- 详情状态可直接由 nullable credits 表达，删除重复字符串状态；线程跨工程移动/项目消失应清理隐性定位。实际审查及新增回归已覆盖。
+
+## 2026-09-30：线程 JSONL 可视化与维护
+- cc-switch 的角色/长消息折叠和 Magpie 的累计快照/模型变更记录可借鉴；不复制源码，不引入会话数据库。
+- 真实旧日志同时有 id 与 session_id，初次只读探针揭示详情与列表优先级不一致；共用解析后 3 份历史通过，原文件字节不变。
+- 新 IPC 使用受限稳定 key、最终 ID 校验和有界读取；正文按需 50 条、20,000 字符，未知能力/用量不伪装成 0。
+- 本轮 419 lib / 9 workflows / 6 隔离安装版 Codex 回归，完整浏览器与生产入口 smoke；仍不能替代真实官方↔中转、工具续接与实际 1M 容量验证。
+- Clippy 37→26；锁定 notify-rust 的 MSRV=1.89，修正声明（实测工具链 1.97.1）。主包 React 分块约 415kB，不宣称总下载同比减少。
+- 详情证据与边界：docs/THREAD_DETAILS_VALIDATION.md；保留个人临时文件，未提交/打包。

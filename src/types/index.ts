@@ -260,6 +260,17 @@ export interface AccountRateLimitWindow {
 
 export type CodexAccountUsageStatus = "unknown" | "healthy" | "expired" | "error";
 
+export interface AccountResetCredit {
+  status: string;
+  grantedAt: number | null;
+  expiresAt: number | null;
+}
+
+export interface AccountResetCredits {
+  availableCount: number;
+  credits: AccountResetCredit[] | null;
+}
+
 export interface CodexAccountSummary {
   accountKey: string;
   email: string;
@@ -272,6 +283,7 @@ export interface CodexAccountSummary {
   lastUsageAt: number | null;
   primaryWindow: AccountRateLimitWindow | null;
   secondaryWindow: AccountRateLimitWindow | null;
+  resetCredits?: AccountResetCredits | null;
   usageStatus: CodexAccountUsageStatus;
   usageError: string | null;
 }

@@ -39,6 +39,8 @@ pub struct RegistryItem {
     pub last_usage_at: Option<i64>,
     pub cached_primary_window: Option<RateLimitWindow>,
     pub cached_secondary_window: Option<RateLimitWindow>,
+    #[serde(default)]
+    pub cached_reset_credits: Option<AccountResetCredits>,
     #[serde(default = "default_usage_status")]
     pub usage_status: String,
     #[serde(default)]
@@ -531,6 +533,7 @@ impl Repository {
                         last_usage_at: None,
                         cached_primary_window: None,
                         cached_secondary_window: None,
+                        cached_reset_credits: None,
                         usage_status: default_usage_status(),
                         last_usage_error: None,
                     };
@@ -576,6 +579,7 @@ impl Repository {
                                         last_usage_at: None,
                                         cached_primary_window: None,
                                         cached_secondary_window: None,
+                                        cached_reset_credits: None,
                                         usage_status: default_usage_status(),
                                         last_usage_error: None,
                                     };
@@ -594,16 +598,13 @@ impl Repository {
 
         registry
             .items
-            .sort_by(|a, b| a.email.to_lowercase().cmp(&b.email.to_lowercase()));
+            .sort_by_cached_key(|item| item.email.to_lowercase());
         self.save_registry(&registry)?;
         Ok(registry)
     }
 
     fn make_snapshot_path(&self, account_key: &str) -> PathBuf {
-        let safe_name = account_key
-            .replace('@', "_")
-            .replace('/', "_")
-            .replace(':', "_");
+        let safe_name = account_key.replace(['@', '/', ':'], "_");
         self.paths.snapshots_dir.join(format!("{safe_name}.json"))
     }
 
@@ -776,6 +777,7 @@ fn carry_over_registry_state(item: &mut RegistryItem, previous: Option<&Registry
     if previous.cached_secondary_window.is_some() {
         item.cached_secondary_window = previous.cached_secondary_window.clone();
     }
+    item.cached_reset_credits = previous.cached_reset_credits.clone();
 }
 
 #[cfg(test)]
@@ -829,6 +831,7 @@ mod tests {
             last_usage_at: None,
             cached_primary_window: None,
             cached_secondary_window: None,
+            cached_reset_credits: None,
             usage_status: default_usage_status(),
             last_usage_error: None,
         }

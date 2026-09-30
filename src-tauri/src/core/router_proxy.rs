@@ -804,7 +804,7 @@ fn provider_target(
     Ok((
         format!(
             "{}{}",
-            super::newapi::provider_endpoint(&endpoint.base_url, &format!("v1/{suffix}"))
+            super::newapi::provider_endpoint(endpoint.base_url, &format!("v1/{suffix}"))
                 .map_err(|_| (StatusCode::BAD_GATEWAY, "invalid provider URL"))?,
             provider_query(query, translation)
         ),

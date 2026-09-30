@@ -21,6 +21,7 @@ import type { TokenUsagePayload } from "@/types";
 import type { ClientConfigRequest, ClientStatus } from "@/types/clients";
 import type { ThreadSummary } from "@/types/threads";
 import { api } from "@/lib/api";
+import { useToast } from "@/hooks/use-toast";
 import i18n from "@/lib/i18n";
 import { errorKey, errorMessage, formatInvokeError } from "@/lib/invoke-error";
 import { claudeOneMDefaults, clientDefaults } from "@/lib/client-config";
@@ -30,6 +31,11 @@ const realBalanceQuery = api.providers.queryBalance;
 const controls = window as any;
 controls.__TAURI_INTERNALS__ = {};
 const root = createRoot(document.getElementById("root")!);
+function ThreadToastProbe() {
+  const { toasts } = useToast();
+  controls.review.lastToast = toasts[0]?.title;
+  return null;
+}
 const noop = () => {};
 const model = (id: string) => ({ id, displayName: id, contextWindow: null, maxOutputTokens: null,
   endpointTypes: ["responses"], included: true, metadataSource: "upstream" as const });
@@ -238,7 +244,7 @@ function ProviderFixture({ mixed = false }: { mixed?: boolean }) {
       onOpenChange={open => setDialog(current => ({ ...current, open }))} onSaved={noop} /></>;
 }
 
-type FixtureMode = "compact" | "grid" | "image" | "mcp" | "accounts" | "groups" | "overview" | "usage" | "provider" | "warnings" | "thread-actions" | "thread-queue-recovery" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-opencode" | "clients-opencode-stale" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official" | "recovery-long" | "recovery-router";
+type FixtureMode = "thread-details" | "thread-details-missing" | "thread-details-unknown" | "thread-details-error" | "compact" | "grid" | "image" | "mcp" | "accounts" | "account-resets" | "account-resets-unavailable" | "thread-tree" | "groups" | "overview" | "usage" | "provider" | "warnings" | "thread-actions" | "thread-queue-recovery" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-opencode" | "clients-opencode-stale" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official" | "recovery-long" | "recovery-router";
 
 function RecoveryFixture({ thread }: { thread: ThreadSummary }) {
   const [open, setOpen] = useState(true);
@@ -280,6 +286,24 @@ function recoveryPreview(mode: FixtureMode) {
 }
 
 function mount(mode: FixtureMode) {
+  if (mode.startsWith("account-resets")) {
+    const now = Math.floor(Date.now() / 1000);
+    const credits = [
+      { status: "available", grantedAt: now - 86400, expiresAt: now + 23 * 86400 },
+      { status: "available", grantedAt: now, expiresAt: now + 30 * 86400 },
+      { status: "redeemed", grantedAt: now - 7 * 86400, expiresAt: null },
+      { status: "expired", grantedAt: now - 40 * 86400, expiresAt: now - 10 * 86400 },
+    ];
+    const payload = { ...accountList, items: accountList.items.map((account, index) => ({ ...account,
+      lastUsageAt: now, resetCredits: index === 0 ? { availableCount: 2, credits: mode.endsWith("unavailable") ? null : credits }
+        : index === 1 ? { availableCount: 0, credits: [credits[2]] } : null,
+    })) };
+    api.accounts.list = async () => payload as any;
+    api.accounts.refresh = async () => { controls.review.accountRefreshCalls = (controls.review.accountRefreshCalls ?? 0) + 1; return payload as any; };
+  } else {
+    api.accounts.list = async () => accountList as any;
+    api.accounts.refresh = async () => accountList as any;
+  }
   const selectedProvider = mode.startsWith("clients-versions") ? versionedProvider
     : mode === "incompatible" || mode === "native-invalid" ? { ...mixedProvider, model: "chat-model" } : mixedProvider;
   state = { providers: mode === "image" ? [imageProvider] : mode === "groups" ? groupedProviders : mode === "overview" ? [...groupedProviders, provider("extra-1"), provider("extra-2")] : mode === "usage" ? [{ ...groupedProviders[0], balance: { remaining: 12.5, used: 7.5, unit: "USD", rawQuota: 12.5, quotaPerUnit: null, requestCount: 5, checkedAt: Math.floor(Date.now() / 1000), conversionAvailable: true } }] : [selectedProvider], router: { enabled: false, accessMode: mode === "native-invalid" ? "native" : "router", accountless: false, port: 43127, configDrifted: false }, proxyRunning: false, activeProviderId: mode === "image" || mode === "groups" || mode === "overview" || mode === "usage" ? null : selectedProvider.id };
@@ -321,6 +345,13 @@ function mount(mode: FixtureMode) {
   if (mode === "recovery-long") threads[0].title = (
     "恢复已有会话：检查模型切换与长路径 C:/synthetic/" + "unbroken-title".repeat(30) + "。"
   ).repeat(3);
+  if (mode === "thread-tree") {
+    threads.forEach((thread, index) => {
+      const project = index < 90 ? "C:/work/AiMaMi" : index < 95 ? "D:/work/AiMaMi" : index < 99 ? "C:/research" : "";
+      Object.assign(thread, { cwd: project, folderName: project.split("/").at(-1) ?? "", updatedAt: 100 - index, archived: index % 2 === 0 });
+    });
+    controls.review.threadItems = threads;
+  }
   if (mode === "thread-actions" || mode === "thread-queue-recovery") {
     controls.review.recoveryApplyCalls = 0;
     controls.review.deleteCalls = [];
@@ -376,15 +407,43 @@ function mount(mode: FixtureMode) {
     data: { total: mode === "thread-actions" ? 2 : 1, lastScanAt: 0,
       pendingDeletionKeys: controls.review.pendingDeletionKeys ?? [],
       pendingDeletionRecoveryNeeded: controls.review.pendingDeletionRecoveryNeeded ?? false,
-      items: threads.slice(0, mode === "thread-actions" ? 2 : 1) } });
+      items: mode === "thread-tree" ? controls.review.threadItems : mode === "thread-details-missing" ? [{ ...threads[0], rolloutStatus: "missing" as const }] : threads.slice(0, mode === "thread-actions" ? 2 : 1) } });
+  controls.review.detailCalls = 0;
+  controls.review.messageOffsets = [];
+  const diagnostics = { invalidLines: 1, oversizedLines: 0, encryptedRecords: 2, compactions: 1, counterResets: 0, lastUsageOnly: 0, undatedUsage: 0, inheritedSessions: 0 };
+  const usage = { input: 33100000, cached: 29400000, output: 201900, reasoning: 68600, total: 33301900 };
+  api.conversations.details = async () => {
+    controls.review.detailCalls += 1;
+    if (controls.review.detailError || mode === "thread-details-error") throw new Error("Synthetic rollout identity mismatch");
+    return { schemaVersion: 1, success: true, code: "ok", message: "", warnings: [], data: {
+      snapshotBytes: 12345, usage: mode === "thread-details-unknown" ? null : usage,
+      byModel: [{ label: "aimami_relay_2d66f8bc24::gpt-6-astra", usage: { ...usage, total: 27401900 } }, { label: "gpt-6.1-sol", usage: { ...usage, total: 5900000 } }],
+      byDate: [{ label: "2026-09-29", usage: { ...usage, total: 14000000 } }, { label: "2026-09-30", usage: { ...usage, total: 19301900 } }],
+      tools: [{ name: "exec_command", calls: 12 }, { name: "apply_patch", calls: 3 }], diagnostics,
+    } };
+  };
+  api.conversations.messages = async (_target, _key, _id, _snapshot, offset) => {
+    controls.review.messageOffsets.push(offset);
+    if (controls.review.messageError) throw new Error("Synthetic stale snapshot; refresh");
+    return { schemaVersion: 1, success: true, code: "ok", message: "", warnings: [], data: { diagnostics,
+      nextOffset: offset === 0 ? 50 : null,
+      messages: offset === 0 ? [
+        { role: "user", timestamp: "2026-09-30T08:00:00Z", text: "合成的用户问题", truncated: false },
+        { role: "assistant", timestamp: "2026-09-30T08:00:01Z", text: "<script>never execute this</script>\n" + "可读长消息。".repeat(500), truncated: true },
+        { role: "toolCall", timestamp: "2026-09-30T08:00:02Z", text: "exec_command\npwd", truncated: false },
+        { role: "toolResult", timestamp: "2026-09-30T08:00:03Z", text: "C:/synthetic/workspace", truncated: false },
+      ] : [{ role: "assistant", timestamp: "", text: "第二页的合成消息", truncated: false }],
+    } };
+  };
   const groups = Array.from({ length: 10 }, (_, i) => ({ key: "g" + i, cwd: "C:/synthetic/g" + i,
     folderName: "Workspace " + i, items: threads.slice(i * 10, i * 10 + 10), latestAt: 0,
     totalMessages: 20, totalSize: 1000, userMessages: 10, agentMessages: 10 }));
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   root.render(<QueryClientProvider client={queryClient}><TooltipProvider>
     <div style={{ position: "relative", height: 600 }}><PageStage state="active">
+      {mode.startsWith("thread-details") && <ThreadToastProbe />}
       {mode.startsWith("recovery-") ? <RecoveryFixture thread={threads[0] as ThreadSummary} /> :
-        mode === "image" ? <ImageWorkbenchPage /> : mode === "mcp" ? <McpPage /> : mode === "accounts" ? <AccountsPage refreshInterval="5m" onManageProviders={noop} /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage" ? <TokenUsagePanel data={usageFixture} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :
+        mode === "image" ? <ImageWorkbenchPage /> : mode === "mcp" ? <McpPage /> : mode === "accounts" || mode.startsWith("account-resets") ? <AccountsPage refreshInterval="5m" onManageProviders={noop} /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage" ? <TokenUsagePanel data={usageFixture} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode.startsWith("thread-details") || mode === "thread-tree" || mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :
         mode === "access" || mode === "incompatible" || mode === "native-invalid" || mode === "groups" ? <NewApiPage /> :
         mode === "test" ? <ProviderTestDialog open provider={mixedProvider} onOpenChange={noop} onTested={noop} onFailed={noop} /> :
         mode.startsWith("clients") ? <ClientConfigs providers={openCode ? [mixedProvider, provider("alternate")] : [selectedProvider]} /> :
