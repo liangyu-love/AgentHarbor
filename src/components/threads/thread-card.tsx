@@ -385,7 +385,7 @@ export function ThreadCard({
                   type="button"
                   data-thread-title
                   className={cn(
-                    "line-clamp-3 text-left text-sm font-bold leading-snug tracking-tight text-foreground hover:text-primary transition-colors",
+                    "line-clamp-2 min-h-[2.75em] text-left text-sm font-bold leading-snug tracking-tight text-foreground hover:text-primary transition-colors",
                     focusRing,
                   )}
                   title={thread.title || t("threads.untitled")}

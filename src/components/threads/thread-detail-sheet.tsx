@@ -47,7 +47,7 @@ import { formatInvokeError } from "@/lib/invoke-error";
 import { formatDateTime } from "@/lib/format-time";
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
-import { formatSize } from "./thread-utils";
+import { formatSize, formatTokenCount } from "./thread-utils";
 import type {
   ThreadDetails,
   ThreadDiagnostics,
@@ -893,6 +893,15 @@ export function ThreadDetailSheet({
               })}
             </span>
 
+            {detail?.usage && (
+              <span
+                className="rounded bg-muted px-1.5 py-0 font-mono text-[10px] text-muted-foreground"
+                title={t("threads.details.recordedTokens")}
+              >
+                {formatTokenCount(detail.usage.total)} Token
+              </span>
+            )}
+
             {detail && (
               <span className="rounded bg-muted px-1.5 py-0 font-mono text-[10px] text-muted-foreground">
                 {t("threads.details.modelCount", {
@@ -993,12 +1002,24 @@ export function ThreadDetailSheet({
               </p>
             </div>
           ) : detailQuery.isPending ? (
-            <div
-              role="status"
-              className="flex flex-col items-center justify-center gap-3 py-16 text-center text-muted-foreground"
-            >
-              <Loader2 className="h-8 w-8 animate-spin text-primary" />
-              <p className="text-sm font-medium">{t("threads.details.loading")}</p>
+            // Skeleton mirrors the usage-tab layout so the real content
+            // replaces placeholder blocks instead of pushing the page around.
+            <div role="status" aria-busy="true" className="space-y-4">
+              <span className="sr-only">{t("threads.details.loading")}</span>
+              <div className="space-y-3 rounded-2xl border border-border/70 bg-card/60 p-4">
+                <div className="h-3 w-28 animate-pulse rounded-full bg-muted/70" />
+                <div className="h-9 w-44 animate-pulse rounded-lg bg-muted/60" />
+                <div className="h-3 w-full animate-pulse rounded-full bg-muted/50" />
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {Array.from({ length: 4 }).map((_, index) => (
+                    <div
+                      key={index}
+                      className="h-14 animate-pulse rounded-xl bg-muted/40"
+                    />
+                  ))}
+                </div>
+              </div>
+              <div className="h-44 animate-pulse rounded-2xl border border-border/60 bg-card/40" />
             </div>
           ) : detailQuery.isError ? (
             <div

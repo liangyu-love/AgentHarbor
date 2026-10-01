@@ -133,7 +133,9 @@ try {
   }));
   assert.equal(await page.evaluate(() => window.scrollY), 0);
   await page.evaluate(() => window.review.mount("grid"));
-  await page.locator("section").evaluate(element => { element.scrollTop = 1800; });
+  // At 3 columns each group is ~820px tall, so Workspace 3 starts around
+  // 2460px; scroll keeps its header inside the 600px-tall container.
+  await page.locator("section").evaluate(element => { element.scrollTop = 2000; });
   await page.waitForFunction(() => [...document.querySelectorAll("h2")].some(element => {
     const bounds = element.getBoundingClientRect();
     const viewport = element.closest("[data-page-scroll-container]")?.getBoundingClientRect();

@@ -11,7 +11,7 @@ export async function testThreadUiFixes({ page, reset, captureDir }) {
   await page.getByText("Review thread 0", { exact: true }).waitFor();
   const list = page.locator("[data-thread-list]");
   const groups = list.locator("[data-thread-group]");
-  for (const width of [390, 510, 511, 512, 773, 774, 960]) {
+  for (const width of [390, 510, 651, 652, 983, 984, 1315, 1316]) {
     await list.evaluate((element, width) => { element.style.width = `${width}px`; }, width);
     const firstGrid = groups.first().locator("[data-thread-grid]");
     await firstGrid.scrollIntoViewIfNeeded();
@@ -26,7 +26,7 @@ export async function testThreadUiFixes({ page, reset, captureDir }) {
       return { columns: getComputedStyle(grid).gridTemplateColumns.split(" ").length,
         lastBottom: card.bottom, nextTop: next.top };
     });
-    assert.equal(bounds.columns, Math.max(1, Math.floor((width + 12) / 262)), `Column boundary at ${width}px`);
+    assert.equal(bounds.columns, Math.min(4, Math.max(1, Math.floor((width + 12) / 332))), `Column boundary at ${width}px`);
     assert.ok(bounds.nextTop >= bounds.lastBottom, `No group overlap at ${width}px: ${JSON.stringify(bounds)}`);
   }
   await list.evaluate(element => { element.style.width = "510px"; });
