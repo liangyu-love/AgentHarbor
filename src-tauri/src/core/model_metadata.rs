@@ -44,6 +44,20 @@ pub enum MatchKind {
     Unmatched,
 }
 
+impl MatchKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Explicit => "explicit",
+            Self::Exact => "exact",
+            Self::Normalized => "normalized",
+            Self::Consensus => "consensus",
+            Self::Ambiguous => "ambiguous",
+            Self::Invalid => "invalid",
+            Self::Unmatched => "unmatched",
+        }
+    }
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MatchStep {

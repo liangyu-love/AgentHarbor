@@ -480,7 +480,8 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
         if store.version < 6 {
             for provider in &mut store.providers {
                 for model in &mut provider.models {
-                    *model = std::mem::take(model).with_local_defaults();
+                    // Effective values are re-derived at read time; this
+                    // migration only restored identity and a visible name.
                     if model.metadata_source != "manual" {
                         model.display_name = model.id.clone();
                     }
@@ -491,16 +492,13 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
                         .iter()
                         .any(|model| model.id == provider.model)
                 {
-                    provider.models.push(
-                        newapi::Model {
-                            id: provider.model.clone(),
-                            display_name: provider.model.clone(),
-                            included: true,
-                            metadata_source: "local".into(),
-                            ..Default::default()
-                        }
-                        .with_local_defaults(),
-                    );
+                    provider.models.push(newapi::Model {
+                        id: provider.model.clone(),
+                        display_name: provider.model.clone(),
+                        included: true,
+                        metadata_source: "local".into(),
+                        ..Default::default()
+                    });
                 }
             }
             changed = true;
@@ -1308,14 +1306,13 @@ pub fn fetch_models(
         }
         ModelProtocol::AnthropicMessages => newapi::anthropic_models(&connection, &provider_proxy),
     }?;
-    let catalog = model_defaults::Catalog::load_with_backup(&paths.codex_home, &paths.app_data_dir);
     Ok(models
         .into_iter()
         .map(|mut model| {
             if let Some(protocol) = saved_protocols.get(&model.id) {
                 model.protocol = Some(*protocol);
             }
-            model.with_catalog_defaults(&catalog).with_local_defaults()
+            model
         })
         .collect())
 }
@@ -2123,6 +2120,7 @@ pub(crate) fn pricing_for(
         tiers: price.tiers,
         source: price.source,
         revision: catalog.snapshot.revision.clone(),
+        match_kind: metadata.match_kind.as_str().into(),
         complete: price.complete,
         currency: price.currency,
     }
@@ -2953,7 +2951,9 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         // read time instead of freezing a guess.
         assert_eq!(model.context_window, None);
         assert_eq!(model.max_output_tokens, None);
-        assert_eq!(model.metadata_source, "local");
+        // The record keeps no declaration of its own; nothing pretends the
+        // model has a known window.
+        assert_eq!(model.metadata_source, "");
     }
 
     #[test]

@@ -332,6 +332,37 @@ export function RoutingDiagnostics({
                             </span>
                           </p>
 
+                          {/* The catalog revision, match kind and pricing status
+                              this attempt actually used; later refreshes never
+                              rewrite them. */}
+                          <p className="flex flex-wrap items-center gap-1.5 font-mono text-[10px] text-muted-foreground">
+                            <span className="rounded bg-muted px-1.5 py-0">
+                              {t("newapi.matchKind." + attempt.matchKind, {
+                                defaultValue: attempt.matchKind,
+                              })}
+                            </span>
+                            <span className="rounded bg-muted px-1.5 py-0">
+                              {t("newapi.traceCatalogRevision", {
+                                revision: (attempt.catalogRevision ?? "").slice(0, 8) || "—",
+                              })}
+                            </span>
+                            <span
+                              className={cn(
+                                "rounded px-1.5 py-0",
+                                attempt.pricingStatus === "priced"
+                                  ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+                                  : "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+                              )}
+                            >
+                              {attempt.pricingStatus === "priced"
+                                ? t("newapi.tracePriced")
+                                : attempt.pricingStatus === "partial"
+                                  ? t("newapi.costPartial")
+                                  : t("newapi.traceUnpriced")}
+                              {attempt.pricingSource ? ` · ${attempt.pricingSource}` : ""}
+                            </span>
+                          </p>
+
                           <div className="pt-1">
                             <h4 className="mb-1.5 font-semibold text-foreground text-[11px]">
                               {t("newapi.traceSent")}

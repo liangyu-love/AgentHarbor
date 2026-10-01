@@ -111,6 +111,11 @@ export interface RouteAttempt {
   failureStage: string | null;
   error: string | null;
   durationMs: number;
+  /** Catalog revision, resolver match kind and pricing status at dispatch. */
+  catalogRevision: string;
+  matchKind: MatchKind;
+  pricingStatus: string;
+  pricingSource: string;
 }
 export interface RouteDiagnostic {
   id: string;

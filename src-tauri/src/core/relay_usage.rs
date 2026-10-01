@@ -85,6 +85,8 @@ pub struct PricingSnapshot {
     /// manual | catalog | catalogAlias | unknown | ...
     pub source: String,
     pub revision: String,
+    /// Resolver match kind for the request's model identity.
+    pub match_kind: String,
     /// False when conditional pricing cannot be fully evaluated.
     pub complete: bool,
     pub currency: String,
@@ -95,6 +97,7 @@ impl PricingSnapshot {
         Self {
             source: source.into(),
             revision: revision.into(),
+            match_kind: "unmatched".into(),
             complete: false,
             currency: "USD".into(),
             ..Default::default()
@@ -103,6 +106,17 @@ impl PricingSnapshot {
 
     pub fn is_known(&self) -> bool {
         self.input.is_some() || self.output.is_some()
+    }
+
+    /// priced | partial | unpriced
+    pub fn status(&self) -> &'static str {
+        if !self.is_known() {
+            "unpriced"
+        } else if self.complete {
+            "priced"
+        } else {
+            "partial"
+        }
     }
 
     /// Rates that apply to a prompt of this size. Tiers are inclusive lower

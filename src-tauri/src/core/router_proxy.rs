@@ -569,11 +569,14 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         for attempt in 0..2 {
             let started = std::time::Instant::now();
             let suffix = upstream_suffix(&segments, &destination, required_protocol)?;
+            let pricing = relay_pricing(&context, &destination, requested_model.as_deref());
+            let attempt_metadata = route_trace::AttemptMetadata::from(&pricing);
             let relay_request = relay_usage_request(
                 &context,
                 &destination,
                 required_protocol,
                 requested_model.as_deref(),
+                pricing,
             );
             let (url, mut attempt_headers) = match &destination {
                 Destination::Provider {
@@ -591,6 +594,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                             router::ModelProtocol::ChatCompletions => "chatCompletions",
                             router::ModelProtocol::AnthropicMessages => "anthropicMessages",
                         },
+                        attempt_metadata.clone(),
                     );
                     provider_target(
                         provider,
@@ -607,6 +611,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                         "OpenAI",
                         requested_model.as_deref().unwrap_or_default(),
                         "responses",
+                        attempt_metadata.clone(),
                     );
                     official_target(
                         &context,
@@ -932,11 +937,41 @@ fn upstream_suffix(
     })
 }
 
+/// Price snapshot for the attempt about to be sent, fixed before the request
+/// leaves so the ledger and diagnostics agree with what was actually used.
+fn relay_pricing(
+    context: &ArcContext,
+    destination: &Destination,
+    requested_model: Option<&str>,
+) -> relay_usage::PricingSnapshot {
+    match destination {
+        Destination::Provider {
+            provider,
+            model_override,
+            ..
+        } => {
+            let model = model_override
+                .clone()
+                .or_else(|| requested_model.map(str::to_owned))
+                .unwrap_or_else(|| provider.model.clone());
+            router::pricing_for_app_data(&context.app_data_dir, provider, &model)
+        }
+        Destination::Official => {
+            let revision = crate::core::models_dev::load(&context.app_data_dir)
+                .snapshot
+                .revision
+                .clone();
+            relay_usage::PricingSnapshot::unknown("official", &revision)
+        }
+    }
+}
+
 fn relay_usage_request(
     context: &ArcContext,
     destination: &Destination,
     required_protocol: Option<router::ModelProtocol>,
     requested_model: Option<&str>,
+    pricing: relay_usage::PricingSnapshot,
 ) -> Option<relay_usage::RelayUsageRequest> {
     match (destination, required_protocol) {
         (
@@ -952,8 +987,6 @@ fn relay_usage_request(
                 .clone()
                 .or_else(|| requested_model.map(str::to_owned))
                 .unwrap_or_else(|| provider.model.clone());
-            let pricing =
-                router::pricing_for_app_data(&context.app_data_dir, provider, &model);
             Some(relay_usage::RelayUsageRequest::new(
                 context.app_data_dir.clone(),
                 provider.id.clone(),

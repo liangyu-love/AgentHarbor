@@ -109,6 +109,11 @@ React UI ── invoke() ──▶ Tauri commands ──▶ core/
                          platform/            macOS / Windows implementations
 ```
 
+Model capabilities and prices come from one resolver fed by a bundled
+[models.dev](https://github.com/anomalyco/models.dev) snapshot plus an optional
+runtime cache; see [docs/models-dev.md](docs/models-dev.md) for matching rules,
+field precedence and the store migration.
+
 ---
 
 ## Contributing

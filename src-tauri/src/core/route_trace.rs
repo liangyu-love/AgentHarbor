@@ -23,8 +23,34 @@ pub struct Attempt {
     pub failure_stage: Option<String>,
     pub error: Option<String>,
     pub duration_ms: u64,
+    /// Metadata the request used at dispatch time: the catalog revision and
+    /// resolver match kind never change with a later catalog refresh.
+    pub catalog_revision: String,
+    pub match_kind: String,
+    pub pricing_status: String,
+    pub pricing_source: String,
     #[serde(skip)]
     started: Instant,
+}
+
+/// Read-only projection of the request's pricing snapshot for diagnostics.
+#[derive(Clone, Default)]
+pub struct AttemptMetadata {
+    pub catalog_revision: String,
+    pub match_kind: String,
+    pub pricing_status: String,
+    pub pricing_source: String,
+}
+
+impl From<&super::relay_usage::PricingSnapshot> for AttemptMetadata {
+    fn from(pricing: &super::relay_usage::PricingSnapshot) -> Self {
+        Self {
+            catalog_revision: pricing.revision.clone(),
+            match_kind: pricing.match_kind.clone(),
+            pricing_status: pricing.status().into(),
+            pricing_source: pricing.source.clone(),
+        }
+    }
 }
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -202,7 +228,14 @@ impl Trace {
     pub fn stage(&self, stage: &str) {
         self.update(|r| r.stage = stage.into());
     }
-    pub fn attempt(&self, provider_id: &str, provider_name: &str, model: &str, protocol: &str) {
+    pub fn attempt(
+        &self,
+        provider_id: &str,
+        provider_name: &str,
+        model: &str,
+        protocol: &str,
+        metadata: AttemptMetadata,
+    ) {
         self.update(|r| {
             r.stage = "build".into();
             r.attempts.push(Attempt {
@@ -216,6 +249,10 @@ impl Trace {
                 failure_stage: None,
                 error: None,
                 duration_ms: 0,
+                catalog_revision: metadata.catalog_revision,
+                match_kind: metadata.match_kind,
+                pricing_status: metadata.pricing_status,
+                pricing_source: metadata.pricing_source,
                 started: Instant::now(),
             });
         });

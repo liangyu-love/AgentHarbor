@@ -445,18 +445,6 @@ fn model_included_by_default() -> bool {
 }
 
 impl Model {
-    /// Only this provider's reasoning declaration, never inherited context provenance.
-    pub(crate) fn reasoning_metadata(&self) -> Option<Value> {
-        let levels = self.supported_reasoning_levels.as_ref()?;
-        if levels.len() > 32 || !levels.iter().all(ReasoningLevel::valid) {
-            return None;
-        }
-        Some(serde_json::json!({
-            "supported_reasoning_levels": levels,
-            "default_reasoning_level": self.default_reasoning_level,
-        }))
-    }
-
     /// Explicit user values for the resolver. Legacy `metadata_source ==
     /// "manual"` records keep their top-level values as user values until the
     /// store migration moves them into [`ModelOverrides`].
@@ -520,59 +508,6 @@ impl Model {
             fetched_at: None,
             legacy: false,
         })
-    }
-
-    pub fn with_local_defaults(mut self) -> Self {
-        let defaults = super::model_defaults::for_model(&self.id);
-        // Known model limits are shared by every channel. Explicit user edits
-        // and a synced model catalog take priority over the offline definition.
-        if self.metadata_source != "manual" {
-            if self.id.to_ascii_lowercase().contains("claude") {
-                self.context_window = Some(defaults.context_window);
-            }
-            if self.metadata_source != "catalog"
-                && super::model_defaults::named_defaults(&self.id).is_some()
-            {
-                self.context_window = Some(defaults.context_window);
-                self.max_output_tokens = Some(defaults.max_output_tokens);
-                self.metadata_source = "local".into();
-            }
-        }
-        if self.context_window.is_none() {
-            self.context_window = Some(defaults.context_window);
-        }
-        if self.max_output_tokens.is_none() {
-            self.max_output_tokens = Some(
-                defaults
-                    .max_output_tokens
-                    .min(self.context_window.unwrap_or(defaults.context_window)),
-            );
-        }
-        if self.metadata_source.trim().is_empty() {
-            self.metadata_source = "local".into();
-        }
-        self
-    }
-
-    /// Resolve the model's shared limits before channel-reported values.
-    /// Only an explicit manual override may differ between saved configurations.
-    pub(crate) fn with_catalog_defaults(
-        mut self,
-        catalog: &super::model_defaults::Catalog,
-    ) -> Self {
-        if self.metadata_source != "manual" {
-            if let Some(entry) = catalog.get(&self.id) {
-                let defaults = super::model_defaults::for_model(&self.id);
-                self.context_window = entry.context_window;
-                self.max_output_tokens = entry.max_output_tokens.or_else(|| {
-                    entry
-                        .context_window
-                        .map(|limit| defaults.max_output_tokens.min(limit))
-                });
-                self.metadata_source = "catalog".into();
-            }
-        }
-        self
     }
 }
 
@@ -847,44 +782,6 @@ mod tests {
     }
 
     #[test]
-    fn model_defaults_are_channel_independent_and_preserve_manual_limits() {
-        for id in [
-            "claude-haiku-4-5",
-            "claude-sonnet-4",
-            "vendor/claude-custom",
-        ] {
-            for source in ["", "local", "catalog", "upstream", "manual"] {
-                let model = Model {
-                    id: id.into(),
-                    context_window: Some(200_000),
-                    max_output_tokens: Some(4096),
-                    metadata_source: source.into(),
-                    ..Default::default()
-                }
-                .with_local_defaults();
-                assert_eq!(
-                    model.context_window,
-                    Some(if source == "manual" {
-                        200_000
-                    } else {
-                        1_000_000
-                    }),
-                    "{id}/{source}"
-                );
-                assert_eq!(
-                    model.max_output_tokens,
-                    Some(if matches!(source, "manual" | "catalog") {
-                        4096
-                    } else {
-                        64_000
-                    })
-                );
-                assert_eq!(model.clone().with_local_defaults(), model);
-            }
-        }
-    }
-
-    #[test]
     fn models_accept_native_token_fields_as_real_declarations() {
         let result = parse_models(&json!({"data":[
             {"id":"claude-haiku-4-5", "max_input_tokens":200000, "max_tokens":8192},
@@ -942,7 +839,7 @@ mod tests {
         );
         assert!(models[3].supported_reasoning_levels.is_none());
         let legacy: Model = serde_json::from_value(json!({"id":"old-saved-model"})).unwrap();
-        assert!(legacy.reasoning_metadata().is_none());
+        assert!(legacy.supported_reasoning_levels.is_none());
     }
 
     #[test]
@@ -1032,73 +929,6 @@ mod tests {
         assert_eq!(result[1].max_output_tokens, Some(8192));
         assert_eq!(result[1].metadata_source, "upstream");
         assert!(parse_models(&json!({"error":"not authorized"})).is_err());
-    }
-
-    #[test]
-    fn saved_context_limit_is_not_replaced_by_local_defaults() {
-        let model = Model {
-            id: "claude-custom".into(),
-            context_window: Some(128_000),
-            metadata_source: "manual".into(),
-            ..Default::default()
-        }
-        .with_local_defaults();
-        assert_eq!(model.context_window, Some(128_000));
-    }
-
-    #[test]
-    fn old_local_claude_guess_moves_to_one_m_but_manual_limit_stays() {
-        let old = Model {
-            id: "claude-opus-4-8".into(),
-            context_window: Some(200_000),
-            max_output_tokens: Some(64_000),
-            metadata_source: "local".into(),
-            ..Default::default()
-        };
-        let updated = old.clone().with_local_defaults();
-        assert_eq!(updated.context_window, Some(1_000_000));
-        assert_eq!(updated.max_output_tokens, Some(128_000));
-        let manual = Model {
-            metadata_source: "manual".into(),
-            ..old
-        }
-        .with_local_defaults();
-        assert_eq!(manual.context_window, Some(200_000));
-    }
-
-    #[test]
-    fn synced_catalog_replaces_guesses_but_not_manual_limits() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("models_cache.json"),
-            r#"{"models":[{"slug":"gpt-6-luna","context_window":272000}]}"#,
-        )
-        .unwrap();
-        let catalog = super::super::model_defaults::Catalog::load(dir.path());
-        let guessed = Model {
-            id: "gpt-6-luna".into(),
-            context_window: Some(400_000),
-            max_output_tokens: Some(128_000),
-            metadata_source: "local".into(),
-            ..Default::default()
-        }
-        .with_catalog_defaults(&catalog);
-        assert_eq!(guessed.context_window, Some(272_000));
-        assert_eq!(guessed.metadata_source, "catalog");
-        let manual = Model {
-            context_window: Some(400_000),
-            metadata_source: "manual".into(),
-            ..guessed.clone()
-        }
-        .with_catalog_defaults(&catalog);
-        assert_eq!(manual.context_window, Some(400_000));
-        let upstream = Model {
-            context_window: Some(400_000),
-            metadata_source: "upstream".into(),
-            ..guessed
-        }
-        .with_catalog_defaults(&catalog);
-        assert_eq!(upstream.context_window, Some(272_000));
     }
 
     #[test]
