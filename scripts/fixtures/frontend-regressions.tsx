@@ -148,6 +148,10 @@ api.routing.catalogStatus = async () => ({ schemaVersion: 1, sourceUrl: "https:/
   lastCheckedAt: 1_790_740_800, stale: true, origin: "runtime", revision: "abcdef", providers: 225, models: 8339, error: null }) as any;
 api.routing.refreshCatalog = async () => ({ schemaVersion: 1, sourceUrl: "https://models.dev/api.json", fetchedAt: 1_790_740_800,
   lastCheckedAt: 1_790_740_800, stale: false, origin: "runtime", revision: "abcdef", providers: 225, models: 8339, error: null }) as any;
+api.routing.setModelPrice = async (providerId, modelId, price) => {
+  controls.review.priceSaves = [...(controls.review.priceSaves ?? []), { providerId, modelId, price }];
+  return { state, applied: null } as any;
+};
 api.routing.setFailover = async enabled => { state = { ...state, router: { ...state.router, sameModelFailover: enabled } }; return { state, applied: null }; };
 api.loadSnapshot = async () => ({ data: { status: {
   paths: { codexHome: "C:/synthetic/codex", authExists: true, registryExists: true, sessionsExists: true },

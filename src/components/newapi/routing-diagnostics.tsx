@@ -139,21 +139,30 @@ export function RoutingDiagnostics({
               </SelectContent>
             </Select>
             {mode !== "clientDefault" && (
-              <Input
-                type="number"
-                min={mode === "percent" ? 1 : 1}
-                max={mode === "percent" ? 99 : 10_000_000}
-                inputMode="numeric"
-                disabled={disabled}
-                className="h-7 w-24 text-xs tabular-nums"
-                aria-label={t("newapi.compression.title")}
-                value={compressionValue || currentValue}
-                onChange={event => setCompressionValue(event.target.value)}
-                onBlur={event => {
-                  commitCompression(mode, event.target.value);
-                  setCompressionValue("");
-                }}
-              />
+              <>
+                <Input
+                  type="number"
+                  min={1}
+                  max={mode === "percent" ? 99 : 10_000_000}
+                  inputMode="numeric"
+                  disabled={disabled}
+                  className="h-7 w-20 text-xs tabular-nums"
+                  aria-label={
+                    mode === "percent"
+                      ? t("newapi.compression.percent")
+                      : t("newapi.compression.tokens")
+                  }
+                  value={compressionValue || currentValue}
+                  onChange={event => setCompressionValue(event.target.value)}
+                  onBlur={event => {
+                    commitCompression(mode, event.target.value);
+                    setCompressionValue("");
+                  }}
+                />
+                <span className="text-[10px] text-muted-foreground">
+                  {t(mode === "percent" ? "newapi.percentUnit" : "newapi.tokenUnit")}
+                </span>
+              </>
             )}
           </label>
 

@@ -100,3 +100,9 @@ The bundled snapshot redistributes model metadata from
 [models.dev](https://github.com/anomalyco/models.dev). Consult that repository
 for the license text that applies to the data, and keep this attribution when
 redistributing builds that contain the snapshot.
+
+Matching behaviour (bare-ID lookup, path/channel prefixes, budget preference for
+`limit.input`, provider-scoped prices, background refresh with a last-good
+fallback) was observed from [Magpie](https://github.com/yetone/magpie) at commit
+`7a3337dd25bd759b1a73a051cdefeab6033b63f6`. Only behaviour was studied; no
+Magpie source code was copied, so its license is not inherited here.

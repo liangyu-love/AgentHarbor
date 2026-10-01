@@ -460,20 +460,25 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
                       </SelectContent>
                     </Select>
                     {(draft.compressionMode === "percent" || draft.compressionMode === "tokens") && (
-                      <Input
-                        className="w-28"
-                        inputMode="numeric"
-                        autoComplete="off"
-                        spellCheck={false}
-                        disabled={saving}
-                        value={draft.compressionValue}
-                        placeholder={draft.compressionMode === "percent" ? "90" : "180000"}
-                        aria-label={t("newapi.compression.providerLevel")}
-                        onChange={event => update("compressionValue", event.target.value)}
-                      />
+                      <>
+                        <Input
+                          className="w-24"
+                          inputMode="numeric"
+                          autoComplete="off"
+                          spellCheck={false}
+                          disabled={saving}
+                          value={draft.compressionValue}
+                          placeholder={draft.compressionMode === "percent" ? "90" : "180000"}
+                          aria-label={t("newapi.compression.providerLevel")}
+                          onChange={event => update("compressionValue", event.target.value)}
+                        />
+                        <span className="shrink-0 text-[10px] text-muted-foreground">
+                          {t(draft.compressionMode === "percent" ? "newapi.percentUnit" : "newapi.tokenUnit")}
+                        </span>
+                      </>
                     )}
                   </div>
-                  <p className="text-[11px] leading-relaxed text-muted-foreground">{t("newapi.compression.description")}</p>
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">{t("newapi.compression.providerHint")}</p>
                 </div>
                 <div className="space-y-1.5 sm:col-span-2">
                   <Label htmlFor="newapi-provider-catalog" className="text-[13px]">{t("newapi.catalogMapping.title")}</Label>

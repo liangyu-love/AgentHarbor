@@ -28,6 +28,17 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   // The applied state distinguishes what clients already use from a pending sync.
   assert.match(await catalog.innerText(), /已生效/);
   assert.match(await catalog.innerText(), /阈值 900,000/);
+  // Manual price overrides are saved per model and estimated cost only.
+  await catalog.getByRole("button", { name: "编辑价格", exact: true }).click();
+  await catalog.getByLabel("输入", { exact: true }).fill("1.5");
+  await catalog.getByLabel("输出", { exact: true }).fill("7.5");
+  await catalog.getByRole("button", { name: "保存", exact: true }).click();
+  await page.waitForFunction(() => (window.review.priceSaves ?? []).length === 1);
+  assert.deepEqual(await page.evaluate(() => window.review.priceSaves[0]), {
+    providerId: "relay",
+    modelId: "claude-opus-5-5-kiro",
+    price: { input: 1.5, output: 7.5, cacheRead: null, cacheWrite: null },
+  });
   await catalog.getByRole("textbox").fill("absent-model");
   await catalog.getByText("没有匹配的已配置模型。", { exact: true }).waitFor();
   await catalog.getByRole("textbox").fill("kiro");

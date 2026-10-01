@@ -101,6 +101,11 @@ const routingApi = {
   setFailover: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_failover", { enabled }),
   setCompression: (policy: import("@/types/newapi").CompressionPolicy) =>
     invoke<NewApiStateChange>("set_newapi_compression", { policy }),
+  setModelPrice: (
+    providerId: string,
+    modelId: string,
+    price: import("@/types/newapi").ModelPriceOverrides | null,
+  ) => invoke<NewApiStateChange>("set_newapi_model_price", { providerId, modelId, price }),
   setEnabled: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_smart_routing", { enabled }),
   setAccessMode: (mode: CodexAccessMode) => invoke<NewApiStateChange>("set_newapi_access_mode", { mode }),
   setAccountless: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_accountless", { enabled }),

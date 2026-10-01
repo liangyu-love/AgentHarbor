@@ -1699,6 +1699,47 @@ pub fn set_compression(
     })
 }
 
+/// Explicit per-model price override. Prices never affect routing, so nothing
+/// is re-applied; the ledger prices new requests with the updated rates.
+pub fn set_model_price_override(
+    paths: &CodexPaths,
+    provider_id: &str,
+    model_id: &str,
+    price: Option<newapi::PriceOverrides>,
+) -> Result<StateChange, String> {
+    let price = price.filter(|rates| {
+        [rates.input, rates.output, rates.cache_read, rates.cache_write]
+            .iter()
+            .any(|rate| rate.is_some())
+    });
+    if price.as_ref().is_some_and(|rates| {
+        [rates.input, rates.output, rates.cache_read, rates.cache_write]
+            .iter()
+            .any(|rate| rate.is_some_and(|rate| !rate.is_finite() || rate < 0.0 || rate > 1_000_000.0))
+    }) {
+        return Err("newapi.errors.context".into());
+    }
+    let _guard = store_write_guard()?;
+    let mut store = load_store_unlocked(paths)?;
+    let provider = store
+        .providers
+        .iter_mut()
+        .find(|provider| provider.id == provider_id)
+        .ok_or("newapi.errors.notFound")?;
+    let model = provider
+        .models
+        .iter_mut()
+        .find(|model| model.id == model_id)
+        .ok_or("newapi.errors.notFound")?;
+    model.overrides.price = price;
+    provider.updated_at = now();
+    save_store_unlocked(paths, &store)?;
+    Ok(StateChange {
+        state: state_from_store_at(&store, super::router_proxy::is_running(), Some(paths)),
+        applied: None,
+    })
+}
+
 /// A clean app exit ends this session's route. A previous run's saved toggle
 /// alone does not confer ownership of Codex's current config.
 pub fn stop_smart_routing_on_exit(paths: &CodexPaths) -> Result<(), String> {
@@ -2700,6 +2741,61 @@ mod tests {
             compression: None,
             network_mode: "proxy".into(),
         }
+    }
+
+    #[test]
+    fn user_price_overrides_win_over_the_catalog_and_clear_cleanly() {
+        let (_dir, paths) = paths();
+        let mut draft = input("Relay", "https://relay.example.com");
+        draft.model = "gpt-5.2".into();
+        draft.models = vec![newapi::Model {
+            id: "gpt-5.2".into(),
+            display_name: "GPT-5.2".into(),
+            included: true,
+            ..Default::default()
+        }];
+        let state = save_provider(&paths, draft).unwrap();
+        let provider_id = state.state.providers[0].id.clone();
+        let store = load_store(&paths).unwrap();
+        let catalog = models_dev::load(&paths.app_data_dir);
+        // Without an override the catalog price applies (or stays unknown).
+        let before = model_projection(&store.providers[0], "gpt-5.2", None, &catalog, &store.global_compression());
+        assert_ne!(before.0.price.source, "manual");
+
+        set_model_price_override(
+            &paths,
+            &provider_id,
+            "gpt-5.2",
+            Some(newapi::PriceOverrides {
+                input: Some(1.5),
+                output: Some(7.5),
+                cache_read: Some(0.15),
+                cache_write: None,
+            }),
+        )
+        .unwrap();
+        let store = load_store(&paths).unwrap();
+        let after = model_projection(&store.providers[0], "gpt-5.2", None, &catalog, &store.global_compression());
+        assert_eq!(after.0.price.source, "manual");
+        assert_eq!(after.0.price.input, Some(1.5));
+        assert_eq!(after.0.price.output, Some(7.5));
+        assert_eq!(after.0.price.complete, true);
+
+        // Clearing restores the catalog price.
+        set_model_price_override(&paths, &provider_id, "gpt-5.2", None).unwrap();
+        let store = load_store(&paths).unwrap();
+        assert!(store.providers[0].models[0].overrides.price.is_none());
+        let cleared = model_projection(&store.providers[0], "gpt-5.2", None, &catalog, &store.global_compression());
+        assert_ne!(cleared.0.price.source, "manual");
+
+        // Negative or absurd rates are rejected.
+        assert!(set_model_price_override(
+            &paths,
+            &provider_id,
+            "gpt-5.2",
+            Some(newapi::PriceOverrides { input: Some(-1.0), ..Default::default() }),
+        )
+        .is_err());
     }
 
     #[test]

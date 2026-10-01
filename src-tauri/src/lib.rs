@@ -174,6 +174,7 @@ pub fn run() {
             commands::newapi::refresh_models_dev_catalog,
             commands::newapi::set_newapi_failover,
             commands::newapi::set_newapi_compression,
+            commands::newapi::set_newapi_model_price,
             commands::newapi::save_newapi_provider,
             commands::newapi::delete_newapi_provider,
             commands::newapi::set_newapi_provider_enabled,

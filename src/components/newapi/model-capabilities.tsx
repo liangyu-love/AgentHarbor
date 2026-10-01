@@ -63,6 +63,13 @@ function number(value: number | null | undefined) {
   return value === null || value === undefined ? "—" : value.toLocaleString();
 }
 
+/** Prices keep enough decimals to stay meaningful without float noise. */
+function priceNumber(value: number | null | undefined) {
+  if (value === null || value === undefined) return "—";
+  if (!Number.isFinite(value)) return "—";
+  return Number(value.toFixed(4)).toString();
+}
+
 function CompressionLine({ plan, applied }: { plan: CompressionPlan; applied: boolean | null }) {
   const { t } = useTranslation();
   const mode =
@@ -122,53 +129,213 @@ function CompressionLine({ plan, applied }: { plan: CompressionPlan; applied: bo
   );
 }
 
-function PriceLine({ price }: { price: PriceInfo }) {
+function PriceLine({
+  price,
+  editing,
+  onEdit,
+}: {
+  price: PriceInfo;
+  editing: boolean;
+  onEdit: () => void;
+}) {
   const { t } = useTranslation();
-  if (!price.input && !price.output) {
-    return (
-      <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
-        <h4 className="flex items-center gap-1.5 font-bold text-foreground text-xs">
+  const empty = !price.input && !price.output;
+  return (
+    <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
+      <h4 className="flex items-center justify-between gap-1.5 font-bold text-foreground text-xs">
+        <span className="flex items-center gap-1.5">
           <DollarSign className="h-3.5 w-3.5 text-primary" />
           <span>{t("newapi.capabilityPrice")}</span>
-        </h4>
+        </span>
+        <button
+          type="button"
+          onClick={onEdit}
+          aria-expanded={editing}
+          className="text-[10px] font-medium text-primary transition-colors hover:text-primary/80"
+        >
+          {t("newapi.priceEdit")}
+        </button>
+      </h4>
+      {empty ? (
         <p className="mt-1 text-xs text-muted-foreground">
           {t("newapi.capabilitySource." + price.source, { defaultValue: price.source })}
           {price.note ? ` · ${price.note}` : ""}
         </p>
-      </div>
-    );
-  }
-  const reference = price.sourceRef
-    ? `${price.sourceRef.providerId}/${price.sourceRef.modelId}`
-    : "—";
+      ) : (
+        <>
+          <p className="mt-1 font-mono text-xs font-bold text-foreground">
+            {priceNumber(price.input)} / {priceNumber(price.output)}
+            <span className="ml-1 text-[10px] font-normal text-muted-foreground">
+              {t("newapi.capabilityPricePerMillion")}
+            </span>
+          </p>
+          {!price.complete && (
+            <p className="text-[10px] text-amber-600 dark:text-amber-400">
+              {t("newapi.capabilityPriceIncomplete")}
+            </p>
+          )}
+          <div className="mt-1 flex flex-wrap items-center gap-1 font-mono text-[10px] text-muted-foreground/80">
+            <span>
+              {price.sourceRef
+                ? `${price.sourceRef.providerId}/${price.sourceRef.modelId}`
+                : "—"}
+            </span>
+            <span>·</span>
+            <span>
+              {t("newapi.capabilitySource." + price.source, { defaultValue: price.source })}
+            </span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Explicit price override: estimated cost only, never a billing reference. */
+function PriceEditor({
+  providerId,
+  modelId,
+  price,
+  onClose,
+  onSaved,
+}: {
+  providerId: string;
+  modelId: string;
+  price: PriceInfo;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { t } = useTranslation();
+  const manual = price.source === "manual";
+  const [rates, setRates] = useState({
+    input: manual && price.input != null ? String(price.input) : "",
+    output: manual && price.output != null ? String(price.output) : "",
+    cacheRead: manual && price.cacheRead != null ? String(price.cacheRead) : "",
+    cacheWrite: manual && price.cacheWrite != null ? String(price.cacheWrite) : "",
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const parse = (text: string) => {
+    if (!text.trim()) return null;
+    const value = Number(text);
+    return Number.isFinite(value) && value >= 0 ? value : undefined;
+  };
+  const submit = async () => {
+    const parsed = {
+      input: parse(rates.input),
+      output: parse(rates.output),
+      cacheRead: parse(rates.cacheRead),
+      cacheWrite: parse(rates.cacheWrite),
+    };
+    if (
+      Object.values(parsed).some(value => value === undefined) ||
+      (parsed.input == null && parsed.output == null)
+    ) {
+      setError(t("newapi.priceInvalid"));
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await api.routing.setModelPrice(providerId, modelId, {
+        input: parsed.input,
+        output: parsed.output,
+        cacheRead: parsed.cacheRead,
+        cacheWrite: parsed.cacheWrite,
+      });
+      onSaved();
+      onClose();
+    } catch (cause) {
+      setError(formatInvokeError(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const clear = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.routing.setModelPrice(providerId, modelId, null);
+      onSaved();
+      onClose();
+    } catch (cause) {
+      setError(formatInvokeError(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const fields: Array<{ key: keyof typeof rates; label: string }> = [
+    { key: "input", label: t("newapi.priceInput") },
+    { key: "output", label: t("newapi.priceOutput") },
+    { key: "cacheRead", label: t("newapi.priceCacheRead") },
+    { key: "cacheWrite", label: t("newapi.priceCacheWrite") },
+  ];
   return (
-    <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
-      <h4 className="flex items-center gap-1.5 font-bold text-foreground text-xs">
-        <DollarSign className="h-3.5 w-3.5 text-primary" />
-        <span>{t("newapi.capabilityPrice")}</span>
-      </h4>
-      <p className="mt-1 font-mono text-xs font-bold text-foreground">
-        {price.input ?? "—"} / {price.output ?? "—"}
-        <span className="ml-1 text-[10px] font-normal text-muted-foreground">
-          {t("newapi.capabilityPricePerMillion")}
-        </span>
+    <div className="rounded-xl border border-primary/30 bg-primary/[0.04] p-3">
+      <p className="text-[11px] font-semibold text-foreground">{t("newapi.priceEditorTitle")}</p>
+      <div className="mt-2 grid gap-2 sm:grid-cols-4">
+        {fields.map(field => (
+          <label key={field.key} className="space-y-1">
+            <span className="block text-[10px] text-muted-foreground">{field.label}</span>
+            <input
+              type="number"
+              min={0}
+              step="0.0001"
+              inputMode="decimal"
+              disabled={busy}
+              value={rates[field.key]}
+              placeholder="0"
+              onChange={event =>
+                setRates(current => ({ ...current, [field.key]: event.target.value }))
+              }
+              className="h-7 w-full rounded-md border border-border/70 bg-background px-1.5 font-mono text-[11px] tabular-nums"
+            />
+          </label>
+        ))}
+      </div>
+      <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
+        {t("newapi.priceManualNote")}
       </p>
-      {!price.complete && (
-        <p className="text-[10px] text-amber-600 dark:text-amber-400">
-          {t("newapi.capabilityPriceIncomplete")}
+      {error && (
+        <p role="alert" className="mt-1 text-[11px] text-destructive">
+          {error}
         </p>
       )}
-      <div className="mt-1 flex flex-wrap items-center gap-1 font-mono text-[10px] text-muted-foreground/80">
-        <span>{reference}</span>
-        <span>·</span>
-        <span>{t("newapi.capabilitySource." + price.source, { defaultValue: price.source })}</span>
+      <div className="mt-2 flex justify-end gap-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={busy || !manual}
+          onClick={() => void clear()}
+          className="h-7 rounded-lg px-2 text-[11px]"
+        >
+          {t("newapi.priceClear")}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy}
+          onClick={onClose}
+          className="h-7 rounded-lg px-2 text-[11px]"
+        >
+          {t("common.cancel")}
+        </Button>
+        <Button
+          size="sm"
+          disabled={busy}
+          onClick={() => void submit()}
+          className="h-7 rounded-lg px-2.5 text-[11px]"
+        >
+          {t("newapi.save")}
+        </Button>
       </div>
     </div>
   );
 }
 
-function CapabilityCard({ model }: { model: ModelCapability }) {
+function CapabilityCard({ model, onSaved }: { model: ModelCapability; onSaved: () => void }) {
   const { t } = useTranslation();
+  const [priceEditing, setPriceEditing] = useState(false);
   const projection: ClientProjection = model.projection;
   const levels = model.reasoning.value ?? [];
   const conflicts = model.conflicts;
@@ -271,8 +438,22 @@ function CapabilityCard({ model }: { model: ModelCapability }) {
             <Origin field={model.output} />
           </div>
 
-          <PriceLine price={model.price} />
+          <PriceLine
+            price={model.price}
+            editing={priceEditing}
+            onEdit={() => setPriceEditing(current => !current)}
+          />
         </div>
+
+        {priceEditing && (
+          <PriceEditor
+            providerId={model.providerId}
+            modelId={model.upstreamModel}
+            price={model.price}
+            onClose={() => setPriceEditing(false)}
+            onSaved={onSaved}
+          />
+        )}
 
         <div className="grid gap-3 lg:grid-cols-3">
           <CompressionLine plan={projection.compression} applied={model.compressionApplied} />
@@ -533,6 +714,7 @@ export function ModelCapabilities() {
               <CapabilityCard
                 key={model.providerId + "::" + model.upstreamModel}
                 model={model}
+                onSaved={() => void queryClient.invalidateQueries({ queryKey: ["model-capabilities"] })}
               />
             ))}
           </div>

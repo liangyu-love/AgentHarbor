@@ -139,12 +139,12 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
         </div>
       ) : (
         <div className="overflow-hidden rounded-xl border">
-          <div className="hidden grid-cols-[32px_minmax(130px,1.25fr)_minmax(100px,1fr)_165px_110px_36px] gap-2 bg-muted/50 px-3 py-2 text-[11px] font-medium text-muted-foreground md:grid">
+          <div className="hidden grid-cols-[32px_minmax(130px,1.2fr)_minmax(100px,1fr)_150px_240px_36px] gap-2 bg-muted/50 px-3 py-2 text-[11px] font-medium text-muted-foreground md:grid">
             <span><span className="sr-only">{t("newapi.includeModel")}</span></span>
             <span>{t("newapi.modelId")}</span>
             <span>{t("newapi.menuDisplayName")}</span>
             <span>{t("newapi.protocol")}</span>
-            <span>{t("newapi.contextWindowShort")}</span>
+            <span title={t("newapi.modelLimitsColumnHint")}>{t("newapi.modelLimitsColumn")}</span>
             <span><span className="sr-only">{t("newapi.removeModel")}</span></span>
           </div>
           <div className="max-h-[310px] overflow-y-auto">
@@ -152,7 +152,7 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
               const supported = supportsProtocol(model, effectiveModelProtocol(model, protocol));
               const isDefault = defaultModel === model.id;
               return (
-                <div key={model.id} className="grid gap-2 border-t px-3 py-2.5 first:border-t-0 md:grid-cols-[32px_minmax(130px,1.25fr)_minmax(100px,1fr)_165px_110px_36px] md:items-center">
+                <div key={model.id} className="grid gap-2 border-t px-3 py-2.5 first:border-t-0 md:grid-cols-[32px_minmax(130px,1.2fr)_minmax(100px,1fr)_150px_240px_36px] md:items-center">
                   <div className="flex items-center gap-2 md:block">
                     <Checkbox checked={model.included} disabled={disabled || isDefault} onCheckedChange={value => setIncluded(model, value === true)} aria-label={t("newapi.includeModelAria", { model: model.id })} />
                     <span className="text-xs text-muted-foreground md:hidden">{t("newapi.includeModel")}</span>
@@ -183,39 +183,52 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
                       <SelectItem value="anthropicMessages">{t("newapi.protocolAnthropicMessages")}</SelectItem>
                     </SelectContent>
                   </Select>
-                  <div className="space-y-0.5">
-                    <Input className="h-8 text-xs tabular-nums" type="number" min={1024} max={100000000} inputMode="numeric" placeholder={t("clients.limitsAuto")} value={model.overrides?.contextWindow ?? ""} disabled={disabled} aria-label={t("newapi.contextFor", { model: model.id })} onChange={event => patch(model.id, { overrides: { ...model.overrides, contextWindow: event.target.value ? Number(event.target.value) : null }, metadataSource: "manual" })} />
-                    {model.overrides?.contextWindow != null && (
-                      <button
-                        type="button"
-                        disabled={disabled}
-                        onClick={() => patch(model.id, { overrides: { ...model.overrides, contextWindow: null } })}
-                        className="text-[10px] font-medium text-primary transition-colors hover:text-primary/80 disabled:opacity-40"
-                      >
-                        {t("clients.limitsAuto")}
-                      </button>
-                    )}
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-8 shrink-0 text-[9px] uppercase tracking-wider text-muted-foreground/70" title={t("newapi.contextWindowShort")}>
+                        {t("newapi.limitShort")}
+                      </span>
+                      <Input className="h-7 text-xs tabular-nums" type="number" min={1024} max={100000000} inputMode="numeric" placeholder={t("clients.limitsAuto")} value={model.overrides?.contextWindow ?? ""} disabled={disabled} aria-label={t("newapi.contextFor", { model: model.id })} onChange={event => patch(model.id, { overrides: { ...model.overrides, contextWindow: event.target.value ? Number(event.target.value) : null }, metadataSource: "manual" })} />
+                      {model.overrides?.contextWindow != null && (
+                        <button
+                          type="button"
+                          disabled={disabled}
+                          onClick={() => patch(model.id, { overrides: { ...model.overrides, contextWindow: null } })}
+                          className="shrink-0 text-[10px] font-medium text-primary transition-colors hover:text-primary/80 disabled:opacity-40"
+                        >
+                          {t("clients.limitsAuto")}
+                        </button>
+                      )}
+                    </div>
                     {/* Per-model catalog reference; empty follows the provider mapping. */}
-                    <input
-                      type="text"
-                      spellCheck={false}
-                      autoComplete="off"
-                      disabled={disabled}
-                      aria-label={t("newapi.catalogMapping.modelLevel")}
-                      placeholder={t("newapi.catalogMapping.modelPlaceholder")}
-                      className="h-7 w-full rounded-md border border-border/70 bg-background px-1 text-[10px] text-muted-foreground"
-                      value={mappingDrafts[model.id] ?? (model.catalogRef ? `${model.catalogRef.providerId}/${model.catalogRef.modelId}` : "")}
-                      onChange={event => {
-                        const text = event.target.value;
-                        setMappingDrafts(current => ({ ...current, [model.id]: text }));
-                        // Empty clears immediately; a complete reference commits as typed.
-                        if (!text.trim()) commitMapping(model.id, "");
-                        else if (text.includes("/")) commitMapping(model.id, text);
-                      }}
-                      onBlur={event => commitMapping(model.id, event.target.value)}
-                    />
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-8 shrink-0 text-[9px] uppercase tracking-wider text-muted-foreground/70" title={t("newapi.catalogMapping.modelLevel")}>
+                        {t("newapi.mappingShort")}
+                      </span>
+                      <input
+                        type="text"
+                        spellCheck={false}
+                        autoComplete="off"
+                        disabled={disabled}
+                        aria-label={t("newapi.catalogMapping.modelLevel")}
+                        placeholder={t("newapi.catalogMapping.modelPlaceholder")}
+                        className="h-7 w-full min-w-0 rounded-md border border-border/70 bg-background px-1.5 font-mono text-[10px] text-muted-foreground"
+                        value={mappingDrafts[model.id] ?? (model.catalogRef ? `${model.catalogRef.providerId}/${model.catalogRef.modelId}` : "")}
+                        onChange={event => {
+                          const text = event.target.value;
+                          setMappingDrafts(current => ({ ...current, [model.id]: text }));
+                          // Empty clears immediately; a complete reference commits as typed.
+                          if (!text.trim()) commitMapping(model.id, "");
+                          else if (text.includes("/")) commitMapping(model.id, text);
+                        }}
+                        onBlur={event => commitMapping(model.id, event.target.value)}
+                      />
+                    </div>
                     {/* Per-model compression policy; inherit follows the provider. */}
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-8 shrink-0 text-[9px] uppercase tracking-wider text-muted-foreground/70" title={t("newapi.compression.modelLevel")}>
+                        {t("newapi.compressionShort")}
+                      </span>
                       <select
                         disabled={disabled}
                         aria-label={t("newapi.compression.modelLevel")}
@@ -237,27 +250,32 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
                         <option value="clientDefault">{t("newapi.compression.clientDefault")}</option>
                       </select>
                       {(model.compression?.mode === "percent" || model.compression?.mode === "tokens") && (
-                        <input
-                          type="number"
-                          inputMode="numeric"
-                          min={1}
-                          max={model.compression.mode === "percent" ? 99 : 10_000_000}
-                          disabled={disabled}
-                          aria-label={t("newapi.compression.modelLevel")}
-                          className="h-7 w-16 rounded-md border border-border/70 bg-background px-1 text-[10px] tabular-nums"
-                          value={model.compression.mode === "percent" ? model.compression.percent : model.compression.tokens}
-                          onChange={event => {
-                            const value = Number(event.target.value);
-                            const compression = model.compression;
-                            if (!Number.isSafeInteger(value) || value <= 0) return;
-                            if (compression?.mode === "percent") {
-                              if (value > 99) return;
-                              patch(model.id, { compression: { mode: "percent", percent: value } });
-                            } else if (compression?.mode === "tokens") {
-                              patch(model.id, { compression: { mode: "tokens", tokens: value } });
-                            }
-                          }}
-                        />
+                        <>
+                          <input
+                            type="number"
+                            inputMode="numeric"
+                            min={1}
+                            max={model.compression.mode === "percent" ? 99 : 10_000_000}
+                            disabled={disabled}
+                            aria-label={t("newapi.compression.modelLevel")}
+                            className="h-7 w-16 shrink-0 rounded-md border border-border/70 bg-background px-1 text-[10px] tabular-nums"
+                            value={model.compression.mode === "percent" ? model.compression.percent : model.compression.tokens}
+                            onChange={event => {
+                              const value = Number(event.target.value);
+                              const compression = model.compression;
+                              if (!Number.isSafeInteger(value) || value <= 0) return;
+                              if (compression?.mode === "percent") {
+                                if (value > 99) return;
+                                patch(model.id, { compression: { mode: "percent", percent: value } });
+                              } else if (compression?.mode === "tokens") {
+                                patch(model.id, { compression: { mode: "tokens", tokens: value } });
+                              }
+                            }}
+                          />
+                          <span className="shrink-0 text-[9px] text-muted-foreground/70">
+                            {t(model.compression.mode === "percent" ? "newapi.percentUnit" : "newapi.tokenUnit")}
+                          </span>
+                        </>
                       )}
                     </div>
                   </div>

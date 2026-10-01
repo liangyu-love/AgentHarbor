@@ -1010,11 +1010,15 @@ fn resolve_price(
             "no capability catalog mapping; prices stay provider-scoped",
         ));
     }
+    // A price found through a reduced candidate is an alias fallback; the full
+    // identity keeps the plain catalog label.
+    let alias_of = |value: &str| !value.eq_ignore_ascii_case(request.raw_model_id.trim());
     // 3. The accepted candidate inside the price scope, when the accepted
     // normalization is price-safe. All matching entries must agree, otherwise
     // the price is treated as ambiguous instead of picking one at random.
     if price_safe(accepted_step) {
-        if let Some(price) = scoped_price(catalog, scope, accepted_value) {
+        if let Some(price) = scoped_price(catalog, scope, accepted_value, alias_of(accepted_value))
+        {
             return price;
         }
     }
@@ -1028,7 +1032,8 @@ fn resolve_price(
         .collect();
     ordered.sort_by_key(|candidate| candidate.value.len());
     for candidate in ordered.into_iter().rev() {
-        if let Some(price) = scoped_price(catalog, scope, &candidate.value) {
+        if let Some(price) = scoped_price(catalog, scope, &candidate.value, alias_of(&candidate.value))
+        {
             return price;
         }
     }
@@ -1037,7 +1042,7 @@ fn resolve_price(
 
 /// Price for one model ID inside the billing scope; `None` when nothing is
 /// priced or when the scope disagrees, so a conflict is never papered over.
-fn scoped_price(catalog: &Catalog, scope: &[String], model_id: &str) -> Option<PriceInfo> {
+fn scoped_price(catalog: &Catalog, scope: &[String], model_id: &str, alias: bool) -> Option<PriceInfo> {
     let matches = catalog.scoped(scope, model_id);
     let mut priced = matches
         .iter()
@@ -1058,7 +1063,7 @@ fn scoped_price(catalog: &Catalog, scope: &[String], model_id: &str) -> Option<P
         Some(first_cost),
         first_entry.model.last_updated.clone(),
         Some(first_entry.model_ref()),
-        true,
+        alias,
     ))
 }
 
@@ -1380,6 +1385,16 @@ mod tests {
         assert_eq!(resolved.context_window.value, Some(200_000));
         assert_eq!(resolved.context_window.source, source::CATALOG);
         assert_eq!(resolved.price.input, Some(1.0), "relay price, not anthropic's 5");
+        // The full identity matched inside the billing scope: a plain catalog
+        // price, not an alias fallback.
+        assert_eq!(resolved.price.source, source::CATALOG);
+
+        // A reduced candidate inside the same scope keeps the alias label.
+        let mut request = input_for("claude-opus-4-5-kiro");
+        request.catalog_providers = &capability;
+        request.price_providers = &billing;
+        let resolved = resolve(&catalog, &request);
+        assert_eq!(resolved.price.input, Some(1.0));
         assert_eq!(resolved.price.source, source::CATALOG_ALIAS);
 
         // Without the binding the price follows the capability scope.
@@ -1387,6 +1402,7 @@ mod tests {
         request.catalog_providers = &capability;
         let resolved = resolve(&catalog, &request);
         assert_eq!(resolved.price.input, Some(5.0));
+        assert_eq!(resolved.price.source, source::CATALOG);
     }
 
     #[test]

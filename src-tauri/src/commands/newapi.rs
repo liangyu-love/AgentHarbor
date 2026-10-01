@@ -94,6 +94,20 @@ pub async fn set_newapi_compression(
     router::set_compression(&paths, policy)
 }
 
+/// Explicit per-model price override (USD per million tokens); `null` clears it
+/// so the catalog price applies again.
+#[tauri::command]
+pub async fn set_newapi_model_price(
+    repo: State<'_, Mutex<Repository>>,
+    provider_id: String,
+    model_id: String,
+    price: Option<newapi::PriceOverrides>,
+) -> Result<StateChange, String> {
+    let paths = paths(&repo)?;
+    let _guard = routing_runtime::mutation_guard().await;
+    router::set_model_price_override(&paths, &provider_id, &model_id, price)
+}
+
 #[tauri::command]
 pub async fn load_newapi_state(repo: State<'_, Mutex<Repository>>) -> Result<NewApiState, String> {
     let paths = paths(&repo)?;
