@@ -119,7 +119,7 @@ pub struct Cost {
     pub context_over_200k: Option<CostRates>,
 }
 
-#[derive(Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct CostRates {
     pub input: Option<f64>,
@@ -131,7 +131,7 @@ pub struct CostRates {
     pub output_audio: Option<f64>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CostTier {
     #[serde(flatten)]
@@ -139,7 +139,7 @@ pub struct CostTier {
     pub tier: TierCondition,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TierCondition {
     #[serde(rename = "type")]

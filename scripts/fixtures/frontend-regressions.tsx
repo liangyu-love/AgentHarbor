@@ -73,6 +73,7 @@ const tokens = (totalTokens: number, inputTokens: number, outputTokens: number, 
 });
 const relayTotals = (totalTokens: number, inputTokens: number, outputTokens: number, requestCount = 8) => ({
   totalTokens, inputTokens, outputTokens, reasoningTokens: 0, requestCount, successfulCount: requestCount, reportedCount: requestCount,
+  cacheReadTokens: 0, cacheWriteTokens: 0, costMicros: Math.round(totalTokens * 0.00002 * 1_000_000), pricedCount: requestCount, unpricedCount: 0,
 });
 const usageFixture: TokenUsagePayload = {
   generatedAt: Math.floor(Date.now() / 1000),
@@ -108,7 +109,7 @@ const usageFixture: TokenUsagePayload = {
     byProvider: [{ providerId: "group-a", providerName: "Relay Alpha", totals: relayTotals(330_000, 310_000, 20_000, 5) }],
     byModel: [{ providerId: "group-a", providerName: "Relay Alpha", model: "gpt-6-luna", totals: relayTotals(330_000, 310_000, 20_000, 5) }],
     daily: Array.from({ length: 14 }, (_, index) => ({ date: `2026-09-${String(index + 14).padStart(2, "0")}`, totals: relayTotals(index === 13 ? 63_000 : index * 1_200, index === 13 ? 62_988 : index * 1_000, index === 13 ? 12 : index * 200, index === 13 ? 1 : 0) })),
-    recent: [{ timestamp: Math.floor(Date.now() / 1000), date: "2026-09-27", providerId: "group-a", providerName: "Relay Alpha", model: "gpt-6-luna", protocol: "responses", statusCode: 200, durationMs: 1140, firstTokenMs: 320, success: true, usageReported: true, inputTokens: 62_988, outputTokens: 12, reasoningTokens: 0, totalTokens: 63_000 }],
+    recent: [{ timestamp: Math.floor(Date.now() / 1000), date: "2026-09-27", providerId: "group-a", providerName: "Relay Alpha", model: "gpt-6-luna", protocol: "responses", statusCode: 200, durationMs: 1140, firstTokenMs: 320, success: true, usageReported: true, inputTokens: 62_988, outputTokens: 12, reasoningTokens: 0, totalTokens: 63_000, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.00126, pricingStatus: "priced", pricingSource: "catalog", catalogRevision: "abcdef" }],
   },
 };
 let state: NewApiState = { providers: [imageProvider], router: { enabled: false, accessMode: "router", accountless: false, port: 0, configDrifted: false }, proxyRunning: false, activeProviderId: null };

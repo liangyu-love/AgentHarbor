@@ -2,7 +2,7 @@ use super::{
     codex_config::{CodexConfigRepository, ConfigWriteResult},
     model_defaults, model_metadata, model_policy, models_dev,
     models::{ApiProxyConfigPayload, CoreError},
-    newapi, protocol, router_balance, secret_file, storage,
+    newapi, protocol, relay_usage, router_balance, secret_file, storage,
 };
 use crate::platform::paths::CodexPaths;
 use chrono::Utc;
@@ -2102,6 +2102,40 @@ pub(super) fn provider_compression(provider: &Provider) -> model_policy::Compres
         }
         ref policy => policy.clone(),
     }
+}
+
+/// Price snapshot fixed when a request starts. Recorded in the usage ledger so
+/// a later catalog refresh or price edit cannot rewrite what already happened.
+pub(crate) fn pricing_for(
+    provider: &Provider,
+    model_id: &str,
+    catalog: &models_dev::Catalog,
+) -> relay_usage::PricingSnapshot {
+    let metadata = resolve_model_metadata(provider, model_id, None, catalog);
+    let price = metadata.price;
+    relay_usage::PricingSnapshot {
+        input: price.input,
+        output: price.output,
+        cache_read: price.cache_read,
+        cache_write: price.cache_write,
+        reasoning: price.reasoning,
+        context_over_200k: price.context_over_200k,
+        tiers: price.tiers,
+        source: price.source,
+        revision: catalog.snapshot.revision.clone(),
+        complete: price.complete,
+        currency: price.currency,
+    }
+}
+
+/// Price snapshot for the proxy hot path; reads the shared in-memory catalog.
+pub(crate) fn pricing_for_app_data(
+    app_data_dir: &std::path::Path,
+    provider: &Provider,
+    model_id: &str,
+) -> relay_usage::PricingSnapshot {
+    let catalog = models_dev::load(app_data_dir);
+    pricing_for(provider, model_id, &catalog)
 }
 
 /// The one projection every consumer reads: the router catalog, the native

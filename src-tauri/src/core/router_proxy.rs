@@ -947,21 +947,27 @@ fn relay_usage_request(
                 ..
             },
             Some(_),
-        ) => Some(relay_usage::RelayUsageRequest::new(
-            context.app_data_dir.clone(),
-            provider.id.clone(),
-            provider.name.clone(),
-            model_override
+        ) => {
+            let model = model_override
                 .clone()
                 .or_else(|| requested_model.map(str::to_owned))
-                .unwrap_or_else(|| provider.model.clone()),
-            match upstream_protocol {
-                router::ModelProtocol::Responses => "responses",
-                router::ModelProtocol::ChatCompletions => "chatCompletions",
-                router::ModelProtocol::AnthropicMessages => "anthropicMessages",
-            }
-            .to_owned(),
-        )),
+                .unwrap_or_else(|| provider.model.clone());
+            let pricing =
+                router::pricing_for_app_data(&context.app_data_dir, provider, &model);
+            Some(relay_usage::RelayUsageRequest::new(
+                context.app_data_dir.clone(),
+                provider.id.clone(),
+                provider.name.clone(),
+                model,
+                match upstream_protocol {
+                    router::ModelProtocol::Responses => "responses",
+                    router::ModelProtocol::ChatCompletions => "chatCompletions",
+                    router::ModelProtocol::AnthropicMessages => "anthropicMessages",
+                }
+                .to_owned(),
+                pricing,
+            ))
+        }
         _ => None,
     }
 }

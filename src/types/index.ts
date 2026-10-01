@@ -302,6 +302,12 @@ export interface RelayUsageTotals {
   outputTokens: number;
   reasoningTokens: number;
   totalTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /** Estimated cost in micro-USD (1e-6 USD). */
+  costMicros: number;
+  pricedCount: number;
+  unpricedCount: number;
 }
 
 export interface RelayProviderUsage {
@@ -335,6 +341,14 @@ export interface RelayUsageRecord {
   outputTokens: number;
   reasoningTokens: number;
   totalTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /** Estimated cost in USD at the rates fixed when the request started. */
+  costUsd?: number | null;
+  /** priced | partial | unpriced | legacy */
+  pricingStatus: string;
+  pricingSource: string;
+  catalogRevision: string;
 }
 
 export interface RelayUsagePayload {

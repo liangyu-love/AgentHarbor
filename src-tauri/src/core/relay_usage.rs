@@ -32,10 +32,14 @@ pub fn usage_path(app_data_dir: &Path) -> PathBuf {
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct TokenCounts {
+    /// Uncached input tokens when the protocol reports cache details.
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub reasoning_tokens: u64,
     pub total_tokens: u64,
+    /// Cache hits and cache writes, tracked separately from input for pricing.
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
 }
 
 impl TokenCounts {
@@ -44,13 +48,164 @@ impl TokenCounts {
         self.output_tokens = self.output_tokens.max(other.output_tokens);
         self.reasoning_tokens = self.reasoning_tokens.max(other.reasoning_tokens);
         self.total_tokens = self.total_tokens.max(other.total_tokens);
+        self.cache_read_tokens = self.cache_read_tokens.max(other.cache_read_tokens);
+        self.cache_write_tokens = self.cache_write_tokens.max(other.cache_write_tokens);
     }
 
     fn normalize_total(&mut self) {
-        self.total_tokens = self
-            .total_tokens
-            .max(self.input_tokens.saturating_add(self.output_tokens));
+        self.total_tokens = self.total_tokens.max(
+            self.input_tokens
+                .saturating_add(self.cache_read_tokens)
+                .saturating_add(self.cache_write_tokens)
+                .saturating_add(self.output_tokens),
+        );
     }
+
+    fn prompt_tokens(&self) -> u64 {
+        self.input_tokens
+            .saturating_add(self.cache_read_tokens)
+            .saturating_add(self.cache_write_tokens)
+    }
+}
+
+/// Rates fixed when the request starts, so a later catalog refresh or a price
+/// edit never rewrites what the ledger already recorded.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PricingSnapshot {
+    /// Base rates, per million tokens in USD.
+    pub input: Option<f64>,
+    pub output: Option<f64>,
+    pub cache_read: Option<f64>,
+    pub cache_write: Option<f64>,
+    pub reasoning: Option<f64>,
+    /// Conditional rates that depend on the request's prompt size.
+    pub context_over_200k: Option<super::models_dev::CostRates>,
+    pub tiers: Vec<super::models_dev::CostTier>,
+    /// manual | catalog | catalogAlias | unknown | ...
+    pub source: String,
+    pub revision: String,
+    /// False when conditional pricing cannot be fully evaluated.
+    pub complete: bool,
+    pub currency: String,
+}
+
+impl PricingSnapshot {
+    pub fn unknown(source: &str, revision: &str) -> Self {
+        Self {
+            source: source.into(),
+            revision: revision.into(),
+            complete: false,
+            currency: "USD".into(),
+            ..Default::default()
+        }
+    }
+
+    pub fn is_known(&self) -> bool {
+        self.input.is_some() || self.output.is_some()
+    }
+
+    /// Rates that apply to a prompt of this size. Tiers are inclusive lower
+    /// bounds, so the largest matching bound wins; unknown tier conditions
+    /// (anything but a context size) keep the base rates and mark the price
+    /// incomplete rather than guessing.
+    fn rates_for(&self, prompt_tokens: u64) -> (Rates, bool) {
+        let mut rates = Rates {
+            input: self.input,
+            output: self.output,
+            cache_read: self.cache_read,
+            cache_write: self.cache_write,
+            reasoning: self.reasoning,
+        };
+        let mut complete = self.complete;
+        if let Some(over) = &self.context_over_200k {
+            if prompt_tokens > 200_000 {
+                rates = Rates::from(over);
+            }
+        }
+        let mut selected: Option<Rates> = None;
+        for tier in &self.tiers {
+            if tier.tier.condition_type != "context" {
+                complete = false;
+                continue;
+            }
+            let Some(size) = tier.tier.size else {
+                continue;
+            };
+            if prompt_tokens >= size {
+                selected = Some(Rates::from(&tier.rates));
+            }
+        }
+        if let Some(selected) = selected {
+            rates = selected;
+        }
+        (rates, complete)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct Rates {
+    input: Option<f64>,
+    output: Option<f64>,
+    cache_read: Option<f64>,
+    cache_write: Option<f64>,
+    reasoning: Option<f64>,
+}
+
+impl From<&super::models_dev::CostRates> for Rates {
+    fn from(rates: &super::models_dev::CostRates) -> Self {
+        Self {
+            input: rates.input,
+            output: rates.output,
+            cache_read: rates.cache_read,
+            cache_write: rates.cache_write,
+            reasoning: rates.reasoning,
+        }
+    }
+}
+
+/// `Some(cost)` when any rate applies. Missing cache rates fall back to the
+/// input rate instead of pretending cached tokens are free; the caller marks
+/// that request as partially priced.
+fn request_cost(tokens: &TokenCounts, pricing: &PricingSnapshot) -> Option<(f64, bool)> {
+    if !pricing.is_known() {
+        return None;
+    }
+    let prompt = tokens.prompt_tokens();
+    let (rates, complete) = pricing.rates_for(prompt);
+    let input_rate = rates.input?;
+    let output_rate = rates.output.unwrap_or(0.0);
+    let cache_read_rate = rates.cache_read.unwrap_or(input_rate);
+    let cache_write_rate = rates.cache_write.unwrap_or(input_rate);
+    let reasoning_rate = rates.reasoning;
+    let per_million = |tokens: u64, rate: f64| (tokens as f64) * rate / 1_000_000.0;
+    let mut cost = per_million(tokens.input_tokens, input_rate)
+        + per_million(tokens.cache_read_tokens, cache_read_rate)
+        + per_million(tokens.cache_write_tokens, cache_write_rate);
+    // Reasoning tokens are a subset of the output; bill them separately only
+    // when the pricing declares a distinct rate, and never add them twice.
+    let reasoning = tokens.reasoning_tokens.min(tokens.output_tokens);
+    match reasoning_rate {
+        Some(rate) if reasoning > 0 => {
+            cost += per_million(reasoning, rate);
+            cost += per_million(tokens.output_tokens.saturating_sub(reasoning), output_rate);
+        }
+        _ => cost += per_million(tokens.output_tokens, output_rate),
+    }
+    let missing_cache_rates = tokens.cache_read_tokens + tokens.cache_write_tokens > 0
+        && (rates.cache_read.is_none() || rates.cache_write.is_none());
+    Some((cost, complete && !missing_cache_rates))
+}
+
+fn to_micros(cost: f64) -> u64 {
+    if !cost.is_finite() || cost <= 0.0 {
+        return 0;
+    }
+    (cost * 1_000_000.0).round().min(u64::MAX as f64) as u64
+}
+
+pub fn micros_to_usd(micros: u64) -> f64 {
+    (micros as f64) / 1_000_000.0
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -70,6 +225,16 @@ pub struct RelayUsageRecord {
     pub usage_reported: bool,
     #[serde(flatten)]
     pub tokens: TokenCounts,
+    /// Estimated cost in USD at the rates fixed when the request started.
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+    /// priced | partial | unpriced | legacy
+    #[serde(default)]
+    pub pricing_status: String,
+    #[serde(default)]
+    pub pricing_source: String,
+    #[serde(default)]
+    pub catalog_revision: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -82,6 +247,14 @@ pub struct RelayUsageTotals {
     pub output_tokens: u64,
     pub reasoning_tokens: u64,
     pub total_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    /// Estimated cost in micro-USD, so small amounts survive accumulation.
+    pub cost_micros: u64,
+    /// Requests whose cost was recorded (fully or partially priced).
+    pub priced_count: u64,
+    /// Requests with no usable price (unknown price, legacy records).
+    pub unpriced_count: u64,
 }
 
 impl RelayUsageTotals {
@@ -101,6 +274,21 @@ impl RelayUsageTotals {
             .reasoning_tokens
             .saturating_add(record.tokens.reasoning_tokens);
         self.total_tokens = self.total_tokens.saturating_add(record.tokens.total_tokens);
+        self.cache_read_tokens = self
+            .cache_read_tokens
+            .saturating_add(record.tokens.cache_read_tokens);
+        self.cache_write_tokens = self
+            .cache_write_tokens
+            .saturating_add(record.tokens.cache_write_tokens);
+        match (record.cost_usd, record.pricing_status.as_str()) {
+            (Some(cost), _) if record.pricing_status != "unpriced" => {
+                self.cost_micros = self.cost_micros.saturating_add(to_micros(cost));
+                self.priced_count = self.priced_count.saturating_add(1);
+            }
+            _ => {
+                self.unpriced_count = self.unpriced_count.saturating_add(1);
+            }
+        }
     }
 
     fn merge(&mut self, other: &Self) {
@@ -111,6 +299,15 @@ impl RelayUsageTotals {
         self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
         self.reasoning_tokens = self.reasoning_tokens.saturating_add(other.reasoning_tokens);
         self.total_tokens = self.total_tokens.saturating_add(other.total_tokens);
+        self.cache_read_tokens = self
+            .cache_read_tokens
+            .saturating_add(other.cache_read_tokens);
+        self.cache_write_tokens = self
+            .cache_write_tokens
+            .saturating_add(other.cache_write_tokens);
+        self.cost_micros = self.cost_micros.saturating_add(other.cost_micros);
+        self.priced_count = self.priced_count.saturating_add(other.priced_count);
+        self.unpriced_count = self.unpriced_count.saturating_add(other.unpriced_count);
     }
 }
 
@@ -177,6 +374,7 @@ pub struct RelayUsageRequest {
     timestamp: i64,
     date: String,
     started: Instant,
+    pricing: PricingSnapshot,
 }
 
 impl RelayUsageRequest {
@@ -186,6 +384,7 @@ impl RelayUsageRequest {
         provider_name: String,
         model: String,
         protocol: String,
+        pricing: PricingSnapshot,
     ) -> Self {
         Self {
             app_data_dir,
@@ -196,6 +395,7 @@ impl RelayUsageRequest {
             timestamp: Utc::now().timestamp(),
             date: Local::now().format("%Y-%m-%d").to_string(),
             started: Instant::now(),
+            pricing,
         }
     }
 
@@ -218,6 +418,14 @@ impl RelayUsageRequest {
 
     fn persist(self, status_code: u16, usage_reported: bool, mut tokens: TokenCounts, first_token_ms: Option<u64>) {
         tokens.normalize_total();
+        // A request can carry reliable usage even when it failed or was cut
+        // off, so the cost follows the tokens, not the HTTP status.
+        let priced = request_cost(&tokens, &self.pricing);
+        let (cost_usd, pricing_status) = match priced {
+            Some((cost, true)) => (Some(cost), "priced"),
+            Some((cost, false)) => (Some(cost), "partial"),
+            None => (None, "unpriced"),
+        };
         let record = RelayUsageRecord {
             timestamp: self.timestamp,
             date: self.date,
@@ -231,6 +439,10 @@ impl RelayUsageRequest {
             success: (200..300).contains(&status_code),
             usage_reported,
             tokens,
+            cost_usd,
+            pricing_status: pricing_status.into(),
+            pricing_source: self.pricing.source.clone(),
+            catalog_revision: self.pricing.revision.clone(),
         };
         if let Err(error) = append_record(&self.app_data_dir, &record) {
             eprintln!("[AgentHarbor] relay usage write failed: {error}");
@@ -381,10 +593,20 @@ fn counts_from_usage(value: &Value) -> Option<TokenCounts> {
         return None;
     }
 
-    let input_tokens = number(object.get("input_tokens"))
-        .max(number(object.get("prompt_tokens")))
-        .saturating_add(number(object.get("cache_creation_input_tokens")))
-        .saturating_add(number(object.get("cache_read_input_tokens")));
+    // Cache details: Anthropic reports cache read/write beside an already
+    // uncached input count; OpenAI-family payloads report a cached subset
+    // inside the input total, which must be subtracted to stay non-overlapping.
+    let detail_cached = number(value.pointer("/input_tokens_details/cached_tokens"))
+        .max(number(value.pointer("/prompt_tokens_details/cached_tokens")));
+    let anthropic_read = number(object.get("cache_read_input_tokens"));
+    let cache_read_tokens = anthropic_read.max(detail_cached);
+    let cache_write_tokens = number(object.get("cache_creation_input_tokens"));
+    let reported_input = number(object.get("input_tokens")).max(number(object.get("prompt_tokens")));
+    let input_tokens = if detail_cached > 0 {
+        reported_input.saturating_sub(detail_cached)
+    } else {
+        reported_input
+    };
     let output_tokens =
         number(object.get("output_tokens")).max(number(object.get("completion_tokens")));
     let reasoning_tokens = number(object.get("reasoning_tokens"))
@@ -403,6 +625,8 @@ fn counts_from_usage(value: &Value) -> Option<TokenCounts> {
         output_tokens,
         reasoning_tokens,
         total_tokens: number(object.get("total_tokens")),
+        cache_read_tokens,
+        cache_write_tokens,
     };
     counts.normalize_total();
     Some(counts)
@@ -673,8 +897,135 @@ mod tests {
             first_token_ms: None,
             success: true,
             usage_reported: true,
-            tokens: TokenCounts { input_tokens: tokens, output_tokens: 0, reasoning_tokens: 0, total_tokens: tokens },
+            tokens: TokenCounts { input_tokens: tokens, output_tokens: 0, reasoning_tokens: 0, total_tokens: tokens, cache_read_tokens: 0, cache_write_tokens: 0 },
+            cost_usd: None,
+            pricing_status: "unpriced".into(),
+            pricing_source: String::new(),
+            catalog_revision: String::new(),
         }
+    }
+
+    fn pricing() -> PricingSnapshot {
+        PricingSnapshot {
+            input: Some(4.0),
+            output: Some(20.0),
+            cache_read: Some(0.4),
+            cache_write: Some(5.0),
+            source: "catalog".into(),
+            revision: "abc".into(),
+            complete: true,
+            currency: "USD".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn costs_use_non_overlapping_token_categories() {
+        let tokens = TokenCounts {
+            input_tokens: 1_000_000,
+            output_tokens: 100_000,
+            reasoning_tokens: 20_000,
+            cache_read_tokens: 2_000_000,
+            cache_write_tokens: 100_000,
+            ..Default::default()
+        };
+        let (cost, complete) = request_cost(&tokens, &pricing()).unwrap();
+        assert!(complete);
+        // 1M*4 + 0.1M*20 + 2M*0.4 + 0.1M*5 = 4 + 2 + 0.8 + 0.5
+        assert!((cost - 7.3).abs() < 1e-9, "{cost}");
+        // Reasoning is inside the output count and has no separate rate.
+        assert!((cost - 7.3).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_distinct_reasoning_rate_never_double_bills_the_output() {
+        let mut price = pricing();
+        price.reasoning = Some(30.0);
+        let tokens = TokenCounts {
+            input_tokens: 0,
+            output_tokens: 1_000_000,
+            reasoning_tokens: 400_000,
+            ..Default::default()
+        };
+        let (cost, _) = request_cost(&tokens, &price).unwrap();
+        // 0.6M at the output rate + 0.4M at the reasoning rate.
+        assert!((cost - (0.6 * 20.0 + 0.4 * 30.0)).abs() < 1e-9, "{cost}");
+    }
+
+    #[test]
+    fn missing_cache_rates_are_estimated_at_the_input_rate_and_flagged_partial() {
+        let mut price = pricing();
+        price.cache_read = None;
+        let tokens = TokenCounts {
+            input_tokens: 0,
+            cache_read_tokens: 1_000_000,
+            ..Default::default()
+        };
+        let (cost, complete) = request_cost(&tokens, &price).unwrap();
+        assert!(!complete, "missing cache rate must be visible");
+        assert!((cost - 4.0).abs() < 1e-9, "cached tokens are not free: {cost}");
+    }
+
+    #[test]
+    fn conditional_pricing_selects_the_matching_tier() {
+        let mut price = pricing();
+        price.tiers = vec![super::super::models_dev::CostTier {
+            rates: super::super::models_dev::CostRates {
+                input: Some(6.0),
+                output: Some(30.0),
+                cache_read: Some(0.6),
+                ..Default::default()
+            },
+            tier: super::super::models_dev::TierCondition {
+                condition_type: "context".into(),
+                size: Some(200_000),
+            },
+        }];
+        price.complete = false;
+        let small = TokenCounts { input_tokens: 100_000, ..Default::default() };
+        let (cost, _) = request_cost(&small, &price).unwrap();
+        assert!((cost - 0.4).abs() < 1e-9, "base rate below the tier: {cost}");
+        let large = TokenCounts { input_tokens: 400_000, ..Default::default() };
+        let (cost, _) = request_cost(&large, &price).unwrap();
+        assert!((cost - 2.4).abs() < 1e-9, "tier rate above the bound: {cost}");
+    }
+
+    #[test]
+    fn usage_with_a_price_is_recorded_and_legacy_records_stay_unpriced() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let mut observer = RelayUsageRequest::new(
+                dir.path().to_owned(),
+                "provider-1".into(),
+                "Provider".into(),
+                "model-1".into(),
+                "responses".into(),
+                pricing(),
+            )
+            .observe(200, false);
+            let payload = serde_json::json!({"usage": {"input_tokens": 1_000_000, "output_tokens": 0}});
+            observer.observe(payload.to_string().as_bytes());
+        }
+        // A legacy line without pricing fields is read as unpriced, not as 0.
+        let legacy = r#"{"timestamp":1,"date":"2020-01-01","providerId":"p","providerName":"P","model":"m","protocol":"responses","statusCode":200,"durationMs":1,"success":true,"usageReported":true,"inputTokens":10,"outputTokens":1,"reasoningTokens":0,"totalTokens":11}"#;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(usage_path(dir.path()))
+            .unwrap()
+            .write_all(format!("{legacy}\n").as_bytes())
+            .unwrap();
+
+        let payload = load(dir.path()).unwrap();
+        assert_eq!(payload.all_time.request_count, 2);
+        assert_eq!(payload.all_time.priced_count, 1);
+        assert_eq!(payload.all_time.unpriced_count, 1);
+        assert!((micros_to_usd(payload.all_time.cost_micros) - 4.0).abs() < 1e-9);
+        let provider = payload
+            .by_provider
+            .iter()
+            .find(|entry| entry.provider_id == "provider-1")
+            .unwrap();
+        assert!((micros_to_usd(provider.totals.cost_micros) - 4.0).abs() < 1e-9);
     }
 
     #[test]
@@ -750,7 +1101,10 @@ mod tests {
         let mut counts = TokenCounts::default();
         visit_usage_values(&anthropic, &mut found, &mut counts);
         assert!(found);
-        assert_eq!(counts.input_tokens, 55);
+        // Anthropic keeps cache categories separate from the uncached input.
+        assert_eq!(counts.input_tokens, 40);
+        assert_eq!(counts.cache_read_tokens, 10);
+        assert_eq!(counts.cache_write_tokens, 5);
         assert_eq!(counts.total_tokens, 64);
     }
 
@@ -763,6 +1117,7 @@ mod tests {
             "Provider".into(),
             "model-1".into(),
             "responses".into(),
+            PricingSnapshot::unknown("unknown", "fixture"),
         );
         {
             let mut observer = request.observe(200, true);
@@ -787,6 +1142,7 @@ mod tests {
             "Provider".into(),
             "model-1".into(),
             "chatCompletions".into(),
+            PricingSnapshot::unknown("unknown", "fixture"),
         )
         .failed(502);
         let payload = load(dir.path()).unwrap();
