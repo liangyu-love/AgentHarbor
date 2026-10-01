@@ -81,6 +81,100 @@ impl Usage {
     }
 }
 
+/// Incremental usage accumulator for `token_count` records. The thread scan
+/// and the detail reader must agree on the same semantics: cumulative
+/// `total_token_usage` snapshots shrink into deltas, a shrinking counter is a
+/// reset and counts whole, and records that only carry `last_token_usage` are
+/// each their own delta (a later cumulative snapshot includes them).
+#[derive(Default)]
+pub(super) struct TokenUsageTracker {
+    // `Option` mirrors the detail reader's historical semantics: the first
+    // contributing delta seeds the sum wholesale. Starting from a defaulted
+    // `Usage` and adding would poison `cached`/`reasoning` through `add`'s
+    // zip-on-None, since the accumulator's own None would erase the delta's.
+    usage: Option<Usage>,
+    previous: Option<Usage>,
+    last_only: Option<(String, Usage)>,
+    pub invalid_lines: usize,
+    pub last_usage_only: usize,
+    pub counter_resets: usize,
+}
+
+impl TokenUsageTracker {
+    /// Feed one JSONL record; returns the delta when the record contributes usage.
+    pub fn observe(&mut self, value: &Value, timestamp: &str) -> Option<Usage> {
+        if value.pointer("/payload/type").and_then(Value::as_str) != Some("token_count") {
+            return None;
+        }
+        if let Some(total) = value
+            .pointer("/payload/info/total_token_usage")
+            .and_then(Usage::parse)
+        {
+            if self.previous.as_ref() == Some(&total) {
+                return None;
+            }
+            let delta = match &self.previous {
+                Some(old)
+                    if total.total >= old.total
+                        && total.input >= old.input
+                        && total.output >= old.output =>
+                {
+                    total.delta(old)
+                }
+                Some(_) => {
+                    self.counter_resets += 1;
+                    total.clone()
+                }
+                None => total.clone(),
+            };
+            self.previous = Some(total);
+            return self.push(delta);
+        }
+        if let Some(last) = value
+            .pointer("/payload/info/last_token_usage")
+            .and_then(Usage::parse)
+        {
+            let fingerprint = (timestamp.to_owned(), last.clone());
+            if self.last_only.as_ref() == Some(&fingerprint) {
+                return None;
+            }
+            self.last_only = Some(fingerprint);
+            self.last_usage_only += 1;
+            match &mut self.previous {
+                Some(sum) => sum.add(&last),
+                None => self.previous = Some(last.clone()),
+            }
+            return self.push(last);
+        }
+        let is_present = |pointer: &str| {
+            value
+                .pointer(pointer)
+                .is_some_and(|value| !value.is_null())
+        };
+        if is_present("/payload/info/total_token_usage")
+            || is_present("/payload/info/last_token_usage")
+        {
+            self.invalid_lines += 1;
+        }
+        None
+    }
+
+    fn push(&mut self, delta: Usage) -> Option<Usage> {
+        if delta.total == 0 {
+            return None;
+        }
+        match &mut self.usage {
+            Some(sum) => sum.add(&delta),
+            None => self.usage = Some(delta.clone()),
+        }
+        Some(delta)
+    }
+
+    pub fn usage(&self) -> Option<&Usage> {
+        self.usage.as_ref()
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageBucket {
@@ -302,9 +396,7 @@ pub fn read_details(
     let path = resolve_path(sessions, archived, key)?;
     let (mut reader, snapshot_bytes) = open_snapshot(&path, None)?;
     let mut diagnostics = Diagnostics::default();
-    let mut usage: Option<Usage> = None;
-    let mut previous: Option<Usage> = None;
-    let mut last_only = None;
+    let mut tracker = TokenUsageTracker::default();
     let mut model = "unknown".to_owned();
     let mut by_model = BTreeMap::<String, Usage>::new();
     let mut by_date = BTreeMap::<String, Usage>::new();
@@ -345,99 +437,45 @@ pub fn read_details(
                     model = next.chars().take(200).collect();
                 }
             }
-            if value.pointer("/payload/type").and_then(Value::as_str) != Some("token_count") {
-                return true;
-            }
-            if let Some(next) = value.pointer("/payload/info/model").and_then(Value::as_str) {
-                model = next.chars().take(200).collect();
-            }
-            if value
-                .pointer("/payload/info/total_token_usage")
-                .is_none_or(Value::is_null)
-                && value
-                    .pointer("/payload/info/last_token_usage")
-                    .is_none_or(Value::is_null)
-            {
-                return true;
-            }
-            let delta = if let Some(total) = value
-                .pointer("/payload/info/total_token_usage")
-                .and_then(Usage::parse)
-            {
-                if previous.as_ref() == Some(&total) {
-                    return true;
+            if value.pointer("/payload/type").and_then(Value::as_str) == Some("token_count") {
+                if let Some(next) = value.pointer("/payload/info/model").and_then(Value::as_str) {
+                    model = next.chars().take(200).collect();
                 }
-                let delta = match &previous {
-                    Some(old)
-                        if total.total >= old.total
-                            && total.input >= old.input
-                            && total.output >= old.output =>
-                    {
-                        total.delta(old)
-                    }
-                    Some(_) => {
-                        diagnostics.counter_resets += 1;
-                        total.clone()
-                    }
-                    None => total.clone(),
-                };
-                previous = Some(total);
-                delta
-            } else if let Some(last) = value
-                .pointer("/payload/info/last_token_usage")
-                .and_then(Usage::parse)
-            {
-                let fingerprint = (timestamp(value).to_owned(), last.clone());
-                if last_only.as_ref() == Some(&fingerprint) {
-                    return true;
+                if let Some(delta) = tracker.observe(value, timestamp(value)) {
+                    let model_key = if by_model.len() < 1000 || by_model.contains_key(&model) {
+                        model.clone()
+                    } else {
+                        "unknown".into()
+                    };
+                    by_model
+                        .entry(model_key)
+                        .and_modify(|sum| sum.add(&delta))
+                        .or_insert_with(|| delta.clone());
+                    let date = chrono::DateTime::parse_from_rfc3339(timestamp(value))
+                        .ok()
+                        .map(|t| t.date_naive().to_string());
+                    let date = date.unwrap_or_else(|| {
+                        diagnostics.undated_usage += 1;
+                        "unknown".into()
+                    });
+                    let date = if by_date.len() < 5000 || by_date.contains_key(&date) {
+                        date
+                    } else {
+                        "unknown".into()
+                    };
+                    by_date
+                        .entry(date)
+                        .and_modify(|sum| sum.add(&delta))
+                        .or_insert(delta);
                 }
-                last_only = Some(fingerprint);
-                diagnostics.last_usage_only += 1;
-                // A later cumulative snapshot includes these already-accounted calls.
-                match &mut previous {
-                    Some(sum) => sum.add(&last),
-                    None => previous = Some(last.clone()),
-                }
-                last
-            } else {
-                diagnostics.invalid_lines += 1;
-                return true;
-            };
-            if delta.total == 0 {
-                return true;
             }
-            match &mut usage {
-                Some(sum) => sum.add(&delta),
-                None => usage = Some(delta.clone()),
-            }
-            let model_key = if by_model.len() < 1000 || by_model.contains_key(&model) {
-                model.clone()
-            } else {
-                "unknown".into()
-            };
-            by_model
-                .entry(model_key)
-                .and_modify(|sum| sum.add(&delta))
-                .or_insert_with(|| delta.clone());
-            let date = chrono::DateTime::parse_from_rfc3339(timestamp(value))
-                .ok()
-                .map(|t| t.date_naive().to_string());
-            let date = date.unwrap_or_else(|| {
-                diagnostics.undated_usage += 1;
-                "unknown".into()
-            });
-            let date = if by_date.len() < 5000 || by_date.contains_key(&date) {
-                date
-            } else {
-                "unknown".into()
-            };
-            by_date
-                .entry(date)
-                .and_modify(|sum| sum.add(&delta))
-                .or_insert(delta);
             true
         },
     )?;
+    diagnostics.invalid_lines += tracker.invalid_lines;
+    diagnostics.last_usage_only = tracker.last_usage_only;
+    diagnostics.counter_resets = tracker.counter_resets;
+    let usage = tracker.usage().cloned();
     index::ensure_unchanged(&path, reader.get_ref().get_ref(), &fingerprint)?;
     let snapshot_id = index::token(&fingerprint);
     index::remember(

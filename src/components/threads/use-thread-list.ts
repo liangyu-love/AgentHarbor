@@ -115,18 +115,29 @@ export function useThreadList() {
   const workspaceCount = (activeProject ? [activeProject] : projects)
     .filter(project => project.key !== DIRECT_CHATS_KEY && project.cwd).length;
   const missingRolloutCount = threads.filter(thread => thread.rolloutStatus === "missing").length;
-  const { archivedCount, totalUserMsgs, totalAgentMsgs, totalBytes, totalTokens } = useMemo(() => {
+  const {
+    archivedCount, totalUserMsgs, totalAgentMsgs, totalBytes, totalTokens,
+    totalInputTokens, totalCachedTokens, totalOutputTokens, hasTokenBreakdown,
+  } = useMemo(() => {
     let archived = 0;
     let user = 0;
     let agent = 0;
     let bytes = 0;
     let tokens = 0;
+    let inputTokens = 0;
+    let cachedTokens = 0;
+    let outputTokens = 0;
+    let breakdown = false;
     for (const item of scopedThreads) {
       if (item.archived) archived++;
       user += item.userMessages || 0;
       agent += item.agentMessages || 0;
       bytes += item.fileSize || 0;
       tokens += item.tokensUsed || 0;
+      if (item.inputTokens != null || item.outputTokens != null) breakdown = true;
+      inputTokens += item.inputTokens ?? 0;
+      cachedTokens += item.cachedTokens ?? 0;
+      outputTokens += item.outputTokens ?? 0;
     }
     return {
       archivedCount: archived,
@@ -134,6 +145,10 @@ export function useThreadList() {
       totalAgentMsgs: agent,
       totalBytes: bytes,
       totalTokens: tokens,
+      totalInputTokens: inputTokens,
+      totalCachedTokens: cachedTokens,
+      totalOutputTokens: outputTokens,
+      hasTokenBreakdown: breakdown,
     };
   }, [scopedThreads]);
 
@@ -376,7 +391,9 @@ export function useThreadList() {
     threadsQuery, threads, pendingDeletionKeys, scanWarnings, pendingDeletionRecoveryNeeded,
     filtered, groups, projects, matchingKeys, activeProject, focusedThread, selectProject, focusThread, scopedThreads, workspaceCount,
     selectedExportableCount, useVirtualList,
-    archivedCount, totalUserMsgs, totalAgentMsgs, totalBytes, totalTokens, missingRolloutCount, totalInteractions,
+    archivedCount, totalUserMsgs, totalAgentMsgs, totalBytes, totalTokens,
+    totalInputTokens, totalCachedTokens, totalOutputTokens, hasTokenBreakdown,
+    missingRolloutCount, totalInteractions,
     status, setStatus, query, setQuery, sortBy, setSortBy, sortLabels, viewMode, setViewMode, format, setFormat,
     selected, toggleSelect, selectFiltered, clearSelection, toggleGroupSelect,
     collapsedGroups, toggleGroupCollapse, expandAllGroups, collapseAllGroups,

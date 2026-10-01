@@ -16,6 +16,10 @@ export interface ThreadSummary {
   modelProvider: string;
   model: string;
   tokensUsed: number;
+  /** Cumulative prompt tokens including the cached subset; null = unknown. */
+  inputTokens: number | null;
+  cachedTokens: number | null;
+  outputTokens: number | null;
   threadSource: "sqlite" | "rollout";
   rolloutStatus: "available" | "missing";
 }

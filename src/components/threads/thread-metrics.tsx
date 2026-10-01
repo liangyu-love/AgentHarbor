@@ -1,5 +1,12 @@
 import { useTranslation } from "react-i18next";
-import { FolderTree, HardDrive, MessagesSquare } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  FolderTree,
+  HardDrive,
+  Layers,
+  MessagesSquare,
+} from "lucide-react";
 import { AuroraCard } from "@/components/ui/aurora-card";
 import { formatSize, formatTokenCount } from "@/components/threads/thread-utils";
 import type { ThreadList } from "@/components/threads/use-thread-list";
@@ -8,8 +15,9 @@ import { focusRing, pressable } from "@/lib/a11y";
 export function ThreadMetrics({ list }: { list: ThreadList }) {
   const { t } = useTranslation();
   const {
-    scopedThreads: threads, archivedCount, workspaceCount, totalUserMsgs, totalAgentMsgs, totalTokens, totalBytes,
-    activeProject, status, setStatus,
+    scopedThreads: threads, archivedCount, workspaceCount, totalTokens,
+    totalInputTokens, totalCachedTokens, totalOutputTokens, hasTokenBreakdown,
+    totalBytes, activeProject, status, setStatus,
   } = list;
 
   return (
@@ -62,19 +70,63 @@ export function ThreadMetrics({ list }: { list: ThreadList }) {
           </div>
         </AuroraCard>
 
+        {/* Token breakdown card — mirrors the relay usage card: input (with
+            cached inside), cached subset, output (with reasoning inside). */}
         <AuroraCard color="blue">
           <div className="space-y-1 p-2.5">
-            <dl className="grid grid-cols-2 gap-3">
-              <div>
-                <dt className="text-xs font-medium text-muted-foreground">{t("threads.statsInput")}</dt>
-                <dd data-metric="input" className="text-xl font-bold tracking-tight tabular-nums">{totalUserMsgs.toLocaleString()}</dd>
-              </div>
-              <div>
-                <dt className="text-xs font-medium text-muted-foreground">{t("threads.statsOutput")}</dt>
-                <dd data-metric="output" className="text-xl font-bold tracking-tight tabular-nums">{totalAgentMsgs.toLocaleString()}</dd>
-              </div>
-            </dl>
-            <p data-metric="tokens" className="text-[11px] text-muted-foreground">
+            {hasTokenBreakdown ? (
+              <dl className="grid grid-cols-3 divide-x divide-border/40">
+                <div className="min-w-0 pr-2.5">
+                  <dt className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+                    <ArrowDown className="h-3 w-3 text-sky-500" />
+                    <span className="truncate">{t("threads.statsInputLabel")}</span>
+                  </dt>
+                  <dd data-metric="input" className="text-xl font-bold tracking-tight tabular-nums">
+                    {formatTokenCount(totalInputTokens)}
+                  </dd>
+                  <p className="text-[10px] text-muted-foreground/70">
+                    {t("threads.statsInputHint")}
+                  </p>
+                </div>
+                <div className="min-w-0 px-2.5">
+                  <dt className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+                    <Layers className="h-3 w-3 text-emerald-500" />
+                    <span className="truncate">{t("threads.statsCachedLabel")}</span>
+                  </dt>
+                  <dd data-metric="cached" className="text-xl font-bold tracking-tight tabular-nums">
+                    {formatTokenCount(totalCachedTokens)}
+                  </dd>
+                  <p className="text-[10px] text-muted-foreground/70">
+                    {t("threads.statsCachedHint")}
+                  </p>
+                </div>
+                <div className="min-w-0 pl-2.5">
+                  <dt className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+                    <ArrowUp className="h-3 w-3 text-amber-500" />
+                    <span className="truncate">{t("threads.statsOutputLabel")}</span>
+                  </dt>
+                  <dd data-metric="output" className="text-xl font-bold tracking-tight tabular-nums">
+                    {formatTokenCount(totalOutputTokens)}
+                  </dd>
+                  <p className="text-[10px] text-muted-foreground/70">
+                    {t("threads.statsOutputHint")}
+                  </p>
+                </div>
+              </dl>
+            ) : (
+              <dl>
+                <dt className="text-xs font-medium text-muted-foreground">
+                  {t("threads.statsTokensLabel")}
+                </dt>
+                <dd data-metric="tokens" className="text-xl font-bold tracking-tight tabular-nums">
+                  {formatTokenCount(totalTokens)}
+                </dd>
+                <p className="text-[10px] text-muted-foreground/70">
+                  {t("threads.statsBreakdownUnknown")}
+                </p>
+              </dl>
+            )}
+            <p data-metric="tokens-total" className="text-[11px] text-muted-foreground">
               {t("threads.statsTokens", { value: formatTokenCount(totalTokens) })}
             </p>
           </div>

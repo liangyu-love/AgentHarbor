@@ -117,9 +117,12 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   assert.equal(await tree.getByRole("button", { name: "展开或收起 AiMaMi", exact: true }).count(), 2, "Windows aliases merge but different paths remain separate");
   await tree.locator('button[title="D:/workspace/AiMaMi"]').click();
   assert.equal(await metric("threads").textContent(), "3");
-  assert.equal(await metric("input").textContent(), "6");
-  assert.equal(await metric("output").textContent(), "12");
-  assert.equal(await metric("tokens").textContent(), "Token 总量：30");
+  // The overview card reports token breakdown now: 4 input / 3 cached / 6
+  // output per fixture thread.
+  assert.equal(await metric("input").textContent(), "12");
+  assert.equal(await metric("cached").textContent(), "9");
+  assert.equal(await metric("output").textContent(), "18");
+  assert.equal(await metric("tokens-total").textContent(), "Token 总量：30");
   assert.equal(await metric("storage").textContent(), "300 B");
   assert.equal(await results.getByRole("checkbox").count(), 3, "Project filtering uses the normalized identity too");
   await page.getByPlaceholder(/搜索.*标题/).fill("no-such-thread");
@@ -129,15 +132,16 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   await tree.getByRole("button", { name: "直接对话 2", exact: true }).click();
   assert.equal(await results.getByRole("checkbox").count(), 2);
   assert.equal(await metric("projects").textContent(), "0");
-  assert.equal(await metric("input").textContent(), "9");
-  assert.equal(await metric("output").textContent(), "18");
+  assert.equal(await metric("input").textContent(), "8");
+  assert.equal(await metric("cached").textContent(), "6");
+  assert.equal(await metric("output").textContent(), "12");
   await tree.getByRole("button", { name: "展开或收起 直接对话", exact: true }).click();
   await tree.getByRole("button", { name: "Review thread 4", exact: true }).click();
   assert.equal(await results.getByRole("checkbox").count(), 1);
   assert.equal(await metric("threads").textContent(), "2", "Thread focus preserves the selected folder overview");
   await tree.getByRole("button", { name: "所有项目 7", exact: true }).click();
   assert.equal(await metric("input").textContent(), "28");
-  assert.equal(await metric("output").textContent(), "56");
+  assert.equal(await metric("output").textContent(), "42");
   await capture("thread-project-overview-desktop.png");
   await page.setViewportSize({ width: 390, height: 700 });
   await capture("thread-project-overview-mobile.png");

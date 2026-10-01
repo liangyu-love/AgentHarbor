@@ -33,6 +33,15 @@ pub struct ThreadSummary {
     pub model_provider: String,
     pub model: String,
     pub tokens_used: i64,
+    /// Cumulative prompt tokens including the cached subset, when the rollout
+    /// carries usable token_count records; `None` means the breakdown is
+    /// unknown (catalog-only threads, or logs without usage events).
+    #[serde(default)]
+    pub input_tokens: Option<i64>,
+    #[serde(default)]
+    pub cached_tokens: Option<i64>,
+    #[serde(default)]
+    pub output_tokens: Option<i64>,
     pub thread_source: String,
     pub rollout_status: String,
 }
@@ -688,6 +697,9 @@ fn merge_catalog_with_rollouts(
             model_provider: String::new(),
             model: String::new(),
             tokens_used: 0,
+            input_tokens: None,
+            cached_tokens: None,
+            output_tokens: None,
             thread_source: "sqlite".into(),
             rollout_status: "missing".into(),
         });
@@ -721,7 +733,11 @@ fn merge_catalog_with_rollouts(
         }
         summary.model_provider = row.model_provider;
         summary.model = row.model;
-        summary.tokens_used = row.tokens_used;
+        // The catalog is authoritative for the total when it has one; a zero
+        // (or absent) column must not erase the rollout-derived total.
+        if row.tokens_used > 0 {
+            summary.tokens_used = row.tokens_used;
+        }
         summary.thread_source = "sqlite".into();
         summary.rollout_status = if rollout_available {
             "available".into()
@@ -1132,6 +1148,7 @@ fn parse_thread(
     let mut model = String::new();
     let mut messages = Vec::new();
     let mut seen_messages = Vec::new();
+    let mut usage_tracker = details::TokenUsageTracker::default();
 
     loop {
         line.clear();
@@ -1205,6 +1222,8 @@ fn parse_thread(
                 &mut messages,
             );
         }
+
+        usage_tracker.observe(&value, timestamp);
     }
 
     if session_id.is_empty() && cwd.is_empty() && user_messages == 0 && agent_messages == 0 {
@@ -1226,6 +1245,20 @@ fn parse_thread(
         .map(str::to_owned)
         .unwrap_or_else(|| cwd.clone());
     let created = created_at.or(updated_at).unwrap_or(0);
+    // The scan is the only pass over every rollout, so this is where the
+    // per-thread token breakdown comes from; the detail reader uses the same
+    // tracker semantics. Threads without usable token_count events keep an
+    // unknown breakdown instead of a misleading zero.
+    let usage = usage_tracker.usage();
+    let (input_tokens, cached_tokens, output_tokens) = match usage {
+        Some(usage) if usage.total > 0 => (
+            Some(usage.input as i64),
+            usage.cached.map(|value| value as i64),
+            Some(usage.output as i64),
+        ),
+        _ => (None, None, None),
+    };
+    let total_tokens = usage.map_or(0, |usage| usage.total as i64);
 
     Ok(Some(ParsedThread {
         summary: ThreadSummary {
@@ -1245,7 +1278,10 @@ fn parse_thread(
             file_path: file.path.display().to_string(),
             model_provider,
             model,
-            tokens_used: 0,
+            tokens_used: total_tokens,
+            input_tokens,
+            cached_tokens,
+            output_tokens,
             thread_source: "rollout".into(),
             rollout_status: "available".into(),
         },
@@ -1540,6 +1576,52 @@ mod tests {
              {{\"timestamp\":\"2026-09-20T12:01:00+08:00\",\"payload\":{{\"type\":\"user_message\",\"message\":\"{title}\"}}}}\n\
              {{\"timestamp\":\"2026-09-20T12:02:00+08:00\",\"payload\":{{\"type\":\"agent_message\",\"message\":\"done\"}}}}\n"
         )
+    }
+
+    #[test]
+    fn scan_accumulates_token_breakdown_from_token_count_events() {
+        let root = tempdir().unwrap();
+        let sessions = root.path().join("sessions");
+        let archived = root.path().join("archived");
+        fs::create_dir_all(&sessions).unwrap();
+        let token = |input: u64, output: u64, cached: u64, total: u64| {
+            format!(
+                "{{\"timestamp\":\"2026-09-20T12:03:00+08:00\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"info\":{{\"total_token_usage\":{{\"input_tokens\":{input},\"output_tokens\":{output},\"cached_input_tokens\":{cached},\"total_tokens\":{total}}},\"last_token_usage\":{{\"input_tokens\":{input},\"output_tokens\":{output}}}}}}}}}\n"
+            )
+        };
+        let mut log = rollout("usage", "C:/work", "Usage thread");
+        log.push_str(&token(100, 20, 40, 120));
+        // Same cumulative snapshot twice must dedupe; the next growth is a delta.
+        log.push_str(&token(100, 20, 40, 120));
+        log.push_str(&token(300, 50, 130, 350));
+        fs::write(sessions.join("rollout-usage.jsonl"), log).unwrap();
+        // A log without token_count events keeps an unknown breakdown.
+        fs::write(
+            sessions.join("rollout-plain.jsonl"),
+            rollout("plain", "C:/work", "Plain thread"),
+        )
+        .unwrap();
+
+        let scan = scan_threads_with_warnings(&sessions, &archived).unwrap();
+        let with_usage = scan
+            .items
+            .iter()
+            .find(|item| item.id == "usage")
+            .unwrap();
+        assert_eq!(with_usage.tokens_used, 350);
+        assert_eq!(with_usage.input_tokens, Some(300));
+        assert_eq!(with_usage.cached_tokens, Some(130));
+        assert_eq!(with_usage.output_tokens, Some(50));
+
+        let plain = scan
+            .items
+            .iter()
+            .find(|item| item.id == "plain")
+            .unwrap();
+        assert_eq!(plain.tokens_used, 0);
+        assert_eq!(plain.input_tokens, None);
+        assert_eq!(plain.cached_tokens, None);
+        assert_eq!(plain.output_tokens, None);
     }
 
     #[test]

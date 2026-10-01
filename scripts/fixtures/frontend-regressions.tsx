@@ -351,6 +351,7 @@ function mount(mode: FixtureMode) {
     createdAt: 0, updatedAt: 0, userMessages: 1, agentMessages: 1, fileSize: 100,
     archived: false, source: "", cliVersion: "", filePath: "C:/synthetic/t" + i,
     modelProvider: "agentharbor_native", model: "gpt-6-sol", tokensUsed: 10,
+    inputTokens: 4, cachedTokens: 3, outputTokens: 6,
     threadSource: "sqlite", rolloutStatus: "available" }));
   if (mode === "recovery-long") threads[0].title = (
     "恢复已有会话：检查模型切换与长路径 C:/synthetic/" + "unbroken-title".repeat(30) + "。"
