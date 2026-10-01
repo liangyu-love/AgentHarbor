@@ -7,7 +7,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { effectiveModelProtocol, supportsProtocol } from "@/lib/provider-models";
 import { cn } from "@/lib/utils";
-import type { ModelProtocol, NewApiModel } from "@/types/newapi";
+import type { CompressionPolicy, ModelProtocol, NewApiModel } from "@/types/newapi";
 
 interface Props {
   models: NewApiModel[];
@@ -175,6 +175,52 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
                         {t("clients.limitsAuto")}
                       </button>
                     )}
+                    {/* Per-model compression policy; inherit follows the provider. */}
+                    <div className="flex items-center gap-1">
+                      <select
+                        disabled={disabled}
+                        aria-label={t("newapi.compression.modelLevel")}
+                        className="h-7 min-w-0 flex-1 rounded-md border border-border/70 bg-background px-1 text-[10px] text-muted-foreground"
+                        value={model.compression?.mode ?? "inherit"}
+                        onChange={event => {
+                          const mode = event.target.value as CompressionPolicy["mode"];
+                          patch(model.id, {
+                            compression:
+                              mode === "percent" ? { mode, percent: 90 }
+                                : mode === "tokens" ? { mode, tokens: 100_000 }
+                                : { mode },
+                          });
+                        }}
+                      >
+                        <option value="inherit">{t("newapi.compression.inherit")}</option>
+                        <option value="percent">{t("newapi.compression.percent")}</option>
+                        <option value="tokens">{t("newapi.compression.tokens")}</option>
+                        <option value="clientDefault">{t("newapi.compression.clientDefault")}</option>
+                      </select>
+                      {(model.compression?.mode === "percent" || model.compression?.mode === "tokens") && (
+                        <input
+                          type="number"
+                          inputMode="numeric"
+                          min={1}
+                          max={model.compression.mode === "percent" ? 99 : 10_000_000}
+                          disabled={disabled}
+                          aria-label={t("newapi.compression.modelLevel")}
+                          className="h-7 w-16 rounded-md border border-border/70 bg-background px-1 text-[10px] tabular-nums"
+                          value={model.compression.mode === "percent" ? model.compression.percent : model.compression.tokens}
+                          onChange={event => {
+                            const value = Number(event.target.value);
+                            const compression = model.compression;
+                            if (!Number.isSafeInteger(value) || value <= 0) return;
+                            if (compression?.mode === "percent") {
+                              if (value > 99) return;
+                              patch(model.id, { compression: { mode: "percent", percent: value } });
+                            } else if (compression?.mode === "tokens") {
+                              patch(model.id, { compression: { mode: "tokens", tokens: value } });
+                            }
+                          }}
+                        />
+                      )}
+                    </div>
                   </div>
                   <button type="button" disabled={disabled || isDefault} onClick={() => removeModel(model.id)} className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-30" aria-label={t("newapi.removeModelAria", { model: model.id })}>
                     <Trash2 className="h-3.5 w-3.5" />

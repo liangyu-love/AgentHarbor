@@ -542,3 +542,25 @@ pnpm build
 - Magpie：<https://github.com/yetone/magpie>
 - 本地 Magpie：`D:/workspace/temp/magpie`，参考提交见文件开头。
 - 本会话已通过 Context7 查询 models.dev 公开类型；实施 P0 仍需以届时实际响应与上游 schema 核验字段，不能把摘要中的缺省项当成完整契约。
+
+## 17. 实施状态（分支 `feat/models-dev-integration`）
+
+本节记录本分支已经落地的范围，供回退与后续迭代参考。
+
+已实施：
+
+- **P0**：拉取真实 `api.json`（5.28 MB / 225 供应商 / 8339 模型）核验字段；`limit.context|output` 全覆盖、`limit.input` 17%、`reasoning_options`（effort/toggle/budget_tokens）74%、`cost` 95%（含 `tiers`、`context_over_200k`）、`canonical_model_id` 63%；发现并兼容真实的 `budget_tokens.min = -1` 约定。
+- **P1**：`scripts/build-models-dev-snapshot.mjs` + 提交的 `src-tauri/assets/models-dev.snapshot.json`；`models_dev.rs`（校验、索引、运行时缓存、原子刷新、ETag、失败保留旧数据）；`model_metadata.rs`（有序候选、显式/精确/规范化/通用/冲突、逐字段来源）；`model_policy.rs`（压缩策略与客户端投影）。
+- **P2**：router catalog、native catalog、OpenCode 与能力预览共用 `model_projection`；官方账户快照只对官方端点生效；`catalogProviders` 映射与 `priceCatalogProvider` 绑定；能力面板展示匹配类型、候选轨迹、冲突、价格与来源；请求诊断记录目录版本、匹配类型与计价状态；`refresh_models_dev_catalog` / `load_models_dev_status` 命令与每小时后台检查。
+- **P3**：全局默认 90%（可改为固定 token 或交由客户端）；模型 → 供应商 → 全局继承；预算优先使用 `limit.input`；无效阈值不注入；native 快照所有权记录推导值；供应商与模型级 UI。
+- **P4**：usage 观察器拆分非重叠的输入/缓存读写计数；请求开始时固定价格快照并落账（含档位与 >200k 条件价）；账本与归档增加 micro-USD 费用与已计价/未计价数量；用量面板展示今日/累计预估费用、按供应商与请求的费用。
+- **P5**：删除族名窗口表、精确 ID 思考表、`for_model`/`named_defaults`、`with_local_defaults`/`with_catalog_defaults` 以及前端族名数值规则；`docs/models-dev.md` 记录匹配规则、来源顺序、迁移与上游归属。
+
+仍属后续独立事项：
+
+- 历史账单的显式“按当前价格估算”（§10.5）。
+- 多数票自动采纳、别名库扩展与复杂条件价格的自动档位推断（§15）。
+- 原生直连的用量导入与真实账单对账（§15）。
+- 供应商预设来自 models.dev 目录（§15）。
+
+验证（本分支实际执行）：`pnpm test:rust`（457 个单元测试 + 9 个集成测试）、`pnpm test:frontend`（含 Playwright 回归与能力面板/压缩策略/用量费用断言）、`pnpm build` 全部通过。
