@@ -2,15 +2,16 @@ import { useTranslation } from "react-i18next";
 import {
   ArrowDown,
   ArrowUp,
+  Coins,
   FolderTree,
   HardDrive,
   Layers,
   MessagesSquare,
 } from "lucide-react";
-import { AuroraCard } from "@/components/ui/aurora-card";
 import { formatSize, formatTokenCount } from "@/components/threads/thread-utils";
 import type { ThreadList } from "@/components/threads/use-thread-list";
 import { focusRing, pressable } from "@/lib/a11y";
+import { cn } from "@/lib/utils";
 
 export function ThreadMetrics({ list }: { list: ThreadList }) {
   const { t } = useTranslation();
@@ -19,138 +20,90 @@ export function ThreadMetrics({ list }: { list: ThreadList }) {
     totalInputTokens, totalCachedTokens, totalOutputTokens, hasTokenBreakdown,
     totalBytes, activeProject, status, setStatus,
   } = list;
+  const summaries = [
+    {
+      name: "threads", label: t("threads.statsThreads"), value: threads.length, Icon: MessagesSquare,
+      hint: t("threads.statsStatus", { active: threads.length - archivedCount, archived: archivedCount }),
+    },
+    { name: "projects", label: t("threads.statsFolders"), value: workspaceCount, Icon: FolderTree },
+    { name: "storage", label: t("threads.statsStorage"), value: formatSize(totalBytes), Icon: HardDrive },
+  ];
+  const tokenParts = [
+    { name: "input", label: t("threads.statsInputLabel"), value: totalInputTokens,
+      hint: t("threads.statsInputHint"), Icon: ArrowDown, color: "text-sky-500" },
+    { name: "cached", label: t("threads.statsCachedLabel"), value: totalCachedTokens,
+      hint: t("threads.statsCachedHint"), Icon: Layers, color: "text-emerald-500" },
+    { name: "output", label: t("threads.statsOutputLabel"), value: totalOutputTokens,
+      hint: t("threads.statsOutputHint"), Icon: ArrowUp, color: "text-amber-500" },
+  ];
 
   return (
-    <section aria-label={t("threads.overview")} data-thread-metrics className="space-y-2">
+    <section aria-label={t("threads.overview")} data-thread-metrics className="thread-overview space-y-2">
       <p className="text-xs text-muted-foreground" data-metric-scope>
         {t("threads.statsScope", { name: activeProject?.folderName ?? t("threads.allProjects") })}
       </p>
-      <div className="app-metric-grid grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-[1fr_0.7fr_1.5fr_1fr]">
-        <AuroraCard
-          color="blue"
-          className={"cursor-pointer hover:border-primary/35 " + focusRing}
-          aria-pressed={status === "active"}
-          {...pressable(() => setStatus(status === "active" ? "all" : "active"))}
-        >
-          <div className="flex items-center justify-between p-2.5">
-            <div className="space-y-0.5">
-              <span className="text-xs font-medium text-muted-foreground">
-                {t("threads.statsThreads")}
-              </span>
-              <div className="flex items-baseline gap-2">
-                <span data-metric="threads" className="text-xl font-bold tracking-tight tabular-nums">
-                  {threads.length}
-                </span>
-                <span className="text-[11px] text-muted-foreground">
-                  {t("threads.statsStatus", { active: threads.length - archivedCount, archived: archivedCount })}
-                </span>
-              </div>
-            </div>
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
-              <MessagesSquare className="h-5 w-5" />
-            </div>
-          </div>
-        </AuroraCard>
-
-        <AuroraCard color="blue">
-          <div className="flex items-center justify-between p-2.5">
-            <div className="space-y-0.5">
-              <span className="text-xs font-medium text-muted-foreground">
-                {t("threads.statsFolders")}
-              </span>
-              <div className="flex items-baseline gap-2">
-                <span data-metric="projects" className="text-xl font-bold tracking-tight tabular-nums">
-                  {workspaceCount}
-                </span>
-              </div>
-            </div>
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
-              <FolderTree className="h-5 w-5" />
-            </div>
-          </div>
-        </AuroraCard>
-
-        {/* Token breakdown card — mirrors the relay usage card: input (with
-            cached inside), cached subset, output (with reasoning inside). */}
-        <AuroraCard color="blue">
-          <div className="space-y-1 p-2.5">
-            {hasTokenBreakdown ? (
-              <dl className="grid grid-cols-3 divide-x divide-border/40">
-                <div className="min-w-0 pr-2.5">
-                  <dt className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
-                    <ArrowDown className="h-3 w-3 text-sky-500" />
-                    <span className="truncate">{t("threads.statsInputLabel")}</span>
-                  </dt>
-                  <dd data-metric="input" className="text-xl font-bold tracking-tight tabular-nums">
-                    {formatTokenCount(totalInputTokens)}
-                  </dd>
-                  <p className="text-[10px] text-muted-foreground/70">
-                    {t("threads.statsInputHint")}
-                  </p>
-                </div>
-                <div className="min-w-0 px-2.5">
-                  <dt className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
-                    <Layers className="h-3 w-3 text-emerald-500" />
-                    <span className="truncate">{t("threads.statsCachedLabel")}</span>
-                  </dt>
-                  <dd data-metric="cached" className="text-xl font-bold tracking-tight tabular-nums">
-                    {formatTokenCount(totalCachedTokens)}
-                  </dd>
-                  <p className="text-[10px] text-muted-foreground/70">
-                    {t("threads.statsCachedHint")}
-                  </p>
-                </div>
-                <div className="min-w-0 pl-2.5">
-                  <dt className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
-                    <ArrowUp className="h-3 w-3 text-amber-500" />
-                    <span className="truncate">{t("threads.statsOutputLabel")}</span>
-                  </dt>
-                  <dd data-metric="output" className="text-xl font-bold tracking-tight tabular-nums">
-                    {formatTokenCount(totalOutputTokens)}
-                  </dd>
-                  <p className="text-[10px] text-muted-foreground/70">
-                    {t("threads.statsOutputHint")}
-                  </p>
-                </div>
-              </dl>
-            ) : (
-              <dl>
-                <dt className="text-xs font-medium text-muted-foreground">
-                  {t("threads.statsTokensLabel")}
-                </dt>
-                <dd data-metric="tokens" className="text-xl font-bold tracking-tight tabular-nums">
-                  {formatTokenCount(totalTokens)}
-                </dd>
-                <p className="text-[10px] text-muted-foreground/70">
-                  {t("threads.statsBreakdownUnknown")}
-                </p>
-              </dl>
+      <div className="thread-overview-grid">
+        {summaries.map(({ name, label, value, Icon, hint }) => (
+          <div
+            key={name}
+            className={cn(
+              "thread-overview-card",
+              name === "storage" && "thread-storage-summary",
+              name === "threads" && "cursor-pointer transition-colors hover:border-primary/40 " + focusRing,
+              name === "threads" && status === "active" && "border-primary/50",
             )}
-            {hasTokenBreakdown && (
-              <p data-metric="tokens-total" className="text-[11px] text-muted-foreground">
+            {...(name === "threads" ? {
+              "aria-pressed": status === "active",
+              ...pressable(() => setStatus(status === "active" ? "all" : "active")),
+            } : {})}
+          >
+            <dl className="thread-metric-item">
+              <dt className="thread-overview-label" title={label}>
+                <Icon aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate">{label}</span>
+              </dt>
+              <dd>
+                <span data-metric={name} className="thread-overview-value">{value}</span>
+                <p className="thread-overview-hint">{hint || "\u00a0"}</p>
+              </dd>
+            </dl>
+          </div>
+        ))}
+
+        <div className="thread-overview-card thread-token-summary">
+          {hasTokenBreakdown ? (
+            <>
+              <dl className="thread-token-parts">
+                {tokenParts.map(({ name, label, value, hint, Icon, color }) => (
+                  <div key={name} className="thread-metric-item">
+                    <dt className="thread-overview-label" title={label}>
+                      <Icon aria-hidden="true" className={cn("h-3.5 w-3.5 shrink-0", color)} />
+                      <span className="truncate">{label}</span>
+                    </dt>
+                    <dd>
+                      <span data-metric={name} className="thread-overview-value">{formatTokenCount(value)}</span>
+                      <p className="thread-overview-hint">{hint}</p>
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+              <p data-metric="tokens-total" className="thread-token-total">
                 {t("threads.statsTokens", { value: formatTokenCount(totalTokens) })}
               </p>
-            )}
-          </div>
-        </AuroraCard>
-
-        <AuroraCard color="blue">
-          <div className="flex items-center justify-between p-2.5">
-            <div className="space-y-0.5">
-              <span className="text-xs font-medium text-muted-foreground">
-                {t("threads.statsStorage")}
-              </span>
-              <div className="flex items-baseline gap-2">
-                <span data-metric="storage" className="text-xl font-bold tracking-tight tabular-nums">
-                  {formatSize(totalBytes)}
-                </span>
-              </div>
-            </div>
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
-              <HardDrive className="h-5 w-5" />
-            </div>
-          </div>
-        </AuroraCard>
+            </>
+          ) : (
+            <dl className="thread-metric-item">
+              <dt className="thread-overview-label" title={t("threads.statsTokensLabel")}>
+                <Coins aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate">{t("threads.statsTokensLabel")}</span>
+              </dt>
+              <dd>
+                <span data-metric="tokens" className="thread-overview-value">{formatTokenCount(totalTokens)}</span>
+                <p className="thread-overview-hint">{t("threads.statsBreakdownUnknown")}</p>
+              </dd>
+            </dl>
+          )}
+        </div>
       </div>
     </section>
   );

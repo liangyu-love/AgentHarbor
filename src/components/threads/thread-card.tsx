@@ -38,6 +38,7 @@ import { focusRing, onActivateKey } from "@/lib/a11y";
 interface ThreadCardProps {
   thread: ThreadSummary;
   selected: boolean;
+  detailActive?: boolean;
   onToggleSelect: () => void;
   onExport: () => void;
   onOpenRaw: () => void;
@@ -50,6 +51,7 @@ interface ThreadCardProps {
 export function ThreadCard({
   thread,
   selected,
+  detailActive = false,
   onToggleSelect,
   onExport,
   onOpenRaw,
@@ -93,8 +95,10 @@ export function ThreadCard({
     return (
       <TooltipProvider delayDuration={200}>
         <div
+          data-thread-card={thread.key}
+          data-detail-active={detailActive ? "" : undefined}
           className={cn(
-            "group relative flex h-13 cursor-pointer items-center justify-between gap-3 overflow-hidden rounded-xl border border-border/60 bg-card/85 px-3 backdrop-blur-sm transition-all duration-150 hover:border-primary/50 hover:bg-muted/40",
+            "thread-compact-card group relative flex h-13 cursor-pointer items-center justify-between gap-3 overflow-hidden rounded-xl border border-border/60 bg-card/85 px-3 backdrop-blur-sm transition-all duration-150 hover:border-primary/50 hover:bg-muted/40",
             selected
               ? "border-primary/70 bg-primary/[0.04] shadow-xs ring-1 ring-primary/40 dark:border-amber-400/50 dark:ring-amber-400/30 dark:bg-amber-400/[0.03]"
               : !hasRollout
@@ -127,9 +131,11 @@ export function ThreadCard({
                 <button
                   type="button"
                   data-thread-title
+                  aria-current={detailActive ? "true" : undefined}
                   className={cn(
                     "truncate text-left text-sm font-semibold leading-none text-foreground hover:text-primary transition-colors",
                     focusRing,
+                    detailActive && "text-primary",
                   )}
                   title={thread.title || t("threads.untitled")}
                   aria-label={t("threads.details.open", {
@@ -163,6 +169,7 @@ export function ThreadCard({
                 )}
 
                 <span
+                  data-thread-row-secondary
                   className="hidden max-w-44 shrink-0 truncate rounded-md bg-primary/10 px-2 py-0.5 font-mono text-[10px] font-medium text-primary md:inline-flex"
                   title={t("threads.providerAndModel", {
                     provider: providerLabel,
@@ -173,6 +180,7 @@ export function ThreadCard({
                 </span>
 
                 <span
+                  data-thread-row-secondary
                   className="hidden shrink-0 items-center gap-1 rounded-md bg-muted/70 px-1.5 py-0.5 text-[9.5px] text-muted-foreground lg:inline-flex"
                   title={t("threads.threadSource")}
                 >
@@ -181,7 +189,7 @@ export function ThreadCard({
                 </span>
 
                 {(thread.cliVersion || thread.source) && (
-                  <span className="hidden md:inline-flex items-center gap-1 rounded-md bg-muted/70 px-1.5 py-0.5 font-mono text-[9.5px] text-muted-foreground">
+                  <span data-thread-row-secondary className="hidden md:inline-flex items-center gap-1 rounded-md bg-muted/70 px-1.5 py-0.5 font-mono text-[9.5px] text-muted-foreground">
                     <Terminal className="h-2.5 w-2.5 opacity-70" />
                     {thread.cliVersion ? `v${thread.cliVersion}` : thread.source}
                   </span>
@@ -191,8 +199,9 @@ export function ThreadCard({
           </div>
 
           {/* Center: Turn counts & Time */}
-          <div className="hidden shrink-0 items-center gap-3.5 text-xs text-muted-foreground sm:flex">
+          <div data-thread-row-stats className="hidden shrink-0 items-center gap-3.5 text-xs text-muted-foreground sm:flex">
             <div
+              data-thread-row-secondary
               className="flex items-center gap-1.5 font-mono rounded-lg bg-muted/50 px-2 py-1"
               title={t("threads.messagesTooltip")}
             >
@@ -220,6 +229,7 @@ export function ThreadCard({
             </span>
 
             <span
+              data-thread-row-secondary
               className="w-16 text-right text-[11px]"
               title={formatDateTime(thread.updatedAt)}
             >
@@ -351,6 +361,8 @@ export function ThreadCard({
   return (
     <TooltipProvider delayDuration={200}>
       <BentoCard
+        data-thread-card={thread.key}
+        data-detail-active={detailActive ? "" : undefined}
         className={cn(
           "group relative flex min-h-[180px] flex-col justify-between cursor-pointer rounded-2xl p-3.5 transition-all duration-200 ease-out hover:-translate-y-1 hover:border-primary/50 hover:shadow-md",
           selected
@@ -386,9 +398,11 @@ export function ThreadCard({
                 <button
                   type="button"
                   data-thread-title
+                  aria-current={detailActive ? "true" : undefined}
                   className={cn(
                     "line-clamp-2 text-left text-sm font-bold leading-snug tracking-tight text-foreground hover:text-primary transition-colors",
                     focusRing,
+                    detailActive && "text-primary",
                   )}
                   title={thread.title || t("threads.untitled")}
                   aria-label={t("threads.details.open", {

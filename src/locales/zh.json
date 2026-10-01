@@ -401,6 +401,7 @@
     "traceRequested": "客户端请求参数",
     "traceSent": "实际发送参数",
     "traceNoParameters": "未显式发送思考或输出预算参数",
+    "traceAttempts": "路由链路与尝试记录（{{count}}）",
     "traceComplete": "已完成",
     "traceFailed": "失败",
     "traceRunning": "进行中",
@@ -415,6 +416,8 @@
     "capabilityContext": "上下文上限",
     "capabilityOutput": "输出上限",
     "capabilityEmpty": "没有匹配的已配置模型。",
+    "capabilityCount": "{{shown}} / {{total}} 个模型",
+    "tokenUnit": "Token",
     "capabilitySource": {
       "catalog": "官方同步目录",
       "local": "内置模型规则",
@@ -870,6 +873,9 @@
     "details": {
       "open": "查看详情：{{title}}",
       "tabs": "线程详情",
+      "backToList": "返回列表",
+      "expandTitle": "展开完整标题",
+      "collapseTitle": "收起完整标题",
       "usage": "用量",
       "tools": "工具",
       "metadata": "元数据",

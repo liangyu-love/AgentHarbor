@@ -147,8 +147,12 @@ export function RoutingDiagnostics({
           {/* Trace Items List */}
           <div className="max-h-[32rem] space-y-2.5 overflow-y-auto pr-0.5">
             {query.data?.map((route) => {
-              const isSuccess = route.done && !route.error && (route.status ?? 0) < 400;
-              const isError = route.done && (route.error || (route.status ?? 0) >= 400);
+              const state =
+                route.error || (route.status != null && route.status >= 400)
+                  ? "failed"
+                  : route.done
+                    ? "complete"
+                    : "running";
 
               return (
                 <details
@@ -161,24 +165,22 @@ export function RoutingDiagnostics({
                         variant="outline"
                         className={cn(
                           "px-2 py-0 text-[10px] font-semibold",
-                          isSuccess
+                          state === "complete"
                             ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                            : isError
+                            : state === "failed"
                               ? "border-rose-500/30 bg-rose-500/10 text-rose-600 dark:text-rose-400"
                               : "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400",
                         )}
                       >
-                        {route.done ? (
-                          route.error ? (
-                            t("newapi.traceFailed")
-                          ) : (
-                            t("newapi.traceComplete")
-                          )
-                        ) : (
+                        {state === "running" ? (
                           <span className="flex items-center gap-1">
                             <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
                             {t("newapi.traceRunning")}
                           </span>
+                        ) : state === "failed" ? (
+                          t("newapi.traceFailed")
+                        ) : (
+                          t("newapi.traceComplete")
                         )}
                       </Badge>
 
@@ -231,7 +233,7 @@ export function RoutingDiagnostics({
                     <div className="space-y-2">
                       <h4 className="font-bold text-foreground flex items-center gap-1.5 px-0.5">
                         <Layers className="h-3.5 w-3.5 text-primary" />
-                        <span>路由链路与尝试记录 ({route.attempts.length})</span>
+                        <span>{t("newapi.traceAttempts", { count: route.attempts.length })}</span>
                       </h4>
                       {route.attempts.map((attempt, index) => (
                         <div

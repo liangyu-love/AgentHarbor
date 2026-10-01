@@ -401,6 +401,7 @@
     "traceRequested": "Client-requested parameters",
     "traceSent": "Actual upstream parameters",
     "traceNoParameters": "No explicit reasoning or output budget parameters",
+    "traceAttempts": "Routing chain and attempts ({{count}})",
     "traceComplete": "Complete",
     "traceFailed": "Failed",
     "traceRunning": "In progress",
@@ -415,6 +416,8 @@
     "capabilityContext": "Context limit",
     "capabilityOutput": "Output limit",
     "capabilityEmpty": "No matching configured models.",
+    "capabilityCount": "{{shown}} / {{total}} models",
+    "tokenUnit": "Token",
     "capabilitySource": {
       "catalog": "Official synced catalog",
       "local": "Bundled model rules",
@@ -870,6 +873,9 @@
     "details": {
       "open": "View details: {{title}}",
       "tabs": "Thread details",
+      "backToList": "Back to conversations",
+      "expandTitle": "Show full title",
+      "collapseTitle": "Collapse title",
       "usage": "Usage",
       "tools": "Tools",
       "metadata": "Metadata",

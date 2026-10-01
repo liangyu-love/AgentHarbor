@@ -1304,4 +1304,53 @@ body {
 @media (max-width: 920px) { .usage-breakdown-content { grid-template-columns: 190px minmax(0, 1fr); } .usage-model-list { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 670px) { .usage-today-row { grid-template-columns: minmax(0, 1fr); } .usage-breakdown-content { grid-template-columns: minmax(0, 1fr); } .usage-donut-wrap { width: 180px; } .usage-mini-tracks { grid-template-columns: minmax(0, 1fr); } .usage-mini-track svg { height: 34px; } .usage-panel-heading { align-items: flex-start; flex-direction: column; } .usage-relay-header { flex-direction: row; } }
 @media (max-width: 420px) { .usage-metric-row { gap: 0.25rem; } .usage-metric { padding: 0.45rem 0.35rem; } .usage-chart-models { align-items: flex-start; flex-direction: column; } .usage-relay-summary strong { font-size: 0.92rem; } }
+
+/* Thread summaries use quiet outlines and labels along their upper edge. */
+.thread-overview { container: thread-overview / inline-size; }
+.thread-overview-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px 12px; padding-top: 8px; }
+.thread-overview-card { position: relative; min-width: 0; border: 1px solid hsl(var(--border) / 0.7); border-radius: 16px; background: hsl(var(--card)); text-align: center; }
+.thread-storage-summary, .thread-token-summary { grid-column: 1 / -1; }
+.thread-metric-item { container: thread-metric / inline-size; position: relative; min-width: 0; padding: 20px 12px 24px; }
+.thread-overview-label { position: absolute; top: -1px; left: 50%; display: flex; max-width: calc(100% - 16px); align-items: center; justify-content: center; gap: 6px; padding: 0 6px; background: hsl(var(--background)); color: hsl(var(--muted-foreground)); font-size: 12px; font-weight: 500; line-height: 20px; white-space: nowrap; transform: translate(-50%, -50%); }
+.thread-overview-value { display: block; font-size: 32px; font-weight: 700; line-height: 1.15; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.thread-overview-hint { margin-top: 8px; color: hsl(var(--muted-foreground)); font-size: 11px; line-height: 18px; }
+.thread-token-parts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.thread-token-parts > :not(:first-child)::before { position: absolute; top: 20px; bottom: 24px; left: 0; width: 1px; background: hsl(var(--border) / 0.6); content: ""; }
+.thread-token-total { position: absolute; right: 12px; bottom: 4px; left: 12px; color: hsl(var(--muted-foreground)); font-size: 10px; line-height: 14px; }
+@container thread-metric (max-width: 180px) { .thread-overview-value { font-size: 28px; } }
+@container thread-metric (max-width: 140px) { .thread-overview-value { font-size: 24px; } }
+@container thread-metric (max-width: 110px) { .thread-overview-value { font-size: 20px; } }
+@container thread-overview (max-width: 380px) {
+  .thread-token-parts .thread-overview-label { max-width: calc(100% - 4px); gap: 4px; padding: 0 4px; font-size: 11px; }
+  .thread-token-parts .thread-overview-label svg { width: 12px; height: 12px; }
+}
+@container thread-overview (min-width: 640px) {
+  .thread-overview-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .thread-storage-summary { grid-column: auto; }
+}
+@container thread-overview (min-width: 1080px) {
+  .thread-overview-grid { grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, 2.25fr); }
+  .thread-token-summary { grid-column: auto; }
+}
+
+/* Thread details share the workspace instead of covering it with a drawer. */
+.thread-workspace-container { container: thread-workspace / inline-size; }
+.thread-compact-card { container: thread-card / inline-size; }
+@container thread-card (max-width: 900px) {
+  [data-thread-workspace][data-detail-open] .thread-compact-card [data-thread-row-secondary] { display: none; }
+}
+@container thread-card (max-width: 560px) {
+  [data-thread-workspace][data-detail-open] .thread-compact-card [data-thread-row-stats] { display: none; }
+}
+.thread-detail-panel { height: calc(100dvh - 8rem); }
+.thread-detail-back { display: inline-flex; }
+.thread-detail-project { display: none; }
+[data-thread-workspace][data-detail-open] > .thread-browser { display: none; }
+@container thread-workspace (min-width: 900px) {
+  [data-thread-workspace][data-detail-open] { grid-template-columns: minmax(0, 1fr) 380px; }
+  [data-thread-workspace][data-detail-open] > .thread-browser { display: grid; }
+  .thread-detail-panel { position: sticky; top: 12px; }
+  .thread-detail-back { display: none; }
+  .thread-detail-project { display: flex; }
+}
 @media (prefers-reduced-motion: reduce) { .usage-area-enter { animation: none; } .usage-chart-crosshair, .usage-chart-active-point, .usage-donut-segment, .usage-model-row, .usage-model-chip, .usage-source-card, .usage-today-card, .usage-view-tabs button { transition: none; } }

@@ -82,14 +82,14 @@ export async function testThreadUiFixes({ page, reset, captureDir }) {
       document.documentElement.setAttribute("data-has-custom-bg", "true");
     }, dark);
     await page.getByRole("button", { name: /^查看详情：/ }).first().click();
-    panel = page.getByRole("dialog");
+    panel = page.getByRole("complementary", { name: "线程详情", exact: true });
     await panel.getByText("33,301,900 Token", { exact: true }).waitFor();
-    assert.match(await panel.evaluate(element => getComputedStyle(element).backgroundColor), /, 0\.5\)$/, "Wallpaper sheet retains its surface alpha");
+    assert.match(await panel.evaluate(element => getComputedStyle(element).backgroundColor), /, 0\.82\)$/, "Wallpaper detail panel retains the card surface alpha");
     await capture(`thread-details-wallpaper-${dark ? "dark" : "light"}-fixed.png`);
     await page.keyboard.press("Escape");
     await panel.waitFor({ state: "hidden" });
   }
-  console.log("PASS wallpaper popover and thread sheet keep valid light/dark backgrounds and remain dismissible");
+  console.log("PASS wallpaper popover and thread panel keep valid light/dark backgrounds and remain dismissible");
 
   await reset("thread-details");
   await page.evaluate(() => {
@@ -104,7 +104,7 @@ export async function testThreadUiFixes({ page, reset, captureDir }) {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async () => {} } });
   });
   await page.getByRole("button", { name: /^查看详情：/ }).first().click();
-  const panel = page.getByRole("dialog");
+  const panel = page.getByRole("complementary", { name: "线程详情", exact: true });
   await panel.getByRole("tab", { name: "对话", exact: true }).click();
   await panel.getByRole("button", { name: "全部 (7)", exact: true }).waitFor();
   const articles = panel.locator("article");

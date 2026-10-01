@@ -6,13 +6,20 @@ export async function testThreadDetails({ page, reset, captureDir }) {
     await reset(mode);
     const trigger = page.getByRole("button", { name: /^查看详情：/ }).first();
     await trigger.click();
-    const panel = page.getByRole("dialog");
+    const panel = page.getByRole("complementary", { name: "线程详情", exact: true });
     await panel.waitFor();
     return { trigger, panel };
   };
   await page.setViewportSize({ width: 1440, height: 820 });
   let { trigger, panel } = await open("thread-details");
   await panel.getByText("33,301,900 Token", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("dialog").count(), 0, "Details are an inline region, without a modal overlay");
+  assert.equal(await page.locator('[data-thread-card][data-detail-active]').count(), 1, "The originating card is highlighted");
+  assert.equal(await trigger.isVisible(), true, "The thread title remains visible beside the details");
+  const panelBox = await panel.boundingBox();
+  const resultsBox = await page.locator('[data-thread-results]').boundingBox();
+  assert.ok(panelBox.x >= resultsBox.x + resultsBox.width, "Details occupy their own right column");
+  assert.ok(panelBox.width <= 400, "The detail region stays compact");
   await page.evaluate(() => {
     window.review.copiedText = [];
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async text => {
@@ -96,7 +103,8 @@ export async function testThreadDetails({ page, reset, captureDir }) {
   await page.evaluate(() => document.documentElement.classList.add("dark"));
   assert.equal(await panel.evaluate(element => element.scrollWidth <= element.clientWidth), true, "No mobile horizontal overflow");
   const footer = await panel.locator("footer").boundingBox();
-  assert.ok(footer.y + footer.height <= 701, "Footer remains visible in the small viewport");
+  const scrollArea = await page.locator('[data-page-scroll-container]').boundingBox();
+  assert.ok(footer.y + footer.height <= scrollArea.y + scrollArea.height + 1, "Footer stays inside the page viewport");
   const closeButton = await panel.getByRole("button", { name: "关闭", exact: true }).boundingBox();
   assert.ok(closeButton.width >= 40 && closeButton.height >= 40, "Close has a usable touch target");
   if (captureDir) await page.screenshot({ path: path.join(captureDir, "thread-details-usage-mobile-dark.png"), animations: "disabled" });
@@ -106,5 +114,39 @@ export async function testThreadDetails({ page, reset, captureDir }) {
   await panel.getByRole("button", { name: "关闭", exact: true }).click();
   await panel.waitFor({ state: "hidden" });
   await page.evaluate(() => document.documentElement.classList.remove("dark"));
+  await page.setViewportSize({ width: 1440, height: 820 });
+  await page.evaluate(() => localStorage.setItem('threads_view_mode', 'compact'));
+  await reset('thread-tree');
+  await page.getByRole('button', { name: '查看详情：Review thread 0', exact: true }).click();
+  panel = page.getByRole('complementary', { name: '线程详情', exact: true });
+  await page.getByRole('button', { name: '查看详情：Review thread 1', exact: true }).click();
+  await panel.getByRole('heading', { name: 'Review thread 1', exact: true }).waitFor();
+  assert.equal(await page.locator('[data-thread-card][data-detail-active]').count(), 1, 'Switching threads moves the highlight');
+  assert.equal(await page.getByText('已选 1 个', { exact: true }).count(), 0, 'Detail highlighting remains separate from batch selection');
+  await panel.getByRole('button', { name: '关闭', exact: true }).click();
+
+  await page.setViewportSize({ width: 500, height: 760 });
+  const search = page.getByPlaceholder('搜索标题、工程、会话 ID、提供商或模型…');
+  await search.fill('Review thread');
+  await page.getByRole('checkbox').first().click();
+  const scroller = page.locator('[data-page-scroll-container]');
+  await scroller.evaluate(element => { element.scrollTop = 750; });
+  const sourceLabel = await page.locator('[data-thread-title]').evaluateAll(elements => {
+    const viewport = document.querySelector('[data-page-scroll-container]').getBoundingClientRect();
+    return elements.find(element => { const box = element.getBoundingClientRect(); return box.top >= viewport.top + 20 && box.bottom < viewport.bottom - 20; })?.getAttribute('aria-label');
+  });
+  assert.ok(sourceLabel, 'A visible virtualized thread is available');
+  const savedScroll = await scroller.evaluate(element => element.scrollTop);
+  await page.getByRole('button', { name: sourceLabel, exact: true }).click();
+  await panel.getByText('33,301,900 Token', { exact: true }).waitFor();
+  await panel.getByRole('button', { name: '返回列表', exact: true }).click();
+  await panel.waitFor({ state: 'hidden' });
+  await page.waitForFunction(({ top, label }) => {
+    const scroller = document.querySelector('[data-page-scroll-container]');
+    return Math.abs(scroller.scrollTop - top) <= 1 && document.activeElement?.getAttribute('aria-label') === label;
+  }, { top: savedScroll, label: sourceLabel });
+  assert.equal(await search.inputValue(), 'Review thread', 'Closing details preserves the search');
+  assert.equal(await page.getByRole('checkbox', { checked: true }).count(), 1, 'Closing details preserves batch selection');
+  console.log('PASS inline details allow direct switching; narrow layouts restore virtual-list scroll, focus, filters and selection');
   console.log("PASS read-only thread details: usage/models/dates/tools/metadata, lazy paged chat, safe text, diagnostics, unknown/missing/errors, keyboard/focus, mobile close/footer");
 }

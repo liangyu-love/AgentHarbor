@@ -28,7 +28,7 @@ function Origin({ field }: { field: CapabilityField<unknown> }) {
       <span>·</span>
       <span>
         {field.updatedAt
-          ? new Date(field.updatedAt * 1000).toLocaleTimeString()
+          ? new Date(field.updatedAt * 1000).toLocaleString()
           : t("newapi.capabilityDateUnknown")}
       </span>
     </div>
@@ -80,7 +80,7 @@ export function ModelCapabilities() {
 
         {open && query.data && (
           <span className="rounded-full bg-muted/80 px-2.5 py-0.5 font-mono text-[11px] font-semibold text-muted-foreground">
-            {models.length} / {allModels.length} 模型
+            {t("newapi.capabilityCount", { shown: models.length, total: allModels.length })}
           </span>
         )}
       </div>
@@ -200,7 +200,7 @@ export function ModelCapabilities() {
                       <p className="mt-1 font-mono text-xs font-bold text-foreground">
                         {m.context.value?.toLocaleString() ?? "—"}{" "}
                         <span className="text-[10px] font-normal text-muted-foreground">
-                          Token
+                          {t("newapi.tokenUnit")}
                         </span>
                       </p>
                       <Origin field={m.context} />
@@ -215,7 +215,7 @@ export function ModelCapabilities() {
                       <p className="mt-1 font-mono text-xs font-bold text-foreground">
                         {m.output.value?.toLocaleString() ?? "—"}{" "}
                         <span className="text-[10px] font-normal text-muted-foreground">
-                          Token
+                          {t("newapi.tokenUnit")}
                         </span>
                       </p>
                       <Origin field={m.output} />

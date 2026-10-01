@@ -31,6 +31,7 @@ export interface VirtualThreadListProps {
   groups: FolderGroup[];
   collapsedGroups: Set<string>;
   selected: Set<string>;
+  detailKey?: string;
   viewMode: "grid" | "compact";
   onToggleSelect: (key: string) => void;
   onToggleGroup: (groupKeys: string[]) => void;
@@ -54,6 +55,7 @@ export function VirtualThreadList({
   groups,
   collapsedGroups,
   selected,
+  detailKey,
   viewMode,
   onToggleSelect,
   onToggleGroup,
@@ -206,6 +208,7 @@ export function VirtualThreadList({
                         key={thread.key}
                         thread={thread}
                         selected={selected.has(thread.key)}
+                        detailActive={detailKey === thread.key}
                         onToggleSelect={() => onToggleSelect(thread.key)}
                         onExport={() => onExport([thread.key])}
                         onOpenRaw={() => onOpenPath(thread.filePath)}
@@ -262,6 +265,7 @@ export function VirtualThreadList({
                 <ThreadCard
                   thread={row.thread}
                   selected={row.selected}
+                  detailActive={detailKey === row.thread.key}
                   onToggleSelect={() => onToggleSelect(row.thread.key)}
                   onExport={() => onExport([row.thread.key])}
                   onOpenRaw={() => onOpenPath(row.thread.filePath)}

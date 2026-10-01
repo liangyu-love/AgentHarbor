@@ -25,9 +25,11 @@ import { threadGridStyle } from "./thread-grid-layout";
 export function ThreadGroupSection({
   group,
   list,
+  onDetails,
 }: {
   group: FolderGroup;
   list: ThreadList;
+  onDetails: (key: string) => void;
 }) {
   const { t } = useTranslation();
   const {
@@ -230,11 +232,12 @@ export function ThreadGroupSection({
               key={thread.key}
               thread={thread}
               selected={selected.has(thread.key)}
+              detailActive={list.detailTarget?.key === thread.key}
               onToggleSelect={() => toggleSelect(thread.key)}
               onExport={() => void handleExport([thread.key])}
               onOpenRaw={() => void handleOpenPath(thread.filePath)}
               onRecover={() => setRecoveryTarget(thread)}
-              onDetails={() => list.setDetailKey(thread.key)}
+              onDetails={() => onDetails(thread.key)}
               onDelete={() => void handleDelete([thread.key])}
               variant={viewMode}
             />

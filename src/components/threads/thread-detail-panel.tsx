@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import {
   AlertCircle,
   Archive,
+  ArrowLeft,
   Bot,
   Brain,
   Check,
@@ -16,6 +17,7 @@ import {
   FileCode,
   FileJson,
   Filter,
+  Folder,
   Layers,
   Loader2,
   MessagesSquare,
@@ -25,14 +27,8 @@ import {
   Trash2,
   User,
   Wrench,
+  X,
 } from "lucide-react";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -47,7 +43,7 @@ import { formatInvokeError } from "@/lib/invoke-error";
 import { formatDateTime } from "@/lib/format-time";
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
-import { formatSize, formatTokenCount } from "./thread-utils";
+import { formatSize } from "./thread-utils";
 import type {
   ThreadDetails,
   ThreadDiagnostics,
@@ -199,8 +195,8 @@ function UsageBreakdown({ usage }: { usage: ThreadUsage }) {
         </div>
       )}
 
-      {/* Token items: one column on narrow drawers, two from `sm` up */}
-      <dl className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+      {/* Keep the existing token cards readable inside the inline panel. */}
+      <dl className="grid grid-cols-1 gap-2 text-xs">
         {parts.map((part) => (
           <div
             key={part.key}
@@ -689,7 +685,7 @@ function MessageItem({
   );
 }
 
-export function ThreadDetailSheet({
+export function ThreadDetailPanel({
   thread,
   onClose,
   onExport,
@@ -709,12 +705,72 @@ export function ThreadDetailSheet({
       : null,
   );
   const tabList = useRef<HTMLDivElement>(null);
+  const panel = useRef<HTMLElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const [tab, setTab] = useState<Tab>("usage");
   const [offset, setOffset] = useState(0);
   const [roleFilter, setRoleFilter] = useState<RoleFilter>("all");
   const [titleExpanded, setTitleExpanded] = useState(false);
   const available = thread.rolloutStatus !== "missing";
+
+  const closePanel = () => {
+    onClose();
+    requestAnimationFrame(() => {
+      if (opener.current?.isConnected) opener.current.focus({ preventScroll: true });
+    });
+  };
+
+  useEffect(() => {
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented
+        || panel.current?.closest('[aria-hidden="true"]')
+        || document.querySelector('[role="dialog"][aria-modal="true"], [role="alertdialog"]')
+        || document.activeElement?.closest('[role="menu"], [role="listbox"]')) return;
+      event.preventDefault();
+      closePanel();
+    };
+    document.addEventListener("keydown", handleEscape);
+    return () => document.removeEventListener("keydown", handleEscape);
+  }, [onClose]);
+
+  useEffect(() => {
+    const element = panel.current;
+    if (!element) return;
+    const scroller = element.closest<HTMLElement>("[data-page-scroll-container]");
+    const workspace = element.closest<HTMLElement>("[data-thread-workspace]");
+    const viewport = () => scroller?.getBoundingClientRect()
+      ?? { top: 0, bottom: window.innerHeight, height: window.innerHeight };
+    // Keep the panel in the page's scroll area, below the shared toolbar.
+    // Short/narrow layouts bring the detail into view without opening a modal.
+    if ((workspace?.clientWidth ?? window.innerWidth) < 900
+      || viewport().bottom - element.getBoundingClientRect().top < 240) {
+      element.scrollIntoView({ block: "start" });
+    }
+    heading.current?.focus({ preventScroll: true });
+    let frame = 0;
+    const measure = () => {
+      const bounds = viewport();
+      const top = Math.max(bounds.top + 12, element.getBoundingClientRect().top);
+      element.style.height = `${Math.max(Math.min(240, bounds.height - 24), bounds.bottom - top - 12)}px`;
+    };
+    const schedule = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(measure);
+    };
+    measure();
+    const observer = new ResizeObserver(schedule);
+    observer.observe(scroller ?? document.documentElement);
+    if (workspace) observer.observe(workspace);
+    (scroller ?? window).addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      (scroller ?? window).removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", schedule);
+    };
+  }, []);
 
   useEffect(() => {
     content.current?.scrollTo(0, 0);
@@ -827,35 +883,44 @@ export function ThreadDetailSheet({
   ];
 
   return (
-    <Sheet open onOpenChange={(open) => !open && onClose()}>
-      {/* The width pair overrides `sm:max-w-sm`. Surface transparency belongs
-          to the wallpaper token; an extra opacity modifier would invalidate it. */}
-      <SheetContent
-        closeLabel={t("common.close")}
-        className="flex h-[100dvh] w-full flex-col gap-0 border-l border-border/80 bg-background p-0 shadow-2xl backdrop-blur-xl sm:w-[560px] sm:max-w-[560px] md:w-[620px] md:max-w-[620px] xl:w-[700px] xl:max-w-[700px]"
-        onCloseAutoFocus={(event) => {
-          event.preventDefault();
-          if (opener.current?.isConnected) opener.current.focus();
-        }}
+    <aside
+        ref={panel}
+        data-thread-detail-panel
+        aria-label={t("threads.details.tabs")}
+        className="thread-detail-panel flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border border-border/70 bg-card shadow-xs"
       >
-        {/* Sheet Header */}
-        <SheetHeader className="shrink-0 space-y-1.5 border-b border-border/60 bg-muted/20 px-5 py-3 text-left">
-          <div className="pr-8">
-            <SheetTitle
+        <header className="max-h-[50%] shrink-0 space-y-2 overflow-y-auto border-b border-border/60 bg-muted/20 px-4 py-3">
+          <div className="flex min-w-0 items-center justify-between gap-2">
+            <span className="thread-detail-project flex min-w-0 items-center gap-2 text-xs text-muted-foreground" title={thread.cwd}>
+              <Folder className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">{thread.cwd.split(/[\\/]/).filter(Boolean).pop() || t("threads.directChats")}</span>
+            </span>
+            <Button variant="ghost" size="sm" className="thread-detail-back gap-1.5 px-0 text-xs" onClick={closePanel}>
+              <ArrowLeft className="h-3.5 w-3.5" />{t("threads.details.backToList")}
+            </Button>
+            <Button variant="ghost" size="icon" className="h-10 w-10 shrink-0 text-muted-foreground" aria-label={t("common.close")} onClick={closePanel}>
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+          <div>
+            <h2
+              ref={heading}
+              tabIndex={-1}
               className={cn(
-                "text-sm sm:text-base font-bold leading-snug tracking-tight text-foreground [overflow-wrap:anywhere]",
+                "text-base font-bold leading-snug tracking-tight text-foreground [overflow-wrap:anywhere] focus:outline-none",
+                titleExpanded && "max-h-24 overflow-y-auto",
                 !titleExpanded && "line-clamp-2",
               )}
             >
               {thread.title || t("threads.untitled")}
-            </SheetTitle>
+            </h2>
             {thread.title && thread.title.length > 60 && (
               <button
                 type="button"
                 onClick={() => setTitleExpanded((v) => !v)}
                 className="mt-0.5 inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
               >
-                <span>{titleExpanded ? "收起完整标题" : "展开完整标题"}</span>
+                <span>{t(titleExpanded ? "threads.details.collapseTitle" : "threads.details.expandTitle")}</span>
                 {titleExpanded ? (
                   <ChevronUp className="h-3 w-3" />
                 ) : (
@@ -865,10 +930,6 @@ export function ThreadDetailSheet({
             )}
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs">
-            <SheetDescription className="text-[11px] text-muted-foreground shrink-0">
-              {t("threads.details.readOnly")}
-            </SheetDescription>
-            <span className="text-muted-foreground/40">·</span>
             {thread.archived ? (
               <Badge
                 variant="outline"
@@ -893,31 +954,20 @@ export function ThreadDetailSheet({
               })}
             </span>
 
-            {detail?.usage && (
-              <span
-                className="rounded bg-muted px-1.5 py-0 font-mono text-[10px] text-muted-foreground"
-                title={t("threads.details.recordedTokens")}
-              >
-                {formatTokenCount(detail.usage.total)} {t("threads.tokenUnit")}
-              </span>
-            )}
-
-            {detail && (
-              <span className="rounded bg-muted px-1.5 py-0 font-mono text-[10px] text-muted-foreground">
-                {t("threads.details.modelCount", {
+              <span className="min-w-20 rounded bg-muted px-1.5 py-0 font-mono text-[10px] text-muted-foreground">
+                {detail ? t("threads.details.modelCount", {
                   count: detail.byModel.length,
-                })}
+                }) : "\u00a0"}
               </span>
-            )}
           </div>
-        </SheetHeader>
+        </header>
 
         {/* Tab List */}
         <div
           ref={tabList}
           role="tablist"
           aria-label={t("threads.details.tabs")}
-          className="flex shrink-0 border-b border-border/60 bg-muted/10 px-4"
+          className="flex shrink-0 border-b border-border/60 bg-muted/10 px-2"
           onKeyDown={(event) => {
             const index = tabs.indexOf(tab);
             const next =
@@ -950,7 +1000,7 @@ export function ThreadDetailSheet({
                 aria-selected={isSelected}
                 tabIndex={isSelected ? 0 : -1}
                 className={cn(
-                  "relative flex items-center gap-1.5 border-b-2 px-3.5 py-3 text-xs font-semibold tracking-tight transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                  "relative flex min-w-0 flex-1 items-center justify-center gap-1 border-b-2 px-1 py-3 text-xs font-semibold tracking-tight transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                   isSelected
                     ? "border-primary text-primary"
                     : "border-transparent text-muted-foreground hover:text-foreground",
@@ -974,7 +1024,7 @@ export function ThreadDetailSheet({
           id="thread-detail-content"
           aria-labelledby={`thread-tab-${tab}`}
           tabIndex={0}
-          className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         >
           {tab === "metadata" ? (
             <div className="rounded-2xl border border-border/70 bg-card/60 p-4 backdrop-blur-sm shadow-xs">
@@ -1010,7 +1060,7 @@ export function ThreadDetailSheet({
                 <div className="h-3 w-28 animate-pulse rounded-full bg-muted/70" />
                 <div className="h-9 w-44 animate-pulse rounded-lg bg-muted/60" />
                 <div className="h-3 w-full animate-pulse rounded-full bg-muted/50" />
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <div className="grid grid-cols-1 gap-2">
                   {Array.from({ length: 4 }).map((_, index) => (
                     <div
                       key={index}
@@ -1221,7 +1271,7 @@ export function ThreadDetailSheet({
         </div>
 
         {/* Footer Actions */}
-        <footer className="flex shrink-0 flex-wrap items-center gap-1.5 border-t border-border/60 bg-muted/20 px-5 py-3 backdrop-blur-md">
+        <footer className="flex shrink-0 flex-wrap items-center gap-1 border-t border-border/60 bg-muted/20 px-3 py-3">
           <Button
             variant="outline"
             size="sm"
@@ -1318,7 +1368,7 @@ export function ThreadDetailSheet({
                   className="h-8 w-8 rounded-xl text-destructive hover:bg-destructive/10 hover:text-destructive active:scale-95"
                   aria-label={t("threads.deleteThread")}
                   onClick={() => {
-                    onClose();
+                    closePanel();
                     onDelete();
                   }}
                 >
@@ -1329,7 +1379,6 @@ export function ThreadDetailSheet({
             </Tooltip>
           </TooltipProvider>
         </footer>
-      </SheetContent>
-    </Sheet>
+    </aside>
   );
 }
