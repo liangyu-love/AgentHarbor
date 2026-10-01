@@ -438,8 +438,6 @@
     "capabilityCompressionAppliedNow": "Applied",
     "capabilityCompressionPendingSync": "Pending sync",
     "capabilityCompressionSyncUnknown": "Not checked",
-    "capabilityCompressionApplied": "Applied threshold",
-    "capabilityCompressionPending": "Suggested threshold",
     "capabilityCompressionHint": "Budget {{budget}} ({{source}})",
     "capabilityCompressionClient": "The client manages compaction",
     "capabilityCompressionUnknown": "Budget unknown; no threshold derived",
@@ -494,7 +492,6 @@
       "placeholder": "e.g. anthropic, openai, deepseek",
       "modelLevel": "Model catalog mapping",
       "modelPlaceholder": "provider/model (optional)",
-      "add": "Add mapping",
       "priceTitle": "Price catalog binding (optional)",
       "priceHint": "Prices always stay scoped to the billing provider; they are never averaged across providers."
     },
