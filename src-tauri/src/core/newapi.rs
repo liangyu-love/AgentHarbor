@@ -305,23 +305,10 @@ pub fn balance(config: &Connection, proxy: &ApiProxyConfigPayload) -> Result<Bal
     parse_balance(&user, status.as_ref(), user_id)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ReasoningLevel {
-    pub effort: String,
-    pub description: String,
-}
-
-impl ReasoningLevel {
-    pub(crate) fn valid(&self) -> bool {
-        !self.effort.is_empty()
-            && self.effort.len() <= 32
-            && self
-                .effort
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-            && self.description.len() <= 1024
-    }
-}
+/// One selectable reasoning level. Defined by the metadata layer (it is a
+/// capability value first) and re-exported here because it is also persisted
+/// inside the provider configuration.
+pub use super::model_metadata::ReasoningLevel;
 
 // Do not turn a malformed/absent declaration into an explicit "unsupported".
 fn parse_reasoning_levels(value: &Value) -> Option<Vec<ReasoningLevel>> {

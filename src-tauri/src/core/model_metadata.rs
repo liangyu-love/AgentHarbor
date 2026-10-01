@@ -6,10 +6,30 @@
 //! reference), and finally an explicit fallback. Routing never consumes these
 //! values: the upstream request keeps the raw model ID.
 use super::models_dev::{Catalog, Cost, ModelRef, ReasoningOption};
-use super::newapi::ReasoningLevel;
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
+
+/// One selectable reasoning level: a stable identifier plus display text.
+/// Re-exported by the provider configuration, which persists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReasoningLevel {
+    pub effort: String,
+    pub description: String,
+}
+
+impl ReasoningLevel {
+    /// Bounds that keep stored declarations safe and renderable.
+    pub(crate) fn valid(&self) -> bool {
+        !self.effort.is_empty()
+            && self.effort.len() <= 32
+            && self
+                .effort
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            && self.description.len() <= 1024
+    }
+}
 
 pub const FALLBACK_CONTEXT_WINDOW: u64 = 128_000;
 pub const FALLBACK_MAX_OUTPUT_TOKENS: u64 = 8_192;

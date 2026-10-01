@@ -561,7 +561,14 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         trace.stage("build");
         let body = if required_protocol == Some(router::ModelProtocol::Responses) {
             session_compat::prepare_reasoning(body, || {
-                router::catalog_value(&context.app_data_dir, &context.codex_home, &store)
+                requested_model.as_deref().and_then(|slug| {
+                    router::catalog_entry_for_slug(
+                        &context.app_data_dir,
+                        &context.codex_home,
+                        &store,
+                        slug,
+                    )
+                })
             })?
         } else {
             body
@@ -570,7 +577,12 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             let started = std::time::Instant::now();
             let suffix = upstream_suffix(&segments, &destination, required_protocol)?;
             let pricing = relay_pricing(&context, &destination, requested_model.as_deref());
-            let attempt_metadata = route_trace::AttemptMetadata::from(&pricing);
+            let attempt_metadata = route_trace::AttemptMetadata {
+                catalog_revision: pricing.revision.clone(),
+                match_kind: pricing.match_kind.clone(),
+                pricing_status: pricing.status().into(),
+                pricing_source: pricing.source.clone(),
+            };
             let relay_request = relay_usage_request(
                 &context,
                 &destination,

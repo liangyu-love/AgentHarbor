@@ -228,7 +228,6 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
         model: draft.model,
         models,
         contextWindow: optionalNumber(draft.contextWindow, "newapi.errors.context"),
-        autoCompactLimit: null,
         compression,
         catalogProviders: draft.catalogProviders
           .split(/[,\s]+/)

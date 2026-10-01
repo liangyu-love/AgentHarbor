@@ -178,7 +178,6 @@ pub struct ProviderView {
     pub protocol: ModelProtocol,
     pub model: String,
     pub context_window: Option<u64>,
-    pub auto_compact_limit: Option<u64>,
     pub catalog_providers: Vec<String>,
     pub price_catalog_provider: Option<String>,
     pub compression: model_policy::CompressionPolicy,
@@ -208,7 +207,6 @@ impl Provider {
             protocol: self.protocol,
             model: self.model.clone(),
             context_window: self.context_window,
-            auto_compact_limit: self.auto_compact_limit,
             catalog_providers: self.catalog_providers.clone(),
             price_catalog_provider: self.price_catalog_provider.clone(),
             compression: self.compression.clone(),
@@ -2026,36 +2024,96 @@ pub(crate) fn catalog_value(
             }
             let official = matched_official_model(&models[..official_models_len], &model_id)
                 .filter(|_| official_endpoint_applies(provider));
-            let (metadata, projection) = model_projection(
+            models.push(relay_menu_entry(
                 provider,
                 &model_id,
                 official,
                 &models_dev,
                 &global_compression,
-            );
-            let alias = metadata.display_name.trim();
-            let display_name = menu_display_name(&provider.name, alias, &model_id);
-            // Codex parses every entry in model_catalog_json as a complete
-            // model definition during config/read. A short display-only entry
-            // makes that RPC fail, which also blocks the desktop sign-in page.
-            let mut entry = relay_catalog_entry(
-                slug,
-                display_name,
-                format!("{} → {model_id}", provider.name),
-                projection.context_window,
-                projection.output_limit,
-                projection.reasoning,
-                projection.default_reasoning,
-            );
-            // A unified menu must not apply one provider's compaction threshold
-            // globally to unrelated official/relay models.
-            if let Some(threshold) = projection.compression.threshold {
-                entry["auto_compact_token_limit"] = serde_json::json!(threshold);
-            }
-            models.push(entry);
+            ));
         }
     }
     serde_json::json!({ "models": models })
+}
+
+/// One relay menu entry for `provider` + `model_id`. Shared by the full catalog
+/// builder and the single-entry lookup, so the menu and the request
+/// compatibility path can never disagree about a model.
+fn relay_menu_entry(
+    provider: &Provider,
+    model_id: &str,
+    official: Option<&Value>,
+    models_dev: &models_dev::Catalog,
+    global_compression: &model_policy::CompressionPolicy,
+) -> Value {
+    let (metadata, projection) =
+        model_projection(provider, model_id, official, models_dev, global_compression);
+    let alias = metadata.display_name.trim();
+    let display_name = menu_display_name(&provider.name, alias, model_id);
+    // Codex parses every entry in model_catalog_json as a complete model
+    // definition during config/read. A short display-only entry makes that RPC
+    // fail, which also blocks the desktop sign-in page.
+    let mut entry = relay_catalog_entry(
+        format!("{}::{model_id}", provider.id),
+        display_name,
+        format!("{} → {model_id}", provider.name),
+        projection.context_window,
+        projection.output_limit,
+        projection.reasoning,
+        projection.default_reasoning,
+    );
+    // A unified menu must not apply one provider's compaction threshold
+    // globally to unrelated official/relay models.
+    if let Some(threshold) = projection.compression.threshold {
+        entry["auto_compact_token_limit"] = serde_json::json!(threshold);
+    }
+    entry
+}
+
+/// One entry of the menu a request would see, by slug: either a borrowed
+/// official entry or a relay entry for a routable provider. Used on the request
+/// hot path so a compatibility check never builds the whole menu.
+pub(crate) fn catalog_entry_for_slug(
+    app_data_dir: &std::path::Path,
+    codex_home: &std::path::Path,
+    store: &Store,
+    slug: &str,
+) -> Option<Value> {
+    let official_snapshot = super::model_catalog::official(codex_home, app_data_dir);
+    let Some((provider_id, model_id)) = slug.split_once("::") else {
+        // Official entries are borrowed read-only and keep their own shape.
+        return official_snapshot
+            .models
+            .iter()
+            .find(|entry| entry.get("slug").and_then(Value::as_str) == Some(slug))
+            .cloned();
+    };
+    let provider = store
+        .providers
+        .iter()
+        .find(|provider| provider.id == provider_id && provider.has_route_credentials())?;
+    // Mirror the menu's inclusion rules; a request for a model the menu does not
+    // list must not silently gain an entry.
+    let listed = provider
+        .models
+        .iter()
+        .any(|model| model.id == model_id && model.included && provider.supports_model(&model.id))
+        || (provider.model == model_id
+            && !provider.model.trim().is_empty()
+            && provider.supports_model(&provider.model));
+    if !listed {
+        return None;
+    }
+    let official = matched_official_model(&official_snapshot.models, model_id)
+        .filter(|_| official_endpoint_applies(provider));
+    let models_dev = models_dev::load(app_data_dir);
+    Some(relay_menu_entry(
+        provider,
+        model_id,
+        official,
+        &models_dev,
+        &store.global_compression(),
+    ))
 }
 
 pub(super) fn matched_official_model<'a>(models: &'a [Value], model_id: &str) -> Option<&'a Value> {

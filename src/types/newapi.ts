@@ -67,7 +67,6 @@ export interface NewApiProvider {
   model: string;
   models: NewApiModel[];
   contextWindow: number | null;
-  autoCompactLimit: number | null;
   catalogProviders: string[];
   priceCatalogProvider: string | null;
   compression: CompressionPolicy;
@@ -281,7 +280,8 @@ export interface NewApiProviderInput {
   model: string;
   models: NewApiModel[];
   contextWindow: number | null;
-  autoCompactLimit: number | null;
+  /** Legacy fixed threshold; only sent by very old callers. */
+  autoCompactLimit?: number | null;
   catalogProviders?: string[];
   priceCatalogProvider?: string | null;
   compression?: CompressionPolicy;

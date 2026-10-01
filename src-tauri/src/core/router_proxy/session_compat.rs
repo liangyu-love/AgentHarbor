@@ -6,9 +6,12 @@ use super::{Bytes, ForwardResult, StatusCode, Value};
 /// the request. Remove only an effort excluded by a known, nonempty catalog
 /// list. Unknown/empty capabilities are not evidence to change the request.
 /// Keep summaries and every other reasoning/history field intact.
+///
+/// `entry` resolves only the requested slug, so this never builds the whole
+/// menu on the request path.
 pub(super) fn prepare_reasoning(
     body: Option<Bytes>,
-    catalog: impl FnOnce() -> Value,
+    entry: impl FnOnce() -> Option<Value>,
 ) -> ForwardResult<Option<Bytes>> {
     let Some(bytes) = &body else { return Ok(body) };
     let Ok(mut value) = serde_json::from_slice::<Value>(bytes) else {
@@ -17,20 +20,13 @@ pub(super) fn prepare_reasoning(
     let Some(effort) = value.pointer("/reasoning/effort").and_then(Value::as_str) else {
         return Ok(body);
     };
-    let Some(model) = value.get("model").and_then(Value::as_str) else {
+    // Without a model there is nothing to resolve; leave the body untouched.
+    if value.get("model").and_then(Value::as_str).is_none() {
         return Ok(body);
-    };
-    let catalog = catalog();
-    let levels = catalog
-        .get("models")
-        .and_then(Value::as_array)
-        .and_then(|models| {
-            models
-                .iter()
-                .find(|entry| entry["slug"].as_str() == Some(model))
-        })
-        .and_then(|entry| entry.get("supported_reasoning_levels"))
-        .and_then(Value::as_array);
+    }
+    let levels = entry()
+        .and_then(|entry| entry.get("supported_reasoning_levels").cloned())
+        .and_then(|levels| levels.as_array().cloned());
     let Some(levels) = levels.filter(|levels| {
         !levels.is_empty()
             && levels.iter().all(|level| {
@@ -91,10 +87,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn catalog(levels: Value) -> Value {
-        json!({"models": [{"slug": "relay::model", "supported_reasoning_levels": levels}]})
-    }
-
     #[test]
     fn unsupported_effort_is_removed_without_changing_history_or_summary() {
         let input = json!({
@@ -106,7 +98,7 @@ mod tests {
             ]
         });
         let body = prepare_reasoning(Some(Bytes::from(input.to_string())), || {
-            catalog(json!([{"effort":"high"}]))
+            Some(json!({"slug": "relay::model", "supported_reasoning_levels": [{"effort": "high"}]}))
         })
         .unwrap()
         .unwrap();
@@ -121,7 +113,7 @@ mod tests {
             Some(Bytes::from_static(
                 br#"{"model":"relay::model","reasoning":{"effort":"none"}}"#,
             )),
-            || catalog(json!([{"effort":"high"}])),
+            || Some(json!({"slug": "relay::model", "supported_reasoning_levels": [{"effort": "high"}]})),
         )
         .unwrap()
         .unwrap();
@@ -143,14 +135,16 @@ mod tests {
             json!([{"effort":"high"},{}]),
         ] {
             assert_eq!(
-                prepare_reasoning(Some(body.clone()), || catalog(levels))
-                    .unwrap()
-                    .unwrap(),
+                prepare_reasoning(Some(body.clone()), || {
+                    Some(json!({"slug": "relay::model", "supported_reasoning_levels": levels}))
+                })
+                .unwrap()
+                .unwrap(),
                 body
             );
         }
         assert_eq!(
-            prepare_reasoning(Some(body.clone()), || json!({"models":[]}))
+            prepare_reasoning(Some(body.clone()), || None)
                 .unwrap()
                 .unwrap(),
             body

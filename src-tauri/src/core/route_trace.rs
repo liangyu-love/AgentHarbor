@@ -33,24 +33,15 @@ pub struct Attempt {
     started: Instant,
 }
 
-/// Read-only projection of the request's pricing snapshot for diagnostics.
+/// Metadata the request used at dispatch time: the catalog revision and
+/// resolver match kind never change with a later catalog refresh. Built by the
+/// proxy from the pricing snapshot so diagnostics do not depend on the ledger.
 #[derive(Clone, Default)]
 pub struct AttemptMetadata {
     pub catalog_revision: String,
     pub match_kind: String,
     pub pricing_status: String,
     pub pricing_source: String,
-}
-
-impl From<&super::relay_usage::PricingSnapshot> for AttemptMetadata {
-    fn from(pricing: &super::relay_usage::PricingSnapshot) -> Self {
-        Self {
-            catalog_revision: pricing.revision.clone(),
-            match_kind: pricing.match_kind.clone(),
-            pricing_status: pricing.status().into(),
-            pricing_source: pricing.source.clone(),
-        }
-    }
 }
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
