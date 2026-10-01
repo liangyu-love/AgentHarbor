@@ -814,7 +814,8 @@ try {
   for (const checkbox of oneMCheckboxes) assert.equal(await checkbox.isChecked(), true);
   await page.getByRole("button", { name: labels.preview, exact: true }).click();
   await page.waitForFunction(() => window.review.previewed?.claudeOneM?.startup === true);
-  assert.equal(await page.evaluate(() => window.review.previewed.contextWindow), 1_000_000);
+  // Limits stay automatic unless the user types them: no family-derived 1M.
+  assert.equal(await page.evaluate(() => window.review.previewed.contextWindow ?? null), null);
   assert.equal(await page.evaluate(() => window.review.previewed.claudeOneM.sonnet), true);
   await page.locator("#client-model").click();
   await page.getByRole("option", { name: "Fable 5.1", exact: true }).click();
@@ -848,10 +849,10 @@ try {
       legacy: claudeOneMDefaults({ startup: false, sonnet: false, opus: false, fable: false, subagent: false }),
     };
   });
-  assert.deepEqual(defaultChecks, { haiku: 1000000, oldClaude: 1000000, other: 128000,
+  assert.deepEqual(defaultChecks, { haiku: null, oldClaude: null, other: null,
     manual: { contextWindow: 200000, maxOutputTokens: 4096 },
     legacy: { startup: false, sonnet: false, opus: false, fable: false, haiku: true, subagent: false } });
-  console.log("PASS all relay Claude fallbacks are 1M, manual context survives catalog refresh, old profile false values survive adding Haiku");
+  console.log("PASS limits stay automatic without model-name guesses, saved values survive catalog refresh, old profile false values survive adding Haiku");
 
   const staleProfile = { id: "stale-profile", name: "Stale profile", request: {
     targetId: "claudeCode", providerId: "versions", model: "claude-opus-5-5", contextWindow: 200000,

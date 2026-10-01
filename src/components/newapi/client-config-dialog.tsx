@@ -247,11 +247,13 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
     const oneM = claudeOneMDefaults(profile.request.claudeOneM);
     const defaults = clientDefaults(nextProvider, model);
     const savedContext = profile.request.contextWindow;
-    const contextWindow = model === profile.request.model && Number.isSafeInteger(savedContext) && savedContext >= 1024
+    const contextWindow = model === profile.request.model && Number.isSafeInteger(savedContext) && (savedContext ?? 0) >= 1024
       ? savedContext : defaults.contextWindow;
     const savedOutput = profile.request.maxOutputTokens;
     const maxOutputTokens = model === profile.request.model && Number.isSafeInteger(savedOutput)
-      && savedOutput >= 1 && savedOutput <= contextWindow ? savedOutput : Math.min(defaults.maxOutputTokens, contextWindow);
+      && (savedOutput ?? 0) >= 1 && (contextWindow == null || (savedOutput ?? 0) <= contextWindow)
+      ? savedOutput
+      : defaults.maxOutputTokens === null ? null : Math.min(defaults.maxOutputTokens, contextWindow ?? defaults.maxOutputTokens);
     const profileRequest: ClientConfigRequest = { ...profile.request, targetId: client.targetId, accessMode, providerId: nextProvider.id,
       providerIds: [nextProvider.id], providerModelIds: undefined, claudeModelIds: modelIds, model,
       claudeModels, claudeOneM: oneM, contextWindow, maxOutputTokens,
@@ -283,9 +285,13 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
     if (isClaude && roles.some(role => request.claudeModels[role] && !configuredModels.includes(request.claudeModels[role]))) {
       setError("clients.errors.protocol"); return;
     }
-    if (!Number.isSafeInteger(request.contextWindow) || request.contextWindow < 1024
-      || !Number.isSafeInteger(request.maxOutputTokens) || request.maxOutputTokens < 1
-      || request.maxOutputTokens > request.contextWindow) {
+    // Only user-entered values are explicit; empty fields follow the backend
+    // resolver, so a catalog refresh can move them.
+    const context = request.contextWindow ?? null;
+    const output = request.maxOutputTokens ?? null;
+    if ((context !== null && (!Number.isSafeInteger(context) || context < 1024))
+      || (output !== null && (!Number.isSafeInteger(output) || output < 1))
+      || (context !== null && output !== null && output > context)) {
       setError("clients.errors.limits"); return;
     }
     setBusy(true);
@@ -447,8 +453,15 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
                   </Select>
                 </div>
               </> : <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5"><Label htmlFor="client-context">{t("clients.context")}</Label><Input id="client-context" type="number" min={1024} value={request.contextWindow} onChange={event => update({ contextWindow: Number(event.target.value) })} /></div>
-                <div className="space-y-1.5"><Label htmlFor="client-output">{t("clients.output")}</Label><Input id="client-output" type="number" min={1} max={request.contextWindow} value={request.maxOutputTokens} onChange={event => update({ maxOutputTokens: Number(event.target.value) })} /></div>
+                <div className="space-y-1.5"><Label htmlFor="client-context">{t("clients.context")}</Label>
+                  <Input id="client-context" type="number" min={1024} placeholder={t("clients.limitsAuto")} value={request.contextWindow ?? ""}
+                    onChange={event => update({ contextWindow: event.target.value === "" ? null : Number(event.target.value) })} />
+                </div>
+                <div className="space-y-1.5"><Label htmlFor="client-output">{t("clients.output")}</Label>
+                  <Input id="client-output" type="number" min={1} placeholder={t("clients.limitsAuto")} value={request.maxOutputTokens ?? ""}
+                    onChange={event => update({ maxOutputTokens: event.target.value === "" ? null : Number(event.target.value) })} />
+                </div>
+                <p className="col-span-2 text-[11px] leading-relaxed text-muted-foreground">{t("clients.limitsHint")}</p>
               </div>}
               <p className="break-all font-mono text-xs text-muted-foreground">{client.path}</p>
             </div>

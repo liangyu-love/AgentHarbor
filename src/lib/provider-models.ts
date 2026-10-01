@@ -20,23 +20,31 @@ export const providerModelProtocol = (provider: NewApiProvider, modelId = provid
 
 export const includedModels = (models: NewApiModel[]) => models.filter(model => model.included);
 
-/** Keep catalog refreshes from replacing local inclusion, aliases, limits or protocol choices. */
+/** Keep catalog refreshes from replacing user values, bindings or choices. */
 export const mergeModelCatalog = (current: NewApiModel[], fetched: NewApiModel[]): NewApiModel[] => {
   const existingById = new Map(current.map(model => [model.id, model]));
   const fetchedIds = new Set(fetched.map(model => model.id));
   const merged = fetched.map(model => {
     const existing = existingById.get(model.id);
     if (!existing) return model;
-    const edited = existing.metadataSource === "manual";
     const renamed = existing.displayName.trim() !== "" && existing.displayName.trim() !== existing.id;
+    // Per-field overrides and catalog bindings are user input, never catalog data.
+    const hasOverrides = existing.overrides
+      ? Object.values(existing.overrides).some(value => value !== null && value !== undefined)
+      : false;
     return {
       ...model,
       protocol: existing.protocol ?? null,
       included: existing.included,
-      displayName: edited || renamed ? existing.displayName : model.displayName,
-      contextWindow: edited ? existing.contextWindow : model.contextWindow,
-      maxOutputTokens: edited ? existing.maxOutputTokens : model.maxOutputTokens,
-      metadataSource: edited ? "manual" as const : model.metadataSource,
+      displayName: renamed ? existing.displayName : model.displayName,
+      overrides: existing.overrides ?? {},
+      catalogRef: existing.catalogRef ?? null,
+      priceRef: existing.priceRef ?? null,
+      compression: existing.compression ?? { mode: "inherit" as const },
+      // Legacy manual values survive until the user clears them.
+      contextWindow: existing.metadataSource === "manual" && !hasOverrides ? existing.contextWindow : model.contextWindow,
+      maxOutputTokens: existing.metadataSource === "manual" && !hasOverrides ? existing.maxOutputTokens : model.maxOutputTokens,
+      metadataSource: existing.metadataSource === "manual" && !hasOverrides ? "manual" as const : model.metadataSource,
     };
   });
   return [...merged, ...current.filter(model => !fetchedIds.has(model.id))];

@@ -1,11 +1,13 @@
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
   AlertTriangle,
   Brain,
   ChevronDown,
   Cpu,
+  DollarSign,
+  Gauge,
   Layers,
   RefreshCw,
   Search,
@@ -18,27 +20,338 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import type { CapabilityField } from "@/types/newapi";
+import type {
+  ClientProjection,
+  CompressionPlan,
+  MatchKind,
+  ModelCapability,
+  PriceInfo,
+  ResolvedField,
+  ModelsDevCatalogStatus,
+} from "@/types/newapi";
 
-function Origin({ field }: { field: CapabilityField<unknown> }) {
+type Field = ResolvedField<unknown>;
+
+function Origin({ field }: { field: Field }) {
   const { t } = useTranslation();
+  const reference = field.sourceRef ? ` · ${field.sourceRef.providerId}/${field.sourceRef.modelId}` : "";
   return (
-    <div className="mt-1 flex items-center gap-1 font-mono text-[10px] text-muted-foreground/80">
-      <span>{t("newapi.capabilitySource." + field.source)}</span>
+    <div className="mt-1 flex flex-wrap items-center gap-1 font-mono text-[10px] text-muted-foreground/80">
+      <span>{t("newapi.capabilitySource." + field.source, { defaultValue: field.source })}</span>
+      {reference && <span className="break-all">{reference}</span>}
       <span>·</span>
       <span>
         {field.updatedAt
-          ? new Date(field.updatedAt * 1000).toLocaleString()
+          ? new Date(field.updatedAt).toLocaleString()
           : t("newapi.capabilityDateUnknown")}
       </span>
     </div>
   );
 }
 
+const matchKindTone: Record<MatchKind, string> = {
+  explicit: "border-primary/40 text-primary",
+  exact: "border-emerald-500/40 text-emerald-600 dark:text-emerald-400",
+  normalized: "border-sky-500/40 text-sky-600 dark:text-sky-400",
+  consensus: "border-border text-muted-foreground",
+  ambiguous: "border-amber-500/50 text-amber-600 dark:text-amber-400",
+  invalid: "border-destructive/40 text-destructive",
+  unmatched: "border-border text-muted-foreground",
+};
+
+function number(value: number | null | undefined) {
+  return value === null || value === undefined ? "—" : value.toLocaleString();
+}
+
+function CompressionLine({ plan }: { plan: CompressionPlan }) {
+  const { t } = useTranslation();
+  const mode =
+    plan.mode === "percent"
+      ? `${plan.percent}%`
+      : plan.mode === "tokens"
+        ? number(plan.tokens)
+        : plan.mode;
+  const state =
+    plan.state === "computed"
+      ? plan.threshold !== null
+        ? `${t("newapi.capabilityCompressionApplied")} ${number(plan.threshold)}`
+        : t("newapi.capabilityCompressionPending")
+      : plan.state === "clientDefault"
+        ? t("newapi.capabilityCompressionClient")
+        : plan.state === "invalid"
+          ? t("newapi.capabilityCompressionInvalid")
+          : t("newapi.capabilityCompressionUnknown");
+  return (
+    <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
+      <h4 className="flex items-center gap-1.5 font-bold text-foreground text-xs">
+        <Gauge className="h-3.5 w-3.5 text-primary" />
+        <span>{t("newapi.capabilityCompression")}</span>
+      </h4>
+      <p className="mt-1 font-mono text-xs font-semibold text-foreground">{state}</p>
+      <p className="font-mono text-[10px] text-muted-foreground">
+        {mode} · {plan.source}
+        {plan.budget !== null
+          ? ` · ${t("newapi.capabilityCompressionHint", {
+              budget: number(plan.budget),
+              source: plan.budgetSource,
+            })}`
+          : ""}
+      </p>
+      {plan.note && (
+        <p className="mt-0.5 text-[10px] text-muted-foreground/80">{plan.note}</p>
+      )}
+    </div>
+  );
+}
+
+function PriceLine({ price }: { price: PriceInfo }) {
+  const { t } = useTranslation();
+  if (!price.input && !price.output) {
+    return (
+      <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
+        <h4 className="flex items-center gap-1.5 font-bold text-foreground text-xs">
+          <DollarSign className="h-3.5 w-3.5 text-primary" />
+          <span>{t("newapi.capabilityPrice")}</span>
+        </h4>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {t("newapi.capabilitySource." + price.source, { defaultValue: price.source })}
+          {price.note ? ` · ${price.note}` : ""}
+        </p>
+      </div>
+    );
+  }
+  const reference = price.sourceRef
+    ? `${price.sourceRef.providerId}/${price.sourceRef.modelId}`
+    : "—";
+  return (
+    <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
+      <h4 className="flex items-center gap-1.5 font-bold text-foreground text-xs">
+        <DollarSign className="h-3.5 w-3.5 text-primary" />
+        <span>{t("newapi.capabilityPrice")}</span>
+      </h4>
+      <p className="mt-1 font-mono text-xs font-bold text-foreground">
+        {price.input ?? "—"} / {price.output ?? "—"}
+        <span className="ml-1 text-[10px] font-normal text-muted-foreground">
+          {t("newapi.capabilityPricePerMillion")}
+        </span>
+      </p>
+      {!price.complete && (
+        <p className="text-[10px] text-amber-600 dark:text-amber-400">
+          {t("newapi.capabilityPriceIncomplete")}
+        </p>
+      )}
+      <div className="mt-1 flex flex-wrap items-center gap-1 font-mono text-[10px] text-muted-foreground/80">
+        <span>{reference}</span>
+        <span>·</span>
+        <span>{t("newapi.capabilitySource." + price.source, { defaultValue: price.source })}</span>
+      </div>
+    </div>
+  );
+}
+
+function CapabilityCard({ model }: { model: ModelCapability }) {
+  const { t } = useTranslation();
+  const projection: ClientProjection = model.projection;
+  const levels = model.reasoning.value ?? [];
+  const conflicts = model.conflicts;
+  return (
+    <details className="group rounded-xl border border-border/70 bg-card p-3.5 shadow-2xs transition-all hover:border-primary/40 text-sm">
+      <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-lg py-0.5">
+        <div className="flex flex-wrap items-center gap-1.5 font-medium">
+          <Badge variant="outline" className="text-[10px] font-semibold">
+            {model.providerName}
+          </Badge>
+          <span className="text-foreground">{model.displayName}</span>
+          <span className="text-muted-foreground/60">→</span>
+          <span className="font-mono font-bold text-primary break-all">{model.matchedModel}</span>
+          <Badge
+            variant="outline"
+            className={cn("text-[10px] font-semibold", matchKindTone[model.matchKind])}
+          >
+            {t("newapi.matchKind." + model.matchKind, { defaultValue: model.matchKind })}
+          </Badge>
+          {conflicts.length > 0 && (
+            <Badge variant="outline" className="border-amber-500/50 text-[10px] font-semibold text-amber-600 dark:text-amber-400">
+              <AlertTriangle className="mr-1 h-3 w-3" />
+              {conflicts.length}
+            </Badge>
+          )}
+        </div>
+        <ChevronDown className="h-3.5 w-3.5 text-muted-foreground transition-transform duration-200 group-open:rotate-180" />
+      </summary>
+
+      <div className="mt-3.5 space-y-3 border-t border-border/40 pt-3">
+        <p className="break-words font-mono text-[11px] text-muted-foreground bg-muted/30 p-2 rounded-lg">
+          {t("newapi.upstreamModel")}:{" "}
+          <span className="font-semibold text-foreground">{model.upstreamModel}</span>
+        </p>
+
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
+            <h4 className="flex items-center gap-1.5 font-bold text-foreground text-xs">
+              <Brain className="h-3.5 w-3.5 text-primary" />
+              <span>{t("newapi.capabilityReasoning")}</span>
+            </h4>
+            <p className="mt-1 font-mono text-xs font-semibold text-foreground">
+              {levels.map((v) => v.effort).join(" / ") || "—"}
+            </p>
+            {model.defaultReasoning && (
+              <p className="font-mono text-[10px] text-muted-foreground">
+                {t("newapi.capabilityDefaultEffort")}: {model.defaultReasoning} ·{" "}
+                {t("newapi.capabilitySource." + model.defaultReasoningSource, {
+                  defaultValue: model.defaultReasoningSource,
+                })}
+              </p>
+            )}
+            {model.reasoningOptions.length > 0 && (
+              <p className="font-mono text-[10px] text-muted-foreground/80">
+                {t("newapi.capabilityReasoningOptions")}:{" "}
+                {model.reasoningOptions
+                  .map((option) =>
+                    option.kind === "effort"
+                      ? `effort(${option.values.join("/")})`
+                      : option.kind === "budgetTokens"
+                        ? `budget(${option.min ?? "?"}…)`
+                        : "toggle",
+                  )
+                  .join(", ")}
+              </p>
+            )}
+            <Origin field={model.reasoning} />
+          </div>
+
+          <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
+            <h4 className="flex items-center gap-1.5 font-bold text-foreground text-xs">
+              <Layers className="h-3.5 w-3.5 text-primary" />
+              <span>{t("newapi.capabilityContext")}</span>
+            </h4>
+            <p className="mt-1 font-mono text-xs font-bold text-foreground">
+              {number(model.context.value)}{" "}
+              <span className="text-[10px] font-normal text-muted-foreground">
+                {t("newapi.tokenUnit")}
+              </span>
+            </p>
+            {model.inputLimit.value !== null && (
+              <p className="font-mono text-[10px] text-muted-foreground">
+                {t("newapi.capabilityInput")}: {number(model.inputLimit.value)}
+              </p>
+            )}
+            <Origin field={model.context} />
+          </div>
+
+          <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
+            <h4 className="flex items-center gap-1.5 font-bold text-foreground text-xs">
+              <Sparkles className="h-3.5 w-3.5 text-primary" />
+              <span>{t("newapi.capabilityOutput")}</span>
+            </h4>
+            <p className="mt-1 font-mono text-xs font-bold text-foreground">
+              {number(model.output.value)}{" "}
+              <span className="text-[10px] font-normal text-muted-foreground">
+                {t("newapi.tokenUnit")}
+              </span>
+            </p>
+            <Origin field={model.output} />
+          </div>
+
+          <PriceLine price={model.price} />
+        </div>
+
+        <div className="grid gap-3 lg:grid-cols-3">
+          <CompressionLine plan={projection.compression} />
+          <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
+            <h4 className="font-bold text-foreground text-xs">{t("newapi.capabilityMatch")}</h4>
+            <p className="mt-1 font-mono text-[11px] text-foreground">
+              {t("newapi.capabilityMatchedRef")}:{" "}
+              {model.matched ? `${model.matched.providerId}/${model.matched.modelId}` : "—"}
+            </p>
+            {projection.contextIsFallback && (
+              <p className="mt-0.5 text-[10px] text-muted-foreground/80">
+                {t("newapi.capabilityFallbackNote")}
+              </p>
+            )}
+          </div>
+          <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
+            <h4 className="font-bold text-foreground text-xs">
+              {t("newapi.capabilityConflicts")}
+            </h4>
+            {conflicts.length === 0 ? (
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {t("newapi.capabilityNoConflicts")}
+              </p>
+            ) : (
+              <ul className="mt-1 space-y-1">
+                {conflicts.map((conflict) => (
+                  <li key={conflict.field} className="font-mono text-[10px] text-amber-600 dark:text-amber-400">
+                    {t("newapi.capabilityField." + conflict.field, {
+                      defaultValue: conflict.field,
+                    })}
+                    :{" "}
+                    {conflict.candidates
+                      .map((candidate) => `${candidate.value} (${candidate.modelRef.providerId})`)
+                      .join(" / ")}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-border/40 bg-muted/10 p-2.5">
+          <h4 className="text-xs font-semibold text-muted-foreground">
+            {t("newapi.capabilityMatchSteps")}
+          </h4>
+          <ul className="mt-2 space-y-1">
+            {model.steps.map((step) => (
+              <li key={step.step + step.modelId} className="font-mono text-[10px] text-muted-foreground">
+                <span className="text-foreground">{step.modelId}</span> · {step.step} · {step.note}
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </details>
+  );
+}
+
+function CatalogNotice({ catalog }: { catalog: ModelsDevCatalogStatus }) {
+  const { t } = useTranslation();
+  const origin = t(`newapi.catalogOrigin${catalog.origin === "runtime" ? "Runtime" : "Embedded"}`);
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/60 bg-muted/20 px-3 py-2 text-[11px] text-muted-foreground">
+      <span>
+        {t("newapi.catalogInfo", {
+          origin,
+          providers: catalog.providers,
+          models: catalog.models,
+          revision: catalog.revision.slice(0, 8),
+        })}
+      </span>
+      <span>·</span>
+      <span>
+        {catalog.fetchedAt
+          ? t("newapi.catalogFetchedAt", {
+              time: new Date(catalog.fetchedAt * 1000).toLocaleString(),
+            })
+          : t("newapi.catalogNever")}
+      </span>
+      {catalog.error && (
+        <span className="text-amber-600 dark:text-amber-400">
+          {t("newapi.catalogError", { error: catalog.error })}
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function ModelCapabilities() {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<"all" | "unmatched" | "conflicts">("all");
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+
   const query = useQuery({
     queryKey: ["model-capabilities"],
     queryFn: api.routing.capabilities,
@@ -46,13 +359,36 @@ export function ModelCapabilities() {
     refetchInterval: open ? 30_000 : false,
   });
 
-  const allModels = query.data?.models ?? [];
-  const models =
-    allModels.filter((m) =>
-      [m.providerName, m.displayName, m.upstreamModel, m.matchedModel].some((s) =>
-        s.toLowerCase().includes(search.toLowerCase()),
-      ),
-    );
+  const allModels = useMemo(() => query.data?.models ?? [], [query.data]);
+  const models = useMemo(
+    () =>
+      allModels.filter((model) => {
+        if (filter === "unmatched" && model.matchKind !== "unmatched") return false;
+        if (filter === "conflicts" && model.conflicts.length === 0) return false;
+        const haystack = [
+          model.providerName,
+          model.displayName,
+          model.upstreamModel,
+          model.matchedModel,
+          ...(model.matched ? [`${model.matched.providerId}/${model.matched.modelId}`] : []),
+        ];
+        return haystack.some((value) => value.toLowerCase().includes(search.toLowerCase()));
+      }),
+    [allModels, filter, search],
+  );
+
+  const refresh = async () => {
+    setRefreshing(true);
+    setRefreshError(null);
+    try {
+      await api.routing.refreshCatalog();
+      await queryClient.invalidateQueries({ queryKey: ["model-capabilities"] });
+    } catch (error) {
+      setRefreshError(formatInvokeError(error));
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   return (
     <section
@@ -91,9 +427,10 @@ export function ModelCapabilities() {
             {t("newapi.capabilityRules")}
           </p>
 
-          {/* Search & Actions Bar */}
-          <div className="flex items-center gap-2">
-            <div className="relative flex-1">
+          {query.data && <CatalogNotice catalog={query.data.catalog} />}
+
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative min-w-[12rem] flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
               <Input
                 value={search}
@@ -113,21 +450,46 @@ export function ModelCapabilities() {
               )}
             </div>
 
+            <div className="flex items-center gap-1 rounded-xl border border-border/60 p-0.5">
+              {(["all", "unmatched", "conflicts"] as const).map((value) => (
+                <Button
+                  key={value}
+                  variant={filter === value ? "secondary" : "ghost"}
+                  onClick={() => setFilter(value)}
+                  className="h-8 rounded-lg px-2.5 text-[11px] font-semibold"
+                >
+                  {t(
+                    value === "all"
+                      ? "newapi.capabilityFilterAll"
+                      : value === "unmatched"
+                        ? "newapi.capabilityFilterUnmatched"
+                        : "newapi.capabilityFilterConflicts",
+                  )}
+                </Button>
+              ))}
+            </div>
+
             <Button
               variant="outline"
-              disabled={query.isFetching}
-              onClick={() => void query.refetch()}
+              disabled={refreshing || query.isFetching}
+              onClick={() => void refresh()}
               className="h-9 gap-1.5 rounded-xl px-3 text-xs font-semibold shadow-xs"
             >
-              <RefreshCw
-                className={cn(
-                  "h-3.5 w-3.5",
-                  query.isFetching && "animate-spin text-primary",
-                )}
-              />
-              <span>{t("common.refresh")}</span>
+              <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin text-primary")} />
+              <span>
+                {t(refreshing ? "newapi.catalogRefreshing" : "newapi.catalogRefresh")}
+              </span>
             </Button>
           </div>
+
+          {refreshError && (
+            <div
+              role="alert"
+              className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-xs font-medium text-destructive"
+            >
+              {refreshError}
+            </div>
+          )}
 
           {query.error && (
             <div
@@ -148,81 +510,12 @@ export function ModelCapabilities() {
             </div>
           )}
 
-          {/* Models List */}
           <div className="max-h-[30rem] space-y-2.5 overflow-y-auto pr-0.5">
-            {models.map((m) => (
-              <details
-                key={m.providerId + "::" + m.upstreamModel}
-                className="group rounded-xl border border-border/70 bg-card p-3.5 shadow-2xs transition-all hover:border-primary/40 text-sm"
-              >
-                <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-lg py-0.5">
-                  <div className="flex flex-wrap items-center gap-1.5 font-medium">
-                    <Badge variant="outline" className="text-[10px] font-semibold">
-                      {m.providerName}
-                    </Badge>
-                    <span className="text-foreground">{m.displayName}</span>
-                    <span className="text-muted-foreground/60">→</span>
-                    <span className="font-mono font-bold text-primary">
-                      {m.matchedModel}
-                    </span>
-                  </div>
-                  <ChevronDown className="h-3.5 w-3.5 text-muted-foreground transition-transform duration-200 group-open:rotate-180" />
-                </summary>
-
-                {/* Expanded details */}
-                <div className="mt-3.5 space-y-3 border-t border-border/40 pt-3">
-                  <p className="break-words font-mono text-[11px] text-muted-foreground bg-muted/30 p-2 rounded-lg">
-                    {t("newapi.upstreamModel")}:{" "}
-                    <span className="font-semibold text-foreground">
-                      {m.upstreamModel}
-                    </span>
-                  </p>
-
-                  <div className="grid gap-3 sm:grid-cols-3">
-                    {/* Reasoning levels */}
-                    <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
-                      <h4 className="flex items-center gap-1.5 font-bold text-foreground text-xs">
-                        <Brain className="h-3.5 w-3.5 text-primary" />
-                        <span>{t("newapi.capabilityReasoning")}</span>
-                      </h4>
-                      <p className="mt-1 font-mono text-xs font-semibold text-foreground">
-                        {m.reasoning.value.map((v) => v.effort).join(" / ") || "—"}
-                      </p>
-                      <Origin field={m.reasoning} />
-                    </div>
-
-                    {/* Context window */}
-                    <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
-                      <h4 className="flex items-center gap-1.5 font-bold text-foreground text-xs">
-                        <Layers className="h-3.5 w-3.5 text-primary" />
-                        <span>{t("newapi.capabilityContext")}</span>
-                      </h4>
-                      <p className="mt-1 font-mono text-xs font-bold text-foreground">
-                        {m.context.value?.toLocaleString() ?? "—"}{" "}
-                        <span className="text-[10px] font-normal text-muted-foreground">
-                          {t("newapi.tokenUnit")}
-                        </span>
-                      </p>
-                      <Origin field={m.context} />
-                    </div>
-
-                    {/* Output limit */}
-                    <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
-                      <h4 className="flex items-center gap-1.5 font-bold text-foreground text-xs">
-                        <Sparkles className="h-3.5 w-3.5 text-primary" />
-                        <span>{t("newapi.capabilityOutput")}</span>
-                      </h4>
-                      <p className="mt-1 font-mono text-xs font-bold text-foreground">
-                        {m.output.value?.toLocaleString() ?? "—"}{" "}
-                        <span className="text-[10px] font-normal text-muted-foreground">
-                          {t("newapi.tokenUnit")}
-                        </span>
-                      </p>
-                      <Origin field={m.output} />
-                    </div>
-                  </div>
-                </div>
-              </details>
+            {models.map((model) => (
+              <CapabilityCard
+                key={model.providerId + "::" + model.upstreamModel}
+                model={model}
+              />
             ))}
           </div>
 

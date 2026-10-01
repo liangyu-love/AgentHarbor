@@ -31,11 +31,23 @@ export const exclusionOf = (provider: NewApiProvider, protocols: ModelProtocol[]
   return clientModels(provider, protocols).length ? null : "protocol";
 };
 
+/**
+ * Saved user limits, only for the dialog's placeholder and restore flow.
+ * Effective values are resolved by the backend (user overrides, provider
+ * setting, upstream declaration, models.dev catalog, then the shared
+ * fallback); the UI never derives them from model names.
+ */
 export const clientDefaults = (provider: NewApiProvider | undefined, model: string) => {
   const metadata = provider?.models.find(entry => entry.id === model);
-  const compact = model.toLowerCase().replace(/[^a-z0-9]/g, "");
-  const contextWindow = metadata?.contextWindow
-    ?? (provider?.model === model ? provider.contextWindow : null)
-    ?? (compact.includes("claude") ? 1_000_000 : 128_000);
-  return { contextWindow, maxOutputTokens: Math.min(metadata?.maxOutputTokens ?? 8192, contextWindow) };
+  const overrides = metadata?.overrides ?? null;
+  // Legacy manual records carried the user's values at the top level.
+  const legacyManual = metadata?.metadataSource === "manual";
+  const contextWindow =
+    overrides?.contextWindow
+    ?? (legacyManual ? metadata?.contextWindow ?? null : null)
+    ?? (provider?.model === model ? provider?.contextWindow ?? null : null);
+  const maxOutputTokens =
+    overrides?.maxOutputTokens
+    ?? (legacyManual ? metadata?.maxOutputTokens ?? null : null);
+  return { contextWindow, maxOutputTokens };
 };

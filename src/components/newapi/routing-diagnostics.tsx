@@ -6,6 +6,7 @@ import {
   AlertCircle,
   ChevronDown,
   Clock,
+  Gauge,
   Layers,
   RefreshCw,
   Route,
@@ -14,9 +15,12 @@ import {
 import { api } from "@/lib/api";
 import { formatInvokeError } from "@/lib/invoke-error";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import type { CompressionPolicy } from "@/types/newapi";
 
 function Parameters({
   values,
@@ -48,19 +52,48 @@ export function RoutingDiagnostics({
   failover,
   disabled,
   onFailover,
+  compression,
+  onCompression,
 }: {
   failover: boolean;
   disabled: boolean;
   onFailover: (enabled: boolean) => void;
+  compression: CompressionPolicy;
+  onCompression: (policy: CompressionPolicy) => void;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const [compressionValue, setCompressionValue] = useState("");
   const query = useQuery({
     queryKey: ["route-diagnostics"],
     queryFn: api.routing.diagnostics,
     enabled: open,
     refetchInterval: open ? 2000 : false,
   });
+  const mode =
+    compression.mode === "tokens" || compression.mode === "clientDefault"
+      ? compression.mode
+      : "percent";
+  const currentValue =
+    compression.mode === "tokens"
+      ? String(compression.tokens)
+      : compression.mode === "percent"
+        ? String(compression.percent)
+        : "";
+  const commitCompression = (next: string, raw: string) => {
+    if (next === "clientDefault") {
+      onCompression({ mode: "clientDefault" });
+      return;
+    }
+    const value = Number(raw || (next === "percent" ? "90" : currentValue));
+    if (!Number.isSafeInteger(value) || value <= 0) return;
+    if (next === "percent") {
+      if (value < 1 || value > 99) return;
+      onCompression({ mode: "percent", percent: value });
+    } else {
+      onCompression({ mode: "tokens", tokens: value });
+    }
+  };
 
   return (
     <section
@@ -87,19 +120,61 @@ export function RoutingDiagnostics({
           />
         </Button>
 
-        <label className="flex items-center gap-2.5 rounded-xl border border-border/60 bg-muted/30 px-3 py-1.5 text-xs font-medium cursor-pointer hover:bg-muted/50 transition-colors">
-          <Switch
-            checked={failover}
-            disabled={disabled}
-            onCheckedChange={onFailover}
-            aria-label={t("newapi.sameModelFailover")}
-          />
-          <span className="text-foreground">{t("newapi.sameModelFailover")}</span>
-        </label>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 rounded-xl border border-border/60 bg-muted/30 px-3 py-1.5 text-xs font-medium">
+            <Gauge className="h-3.5 w-3.5 text-primary" aria-hidden />
+            <span className="text-foreground">{t("newapi.compression.globalDefault")}</span>
+            <Select
+              value={mode}
+              disabled={disabled}
+              onValueChange={value => commitCompression(value, compressionValue || currentValue)}
+            >
+              <SelectTrigger className="h-7 w-32 text-xs" aria-label={t("newapi.compression.title")}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="percent">{t("newapi.compression.percent")}</SelectItem>
+                <SelectItem value="tokens">{t("newapi.compression.tokens")}</SelectItem>
+                <SelectItem value="clientDefault">{t("newapi.compression.clientDefault")}</SelectItem>
+              </SelectContent>
+            </Select>
+            {mode !== "clientDefault" && (
+              <Input
+                type="number"
+                min={mode === "percent" ? 1 : 1}
+                max={mode === "percent" ? 99 : 10_000_000}
+                inputMode="numeric"
+                disabled={disabled}
+                className="h-7 w-24 text-xs tabular-nums"
+                aria-label={t("newapi.compression.title")}
+                value={compressionValue || currentValue}
+                onChange={event => setCompressionValue(event.target.value)}
+                onBlur={event => {
+                  commitCompression(mode, event.target.value);
+                  setCompressionValue("");
+                }}
+              />
+            )}
+          </label>
+
+          <label className="flex items-center gap-2.5 rounded-xl border border-border/60 bg-muted/30 px-3 py-1.5 text-xs font-medium cursor-pointer hover:bg-muted/50 transition-colors">
+            <Switch
+              checked={failover}
+              disabled={disabled}
+              onCheckedChange={onFailover}
+              aria-label={t("newapi.sameModelFailover")}
+            />
+            <span className="text-foreground">{t("newapi.sameModelFailover")}</span>
+          </label>
+        </div>
       </div>
 
       <p className="mt-2 text-xs text-muted-foreground/80 leading-relaxed px-2">
         {t("newapi.failoverRules")}
+      </p>
+
+      <p className="mt-1 text-xs text-muted-foreground/80 leading-relaxed px-2">
+        {t("newapi.compression.description")}
       </p>
 
       {/* Expanded Content */}

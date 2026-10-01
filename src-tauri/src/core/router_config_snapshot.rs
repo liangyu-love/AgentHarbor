@@ -504,17 +504,17 @@ pub(super) fn recover_legacy(
         );
     }
     if let Some(previous) = previous_provider {
+        // Record the values the native path actually applies (the provider
+        // setting plus the derived conservative threshold), not the legacy
+        // fixed field, so drift detection and restore stay truthful.
+        let (context, threshold) = super::native_config::native_limits(paths, store, previous);
         applied.insert(
             "model_context_window".into(),
-            previous
-                .context_window
-                .map(|value| Scalar::Integer(value as i64)),
+            context.map(|value| Scalar::Integer(value as i64)),
         );
         applied.insert(
             "model_auto_compact_token_limit".into(),
-            previous
-                .auto_compact_limit
-                .map(|value| Scalar::Integer(value as i64)),
+            threshold.map(|value| Scalar::Integer(value as i64)),
         );
     }
     // With no old provider metadata, context overrides cannot be distinguished

@@ -164,7 +164,17 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
                     </SelectContent>
                   </Select>
                   <div className="space-y-0.5">
-                    <Input className="h-8 text-xs tabular-nums" type="number" min={1024} max={100000000} inputMode="numeric" value={model.contextWindow ?? ""} disabled={disabled} aria-label={t("newapi.contextFor", { model: model.id })} onChange={event => patch(model.id, { contextWindow: event.target.value ? Number(event.target.value) : null, metadataSource: "manual" })} />
+                    <Input className="h-8 text-xs tabular-nums" type="number" min={1024} max={100000000} inputMode="numeric" placeholder={t("clients.limitsAuto")} value={model.overrides?.contextWindow ?? ""} disabled={disabled} aria-label={t("newapi.contextFor", { model: model.id })} onChange={event => patch(model.id, { overrides: { ...model.overrides, contextWindow: event.target.value ? Number(event.target.value) : null }, metadataSource: "manual" })} />
+                    {model.overrides?.contextWindow != null && (
+                      <button
+                        type="button"
+                        disabled={disabled}
+                        onClick={() => patch(model.id, { overrides: { ...model.overrides, contextWindow: null } })}
+                        className="text-[10px] font-medium text-primary transition-colors hover:text-primary/80 disabled:opacity-40"
+                      >
+                        {t("clients.limitsAuto")}
+                      </button>
+                    )}
                   </div>
                   <button type="button" disabled={disabled || isDefault} onClick={() => removeModel(model.id)} className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-30" aria-label={t("newapi.removeModelAria", { model: model.id })}>
                     <Trash2 className="h-3.5 w-3.5" />

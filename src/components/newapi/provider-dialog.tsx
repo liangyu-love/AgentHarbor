@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
 import { mergeModelCatalog } from "@/lib/provider-models";
-import type { ModelProtocol, NewApiProvider, NewApiStateChange, NewApiModel } from "@/types/newapi";
+import type { CompressionPolicy, ModelProtocol, NewApiProvider, NewApiStateChange, NewApiModel } from "@/types/newapi";
 import { ProviderModelEditor } from "@/components/newapi/provider-model-editor";
 import { PROVIDER_PRESETS } from "@/lib/provider-presets";
 
@@ -25,23 +25,69 @@ interface ProviderDraft {
   protocol: ModelProtocol;
   model: string;
   contextWindow: string;
-  autoCompactLimit: string;
+  compressionMode: "inherit" | "percent" | "tokens" | "clientDefault";
+  compressionValue: string;
+  catalogProviders: string;
+  priceCatalogProvider: string;
 }
-const emptyDraft: ProviderDraft = { name: "", baseUrl: "", apiKey: "", protocol: DEFAULT_PROTOCOL, model: "", contextWindow: "", autoCompactLimit: "" };
-const fromProvider = (provider: NewApiProvider): ProviderDraft => ({
-  name: provider.name,
-  baseUrl: provider.baseUrl,
+const emptyDraft: ProviderDraft = {
+  name: "",
+  baseUrl: "",
   apiKey: "",
-  protocol: provider.protocol,
-  model: provider.model,
-  contextWindow: provider.contextWindow?.toString() ?? "",
-  autoCompactLimit: provider.autoCompactLimit?.toString() ?? "",
-});
+  protocol: DEFAULT_PROTOCOL,
+  model: "",
+  contextWindow: "",
+  compressionMode: "inherit",
+  compressionValue: "",
+  catalogProviders: "",
+  priceCatalogProvider: "",
+};
+const fromProvider = (provider: NewApiProvider): ProviderDraft => {
+  const compression = provider.compression ?? { mode: "inherit" as const };
+  return {
+    name: provider.name,
+    baseUrl: provider.baseUrl,
+    apiKey: "",
+    protocol: provider.protocol,
+    model: provider.model,
+    contextWindow: provider.contextWindow?.toString() ?? "",
+    compressionMode: compression.mode,
+    compressionValue:
+      compression.mode === "percent"
+        ? String(compression.percent)
+        : compression.mode === "tokens"
+          ? String(compression.tokens)
+          : "",
+    catalogProviders: (provider.catalogProviders ?? []).join(", "),
+    priceCatalogProvider: provider.priceCatalogProvider ?? "",
+  };
+};
 function optionalNumber(text: string, errorKey: string) {
   if (!text.trim()) return null;
   const value = Number(text);
   if (!/^\d+$/.test(text) || !Number.isSafeInteger(value) || value <= 0) throw new Error(errorKey);
   return value;
+}
+/** Provider-level compression policy; throws a locale key when the input is invalid. */
+function compressionPolicy(draft: ProviderDraft): CompressionPolicy {
+  switch (draft.compressionMode) {
+    case "inherit":
+      return { mode: "inherit" };
+    case "clientDefault":
+      return { mode: "clientDefault" };
+    case "percent": {
+      const value = Number(draft.compressionValue || "90");
+      if (!Number.isSafeInteger(value) || value < 1 || value > 99) {
+        throw new Error("newapi.compression.percentRange");
+      }
+      return { mode: "percent", percent: value };
+    }
+    default: {
+      const tokens = optionalNumber(draft.compressionValue, "newapi.compression.tokensRange");
+      if (tokens === null) throw new Error("newapi.compression.tokensRange");
+      return { mode: "tokens", tokens };
+    }
+  }
 }
 const protocolLabelKey: Record<ModelProtocol, string> = {
   responses: "newapi.protocolResponses",
@@ -122,7 +168,7 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
     if (open) {
       setDraft(provider ? fromProvider(provider) : emptyDraft);
       setError(null);
-      setShowAdvanced(!!provider && (!!provider.userId || provider.hasAccessToken || !!provider.contextWindow || !!provider.autoCompactLimit));
+      setShowAdvanced(!!provider && (!!provider.userId || provider.hasAccessToken || !!provider.contextWindow || (provider.compression?.mode ?? "inherit") !== "inherit" || !!provider.catalogProviders?.length));
       setModels(provider?.models.length ? provider.models : provider?.model ? [{
         id: provider.model,
         displayName: provider.model,
@@ -170,6 +216,7 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
     setSaving(true);
     setError(null);
     try {
+      const compression = compressionPolicy(draft);
       const change = await api.providers.save({
         id: provider?.id ?? null,
         name: draft.name,
@@ -181,7 +228,13 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
         model: draft.model,
         models,
         contextWindow: optionalNumber(draft.contextWindow, "newapi.errors.context"),
-        autoCompactLimit: optionalNumber(draft.autoCompactLimit, "newapi.errors.context"),
+        autoCompactLimit: null,
+        compression,
+        catalogProviders: draft.catalogProviders
+          .split(/[,\s]+/)
+          .map(value => value.trim().toLowerCase())
+          .filter(Boolean),
+        priceCatalogProvider: draft.priceCatalogProvider.trim().toLowerCase() || null,
       });
       onSaved(change);
       onOpenChange(false);
@@ -195,7 +248,9 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
     }
   };
   const hasAdvancedConfigured =
-    !!draft.contextWindow || !!draft.autoCompactLimit;
+    !!draft.contextWindow
+    || draft.compressionMode !== "inherit"
+    || !!draft.catalogProviders.trim();
 
   const fetchModels = async () => {
     if (fetchingModels || saving) return;
@@ -386,7 +441,66 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
             {showAdvanced && (
               <div className="grid gap-3 sm:grid-cols-2 rounded-xl bg-black/[0.02] p-3 ring-1 ring-border/50 dark:bg-white/[0.02]">
                 {field("contextWindow", "newapi.contextWindow", { numeric: true, placeholder: t("newapi.useDefault") })}
-                {field("autoCompactLimit", "newapi.autoCompact", { numeric: true, placeholder: t("newapi.useDefault") })}
+                <div className="space-y-1.5">
+                  <Label htmlFor="newapi-provider-compression" className="text-[13px]">{t("newapi.compression.providerLevel")}</Label>
+                  <div className="flex gap-2">
+                    <Select
+                      value={draft.compressionMode}
+                      disabled={saving}
+                      onValueChange={value => setDraft(current => ({ ...current, compressionMode: value as ProviderDraft["compressionMode"] }))}
+                    >
+                      <SelectTrigger id="newapi-provider-compression" className="min-w-0 flex-1">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="inherit">{t("newapi.compression.inherit")}</SelectItem>
+                        <SelectItem value="percent">{t("newapi.compression.percent")}</SelectItem>
+                        <SelectItem value="tokens">{t("newapi.compression.tokens")}</SelectItem>
+                        <SelectItem value="clientDefault">{t("newapi.compression.clientDefault")}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {(draft.compressionMode === "percent" || draft.compressionMode === "tokens") && (
+                      <Input
+                        className="w-28"
+                        inputMode="numeric"
+                        autoComplete="off"
+                        spellCheck={false}
+                        disabled={saving}
+                        value={draft.compressionValue}
+                        placeholder={draft.compressionMode === "percent" ? "90" : "180000"}
+                        aria-label={t("newapi.compression.providerLevel")}
+                        onChange={event => update("compressionValue", event.target.value)}
+                      />
+                    )}
+                  </div>
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">{t("newapi.compression.description")}</p>
+                </div>
+                <div className="space-y-1.5 sm:col-span-2">
+                  <Label htmlFor="newapi-provider-catalog" className="text-[13px]">{t("newapi.catalogMapping.title")}</Label>
+                  <Input
+                    id="newapi-provider-catalog"
+                    value={draft.catalogProviders}
+                    disabled={saving}
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder={t("newapi.catalogMapping.placeholder")}
+                    onChange={event => update("catalogProviders", event.target.value)}
+                  />
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">{t("newapi.catalogMapping.description")}</p>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="newapi-provider-price-catalog" className="text-[13px]">{t("newapi.catalogMapping.priceTitle")}</Label>
+                  <Input
+                    id="newapi-provider-price-catalog"
+                    value={draft.priceCatalogProvider}
+                    disabled={saving}
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder={t("newapi.catalogMapping.placeholder")}
+                    onChange={event => update("priceCatalogProvider", event.target.value)}
+                  />
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">{t("newapi.catalogMapping.priceHint")}</p>
+                </div>
               </div>
             )}
           </div>

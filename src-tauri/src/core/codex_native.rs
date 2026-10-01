@@ -298,7 +298,7 @@ fn catalog(paths: &CodexPaths, store: &Store, provider: &Provider) -> serde_json
 /// threshold is the conservative minimum across this provider's selected
 /// models so switching models inside one shared config never overstates a
 /// smaller model's budget; models without real data never contribute one.
-fn native_limits(
+pub(super) fn native_limits(
     paths: &CodexPaths,
     store: &Store,
     provider: &Provider,

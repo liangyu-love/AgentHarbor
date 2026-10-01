@@ -38,11 +38,13 @@ function ThreadToastProbe() {
 }
 const noop = () => {};
 const model = (id: string) => ({ id, displayName: id, contextWindow: null, maxOutputTokens: null,
-  endpointTypes: ["responses"], included: true, metadataSource: "upstream" as const });
+  endpointTypes: ["responses"], included: true, metadataSource: "upstream" as const,
+  overrides: {}, catalogRef: null, priceRef: null, compression: { mode: "inherit" as const } });
 const provider = (id: string) => ({ id, name: "Provider " + id, model: "model-" + id,
   models: [model("model-" + id)], hasApiKey: true, baseUrl: "https://" + id + ".invalid",
   enabled: true, protocol: "responses" as const, userId: null, hasAccessToken: false,
-  contextWindow: null, autoCompactLimit: null, networkMode: "direct" as const,
+  contextWindow: null, autoCompactLimit: null, catalogProviders: [], priceCatalogProvider: null,
+  compression: { mode: "inherit" as const }, networkMode: "direct" as const,
   modelsFetchedAt: null, balance: null, balanceSource: null, testStatus: "untested" as const,
   testAt: null, createdAt: 0, updatedAt: 0 });
 const imageProvider = { ...provider("image"), model: "gpt-image-2", models: [model("gpt-image-2")] };
@@ -115,11 +117,34 @@ api.routing.diagnostics = async () => [{ id: "synthetic-route", timestamp: 1_790
   requested: { "reasoning.effort": "high" }, stage: "complete", done: true, status: 200, failureStage: null, error: null, durationMs: 840, firstTokenMs: 230,
   attempts: [{ providerId: "relay", providerName: "Synthetic channel", upstreamModel: "claude-opus-5-5-kiro", matchedModel: "claude-opus-5-5", protocol: "anthropicMessages",
     sent: { "thinking.type": "adaptive", "output_config.effort": "high", max_tokens: 8192 }, status: 200, failureStage: null, error: null, durationMs: 830 }] }];
-api.routing.capabilities = async () => ({ stale: true, error: "catalog_unavailable_or_invalid", updatedAt: 1_790_740_800, models: [{
-  providerId: "relay", providerName: "Synthetic channel", displayName: "My custom alias", upstreamModel: "claude-opus-5-5-kiro", matchedModel: "claude-opus-5-5",
-  reasoning: { value: [{ effort: "low", description: "Low" }, { effort: "high", description: "High" }], source: "catalog", updatedAt: 1_790_740_800 }, defaultReasoning: "low",
-  context: { value: 1_000_000, source: "local", updatedAt: null }, output: { value: 128_000, source: "catalog", updatedAt: 1_790_740_800 },
-}] });
+const capabilityRef = { providerId: "anthropic", modelId: "claude-opus-5-5" };
+api.routing.capabilities = async () => ({ stale: true, error: "catalog_unavailable_or_invalid", updatedAt: 1_790_740_800,
+  catalog: { schemaVersion: 1, sourceUrl: "https://models.dev/api.json", fetchedAt: 1_790_740_000, lastCheckedAt: 1_790_740_800,
+    stale: true, origin: "runtime", revision: "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", providers: 225, models: 8339, error: null },
+  models: [{
+    providerId: "relay", providerName: "Synthetic channel", displayName: "My custom alias",
+    upstreamModel: "claude-opus-5-5-kiro", matchedModel: "anthropic/claude-opus-5-5",
+    matchKind: "normalized", matched: capabilityRef,
+    steps: [{ modelId: "claude-opus-5-5", step: "knownChannelSuffix", matched: [capabilityRef], note: "matched 1 scoped catalog entry" }],
+    conflicts: [{ field: "outputLimit", candidates: [{ modelRef: capabilityRef, value: "128000" }, { modelRef: { providerId: "github-copilot", modelId: "claude-opus-5-5" }, value: "64000" }] }],
+    reasoning: { value: [{ effort: "low", description: "Low" }, { effort: "high", description: "High" }], source: "catalog", sourceRef: capabilityRef, updatedAt: "2025-11-24T00:00:00Z" },
+    reasoningSupports: true,
+    reasoningOptions: [{ kind: "effort", values: ["low", "high"], min: null, max: null }],
+    defaultReasoning: "low", defaultReasoningSource: "policy",
+    context: { value: 1_000_000, source: "local", sourceRef: null, updatedAt: null },
+    inputLimit: { value: null, source: "unknown", sourceRef: null, updatedAt: null },
+    output: { value: 128_000, source: "catalog", sourceRef: capabilityRef, updatedAt: "2025-11-24T00:00:00Z" },
+    price: { currency: "USD", unit: "perMillionTokens", input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5, reasoning: null,
+      source: "catalog", sourceRef: capabilityRef, updatedAt: "2025-11-24T00:00:00Z", complete: true, note: null },
+    projection: { contextWindow: 1_000_000, contextSource: "local", contextIsFallback: false, budget: 1_000_000, budgetSource: "local",
+      inputLimit: null, outputLimit: 128_000, outputSource: "catalog",
+      reasoning: [{ effort: "low", description: "Low" }, { effort: "high", description: "High" }], reasoningSource: "catalog", defaultReasoning: "low",
+      compression: { mode: "percent", percent: 90, tokens: null, source: "global", budget: 1_000_000, budgetSource: "local", threshold: 900_000, state: "computed", note: null } },
+  }] });
+api.routing.catalogStatus = async () => ({ schemaVersion: 1, sourceUrl: "https://models.dev/api.json", fetchedAt: 1_790_740_000,
+  lastCheckedAt: 1_790_740_800, stale: true, origin: "runtime", revision: "abcdef", providers: 225, models: 8339, error: null }) as any;
+api.routing.refreshCatalog = async () => ({ schemaVersion: 1, sourceUrl: "https://models.dev/api.json", fetchedAt: 1_790_740_800,
+  lastCheckedAt: 1_790_740_800, stale: false, origin: "runtime", revision: "abcdef", providers: 225, models: 8339, error: null }) as any;
 api.routing.setFailover = async enabled => { state = { ...state, router: { ...state.router, sameModelFailover: enabled } }; return { state, applied: null }; };
 api.loadSnapshot = async () => ({ data: { status: {
   paths: { codexHome: "C:/synthetic/codex", authExists: true, registryExists: true, sessionsExists: true },

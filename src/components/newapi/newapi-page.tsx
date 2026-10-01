@@ -84,6 +84,8 @@ export function NewApiPage() {
       <ClientConfigs providers={providers} />
 
       <RoutingDiagnostics failover={router?.sameModelFailover ?? false} disabled={nativeAccess || !state.isSuccess || store.mutationLocked}
+        compression={state.data?.compression ?? { mode: "percent", percent: 90 }}
+        onCompression={policy => { void run("compression", async () => applyChange(await api.routing.setCompression(policy)), t("newapi.compression.saveFailed")); }}
         onFailover={enabled => { void run("failover", async () => applyChange(await api.routing.setFailover(enabled)), t("newapi.traceSettingsFailed")); }} />
       <ModelCapabilities />
 

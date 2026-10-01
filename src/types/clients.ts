@@ -33,8 +33,10 @@ export interface ClientConfigRequest {
   targetId: TargetId;
   providerId: string;
   model: string;
-  contextWindow: number;
-  maxOutputTokens: number;
+  /** Explicit user-entered budget; null/absent follows the backend resolver. */
+  contextWindow?: number | null;
+  /** Explicit user-entered output cap; null/absent follows the backend resolver. */
+  maxOutputTokens?: number | null;
   accessMode: ClientAccessMode;
   providerIds: string[];
   providerModelIds?: Record<string, string[]>;

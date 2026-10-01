@@ -95,7 +95,12 @@ const providersApi = {
 const routingApi = {
   capabilities: () => invoke<import("@/types/newapi").ModelCapabilities>("load_model_capabilities"),
   diagnostics: () => invoke<import("@/types/newapi").RouteDiagnostic[]>("load_route_diagnostics"),
+  catalogStatus: () => invoke<import("@/types/newapi").ModelsDevCatalogStatus>("load_models_dev_status"),
+  refreshCatalog: () =>
+    invoke<import("@/types/newapi").ModelsDevCatalogStatus>("refresh_models_dev_catalog"),
   setFailover: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_failover", { enabled }),
+  setCompression: (policy: import("@/types/newapi").CompressionPolicy) =>
+    invoke<NewApiStateChange>("set_newapi_compression", { policy }),
   setEnabled: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_smart_routing", { enabled }),
   setAccessMode: (mode: CodexAccessMode) => invoke<NewApiStateChange>("set_newapi_access_mode", { mode }),
   setAccountless: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_accountless", { enabled }),
