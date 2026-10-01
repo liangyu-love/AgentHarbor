@@ -698,6 +698,8 @@
     "relayReported": "{{count}} 次有用量",
     "inputShort": "输入",
     "outputShort": "输出",
+    "cacheShort": "缓存",
+    "cacheDetail": "缓存读取 {{read}}，缓存写入 {{write}}（已从输入中拆分，避免重复计费）",
     "dailyTrend": "每日趋势",
     "last14Days": "最近 14 天",
     "peakUsage": "峰值",

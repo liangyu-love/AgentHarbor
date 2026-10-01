@@ -1434,6 +1434,49 @@ mod tests {
     }
 
     #[test]
+    fn zero_prices_stay_zero_instead_of_unknown() {
+        let bytes = serde_json::to_vec(&json!({
+            "schemaVersion": 1,
+            "sourceUrl": "https://models.dev/api.json",
+            "fetchedAt": 1_700_000_000,
+            "revision": "fixture",
+            "providers": [{
+                "id": "relay-a",
+                "name": "A",
+                "models": [{
+                    "id": "free-model",
+                    "name": "Free",
+                    "limit": {"context": 1000, "output": 100},
+                    "cost": {"input": 0, "output": 0}
+                }]
+            }]
+        }))
+        .unwrap();
+        let catalog = Catalog::parse(&bytes, super::super::models_dev::Origin::Runtime).unwrap();
+        let scope = ["relay-a".to_owned()];
+        let mut request = input_for("free-model");
+        request.catalog_providers = &scope;
+        let resolved = resolve(&catalog, &request);
+        // A declared zero rate is a price, not a missing one.
+        assert_eq!(resolved.price.input, Some(0.0));
+        assert_eq!(resolved.price.output, Some(0.0));
+        assert_ne!(resolved.price.source, source::UNKNOWN);
+        assert!(resolved.price.complete);
+
+        // A user override of zero behaves the same way.
+        let mut request = input_for("free-model");
+        request.catalog_providers = &scope;
+        request.user.price = Some(CostRatesInput {
+            input: Some(0.0),
+            output: Some(0.0),
+            ..Default::default()
+        });
+        let resolved = resolve(&catalog, &request);
+        assert_eq!(resolved.price.source, source::MANUAL);
+        assert_eq!(resolved.price.input, Some(0.0));
+    }
+
+    #[test]
     fn conditional_prices_are_marked_incomplete() {
         let bytes = serde_json::to_vec(&json!({
             "schemaVersion": 1,

@@ -219,6 +219,10 @@ pub struct Catalog {
 
 #[derive(Default)]
 struct Index {
+    /// provider id (lower) -> position in `snapshot.providers`
+    providers: HashMap<String, usize>,
+    /// provider id (lower) -> model id (lower) -> positions in that provider
+    provider_models: HashMap<String, HashMap<String, Vec<usize>>>,
     global: HashMap<String, Vec<Entry>>,
 }
 
@@ -285,11 +289,10 @@ impl Catalog {
     }
 
     pub fn provider(&self, id: &str) -> Option<&Provider> {
-        let id = lower(id);
-        self.snapshot
+        self.index
             .providers
-            .iter()
-            .find(|provider| lower(&provider.id) == id)
+            .get(&lower(id))
+            .and_then(|index| self.snapshot.providers.get(*index))
     }
 
     /// Case-sensitive lookup inside one provider. Used for explicit references.
@@ -304,20 +307,29 @@ impl Catalog {
 
     /// Case-insensitive matches for one model ID inside the given providers.
     /// Case-conflicting entries are all returned; callers must treat more than
-    /// one distinct model as ambiguous.
+    /// one distinct model as ambiguous. Indexed, so the request hot path never
+    /// scans provider model lists.
     pub fn scoped(&self, provider_ids: &[String], model_id: &str) -> Vec<Match<'_>> {
         let model_id = lower(model_id);
-        let mut seen = Vec::new();
         let mut matches = Vec::new();
         for provider_id in provider_ids {
-            let Some(provider) = self.provider(provider_id) else {
+            let provider_id = lower(provider_id);
+            let Some(provider_index) = self.index.providers.get(&provider_id).copied() else {
                 continue;
             };
-            for model in &provider.models {
-                if lower(&model.id) == model_id
-                    && !seen.contains(&(provider.id.clone(), model.id.clone()))
-                {
-                    seen.push((provider.id.clone(), model.id.clone()));
+            let Some(indices) = self
+                .index
+                .provider_models
+                .get(&provider_id)
+                .and_then(|by_model| by_model.get(&model_id))
+            else {
+                continue;
+            };
+            let Some(provider) = self.snapshot.providers.get(provider_index) else {
+                continue;
+            };
+            for model_index in indices {
+                if let Some(model) = provider.models.get(*model_index) {
                     matches.push(Match { provider, model });
                 }
             }
@@ -428,7 +440,17 @@ impl Index {
     fn build(providers: &[Provider]) -> Self {
         let mut index = Index::default();
         for (provider_index, provider) in providers.iter().enumerate() {
+            let provider_key = lower(&provider.id);
+            index.providers.insert(provider_key.clone(), provider_index);
+            let by_model = index
+                .provider_models
+                .entry(provider_key)
+                .or_default();
             for (model_index, model) in provider.models.iter().enumerate() {
+                by_model
+                    .entry(lower(&model.id))
+                    .or_default()
+                    .push(model_index);
                 index
                     .global
                     .entry(lower(&model.id))

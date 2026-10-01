@@ -139,7 +139,8 @@ function PriceLine({
   onEdit: () => void;
 }) {
   const { t } = useTranslation();
-  const empty = !price.input && !price.output;
+  // A real zero rate is a price, not "unknown"; only missing rates are unknown.
+  const empty = price.input == null && price.output == null;
   return (
     <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
       <h4 className="flex items-center justify-between gap-1.5 font-bold text-foreground text-xs">

@@ -84,6 +84,14 @@ function RelayTrend({ relay }: { relay: RelayUsagePayload }) {
     <div className="usage-relay-day-details" aria-live="polite">
       <span><i className="usage-dot usage-dot-sky" />{t("accounts.inputShort")} <strong>{formatTokens(day.totals.inputTokens)}</strong></span>
       <span><i className="usage-dot usage-dot-orange" />{t("accounts.outputShort")} <strong>{formatTokens(day.totals.outputTokens)}</strong></span>
+      {day.totals.cacheReadTokens + day.totals.cacheWriteTokens > 0 && (
+        <span title={t("accounts.cacheDetail", {
+          read: formatTokens(day.totals.cacheReadTokens),
+          write: formatTokens(day.totals.cacheWriteTokens),
+        })}>
+          {t("accounts.cacheShort")} <strong>{formatTokens(day.totals.cacheReadTokens + day.totals.cacheWriteTokens)}</strong>
+        </span>
+      )}
       {day.totals.pricedCount > 0 && (
         <span>{t("accounts.costEstimate")} <strong>{formatCost(day.totals.costMicros)}</strong></span>
       )}
@@ -105,7 +113,17 @@ function RelayRequests({ relay }: { relay: RelayUsagePayload }) {
       <tbody>{relay.recent.map((record, index) => <tr key={`${record.timestamp}-${record.providerId}-${index}`}>
         <td className="font-medium" title={record.providerName}>{record.providerName}</td>
         <td className="font-mono" title={record.model}>{record.model || "—"}</td>
-        <td className="font-mono">{formatTokens(record.inputTokens)}</td>
+        <td className="font-mono">
+          {formatTokens(record.inputTokens)}
+          {record.cacheReadTokens + record.cacheWriteTokens > 0 && (
+            <small className="ml-1 text-muted-foreground" title={t("accounts.cacheDetail", {
+              read: formatTokens(record.cacheReadTokens),
+              write: formatTokens(record.cacheWriteTokens),
+            })}>
+              +{formatTokens(record.cacheReadTokens + record.cacheWriteTokens)}
+            </small>
+          )}
+        </td>
         <td className="font-mono">{formatTokens(record.outputTokens)}</td>
         <td className="font-mono font-semibold">{formatTokens(record.totalTokens)}</td>
         <td

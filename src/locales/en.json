@@ -698,6 +698,8 @@
     "relayReported": "{{count}} with usage",
     "inputShort": "Input",
     "outputShort": "Output",
+    "cacheShort": "Cache",
+    "cacheDetail": "Cache read {{read}}, cache write {{write}} (split out of the input so nothing is double billed)",
     "dailyTrend": "Daily trend",
     "last14Days": "Last 14 days",
     "peakUsage": "Peak",
