@@ -116,12 +116,10 @@ export function useThreadList() {
     .filter(project => project.key !== DIRECT_CHATS_KEY && project.cwd).length;
   const missingRolloutCount = threads.filter(thread => thread.rolloutStatus === "missing").length;
   const {
-    archivedCount, totalUserMsgs, totalAgentMsgs, totalBytes, totalTokens,
+    archivedCount, totalBytes, totalTokens,
     totalInputTokens, totalCachedTokens, totalOutputTokens, hasTokenBreakdown,
   } = useMemo(() => {
     let archived = 0;
-    let user = 0;
-    let agent = 0;
     let bytes = 0;
     let tokens = 0;
     let inputTokens = 0;
@@ -130,8 +128,6 @@ export function useThreadList() {
     let breakdown = false;
     for (const item of scopedThreads) {
       if (item.archived) archived++;
-      user += item.userMessages || 0;
-      agent += item.agentMessages || 0;
       bytes += item.fileSize || 0;
       tokens += item.tokensUsed || 0;
       if (item.inputTokens != null || item.outputTokens != null) breakdown = true;
@@ -141,8 +137,6 @@ export function useThreadList() {
     }
     return {
       archivedCount: archived,
-      totalUserMsgs: user,
-      totalAgentMsgs: agent,
       totalBytes: bytes,
       totalTokens: tokens,
       totalInputTokens: inputTokens,
@@ -152,7 +146,6 @@ export function useThreadList() {
     };
   }, [scopedThreads]);
 
-  const totalInteractions = totalUserMsgs + totalAgentMsgs;
   const useVirtualList = filtered.length >= VIRTUALIZE_THRESHOLD;
 
   // Keep the selection limited to visible threads: batch delete/export must never
@@ -391,9 +384,9 @@ export function useThreadList() {
     threadsQuery, threads, pendingDeletionKeys, scanWarnings, pendingDeletionRecoveryNeeded,
     filtered, groups, projects, matchingKeys, activeProject, focusedThread, selectProject, focusThread, scopedThreads, workspaceCount,
     selectedExportableCount, useVirtualList,
-    archivedCount, totalUserMsgs, totalAgentMsgs, totalBytes, totalTokens,
+    archivedCount, totalBytes, totalTokens,
     totalInputTokens, totalCachedTokens, totalOutputTokens, hasTokenBreakdown,
-    missingRolloutCount, totalInteractions,
+    missingRolloutCount,
     status, setStatus, query, setQuery, sortBy, setSortBy, sortLabels, viewMode, setViewMode, format, setFormat,
     selected, toggleSelect, selectFiltered, clearSelection, toggleGroupSelect,
     collapsedGroups, toggleGroupCollapse, expandAllGroups, collapseAllGroups,

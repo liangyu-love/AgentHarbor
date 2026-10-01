@@ -20,7 +20,7 @@ export function ThreadsHeader({ list }: { list: ThreadList }) {
   } = list;
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3">
+    <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
       <div className="flex items-center gap-2.5">
         <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-primary/20 via-primary/10 to-transparent text-primary shadow-xs ring-1 ring-primary/25">
           <MessagesSquare className="h-4.5 w-4.5" />
@@ -32,7 +32,7 @@ export function ThreadsHeader({ list }: { list: ThreadList }) {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2.5">
+      <div className="flex flex-wrap items-center gap-2.5 sm:justify-end">
         {/* Format Selector */}
         <SegmentedOptions
           items={[

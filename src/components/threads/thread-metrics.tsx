@@ -126,9 +126,11 @@ export function ThreadMetrics({ list }: { list: ThreadList }) {
                 </p>
               </dl>
             )}
-            <p data-metric="tokens-total" className="text-[11px] text-muted-foreground">
-              {t("threads.statsTokens", { value: formatTokenCount(totalTokens) })}
-            </p>
+            {hasTokenBreakdown && (
+              <p data-metric="tokens-total" className="text-[11px] text-muted-foreground">
+                {t("threads.statsTokens", { value: formatTokenCount(totalTokens) })}
+              </p>
+            )}
           </div>
         </AuroraCard>
 

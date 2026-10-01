@@ -2,6 +2,8 @@ import { useState } from "react";
 import {
   AlertTriangle,
   Archive,
+  ArrowDown,
+  ArrowUp,
   Check,
   CheckSquare,
   Clock,
@@ -59,11 +61,11 @@ export function ThreadCard({
   const { t } = useTranslation();
   const [copiedId, setCopiedId] = useState(false);
 
-  const totalMsgs = (thread.userMessages || 0) + (thread.agentMessages || 0);
-  const userRatio =
-    totalMsgs > 0
-      ? Math.round(((thread.userMessages || 0) / totalMsgs) * 100)
-      : 50;
+  const hasTokenSplit = thread.inputTokens != null || thread.outputTokens != null;
+  const inputTokens = thread.inputTokens ?? 0;
+  const outputTokens = thread.outputTokens ?? 0;
+  const splitTotal = inputTokens + outputTokens;
+  const inputRatio = splitTotal > 0 ? Math.round((inputTokens / splitTotal) * 100) : 50;
   const hasRollout = thread.rolloutStatus !== "missing";
   const canPreviewRecovery = thread.id.length > 0;
   const providerLabel = thread.modelProvider || t("threads.unknownProvider");
@@ -380,12 +382,12 @@ export function ThreadCard({
             </span>
 
             <div className="min-w-0 flex-1">
-              <h3>
+              <h3 className="flex min-h-[2.75em] items-center">
                 <button
                   type="button"
                   data-thread-title
                   className={cn(
-                    "line-clamp-2 min-h-[2.75em] text-left text-sm font-bold leading-snug tracking-tight text-foreground hover:text-primary transition-colors",
+                    "line-clamp-2 text-left text-sm font-bold leading-snug tracking-tight text-foreground hover:text-primary transition-colors",
                     focusRing,
                   )}
                   title={thread.title || t("threads.untitled")}
@@ -453,20 +455,31 @@ export function ThreadCard({
           </div>
         </div>
 
-        {/* Middle: Dialogue breakdown capsule */}
+        {/* Middle: Token split capsule */}
         <div className="mt-3 flex items-center justify-between gap-2 rounded-xl bg-muted/35 px-2.5 py-1.5 text-[11px] border border-border/30">
           <div className="flex min-w-0 items-center gap-2 font-mono">
-            <span className="flex items-center gap-1 text-sky-600 dark:text-sky-400 font-semibold">
-              <User className="h-3 w-3" />
-              {thread.userMessages}
-            </span>
-            <span className="text-muted-foreground/30">/</span>
-            <span className="flex items-center gap-1 text-purple-600 dark:text-purple-400 font-semibold">
-              <Sparkles className="h-3 w-3" />
-              {thread.agentMessages}
-            </span>
+            {hasTokenSplit && (
+              <>
+                <span
+                  className="flex items-center gap-1 text-sky-600 dark:text-sky-400 font-semibold"
+                  title={t("threads.statsInputLabel")}
+                >
+                  <ArrowDown className="h-3 w-3" />
+                  {formatTokenCount(inputTokens)}
+                </span>
+                <span className="text-muted-foreground/30">/</span>
+                <span
+                  className="flex items-center gap-1 text-amber-600 dark:text-amber-400 font-semibold"
+                  title={t("threads.statsOutputLabel")}
+                >
+                  <ArrowUp className="h-3 w-3" />
+                  {formatTokenCount(outputTokens)}
+                </span>
+                <span className="text-muted-foreground/30">·</span>
+              </>
+            )}
             <span
-              className="flex items-center gap-1 text-muted-foreground/80 ml-1 border-l border-border/50 pl-2"
+              className="flex min-w-0 items-center gap-1 text-muted-foreground/80"
               title={t("threads.tokensUsed", { count: thread.tokensUsed || 0 })}
             >
               <Coins className="h-3 w-3 opacity-70" />
@@ -474,19 +487,21 @@ export function ThreadCard({
             </span>
           </div>
 
-          <div
-            className="h-2 w-16 shrink-0 overflow-hidden rounded-full bg-muted/80 flex ring-1 ring-border/20 shadow-2xs"
-            title={`用户提问占比: ${userRatio}%`}
-          >
+          {hasTokenSplit && (
             <div
-              className="bg-gradient-to-r from-sky-500 to-sky-400"
-              style={{ width: `${userRatio}%` }}
-            />
-            <div
-              className="bg-gradient-to-r from-fuchsia-500 to-purple-400"
-              style={{ width: `${100 - userRatio}%` }}
-            />
-          </div>
+              className="h-2 w-16 shrink-0 overflow-hidden rounded-full bg-muted/80 flex ring-1 ring-border/20 shadow-2xs"
+              title={t("threads.tokenSplit", { input: inputRatio, output: 100 - inputRatio })}
+            >
+              <div
+                className="bg-gradient-to-r from-sky-500 to-sky-400"
+                style={{ width: `${inputRatio}%` }}
+              />
+              <div
+                className="bg-gradient-to-r from-amber-500 to-amber-400"
+                style={{ width: `${100 - inputRatio}%` }}
+              />
+            </div>
+          )}
         </div>
 
         {/* Bottom: Meta & Quick Actions */}
@@ -500,10 +515,10 @@ export function ThreadCard({
                 </span>
               </TooltipTrigger>
               <TooltipContent className="text-xs space-y-0.5">
-                <div>活跃时间: {formatDateTime(thread.updatedAt)}</div>
+                <div>{t("threads.activeTime", { time: formatDateTime(thread.updatedAt) })}</div>
                 {thread.createdAt && (
                   <div className="text-muted-foreground">
-                    创建时间: {formatDateTime(thread.createdAt)}
+                    {t("threads.createdTime", { time: formatDateTime(thread.createdAt) })}
                   </div>
                 )}
               </TooltipContent>

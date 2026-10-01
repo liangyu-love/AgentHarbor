@@ -898,7 +898,7 @@ export function ThreadDetailSheet({
                 className="rounded bg-muted px-1.5 py-0 font-mono text-[10px] text-muted-foreground"
                 title={t("threads.details.recordedTokens")}
               >
-                {formatTokenCount(detail.usage.total)} Token
+                {formatTokenCount(detail.usage.total)} {t("threads.tokenUnit")}
               </span>
             )}
 

@@ -11,8 +11,6 @@ export interface FolderGroup {
   latestAt: number;
   totalMessages: number;
   totalSize: number;
-  userMessages: number;
-  agentMessages: number;
 }
 
 export function formatSize(bytes: number): string {
@@ -106,8 +104,6 @@ export function groupThreads(threads: ThreadSummary[], unknownFolder: string, di
       existing.items.push(thread);
       existing.latestAt = Math.max(existing.latestAt, thread.updatedAt);
       existing.totalMessages += msgCount;
-      existing.userMessages += thread.userMessages || 0;
-      existing.agentMessages += thread.agentMessages || 0;
       existing.totalSize += thread.fileSize || 0;
       continue;
     }
@@ -119,8 +115,6 @@ export function groupThreads(threads: ThreadSummary[], unknownFolder: string, di
       latestAt: thread.updatedAt,
       totalMessages: msgCount,
       totalSize: thread.fileSize || 0,
-      userMessages: thread.userMessages || 0,
-      agentMessages: thread.agentMessages || 0,
     });
   }
   return [...groups.values()].sort((a, b) => b.latestAt - a.latestAt);
