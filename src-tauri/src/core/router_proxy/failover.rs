@@ -8,7 +8,7 @@ const KEEP: usize = 1024;
 #[derive(Clone)]
 pub(super) struct Binding {
     pub provider_id: String,
-    model: String,
+    pub(super) model: String,
     protocol: router::ModelProtocol,
     endpoint: String,
 }
@@ -92,7 +92,7 @@ pub(super) fn bind(key: &str, destination: &Destination) -> bool {
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     // Never evict a live binding and silently reassign a later tool turn. At
-    // capacity, new sessions simply cannot opt into automatic failover.
+    // capacity, the caller must reject a new session before contacting upstream.
     if cache.len() >= KEEP && !cache.iter().any(|(k, _)| k == key) {
         return false;
     }
@@ -191,6 +191,56 @@ pub(super) fn alternative(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn full_registry_rejects_new_sessions_before_upstream_and_keeps_existing_bindings() {
+        use super::super::failover_tests::{mock, persist, RESPONSE};
+        use std::sync::atomic::Ordering;
+        let _guard = global_router_test_lock();
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let (url, calls, _, server) = mock(200, RESPONSE, "application/json").await;
+            let dir = tempfile::tempdir().unwrap();
+            let paths = CodexPaths::from_home(dir.path().into());
+            let store = router::Store {
+                providers: vec![router::Provider {
+                    id: "a".into(), base_url: url, model: "gpt-6-astra".into(),
+                    api_key: "synthetic".into(), enabled: true, ..Default::default()
+                }],
+                router: router::RouterSettings {
+                    same_model_failover: true, bearer_token: "local".into(), ..Default::default()
+                },
+                ..Default::default()
+            };
+            persist(&paths, &store);
+            let destination = provider_destination(&store, "a", Some(router::ModelProtocol::Responses), None).unwrap();
+            let mut headers = HeaderMap::new();
+            headers.insert("session_id", HeaderValue::from_static("existing"));
+            let existing_key = key(&paths.app_data_dir.join("newapi-providers.dat"), &headers, "a::gpt-6-astra").unwrap();
+            let previous = std::mem::take(&mut *AFFINITY.get_or_init(|| Mutex::new(VecDeque::new())).lock().unwrap());
+            assert!(bind(&existing_key, &destination));
+            for i in 1..KEEP { assert!(bind(&format!("capacity-{i}"), &destination)); }
+            let port = ensure_running(0, paths, ApiProxyConfigPayload {
+                mode: super::super::super::models::ApiProxyMode::Direct, url: None,
+            }).await.unwrap();
+            let client = Client::builder().no_proxy().build().unwrap();
+            let url = format!("http://127.0.0.1:{port}/codex/v1/responses");
+            let response = client.post(&url).bearer_auth("local").header("session_id", "new")
+                .json(&json!({"model":"a::gpt-6-astra", "input":"hello"})).send().await.unwrap();
+            let new_status = response.status();
+            let new_error = response.text().await.unwrap();
+            let new_calls = calls.load(Ordering::SeqCst);
+            let response = client.post(&url).bearer_auth("local").header("session_id", "existing")
+                .json(&json!({"model":"a::gpt-6-astra", "previous_response_id":"response-test", "input":"next"})).send().await.unwrap();
+            let existing_status = response.status();
+            response.bytes().await.unwrap();
+            stop(); server.abort();
+            *AFFINITY.get().unwrap().lock().unwrap() = previous;
+            assert_eq!(new_status, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(new_error.contains("capacity reached"));
+            assert_eq!(new_calls, 0, "A rejected first turn must not spend upstream quota");
+            assert_eq!(existing_status, StatusCode::OK);
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        });
+    }
     #[test]
     fn tools_and_continuations_cannot_be_replayed() {
         for v in [

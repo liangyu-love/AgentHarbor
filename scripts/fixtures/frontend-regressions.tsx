@@ -427,16 +427,17 @@ function mount(mode: FixtureMode) {
     controls.review.detailCalls += 1;
     if (controls.review.detailError || mode === "thread-details-error") throw new Error("Synthetic rollout identity mismatch");
     return { schemaVersion: 1, success: true, code: "ok", message: "", warnings: [], data: {
-      snapshotBytes: controls.review.snapshotBytes ?? 12345, usage: mode === "thread-details-unknown" ? null : usage,
+      snapshotBytes: controls.review.snapshotBytes ?? 12345, snapshotId: controls.review.snapshotId ?? "fixture-1", usage: mode === "thread-details-unknown" ? null : usage,
       byModel: [{ label: "aimami_relay_2d66f8bc24::gpt-6-astra", usage: { ...usage, total: 27401900 } }, { label: "gpt-6.1-sol", usage: { ...usage, total: 5900000 } }],
       byDate: [{ label: "2026-09-29", usage: { ...usage, total: 14000000 } }, { label: "2026-09-30", usage: { ...usage, total: 19301900 } }],
       tools: [{ name: "exec_command", calls: 12 }, { name: "apply_patch", calls: 3 }], diagnostics,
     } };
   };
-  api.conversations.messages = async (_target, _key, _id, snapshot, offset) => {
+  api.conversations.messages = async (_target, _key, _id, snapshot, offset, snapshotId) => {
     controls.review.messageOffsets.push(offset);
-    controls.review.messageRequests.push({ snapshot, offset });
-    if (controls.review.messageError) throw new Error("Synthetic stale snapshot; refresh");
+    controls.review.messageRequests.push({ snapshot, offset, snapshotId });
+    if (controls.review.messageError || snapshotId !== (controls.review.snapshotId ?? "fixture-1"))
+      throw new Error("Synthetic stale snapshot; refresh");
     return { schemaVersion: 1, success: true, code: "ok", message: "", warnings: [], data: { diagnostics,
       nextOffset: offset === 0 ? 50 : null,
       messages: controls.review.messageFixtures?.[offset] ?? (offset === 0 ? [

@@ -62,10 +62,12 @@ requests without a stable session ID are never replayed. Once a session is
 bound to a provider, subsequent turns keep that provider; a disabled or
 changed bound provider fails closed. Bindings are bounded in memory and are not
 restored after an application restart.
+When the binding registry is full, a new identified session is rejected before
+contacting upstream; existing bound sessions continue normally.
 
 ## Verification
 
-- 442 Rust unit tests passed; 4 tests remain ignored, including live-auth
+- 443 Rust unit tests passed; 4 tests remain ignored, including live-auth
   checks.
 - 9 local workflow integration tests passed.
 - npm run build passed.

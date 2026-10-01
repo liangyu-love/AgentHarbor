@@ -1,7 +1,7 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-async fn mock(
+pub(super) async fn mock(
     status: u16,
     body: &'static str,
     content_type: &'static str,
@@ -57,8 +57,8 @@ async fn mock(
     (url, count, requests, task)
 }
 
-const RESPONSE: &str = r#"{"id":"response-test","object":"response","status":"completed","model":"gpt-6-astra","output":[],"usage":{"input_tokens":1,"output_tokens":1}}"#;
-fn persist(paths: &CodexPaths, store: &router::Store) {
+pub(super) const RESPONSE: &str = r#"{"id":"response-test","object":"response","status":"completed","model":"gpt-6-astra","output":[],"usage":{"input_tokens":1,"output_tokens":1}}"#;
+pub(super) fn persist(paths: &CodexPaths, store: &router::Store) {
     std::fs::create_dir_all(&paths.app_data_dir).unwrap();
     crate::core::secret_file::write(
         &paths.app_data_dir.join("newapi-providers.dat"),
@@ -94,9 +94,21 @@ fn failover_is_opt_in_bounded_and_keeps_followups_on_the_actual_channel() {
         let mut tools=body.clone();tools["tools"]=json!([{"type":"function","name":"execute"}]);
         let response=send("tool-first",tools).await.unwrap();assert_eq!(response.status(),429);response.bytes().await.unwrap();
         assert_eq!(b.load(Ordering::SeqCst),2);
-        store.providers[1].enabled=false;persist(&paths,&store);
+        // The requested model still names A after failover, but only B's
+        // availability may decide whether this conversation can continue.
+        store.providers[0].enabled=false;persist(&paths,&store);
+        let response=send("new-turn",body.clone()).await.unwrap();assert_eq!(response.status(),200);response.bytes().await.unwrap();
+        assert_eq!(a.load(Ordering::SeqCst),3);assert_eq!(b.load(Ordering::SeqCst),3);
+        store.providers.remove(0);persist(&paths,&store);
+        let response=send("new-turn",body.clone()).await.unwrap();assert_eq!(response.status(),200);response.bytes().await.unwrap();
+        assert_eq!(a.load(Ordering::SeqCst),3);assert_eq!(b.load(Ordering::SeqCst),4);
+        // A binding must not bypass a direct route's namespace validation.
+        let response=client.post(format!("http://127.0.0.1:{port}/p/b/v1/responses"))
+            .bearer_auth("local-only").header("session_id","new-turn").json(&body).send().await.unwrap();
+        assert_eq!(response.status(),400);assert_eq!(b.load(Ordering::SeqCst),4);
+        store.providers[0].enabled=false;persist(&paths,&store);
         let response=send("new-turn",body.clone()).await.unwrap();assert_eq!(response.status(),503);
-        assert_eq!(a.load(Ordering::SeqCst),3);assert_eq!(b.load(Ordering::SeqCst),2);
+        assert_eq!(a.load(Ordering::SeqCst),3);assert_eq!(b.load(Ordering::SeqCst),4);
         let traces=super::super::route_trace::recent();
         let route=traces.iter().find(|r| r.attempts.len()==2 && r.requested_model=="a::gpt-6-astra").unwrap();
         assert_eq!(route.attempts[0].status,Some(429));assert_eq!(route.attempts[1].provider_id,"b");

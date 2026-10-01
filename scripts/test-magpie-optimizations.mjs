@@ -30,6 +30,24 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   await catalog.getByRole("textbox").fill("kiro");
   await catalog.locator("summary").waitFor();
   if (captureDir) { await routes.scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(captureDir, "routing-diagnostics.png"), fullPage: true }); }
+  for (const dark of [false, true]) {
+    await page.evaluate(dark => {
+      document.documentElement.classList.toggle("dark", dark);
+      document.documentElement.setAttribute("data-has-custom-bg", "true");
+    }, dark);
+    // These panels animate their surface color; inspect the settled wallpaper
+    // surface rather than the first frame of the transition.
+    await page.waitForFunction(() => [...document.querySelectorAll(
+      'section[aria-label="请求级路由诊断"], section[aria-label="模型能力目录与匹配预览"]',
+    )].every(element => /, 0\.82\)$/.test(getComputedStyle(element).backgroundColor)));
+    for (const panel of [routes, catalog]) {
+      const surfaces = await panel.evaluate(element => [element, ...element.querySelectorAll("details")]
+        .map(surface => getComputedStyle(surface).backgroundColor));
+      assert.ok(surfaces.every(color => /, 0\.82\)$/.test(color)),
+        `Wallpaper surfaces retain their alpha in ${dark ? "dark" : "light"} mode: ${surfaces}`);
+    }
+  }
+  await page.evaluate(() => document.documentElement.removeAttribute("data-has-custom-bg"));
   await page.setViewportSize({ width: 390, height: 844 });
   await page.evaluate(() => document.documentElement.classList.add("dark"));
   await routes.scrollIntoViewIfNeeded();

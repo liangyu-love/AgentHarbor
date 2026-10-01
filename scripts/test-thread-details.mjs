@@ -54,6 +54,18 @@ export async function testThreadDetails({ page, reset, captureDir }) {
   await panel.getByText("合成的用户问题", { exact: true }).waitFor();
   await panel.getByText("记录诊断（点击查看）", { exact: true }).first().click();
   await panel.getByText(/2 条记录包含不展示的加密载荷/).first().waitFor();
+  // Same-size edits still invalidate the snapshot token. Retry must get a new
+  // detail snapshot and return to page one instead of repeating the old token.
+  await page.evaluate(() => { window.review.snapshotId = "fixture-2"; });
+  await panel.getByRole("button", { name: "下一页", exact: true }).click();
+  await panel.getByRole("alert").getByText("Synthetic stale snapshot; refresh", { exact: true }).waitFor();
+  const detailCalls = await page.evaluate(() => window.review.detailCalls);
+  await panel.getByRole("button", { name: "重试", exact: true }).click();
+  await panel.getByText("合成的用户问题", { exact: true }).waitFor();
+  assert.equal(await panel.getByRole("alert").count(), 0);
+  assert.ok(await page.evaluate(() => window.review.detailCalls) > detailCalls);
+  assert.deepEqual(await page.evaluate(() => window.review.messageRequests.at(-1)),
+    { snapshot: 12345, offset: 0, snapshotId: "fixture-2" });
   await page.keyboard.press("Escape");
   await panel.waitFor({ state: "hidden" });
   assert.equal(await trigger.evaluate(element => element === document.activeElement), true, "Escape restores invoking title focus");

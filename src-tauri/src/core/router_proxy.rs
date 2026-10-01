@@ -480,27 +480,16 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         body.as_deref(),
     );
     let result = async {
-        let mut destination = resolve_destination(
-            &store,
-            &segments,
-            required_protocol,
-            requested_model.as_deref(),
-        )?;
-        if one_m_context
-            && !matches!(
-                &destination,
-                Destination::Provider {
-                    upstream_protocol: router::ModelProtocol::AnthropicMessages,
-                    ..
-                }
-            )
-        {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "1M context requires an Anthropic Messages provider",
-            ));
-        }
-        let affinity_key = matches!(&destination, Destination::Provider { .. })
+        // Identify provider routes without consulting the original channel's
+        // availability: an existing session may already have switched away.
+        let provider_route = match segments.as_slice() {
+            ["codex", "v1", ..] => requested_model
+                .as_deref()
+                .is_some_and(|m| m.contains("::")),
+            ["p", _, "v1", ..] | ["v1", ..] => true,
+            _ => false,
+        };
+        let affinity_key = provider_route
             .then(|| {
                 failover::key(
                     &context.store_path,
@@ -515,27 +504,26 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             None
         };
         let binding = affinity_key.as_deref().and_then(failover::bound);
-        if let (
-            Some(binding),
-            Destination::Provider {
-                provider,
-                model_override,
-                ..
-            },
-        ) = (&binding, &destination)
+        let mut destination = resolve_destination(
+            &store,
+            &segments,
+            required_protocol,
+            requested_model.as_deref(),
+            binding.as_ref(),
+        )?;
+        if one_m_context
+            && !matches!(
+                &destination,
+                Destination::Provider {
+                    upstream_protocol: router::ModelProtocol::AnthropicMessages,
+                    ..
+                }
+            )
         {
-            let model = model_override
-                .clone()
-                .unwrap_or_else(|| provider.model.clone());
-            // A disabled/deleted bound channel fails closed instead of moving a tool turn.
-            destination =
-                provider_destination(&store, &binding.provider_id, required_protocol, Some(model))?;
-            if !failover::agrees(binding, &destination) {
-                return Err((
-                    StatusCode::CONFLICT,
-                    "conversation channel changed; start a new conversation",
-                ));
-            }
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "1M context requires an Anthropic Messages provider",
+            ));
         }
         let stateless = store.router.same_model_failover
             && binding.is_none()
@@ -555,6 +543,12 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             && affinity_key
                 .as_deref()
                 .is_some_and(|key| failover::bind(key, &destination));
+        if store.router.same_model_failover && affinity_key.is_some() && !reserved {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                "conversation routing capacity reached; disable failover or restart the application",
+            ));
+        }
         let can_retry = store.router.same_model_failover
             && binding.is_none()
             && reserved
@@ -794,13 +788,36 @@ fn resolve_destination(
     segments: &[&str],
     required_protocol: Option<router::ModelProtocol>,
     requested_model: Option<&str>,
+    binding: Option<&failover::Binding>,
 ) -> ForwardResult<Destination> {
     let prefixed_model = requested_model.and_then(|model| model.split_once("::"));
+    let select_provider = |id: &str, protocol, model: Option<String>| {
+        if let Some(binding) = binding {
+            // Validate only the actual channel. Path/model namespace checks
+            // below still apply before reaching this selection.
+            let destination = provider_destination(
+                store,
+                &binding.provider_id,
+                protocol,
+                Some(binding.model.clone()),
+            )?;
+            if model.as_deref().is_some_and(|m| m != binding.model)
+                || !failover::agrees(binding, &destination)
+            {
+                return Err((
+                    StatusCode::CONFLICT,
+                    "conversation channel changed; start a new conversation",
+                ));
+            }
+            Ok(destination)
+        } else {
+            provider_destination(store, id, protocol, model)
+        }
+    };
     Ok(match segments {
         // Codex protocol: model slug `<provider id>::<model>` decides the route.
         ["codex", "v1", ..] => match prefixed_model {
-            Some((provider_id, model_id)) => provider_destination(
-                store,
+            Some((provider_id, model_id)) => select_provider(
                 provider_id,
                 Some(router::ModelProtocol::Responses),
                 Some(model_id.to_owned()),
@@ -820,15 +837,20 @@ fn resolve_destination(
                 }
                 None => requested_model.map(str::to_owned),
             };
-            provider_destination(store, id, required_protocol, model_override)?
+            select_provider(id, required_protocol, model_override)?
         }
         ["v1", ..] => {
             if let Some((provider_id, model_id)) = prefixed_model {
-                provider_destination(
-                    store,
+                select_provider(
                     provider_id,
                     required_protocol,
                     Some(model_id.to_owned()),
+                )?
+            } else if let Some(binding) = binding {
+                select_provider(
+                    &binding.provider_id,
+                    required_protocol,
+                    requested_model.map(str::to_owned),
                 )?
             } else {
                 // The explicit model may override the pinned provider's default
@@ -850,8 +872,7 @@ fn resolve_destination(
                     None => router::effective_active(store),
                 });
                 match provider {
-                    Some(provider) => provider_destination(
-                        store,
+                    Some(provider) => select_provider(
                         &provider.id,
                         required_protocol,
                         requested_model.map(str::to_owned),
@@ -1738,7 +1759,7 @@ mod tests {
             let required = request_protocol(&segments);
             assert_eq!(required, Some(router::ModelProtocol::Responses));
             let destination =
-                resolve_destination(&store, &segments, required, Some("chat::model")).unwrap();
+                resolve_destination(&store, &segments, required, Some("chat::model"), None).unwrap();
             assert_eq!(
                 upstream_suffix(&segments, &destination, required)
                     .unwrap_err()
@@ -1850,7 +1871,7 @@ mod tests {
             let segments: Vec<_> = path.split('/').collect();
             let required = request_protocol(&segments);
             let destination =
-                resolve_destination(&store, &segments, required, Some("official-model")).unwrap();
+                resolve_destination(&store, &segments, required, Some("official-model"), None).unwrap();
             assert!(matches!(destination, Destination::Official));
             assert_eq!(
                 upstream_suffix(&segments, &destination, required).unwrap(),

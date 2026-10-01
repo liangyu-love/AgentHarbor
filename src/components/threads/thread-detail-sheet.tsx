@@ -753,6 +753,21 @@ export function ThreadDetailSheet({
 
   const rawMessages = messageQuery.data?.data.messages ?? EMPTY_MESSAGES;
 
+  const refreshDetails = async () => {
+    const refreshed = await detailQuery.refetch();
+    if (refreshed.isError || !refreshed.data) return;
+    setOffset(0);
+    // A new snapshot/page key fetches automatically. Retry the current query
+    // explicitly only when both remain unchanged (e.g. a transient read error).
+    if (
+      tab === "conversation" && offset === 0
+      && refreshed.data.data.snapshotBytes === detail?.snapshotBytes
+      && refreshed.data.data.snapshotId === detail?.snapshotId
+    ) {
+      await messageQuery.refetch();
+    }
+  };
+
   // A message counts as a "tool" message only for the two tool roles; reasoning
   // and compaction summaries are their own bucket. The filter buttons and their
   // counts both read from these predicates, so the label can never disagree
@@ -1117,7 +1132,8 @@ export function ThreadDetailSheet({
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => void messageQuery.refetch()}
+                          disabled={detailQuery.isFetching || messageQuery.isFetching}
+                          onClick={() => void refreshDetails()}
                         >
                           {t("threads.retry")}
                         </Button>
@@ -1129,7 +1145,7 @@ export function ThreadDetailSheet({
                             <div className="space-y-3">
                               {filteredMessages.map(({ message, index }) => (
                                 <MessageItem
-                                  key={`${detail.snapshotBytes}-${offset}-${index}`}
+                                  key={`${detail.snapshotId ?? detail.snapshotBytes}-${offset}-${index}`}
                                   message={message}
                                 />
                               ))}
@@ -1213,15 +1229,7 @@ export function ThreadDetailSheet({
                   className="h-8 w-8 rounded-xl text-muted-foreground hover:bg-muted hover:text-foreground active:scale-95"
                   disabled={!available || detailQuery.isFetching}
                   aria-label={t("threads.details.refresh")}
-                  onClick={() => {
-                    // Reset to page 1 and refetch unconditionally. Testing
-                    // `offset === 0` here read the *pre-reset* value, so
-                    // refreshing from page 3 left the old page's messages on
-                    // screen while the indicator claimed page 1.
-                    setOffset(0);
-                    void detailQuery.refetch();
-                    if (tab === "conversation") void messageQuery.refetch();
-                  }}
+                  onClick={() => void refreshDetails()}
                 >
                   <RefreshCw
                     className={cn(

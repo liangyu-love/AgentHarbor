@@ -64,7 +64,7 @@ export function RoutingDiagnostics({
 
   return (
     <section
-      className="rounded-2xl border border-border/70 bg-gradient-to-b from-card/95 via-card/85 to-card/65 p-4.5 backdrop-blur-md shadow-xs transition-all"
+      className="rounded-2xl border border-border/70 bg-card p-4.5 backdrop-blur-md shadow-xs transition-all"
       aria-label={t("newapi.routeDiagnostics")}
     >
       {/* Header bar */}
@@ -153,7 +153,7 @@ export function RoutingDiagnostics({
               return (
                 <details
                   key={route.id}
-                  className="group rounded-xl border border-border/70 bg-card/75 p-3.5 shadow-2xs transition-all hover:border-primary/40"
+                  className="group rounded-xl border border-border/70 bg-card p-3.5 shadow-2xs transition-all hover:border-primary/40"
                 >
                   <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-2.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-lg py-0.5">
                     <div className="flex flex-wrap items-center gap-2">
