@@ -434,6 +434,10 @@
     "capabilityPricePerMillion": "USD / million tokens",
     "capabilityPriceIncomplete": "Conditional pricing; billed by the actual tier",
     "capabilityCompression": "Auto compact",
+    "capabilityCompressionThreshold": "Threshold {{value}}",
+    "capabilityCompressionAppliedNow": "Applied",
+    "capabilityCompressionPendingSync": "Pending sync",
+    "capabilityCompressionSyncUnknown": "Not checked",
     "capabilityCompressionApplied": "Applied threshold",
     "capabilityCompressionPending": "Suggested threshold",
     "capabilityCompressionHint": "Budget {{budget}} ({{source}})",
@@ -465,6 +469,7 @@
       "unmatched": "Unmatched"
     },
     "capabilityEmpty": "No matching configured models.",
+    "catalogEmpty": "The model catalog is empty (missing bundled snapshot or a corrupted cache); capability resolution falls back to the shared default. Try refreshing the catalog.",
     "capabilityCount": "{{shown}} / {{total}} models",
     "tokenUnit": "Token",
     "compression": {
@@ -487,6 +492,8 @@
       "title": "Capability catalog mapping",
       "description": "Point this relay at models.dev providers to match their catalog exactly. Without a mapping only generic references are used, and disagreeing fields are never filled in.",
       "placeholder": "e.g. anthropic, openai, deepseek",
+      "modelLevel": "Model catalog mapping",
+      "modelPlaceholder": "provider/model (optional)",
       "add": "Add mapping",
       "priceTitle": "Price catalog binding (optional)",
       "priceHint": "Prices always stay scoped to the billing provider; they are never averaged across providers."
@@ -668,6 +675,7 @@
     "weekUsage": "This week",
     "allUsage": "All time",
     "costToday": "Estimated cost today",
+    "costWeek": "Estimated cost, last 7 days",
     "costAllTime": "Estimated total cost",
     "costEstimate": "Estimated cost",
     "costEstimatedHint": "Estimated with the model price fixed when each request started; subscription plans or relay billing can differ and this is not an invoice.",

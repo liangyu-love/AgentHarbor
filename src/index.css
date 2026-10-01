@@ -1248,13 +1248,14 @@ body {
 .usage-donut-center strong { margin-top: 0.2rem; font-size: clamp(1rem, 1.5vw, 1.35rem); font-weight: 730; font-variant-numeric: tabular-nums; letter-spacing: -0.04em; }
 .usage-donut-center small { color: hsl(var(--muted-foreground)); font-size: 0.68rem; }
 .usage-model-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.4rem; }
-.usage-model-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 0.55rem; padding: 0.6rem 0.7rem; border: 1px solid hsl(var(--border) / 0.6); border-radius: 0.65rem; background: hsl(var(--background) / 0.32); font-size: 0.72rem; transition: border-color 170ms ease, transform 170ms ease, background-color 170ms ease; }
+.usage-model-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto auto; align-items: center; gap: 0.55rem; padding: 0.6rem 0.7rem; border: 1px solid hsl(var(--border) / 0.6); border-radius: 0.65rem; background: hsl(var(--background) / 0.32); font-size: 0.72rem; transition: border-color 170ms ease, transform 170ms ease, background-color 170ms ease; }
 .usage-model-row:hover, .usage-model-row.is-active { transform: translateY(-2px); border-color: var(--model-color); background: hsl(var(--background) / 0.72); }
 .usage-model-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .usage-model-row strong { font-variant-numeric: tabular-nums; }
 .usage-model-row em, .usage-model-detail-row em { color: var(--model-color); font-size: 0.7rem; font-style: normal; font-weight: 700; }
 .usage-model-detail-list { max-height: 26rem; overflow: auto; padding: 0.7rem 1.15rem; }
-.usage-model-detail-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 0.7rem; padding: 0.55rem; border-bottom: 1px solid hsl(var(--border) / 0.55); }
+.usage-model-detail-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto auto; align-items: center; gap: 0.7rem; padding: 0.55rem; border-bottom: 1px solid hsl(var(--border) / 0.55); }
+.usage-model-cost { color: hsl(var(--muted-foreground)); font-size: 0.68rem; font-variant-numeric: tabular-nums; }
 .usage-model-detail-row > div { display: flex; min-width: 0; flex-direction: column; }
 .usage-model-detail-row strong, .usage-model-detail-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .usage-model-detail-row strong { font-size: 0.75rem; }

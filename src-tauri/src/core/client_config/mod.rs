@@ -1,5 +1,6 @@
 //! Client-specific config adapters share one reversible file transaction boundary.
-//! This module depends on provider data, never on Codex paths, accounts or processes.
+//! This module depends on provider data and the models.dev catalog (read from the
+//! app data directory), never on Codex paths, accounts or processes.
 mod claude;
 mod opencode;
 mod options;

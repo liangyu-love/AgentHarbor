@@ -33,6 +33,11 @@ pub struct Preview {
     pub price: PriceInfo,
     /// Effective values the client projection uses, including compression.
     pub projection: model_policy::ClientProjection,
+    /// Whether the threshold in the projection is the one currently applied to
+    /// a client. `Some(false)` means it still needs a config sync.
+    pub compression_applied: Option<bool>,
+    /// catalog | config | none
+    pub compression_applied_source: String,
 }
 
 #[derive(Serialize)]
@@ -52,6 +57,12 @@ pub fn preview(paths: &CodexPaths, store: &router::Store) -> CatalogView {
     let models_dev = models_dev::load(&paths.app_data_dir);
     let global_compression = store.global_compression();
     let now = chrono::Utc::now().timestamp();
+    // Applied state: the written router catalog for relay entries, and the
+    // native configuration when that mode owns Codex. Both are read-only.
+    let applied_thresholds = router::applied_catalog_thresholds(paths);
+    let native_applied = (store.codex_access_mode == router::CodexAccessMode::Native)
+        .then(|| router::native_config_is_applied(paths, store))
+        .flatten();
     let mut models = Vec::new();
     for provider in &store.providers {
         let mut ids: Vec<&str> = provider.models.iter().map(|m| m.id.as_str()).collect();
@@ -73,6 +84,20 @@ pub fn preview(paths: &CodexPaths, store: &router::Store) -> CatalogView {
                 .as_ref()
                 .map(|reference| format!("{}/{}", reference.provider_id, reference.model_id))
                 .unwrap_or_else(|| model_defaults::model_key(id));
+            let (compression_applied, applied_source) = match native_applied {
+                Some(applied) => {
+                    let source = if applied { "config" } else { "none" };
+                    (Some(applied), source.to_owned())
+                }
+                None => match &applied_thresholds {
+                    Some(thresholds) => {
+                        let slug = format!("{}::{id}", provider.id);
+                        let applied = thresholds.get(&slug) == projection.compression.threshold.as_ref();
+                        (Some(applied), "catalog".to_owned())
+                    }
+                    None => (None, "none".to_owned()),
+                },
+            };
             models.push(Preview {
                 provider_id: provider.id.clone(),
                 provider_name: provider.name.clone(),
@@ -93,6 +118,8 @@ pub fn preview(paths: &CodexPaths, store: &router::Store) -> CatalogView {
                 output: metadata.output_limit.clone(),
                 price: metadata.price.clone(),
                 projection,
+                compression_applied,
+                compression_applied_source: applied_source,
             });
         }
     }
@@ -174,6 +201,33 @@ mod tests {
         assert_eq!(row.projection.context_source, "fallback");
         assert_eq!(row.projection.context_window, 128_000);
         assert_eq!(row.projection.compression.threshold, Some(115_200));
+    }
+
+    #[test]
+    fn compression_applied_state_separates_pending_from_applied() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().to_path_buf());
+        let mut provider = provider("relay", "gpt-5.2");
+        provider.context_window = Some(200_000);
+        let store = router::Store {
+            providers: vec![provider],
+            ..Default::default()
+        };
+        // No catalog written yet: the state is unknown, not "pending".
+        let view = preview(&paths, &store);
+        assert_eq!(view.models[0].compression_applied, None);
+
+        // Writing the catalog marks the derived threshold as applied.
+        router::write_catalog(&paths, &store).unwrap();
+        let view = preview(&paths, &store);
+        assert_eq!(view.models[0].compression_applied, Some(true));
+        assert_eq!(view.models[0].compression_applied_source, "catalog");
+
+        // A policy change makes the written threshold stale until a sync.
+        let mut changed = store.clone();
+        changed.providers[0].compression = model_policy::CompressionPolicy::percent(50);
+        let view = preview(&paths, &changed);
+        assert_eq!(view.models[0].compression_applied, Some(false));
     }
 
     #[test]

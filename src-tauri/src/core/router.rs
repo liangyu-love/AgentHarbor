@@ -952,6 +952,21 @@ fn validate_input(input: &mut ProviderInput) -> Result<(), String> {
     Ok(())
 }
 
+/// Trim and bound a `{provider, model}` catalog reference; invalid input is
+/// dropped rather than failing the whole save (the reference is advisory).
+fn sanitized_ref(reference: Option<models_dev::ModelRef>) -> Option<models_dev::ModelRef> {
+    let reference = reference?;
+    let provider_id = reference.provider_id.trim().to_lowercase();
+    let model_id = reference.model_id.trim().to_owned();
+    let valid = |value: &str, max: usize| {
+        !value.is_empty() && value.len() <= max && !value.chars().any(char::is_control)
+    };
+    (valid(&provider_id, 64) && valid(&model_id, 256)).then_some(models_dev::ModelRef {
+        provider_id,
+        model_id,
+    })
+}
+
 fn normalize_models(
     models: &mut Vec<newapi::Model>,
     default_model: &str,
@@ -1032,6 +1047,10 @@ fn normalize_models(
         ) {
             model.metadata_source = "manual".into();
         }
+        // Catalog bindings are advisory references; impossible values are
+        // dropped instead of failing the whole save.
+        model.catalog_ref = sanitized_ref(model.catalog_ref.take());
+        model.price_ref = sanitized_ref(model.price_ref.take());
         if model.compression.validate().is_err() {
             return Err("newapi.errors.context".into());
         }
@@ -2027,10 +2046,18 @@ pub(super) fn resolve_model_metadata(
     models_dev: &models_dev::Catalog,
 ) -> model_metadata::ResolvedMetadata {
     let saved = provider.models.iter().find(|model| model.id == model_id);
+    // Prices are scoped to the billing provider: an explicit price binding
+    // wins over the capability mapping, so borrowing a vendor's capability
+    // never implies borrowing its price.
+    let price_scope: Vec<String> = match provider.price_catalog_provider.as_deref() {
+        Some(binding) if !binding.trim().is_empty() => vec![binding.trim().to_lowercase()],
+        _ => provider.catalog_providers.clone(),
+    };
     let request = model_metadata::ResolutionRequest {
         raw_model_id: model_id,
         display_name: saved.map(|model| model.display_name.as_str()).unwrap_or(""),
         catalog_providers: &provider.catalog_providers,
+        price_providers: &price_scope,
         explicit_ref: saved.and_then(|model| model.catalog_ref.as_ref()),
         price_ref: saved.and_then(|model| model.price_ref.as_ref()),
         user: saved.map(newapi::Model::user_values).unwrap_or_default(),
@@ -2134,6 +2161,31 @@ pub(crate) fn pricing_for_app_data(
 ) -> relay_usage::PricingSnapshot {
     let catalog = models_dev::load(app_data_dir);
     pricing_for(provider, model_id, &catalog)
+}
+
+/// Whether the native Codex configuration still matches what we would apply.
+/// Read-only; used by the capability preview to separate "pending" from
+/// "applied" thresholds.
+pub(crate) fn native_config_is_applied(paths: &CodexPaths, store: &Store) -> Option<bool> {
+    native_config::intact(paths, store).ok()
+}
+
+/// Auto-compact thresholds recorded in the currently written router catalog,
+/// keyed by model slug (`provider::model`). `None` when no catalog is on disk.
+pub(crate) fn applied_catalog_thresholds(paths: &CodexPaths) -> Option<HashMap<String, u64>> {
+    let bytes = std::fs::read(catalog_path(paths)).ok()?;
+    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    let models = value.get("models")?.as_array()?;
+    let mut thresholds = HashMap::new();
+    for entry in models {
+        let Some(slug) = entry.get("slug").and_then(Value::as_str) else {
+            continue;
+        };
+        if let Some(limit) = entry.get("auto_compact_token_limit").and_then(Value::as_u64) {
+            thresholds.insert(slug.to_owned(), limit);
+        }
+    }
+    Some(thresholds)
 }
 
 /// The one projection every consumer reads: the router catalog, the native
@@ -2648,6 +2700,26 @@ mod tests {
             compression: None,
             network_mode: "proxy".into(),
         }
+    }
+
+    #[test]
+    fn catalog_references_are_normalized_or_dropped() {
+        let normalized = sanitized_ref(Some(models_dev::ModelRef {
+            provider_id: " Anthropic ".into(),
+            model_id: " claude-opus-4-5 ".into(),
+        }))
+        .unwrap();
+        assert_eq!(normalized.provider_id, "anthropic");
+        assert_eq!(normalized.model_id, "claude-opus-4-5");
+        for invalid in [
+            models_dev::ModelRef { provider_id: String::new(), model_id: "x".into() },
+            models_dev::ModelRef { provider_id: "p".into(), model_id: String::new() },
+            models_dev::ModelRef { provider_id: "p".into(), model_id: "x".repeat(300) },
+            models_dev::ModelRef { provider_id: "p".into(), model_id: "bad\nmodel".into() },
+        ] {
+            assert!(sanitized_ref(Some(invalid)).is_none());
+        }
+        assert!(sanitized_ref(None).is_none());
     }
 
     #[test]

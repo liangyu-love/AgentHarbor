@@ -58,8 +58,23 @@ catalog refresh; percentages are recomputed.
 ## HTTP APIs
 
 ```text
-GET /api.json   5.3 MB, 225 providers, 8339 models (observed 2026-10-01)
+GET /api.json   5.28 MB, 225 providers, 8339 models (measured 2026-10-01)
 ```
+
+Field coverage measured on the real document before implementation:
+
+| Field | Coverage | Use |
+| --- | --- | --- |
+| `limit.context` / `limit.output` | 8339 / 8339 (100%) | Effective window and output cap. |
+| `limit.input` | 1441 (17%) | Preferred compression budget when present. |
+| `reasoning_options` | 6148 (74%) — effort 3829, toggle 1384, budget_tokens 598 | Reasoning levels and raw capabilities. |
+| `cost` | 7915 (95%) — `cache_read` 5368, `cache_write` 1790, `reasoning` 152, `tiers` 614, `context_over_200k` 519 | Estimated pricing. |
+| `modalities` | 8339 (100%) | Input/output modality list. |
+| `canonical_model_id` | 5274 (63%) | Kept for reference; identity matching does not depend on it. |
+| `status` | 324 | Deprecation marker, shown in the catalog view. |
+
+`budget_tokens.min` uses `-1` upstream for "unset"; the snapshot drops it and
+the deserializer treats non-positive values as missing.
 
 The snapshot keeps limits, reasoning options, the full cost structure
 (including tiers and `context_over_200k`), modalities, status, dates and

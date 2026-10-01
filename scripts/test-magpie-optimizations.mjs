@@ -25,6 +25,9 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   assert.match(await catalog.innerText(), /继续使用上一份有效目录/);
   assert.match(await catalog.innerText(), /1,000,000/);
   assert.match(await catalog.innerText(), /内置模型规则/);
+  // The applied state distinguishes what clients already use from a pending sync.
+  assert.match(await catalog.innerText(), /已生效/);
+  assert.match(await catalog.innerText(), /阈值 900,000/);
   await catalog.getByRole("textbox").fill("absent-model");
   await catalog.getByText("没有匹配的已配置模型。", { exact: true }).waitFor();
   await catalog.getByRole("textbox").fill("kiro");

@@ -25,10 +25,30 @@ interface Props {
 export function ProviderModelEditor({ models, providerName, protocol, defaultModel, disabled, fetching, fetchError, onFetch, onModelsChange, onDefaultModelChange }: Props) {
   const { t } = useTranslation();
   const [newModel, setNewModel] = useState("");
+  // Drafts keep a half-typed catalog reference visible until it is complete.
+  const [mappingDrafts, setMappingDrafts] = useState<Record<string, string>>({});
   const selected = models.filter(model => model.included).length;
 
   const patch = (id: string, change: Partial<NewApiModel>) => {
     onModelsChange(models.map(model => model.id === id ? { ...model, ...change } : model));
+  };
+  const commitMapping = (id: string, text: string) => {
+    const value = text.trim();
+    const reference = (() => {
+      if (!value) return null;
+      const [providerId, ...rest] = value.split("/");
+      const modelId = rest.join("/");
+      if (!providerId || !modelId) return undefined;
+      return { providerId: providerId.toLowerCase(), modelId };
+    })();
+    setMappingDrafts(current => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+    // `undefined` is an incomplete reference: keep the stored value as is.
+    if (reference === undefined) return;
+    patch(id, { catalogRef: reference });
   };
   const setIncluded = (model: NewApiModel, included: boolean) => {
     patch(model.id, { included });
@@ -175,6 +195,25 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
                         {t("clients.limitsAuto")}
                       </button>
                     )}
+                    {/* Per-model catalog reference; empty follows the provider mapping. */}
+                    <input
+                      type="text"
+                      spellCheck={false}
+                      autoComplete="off"
+                      disabled={disabled}
+                      aria-label={t("newapi.catalogMapping.modelLevel")}
+                      placeholder={t("newapi.catalogMapping.modelPlaceholder")}
+                      className="h-7 w-full rounded-md border border-border/70 bg-background px-1 text-[10px] text-muted-foreground"
+                      value={mappingDrafts[model.id] ?? (model.catalogRef ? `${model.catalogRef.providerId}/${model.catalogRef.modelId}` : "")}
+                      onChange={event => {
+                        const text = event.target.value;
+                        setMappingDrafts(current => ({ ...current, [model.id]: text }));
+                        // Empty clears immediately; a complete reference commits as typed.
+                        if (!text.trim()) commitMapping(model.id, "");
+                        else if (text.includes("/")) commitMapping(model.id, text);
+                      }}
+                      onBlur={event => commitMapping(model.id, event.target.value)}
+                    />
                     {/* Per-model compression policy; inherit follows the provider. */}
                     <div className="flex items-center gap-1">
                       <select

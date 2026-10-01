@@ -219,6 +219,10 @@ pub struct ResolutionRequest<'a> {
     /// models.dev provider IDs this configured provider maps to. Empty means
     /// only generic reference matching is available.
     pub catalog_providers: &'a [String],
+    /// Scope used for prices. Defaults to `catalog_providers`; a separate
+    /// binding keeps prices tied to the billing provider even when the
+    /// capability mapping points somewhere else.
+    pub price_providers: &'a [String],
     /// Explicit `{provider, model}` capability reference.
     pub explicit_ref: Option<&'a ModelRef>,
     /// Independent price binding; falls back to the capability match.
@@ -228,6 +232,16 @@ pub struct ResolutionRequest<'a> {
     pub provider_context: Option<u64>,
     pub official: Option<OfficialValues>,
     pub upstream: Option<UpstreamValues>,
+}
+
+impl ResolutionRequest<'_> {
+    fn price_scope(&self) -> &[String] {
+        if self.price_providers.is_empty() {
+            self.catalog_providers
+        } else {
+            self.price_providers
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Default)]
@@ -927,7 +941,6 @@ pub fn resolve(catalog: &Catalog, request: &ResolutionRequest<'_>) -> ResolvedMe
     result.price = resolve_price(
         catalog,
         request,
-        &matches,
         accepted_step,
         &accepted_value,
         &candidates,
@@ -958,7 +971,6 @@ fn pick_match_ref(matches: &[CatalogMatch<'_>]) -> ModelRef {
 fn resolve_price(
     catalog: &Catalog,
     request: &ResolutionRequest<'_>,
-    matches: &[CatalogMatch<'_>],
     accepted_step: &str,
     accepted_value: &str,
     candidates: &[Candidate],
@@ -990,41 +1002,64 @@ fn resolve_price(
             None => PriceInfo::unknown(Some("price binding no longer exists")),
         };
     }
-    if request.catalog_providers.is_empty() {
+    let scope = request.price_scope();
+    if scope.is_empty() {
         // Without a provider scope a generic price would cross vendor
         // boundaries; keep it unknown and say why.
         return PriceInfo::unknown(Some(
             "no capability catalog mapping; prices stay provider-scoped",
         ));
     }
-    // 3. The accepted match, when the accepted normalization is price-safe.
+    // 3. The accepted candidate inside the price scope, when the accepted
+    // normalization is price-safe. All matching entries must agree, otherwise
+    // the price is treated as ambiguous instead of picking one at random.
     if price_safe(accepted_step) {
-        if let Some(entry) = matches.iter().find(|entry| entry.model.cost.is_some()) {
-            return price_from_catalog(
-                entry.model.cost.as_ref(),
-                entry.model.last_updated.clone(),
-                Some(entry.model_ref()),
-                false,
-            );
+        if let Some(price) = scoped_price(catalog, scope, accepted_value) {
+            return price;
         }
     }
-    // 4. Keep searching other price-safe candidates for a priced entry.
-    for candidate in candidates {
-        if candidate.value == accepted_value || !price_safe(candidate.step) {
-            continue;
-        }
-        for entry in catalog.scoped(request.catalog_providers, &candidate.value) {
-            if entry.model.cost.is_some() {
-                return price_from_catalog(
-                    entry.model.cost.as_ref(),
-                    entry.model.last_updated.clone(),
-                    Some(entry.model_ref()),
-                    true,
-                );
-            }
+    // 4. Other price-safe candidates, keeping full-identity candidates first.
+    // This is the alias fallback the plan allows only inside one billing
+    // provider scope.
+    let mut ordered: Vec<&Candidate> = candidates
+        .iter()
+        .filter(|candidate| price_safe(candidate.step))
+        .filter(|candidate| candidate.value != accepted_value)
+        .collect();
+    ordered.sort_by_key(|candidate| candidate.value.len());
+    for candidate in ordered.into_iter().rev() {
+        if let Some(price) = scoped_price(catalog, scope, &candidate.value) {
+            return price;
         }
     }
     PriceInfo::unknown(Some("no price record for this provider and model"))
+}
+
+/// Price for one model ID inside the billing scope; `None` when nothing is
+/// priced or when the scope disagrees, so a conflict is never papered over.
+fn scoped_price(catalog: &Catalog, scope: &[String], model_id: &str) -> Option<PriceInfo> {
+    let matches = catalog.scoped(scope, model_id);
+    let mut priced = matches
+        .iter()
+        .filter_map(|entry| entry.model.cost.as_ref().map(|cost| (*entry, cost)));
+    let (first_entry, first_cost) = priced.next()?;
+    let first = (
+        first_cost.input,
+        first_cost.output,
+        first_cost.cache_read,
+        first_cost.cache_write,
+    );
+    if priced.any(|(_, cost)| {
+        (cost.input, cost.output, cost.cache_read, cost.cache_write) != first
+    }) {
+        return None;
+    }
+    Some(price_from_catalog(
+        Some(first_cost),
+        first_entry.model.last_updated.clone(),
+        Some(first_entry.model_ref()),
+        true,
+    ))
 }
 
 fn price_from_catalog(
@@ -1130,6 +1165,7 @@ mod tests {
             raw_model_id: raw,
             display_name: "",
             catalog_providers: &[],
+            price_providers: &[],
             explicit_ref: None,
             price_ref: None,
             user: UserValues::default(),
@@ -1326,6 +1362,57 @@ mod tests {
         // Capability still resolves through the tag-stripped candidate.
         assert_eq!(resolved.context_window.value, Some(200_000));
         // Price does not silently fall back to the base model's rates.
+        assert_eq!(resolved.price.source, source::UNKNOWN);
+        assert!(resolved.price.input.is_none());
+    }
+
+    #[test]
+    fn prices_stay_with_the_billing_provider_scope() {
+        let catalog = catalog();
+        // Capability from anthropic, price bound to the relay: the borrowed
+        // capability must not drag anthropic's price along.
+        let capability = ["anthropic".to_owned()];
+        let billing = ["relay".to_owned()];
+        let mut request = input_for("claude-opus-4-5");
+        request.catalog_providers = &capability;
+        request.price_providers = &billing;
+        let resolved = resolve(&catalog, &request);
+        assert_eq!(resolved.context_window.value, Some(200_000));
+        assert_eq!(resolved.context_window.source, source::CATALOG);
+        assert_eq!(resolved.price.input, Some(1.0), "relay price, not anthropic's 5");
+        assert_eq!(resolved.price.source, source::CATALOG_ALIAS);
+
+        // Without the binding the price follows the capability scope.
+        let mut request = input_for("claude-opus-4-5");
+        request.catalog_providers = &capability;
+        let resolved = resolve(&catalog, &request);
+        assert_eq!(resolved.price.input, Some(5.0));
+    }
+
+    #[test]
+    fn conflicting_prices_inside_one_scope_are_never_averaged() {
+        let bytes = serde_json::to_vec(&json!({
+            "schemaVersion": 1,
+            "sourceUrl": "https://models.dev/api.json",
+            "fetchedAt": 1_700_000_000,
+            "revision": "fixture",
+            "providers": [
+                {"id": "relay-a", "name": "A", "models": [
+                    {"id": "model-x", "name": "X", "limit": {"context": 1000, "output": 100}, "cost": {"input": 1.0, "output": 2.0}}
+                ]},
+                {"id": "relay-b", "name": "B", "models": [
+                    {"id": "model-x", "name": "X", "limit": {"context": 1000, "output": 100}, "cost": {"input": 9.0, "output": 2.0}}
+                ]}
+            ]
+        }))
+        .unwrap();
+        let catalog = Catalog::parse(&bytes, super::super::models_dev::Origin::Runtime).unwrap();
+        let scope = ["relay-a".to_owned(), "relay-b".to_owned()];
+        let mut request = input_for("model-x");
+        request.catalog_providers = &scope;
+        let resolved = resolve(&catalog, &request);
+        // Capability agrees, price does not: the price stays unknown.
+        assert_eq!(resolved.context_window.value, Some(1000));
         assert_eq!(resolved.price.source, source::UNKNOWN);
         assert!(resolved.price.input.is_none());
     }

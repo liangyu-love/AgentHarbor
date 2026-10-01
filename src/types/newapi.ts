@@ -226,6 +226,10 @@ export interface ModelCapability {
   output: ResolvedField<number>;
   price: PriceInfo;
   projection: ClientProjection;
+  /** Whether the projected threshold is the one clients currently use. */
+  compressionApplied: boolean | null;
+  /** catalog | config | none */
+  compressionAppliedSource: string;
 }
 export interface ModelsDevCatalogStatus {
   schemaVersion: number;

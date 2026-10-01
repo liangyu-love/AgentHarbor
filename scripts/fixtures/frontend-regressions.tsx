@@ -142,6 +142,7 @@ api.routing.capabilities = async () => ({ stale: true, error: "catalog_unavailab
       inputLimit: null, outputLimit: 128_000, outputSource: "catalog",
       reasoning: [{ effort: "low", description: "Low" }, { effort: "high", description: "High" }], reasoningSource: "catalog", defaultReasoning: "low",
       compression: { mode: "percent", percent: 90, tokens: null, source: "global", budget: 1_000_000, budgetSource: "local", threshold: 900_000, state: "computed", note: null } },
+    compressionApplied: true, compressionAppliedSource: "catalog",
   }] });
 api.routing.catalogStatus = async () => ({ schemaVersion: 1, sourceUrl: "https://models.dev/api.json", fetchedAt: 1_790_740_000,
   lastCheckedAt: 1_790_740_800, stale: true, origin: "runtime", revision: "abcdef", providers: 225, models: 8339, error: null }) as any;

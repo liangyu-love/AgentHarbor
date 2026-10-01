@@ -63,7 +63,7 @@ function number(value: number | null | undefined) {
   return value === null || value === undefined ? "—" : value.toLocaleString();
 }
 
-function CompressionLine({ plan }: { plan: CompressionPlan }) {
+function CompressionLine({ plan, applied }: { plan: CompressionPlan; applied: boolean | null }) {
   const { t } = useTranslation();
   const mode =
     plan.mode === "percent"
@@ -74,18 +74,36 @@ function CompressionLine({ plan }: { plan: CompressionPlan }) {
   const state =
     plan.state === "computed"
       ? plan.threshold !== null
-        ? `${t("newapi.capabilityCompressionApplied")} ${number(plan.threshold)}`
-        : t("newapi.capabilityCompressionPending")
+        ? t("newapi.capabilityCompressionThreshold", { value: number(plan.threshold) })
+        : t("newapi.capabilityCompressionUnknown")
       : plan.state === "clientDefault"
         ? t("newapi.capabilityCompressionClient")
         : plan.state === "invalid"
           ? t("newapi.capabilityCompressionInvalid")
           : t("newapi.capabilityCompressionUnknown");
+  const appliedLabel =
+    applied === true
+      ? t("newapi.capabilityCompressionAppliedNow")
+      : applied === false
+        ? t("newapi.capabilityCompressionPendingSync")
+        : t("newapi.capabilityCompressionSyncUnknown");
   return (
     <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
       <h4 className="flex items-center gap-1.5 font-bold text-foreground text-xs">
         <Gauge className="h-3.5 w-3.5 text-primary" />
         <span>{t("newapi.capabilityCompression")}</span>
+        {plan.threshold !== null && (
+          <span
+            className={cn(
+              "rounded px-1.5 py-0 text-[10px] font-semibold",
+              applied === true
+                ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+                : "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+            )}
+          >
+            {appliedLabel}
+          </span>
+        )}
       </h4>
       <p className="mt-1 font-mono text-xs font-semibold text-foreground">{state}</p>
       <p className="font-mono text-[10px] text-muted-foreground">
@@ -257,7 +275,7 @@ function CapabilityCard({ model }: { model: ModelCapability }) {
         </div>
 
         <div className="grid gap-3 lg:grid-cols-3">
-          <CompressionLine plan={projection.compression} />
+          <CompressionLine plan={projection.compression} applied={model.compressionApplied} />
           <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
             <h4 className="font-bold text-foreground text-xs">{t("newapi.capabilityMatch")}</h4>
             <p className="mt-1 font-mono text-[11px] text-foreground">
@@ -521,7 +539,11 @@ export function ModelCapabilities() {
 
           {!query.isLoading && !models.length && (
             <div className="rounded-xl border border-dashed border-border/70 p-8 text-center text-muted-foreground">
-              <p className="text-xs font-medium">{t("newapi.capabilityEmpty")}</p>
+              <p className="text-xs font-medium">
+                {query.data?.catalog.models === 0
+                  ? t("newapi.catalogEmpty")
+                  : t("newapi.capabilityEmpty")}
+              </p>
             </div>
           )}
         </div>

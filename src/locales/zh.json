@@ -434,6 +434,10 @@
     "capabilityPricePerMillion": "USD / 百万 token",
     "capabilityPriceIncomplete": "含条件价格，按实际档位计费",
     "capabilityCompression": "自动压缩",
+    "capabilityCompressionThreshold": "阈值 {{value}}",
+    "capabilityCompressionAppliedNow": "已生效",
+    "capabilityCompressionPendingSync": "待同步",
+    "capabilityCompressionSyncUnknown": "未检测",
     "capabilityCompressionApplied": "已应用阈值",
     "capabilityCompressionPending": "建议阈值",
     "capabilityCompressionHint": "预算 {{budget}}（{{source}}）",
@@ -465,6 +469,7 @@
       "unmatched": "未匹配"
     },
     "capabilityEmpty": "没有匹配的已配置模型。",
+    "catalogEmpty": "模型目录为空（内置快照缺失或缓存损坏）；能力解析只能使用通用兜底。请尝试刷新目录。",
     "capabilityCount": "{{shown}} / {{total}} 个模型",
     "tokenUnit": "Token",
     "compression": {
@@ -487,6 +492,8 @@
       "title": "能力目录映射",
       "description": "指定这条中转对应的 models.dev 供应商后，按该供应商的目录精确匹配；未指定时只使用通用参考，字段不一致时不自动填入。",
       "placeholder": "例如 anthropic、openai、deepseek",
+      "modelLevel": "模型目录映射",
+      "modelPlaceholder": "provider/model（可选）",
       "add": "添加映射",
       "priceTitle": "价格目录绑定（可选）",
       "priceHint": "价格始终按当前计费供应商匹配，不跨供应商取价。"
@@ -668,6 +675,7 @@
     "weekUsage": "本周 Token",
     "allUsage": "累计 Token",
     "costToday": "今日预估费用",
+    "costWeek": "近七日预估费用",
     "costAllTime": "累计预估费用",
     "costEstimate": "预估费用",
     "costEstimatedHint": "按请求开始时的模型价格估算；订阅套餐或中转实际扣费可能不同，不代表账单。",

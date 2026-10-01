@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
 import type { RelayUsagePayload, RelayUsageTotals } from "@/types";
 import type { NewApiState } from "@/types/newapi";
+import { formatCost, costLabel } from "@/lib/format-cost";
 import { queryKeys } from "@/lib/query-keys";
 import { formatInvokeError } from "@/lib/invoke-error";
 
@@ -22,23 +23,8 @@ function formatTokens(value: number) {
   return new Intl.NumberFormat(undefined, { notation: value >= 10_000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(value);
 }
 
-/** Estimated cost, keeping meaningful precision for very small amounts. */
-function formatCost(micros: number) {
-  const usd = micros / 1_000_000;
-  if (usd <= 0) return "$0";
-  if (usd < 0.01) return `$${usd.toFixed(4)}`;
-  if (usd < 1) return `$${usd.toFixed(3)}`;
-  return `$${usd.toFixed(2)}`;
-}
-
-function totalsCostLabel(
-  totals: RelayUsageTotals,
-  unpricedLabel: (count: number) => string,
-  unknown: string,
-) {
-  if (totals.pricedCount === 0) return unknown;
-  const label = formatCost(totals.costMicros);
-  return totals.unpricedCount > 0 ? `${label} · ${unpricedLabel(totals.unpricedCount)}` : label;
+function totalsCost(totals: RelayUsageTotals, unpricedLabel: (count: number) => string, unknown: string) {
+  return costLabel(totals.costMicros, totals.pricedCount, totals.unpricedCount, unpricedLabel, unknown);
 }
 
 function relayPath(points: Array<{ x: number; y: number }>) {
@@ -98,7 +84,9 @@ function RelayTrend({ relay }: { relay: RelayUsagePayload }) {
     <div className="usage-relay-day-details" aria-live="polite">
       <span><i className="usage-dot usage-dot-sky" />{t("accounts.inputShort")} <strong>{formatTokens(day.totals.inputTokens)}</strong></span>
       <span><i className="usage-dot usage-dot-orange" />{t("accounts.outputShort")} <strong>{formatTokens(day.totals.outputTokens)}</strong></span>
-      <span>{t("accounts.relayRequests", { count: day.totals.requestCount })}</span>
+      {day.totals.pricedCount > 0 && (
+        <span>{t("accounts.costEstimate")} <strong>{formatCost(day.totals.costMicros)}</strong></span>
+      )}
     </div>
   </div>;
 }
@@ -166,7 +154,7 @@ function ProviderQuota({ relay, onManageProviders }: { relay: RelayUsagePayload;
       const balance = provider?.balance;
       return <div key={item.providerId} className="usage-provider-row">
         <div className="min-w-0"><strong className="truncate" title={item.providerName}>{item.providerName}</strong><span>{t("accounts.relayRequests", { count: item.totals.requestCount })}</span></div>
-        <div><span>{t("accounts.totalShort")}</span><strong>{formatTokens(item.totals.totalTokens)}</strong><em className="usage-cost-line">{totalsCostLabel(item.totals, count => t("accounts.unpricedRequests", { count }), t("accounts.costUnavailable"))}</em></div>
+        <div><span>{t("accounts.totalShort")}</span><strong>{formatTokens(item.totals.totalTokens)}</strong><em className="usage-cost-line">{totalsCost(item.totals, count => t("accounts.unpricedRequests", { count }), t("accounts.costUnavailable"))}</em></div>
         <div title={balance ? new Date(balance.checkedAt * 1000).toLocaleString() : undefined}>
           <span>{t("accounts.balanceRemaining")}</span>
           <strong>{balance ? balance.conversionAvailable
@@ -198,11 +186,15 @@ export function RelayUsagePanel({ relay, onManageProviders }: { relay: RelayUsag
       <div><h4>{t("accounts.relayUsage")}</h4><p>{t("accounts.relayRequests", { count: relay.allTime.requestCount })} · {t("accounts.relayReported", { count: relay.allTime.reportedCount })}</p></div>
       <div className="usage-relay-summary" title={t("accounts.costEstimatedHint")}>
         <span>{t("accounts.costToday")}</span>
-        <strong>{totalsCostLabel(relay.today, count => t("accounts.unpricedRequests", { count }), "—")}<small>USD</small></strong>
+        <strong>{totalsCost(relay.today, count => t("accounts.unpricedRequests", { count }), "—")}<small>USD</small></strong>
+      </div>
+      <div className="usage-relay-summary" title={t("accounts.costEstimatedHint")}>
+        <span>{t("accounts.costWeek")}</span>
+        <strong>{totalsCost(relay.week, count => t("accounts.unpricedRequests", { count }), "—")}<small>USD</small></strong>
       </div>
       <div className="usage-relay-summary" title={t("accounts.costEstimatedHint")}>
         <span>{t("accounts.costAllTime")}</span>
-        <strong>{totalsCostLabel(relay.allTime, count => t("accounts.unpricedRequests", { count }), "—")}<small>USD</small></strong>
+        <strong>{totalsCost(relay.allTime, count => t("accounts.unpricedRequests", { count }), "—")}<small>USD</small></strong>
       </div>
       <div className="usage-relay-summary"><span>{t("accounts.allUsage")}</span><strong>{formatTokens(relay.allTime.totalTokens)} <small>Token</small></strong></div>
     </div>
