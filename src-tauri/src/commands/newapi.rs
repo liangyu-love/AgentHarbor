@@ -21,6 +21,40 @@ fn paths(repo: &State<'_, Mutex<Repository>>) -> Result<CodexPaths, String> {
         .clone())
 }
 
+/// The models.dev catalog status without network access.
+#[tauri::command]
+pub async fn load_models_dev_status(
+    repo: State<'_, Mutex<Repository>>,
+) -> Result<crate::core::models_dev::CatalogStatus, String> {
+    let paths = paths(&repo)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let catalog = crate::core::models_dev::load(&paths.app_data_dir);
+        let now = chrono::Utc::now().timestamp();
+        Ok(catalog.status(now))
+    })
+    .await
+    .map_err(|_| "newapi.errors.storage".to_owned())?
+}
+
+/// Manual catalog refresh. Downloads, validates and atomically replaces the
+/// runtime cache; any failure keeps the previously valid catalog active.
+#[tauri::command]
+pub async fn refresh_models_dev_catalog(
+    repo: State<'_, Mutex<Repository>>,
+) -> Result<crate::core::models_dev::CatalogStatus, String> {
+    let (paths, proxy) = {
+        let repo = repo.lock().map_err(|_| "newapi.errors.storage")?;
+        (repo.paths().clone(), repo.api_proxy_config())
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::core::models_dev::refresh(&paths.app_data_dir, &proxy)?;
+        let catalog = crate::core::models_dev::load(&paths.app_data_dir);
+        Ok(catalog.status(chrono::Utc::now().timestamp()))
+    })
+    .await
+    .map_err(|_| "newapi.errors.storage".to_owned())?
+}
+
 #[tauri::command]
 pub fn load_route_diagnostics() -> Vec<crate::core::route_trace::Route> {
     crate::core::route_trace::recent()
@@ -47,6 +81,17 @@ pub async fn set_newapi_failover(
     let paths = paths(&repo)?;
     let _guard = routing_runtime::mutation_guard().await;
     router::set_same_model_failover(&paths, enabled)
+}
+
+/// Global compression policy (default 90%). Existing injections are re-derived.
+#[tauri::command]
+pub async fn set_newapi_compression(
+    repo: State<'_, Mutex<Repository>>,
+    policy: crate::core::model_policy::CompressionPolicy,
+) -> Result<StateChange, String> {
+    let paths = paths(&repo)?;
+    let _guard = routing_runtime::mutation_guard().await;
+    router::set_compression(&paths, policy)
 }
 
 #[tauri::command]

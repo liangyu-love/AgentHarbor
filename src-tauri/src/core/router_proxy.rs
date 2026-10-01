@@ -1929,6 +1929,8 @@ mod tests {
             std::fs::write(&auth_path, auth).unwrap();
             // Synthetic exact model metadata exercises both valid `none` and a
             // target that rejects it, independently of family-name heuristics.
+            // The relays declare their own levels; the account cache below must
+            // not override a relay that does not target the official endpoint.
             std::fs::write(fixture.path().join("models_cache.json"), json!({"models":[
                 {"slug":"model-a","supported_reasoning_levels":[{"effort":"none","description":"Off"}]},
                 {"slug":"model-b","supported_reasoning_levels":[{"effort":"high","description":"High"}]}
@@ -1941,13 +1943,22 @@ mod tests {
                 router: RouterSettings { bearer_token:"fixture-local-secret".into(), ..Default::default() },
                 ..Default::default()
             };
-            for (id, port, model, key) in [
-                ("relay-a", port_a, "model-a", "fixture-relay-a-key"),
-                ("relay-b", port_b, "model-b", "fixture-relay-b-key"),
+            for (id, port, model, key, levels) in [
+                ("relay-a", port_a, "model-a", "fixture-relay-a-key", json!([{"effort":"none","description":"Off"}])),
+                ("relay-b", port_b, "model-b", "fixture-relay-b-key", json!([{"effort":"high","description":"High"}])),
             ] {
                 store.providers.push(Provider {
                     id:id.into(), name:id.into(), base_url:format!("http://127.0.0.1:{port}"),
-                    api_key:key.into(), model:model.into(), enabled:true, ..Default::default()
+                    api_key:key.into(), model:model.into(), enabled:true,
+                    models: vec![crate::core::newapi::Model {
+                        id: model.into(),
+                        display_name: model.into(),
+                        included: true,
+                        metadata_source: "upstream".into(),
+                        supported_reasoning_levels: serde_json::from_value(levels).unwrap(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
                 });
             }
             let store_path = app_data_dir.join("newapi-providers.dat");
@@ -2181,6 +2192,7 @@ mod tests {
                 providers: vec![provider, chat_provider, anthropic_provider],
                 active_provider_id: Some("agentharbor_fixture".into()),
                 router: RouterSettings { bearer_token: "router-test-token".into(), ..Default::default() },
+                compression: Default::default(),
             };
             crate::core::secret_file::write(&paths.app_data_dir.join("newapi-providers.dat"), &serde_json::to_vec(&store).unwrap()).unwrap();
 
@@ -2465,7 +2477,7 @@ mod tests {
             let manager = ConfigManager::new(&paths.app_data_dir, client_paths);
             let mut config_request = ConfigRequest {
                 target_id: TargetId::ClaudeCode, provider_id: "anthropic_fixture".into(),
-                model: "claude-mock".into(), context_window: 200000, max_output_tokens: 8192,
+                model: "claude-mock".into(), context_window: Some(200000), max_output_tokens: Some(8192),
                 options: crate::core::client_config::ClientOptions {
                     access_mode: crate::core::client_config::ClientAccessMode::Router,
                     ..Default::default()
@@ -2663,6 +2675,9 @@ mod tests {
                     models: tested.models,
                     context_window: provider.context_window,
                     auto_compact_limit: provider.auto_compact_limit,
+                    catalog_providers: None,
+                    price_catalog_provider: None,
+                    compression: None,
                     network_mode: provider.network_mode,
                 },
             )

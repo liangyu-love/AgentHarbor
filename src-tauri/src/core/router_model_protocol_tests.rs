@@ -148,12 +148,7 @@ fn provider_protocol_inference_uses_the_selected_model() {
 fn normalization_migration_and_export_keep_per_model_protocols() {
     let (directory, paths) = paths();
     let mut provider = provider();
-    normalize_models(
-        &mut provider.models,
-        &provider.model,
-        &model_defaults::Catalog::load(&paths.codex_home),
-    )
-    .unwrap();
+    normalize_models(&mut provider.models, &provider.model).unwrap();
     let expected: Vec<_> = provider
         .models
         .iter()
@@ -272,6 +267,9 @@ fn native_validation_and_save_reject_selected_non_responses_without_fallback_or_
         models: current.models.clone(),
         context_window: None,
         auto_compact_limit: None,
+        catalog_providers: None,
+        price_catalog_provider: None,
+        compression: None,
         network_mode: "direct".into(),
     };
     assert_eq!(

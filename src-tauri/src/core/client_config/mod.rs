@@ -9,6 +9,7 @@ pub use options::{ClaudeAuthField, ClaudeModels, ClaudeOneM, ClientAccessMode, C
 mod tests;
 
 use super::{
+    models_dev,
     router::{ModelProtocol, Provider, Store},
     secret_file, storage,
     targets::TargetId,
@@ -74,11 +75,18 @@ trait ClientAdapter: Sync {
     fn name(&self) -> &'static str;
     fn protocols(&self) -> &'static [ModelProtocol];
     fn path<'a>(&self, paths: &'a ClientPaths) -> &'a Path;
+    /// Whether the adapter writes context/output limits into the client
+    /// configuration. Claude Code ignores them, so missing catalog metadata
+    /// must not block its injection.
+    fn needs_limits(&self) -> bool {
+        true
+    }
     fn edits(
         &self,
         document: &Value,
         store: &Store,
         request: &ConfigRequest,
+        catalog: &models_dev::Catalog,
     ) -> Result<Vec<Edit>, String>;
 }
 
@@ -96,8 +104,15 @@ pub struct ConfigRequest {
     pub target_id: TargetId,
     pub provider_id: String,
     pub model: String,
-    pub context_window: u64,
-    pub max_output_tokens: u64,
+    /// Explicit user-entered prompt budget. `None` follows the resolver
+    /// (user overrides, upstream declaration, catalog, then the shared
+    /// fallback), so a catalog change can move an automatic value while a
+    /// user-entered one never moves.
+    #[serde(default)]
+    pub context_window: Option<u64>,
+    /// Explicit user-entered output cap; `None` follows the resolver.
+    #[serde(default)]
+    pub max_output_tokens: Option<u64>,
     #[serde(flatten)]
     pub options: ClientOptions,
 }
@@ -173,6 +188,8 @@ struct Session {
 
 pub struct ConfigManager {
     data_dir: PathBuf,
+    /// App data directory, used to read the models.dev catalog snapshot.
+    app_data_dir: PathBuf,
     paths: ClientPaths,
 }
 
@@ -180,6 +197,7 @@ impl ConfigManager {
     pub fn new(data_dir: &Path, paths: ClientPaths) -> Self {
         Self {
             data_dir: data_dir.join("client-config"),
+            app_data_dir: data_dir.to_path_buf(),
             paths,
         }
     }
@@ -359,9 +377,19 @@ impl ConfigManager {
             return Err("clients.errors.protocol".into());
         }
         validate_model(&request.model)?;
-        if request.context_window < 1024
-            || request.max_output_tokens == 0
-            || request.max_output_tokens > request.context_window
+        // Only adapters that consume limits require them. Claude Code ignores
+        // context/output entirely, so catalog-less models stay injectable.
+        if adapter.needs_limits()
+            && (request
+                .context_window
+                .is_some_and(|value| !(1_024..=100_000_000).contains(&value))
+                || request
+                    .max_output_tokens
+                    .is_some_and(|value| value == 0 || value > 100_000_000)
+                || matches!(
+                    (request.context_window, request.max_output_tokens),
+                    (Some(context), Some(output)) if output > context
+                ))
         {
             return Err("clients.errors.limits".into());
         }
@@ -391,7 +419,10 @@ impl ConfigManager {
                 .map(|s| s.original)
                 .unwrap_or_else(|| current.clone())
         };
-        let edits = adapter.edits(&document, store, request)?;
+        let edits = {
+            let catalog = models_dev::load(&self.app_data_dir);
+            adapter.edits(&document, store, request, &catalog)?
+        };
         let mut changes = Vec::new();
         for edit in edits {
             let before = field(&document, &edit.path).cloned();

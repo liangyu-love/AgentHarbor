@@ -9,18 +9,50 @@ export interface NewApiBalance {
   checkedAt: number;
   conversionAvailable: boolean;
 }
+export interface ModelRef {
+  providerId: string;
+  modelId: string;
+}
+export interface ModelPriceOverrides {
+  input?: number | null;
+  output?: number | null;
+  cacheRead?: number | null;
+  cacheWrite?: number | null;
+}
+export interface ModelOverrides {
+  contextWindow?: number | null;
+  inputLimit?: number | null;
+  maxOutputTokens?: number | null;
+  /** null/absent: inherit; []: explicitly no levels. */
+  reasoning?: { effort: string; description: string }[] | null;
+  defaultEffort?: string | null;
+  price?: ModelPriceOverrides | null;
+}
+export type CompressionPolicy =
+  | { mode: "inherit" }
+  | { mode: "percent"; percent: number }
+  | { mode: "tokens"; tokens: number }
+  | { mode: "clientDefault" };
 export interface NewApiModel {
   id: string;
   protocol?: ModelProtocol | null;
   displayName: string;
+  /**
+   * Legacy upstream declaration or migration source. Effective values come
+   * from the resolver; `overrides` carries explicit user values.
+   */
   contextWindow: number | null;
   maxOutputTokens: number | null;
   endpointTypes: string[];
   included: boolean;
-  metadataSource: "upstream" | "local" | "catalog" | "manual";
+  metadataSource: "upstream" | "local" | "catalog" | "manual" | "legacy" | "";
   /** null/absent: unknown; []: the provider explicitly declares no effort levels. */
   supportedReasoningLevels?: { effort: string; description: string }[] | null;
   defaultReasoningLevel?: string | null;
+  overrides?: ModelOverrides;
+  catalogRef?: ModelRef | null;
+  priceRef?: ModelRef | null;
+  compression?: CompressionPolicy;
 }
 export type ModelProtocol = "responses" | "chatCompletions" | "anthropicMessages";
 export type CodexAccessMode = "router" | "native";
@@ -36,6 +68,9 @@ export interface NewApiProvider {
   models: NewApiModel[];
   contextWindow: number | null;
   autoCompactLimit: number | null;
+  catalogProviders: string[];
+  priceCatalogProvider: string | null;
+  compression: CompressionPolicy;
   enabled: boolean;
   networkMode: "proxy" | "direct";
   modelsFetchedAt: number | null;
@@ -77,16 +112,6 @@ export interface RouteAttempt {
   error: string | null;
   durationMs: number;
 }
-
-export interface CapabilityField<T> { value: T; source: string; updatedAt: number | null }
-export interface ModelCapability {
-  providerId: string; providerName: string; displayName: string; upstreamModel: string; matchedModel: string;
-  reasoning: CapabilityField<{ effort: string; description: string }[]>;
-  defaultReasoning: string | null;
-  context: CapabilityField<number | null>;
-  output: CapabilityField<number | null>;
-}
-export interface ModelCapabilities { stale: boolean; error: string | null; updatedAt: number | null; models: ModelCapability[] }
 export interface RouteDiagnostic {
   id: string;
   timestamp: number;
@@ -101,11 +126,128 @@ export interface RouteDiagnostic {
   durationMs: number;
   firstTokenMs: number | null;
 }
+
+/** Resolver output: one field with its provenance. */
+export interface ResolvedField<T> {
+  value: T | null;
+  source: string;
+  sourceRef: ModelRef | null;
+  updatedAt: string | null;
+}
+export interface ConflictValue {
+  modelRef: ModelRef;
+  value: string;
+}
+export interface FieldConflict {
+  field: string;
+  candidates: ConflictValue[];
+}
+export interface MatchStep {
+  modelId: string;
+  step: string;
+  matched: ModelRef[];
+  note: string;
+}
+export type MatchKind =
+  | "explicit"
+  | "exact"
+  | "normalized"
+  | "consensus"
+  | "ambiguous"
+  | "invalid"
+  | "unmatched";
+export interface ReasoningOptionInfo {
+  kind: string;
+  values: string[];
+  min: number | null;
+  max: number | null;
+}
+export interface PriceInfo {
+  currency: string;
+  unit: string;
+  input: number | null;
+  output: number | null;
+  cacheRead: number | null;
+  cacheWrite: number | null;
+  reasoning: number | null;
+  source: string;
+  sourceRef: ModelRef | null;
+  updatedAt: string | null;
+  complete: boolean;
+  note: string | null;
+}
+export interface CompressionPlan {
+  mode: string;
+  percent: number | null;
+  tokens: number | null;
+  source: string;
+  budget: number | null;
+  budgetSource: string;
+  threshold: number | null;
+  state: string;
+  note: string | null;
+}
+export interface ClientProjection {
+  contextWindow: number;
+  contextSource: string;
+  contextIsFallback: boolean;
+  budget: number;
+  budgetSource: string;
+  inputLimit: number | null;
+  outputLimit: number | null;
+  outputSource: string;
+  reasoning: { effort: string; description: string }[];
+  reasoningSource: string;
+  defaultReasoning: string | null;
+  compression: CompressionPlan;
+}
+export interface ModelCapability {
+  providerId: string;
+  providerName: string;
+  displayName: string;
+  upstreamModel: string;
+  matchedModel: string;
+  matchKind: MatchKind;
+  matched: ModelRef | null;
+  steps: MatchStep[];
+  conflicts: FieldConflict[];
+  reasoning: ResolvedField<{ effort: string; description: string }[]>;
+  reasoningSupports: boolean | null;
+  reasoningOptions: ReasoningOptionInfo[];
+  defaultReasoning: string | null;
+  defaultReasoningSource: string;
+  context: ResolvedField<number>;
+  inputLimit: ResolvedField<number>;
+  output: ResolvedField<number>;
+  price: PriceInfo;
+  projection: ClientProjection;
+}
+export interface ModelsDevCatalogStatus {
+  schemaVersion: number;
+  sourceUrl: string;
+  fetchedAt: number | null;
+  lastCheckedAt: number | null;
+  stale: boolean;
+  origin: "runtime" | "embedded" | string;
+  revision: string;
+  providers: number;
+  models: number;
+  error: string | null;
+}
+export interface ModelCapabilities {
+  /** Codex official snapshot status. */
+  stale: boolean;
+  error: string | null;
+  updatedAt: number | null;
+  catalog: ModelsDevCatalogStatus;
+  models: ModelCapability[];
+}
 export interface NewApiState {
   providers: NewApiProvider[];
   router: NewApiRouterView;
   proxyRunning: boolean;
   activeProviderId: string | null;
+  compression: CompressionPolicy;
 }
 export interface NewApiAppliedConfig {
   path: string;
@@ -131,5 +273,11 @@ export interface NewApiProviderInput {
   models: NewApiModel[];
   contextWindow: number | null;
   autoCompactLimit: number | null;
+  catalogProviders?: string[];
+  priceCatalogProvider?: string | null;
+  compression?: CompressionPolicy;
   networkMode?: "proxy" | "direct";
+}
+export interface CompressionSettingInput {
+  compression: CompressionPolicy;
 }

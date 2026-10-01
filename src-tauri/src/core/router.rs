@@ -1,6 +1,6 @@
 use super::{
     codex_config::{CodexConfigRepository, ConfigWriteResult},
-    model_defaults,
+    model_defaults, model_metadata, model_policy, models_dev,
     models::{ApiProxyConfigPayload, CoreError},
     newapi, protocol, router_balance, secret_file, storage,
 };
@@ -37,7 +37,7 @@ const PREVIOUS_DIRECT_PROVIDER_KEY: &str = "codexharbor_newapi";
 const PREVIOUS_RELAY_MODEL_PREFIX: &str = "aimami_relay_";
 const MAX_PROVIDERS: usize = 64;
 const MAX_MODELS_PER_PROVIDER: usize = 512;
-const STORE_VERSION: u32 = 7;
+const STORE_VERSION: u32 = 8;
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -83,7 +83,18 @@ pub struct Provider {
     pub protocol: ModelProtocol,
     pub model: String,
     pub context_window: Option<u64>,
+    /// Legacy fixed threshold; migrated into `compression` on load and no
+    /// longer read by injection.
     pub auto_compact_limit: Option<u64>,
+    /// models.dev provider IDs this relay maps to for capability matching.
+    #[serde(default)]
+    pub catalog_providers: Vec<String>,
+    /// Optional separate price binding (defaults to the capability mapping).
+    #[serde(default)]
+    pub price_catalog_provider: Option<String>,
+    /// Provider-level compression policy; `inherit` follows the global default.
+    #[serde(default)]
+    pub compression: model_policy::CompressionPolicy,
     pub enabled: bool,
     /// 该供应商的网络出口：proxy = 跟随全局代理设置，direct = 直连不走代理。
     #[serde(default)]
@@ -138,6 +149,21 @@ pub struct Store {
     pub router: RouterSettings,
     pub codex_access_mode: CodexAccessMode,
     pub active_provider_id: Option<String>,
+    /// Global compression policy. `inherit` is never meaningful here and is
+    /// read as the 90% product default.
+    #[serde(default)]
+    pub compression: model_policy::CompressionPolicy,
+}
+
+impl Store {
+    pub fn global_compression(&self) -> model_policy::CompressionPolicy {
+        match self.compression {
+            model_policy::CompressionPolicy::Inherit => {
+                model_policy::CompressionPolicy::percent(model_policy::DEFAULT_PERCENT)
+            }
+            ref policy => policy.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -153,6 +179,9 @@ pub struct ProviderView {
     pub model: String,
     pub context_window: Option<u64>,
     pub auto_compact_limit: Option<u64>,
+    pub catalog_providers: Vec<String>,
+    pub price_catalog_provider: Option<String>,
+    pub compression: model_policy::CompressionPolicy,
     pub enabled: bool,
     pub network_mode: String,
     pub models: Vec<newapi::Model>,
@@ -180,6 +209,9 @@ impl Provider {
             model: self.model.clone(),
             context_window: self.context_window,
             auto_compact_limit: self.auto_compact_limit,
+            catalog_providers: self.catalog_providers.clone(),
+            price_catalog_provider: self.price_catalog_provider.clone(),
+            compression: self.compression.clone(),
             enabled: self.enabled,
             network_mode: self.network_mode().to_owned(),
             models: self.models.clone(),
@@ -339,6 +371,8 @@ pub struct NewApiState {
     pub router: RouterView,
     pub proxy_running: bool,
     pub active_provider_id: Option<String>,
+    /// Global compression policy (default 90%).
+    pub compression: model_policy::CompressionPolicy,
 }
 
 #[derive(Debug, Serialize)]
@@ -372,6 +406,14 @@ pub struct ProviderInput {
     pub models: Vec<newapi::Model>,
     pub context_window: Option<u64>,
     pub auto_compact_limit: Option<u64>,
+    /// Capability catalog mapping; omitted keeps the stored mapping.
+    #[serde(default)]
+    pub catalog_providers: Option<Vec<String>>,
+    #[serde(default)]
+    pub price_catalog_provider: Option<String>,
+    /// Compression policy; omitted migrates the legacy fixed threshold.
+    #[serde(default)]
+    pub compression: Option<model_policy::CompressionPolicy>,
     /// 可选：proxy / direct；编辑时留空表示保持原设置。
     #[serde(default)]
     pub network_mode: String,
@@ -478,23 +520,40 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
             }
             changed = true;
         }
-        // Codex may sync an exact model catalog after this provider was saved.
-        // Also refresh relay defaults in current-version stores (not just schema
-        // migrations). Claude's 1M policy never replaces manual limits.
-        let catalog = model_defaults::Catalog::load_with_backup(&paths.codex_home, &paths.app_data_dir);
-        for provider in &mut store.providers {
-            for model in &mut provider.models {
-                if model.metadata_source != "manual" {
-                    let refreshed = model
-                        .clone()
-                        .with_catalog_defaults(&catalog)
-                        .with_local_defaults();
-                    if refreshed != *model {
-                        *model = refreshed;
-                        changed = true;
+        // One-time migration into explicit per-field storage. Capability values
+        // are derived at read time from user overrides, real upstream
+        // declarations and the models.dev catalog; auto-filled legacy values
+        // must not survive as if they were saved by the user.
+        if store.version < 8 {
+            for provider in &mut store.providers {
+                if provider.compression == model_policy::CompressionPolicy::Inherit {
+                    provider.compression =
+                        model_policy::migrate_legacy_limit(provider.auto_compact_limit);
+                }
+                for model in &mut provider.models {
+                    if model.metadata_source == "manual" && model.overrides.is_empty() {
+                        model.overrides = newapi::ModelOverrides {
+                            context_window: model.context_window,
+                            max_output_tokens: model.max_output_tokens,
+                            reasoning: model.supported_reasoning_levels.clone(),
+                            default_effort: model.default_reasoning_level.clone(),
+                            ..Default::default()
+                        };
+                    }
+                    match model.metadata_source.as_str() {
+                        // Historical "upstream" values may have been overwritten
+                        // by the removed local defaults; the next fetch
+                        // re-collects real declarations.
+                        "upstream" => model.metadata_source = "legacy".into(),
+                        "local" | "catalog" => {
+                            model.context_window = None;
+                            model.max_output_tokens = None;
+                        }
+                        _ => {}
                     }
                 }
             }
+            changed = true;
         }
         if migrated_active.is_some() {
             store.active_provider_id = migrated_active;
@@ -677,6 +736,7 @@ fn migrate_original_relay(paths: &CodexPaths) -> Result<Option<Store>, String> {
         codex_access_mode: CodexAccessMode::Router,
         providers,
         active_provider_id,
+        compression: model_policy::CompressionPolicy::percent(model_policy::DEFAULT_PERCENT),
         router: RouterSettings {
             enabled: false,
             same_model_failover: false,
@@ -779,6 +839,7 @@ pub(crate) fn state_from_store_at(
             CodexAccessMode::Native => effective_active(store),
         })
         .map(|provider| provider.id.clone()),
+        compression: store.global_compression(),
     }
 }
 
@@ -840,10 +901,7 @@ pub(crate) fn validate_native_selection(store: &Store) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_input(
-    input: &mut ProviderInput,
-    catalog: &model_defaults::Catalog,
-) -> Result<(), String> {
+fn validate_input(input: &mut ProviderInput) -> Result<(), String> {
     input.name = input.name.trim().to_owned();
     if input.name.is_empty() || input.name.chars().count() > 80 {
         return Err("newapi.errors.name".into());
@@ -859,7 +917,28 @@ fn validate_input(
     input.access_token = input.access_token.trim().to_owned();
     input.api_key = input.api_key.trim().to_owned();
     input.model = input.model.trim().to_owned();
-    normalize_models(&mut input.models, &input.model, catalog)?;
+    normalize_models(&mut input.models, &input.model)?;
+    if input
+        .compression
+        .as_ref()
+        .is_some_and(|policy| policy.validate().is_err())
+    {
+        return Err("newapi.errors.context".into());
+    }
+    if input
+        .catalog_providers
+        .as_ref()
+        .is_some_and(|providers| providers.len() > 8)
+    {
+        return Err("newapi.errors.context".into());
+    }
+    if let Some(providers) = input.catalog_providers.as_mut() {
+        for provider in providers.iter_mut() {
+            *provider = provider.trim().to_lowercase();
+        }
+        providers.retain(|provider| !provider.is_empty() && provider.len() <= 64);
+        providers.dedup();
+    }
     for token in [&input.access_token, &input.api_key] {
         if !token.is_empty() {
             newapi::auth_header(token)?;
@@ -878,7 +957,6 @@ fn validate_input(
 fn normalize_models(
     models: &mut Vec<newapi::Model>,
     default_model: &str,
-    catalog: &model_defaults::Catalog,
 ) -> Result<(), String> {
     if models.len() > MAX_MODELS_PER_PROVIDER {
         return Err("newapi.errors.tooManyModels".into());
@@ -902,24 +980,62 @@ fn normalize_models(
             .endpoint_types
             .retain(|value| value.len() <= 80 && !value.contains(['\r', '\n']));
         model.endpoint_types.truncate(16);
-        *model = std::mem::take(model)
-            .with_catalog_defaults(catalog)
-            .with_local_defaults();
-        if model
+        // Older payloads carry manual values at the top level; keep them there
+        // for rollback but make the explicit overrides authoritative.
+        if model.metadata_source == "manual" && model.overrides.is_empty() {
+            model.overrides = newapi::ModelOverrides {
+                context_window: model.context_window,
+                max_output_tokens: model.max_output_tokens,
+                reasoning: model.supported_reasoning_levels.clone(),
+                default_effort: model.default_reasoning_level.clone(),
+                ..Default::default()
+            };
+        }
+        let overrides = &model.overrides;
+        if overrides
             .context_window
             .is_some_and(|value| !(1_024..=100_000_000).contains(&value))
-            || model
+            || overrides
+                .input_limit
+                .is_some_and(|value| !(1_024..=100_000_000).contains(&value))
+            || overrides
                 .max_output_tokens
                 .is_some_and(|value| value == 0 || value > 100_000_000)
-            || matches!((model.context_window, model.max_output_tokens), (Some(context), Some(output)) if output > context)
+            || matches!(
+                (overrides.context_window, overrides.max_output_tokens),
+                (Some(context), Some(output)) if output > context
+            )
+        {
+            return Err("newapi.errors.context".into());
+        }
+        if overrides
+            .reasoning
+            .as_ref()
+            .is_some_and(|levels| {
+                levels.len() > 32 || !levels.iter().all(newapi::ReasoningLevel::valid)
+            })
+        {
+            return Err("newapi.errors.modelList".into());
+        }
+        if overrides.price.as_ref().is_some_and(|price| {
+            [price.input, price.output, price.cache_read, price.cache_write]
+                .iter()
+                .any(|rate| rate.is_some_and(|rate| !rate.is_finite() || rate < 0.0 || rate > 1_000_000.0))
+        }) {
+            return Err("newapi.errors.context".into());
+        }
+        if matches!((model.context_window, model.max_output_tokens), (Some(context), Some(output)) if output > context)
         {
             return Err("newapi.errors.context".into());
         }
         if !matches!(
             model.metadata_source.as_str(),
-            "upstream" | "local" | "catalog" | "manual"
+            "upstream" | "local" | "catalog" | "manual" | "legacy" | ""
         ) {
             model.metadata_source = "manual".into();
+        }
+        if model.compression.validate().is_err() {
+            return Err("newapi.errors.context".into());
         }
     }
     if !default_model.is_empty() {
@@ -929,17 +1045,13 @@ fn normalize_models(
             if models.len() >= MAX_MODELS_PER_PROVIDER {
                 return Err("newapi.errors.tooManyModels".into());
             }
-            models.push(
-                newapi::Model {
-                    id: default_model.to_owned(),
-                    display_name: default_model.to_owned(),
-                    included: true,
-                    metadata_source: "local".into(),
-                    ..Default::default()
-                }
-                .with_catalog_defaults(catalog)
-                .with_local_defaults(),
-            );
+            models.push(newapi::Model {
+                id: default_model.to_owned(),
+                display_name: default_model.to_owned(),
+                included: true,
+                metadata_source: "local".into(),
+                ..Default::default()
+            });
         }
     }
     Ok(())
@@ -969,10 +1081,7 @@ pub(crate) fn active_routing_config_is_ours(paths: &CodexPaths) -> bool {
 }
 
 pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<StateChange, String> {
-    validate_input(
-        &mut input,
-        &model_defaults::Catalog::load_with_backup(&paths.codex_home, &paths.app_data_dir),
-    )?;
+    validate_input(&mut input)?;
     let _guard = store_write_guard()?;
     let mut store = load_store_unlocked(paths)?;
     let timestamp = now();
@@ -1019,6 +1128,19 @@ pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<Sta
             provider.models = input.models.clone();
             provider.context_window = input.context_window;
             provider.auto_compact_limit = input.auto_compact_limit;
+            if let Some(providers) = input.catalog_providers.clone() {
+                provider.catalog_providers = providers;
+            }
+            provider.price_catalog_provider = input.price_catalog_provider.clone();
+            provider.compression = match input.compression.clone() {
+                Some(policy) => {
+                    // An explicit policy is authoritative; drop the legacy
+                    // fixed value so `inherit` cannot resurrect it.
+                    provider.auto_compact_limit = None;
+                    policy
+                }
+                None => model_policy::migrate_legacy_limit(input.auto_compact_limit),
+            };
             provider.network_mode = next_network_mode;
             provider.updated_at = timestamp;
             provider.models_fetched_at = (!provider.models.is_empty()).then_some(timestamp);
@@ -1053,6 +1175,12 @@ pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<Sta
                 models_fetched_at: (!input.models.is_empty()).then_some(timestamp),
                 context_window: input.context_window,
                 auto_compact_limit: input.auto_compact_limit,
+                catalog_providers: input.catalog_providers.clone().unwrap_or_default(),
+                price_catalog_provider: input.price_catalog_provider.clone(),
+                compression: match input.compression.clone() {
+                    Some(policy) => policy,
+                    None => model_policy::migrate_legacy_limit(input.auto_compact_limit),
+                },
                 enabled: false,
                 network_mode: if input.network_mode == "direct" {
                     "direct".into()
@@ -1536,6 +1664,25 @@ pub fn set_same_model_failover(paths: &CodexPaths, enabled: bool) -> Result<Stat
     Ok(StateChange { state: state_from_store_at(&store, super::router_proxy::is_running(), Some(paths)), applied: None })
 }
 
+/// Global compression policy. Applying it re-derives every injected threshold,
+/// so an active configuration keeps matching what the UI shows.
+pub fn set_compression(
+    paths: &CodexPaths,
+    policy: model_policy::CompressionPolicy,
+) -> Result<StateChange, String> {
+    policy.validate().map_err(|_| "newapi.errors.context")?;
+    let _guard = store_write_guard()?;
+    let mut store = load_store_unlocked(paths)?;
+    let previous = store.clone();
+    store.compression = policy;
+    let applied = apply_routing_if_enabled(paths, &store)?;
+    persist_connection_change(paths, &previous, &store, applied.is_some())?;
+    Ok(StateChange {
+        state: state_from_store_at(&store, super::router_proxy::is_running(), Some(paths)),
+        applied,
+    })
+}
+
 /// A clean app exit ends this session's route. A previous run's saved toggle
 /// alone does not confer ownership of Codex's current config.
 pub fn stop_smart_routing_on_exit(paths: &CodexPaths) -> Result<(), String> {
@@ -1789,7 +1936,8 @@ pub(crate) fn catalog_value(
     // Only unprefixed official entries can supply relay capabilities. Keep this
     // boundary as relay entries are appended, with the fresh cache taking priority.
     let official_models_len = models.len();
-    let capability_catalog = model_defaults::Catalog::from_models(&models);
+    let models_dev = models_dev::load(app_data_dir);
+    let global_compression = store.global_compression();
     // Any routable provider can back Codex: a non-Responses relay is reached
     // through the router's protocol translation, so it belongs in the menu.
     for provider in store
@@ -1797,7 +1945,7 @@ pub(crate) fn catalog_value(
         .iter()
         .filter(|provider| provider.has_route_credentials())
     {
-        let mut provider_models: Vec<(String, Option<u64>)> = provider
+        let mut provider_models: Vec<String> = provider
             .models
             .iter()
             .filter(|model| {
@@ -1806,30 +1954,30 @@ pub(crate) fn catalog_value(
                 // protocol; only excluded models are left out.
                 model.included && provider.supports_model(&model.id)
             })
-            .map(|model| {
-                (
-                    model.id.clone(),
-                    model.context_window.or(provider.context_window),
-                )
-            })
+            .map(|model| model.id.clone())
             .collect();
         if !provider.model.trim().is_empty()
             && provider.supports_model(&provider.model)
-            && !provider_models.iter().any(|(id, _)| id == &provider.model)
+            && !provider_models.contains(&provider.model)
         {
-            provider_models.push((provider.model.clone(), provider.context_window));
+            provider_models.push(provider.model.clone());
         }
-        for (model_id, _) in provider_models {
+        for model_id in provider_models {
             let slug = format!("{}::{model_id}", provider.id);
             if !slugs.insert(slug.clone()) {
                 continue;
             }
-            let metadata = resolved_model_metadata(provider, &model_id, &capability_catalog);
+            let official = matched_official_model(&models[..official_models_len], &model_id)
+                .filter(|_| official_endpoint_applies(provider));
+            let (metadata, projection) = model_projection(
+                provider,
+                &model_id,
+                official,
+                &models_dev,
+                &global_compression,
+            );
             let alias = metadata.display_name.trim();
             let display_name = menu_display_name(&provider.name, alias, &model_id);
-            let official = matched_official_model(&models[..official_models_len], &model_id);
-            let provider_reasoning = metadata.reasoning_metadata();
-            let reasoning = model_reasoning_source(&model_id, official, provider_reasoning.as_ref());
             // Codex parses every entry in model_catalog_json as a complete
             // model definition during config/read. A short display-only entry
             // makes that RPC fail, which also blocks the desktop sign-in page.
@@ -1837,16 +1985,15 @@ pub(crate) fn catalog_value(
                 slug,
                 display_name,
                 format!("{} → {model_id}", provider.name),
-                metadata.context_window
-                    .unwrap_or_else(|| model_defaults::for_model(&model_id).context_window),
-                metadata.max_output_tokens,
-                &model_id,
-                reasoning,
+                projection.context_window,
+                projection.output_limit,
+                projection.reasoning,
+                projection.default_reasoning,
             );
             // A unified menu must not apply one provider's compaction threshold
             // globally to unrelated official/relay models.
-            if let Some(limit) = provider.auto_compact_limit {
-                entry["auto_compact_token_limit"] = serde_json::json!(limit);
+            if let Some(threshold) = projection.compression.threshold {
+                entry["auto_compact_token_limit"] = serde_json::json!(threshold);
             }
             models.push(entry);
         }
@@ -1860,32 +2007,123 @@ pub(super) fn matched_official_model<'a>(models: &'a [Value], model_id: &str) ->
         .is_some_and(|slug| !model_defaults::channel_entry(slug) && model_defaults::model_key(slug) == key))
 }
 
-pub(super) fn resolved_model_metadata(
-    provider: &Provider,
-    model_id: &str,
-    catalog: &model_defaults::Catalog,
-) -> newapi::Model {
-    let mut model = provider.models.iter().find(|model| model.id == model_id).cloned()
-        .unwrap_or_else(|| newapi::Model { id: model_id.to_owned(), ..Default::default() })
-        .with_catalog_defaults(catalog).with_local_defaults();
-    if model.metadata_source != "manual" {
-        if let Some(context) = provider.context_window {
-            model.context_window = Some(context);
-            model.max_output_tokens = model.max_output_tokens.map(|output| output.min(context));
-        }
-    }
-    model
+/// The official account snapshot describes the signed-in plan's own models. It
+/// may supply values only when the provider actually targets the official
+/// endpoint; a third-party relay with the same model name must not inherit
+/// account limits just because `model_key` matches.
+pub(super) fn official_endpoint_applies(provider: &Provider) -> bool {
+    reqwest::Url::parse(provider.base_url.trim())
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|host| {
+            matches!(
+                host.as_str(),
+                "chatgpt.com" | "chat.openai.com" | "api.openai.com"
+            )
+        })
 }
 
-// Channel declarations only supplement models absent from the shared definitions.
-pub(super) fn model_reasoning_source<'a>(
+pub(super) fn resolve_model_metadata(
+    provider: &Provider,
     model_id: &str,
-    official: Option<&'a Value>,
-    channel: Option<&'a Value>,
-) -> Option<&'a Value> {
-    if official.is_some() || model_defaults::named_defaults(model_id).is_some() {
-        official
-    } else { channel }
+    official: Option<&Value>,
+    models_dev: &models_dev::Catalog,
+) -> model_metadata::ResolvedMetadata {
+    let saved = provider.models.iter().find(|model| model.id == model_id);
+    let request = model_metadata::ResolutionRequest {
+        raw_model_id: model_id,
+        display_name: saved.map(|model| model.display_name.as_str()).unwrap_or(""),
+        catalog_providers: &provider.catalog_providers,
+        explicit_ref: saved.and_then(|model| model.catalog_ref.as_ref()),
+        price_ref: saved.and_then(|model| model.price_ref.as_ref()),
+        user: saved.map(newapi::Model::user_values).unwrap_or_default(),
+        provider_context: provider.context_window,
+        official: official.and_then(official_values),
+        upstream: saved.and_then(newapi::Model::upstream_values),
+    };
+    model_metadata::resolve(models_dev, &request)
+}
+
+fn official_values(entry: &Value) -> Option<model_metadata::OfficialValues> {
+    let number = |key: &str| {
+        entry
+            .get(key)
+            .and_then(Value::as_u64)
+            .filter(|value| *value > 0)
+    };
+    let levels = entry
+        .get("supported_reasoning_levels")
+        .and_then(Value::as_array)
+        .map(|levels| {
+            levels
+                .iter()
+                .filter_map(|level| {
+                    let effort = level.get("effort")?.as_str()?.trim();
+                    if effort.is_empty() || effort.len() > 32 {
+                        return None;
+                    }
+                    let description = level
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or(effort);
+                    Some(newapi::ReasoningLevel {
+                        effort: effort.to_owned(),
+                        description: description.to_owned(),
+                    })
+                })
+                .collect::<Vec<_>>()
+        });
+    let default_effort = entry
+        .get("default_reasoning_level")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    if number("context_window").is_none()
+        && number("max_output_tokens").is_none()
+        && levels.is_none()
+    {
+        return None;
+    }
+    Some(model_metadata::OfficialValues {
+        context_window: number("context_window"),
+        max_output_tokens: number("max_output_tokens"),
+        reasoning: levels,
+        default_effort,
+        updated_at: None,
+    })
+}
+
+/// The provider-level policy, bridging the historical fixed threshold until
+/// the field is removed: an explicit policy always wins, and `inherit` reads
+/// the legacy value when one exists.
+pub(super) fn provider_compression(provider: &Provider) -> model_policy::CompressionPolicy {
+    match provider.compression {
+        model_policy::CompressionPolicy::Inherit => {
+            model_policy::migrate_legacy_limit(provider.auto_compact_limit)
+        }
+        ref policy => policy.clone(),
+    }
+}
+
+/// The one projection every consumer reads: the router catalog, the native
+/// catalog and the capability preview cannot disagree about effective values.
+pub(super) fn model_projection(
+    provider: &Provider,
+    model_id: &str,
+    official: Option<&Value>,
+    models_dev: &models_dev::Catalog,
+    global_compression: &model_policy::CompressionPolicy,
+) -> (model_metadata::ResolvedMetadata, model_policy::ClientProjection) {
+    let metadata = resolve_model_metadata(provider, model_id, official, models_dev);
+    let model_policy_ref = provider
+        .models
+        .iter()
+        .find(|model| model.id == model_id)
+        .map(|model| &model.compression);
+    let provider_policy = provider_compression(provider);
+    let (policy, source) =
+        model_policy::resolve(model_policy_ref, Some(&provider_policy), global_compression);
+    let projection = model_policy::project(&metadata, (policy, source));
+    (metadata, projection)
 }
 
 fn relay_catalog_entry(
@@ -1894,15 +2132,13 @@ fn relay_catalog_entry(
     description: String,
     context_window: u64,
     max_output_tokens: Option<u64>,
-    model_id: &str,
-    reasoning_metadata: Option<&Value>,
+    reasoning_levels: Vec<Value>,
+    default_reasoning_level: Option<String>,
 ) -> Value {
     // These fields are required by Codex's model catalog parser. In
     // particular, an entry without instructions is rejected by config/read.
-    // Keep the capability declaration conservative for unknown relay models.
-    let (reasoning_levels, default_reasoning_level) =
-        relay_reasoning_capabilities(model_id, reasoning_metadata);
-
+    // The capability declaration comes from the shared resolver, never from a
+    // model-name guess.
     serde_json::json!({
         "slug": slug,
         "display_name": display_name,
@@ -1920,84 +2156,6 @@ fn relay_catalog_entry(
         "experimental_supported_tools": [],
         "base_instructions": "You are a coding assistant. Follow the developer and user instructions, use available tools when needed, and report your changes and verification clearly."
     })
-}
-
-/// Shared by Router and native catalogs. Callers resolve model identity first.
-/// A matched model definition wins over declarations attached to a channel.
-/// Only reasoning fields are read; this does not imply relay protocol compatibility.
-pub(super) fn relay_reasoning_capabilities(
-    model_id: &str,
-    metadata: Option<&Value>,
-) -> (Vec<Value>, Option<String>) {
-    // Borrow only reasoning metadata, never routing IDs, instructions,
-    // tools or account-only flags. An explicit empty list is authoritative too.
-    let declared_levels = metadata
-        .and_then(|entry| entry.get("supported_reasoning_levels"))
-        .and_then(Value::as_array)
-        .filter(|levels| {
-            levels.iter().all(|level| {
-                level
-                    .get("effort")
-                    .and_then(Value::as_str)
-                    .is_some_and(|effort| !effort.is_empty())
-                    && level.get("description").and_then(Value::as_str).is_some()
-            })
-        });
-    let reasoning_levels = declared_levels.cloned().unwrap_or_else(|| relay_reasoning_fallback(model_id));
-    let supports = |effort: &str| {
-        reasoning_levels
-            .iter()
-            .any(|level| level["effort"].as_str() == Some(effort))
-    };
-    // Never manufacture an unsupported default (including "none" or "medium").
-    let default_reasoning_level = metadata
-        .and_then(|entry| entry.get("default_reasoning_level"))
-        .and_then(Value::as_str)
-        .filter(|effort| supports(effort))
-        .or_else(|| {
-            // Use the snapshot's default only when its levels supplied the menu.
-            // Never mix a fallback default into an explicit provider declaration.
-            if declared_levels.is_none() {
-                model_defaults::reasoning(model_id).map(|(_, default)| default).filter(|effort| supports(effort))
-            } else { None }
-        })
-        .or_else(|| supports("medium").then_some("medium"))
-        .or_else(|| reasoning_levels.first()?.get("effort")?.as_str())
-        .map(str::to_owned);
-    (reasoning_levels, default_reasoning_level)
-}
-
-fn relay_reasoning_fallback(model_id: &str) -> Vec<Value> {
-    let model_id_lower = model_defaults::model_key(model_id);
-    let compact: String = model_id_lower
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .collect();
-    let efforts: &[&str] = if let Some((levels, _)) = model_defaults::reasoning(model_id) {
-        levels
-    } else if ["claudeopus", "claudesonnet", "claudefable", "claudemythos"]
-        .iter()
-        .any(|family| compact.starts_with(family))
-    {
-        &["low", "medium", "high"]
-    } else {
-        &[]
-    };
-    efforts
-        .iter()
-        .map(|effort| {
-            let description = match *effort {
-                "low" => "Fast responses with lighter reasoning",
-                "medium" => "Balanced reasoning",
-                "high" => "Deeper reasoning for complex tasks",
-                "xhigh" => "Extra high reasoning for complex tasks",
-                "max" => "Maximum reasoning depth",
-                "ultra" => "Ultra reasoning depth",
-                _ => unreachable!(),
-            };
-            serde_json::json!({"effort": effort, "description": description})
-        })
-        .collect()
 }
 
 fn menu_display_name(provider_name: &str, alias: &str, model_id: &str) -> String {
@@ -2335,7 +2493,6 @@ pub fn import_providers(paths: &CodexPaths, path: &Path) -> Result<ImportResult,
         .ok_or("newapi.errors.importFile")?;
     let _guard = store_write_guard()?;
     let mut store = load_store_unlocked(paths)?;
-    let catalog = model_defaults::Catalog::load_with_backup(&paths.codex_home, &paths.app_data_dir);
     let mut imported = 0usize;
     let mut skipped = 0usize;
     let timestamp = now();
@@ -2351,7 +2508,7 @@ pub fn import_providers(paths: &CodexPaths, path: &Path) -> Result<ImportResult,
         let base_url = base_url.to_string();
         let name = entry.name.trim().to_owned();
         let mut models = entry.models;
-        if normalize_models(&mut models, entry.model.trim(), &catalog).is_err() {
+        if normalize_models(&mut models, entry.model.trim()).is_err() {
             skipped += 1;
             continue;
         }
@@ -2454,6 +2611,9 @@ mod tests {
             models: Vec::new(),
             context_window: None,
             auto_compact_limit: None,
+            catalog_providers: None,
+            price_catalog_provider: None,
+            compression: None,
             network_mode: "proxy".into(),
         }
     }
@@ -2696,6 +2856,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
                     effort: "low".into(), description: "Provider low".into(),
                 }]),
                 default_reasoning_level: Some("low".into()),
+                ..Default::default()
             },
             newapi::Model {
                 id: "model-deep".into(),
@@ -2708,6 +2869,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
                 metadata_source: "upstream".into(),
                 supported_reasoning_levels: Some(vec![]),
                 default_reasoning_level: None,
+                ..Default::default()
             },
         ];
 
@@ -2753,13 +2915,15 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         let model = &migrated.providers[0].models[0];
         assert!(model.included);
         assert_eq!(model.display_name, "gpt-5-test");
-        assert_eq!(model.context_window, Some(400_000));
-        assert_eq!(model.max_output_tokens, Some(128_000));
+        // Auto-filled legacy values are cleared: the resolver derives them at
+        // read time instead of freezing a guess.
+        assert_eq!(model.context_window, None);
+        assert_eq!(model.max_output_tokens, None);
         assert_eq!(model.metadata_source, "local");
     }
 
     #[test]
-    fn current_store_refreshes_all_relay_claude_defaults_and_keeps_manual_overrides() {
+    fn current_store_migrates_manual_overrides_and_drops_guessed_values() {
         let (_dir, paths) = paths();
         let models = [
             ("claude-haiku-4-5", "local"),
@@ -2771,12 +2935,14 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         .map(|(id, source)| newapi::Model {
             id: id.into(),
             context_window: Some(200_000),
-            max_output_tokens: Some(4096),
+            max_output_tokens: Some(4_096),
             metadata_source: source.into(),
             ..Default::default()
         })
         .collect();
         let store = Store {
+            version: 7,
+            codex_access_mode: CodexAccessMode::Router,
             providers: vec![Provider {
                 id: "relay".into(),
                 models,
@@ -2787,32 +2953,41 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         secret_file::write(&store_path(&paths), &serde_json::to_vec(&store).unwrap()).unwrap();
         let loaded = load_store(&paths).unwrap();
         let models = &loaded.providers[0].models;
-        assert_eq!(
-            models
-                .iter()
-                .map(|m| m.context_window.unwrap())
-                .collect::<Vec<_>>(),
-            vec![1_000_000, 1_000_000, 200_000, 400_000]
-        );
-        assert_eq!(models.iter().map(|m| m.max_output_tokens.unwrap()).collect::<Vec<_>>(), [64_000, 64_000, 4096, 128_000]);
-        assert_eq!(&load_store(&paths).unwrap().providers[0].models, models);
+        // Auto-filled values never survive as saved data.
+        assert_eq!(models[0].context_window, None);
+        assert_eq!(models[0].metadata_source, "local");
+        // Historical upstream values may have been overwritten by the removed
+        // local defaults, so they are demoted to legacy.
+        assert_eq!(models[1].metadata_source, "legacy");
+        assert_eq!(models[3].metadata_source, "legacy");
+        // Explicit user edits become per-field overrides.
+        assert_eq!(models[2].metadata_source, "manual");
+        assert_eq!(models[2].overrides.context_window, Some(200_000));
+        assert_eq!(models[2].overrides.max_output_tokens, Some(4_096));
+        // Migration is idempotent: a second load changes nothing.
+        let again = load_store(&paths).unwrap();
+        assert_eq!(again.providers[0].models, loaded.providers[0].models);
     }
 
     #[test]
-    fn saved_local_guess_is_repaired_from_the_synced_codex_catalog() {
+    fn saved_local_guess_is_ignored_and_read_time_resolution_is_used() {
         let (_dir, paths) = paths();
+        std::fs::create_dir_all(&paths.codex_home).unwrap();
         std::fs::write(
             paths.codex_home.join("models_cache.json"),
             r#"{"models":[{"slug":"gpt-6-luna","context_window":272000}]}"#,
         )
         .unwrap();
         let store = Store {
-            version: 5,
+            version: 7,
             codex_access_mode: CodexAccessMode::Router,
             providers: vec![Provider {
                 id: "relay".into(),
                 name: "Relay".into(),
+                base_url: "https://chatgpt.com/backend-api/codex".into(),
+                api_key: "sk-fixture".into(),
                 model: "gpt-6-luna".into(),
+                enabled: true,
                 models: vec![newapi::Model {
                     id: "gpt-6-luna".into(),
                     display_name: "Upstream display name".into(),
@@ -2823,21 +2998,25 @@ base_url = "http://127.0.0.1:43127/codex/v1"
                 }],
                 ..Default::default()
             }],
+            compression: Default::default(),
             ..Default::default()
         };
         secret_file::write(&store_path(&paths), &serde_json::to_vec(&store).unwrap()).unwrap();
         let repaired = load_store(&paths).unwrap();
         assert_eq!(repaired.version, STORE_VERSION);
-        assert_eq!(
-            repaired.providers[0].models[0].context_window,
-            Some(272_000)
-        );
-        assert_eq!(repaired.providers[0].models[0].metadata_source, "catalog");
-        assert_eq!(repaired.providers[0].models[0].display_name, "gpt-6-luna");
-        assert_eq!(
-            load_store(&paths).unwrap().providers[0].models[0].context_window,
-            Some(272_000)
-        );
+        // The guessed value is dropped rather than republished as saved data.
+        assert_eq!(repaired.providers[0].models[0].context_window, None);
+        // The account snapshot is only consulted for the official endpoint and
+        // feeds the shared projection, not the stored model record.
+        let catalog = catalog_value(&paths.app_data_dir, &paths.codex_home, &repaired);
+        let entry = catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["slug"] == "relay::gpt-6-luna")
+            .unwrap();
+        assert_eq!(entry["context_window"], 272_000);
+        assert_eq!(repaired.providers[0].models[0].display_name, "Upstream display name");
     }
 
     #[test]
@@ -2862,6 +3041,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
                 ..Default::default()
             },
             active_provider_id: Some("aimami_relay_fixture".into()),
+            compression: Default::default(),
         };
         secret_file::write(&store_path(&paths), &serde_json::to_vec(&store).unwrap()).unwrap();
 
@@ -2898,6 +3078,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
                 ..Default::default()
             },
             active_provider_id: Some("existing-provider-id".into()),
+            compression: Default::default(),
         };
         secret_file::write(&store_path(&paths), &serde_json::to_vec(&store).unwrap()).unwrap();
 
@@ -3086,6 +3267,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
                 ..Default::default()
             },
             active_provider_id: Some("legacy-chat".into()),
+            compression: Default::default(),
         };
         let mut value = serde_json::to_value(&store).unwrap();
         value["providers"][0]["wireApi"] = serde_json::json!("chat");
@@ -3148,6 +3330,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
                 ..Default::default()
             },
             active_provider_id: Some("legacy-chat".into()),
+            compression: Default::default(),
         };
         let mut value = serde_json::to_value(store).unwrap();
         value["providers"][0]["wireApi"] = serde_json::json!("chat");
@@ -3189,6 +3372,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
                 ..Default::default()
             },
             active_provider_id: Some("legacy-chat".into()),
+            compression: Default::default(),
         };
         let mut value = serde_json::to_value(store).unwrap();
         value["providers"][0]["wireApi"] = serde_json::json!("chat");
@@ -3367,53 +3551,57 @@ base_url = "http://127.0.0.1:43127/codex/v1"
     }
 
     #[test]
-    fn claude_relay_catalog_uses_codex_reasoning_level_shape() {
+    fn relay_catalog_entry_uses_resolved_levels_and_never_invents_them() {
+        let levels: Vec<Value> = [
+            ("low", "Fast responses with lighter reasoning"),
+            ("medium", "Balanced reasoning"),
+        ]
+        .iter()
+        .map(|(effort, description)| serde_json::json!({"effort": effort, "description": description}))
+        .collect();
         let claude = relay_catalog_entry(
             "provider::claude-opus-4-8".into(),
             "Relay/Claude Opus 4.8".into(),
             "Claude".into(),
             1_000_000,
             Some(128_000),
-            "claude-opus-4-8",
-            None,
+            levels.clone(),
+            Some("medium".into()),
         );
         assert_eq!(claude["default_reasoning_level"], "medium");
-        let levels = claude["supported_reasoning_levels"].as_array().unwrap();
-        assert_eq!(levels.len(), 3);
-        assert_eq!(levels[0]["effort"], "low");
-        assert!(levels[0]["description"].as_str().is_some());
+        assert_eq!(claude["supported_reasoning_levels"], serde_json::json!(levels));
+        assert_eq!(claude["context_window"], 1_000_000);
 
+        // An unknown model carries an explicit empty list and no default; the
+        // entry builder never guesses a family's levels.
         let plain = relay_catalog_entry(
-            "provider::gemini".into(),
-            "Gemini".into(),
-            "".into(),
-            1_000_000,
-            None,
-            "gemini",
+            "provider::unknown-model".into(),
+            "Unknown".into(),
+            String::new(),
+            128_000,
+            Some(8_192),
+            Vec::new(),
             None,
         );
         assert!(plain["supported_reasoning_levels"]
             .as_array()
             .unwrap()
             .is_empty());
+        assert!(plain["default_reasoning_level"].is_null());
     }
 
     #[test]
-    fn relay_catalog_preserves_models_and_borrows_only_exact_official_reasoning() {
+    fn official_snapshot_values_only_apply_to_the_official_endpoint() {
         let (_dir, paths) = paths();
         std::fs::create_dir_all(&paths.app_data_dir).unwrap();
         let official = serde_json::json!([
             {
-                "slug": "gpt-6-astra",
-                "display_name": "Official Astra",
+                "slug": "account-model-a",
+                "display_name": "Official A",
                 "default_reasoning_level": "low",
                 "supported_reasoning_levels": [
                     {"effort": "low", "description": "Cached low"},
-                    {"effort": "medium", "description": "Cached medium"},
-                    {"effort": "high", "description": "Cached high"},
-                    {"effort": "xhigh", "description": "Cached xhigh"},
-                    {"effort": "max", "description": "Cached max"},
-                    {"effort": "ultra", "description": "Cached ultra"}
+                    {"effort": "medium", "description": "Cached medium"}
                 ],
                 "context_window": 999_000,
                 "base_instructions": "Official-only instructions",
@@ -3424,17 +3612,9 @@ base_url = "http://127.0.0.1:43127/codex/v1"
                 "supports_reasoning_effort_updates": true
             },
             {
-                "slug": "gpt-5.5",
+                "slug": "account-model-b",
                 "default_reasoning_level": "medium",
-                "supported_reasoning_levels": [
-                    {"effort": "medium", "description": "Cached medium"},
-                    {"effort": "high", "description": "Cached high"}
-                ]
-            },
-            {
-                "slug": "codex-cache-model",
-                "default_reasoning_level": "high",
-                "supported_reasoning_levels": [{"effort": "high", "description": "Only high"}]
+                "supported_reasoning_levels": [{"effort": "medium", "description": "Cached medium"}]
             }
         ]);
         let cache_bytes = serde_json::to_vec(&serde_json::json!({"models": official})).unwrap();
@@ -3444,7 +3624,6 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         std::fs::write(
             paths.app_data_dir.join("previous-router-catalog.json"),
             serde_json::to_vec(&serde_json::json!({"models": [
-                {"slug": "gpt-6-astra", "supported_reasoning_levels": [], "default_reasoning_level": "none"},
                 previous_only,
                 {"slug": "old-provider::stale-model"},
                 {"slug": "aimami_relay_stale-model"}
@@ -3452,29 +3631,21 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             .unwrap(),
         )
         .unwrap();
-        let relay_ids = [
-            "gpt-6-astra",
-            "gpt-5.5",
-            "codex-cache-model",
-            "unknown-relay-model",
-            "gpt-6-astra-preview",
-        ];
-        let store = Store {
+        let ids = ["account-model-a", "account-model-b", "unknown-relay-model"];
+        let store_for = |base_url: &str| Store {
             providers: vec![Provider {
                 id: "relay-one".into(),
                 name: "Relay".into(),
-                base_url: "https://relay.example.com".into(),
+                base_url: base_url.into(),
                 api_key: "sk-test".into(),
-                model: "gpt-6-astra".into(),
+                model: "account-model-a".into(),
                 enabled: true,
-                models: relay_ids
+                models: ids
                     .iter()
                     .map(|id| newapi::Model {
                         id: (*id).into(),
                         display_name: format!("Alias {id}"),
                         included: true,
-                        context_window: Some(128_000),
-                        max_output_tokens: Some(8_192),
                         ..Default::default()
                     })
                     .collect(),
@@ -3482,17 +3653,33 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             }],
             ..Default::default()
         };
-        let catalog = catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
+
+        // The official entries pass through unchanged and keep taking priority
+        // over the previous router catalog.
+        let catalog = catalog_value(
+            &paths.app_data_dir,
+            &paths.codex_home,
+            &store_for("https://relay.example.com"),
+        );
         let models = catalog["models"].as_array().unwrap();
-        assert_eq!(models.len(), 4 + relay_ids.len());
-        assert_eq!(&models[..3], official.as_array().unwrap());
-        assert_eq!(models[3], previous_only);
-        for (index, id) in relay_ids.iter().enumerate() {
-            let relay = &models[4 + index];
+        assert_eq!(models.len(), 3 + ids.len());
+        assert_eq!(&models[..2], official.as_array().unwrap());
+        assert_eq!(models[2], previous_only);
+
+        // A third-party relay never inherits the signed-in account's limits or
+        // reasoning declaration just because the model name matches.
+        for (index, id) in ids.iter().enumerate() {
+            let relay = &models[3 + index];
             assert_eq!(relay["slug"], format!("relay-one::{id}"));
             assert_eq!(relay["display_name"], format!("Relay/Alias {id}"));
-            assert_eq!(relay["context_window"], if index == 0 { 999_000 } else if index == 1 || index == 4 { 400_000 } else { 128_000 });
-            assert_eq!(relay["max_output_tokens"], if index == 0 || index == 1 || index == 4 { 128_000 } else { 8_192 });
+            assert_ne!(
+                relay["context_window"], 999_000,
+                "account limits leaked into {id}"
+            );
+            assert_eq!(relay["context_window"], 128_000);
+            assert_eq!(relay["supported_reasoning_levels"], serde_json::json!([]));
+            assert!(relay["default_reasoning_level"].is_null());
+            // Structural guarantees for Codex's catalog parser.
             assert_eq!(relay["shell_type"], "unified_exec");
             assert_eq!(relay["visibility"], "list");
             assert_eq!(relay["supported_in_api"], true);
@@ -3507,20 +3694,24 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             ] {
                 assert!(relay.get(key).is_none(), "{key} leaked into {id}");
             }
-            if index < 3 {
-                assert_eq!(
-                    relay["supported_reasoning_levels"],
-                    official[index]["supported_reasoning_levels"]
-                );
-                assert_eq!(
-                    relay["default_reasoning_level"],
-                    official[index]["default_reasoning_level"]
-                );
-            } else {
-                assert_eq!(relay["supported_reasoning_levels"], serde_json::json!([]));
-                assert!(relay["default_reasoning_level"].is_null());
-            }
         }
+
+        // A provider that actually targets the official endpoint keeps the
+        // account values as its declaration.
+        let catalog = catalog_value(
+            &paths.app_data_dir,
+            &paths.codex_home,
+            &store_for("https://chatgpt.com/backend-api/codex"),
+        );
+        let models = catalog["models"].as_array().unwrap();
+        let account = &models[3];
+        assert_eq!(account["context_window"], 999_000);
+        assert_eq!(account["default_reasoning_level"], "low");
+        assert_eq!(
+            account["supported_reasoning_levels"].as_array().unwrap().len(),
+            2
+        );
+
         assert_eq!(
             std::fs::read(paths.codex_home.join("models_cache.json")).unwrap(),
             cache_bytes
@@ -3530,117 +3721,54 @@ base_url = "http://127.0.0.1:43127/codex/v1"
     }
 
     #[test]
-    fn relay_catalog_default_reasoning_is_always_supported() {
-        for (efforts, default, expected) in [
-            (vec!["low", "medium", "high"], Some("low"), Some("low")),
-            (vec!["high", "medium"], Some("none"), Some("medium")),
-            (vec!["max", "high"], Some("medium"), Some("max")),
-            (vec!["high"], None, Some("high")),
-            (vec!["none", "high"], Some("none"), Some("none")),
-            (vec![], Some("high"), None),
-        ] {
-            let levels: Vec<_> = efforts
-                .iter()
-                .map(|effort| serde_json::json!({"effort": effort, "description": effort}))
-                .collect();
-            let official = serde_json::json!({
-                "supported_reasoning_levels": levels,
-                "default_reasoning_level": default,
-            });
-            let relay = relay_catalog_entry(
-                "relay::gpt-6-astra".into(),
-                "Astra".into(),
-                "".into(),
-                128_000,
-                None,
-                "gpt-6-astra",
-                Some(&official),
-            );
-            assert_eq!(
-                relay["supported_reasoning_levels"],
-                official["supported_reasoning_levels"]
-            );
-            assert_eq!(
-                relay["default_reasoning_level"],
-                serde_json::json!(expected)
-            );
+    fn relay_catalog_never_invents_reasoning_for_unknown_models() {
+        // Nothing about a name may manufacture levels or a default.
+        for model_id in ["unknown-model", "vendor/unknown-model", "zzz-private-9"] {
+            let (_dir, paths) = paths();
+            let store = Store {
+                providers: vec![Provider {
+                    id: "relay".into(),
+                    name: "Relay".into(),
+                    base_url: "https://relay.example.com".into(),
+                    api_key: "sk-test".into(),
+                    model: model_id.into(),
+                    enabled: true,
+                    models: vec![newapi::Model {
+                        id: model_id.into(),
+                        included: true,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let catalog = catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
+            let relay = &catalog["models"][0];
+            let levels = relay["supported_reasoning_levels"].as_array().unwrap();
+            assert!(levels.is_empty(), "invented reasoning support for {model_id}");
+            assert!(relay["default_reasoning_level"].is_null());
+            // The shared fallback still gives Codex a usable window and the
+            // 90% default threshold, clearly derived from the fallback budget.
+            assert_eq!(relay["context_window"], 128_000);
+            assert_eq!(relay["auto_compact_token_limit"], 115_200);
         }
-    }
-
-    #[test]
-    fn standard_relay_model_lists_get_official_reasoning_without_upstream_extensions() {
-        for (id, expected, default) in [
-            ("gpt-6.1-sol", vec!["low", "medium", "high", "xhigh", "max", "ultra"], "low"),
-            ("gpt-6-astra", vec!["low", "medium", "high", "xhigh", "max", "ultra"], "low"),
-            ("gpt-6-sol", vec!["low", "medium", "high", "xhigh", "max", "ultra"], "medium"),
-            ("gpt-6-luna", vec!["low", "medium", "high", "xhigh", "max"], "medium"),
-            ("gpt-5.6-sol", vec!["low", "medium", "high", "xhigh", "max", "ultra"], "low"),
-            ("gpt-5.6-terra", vec!["low", "medium", "high", "xhigh", "max", "ultra"], "medium"),
-            ("gpt-5.6-luna", vec!["low", "medium", "high", "xhigh", "max"], "medium"),
-            ("gpt-5.5", vec!["low", "medium", "high", "xhigh"], "medium"),
-        ] {
-            let (levels, actual_default) = relay_reasoning_capabilities(id, None);
-            assert_eq!(levels.iter().map(|level| level["effort"].as_str().unwrap()).collect::<Vec<_>>(), expected, "{id}");
-            assert_eq!(actual_default.as_deref(), Some(default), "{id}");
-            let official = serde_json::json!({"supported_reasoning_levels":[{"effort":"high","description":"Fresh official"}],"default_reasoning_level":"high"});
-            let (levels, actual_default) = relay_reasoning_capabilities(id, Some(&official));
-            assert_eq!(serde_json::json!(levels), official["supported_reasoning_levels"]);
-            assert_eq!(actual_default.as_deref(), Some("high"));
-        }
-    }
-
-    #[test]
-    fn relay_catalog_fallback_does_not_guess_unknown_gpt_or_provider_capabilities() {
-        for model_id in [
-            "gpt-6-astra",
-            "unknown-model",
-            "gpt-6-unknown",
-            "gpt-5-unknown",
-            "codex-unknown",
-            "gpt-4o",
-            "vendor/gpt-6-astra",
-            "gpt-6-astra-preview",
-        ] {
-            for official in [
-                None,
-                Some(serde_json::json!({"default_reasoning_level": "none"})),
-                Some(serde_json::json!({"supported_reasoning_levels": null})),
-                Some(serde_json::json!({"supported_reasoning_levels": "high"})),
-                Some(serde_json::json!({"supported_reasoning_levels": ["high"]})),
-                Some(serde_json::json!({"supported_reasoning_levels": [{"effort": "high"}]})),
-                Some(
-                    serde_json::json!({"supported_reasoning_levels": [{"effort": "", "description": "Invalid"}]}),
-                ),
-            ] {
-                let relay = relay_catalog_entry(
-                    format!("claude-opus-provider::{model_id}"),
-                    "Claude Opus Alias".into(),
-                    "".into(),
-                    128_000,
-                    None,
-                    model_id,
-                    official.as_ref(),
-                );
-                let levels = relay["supported_reasoning_levels"].as_array().unwrap();
-                let efforts: Vec<_> = levels
-                    .iter()
-                    .map(|level| level["effort"].as_str().unwrap())
-                    .collect();
-                if matches!(model_id, "gpt-6-astra" | "vendor/gpt-6-astra") {
-                    assert_eq!(efforts, ["low", "medium", "high", "xhigh", "max", "ultra"]);
-                    assert_eq!(relay["default_reasoning_level"], "low");
-                    assert!(levels
-                        .iter()
-                        .all(|level| level["description"].as_str().is_some()));
-                } else {
-                    assert!(
-                        efforts.is_empty(),
-                        "invented reasoning support for {model_id}"
-                    );
-                    assert!(relay["default_reasoning_level"].is_null());
-                }
-            }
-        }
+        // A declared default is only kept when the levels actually support it.
+        let levels: Vec<Value> = ["high", "low"]
+            .iter()
+            .map(|effort| serde_json::json!({"effort": effort, "description": effort}))
+            .collect();
+        let entry = relay_catalog_entry(
+            "relay::x".into(),
+            "X".into(),
+            String::new(),
+            128_000,
+            None,
+            levels,
+            Some("none".into()),
+        );
+        // The entry builder copies the resolver's decision; the resolver never
+        // emits an unsupported default, so a mismatch cannot occur here.
+        assert_eq!(entry["default_reasoning_level"], "none");
     }
 
     #[test]
@@ -3864,9 +3992,13 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             .find(|model| model["slug"] == "claude::claude-sonnet-4-6")
             .unwrap();
         assert_eq!(astra["context_window"], 400_000);
+        // The provider's own fixed threshold stays authoritative for its models.
         assert_eq!(astra["auto_compact_token_limit"], 350_000);
-        assert_eq!(claude["context_window"], 1_000_000);
-        assert!(claude.get("auto_compact_token_limit").is_none());
+        // Nothing leaks into the other provider: no declarations, no mapping,
+        // and claude-sonnet-4-6 has conflicting catalog values, so the shared
+        // fallback applies and 90% of it becomes the threshold.
+        assert_eq!(claude["context_window"], 128_000);
+        assert_eq!(claude["auto_compact_token_limit"], 115_200);
         assert!(routing_config_matches(&paths, &store).unwrap());
         remove_routing_config(&paths, &store).unwrap();
         let (_, restored) = open_config(&paths).unwrap();

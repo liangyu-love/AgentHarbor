@@ -1,15 +1,13 @@
-use super::{model_catalog, model_defaults, router};
+//! Capability preview: serializes the exact resolver output and client
+//! projection that injection uses, so the panel can never disagree with the
+//! generated configuration. No value is recomputed here.
+use super::model_metadata::{
+    Field, FieldConflict, MatchKind, MatchStep, PriceInfo, ReasoningOptionInfo,
+};
+use super::{model_catalog, model_defaults, model_policy, models_dev, newapi, router};
 use crate::platform::paths::CodexPaths;
 use serde::Serialize;
-use serde_json::Value;
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Field<T: Serialize> {
-    pub value: T,
-    pub source: String,
-    pub updated_at: Option<i64>,
-}
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Preview {
@@ -17,30 +15,43 @@ pub struct Preview {
     pub provider_name: String,
     pub display_name: String,
     pub upstream_model: String,
+    /// Human-readable identity the resolver settled on (or the normalized
+    /// fallback when nothing matched).
     pub matched_model: String,
-    pub reasoning: Field<Vec<Value>>,
+    pub match_kind: MatchKind,
+    pub matched: Option<models_dev::ModelRef>,
+    pub steps: Vec<MatchStep>,
+    pub conflicts: Vec<FieldConflict>,
+    pub reasoning: Field<Vec<newapi::ReasoningLevel>>,
+    pub reasoning_supports: Option<bool>,
+    pub reasoning_options: Vec<ReasoningOptionInfo>,
     pub default_reasoning: Option<String>,
-    pub context: Field<Option<u64>>,
-    pub output: Field<Option<u64>>,
+    pub default_reasoning_source: String,
+    pub context: Field<u64>,
+    pub input_limit: Field<u64>,
+    pub output: Field<u64>,
+    pub price: PriceInfo,
+    /// Effective values the client projection uses, including compression.
+    pub projection: model_policy::ClientProjection,
 }
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogView {
+    /// Codex official snapshot status.
     pub stale: bool,
     pub error: Option<String>,
     pub updated_at: Option<i64>,
+    /// models.dev catalog status (revision, age, errors).
+    pub catalog: models_dev::CatalogStatus,
     pub models: Vec<Preview>,
 }
-fn field<T: Serialize>(value: T, source: &str, updated_at: Option<i64>) -> Field<T> {
-    Field {
-        value,
-        source: source.into(),
-        updated_at,
-    }
-}
+
 pub fn preview(paths: &CodexPaths, store: &router::Store) -> CatalogView {
     let snapshot = model_catalog::official(&paths.codex_home, &paths.app_data_dir);
-    let catalog = model_defaults::Catalog::from_models(&snapshot.models);
+    let models_dev = models_dev::load(&paths.app_data_dir);
+    let global_compression = store.global_compression();
+    let now = chrono::Utc::now().timestamp();
     let mut models = Vec::new();
     for provider in &store.providers {
         let mut ids: Vec<&str> = provider.models.iter().map(|m| m.id.as_str()).collect();
@@ -48,121 +59,40 @@ pub fn preview(paths: &CodexPaths, store: &router::Store) -> CatalogView {
             ids.push(&provider.model);
         }
         for id in ids {
-            let resolved = router::resolved_model_metadata(provider, id, &catalog);
-            let official = router::matched_official_model(&snapshot.models, id);
-            let official_time = official
-                .and_then(|m| m["slug"].as_str())
-                .and_then(|slug| snapshot.model_updated_at.get(slug))
-                .copied()
-                .flatten();
-            let channel = resolved.reasoning_metadata();
-            let reasoning_source = router::model_reasoning_source(id, official, channel.as_ref());
-            let (levels, default) = router::relay_reasoning_capabilities(id, reasoning_source);
-            let shared = catalog.get(id);
-            let known = model_defaults::named_defaults(id).is_some();
-            let saved = provider.models.iter().find(|m| m.id == id);
-            let manual = saved.is_some_and(|m| m.metadata_source == "manual");
-            let source = if manual {
-                "manual"
-            } else if saved.is_some_and(|m| m.metadata_source == "catalog") {
-                "catalog"
-            } else if known {
-                "local"
-            } else {
-                "upstream"
-            };
-            let time = if manual {
-                Some(provider.updated_at)
-            } else if !known {
-                provider.models_fetched_at
-            } else {
-                None
-            };
-            let context_source = if manual || provider.context_window.is_some() {
-                "manual"
-            } else if id.to_ascii_lowercase().contains("claude") {
-                "local"
-            } else if shared.is_some() {
-                "catalog"
-            } else if saved.is_some_and(|m| m.context_window.is_some()) {
-                source
-            } else {
-                "local"
-            };
-            let defaults = model_defaults::for_model(id);
-            let unclamped_output = shared
-                .and_then(|e| {
-                    e.max_output_tokens
-                        .or_else(|| e.context_window.map(|n| n.min(defaults.max_output_tokens)))
-                })
-                .or_else(|| {
-                    if known && source != "catalog" {
-                        Some(defaults.max_output_tokens)
-                    } else {
-                        saved.and_then(|m| m.max_output_tokens)
-                    }
-                });
-            let output_source = if !manual
-                && provider
-                    .context_window
-                    .is_some_and(|limit| unclamped_output.is_some_and(|output| output > limit))
-            {
-                "contextLimit"
-            } else if manual && saved.is_some_and(|m| m.max_output_tokens.is_some()) {
-                "manual"
-            } else if shared.and_then(|e| e.max_output_tokens).is_some() {
-                "catalog"
-            } else if shared.is_some() {
-                "local"
-            } else if saved.is_some_and(|m| m.max_output_tokens.is_some()) {
-                source
-            } else {
-                "local"
-            };
-            let declared_reasoning = reasoning_source
-                .and_then(|m| m.get("supported_reasoning_levels"))
-                .and_then(Value::as_array)
-                .is_some_and(|levels| {
-                    levels.iter().all(|level| {
-                        level["effort"].as_str().is_some_and(|s| !s.is_empty())
-                            && level["description"].as_str().is_some()
-                    })
-                });
-            let reasoning_origin = if declared_reasoning {
-                if official.is_some() {
-                    "catalog"
-                } else {
-                    "upstream"
-                }
-            } else if !levels.is_empty() {
-                "local"
-            } else {
-                "unknown"
-            };
-            let timestamp = |source| match source {
-                "catalog" => official_time,
-                "manual" | "contextLimit" => Some(provider.updated_at),
-                "upstream" => time,
-                _ => None,
-            };
+            let official = router::matched_official_model(&snapshot.models, id)
+                .filter(|_| router::official_endpoint_applies(provider));
+            let (metadata, projection) = router::model_projection(
+                provider,
+                id,
+                official,
+                &models_dev,
+                &global_compression,
+            );
+            let matched_model = metadata
+                .matched
+                .as_ref()
+                .map(|reference| format!("{}/{}", reference.provider_id, reference.model_id))
+                .unwrap_or_else(|| model_defaults::model_key(id));
             models.push(Preview {
                 provider_id: provider.id.clone(),
                 provider_name: provider.name.clone(),
-                display_name: resolved.display_name,
-                upstream_model: id.into(),
-                matched_model: model_defaults::model_key(id),
-                reasoning: field(levels, reasoning_origin, timestamp(reasoning_origin)),
-                default_reasoning: default,
-                context: field(
-                    resolved.context_window,
-                    context_source,
-                    timestamp(context_source),
-                ),
-                output: field(
-                    resolved.max_output_tokens,
-                    output_source,
-                    timestamp(output_source),
-                ),
+                display_name: metadata.display_name.clone(),
+                upstream_model: id.to_owned(),
+                matched_model,
+                match_kind: metadata.match_kind,
+                matched: metadata.matched.clone(),
+                steps: metadata.steps.clone(),
+                conflicts: metadata.conflicts.clone(),
+                reasoning: metadata.reasoning.levels.clone(),
+                reasoning_supports: metadata.reasoning.supports,
+                reasoning_options: metadata.reasoning.options.clone(),
+                default_reasoning: metadata.default_effort.clone(),
+                default_reasoning_source: metadata.default_effort_source.clone(),
+                context: metadata.context_window.clone(),
+                input_limit: metadata.input_limit.clone(),
+                output: metadata.output_limit.clone(),
+                price: metadata.price.clone(),
+                projection,
             });
         }
     }
@@ -170,6 +100,7 @@ pub fn preview(paths: &CodexPaths, store: &router::Store) -> CatalogView {
         stale: snapshot.stale,
         error: snapshot.error,
         updated_at: snapshot.updated_at,
+        catalog: models_dev.status(now),
         models,
     }
 }
@@ -177,172 +108,96 @@ pub fn preview(paths: &CodexPaths, store: &router::Store) -> CatalogView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn channel_aliases_never_change_the_upstream_or_capability_identity() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = CodexPaths::from_home(dir.path().to_path_buf());
-        let provider = router::Provider {
-            id: "relay".into(),
-            name: "Channel".into(),
-            model: "claude-opus-5-5-kiro".into(),
-            models: vec![super::super::newapi::Model {
-                id: "claude-opus-5-5-kiro".into(),
-                display_name: "My alias".into(),
+
+    fn provider(id: &str, model: &str) -> router::Provider {
+        router::Provider {
+            id: id.into(),
+            name: id.into(),
+            model: model.into(),
+            enabled: true,
+            api_key: "fixture".into(),
+            models: vec![newapi::Model {
+                id: model.into(),
+                display_name: "Alias".into(),
                 ..Default::default()
             }],
             ..Default::default()
-        };
-        let view = preview(
-            &paths,
-            &router::Store {
-                providers: vec![provider],
-                ..Default::default()
-            },
-        );
-        assert_eq!(view.models[0].display_name, "My alias");
-        assert_eq!(view.models[0].upstream_model, "claude-opus-5-5-kiro");
-        assert_eq!(view.models[0].matched_model, "claude-opus-5-5");
-        assert_eq!(view.models[0].context.value, Some(1_000_000));
-        assert_eq!(view.models[0].context.source, "local");
+        }
     }
 
     #[test]
-    fn preview_and_router_share_official_fallback_and_per_field_provenance() {
+    fn preview_serializes_the_same_projection_injection_uses() {
         let dir = tempfile::tempdir().unwrap();
-        let paths = CodexPaths::from_home(dir.path().into());
-        std::fs::create_dir_all(&paths.app_data_dir).unwrap();
-        std::fs::write(paths.app_data_dir.join("previous-router-catalog.json"),r#"{"models":[{"slug":"gpt-6-astra","context_window":900000,"max_output_tokens":64000,"supported_reasoning_levels":[{"effort":"high","description":"High"}]}]}"#).unwrap();
-        let provider = router::Provider {
-            id: "a".into(),
-            model: "gpt-6-astra".into(),
-            api_key: "fixture".into(),
-            enabled: true,
+        let paths = CodexPaths::from_home(dir.path().to_path_buf());
+        let store = router::Store {
+            providers: vec![provider("relay", "claude-opus-4-5")],
             ..Default::default()
         };
+        let view = preview(&paths, &store);
+        let row = &view.models[0];
+        assert_eq!(row.upstream_model, "claude-opus-4-5");
+        assert_eq!(row.display_name, "Alias");
+        // The preview and the generated catalog entry share the projection.
+        let catalog = router::catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
+        let entry = catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["slug"] == "relay::claude-opus-4-5")
+            .unwrap();
+        assert_eq!(
+            entry["context_window"].as_u64(),
+            Some(row.projection.context_window)
+        );
+        assert_eq!(
+            entry["max_output_tokens"].as_u64(),
+            row.projection.output_limit
+        );
+        // 90% of the effective budget by default.
+        assert_eq!(
+            entry["auto_compact_token_limit"].as_u64(),
+            row.projection.compression.threshold
+        );
+    }
+
+    #[test]
+    fn unknown_models_are_marked_as_fallback_not_as_catalog_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().to_path_buf());
+        let store = router::Store {
+            providers: vec![provider("relay", "totally-unknown-model-xyz")],
+            ..Default::default()
+        };
+        let view = preview(&paths, &store);
+        let row = &view.models[0];
+        assert!(row.projection.context_is_fallback);
+        assert_eq!(row.projection.context_source, "fallback");
+        assert_eq!(row.projection.context_window, 128_000);
+        assert_eq!(row.projection.compression.threshold, Some(115_200));
+    }
+
+    #[test]
+    fn provider_compression_and_overrides_flow_through_the_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().to_path_buf());
+        let mut provider = provider("relay", "gpt-5.2");
+        provider.context_window = Some(200_000);
+        provider.compression = model_policy::CompressionPolicy::percent(80);
+        provider.models[0].overrides.context_window = Some(200_000);
         let store = router::Store {
             providers: vec![provider],
             ..Default::default()
         };
-        let preview = preview(&paths, &store);
-        let catalog = router::catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
-        let row = catalog["models"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|m| m["slug"] == "a::gpt-6-astra")
-            .unwrap();
-        assert_eq!(
-            preview.models[0].context.value,
-            Some(row["context_window"].as_u64().unwrap())
-        );
-        assert_eq!(
-            preview.models[0].reasoning.value,
-            row["supported_reasoning_levels"]
-                .as_array()
-                .unwrap()
-                .clone()
-        );
-        assert_eq!(preview.models[0].output.source, "catalog");
-        assert!(preview.models[0].output.updated_at.is_some());
-        assert!(preview.stale);
-    }
-
-    #[test]
-    fn official_limits_without_reasoning_declaration_keep_reasoning_source_local() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = CodexPaths::from_home(dir.path().to_path_buf());
-        std::fs::write(
-            paths.codex_home.join("models_cache.json"),
-            r#"{"models":[{"slug":"gpt-6-astra","context_window":900000,"max_output_tokens":64000}]} "#,
-        )
-        .unwrap();
-        let provider = router::Provider {
-            id: "catalog".into(),
-            model: "gpt-6-astra".into(),
-            models: vec![super::super::newapi::Model {
-                id: "gpt-6-astra".into(),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        let view = preview(
-            &paths,
-            &router::Store {
-                providers: vec![provider],
-                ..Default::default()
-            },
-        );
-
-        assert_eq!(view.models[0].context.value, Some(900_000));
-        assert_eq!(view.models[0].context.source, "catalog");
-        assert_eq!(view.models[0].output.value, Some(64_000));
-        assert_eq!(view.models[0].output.source, "catalog");
-        assert_eq!(view.models[0].reasoning.source, "local");
-        assert!(!view.models[0].reasoning.value.is_empty());
-    }
-
-    #[test]
-    fn provider_context_limit_is_reported_as_output_constraint() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = CodexPaths::from_home(dir.path().to_path_buf());
-        let provider = router::Provider {
-            id: "limited".into(),
-            model: "gpt-6-astra".into(),
-            context_window: Some(4096),
-            updated_at: 12345,
-            models: vec![super::super::newapi::Model {
-                id: "gpt-6-astra".into(),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        let view = preview(
-            &paths,
-            &router::Store {
-                providers: vec![provider],
-                ..Default::default()
-            },
-        );
-
-        assert_eq!(view.models[0].context.value, Some(4096));
-        assert_eq!(view.models[0].context.source, "manual");
-        assert_eq!(view.models[0].output.value, Some(4096));
-        assert_eq!(view.models[0].output.source, "contextLimit");
-        assert_eq!(view.models[0].output.updated_at, Some(12345));
-    }
-
-    #[test]
-    fn saved_catalog_metadata_keeps_catalog_provenance_when_refresh_lacks_model() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = CodexPaths::from_home(dir.path().to_path_buf());
-        let provider = router::Provider {
-            id: "saved".into(),
-            model: "vendor-model".into(),
-            models: vec![super::super::newapi::Model {
-                id: "vendor-model".into(),
-                display_name: "Saved vendor".into(),
-                context_window: Some(100_000),
-                max_output_tokens: Some(20_000),
-                metadata_source: "catalog".into(),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        let view = preview(
-            &paths,
-            &router::Store {
-                providers: vec![provider],
-                ..Default::default()
-            },
-        );
-
-        assert_eq!(view.models[0].display_name, "Saved vendor");
-        assert_eq!(view.models[0].context.value, Some(100_000));
-        assert_eq!(view.models[0].context.source, "catalog");
-        assert_eq!(view.models[0].output.value, Some(20_000));
-        assert_eq!(view.models[0].output.source, "catalog");
+        let view = preview(&paths, &store);
+        let row = &view.models[0];
+        assert_eq!(row.context.value, Some(200_000));
+        assert_eq!(row.context.source, "manual");
+        // The budget prefers the catalog's input limit (272000) over the raw
+        // context, so 80% is 217600 rather than 160000.
+        assert_eq!(row.projection.budget, 272_000);
+        assert_eq!(row.projection.compression.threshold, Some(217_600));
+        assert_eq!(row.projection.compression.source, "provider");
+        // The generic reference supplies the output cap without a conflict.
+        assert_eq!(row.projection.output_limit, Some(128_000));
     }
 }

@@ -292,6 +292,12 @@ impl Repository {
         }))
     }
 
+    /// Current outbound proxy configuration, for background downloads such as
+    /// the models.dev catalog refresh.
+    pub fn api_proxy_config(&self) -> ApiProxyConfigPayload {
+        self.load_settings().api_proxy
+    }
+
     pub fn set_api_proxy_config(
         &self,
         mode: ApiProxyMode,

@@ -1,6 +1,8 @@
 //! Compression policy: the single place that turns "auto compact at 90% of
 //! the prompt budget" (or a fixed token count, or delegation to the client)
-//! into a concrete threshold. Never invents values for unknown budgets.
+//! into a concrete threshold, plus the client projection that every consumer
+//! (Codex catalog, OpenCode limits, preview) shares.
+use super::model_metadata::{self, ResolvedMetadata};
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_PERCENT: u8 = 90;
@@ -197,6 +199,82 @@ pub fn migrate_legacy_limit(limit: Option<u64>) -> CompressionPolicy {
     match limit.filter(|limit| *limit > 0) {
         Some(tokens) => CompressionPolicy::Tokens { tokens },
         None => CompressionPolicy::Inherit,
+    }
+}
+
+/// What a client adapter finally injects for one model. The preview and every
+/// injection path read this same projection, so they cannot disagree.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientProjection {
+    /// Effective context window after every source, including the shared
+    /// fallback when nothing else is known.
+    pub context_window: u64,
+    pub context_source: String,
+    pub context_is_fallback: bool,
+    /// Effective prompt budget the compression threshold derives from.
+    pub budget: u64,
+    pub budget_source: String,
+    pub input_limit: Option<u64>,
+    pub output_limit: Option<u64>,
+    pub output_source: String,
+    /// Codex-shaped reasoning levels (`[{effort, description}]`).
+    pub reasoning: Vec<serde_json::Value>,
+    pub reasoning_source: String,
+    pub default_reasoning: Option<String>,
+    pub compression: CompressionPlan,
+}
+
+/// Build the shared projection. `policy` is the resolved model → provider →
+/// global chain; the caller supplies it so the source label stays truthful.
+pub fn project(
+    metadata: &ResolvedMetadata,
+    policy: (&CompressionPolicy, PolicySource),
+) -> ClientProjection {
+    let (fallback_context, fallback_output) = model_metadata::fallback_values();
+    let (context_window, context_source, context_is_fallback) =
+        match metadata.context_window.value {
+            Some(value) => (value, metadata.context_window.source.clone(), false),
+            None => (fallback_context, model_metadata::source::FALLBACK.to_owned(), true),
+        };
+    // An output cap above the context window cannot be satisfied; keep the
+    // existing client-side clamp while leaving the raw catalog value visible
+    // through the resolver fields.
+    let (output_limit, output_source) = match metadata.output_limit.value {
+        Some(value) => (Some(value.min(context_window)), metadata.output_limit.source.clone()),
+        None => (
+            Some(fallback_output.min(context_window)),
+            model_metadata::source::FALLBACK.to_owned(),
+        ),
+    };
+    let (budget, budget_source) = match metadata.input_limit.value {
+        Some(value) => (value, metadata.input_limit.source.clone()),
+        None => (context_window, context_source.clone()),
+    };
+    let levels = metadata.reasoning.levels.value.clone().unwrap_or_default();
+    let reasoning = levels
+        .iter()
+        .filter_map(|level| serde_json::to_value(level).ok())
+        .collect();
+    let default_reasoning = metadata
+        .default_effort
+        .clone()
+        .filter(|effort| levels.iter().any(|level| level.effort.eq_ignore_ascii_case(effort)));
+    let budget = budget.max(1);
+    let compression = plan(policy.0, policy.1, Some(budget), &budget_source);
+    ClientProjection {
+        context_window,
+        context_source,
+        context_is_fallback,
+        budget,
+        budget_source,
+        input_limit: metadata.input_limit.value,
+        output_limit,
+        output_source,
+        reasoning,
+        reasoning_source: metadata.reasoning.levels.source.clone(),
+        default_reasoning,
+        compression,
     }
 }
 

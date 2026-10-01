@@ -499,22 +499,25 @@ fn bounded_read(path: &Path) -> Option<Vec<u8>> {
 }
 
 fn embedded() -> Arc<Catalog> {
-    match Catalog::parse(EMBEDDED.as_bytes(), Origin::Embedded) {
-        Ok(catalog) => Arc::new(catalog),
-        Err(error) => {
-            log::error!("embedded models.dev snapshot rejected: {error}");
-            Arc::new(Catalog {
-                snapshot: Snapshot {
-                    schema_version: SCHEMA_VERSION,
-                    source_url: DEFAULT_SOURCE_URL.into(),
-                    ..Default::default()
-                },
-                origin: Origin::Embedded,
-                error: Some(error),
-                index: Index::default(),
-            })
-        }
-    }
+    static EMBEDDED_CATALOG: OnceLock<Arc<Catalog>> = OnceLock::new();
+    EMBEDDED_CATALOG
+        .get_or_init(|| match Catalog::parse(EMBEDDED.as_bytes(), Origin::Embedded) {
+            Ok(catalog) => Arc::new(catalog),
+            Err(error) => {
+                log::error!("embedded models.dev snapshot rejected: {error}");
+                Arc::new(Catalog {
+                    snapshot: Snapshot {
+                        schema_version: SCHEMA_VERSION,
+                        source_url: DEFAULT_SOURCE_URL.into(),
+                        ..Default::default()
+                    },
+                    origin: Origin::Embedded,
+                    error: Some(error),
+                    index: Index::default(),
+                })
+            }
+        })
+        .clone()
 }
 
 /// Read the catalog for `app_data_dir` without network access. The runtime

@@ -42,8 +42,8 @@ fn fixture() -> (tempfile::TempDir, ConfigManager, Store, ConfigRequest) {
         target_id: TargetId::ClaudeCode,
         provider_id: "test-relay".into(),
         model: "claude-test".into(),
-        context_window: 200000,
-        max_output_tokens: 8192,
+        context_window: Some(200000),
+        max_output_tokens: Some(8192),
         options: ClientOptions {
             access_mode: ClientAccessMode::Router,
             // These legacy-configuration fixtures explicitly opt out of 1M.

@@ -414,6 +414,8 @@ fn opencode_native_selects_cards_and_preserves_headers_and_custom_models() {
             protocol: Some(ModelProtocol::Responses),
             context_window: Some(64000),
             max_output_tokens: Some(4096),
+            // Collected declarations, not name-based guesses.
+            metadata_source: "upstream".into(),
             ..Default::default()
         },
         crate::core::newapi::Model {
@@ -423,6 +425,7 @@ fn opencode_native_selects_cards_and_preserves_headers_and_custom_models() {
             protocol: Some(ModelProtocol::ChatCompletions),
             context_window: Some(96000),
             max_output_tokens: Some(4096),
+            metadata_source: "upstream".into(),
             ..Default::default()
         },
     ];
@@ -479,7 +482,9 @@ fn opencode_native_selects_cards_and_preserves_headers_and_custom_models() {
     );
     assert_eq!(
         providers["agentharbor_second_responses"]["models"]["responses-model"]["limit"]["context"],
-        64000
+        // The provider-wide window setting overrides per-model values, exactly
+        // as the router's resolver does.
+        999999
     );
     assert!(providers["agentharbor_second"]["models"]["chat-model"]["limit"].is_null());
     assert!(!has_router_configs(manager.data_dir.parent().unwrap()).unwrap());

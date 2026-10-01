@@ -1,4 +1,6 @@
+use super::model_policy::CompressionPolicy;
 use super::models::ApiProxyConfigPayload;
+use super::models_dev::ModelRef;
 use reqwest::{
     blocking::{Client, Response},
     header::{HeaderMap, HeaderValue, AUTHORIZATION},
@@ -310,7 +312,7 @@ pub struct ReasoningLevel {
 }
 
 impl ReasoningLevel {
-    fn valid(&self) -> bool {
+    pub(crate) fn valid(&self) -> bool {
         !self.effort.is_empty()
             && self.effort.len() <= 32
             && self
@@ -348,13 +350,50 @@ fn parse_reasoning_levels(value: &Value) -> Option<Vec<ReasoningLevel>> {
     Some(parsed)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PriceOverrides {
+    pub input: Option<f64>,
+    pub output: Option<f64>,
+    pub cache_read: Option<f64>,
+    pub cache_write: Option<f64>,
+}
+
+/// Explicit user values for one model. Anything left `None` inherits from the
+/// provider setting, a real upstream declaration, the account snapshot or the
+/// models.dev catalog, in that order. `Some(vec![])` on reasoning means the
+/// user explicitly selected "no levels".
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ModelOverrides {
+    pub context_window: Option<u64>,
+    pub input_limit: Option<u64>,
+    pub max_output_tokens: Option<u64>,
+    pub reasoning: Option<Vec<ReasoningLevel>>,
+    pub default_effort: Option<String>,
+    pub price: Option<PriceOverrides>,
+}
+
+impl ModelOverrides {
+    pub fn is_empty(&self) -> bool {
+        self.context_window.is_none()
+            && self.input_limit.is_none()
+            && self.max_output_tokens.is_none()
+            && self.reasoning.is_none()
+            && self.default_effort.is_none()
+            && self.price.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Model {
     pub id: String,
     pub display_name: String,
     /// None inherits the provider default; an explicit value belongs to this model.
     pub protocol: Option<super::router::ModelProtocol>,
+    /// Legacy upstream declaration or migration source; the resolved values are
+    /// derived from [`ModelOverrides`] and the catalog at read time.
     pub context_window: Option<u64>,
     pub max_output_tokens: Option<u64>,
     pub endpoint_types: Vec<String>,
@@ -366,6 +405,18 @@ pub struct Model {
     pub supported_reasoning_levels: Option<Vec<ReasoningLevel>>,
     #[serde(alias = "default_reasoning_level")]
     pub default_reasoning_level: Option<String>,
+    /// Explicit user values; authoritative over every derived source.
+    #[serde(default)]
+    pub overrides: ModelOverrides,
+    /// Explicit models.dev capability reference `{providerId, modelId}`.
+    #[serde(default)]
+    pub catalog_ref: Option<ModelRef>,
+    /// Independent price binding; falls back to the capability match.
+    #[serde(default)]
+    pub price_ref: Option<ModelRef>,
+    /// Per-model compression policy; `inherit` follows provider then global.
+    #[serde(default)]
+    pub compression: CompressionPolicy,
 }
 
 impl Default for Model {
@@ -381,6 +432,10 @@ impl Default for Model {
             metadata_source: String::new(),
             supported_reasoning_levels: None,
             default_reasoning_level: None,
+            overrides: ModelOverrides::default(),
+            catalog_ref: None,
+            price_ref: None,
+            compression: CompressionPolicy::default(),
         }
     }
 }
@@ -402,11 +457,73 @@ impl Model {
         }))
     }
 
+    /// Explicit user values for the resolver. Legacy `metadata_source ==
+    /// "manual"` records keep their top-level values as user values until the
+    /// store migration moves them into [`ModelOverrides`].
+    pub(crate) fn user_values(&self) -> super::model_metadata::UserValues {
+        let legacy_manual = self.metadata_source == "manual" && self.overrides.is_empty();
+        let legacy_reasoning = legacy_manual
+            .then(|| self.supported_reasoning_levels.clone())
+            .flatten();
+        super::model_metadata::UserValues {
+            context_window: self
+                .overrides
+                .context_window
+                .or_else(|| legacy_manual.then_some(self.context_window).flatten()),
+            input_limit: self.overrides.input_limit,
+            output_limit: self
+                .overrides
+                .max_output_tokens
+                .or_else(|| legacy_manual.then_some(self.max_output_tokens).flatten()),
+            reasoning: self.overrides.reasoning.clone().or(legacy_reasoning),
+            default_effort: self
+                .overrides
+                .default_effort
+                .clone()
+                .or_else(|| {
+                    legacy_manual
+                        .then(|| self.default_reasoning_level.clone())
+                        .flatten()
+                }),
+            price: self.overrides.price.as_ref().map(|price| {
+                super::model_metadata::CostRatesInput {
+                    input: price.input,
+                    output: price.output,
+                    cache_read: price.cache_read,
+                    cache_write: price.cache_write,
+                }
+            }),
+        }
+    }
+
+    /// Real upstream declarations. Context/output values only qualify when the
+    /// record was freshly collected (`upstream`): `local`/`catalog` values were
+    /// auto-filled at some point. Reasoning declarations were never
+    /// auto-generated, so any non-manual record keeps them.
+    pub(crate) fn upstream_values(&self) -> Option<super::model_metadata::UpstreamValues> {
+        let collected_limits = self.metadata_source == "upstream";
+        let reasoning = (self.metadata_source != "manual")
+            .then(|| self.supported_reasoning_levels.clone())
+            .flatten();
+        let default_effort = (self.metadata_source != "manual")
+            .then(|| self.default_reasoning_level.clone())
+            .flatten();
+        if !collected_limits && reasoning.is_none() && default_effort.is_none() {
+            return None;
+        }
+        Some(super::model_metadata::UpstreamValues {
+            context_window: collected_limits.then_some(self.context_window).flatten(),
+            input_limit: None,
+            max_output_tokens: collected_limits.then_some(self.max_output_tokens).flatten(),
+            reasoning,
+            default_effort,
+            fetched_at: None,
+            legacy: false,
+        })
+    }
+
     pub fn with_local_defaults(mut self) -> Self {
         let defaults = super::model_defaults::for_model(&self.id);
-        if self.display_name.trim().is_empty() {
-            self.display_name = self.id.clone();
-        }
         // Known model limits are shared by every channel. Explicit user edits
         // and a synced model catalog take priority over the offline definition.
         if self.metadata_source != "manual" {
@@ -511,8 +628,8 @@ fn parse_models(value: &Value) -> Result<Vec<Model>, String> {
                 .and_then(Value::as_str)
                 .filter(|value| value.len() <= 32)
                 .map(str::to_owned),
-        }
-        .with_local_defaults();
+            ..Default::default()
+        };
         if let (Some(context), Some(output)) = (model.context_window, model.max_output_tokens) {
             model.max_output_tokens = Some(output.min(context));
         }
@@ -768,15 +885,18 @@ mod tests {
     }
 
     #[test]
-    fn models_accept_native_token_fields_without_overriding_relay_claude_policy() {
+    fn models_accept_native_token_fields_as_real_declarations() {
         let result = parse_models(&json!({"data":[
             {"id":"claude-haiku-4-5", "max_input_tokens":200000, "max_tokens":8192},
             {"id":"native-model", "max_input_tokens":32000, "max_tokens":4096},
             {"id":"priority", "context_window":64000, "context_length":32000, "max_input_tokens":16000, "max_output_tokens":2048, "max_tokens":4096},
             {"id":"zero", "context_window":0, "context_length":-1, "max_input_tokens":16000, "max_output_tokens":0, "max_tokens":99999}
         ]})).unwrap();
-        assert_eq!(result[0].context_window, Some(1_000_000));
-        assert_eq!(result[0].max_output_tokens, Some(64_000));
+        // Fetched values are recorded as the upstream declaration; no family
+        // policy rewrites them any more.
+        assert_eq!(result[0].context_window, Some(200_000));
+        assert_eq!(result[0].max_output_tokens, Some(8_192));
+        assert_eq!(result[0].metadata_source, "upstream");
         assert_eq!(result[1].context_window, Some(32000));
         assert_eq!(result[1].max_output_tokens, Some(4096));
         assert_eq!(result[2].context_window, Some(64000));
@@ -889,25 +1009,27 @@ mod tests {
             .iter()
             .find(|entry| entry["slug"] == "review::gpt-6-astra")
             .unwrap();
-        assert_eq!(
-            disabled["supported_reasoning_levels"]
-                .as_array()
-                .unwrap()
-                .len(),
-            6
-        );
-        assert_eq!(disabled["default_reasoning_level"], "low");
+        // The relay's explicit empty declaration outranks the shared catalog:
+        // whatever the other channels report cannot re-add levels here.
+        assert!(disabled["supported_reasoning_levels"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(disabled["default_reasoning_level"].is_null());
     }
 
     #[test]
-    fn models_fill_missing_limits_from_editable_local_defaults() {
+    fn models_keep_missing_limits_unknown_for_read_time_resolution() {
         let result = parse_models(&json!({"data":[{"id":"a"},{"id":"b","context_length":128000,"max_output_tokens":8192,"supported_endpoint_types":["openai-response"]},{"id":"a"}]})).unwrap();
         assert_eq!(result.len(), 2);
-        assert_eq!(result[0].context_window, Some(128_000));
-        assert_eq!(result[0].max_output_tokens, Some(8192));
+        // No local family defaults are invented at fetch time; the resolver
+        // fills effective values at read time and marks their source.
+        assert_eq!(result[0].context_window, None);
+        assert_eq!(result[0].max_output_tokens, None);
         assert_eq!(result[0].display_name, "a");
         assert_eq!(result[0].metadata_source, "local");
         assert_eq!(result[1].context_window, Some(128000));
+        assert_eq!(result[1].max_output_tokens, Some(8192));
         assert_eq!(result[1].metadata_source, "upstream");
         assert!(parse_models(&json!({"error":"not authorized"})).is_err());
     }

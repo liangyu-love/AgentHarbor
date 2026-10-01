@@ -16,11 +16,18 @@ impl ClientAdapter for ClaudeCode {
         &paths.claude
     }
 
+    /// Claude Code does not consume context/output limits in its settings;
+    /// catalog-less models must stay injectable.
+    fn needs_limits(&self) -> bool {
+        false
+    }
+
     fn edits(
         &self,
         document: &Value,
         store: &Store,
         request: &ConfigRequest,
+        _catalog: &super::models_dev::Catalog,
     ) -> Result<Vec<Edit>, String> {
         let provider = selected_provider(store, request)?;
         let (base, credential) = client_endpoint(store, provider, request, false)?;

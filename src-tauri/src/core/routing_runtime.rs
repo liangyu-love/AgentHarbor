@@ -122,8 +122,8 @@ mod tests {
                 target_id: crate::core::targets::TargetId::ClaudeCode,
                 provider_id: "relay".into(),
                 model: "claude-test".into(),
-                context_window: 200000,
-                max_output_tokens: 8192,
+                context_window: Some(200000),
+                max_output_tokens: Some(8192),
                 options: client_config::ClientOptions {
                     access_mode: client_config::ClientAccessMode::Router,
                     ..Default::default()

@@ -2,6 +2,17 @@ use super::*;
 
 pub(super) struct OpenCode;
 
+/// Shared resolver projection, so OpenCode limits match the router catalog.
+fn projection_for(
+    store: &Store,
+    provider: &Provider,
+    model: &str,
+    catalog: &super::models_dev::Catalog,
+) -> super::super::model_policy::ClientProjection {
+    let global = store.global_compression();
+    super::super::router::model_projection(provider, model, None, catalog, &global).1
+}
+
 fn provider_key(provider: &Provider, protocol: ModelProtocol) -> String {
     let base = format!("agentharbor_{}", provider.id);
     if protocol == provider.protocol {
@@ -39,6 +50,7 @@ impl ClientAdapter for OpenCode {
         document: &Value,
         store: &Store,
         request: &ConfigRequest,
+        catalog: &super::models_dev::Catalog,
     ) -> Result<Vec<Edit>, String> {
         let mut edits = Vec::new();
         let providers: Vec<_> = store
@@ -116,31 +128,22 @@ impl ClientAdapter for OpenCode {
                 }) {
                     let metadata = provider.models.iter().find(|m| m.id == id);
                     let selected = provider.id == request.provider_id && id == request.model;
+                    let projection = projection_for(store, provider, id, catalog);
+                    // The selected model honors explicit user input; every
+                    // other model uses the same resolver projection as the
+                    // router and Codex catalogs.
                     let context = if selected {
-                        request.context_window
+                        request.context_window.unwrap_or(projection.context_window)
                     } else {
-                        metadata
-                            .and_then(|m| m.context_window)
-                            .or_else(|| {
-                                if id == provider.model {
-                                    provider.context_window
-                                } else {
-                                    None
-                                }
-                            })
-                            .unwrap_or_else(|| {
-                                super::super::model_defaults::for_model(id).context_window
-                            })
+                        projection.context_window
                     };
                     let output = if selected {
-                        request.max_output_tokens
-                    } else {
-                        metadata
-                            .and_then(|m| m.max_output_tokens)
-                            .unwrap_or_else(|| {
-                                super::super::model_defaults::for_model(id).max_output_tokens
-                            })
+                        request
+                            .max_output_tokens
+                            .unwrap_or_else(|| projection.output_limit.unwrap_or(context))
                             .min(context)
+                    } else {
+                        projection.output_limit.unwrap_or(context).min(context)
                     };
                     models.insert(
                         id.to_owned(),

@@ -76,12 +76,24 @@ pub fn run() {
             {
                 let paths = repo_state.lock().map(|r| r.paths().clone());
                 if let Ok(paths) = paths {
+                    let reconciliation_paths = paths.clone();
                     tauri::async_runtime::spawn(async move {
                         let _guard = core::routing_runtime::mutation_guard().await;
                         if let Err(error) =
-                            core::routing_runtime::reconcile_on_startup(&paths).await
+                            core::routing_runtime::reconcile_on_startup(&reconciliation_paths)
+                                .await
                         {
                             eprintln!("[AgentHarbor] local router startup failed: {error}");
+                        }
+                    });
+                    // Refresh the models.dev catalog when it is stale, then keep
+                    // checking hourly. Failures keep the last valid snapshot.
+                    let handle = app.handle().clone();
+                    let catalog_paths = paths.clone();
+                    tauri::async_runtime::spawn(async move {
+                        loop {
+                            refresh_models_dev_if_due(&handle, &catalog_paths).await;
+                            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
                         }
                     });
                 }
@@ -158,7 +170,10 @@ pub fn run() {
             commands::newapi::load_newapi_state,
             commands::newapi::load_route_diagnostics,
             commands::newapi::load_model_capabilities,
+            commands::newapi::load_models_dev_status,
+            commands::newapi::refresh_models_dev_catalog,
             commands::newapi::set_newapi_failover,
+            commands::newapi::set_newapi_compression,
             commands::newapi::save_newapi_provider,
             commands::newapi::delete_newapi_provider,
             commands::newapi::set_newapi_provider_enabled,
@@ -281,4 +296,27 @@ fn schedule_startup_main_window_reveal(app: &tauri::AppHandle) {
         std::thread::sleep(std::time::Duration::from_millis(180));
         commands::hotspot::reveal_main_window(&handle);
     });
+}
+
+/// Background models.dev refresh: only when the catalog is stale or a previous
+/// attempt failed and is due for a retry. Runs on the blocking pool because the
+/// download uses the blocking client, and never blocks startup.
+async fn refresh_models_dev_if_due(app: &tauri::AppHandle, paths: &CodexPaths) {
+    use tauri::Manager;
+    if !core::models_dev::should_refresh(&paths.app_data_dir) {
+        return;
+    }
+    let proxy = app
+        .state::<Mutex<Repository>>()
+        .lock()
+        .map(|repository| repository.api_proxy_config())
+        .unwrap_or_default();
+    let app_data_dir = paths.app_data_dir.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        core::models_dev::refresh(&app_data_dir, &proxy)
+    })
+    .await;
+    if let Err(error) = result.unwrap_or_else(|_| Err("refresh task failed".into())) {
+        eprintln!("[AgentHarbor] models.dev refresh failed: {error}");
+    }
 }
