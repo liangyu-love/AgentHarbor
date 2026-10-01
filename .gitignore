@@ -35,3 +35,6 @@ pnpm-debug.log*
 *.tsbuildinfo
 .visual-baseline/
 .visual-current/
+
+# Test screenshots
+.playwright-cli/
