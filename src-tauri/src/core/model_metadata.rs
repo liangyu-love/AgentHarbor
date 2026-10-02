@@ -548,7 +548,7 @@ pub fn effort_description(effort: &str) -> String {
     .to_owned()
 }
 
-fn option_infos(model: &super::models_dev::Model) -> Vec<ReasoningOptionInfo> {
+pub(crate) fn option_infos(model: &super::models_dev::Model) -> Vec<ReasoningOptionInfo> {
     model
         .reasoning_options
         .iter()

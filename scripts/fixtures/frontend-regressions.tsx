@@ -120,7 +120,10 @@ api.routing.diagnostics = async () => [{ id: "synthetic-route", timestamp: 1_790
   requested: { "reasoning.effort": "high" }, stage: "complete", done: true, status: 200, failureStage: null, error: null, durationMs: 840, firstTokenMs: 230,
   attempts: [{ providerId: "relay", providerName: "Synthetic channel", upstreamModel: "claude-opus-5-5-kiro", matchedModel: "claude-opus-5-5", protocol: "anthropicMessages",
     sent: { "thinking.type": "adaptive", "output_config.effort": "high", max_tokens: 8192 }, status: 200, failureStage: null, error: null, durationMs: 830,
-    catalogRevision: "abcdef1234567890", matchKind: "normalized", pricingStatus: "priced", pricingSource: "catalog" }] }];
+    catalogRevision: "abcdef1234567890", matchKind: "normalized", pricingStatus: "priced", pricingSource: "catalog",
+    attemptId: "synthetic-attempt", selectionReason: "active_provider", failoverReason: null,
+    credential: { kind: "providerApiKey", status: "recorded", reason: null, versionFingerprint: "fixture-version", accountId: null, accountStatus: "not_recorded", label: null },
+    modelObservation: { servedModel: "claude-opus-5-5-kiro", modelMatchStatus: "same", modelMatchBasis: "raw_exact", unknownReason: null, conflictingModel: null } }] }];
 const capabilityRef = { providerId: "anthropic", modelId: "claude-opus-5-5" };
 api.routing.capabilities = async () => ({ stale: true, error: "catalog_unavailable_or_invalid", updatedAt: 1_790_740_800,
   catalog: { schemaVersion: 1, sourceUrl: "https://models.dev/api.json", fetchedAt: 1_790_740_000, lastCheckedAt: 1_790_740_800,
@@ -131,6 +134,10 @@ api.routing.capabilities = async () => ({ stale: true, error: "catalog_unavailab
     matchKind: "normalized", matched: capabilityRef,
     steps: [{ modelId: "claude-opus-5-5", step: "knownChannelSuffix", matched: [capabilityRef], note: "matched 1 scoped catalog entry" }],
     conflicts: [{ field: "outputLimit", candidates: [{ modelRef: capabilityRef, value: "128000" }, { modelRef: { providerId: "github-copilot", modelId: "claude-opus-5-5" }, value: "64000" }] }],
+    catalogHints: [{ source: capabilityRef, canonicalRaw: "anthropic/claude-opus-5-5", canonicalTarget: capabilityRef,
+      canonicalStatus: "self", reasoningOptionsPresence: "declared",
+      reasoningOptions: [{ kind: "effort", values: ["low", "high"], min: null, max: null }],
+      interleaved: { field: "reasoning_content" } }],
     reasoning: { value: [{ effort: "low", description: "Low" }, { effort: "high", description: "High" }], source: "catalog", sourceRef: capabilityRef, updatedAt: "2025-11-24T00:00:00Z" },
     reasoningSupports: true,
     reasoningOptions: [{ kind: "effort", values: ["low", "high"], min: null, max: null }],

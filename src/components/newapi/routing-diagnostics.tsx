@@ -341,6 +341,25 @@ export function RoutingDiagnostics({
                             </span>
                           </p>
 
+                          <div className="rounded-lg border border-border/50 bg-card/60 p-2 text-[11px] text-muted-foreground">
+                            <p className="break-all font-mono">
+                              {t("newapi.traceServedModel")}: <span className="font-semibold text-foreground">{attempt.modelObservation?.servedModel ?? "—"}</span>
+                              {" · "}{t("newapi.traceModelStatus." + (attempt.modelObservation?.modelMatchStatus ?? "unknown"))}
+                            </p>
+                            {attempt.modelObservation?.unknownReason && <p>{t("newapi.traceUnknownReason." + attempt.modelObservation.unknownReason,
+                              { defaultValue: attempt.modelObservation.unknownReason })}</p>}
+                            {attempt.modelObservation?.conflictingModel && <p className="break-all">{t("newapi.traceConflictingModel")}: {attempt.modelObservation.conflictingModel}</p>}
+                            <p>{t("newapi.traceSelectionReason." + attempt.selectionReason, { defaultValue: attempt.selectionReason })}
+                              {attempt.failoverReason && ` · ${t("newapi.traceFailoverReason", { reason: attempt.failoverReason })}`}</p>
+                            <p className="font-mono">{t("newapi.traceAttemptId")}: {attempt.attemptId?.slice(0, 8) ?? "—"}</p>
+                            <p>{t("newapi.traceCredential")}: {t("newapi.traceCredentialStatus." + (attempt.credential?.status ?? "not_recorded"))}
+                              {attempt.credential?.versionFingerprint && ` · ${t("newapi.traceCredentialVersion")} ${attempt.credential.versionFingerprint.slice(0, 12)}`}
+                              {attempt.credential?.accountId && ` · ${t("newapi.traceAccount")} ${attempt.credential.accountId.slice(0, 12)}`}
+                              {attempt.credential?.kind === "codexLocal" && !attempt.credential.accountId && ` · ${t("newapi.traceAccountNotRecorded")}`}</p>
+                            {attempt.credential?.reason && <p>{t("newapi.traceCredentialReason." + attempt.credential.reason,
+                              { defaultValue: attempt.credential.reason })}</p>}
+                          </div>
+
                           {/* The catalog revision, match kind and pricing status
                               this attempt actually used; later refreshes never
                               rewrite them. */}

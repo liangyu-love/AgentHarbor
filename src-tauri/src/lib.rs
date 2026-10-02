@@ -170,6 +170,8 @@ pub fn run() {
             commands::newapi::load_newapi_state,
             commands::newapi::load_route_diagnostics,
             commands::newapi::load_model_capabilities,
+            commands::newapi::preview_newapi_capability_clear,
+            commands::newapi::apply_newapi_capability_clear,
             commands::newapi::load_models_dev_status,
             commands::newapi::refresh_models_dev_catalog,
             commands::newapi::set_newapi_failover,

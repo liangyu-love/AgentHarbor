@@ -1,3 +1,4 @@
+use super::request_diagnostics::{CredentialSnapshot, ServedModelObservation};
 use chrono::{Datelike, Duration as ChronoDuration, Local, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -136,7 +137,8 @@ impl PricingSnapshot {
             input_audio: self.input_audio,
             output_audio: self.output_audio,
         };
-        let mut complete = self.complete && self.input_audio.is_none() && self.output_audio.is_none();
+        let mut complete =
+            self.complete && self.input_audio.is_none() && self.output_audio.is_none();
         if let Some(over) = &self.context_over_200k {
             if prompt_tokens > 200_000 {
                 rates = Rates::from(over);
@@ -204,10 +206,17 @@ fn request_cost(tokens: &TokenCounts, pricing: &PricingSnapshot) -> Option<(f64,
     let (rates, mut complete) = pricing.rates_for(prompt);
     let mut applicable = tokens.prompt_tokens() == 0 && tokens.output_tokens == 0;
     let mut charge = |count: u64, rate: Option<f64>, estimate: Option<f64>| {
-        if count == 0 { return 0.0; }
-        if rate.is_none() { complete = false; }
+        if count == 0 {
+            return 0.0;
+        }
+        if rate.is_none() {
+            complete = false;
+        }
         match rate.or(estimate) {
-            Some(rate) => { applicable = true; (count as f64) * rate / 1_000_000.0 }
+            Some(rate) => {
+                applicable = true;
+                (count as f64) * rate / 1_000_000.0
+            }
             None => 0.0,
         }
     };
@@ -221,7 +230,11 @@ fn request_cost(tokens: &TokenCounts, pricing: &PricingSnapshot) -> Option<(f64,
     match reasoning_rate {
         Some(rate) if reasoning > 0 => {
             cost += charge(reasoning, Some(rate), None);
-            cost += charge(tokens.output_tokens.saturating_sub(reasoning), rates.output, None);
+            cost += charge(
+                tokens.output_tokens.saturating_sub(reasoning),
+                rates.output,
+                None,
+            );
         }
         _ => cost += charge(tokens.output_tokens, rates.output, None),
     }
@@ -248,6 +261,10 @@ pub struct RelayUsageRecord {
     pub request_id: String,
     #[serde(default)]
     pub attempt_id: String,
+    #[serde(default)]
+    pub credential: CredentialSnapshot,
+    #[serde(default)]
+    pub model_observation: ServedModelObservation,
     pub timestamp: i64,
     pub date: String,
     pub provider_id: String,
@@ -334,7 +351,9 @@ impl RelayUsageTotals {
                 match record.pricing_status.as_str() {
                     "priced" => self.fully_priced_count = self.fully_priced_count.saturating_add(1),
                     "partial" => self.partial_count = self.partial_count.saturating_add(1),
-                    _ => self.coverage_unknown_count = self.coverage_unknown_count.saturating_add(1),
+                    _ => {
+                        self.coverage_unknown_count = self.coverage_unknown_count.saturating_add(1)
+                    }
                 }
             }
             _ => {
@@ -360,9 +379,13 @@ impl RelayUsageTotals {
         self.cost_micros = self.cost_micros.saturating_add(other.cost_micros);
         self.priced_count = self.priced_count.saturating_add(other.priced_count);
         self.unpriced_count = self.unpriced_count.saturating_add(other.unpriced_count);
-        self.fully_priced_count = self.fully_priced_count.saturating_add(other.fully_priced_count);
+        self.fully_priced_count = self
+            .fully_priced_count
+            .saturating_add(other.fully_priced_count);
         self.partial_count = self.partial_count.saturating_add(other.partial_count);
-        self.coverage_unknown_count = self.coverage_unknown_count.saturating_add(other.coverage_unknown_count);
+        self.coverage_unknown_count = self
+            .coverage_unknown_count
+            .saturating_add(other.coverage_unknown_count);
     }
 }
 
@@ -437,6 +460,8 @@ pub struct RelayUsageRequest {
     date: String,
     started: Instant,
     pricing: PricingSnapshot,
+    credential: CredentialSnapshot,
+    model_observation: ServedModelObservation,
 }
 
 impl RelayUsageRequest {
@@ -460,15 +485,35 @@ impl RelayUsageRequest {
             date: Local::now().format("%Y-%m-%d").to_string(),
             started: Instant::now(),
             pricing,
+            credential: CredentialSnapshot::not_sent(),
+            model_observation: ServedModelObservation {
+                model_match_status: "unknown".into(),
+                unknown_reason: Some("response_not_received".into()),
+                ..Default::default()
+            },
         }
     }
 
     pub fn failed(self, status_code: u16) {
-        self.persist(status_code, false, false, TokenCounts::default(), None);
+        let mut request = self;
+        if status_code == 429 {
+            request.model_observation.unknown_reason = Some("upstream_http_error".into());
+        }
+        request.persist(status_code, false, false, TokenCounts::default(), None);
     }
 
     pub fn with_request_id(mut self, request_id: &str) -> Self {
         self.request_id = request_id.into();
+        self
+    }
+
+    pub fn with_attempt_id(mut self, attempt_id: &str) -> Self {
+        self.attempt_id = attempt_id.into();
+        self
+    }
+
+    pub fn with_credential(mut self, credential: CredentialSnapshot) -> Self {
+        self.credential = credential;
         self
     }
 
@@ -484,11 +529,20 @@ impl RelayUsageRequest {
         }
     }
 
-    fn persist(self, status_code: u16, usage_reported: bool, usage_complete: bool, mut tokens: TokenCounts, first_token_ms: Option<u64>) {
+    fn persist(
+        self,
+        status_code: u16,
+        usage_reported: bool,
+        usage_complete: bool,
+        mut tokens: TokenCounts,
+        first_token_ms: Option<u64>,
+    ) {
         tokens.normalize_total();
         // A request can carry reliable usage even when it failed or was cut
         // off, so the cost follows the tokens, not the HTTP status.
-        let priced = usage_reported.then(|| request_cost(&tokens, &self.pricing)).flatten();
+        let priced = usage_reported
+            .then(|| request_cost(&tokens, &self.pricing))
+            .flatten();
         let (cost_usd, pricing_status) = match priced {
             Some((cost, true)) if usage_complete => (Some(cost), "priced"),
             Some((cost, _)) => (Some(cost), "partial"),
@@ -498,15 +552,23 @@ impl RelayUsageRequest {
             let mut rates = self.pricing.rates_for(tokens.prompt_tokens()).0;
             // Persist the rates actually used for our partial estimates while
             // the snapshot retains which upstream rates were missing.
-            if tokens.cache_read_tokens > 0 { rates.cache_read = rates.cache_read.or(rates.input); }
-            if tokens.cache_write_tokens > 0 { rates.cache_write = rates.cache_write.or(rates.input); }
-            if tokens.reasoning_tokens > 0 { rates.reasoning = rates.reasoning.or(rates.output); }
+            if tokens.cache_read_tokens > 0 {
+                rates.cache_read = rates.cache_read.or(rates.input);
+            }
+            if tokens.cache_write_tokens > 0 {
+                rates.cache_write = rates.cache_write.or(rates.input);
+            }
+            if tokens.reasoning_tokens > 0 {
+                rates.reasoning = rates.reasoning.or(rates.output);
+            }
             rates
         });
         let record = RelayUsageRecord {
-            schema_version: 1,
+            schema_version: 2,
             request_id: self.request_id,
             attempt_id: self.attempt_id,
+            credential: self.credential,
+            model_observation: self.model_observation,
             timestamp: self.timestamp,
             date: self.date,
             provider_id: self.provider_id,
@@ -548,6 +610,11 @@ pub struct RelayUsageObserver {
 }
 
 impl RelayUsageObserver {
+    pub fn set_model_observation(&mut self, observation: ServedModelObservation) {
+        if let Some(request) = self.request.as_mut() {
+            request.model_observation = observation;
+        }
+    }
     pub fn observe(&mut self, chunk: &[u8]) {
         if self.capture_truncated {
             return;
@@ -587,8 +654,9 @@ impl RelayUsageObserver {
         }
         if let Ok(value) = serde_json::from_str::<Value>(&data) {
             if self.first_token_ms.is_none() && contains_output_delta(&value) {
-                self.first_token_ms = self.request.as_ref().map(|request|
-                    request.started.elapsed().as_millis().min(u64::MAX as u128) as u64);
+                self.first_token_ms = self.request.as_ref().map(|request| {
+                    request.started.elapsed().as_millis().min(u64::MAX as u128) as u64
+                });
             }
             self.merge_value(&value);
         }
@@ -609,20 +677,35 @@ impl Drop for RelayUsageObserver {
             }
         }
         if let Some(request) = self.request.take() {
-            request.persist(self.status_code, self.usage.reported,
+            request.persist(
+                self.status_code,
+                self.usage.reported,
                 self.usage.fields.input && self.usage.fields.output && !self.capture_truncated,
-                self.usage.normalized(), self.first_token_ms);
+                self.usage.normalized(),
+                self.first_token_ms,
+            );
         }
     }
 }
 
 fn contains_output_delta(value: &Value) -> bool {
-    let event_type = value.get("type").and_then(Value::as_str).unwrap_or_default();
-    if matches!(event_type, "response.output_text.delta" | "content_block_delta") {
-        return value.pointer("/delta/text").or_else(|| value.pointer("/delta/partial_json")).or_else(|| value.get("delta"))
-            .and_then(Value::as_str).is_some_and(|text| !text.is_empty());
+    let event_type = value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if matches!(
+        event_type,
+        "response.output_text.delta" | "content_block_delta"
+    ) {
+        return value
+            .pointer("/delta/text")
+            .or_else(|| value.pointer("/delta/partial_json"))
+            .or_else(|| value.get("delta"))
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty());
     }
-    value.pointer("/choices/0/delta/content")
+    value
+        .pointer("/choices/0/delta/content")
         .and_then(Value::as_str)
         .is_some_and(|text| !text.is_empty())
 }
@@ -666,7 +749,11 @@ fn counts_from_usage(value: &Value) -> Option<TokenCounts> {
         "reasoning_tokens",
     ]
     .iter()
-    .any(|key| object.get(*key).is_some_and(|value| value.as_u64().is_some()));
+    .any(|key| {
+        object
+            .get(*key)
+            .is_some_and(|value| value.as_u64().is_some())
+    });
     if !has_known_field {
         return None;
     }
@@ -674,12 +761,14 @@ fn counts_from_usage(value: &Value) -> Option<TokenCounts> {
     // Cache details: Anthropic reports cache read/write beside an already
     // uncached input count; OpenAI-family payloads report a cached subset
     // inside the input total, which must be subtracted to stay non-overlapping.
-    let detail_cached = number(value.pointer("/input_tokens_details/cached_tokens"))
-        .max(number(value.pointer("/prompt_tokens_details/cached_tokens")));
+    let detail_cached = number(value.pointer("/input_tokens_details/cached_tokens")).max(number(
+        value.pointer("/prompt_tokens_details/cached_tokens"),
+    ));
     let anthropic_read = number(object.get("cache_read_input_tokens"));
     let cache_read_tokens = anthropic_read.max(detail_cached);
     let cache_write_tokens = number(object.get("cache_creation_input_tokens"));
-    let reported_input = number(object.get("input_tokens")).max(number(object.get("prompt_tokens")));
+    let reported_input =
+        number(object.get("input_tokens")).max(number(object.get("prompt_tokens")));
     let output_tokens =
         number(object.get("output_tokens")).max(number(object.get("completion_tokens")));
     let reasoning_tokens = number(object.get("reasoning_tokens"))
@@ -707,7 +796,10 @@ fn counts_from_usage(value: &Value) -> Option<TokenCounts> {
 }
 
 #[derive(Default)]
-struct UsageFields { input: bool, output: bool }
+struct UsageFields {
+    input: bool,
+    output: bool,
+}
 
 #[derive(Default)]
 struct UsageAccumulator {
@@ -719,11 +811,21 @@ struct UsageAccumulator {
 
 impl UsageAccumulator {
     fn merge(&mut self, usage: &Value) {
-        let Some(next) = counts_from_usage(usage) else { return; };
-        self.fields.input |= ["input_tokens", "prompt_tokens"].iter().any(|key| usage.get(*key).and_then(Value::as_u64).is_some());
-        self.fields.output |= ["output_tokens", "completion_tokens"].iter().any(|key| usage.get(*key).and_then(Value::as_u64).is_some());
-        self.cache_in_input |= ["/input_tokens_details/cached_tokens", "/prompt_tokens_details/cached_tokens"]
-            .iter().any(|path| usage.pointer(path).and_then(Value::as_u64).is_some());
+        let Some(next) = counts_from_usage(usage) else {
+            return;
+        };
+        self.fields.input |= ["input_tokens", "prompt_tokens"]
+            .iter()
+            .any(|key| usage.get(*key).and_then(Value::as_u64).is_some());
+        self.fields.output |= ["output_tokens", "completion_tokens"]
+            .iter()
+            .any(|key| usage.get(*key).and_then(Value::as_u64).is_some());
+        self.cache_in_input |= [
+            "/input_tokens_details/cached_tokens",
+            "/prompt_tokens_details/cached_tokens",
+        ]
+        .iter()
+        .any(|path| usage.pointer(path).and_then(Value::as_u64).is_some());
         self.raw.merge_max(next);
         self.reported = true;
     }
@@ -777,8 +879,13 @@ fn append_record(app_data_dir: &Path, record: &RelayUsageRecord) -> Result<(), S
             log::warn!("relay usage compaction failed: {error}");
         }
         // Even when little can be folded, do not retry on every request.
-        let size = std::fs::metadata(usage_path(app_data_dir)).map(|meta| meta.len()).unwrap_or(0);
-        NEXT_COMPACT_AT.store(size.max(COMPACT_BYTES) + COMPACT_BYTES / 2, std::sync::atomic::Ordering::Relaxed);
+        let size = std::fs::metadata(usage_path(app_data_dir))
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        NEXT_COMPACT_AT.store(
+            size.max(COMPACT_BYTES) + COMPACT_BYTES / 2,
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
     Ok(())
 }
@@ -800,7 +907,10 @@ fn parse_ledger(bytes: &[u8]) -> Ledger {
         } else if let Ok(mut archive) = serde_json::from_slice::<ArchiveLine>(line) {
             let value: Value = serde_json::from_slice(line).unwrap_or_default();
             for (index, entry) in archive.archive.iter_mut().enumerate() {
-                if value.pointer(&format!("/archive/{index}/totals/partialCount")).is_none() {
+                if value
+                    .pointer(&format!("/archive/{index}/totals/partialCount"))
+                    .is_none()
+                {
                     entry.totals.coverage_unknown_count = entry.totals.priced_count;
                     entry.totals.fully_priced_count = 0;
                 }
@@ -820,7 +930,9 @@ fn read_ledger(app_data_dir: &Path) -> Result<Ledger, String> {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         match std::fs::read(usage_path(app_data_dir)) {
             Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Ledger::default()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Ledger::default())
+            }
             Err(error) => return Err(error.to_string()),
         }
     };
@@ -840,7 +952,10 @@ fn compact_locked(app_data_dir: &Path) -> Result<(), String> {
     for entry in ledger.archive {
         archive
             .entry((entry.provider_id.clone(), entry.model.clone()))
-            .or_insert_with(|| ArchivedModel { totals: RelayUsageTotals::default(), ..entry.clone() })
+            .or_insert_with(|| ArchivedModel {
+                totals: RelayUsageTotals::default(),
+                ..entry.clone()
+            })
             .totals
             .merge(&entry.totals);
     }
@@ -864,8 +979,11 @@ fn compact_locked(app_data_dir: &Path) -> Result<(), String> {
     let mut output = Vec::new();
     if !archive.is_empty() {
         let mut archive: Vec<_> = archive.into_values().collect();
-        archive.sort_by(|left, right| (&left.provider_id, &left.model).cmp(&(&right.provider_id, &right.model)));
-        serde_json::to_writer(&mut output, &ArchiveLine { archive }).map_err(|error| error.to_string())?;
+        archive.sort_by(|left, right| {
+            (&left.provider_id, &left.model).cmp(&(&right.provider_id, &right.model))
+        });
+        serde_json::to_writer(&mut output, &ArchiveLine { archive })
+            .map_err(|error| error.to_string())?;
         output.push(b'\n');
     }
     for record in &kept {
@@ -1008,11 +1126,24 @@ fn load_on(app_data_dir: &Path, today: NaiveDate) -> Result<RelayUsagePayload, S
 mod tests {
     use super::*;
 
+    #[test]
+    fn legacy_detail_has_unknown_model_and_unrecorded_credential() {
+        let mut value = serde_json::to_value(record_on("2026-10-02", "p", "m", 1)).unwrap();
+        value.as_object_mut().unwrap().remove("credential");
+        value.as_object_mut().unwrap().remove("modelObservation");
+        let legacy: RelayUsageRecord = serde_json::from_value(value).unwrap();
+        assert_eq!(legacy.credential.status, "not_recorded");
+        assert_eq!(legacy.model_observation.model_match_status, "unknown");
+        assert_eq!(legacy.model_observation.unknown_reason.as_deref(), Some("not_recorded"));
+    }
+
     fn record_on(date: &str, provider: &str, model: &str, tokens: u64) -> RelayUsageRecord {
         RelayUsageRecord {
             schema_version: 1,
             request_id: "fixture-request".into(),
             attempt_id: "fixture-attempt".into(),
+            credential: CredentialSnapshot::default(),
+            model_observation: ServedModelObservation::default(),
             timestamp: 0,
             date: date.into(),
             provider_id: provider.into(),
@@ -1025,7 +1156,14 @@ mod tests {
             success: true,
             usage_reported: true,
             usage_complete: true,
-            tokens: TokenCounts { input_tokens: tokens, output_tokens: 0, reasoning_tokens: 0, total_tokens: tokens, cache_read_tokens: 0, cache_write_tokens: 0 },
+            tokens: TokenCounts {
+                input_tokens: tokens,
+                output_tokens: 0,
+                reasoning_tokens: 0,
+                total_tokens: tokens,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+            },
             cost_usd: None,
             pricing_status: "unpriced".into(),
             pricing_source: String::new(),
@@ -1093,7 +1231,10 @@ mod tests {
         };
         let (cost, complete) = request_cost(&tokens, &price).unwrap();
         assert!(!complete, "missing cache rate must be visible");
-        assert!((cost - 4.0).abs() < 1e-9, "cached tokens are not free: {cost}");
+        assert!(
+            (cost - 4.0).abs() < 1e-9,
+            "cached tokens are not free: {cost}"
+        );
     }
 
     #[test]
@@ -1112,12 +1253,24 @@ mod tests {
             },
         }];
         price.complete = false;
-        let small = TokenCounts { input_tokens: 100_000, ..Default::default() };
+        let small = TokenCounts {
+            input_tokens: 100_000,
+            ..Default::default()
+        };
         let (cost, _) = request_cost(&small, &price).unwrap();
-        assert!((cost - 0.4).abs() < 1e-9, "base rate below the tier: {cost}");
-        let large = TokenCounts { input_tokens: 400_000, ..Default::default() };
+        assert!(
+            (cost - 0.4).abs() < 1e-9,
+            "base rate below the tier: {cost}"
+        );
+        let large = TokenCounts {
+            input_tokens: 400_000,
+            ..Default::default()
+        };
         let (cost, _) = request_cost(&large, &price).unwrap();
-        assert!((cost - 2.4).abs() < 1e-9, "tier rate above the bound: {cost}");
+        assert!(
+            (cost - 2.4).abs() < 1e-9,
+            "tier rate above the bound: {cost}"
+        );
     }
 
     #[test]
@@ -1133,7 +1286,8 @@ mod tests {
                 pricing(),
             )
             .observe(200, false);
-            let payload = serde_json::json!({"usage": {"input_tokens": 1_000_000, "output_tokens": 0}});
+            let payload =
+                serde_json::json!({"usage": {"input_tokens": 1_000_000, "output_tokens": 0}});
             observer.observe(payload.to_string().as_bytes());
         }
         // A legacy line without pricing fields is read as unpriced, not as 0.
@@ -1170,7 +1324,10 @@ mod tests {
             record_on(&old, "p", "m", 7),
             record_on(&old, "q", "n", 3),
             record_on(&today, "p", "m", 11),
-        ].into_iter().enumerate() {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             if index != 2 {
                 record.cost_usd = Some((index + 1) as f64 / 1_000_000.0);
                 record.pricing_status = if index == 1 { "partial" } else { "priced" }.into();
@@ -1178,23 +1335,47 @@ mod tests {
             append_record(dir.path(), &record).unwrap();
         }
         // A crash-truncated line must not break the compacted file either.
-        std::fs::OpenOptions::new().append(true).open(usage_path(dir.path())).unwrap()
-            .write_all(b"{\"timestamp\":1,\"da\n").unwrap();
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(usage_path(dir.path()))
+            .unwrap()
+            .write_all(b"{\"timestamp\":1,\"da\n")
+            .unwrap();
         let before = load(dir.path()).unwrap();
 
         compact_locked(dir.path()).unwrap();
         let text = std::fs::read_to_string(usage_path(dir.path())).unwrap();
-        assert_eq!(text.lines().count(), 2, "one archive line plus the recent record: {text}");
+        assert_eq!(
+            text.lines().count(),
+            2,
+            "one archive line plus the recent record: {text}"
+        );
         let after = load(dir.path()).unwrap();
         assert_eq!(after.all_time.total_tokens, before.all_time.total_tokens);
         assert_eq!(before.all_time.cost_micros, 7);
         assert_eq!(after.all_time.cost_micros, before.all_time.cost_micros);
         assert_eq!(after.all_time.priced_count, before.all_time.priced_count);
-        assert_eq!(after.all_time.unpriced_count, before.all_time.unpriced_count);
-        assert_eq!(after.by_provider.iter().find(|entry| entry.provider_id == "p").unwrap().totals.cost_micros, 7);
+        assert_eq!(
+            after.all_time.unpriced_count,
+            before.all_time.unpriced_count
+        );
+        assert_eq!(
+            after
+                .by_provider
+                .iter()
+                .find(|entry| entry.provider_id == "p")
+                .unwrap()
+                .totals
+                .cost_micros,
+            7
+        );
         assert_eq!(after.all_time.request_count, 4);
         assert_eq!(after.today.total_tokens, 11);
-        let p = after.by_provider.iter().find(|entry| entry.provider_id == "p").unwrap();
+        let p = after
+            .by_provider
+            .iter()
+            .find(|entry| entry.provider_id == "p")
+            .unwrap();
         assert_eq!(p.totals.total_tokens, 23);
 
         // Compacting again merges into the existing archive instead of duplicating it.
@@ -1205,28 +1386,67 @@ mod tests {
 
     #[test]
     fn detects_first_content_event_without_treating_usage_as_text() {
-        assert!(contains_output_delta(&serde_json::json!({"type":"response.output_text.delta","delta":"hello"})));
-        assert!(contains_output_delta(&serde_json::json!({"type":"content_block_delta","delta":{"text":"hello"}})));
-        assert!(contains_output_delta(&serde_json::json!({"choices":[{"delta":{"content":"hello"}}]})));
-        assert!(!contains_output_delta(&serde_json::json!({"type":"response.completed","response":{"usage":{"input_tokens":1}}})));
+        assert!(contains_output_delta(
+            &serde_json::json!({"type":"response.output_text.delta","delta":"hello"})
+        ));
+        assert!(contains_output_delta(
+            &serde_json::json!({"type":"content_block_delta","delta":{"text":"hello"}})
+        ));
+        assert!(contains_output_delta(
+            &serde_json::json!({"choices":[{"delta":{"content":"hello"}}]})
+        ));
+        assert!(!contains_output_delta(
+            &serde_json::json!({"type":"response.completed","response":{"usage":{"input_tokens":1}}})
+        ));
     }
 
     #[test]
     fn late_cache_details_are_normalized_once_and_duplicate_final_usage_is_not_rebilled() {
         for (protocol, initial, final_usage, input, total) in [
-            ("responses", serde_json::json!({"input_tokens":100,"output_tokens":0}),
-                serde_json::json!({"input_tokens":100,"output_tokens":10,"input_tokens_details":{"cached_tokens":80}}), 20, 110),
-            ("chatCompletions", serde_json::json!({"prompt_tokens":100,"completion_tokens":0}),
-                serde_json::json!({"prompt_tokens":100,"completion_tokens":10,"prompt_tokens_details":{"cached_tokens":80}}), 20, 110),
-            ("anthropicMessages", serde_json::json!({"input_tokens":20,"cache_read_input_tokens":80}),
-                serde_json::json!({"output_tokens":10}), 20, 110),
+            (
+                "responses",
+                serde_json::json!({"input_tokens":100,"output_tokens":0}),
+                serde_json::json!({"input_tokens":100,"output_tokens":10,"input_tokens_details":{"cached_tokens":80}}),
+                20,
+                110,
+            ),
+            (
+                "chatCompletions",
+                serde_json::json!({"prompt_tokens":100,"completion_tokens":0}),
+                serde_json::json!({"prompt_tokens":100,"completion_tokens":10,"prompt_tokens_details":{"cached_tokens":80}}),
+                20,
+                110,
+            ),
+            (
+                "anthropicMessages",
+                serde_json::json!({"input_tokens":20,"cache_read_input_tokens":80}),
+                serde_json::json!({"output_tokens":10}),
+                20,
+                110,
+            ),
         ] {
             let dir = tempfile::tempdir().unwrap();
-            let price = PricingSnapshot { input: Some(10.0), output: Some(2.0), cache_read: Some(1.0), complete: true, ..pricing() };
+            let price = PricingSnapshot {
+                input: Some(10.0),
+                output: Some(2.0),
+                cache_read: Some(1.0),
+                complete: true,
+                ..pricing()
+            };
             {
-                let mut observer = RelayUsageRequest::new(dir.path().into(), "p".into(), "P".into(), "model".into(), protocol.into(), price).observe(200, true);
+                let mut observer = RelayUsageRequest::new(
+                    dir.path().into(),
+                    "p".into(),
+                    "P".into(),
+                    "model".into(),
+                    protocol.into(),
+                    price,
+                )
+                .observe(200, true);
                 for value in [&initial, &final_usage, &final_usage] {
-                    observer.observe(format!("data: {}\n\n", serde_json::json!({"usage":value})).as_bytes());
+                    observer.observe(
+                        format!("data: {}\n\n", serde_json::json!({"usage":value})).as_bytes(),
+                    );
                 }
             }
             let payload = load(dir.path()).unwrap();
@@ -1243,7 +1463,14 @@ mod tests {
     #[test]
     fn seven_days_include_the_previous_week_and_exclude_future_and_older_dates() {
         let dir = tempfile::tempdir().unwrap();
-        for date in ["2026-09-25", "2026-09-26", "2026-09-27", "2026-09-28", "2026-10-02", "2026-10-03"] {
+        for date in [
+            "2026-09-25",
+            "2026-09-26",
+            "2026-09-27",
+            "2026-09-28",
+            "2026-10-02",
+            "2026-10-03",
+        ] {
             let mut record = record_on(date, "p", "model", 1);
             record.cost_usd = Some(1.0);
             record.pricing_status = "priced".into();
@@ -1271,10 +1498,15 @@ mod tests {
         assert_eq!(totals.coverage_unknown_count, 0);
         compact_locked(dir.path()).unwrap();
         assert_eq!(load(dir.path()).unwrap().all_time.partial_count, 1);
-        std::fs::write(usage_path(dir.path()), serde_json::json!({"archive":[{
-            "providerId":"p","providerName":"P","model":"model",
-            "totals":{"requestCount":2,"pricedCount":2,"costMicros":1234567}
-        }]}).to_string()).unwrap();
+        std::fs::write(
+            usage_path(dir.path()),
+            serde_json::json!({"archive":[{
+                "providerId":"p","providerName":"P","model":"model",
+                "totals":{"requestCount":2,"pricedCount":2,"costMicros":1234567}
+            }]})
+            .to_string(),
+        )
+        .unwrap();
         let totals = load(dir.path()).unwrap().all_time;
         assert_eq!(totals.coverage_unknown_count, 2);
         assert_eq!(totals.fully_priced_count, 0);

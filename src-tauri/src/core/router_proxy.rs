@@ -1,5 +1,5 @@
 use super::models::ApiProxyConfigPayload;
-use super::{protocol, relay_usage, route_trace, router};
+use super::{protocol, relay_usage, request_diagnostics, route_trace, router};
 use crate::platform::paths::CodexPaths;
 use futures_util::StreamExt;
 use http_body_util::{combinators::BoxBody, BodyExt, Full, StreamBody};
@@ -504,7 +504,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             None
         };
         let binding = affinity_key.as_deref().and_then(failover::bound);
-        let mut destination = resolve_destination(
+        let (mut destination, mut selection_reason) = resolve_destination_explain(
             &store,
             &segments,
             required_protocol,
@@ -575,22 +575,31 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         };
         let usage_request_id = trace.request_id().to_owned();
         for attempt in 0..2 {
+            let attempt_id = uuid::Uuid::new_v4().to_string();
             let started = std::time::Instant::now();
             let suffix = upstream_suffix(&segments, &destination, required_protocol)?;
             let pricing = relay_pricing(&context, &destination, requested_model.as_deref());
             let attempt_metadata = route_trace::AttemptMetadata {
+                attempt_id: attempt_id.clone(),
                 catalog_revision: pricing.revision.clone(),
                 match_kind: pricing.match_kind.clone(),
                 pricing_status: pricing.status().into(),
                 pricing_source: pricing.source.clone(),
+                selection_reason: selection_reason.clone(),
+                failover_reason: (attempt > 0).then(|| selection_reason.clone()),
             };
-            let relay_request = relay_usage_request(
+            let mut relay_request = relay_usage_request(
                 &context,
                 &destination,
                 required_protocol,
                 requested_model.as_deref(),
                 pricing,
-            ).map(|request| request.with_request_id(&usage_request_id));
+            ).map(|request| request.with_request_id(&usage_request_id).with_attempt_id(&attempt_id));
+            let (upstream_protocol, upstream_model) = match &destination {
+                Destination::Provider { provider, model_override, upstream_protocol, .. } =>
+                    (*upstream_protocol, model_override.clone().unwrap_or_else(|| provider.model.clone())),
+                Destination::Official => (router::ModelProtocol::Responses, requested_model.clone().unwrap_or_default()),
+            };
             let (url, mut attempt_headers) = match &destination {
                 Destination::Provider {
                     provider,
@@ -639,9 +648,23 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                 append_anthropic_beta(&mut attempt_headers);
             }
             let (sent, translated_input) = upstream_body(&destination, body.clone())?;
-            trace.sent(sent.as_deref());
-            let mut outbound = client_for(&context, &destination)?
-                .request(method.clone(), url)
+            let outbound_client = client_for(&context, &destination)?;
+            let credential_kind = if matches!(destination, Destination::Official) { "codexLocal" } else { "providerApiKey" };
+            let credential_header = attempt_headers.get(AUTHORIZATION)
+                .or_else(|| attempt_headers.get("x-api-key"))
+                .and_then(|value| value.to_str().ok());
+            let account_id = attempt_headers.get("chatgpt-account-id").and_then(|value| value.to_str().ok());
+            let provider_id = match &destination {
+                Destination::Provider { provider, .. } => provider.id.as_str(),
+                Destination::Official => "official",
+            };
+            let credential_scope = format!("{}|{}", provider_id, url.split('?').next().unwrap_or(&url));
+            let credential = request_diagnostics::CredentialSnapshot::from_header(
+                &context.app_data_dir, credential_kind, &credential_scope, credential_header, account_id,
+            );
+            relay_request = relay_request.map(|request| request.with_credential(credential.clone()));
+            trace.sent(sent.as_deref(), credential);
+            let mut outbound = outbound_client.request(method.clone(), url)
                 .headers(attempt_headers);
             if let Some(sent) = sent {
                 outbound = outbound.body(sent);
@@ -668,6 +691,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                     if error.is_connect() && !error.is_timeout() {
                         if let Some(next) = alternative {
                             destination = next;
+                            selection_reason = "failover_connect_error".into();
                             if let Some(key) = &affinity_key {
                                 failover::bind(key, &destination);
                             }
@@ -698,6 +722,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                         started.elapsed().as_millis() as u64,
                     );
                     destination = next;
+                    selection_reason = "failover_rate_limited".into();
                     if let Some(key) = &affinity_key {
                         failover::bind(key, &destination);
                     }
@@ -715,6 +740,9 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                 relay_request,
                 translated_input,
                 trace.clone(),
+                upstream_protocol,
+                upstream_model,
+                attempt_id,
             )
             .await;
         }
@@ -801,6 +829,7 @@ fn codex_catalog_response(context: &ArcContext, store: &router::Store) -> Respon
 }
 
 /// Picks the upstream for a request path and its `model`.
+#[cfg(test)]
 fn resolve_destination(
     store: &router::Store,
     segments: &[&str],
@@ -808,6 +837,17 @@ fn resolve_destination(
     requested_model: Option<&str>,
     binding: Option<&failover::Binding>,
 ) -> ForwardResult<Destination> {
+    resolve_destination_explain(store, segments, required_protocol, requested_model, binding)
+        .map(|(destination, _)| destination)
+}
+
+fn resolve_destination_explain(
+    store: &router::Store,
+    segments: &[&str],
+    required_protocol: Option<router::ModelProtocol>,
+    requested_model: Option<&str>,
+    binding: Option<&failover::Binding>,
+) -> ForwardResult<(Destination, String)> {
     let prefixed_model = requested_model.and_then(|model| model.split_once("::"));
     let select_provider = |id: &str, protocol, model: Option<String>| {
         if let Some(binding) = binding {
@@ -832,16 +872,28 @@ fn resolve_destination(
             provider_destination(store, id, protocol, model)
         }
     };
-    Ok(match segments {
+    let reason = if binding.is_some() {
+        "session_binding"
+    } else {
+        ""
+    };
+    let (destination, reason) = match segments {
         // Codex protocol: model slug `<provider id>::<model>` decides the route.
         ["codex", "v1", ..] => match prefixed_model {
-            Some((provider_id, model_id)) => select_provider(
-                provider_id,
-                Some(router::ModelProtocol::Responses),
-                Some(model_id.to_owned()),
-            )?,
+            Some((provider_id, model_id)) => (
+                select_provider(
+                    provider_id,
+                    Some(router::ModelProtocol::Responses),
+                    Some(model_id.to_owned()),
+                )?,
+                if reason.is_empty() {
+                    "codex_slug"
+                } else {
+                    reason
+                },
+            ),
             // Official model slugs (and anything unprefixed) go to OpenAI with local credentials.
-            _ => Destination::Official,
+            _ => (Destination::Official, "official"),
         },
         // Legacy direct routes.
         ["p", id, "v1", ..] => {
@@ -855,21 +907,34 @@ fn resolve_destination(
                 }
                 None => requested_model.map(str::to_owned),
             };
-            select_provider(id, required_protocol, model_override)?
+            (
+                select_provider(id, required_protocol, model_override)?,
+                if reason.is_empty() {
+                    "path_provider"
+                } else {
+                    reason
+                },
+            )
         }
         ["v1", ..] => {
             if let Some((provider_id, model_id)) = prefixed_model {
-                select_provider(
-                    provider_id,
-                    required_protocol,
-                    Some(model_id.to_owned()),
-                )?
+                (
+                    select_provider(provider_id, required_protocol, Some(model_id.to_owned()))?,
+                    if reason.is_empty() {
+                        "model_slug"
+                    } else {
+                        reason
+                    },
+                )
             } else if let Some(binding) = binding {
-                select_provider(
-                    &binding.provider_id,
-                    required_protocol,
-                    requested_model.map(str::to_owned),
-                )?
+                (
+                    select_provider(
+                        &binding.provider_id,
+                        required_protocol,
+                        requested_model.map(str::to_owned),
+                    )?,
+                    "session_binding",
+                )
             } else {
                 // The explicit model may override the pinned provider's default
                 // protocol. Resolve it before falling back to another provider.
@@ -890,11 +955,18 @@ fn resolve_destination(
                     None => router::effective_active(store),
                 });
                 match provider {
-                    Some(provider) => select_provider(
-                        &provider.id,
-                        required_protocol,
-                        requested_model.map(str::to_owned),
-                    )?,
+                    Some(provider) => (
+                        select_provider(
+                            &provider.id,
+                            required_protocol,
+                            requested_model.map(str::to_owned),
+                        )?,
+                        if pinned.is_some() {
+                            "active_provider"
+                        } else {
+                            "effective_active"
+                        },
+                    ),
                     None => {
                         return Err((
                             StatusCode::SERVICE_UNAVAILABLE,
@@ -905,7 +977,8 @@ fn resolve_destination(
             }
         }
         _ => return Err((StatusCode::NOT_FOUND, "unsupported path")),
-    })
+    };
+    Ok((destination, reason.into()))
 }
 
 /// The path below the upstream's `/v1/`, rewritten for a translated protocol.
@@ -1217,6 +1290,9 @@ async fn relay_response(
     relay_request: Option<relay_usage::RelayUsageRequest>,
     translated_input: Vec<Value>,
     trace: route_trace::Trace,
+    upstream_protocol: router::ModelProtocol,
+    upstream_model: String,
+    attempt_id: String,
 ) -> ForwardResult {
     let response_status = response.status();
     let is_event_stream = response
@@ -1257,17 +1333,30 @@ async fn relay_response(
             relay_request,
             translated_input,
             trace,
+            upstream_protocol,
+            upstream_model,
+            attempt_id,
         ),
         Some(translation) if response_status.is_success() => {
-            let bytes = response
-                .bytes()
-                .await
-                .map_err(|_| (StatusCode::BAD_GATEWAY, "cannot read provider response"))?;
-            if let Some(request) = relay_request {
-                request
-                    .observe(response_status.as_u16(), false)
-                    .observe(&bytes);
-            }
+            let mut diagnostic = ResponseObservation::new(
+                trace.clone(),
+                relay_request,
+                upstream_protocol,
+                &upstream_model,
+                &attempt_id,
+                response_status.as_u16(),
+                false,
+            );
+            let bytes = match response.bytes().await {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    diagnostic.error();
+                    diagnostic.finalize(false);
+                    return Err((StatusCode::BAD_GATEWAY, "cannot read provider response"));
+                }
+            };
+            diagnostic.push(&bytes);
+            diagnostic.finalize(true);
             let value: Value = serde_json::from_slice(&bytes)
                 .map_err(|_| (StatusCode::BAD_GATEWAY, "invalid provider response"))?;
             let converted = protocol::response_body(translation, &value).map_err(|_| {
@@ -1276,9 +1365,6 @@ async fn relay_response(
                     "cannot translate provider response",
                 )
             })?;
-            let mut diagnostic =
-                route_trace::Observation::new(trace, false, response_status.as_u16());
-            diagnostic.push(&bytes);
             diagnostic.finish();
             if translation.from == router::ModelProtocol::Responses {
                 protocol::history::remember(&converted, translated_input);
@@ -1291,22 +1377,32 @@ async fn relay_response(
             // An upstream error must reach the caller in the caller's own error shape,
             // otherwise SDKs report a parse failure instead of the real message.
             let bytes = response.bytes().await.unwrap_or_default();
-            if let Some(request) = relay_request {
-                request
-                    .observe(response_status.as_u16(), false)
-                    .observe(&bytes);
-            }
+            let mut diagnostic = ResponseObservation::new(
+                trace.clone(),
+                relay_request,
+                upstream_protocol,
+                &upstream_model,
+                &attempt_id,
+                response_status.as_u16(),
+                false,
+            );
+            diagnostic.push(&bytes);
+            diagnostic.finish();
             let body = translated_error_body(translation.from, response_status, &bytes);
             trace.fail("headers", "upstream_http_error");
             BodyExt::boxed(Full::new(Bytes::from(body)).map_err(|never| match never {}))
         }
         None => {
-            let mut observer = relay_request
-                .map(|request| request.observe(response_status.as_u16(), is_event_stream));
-            let stream = observed_stream(response, trace, is_event_stream).map(move |chunk| {
-                if let (Some(observer), Ok(bytes)) = (observer.as_mut(), &chunk) {
-                    observer.observe(bytes);
-                }
+            let stream = observed_stream(
+                response,
+                trace,
+                relay_request,
+                upstream_protocol,
+                upstream_model,
+                attempt_id,
+                is_event_stream,
+            )
+            .map(move |chunk| {
                 chunk
                     .map(Frame::data)
                     .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
@@ -1327,9 +1423,10 @@ fn translated_stream(
     relay_request: Option<relay_usage::RelayUsageRequest>,
     translated_input: Vec<Value>,
     trace: route_trace::Trace,
+    upstream_protocol: router::ModelProtocol,
+    upstream_model: String,
+    attempt_id: String,
 ) -> ResponseBody {
-    let mut observer =
-        relay_request.map(|request| request.observe(response.status().as_u16(), true));
     // The turn is recorded once it completes, so the next follow-up that
     // quotes this response id can be rebuilt from it.
     let mut recorded = Some(translated_input);
@@ -1337,14 +1434,20 @@ fn translated_stream(
     // the body stream itself has been moved into the response.
     let translator = Arc::new(Mutex::new(protocol::stream_translator(translation)));
     let body_translator = Arc::clone(&translator);
-    let stream = observed_stream(response, trace, true).flat_map(move |chunk| {
+    let stream = observed_stream(
+        response,
+        trace,
+        relay_request,
+        upstream_protocol,
+        upstream_model,
+        attempt_id,
+        true,
+    )
+    .flat_map(move |chunk| {
         let mut frames: Vec<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>> =
             Vec::new();
         match chunk {
             Ok(bytes) => {
-                if let Some(observer) = observer.as_mut() {
-                    observer.observe(&bytes);
-                }
                 if let Ok(mut translator) = body_translator.lock() {
                     let events = translator.push(&bytes);
                     // Record before exposing response.completed: a follow-up
@@ -1388,9 +1491,21 @@ fn translated_stream(
 fn observed_stream(
     response: reqwest::Response,
     trace: route_trace::Trace,
+    relay_request: Option<relay_usage::RelayUsageRequest>,
+    upstream_protocol: router::ModelProtocol,
+    upstream_model: String,
+    attempt_id: String,
     sse: bool,
 ) -> impl futures_util::Stream<Item = Result<Bytes, reqwest::Error>> + Send {
-    let observer = route_trace::Observation::new(trace, sse, response.status().as_u16());
+    let observer = ResponseObservation::new(
+        trace,
+        relay_request,
+        upstream_protocol,
+        &upstream_model,
+        &attempt_id,
+        response.status().as_u16(),
+        sse,
+    );
     futures_util::stream::unfold(
         (response.bytes_stream(), observer),
         |(mut stream, mut observer)| async move {
@@ -1409,6 +1524,70 @@ fn observed_stream(
             }
         },
     )
+}
+
+/// One raw-byte observation per attempt. The same bounded model result is
+/// delivered to the memory trace and the provider ledger before either closes.
+struct ResponseObservation {
+    trace: route_trace::Trace,
+    diagnostic: route_trace::Observation,
+    usage: Option<relay_usage::RelayUsageObserver>,
+    served: request_diagnostics::ServedModelObserver,
+    attempt_id: String,
+    finalized: bool,
+}
+
+impl ResponseObservation {
+    fn new(
+        trace: route_trace::Trace,
+        request: Option<relay_usage::RelayUsageRequest>,
+        protocol: router::ModelProtocol,
+        model: &str,
+        attempt_id: &str,
+        status: u16,
+        sse: bool,
+    ) -> Self {
+        Self {
+            diagnostic: route_trace::Observation::new(trace.clone(), sse, status),
+            trace,
+            usage: request.map(|request| request.observe(status, sse)),
+            served: request_diagnostics::ServedModelObserver::new(protocol, model, status, sse),
+            attempt_id: attempt_id.into(),
+            finalized: false,
+        }
+    }
+    fn push(&mut self, bytes: &[u8]) {
+        self.diagnostic.push(bytes);
+        self.served.push(bytes);
+        if let Some(usage) = self.usage.as_mut() {
+            usage.observe(bytes);
+        }
+    }
+    fn error(&mut self) {
+        self.diagnostic.error();
+        self.served.error();
+    }
+    fn finish(&mut self) {
+        self.finalize(true);
+        self.diagnostic.finish();
+    }
+    fn finalize(&mut self, eof: bool) {
+        if self.finalized {
+            return;
+        }
+        self.finalized = true;
+        let observation = self.served.finish(eof);
+        self.trace.observed(&self.attempt_id, observation.clone());
+        if let Some(usage) = self.usage.as_mut() {
+            usage.set_model_observation(observation);
+        }
+    }
+}
+
+impl Drop for ResponseObservation {
+    fn drop(&mut self) {
+        self.finalize(false);
+    }
 }
 
 /// Re-shape an upstream error body into the caller's protocol.
@@ -1811,7 +1990,8 @@ mod tests {
             let required = request_protocol(&segments);
             assert_eq!(required, Some(router::ModelProtocol::Responses));
             let destination =
-                resolve_destination(&store, &segments, required, Some("chat::model"), None).unwrap();
+                resolve_destination(&store, &segments, required, Some("chat::model"), None)
+                    .unwrap();
             assert_eq!(
                 upstream_suffix(&segments, &destination, required)
                     .unwrap_err()
@@ -1923,7 +2103,8 @@ mod tests {
             let segments: Vec<_> = path.split('/').collect();
             let required = request_protocol(&segments);
             let destination =
-                resolve_destination(&store, &segments, required, Some("official-model"), None).unwrap();
+                resolve_destination(&store, &segments, required, Some("official-model"), None)
+                    .unwrap();
             assert!(matches!(destination, Destination::Official));
             assert_eq!(
                 upstream_suffix(&segments, &destination, required).unwrap(),

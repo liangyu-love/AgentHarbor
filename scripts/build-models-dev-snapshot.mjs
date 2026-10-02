@@ -109,6 +109,7 @@ function transformModel(model) {
   if (typeof model.family === "string" && model.family.length > 0) transformed.family = model.family;
   if (typeof model.reasoning === "boolean") transformed.reasoning = model.reasoning;
   const options = transformOptions(model.reasoning_options);
+  transformed.reasoningOptionsDeclared = Object.prototype.hasOwnProperty.call(model, "reasoning_options");
   if (options.length > 0) transformed.reasoningOptions = options;
   const limit = model.limit ?? {};
   const limits = {};
@@ -132,9 +133,13 @@ function transformModel(model) {
     ["structuredOutput", "structured_output"],
     ["temperature", "temperature"],
     ["openWeights", "open_weights"],
-    ["interleaved", "interleaved"],
   ]) {
     if (typeof model[from] === "boolean") transformed[key] = model[from];
+  }
+  if (typeof model.interleaved === "boolean") transformed.interleaved = model.interleaved;
+  else if (model.interleaved && typeof model.interleaved === "object" &&
+    typeof model.interleaved.field === "string" && model.interleaved.field.length > 0 && model.interleaved.field.length <= 128) {
+    transformed.interleaved = { field: model.interleaved.field };
   }
   if (typeof model.knowledge === "string" && model.knowledge.length > 0) transformed.knowledge = model.knowledge;
   if (typeof model.release_date === "string") transformed.releaseDate = model.release_date;

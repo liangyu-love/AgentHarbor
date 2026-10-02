@@ -1225,6 +1225,90 @@ pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<Sta
     })
 }
 
+/// A single explicit value to clear. This is shared by the read-only preview
+/// and the guarded mutation, so they cannot disagree about what was removed.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ClearCapabilityField {
+    ContextWindow,
+    InputLimit,
+    OutputLimit,
+    Reasoning,
+    DefaultEffort,
+    Price,
+    CatalogRef,
+    PriceRef,
+    Compression,
+    ProviderContextWindow,
+    ProviderCatalogProviders,
+    ProviderPriceCatalogProvider,
+    ProviderCompression,
+}
+
+pub(crate) fn clear_capability_on_store(
+    store: &mut Store, provider_id: &str, model_id: &str, field: ClearCapabilityField,
+) -> Result<(), String> {
+    let provider = store.providers.iter_mut().find(|p| p.id == provider_id)
+        .ok_or("newapi.errors.notFound")?;
+    match field {
+        ClearCapabilityField::ProviderContextWindow => provider.context_window = None,
+        ClearCapabilityField::ProviderCatalogProviders => provider.catalog_providers.clear(),
+        ClearCapabilityField::ProviderPriceCatalogProvider => provider.price_catalog_provider = None,
+        ClearCapabilityField::ProviderCompression => provider.compression = model_policy::CompressionPolicy::Inherit,
+        _ => {
+            let model = provider.models.iter_mut().find(|m| m.id == model_id)
+                .ok_or("newapi.errors.notFound")?;
+            match field {
+                ClearCapabilityField::ContextWindow => model.overrides.context_window = None,
+                ClearCapabilityField::InputLimit => model.overrides.input_limit = None,
+                ClearCapabilityField::OutputLimit => model.overrides.max_output_tokens = None,
+                ClearCapabilityField::Reasoning => model.overrides.reasoning = None,
+                ClearCapabilityField::DefaultEffort => model.overrides.default_effort = None,
+                ClearCapabilityField::Price => model.overrides.price = None,
+                ClearCapabilityField::CatalogRef => model.catalog_ref = None,
+                ClearCapabilityField::PriceRef => model.price_ref = None,
+                ClearCapabilityField::Compression => model.compression = model_policy::CompressionPolicy::Inherit,
+                _ => unreachable!(),
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn config_revision(store: &Store) -> Result<String, String> {
+    let bytes = serde_json::to_vec(store).map_err(|_| "newapi.errors.storage")?;
+    Ok(super::request_diagnostics::state_revision(&bytes))
+}
+
+pub fn clear_capability_if_current(
+    paths: &CodexPaths, provider_id: &str, model_id: &str,
+    field: ClearCapabilityField, expected_config: &str, expected_catalog: &str,
+    expected_official: &str,
+) -> Result<StateChange, String> {
+    let _guard = store_write_guard()?;
+    let mut store = load_store_unlocked(paths)?;
+    let catalog = super::models_dev::load(&paths.app_data_dir);
+    let official = super::model_catalog::official(&paths.codex_home, &paths.app_data_dir);
+    let official_bytes = serde_json::to_vec(&official.models).map_err(|_| "newapi.errors.storage")?;
+    if config_revision(&store)? != expected_config
+        || catalog.snapshot.revision != expected_catalog
+        || super::request_diagnostics::state_revision(&official_bytes) != expected_official {
+        return Err("newapi.errors.previewStale".into());
+    }
+    let previous = store.clone();
+    clear_capability_on_store(&mut store, provider_id, model_id, field)?;
+    if let Some(provider) = store.providers.iter_mut().find(|p| p.id == provider_id) {
+        provider.updated_at = now();
+    }
+    validate_native_selection(&store)?;
+    let applied = apply_routing_if_enabled(paths, &store)?;
+    persist_connection_change(paths, &previous, &store, applied.is_some())?;
+    Ok(StateChange {
+        state: state_from_store_at(&store, super::router_proxy::is_running(), Some(paths)),
+        applied,
+    })
+}
+
 pub fn delete_provider(paths: &CodexPaths, id: &str) -> Result<StateChange, String> {
     let _guard = store_write_guard()?;
     let mut store = load_store_unlocked(paths)?;

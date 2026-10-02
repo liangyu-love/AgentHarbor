@@ -60,6 +60,10 @@ pub struct Model {
     /// `Some(false)` is an explicit "no reasoning" declaration.
     pub reasoning: Option<bool>,
     pub reasoning_options: Vec<ReasoningOption>,
+    /// `None` means an older snapshot cannot distinguish absent from [].
+    pub reasoning_options_declared: Option<bool>,
+    /// Response-format hint only; never selects a protocol or endpoint.
+    pub interleaved: Option<Interleaved>,
     pub limit: Limit,
     pub cost: Option<Cost>,
     pub modalities: Option<Modalities>,
@@ -76,6 +80,13 @@ pub struct Model {
     /// Diagnostics-only hints; never used for protocol selection.
     pub provider_hint: Option<Value>,
     pub experimental: Option<Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Interleaved {
+    Enabled(bool),
+    Field { field: String },
 }
 
 #[derive(Clone, Copy, Default, Serialize, Deserialize)]
@@ -277,6 +288,7 @@ impl Catalog {
                 let Value::Object(mut model) = model else {
                     return Err("invalid_api_model".into());
                 };
+                let reasoning_declared = model.contains_key("reasoning_options");
                 rename_fields(&mut model, &[
                     ("reasoning_options", "reasoningOptions"),
                     ("tool_call", "toolCall"), ("structured_output", "structuredOutput"),
@@ -284,6 +296,7 @@ impl Catalog {
                     ("last_updated", "lastUpdated"), ("canonical_model_id", "canonicalModelId"),
                     ("provider", "providerHint"),
                 ]);
+                model.insert("reasoningOptionsDeclared".into(), Value::Bool(reasoning_declared));
                 if let Some(Value::Array(options)) = model.get_mut("reasoningOptions") {
                     // Unknown option variants are future diagnostics, not a
                     // reason to discard the whole catalog.
@@ -485,6 +498,10 @@ fn rename_rates(object: &mut serde_json::Map<String, Value>) {
 }
 
 fn valid_model(model: &Model) -> bool {
+    if model.interleaved.as_ref().is_some_and(|hint| match hint {
+        Interleaved::Enabled(_) => false,
+        Interleaved::Field { field } => field.is_empty() || field.len() > 128 || field.chars().any(char::is_control),
+    }) { return false; }
     // A record with no usable metadata at all is a shape change, not a model.
     if model.limit.context.is_none()
         && model.limit.input.is_none()

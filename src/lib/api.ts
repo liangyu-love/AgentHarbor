@@ -94,6 +94,14 @@ const providersApi = {
 
 const routingApi = {
   capabilities: () => invoke<import("@/types/newapi").ModelCapabilities>("load_model_capabilities"),
+  previewCapabilityClear: (providerId: string, modelId: string, field: import("@/types/newapi").ClearCapabilityField) =>
+    invoke<import("@/types/newapi").ClearCapabilityPreview>("preview_newapi_capability_clear", { providerId, modelId, field }),
+  applyCapabilityClear: (providerId: string, modelId: string, field: import("@/types/newapi").ClearCapabilityField,
+    preview: import("@/types/newapi").ClearCapabilityPreview) =>
+    invoke<import("@/types/newapi").ClearCapabilityApplyResult>("apply_newapi_capability_clear", {
+      providerId, modelId, field, configRevision: preview.configRevision,
+      catalogRevision: preview.catalogRevision, officialRevision: preview.officialRevision,
+    }),
   diagnostics: () => invoke<import("@/types/newapi").RouteDiagnostic[]>("load_route_diagnostics"),
   catalogStatus: () => invoke<import("@/types/newapi").ModelsDevCatalogStatus>("load_models_dev_status"),
   refreshCatalog: () =>

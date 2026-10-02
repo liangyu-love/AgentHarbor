@@ -332,6 +332,8 @@ export interface RelayUsageRecord {
   schemaVersion?: number;
   requestId?: string;
   attemptId?: string;
+  credential?: import("./newapi").CredentialSnapshot;
+  modelObservation?: import("./newapi").ServedModelObservation;
   usageComplete?: boolean;
   timestamp: number;
   date: string;

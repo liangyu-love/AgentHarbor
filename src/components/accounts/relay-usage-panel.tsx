@@ -110,6 +110,7 @@ function RelayRequests({ relay }: { relay: RelayUsagePayload }) {
   const { t } = useTranslation();
   if (!relay.recent.length) return <p className="usage-empty-state">{t("accounts.relayEmpty")}</p>;
   return <div className="usage-request-scroll">
+    <p className="px-2 pb-2 text-[11px] text-muted-foreground">{t("accounts.relayDetailRetention")}</p>
     <table className="usage-request-table">
       <thead><tr>
         <th>{t("accounts.providerColumn")}</th><th>{t("accounts.billingModelColumn")}</th>
@@ -119,7 +120,17 @@ function RelayRequests({ relay }: { relay: RelayUsagePayload }) {
       </tr></thead>
       <tbody>{relay.recent.map((record, index) => <tr key={`${record.timestamp}-${record.providerId}-${index}`}>
         <td className="font-medium" title={record.providerName}>{record.providerName}</td>
-        <td className="font-mono" title={record.model}>{record.model || "—"}</td>
+        <td className="font-mono" title={record.model}>
+          {record.model || "—"}
+          <small className="block text-[10px] text-muted-foreground">
+            {t("accounts.relayServedModel")}: {record.modelObservation?.servedModel ?? "—"}
+            {" · "}{t("accounts.relayModelStatus." + (record.modelObservation?.modelMatchStatus || "unknown"))}
+          </small>
+          <small className="block text-[10px] text-muted-foreground">
+            {t("accounts.relayCredential")}: {t("accounts.relayCredentialStatus." + (record.credential?.status || "not_recorded"))}
+            {record.credential?.versionFingerprint && ` · ${record.credential.versionFingerprint.slice(0, 12)}`}
+          </small>
+        </td>
         <td className="font-mono">
           {record.usageReported ? formatTokens(record.inputTokens) : "—"}
           {record.cacheReadTokens + record.cacheWriteTokens > 0 && (

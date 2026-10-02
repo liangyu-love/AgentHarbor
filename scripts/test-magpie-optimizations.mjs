@@ -13,6 +13,8 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   assert.match(await routes.innerText(), /claude-opus-5-5-kiro/);
   assert.match(await routes.innerText(), /claude-opus-5-5 → Synthetic channel/);
   assert.match(await routes.innerText(), /230 ms/);
+  assert.match(await routes.innerText(), /syntheti/);
+  assert.match(await routes.innerText(), /fixture-vers/);
   const toggle = routes.getByRole("switch", { name: "同模型渠道故障切换" });
   assert.equal(await toggle.getAttribute("aria-checked"), "false");
   await toggle.click();
@@ -25,6 +27,8 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   assert.match(await catalog.innerText(), /继续使用上一份有效目录/);
   assert.match(await catalog.innerText(), /1,000,000/);
   assert.match(await catalog.innerText(), /内置模型规则/);
+  assert.match(await catalog.innerText(), /anthropic\/claude-opus-5-5/);
+  assert.match(await catalog.innerText(), /reasoning_content/);
   // The applied state distinguishes what clients already use from a pending sync.
   assert.match(await catalog.innerText(), /已生效/);
   assert.match(await catalog.innerText(), /阈值 900,000/);

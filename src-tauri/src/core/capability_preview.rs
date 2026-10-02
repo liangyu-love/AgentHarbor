@@ -10,6 +10,58 @@ use serde::Serialize;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CatalogHint {
+    pub source: models_dev::ModelRef,
+    pub canonical_raw: Option<String>,
+    pub canonical_target: Option<models_dev::ModelRef>,
+    /// absent | invalid | missingTarget | verified | self | sourceMissing
+    pub canonical_status: String,
+    /// declared | absent | unknown (older embedded/runtime snapshot)
+    pub reasoning_options_presence: String,
+    pub reasoning_options: Vec<ReasoningOptionInfo>,
+    pub interleaved: Option<models_dev::Interleaved>,
+}
+
+fn catalog_hints(catalog: &models_dev::Catalog, steps: &[MatchStep]) -> Vec<CatalogHint> {
+    let Some(step) = steps.iter().rev().find(|step| !step.matched.is_empty()) else { return Vec::new(); };
+    let mut hints = Vec::new();
+    for source in &step.matched {
+        if hints.iter().any(|hint: &CatalogHint| hint.source == *source) { continue; }
+        let Some(found) = catalog.exact_in(&source.provider_id, &source.model_id) else {
+            hints.push(CatalogHint { source: source.clone(), canonical_raw: None,
+                canonical_target: None, canonical_status: "sourceMissing".into(),
+                reasoning_options_presence: "unknown".into(), reasoning_options: Vec::new(), interleaved: None });
+            continue;
+        };
+        let raw = found.model.canonical_model_id.clone();
+        let (target, status) = match raw.as_deref() {
+            None => (None, "absent"),
+            Some(raw) => match raw.split_once('/') {
+                Some((provider, model)) if !provider.is_empty() && !model.is_empty()
+                    && !raw.chars().any(char::is_control) => {
+                    let reference = models_dev::ModelRef { provider_id: provider.into(), model_id: model.into() };
+                    if catalog.exact_in(provider, model).is_some() {
+                        (Some(reference), if provider == source.provider_id && model == source.model_id { "self" } else { "verified" })
+                    } else { (Some(reference), "missingTarget") }
+                }
+                _ => (None, "invalid"),
+            }
+        };
+        hints.push(CatalogHint {
+            source: source.clone(), canonical_raw: raw, canonical_target: target,
+            canonical_status: status.into(),
+            reasoning_options_presence: match found.model.reasoning_options_declared {
+                Some(true) => "declared", Some(false) => "absent", None => "unknown"
+            }.into(),
+            reasoning_options: super::model_metadata::option_infos(found.model),
+            interleaved: found.model.interleaved.clone(),
+        });
+    }
+    hints
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Preview {
     pub provider_id: String,
     pub provider_name: String,
@@ -22,6 +74,7 @@ pub struct Preview {
     pub matched: Option<models_dev::ModelRef>,
     pub steps: Vec<MatchStep>,
     pub conflicts: Vec<FieldConflict>,
+    pub catalog_hints: Vec<CatalogHint>,
     pub reasoning: Field<Vec<newapi::ReasoningLevel>>,
     pub reasoning_supports: Option<bool>,
     pub reasoning_options: Vec<ReasoningOptionInfo>,
@@ -60,9 +113,50 @@ pub struct CatalogView {
     pub models: Vec<Preview>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearPreview {
+    pub config_revision: String,
+    pub catalog_revision: String,
+    pub official_revision: String,
+    pub before: Preview,
+    pub after: Preview,
+}
+
+pub fn preview_clear(
+    paths: &CodexPaths, store: &router::Store, provider_id: &str, model_id: &str,
+    field: router::ClearCapabilityField,
+) -> Result<ClearPreview, String> {
+    let official = model_catalog::official(&paths.codex_home, &paths.app_data_dir);
+    let catalog = models_dev::load(&paths.app_data_dir);
+    let mut after_store = store.clone();
+    router::clear_capability_on_store(&mut after_store, provider_id, model_id, field)?;
+    let find = |view: CatalogView| view.models.into_iter()
+        .find(|model| model.provider_id == provider_id && model.upstream_model == model_id)
+        .ok_or_else(|| "newapi.errors.notFound".to_owned());
+    let before = find(preview_with_sources(paths, store, &official, &catalog))?;
+    let after = find(preview_with_sources(paths, &after_store, &official, &catalog))?;
+    let official_bytes = serde_json::to_vec(&official.models).map_err(|_| "newapi.errors.storage")?;
+    Ok(ClearPreview {
+        config_revision: router::config_revision(store)?,
+        catalog_revision: catalog.snapshot.revision.clone(),
+        official_revision: super::request_diagnostics::state_revision(&official_bytes),
+        before, after,
+    })
+}
+
 pub fn preview(paths: &CodexPaths, store: &router::Store) -> CatalogView {
     let snapshot = model_catalog::official(&paths.codex_home, &paths.app_data_dir);
     let models_dev = models_dev::load(&paths.app_data_dir);
+    preview_with_sources(paths, store, &snapshot, &models_dev)
+}
+
+pub(crate) fn preview_with_sources(
+    paths: &CodexPaths,
+    store: &router::Store,
+    snapshot: &model_catalog::Snapshot,
+    models_dev: &models_dev::Catalog,
+) -> CatalogView {
     let global_compression = store.global_compression();
     let now = chrono::Utc::now().timestamp();
     // Applied state: the written router catalog for relay entries, and the
@@ -120,6 +214,7 @@ pub fn preview(paths: &CodexPaths, store: &router::Store) -> CatalogView {
                 matched: metadata.matched.clone(),
                 steps: metadata.steps.clone(),
                 conflicts: metadata.conflicts.clone(),
+                catalog_hints: catalog_hints(&models_dev, &metadata.steps),
                 reasoning: metadata.reasoning.levels.clone(),
                 reasoning_supports: metadata.reasoning.supports,
                 reasoning_options: metadata.reasoning.options.clone(),
@@ -150,7 +245,7 @@ pub fn preview(paths: &CodexPaths, store: &router::Store) -> CatalogView {
     }
     CatalogView {
         stale: snapshot.stale,
-        error: snapshot.error,
+        error: snapshot.error.clone(),
         updated_at: snapshot.updated_at,
         catalog: models_dev.status(now),
         models,
@@ -160,6 +255,59 @@ pub fn preview(paths: &CodexPaths, store: &router::Store) -> CatalogView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_links_only_validate_identity_and_keep_source_records() {
+        let catalog = models_dev::Catalog::parse(serde_json::json!({
+            "schemaVersion": 1, "sourceUrl": "fixture", "fetchedAt": 1, "revision": "fixture",
+            "providers": [
+                {"id":"relay", "models":[
+                    {"id":"a", "limit":{"context": 100000}, "canonicalModelId":"official/a", "reasoningOptionsDeclared":true, "reasoningOptions":[], "interleaved":{"field":"reasoning_content"}},
+                    {"id":"b", "limit":{"context": 80000}, "canonicalModelId":"official/missing"},
+                    {"id":"c", "limit":{"context": 70000}, "canonicalModelId":"broken"}
+                ]},
+                {"id":"official", "models":[{"id":"a", "limit":{"context": 200000}}]}
+            ]
+        }).to_string().as_bytes(), models_dev::Origin::Embedded).unwrap();
+        let steps = vec![MatchStep { model_id: "a".into(), step: "exact".into(),
+            matched: ["a", "b", "c"].into_iter().map(|model| models_dev::ModelRef {
+                provider_id: "relay".into(), model_id: model.into() }).collect(), note: String::new() }];
+        let hints = catalog_hints(&catalog, &steps);
+        assert_eq!(hints.iter().map(|hint| hint.canonical_status.as_str()).collect::<Vec<_>>(),
+            vec!["verified", "missingTarget", "invalid"]);
+        assert_eq!(hints[0].reasoning_options_presence, "declared");
+        assert_eq!(hints[1].reasoning_options_presence, "unknown");
+        assert_eq!(catalog.exact_in("relay", "a").unwrap().model.limit.context, Some(100000));
+        assert_eq!(catalog.exact_in("official", "a").unwrap().model.limit.context, Some(200000));
+    }
+
+    #[test]
+    fn clear_dry_run_and_guarded_apply_share_the_resolver() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().to_path_buf());
+        paths.ensure_directories().unwrap();
+        let mut entry = provider("relay", "fixture-model");
+        entry.context_window = Some(200_000);
+        entry.models[0].overrides.context_window = Some(300_000);
+        let store = router::Store { providers: vec![entry], ..Default::default() };
+        super::super::secret_file::write(&paths.app_data_dir.join("newapi-providers.dat"),
+            &serde_json::to_vec(&store).unwrap()).unwrap();
+        let loaded = router::load_store(&paths).unwrap();
+        let dry_run = preview_clear(&paths, &loaded, "relay", "fixture-model",
+            router::ClearCapabilityField::ContextWindow).unwrap();
+        assert_eq!(dry_run.before.context.value, Some(300_000));
+        assert_eq!(dry_run.before.context.source, "manual");
+        assert_eq!(dry_run.after.context.value, Some(200_000));
+        assert_eq!(dry_run.after.context.source, "providerSetting");
+        router::clear_capability_if_current(&paths, "relay", "fixture-model",
+            router::ClearCapabilityField::ContextWindow,
+            &dry_run.config_revision, &dry_run.catalog_revision, &dry_run.official_revision).unwrap();
+        let actual = preview(&paths, &router::load_store(&paths).unwrap());
+        assert_eq!(actual.models[0].context.value, dry_run.after.context.value);
+        assert!(router::clear_capability_if_current(&paths, "relay", "fixture-model",
+            router::ClearCapabilityField::ContextWindow,
+            &dry_run.config_revision, &dry_run.catalog_revision, &dry_run.official_revision).is_err());
+    }
 
     fn provider(id: &str, model: &str) -> router::Provider {
         router::Provider {

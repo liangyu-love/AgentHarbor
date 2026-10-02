@@ -102,7 +102,7 @@ fn public_api_refresh_transforms_and_preserves_last_good_cache_on_failure_and_30
         "cost":{"input":5,"output":25,"cache_read":0.5,"cache_write":6,"reasoning":30,
             "context_over_200k":{"input":10,"cache_read":1},
             "tiers":[{"tier":{"type":"context","size":100000},"input":7,"output":35,"cache_write":8}]},
-        "canonical_model_id":"model-v1","tool_call":true,"last_updated":"2026-10-01"
+        "canonical_model_id":"model-v1","interleaved":{"field":"reasoning_content"},"tool_call":true,"last_updated":"2026-10-01"
     }}}}).to_string();
     let server = std::thread::spawn(move || {
         for (status, body) in [(200, public), (200, "{}".into()), (304, String::new())] {
@@ -129,6 +129,8 @@ fn public_api_refresh_transforms_and_preserves_last_good_cache_on_failure_and_30
     let model = loaded.exact_in("openai", "model").unwrap().model;
     assert_eq!(model.limit.input, Some(180000));
     assert_eq!(model.reasoning_options.len(), 2);
+    assert_eq!(model.reasoning_options_declared, Some(true));
+    assert!(matches!(model.interleaved, Some(dev::Interleaved::Field { ref field }) if field == "reasoning_content"));
     assert_eq!(model.cost.as_ref().unwrap().cache_read, Some(0.5));
     assert_eq!(
         model.cost.as_ref().unwrap().tiers[0].rates.cache_write,
@@ -690,7 +692,7 @@ fn usage_unknown_partial_zero_failure_and_price_snapshots_stay_distinct() {
         Some(1.0)
     );
     assert!(records[4].applied_rates.is_some());
-    assert_eq!(records[4].schema_version, 1);
+    assert_eq!(records[4].schema_version, 2);
     assert_eq!(records[0].request_id, records[1].request_id);
     assert_ne!(records[0].attempt_id, records[1].attempt_id);
     assert_eq!(

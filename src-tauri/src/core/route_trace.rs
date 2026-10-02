@@ -1,4 +1,5 @@
 //! Bounded, memory-only diagnostics. No bodies, headers, URLs or remote error text.
+use super::request_diagnostics::{CredentialSnapshot, ServedModelObservation};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::{
@@ -13,6 +14,7 @@ const MAX_EVENT: usize = 256 * 1024;
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Attempt {
+    pub attempt_id: String,
     pub provider_id: String,
     pub provider_name: String,
     pub upstream_model: String,
@@ -29,6 +31,10 @@ pub struct Attempt {
     pub match_kind: String,
     pub pricing_status: String,
     pub pricing_source: String,
+    pub selection_reason: String,
+    pub failover_reason: Option<String>,
+    pub credential: CredentialSnapshot,
+    pub model_observation: ServedModelObservation,
     #[serde(skip)]
     started: Instant,
 }
@@ -38,10 +44,13 @@ pub struct Attempt {
 /// proxy from the pricing snapshot so diagnostics do not depend on the ledger.
 #[derive(Clone, Default)]
 pub struct AttemptMetadata {
+    pub attempt_id: String,
     pub catalog_revision: String,
     pub match_kind: String,
     pub pricing_status: String,
     pub pricing_source: String,
+    pub selection_reason: String,
+    pub failover_reason: Option<String>,
 }
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -234,6 +243,7 @@ impl Trace {
         self.update(|r| {
             r.stage = "build".into();
             r.attempts.push(Attempt {
+                attempt_id: metadata.attempt_id,
                 provider_id: label(provider_id),
                 provider_name: label(provider_name),
                 upstream_model: label(model),
@@ -248,15 +258,25 @@ impl Trace {
                 match_kind: metadata.match_kind,
                 pricing_status: metadata.pricing_status,
                 pricing_source: metadata.pricing_source,
+                selection_reason: metadata.selection_reason,
+                failover_reason: metadata.failover_reason,
+                credential: CredentialSnapshot::not_sent(),
+                model_observation: ServedModelObservation {
+                    model_match_status: "unknown".into(),
+                    unknown_reason: Some("not_sent".into()),
+                    ..Default::default()
+                },
                 started: Instant::now(),
             });
         });
     }
-    pub fn sent(&self, body: Option<&[u8]>) {
+    pub fn sent(&self, body: Option<&[u8]>, credential: CredentialSnapshot) {
         self.update(|r| {
             r.stage = "connect".into();
             if let Some(a) = r.attempts.last_mut() {
                 a.sent = parameters(body);
+                a.credential = credential;
+                a.model_observation.unknown_reason = Some("response_not_received".into());
             }
         });
     }
@@ -275,6 +295,11 @@ impl Trace {
                 a.failure_stage = Some(stage.into());
                 a.error = Some(code.into());
                 a.duration_ms = millis;
+                a.model_observation.unknown_reason = Some(if stage == "headers" {
+                    "upstream_http_error".into()
+                } else {
+                    "response_not_received".into()
+                });
             }
         });
     }
@@ -317,6 +342,17 @@ impl Trace {
         self.update(|r| {
             if let Some(a) = r.attempts.last_mut() {
                 a.duration_ms = a.started.elapsed().as_millis() as u64;
+            }
+        });
+    }
+    pub fn observed(&self, attempt_id: &str, observation: ServedModelObservation) {
+        self.update(|route| {
+            if let Some(attempt) = route
+                .attempts
+                .iter_mut()
+                .find(|a| a.attempt_id == attempt_id)
+            {
+                attempt.model_observation = observation;
             }
         });
     }

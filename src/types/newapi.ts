@@ -100,6 +100,7 @@ export interface NewApiRouterView {
 }
 
 export interface RouteAttempt {
+  attemptId: string;
   providerId: string;
   providerName: string;
   upstreamModel: string;
@@ -115,6 +116,28 @@ export interface RouteAttempt {
   matchKind: MatchKind;
   pricingStatus: string;
   pricingSource: string;
+  selectionReason: string;
+  failoverReason: string | null;
+  credential: CredentialSnapshot;
+  modelObservation: ServedModelObservation;
+}
+
+export interface ServedModelObservation {
+  servedModel: string | null;
+  modelMatchStatus: "same" | "declared_different" | "unknown";
+  modelMatchBasis: string | null;
+  unknownReason: string | null;
+  conflictingModel: string | null;
+}
+
+export interface CredentialSnapshot {
+  kind: string;
+  status: "recorded" | "not_recorded" | "not_sent";
+  reason: string | null;
+  versionFingerprint: string | null;
+  accountId: string | null;
+  accountStatus: "recorded" | "not_recorded";
+  label: string | null;
 }
 export interface RouteDiagnostic {
   id: string;
@@ -165,6 +188,31 @@ export interface ReasoningOptionInfo {
   values: string[];
   min: number | null;
   max: number | null;
+}
+export interface CatalogHint {
+  source: ModelRef;
+  canonicalRaw: string | null;
+  canonicalTarget: ModelRef | null;
+  canonicalStatus: "absent" | "invalid" | "missingTarget" | "verified" | "self" | "sourceMissing";
+  reasoningOptionsPresence: "declared" | "absent" | "unknown";
+  reasoningOptions: ReasoningOptionInfo[];
+  interleaved: boolean | { field: string } | null;
+}
+export type ClearCapabilityField =
+  | "contextWindow" | "inputLimit" | "outputLimit" | "reasoning" | "defaultEffort"
+  | "price" | "catalogRef" | "priceRef" | "compression"
+  | "providerContextWindow" | "providerCatalogProviders"
+  | "providerPriceCatalogProvider" | "providerCompression";
+export interface ClearCapabilityPreview {
+  configRevision: string;
+  catalogRevision: string;
+  officialRevision: string;
+  before: ModelCapability;
+  after: ModelCapability;
+}
+export interface ClearCapabilityApplyResult {
+  applied: NewApiStateChange | null;
+  refreshedPreview: ClearCapabilityPreview | null;
 }
 export interface CostRates {
   input: number | null;
@@ -234,6 +282,7 @@ export interface ModelCapability {
   matched: ModelRef | null;
   steps: MatchStep[];
   conflicts: FieldConflict[];
+  catalogHints: CatalogHint[];
   reasoning: ResolvedField<{ effort: string; description: string }[]>;
   reasoningSupports: boolean | null;
   reasoningOptions: ReasoningOptionInfo[];
