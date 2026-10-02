@@ -29,6 +29,7 @@ impl ClientAdapter for ClaudeCode {
         request: &ConfigRequest,
         _catalog: &super::models_dev::Catalog,
         _official_models: &[Value],
+        ctx: &EditContext,
     ) -> Result<Vec<Edit>, String> {
         let provider = selected_provider(store, request)?;
         let (base, credential) = client_endpoint(store, provider, request, false)?;
@@ -214,24 +215,28 @@ impl ClientAdapter for ClaudeCode {
             None => Vec::new(),
         };
         // Older builds left their plain model/label rows behind when switching
-        // relays. Keep user-authored rows (custom labels or metadata), but do not
-        // carry those generated rows into an unrelated relay's picker.
+        // relays. Without a journal and an ownership record nothing else
+        // identifies them, so this narrow shape check is the one-time
+        // migration; once a record exists it does the withdrawing, and user
+        // rows — including minimal ones — are never shape-guessed.
         let mut stale_generated = Vec::new();
-        entries.retain(|entry| {
-            let Some(object) = entry.as_object() else {
-                return true;
-            };
-            let Some(model) = object.get("model").and_then(Value::as_str) else {
-                return true;
-            };
-            let stale = object.len() == 2
-                && object.get("label").and_then(Value::as_str) == Some(model)
-                && !models.iter().any(|selected| selected == model);
-            if stale {
-                stale_generated.push(model.to_owned());
-            }
-            !stale
-        });
+        if ctx.legacy_picker_cleanup {
+            entries.retain(|entry| {
+                let Some(object) = entry.as_object() else {
+                    return true;
+                };
+                let Some(model) = object.get("model").and_then(Value::as_str) else {
+                    return true;
+                };
+                let stale = object.len() == 2
+                    && object.get("label").and_then(Value::as_str) == Some(model)
+                    && !models.iter().any(|selected| selected == model);
+                if stale {
+                    stale_generated.push(model.to_owned());
+                }
+                !stale
+            });
+        }
         for model in &models {
             if entries
                 .iter()

@@ -5,6 +5,7 @@
 mod claude;
 mod opencode;
 mod options;
+mod owned;
 mod takeover;
 use options::{client_endpoint, validate_model};
 pub use options::{ClaudeAuthField, ClaudeModels, ClaudeOneM, ClientAccessMode, ClientOptions};
@@ -73,6 +74,15 @@ fn opencode_path(dir: &Path) -> PathBuf {
         .unwrap_or_else(|| dir.join("opencode.json"))
 }
 
+/// Per-apply input the adapters need beyond the request itself.
+pub(super) struct EditContext {
+    /// One-time cleanup of plain `{"model","label"}` picker rows left by older
+    /// builds: only possible with no journal and no ownership record, where
+    /// nothing else identifies them. Once a record exists it does the
+    /// withdrawing, and user rows must never be shape-guessed.
+    pub legacy_picker_cleanup: bool,
+}
+
 trait ClientAdapter: Sync {
     fn id(&self) -> TargetId;
     fn name(&self) -> &'static str;
@@ -91,6 +101,7 @@ trait ClientAdapter: Sync {
         request: &ConfigRequest,
         catalog: &models_dev::Catalog,
         official_models: &[Value],
+        ctx: &EditContext,
     ) -> Result<Vec<Edit>, String>;
 }
 
@@ -134,6 +145,8 @@ pub struct ClientStatus {
     pub provider_id: Option<String>,
     pub model: Option<String>,
     pub request: Option<ConfigRequest>,
+    /// Managed paths that no longer match what the last apply wrote.
+    pub conflict_fields: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -233,6 +246,7 @@ impl ConfigManager {
                     provider_id: None,
                     model: None,
                     request: None,
+                    conflict_fields: Vec::new(),
                 };
                 let result = (|| -> Result<(), String> {
                     let session = self.session(id)?;
@@ -243,7 +257,9 @@ impl ConfigManager {
                         status.model = Some(session.request.model.clone());
                         status.request = Some(session.request.clone());
                         let current = parse(read_text(&session.path)?.as_deref(), id)?;
-                        status.conflict = verify_fields(&current, session).is_err();
+                        let conflict_fields = conflicting_fields(&current, session);
+                        status.conflict = !conflict_fields.is_empty();
+                        status.conflict_fields = conflict_fields;
                     } else {
                         parse(read_text(adapter.path(&self.paths))?.as_deref(), id)?;
                     }
@@ -421,6 +437,34 @@ impl ConfigManager {
             .to_path_buf();
         let current = read_text(&path)?;
         let mut document = parse(current.as_deref(), request.target_id)?;
+        // Element-keyed arrays are rebuilt from the file as it is now with this
+        // app's previous elements withdrawn, so user rows added after the last
+        // apply are adopted and rows we wrote are regenerated. The snapshot is
+        // taken before undo, which resets arrays to the previous apply's state.
+        let owned_recorded = owned::path(&self.data_dir, request.target_id).exists();
+        let owned = if owned_recorded {
+            owned::load(&self.data_dir, request.target_id)
+        } else {
+            // Pre-upgrade journals carry their additions in the recorded changes.
+            previous
+                .as_ref()
+                .map(owned::OwnedRecord::seed_from_session)
+                .unwrap_or_default()
+        };
+        let picker_options = document
+            .get("modelPicker")
+            .and_then(|picker| picker.get("options"));
+        let available_values = document.get("availableModels");
+        let had_picker = picker_options.is_some();
+        let had_available = available_values.is_some();
+        // A key holding something that is not an array has no baseline: it is
+        // left untouched for the adapter's validation to reject.
+        let baseline_picker = picker_options
+            .and_then(Value::as_array)
+            .map(|entries| owned.withdraw(&["modelPicker".into(), "options".into()], entries));
+        let baseline_available = available_values
+            .and_then(Value::as_array)
+            .map(|values| owned.withdraw(&["availableModels".into()], values));
         let independently_changed = previous.as_ref().is_some_and(|p| document != p.installed);
         if let Some(previous) = &previous {
             verify_fields(&document, previous)?;
@@ -437,12 +481,43 @@ impl ConfigManager {
                 .map(|session| session.original.clone())
                 .unwrap_or_else(|| current.clone())
         };
+        // A key the user deleted stays deleted; one that exists is rebuilt
+        // without this app's previous elements. undo may have re-created a
+        // deleted key from the journal, which the None-with-absent branches
+        // reverse.
+        match baseline_picker {
+            Some(entries) => set_field(
+                &mut document,
+                &["modelPicker".into(), "options".into()],
+                Some(json!(entries)),
+            )?,
+            None if !had_picker
+                && field(&document, &["modelPicker".into(), "options".into()]).is_some() =>
+            {
+                set_field(&mut document, &["modelPicker".into(), "options".into()], None)?
+            }
+            None => {}
+        }
+        match baseline_available {
+            Some(values) => {
+                set_field(&mut document, &["availableModels".into()], Some(json!(values)))?
+            }
+            None if !had_available && field(&document, &["availableModels".into()]).is_some() => {
+                set_field(&mut document, &["availableModels".into()], None)?
+            }
+            None => {}
+        }
         let mut warnings = Vec::new();
         let edits = {
             let catalog = models_dev::load(&self.app_data_dir);
             let official = self.official_home.as_ref().map(|home|
                 model_catalog::official(home, &self.app_data_dir)).unwrap_or_default();
-            adapter.edits(&document, store, request, &catalog, &official.models)?
+            let ctx = EditContext {
+                // Legacy shape-based cleanup only where nothing else identifies
+                // this app's rows: no journal and no ownership record.
+                legacy_picker_cleanup: previous.is_none() && !owned_recorded,
+            };
+            adapter.edits(&document, store, request, &catalog, &official.models, &ctx)?
         };
         // `document` here is the file as it exists right now, before the edits
         // are applied — exactly what the takeover analysis compares against.
@@ -549,6 +624,15 @@ impl ConfigManager {
                 }
             }
         }
+        // Record what this apply added to the element-keyed arrays so the next
+        // apply withdraws exactly those; restore clears the record because
+        // nothing of ours remains in the file.
+        match session {
+            Some(session) => {
+                owned::save(&self.data_dir, id, &owned::OwnedRecord::from_changes(&session.changes))
+            }
+            None => owned::clear(&self.data_dir, id),
+        }
         Ok(ConfigApplied {
             path: path.to_string_lossy().into(),
             backup_path: backup_path.to_string_lossy().into(),
@@ -640,14 +724,25 @@ fn set_field(document: &mut Value, path: &[String], value: Option<Value>) -> Res
 }
 
 fn verify_fields(document: &Value, session: &Session) -> Result<(), String> {
-    if session
-        .changes
-        .iter()
-        .any(|c| field(document, &c.path) != c.after.as_ref())
-    {
+    if !conflicting_fields(document, session).is_empty() {
         return Err("clients.errors.conflict".into());
     }
     Ok(())
+}
+
+/// Managed paths whose current value differs from what the last apply wrote.
+/// Element-keyed arrays are excluded: additions and deletions by the user are
+/// adopted on the next apply instead of being reported as conflicts.
+fn conflicting_fields(document: &Value, session: &Session) -> Vec<String> {
+    session
+        .changes
+        .iter()
+        .filter(|change| {
+            !owned::is_element_array_path(&change.path)
+                && field(document, &change.path) != change.after.as_ref()
+        })
+        .map(|change| change.path.join("."))
+        .collect()
 }
 
 fn undo(document: &mut Value, session: &Session) -> Result<(), String> {
