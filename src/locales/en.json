@@ -179,6 +179,7 @@
     "selectModel": "Select a default model",
     "subagent": "Subagent",
     "autoModel": "Auto · {{model}}",
+    "autoSubagent": "Auto · follows the role tiers",
     "authField": "Authentication field",
     "removedFields": "Remove: {{fields}}",
     "noNativeProviders": "No compatible native models. Switch to the local router."

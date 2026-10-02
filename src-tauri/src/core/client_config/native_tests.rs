@@ -705,6 +705,13 @@ fn managed_settings_are_reported_only_when_they_conflict() {
     let (temp, manager, store, request) = fixture();
     let managed = temp.path().join("managed-settings.json");
     std::fs::write(&managed, br#"{"env": {"ANTHROPIC_BASE_URL": "https://managed.example"}}"#).unwrap();
+    struct ManagedPathGuard;
+    impl Drop for ManagedPathGuard {
+        fn drop(&mut self) {
+            takeover::set_managed_settings_path(None);
+        }
+    }
+    let _guard = ManagedPathGuard;
     takeover::set_managed_settings_path(Some(managed.clone()));
     let preview = manager.preview(&store, &request).unwrap();
     assert!(
@@ -716,7 +723,6 @@ fn managed_settings_are_reported_only_when_they_conflict() {
     std::fs::write(&managed, br#"{"env": {"COMPANY_KEY": "x"}}"#).unwrap();
     let preview = manager.preview(&store, &request).unwrap();
     assert!(!preview.warnings.iter().any(|warning| warning == "clients.warnings.managedSettings"));
-    takeover::set_managed_settings_path(None);
 }
 
 #[test]
@@ -862,6 +868,35 @@ fn claude_one_m_mark_follows_the_known_context_window() {
     store.providers[0].models[0].context_window = Some(1_000_000);
     apply(&manager, &store, &request);
     assert_eq!(read(&manager.paths.claude)["model"], "claude-test[1m]");
+}
+
+#[test]
+fn user_deleted_array_keys_are_respected_on_reapply() {
+    let (_temp, manager, store, request) = versioned_claude_fixture();
+    write(&manager.paths.claude, &json!({"availableModels": ["legacy"]}));
+    apply(&manager, &store, &request);
+    // The user deletes both managed arrays between applies (the picker object
+    // itself stays: it also holds the managed replaceBuiltInOptions scalar,
+    // whose removal would be a conflict).
+    let mut current = read(&manager.paths.claude);
+    current["modelPicker"]
+        .as_object_mut()
+        .unwrap()
+        .remove("options");
+    current.as_object_mut().unwrap().remove("availableModels");
+    write(&manager.paths.claude, &current);
+    assert!(!manager.list()[0].conflict);
+    apply(&manager, &store, &request);
+    let installed = read(&manager.paths.claude);
+    // The picker is regenerated from the current selection…
+    assert_eq!(
+        installed["modelPicker"]["options"].as_array().unwrap().len(),
+        3
+    );
+    // …but the deleted allowlist is not resurrected.
+    assert!(installed.get("availableModels").is_none());
+    manager.restore(TargetId::ClaudeCode).unwrap();
+    assert_eq!(read(&manager.paths.claude), json!({"availableModels": ["legacy"]}));
 }
 
 #[test]

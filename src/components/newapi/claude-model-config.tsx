@@ -75,7 +75,7 @@ export function ClaudeModelConfig({ provider, models, selected, mapping, default
               <th scope="col" className="w-20 px-3 py-2 text-center font-medium">{t("clients.oneM")}</th></tr>
           </thead>
           <tbody>{claudeRoles.map(role => {
-            const automatic = autoRoleModel(selected, role !== "subagent" ? role : "", defaultModel) ?? defaultModel;
+            const automatic = autoRoleModel(selected, role !== "subagent" ? role : "", defaultModel);
             const modelId = mapping[role] || automatic;
             const oneMEnabled = oneM[role];
             // A known sub-1M context must not be marked; the backend drops the
@@ -90,7 +90,9 @@ export function ClaudeModelConfig({ provider, models, selected, mapping, default
                   onValueChange={value => onMappingChange({ ...mapping, [role]: value === "auto" ? "" : value.slice(6) })}>
                   <SelectTrigger id={"client-role-" + role} className="w-full"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="auto">{t("clients.autoModel", { model: automatic ? label(automatic) : "—" })}</SelectItem>
+                    <SelectItem value="auto">{role === "subagent"
+                      ? t("clients.autoSubagent")
+                      : t("clients.autoModel", { model: automatic ? label(automatic) : "—" })}</SelectItem>
                     {selected.map(id => <SelectItem key={id} value={"model:" + id}>{label(id)}</SelectItem>)}
                   </SelectContent>
                 </Select>

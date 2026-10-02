@@ -44,9 +44,10 @@ export const autoRoleModel = (models: string[], role: string, startup: string): 
 export const MIN_ONE_M_CONTEXT = 1_000_000;
 export const effectiveContext = (provider: NewApiProvider | undefined, id: string | null | undefined): number | null => {
   if (!provider || !id) return null;
-  if (provider.contextWindow != null) return provider.contextWindow;
   const model = provider.models.find(entry => entry.id === id);
-  return model ? model.overrides?.contextWindow ?? model.contextWindow ?? null : null;
+  // Resolver order: per-model user overrides beat the provider-wide window,
+  // which beats the upstream declaration.
+  return model?.overrides?.contextWindow ?? provider.contextWindow ?? model?.contextWindow ?? null;
 };
 export const knownSmallContext = (context: number | null): boolean =>
   context != null && context < MIN_ONE_M_CONTEXT;

@@ -179,6 +179,7 @@
     "selectModel": "选择默认模型",
     "subagent": "子代理",
     "autoModel": "自动 · {{model}}",
+    "autoSubagent": "自动 · 跟随各角色 tier",
     "authField": "认证字段",
     "removedFields": "移除：{{fields}}",
     "noNativeProviders": "没有兼容的原生模型，可切换本地路由。"
