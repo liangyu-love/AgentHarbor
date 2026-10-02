@@ -7,6 +7,7 @@ mod opencode;
 mod options;
 mod owned;
 mod takeover;
+mod version;
 use options::{client_endpoint, validate_model};
 pub use options::{ClaudeAuthField, ClaudeModels, ClaudeOneM, ClientAccessMode, ClientOptions};
 #[cfg(test)]
@@ -148,6 +149,8 @@ pub struct ClientStatus {
     pub request: Option<ConfigRequest>,
     /// Managed paths that no longer match what the last apply wrote.
     pub conflict_fields: Vec<String>,
+    /// Claude Code CLI version when it could be detected.
+    pub client_version: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -248,7 +251,11 @@ impl ConfigManager {
                     model: None,
                     request: None,
                     conflict_fields: Vec::new(),
+                    client_version: None,
                 };
+                if id == TargetId::ClaudeCode {
+                    status.client_version = version::detected();
+                }
                 let result = (|| -> Result<(), String> {
                     let session = self.session(id)?;
                     if let Some(session) = &session {
@@ -741,6 +748,14 @@ fn parse(text: Option<&str>, id: TargetId) -> Result<Value, String> {
     let text = text.trim_start_matches('\u{feff}');
     let value: Value = if id == TargetId::OpenCode {
         json5::from_str(text).map_err(|_| "clients.errors.invalidConfig")?
+    } else if id == TargetId::ClaudeCode {
+        // Claude's settings.json is JSON, but other tools may have written
+        // comments or trailing commas into it. Parse through json5 and write
+        // back normalized JSON, same policy as OpenCode; the original text is
+        // kept in the backup and restored verbatim when nothing else changed.
+        serde_json::from_str(text)
+            .or_else(|_| json5::from_str(text))
+            .map_err(|_| "clients.errors.invalidConfig")?
     } else {
         serde_json::from_str(text).map_err(|_| "clients.errors.invalidConfig")?
     };

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { autoRoleModel, claudeRoles, emptyClaudeRoles, knownSmallContext, effectiveContext } from "@/lib/client-config";
+import { autoRoleModel, claudeRoles, emptyClaudeRoles, knownSmallContext, effectiveContext, pickerVersionState } from "@/lib/client-config";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -9,13 +9,14 @@ import type { ClaudeModels, ClaudeOneM } from "@/types/clients";
 import type { NewApiProvider } from "@/types/newapi";
 
 export function ClaudeModelConfig({ provider, models, selected, mapping, defaultModel, disabled,
-  oneM, onSelectedChange, onMappingChange, onOneMChange }: {
+  oneM, clientVersion, onSelectedChange, onMappingChange, onOneMChange }: {
   provider?: NewApiProvider;
   models: string[];
   selected: string[];
   mapping: ClaudeModels;
   defaultModel: string;
   disabled: boolean;
+  clientVersion?: string | null;
   oneM: ClaudeOneM;
   onSelectedChange: (ids: string[]) => void;
   onMappingChange: (mapping: ClaudeModels) => void;
@@ -23,6 +24,7 @@ export function ClaudeModelConfig({ provider, models, selected, mapping, default
 }) {
   const { t } = useTranslation();
   const [search, setSearch] = useState("");
+  const versionState = pickerVersionState(clientVersion);
   const label = (id: string) => provider?.models.find(model => model.id === id)?.displayName || id;
   const query = search.trim().toLowerCase();
   const filtered = models.filter(id => (id + " " + label(id)).toLowerCase().includes(query));
@@ -54,7 +56,10 @@ export function ClaudeModelConfig({ provider, models, selected, mapping, default
         })}
         {filtered.length === 0 && <p className="px-3 py-3 text-sm text-muted-foreground">{t("clients.noMatchingModels")}</p>}
       </div>
-      <p className="text-xs text-muted-foreground">{t("clients.modelPickerVersion")}</p>
+      <p className={versionState === "tooOld" ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
+        {t(versionState === "tooOld" ? "clients.modelPickerVersion"
+          : versionState === "unknown" ? "clients.versionUnknown" : "clients.modelPickerOk")}
+      </p>
     </section>
     <section aria-labelledby="client-model-mapping-label" className="space-y-2">
       <div className="flex items-center justify-between gap-2">

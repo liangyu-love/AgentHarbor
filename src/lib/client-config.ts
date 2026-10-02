@@ -50,6 +50,24 @@ export const effectiveContext = (provider: NewApiProvider | undefined, id: strin
 };
 export const knownSmallContext = (context: number | null): boolean =>
   context != null && context < MIN_ONE_M_CONTEXT;
+
+// The /model picker needs Claude Code 2.1.242 or newer; everything else in
+// the injection works regardless, so this stays a notice, never a blocker.
+export const MIN_PICKER_VERSION = "2.1.242";
+export type PickerVersionState = "ok" | "tooOld" | "unknown";
+export const pickerVersionState = (clientVersion?: string | null): PickerVersionState => {
+  const parse = (version: string) =>
+    version.split(".").map(part => (/^\d+$/.test(part) ? Number(part) : null));
+  const parts = clientVersion ? parse(clientVersion) : null;
+  if (!parts || parts.some(part => part === null)) return "unknown";
+  const min = parse(MIN_PICKER_VERSION);
+  for (let i = 0; i < Math.max(parts.length, min.length); i++) {
+    const left = parts[i] ?? 0;
+    const right = min[i] ?? 0;
+    if (left !== right) return left > right ? "ok" : "tooOld";
+  }
+  return "ok";
+};
 export type ConflictScope = "endpoint" | "credential" | "model" | "menu" | "other";
 export const conflictScopes = (fields: string[]): ConflictScope[] => {
   const scopes = new Set<ConflictScope>();

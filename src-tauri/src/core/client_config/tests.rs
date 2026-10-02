@@ -438,3 +438,20 @@ fn clients_have_independent_lifetimes_and_new_files_are_removed_on_restore() {
     assert!(manager.session(TargetId::OpenCode).unwrap().is_none());
     assert!(!manager.paths.opencode.exists());
 }
+
+#[test]
+fn claude_settings_with_comments_can_be_injected_and_the_original_is_restored() {
+    let (_temp, manager, store, request) = fixture();
+    let original = "{
+ // written by another tool
+ \"permissions\": {\"allow\": [\"Read\"]},
+}
+";
+    storage::write_atomic(&manager.paths.claude, original.as_bytes()).unwrap();
+    apply(&manager, &store, &request);
+    let installed = read(&manager.paths.claude);
+    assert_eq!(installed["permissions"]["allow"][0], "Read");
+    assert!(installed["env"]["ANTHROPIC_BASE_URL"].is_string());
+    manager.restore(request.target_id).unwrap();
+    assert_eq!(std::fs::read_to_string(&manager.paths.claude).unwrap(), original);
+}

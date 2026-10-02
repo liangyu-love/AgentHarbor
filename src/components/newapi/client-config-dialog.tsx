@@ -418,15 +418,19 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
           {isClaude && <ClaudeModelConfig key={request.providerId + ":" + request.accessMode}
             provider={provider} models={models} selected={configuredModels} mapping={request.claudeModels}
             defaultModel={request.model} disabled={busy} oneM={claudeOneMDefaults(request.claudeOneM)}
+            clientVersion={client.clientVersion}
             onSelectedChange={selectClaudeModels} onMappingChange={claudeModels => update({ claudeModels })}
             onOneMChange={claudeOneM => update({ claudeOneM })} />}
           {client.targetId === "opencode" && staleOpenCodeModelSelection &&
             <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
               {t("clients.staleOpenCodeModels")}
             </p>}
-          {isClaude && staleClaudeModelSelection && <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
-            {t("clients.errors.profileModelsUnavailable")}
-          </p>}
+          {isClaude && staleClaudeModelSelection && (() => {
+            const stale = (request.claudeModelIds ?? []).filter(id => !models.includes(id));
+            return <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
+              {t("clients.staleClaudeModels", { models: stale.map(id => modelLabel(provider, id)).join(" · ") })}
+            </p>;
+          })()}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between gap-2"><Label htmlFor="client-model">{t(isClaude ? "clients.startupModel" : "clients.model")}</Label>
               {selectedProtocol && <Badge variant="outline" className="text-[10px]">{t("newapi.protocol" + (selectedProtocol === "responses" ? "Responses" : selectedProtocol === "chatCompletions" ? "ChatCompletions" : "AnthropicMessages"))}</Badge>}

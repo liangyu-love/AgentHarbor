@@ -124,6 +124,9 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
               <div className="flex items-center gap-2">
                 <Terminal className="h-4 w-4 text-muted-foreground" />
                 <h3 className="font-semibold">{client.name}</h3>
+                {client.targetId === "claudeCode" && <span className="text-xs tabular-nums text-muted-foreground">
+                  {client.clientVersion ? "v" + client.clientVersion : t("clients.versionShort")}
+                </span>}
                 {client.configured && <span className="text-xs text-muted-foreground">{t(mode === "native" ? "clients.accessNative" : "clients.accessRouter")}</span>}
                 <Badge variant="outline" className="ml-auto">{t(client.conflict ? "clients.conflict" : client.configured ? "clients.configured" : "clients.notConfigured")}</Badge>
               </div>
