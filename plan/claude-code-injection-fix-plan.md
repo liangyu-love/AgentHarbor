@@ -1,7 +1,7 @@
 # Claude Code 注入问题修复计划
 
 日期：2026-10-02  
-状态：已核实待评审，未开始实施（2026-10-02 修订：并入 magpie 对照结论）  
+状态：已实施（2026-10-02。`feat/models-dev-integration` 上的 9f54df9、e386d72、4e56b12、aa8b5ff 与 `fix/claude-code-injection` 分支的 7531770..3d32d64 覆盖全部 F1–F11；第 5 节的可选增强仍待独立评审）  
 范围：`src-tauri/src/core/client_config/`、`src-tauri/src/core/models_dev`（只读）、`src/components/newapi/client-config-*`、`docs/client-configuration.md`  
 核实基线：工作区 `feat/models-dev-integration` 分支当前代码；本机安装的 Claude Code 2.1.285（二进制字符串与解析逻辑实测）；本机同时装有 CC Switch  
 参考源码：本地 `D:/workspace/temp/magpie`，提交 `7a3337d`（`internal/agent/claude.go`、`internal/agent/applied.go`）——借鉴点在对应修复项中标注出处

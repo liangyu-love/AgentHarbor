@@ -144,6 +144,7 @@
     },
     "errors": {
       "unsupported": "This client does not support this configuration entry. Use routing injection above for Codex.",
+      "cloudMode": "CLAUDE_CODE_USE_BEDROCK / CLAUDE_CODE_USE_VERTEX / CLAUDE_CODE_USE_FOUNDRY is enabled. That is your own cloud-provider setup, which AgentHarbor does not rewrite; disable it in settings.json before injecting.",
       "storage": "Could not read or save client configuration. Check directory permissions.",
       "read": "Could not read the client configuration. Check permissions and encoding.",
       "invalidConfig": "The existing configuration is not a valid JSON / JSONC object, or a managed field has an invalid type. The file was not changed.",

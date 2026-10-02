@@ -144,6 +144,7 @@
     },
     "errors": {
       "unsupported": "该客户端暂不支持此配置入口；Codex 请使用上方路由注入。",
+      "cloudMode": "检测到 CLAUDE_CODE_USE_BEDROCK / CLAUDE_CODE_USE_VERTEX / CLAUDE_CODE_USE_FOUNDRY 已启用。这是你自己的云接入配置，AgentHarbor 不会改写它；请先在 settings.json 中关闭后再注入。",
       "storage": "读取或保存客户端配置失败，请检查目录权限后重试。",
       "read": "无法读取客户端配置文件，请检查权限及文件编码。",
       "invalidConfig": "现有配置不是有效的 JSON / JSONC 对象，或待修改字段的格式不正确。原文件未修改。",
