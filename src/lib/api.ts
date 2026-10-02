@@ -163,6 +163,8 @@ const targetsApi = {
   applyConfig: (request: ClientConfigRequest, revision: string) => invoke<ClientConfigApplied>("apply_client_config", { request, revision }),
   restoreConfig: (targetId: TargetId) => invoke<ClientConfigApplied>("restore_client_config", { targetId }),
   releaseConfig: (targetId: TargetId) => invoke<void>("release_client_config", { targetId }),
+  reapplyConfig: (targetId: TargetId, rebaseline: boolean) =>
+    invoke<ClientConfigApplied>("reapply_client_config", { targetId, rebaseline }),
 };
 
 const conversationsApi = {

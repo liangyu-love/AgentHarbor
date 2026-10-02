@@ -840,29 +840,32 @@ try {
   await page.getByRole("button", { name: labels.clientRouter, exact: true }).click();
   const startupOneM = page.getByRole("checkbox", { name: labels.oneMStartup, exact: true });
   const oneMCheckboxes = [labels.oneMStartup, ...labels.oneMRoles].map(name => page.getByRole("checkbox", { name, exact: true }));
-  for (const checkbox of oneMCheckboxes) assert.equal(await checkbox.isChecked(), true);
+  // [1m] marks follow the resolver: models without catalog context default to
+  // unmarked, and the explicit opt-in decides and survives model/mode changes.
+  for (const checkbox of oneMCheckboxes) assert.equal(await checkbox.isChecked(), false);
   await page.getByRole("button", { name: labels.preview, exact: true }).click();
-  await page.waitForFunction(() => window.review.previewed?.claudeOneM?.startup === true);
+  await page.waitForFunction(() => window.review.previewed?.claudeOneM?.startup === false);
   // Limits stay automatic unless the user types them: no family-derived 1M.
   assert.equal(await page.evaluate(() => window.review.previewed.contextWindow ?? null), null);
-  assert.equal(await page.evaluate(() => window.review.previewed.claudeOneM.sonnet), true);
+  assert.equal(await page.evaluate(() => window.review.previewed.claudeOneM.sonnet), false);
+  for (const checkbox of oneMCheckboxes) await checkbox.check();
   await page.locator("#client-model").click();
   await page.getByRole("option", { name: "Fable 5.1", exact: true }).click();
   assert.equal(await startupOneM.isChecked(), true);
-  for (const checkbox of oneMCheckboxes) await checkbox.uncheck();
   await page.getByRole("button", { name: labels.clientNative, exact: true }).click();
   await page.getByRole("button", { name: labels.clientRouter, exact: true }).click();
   await page.getByRole("button", { name: labels.preview, exact: true }).click();
   await page.waitForFunction(() => window.review.previewed?.model === "claude-fable-5-1");
-  assert.equal(await page.evaluate(() => window.review.previewed.claudeOneM.startup), false);
-  assert.equal(await page.evaluate(() => Object.values(window.review.previewed.claudeOneM).every(value => value === false)), true);
+  assert.equal(await page.evaluate(() => window.review.previewed.claudeOneM.startup), true);
+  assert.equal(await page.evaluate(() => Object.values(window.review.previewed.claudeOneM).every(value => value === true)), true);
+  for (const checkbox of oneMCheckboxes) await checkbox.uncheck();
   await selectedVersion("claude-fable-5-1").uncheck();
   for (const checkbox of oneMCheckboxes) assert.equal(await checkbox.isChecked(), false);
   await page.getByRole("button", { name: labels.preview, exact: true }).click();
   await page.getByRole("button", { name: labels.clientApply, exact: true }).click();
   await page.getByRole("button", { name: labels.changeClient, exact: true }).click();
   for (const checkbox of oneMCheckboxes) assert.equal(await checkbox.isChecked(), false);
-  console.log("PASS all six Claude 1M choices default on and explicit off survives model/mode/subset changes, apply and reopen");
+  console.log("PASS Claude 1M choices default to unmarked without catalog data and explicit on/off values survive model/mode/subset changes, apply and reopen");
 
   const defaultChecks = await page.evaluate(() => {
     const { clientDefaults, claudeOneMDefaults, mergeModelCatalog } = window.review;
@@ -880,7 +883,7 @@ try {
   });
   assert.deepEqual(defaultChecks, { haiku: null, oldClaude: null, other: null,
     manual: { contextWindow: 200000, maxOutputTokens: 4096 },
-    legacy: { startup: false, sonnet: false, opus: false, fable: false, haiku: true, subagent: false } });
+    legacy: { startup: false, sonnet: false, opus: false, fable: false, haiku: false, subagent: false } });
   console.log("PASS limits stay automatic without model-name guesses, saved values survive catalog refresh, old profile false values survive adding Haiku");
 
   const staleProfile = { id: "stale-profile", name: "Stale profile", request: {

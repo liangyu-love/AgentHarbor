@@ -161,6 +161,7 @@ pub fn run() {
             commands::client_config::apply_client_config,
             commands::client_config::restore_client_config,
             commands::client_config::release_client_config,
+            commands::client_config::reapply_client_config,
             commands::accounts::list_codex_accounts,
             commands::usage::get_token_usage,
             commands::accounts::refresh_codex_accounts,

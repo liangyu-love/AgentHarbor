@@ -705,6 +705,13 @@ fn managed_settings_are_reported_only_when_they_conflict() {
     let (temp, manager, store, request) = fixture();
     let managed = temp.path().join("managed-settings.json");
     std::fs::write(&managed, br#"{"env": {"ANTHROPIC_BASE_URL": "https://managed.example"}}"#).unwrap();
+    struct ManagedPathGuard;
+    impl Drop for ManagedPathGuard {
+        fn drop(&mut self) {
+            takeover::set_managed_settings_path(None);
+        }
+    }
+    let _guard = ManagedPathGuard;
     takeover::set_managed_settings_path(Some(managed.clone()));
     let preview = manager.preview(&store, &request).unwrap();
     assert!(
@@ -716,5 +723,211 @@ fn managed_settings_are_reported_only_when_they_conflict() {
     std::fs::write(&managed, br#"{"env": {"COMPANY_KEY": "x"}}"#).unwrap();
     let preview = manager.preview(&store, &request).unwrap();
     assert!(!preview.warnings.iter().any(|warning| warning == "clients.warnings.managedSettings"));
-    takeover::set_managed_settings_path(None);
+}
+
+#[test]
+fn owned_arrays_withdraw_exactly_the_previous_elements_and_adopt_user_rows() {
+    let (_temp, manager, store, mut request) = versioned_claude_fixture();
+    let original = json!({"modelPicker": {"options": [
+        {"model": "user-fancy", "label": "User", "description": "mine"}
+    ]}, "availableModels": ["user-fancy"]});
+    write(&manager.paths.claude, &original);
+    apply(&manager, &store, &request);
+    let installed = read(&manager.paths.claude);
+    assert_eq!(
+        installed["modelPicker"]["options"].as_array().unwrap().len(),
+        4
+    );
+    assert_eq!(installed["availableModels"].as_array().unwrap().len(), 4);
+    // The user hand-writes a minimal row between applies. The ownership
+    // record now exists, so it survives even though its shape is plain.
+    let mut current = read(&manager.paths.claude);
+    current["modelPicker"]["options"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"model": "user-plain", "label": "user-plain"}));
+    write(&manager.paths.claude, &current);
+    request.options.claude_model_ids =
+        Some(vec!["claude-opus-5-5".into(), "claude-fable-5-1".into()]);
+    apply(&manager, &store, &request);
+    let installed = read(&manager.paths.claude);
+    let entries = installed["modelPicker"]["options"].as_array().unwrap();
+    assert_eq!(entries.len(), 4);
+    assert!(entries.contains(&json!({"model": "user-plain", "label": "user-plain"})));
+    assert!(entries.contains(&json!({"model": "user-fancy", "label": "User", "description": "mine"})));
+    assert!(!entries.iter().any(|entry| entry["model"] == "claude-opus-4-8"));
+    assert_eq!(
+        installed["availableModels"],
+        json!(["user-fancy", "claude-opus-5-5", "claude-fable-5-1"])
+    );
+    manager.restore(TargetId::ClaudeCode).unwrap();
+    assert_eq!(read(&manager.paths.claude), original);
+}
+
+#[test]
+fn user_added_picker_rows_are_adopted_instead_of_conflicting() {
+    let (_temp, manager, store, request) = versioned_claude_fixture();
+    apply(&manager, &store, &request);
+    let mut current = read(&manager.paths.claude);
+    current["modelPicker"]["options"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"model": "user-added", "label": "Mine"}));
+    write(&manager.paths.claude, &current);
+    assert!(!manager.list()[0].conflict);
+    apply(&manager, &store, &request);
+    let entries = read(&manager.paths.claude)["modelPicker"]["options"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(entries.len(), 4);
+    assert!(entries.contains(&json!({"model": "user-added", "label": "Mine"})));
+}
+
+#[test]
+fn released_sessions_still_withdraw_their_rows_on_the_next_apply() {
+    let (_temp, manager, store, mut request) = versioned_claude_fixture();
+    apply(&manager, &store, &request);
+    manager.release(TargetId::ClaudeCode).unwrap();
+    // The generated rows carry display-name labels, so the legacy shape
+    // heuristic cannot find them; only the ownership record can.
+    request.options.claude_model_ids =
+        Some(vec!["claude-opus-5-5".into(), "claude-fable-5-1".into()]);
+    apply(&manager, &store, &request);
+    let entries = read(&manager.paths.claude)["modelPicker"]["options"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(entries.len(), 2);
+    assert!(!entries.iter().any(|entry| entry["model"] == "claude-opus-4-8"));
+}
+
+#[test]
+fn ownership_is_seeded_from_a_pre_upgrade_session() {
+    let (_temp, manager, store, mut request) = versioned_claude_fixture();
+    apply(&manager, &store, &request);
+    std::fs::remove_file(manager.data_dir.join("claude-code.owned.dat")).unwrap();
+    request.options.claude_model_ids =
+        Some(vec!["claude-opus-5-5".into(), "claude-fable-5-1".into()]);
+    apply(&manager, &store, &request);
+    let entries = read(&manager.paths.claude)["modelPicker"]["options"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(entries.len(), 2);
+    assert!(!entries.iter().any(|entry| entry["model"] == "claude-opus-4-8"));
+}
+
+#[test]
+fn user_deleted_managed_rows_are_regenerated_without_duplicates() {
+    let (_temp, manager, store, request) = versioned_claude_fixture();
+    apply(&manager, &store, &request);
+    let mut current = read(&manager.paths.claude);
+    let options = current["modelPicker"]["options"].as_array_mut().unwrap();
+    options.retain(|entry| entry["model"] != "claude-opus-4-8");
+    write(&manager.paths.claude, &current);
+    assert!(!manager.list()[0].conflict);
+    apply(&manager, &store, &request);
+    let entries = read(&manager.paths.claude)["modelPicker"]["options"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(entries.len(), 3);
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|entry| entry["model"] == "claude-opus-4-8")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn claude_one_m_mark_follows_the_known_context_window() {
+    let (_temp, manager, mut store, mut request) = fixture();
+    request.options.access_mode = ClientAccessMode::Native;
+    store.providers[0].models = vec![crate::core::newapi::Model {
+        id: "claude-test".into(),
+        included: true,
+        context_window: Some(200_000),
+        metadata_source: "upstream".into(),
+        ..Default::default()
+    }];
+    request.options.claude_one_m = ClaudeOneM::default();
+    let preview = manager.preview(&store, &request).unwrap();
+    assert!(
+        preview.warnings.iter().any(|warning| warning == "clients.warnings.oneMIgnored"),
+        "{:?}",
+        preview.warnings
+    );
+    apply(&manager, &store, &request);
+    let installed = read(&manager.paths.claude);
+    assert_eq!(installed["model"], "claude-test");
+    assert_eq!(installed["env"]["ANTHROPIC_MODEL"], "claude-test");
+    // A model at or above 1M keeps its mark.
+    store.providers[0].models[0].context_window = Some(1_000_000);
+    apply(&manager, &store, &request);
+    assert_eq!(read(&manager.paths.claude)["model"], "claude-test[1m]");
+}
+
+#[test]
+fn user_deleted_array_keys_are_respected_on_reapply() {
+    let (_temp, manager, store, request) = versioned_claude_fixture();
+    write(&manager.paths.claude, &json!({"availableModels": ["legacy"]}));
+    apply(&manager, &store, &request);
+    // The user deletes both managed arrays between applies (the picker object
+    // itself stays: it also holds the managed replaceBuiltInOptions scalar,
+    // whose removal would be a conflict).
+    let mut current = read(&manager.paths.claude);
+    current["modelPicker"]
+        .as_object_mut()
+        .unwrap()
+        .remove("options");
+    current.as_object_mut().unwrap().remove("availableModels");
+    write(&manager.paths.claude, &current);
+    assert!(!manager.list()[0].conflict);
+    apply(&manager, &store, &request);
+    let installed = read(&manager.paths.claude);
+    // The picker is regenerated from the current selection…
+    assert_eq!(
+        installed["modelPicker"]["options"].as_array().unwrap().len(),
+        3
+    );
+    // …but the deleted allowlist is not resurrected.
+    assert!(installed.get("availableModels").is_none());
+    manager.restore(TargetId::ClaudeCode).unwrap();
+    assert_eq!(read(&manager.paths.claude), json!({"availableModels": ["legacy"]}));
+}
+
+#[test]
+fn claude_role_auto_match_prefers_the_newest_version_regardless_of_order() {
+    let (_temp, manager, mut store, mut request) = fixture();
+    request.options.access_mode = ClientAccessMode::Native;
+    store.providers[0].model = "claude-opus-4".into();
+    request.model = "claude-opus-4".into();
+    // Storage order lists the older alias first.
+    store.providers[0].models = [("claude-opus-4", ""), ("claude-opus-4-10", "Newest"), ("claude-fable-9-2", "")]
+        .into_iter()
+        .map(|(id, name)| crate::core::newapi::Model {
+            id: id.into(),
+            display_name: name.into(),
+            included: true,
+            ..Default::default()
+        })
+        .collect();
+    apply(&manager, &store, &request);
+    // The startup model fits the opus role, so the user's default wins.
+    assert_eq!(
+        read(&manager.paths.claude)["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"],
+        "claude-opus-4"
+    );
+    // Without a startup hit the numerically newest alias wins, even though
+    // storage order lists it second.
+    store.providers[0].model = "claude-fable-9-2".into();
+    request.model = "claude-fable-9-2".into();
+    apply(&manager, &store, &request);
+    assert_eq!(
+        read(&manager.paths.claude)["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"],
+        "claude-opus-4-10"
+    );
 }

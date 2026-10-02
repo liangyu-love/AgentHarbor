@@ -27,8 +27,9 @@ impl ClientAdapter for ClaudeCode {
         document: &Value,
         store: &Store,
         request: &ConfigRequest,
-        _catalog: &super::models_dev::Catalog,
-        _official_models: &[Value],
+        catalog: &super::models_dev::Catalog,
+        official_models: &[Value],
+        ctx: &mut EditContext<'_>,
     ) -> Result<Vec<Edit>, String> {
         let provider = selected_provider(store, request)?;
         let (base, credential) = client_endpoint(store, provider, request, false)?;
@@ -100,10 +101,35 @@ impl ClientAdapter for ClaudeCode {
             return Err("clients.errors.modelSelection".into());
         }
         // Claude Code reads the [1m] suffix per variable and strips it before sending,
-        // so it works in native and router mode alike. Context-window env vars are left
-        // to the user: they are ignored for [1m] IDs and only affect unrecognized models.
+        // so it works in native and router mode alike. It treats an unmarked model as
+        // a 200K one and compacts early, while a mark on a model without the capacity
+        // asks for a context the upstream must refuse — so the shared resolver decides:
+        // only models whose known context reaches 1M are marked, and for models without
+        // data the explicit opt-in decides. Context-window env vars are left to the user.
         let one_m = &request.options.claude_one_m;
-        let startup_model = marked_model(&request.model, one_m.startup);
+        let known_small = |model: &str| {
+            let official = super::super::router::matched_official_model(official_models, model)
+                .filter(|_| super::super::router::official_endpoint_applies(provider));
+            let projection = super::super::router::model_projection(
+                provider,
+                model,
+                official,
+                catalog,
+                &store.global_compression(),
+            )
+            .1;
+            !projection.context_is_fallback && projection.context_window < 1_000_000
+        };
+        let mut one_m_ignored = false;
+        let mark = |model: &str, requested: bool, ignored: &mut bool| -> String {
+            if requested && known_small(model) {
+                *ignored = true;
+                model.to_owned()
+            } else {
+                marked_model(model, requested)
+            }
+        };
+        let startup_model = mark(&request.model, one_m.startup, &mut one_m_ignored);
         edits.push(edit(&["model"], json!(startup_model)));
         edits.push(edit(&["env", "ANTHROPIC_MODEL"], json!(startup_model)));
         let mut allowed_models = models.clone();
@@ -159,18 +185,16 @@ impl ClientAdapter for ClaudeCode {
             let model = if !explicit.is_empty() {
                 explicit
             } else {
-                models
-                    .iter()
-                    .find(|id| !role.is_empty() && id.to_ascii_lowercase().contains(role))
-                    .unwrap_or(&request.model)
+                auto_role_model(&models, role, &request.model).unwrap_or(&request.model)
             };
             validate_model(model)?;
-            if !models.contains(model) {
+            if !models.iter().any(|id| id == model) {
                 return Err("clients.errors.protocol".into());
             }
-            edits.push(edit(&["env", name], json!(marked_model(model, role_one_m))));
+            let marked_value = mark(model, role_one_m, &mut one_m_ignored);
+            edits.push(edit(&["env", name], json!(marked_value.clone())));
             if role == "haiku" {
-                haiku_model = Some(marked_model(model, role_one_m));
+                haiku_model = Some(marked_value);
             }
             // A previous gateway's display names must not describe a different model.
             if !role.is_empty() {
@@ -183,8 +207,8 @@ impl ClientAdapter for ClaudeCode {
                     .unwrap_or(model);
                 edits.push(edit(&["env", &format!("{name}_NAME")], json!(display_name)));
             }
-            if !allowed_models.contains(model) {
-                allowed_models.push(model.clone());
+            if !allowed_models.iter().any(|id| id == model) {
+                allowed_models.push(model.to_owned());
             }
         }
         // Older Claude Code builds read the deprecated small-fast variable for
@@ -214,24 +238,28 @@ impl ClientAdapter for ClaudeCode {
             None => Vec::new(),
         };
         // Older builds left their plain model/label rows behind when switching
-        // relays. Keep user-authored rows (custom labels or metadata), but do not
-        // carry those generated rows into an unrelated relay's picker.
+        // relays. Without a journal and an ownership record nothing else
+        // identifies them, so this narrow shape check is the one-time
+        // migration; once a record exists it does the withdrawing, and user
+        // rows — including minimal ones — are never shape-guessed.
         let mut stale_generated = Vec::new();
-        entries.retain(|entry| {
-            let Some(object) = entry.as_object() else {
-                return true;
-            };
-            let Some(model) = object.get("model").and_then(Value::as_str) else {
-                return true;
-            };
-            let stale = object.len() == 2
-                && object.get("label").and_then(Value::as_str) == Some(model)
-                && !models.iter().any(|selected| selected == model);
-            if stale {
-                stale_generated.push(model.to_owned());
-            }
-            !stale
-        });
+        if ctx.legacy_picker_cleanup {
+            entries.retain(|entry| {
+                let Some(object) = entry.as_object() else {
+                    return true;
+                };
+                let Some(model) = object.get("model").and_then(Value::as_str) else {
+                    return true;
+                };
+                let stale = object.len() == 2
+                    && object.get("label").and_then(Value::as_str) == Some(model)
+                    && !models.iter().any(|selected| selected == model);
+                if stale {
+                    stale_generated.push(model.to_owned());
+                }
+                !stale
+            });
+        }
         for model in &models {
             if entries
                 .iter()
@@ -268,6 +296,9 @@ impl ClientAdapter for ClaudeCode {
             }
             edits.push(edit(&["availableModels"], json!(allowed)));
         }
+        if one_m_ignored {
+            ctx.warnings.push("clients.warnings.oneMIgnored".into());
+        }
         Ok(edits)
     }
 }
@@ -278,6 +309,64 @@ fn marked_model(model: &str, one_m: bool) -> String {
     } else {
         model.to_owned()
     }
+}
+
+/// Deterministic role auto-match: segment-boundary matches only, the startup
+/// model wins when it fits the role, then the numerically newest version
+/// (rolling aliases beat dated snapshots), then the provider's storage order.
+/// Substring matching would drift with the provider's model order and could
+/// pick an older alias of the same family.
+fn auto_role_model<'a>(models: &'a [String], role: &str, startup: &'a str) -> Option<&'a str> {
+    let matches = |id: &str| {
+        id.split(['-', '_', '.'])
+            .any(|segment| segment.eq_ignore_ascii_case(role))
+    };
+    if models.iter().any(|id| id == startup) && matches(startup) {
+        return Some(startup);
+    }
+    let mut candidates: Vec<&str> = models
+        .iter()
+        .map(String::as_str)
+        .filter(|id| matches(id))
+        .collect();
+    match candidates.len() {
+        0 => None,
+        1 => candidates.pop(),
+        // min_by keeps the first of equals, so ties stay in storage order.
+        _ => candidates.into_iter().min_by(|a, b| version_order(b, a)),
+    }
+}
+
+/// Orders two model ids by version, `Ordering::Greater` meaning `a` is newer.
+fn version_order(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let date_like = |id: &str| {
+        id.split(['-', '_', '.'])
+            .any(|segment| segment.len() >= 8 && segment.chars().all(|c| c.is_ascii_digit()))
+    };
+    match (date_like(a), date_like(b)) {
+        (true, false) => return Ordering::Less,
+        (false, true) => return Ordering::Greater,
+        _ => {}
+    }
+    let segments = |id: &str| -> Vec<String> {
+        id.to_ascii_lowercase().split(['-', '_', '.']).map(str::to_owned).collect()
+    };
+    let left = segments(a);
+    let right = segments(b);
+    for (a_segment, b_segment) in left.iter().zip(right.iter()) {
+        if a_segment == b_segment {
+            continue;
+        }
+        let numeric = |segment: &str| -> Option<u64> {
+            (segment.len() < 8).then(|| segment.parse().ok()).flatten()
+        };
+        return match (numeric(a_segment), numeric(b_segment)) {
+            (Some(a_number), Some(b_number)) => a_number.cmp(&b_number),
+            _ => a_segment.cmp(b_segment),
+        };
+    }
+    left.len().cmp(&right.len())
 }
 
 /// Mirrors Claude Code's own env-flag parsing: only 1/true/yes/on (case
