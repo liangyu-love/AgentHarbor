@@ -102,6 +102,7 @@ trait ClientAdapter: Sync {
         catalog: &models_dev::Catalog,
         official_models: &[Value],
         ctx: &EditContext,
+        warnings: &mut Vec<String>,
     ) -> Result<Vec<Edit>, String>;
 }
 
@@ -517,7 +518,7 @@ impl ConfigManager {
                 // this app's rows: no journal and no ownership record.
                 legacy_picker_cleanup: previous.is_none() && !owned_recorded,
             };
-            adapter.edits(&document, store, request, &catalog, &official.models, &ctx)?
+            adapter.edits(&document, store, request, &catalog, &official.models, &ctx, &mut warnings)?
         };
         // `document` here is the file as it exists right now, before the edits
         // are applied — exactly what the takeover analysis compares against.

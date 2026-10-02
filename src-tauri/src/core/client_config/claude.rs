@@ -27,9 +27,10 @@ impl ClientAdapter for ClaudeCode {
         document: &Value,
         store: &Store,
         request: &ConfigRequest,
-        _catalog: &super::models_dev::Catalog,
-        _official_models: &[Value],
+        catalog: &super::models_dev::Catalog,
+        official_models: &[Value],
         ctx: &EditContext,
+        warnings: &mut Vec<String>,
     ) -> Result<Vec<Edit>, String> {
         let provider = selected_provider(store, request)?;
         let (base, credential) = client_endpoint(store, provider, request, false)?;
@@ -101,10 +102,35 @@ impl ClientAdapter for ClaudeCode {
             return Err("clients.errors.modelSelection".into());
         }
         // Claude Code reads the [1m] suffix per variable and strips it before sending,
-        // so it works in native and router mode alike. Context-window env vars are left
-        // to the user: they are ignored for [1m] IDs and only affect unrecognized models.
+        // so it works in native and router mode alike. It treats an unmarked model as
+        // a 200K one and compacts early, while a mark on a model without the capacity
+        // asks for a context the upstream must refuse — so the shared resolver decides:
+        // only models whose known context reaches 1M are marked, and for models without
+        // data the explicit opt-in decides. Context-window env vars are left to the user.
         let one_m = &request.options.claude_one_m;
-        let startup_model = marked_model(&request.model, one_m.startup);
+        let known_small = |model: &str| {
+            let official = super::super::router::matched_official_model(official_models, model)
+                .filter(|_| super::super::router::official_endpoint_applies(provider));
+            let projection = super::super::router::model_projection(
+                provider,
+                model,
+                official,
+                catalog,
+                &store.global_compression(),
+            )
+            .1;
+            !projection.context_is_fallback && projection.context_window < 1_000_000
+        };
+        let mut one_m_ignored = false;
+        let mark = |model: &str, requested: bool, ignored: &mut bool| -> String {
+            if requested && known_small(model) {
+                *ignored = true;
+                model.to_owned()
+            } else {
+                marked_model(model, requested)
+            }
+        };
+        let startup_model = mark(&request.model, one_m.startup, &mut one_m_ignored);
         edits.push(edit(&["model"], json!(startup_model)));
         edits.push(edit(&["env", "ANTHROPIC_MODEL"], json!(startup_model)));
         let mut allowed_models = models.clone();
@@ -169,9 +195,10 @@ impl ClientAdapter for ClaudeCode {
             if !models.contains(model) {
                 return Err("clients.errors.protocol".into());
             }
-            edits.push(edit(&["env", name], json!(marked_model(model, role_one_m))));
+            let marked_value = mark(model, role_one_m, &mut one_m_ignored);
+            edits.push(edit(&["env", name], json!(marked_value.clone())));
             if role == "haiku" {
-                haiku_model = Some(marked_model(model, role_one_m));
+                haiku_model = Some(marked_value);
             }
             // A previous gateway's display names must not describe a different model.
             if !role.is_empty() {
@@ -272,6 +299,9 @@ impl ClientAdapter for ClaudeCode {
                 }
             }
             edits.push(edit(&["availableModels"], json!(allowed)));
+        }
+        if one_m_ignored {
+            warnings.push("clients.warnings.oneMIgnored".into());
         }
         Ok(edits)
     }

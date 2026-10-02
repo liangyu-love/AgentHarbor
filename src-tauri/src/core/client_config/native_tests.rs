@@ -835,3 +835,31 @@ fn user_deleted_managed_rows_are_regenerated_without_duplicates() {
         1
     );
 }
+
+#[test]
+fn claude_one_m_mark_follows_the_known_context_window() {
+    let (_temp, manager, mut store, mut request) = fixture();
+    request.options.access_mode = ClientAccessMode::Native;
+    store.providers[0].models = vec![crate::core::newapi::Model {
+        id: "claude-test".into(),
+        included: true,
+        context_window: Some(200_000),
+        metadata_source: "upstream".into(),
+        ..Default::default()
+    }];
+    request.options.claude_one_m = ClaudeOneM::default();
+    let preview = manager.preview(&store, &request).unwrap();
+    assert!(
+        preview.warnings.iter().any(|warning| warning == "clients.warnings.oneMIgnored"),
+        "{:?}",
+        preview.warnings
+    );
+    apply(&manager, &store, &request);
+    let installed = read(&manager.paths.claude);
+    assert_eq!(installed["model"], "claude-test");
+    assert_eq!(installed["env"]["ANTHROPIC_MODEL"], "claude-test");
+    // A model at or above 1M keeps its mark.
+    store.providers[0].models[0].context_window = Some(1_000_000);
+    apply(&manager, &store, &request);
+    assert_eq!(read(&manager.paths.claude)["model"], "claude-test[1m]");
+}

@@ -56,6 +56,7 @@ impl ClientAdapter for OpenCode {
         catalog: &super::models_dev::Catalog,
         official_models: &[Value],
         _ctx: &EditContext,
+        _warnings: &mut Vec<String>,
     ) -> Result<Vec<Edit>, String> {
         let mut edits = Vec::new();
         let providers: Vec<_> = store
