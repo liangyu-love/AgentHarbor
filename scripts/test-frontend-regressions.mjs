@@ -838,6 +838,12 @@ try {
   await reset("clients-versions");
   await page.getByRole("button", { name: labels.configure, exact: true }).click();
   await page.getByRole("button", { name: labels.clientRouter, exact: true }).click();
+  // The fixture only has Opus and Fable models. Give the remaining roles a
+  // model before testing their 1M switches, which correctly disable otherwise.
+  for (const role of ["sonnet", "haiku", "subagent"]) {
+    await page.locator("#client-role-" + role).click();
+    await page.getByRole("option", { name: "Opus 5.5", exact: true }).click();
+  }
   const startupOneM = page.getByRole("checkbox", { name: labels.oneMStartup, exact: true });
   const oneMCheckboxes = [labels.oneMStartup, ...labels.oneMRoles].map(name => page.getByRole("checkbox", { name, exact: true }));
   // [1m] marks follow the resolver: models without catalog context default to

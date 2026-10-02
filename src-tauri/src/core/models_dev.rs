@@ -63,6 +63,7 @@ pub struct Model {
     /// `None` means an older snapshot cannot distinguish absent from [].
     pub reasoning_options_declared: Option<bool>,
     /// Response-format hint only; never selects a protocol or endpoint.
+    #[serde(deserialize_with = "deserialize_interleaved")]
     pub interleaved: Option<Interleaved>,
     pub limit: Limit,
     pub cost: Option<Cost>,
@@ -87,6 +88,20 @@ pub struct Model {
 pub enum Interleaved {
     Enabled(bool),
     Field { field: String },
+}
+
+fn deserialize_interleaved<'de, D>(deserializer: D) -> Result<Option<Interleaved>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    Ok(match value {
+        Value::Bool(enabled) => Some(Interleaved::Enabled(enabled)),
+        Value::Object(object) => object.get("field").and_then(Value::as_str)
+            .filter(|field| !field.is_empty() && field.len() <= 128 && !field.chars().any(char::is_control))
+            .map(|field| Interleaved::Field { field: field.into() }),
+        _ => None,
+    })
 }
 
 #[derive(Clone, Copy, Default, Serialize, Deserialize)]
@@ -498,10 +513,6 @@ fn rename_rates(object: &mut serde_json::Map<String, Value>) {
 }
 
 fn valid_model(model: &Model) -> bool {
-    if model.interleaved.as_ref().is_some_and(|hint| match hint {
-        Interleaved::Enabled(_) => false,
-        Interleaved::Field { field } => field.is_empty() || field.len() > 128 || field.chars().any(char::is_control),
-    }) { return false; }
     // A record with no usable metadata at all is a shape change, not a model.
     if model.limit.context.is_none()
         && model.limit.input.is_none()
@@ -908,6 +919,30 @@ mod tests {
             .unwrap(),
         ] {
             assert!(Catalog::parse(&bytes, Origin::Runtime).is_err());
+        }
+    }
+
+    #[test]
+    fn malformed_interleaved_hints_never_drop_models_or_the_catalog() {
+        for hint in [
+            serde_json::json!({"field": 5}), serde_json::json!([]), serde_json::json!("x"),
+            serde_json::json!({"field": ""}), serde_json::json!({"field": "x".repeat(129)}),
+            serde_json::json!({"field": "bad\nfield"}),
+        ] {
+            let mut snapshot: Value = serde_json::from_slice(&fixture()).unwrap();
+            snapshot["providers"][0]["models"][0]["interleaved"] = hint.clone();
+            let catalog = Catalog::parse(&serde_json::to_vec(&snapshot).unwrap(), Origin::Runtime).unwrap();
+            let model = catalog.exact_in("anthropic", "claude-opus-4-5").unwrap().model;
+            assert!(model.interleaved.is_none(), "snapshot hint: {hint}");
+            assert_eq!(catalog.model_count(), 4);
+
+            let api = serde_json::json!({"p": {"id": "p", "name": "P", "models": {
+                "m": {"id": "m", "name": "M", "limit": {"context": 100}, "interleaved": hint}
+            }}});
+            let catalog = Catalog::from_api(api.to_string().as_bytes(), DEFAULT_SOURCE_URL, 1).unwrap();
+            let model = catalog.exact_in("p", "m").unwrap().model;
+            assert!(model.interleaved.is_none(), "API hint: {hint}");
+            assert_eq!(catalog.model_count(), 1);
         }
     }
 

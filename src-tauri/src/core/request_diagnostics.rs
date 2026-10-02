@@ -154,7 +154,7 @@ pub fn state_revision(bytes: &[u8]) -> String {
 pub struct ServedModelObserver {
     protocol: ModelProtocol,
     upstream_model: String,
-    request_model_valid: bool,
+    request_model_issue: Option<&'static str>,
     status: u16,
     sse: bool,
     buffer: Vec<u8>,
@@ -170,12 +170,17 @@ pub struct ServedModelObserver {
 
 impl ServedModelObserver {
     pub fn new(protocol: ModelProtocol, upstream_model: &str, status: u16, sse: bool) -> Self {
-        let request_model_valid = upstream_model.len() <= MAX_ID
-            && !upstream_model.chars().any(char::is_control);
+        let request_model_issue = if upstream_model.is_empty() {
+            Some("request_model_missing")
+        } else if upstream_model.len() > MAX_ID || upstream_model.chars().any(char::is_control) {
+            Some("request_model_truncated")
+        } else {
+            None
+        };
         Self {
             protocol,
-            upstream_model: if request_model_valid { upstream_model.into() } else { String::new() },
-            request_model_valid,
+            upstream_model: if request_model_issue.is_none() { upstream_model.into() } else { String::new() },
+            request_model_issue,
             status,
             sse,
             buffer: Vec::new(),
@@ -257,12 +262,12 @@ impl ServedModelObserver {
             return;
         };
         let kind = value.get("type").and_then(Value::as_str).unwrap_or(&name);
-        if matches!(kind, "error" | "response.failed" | "response.incomplete")
+        if matches!(kind, "error" | "response.failed")
             || !value["error"].is_null()
         {
             self.reason = Some("response_failed");
         }
-        if matches!(kind, "response.completed" | "message_stop") {
+        if matches!(kind, "response.completed" | "response.incomplete" | "message_stop") {
             self.terminal = true;
         }
         let declared = match self.protocol {
@@ -300,21 +305,16 @@ impl ServedModelObserver {
 
     fn record_declaration(&mut self, declared: &str) {
         if !declared.is_empty() {
-            let cleaned: String = declared
-                .chars()
-                .filter(|c| !c.is_control())
-                .take(MAX_ID + 1)
-                .collect();
-            if cleaned.len() > MAX_ID || cleaned.len() != declared.len() {
+            if declared.len() > MAX_ID || declared.chars().any(char::is_control) {
                 self.reason = Some("model_id_truncated");
                 return;
             }
             match &self.served {
-                Some(first) if first != &cleaned => {
-                    if self.conflict.is_none() { self.conflict = Some(cleaned); }
+                Some(first) if first != declared => {
+                    if self.conflict.is_none() { self.conflict = Some(declared.into()); }
                     self.reason = Some("conflicting_declarations");
                 }
-                None => self.served = Some(cleaned),
+                None => self.served = Some(declared.into()),
                 _ => {}
             }
         }
@@ -359,8 +359,8 @@ impl ServedModelObserver {
             Some("incomplete_stream")
         } else if self.served.is_none() {
             Some("model_not_declared")
-        } else if !self.request_model_valid {
-            Some("request_model_truncated")
+        } else if self.request_model_issue.is_some() {
+            self.request_model_issue
         } else {
             None
         };
@@ -418,6 +418,24 @@ mod tests {
         let mut incomplete = ServedModelObserver::new(ModelProtocol::ChatCompletions, "wire", 200, true);
         incomplete.push(b"data: {\"model\":\"wire\"}\n\n");
         assert_eq!(incomplete.finish(true).unknown_reason.as_deref(), Some("incomplete_stream"));
+    }
+
+    #[test]
+    fn incomplete_response_is_terminal_and_can_confirm_the_served_model() {
+        let mut observer = ServedModelObserver::new(ModelProtocol::Responses, "wire", 200, true);
+        observer.push(b"event: response.incomplete\ndata: {\"type\":\"response.incomplete\",\"response\":{\"model\":\"wire\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n");
+        let result = observer.finish(true);
+        assert_eq!(result.unknown_reason, None);
+        assert_eq!(result.model_match_status, "same");
+    }
+
+    #[test]
+    fn missing_request_model_cannot_produce_a_raw_comparison() {
+        let mut observer = ServedModelObserver::new(ModelProtocol::Responses, "", 200, false);
+        observer.push(br#"{"model":"wire"}"#);
+        let result = observer.finish(true);
+        assert_eq!(result.model_match_status, "unknown");
+        assert_eq!(result.unknown_reason.as_deref(), Some("request_model_missing"));
     }
 
     #[test]

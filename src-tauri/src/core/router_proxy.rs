@@ -676,7 +676,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                 Ok(response) => response,
                 Err(error) => {
                     if let Some(request) = relay_request {
-                        request.failed(StatusCode::BAD_GATEWAY.as_u16());
+                        request.failed(StatusCode::BAD_GATEWAY.as_u16(), "response_not_received");
                     }
                     trace.failed_attempt(
                         "connect",
@@ -714,7 +714,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             if response.status() == StatusCode::TOO_MANY_REQUESTS {
                 if let Some(next) = alternative {
                     if let Some(request) = relay_request {
-                        request.failed(429);
+                        request.failed(429, "upstream_http_error");
                     }
                     trace.failed_attempt(
                         "headers",

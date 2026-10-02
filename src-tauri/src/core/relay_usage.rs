@@ -494,11 +494,9 @@ impl RelayUsageRequest {
         }
     }
 
-    pub fn failed(self, status_code: u16) {
+    pub fn failed(self, status_code: u16, unknown_reason: &'static str) {
         let mut request = self;
-        if status_code == 429 {
-            request.model_observation.unknown_reason = Some("upstream_http_error".into());
-        }
+        request.model_observation.unknown_reason = Some(unknown_reason.into());
         request.persist(status_code, false, false, TokenCounts::default(), None);
     }
 
@@ -1590,7 +1588,7 @@ mod tests {
             "chatCompletions".into(),
             PricingSnapshot::unknown("unknown", "fixture"),
         )
-        .failed(502);
+        .failed(502, "response_not_received");
         let payload = load(dir.path()).unwrap();
         assert_eq!(payload.all_time.request_count, 1);
         assert_eq!(payload.all_time.successful_count, 0);

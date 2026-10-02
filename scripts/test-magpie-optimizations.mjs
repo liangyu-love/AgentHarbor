@@ -13,7 +13,7 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   assert.match(await routes.innerText(), /claude-opus-5-5-kiro/);
   assert.match(await routes.innerText(), /claude-opus-5-5 → Synthetic channel/);
   assert.match(await routes.innerText(), /230 ms/);
-  assert.match(await routes.innerText(), /syntheti/);
+  assert.match(await routes.innerText(), /尝试 ID: syntheti/);
   assert.match(await routes.innerText(), /fixture-vers/);
   const toggle = routes.getByRole("switch", { name: "同模型渠道故障切换" });
   assert.equal(await toggle.getAttribute("aria-checked"), "false");

@@ -669,7 +669,7 @@ fn usage_unknown_partial_zero_failure_and_price_snapshots_stay_distinct() {
         "responses".into(),
         price.clone(),
     )
-    .failed(502);
+    .failed(502, "response_not_received");
     let ledger = std::fs::read_to_string(usage::usage_path(&paths.app_data_dir)).unwrap();
     let records: Vec<usage::RelayUsageRecord> = ledger
         .lines()
