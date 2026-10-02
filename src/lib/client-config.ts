@@ -50,6 +50,19 @@ export const effectiveContext = (provider: NewApiProvider | undefined, id: strin
 };
 export const knownSmallContext = (context: number | null): boolean =>
   context != null && context < MIN_ONE_M_CONTEXT;
+export type ConflictScope = "endpoint" | "credential" | "model" | "menu" | "other";
+export const conflictScopes = (fields: string[]): ConflictScope[] => {
+  const scopes = new Set<ConflictScope>();
+  for (const field of fields) {
+    if (field.includes("BASE_URL")) scopes.add("endpoint");
+    else if (field.includes("TOKEN") || field.includes("API_KEY")) scopes.add("credential");
+    else if (field === "model" || field.includes("MODEL")) scopes.add("model");
+    else if (field.startsWith("modelPicker") || field.startsWith("availableModels")) scopes.add("menu");
+    else scopes.add("other");
+  }
+  return [...scopes];
+};
+
 export const clientProtocols = (client: ClientStatus, mode: ClientAccessMode): ModelProtocol[] =>
   client.targetId === "claudeCode" && mode === "router"
     ? ["anthropicMessages", "responses", "chatCompletions"] : client.protocols;

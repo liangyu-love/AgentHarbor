@@ -80,6 +80,28 @@ pub async fn restore_client_config(
     attach_reconcile_warning(result, routing_runtime::reconcile(&paths).await)
 }
 
+/// Re-inject the last applied configuration. With `rebaseline`, the file's
+/// current managed values are adopted as the rollback point first.
+#[tauri::command]
+pub async fn reapply_client_config(
+    repo: State<'_, Mutex<Repository>>,
+    target_id: TargetId,
+    rebaseline: Option<bool>,
+) -> Result<ConfigApplied, String> {
+    let paths = paths(&repo)?;
+    let _guard = routing_runtime::mutation_guard().await;
+    let rebaseline = rebaseline.unwrap_or(false);
+    if manager(&paths)
+        .stored_request(target_id)?
+        .is_some_and(|request| request.needs_router())
+    {
+        routing_runtime::ensure_available(&paths).await?;
+    }
+    let result = router::load_store(&paths)
+        .and_then(|store| manager(&paths).reapply(&store, target_id, rebaseline));
+    attach_reconcile_warning(result, routing_runtime::reconcile(&paths).await)
+}
+
 /// Drop AgentHarbor's management record, leaving the client file as it is.
 #[tauri::command]
 pub async fn release_client_config(

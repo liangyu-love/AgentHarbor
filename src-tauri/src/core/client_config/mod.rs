@@ -298,7 +298,7 @@ impl ConfigManager {
     }
 
     pub fn preview(&self, store: &Store, request: &ConfigRequest) -> Result<ConfigPreview, String> {
-        let plan = self.prepare(store, request)?;
+        let plan = self.prepare(store, request, false)?;
         let mut patch = json!({});
         for change in &plan.session.changes {
             set_field(&mut patch, &change.path, change.after.clone())?;
@@ -329,7 +329,7 @@ impl ConfigManager {
             .get_or_init(|| Mutex::new(()))
             .lock()
             .map_err(|_| "clients.errors.storage")?;
-        let plan = self.prepare(store, request)?;
+        let plan = self.prepare(store, request, false)?;
         if plan.revision != expected_revision {
             return Err("clients.errors.changed".into());
         }
@@ -372,6 +372,44 @@ impl ConfigManager {
         self.commit(id, &session.path, current, restored, None, Vec::new())
     }
 
+    /// Re-inject the stored request without reopening the configuration
+    /// dialog. With `rebaseline` the file's current managed values become the
+    /// rollback point first — the explicit way out of a conflict, mirroring
+    /// the Codex takeover path.
+    pub fn reapply(
+        &self,
+        store: &Store,
+        id: TargetId,
+        rebaseline: bool,
+    ) -> Result<ConfigApplied, String> {
+        let _guard = WRITE_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .map_err(|_| "clients.errors.storage")?;
+        adapter(id)?;
+        let session = self.session(id)?.ok_or("clients.errors.notConfigured")?;
+        let plan = self.prepare(store, &session.request, rebaseline)?;
+        let text = format!(
+            "{}\n",
+            serde_json::to_string_pretty(&plan.session.installed)
+                .map_err(|_| "clients.errors.storage")?
+        );
+        self.commit(
+            id,
+            &plan.session.path,
+            plan.current,
+            Some(text),
+            Some(&plan.session),
+            plan.warnings,
+        )
+    }
+
+    /// The stored request for a client; reapply uses it to decide whether the
+    /// local router must be running.
+    pub fn stored_request(&self, id: TargetId) -> Result<Option<ConfigRequest>, String> {
+        Ok(self.session(id)?.map(|session| session.request))
+    }
+
     /// Stop managing a client without touching its config file. This is the way out
     /// of a conflict (the user edited managed fields) or an unreadable session record:
     /// the file keeps whatever the user has now, and a later apply starts from it.
@@ -404,7 +442,7 @@ impl ConfigManager {
             .collect()
     }
 
-    fn prepare(&self, store: &Store, request: &ConfigRequest) -> Result<Plan, String> {
+    fn prepare(&self, store: &Store, request: &ConfigRequest, rebaseline: bool) -> Result<Plan, String> {
         let adapter = adapter(request.target_id)?;
         let provider = selected_provider(store, request)?;
         if !request.accepts_model(provider, &request.model) {
@@ -430,7 +468,7 @@ impl ConfigManager {
         if request.needs_router() && store.router.bearer_token.is_empty() {
             return Err("clients.errors.router".into());
         }
-        let previous = self.session(request.target_id)?;
+        let mut previous = self.session(request.target_id)?;
         let path = previous
             .as_ref()
             .map(|s| s.path.as_path())
@@ -467,11 +505,23 @@ impl ConfigManager {
             .and_then(Value::as_array)
             .map(|values| owned.withdraw(&["availableModels".into()], values));
         let independently_changed = previous.as_ref().is_some_and(|p| document != p.installed);
-        if let Some(previous) = &previous {
-            verify_fields(&document, previous)?;
-            undo(&mut document, previous)?;
+        let rebaselined = rebaseline && previous.is_some();
+        if let Some(previous_session) = previous.as_mut() {
+            if rebaselined {
+                // Explicit re-takeover: adopt the file's current managed values
+                // as the rollback point instead of rejecting them, the way the
+                // Codex path starts a new session from another switcher's live
+                // settings. The original snapshot is kept, so a later restore
+                // can still go back past this point.
+                for change in &mut previous_session.changes {
+                    change.before = field(&document, &change.path).cloned();
+                }
+            } else {
+                verify_fields(&document, previous_session)?;
+                undo(&mut document, previous_session)?;
+            }
         }
-        let original = if independently_changed {
+        let original = if independently_changed && !rebaselined {
             Some(format!(
                 "{}\n",
                 serde_json::to_string_pretty(&document).map_err(|_| "clients.errors.storage")?

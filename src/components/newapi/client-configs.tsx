@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { RotateCcw, Settings2, Terminal, Unlink } from "lucide-react";
+import { RefreshCw, RotateCcw, Settings2, Terminal, Unlink } from "lucide-react";
 import { api } from "@/lib/api";
-import { clientModels, clientProtocols, exclusionOf, type Exclusion } from "@/lib/client-config";
+import { clientModels, clientProtocols, conflictScopes, exclusionOf, type Exclusion } from "@/lib/client-config";
 import { ConfigDialog } from "./client-config-dialog";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -42,6 +42,7 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
   const [selected, setSelected] = useState<ClientStatus | null>(null);
   const [restoring, setRestoring] = useState<ClientStatus | null>(null);
   const [releasing, setReleasing] = useState<ClientStatus | null>(null);
+  const [reapplying, setReapplying] = useState<{ client: ClientStatus; rebaseline: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const refresh = async () => {
@@ -62,6 +63,23 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
         variant: restored.warnings?.length ? "destructive" : "success",
       });
       setRestoring(null);
+    } catch (cause) { setError(clientErrorKey(cause)); }
+    finally { setBusy(false); await refresh(); }
+  };
+  const reapply = async () => {
+    if (!reapplying || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const applied = await api.targets.reapplyConfig(reapplying.client.targetId, reapplying.rebaseline);
+      toast({
+        title: t(reapplying.rebaseline ? "clients.reappliedRebaseline" : "clients.reapplied"),
+        description: applied.warnings?.length
+          ? applied.warnings.map(key => t(key)).join(" ")
+          : t("clients.restartHint"),
+        variant: applied.warnings?.length ? "destructive" : "success",
+      });
+      setReapplying(null);
     } catch (cause) { setError(clientErrorKey(cause)); }
     finally { setBusy(false); await refresh(); }
   };
@@ -112,6 +130,11 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
               <p className="break-all font-mono text-xs text-muted-foreground">{client.path}</p>
               <p className="break-words text-sm">{client.configured ? configuredSummary : t(`clients.${client.targetId}Hint`)}</p>
               {(client.conflict || client.error || unavailable) && <p role="alert" className="text-xs text-destructive">{t(client.error ?? (client.conflict ? "clients.errors.conflict" : "clients.errors.provider"))}</p>}
+              {client.conflict && !!client.conflictFields?.length && <p role="status" className="text-xs text-muted-foreground">
+                {t("clients.conflictScope", {
+                  fields: conflictScopes(client.conflictFields).map(scope => t("clients.conflictScopes." + scope)).join(" · "),
+                })}
+              </p>}
               {reasons.length > 0 && (
                 <p className="text-xs text-muted-foreground">
                   {t("clients.noEligibleProviders")} {reasons.join(" · ")}
@@ -123,6 +146,12 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
                 </Button>
                 {client.configured && <Button size="sm" variant="ghost" disabled={busy || client.conflict || !!client.error} onClick={() => setRestoring(client)}>
                   <RotateCcw className="h-3.5 w-3.5" />{t("clients.restore")}
+                </Button>}
+                {client.configured && !client.conflict && !client.error && !unavailable && <Button size="sm" variant="ghost" disabled={busy} onClick={() => setReapplying({ client, rebaseline: false })}>
+                  <RefreshCw className="h-3.5 w-3.5" />{t("clients.reapply")}
+                </Button>}
+                {client.conflict && <Button size="sm" variant="ghost" disabled={busy} onClick={() => setReapplying({ client, rebaseline: true })}>
+                  <RefreshCw className="h-3.5 w-3.5" />{t("clients.rebaseline")}
                 </Button>}
                 {(client.conflict || (client.error && client.error !== "clients.errors.invalidConfig")) && (
                   <Button size="sm" variant="ghost" disabled={busy} onClick={() => setReleasing(client)}>
@@ -145,6 +174,21 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
           <AlertDialogFooter>
             <AlertDialogCancel disabled={busy}>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction disabled={busy} onClick={event => { event.preventDefault(); void restore(); }}>{t("clients.restore")}</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={!!reapplying} onOpenChange={open => { if (!open && !busy) setReapplying(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t(reapplying?.rebaseline ? "clients.rebaselineTitle" : "clients.reapplyTitle", { name: reapplying?.client.name })}</AlertDialogTitle>
+            <AlertDialogDescription>{t(reapplying?.rebaseline ? "clients.rebaselineDescription" : "clients.reapplyDescription")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          {error && <p role="alert" className="text-sm text-destructive">{t(error)}</p>}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={busy}>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction disabled={busy} onClick={event => { event.preventDefault(); void reapply(); }}>
+              {t(reapplying?.rebaseline ? "clients.rebaseline" : "clients.reapply")}
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
