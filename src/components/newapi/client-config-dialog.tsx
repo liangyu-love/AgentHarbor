@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { BookmarkPlus, Check, ChevronDown, Eye, Loader2, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
-import { claudeRoles as roles, emptyClaudeRoles as emptyRoles, claudeOneMDefaults, clientDefaults, clientModels, clientProtocols, exclusionOf } from "@/lib/client-config";
+import { claudeRoles as roles, emptyClaudeRoles as emptyRoles, claudeOneMDefaults, clientDefaults, clientModels, clientProtocols, exclusionOf, knownSmallContext, effectiveContext } from "@/lib/client-config";
 import { ClaudeModelConfig } from "./claude-model-config";
 import { providerModelProtocol } from "@/lib/provider-models";
 import { toast } from "@/hooks/use-toast";
@@ -108,6 +108,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
   const staleOpenCodeModelSelection = client.targetId === "opencode" && selected.some(entry =>
     (request.providerModelIds?.[entry.id] ?? []).some(id => !clientModels(entry, protocols).includes(id)));
   const selectedProtocol = provider ? providerModelProtocol(provider, request.model) : null;
+  const startupOneMUnavailable = isClaude && knownSmallContext(effectiveContext(provider, request.model));
   const modelLabel = (p: NewApiProvider, id: string) => p.models.find(model => model.id === id)?.displayName || id;
   const update = (patch: Partial<ClientConfigRequest>) => {
     if (busy) return;
@@ -437,9 +438,10 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
                 {(!isClaude && selected.length > 1 ? p.name + " / " : "") + modelLabel(p, id)}
               </SelectItem>))}</SelectContent>
             </Select>
-            {isClaude && <label className="flex items-center gap-2 pt-1 text-xs text-muted-foreground">
-              <input type="checkbox" checked={request.claudeOneM?.startup ?? true}
-                disabled={busy || !request.model}
+            {isClaude && <label className="flex items-center gap-2 pt-1 text-xs text-muted-foreground"
+              title={startupOneMUnavailable ? t("clients.oneMUnavailable") : undefined}>
+              <input type="checkbox" checked={!startupOneMUnavailable && (request.claudeOneM?.startup ?? false)}
+                disabled={busy || !request.model || startupOneMUnavailable}
                 className="h-4 w-4 accent-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-50"
                 onChange={event => update({ claudeOneM: { ...claudeOneMDefaults(request.claudeOneM), startup: event.target.checked } })} />
               {t("clients.oneMStartup")}

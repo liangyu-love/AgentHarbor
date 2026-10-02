@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { claudeRoles, emptyClaudeRoles } from "@/lib/client-config";
+import { autoRoleModel, claudeRoles, emptyClaudeRoles, knownSmallContext, effectiveContext } from "@/lib/client-config";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -70,9 +70,12 @@ export function ClaudeModelConfig({ provider, models, selected, mapping, default
               <th scope="col" className="w-20 px-3 py-2 text-center font-medium">{t("clients.oneM")}</th></tr>
           </thead>
           <tbody>{claudeRoles.map(role => {
-            const automatic = selected.find(id => role !== "subagent" && id.toLowerCase().includes(role)) ?? defaultModel;
+            const automatic = autoRoleModel(selected, role !== "subagent" ? role : "", defaultModel) ?? defaultModel;
             const modelId = mapping[role] || automatic;
             const oneMEnabled = oneM[role];
+            // A known sub-1M context must not be marked; the backend drops the
+            // mark too, so the checkbox is pinned off instead of lying.
+            const oneMUnavailable = knownSmallContext(effectiveContext(provider, modelId));
             return <tr key={role} className="border-t">
               <th scope="row" className="px-3 py-2 text-left font-medium">
                 <Label htmlFor={"client-role-" + role}>{role === "subagent" ? t("clients.subagent") : role[0].toUpperCase() + role.slice(1)}</Label>
@@ -89,7 +92,9 @@ export function ClaudeModelConfig({ provider, models, selected, mapping, default
               </td>
               <td className="p-2 text-center">
                 <input type="checkbox" aria-label={t("clients.oneMForRole", { role: t("clients." + role) })}
-                    checked={oneMEnabled} disabled={disabled || (!modelId && !oneMEnabled)}
+                    title={oneMUnavailable ? t("clients.oneMUnavailable") : undefined}
+                    checked={!oneMUnavailable && oneMEnabled}
+                    disabled={disabled || oneMUnavailable || (!modelId && !oneMEnabled)}
                     className="h-4 w-4 accent-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-50"
                     onChange={event => onOneMChange({ ...oneM, [role]: event.target.checked })} />
               </td>
