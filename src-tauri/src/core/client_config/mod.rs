@@ -1,6 +1,7 @@
 //! Client-specific config adapters share one reversible file transaction boundary.
 //! This module depends on provider data and the models.dev catalog (read from the
-//! app data directory), never on Codex paths, accounts or processes.
+//! app data directory). An optional official snapshot source is supplied by
+//! the caller, so model inputs match the Codex adapters without owning accounts.
 mod claude;
 mod opencode;
 mod options;
@@ -10,7 +11,7 @@ pub use options::{ClaudeAuthField, ClaudeModels, ClaudeOneM, ClientAccessMode, C
 mod tests;
 
 use super::{
-    models_dev,
+    models_dev, model_catalog,
     router::{ModelProtocol, Provider, Store},
     secret_file, storage,
     targets::TargetId,
@@ -88,6 +89,7 @@ trait ClientAdapter: Sync {
         store: &Store,
         request: &ConfigRequest,
         catalog: &models_dev::Catalog,
+        official_models: &[Value],
     ) -> Result<Vec<Edit>, String>;
 }
 
@@ -191,6 +193,7 @@ pub struct ConfigManager {
     data_dir: PathBuf,
     /// App data directory, used to read the models.dev catalog snapshot.
     app_data_dir: PathBuf,
+    official_home: Option<PathBuf>,
     paths: ClientPaths,
 }
 
@@ -199,8 +202,14 @@ impl ConfigManager {
         Self {
             data_dir: data_dir.join("client-config"),
             app_data_dir: data_dir.to_path_buf(),
+            official_home: None,
             paths,
         }
+    }
+
+    pub fn with_official_home(mut self, home: &Path) -> Self {
+        self.official_home = Some(home.to_path_buf());
+        self
     }
 
     pub fn list(&self) -> Vec<ClientStatus> {
@@ -422,7 +431,9 @@ impl ConfigManager {
         };
         let edits = {
             let catalog = models_dev::load(&self.app_data_dir);
-            adapter.edits(&document, store, request, &catalog)?
+            let official = self.official_home.as_ref().map(|home|
+                model_catalog::official(home, &self.app_data_dir)).unwrap_or_default();
+            adapter.edits(&document, store, request, &catalog, &official.models)?
         };
         let mut changes = Vec::new();
         for edit in edits {

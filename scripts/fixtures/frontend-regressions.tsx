@@ -74,6 +74,7 @@ const tokens = (totalTokens: number, inputTokens: number, outputTokens: number, 
 const relayTotals = (totalTokens: number, inputTokens: number, outputTokens: number, requestCount = 8) => ({
   totalTokens, inputTokens, outputTokens, reasoningTokens: 0, requestCount, successfulCount: requestCount, reportedCount: requestCount,
   cacheReadTokens: 0, cacheWriteTokens: 0, costMicros: Math.round(totalTokens * 0.00002 * 1_000_000), pricedCount: requestCount, unpricedCount: 0,
+  fullyPricedCount: requestCount, partialCount: 0, coverageUnknownCount: 0,
 });
 const usageFixture: TokenUsagePayload = {
   generatedAt: Math.floor(Date.now() / 1000),
@@ -106,6 +107,7 @@ const usageFixture: TokenUsagePayload = {
   relay: {
     generatedAt: Math.floor(Date.now() / 1000), today: relayTotals(63_000, 62_988, 12, 1),
     week: relayTotals(120_000, 116_000, 4_000, 3), allTime: relayTotals(330_000, 310_000, 20_000, 5),
+    lastSevenDays: relayTotals(220_000, 216_000, 4_000, 4), lastSevenDaysStart: "2026-09-21", lastSevenDaysEnd: "2026-09-27", statisticalTimezone: "local (+08:00)",
     byProvider: [{ providerId: "group-a", providerName: "Relay Alpha", totals: relayTotals(330_000, 310_000, 20_000, 5) }],
     byModel: [{ providerId: "group-a", providerName: "Relay Alpha", model: "gpt-6-luna", totals: relayTotals(330_000, 310_000, 20_000, 5) }],
     daily: Array.from({ length: 14 }, (_, index) => ({ date: `2026-09-${String(index + 14).padStart(2, "0")}`, totals: relayTotals(index === 13 ? 63_000 : index * 1_200, index === 13 ? 62_988 : index * 1_000, index === 13 ? 12 : index * 200, index === 13 ? 1 : 0) })),
@@ -137,13 +139,17 @@ api.routing.capabilities = async () => ({ stale: true, error: "catalog_unavailab
     inputLimit: { value: null, source: "unknown", sourceRef: null, updatedAt: null },
     output: { value: 128_000, source: "catalog", sourceRef: capabilityRef, updatedAt: "2025-11-24T00:00:00Z" },
     price: { currency: "USD", unit: "perMillionTokens", input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5, reasoning: null,
+      inputAudio: null, outputAudio: null, contextOver200k: null, tiers: [],
       source: "catalog", sourceRef: capabilityRef, updatedAt: "2025-11-24T00:00:00Z", complete: true, note: null },
     projection: { contextWindow: 1_000_000, contextSource: "local", contextIsFallback: false, budget: 1_000_000, budgetSource: "local",
       inputLimit: null, outputLimit: 128_000, outputSource: "catalog",
       reasoning: [{ effort: "low", description: "Low" }, { effort: "high", description: "High" }], reasoningSource: "catalog", defaultReasoning: "low",
       compression: { mode: "percent", percent: 90, tokens: null, source: "global", budget: 1_000_000, budgetSource: "local", threshold: 900_000, state: "computed", note: null } },
     compressionApplied: true, compressionAppliedSource: "catalog",
-  }] });
+    compressionAppliedThreshold: 900_000, compressionSharedThreshold: null, compressionLimitingModels: [],
+    compressionScope: "routerModel", compressionSharedApplied: null,
+    compressionSharedPlan: null, compressionConfigActive: true, compressionWrittenThreshold: 900_000,
+  }].flatMap(model => controls.review.capabilityVariants?.map((patch: any) => ({ ...model, ...patch })) ?? [model]) });
 api.routing.catalogStatus = async () => ({ schemaVersion: 1, sourceUrl: "https://models.dev/api.json", fetchedAt: 1_790_740_000,
   lastCheckedAt: 1_790_740_800, stale: true, origin: "runtime", revision: "abcdef", providers: 225, models: 8339, error: null }) as any;
 api.routing.refreshCatalog = async () => ({ schemaVersion: 1, sourceUrl: "https://models.dev/api.json", fetchedAt: 1_790_740_800,
@@ -174,7 +180,7 @@ const accountList = { activeAccountKey: "acct-a", refreshedAt: 1_800_000_000, it
 ] };
 api.accounts.refresh = async () => accountList as any;
 api.accounts.list = async () => accountList as any;
-api.usage.overview = async () => usageFixture;
+api.usage.overview = async () => ({ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } });
 api.loadInstalledSkills = async () => ({ data: { total: 36, items: [] } }) as any;
 api.loadSkillBackups = async () => ({ data: { total: 0, items: [] } }) as any;
 api.loadCustomInstructionState = async () => ({ data: { current: { managedBlockPresent: false, lastTemplateTitle: null } } }) as any;
@@ -282,6 +288,7 @@ api.providers.save = async input => {
 function ProviderFixture({ mixed = false }: { mixed?: boolean }) {
   const [dialog, setDialog] = useState({ open: true, provider: mixed ? mixedProvider : provider("A") });
   return <><button id="open-b" onClick={() => setDialog({ open: true, provider: provider("B") })}>Open B</button>
+    <button id="reopen-saved" onClick={() => setDialog(current => ({ open: true, provider: { ...current.provider, ...controls.review.saved } }))}>Reopen saved</button>
     <ProviderDialog open={dialog.open} provider={dialog.provider}
       onOpenChange={open => setDialog(current => ({ ...current, open }))} onSaved={noop} /></>;
 }
@@ -489,7 +496,7 @@ function mount(mode: FixtureMode) {
     <div style={{ position: "relative", height: 600 }}><PageStage state="active">
       {mode.startsWith("thread-details") && <ThreadToastProbe />}
       {mode.startsWith("recovery-") ? <RecoveryFixture thread={threads[0] as ThreadSummary} /> :
-        mode === "image" ? <ImageWorkbenchPage /> : mode === "mcp" ? <McpPage /> : mode === "accounts" || mode.startsWith("account-resets") ? <AccountsPage refreshInterval="5m" onManageProviders={noop} /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage" ? <TokenUsagePanel data={usageFixture} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode.startsWith("thread-details") || mode === "thread-tree" || mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :
+        mode === "image" ? <ImageWorkbenchPage /> : mode === "mcp" ? <McpPage /> : mode === "accounts" || mode.startsWith("account-resets") ? <AccountsPage refreshInterval="5m" onManageProviders={noop} /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage" ? <TokenUsagePanel data={{ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } }} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode.startsWith("thread-details") || mode === "thread-tree" || mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :
         mode === "access" || mode === "incompatible" || mode === "native-invalid" || mode === "groups" ? <NewApiPage /> :
         mode === "test" ? <ProviderTestDialog open provider={mixedProvider} onOpenChange={noop} onTested={noop} onFailed={noop} /> :
         mode.startsWith("clients") ? <ClientConfigs providers={openCode ? [mixedProvider, provider("alternate")] : [selectedProvider]} /> :
@@ -507,6 +514,12 @@ controls.review = { mount, realBalanceQuery, clientDefaults, claudeOneMDefaults,
   restartCalls: [], recoveryApplyCalls: 0, recoveredCalls: 0, deleteCalls: [], openedPath: null,
   holdThumbnails: false, holdOriginal: false, labels: {
     fetchModels: i18n.t("newapi.fetchModels"), cancel: i18n.t("common.cancel"), close: i18n.t("common.close"),
+    modelContext: i18n.t("newapi.contextFor", { model: "model-A" }),
+    modelInput: `${i18n.t("newapi.capabilityInput")} · model-A`,
+    modelOutput: `${i18n.t("newapi.capabilityOutput")} · model-A`,
+    modelReasoning: `${i18n.t("newapi.capabilityReasoning")} · model-A`,
+    modelDefaultEffort: `${i18n.t("newapi.capabilityDefaultEffort")} · model-A`,
+    modelFieldOverrides: i18n.t("newapi.modelFieldOverrides"),
     galleryTitle: i18n.t("image.galleryTitle"),
     chatProtocol: i18n.t("newapi.protocolFor", { model: "chat-model" }),
     inheritedProtocol: i18n.t("newapi.protocolFor", { model: "inherited-model" }),

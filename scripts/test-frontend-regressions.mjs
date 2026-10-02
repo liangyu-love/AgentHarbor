@@ -416,6 +416,35 @@ try {
   assert.deepEqual(await page.evaluate(() => window.review.saved.models.map(model => model.id)), ["model-A"]);
   console.log("PASS model fetch results cannot cross provider dialogs or changed connection settings");
 
+  await reset("provider");
+  await page.getByRole("spinbutton", { name: labels.modelContext, exact: true }).fill("100000");
+  await page.getByText(labels.modelFieldOverrides, { exact: true }).click();
+  await page.getByRole("spinbutton", { name: labels.modelInput, exact: true }).fill("80000");
+  await page.getByRole("spinbutton", { name: labels.modelOutput, exact: true }).fill("4096");
+  await page.getByRole("textbox", { name: labels.modelReasoning, exact: true }).fill("low, high");
+  await page.getByRole("textbox", { name: labels.modelDefaultEffort, exact: true }).fill("high");
+  await page.locator('button[type="submit"]').click();
+  await page.waitForFunction(() => Boolean(window.review.saved));
+  assert.deepEqual(await page.evaluate(() => window.review.saved.models[0].overrides), {
+    contextWindow: 100000, inputLimit: 80000, maxOutputTokens: 4096,
+    reasoning: [{ effort: "low", description: "low" }, { effort: "high", description: "high" }], defaultEffort: "high",
+  });
+  assert.equal(await page.evaluate(() => window.review.saved.models[0].metadataSource), "upstream");
+  await page.locator("#reopen-saved").click();
+  await page.getByRole("spinbutton", { name: labels.modelContext, exact: true }).fill("");
+  await page.getByText(labels.modelFieldOverrides, { exact: true }).click();
+  await page.getByRole("spinbutton", { name: labels.modelInput, exact: true }).fill("");
+  await page.getByRole("spinbutton", { name: labels.modelOutput, exact: true }).fill("");
+  await page.getByRole("textbox", { name: labels.modelReasoning, exact: true }).fill("");
+  await page.getByRole("textbox", { name: labels.modelDefaultEffort, exact: true }).fill("");
+  await page.locator('button[type="submit"]').click();
+  await page.waitForFunction(() => window.review.saved.models[0].overrides.contextWindow === null);
+  assert.deepEqual(await page.evaluate(() => window.review.saved.models[0].overrides), {
+    contextWindow: null, inputLimit: null, maxOutputTokens: null, reasoning: null, defaultEffort: null,
+  });
+  assert.equal(await page.evaluate(() => window.review.saved.models[0].metadataSource), "upstream");
+  console.log("PASS per-field overrides preserve upstream provenance and clearing/reopening restores automatic values");
+
   await reset("mixed");
   const chatProtocol = page.getByRole("combobox", { name: labels.chatProtocol, exact: true });
   assert.equal(await chatProtocol.textContent(), labels.chat);
@@ -448,12 +477,12 @@ try {
     { levels: [], default: null },
   ]);
   const refreshedReasoning = await page.evaluate(() => {
-    const previous = { ...window.review.saved.models[0], metadataSource: "manual", contextWindow: 200000 };
+    const previous = { ...window.review.saved.models[0], overrides: { contextWindow: 200000 } };
     const fetched = { ...previous, metadataSource: "upstream", contextWindow: 64000, supportedReasoningLevels: [], defaultReasoningLevel: null };
     const refreshed = window.review.mergeModelCatalog([previous], [fetched])[0];
-    return { context: refreshed.contextWindow, levels: refreshed.supportedReasoningLevels, default: refreshed.defaultReasoningLevel };
+    return { context: refreshed.contextWindow, override: refreshed.overrides.contextWindow, levels: refreshed.supportedReasoningLevels, default: refreshed.defaultReasoningLevel };
   });
-  assert.deepEqual(refreshedReasoning, { context: 200000, levels: [], default: null });
+  assert.deepEqual(refreshedReasoning, { context: 64000, override: 200000, levels: [], default: null });
   console.log("PASS provider reasoning survives fetch, refresh, manual context overrides and the save payload, including explicit empty levels");
 
   await reset("access");
@@ -838,7 +867,7 @@ try {
   const defaultChecks = await page.evaluate(() => {
     const { clientDefaults, claudeOneMDefaults, mergeModelCatalog } = window.review;
     const id = "claude-haiku-4-5";
-    const manual = { id, displayName: id, contextWindow: 200000, maxOutputTokens: 4096, metadataSource: "manual", included: true, endpointTypes: [] };
+    const manual = { id, displayName: id, contextWindow: null, maxOutputTokens: null, overrides: { contextWindow: 200000, maxOutputTokens: 4096 }, metadataSource: "local", included: true, endpointTypes: [] };
     const fetched = { ...manual, contextWindow: 1000000, maxOutputTokens: 64000, metadataSource: "local" };
     const merged = mergeModelCatalog([manual], [fetched])[0];
     return {

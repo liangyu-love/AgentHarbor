@@ -70,4 +70,101 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   await page.evaluate(() => document.documentElement.classList.remove("dark"));
   await page.setViewportSize({ width: 1200, height: 700 });
   console.log("PASS routing trace exposes requested/sent values, failover is opt-in, and capability sources survive stale cache");
+
+  await reset("access");
+  await page.evaluate(() => {
+    window.review.capabilityVariants = [
+      { compressionApplied: false, compressionScope: "nativeShared", compressionSharedApplied: true,
+        compressionSharedThreshold: 90000, compressionAppliedThreshold: 90000, compressionLimitingModels: ["small"] },
+      { providerId: "inactive", displayName: "Inactive model", compressionApplied: false, compressionScope: "inactive",
+        compressionSharedThreshold: null, compressionAppliedThreshold: null, compressionLimitingModels: [] },
+    ];
+  });
+  const nativeCatalog = page.getByRole("region", { name: "模型能力目录与匹配预览" });
+  await nativeCatalog.getByRole("button", { name: "模型能力目录与匹配预览", exact: true }).click();
+  await nativeCatalog.locator("summary").first().waitFor();
+  for (const summary of await nativeCatalog.locator("summary").all()) await summary.click();
+  assert.match(await nativeCatalog.innerText(), /阈值 900,000/);
+  assert.match(await nativeCatalog.innerText(), /原生共享阈值：90,000；当前配置：90,000/);
+  assert.match(await nativeCatalog.innerText(), /由 small 限制/);
+  assert.match(await nativeCatalog.innerText(), /当前客户端配置未应用此模型的压缩设置，仅显示建议值/);
+  assert.equal(await nativeCatalog.getByText("待同步", { exact: true }).count(), 0);
+  console.log("PASS native capability UI separates suggestions, actual shared limits, limiting models and inactive providers");
+
+  await reset("access");
+  await page.evaluate(() => {
+    window.review.capabilityVariants = [
+      ...["invalid", "unknown", "clientDefault"].map((state, index) => ({
+        providerId: `blocked-${index}`, compressionApplied: false, compressionScope: "nativeShared",
+        compressionSharedThreshold: null, compressionAppliedThreshold: null, compressionSharedApplied: false,
+        compressionSharedPlan: { threshold: null, limitingModels: [], blockingModels: ["small"], state },
+      })),
+      { providerId: "inactive", compressionApplied: false, compressionScope: "inactive", compressionConfigActive: false,
+        compressionAppliedThreshold: null, compressionWrittenThreshold: 900000 },
+      { providerId: "audio", price: { currency: "USD", unit: "perMillionTokens", input: 1, output: 2,
+        cacheRead: null, cacheWrite: null, reasoning: null, inputAudio: 10, outputAudio: 20,
+        source: "catalog", sourceRef: null, updatedAt: null, complete: false, note: null,
+        contextOver200k: { input: 3, output: 4, inputAudio: 30 }, tiers: [{ input: 5, output: 6, tier: { type: "context", size: 300000 } }] } },
+    ];
+  });
+  const blockedCatalog = page.getByRole("region", { name: "模型能力目录与匹配预览" });
+  await blockedCatalog.getByRole("button", { name: "模型能力目录与匹配预览", exact: true }).click();
+  await blockedCatalog.locator("summary").first().waitFor();
+  for (const summary of await blockedCatalog.locator("summary").all()) await summary.click();
+  const blockedText = await blockedCatalog.innerText();
+  assert.match(blockedText, /有无效策略，未注入共享阈值/);
+  assert.match(blockedText, /有未知预算，未注入共享阈值/);
+  assert.match(blockedText, /要求由客户端管理，未注入共享阈值/);
+  assert.match(blockedText, /目录文件记录阈值 900,000，当前配置未引用/);
+  assert.match(blockedText, /音频输入 10 · 音频输出 20/);
+  assert.match(blockedText, /当前未采集音频用量/);
+  assert.match(blockedText, /输入达到 300,000 Token 的单价/);
+  console.log("PASS blocked shared policies, inactive written catalogs and retained audio/conditional prices are explained in capability UI");
+
+  await reset("usage");
+  await page.evaluate(() => {
+    const totals = (costMicros, pricedCount, partialCount = 0, unpricedCount = 0, coverageUnknownCount = 0) => ({
+      totalTokens: 100000, inputTokens: 50000, outputTokens: 50000, cacheReadTokens: 0, cacheWriteTokens: 0,
+      reasoningTokens: 0, requestCount: pricedCount + unpricedCount, successfulCount: pricedCount + unpricedCount,
+      reportedCount: pricedCount + unpricedCount, costMicros, pricedCount, unpricedCount, partialCount,
+      coverageUnknownCount, fullyPricedCount: pricedCount - partialCount - coverageUnknownCount,
+    });
+    window.review.relayPatch = {
+      today: totals(1000000, 1, 1), lastSevenDays: totals(4000000, 3, 1, 1, 1),
+      allTime: totals(4000000, 3, 1, 1, 1), week: totals(2000000, 2),
+      daily: [{ date: "2026-10-02", totals: totals(1000000, 1, 1) }],
+      byProvider: [{ providerId: "group-a", providerName: "Relay Alpha", totals: totals(4000000, 3, 1, 1, 1) }],
+      byModel: [
+        { providerId: "group-a", providerName: "Relay Alpha", model: "same-model", totals: totals(1000000, 1, 1) },
+        { providerId: "other", providerName: "Other", model: "same-model", totals: totals(0, 0, 0, 1) },
+        { providerId: "legacy", providerName: "Legacy", model: "legacy-model", totals: totals(3000000, 1, 0, 0, 1) },
+        { providerId: "free", providerName: "Free", model: "free-model", totals: totals(0, 1) },
+        { providerId: "unknown", providerName: "Unknown", model: "unknown-model", totals: totals(0, 0, 0, 1) },
+      ],
+    };
+    window.review.mount("usage");
+  });
+  const usage = page.locator(".usage-relay-panel");
+  await usage.getByText("1 笔部分计价", { exact: false }).first().waitFor();
+  const sevenDays = usage.locator(".usage-relay-summary").filter({ hasText: "近七日预估费用" });
+  assert.match(await sevenDays.innerText(), /\$4\.00/);
+  assert.match(await sevenDays.innerText(), /1 笔部分计价/);
+  assert.match(await sevenDays.innerText(), /1 笔历史计价完整性未知/);
+  assert.match(await usage.locator(".usage-relay-day-details").innerText(), /1 笔部分计价/);
+  await usage.getByRole("tab", { name: "模型", exact: true }).click();
+  const sameModel = usage.locator(".usage-model-row").filter({ hasText: "same-model" });
+  assert.match(await sameModel.innerText(), /1 笔部分计价/);
+  assert.match(await sameModel.innerText(), /1 笔未计价/);
+  assert.match(await usage.locator(".usage-model-row").filter({ hasText: "free-model" }).innerText(), /\$0/);
+  assert.match(await usage.locator(".usage-model-row").filter({ hasText: "unknown-model" }).innerText(), /无法可靠计算成本/);
+  await usage.getByRole("button", { name: "明细", exact: true }).click();
+  assert.match(await usage.locator(".usage-model-detail-row").filter({ hasText: "same-model" }).innerText(), /1 笔部分计价/);
+  await usage.getByRole("tab", { name: "供应商与额度" }).click();
+  assert.match(await usage.locator(".usage-cost-line").innerText(), /1 笔部分计价/);
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+  await usage.getByRole("tab", { name: "模型", exact: true }).click();
+  assert.equal(await usage.evaluate(element => element.scrollWidth <= element.clientWidth), true, "pricing coverage must wrap within the model panel");
+  await page.setViewportSize({ width: 1200, height: 700 });
+  console.log("PASS seven-day costs and partial/unknown coverage survive summaries, trends, merged model views and narrow screens");
 }

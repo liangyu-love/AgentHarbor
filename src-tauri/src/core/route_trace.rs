@@ -178,6 +178,10 @@ struct Inner {
 #[derive(Clone)]
 pub(crate) struct Trace(Arc<Inner>);
 impl Trace {
+    pub fn request_id(&self) -> &str {
+        &self.0.id
+    }
+
     pub fn begin(model: &str, body: Option<&[u8]>) -> Self {
         let id = uuid::Uuid::new_v4().to_string();
         let raw = metadata(body);

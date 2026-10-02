@@ -225,6 +225,40 @@ pub struct ClientProjection {
     pub compression: CompressionPlan,
 }
 
+/// One global setting must be valid for every model in that configuration.
+/// Invalid, unknown or client-managed models cannot silently leave this set.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedCompressionPlan {
+    pub threshold: Option<u64>,
+    pub limiting_models: Vec<String>,
+    pub blocking_models: Vec<String>,
+    pub state: String,
+}
+
+pub fn shared_plan(models: &[(&str, &ClientProjection)]) -> SharedCompressionPlan {
+    let invalid: Vec<_> = models.iter().filter(|(_, p)| p.compression.state == "invalid")
+        .map(|(id, _)| (*id).to_owned()).collect();
+    let delegated: Vec<_> = models.iter().filter(|(_, p)| p.compression.mode == "clientDefault")
+        .map(|(id, _)| (*id).to_owned()).collect();
+    let unknown: Vec<_> = models.iter().filter(|(_, p)| p.budget_source == model_metadata::source::FALLBACK
+        || p.compression.threshold.is_none()).map(|(id, _)| (*id).to_owned()).collect();
+    let blocked = if !invalid.is_empty() { Some(("invalid", invalid)) }
+        else if !delegated.is_empty() { Some(("clientDefault", delegated)) }
+        else if !unknown.is_empty() { Some(("unknown", unknown)) } else { None };
+    if let Some((state, models)) = blocked {
+        return SharedCompressionPlan { threshold: None, limiting_models: vec![], blocking_models: models, state: state.into() };
+    }
+    let threshold = models.iter().filter_map(|(_, p)| p.compression.threshold).min();
+    SharedCompressionPlan {
+        threshold,
+        limiting_models: models.iter().filter(|(_, p)| threshold.is_some() && p.compression.threshold == threshold)
+            .map(|(id, _)| (*id).to_owned()).collect(),
+        blocking_models: vec![],
+        state: if threshold.is_some() { "computed" } else { "unknown" }.into(),
+    }
+}
+
 /// Build the shared projection. `policy` is the resolved model → provider →
 /// global chain; the caller supplies it so the source label stays truthful.
 pub fn project(
@@ -248,7 +282,8 @@ pub fn project(
         ),
     };
     let (budget, budget_source) = match metadata.input_limit.value {
-        Some(value) => (value, metadata.input_limit.source.clone()),
+        Some(value) if value < context_window => (value, metadata.input_limit.source.clone()),
+        Some(_) => (context_window, context_source.clone()),
         None => (context_window, context_source.clone()),
     };
     let levels = metadata.reasoning.levels.value.clone().unwrap_or_default();

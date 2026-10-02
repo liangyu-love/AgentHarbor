@@ -7,15 +7,24 @@ export function formatCost(micros: number) {
   return `$${usd.toFixed(2)}`;
 }
 
-/** `$x · N unpriced` when part of the usage has no price, else just `$x`. */
+/** Keep the recorded subtotal visible together with its pricing coverage. */
 export function costLabel(
   micros: number,
   pricedCount: number,
   unpricedCount: number,
   unpricedLabel: (count: number) => string,
   unknown: string,
+  coverage?: {
+    partialCount: number;
+    coverageUnknownCount: number;
+    partialLabel: (count: number) => string;
+    coverageUnknownLabel: (count: number) => string;
+  },
 ) {
   if (pricedCount === 0) return unknown;
-  const label = formatCost(micros);
-  return unpricedCount > 0 ? `${label} · ${unpricedLabel(unpricedCount)}` : label;
+  const labels = [formatCost(micros)];
+  if (unpricedCount > 0) labels.push(unpricedLabel(unpricedCount));
+  if (coverage?.partialCount) labels.push(coverage.partialLabel(coverage.partialCount));
+  if (coverage?.coverageUnknownCount) labels.push(coverage.coverageUnknownLabel(coverage.coverageUnknownCount));
+  return labels.join(" · ");
 }

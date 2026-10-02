@@ -8,9 +8,12 @@ fn projection_for(
     provider: &Provider,
     model: &str,
     catalog: &super::models_dev::Catalog,
+    official_models: &[Value],
 ) -> super::super::model_policy::ClientProjection {
     let global = store.global_compression();
-    super::super::router::model_projection(provider, model, None, catalog, &global).1
+    let official = super::super::router::matched_official_model(official_models, model)
+        .filter(|_| super::super::router::official_endpoint_applies(provider));
+    super::super::router::model_projection(provider, model, official, catalog, &global).1
 }
 
 fn provider_key(provider: &Provider, protocol: ModelProtocol) -> String {
@@ -51,6 +54,7 @@ impl ClientAdapter for OpenCode {
         store: &Store,
         request: &ConfigRequest,
         catalog: &super::models_dev::Catalog,
+        official_models: &[Value],
     ) -> Result<Vec<Edit>, String> {
         let mut edits = Vec::new();
         let providers: Vec<_> = store
@@ -128,7 +132,7 @@ impl ClientAdapter for OpenCode {
                 }) {
                     let metadata = provider.models.iter().find(|m| m.id == id);
                     let selected = provider.id == request.provider_id && id == request.model;
-                    let projection = projection_for(store, provider, id, catalog);
+                    let projection = projection_for(store, provider, id, catalog, official_models);
                     // The selected model honors explicit user input; every
                     // other model uses the same resolver projection as the
                     // router and Codex catalogs.

@@ -27,6 +27,7 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
   const [newModel, setNewModel] = useState("");
   // Drafts keep a half-typed catalog reference visible until it is complete.
   const [mappingDrafts, setMappingDrafts] = useState<Record<string, string>>({});
+  const [reasoningDrafts, setReasoningDrafts] = useState<Record<string, string>>({});
   const selected = models.filter(model => model.included).length;
 
   const patch = (id: string, change: Partial<NewApiModel>) => {
@@ -188,7 +189,7 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
                       <span className="w-8 shrink-0 text-[9px] uppercase tracking-wider text-muted-foreground/70" title={t("newapi.contextWindowShort")}>
                         {t("newapi.limitShort")}
                       </span>
-                      <Input className="h-7 text-xs tabular-nums" type="number" min={1024} max={100000000} inputMode="numeric" placeholder={t("clients.limitsAuto")} value={model.overrides?.contextWindow ?? ""} disabled={disabled} aria-label={t("newapi.contextFor", { model: model.id })} onChange={event => patch(model.id, { overrides: { ...model.overrides, contextWindow: event.target.value ? Number(event.target.value) : null }, metadataSource: "manual" })} />
+                      <Input className="h-7 text-xs tabular-nums" type="number" min={1024} max={100000000} inputMode="numeric" placeholder={t("clients.limitsAuto")} value={model.overrides?.contextWindow ?? ""} disabled={disabled} aria-label={t("newapi.contextFor", { model: model.id })} onChange={event => patch(model.id, { overrides: { ...model.overrides, contextWindow: event.target.value ? Number(event.target.value) : null } })} />
                       {model.overrides?.contextWindow != null && (
                         <button
                           type="button"
@@ -283,6 +284,46 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
                   {!supported && <p className="text-[10px] text-muted-foreground md:col-start-2 md:col-span-4">{t("newapi.protocolMismatchModel")}</p>}
+                  <details className="text-xs md:col-start-2 md:col-span-4">
+                    <summary className="cursor-pointer text-muted-foreground">{t("newapi.modelFieldOverrides")}</summary>
+                    <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                      {(["inputLimit", "maxOutputTokens"] as const).map(field => (
+                        <label key={field} className="space-y-1 text-muted-foreground">
+                          <span>{t(field === "inputLimit" ? "newapi.capabilityInput" : "newapi.capabilityOutput")}</span>
+                          <Input type="number" min={field === "inputLimit" ? 1024 : 1} max={100000000}
+                            className="h-7 text-xs" disabled={disabled} placeholder={t("clients.limitsAuto")}
+                            aria-label={`${t(field === "inputLimit" ? "newapi.capabilityInput" : "newapi.capabilityOutput")} · ${model.id}`}
+                            value={model.overrides?.[field] ?? ""}
+                            onChange={event => patch(model.id, { overrides: { ...model.overrides, [field]: event.target.value ? Number(event.target.value) : null } })} />
+                        </label>
+                      ))}
+                      <label className="space-y-1 text-muted-foreground">
+                        <span>{t("newapi.capabilityReasoning")}</span>
+                        <Input className="h-7 text-xs" disabled={disabled} placeholder={t("newapi.reasoningOverridePlaceholder")}
+                          pattern="(?:-|[A-Za-z0-9_]{1,32}(?:\s*,\s*[A-Za-z0-9_]{1,32})*)"
+                          title={t("newapi.modelFieldOverridesHint")}
+                          aria-label={`${t("newapi.capabilityReasoning")} · ${model.id}`}
+                          value={reasoningDrafts[model.id] ?? (model.overrides?.reasoning == null ? "" : model.overrides.reasoning.length === 0 ? "-" : model.overrides.reasoning.map(level => level.effort).join(", "))}
+                          onChange={event => setReasoningDrafts(current => ({ ...current, [model.id]: event.target.value }))}
+                          onBlur={event => {
+                            const text = event.target.value.trim();
+                            const efforts = [...new Set(text.split(",").map(value => value.trim()).filter(Boolean))];
+                            if (text && text !== "-" && (efforts.length > 32 || efforts.some(value => !/^[a-zA-Z0-9_]{1,32}$/.test(value)))) return;
+                            patch(model.id, { overrides: { ...model.overrides, reasoning: !text ? null : text === "-" ? [] : efforts.map(effort => ({ effort, description: effort })) } });
+                            setReasoningDrafts(current => { const next = { ...current }; delete next[model.id]; return next; });
+                          }} />
+                      </label>
+                      <label className="space-y-1 text-muted-foreground">
+                        <span>{t("newapi.capabilityDefaultEffort")}</span>
+                        <Input className="h-7 text-xs" disabled={disabled} placeholder={t("clients.limitsAuto")}
+                          pattern="[A-Za-z0-9_]{1,32}"
+                          aria-label={`${t("newapi.capabilityDefaultEffort")} · ${model.id}`}
+                          value={model.overrides?.defaultEffort ?? ""}
+                          onChange={event => patch(model.id, { overrides: { ...model.overrides, defaultEffort: event.target.value.trim() || null } })} />
+                      </label>
+                      <p className="sm:col-span-2">{t("newapi.modelFieldOverridesHint")}</p>
+                    </div>
+                  </details>
                 </div>
               );
             })}

@@ -28,7 +28,8 @@ pub fn release_router_clients(paths: &CodexPaths) {
 }
 
 fn release_router_clients_at(paths: &CodexPaths, clients: client_config::ClientPaths) {
-    let manager = client_config::ConfigManager::new(&paths.app_data_dir, clients);
+    let manager = client_config::ConfigManager::new(&paths.app_data_dir, clients)
+        .with_official_home(&paths.codex_home);
     for (target, error) in manager.restore_router_configs_on_exit() {
         log::warn!("{target:?} router config cleanup failed: {error}");
     }
@@ -117,7 +118,8 @@ mod tests {
 
             let original = r#"{"env":{"CUSTOM":"kept"}}"#;
             crate::core::storage::write_atomic(&clients.claude, original.as_bytes()).unwrap();
-            let manager = client_config::ConfigManager::new(&paths.app_data_dir, clients.clone());
+            let manager = client_config::ConfigManager::new(&paths.app_data_dir, clients.clone())
+                .with_official_home(&paths.codex_home);
             let request = client_config::ConfigRequest {
                 target_id: crate::core::targets::TargetId::ClaudeCode,
                 provider_id: "relay".into(),

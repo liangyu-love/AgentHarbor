@@ -573,6 +573,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         } else {
             body
         };
+        let usage_request_id = trace.request_id().to_owned();
         for attempt in 0..2 {
             let started = std::time::Instant::now();
             let suffix = upstream_suffix(&segments, &destination, required_protocol)?;
@@ -589,7 +590,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                 required_protocol,
                 requested_model.as_deref(),
                 pricing,
-            );
+            ).map(|request| request.with_request_id(&usage_request_id));
             let (url, mut attempt_headers) = match &destination {
                 Destination::Provider {
                     provider,

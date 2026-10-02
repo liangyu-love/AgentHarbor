@@ -32,10 +32,17 @@ Versions, dates and `-preview` suffixes are never removed. Matching kinds:
   the rest are reported as conflicts instead of guessed.
 - `unmatched` – nothing matched; clients see the shared fallback, marked as such.
 
-Prices are always scoped to the billing provider (`priceCatalogProvider`, else
-the capability mapping, else the model's `priceRef`). They are never averaged or
+Prices require an independent billing binding (`priceCatalogProvider` or a model
+`priceRef`) or an explicit user price. Capability mappings and capability
+references never establish billing prices. Without a billing binding, price
+remains unknown. A `priceRef` overrides the provider's billing scope; otherwise
+the full upstream model ID is tried first, followed by price-safe candidates in
+their original order, independently of the capability match. Prices are never averaged or
 borrowed across providers, and `:free`/`@fast`-style tags never borrow the base
 model's price.
+The safety check covers the entire candidate reduction path, including combined
+prefixes and tags. Catalog agreement compares every stored price field and tier;
+a conflict stays unknown with an explanation.
 
 ## Field precedence
 
@@ -50,10 +57,31 @@ For every field the resolver reads, in order:
 6. Unambiguous generic reference.
 7. The shared fallback (`128 000` / `8 192`), clearly labelled `fallback`.
 
+Newly fetched output-only declarations remain upstream data even without a
+context declaration. Each resolved catalog field carries the reference and date
+of a record that actually declares that field, rather than another matched record.
+
 Compression thresholds follow `model → provider → global` inheritance with a
 default of 90% of the effective prompt budget (`limit.input` when the catalog
 provides it, otherwise `limit.context`). Fixed token thresholds never move on a
 catalog refresh; percentages are recomputed.
+The effective budget never exceeds the final context override; raw input/context
+values remain visible separately. Router failover reads the proxy's existing
+same-model candidate predicate and limits only that relay entry's budget.
+Unknown candidate budgets are called out without disabling the candidate.
+
+Native Codex applies a shared minimum threshold across the active provider's
+selected Responses models. The preview shows each model's suggestion, the
+planned shared threshold, the value read from config, the limiting models and
+sync state. Models outside that configuration are marked inactive.
+Catalog generation, shared planning and configuration matching reuse one native
+configuration plan captured from the same models.dev and applicable official
+snapshots. OpenCode receives that same applicable official source when configured
+by the application. An invalid policy, unknown budget or `clientDefault` model
+prevents injecting a global shared threshold; the model stays selectable and the
+user's values stay stored. `compressionSharedPlan` names the state and blocking
+models. A written router catalog is reported separately from an active config:
+only an enabled router whose config references that catalog can be applied.
 
 ## HTTP APIs
 
@@ -79,6 +107,38 @@ the deserializer treats non-positive values as missing.
 The snapshot keeps limits, reasoning options, the full cost structure
 (including tiers and `context_over_200k`), modalities, status, dates and
 `canonical_model_id`. Descriptions, logos and benchmarks are dropped.
+Runtime refresh converts the public provider-keyed response into the same typed
+snapshot before validation and atomic publication. Both refresh paths use the
+SHA-256 of the source bytes as the content revision; internal snapshots continue
+to be the only accepted cache format.
+
+## Usage ledger
+
+New records use `schemaVersion: 1`, correlate `requestId` with route diagnostics,
+and give every upstream attempt its own `attemptId`. They persist the request's
+pricing snapshot (including its reference and revision) and selected conditional
+rates. Missing usage has an unknown cost; explicit zero usage and zero rates
+remain zero. Missing priced categories and incomplete usage produce a partial
+amount when a useful subtotal exists. Reliable usage on failed responses is
+still charged. Existing records retain their amounts and remain readable; catalog
+and manual price changes never reprice the ledger. Archive regression checks
+preserve micro-USD amounts and priced/unpriced counts through repeated compaction.
+Streaming counters are merged before their final normalization, so cache details
+reported later reduce uncached input without double billing. `pricedCount` stays
+the count of recorded subtotals for compatibility; `fullyPricedCount`,
+`partialCount` and `coverageUnknownCount` describe their coverage. Older archives
+retain their exact amounts and mark the coverage of priced requests unknown.
+Summaries, trends and model/provider views show partial and unknown coverage.
+
+`week` retains Monday-based semantics. `lastSevenDays` covers today and the six
+preceding local calendar days; its start/end dates and the local timezone offset
+are returned in the payload. The seven-day cost card consumes this separate total.
+
+Resolved prices, pricing snapshots and applied rates retain `inputAudio`,
+`outputAudio`, `tiers` and `contextOver200k`, with matching TypeScript contracts.
+Audio usage is not currently observed, so an audio price makes settlement
+incomplete rather than silently claiming full pricing. The original rates remain
+available to consumers; historical amounts are never recomputed.
 
 ## Migration
 
@@ -91,14 +151,23 @@ Store schema v8 introduces `overrides`, `catalogRef`, `priceRef` and
 - clears auto-filled `local`/`catalog` limits so the resolver re-derives them,
 - converts a non-empty `autoCompactLimit` into a provider `tokens` policy.
 
+Before replacing a pre-v8 store, the migration saves the original bytes in
+`<app data>/newapi-providers.pre-v8.dat` using the same encrypted storage policy.
+Backup failure aborts the migration, and later reads preserve the first backup.
+Legacy manual values are promoted only during that versioned migration. Clearing
+`overrides.*` afterward never resurrects top-level values. The model editor can
+independently edit or clear context, input, output, reasoning and default effort.
+
 Back up `<app data>/newapi-providers.dat` before a downgrade; user IDs,
 protocols, aliases and overrides are never cleared by the migration.
 
 ## Attribution and license
 
 The bundled snapshot redistributes model metadata from
-[models.dev](https://github.com/anomalyco/models.dev). Consult that repository
-for the license text that applies to the data, and keep this attribution when
+[models.dev](https://github.com/anomalyco/models.dev), distributed under the MIT
+license (Copyright (c) 2025 models.dev). The upstream license text, verified
+2026-10-01, is preserved in `src-tauri/assets/models-dev.LICENSE.txt` and included
+in Tauri's bundle resources. Keep that text and this attribution when
 redistributing builds that contain the snapshot.
 
 Matching behaviour (bare-ID lookup, path/channel prefixes, budget preference for

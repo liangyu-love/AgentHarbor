@@ -166,14 +166,33 @@ export interface ReasoningOptionInfo {
   min: number | null;
   max: number | null;
 }
-export interface PriceInfo {
-  currency: string;
-  unit: string;
+export interface CostRates {
   input: number | null;
   output: number | null;
   cacheRead: number | null;
   cacheWrite: number | null;
   reasoning: number | null;
+  inputAudio: number | null;
+  outputAudio: number | null;
+}
+export interface CostTier extends CostRates {
+  tier: { type: string; size: number | null };
+}
+export interface PricingSnapshot extends CostRates {
+  contextOver200k: CostRates | null;
+  tiers: CostTier[];
+  currency: string;
+  source: string;
+  revision: string;
+  matchKind: string;
+  complete: boolean;
+  sourceRef: ModelRef | null;
+}
+export interface PriceInfo extends CostRates {
+  currency: string;
+  unit: string;
+  contextOver200k: CostRates | null;
+  tiers: CostTier[];
   source: string;
   sourceRef: ModelRef | null;
   updatedAt: string | null;
@@ -229,6 +248,20 @@ export interface ModelCapability {
   compressionApplied: boolean | null;
   /** catalog | config | none */
   compressionAppliedSource: string;
+  compressionAppliedThreshold: number | null;
+  compressionSharedThreshold: number | null;
+  compressionLimitingModels: string[];
+  compressionScope: "nativeShared" | "inactive" | "routerModel";
+  compressionSharedApplied: boolean | null;
+  compressionSharedPlan: SharedCompressionPlan | null;
+  compressionConfigActive: boolean;
+  compressionWrittenThreshold: number | null;
+}
+export interface SharedCompressionPlan {
+  threshold: number | null;
+  limitingModels: string[];
+  blockingModels: string[];
+  state: "computed" | "invalid" | "clientDefault" | "unknown";
 }
 export interface ModelsDevCatalogStatus {
   schemaVersion: number;

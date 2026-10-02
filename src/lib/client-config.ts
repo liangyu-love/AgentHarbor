@@ -40,14 +40,10 @@ export const exclusionOf = (provider: NewApiProvider, protocols: ModelProtocol[]
 export const clientDefaults = (provider: NewApiProvider | undefined, model: string) => {
   const metadata = provider?.models.find(entry => entry.id === model);
   const overrides = metadata?.overrides ?? null;
-  // Legacy manual records carried the user's values at the top level.
-  const legacyManual = metadata?.metadataSource === "manual";
   const contextWindow =
     overrides?.contextWindow
-    ?? (legacyManual ? metadata?.contextWindow ?? null : null)
     ?? (provider?.model === model ? provider?.contextWindow ?? null : null);
   const maxOutputTokens =
-    overrides?.maxOutputTokens
-    ?? (legacyManual ? metadata?.maxOutputTokens ?? null : null);
+    overrides?.maxOutputTokens ?? null;
   return { contextWindow, maxOutputTokens };
 };

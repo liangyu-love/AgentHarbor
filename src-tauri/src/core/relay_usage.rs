@@ -79,6 +79,8 @@ pub struct PricingSnapshot {
     pub cache_read: Option<f64>,
     pub cache_write: Option<f64>,
     pub reasoning: Option<f64>,
+    pub input_audio: Option<f64>,
+    pub output_audio: Option<f64>,
     /// Conditional rates that depend on the request's prompt size.
     pub context_over_200k: Option<super::models_dev::CostRates>,
     pub tiers: Vec<super::models_dev::CostTier>,
@@ -90,6 +92,7 @@ pub struct PricingSnapshot {
     /// False when conditional pricing cannot be fully evaluated.
     pub complete: bool,
     pub currency: String,
+    pub source_ref: Option<super::models_dev::ModelRef>,
 }
 
 impl PricingSnapshot {
@@ -130,40 +133,47 @@ impl PricingSnapshot {
             cache_read: self.cache_read,
             cache_write: self.cache_write,
             reasoning: self.reasoning,
+            input_audio: self.input_audio,
+            output_audio: self.output_audio,
         };
-        let mut complete = self.complete;
+        let mut complete = self.complete && self.input_audio.is_none() && self.output_audio.is_none();
         if let Some(over) = &self.context_over_200k {
             if prompt_tokens > 200_000 {
                 rates = Rates::from(over);
             }
         }
-        let mut selected: Option<Rates> = None;
+        let mut selected: Option<(u64, Rates)> = None;
         for tier in &self.tiers {
             if tier.tier.condition_type != "context" {
                 complete = false;
                 continue;
             }
             let Some(size) = tier.tier.size else {
+                complete = false;
                 continue;
             };
-            if prompt_tokens >= size {
-                selected = Some(Rates::from(&tier.rates));
+            if prompt_tokens >= size && selected.as_ref().is_none_or(|(bound, _)| size > *bound) {
+                selected = Some((size, Rates::from(&tier.rates)));
             }
         }
-        if let Some(selected) = selected {
+        if let Some((_, selected)) = selected {
             rates = selected;
         }
+        complete &= rates.input_audio.is_none() && rates.output_audio.is_none();
         (rates, complete)
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct Rates {
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Rates {
     input: Option<f64>,
     output: Option<f64>,
     cache_read: Option<f64>,
     cache_write: Option<f64>,
     reasoning: Option<f64>,
+    input_audio: Option<f64>,
+    output_audio: Option<f64>,
 }
 
 impl From<&super::models_dev::CostRates> for Rates {
@@ -174,6 +184,8 @@ impl From<&super::models_dev::CostRates> for Rates {
             cache_read: rates.cache_read,
             cache_write: rates.cache_write,
             reasoning: rates.reasoning,
+            input_audio: rates.input_audio,
+            output_audio: rates.output_audio,
         }
     }
 }
@@ -186,29 +198,34 @@ fn request_cost(tokens: &TokenCounts, pricing: &PricingSnapshot) -> Option<(f64,
         return None;
     }
     let prompt = tokens.prompt_tokens();
-    let (rates, complete) = pricing.rates_for(prompt);
-    let input_rate = rates.input?;
-    let output_rate = rates.output.unwrap_or(0.0);
-    let cache_read_rate = rates.cache_read.unwrap_or(input_rate);
-    let cache_write_rate = rates.cache_write.unwrap_or(input_rate);
+    if prompt == 0 && tokens.output_tokens == 0 && tokens.total_tokens > 0 {
+        return None; // A total-only usage report cannot be split into priced categories.
+    }
+    let (rates, mut complete) = pricing.rates_for(prompt);
+    let mut applicable = tokens.prompt_tokens() == 0 && tokens.output_tokens == 0;
+    let mut charge = |count: u64, rate: Option<f64>, estimate: Option<f64>| {
+        if count == 0 { return 0.0; }
+        if rate.is_none() { complete = false; }
+        match rate.or(estimate) {
+            Some(rate) => { applicable = true; (count as f64) * rate / 1_000_000.0 }
+            None => 0.0,
+        }
+    };
     let reasoning_rate = rates.reasoning;
-    let per_million = |tokens: u64, rate: f64| (tokens as f64) * rate / 1_000_000.0;
-    let mut cost = per_million(tokens.input_tokens, input_rate)
-        + per_million(tokens.cache_read_tokens, cache_read_rate)
-        + per_million(tokens.cache_write_tokens, cache_write_rate);
+    let mut cost = charge(tokens.input_tokens, rates.input, None)
+        + charge(tokens.cache_read_tokens, rates.cache_read, rates.input)
+        + charge(tokens.cache_write_tokens, rates.cache_write, rates.input);
     // Reasoning tokens are a subset of the output; bill them separately only
     // when the pricing declares a distinct rate, and never add them twice.
     let reasoning = tokens.reasoning_tokens.min(tokens.output_tokens);
     match reasoning_rate {
         Some(rate) if reasoning > 0 => {
-            cost += per_million(reasoning, rate);
-            cost += per_million(tokens.output_tokens.saturating_sub(reasoning), output_rate);
+            cost += charge(reasoning, Some(rate), None);
+            cost += charge(tokens.output_tokens.saturating_sub(reasoning), rates.output, None);
         }
-        _ => cost += per_million(tokens.output_tokens, output_rate),
+        _ => cost += charge(tokens.output_tokens, rates.output, None),
     }
-    let missing_cache_rates = tokens.cache_read_tokens + tokens.cache_write_tokens > 0
-        && (rates.cache_read.is_none() || rates.cache_write.is_none());
-    Some((cost, complete && !missing_cache_rates))
+    applicable.then_some((cost, complete))
 }
 
 fn to_micros(cost: f64) -> u64 {
@@ -225,6 +242,12 @@ pub fn micros_to_usd(micros: u64) -> f64 {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelayUsageRecord {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub request_id: String,
+    #[serde(default)]
+    pub attempt_id: String,
     pub timestamp: i64,
     pub date: String,
     pub provider_id: String,
@@ -237,6 +260,8 @@ pub struct RelayUsageRecord {
     pub first_token_ms: Option<u64>,
     pub success: bool,
     pub usage_reported: bool,
+    #[serde(default)]
+    pub usage_complete: bool,
     #[serde(flatten)]
     pub tokens: TokenCounts,
     /// Estimated cost in USD at the rates fixed when the request started.
@@ -249,6 +274,10 @@ pub struct RelayUsageRecord {
     pub pricing_source: String,
     #[serde(default)]
     pub catalog_revision: String,
+    #[serde(default)]
+    pub pricing_snapshot: Option<PricingSnapshot>,
+    #[serde(default)]
+    pub applied_rates: Option<Rates>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -269,6 +298,10 @@ pub struct RelayUsageTotals {
     pub priced_count: u64,
     /// Requests with no usable price (unknown price, legacy records).
     pub unpriced_count: u64,
+    pub fully_priced_count: u64,
+    pub partial_count: u64,
+    /// Older archives kept amounts but did not retain pricing coverage.
+    pub coverage_unknown_count: u64,
 }
 
 impl RelayUsageTotals {
@@ -298,6 +331,11 @@ impl RelayUsageTotals {
             (Some(cost), _) if record.pricing_status != "unpriced" => {
                 self.cost_micros = self.cost_micros.saturating_add(to_micros(cost));
                 self.priced_count = self.priced_count.saturating_add(1);
+                match record.pricing_status.as_str() {
+                    "priced" => self.fully_priced_count = self.fully_priced_count.saturating_add(1),
+                    "partial" => self.partial_count = self.partial_count.saturating_add(1),
+                    _ => self.coverage_unknown_count = self.coverage_unknown_count.saturating_add(1),
+                }
             }
             _ => {
                 self.unpriced_count = self.unpriced_count.saturating_add(1);
@@ -322,6 +360,9 @@ impl RelayUsageTotals {
         self.cost_micros = self.cost_micros.saturating_add(other.cost_micros);
         self.priced_count = self.priced_count.saturating_add(other.priced_count);
         self.unpriced_count = self.unpriced_count.saturating_add(other.unpriced_count);
+        self.fully_priced_count = self.fully_priced_count.saturating_add(other.fully_priced_count);
+        self.partial_count = self.partial_count.saturating_add(other.partial_count);
+        self.coverage_unknown_count = self.coverage_unknown_count.saturating_add(other.coverage_unknown_count);
     }
 }
 
@@ -372,6 +413,11 @@ pub struct RelayUsagePayload {
     pub generated_at: i64,
     pub today: RelayUsageTotals,
     pub week: RelayUsageTotals,
+    /// Today and the preceding six local calendar days; week remains Monday-based.
+    pub last_seven_days: RelayUsageTotals,
+    pub last_seven_days_start: String,
+    pub last_seven_days_end: String,
+    pub statistical_timezone: String,
     pub all_time: RelayUsageTotals,
     pub by_provider: Vec<RelayProviderUsage>,
     pub by_model: Vec<RelayModelUsage>,
@@ -380,6 +426,8 @@ pub struct RelayUsagePayload {
 }
 
 pub struct RelayUsageRequest {
+    request_id: String,
+    attempt_id: String,
     app_data_dir: PathBuf,
     provider_id: String,
     provider_name: String,
@@ -402,6 +450,8 @@ impl RelayUsageRequest {
     ) -> Self {
         Self {
             app_data_dir,
+            request_id: uuid::Uuid::new_v4().to_string(),
+            attempt_id: uuid::Uuid::new_v4().to_string(),
             provider_id,
             provider_name,
             model,
@@ -414,7 +464,12 @@ impl RelayUsageRequest {
     }
 
     pub fn failed(self, status_code: u16) {
-        self.persist(status_code, false, TokenCounts::default(), None);
+        self.persist(status_code, false, false, TokenCounts::default(), None);
+    }
+
+    pub fn with_request_id(mut self, request_id: &str) -> Self {
+        self.request_id = request_id.into();
+        self
     }
 
     pub fn observe(self, status_code: u16, is_event_stream: bool) -> RelayUsageObserver {
@@ -423,24 +478,35 @@ impl RelayUsageRequest {
             status_code,
             is_event_stream,
             capture: Vec::new(),
-            usage_reported: false,
-            tokens: TokenCounts::default(),
+            usage: UsageAccumulator::default(),
             capture_truncated: false,
             first_token_ms: None,
         }
     }
 
-    fn persist(self, status_code: u16, usage_reported: bool, mut tokens: TokenCounts, first_token_ms: Option<u64>) {
+    fn persist(self, status_code: u16, usage_reported: bool, usage_complete: bool, mut tokens: TokenCounts, first_token_ms: Option<u64>) {
         tokens.normalize_total();
         // A request can carry reliable usage even when it failed or was cut
         // off, so the cost follows the tokens, not the HTTP status.
-        let priced = request_cost(&tokens, &self.pricing);
+        let priced = usage_reported.then(|| request_cost(&tokens, &self.pricing)).flatten();
         let (cost_usd, pricing_status) = match priced {
-            Some((cost, true)) => (Some(cost), "priced"),
-            Some((cost, false)) => (Some(cost), "partial"),
+            Some((cost, true)) if usage_complete => (Some(cost), "priced"),
+            Some((cost, _)) => (Some(cost), "partial"),
             None => (None, "unpriced"),
         };
+        let applied_rates = priced.map(|_| {
+            let mut rates = self.pricing.rates_for(tokens.prompt_tokens()).0;
+            // Persist the rates actually used for our partial estimates while
+            // the snapshot retains which upstream rates were missing.
+            if tokens.cache_read_tokens > 0 { rates.cache_read = rates.cache_read.or(rates.input); }
+            if tokens.cache_write_tokens > 0 { rates.cache_write = rates.cache_write.or(rates.input); }
+            if tokens.reasoning_tokens > 0 { rates.reasoning = rates.reasoning.or(rates.output); }
+            rates
+        });
         let record = RelayUsageRecord {
+            schema_version: 1,
+            request_id: self.request_id,
+            attempt_id: self.attempt_id,
             timestamp: self.timestamp,
             date: self.date,
             provider_id: self.provider_id,
@@ -452,11 +518,14 @@ impl RelayUsageRequest {
             first_token_ms,
             success: (200..300).contains(&status_code),
             usage_reported,
+            usage_complete,
             tokens,
             cost_usd,
             pricing_status: pricing_status.into(),
             pricing_source: self.pricing.source.clone(),
             catalog_revision: self.pricing.revision.clone(),
+            applied_rates,
+            pricing_snapshot: Some(self.pricing),
         };
         if let Err(error) = append_record(&self.app_data_dir, &record) {
             eprintln!("[AgentHarbor] relay usage write failed: {error}");
@@ -473,8 +542,7 @@ pub struct RelayUsageObserver {
     status_code: u16,
     is_event_stream: bool,
     capture: Vec<u8>,
-    usage_reported: bool,
-    tokens: TokenCounts,
+    usage: UsageAccumulator,
     capture_truncated: bool,
     first_token_ms: Option<u64>,
 }
@@ -527,13 +595,7 @@ impl RelayUsageObserver {
     }
 
     fn merge_value(&mut self, value: &Value) {
-        let mut found = false;
-        let mut counts = TokenCounts::default();
-        visit_usage_values(value, &mut found, &mut counts);
-        if found {
-            self.usage_reported = true;
-            self.tokens.merge_max(counts);
-        }
+        visit_usage_values(value, &mut self.usage);
     }
 }
 
@@ -547,7 +609,9 @@ impl Drop for RelayUsageObserver {
             }
         }
         if let Some(request) = self.request.take() {
-            request.persist(self.status_code, self.usage_reported, self.tokens, self.first_token_ms);
+            request.persist(self.status_code, self.usage.reported,
+                self.usage.fields.input && self.usage.fields.output && !self.capture_truncated,
+                self.usage.normalized(), self.first_token_ms);
         }
     }
 }
@@ -602,7 +666,7 @@ fn counts_from_usage(value: &Value) -> Option<TokenCounts> {
         "reasoning_tokens",
     ]
     .iter()
-    .any(|key| object.contains_key(*key));
+    .any(|key| object.get(*key).is_some_and(|value| value.as_u64().is_some()));
     if !has_known_field {
         return None;
     }
@@ -616,11 +680,6 @@ fn counts_from_usage(value: &Value) -> Option<TokenCounts> {
     let cache_read_tokens = anthropic_read.max(detail_cached);
     let cache_write_tokens = number(object.get("cache_creation_input_tokens"));
     let reported_input = number(object.get("input_tokens")).max(number(object.get("prompt_tokens")));
-    let input_tokens = if detail_cached > 0 {
-        reported_input.saturating_sub(detail_cached)
-    } else {
-        reported_input
-    };
     let output_tokens =
         number(object.get("output_tokens")).max(number(object.get("completion_tokens")));
     let reasoning_tokens = number(object.get("reasoning_tokens"))
@@ -634,34 +693,64 @@ fn counts_from_usage(value: &Value) -> Option<TokenCounts> {
                 .get("completion_tokens_details")
                 .and_then(|details| details.get("reasoning_tokens")),
         ));
-    let mut counts = TokenCounts {
-        input_tokens,
+    // Keep protocol counters raw until the complete stream has been merged.
+    // Cache details may arrive after the input total and change its split.
+    let counts = TokenCounts {
+        input_tokens: reported_input,
         output_tokens,
         reasoning_tokens,
         total_tokens: number(object.get("total_tokens")),
         cache_read_tokens,
         cache_write_tokens,
     };
-    counts.normalize_total();
     Some(counts)
 }
 
-fn visit_usage_values(value: &Value, found: &mut bool, counts: &mut TokenCounts) {
+#[derive(Default)]
+struct UsageFields { input: bool, output: bool }
+
+#[derive(Default)]
+struct UsageAccumulator {
+    raw: TokenCounts,
+    fields: UsageFields,
+    reported: bool,
+    cache_in_input: bool,
+}
+
+impl UsageAccumulator {
+    fn merge(&mut self, usage: &Value) {
+        let Some(next) = counts_from_usage(usage) else { return; };
+        self.fields.input |= ["input_tokens", "prompt_tokens"].iter().any(|key| usage.get(*key).and_then(Value::as_u64).is_some());
+        self.fields.output |= ["output_tokens", "completion_tokens"].iter().any(|key| usage.get(*key).and_then(Value::as_u64).is_some());
+        self.cache_in_input |= ["/input_tokens_details/cached_tokens", "/prompt_tokens_details/cached_tokens"]
+            .iter().any(|path| usage.pointer(path).and_then(Value::as_u64).is_some());
+        self.raw.merge_max(next);
+        self.reported = true;
+    }
+
+    fn normalized(&self) -> TokenCounts {
+        let mut tokens = self.raw;
+        if self.cache_in_input {
+            tokens.input_tokens = tokens.input_tokens.saturating_sub(tokens.cache_read_tokens);
+        }
+        tokens.normalize_total();
+        tokens
+    }
+}
+
+fn visit_usage_values(value: &Value, usage: &mut UsageAccumulator) {
     match value {
         Value::Object(object) => {
-            if let Some(usage) = object.get("usage") {
-                if let Some(next) = counts_from_usage(usage) {
-                    *found = true;
-                    counts.merge_max(next);
-                }
+            if let Some(value) = object.get("usage") {
+                usage.merge(value);
             }
             for child in object.values() {
-                visit_usage_values(child, found, counts);
+                visit_usage_values(child, usage);
             }
         }
         Value::Array(items) => {
             for child in items {
-                visit_usage_values(child, found, counts);
+                visit_usage_values(child, usage);
             }
         }
         _ => {}
@@ -708,7 +797,14 @@ fn parse_ledger(bytes: &[u8]) -> Ledger {
     for line in bytes.split(|byte| *byte == b'\n') {
         if let Ok(record) = serde_json::from_slice::<RelayUsageRecord>(line) {
             ledger.records.push(record);
-        } else if let Ok(archive) = serde_json::from_slice::<ArchiveLine>(line) {
+        } else if let Ok(mut archive) = serde_json::from_slice::<ArchiveLine>(line) {
+            let value: Value = serde_json::from_slice(line).unwrap_or_default();
+            for (index, entry) in archive.archive.iter_mut().enumerate() {
+                if value.pointer(&format!("/archive/{index}/totals/partialCount")).is_none() {
+                    entry.totals.coverage_unknown_count = entry.totals.priced_count;
+                    entry.totals.fully_priced_count = 0;
+                }
+            }
             ledger.archive.extend(archive.archive);
         }
     }
@@ -787,13 +883,18 @@ fn sort_totals(left: &RelayUsageTotals, right: &RelayUsageTotals) -> std::cmp::O
 }
 
 pub fn load(app_data_dir: &Path) -> Result<RelayUsagePayload, String> {
+    load_on(app_data_dir, Local::now().date_naive())
+}
+
+fn load_on(app_data_dir: &Path, today: NaiveDate) -> Result<RelayUsagePayload, String> {
     let Ledger { archive, records } = read_ledger(app_data_dir)?;
-    let today = Local::now().date_naive();
     let week_start = today - ChronoDuration::days(today.weekday().num_days_from_monday() as i64);
+    let seven_days_start = today - ChronoDuration::days(6);
     let first_day = today - ChronoDuration::days(DAILY_WINDOW_DAYS - 1);
     let today_text = today.format("%Y-%m-%d").to_string();
     let mut today_totals = RelayUsageTotals::default();
     let mut week_totals = RelayUsageTotals::default();
+    let mut seven_days_totals = RelayUsageTotals::default();
     let mut all_time = RelayUsageTotals::default();
     let mut provider_totals: HashMap<String, (String, RelayUsageTotals)> = HashMap::new();
     let mut model_totals: HashMap<(String, String), (String, RelayUsageTotals)> = HashMap::new();
@@ -824,6 +925,11 @@ pub fn load(app_data_dir: &Path) -> Result<RelayUsagePayload, String> {
             .is_ok_and(|date| date >= week_start && date <= today)
         {
             week_totals.add(record);
+        }
+        if NaiveDate::parse_from_str(&record.date, "%Y-%m-%d")
+            .is_ok_and(|date| date >= seven_days_start && date <= today)
+        {
+            seven_days_totals.add(record);
         }
         let provider = provider_totals
             .entry(record.provider_id.clone())
@@ -886,6 +992,10 @@ pub fn load(app_data_dir: &Path) -> Result<RelayUsagePayload, String> {
         generated_at: Utc::now().timestamp(),
         today: today_totals,
         week: week_totals,
+        last_seven_days: seven_days_totals,
+        last_seven_days_start: seven_days_start.format("%Y-%m-%d").to_string(),
+        last_seven_days_end: today_text,
+        statistical_timezone: format!("local ({})", Local::now().format("%:z")),
         all_time,
         by_provider,
         by_model,
@@ -900,6 +1010,9 @@ mod tests {
 
     fn record_on(date: &str, provider: &str, model: &str, tokens: u64) -> RelayUsageRecord {
         RelayUsageRecord {
+            schema_version: 1,
+            request_id: "fixture-request".into(),
+            attempt_id: "fixture-attempt".into(),
             timestamp: 0,
             date: date.into(),
             provider_id: provider.into(),
@@ -911,11 +1024,14 @@ mod tests {
             first_token_ms: None,
             success: true,
             usage_reported: true,
+            usage_complete: true,
             tokens: TokenCounts { input_tokens: tokens, output_tokens: 0, reasoning_tokens: 0, total_tokens: tokens, cache_read_tokens: 0, cache_write_tokens: 0 },
             cost_usd: None,
             pricing_status: "unpriced".into(),
             pricing_source: String::new(),
             catalog_revision: String::new(),
+            pricing_snapshot: None,
+            applied_rates: None,
         }
     }
 
@@ -1049,12 +1165,16 @@ mod tests {
         let old = (Local::now().date_naive() - ChronoDuration::days(KEEP_DAYS + 10))
             .format("%Y-%m-%d")
             .to_string();
-        for record in [
+        for (index, mut record) in [
             record_on(&old, "p", "m", 5),
             record_on(&old, "p", "m", 7),
             record_on(&old, "q", "n", 3),
             record_on(&today, "p", "m", 11),
-        ] {
+        ].into_iter().enumerate() {
+            if index != 2 {
+                record.cost_usd = Some((index + 1) as f64 / 1_000_000.0);
+                record.pricing_status = if index == 1 { "partial" } else { "priced" }.into();
+            }
             append_record(dir.path(), &record).unwrap();
         }
         // A crash-truncated line must not break the compacted file either.
@@ -1067,6 +1187,11 @@ mod tests {
         assert_eq!(text.lines().count(), 2, "one archive line plus the recent record: {text}");
         let after = load(dir.path()).unwrap();
         assert_eq!(after.all_time.total_tokens, before.all_time.total_tokens);
+        assert_eq!(before.all_time.cost_micros, 7);
+        assert_eq!(after.all_time.cost_micros, before.all_time.cost_micros);
+        assert_eq!(after.all_time.priced_count, before.all_time.priced_count);
+        assert_eq!(after.all_time.unpriced_count, before.all_time.unpriced_count);
+        assert_eq!(after.by_provider.iter().find(|entry| entry.provider_id == "p").unwrap().totals.cost_micros, 7);
         assert_eq!(after.all_time.request_count, 4);
         assert_eq!(after.today.total_tokens, 11);
         let p = after.by_provider.iter().find(|entry| entry.provider_id == "p").unwrap();
@@ -1075,6 +1200,7 @@ mod tests {
         // Compacting again merges into the existing archive instead of duplicating it.
         compact_locked(dir.path()).unwrap();
         assert_eq!(load(dir.path()).unwrap().all_time.total_tokens, 26);
+        assert_eq!(load(dir.path()).unwrap().all_time.cost_micros, 7);
     }
 
     #[test]
@@ -1083,6 +1209,80 @@ mod tests {
         assert!(contains_output_delta(&serde_json::json!({"type":"content_block_delta","delta":{"text":"hello"}})));
         assert!(contains_output_delta(&serde_json::json!({"choices":[{"delta":{"content":"hello"}}]})));
         assert!(!contains_output_delta(&serde_json::json!({"type":"response.completed","response":{"usage":{"input_tokens":1}}})));
+    }
+
+    #[test]
+    fn late_cache_details_are_normalized_once_and_duplicate_final_usage_is_not_rebilled() {
+        for (protocol, initial, final_usage, input, total) in [
+            ("responses", serde_json::json!({"input_tokens":100,"output_tokens":0}),
+                serde_json::json!({"input_tokens":100,"output_tokens":10,"input_tokens_details":{"cached_tokens":80}}), 20, 110),
+            ("chatCompletions", serde_json::json!({"prompt_tokens":100,"completion_tokens":0}),
+                serde_json::json!({"prompt_tokens":100,"completion_tokens":10,"prompt_tokens_details":{"cached_tokens":80}}), 20, 110),
+            ("anthropicMessages", serde_json::json!({"input_tokens":20,"cache_read_input_tokens":80}),
+                serde_json::json!({"output_tokens":10}), 20, 110),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let price = PricingSnapshot { input: Some(10.0), output: Some(2.0), cache_read: Some(1.0), complete: true, ..pricing() };
+            {
+                let mut observer = RelayUsageRequest::new(dir.path().into(), "p".into(), "P".into(), "model".into(), protocol.into(), price).observe(200, true);
+                for value in [&initial, &final_usage, &final_usage] {
+                    observer.observe(format!("data: {}\n\n", serde_json::json!({"usage":value})).as_bytes());
+                }
+            }
+            let payload = load(dir.path()).unwrap();
+            assert_eq!(payload.all_time.request_count, 1);
+            let record = &payload.recent[0];
+            assert_eq!(record.tokens.input_tokens, input, "{protocol}");
+            assert_eq!(record.tokens.cache_read_tokens, 80);
+            assert_eq!(record.tokens.total_tokens, total);
+            assert!((record.cost_usd.unwrap() - 0.0003).abs() < 1e-12);
+            assert_eq!(record.pricing_status, "priced");
+        }
+    }
+
+    #[test]
+    fn seven_days_include_the_previous_week_and_exclude_future_and_older_dates() {
+        let dir = tempfile::tempdir().unwrap();
+        for date in ["2026-09-25", "2026-09-26", "2026-09-27", "2026-09-28", "2026-10-02", "2026-10-03"] {
+            let mut record = record_on(date, "p", "model", 1);
+            record.cost_usd = Some(1.0);
+            record.pricing_status = "priced".into();
+            append_record(dir.path(), &record).unwrap();
+        }
+        let payload = load_on(dir.path(), NaiveDate::from_ymd_opt(2026, 10, 2).unwrap()).unwrap();
+        assert_eq!(payload.week.cost_micros, 2000000);
+        assert_eq!(payload.last_seven_days.cost_micros, 4000000);
+        assert_eq!(payload.last_seven_days_start, "2026-09-26");
+        assert_eq!(payload.last_seven_days_end, "2026-10-02");
+    }
+
+    #[test]
+    fn partial_pricing_and_legacy_coverage_survive_archiving_without_repricing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut record = record_on("2000-01-01", "p", "model", 2000000);
+        record.cost_usd = Some(1.0);
+        record.pricing_status = "partial".into();
+        append_record(dir.path(), &record).unwrap();
+        compact_locked(dir.path()).unwrap();
+        let totals = load(dir.path()).unwrap().all_time;
+        assert_eq!(totals.cost_micros, 1000000);
+        assert_eq!(totals.partial_count, 1);
+        assert_eq!(totals.fully_priced_count, 0);
+        assert_eq!(totals.coverage_unknown_count, 0);
+        compact_locked(dir.path()).unwrap();
+        assert_eq!(load(dir.path()).unwrap().all_time.partial_count, 1);
+        std::fs::write(usage_path(dir.path()), serde_json::json!({"archive":[{
+            "providerId":"p","providerName":"P","model":"model",
+            "totals":{"requestCount":2,"pricedCount":2,"costMicros":1234567}
+        }]}).to_string()).unwrap();
+        let totals = load(dir.path()).unwrap().all_time;
+        assert_eq!(totals.coverage_unknown_count, 2);
+        assert_eq!(totals.fully_priced_count, 0);
+        assert_eq!(totals.cost_micros, 1234567);
+        compact_locked(dir.path()).unwrap();
+        let totals = load(dir.path()).unwrap().all_time;
+        assert_eq!(totals.coverage_unknown_count, 2);
+        assert_eq!(totals.cost_micros, 1234567);
     }
 
     #[test]
@@ -1096,10 +1296,10 @@ mod tests {
                 "output_tokens_details": {"reasoning_tokens": 11}
             }}
         });
-        let mut found = false;
-        let mut counts = TokenCounts::default();
-        visit_usage_values(&openai, &mut found, &mut counts);
-        assert!(found);
+        let mut usage = UsageAccumulator::default();
+        visit_usage_values(&openai, &mut usage);
+        assert!(usage.reported);
+        let counts = usage.normalized();
         assert_eq!(counts.input_tokens, 120);
         assert_eq!(counts.output_tokens, 30);
         assert_eq!(counts.reasoning_tokens, 11);
@@ -1111,10 +1311,10 @@ mod tests {
             "cache_read_input_tokens": 10,
             "output_tokens": 9
         }});
-        let mut found = false;
-        let mut counts = TokenCounts::default();
-        visit_usage_values(&anthropic, &mut found, &mut counts);
-        assert!(found);
+        let mut usage = UsageAccumulator::default();
+        visit_usage_values(&anthropic, &mut usage);
+        assert!(usage.reported);
+        let counts = usage.normalized();
         // Anthropic keeps cache categories separate from the uncached input.
         assert_eq!(counts.input_tokens, 40);
         assert_eq!(counts.cache_read_tokens, 10);

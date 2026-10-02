@@ -308,6 +308,9 @@ export interface RelayUsageTotals {
   costMicros: number;
   pricedCount: number;
   unpricedCount: number;
+  fullyPricedCount: number;
+  partialCount: number;
+  coverageUnknownCount: number;
 }
 
 export interface RelayProviderUsage {
@@ -326,6 +329,10 @@ export interface RelayUsageDay {
 }
 
 export interface RelayUsageRecord {
+  schemaVersion?: number;
+  requestId?: string;
+  attemptId?: string;
+  usageComplete?: boolean;
   timestamp: number;
   date: string;
   providerId: string;
@@ -349,12 +356,18 @@ export interface RelayUsageRecord {
   pricingStatus: string;
   pricingSource: string;
   catalogRevision: string;
+  pricingSnapshot?: import("./newapi").PricingSnapshot | null;
+  appliedRates?: import("./newapi").CostRates | null;
 }
 
 export interface RelayUsagePayload {
   generatedAt: number;
   today: RelayUsageTotals;
   week: RelayUsageTotals;
+  lastSevenDays: RelayUsageTotals;
+  lastSevenDaysStart: string;
+  lastSevenDaysEnd: string;
+  statisticalTimezone: string;
   allTime: RelayUsageTotals;
   byProvider: RelayProviderUsage[];
   byModel: RelayModelUsage[];

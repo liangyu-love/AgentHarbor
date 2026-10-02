@@ -38,6 +38,14 @@ pub struct Preview {
     pub compression_applied: Option<bool>,
     /// catalog | config | none
     pub compression_applied_source: String,
+    pub compression_applied_threshold: Option<u64>,
+    pub compression_shared_threshold: Option<u64>,
+    pub compression_limiting_models: Vec<String>,
+    pub compression_scope: String,
+    pub compression_shared_applied: Option<bool>,
+    pub compression_shared_plan: Option<model_policy::SharedCompressionPlan>,
+    pub compression_config_active: bool,
+    pub compression_written_threshold: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -60,8 +68,10 @@ pub fn preview(paths: &CodexPaths, store: &router::Store) -> CatalogView {
     // Applied state: the written router catalog for relay entries, and the
     // native configuration when that mode owns Codex. Both are read-only.
     let applied_thresholds = router::applied_catalog_thresholds(paths);
-    let native_applied = (store.codex_access_mode == router::CodexAccessMode::Native)
-        .then(|| router::native_config_is_applied(paths, store))
+    let native_mode = store.codex_access_mode == router::CodexAccessMode::Native;
+    let router_active = !native_mode && store.router.enabled && router::routing_config_intact(paths);
+    let native_state = native_mode
+        .then(|| router::native_compression_state(paths, store, &models_dev, &snapshot.models))
         .flatten();
     let mut models = Vec::new();
     for provider in &store.providers {
@@ -72,31 +82,33 @@ pub fn preview(paths: &CodexPaths, store: &router::Store) -> CatalogView {
         for id in ids {
             let official = router::matched_official_model(&snapshot.models, id)
                 .filter(|_| router::official_endpoint_applies(provider));
-            let (metadata, projection) = router::model_projection(
+            let (metadata, projection) = if native_mode { router::model_projection(
                 provider,
                 id,
                 official,
                 &models_dev,
                 &global_compression,
-            );
+            ) } else { router::relay_model_projection(store, provider, id, official, &models_dev, &global_compression) };
             let matched_model = metadata
                 .matched
                 .as_ref()
                 .map(|reference| format!("{}/{}", reference.provider_id, reference.model_id))
                 .unwrap_or_else(|| model_defaults::model_key(id));
-            let (compression_applied, applied_source) = match native_applied {
-                Some(applied) => {
-                    let source = if applied { "config" } else { "none" };
-                    (Some(applied), source.to_owned())
-                }
-                None => match &applied_thresholds {
+            let native_scope = native_state.as_ref().filter(|state|
+                state.provider_id == provider.id && state.models.iter().any(|model| model == id));
+            let (compression_applied, applied_source) = if native_mode {
+                (Some(native_scope.is_some_and(|state| state.applied == Some(true)
+                    && state.applied_threshold == projection.compression.threshold)), "config".to_owned())
+            } else if !router_active {
+                (Some(false), "none".to_owned())
+            } else { match &applied_thresholds {
                     Some(thresholds) => {
                         let slug = format!("{}::{id}", provider.id);
-                        let applied = thresholds.get(&slug) == projection.compression.threshold.as_ref();
+                        let applied = thresholds.get(&slug) == Some(&projection.compression.threshold);
                         (Some(applied), "catalog".to_owned())
                     }
                     None => (None, "none".to_owned()),
-                },
+                }
             };
             models.push(Preview {
                 provider_id: provider.id.clone(),
@@ -120,6 +132,19 @@ pub fn preview(paths: &CodexPaths, store: &router::Store) -> CatalogView {
                 projection,
                 compression_applied,
                 compression_applied_source: applied_source,
+                compression_applied_threshold: if native_mode { native_scope.and_then(|state| state.applied_threshold) }
+                    else { router_active.then(|| applied_thresholds.as_ref().and_then(|entries| entries.get(&format!("{}::{id}", provider.id)).copied().flatten())).flatten() },
+                compression_shared_threshold: native_scope.and_then(|state| state.threshold),
+                compression_limiting_models: native_scope.map(|state| state.limiting_models.clone()).unwrap_or_default(),
+                compression_scope: if native_mode {
+                    if native_scope.is_some() { "nativeShared" } else { "inactive" }
+                } else if router_active { "routerModel" } else { "inactive" }.into(),
+                compression_shared_applied: native_scope.and_then(|state| state.applied),
+                compression_shared_plan: native_scope.map(|state| state.shared_plan.clone()),
+                compression_config_active: if native_mode { native_scope.is_some_and(|state| state.config_active) } else { router_active },
+                compression_written_threshold: if native_mode { None } else {
+                    applied_thresholds.as_ref().and_then(|entries| entries.get(&format!("{}::{id}", provider.id)).copied().flatten())
+                },
             });
         }
     }
@@ -207,18 +232,26 @@ mod tests {
     fn compression_applied_state_separates_pending_from_applied() {
         let dir = tempfile::tempdir().unwrap();
         let paths = CodexPaths::from_home(dir.path().to_path_buf());
+        paths.ensure_directories().unwrap();
+        std::fs::create_dir_all(&paths.codex_home).unwrap();
+        std::fs::write(&paths.config_path, "").unwrap();
         let mut provider = provider("relay", "gpt-5.2");
+        provider.base_url = "https://relay.example/v1".into();
         provider.context_window = Some(200_000);
-        let store = router::Store {
+        let mut store = router::Store {
             providers: vec![provider],
             ..Default::default()
         };
-        // No catalog written yet: the state is unknown, not "pending".
+        // A missing active configuration is inactive even without a catalog.
         let view = preview(&paths, &store);
-        assert_eq!(view.models[0].compression_applied, None);
+        assert_eq!(view.models[0].compression_applied, Some(false));
 
-        // Writing the catalog marks the derived threshold as applied.
+        // A written file alone never proves that Codex consumes it.
         router::write_catalog(&paths, &store).unwrap();
+        assert_eq!(preview(&paths, &store).models[0].compression_scope, "inactive");
+        store.router.enabled = true;
+        store.router.bearer_token = "synthetic-bearer".into();
+        router::apply_routing_config(&paths, &store).unwrap();
         let view = preview(&paths, &store);
         assert_eq!(view.models[0].compression_applied, Some(true));
         assert_eq!(view.models[0].compression_applied_source, "catalog");
@@ -246,10 +279,11 @@ mod tests {
         let row = &view.models[0];
         assert_eq!(row.context.value, Some(200_000));
         assert_eq!(row.context.source, "manual");
-        // The budget prefers the catalog's input limit (272000) over the raw
-        // context, so 80% is 217600 rather than 160000.
-        assert_eq!(row.projection.budget, 272_000);
-        assert_eq!(row.projection.compression.threshold, Some(217_600));
+        // The raw catalog input stays visible, but the final user context
+        // constrains the effective budget used for compaction.
+        assert_eq!(row.input_limit.value, Some(272_000));
+        assert_eq!(row.projection.budget, 200_000);
+        assert_eq!(row.projection.compression.threshold, Some(160_000));
         assert_eq!(row.projection.compression.source, "provider");
         // The generic reference supplies the output cap without a conflict.
         assert_eq!(row.projection.output_limit, Some(128_000));

@@ -5,6 +5,7 @@
 use super::models::ApiProxyConfigPayload;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     io::Read,
@@ -105,7 +106,7 @@ pub struct Modalities {
     pub output: Vec<String>,
 }
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Cost {
     pub input: Option<f64>,
@@ -119,7 +120,7 @@ pub struct Cost {
     pub context_over_200k: Option<CostRates>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct CostRates {
     pub input: Option<f64>,
@@ -131,7 +132,13 @@ pub struct CostRates {
     pub output_audio: Option<f64>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+impl CostRates {
+    pub fn has_audio(&self) -> bool {
+        self.input_audio.is_some() || self.output_audio.is_some()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CostTier {
     #[serde(flatten)]
@@ -139,7 +146,7 @@ pub struct CostTier {
     pub tier: TierCondition,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TierCondition {
     #[serde(rename = "type")]
@@ -241,6 +248,85 @@ impl Catalog {
         let snapshot: Snapshot =
             serde_json::from_slice(bytes).map_err(|error| format!("invalid_snapshot: {error}"))?;
         Self::from_snapshot(snapshot, origin)
+    }
+
+    /// The public API is a provider-keyed object with snake_case model fields;
+    /// the cache and embedded assets use our versioned camelCase snapshot.
+    fn from_api(bytes: &[u8], source_url: &str, fetched_at: i64) -> Result<Self, String> {
+        let value: Value = serde_json::from_slice(bytes)
+            .map_err(|error| format!("invalid_api: {error}"))?;
+        let Value::Object(providers) = value else {
+            return Err("invalid_api_providers".into());
+        };
+        if providers.is_empty() || providers.len() > MAX_PROVIDERS {
+            return Err("invalid_provider_count".into());
+        }
+        let mut transformed = Vec::new();
+        for (_, provider) in providers {
+            let Value::Object(mut provider) = provider else {
+                return Err("invalid_api_provider".into());
+            };
+            let Some(Value::Object(models)) = provider.remove("models") else {
+                return Err("invalid_api_models".into());
+            };
+            if models.len() > MAX_MODELS_PER_PROVIDER {
+                return Err("invalid_model_count".into());
+            }
+            let mut entries = Vec::new();
+            for (_, model) in models {
+                let Value::Object(mut model) = model else {
+                    return Err("invalid_api_model".into());
+                };
+                rename_fields(&mut model, &[
+                    ("reasoning_options", "reasoningOptions"),
+                    ("tool_call", "toolCall"), ("structured_output", "structuredOutput"),
+                    ("open_weights", "openWeights"), ("release_date", "releaseDate"),
+                    ("last_updated", "lastUpdated"), ("canonical_model_id", "canonicalModelId"),
+                    ("provider", "providerHint"),
+                ]);
+                if let Some(Value::Array(options)) = model.get_mut("reasoningOptions") {
+                    // Unknown option variants are future diagnostics, not a
+                    // reason to discard the whole catalog.
+                    options.retain_mut(|option| match option["type"].as_str() {
+                        Some("effort") => {
+                            let Some(Value::Array(values)) = option.get_mut("values") else { return false; };
+                            values.retain(|value| value.as_str().is_some_and(|value| !value.is_empty()));
+                            !values.is_empty()
+                        }
+                        Some("toggle" | "budget_tokens") => true,
+                        _ => false,
+                    });
+                }
+                if let Some(Value::Object(cost)) = model.get_mut("cost") {
+                    rename_rates(cost);
+                    rename_fields(cost, &[("context_over_200k", "contextOver200k")]);
+                    if let Some(Value::Object(over)) = cost.get_mut("contextOver200k") {
+                        rename_rates(over);
+                    }
+                    if let Some(Value::Array(tiers)) = cost.get_mut("tiers") {
+                        for tier in tiers {
+                            if let Value::Object(tier) = tier { rename_rates(tier); }
+                        }
+                    }
+                }
+                entries.push(Value::Object(model));
+            }
+            provider.insert("models".into(), Value::Array(entries));
+            transformed.push(serde_json::from_value::<Provider>(Value::Object(provider))
+                .map_err(|error| format!("invalid_api_provider: {error}"))?);
+        }
+        for provider in &mut transformed { provider.models.sort_by(|a, b| a.id.cmp(&b.id)); }
+        transformed.sort_by(|a, b| a.id.cmp(&b.id));
+        Self::from_snapshot(Snapshot {
+            schema_version: SCHEMA_VERSION,
+            source_url: source_url.into(),
+            fetched_at,
+            // Both refresh paths hash the source bytes; timestamps do not
+            // invent new revisions for identical catalog content.
+            revision: format!("{:x}", Sha256::digest(bytes)),
+            providers: transformed,
+            ..Default::default()
+        }, Origin::Runtime)
     }
 
     pub fn from_snapshot(mut snapshot: Snapshot, origin: Origin) -> Result<Self, String> {
@@ -387,6 +473,17 @@ impl Catalog {
     }
 }
 
+fn rename_fields(object: &mut serde_json::Map<String, Value>, fields: &[(&str, &str)]) {
+    for (from, to) in fields {
+        if let Some(value) = object.remove(*from) { object.insert((*to).into(), value); }
+    }
+}
+
+fn rename_rates(object: &mut serde_json::Map<String, Value>) {
+    rename_fields(object, &[("cache_read", "cacheRead"), ("cache_write", "cacheWrite"),
+        ("input_audio", "inputAudio"), ("output_audio", "outputAudio")]);
+}
+
 fn valid_model(model: &Model) -> bool {
     // A record with no usable metadata at all is a shape change, not a model.
     if model.limit.context.is_none()
@@ -407,6 +504,8 @@ fn valid_model(model: &Model) -> bool {
     let valid_rate = |value: Option<f64>| {
         value.is_none_or(|value| value.is_finite() && value >= 0.0 && value < 1_000_000.0)
     };
+    let valid_rates = |rates: &CostRates| [rates.input, rates.output, rates.cache_read,
+        rates.cache_write, rates.reasoning, rates.input_audio, rates.output_audio].into_iter().all(valid_rate);
     if model.cost.as_ref().is_some_and(|cost| {
         !valid_rate(cost.input)
             || !valid_rate(cost.output)
@@ -415,6 +514,8 @@ fn valid_model(model: &Model) -> bool {
             || !valid_rate(cost.reasoning)
             || !valid_rate(cost.input_audio)
             || !valid_rate(cost.output_audio)
+            || cost.context_over_200k.as_ref().is_some_and(|rates| !valid_rates(rates))
+            || cost.tiers.iter().any(|tier| !valid_rates(&tier.rates))
     }) {
         return false;
     }
@@ -702,7 +803,7 @@ fn download(catalog: &Catalog, proxy: &ApiProxyConfigPayload) -> Result<Download
     }
     // Validate before anything touches the cache file; keep the ETag only for
     // the document we actually accepted.
-    let mut parsed = Catalog::parse(&bytes, Origin::Runtime)?;
+    let mut parsed = Catalog::from_api(&bytes, source, now())?;
     parsed.snapshot.etag = etag;
     Ok(Download::Fresh(parsed.snapshot))
 }
@@ -803,12 +904,12 @@ mod tests {
 
         // A corrupt cache falls back to the committed snapshot, never to a
         // partial merge of the two.
-        states().lock().unwrap().clear();
+        states().lock().unwrap().remove(dir.path());
         std::fs::write(cache_path(dir.path()), b"{ truncated").unwrap();
         let catalog = load(dir.path());
         assert_eq!(catalog.origin, Origin::Embedded);
         assert!(catalog.snapshot.providers.len() > 10);
-        states().lock().unwrap().clear();
+        states().lock().unwrap().remove(dir.path());
     }
 
     #[test]
@@ -820,7 +921,7 @@ mod tests {
         let catalog = load(dir.path());
         assert!(catalog.is_stale(1_700_000_000 + 86_401));
         assert!(!catalog.is_stale(1_700_000_000 + 86_399));
-        states().lock().unwrap().clear();
+        states().lock().unwrap().remove(dir.path());
     }
 
     #[test]
@@ -834,7 +935,7 @@ mod tests {
         assert_eq!(after.snapshot.providers.len(), before.snapshot.providers.len());
         assert_eq!(after.error.as_deref(), Some("network_error"));
         assert!(after.provider("anthropic").is_some());
-        states().lock().unwrap().clear();
+        states().lock().unwrap().remove(dir.path());
     }
 
     #[test]

@@ -166,6 +166,8 @@ pub struct PriceInfo {
     pub cache_read: Option<f64>,
     pub cache_write: Option<f64>,
     pub reasoning: Option<f64>,
+    pub input_audio: Option<f64>,
+    pub output_audio: Option<f64>,
     pub tiers: Vec<super::models_dev::CostTier>,
     pub context_over_200k: Option<super::models_dev::CostRates>,
     pub source: String,
@@ -239,13 +241,12 @@ pub struct ResolutionRequest<'a> {
     /// models.dev provider IDs this configured provider maps to. Empty means
     /// only generic reference matching is available.
     pub catalog_providers: &'a [String],
-    /// Scope used for prices. Defaults to `catalog_providers`; a separate
-    /// binding keeps prices tied to the billing provider even when the
-    /// capability mapping points somewhere else.
+    /// Independently bound billing providers. Capability mappings alone never
+    /// establish what a relay charges.
     pub price_providers: &'a [String],
     /// Explicit `{provider, model}` capability reference.
     pub explicit_ref: Option<&'a ModelRef>,
-    /// Independent price binding; falls back to the capability match.
+    /// Independent price binding; never inferred from the capability match.
     pub price_ref: Option<&'a ModelRef>,
     pub user: UserValues,
     /// Provider-level context window setting (existing override semantics).
@@ -256,11 +257,7 @@ pub struct ResolutionRequest<'a> {
 
 impl ResolutionRequest<'_> {
     fn price_scope(&self) -> &[String] {
-        if self.price_providers.is_empty() {
-            self.catalog_providers
-        } else {
-            self.price_providers
-        }
+        self.price_providers
     }
 }
 
@@ -286,6 +283,8 @@ pub struct ResolvedMetadata {
 pub struct Candidate {
     pub value: String,
     pub step: &'static str,
+    /// Safety of the entire reduction path, not just its final step.
+    pub price_safe: bool,
 }
 
 const KNOWN_EFFORTS: &[&str] = &[
@@ -322,24 +321,25 @@ fn strip_suffix_ci<'a>(value: &'a str, suffix: &str) -> Option<&'a str> {
 /// one explicit step so the preview can explain exactly what was attempted.
 /// Version numbers, dates and `-preview` suffixes are never removed.
 pub fn candidates(raw_model_id: &str) -> Vec<Candidate> {
-    let mut queue: VecDeque<(&'static str, String)> = VecDeque::new();
+    let mut queue: VecDeque<(&'static str, String, bool)> = VecDeque::new();
     let mut seen = HashSet::new();
     let mut out = Vec::new();
-    queue.push_back(("exact", raw_model_id.trim().to_owned()));
-    while let Some((step, current)) = queue.pop_front() {
+    queue.push_back(("exact", raw_model_id.trim().to_owned(), true));
+    while let Some((step, current, safe)) = queue.pop_front() {
         if current.is_empty() || !seen.insert(current.clone()) {
             continue;
         }
         out.push(Candidate {
             value: current.clone(),
             step,
+            price_safe: safe,
         });
         if out.len() >= MAX_CANDIDATES {
             break;
         }
         for (next_step, next) in reductions(&current) {
             if !seen.contains(&next) {
-                queue.push_back((next_step, next));
+                queue.push_back((next_step, next, safe && price_safe(next_step)));
             }
         }
     }
@@ -576,6 +576,13 @@ fn format_timestamp(timestamp: i64) -> Option<String> {
     DateTime::<Utc>::from_timestamp(timestamp, 0).map(|time| time.to_rfc3339())
 }
 
+fn field_provenance(matches: &[CatalogMatch<'_>], present: impl Fn(&super::models_dev::Model) -> bool)
+    -> (Option<ModelRef>, Option<String>) {
+    matches.iter().find(|entry| present(entry.model))
+        .map(|entry| (Some(entry.model_ref()), entry.model.last_updated.clone()))
+        .unwrap_or_default()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn resolve_number(
     manual: Option<u64>,
@@ -654,9 +661,7 @@ pub fn resolve(catalog: &Catalog, request: &ResolutionRequest<'_>) -> ResolvedMe
     let candidates = candidates(raw);
     let mut matches: Vec<CatalogMatch<'_>> = Vec::new();
     let mut kind = MatchKind::Unmatched;
-    let mut accepted_step = "exact";
-    let mut accepted_value = raw.to_owned();
-    let mut matched_scoped = !request.catalog_providers.is_empty();
+    let mut matched_scoped = false;
 
     if let Some(reference) = request.explicit_ref {
         match catalog.exact_in(&reference.provider_id, &reference.model_id) {
@@ -723,8 +728,7 @@ pub fn resolve(catalog: &Catalog, request: &ResolutionRequest<'_>) -> ResolvedMe
                     )
                 },
             });
-            accepted_step = candidate.step;
-            accepted_value = candidate.value.clone();
+            matched_scoped = scoped;
             let distinct: HashSet<(&str, &str)> = found
                 .iter()
                 .map(|entry| (entry.provider_id, entry.model_id))
@@ -781,8 +785,10 @@ pub fn resolve(catalog: &Catalog, request: &ResolutionRequest<'_>) -> ResolvedMe
     let context = agreement(&matches, |entry| entry.model.limit.context);
     let input = agreement(&matches, |entry| entry.model.limit.input);
     let output = agreement(&matches, |entry| entry.model.limit.output);
-    let catalog_ref = matches.first().map(CatalogMatch::model_ref);
-    let catalog_updated = matches.iter().find_map(|entry| entry.model.last_updated.clone());
+    let (context_ref, context_updated) = field_provenance(&matches, |model| model.limit.context.is_some());
+    let (input_ref, input_updated) = field_provenance(&matches, |model| model.limit.input.is_some());
+    let (output_ref, output_updated) = field_provenance(&matches, |model| model.limit.output.is_some());
+    let (reasoning_ref, reasoning_updated) = field_provenance(&matches, |model| effective_levels(model).is_some());
     let official_time = request.official.as_ref().and_then(|values| values.updated_at);
     let upstream_time = request
         .upstream
@@ -797,8 +803,8 @@ pub fn resolve(catalog: &Catalog, request: &ResolutionRequest<'_>) -> ResolvedMe
         request.official.as_ref().and_then(|values| values.context_window),
         &context,
         catalog_source,
-        catalog_ref.clone(),
-        catalog_updated.clone(),
+        context_ref,
+        context_updated,
         official_time,
         upstream_time,
     );
@@ -809,8 +815,8 @@ pub fn resolve(catalog: &Catalog, request: &ResolutionRequest<'_>) -> ResolvedMe
         None,
         &input,
         catalog_source,
-        catalog_ref.clone(),
-        catalog_updated.clone(),
+        input_ref,
+        input_updated,
         official_time,
         upstream_time,
     );
@@ -824,8 +830,8 @@ pub fn resolve(catalog: &Catalog, request: &ResolutionRequest<'_>) -> ResolvedMe
             .and_then(|values| values.max_output_tokens),
         &output,
         catalog_source,
-        catalog_ref.clone(),
-        catalog_updated.clone(),
+        output_ref,
+        output_updated,
         official_time,
         upstream_time,
     );
@@ -836,6 +842,8 @@ pub fn resolve(catalog: &Catalog, request: &ResolutionRequest<'_>) -> ResolvedMe
                 if output > limit {
                     output_field.value = Some(limit);
                     output_field.source = source::PROVIDER_SETTING.into();
+                    output_field.source_ref = None;
+                    output_field.updated_at = None;
                 }
             }
         }
@@ -879,8 +887,8 @@ pub fn resolve(catalog: &Catalog, request: &ResolutionRequest<'_>) -> ResolvedMe
             Agreement::Agreed(value) => Field::new(
                 value.clone(),
                 catalog_source,
-                catalog_ref.clone(),
-                catalog_updated.clone(),
+                reasoning_ref,
+                reasoning_updated,
             ),
             Agreement::Conflict(values) => {
                 result.conflicts.push(FieldConflict {
@@ -958,13 +966,7 @@ pub fn resolve(catalog: &Catalog, request: &ResolutionRequest<'_>) -> ResolvedMe
 
     // Price. Borrows a price only from price-safe candidates within the
     // configured (billing) provider scope or from an explicit binding.
-    result.price = resolve_price(
-        catalog,
-        request,
-        accepted_step,
-        &accepted_value,
-        &candidates,
-    );
+    result.price = resolve_price(catalog, request, &candidates);
     result
 }
 
@@ -991,8 +993,6 @@ fn pick_match_ref(matches: &[CatalogMatch<'_>]) -> ModelRef {
 fn resolve_price(
     catalog: &Catalog,
     request: &ResolutionRequest<'_>,
-    accepted_step: &str,
-    accepted_value: &str,
     candidates: &[Candidate],
 ) -> PriceInfo {
     // 1. Explicit user price override.
@@ -1004,14 +1004,14 @@ fn resolve_price(
                 cache_read: rates.cache_read,
                 cache_write: rates.cache_write,
                 source: source::MANUAL.into(),
-                complete: true,
+                complete: rates.input.is_some() && rates.output.is_some(),
+                note: (rates.input.is_none() || rates.output.is_none()).then(|| "some token categories have no rate".into()),
                 ..PriceInfo::unknown(None)
             };
         }
     }
-    // 2. User-bound price reference, or the explicit capability reference.
-    let bound = request.price_ref.or(request.explicit_ref);
-    if let Some(reference) = bound {
+    // 2. Only an independent model price reference overrides the billing scope.
+    if let Some(reference) = request.price_ref {
         return match catalog.exact_in(&reference.provider_id, &reference.model_id) {
             Some(entry) => price_from_catalog(
                 entry.model.cost.as_ref(),
@@ -1027,31 +1027,15 @@ fn resolve_price(
         // Without a provider scope a generic price would cross vendor
         // boundaries; keep it unknown and say why.
         return PriceInfo::unknown(Some(
-            "no capability catalog mapping; prices stay provider-scoped",
+            "no billing catalog binding; capability mappings do not establish prices",
         ));
     }
     // A price found through a reduced candidate is an alias fallback; the full
     // identity keeps the plain catalog label.
     let alias_of = |value: &str| !value.eq_ignore_ascii_case(request.raw_model_id.trim());
-    // 3. The accepted candidate inside the price scope, when the accepted
-    // normalization is price-safe. All matching entries must agree, otherwise
-    // the price is treated as ambiguous instead of picking one at random.
-    if price_safe(accepted_step) {
-        if let Some(price) = scoped_price(catalog, scope, accepted_value, alias_of(accepted_value))
-        {
-            return price;
-        }
-    }
-    // 4. Other price-safe candidates, keeping full-identity candidates first.
-    // This is the alias fallback the plan allows only inside one billing
-    // provider scope.
-    let mut ordered: Vec<&Candidate> = candidates
-        .iter()
-        .filter(|candidate| price_safe(candidate.step))
-        .filter(|candidate| candidate.value != accepted_value)
-        .collect();
-    ordered.sort_by_key(|candidate| candidate.value.len());
-    for candidate in ordered.into_iter().rev() {
+    // 3. Resolve the actual request identity first, then price-safe reductions
+    // in their original order. Capability selection cannot reorder billing.
+    for candidate in candidates.iter().filter(|candidate| candidate.price_safe) {
         if let Some(price) = scoped_price(catalog, scope, &candidate.value, alias_of(&candidate.value))
         {
             return price;
@@ -1068,16 +1052,9 @@ fn scoped_price(catalog: &Catalog, scope: &[String], model_id: &str, alias: bool
         .iter()
         .filter_map(|entry| entry.model.cost.as_ref().map(|cost| (*entry, cost)));
     let (first_entry, first_cost) = priced.next()?;
-    let first = (
-        first_cost.input,
-        first_cost.output,
-        first_cost.cache_read,
-        first_cost.cache_write,
-    );
-    if priced.any(|(_, cost)| {
-        (cost.input, cost.output, cost.cache_read, cost.cache_write) != first
-    }) {
-        return None;
+    if priced.any(|(_, cost)| cost != first_cost) {
+        // A conflicting complete ID must not fall through to a cheaper alias.
+        return Some(PriceInfo::unknown(Some("billing catalogs disagree on pricing")));
     }
     Some(price_from_catalog(
         Some(first_cost),
@@ -1097,6 +1074,9 @@ fn price_from_catalog(
         return PriceInfo::unknown(Some("price record exists without rates"));
     };
     let conditional = !cost.tiers.is_empty() || cost.context_over_200k.is_some();
+    let audio = cost.input_audio.is_some() || cost.output_audio.is_some()
+        || cost.context_over_200k.as_ref().is_some_and(|rates| rates.has_audio())
+        || cost.tiers.iter().any(|tier| tier.rates.has_audio());
     PriceInfo {
         currency: "USD".into(),
         unit: "perMillionTokens".into(),
@@ -1105,6 +1085,8 @@ fn price_from_catalog(
         cache_read: cost.cache_read,
         cache_write: cost.cache_write,
         reasoning: cost.reasoning,
+        input_audio: cost.input_audio,
+        output_audio: cost.output_audio,
         tiers: cost.tiers.clone(),
         context_over_200k: cost.context_over_200k,
         source: if alias {
@@ -1114,8 +1096,11 @@ fn price_from_catalog(
         },
         source_ref,
         updated_at,
-        complete: !conditional,
-        note: conditional.then(|| "conditional pricing varies with context size".to_owned()),
+        complete: !conditional && !audio && cost.input.is_some() && cost.output.is_some(),
+        note: if audio { Some("audio token rates are preserved; audio usage is not observed, so estimates are partial".to_owned()) }
+            else if conditional { Some("conditional pricing varies with context size".to_owned()) }
+            else if cost.input.is_none() || cost.output.is_none() { Some("some token categories have no rate".to_owned()) }
+            else { None },
     }
 }
 
@@ -1261,6 +1246,7 @@ mod tests {
         let scoped_ids = ["openrouter".to_owned()];
         let mut scoped = input_for("openrouter/anthropic/claude-opus-4-5");
         scoped.catalog_providers = &scoped_ids;
+        scoped.price_providers = &scoped_ids;
         let resolved = resolve(&catalog, &scoped);
         assert_eq!(resolved.match_kind, MatchKind::Normalized);
         assert_eq!(resolved.context_window.value, Some(200_000));
@@ -1383,6 +1369,7 @@ mod tests {
         let scoped_ids = ["openrouter".to_owned()];
         let mut request = input_for("anthropic/claude-opus-4-5:free");
         request.catalog_providers = &scoped_ids;
+        request.price_providers = &scoped_ids;
         let resolved = resolve(&catalog, &request);
         // Capability still resolves through the tag-stripped candidate.
         assert_eq!(resolved.context_window.value, Some(200_000));
@@ -1417,12 +1404,12 @@ mod tests {
         assert_eq!(resolved.price.input, Some(1.0));
         assert_eq!(resolved.price.source, source::CATALOG_ALIAS);
 
-        // Without the binding the price follows the capability scope.
+        // A capability binding alone never establishes billing prices.
         let mut request = input_for("claude-opus-4-5");
         request.catalog_providers = &capability;
         let resolved = resolve(&catalog, &request);
-        assert_eq!(resolved.price.input, Some(5.0));
-        assert_eq!(resolved.price.source, source::CATALOG);
+        assert_eq!(resolved.price.input, None);
+        assert_eq!(resolved.price.source, source::UNKNOWN);
     }
 
     #[test]
@@ -1446,6 +1433,7 @@ mod tests {
         let scope = ["relay-a".to_owned(), "relay-b".to_owned()];
         let mut request = input_for("model-x");
         request.catalog_providers = &scope;
+        request.price_providers = &scope;
         let resolved = resolve(&catalog, &request);
         // Capability agrees, price does not: the price stays unknown.
         assert_eq!(resolved.context_window.value, Some(1000));
@@ -1476,6 +1464,7 @@ mod tests {
         let scope = ["relay-a".to_owned()];
         let mut request = input_for("free-model");
         request.catalog_providers = &scope;
+        request.price_providers = &scope;
         let resolved = resolve(&catalog, &request);
         // A declared zero rate is a price, not a missing one.
         assert_eq!(resolved.price.input, Some(0.0));
@@ -1522,6 +1511,7 @@ mod tests {
         let scoped_ids = ["deepinfra".to_owned()];
         let mut request = input_for("qwen3-max");
         request.catalog_providers = &scoped_ids;
+        request.price_providers = &scoped_ids;
         let resolved = resolve(&catalog, &request);
         assert_eq!(resolved.price.input, Some(2.4));
         assert!(!resolved.price.complete);

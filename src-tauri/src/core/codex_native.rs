@@ -8,7 +8,7 @@ use super::{
 };
 use crate::{
     core::{
-        codex_config::CodexConfigRepository, model_metadata, models::CoreError, models_dev,
+        codex_config::CodexConfigRepository, model_catalog, model_policy, models::CoreError, models_dev,
         newapi, storage,
     },
     platform::paths::CodexPaths,
@@ -245,39 +245,45 @@ fn api_key(provider: &Provider) -> Result<String, String> {
         .map_err(|_| "newapi.errors.token".into())
 }
 
-fn catalog(paths: &CodexPaths, store: &Store, provider: &Provider) -> serde_json::Value {
-    // Reuse the router's read-only official catalog loading and cache precedence.
-    // Only the selected provider's own models are emitted below.
-    let official_catalog =
-        super::catalog_value(&paths.app_data_dir, &paths.codex_home, &Store::default());
-    let official_models = official_catalog["models"].as_array().expect("catalog model array");
-    let models_dev = models_dev::load(&paths.app_data_dir);
+fn model_ids(provider: &Provider) -> Vec<String> {
+    let mut ids: Vec<String> = provider.models.iter()
+        .filter(|model| model.included
+            && provider.protocol_for_model(&model.id) == ModelProtocol::Responses
+            && provider.supports_model(&model.id))
+        .map(|model| model.id.clone()).collect();
+    if !provider.model.is_empty() && !ids.contains(&provider.model) { ids.push(provider.model.clone()); }
+    ids
+}
+
+struct NativeConfigurationPlan {
+    catalog: serde_json::Value,
+    models: Vec<String>,
+    compression: model_policy::SharedCompressionPlan,
+}
+
+fn configuration_plan(
+    store: &Store,
+    provider: &Provider,
+    models_dev: &models_dev::Catalog,
+    official_models: &[serde_json::Value],
+) -> NativeConfigurationPlan {
     let global_compression = store.global_compression();
     let mut seen = HashSet::new();
-    let mut ids: Vec<String> = provider
-        .models
-        .iter()
-        .filter(|model| {
-            model.included
-                && provider.protocol_for_model(&model.id) == ModelProtocol::Responses
-                && provider.supports_model(&model.id)
-        })
-        .map(|model| model.id.clone())
-        .collect();
-    ids.push(provider.model.clone());
-    let models: Vec<_> = ids
-        .into_iter()
-        .filter(|id| seen.insert(id.clone()))
-        .map(|id| {
+    let ids: Vec<_> = model_ids(provider).into_iter().filter(|id| seen.insert(id.clone())).collect();
+    let resolved: Vec<_> = ids.iter().map(|id| {
             let official = super::matched_official_model(official_models, &id)
                 .filter(|_| super::official_endpoint_applies(provider));
-            let (metadata, projection) = super::model_projection(
+            super::model_projection(
                 provider,
                 &id,
                 official,
-                &models_dev,
+                models_dev,
                 &global_compression,
-            );
+            )
+        }).collect();
+    let compression = model_policy::shared_plan(&ids.iter().zip(&resolved)
+        .map(|(id, (_, projection))| (id.as_str(), projection)).collect::<Vec<_>>());
+    let models: Vec<_> = ids.iter().zip(resolved).map(|(id, (metadata, projection))| {
             let alias = metadata.display_name.trim();
             super::relay_catalog_entry(
                 id.clone(),
@@ -290,46 +296,70 @@ fn catalog(paths: &CodexPaths, store: &Store, provider: &Provider) -> serde_json
             )
         })
         .collect();
-    serde_json::json!({ "models": models })
+    NativeConfigurationPlan { catalog: serde_json::json!({ "models": models }), models: ids, compression }
+}
+
+fn load_configuration_plan(paths: &CodexPaths, store: &Store, provider: &Provider) -> NativeConfigurationPlan {
+    let catalog = models_dev::load(&paths.app_data_dir);
+    let official = model_catalog::official(&paths.codex_home, &paths.app_data_dir);
+    configuration_plan(store, provider, &catalog, &official.models)
+}
+
+#[cfg(test)]
+fn catalog(paths: &CodexPaths, store: &Store, provider: &Provider) -> serde_json::Value {
+    load_configuration_plan(paths, store, provider).catalog
 }
 
 /// Effective values the native config applies globally for this provider.
 /// The context window stays the user's provider setting. The compaction
 /// threshold is the conservative minimum across this provider's selected
 /// models so switching models inside one shared config never overstates a
-/// smaller model's budget; models without real data never contribute one.
+/// smaller model's budget. Invalid or unknown models block a shared override.
 pub(super) fn native_limits(
     paths: &CodexPaths,
     store: &Store,
     provider: &Provider,
 ) -> (Option<u64>, Option<u64>) {
-    let models_dev = models_dev::load(&paths.app_data_dir);
-    let global_compression = store.global_compression();
-    let mut ids: Vec<String> = provider
-        .models
-        .iter()
-        .filter(|model| {
-            model.included
-                && provider.protocol_for_model(&model.id) == ModelProtocol::Responses
-                && provider.supports_model(&model.id)
-        })
-        .map(|model| model.id.clone())
-        .collect();
-    if !provider.model.is_empty() && !ids.contains(&provider.model) {
-        ids.push(provider.model.clone());
-    }
-    let mut thresholds: Vec<u64> = Vec::new();
-    for id in ids {
-        let (_, projection) =
-            super::model_projection(provider, &id, None, &models_dev, &global_compression);
-        if projection.budget_source == model_metadata::source::FALLBACK {
-            continue;
-        }
-        if let Some(threshold) = projection.compression.threshold {
-            thresholds.push(threshold);
-        }
-    }
-    (provider.context_window, thresholds.into_iter().min())
+    (provider.context_window, load_configuration_plan(paths, store, provider).compression.threshold)
+}
+
+pub(crate) struct NativeCompressionState {
+    pub provider_id: String,
+    pub models: Vec<String>,
+    pub threshold: Option<u64>,
+    pub applied_threshold: Option<u64>,
+    pub limiting_models: Vec<String>,
+    pub applied: Option<bool>,
+    pub shared_plan: model_policy::SharedCompressionPlan,
+    pub config_active: bool,
+}
+
+pub(super) fn compression_state(paths: &CodexPaths, store: &Store,
+    catalog: &models_dev::Catalog, official_models: &[serde_json::Value]) -> Option<NativeCompressionState> {
+    let provider = selected_provider(store).ok()?;
+    let plan = configuration_plan(store, provider, catalog, official_models);
+    let _guard = config_snapshot::guard().ok()?;
+    let applied = intact_unlocked(paths, store, &plan).ok().map(|intact|
+        intact && !matches!(plan.compression.state.as_str(), "invalid" | "unknown"));
+    let config_active = config(paths).ok().is_some_and(|document| {
+        let owns_scope = document.get("model_provider").and_then(Item::as_str) == Some(PROVIDER_KEY)
+            && document.get("model_providers").and_then(|entries| entries.get(PROVIDER_KEY))
+                .and_then(|entry| entry.get("base_url")).and_then(Item::as_str) == endpoint(provider).ok().as_deref();
+        let credential = document.get("model_providers").and_then(|entries| entries.get(PROVIDER_KEY))
+            .and_then(|entry| entry.get("env_key")).and_then(Item::as_str)
+            .and_then(|name| EnvFile::load(paths).ok().and_then(|file| file.owned.into_iter().find(|entry| entry.name == name)));
+        owns_scope && credential.is_some_and(|credential|
+            api_key(provider).ok().as_deref() == Some(credential.key.as_str())
+                && document.get("model_catalog_json").and_then(Item::as_str)
+                    == Some(catalog_path(paths, credential.id).to_string_lossy().as_ref()))
+    });
+    let applied_threshold = config_active.then(|| config(paths).ok()).flatten().and_then(|document| {
+        document.get("model_auto_compact_token_limit").and_then(Item::as_integer)
+            .and_then(|value| u64::try_from(value).ok())
+    });
+    Some(NativeCompressionState { provider_id: provider.id.clone(), models: plan.models,
+        threshold: plan.compression.threshold, limiting_models: plan.compression.limiting_models.clone(),
+        applied_threshold, applied, shared_plan: plan.compression, config_active })
 }
 
 fn config(paths: &CodexPaths) -> Result<DocumentMut, CoreError> {
@@ -390,10 +420,11 @@ pub(super) fn cleanup_credentials(paths: &CodexPaths) -> Result<(), String> {
 
 pub(super) fn intact(paths: &CodexPaths, store: &Store) -> Result<bool, String> {
     let _guard = config_snapshot::guard().map_err(config_update_error)?;
-    intact_unlocked(paths, store)
+    let plan = load_configuration_plan(paths, store, selected_provider(store)?);
+    intact_unlocked(paths, store, &plan)
 }
 
-fn intact_unlocked(paths: &CodexPaths, store: &Store) -> Result<bool, String> {
+fn intact_unlocked(paths: &CodexPaths, store: &Store, plan: &NativeConfigurationPlan) -> Result<bool, String> {
     let provider = selected_provider(store)?;
     let expected_base = endpoint(provider)?;
     let expected_key = api_key(provider)?;
@@ -429,11 +460,11 @@ fn intact_unlocked(paths: &CodexPaths, store: &Store) -> Result<bool, String> {
         return Err(CREDENTIAL_ERROR.into());
     }
     let expected_catalog = catalog_path(paths, credential.id);
-    let (expected_context, expected_threshold) = native_limits(paths, store, provider);
+    let (expected_context, expected_threshold) = (provider.context_window, plan.compression.threshold);
     let catalog_matches = std::fs::read(&expected_catalog)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .is_some_and(|value| value == catalog(paths, store, provider));
+        .is_some_and(|value| value == plan.catalog);
     Ok(credential.key == expected_key
         && document.get("model_provider").and_then(Item::as_str) == Some(PROVIDER_KEY)
         && document.get("model").and_then(Item::as_str) == Some(provider.model.as_str())
@@ -470,14 +501,15 @@ pub(super) fn apply(paths: &CodexPaths, store: &Store) -> Result<newapi::Applied
     let provider = selected_provider(store)?;
     let expected_base = endpoint(provider)?;
     let key = api_key(provider)?;
-    let (limit_context, limit_threshold) = native_limits(paths, store, provider);
+    let plan = load_configuration_plan(paths, store, provider);
+    let (limit_context, limit_threshold) = (provider.context_window, plan.compression.threshold);
     newapi::validate_limits(&newapi::Connection {
         model: provider.model.clone(),
         context_window: limit_context,
         auto_compact_limit: limit_threshold,
         ..Default::default()
     })?;
-    if intact_unlocked(paths, store)? {
+    if intact_unlocked(paths, store, &plan)? {
         if cleanup_unlocked(paths, None).is_err() {
             log::warn!("Native credential cleanup will retry on next use");
         }
@@ -500,7 +532,7 @@ pub(super) fn apply(paths: &CodexPaths, store: &Store) -> Result<newapi::Applied
     let result = (|| -> Result<_, CoreError> {
         storage::write_atomic(
             &catalog_path,
-            &serde_json::to_vec_pretty(&catalog(paths, store, provider))?,
+            &serde_json::to_vec_pretty(&plan.catalog)?,
         )?;
         CodexConfigRepository::new(paths).update(|original| {
             let mut document = original

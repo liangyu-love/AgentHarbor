@@ -187,8 +187,8 @@ const body = {
   fetchedAt: Math.floor(Date.now() / 1000),
   providers,
 };
-const canonical = JSON.stringify(body);
-body.revision = createHash("sha256").update(canonical).digest("hex");
+// Same content revision as the runtime API refresh, independent of fetch time.
+body.revision = createHash("sha256").update(text).digest("hex");
 
 mkdirSync(dirname(target), { recursive: true });
 writeFileSync(target, JSON.stringify(body));

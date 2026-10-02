@@ -34,6 +34,7 @@ fn paths(repo: &State<'_, Mutex<Repository>>) -> Result<CodexPaths, String> {
 
 fn manager(paths: &CodexPaths) -> ConfigManager {
     ConfigManager::new(&paths.app_data_dir, ClientPaths::discover())
+        .with_official_home(&paths.codex_home)
 }
 
 #[tauri::command]

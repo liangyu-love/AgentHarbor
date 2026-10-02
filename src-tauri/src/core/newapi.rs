@@ -398,7 +398,7 @@ pub struct Model {
     /// Explicit models.dev capability reference `{providerId, modelId}`.
     #[serde(default)]
     pub catalog_ref: Option<ModelRef>,
-    /// Independent price binding; falls back to the capability match.
+    /// Independent price binding; capability matching does not infer prices.
     #[serde(default)]
     pub price_ref: Option<ModelRef>,
     /// Per-model compression policy; `inherit` follows provider then global.
@@ -432,34 +432,15 @@ fn model_included_by_default() -> bool {
 }
 
 impl Model {
-    /// Explicit user values for the resolver. Legacy `metadata_source ==
-    /// "manual"` records keep their top-level values as user values until the
-    /// store migration moves them into [`ModelOverrides`].
+    /// Explicit user values for the resolver. Legacy top-level manual values
+    /// are promoted by the versioned store migration, never during resolution.
     pub(crate) fn user_values(&self) -> super::model_metadata::UserValues {
-        let legacy_manual = self.metadata_source == "manual" && self.overrides.is_empty();
-        let legacy_reasoning = legacy_manual
-            .then(|| self.supported_reasoning_levels.clone())
-            .flatten();
         super::model_metadata::UserValues {
-            context_window: self
-                .overrides
-                .context_window
-                .or_else(|| legacy_manual.then_some(self.context_window).flatten()),
+            context_window: self.overrides.context_window,
             input_limit: self.overrides.input_limit,
-            output_limit: self
-                .overrides
-                .max_output_tokens
-                .or_else(|| legacy_manual.then_some(self.max_output_tokens).flatten()),
-            reasoning: self.overrides.reasoning.clone().or(legacy_reasoning),
-            default_effort: self
-                .overrides
-                .default_effort
-                .clone()
-                .or_else(|| {
-                    legacy_manual
-                        .then(|| self.default_reasoning_level.clone())
-                        .flatten()
-                }),
+            output_limit: self.overrides.max_output_tokens,
+            reasoning: self.overrides.reasoning.clone(),
+            default_effort: self.overrides.default_effort.clone(),
             price: self.overrides.price.as_ref().map(|price| {
                 super::model_metadata::CostRatesInput {
                     input: price.input,
@@ -537,7 +518,7 @@ fn parse_models(value: &Value) -> Result<Vec<Model>, String> {
                 })
                 .unwrap_or_default(),
             included: true,
-            metadata_source: if upstream_context.is_some() {
+            metadata_source: if upstream_context.is_some() || upstream_output.is_some() {
                 "upstream".into()
             } else {
                 "local".into()
@@ -787,6 +768,21 @@ mod tests {
         assert_eq!(result[2].max_output_tokens, Some(2048));
         assert_eq!(result[3].context_window, Some(16000));
         assert_eq!(result[3].max_output_tokens, Some(16000));
+    }
+
+    #[test]
+    fn output_only_declarations_survive_resolution_and_client_projection() {
+        use super::super::{model_policy, models_dev, router};
+        let models = parse_models(&json!({"data":[{"id":"output-only-fixture","max_output_tokens":4096}]})).unwrap();
+        assert_eq!(models[0].metadata_source, "upstream");
+        assert!(models[0].context_window.is_none());
+        let provider = router::Provider { models, ..Default::default() };
+        let dir = tempfile::tempdir().unwrap();
+        let (metadata, projection) = router::model_projection(&provider, "output-only-fixture", None,
+            &models_dev::load(dir.path()), &model_policy::CompressionPolicy::percent(90));
+        assert_eq!(metadata.output_limit.value, Some(4096));
+        assert_eq!(metadata.output_limit.source, "upstream");
+        assert_eq!(projection.output_limit, Some(4096));
     }
 
     #[test]

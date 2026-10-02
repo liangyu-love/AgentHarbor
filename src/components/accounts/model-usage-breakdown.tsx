@@ -2,10 +2,10 @@ import { useState, type CSSProperties } from "react";
 import { ChartPie, List } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
-import { formatCost } from "@/lib/format-cost";
+import { costLabel } from "@/lib/format-cost";
 import { cn } from "@/lib/utils";
 
-type UsageTotals = { totalTokens: number; costMicros?: number; pricedCount?: number; unpricedCount?: number };
+type UsageTotals = { totalTokens: number; costMicros?: number; pricedCount?: number; unpricedCount?: number; partialCount?: number; coverageUnknownCount?: number };
 type UsageItem = { key: string; title: string; subtitle?: string; totals: UsageTotals };
 type DisplayItem = UsageItem & { memberCount: number; providerLabels: string[] };
 const COLORS = ["#ed7c35", "#54a7d9", "#54b98b", "#a67be7", "#e66880", "#e6ad4f"];
@@ -23,13 +23,16 @@ function cleanModelTitle(title: string) {
 }
 
 function emptyTotals(totals: UsageTotals): UsageTotals {
-  return { totalTokens: totals.totalTokens, costMicros: totals.costMicros ?? 0, pricedCount: totals.pricedCount ?? 0, unpricedCount: totals.unpricedCount ?? 0 };
+  return { totalTokens: totals.totalTokens, costMicros: totals.costMicros ?? 0, pricedCount: totals.pricedCount ?? 0, unpricedCount: totals.unpricedCount ?? 0,
+    partialCount: totals.partialCount ?? 0, coverageUnknownCount: totals.coverageUnknownCount ?? 0 };
 }
 
 function addTotals(target: UsageTotals, other: UsageTotals) {
   target.costMicros = (target.costMicros ?? 0) + (other.costMicros ?? 0);
   target.pricedCount = (target.pricedCount ?? 0) + (other.pricedCount ?? 0);
   target.unpricedCount = (target.unpricedCount ?? 0) + (other.unpricedCount ?? 0);
+  target.partialCount = (target.partialCount ?? 0) + (other.partialCount ?? 0);
+  target.coverageUnknownCount = (target.coverageUnknownCount ?? 0) + (other.coverageUnknownCount ?? 0);
 }
 
 function prepareItems(items: UsageItem[], mergeDuplicateModels: boolean): DisplayItem[] {
@@ -63,17 +66,22 @@ export function UsageBreakdown({ title, items, emptyLabel, mergeDuplicateModels 
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const sorted = prepareItems(items, mergeDuplicateModels).sort((a, b) => b.totals.totalTokens - a.totals.totalTokens);
   const total = sorted.reduce((sum, item) => sum + item.totals.totalTokens, 0);
-  const totalCost = sorted.reduce((sum, item) => sum + (item.totals.costMicros ?? 0), 0);
-  const pricedCount = sorted.reduce((sum, item) => sum + (item.totals.pricedCount ?? 0), 0);
-  const unpricedCount = sorted.reduce((sum, item) => sum + (item.totals.unpricedCount ?? 0), 0);
+  const sumCosts = (items: DisplayItem[]) => items.reduce((sum, item) => { addTotals(sum, item.totals); return sum; }, emptyTotals({ totalTokens: 0 }));
+  const totals = sumCosts(sorted);
+  const label = (totals: UsageTotals) => costLabel(totals.costMicros ?? 0, totals.pricedCount ?? 0, totals.unpricedCount ?? 0,
+    count => t("accounts.unpricedRequests", { count }), t("accounts.costUnavailable"), {
+      partialCount: totals.partialCount ?? 0, coverageUnknownCount: totals.coverageUnknownCount ?? 0,
+      partialLabel: count => t("accounts.partialRequests", { count }),
+      coverageUnknownLabel: count => t("accounts.coverageUnknownRequests", { count }),
+    });
   const visible = sorted.slice(0, COLORS.length);
   const other = sorted.slice(COLORS.length).reduce((sum, item) => sum + item.totals.totalTokens, 0);
-  const otherCost = sorted.slice(COLORS.length).reduce((sum, item) => sum + (item.totals.costMicros ?? 0), 0);
-  const segments = visible.map((item, index) => ({ key: item.key, label: item.title, value: item.totals.totalTokens, cost: item.totals.costMicros ?? 0, color: COLORS[index] }));
-  if (other > 0) segments.push({ key: "other", label: t("accounts.otherModels"), value: other, cost: otherCost, color: OTHER_COLOR });
+  const otherTotals = sumCosts(sorted.slice(COLORS.length));
+  const segments = visible.map((item, index) => ({ key: item.key, label: item.title, value: item.totals.totalTokens, totals: item.totals, color: COLORS[index] }));
+  if (other > 0) segments.push({ key: "other", label: t("accounts.otherModels"), value: other, totals: otherTotals, color: OTHER_COLOR });
   const active = segments.find(item => item.key === activeKey) ?? null;
   let offset = 0;
-  const showCost = pricedCount > 0;
+  const showCost = (totals.pricedCount ?? 0) > 0 || (totals.unpricedCount ?? 0) > 0;
 
   return <section className={cn("usage-breakdown-panel", embedded && "is-embedded")}>
     <div className="usage-panel-heading">
@@ -82,8 +90,8 @@ export function UsageBreakdown({ title, items, emptyLabel, mergeDuplicateModels 
         <p>
           {formatTokens(total)} Token
           {showCost && (
-            <span title={unpricedCount > 0 ? t("accounts.unpricedRequests", { count: unpricedCount }) : undefined}>
-              {" · "}{formatCost(totalCost)}
+            <span>
+              {" · "}{label(totals)}
             </span>
           )}
         </p>
@@ -121,7 +129,7 @@ export function UsageBreakdown({ title, items, emptyLabel, mergeDuplicateModels 
             onFocus={() => setActiveKey(segment.key)} onBlur={() => setActiveKey(null)} tabIndex={0}>
             <i /><span title={segment.label}>{segment.label}</span>
             <strong>{formatTokens(segment.value)}</strong>
-            <span className="usage-model-cost">{showCost ? formatCost(segment.cost) : ""}</span>
+            <span className="usage-model-cost" title={showCost ? label(segment.totals) : undefined}>{showCost ? label(segment.totals) : ""}</span>
             <em>{Math.round(segment.value / Math.max(1, total) * 100)}%</em>
           </div>)}
         </div>
@@ -130,7 +138,7 @@ export function UsageBreakdown({ title, items, emptyLabel, mergeDuplicateModels 
         {sorted.map((item, index) => <div key={item.key} className="usage-model-detail-row" style={{ "--model-color": COLORS[index % COLORS.length] } as CSSProperties}>
           <i /><div className="min-w-0"><strong title={item.title}>{item.title}</strong><small title={item.providerLabels.join(", ")}>{item.providerLabels.join(" · ")}</small></div>
           <span>{formatTokens(item.totals.totalTokens)} Token</span>
-          <span className="usage-model-cost">{showCost ? formatCost(item.totals.costMicros ?? 0) : ""}</span>
+          <span className="usage-model-cost" title={showCost ? label(item.totals) : undefined}>{showCost ? label(item.totals) : ""}</span>
           <em>{Math.round(item.totals.totalTokens / Math.max(1, total) * 100)}%</em>
         </div>)}
       </div>}

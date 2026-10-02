@@ -1,6 +1,7 @@
 import { useMemo, useState, type MouseEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { ArrowRight, ChartNoAxesCombined, ListFilter, RefreshCw, Rows3, Wallet } from "lucide-react";
 
 import { UsageBreakdown } from "@/components/accounts/model-usage-breakdown";
@@ -23,8 +24,14 @@ function formatTokens(value: number) {
   return new Intl.NumberFormat(undefined, { notation: value >= 10_000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(value);
 }
 
-function totalsCost(totals: RelayUsageTotals, unpricedLabel: (count: number) => string, unknown: string) {
-  return costLabel(totals.costMicros, totals.pricedCount, totals.unpricedCount, unpricedLabel, unknown);
+function totalsCost(totals: RelayUsageTotals, t: TFunction, unknown = t("accounts.costUnavailable")) {
+  return costLabel(totals.costMicros, totals.pricedCount, totals.unpricedCount,
+    count => t("accounts.unpricedRequests", { count }), unknown, {
+      partialCount: totals.partialCount ?? 0,
+      coverageUnknownCount: totals.coverageUnknownCount ?? 0,
+      partialLabel: count => t("accounts.partialRequests", { count }),
+      coverageUnknownLabel: count => t("accounts.coverageUnknownRequests", { count }),
+    });
 }
 
 function relayPath(points: Array<{ x: number; y: number }>) {
@@ -93,7 +100,7 @@ function RelayTrend({ relay }: { relay: RelayUsagePayload }) {
         </span>
       )}
       {day.totals.pricedCount > 0 && (
-        <span>{t("accounts.costEstimate")} <strong>{formatCost(day.totals.costMicros)}</strong></span>
+        <span>{t("accounts.costEstimate")} <strong>{totalsCost(day.totals, t)}</strong></span>
       )}
     </div>
   </div>;
@@ -114,7 +121,7 @@ function RelayRequests({ relay }: { relay: RelayUsagePayload }) {
         <td className="font-medium" title={record.providerName}>{record.providerName}</td>
         <td className="font-mono" title={record.model}>{record.model || "—"}</td>
         <td className="font-mono">
-          {formatTokens(record.inputTokens)}
+          {record.usageReported ? formatTokens(record.inputTokens) : "—"}
           {record.cacheReadTokens + record.cacheWriteTokens > 0 && (
             <small className="ml-1 text-muted-foreground" title={t("accounts.cacheDetail", {
               read: formatTokens(record.cacheReadTokens),
@@ -124,15 +131,15 @@ function RelayRequests({ relay }: { relay: RelayUsagePayload }) {
             </small>
           )}
         </td>
-        <td className="font-mono">{formatTokens(record.outputTokens)}</td>
-        <td className="font-mono font-semibold">{formatTokens(record.totalTokens)}</td>
+        <td className="font-mono">{record.usageReported ? formatTokens(record.outputTokens) : "—"}</td>
+        <td className="font-mono font-semibold">{record.usageReported ? formatTokens(record.totalTokens) : "—"}</td>
         <td
           className="font-mono"
-          title={record.pricingStatus === "partial"
+          title={!record.usageReported ? t("accounts.usageNotReported") : record.pricingStatus === "partial"
             ? t("accounts.costPartial")
             : record.pricingSource || t("accounts.costUnavailable")}
         >
-          {record.costUsd != null ? formatCost(record.costUsd * 1_000_000) : "—"}
+          {!record.usageReported ? t("accounts.usageNotReported") : record.costUsd != null ? formatCost(record.costUsd * 1_000_000) : t("accounts.costUnpriced")}
           {record.pricingStatus === "partial" && <small className="ml-1 text-amber-600">*</small>}
         </td>
         <td className="font-mono"><strong>{record.durationMs} ms</strong><small>{t("accounts.firstTokenShort")} {record.firstTokenMs == null ? "—" : `${record.firstTokenMs} ms`}</small></td>
@@ -172,7 +179,7 @@ function ProviderQuota({ relay, onManageProviders }: { relay: RelayUsagePayload;
       const balance = provider?.balance;
       return <div key={item.providerId} className="usage-provider-row">
         <div className="min-w-0"><strong className="truncate" title={item.providerName}>{item.providerName}</strong><span>{t("accounts.relayRequests", { count: item.totals.requestCount })}</span></div>
-        <div><span>{t("accounts.totalShort")}</span><strong>{formatTokens(item.totals.totalTokens)}</strong><em className="usage-cost-line">{totalsCost(item.totals, count => t("accounts.unpricedRequests", { count }), t("accounts.costUnavailable"))}</em></div>
+        <div><span>{t("accounts.totalShort")}</span><strong>{formatTokens(item.totals.totalTokens)}</strong><em className="usage-cost-line">{totalsCost(item.totals, t)}</em></div>
         <div title={balance ? new Date(balance.checkedAt * 1000).toLocaleString() : undefined}>
           <span>{t("accounts.balanceRemaining")}</span>
           <strong>{balance ? balance.conversionAvailable
@@ -204,15 +211,15 @@ export function RelayUsagePanel({ relay, onManageProviders }: { relay: RelayUsag
       <div><h4>{t("accounts.relayUsage")}</h4><p>{t("accounts.relayRequests", { count: relay.allTime.requestCount })} · {t("accounts.relayReported", { count: relay.allTime.reportedCount })}</p></div>
       <div className="usage-relay-summary" title={t("accounts.costEstimatedHint")}>
         <span>{t("accounts.costToday")}</span>
-        <strong>{totalsCost(relay.today, count => t("accounts.unpricedRequests", { count }), "—")}<small>USD</small></strong>
+        <strong>{totalsCost(relay.today, t, "—")}<small>USD</small></strong>
       </div>
       <div className="usage-relay-summary" title={t("accounts.costEstimatedHint")}>
         <span>{t("accounts.costWeek")}</span>
-        <strong>{totalsCost(relay.week, count => t("accounts.unpricedRequests", { count }), "—")}<small>USD</small></strong>
+        <strong>{totalsCost(relay.lastSevenDays, t, "—")}<small>USD</small></strong>
       </div>
       <div className="usage-relay-summary" title={t("accounts.costEstimatedHint")}>
         <span>{t("accounts.costAllTime")}</span>
-        <strong>{totalsCost(relay.allTime, count => t("accounts.unpricedRequests", { count }), "—")}<small>USD</small></strong>
+        <strong>{totalsCost(relay.allTime, t, "—")}<small>USD</small></strong>
       </div>
       <div className="usage-relay-summary"><span>{t("accounts.allUsage")}</span><strong>{formatTokens(relay.allTime.totalTokens)} <small>Token</small></strong></div>
     </div>

@@ -89,7 +89,7 @@ pub struct Provider {
     /// models.dev provider IDs this relay maps to for capability matching.
     #[serde(default)]
     pub catalog_providers: Vec<String>,
-    /// Optional separate price binding (defaults to the capability mapping).
+    /// Independent billing catalog binding; capability mapping never prices a relay.
     #[serde(default)]
     pub price_catalog_provider: Option<String>,
     /// Provider-level compression policy; `inherit` follows the global default.
@@ -438,6 +438,7 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
     if let Some(bytes) = secret_file::read(&store_path(paths))? {
         let mut store: Store =
             serde_json::from_slice(&bytes).map_err(|_| "newapi.errors.storage")?;
+        let needs_metadata_backup = store.version < 8;
         let mut changed = false;
         if store.version < 2 {
             // Older builds treated a successful model-list request as a
@@ -594,6 +595,18 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
             changed = true;
         }
         if changed {
+            if needs_metadata_backup {
+                let backup = paths.app_data_dir.join("newapi-providers.pre-v8.dat");
+                match secret_file::read(&backup)? {
+                    None => secret_file::write(&backup, &bytes)?,
+                    Some(original) => {
+                        // Keep the first valid backup; an unreadable/corrupt
+                        // backup must not permit a destructive migration.
+                        serde_json::from_slice::<Store>(&original)
+                            .map_err(|_| "newapi.errors.storage".to_owned())?;
+                    }
+                }
+            }
             save_store_unlocked(paths, &store)?;
         }
         return Ok(store);
@@ -991,17 +1004,8 @@ fn normalize_models(
             .endpoint_types
             .retain(|value| value.len() <= 80 && !value.contains(['\r', '\n']));
         model.endpoint_types.truncate(16);
-        // Older payloads carry manual values at the top level; keep them there
-        // for rollback but make the explicit overrides authoritative.
-        if model.metadata_source == "manual" && model.overrides.is_empty() {
-            model.overrides = newapi::ModelOverrides {
-                context_window: model.context_window,
-                max_output_tokens: model.max_output_tokens,
-                reasoning: model.supported_reasoning_levels.clone(),
-                default_effort: model.default_reasoning_level.clone(),
-                ..Default::default()
-            };
-        }
+        // Legacy manual values are promoted only by the versioned store
+        // migration. An empty override here means the user cleared it.
         let overrides = &model.overrides;
         if overrides
             .context_window
@@ -1946,7 +1950,14 @@ pub(crate) fn routing_config_intact(paths: &CodexPaths) -> bool {
             .get("model_provider")
             .and_then(toml_edit::Item::as_str)
             == Some(CATALOG_PROVIDER_KEY)
-        && document.get("model_catalog_json").is_some()
+        && document.get("model_catalog_json").and_then(toml_edit::Item::as_str)
+            .is_some_and(|reference| {
+                let referenced = PathBuf::from(reference);
+                let referenced = if referenced.is_absolute() { referenced } else { paths.codex_home.join(referenced) };
+                let expected = catalog_path(paths);
+                referenced == expected || referenced.canonicalize().ok()
+                    .zip(expected.canonicalize().ok()).is_some_and(|(a, b)| a == b)
+            })
 }
 
 pub(crate) fn catalog_path(paths: &CodexPaths) -> PathBuf {
@@ -2025,6 +2036,7 @@ pub(crate) fn catalog_value(
             let official = matched_official_model(&models[..official_models_len], &model_id)
                 .filter(|_| official_endpoint_applies(provider));
             models.push(relay_menu_entry(
+                store,
                 provider,
                 &model_id,
                 official,
@@ -2040,6 +2052,7 @@ pub(crate) fn catalog_value(
 /// builder and the single-entry lookup, so the menu and the request
 /// compatibility path can never disagree about a model.
 fn relay_menu_entry(
+    store: &Store,
     provider: &Provider,
     model_id: &str,
     official: Option<&Value>,
@@ -2047,7 +2060,7 @@ fn relay_menu_entry(
     global_compression: &model_policy::CompressionPolicy,
 ) -> Value {
     let (metadata, projection) =
-        model_projection(provider, model_id, official, models_dev, global_compression);
+        relay_model_projection(store, provider, model_id, official, models_dev, global_compression);
     let alias = metadata.display_name.trim();
     let display_name = menu_display_name(&provider.name, alias, model_id);
     // Codex parses every entry in model_catalog_json as a complete model
@@ -2108,6 +2121,7 @@ pub(crate) fn catalog_entry_for_slug(
         .filter(|_| official_endpoint_applies(provider));
     let models_dev = models_dev::load(app_data_dir);
     Some(relay_menu_entry(
+        store,
         provider,
         model_id,
         official,
@@ -2150,7 +2164,7 @@ pub(super) fn resolve_model_metadata(
     // never implies borrowing its price.
     let price_scope: Vec<String> = match provider.price_catalog_provider.as_deref() {
         Some(binding) if !binding.trim().is_empty() => vec![binding.trim().to_lowercase()],
-        _ => provider.catalog_providers.clone(),
+        _ => Vec::new(),
     };
     let request = model_metadata::ResolutionRequest {
         raw_model_id: model_id,
@@ -2236,19 +2250,29 @@ pub(crate) fn pricing_for(
 ) -> relay_usage::PricingSnapshot {
     let metadata = resolve_model_metadata(provider, model_id, None, catalog);
     let price = metadata.price;
+    // Static preview completeness and request-time evaluability differ:
+    // supported conditional tiers can be settled once prompt usage is known.
+    let complete = price.source != model_metadata::source::UNKNOWN
+        && price.input_audio.is_none() && price.output_audio.is_none()
+        && price.context_over_200k.as_ref().is_none_or(|rates| !rates.has_audio())
+        && price.tiers.iter().all(|tier| !tier.rates.has_audio())
+        && price.tiers.iter().all(|tier| tier.tier.condition_type == "context" && tier.tier.size.is_some());
     relay_usage::PricingSnapshot {
         input: price.input,
         output: price.output,
         cache_read: price.cache_read,
         cache_write: price.cache_write,
         reasoning: price.reasoning,
+        input_audio: price.input_audio,
+        output_audio: price.output_audio,
         context_over_200k: price.context_over_200k,
         tiers: price.tiers,
         source: price.source,
         revision: catalog.snapshot.revision.clone(),
         match_kind: metadata.match_kind.as_str().into(),
-        complete: price.complete,
+        complete,
         currency: price.currency,
+        source_ref: price.source_ref,
     }
 }
 
@@ -2265,13 +2289,14 @@ pub(crate) fn pricing_for_app_data(
 /// Whether the native Codex configuration still matches what we would apply.
 /// Read-only; used by the capability preview to separate "pending" from
 /// "applied" thresholds.
-pub(crate) fn native_config_is_applied(paths: &CodexPaths, store: &Store) -> Option<bool> {
-    native_config::intact(paths, store).ok()
+pub(crate) fn native_compression_state(paths: &CodexPaths, store: &Store,
+    catalog: &models_dev::Catalog, official: &[Value]) -> Option<native_config::NativeCompressionState> {
+    native_config::compression_state(paths, store, catalog, official)
 }
 
 /// Auto-compact thresholds recorded in the currently written router catalog,
 /// keyed by model slug (`provider::model`). `None` when no catalog is on disk.
-pub(crate) fn applied_catalog_thresholds(paths: &CodexPaths) -> Option<HashMap<String, u64>> {
+pub(crate) fn applied_catalog_thresholds(paths: &CodexPaths) -> Option<HashMap<String, Option<u64>>> {
     let bytes = std::fs::read(catalog_path(paths)).ok()?;
     let value: Value = serde_json::from_slice(&bytes).ok()?;
     let models = value.get("models")?.as_array()?;
@@ -2280,9 +2305,7 @@ pub(crate) fn applied_catalog_thresholds(paths: &CodexPaths) -> Option<HashMap<S
         let Some(slug) = entry.get("slug").and_then(Value::as_str) else {
             continue;
         };
-        if let Some(limit) = entry.get("auto_compact_token_limit").and_then(Value::as_u64) {
-            thresholds.insert(slug.to_owned(), limit);
-        }
+        thresholds.insert(slug.to_owned(), entry.get("auto_compact_token_limit").and_then(Value::as_u64));
     }
     Some(thresholds)
 }
@@ -2306,6 +2329,60 @@ pub(super) fn model_projection(
     let (policy, source) =
         model_policy::resolve(model_policy_ref, Some(&provider_policy), global_compression);
     let projection = model_policy::project(&metadata, (policy, source));
+    (metadata, projection)
+}
+
+/// The exact eligibility predicate used by the proxy's existing failover.
+/// Budget planning reads this set without changing its order or routing it.
+pub(crate) fn same_model_failover_candidate(candidate: &Provider, current: &Provider, model: &str) -> bool {
+    candidate.id != current.id
+        && (candidate.model == model || candidate.models.iter().any(|entry| entry.id == model && entry.included))
+        && candidate.can_route_model(model)
+        && candidate.protocol_for_model(model) == current.protocol_for_model(model)
+}
+
+pub(super) fn relay_model_projection(
+    store: &Store,
+    provider: &Provider,
+    model_id: &str,
+    official: Option<&Value>,
+    catalog: &models_dev::Catalog,
+    global: &model_policy::CompressionPolicy,
+) -> (model_metadata::ResolvedMetadata, model_policy::ClientProjection) {
+    let (metadata, mut projection) = model_projection(provider, model_id, official, catalog, global);
+    if !store.router.same_model_failover || !provider.can_route_model(model_id) {
+        return (metadata, projection);
+    }
+    let mut unknown = projection.budget_source == model_metadata::source::FALLBACK;
+    let mut limiting_provider = None;
+    for candidate in store.providers.iter().filter(|candidate|
+        same_model_failover_candidate(candidate, provider, model_id)) {
+        let (_, other) = model_projection(candidate, model_id,
+            official.filter(|_| official_endpoint_applies(candidate)), catalog, global);
+        unknown |= other.budget_source == model_metadata::source::FALLBACK;
+        if other.budget < projection.budget {
+            projection.budget = other.budget;
+            limiting_provider = Some(candidate.id.as_str());
+        }
+    }
+    if limiting_provider.is_some() {
+        projection.budget_source = "failover".into();
+        let provider_policy = provider_compression(provider);
+        let model_policy = provider.models.iter().find(|entry| entry.id == model_id).map(|entry| &entry.compression);
+        let (policy, source) = model_policy::resolve(model_policy, Some(&provider_policy), global);
+        projection.compression = model_policy::plan(policy, source, Some(projection.budget), "failover");
+    }
+    let note = if unknown {
+        Some("Some failover candidate budgets are unknown; capacity cannot be confirmed for all candidates".to_owned())
+    } else {
+        limiting_provider.map(|id| format!("Conservative budget limited by failover provider {id}"))
+    };
+    if let Some(note) = note {
+        projection.compression.note = Some(match projection.compression.note {
+            Some(existing) => format!("{existing}; {note}"),
+            None => note,
+        });
+    }
     (metadata, projection)
 }
 
@@ -2897,7 +2974,7 @@ model_catalog_json = 'catalog.json'
 name = "AgentHarbor"
 base_url = "http://127.0.0.1:43127/codex/v1"
 "#
-                .to_owned())
+                .replace("catalog.json", &catalog_path(&paths).to_string_lossy()))
             })
             .unwrap();
         assert!(routing_config_intact(&paths));
@@ -2907,7 +2984,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             .update(|original| {
                 let replaced = original
                     .replace("agentharbor_relay", "aimai1")
-                    .replace("model_catalog_json = 'catalog.json'\n", "");
+                    .replace(&format!("model_catalog_json = '{}'\n", catalog_path(&paths).display()), "");
                 Ok(replaced)
             })
             .unwrap();
@@ -3748,6 +3825,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
                         endpoint_types: vec!["openai-response".into()],
                         included: true,
                         metadata_source: "manual".into(),
+                        overrides: newapi::ModelOverrides { context_window: Some(400_000), max_output_tokens: Some(32_768), ..Default::default() },
                         ..Default::default()
                     },
                     newapi::Model {
@@ -4166,6 +4244,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             id: "gpt-6-luna".into(),
             context_window: Some(272_000),
             metadata_source: "manual".into(),
+            overrides: newapi::ModelOverrides { context_window: Some(272_000), ..Default::default() },
             ..Default::default()
         }];
         let state = save_provider(&paths, draft).unwrap();

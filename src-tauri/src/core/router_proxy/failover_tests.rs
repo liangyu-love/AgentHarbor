@@ -113,6 +113,13 @@ fn failover_is_opt_in_bounded_and_keeps_followups_on_the_actual_channel() {
         let route=traces.iter().find(|r| r.attempts.len()==2 && r.requested_model=="a::gpt-6-astra").unwrap();
         assert_eq!(route.attempts[0].status,Some(429));assert_eq!(route.attempts[1].provider_id,"b");
         assert_eq!(route.requested["reasoning.effort"],"high");assert_eq!(route.attempts[1].sent["reasoning.effort"],"high");
+        let usage = super::super::relay_usage::load(&paths.app_data_dir).unwrap();
+        let mut by_request = std::collections::HashMap::<String, Vec<_>>::new();
+        for record in &usage.recent { by_request.entry(record.request_id.clone()).or_default().push(record); }
+        let retried = by_request.values().find(|records| records.len() == 2).unwrap();
+        assert!(!retried[0].request_id.is_empty());
+        assert_ne!(retried[0].attempt_id, retried[1].attempt_id);
+        assert_eq!(retried.iter().filter(|record| record.provider_id == "b").count(), 1);
         let serialized=serde_json::to_string(route).unwrap();
         for secret in ["PRIVATE BODY","sk-sensitive","local-only","DONE ONCE"] { assert!(!serialized.contains(secret)); }
         stop();server_a.abort();server_b.abort();

@@ -22,6 +22,7 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type {
   ClientProjection,
+  CostRates,
   CompressionPlan,
   MatchKind,
   ModelCapability,
@@ -70,7 +71,7 @@ function priceNumber(value: number | null | undefined) {
   return Number(value.toFixed(4)).toString();
 }
 
-function CompressionLine({ plan, applied }: { plan: CompressionPlan; applied: boolean | null }) {
+function CompressionLine({ plan, applied, model }: { plan: CompressionPlan; applied: boolean | null; model: ModelCapability }) {
   const { t } = useTranslation();
   const mode =
     plan.mode === "percent"
@@ -99,7 +100,7 @@ function CompressionLine({ plan, applied }: { plan: CompressionPlan; applied: bo
       <h4 className="flex items-center gap-1.5 font-bold text-foreground text-xs">
         <Gauge className="h-3.5 w-3.5 text-primary" />
         <span>{t("newapi.capabilityCompression")}</span>
-        {plan.threshold !== null && (
+        {plan.threshold !== null && model.compressionScope === "routerModel" && (
           <span
             className={cn(
               "rounded px-1.5 py-0 text-[10px] font-semibold",
@@ -113,6 +114,24 @@ function CompressionLine({ plan, applied }: { plan: CompressionPlan; applied: bo
         )}
       </h4>
       <p className="mt-1 font-mono text-xs font-semibold text-foreground">{state}</p>
+      {model.compressionScope === "nativeShared" && (
+        <p className="mt-1 text-[10px] text-muted-foreground">
+          {t("newapi.capabilityCompressionShared", {
+            planned: number(model.compressionSharedThreshold),
+            actual: number(model.compressionAppliedThreshold),
+          })}
+          {(!model.compressionSharedPlan || model.compressionSharedPlan.state === "computed") && ` · ${t(model.compressionSharedApplied ? "newapi.capabilityCompressionAppliedNow" : "newapi.capabilityCompressionPendingSync")}`}
+          {model.compressionLimitingModels.length > 0 && ` · ${t("newapi.capabilityCompressionLimitingModels", { models: model.compressionLimitingModels.join(", ") })}`}
+          {model.compressionSharedPlan && model.compressionSharedPlan.state !== "computed" && <span className="block text-amber-600 dark:text-amber-400">
+            {t("newapi.capabilityCompressionSharedState." + model.compressionSharedPlan.state)}
+            {model.compressionSharedPlan.blockingModels.length > 0 && ` · ${model.compressionSharedPlan.blockingModels.join(", ")}`}
+          </span>}
+        </p>
+      )}
+      {model.compressionScope === "inactive" && <p className="mt-1 text-[10px] text-muted-foreground">{t("newapi.capabilityCompressionInactive")}</p>}
+      {model.compressionScope === "inactive" && model.compressionWrittenThreshold != null && <p className="text-[10px] text-muted-foreground">
+        {t("newapi.capabilityCompressionWritten", { value: number(model.compressionWrittenThreshold) })}
+      </p>}
       <p className="font-mono text-[10px] text-muted-foreground">
         {mode} · {plan.source}
         {plan.budget !== null
@@ -129,6 +148,15 @@ function CompressionLine({ plan, applied }: { plan: CompressionPlan; applied: bo
   );
 }
 
+function RateDetails({ rates, includeText = false }: { rates: CostRates; includeText?: boolean }) {
+  const { t } = useTranslation();
+  const keys: (keyof CostRates)[] = includeText ? ["input", "output", "cacheRead", "cacheWrite", "reasoning", "inputAudio", "outputAudio"]
+    : ["cacheRead", "cacheWrite", "reasoning", "inputAudio", "outputAudio"];
+  return <p className="mt-1 text-[10px] text-muted-foreground">
+    {keys.filter(key => rates[key] != null).map(key => `${t("newapi.priceRates." + key)} ${priceNumber(rates[key])}`).join(" · ")}
+  </p>;
+}
+
 function PriceLine({
   price,
   editing,
@@ -140,7 +168,7 @@ function PriceLine({
 }) {
   const { t } = useTranslation();
   // A real zero rate is a price, not "unknown"; only missing rates are unknown.
-  const empty = price.input == null && price.output == null;
+  const empty = price.input == null && price.output == null && price.inputAudio == null && price.outputAudio == null;
   return (
     <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
       <h4 className="flex items-center justify-between gap-1.5 font-bold text-foreground text-xs">
@@ -175,6 +203,18 @@ function PriceLine({
               {t("newapi.capabilityPriceIncomplete")}
             </p>
           )}
+          <RateDetails rates={price} />
+          {(price.inputAudio != null || price.outputAudio != null || price.contextOver200k?.inputAudio != null || price.contextOver200k?.outputAudio != null
+            || price.tiers?.some(tier => tier.inputAudio != null || tier.outputAudio != null)) && <p className="text-[10px] text-amber-600 dark:text-amber-400">
+              {t("newapi.capabilityPriceAudioUnsupported")}
+            </p>}
+          {price.contextOver200k && <div className="mt-1 text-[10px] text-muted-foreground">
+            {t("newapi.capabilityPriceOver200k")}<RateDetails rates={price.contextOver200k} includeText />
+          </div>}
+          {price.tiers?.map((tier, index) => <div key={index} className="mt-1 text-[10px] text-muted-foreground">
+            {tier.tier.type === "context" ? t("newapi.capabilityPriceTier", { value: number(tier.tier.size) }) : tier.tier.type}
+            <RateDetails rates={tier} includeText />
+          </div>)}
           <div className="mt-1 flex flex-wrap items-center gap-1 font-mono text-[10px] text-muted-foreground/80">
             <span>
               {price.sourceRef
@@ -457,7 +497,7 @@ function CapabilityCard({ model, onSaved }: { model: ModelCapability; onSaved: (
         )}
 
         <div className="grid gap-3 lg:grid-cols-3">
-          <CompressionLine plan={projection.compression} applied={model.compressionApplied} />
+          <CompressionLine plan={projection.compression} applied={model.compressionApplied} model={model} />
           <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
             <h4 className="font-bold text-foreground text-xs">{t("newapi.capabilityMatch")}</h4>
             <p className="mt-1 font-mono text-[11px] text-foreground">

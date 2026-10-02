@@ -168,7 +168,6 @@ pub(super) fn alternative(
     let Destination::Provider {
         provider,
         model_override,
-        upstream_protocol,
         ..
     } = current
     else {
@@ -179,12 +178,7 @@ pub(super) fn alternative(
     store
         .providers
         .iter()
-        .filter(|p| {
-            p.id != provider.id
-                && (p.model == model || p.models.iter().any(|m| m.id == model && m.included))
-                && p.can_route_model(model)
-                && p.protocol_for_model(model) == *upstream_protocol
-        })
+        .filter(|p| router::same_model_failover_candidate(p, provider, model))
         .find_map(|p| provider_destination(store, &p.id, spoken, Some(model.into())).ok())
 }
 

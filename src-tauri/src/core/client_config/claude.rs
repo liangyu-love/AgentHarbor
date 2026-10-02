@@ -28,6 +28,7 @@ impl ClientAdapter for ClaudeCode {
         store: &Store,
         request: &ConfigRequest,
         _catalog: &super::models_dev::Catalog,
+        _official_models: &[Value],
     ) -> Result<Vec<Edit>, String> {
         let provider = selected_provider(store, request)?;
         let (base, credential) = client_endpoint(store, provider, request, false)?;
