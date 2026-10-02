@@ -4,20 +4,21 @@
 
 1. 创建供应商，设置 API 密钥、协议和默认模型，然后启用供应商。
 2. 在客户端卡片中选择「配置」，选择已有中转卡片。地址、凭据和可用模型自动带入；新配置默认原生直连。
-3. 预览待写入的字段，确认后应用。预览不返回本地路由令牌或供应商密钥。
+3. 预览待写入的字段，确认后应用。预览不返回本地路由令牌或供应商密钥；首次注入会列出将被覆盖的现有字段（网关地址、凭据、模型菜单等），管理级 `managed-settings.json` 与本次注入冲突时也会提示。
 4. 重新打开客户端会话。原生直连无需保持 AgentHarbor 运行；本地路由模式需要保持运行，AgentHarbor 正常退出时会撤回该模式的客户端配置。
 5. 使用「恢复原配置」撤回配置；原有官方供应商、权限和其他设置会保留。
 
 | 客户端 | 支持协议 | 写入内容 |
 | --- | --- | --- |
-| Claude Code 原生直连 | Anthropic Messages | 将中转地址及凭据写入 `settings.json`；自动匹配 Sonnet、Opus、Fable、Haiku，缺少对应模型时使用所选默认模型 |
+| Claude Code 原生直连 | Anthropic Messages | 将中转地址及凭据写入 `settings.json`；按角色自动匹配 Sonnet、Opus、Fable、Haiku（分段匹配、取数值最新版本），缺少对应模型时使用所选默认模型 |
 | Claude Code 本地路由 | Anthropic Messages、Responses、Chat Completions | 写入所选供应商的本地入口；非 Messages 上游由路由转换请求及响应 |
 | OpenCode | Responses、Chat Completions、Anthropic Messages | 可多选中转卡片，加入所选卡片的兼容模型，并设置一个默认模型；原生直连和本地路由均可选 |
 
 Claude Code 的角色映射与子代理模型可在模型映射表中调整，认证字段位于高级设置。认证只写入 `ANTHROPIC_AUTH_TOKEN` 或 `ANTHROPIC_API_KEY` 之一，另一字段会删除并纳入恢复记录，避免旧凭据覆盖新配置。
-Claude Code 选择中转卡片后默认勾选其中的全部兼容模型，也可只保留需要的模型。同一系列的不同版本分别保留，例如两个 Opus 版本与一个 Fable 版本可以同时配置。启动默认模型只决定新会话的初始选择；Sonnet、Opus、Fable、Haiku 和子代理的角色映射直接展示，可分别调整。取消选择默认模型时会改用仍选中的模型，指向被移除模型的角色映射会恢复为自动匹配。
+角色自动匹配按分段边界识别角色并取数值上最新的版本（`claude-opus-4-10` 优于 `claude-opus-4`），启动默认模型命中角色时优先，结果与供应商模型存储顺序无关。子代理映射留空时不写入 `CLAUDE_CODE_SUBAGENT_MODEL`——强制所有子代理使用主模型会覆盖它们按 tier（如 Haiku）请求的模型；显式映射照常写入。`CLAUDE_CODE_USE_BEDROCK/VERTEX/FOUNDRY` 既不创建也不改写：未设置或为假值时接入本就由 `ANTHROPIC_BASE_URL` 决定，已是真值则视为用户自己的云接入配置，注入会明确拒绝而不是静默关闭。遗留的 `ANTHROPIC_SMALL_FAST_MODEL`（旧版后台小任务变量）存在时会被改写为 Haiku 角色同值，不创建新键。
+Claude Code 选择中转卡片后默认勾选其中的全部兼容模型，也可只保留需要的模型。同一系列的不同版本分别保留，例如两个 Opus 版本与一个 Fable 版本可以同时配置。启动默认模型只决定新会话的初始选择；Sonnet、Opus、Fable、Haiku 和子代理的角色映射直接展示，可分别调整。取消选择默认模型时会改用仍选中的模型，指向被移除模型的角色映射会恢复为自动匹配。[1m] 标记由解析出的上下文窗口决定：已知不足 1M 的模型不标记（对话框中对应勾选禁用并提示），未知上下文以勾选为准。
 
-多个模型通过用户配置中的 `modelPicker.options` 写入 `/model` 菜单，需要 Claude Code **2.1.242 或更新版本**。列表保留已有的手动条目及其显示名称、描述和能力配置，并设置 `replaceBuiltInOptions`，使具体版本分别显示；已有 `availableModels` 限制会补入全部选中版本。重新应用会撤回上一轮管理的模型条目后重新生成，恢复操作会还原原始菜单设置。
+多个模型通过用户配置中的 `modelPicker.options` 写入 `/model` 菜单，需要 Claude Code **2.1.242 或更新版本**。AgentHarbor 会检测本机 `claude` 版本（每进程一次），版本过低或无法检测时提示，注入本身不受影响。每次应用会把写入的模型条目记入所有权记录，重新应用时精准撤回这些条目后按当前选择重新生成；用户手写的条目及其显示名称、描述和能力配置永不改动或删除，应用之间新增的条目会被保留而不是报冲突。已有 `availableModels` 限制同样按元素补入，并设置 `replaceBuiltInOptions` 使具体版本分别显示。恢复操作还原原始菜单设置并清除所有权记录。
 
 OpenCode 分别使用 `@ai-sdk/openai`、`@ai-sdk/openai-compatible` 和 `@ai-sdk/anthropic`。
 模型上下文及输出长度优先使用供应商返回的元数据，未知值的默认配置可以在应用前修改。
@@ -35,11 +36,11 @@ OpenCode 分别使用 `@ai-sdk/openai`、`@ai-sdk/openai-compatible` 和 `@ai-sd
 - Claude Code：`CLAUDE_CONFIG_DIR/settings.json`，默认 `~/.claude/settings.json`。
 - OpenCode：优先 `OPENCODE_CONFIG`；否则使用 `$XDG_CONFIG_HOME/opencode`（默认 `~/.config/opencode`），选择已有的 `opencode.jsonc`、`opencode.json`、`config.json`。
 - 隔离调试：设置 `AGENT_HARBOR_CLIENT_HOME` 后，这两个客户端都从指定目录构造配置路径，不读取正式客户端的目录覆盖变量。
-- 备份和管理记录：AgentHarbor 数据目录下的 `client-config`。Windows 使用现有 DPAPI 加密存储，Unix 文件只允许当前用户读取。
+- 备份和管理记录：AgentHarbor 数据目录下的 `client-config`（会话记录，以及记录每轮写入条目的所有权文件 `*.owned.dat`）。Windows 使用现有 DPAPI 加密存储，Unix 文件只允许当前用户读取。
 
-配置采用字段级合并和原子替换。预览版本会校验配置是否在预览后变更。恢复只撤回管理字段；没有其他改动时恢复原始文件全文（含注释），原先不存在的文件会删除。JSONC 应用后规范化为 JSON，原始带注释文本保存在备份中。
+配置采用字段级合并和原子替换。预览版本会校验配置是否在预览后变更。恢复只撤回管理字段；没有其他改动时恢复原始文件全文（含注释），原先不存在的文件会删除。带注释或尾逗号的文件（Claude 与 OpenCode 均适用）解析后应用会规范化为 JSON，原始带注释文本保存在备份中。
 
-如果外部工具修改了管理字段，会报告冲突，避免覆盖。项目级配置、环境配置及启动参数仍可能覆盖全局配置；页面显示的是写入状态，不代表已完成模型连通性测试。
+如果外部工具修改了管理字段，会报告冲突并指出范围（网关地址、凭据、模型或模型菜单），避免覆盖。此时有两个出口：「以当前文件为准重新接管」把现有值记录为新基线后按上次配置重新写入；「释放管理」停止管理且不改写文件。没有冲突时也可一键「重新应用」按上次配置重写。项目级配置、环境配置及启动参数仍可能覆盖全局配置；页面显示的是写入状态，不代表已完成模型连通性测试。
 
 正常退出时，Claude Code 和 OpenCode 的本地路由配置会逐个尝试恢复，防止它们继续指向已经停止的本地代理；原生直连配置像普通客户端设置一样保留。若 cc-switch 等工具已经修改了受管理字段，退出清理会保留外部改动并记录冲突，不会强行覆盖。强制结束进程无法执行退出清理，重新打开 AgentHarbor 会重新提供仍在配置中的本地路由。
 
