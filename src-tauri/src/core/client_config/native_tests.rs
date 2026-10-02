@@ -629,3 +629,28 @@ fn claude_never_touches_cloud_selectors_and_refuses_enabled_ones() {
         assert_eq!(read(&manager.paths.claude), original, "flag {enabled}");
     }
 }
+
+#[test]
+fn claude_overwrites_a_leftover_small_fast_model_but_never_creates_it() {
+    let (_temp, manager, store, mut request) = fixture();
+    request.options.access_mode = ClientAccessMode::Native;
+    request.options.claude_models.haiku = "claude-test".into();
+    let original = json!({"env": {"ANTHROPIC_SMALL_FAST_MODEL": "old-gateway-haiku"}});
+    write(&manager.paths.claude, &original);
+    apply(&manager, &store, &request);
+    let installed = read(&manager.paths.claude);
+    assert_eq!(installed["env"]["ANTHROPIC_SMALL_FAST_MODEL"], "claude-test");
+    assert_eq!(
+        installed["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"],
+        "claude-test"
+    );
+    manager.restore(TargetId::ClaudeCode).unwrap();
+    assert_eq!(read(&manager.paths.claude), original);
+    // Absent stays absent: modern builds ignore the variable entirely.
+    manager.release(TargetId::ClaudeCode).unwrap();
+    write(&manager.paths.claude, &json!({"env": {}}));
+    apply(&manager, &store, &request);
+    assert!(read(&manager.paths.claude)["env"]
+        .get("ANTHROPIC_SMALL_FAST_MODEL")
+        .is_none());
+}

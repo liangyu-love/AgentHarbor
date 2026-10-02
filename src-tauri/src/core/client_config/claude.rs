@@ -107,6 +107,7 @@ impl ClientAdapter for ClaudeCode {
         edits.push(edit(&["model"], json!(startup_model)));
         edits.push(edit(&["env", "ANTHROPIC_MODEL"], json!(startup_model)));
         let mut allowed_models = models.clone();
+        let mut haiku_model = None;
         for (role, name, explicit, role_one_m) in [
             (
                 "sonnet",
@@ -152,6 +153,9 @@ impl ClientAdapter for ClaudeCode {
                 return Err("clients.errors.protocol".into());
             }
             edits.push(edit(&["env", name], json!(marked_model(model, role_one_m))));
+            if role == "haiku" {
+                haiku_model = Some(marked_model(model, role_one_m));
+            }
             // A previous gateway's display names must not describe a different model.
             if !role.is_empty() {
                 let display_name = provider
@@ -165,6 +169,19 @@ impl ClientAdapter for ClaudeCode {
             }
             if !allowed_models.contains(model) {
                 allowed_models.push(model.clone());
+            }
+        }
+        // Older Claude Code builds read the deprecated small-fast variable for
+        // background tasks, so a leftover value from a previous gateway keeps
+        // describing a different model. Overwrite it with the haiku role's
+        // model, but never create the key: modern builds ignore it entirely.
+        if let Some(haiku) = haiku_model {
+            if document
+                .get("env")
+                .and_then(|env| env.get("ANTHROPIC_SMALL_FAST_MODEL"))
+                .is_some_and(|value| !value.is_null())
+            {
+                edits.push(edit(&["env", "ANTHROPIC_SMALL_FAST_MODEL"], json!(haiku)));
             }
         }
         // Import every selected version, including multiple versions of one family.
