@@ -88,10 +88,11 @@ fn claude_one_m_marks_only_enabled_models_and_leaves_context_env_alone() {
         installed["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"],
         "claude-test"
     );
-    assert_eq!(
-        installed["env"]["CLAUDE_CODE_SUBAGENT_MODEL"],
-        "claude-test[1m]"
-    );
+    // No explicit subagent mapping: the override is dropped so subagents
+    // keep asking for their own tiers.
+    assert!(installed["env"]
+        .get("CLAUDE_CODE_SUBAGENT_MODEL")
+        .is_none());
     assert!(installed["env"]
         .get("CLAUDE_CODE_MAX_CONTEXT_TOKENS")
         .is_none());
@@ -113,10 +114,9 @@ fn claude_one_m_marks_only_enabled_models_and_leaves_context_env_alone() {
         installed["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"],
         "claude-test"
     );
-    assert_eq!(
-        installed["env"]["CLAUDE_CODE_SUBAGENT_MODEL"],
-        "claude-test"
-    );
+    assert!(installed["env"]
+        .get("CLAUDE_CODE_SUBAGENT_MODEL")
+        .is_none());
 }
 
 #[test]
@@ -653,4 +653,26 @@ fn claude_overwrites_a_leftover_small_fast_model_but_never_creates_it() {
     assert!(read(&manager.paths.claude)["env"]
         .get("ANTHROPIC_SMALL_FAST_MODEL")
         .is_none());
+}
+
+#[test]
+fn claude_subagent_variable_follows_explicit_mapping_or_the_tiers() {
+    let (_temp, manager, store, mut request) = fixture();
+    request.options.access_mode = ClientAccessMode::Native;
+    request.options.claude_models.subagent = "claude-test".into();
+    write(&manager.paths.claude, &json!({"env": {}}));
+    apply(&manager, &store, &request);
+    assert_eq!(
+        read(&manager.paths.claude)["env"]["CLAUDE_CODE_SUBAGENT_MODEL"],
+        "claude-test"
+    );
+    // Dropping the mapping withdraws the override so subagents keep asking
+    // for their own tiers.
+    request.options.claude_models.subagent = "".into();
+    apply(&manager, &store, &request);
+    assert!(read(&manager.paths.claude)["env"]
+        .get("CLAUDE_CODE_SUBAGENT_MODEL")
+        .is_none());
+    manager.restore(TargetId::ClaudeCode).unwrap();
+    assert_eq!(read(&manager.paths.claude), json!({"env": {}}));
 }

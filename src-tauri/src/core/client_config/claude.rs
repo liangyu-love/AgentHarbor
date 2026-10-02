@@ -140,6 +140,22 @@ impl ClientAdapter for ClaudeCode {
                 one_m.subagent,
             ),
         ] {
+            if role.is_empty() && explicit.is_empty() {
+                // An unmapped subagent role must not force every subagent onto
+                // the startup model: Claude Code's subagents ask for their own
+                // tiers (haiku for small tasks), which one flat override would
+                // silence. Drop the variable and let the role variables decide;
+                // when all of them equal the startup model the two are
+                // equivalent anyway.
+                if document
+                    .get("env")
+                    .and_then(|env| env.get(name))
+                    .is_some()
+                {
+                    edits.push(remove(&["env", name]));
+                }
+                continue;
+            }
             let model = if !explicit.is_empty() {
                 explicit
             } else {
