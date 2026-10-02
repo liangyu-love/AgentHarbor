@@ -186,13 +186,10 @@ impl ClientAdapter for ClaudeCode {
             let model = if !explicit.is_empty() {
                 explicit
             } else {
-                models
-                    .iter()
-                    .find(|id| !role.is_empty() && id.to_ascii_lowercase().contains(role))
-                    .unwrap_or(&request.model)
+                auto_role_model(&models, role, &request.model).unwrap_or(&request.model)
             };
             validate_model(model)?;
-            if !models.contains(model) {
+            if !models.iter().any(|id| id == model) {
                 return Err("clients.errors.protocol".into());
             }
             let marked_value = mark(model, role_one_m, &mut one_m_ignored);
@@ -211,8 +208,8 @@ impl ClientAdapter for ClaudeCode {
                     .unwrap_or(model);
                 edits.push(edit(&["env", &format!("{name}_NAME")], json!(display_name)));
             }
-            if !allowed_models.contains(model) {
-                allowed_models.push(model.clone());
+            if !allowed_models.iter().any(|id| id == model) {
+                allowed_models.push(model.to_owned());
             }
         }
         // Older Claude Code builds read the deprecated small-fast variable for
@@ -313,6 +310,64 @@ fn marked_model(model: &str, one_m: bool) -> String {
     } else {
         model.to_owned()
     }
+}
+
+/// Deterministic role auto-match: segment-boundary matches only, the startup
+/// model wins when it fits the role, then the numerically newest version
+/// (rolling aliases beat dated snapshots), then the provider's storage order.
+/// Substring matching would drift with the provider's model order and could
+/// pick an older alias of the same family.
+fn auto_role_model<'a>(models: &'a [String], role: &str, startup: &'a str) -> Option<&'a str> {
+    let matches = |id: &str| {
+        id.split(['-', '_', '.'])
+            .any(|segment| segment.eq_ignore_ascii_case(role))
+    };
+    if models.iter().any(|id| id == startup) && matches(startup) {
+        return Some(startup);
+    }
+    let mut candidates: Vec<&str> = models
+        .iter()
+        .map(String::as_str)
+        .filter(|id| matches(id))
+        .collect();
+    match candidates.len() {
+        0 => None,
+        1 => candidates.pop(),
+        // min_by keeps the first of equals, so ties stay in storage order.
+        _ => candidates.into_iter().min_by(|a, b| version_order(b, a)),
+    }
+}
+
+/// Orders two model ids by version, `Ordering::Greater` meaning `a` is newer.
+fn version_order(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let date_like = |id: &str| {
+        id.split(['-', '_', '.'])
+            .any(|segment| segment.len() >= 8 && segment.chars().all(|c| c.is_ascii_digit()))
+    };
+    match (date_like(a), date_like(b)) {
+        (true, false) => return Ordering::Less,
+        (false, true) => return Ordering::Greater,
+        _ => {}
+    }
+    let segments = |id: &str| -> Vec<String> {
+        id.to_ascii_lowercase().split(['-', '_', '.']).map(str::to_owned).collect()
+    };
+    let left = segments(a);
+    let right = segments(b);
+    for (a_segment, b_segment) in left.iter().zip(right.iter()) {
+        if a_segment == b_segment {
+            continue;
+        }
+        let numeric = |segment: &str| -> Option<u64> {
+            (segment.len() < 8).then(|| segment.parse().ok()).flatten()
+        };
+        return match (numeric(a_segment), numeric(b_segment)) {
+            (Some(a_number), Some(b_number)) => a_number.cmp(&b_number),
+            _ => a_segment.cmp(b_segment),
+        };
+    }
+    left.len().cmp(&right.len())
 }
 
 /// Mirrors Claude Code's own env-flag parsing: only 1/true/yes/on (case

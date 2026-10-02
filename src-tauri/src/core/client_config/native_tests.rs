@@ -863,3 +863,36 @@ fn claude_one_m_mark_follows_the_known_context_window() {
     apply(&manager, &store, &request);
     assert_eq!(read(&manager.paths.claude)["model"], "claude-test[1m]");
 }
+
+#[test]
+fn claude_role_auto_match_prefers_the_newest_version_regardless_of_order() {
+    let (_temp, manager, mut store, mut request) = fixture();
+    request.options.access_mode = ClientAccessMode::Native;
+    store.providers[0].model = "claude-opus-4".into();
+    request.model = "claude-opus-4".into();
+    // Storage order lists the older alias first.
+    store.providers[0].models = [("claude-opus-4", ""), ("claude-opus-4-10", "Newest"), ("claude-fable-9-2", "")]
+        .into_iter()
+        .map(|(id, name)| crate::core::newapi::Model {
+            id: id.into(),
+            display_name: name.into(),
+            included: true,
+            ..Default::default()
+        })
+        .collect();
+    apply(&manager, &store, &request);
+    // The startup model fits the opus role, so the user's default wins.
+    assert_eq!(
+        read(&manager.paths.claude)["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"],
+        "claude-opus-4"
+    );
+    // Without a startup hit the numerically newest alias wins, even though
+    // storage order lists it second.
+    store.providers[0].model = "claude-fable-9-2".into();
+    request.model = "claude-fable-9-2".into();
+    apply(&manager, &store, &request);
+    assert_eq!(
+        read(&manager.paths.claude)["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"],
+        "claude-opus-4-10"
+    );
+}
