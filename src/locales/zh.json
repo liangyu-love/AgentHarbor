@@ -114,6 +114,13 @@
     "apply": "应用配置",
     "applied": "客户端配置已应用",
     "restartHint": "请重新打开该客户端会话。",
+    "warnings": {
+      "takeoverEndpoint": "现有 ANTHROPIC_BASE_URL 指向其他地址（可能来自 cc-switch 等切换工具或手动配置），应用后将覆盖为本次配置。",
+      "takeoverCredential": "现有的认证凭据将被本次配置的凭据替换。",
+      "takeoverModelConfig": "现有的默认模型、/model 菜单或可用模型列表将被本次配置接管。",
+      "managedSettings": "检测到管理级 managed-settings.json 定义了相同的环境变量；它优先于用户配置，会覆盖本次注入。",
+      "oneMIgnored": "部分角色按模型目录数据忽略了 [1m] 标记（该模型不支持 1M 上下文），可在模型映射中查看实际写入值。"
+    },
     "errors": {
       "unsupported": "该客户端暂不支持此配置入口；Codex 请使用上方路由注入。",
       "storage": "读取或保存客户端配置失败，请检查目录权限后重试。",

@@ -5,6 +5,7 @@
 mod claude;
 mod opencode;
 mod options;
+mod takeover;
 use options::{client_endpoint, validate_model};
 pub use options::{ClaudeAuthField, ClaudeModels, ClaudeOneM, ClientAccessMode, ClientOptions};
 #[cfg(test)]
@@ -143,6 +144,9 @@ pub struct ConfigPreview {
     /// Only the managed fields are returned; all credential values are redacted.
     pub content: String,
     pub removed_fields: Vec<String>,
+    /// i18n keys for non-blocking notices: fields the first injection will
+    /// overwrite, and higher-priority configuration that would override it.
+    pub warnings: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -150,8 +154,9 @@ pub struct ConfigPreview {
 pub struct ConfigApplied {
     pub path: String,
     pub backup_path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub warning: Option<String>,
+    /// i18n keys for non-blocking notices (takeover, managed settings, router
+    /// reconciliation failures). Empty when everything was quiet.
+    pub warnings: Vec<String>,
 }
 
 struct Edit {
@@ -293,6 +298,7 @@ impl ConfigManager {
                 .filter(|change| change.after.is_none())
                 .map(|change| change.path.join("."))
                 .collect(),
+            warnings: plan.warnings,
         })
     }
 
@@ -321,6 +327,7 @@ impl ConfigManager {
             plan.current,
             Some(text),
             Some(&plan.session),
+            plan.warnings,
         )
     }
 
@@ -345,7 +352,7 @@ impl ConfigManager {
                 serde_json::to_string_pretty(&document).map_err(|_| "clients.errors.storage")?
             ))
         };
-        self.commit(id, &session.path, current, restored, None)
+        self.commit(id, &session.path, current, restored, None, Vec::new())
     }
 
     /// Stop managing a client without touching its config file. This is the way out
@@ -426,15 +433,27 @@ impl ConfigManager {
             ))
         } else {
             previous
-                .map(|s| s.original)
+                .as_ref()
+                .map(|session| session.original.clone())
                 .unwrap_or_else(|| current.clone())
         };
+        let mut warnings = Vec::new();
         let edits = {
             let catalog = models_dev::load(&self.app_data_dir);
             let official = self.official_home.as_ref().map(|home|
                 model_catalog::official(home, &self.app_data_dir)).unwrap_or_default();
             adapter.edits(&document, store, request, &catalog, &official.models)?
         };
+        // `document` here is the file as it exists right now, before the edits
+        // are applied — exactly what the takeover analysis compares against.
+        if previous.is_none() {
+            takeover::takeover_warnings(&document, &edits, &mut warnings);
+        }
+        if request.target_id == TargetId::ClaudeCode {
+            takeover::managed_settings_conflicts(&edits, &mut warnings);
+        }
+        warnings.sort_unstable();
+        warnings.dedup();
         let mut changes = Vec::new();
         for edit in edits {
             let before = field(&document, &edit.path).cloned();
@@ -460,6 +479,7 @@ impl ConfigManager {
             revision: format!("{:x}", hasher.finalize()),
             current,
             session,
+            warnings,
         })
     }
 
@@ -470,6 +490,7 @@ impl ConfigManager {
         current: Option<String>,
         next: Option<String>,
         session: Option<&Session>,
+        warnings: Vec<String>,
     ) -> Result<ConfigApplied, String> {
         if read_text(path)? != current {
             return Err("clients.errors.changed".into());
@@ -531,7 +552,7 @@ impl ConfigManager {
         Ok(ConfigApplied {
             path: path.to_string_lossy().into(),
             backup_path: backup_path.to_string_lossy().into(),
-            warning: None,
+            warnings,
         })
     }
 }
@@ -540,6 +561,9 @@ struct Plan {
     revision: String,
     current: Option<String>,
     session: Session,
+    /// Non-blocking notices computed while planning: first-injection takeover
+    /// warnings and managed-settings overrides.
+    warnings: Vec<String>,
 }
 
 pub fn has_router_configs(data_dir: &Path) -> Result<bool, String> {

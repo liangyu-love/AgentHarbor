@@ -56,7 +56,11 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
     setError(null);
     try {
       const restored = await api.targets.restoreConfig(restoring.targetId);
-      toast({ title: t("clients.restored"), description: restored.warning ? t(restored.warning) : undefined, variant: restored.warning ? "destructive" : "success" });
+      toast({
+        title: t("clients.restored"),
+        description: restored.warnings?.length ? restored.warnings.map(key => t(key)).join(" ") : undefined,
+        variant: restored.warnings?.length ? "destructive" : "success",
+      });
       setRestoring(null);
     } catch (cause) { setError(clientErrorKey(cause)); }
     finally { setBusy(false); await refresh(); }

@@ -12,6 +12,10 @@ export interface ClientStatus {
   providerId: string | null;
   model: string | null;
   request?: ClientConfigRequest | null;
+  /** Claude Code CLI version when it could be detected. */
+  clientVersion?: string | null;
+  /** Managed fields that no longer match what the last apply wrote. */
+  conflictFields?: string[];
 }
 export type ClientAccessMode = "native" | "router";
 export interface ClaudeModels {
@@ -50,9 +54,11 @@ export interface ClientConfigPreview {
   revision: string;
   content: string;
   removedFields?: string[];
+  /** i18n keys for non-blocking notices about the fields being taken over. */
+  warnings?: string[];
 }
 export interface ClientConfigApplied {
   path: string;
   backupPath: string;
-  warning?: string;
+  warnings?: string[];
 }

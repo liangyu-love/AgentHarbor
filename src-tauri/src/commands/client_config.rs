@@ -17,7 +17,7 @@ fn attach_reconcile_warning(
     match (result, reconcile) {
         (Ok(mut applied), Err(error)) => {
             log::warn!("client config was applied but router reconciliation failed: {error}");
-            applied.warning = Some("clients.errors.routerReconcile".into());
+            applied.warnings.push("clients.errors.routerReconcile".into());
             Ok(applied)
         }
         (result, _) => result,
@@ -105,17 +105,16 @@ mod tests {
             Ok(ConfigApplied {
                 path: "client.json".into(),
                 backup_path: "backup.dat".into(),
-                warning: None,
+                warnings: Vec::new(),
             }),
             Err("proxy unavailable".into()),
         )
         .unwrap();
 
         assert_eq!(result.path, "client.json");
-        assert_eq!(
-            result.warning.as_deref(),
-            Some("clients.errors.routerReconcile")
-        );
+        assert!(result
+            .warnings
+            .contains(&"clients.errors.routerReconcile".to_owned()));
     }
 
     #[test]

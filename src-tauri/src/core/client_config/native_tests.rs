@@ -676,3 +676,45 @@ fn claude_subagent_variable_follows_explicit_mapping_or_the_tiers() {
     manager.restore(TargetId::ClaudeCode).unwrap();
     assert_eq!(read(&manager.paths.claude), json!({"env": {}}));
 }
+
+#[test]
+fn preview_warns_when_a_first_injection_overwrites_existing_fields() {
+    let (_temp, manager, store, request) = fixture();
+    write(
+        &manager.paths.claude,
+        &json!({"env": {"ANTHROPIC_BASE_URL": "https://cc-switch.example", "ANTHROPIC_AUTH_TOKEN": "other-tool-secret"},
+            "model": "their-model", "modelPicker": {"options": [{"model": "their-model", "label": "Theirs"}]}}),
+    );
+    let preview = manager.preview(&store, &request).unwrap();
+    for key in [
+        "clients.warnings.takeoverEndpoint",
+        "clients.warnings.takeoverCredential",
+        "clients.warnings.takeoverModelConfig",
+    ] {
+        assert!(preview.warnings.iter().any(|warning| warning == key), "{key}: {:?}", preview.warnings);
+    }
+    // A re-apply under a session is guarded by field-level conflicts instead.
+    apply(&manager, &store, &request);
+    let second = manager.preview(&store, &request).unwrap();
+    assert!(!second.warnings.iter().any(|warning| warning.contains("takeover")));
+    manager.restore(TargetId::ClaudeCode).unwrap();
+}
+
+#[test]
+fn managed_settings_are_reported_only_when_they_conflict() {
+    let (temp, manager, store, request) = fixture();
+    let managed = temp.path().join("managed-settings.json");
+    std::fs::write(&managed, br#"{"env": {"ANTHROPIC_BASE_URL": "https://managed.example"}}"#).unwrap();
+    takeover::set_managed_settings_path(Some(managed.clone()));
+    let preview = manager.preview(&store, &request).unwrap();
+    assert!(
+        preview.warnings.iter().any(|warning| warning == "clients.warnings.managedSettings"),
+        "{:?}",
+        preview.warnings
+    );
+    // Unrelated keys and missing files are not a conflict.
+    std::fs::write(&managed, br#"{"env": {"COMPANY_KEY": "x"}}"#).unwrap();
+    let preview = manager.preview(&store, &request).unwrap();
+    assert!(!preview.warnings.iter().any(|warning| warning == "clients.warnings.managedSettings"));
+    takeover::set_managed_settings_path(None);
+}

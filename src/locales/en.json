@@ -114,6 +114,13 @@
     "apply": "Apply configuration",
     "applied": "Client configuration applied",
     "restartHint": "Reopen the client session to use the new configuration.",
+    "warnings": {
+      "takeoverEndpoint": "The existing ANTHROPIC_BASE_URL points elsewhere (possibly from another switcher such as cc-switch or a manual setup); applying overwrites it with this configuration.",
+      "takeoverCredential": "The existing credential will be replaced by this configuration's credential.",
+      "takeoverModelConfig": "The existing default model, /model menu, or available-model list will be taken over by this configuration.",
+      "managedSettings": "A managed-settings.json defines the same environment variables; it outranks the user file and will override this injection.",
+      "oneMIgnored": "Some roles had their [1m] mark dropped because the model's catalog context is below 1M; see the model mapping for the values actually written."
+    },
     "errors": {
       "unsupported": "This client does not support this configuration entry. Use routing injection above for Codex.",
       "storage": "Could not read or save client configuration. Check directory permissions.",

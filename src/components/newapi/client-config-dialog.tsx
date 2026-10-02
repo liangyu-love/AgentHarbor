@@ -303,7 +303,13 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
       if (preview) {
         const applied = await api.targets.applyConfig(configuredRequest, preview.revision);
         await onApplied();
-        toast({ title: t("clients.applied"), description: t(applied.warning ?? "clients.restartHint"), variant: applied.warning ? "destructive" : "success" });
+        toast({
+          title: t("clients.applied"),
+          description: applied.warnings?.length
+            ? applied.warnings.map(key => t(key)).join(" ")
+            : t("clients.restartHint"),
+          variant: applied.warnings?.length ? "destructive" : "success",
+        });
         onClose();
       } else { setPreview(await api.targets.previewConfig(configuredRequest)); }
     } catch (cause) {
@@ -468,6 +474,10 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
           </details>
         </fieldset>
         {preview && <div className="space-y-2"><p className="text-sm font-medium">{t("clients.previewTitle")}</p>
+          {!!preview.warnings?.length && <ul className="space-y-1">
+            {preview.warnings.map(key => <li key={key} role="status"
+              className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">{t(key)}</li>)}
+          </ul>}
           <pre className="max-h-64 overflow-auto rounded-md bg-muted p-3 text-xs">{preview.content}</pre>
           {!!preview.removedFields?.length && <p className="break-all text-xs text-muted-foreground">{t("clients.removedFields", { fields: preview.removedFields.join(", ") })}</p>}
           <p className="text-xs text-muted-foreground">{t("clients.backupHint")}</p>
