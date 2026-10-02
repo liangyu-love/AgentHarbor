@@ -595,3 +595,37 @@ fn apply_keeps_the_user_key_order() {
     let alpha = text.find("\"alpha\"").unwrap();
     assert!(zeta < permissions && permissions < alpha, "{text}");
 }
+
+#[test]
+fn claude_never_touches_cloud_selectors_and_refuses_enabled_ones() {
+    let (_temp, manager, store, mut request) = fixture();
+    request.options.access_mode = ClientAccessMode::Native;
+    // Absent keys stay absent: no "0" placeholders are created.
+    apply(&manager, &store, &request);
+    let installed = read(&manager.paths.claude);
+    for name in ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"] {
+        assert!(installed["env"].get(name).is_none(), "{name}");
+    }
+    // A falsy leftover keeps its value; it is falsy already, so rewriting it
+    // would only churn the user's file.
+    manager.release(TargetId::ClaudeCode).unwrap();
+    let falsy = json!({"env": {"CLAUDE_CODE_USE_BEDROCK": "0", "CLAUDE_CODE_USE_VERTEX": "false"}});
+    write(&manager.paths.claude, &falsy);
+    apply(&manager, &store, &request);
+    let installed = read(&manager.paths.claude);
+    assert_eq!(installed["env"]["CLAUDE_CODE_USE_BEDROCK"], "0");
+    assert_eq!(installed["env"]["CLAUDE_CODE_USE_VERTEX"], "false");
+    assert!(installed["env"].get("CLAUDE_CODE_USE_FOUNDRY").is_none());
+    // A truthy selector is the user's own cloud setup and blocks the write.
+    for enabled in ["1", "true", "yes", "on", " ON "] {
+        manager.release(TargetId::ClaudeCode).unwrap();
+        let original = json!({"env": {"CLAUDE_CODE_USE_FOUNDRY": enabled}});
+        write(&manager.paths.claude, &original);
+        assert_eq!(
+            manager.preview(&store, &request).err().as_deref(),
+            Some("clients.errors.cloudMode"),
+            "flag {enabled}"
+        );
+        assert_eq!(read(&manager.paths.claude), original, "flag {enabled}");
+    }
+}

@@ -32,6 +32,24 @@ impl ClientAdapter for ClaudeCode {
     ) -> Result<Vec<Edit>, String> {
         let provider = selected_provider(store, request)?;
         let (base, credential) = client_endpoint(store, provider, request, false)?;
+        // Cloud-provider selectors override ANTHROPIC_BASE_URL, but an unset or
+        // falsy one already lets the base URL win. Never create or rewrite these
+        // keys: a truthy selector is the user's own Bedrock, Vertex or Foundry
+        // setup, and it refuses the injection instead of being silently disabled
+        // (direct configurations are persistent and not restored on exit).
+        for name in [
+            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_USE_VERTEX",
+            "CLAUDE_CODE_USE_FOUNDRY",
+        ] {
+            if document
+                .get("env")
+                .and_then(|env| env.get(name))
+                .is_some_and(cloud_selector_truthy)
+            {
+                return Err("clients.errors.cloudMode".into());
+            }
+        }
         let (auth, other_auth) = match request.options.auth_field {
             ClaudeAuthField::AuthToken => ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"),
             ClaudeAuthField::ApiKey => ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
@@ -199,14 +217,6 @@ impl ClientAdapter for ClaudeCode {
         }
         edits.push(edit(&["modelPicker", "options"], json!(entries)));
         edits.push(edit(&["modelPicker", "replaceBuiltInOptions"], json!(true)));
-        // Cloud-provider selectors override ANTHROPIC_BASE_URL; save and restore them as owned fields.
-        for name in [
-            "CLAUDE_CODE_USE_BEDROCK",
-            "CLAUDE_CODE_USE_VERTEX",
-            "CLAUDE_CODE_USE_FOUNDRY",
-        ] {
-            edits.push(edit(&["env", name], json!("0")));
-        }
         if let Some(allowed) = document.get("availableModels") {
             let mut allowed = allowed
                 .as_array()
@@ -234,5 +244,18 @@ fn marked_model(model: &str, one_m: bool) -> String {
         format!("{model}[1m]")
     } else {
         model.to_owned()
+    }
+}
+
+/// Mirrors Claude Code's own env-flag parsing: only 1/true/yes/on (case
+/// insensitive, trimmed) enable a selector, so "0" and friends are falsy.
+fn cloud_selector_truthy(value: &Value) -> bool {
+    match value {
+        Value::Bool(enabled) => *enabled,
+        Value::String(flag) => matches!(
+            flag.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        _ => false,
     }
 }
