@@ -29,8 +29,7 @@ impl ClientAdapter for ClaudeCode {
         request: &ConfigRequest,
         catalog: &super::models_dev::Catalog,
         official_models: &[Value],
-        ctx: &EditContext,
-        warnings: &mut Vec<String>,
+        ctx: &mut EditContext<'_>,
     ) -> Result<Vec<Edit>, String> {
         let provider = selected_provider(store, request)?;
         let (base, credential) = client_endpoint(store, provider, request, false)?;
@@ -298,7 +297,7 @@ impl ClientAdapter for ClaudeCode {
             edits.push(edit(&["availableModels"], json!(allowed)));
         }
         if one_m_ignored {
-            warnings.push("clients.warnings.oneMIgnored".into());
+            ctx.warnings.push("clients.warnings.oneMIgnored".into());
         }
         Ok(edits)
     }

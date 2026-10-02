@@ -76,12 +76,14 @@ fn opencode_path(dir: &Path) -> PathBuf {
 }
 
 /// Per-apply input the adapters need beyond the request itself.
-pub(super) struct EditContext {
+pub(super) struct EditContext<'a> {
     /// One-time cleanup of plain `{"model","label"}` picker rows left by older
     /// builds: only possible with no journal and no ownership record, where
     /// nothing else identifies them. Once a record exists it does the
     /// withdrawing, and user rows must never be shape-guessed.
     pub legacy_picker_cleanup: bool,
+    /// Non-blocking notices the adapter wants surfaced on the preview.
+    pub warnings: &'a mut Vec<String>,
 }
 
 trait ClientAdapter: Sync {
@@ -102,8 +104,7 @@ trait ClientAdapter: Sync {
         request: &ConfigRequest,
         catalog: &models_dev::Catalog,
         official_models: &[Value],
-        ctx: &EditContext,
-        warnings: &mut Vec<String>,
+        ctx: &mut EditContext<'_>,
     ) -> Result<Vec<Edit>, String>;
 }
 
@@ -570,12 +571,13 @@ impl ConfigManager {
             let catalog = models_dev::load(&self.app_data_dir);
             let official = self.official_home.as_ref().map(|home|
                 model_catalog::official(home, &self.app_data_dir)).unwrap_or_default();
-            let ctx = EditContext {
+            let mut ctx = EditContext {
                 // Legacy shape-based cleanup only where nothing else identifies
                 // this app's rows: no journal and no ownership record.
                 legacy_picker_cleanup: previous.is_none() && !owned_recorded,
+                warnings: &mut warnings,
             };
-            adapter.edits(&document, store, request, &catalog, &official.models, &ctx, &mut warnings)?
+            adapter.edits(&document, store, request, &catalog, &official.models, &mut ctx)?
         };
         // `document` here is the file as it exists right now, before the edits
         // are applied — exactly what the takeover analysis compares against.
