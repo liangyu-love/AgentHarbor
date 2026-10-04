@@ -58,7 +58,7 @@ export function ThreadGroupSection({
     groupKeys.some((key) => selected.has(key)) && !allInGroupSelected;
 
   return (
-    <section className="space-y-2">
+    <section className="space-y-1.5">
       {/* Workspace Folder Header Bar */}
       <div
         className={cn(

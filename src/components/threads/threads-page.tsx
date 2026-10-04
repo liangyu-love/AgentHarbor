@@ -44,7 +44,7 @@ export function ThreadsPage() {
 
   return (
     <TooltipProvider delayDuration={200}>
-      <div className="space-y-3">
+      <div className="space-y-2.5">
         {/* Page Header */}
         <ThreadsHeader list={list} />
 

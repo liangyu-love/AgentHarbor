@@ -38,7 +38,7 @@ export function ThreadMetrics({ list }: { list: ThreadList }) {
   ];
 
   return (
-    <section aria-label={t("threads.overview")} data-thread-metrics className="thread-overview space-y-2">
+    <section aria-label={t("threads.overview")} data-thread-metrics className="thread-overview space-y-1.5">
       <p className="text-xs text-muted-foreground" data-metric-scope>
         {t("threads.statsScope", { name: activeProject?.folderName ?? t("threads.allProjects") })}
       </p>

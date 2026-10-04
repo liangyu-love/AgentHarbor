@@ -20,7 +20,6 @@ import {
   User,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { BentoCard } from "@/components/ui/bento-card";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -98,11 +97,11 @@ export function ThreadCard({
           data-thread-card={thread.key}
           data-detail-active={detailActive ? "" : undefined}
           className={cn(
-            "thread-compact-card group relative flex h-13 cursor-pointer items-center justify-between gap-3 overflow-hidden rounded-xl border border-border/60 bg-card/85 px-3 backdrop-blur-sm transition-all duration-150 hover:border-primary/50 hover:bg-muted/40",
+            "thread-compact-card group relative flex h-13 cursor-pointer items-center justify-between gap-3 overflow-hidden rounded-xl border border-border/70 bg-card/90 px-3 transition-colors duration-150 hover:border-primary/50 motion-reduce:transition-none",
             selected
-              ? "border-primary/70 bg-primary/[0.04] shadow-xs ring-1 ring-primary/40 dark:border-amber-400/50 dark:ring-amber-400/30 dark:bg-amber-400/[0.03]"
+              ? "border-primary/70 ring-1 ring-primary/40"
               : !hasRollout
-                ? "border-destructive/45 bg-destructive/[0.025]"
+                ? "border-destructive/45"
                 : "",
           )}
           onClick={onToggleSelect}
@@ -360,16 +359,16 @@ export function ThreadCard({
   // Bento Card Grid View (Default) — high-craft interactive card
   return (
     <TooltipProvider delayDuration={200}>
-      <BentoCard
+      <div
         data-thread-card={thread.key}
         data-detail-active={detailActive ? "" : undefined}
         className={cn(
-          "group relative flex min-h-[180px] flex-col justify-between cursor-pointer rounded-2xl p-3.5 transition-all duration-200 ease-out hover:-translate-y-1 hover:border-primary/50 hover:shadow-md",
+          "group relative flex min-h-[176px] flex-col justify-between cursor-pointer rounded-xl border border-border/70 bg-card/90 p-3 transition-colors duration-150 hover:border-primary/50 motion-reduce:transition-none",
           selected
-            ? "border-primary/70 bg-primary/[0.04] ring-2 ring-primary/30 shadow-md dark:border-amber-400/60 dark:ring-amber-400/30 dark:bg-amber-400/[0.03]"
+            ? "border-primary/70 ring-1 ring-primary/40"
             : !hasRollout
-              ? "border-destructive/45 bg-destructive/[0.025]"
-              : "border-border/70 bg-gradient-to-b from-card/95 via-card/85 to-card/65 backdrop-blur-md shadow-2xs",
+              ? "border-destructive/45"
+              : "",
         )}
         onClick={onToggleSelect}
       >
@@ -660,7 +659,7 @@ export function ThreadCard({
             </Tooltip>
           </div>
         </div>
-      </BentoCard>
+      </div>
     </TooltipProvider>
   );
 }
