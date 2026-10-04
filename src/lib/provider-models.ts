@@ -26,7 +26,9 @@ export const mergeModelCatalog = (current: NewApiModel[], fetched: NewApiModel[]
   const fetchedIds = new Set(fetched.map(model => model.id));
   const merged = fetched.map(model => {
     const existing = existingById.get(model.id);
-    if (!existing) return model;
+    // A refresh discovers models; it must not silently add every discovered
+    // model to the active catalog. Users opt in from the model list.
+    if (!existing) return { ...model, included: false };
     const renamed = existing.displayName.trim() !== "" && existing.displayName.trim() !== existing.id;
     // Per-field overrides and catalog bindings are user input, never catalog data.
     return {

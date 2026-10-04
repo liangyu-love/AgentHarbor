@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, Eye, EyeOff, Loader2, Plug } from "lucide-react";
 import { api } from "@/lib/api";
@@ -12,6 +12,7 @@ import { toast } from "@/hooks/use-toast";
 import { mergeModelCatalog } from "@/lib/provider-models";
 import type { CompressionPolicy, ModelProtocol, NewApiProvider, NewApiStateChange, NewApiModel } from "@/types/newapi";
 import { ProviderModelEditor } from "@/components/newapi/provider-model-editor";
+import { useModelResolutions } from "@/components/newapi/use-model-resolutions";
 import { PROVIDER_PRESETS } from "@/lib/provider-presets";
 
 // A relay usually speaks OpenAI-compatible Chat Completions unless it says
@@ -95,14 +96,30 @@ const protocolLabelKey: Record<ModelProtocol, string> = {
   anthropicMessages: "newapi.protocolAnthropicMessages",
 };
 
-function SecretInput({ id, value, placeholder, disabled, onChange }: {
+function SecretInput({ id, value, placeholder, disabled, hasStoredSecret, onReveal, onChange }: {
   id: string;
   value: string;
   placeholder?: string;
   disabled?: boolean;
+  hasStoredSecret?: boolean;
+  onReveal?: () => Promise<boolean>;
   onChange: (value: string) => void;
 }) {
   const [visible, setVisible] = useState(false);
+  const [revealing, setRevealing] = useState(false);
+  const canToggle = Boolean(value) || Boolean(hasStoredSecret && onReveal);
+  const toggle = async () => {
+    if (!value && hasStoredSecret && onReveal) {
+      setRevealing(true);
+      try {
+        if (await onReveal()) setVisible(true);
+      } finally {
+        setRevealing(false);
+      }
+      return;
+    }
+    setVisible(current => !current);
+  };
   return (
     <div className="relative">
       <Input
@@ -112,15 +129,16 @@ function SecretInput({ id, value, placeholder, disabled, onChange }: {
         spellCheck={false}
         className="pr-9"
         value={value}
-        disabled={disabled}
+        disabled={disabled || revealing}
         placeholder={placeholder}
         onChange={e => onChange(e.target.value)}
       />
       <button
         type="button"
-        onClick={() => setVisible(v => !v)}
+        onClick={() => void toggle()}
+        disabled={disabled || !canToggle || revealing}
         aria-label={visible ? "hide" : "show"}
-        className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
       >
         {visible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
       </button>
@@ -181,16 +199,60 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
       setFetchError(null);
     }
   }, [open, provider]);
+  const resolutionDraft = useMemo(() => {
+    try {
+      return {
+        providerId: provider?.id ?? null,
+        baseUrl: draft.baseUrl.trim(),
+        hasDraftApiKey: Boolean(draft.apiKey.trim()),
+        protocol: draft.protocol,
+        contextWindow: optionalNumber(draft.contextWindow, "newapi.errors.context"),
+        catalogProviders: draft.catalogProviders.split(/[\s,]+/).filter(Boolean),
+        compression: compressionPolicy(draft),
+        models: models.filter(model => model.included),
+      };
+    } catch {
+      return null;
+    }
+  }, [provider?.id, draft.baseUrl, Boolean(draft.apiKey.trim()), draft.protocol, draft.contextWindow, draft.catalogProviders, draft.compressionMode, draft.compressionValue, models]);
+  const resolutions = useModelResolutions(open, resolutionDraft);
   const update = (key: keyof typeof draft, value: string) => setDraft(d => ({ ...d, [key]: value }));
+  const secretScope = JSON.stringify([open, provider?.id, draft.baseUrl, draft.apiKey]);
+  const currentSecretScope = useRef(secretScope);
+  currentSecretScope.current = secretScope;
+  const secretGeneration = useRef(0);
+  useEffect(() => {
+    secretGeneration.current += 1;
+    return () => { secretGeneration.current += 1; };
+  }, [open, provider]);
+  const revealSavedApiKey = async () => {
+    if (!provider?.id) return false;
+    const scope = secretScope;
+    const generation = secretGeneration.current;
+    const isCurrent = () => currentSecretScope.current === scope && secretGeneration.current === generation;
+    setError(null);
+    try {
+      const key = await api.providers.revealApiKey(provider.id);
+      if (!isCurrent()) return false;
+      update("apiKey", key);
+      return true;
+    } catch (cause) {
+      if (isCurrent()) setError(typeof cause === "string" ? cause : cause instanceof Error ? cause.message : String(cause));
+      return false;
+    }
+  };
   const field = (key: keyof typeof draft, label: string, options: { password?: boolean; hint?: string; placeholder?: string; numeric?: boolean; list?: string } = {}) => (
     <div className="space-y-1.5">
       <Label htmlFor={`newapi-provider-${key}`} className="text-[13px]">{t(label)}</Label>
       {options.password ? (
         <SecretInput
+          key={`${open}:${provider?.id ?? "new"}:${key}`}
           id={`newapi-provider-${key}`}
           value={draft[key]}
           placeholder={options.placeholder}
           disabled={saving}
+          hasStoredSecret={key === "apiKey" && !!provider?.hasApiKey}
+          onReveal={key === "apiKey" ? revealSavedApiKey : undefined}
           onChange={value => update(key, value)}
         />
       ) : (
@@ -274,12 +336,13 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
         if (!isCurrent()) return current;
         const merged = mergeModelCatalog(current, fetched);
         setDraft(value => {
-          const defaultAvailable = merged.some(model => model.id === value.model && model.included);
+          const defaultAvailable = Boolean(value.model)
+            && merged.some(model => model.id === value.model && model.included);
           return {
             ...value,
-            model: defaultAvailable
-              ? value.model
-              : merged.find(model => model.included)?.id ?? "",
+            // Keep an explicit default only while it remains selected. A
+            // refresh must not silently choose the first fetched model.
+            model: defaultAvailable ? value.model : "",
           };
         });
         return merged;
@@ -403,6 +466,7 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
 
           <div className="border-t border-border/50 pt-4">
             <ProviderModelEditor
+              key={`${open}:${provider?.id ?? "new"}`}
               models={models}
               providerName={draft.name}
               protocol={draft.protocol}
@@ -410,6 +474,7 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
               disabled={saving || fetchingModels}
               fetching={fetchingModels}
               fetchError={fetchError}
+              resolutions={resolutions}
               onFetch={() => void fetchModels()}
               onModelsChange={setModels}
               onDefaultModelChange={model => update("model", model)}
@@ -518,7 +583,7 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
               <Button type="button" variant="ghost" size="sm" onClick={() => onOpenChange(false)} disabled={saving}>
                 {t("common.cancel")}
               </Button>
-              <Button type="submit" size="sm" disabled={saving || !draft.name.trim() || !draft.baseUrl.trim() || !draft.model || !models.some(model => model.id === draft.model && model.included)}>
+              <Button type="submit" size="sm" disabled={saving || !draft.name.trim() || !draft.baseUrl.trim() || (!!draft.model && !models.some(model => model.id === draft.model && model.included))}>
                 {saving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
                 {t("newapi.save")}
               </Button>

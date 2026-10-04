@@ -3662,6 +3662,33 @@ base_url = "http://127.0.0.1:43127/codex/v1"
     }
 
     #[test]
+    fn cleared_model_defaults_and_pending_models_survive_save_and_reload() {
+        let (_dir, paths) = paths();
+        let mut draft = input("Relay", "https://relay.invalid");
+        let created = save_provider(&paths, input("Relay", "https://relay.invalid")).unwrap();
+        draft.id = Some(created.state.providers[0].id.clone());
+        draft.model.clear();
+        draft.models = vec![newapi::Model {
+            id: "pending-model".into(),
+            display_name: "Pending".into(),
+            included: false,
+            ..Default::default()
+        }];
+        save_provider(&paths, draft).unwrap();
+        let store = load_store(&paths).unwrap();
+        assert!(store.providers[0].model.is_empty());
+        assert_eq!(store.providers[0].models.len(), 1);
+        assert!(!store.providers[0].models[0].included);
+        let mut draft = input("Relay", "https://relay.invalid");
+        draft.id = Some(created.state.providers[0].id.clone());
+        draft.model.clear();
+        save_provider(&paths, draft).unwrap();
+        let store = load_store(&paths).unwrap();
+        assert!(store.providers[0].model.is_empty());
+        assert!(store.providers[0].models.is_empty());
+    }
+
+    #[test]
     fn version_three_models_migrate_to_visible_local_metadata() {
         let (_dir, paths) = paths();
         let legacy = serde_json::json!({

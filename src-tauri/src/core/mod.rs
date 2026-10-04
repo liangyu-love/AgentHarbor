@@ -22,6 +22,7 @@ mod models_dev_regression_tests;
 pub mod newapi;
 pub mod protocol;
 pub mod provider_probe;
+pub mod provider_model_preview;
 pub mod quota_store;
 pub mod relay_usage;
 pub mod repository;

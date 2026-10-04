@@ -29,6 +29,9 @@ struct Cached {
     backup: Option<PathBuf>,
     checked: Instant,
     snapshot: Snapshot,
+    /// A read-only preview must not prevent the next ordinary read from
+    /// persisting the fresh last-good backup.
+    write_backup: bool,
 }
 fn cache() -> &'static Mutex<HashMap<PathBuf, Cached>> {
     static CACHE: OnceLock<Mutex<HashMap<PathBuf, Cached>>> = OnceLock::new();
@@ -74,6 +77,10 @@ fn parse(bytes: &[u8]) -> Option<Vec<Value>> {
     (!models.is_empty()).then_some(models)
 }
 pub(crate) fn load(source: &Path, backup: Option<&Path>) -> Snapshot {
+    load_with_backup_mode(source, backup, true)
+}
+
+fn load_with_backup_mode(source: &Path, backup: Option<&Path>, write_backup: bool) -> Snapshot {
     let mut cache = cache().lock().unwrap_or_else(|e| e.into_inner());
     let stamp = std::fs::metadata(source)
         .ok()
@@ -81,6 +88,7 @@ pub(crate) fn load(source: &Path, backup: Option<&Path>) -> Snapshot {
     if let Some(cached) = cache.get(source).filter(|c| {
         c.stamp == stamp
             && c.backup.as_deref() == backup
+            && (!write_backup || c.write_backup)
             && (!c.snapshot.stale || c.checked.elapsed().as_secs() < 30)
     }) {
         return cached.snapshot.clone();
@@ -104,7 +112,7 @@ pub(crate) fn load(source: &Path, backup: Option<&Path>) -> Snapshot {
             error: None,
             model_updated_at,
         };
-        if let Some(backup) = backup {
+        if let Some(backup) = backup.filter(|_| write_backup) {
             let data = serde_json::json!({"source": source.to_string_lossy(), "models": snapshot.models, "updatedAt": snapshot.updated_at});
             if let Ok(bytes) = serde_json::to_vec(&data) {
                 let _ = super::storage::write_atomic(backup, &bytes);
@@ -158,14 +166,26 @@ pub(crate) fn load(source: &Path, backup: Option<&Path>) -> Snapshot {
             backup: backup.map(Path::to_path_buf),
             checked: Instant::now(),
             snapshot: snapshot.clone(),
+            write_backup,
         },
     );
     snapshot
 }
 pub(crate) fn official(codex_home: &Path, app_data: &Path) -> Snapshot {
-    let mut snapshot = load(
+    official_with_backup_mode(codex_home, app_data, true)
+}
+
+/// Resolve the same official sources and stale fallback without creating or
+/// refreshing a last-good file while an unsaved provider draft is being edited.
+pub(crate) fn official_read_only(codex_home: &Path, app_data: &Path) -> Snapshot {
+    official_with_backup_mode(codex_home, app_data, false)
+}
+
+fn official_with_backup_mode(codex_home: &Path, app_data: &Path, write_backup: bool) -> Snapshot {
+    let mut snapshot = load_with_backup_mode(
         &codex_home.join("models_cache.json"),
         Some(&app_data.join("model-capabilities-last-good.json")),
+        write_backup,
     );
     let previous = load(&app_data.join("previous-router-catalog.json"), None);
     let mut slugs: HashSet<String> = snapshot
@@ -199,6 +219,34 @@ fn bounded_read(path: &Path) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn read_only_official_preserves_fallback_and_defers_backup_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let app_data = dir.path().join("app");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&app_data).unwrap();
+        let source = home.join("models_cache.json");
+        let backup = app_data.join("model-capabilities-last-good.json");
+        std::fs::write(
+            &source,
+            r#"{"models":[{"slug":"gpt-6-luna","context_window":400000}]}"#,
+        )
+        .unwrap();
+        let preview = official_read_only(&home, &app_data);
+        assert_eq!(preview.models[0]["context_window"], 400_000);
+        assert!(!backup.exists());
+        let ordinary = official(&home, &app_data);
+        assert_eq!(preview.models, ordinary.models);
+        assert!(backup.exists());
+        let original_backup = std::fs::read(&backup).unwrap();
+        std::fs::write(&source, b"{broken").unwrap();
+        let stale = official_read_only(&home, &app_data);
+        assert!(stale.stale);
+        assert_eq!(stale.models, ordinary.models);
+        assert_eq!(std::fs::read(&backup).unwrap(), original_backup);
+    }
+
     #[test]
     fn malformed_empty_and_missing_refresh_keep_last_valid_data() {
         let dir = tempfile::tempdir().unwrap();

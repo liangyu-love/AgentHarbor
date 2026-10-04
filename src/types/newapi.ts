@@ -272,6 +272,29 @@ export interface ClientProjection {
   defaultReasoning: string | null;
   compression: CompressionPlan;
 }
+/** Read-only resolution of an editor draft; credentials are never transmitted. */
+export interface ProviderModelResolutionDraft {
+  providerId: string | null;
+  baseUrl: string;
+  hasDraftApiKey: boolean;
+  protocol: ModelProtocol;
+  contextWindow: number | null;
+  catalogProviders: string[];
+  compression: CompressionPolicy;
+  models: NewApiModel[];
+}
+export interface ProviderModelResolution {
+  modelId: string;
+  matchKind: MatchKind;
+  matched: ModelRef | null;
+  context: ResolvedField<number>;
+  inputLimit: ResolvedField<number>;
+  output: ResolvedField<number>;
+  projection: ClientProjection;
+}
+export interface ProviderModelResolutions {
+  models: ProviderModelResolution[];
+}
 export interface ModelCapability {
   providerId: string;
   providerName: string;

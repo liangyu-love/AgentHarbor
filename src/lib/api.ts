@@ -60,6 +60,7 @@ export type { TargetId } from "@/types/clients";
 
 const providersApi = {
   loadState: () => invoke<NewApiState>("load_newapi_state"),
+  revealApiKey: (id: string) => invoke<string>("reveal_newapi_provider_api_key", { id }),
   save: (provider: NewApiProviderInput) => invoke<NewApiStateChange>("save_newapi_provider", { provider }),
   delete: (id: string) => invoke<NewApiStateChange>("delete_newapi_provider", { id }),
   setEnabled: (id: string, enabled: boolean) => invoke<NewApiStateChange>("set_newapi_provider_enabled", { id, enabled }),
@@ -77,6 +78,8 @@ const providersApi = {
     invoke<NewApiProvider>("set_newapi_balance_sharing", { id, expectedBaseUrl, shared }),
   fetchModels: (providerId: string | null, baseUrl: string, apiKey: string, protocol: ModelProtocol) =>
     invoke<NewApiModel[]>("fetch_newapi_models", { providerId, baseUrl, apiKey, protocol }),
+  previewModelResolutions: (draft: import("@/types/newapi").ProviderModelResolutionDraft) =>
+    invoke<import("@/types/newapi").ProviderModelResolutions>("preview_newapi_model_resolutions", { draft }),
   queryBalance: async (id: string): Promise<NewApiProvider> => {
     try {
       return await invoke<NewApiProvider>("query_newapi_provider_balance", { id });

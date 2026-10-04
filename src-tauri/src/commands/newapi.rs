@@ -10,8 +10,8 @@ use crate::{
     },
     platform::paths::CodexPaths,
 };
-use std::sync::Mutex;
 use serde::Serialize;
+use std::sync::Mutex;
 use tauri::State;
 
 fn paths(repo: &State<'_, Mutex<Repository>>) -> Result<CodexPaths, String> {
@@ -74,16 +74,40 @@ pub async fn load_model_capabilities(
     .map_err(|_| "newapi.errors.storage".to_owned())?
 }
 
+/// Effective metadata for selected and pending models in an unsaved editor.
+#[tauri::command]
+pub async fn preview_newapi_model_resolutions(
+    repo: State<'_, Mutex<Repository>>,
+    draft: crate::core::provider_model_preview::DraftProviderModels,
+) -> Result<crate::core::provider_model_preview::DraftModelResolutions, String> {
+    let paths = paths(&repo)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::core::provider_model_preview::preview(&paths, draft)
+    })
+    .await
+    .map_err(|_| "newapi.errors.storage".to_owned())?
+}
+
 #[tauri::command]
 pub async fn preview_newapi_capability_clear(
-    repo: State<'_, Mutex<Repository>>, provider_id: String, model_id: String,
+    repo: State<'_, Mutex<Repository>>,
+    provider_id: String,
+    model_id: String,
     field: router::ClearCapabilityField,
 ) -> Result<crate::core::capability_preview::ClearPreview, String> {
     let paths = paths(&repo)?;
     tauri::async_runtime::spawn_blocking(move || {
         let store = router::load_store(&paths)?;
-        crate::core::capability_preview::preview_clear(&paths, &store, &provider_id, &model_id, field)
-    }).await.map_err(|_| "newapi.errors.storage".to_owned())?
+        crate::core::capability_preview::preview_clear(
+            &paths,
+            &store,
+            &provider_id,
+            &model_id,
+            field,
+        )
+    })
+    .await
+    .map_err(|_| "newapi.errors.storage".to_owned())?
 }
 
 #[derive(Serialize)]
@@ -95,20 +119,42 @@ pub struct ClearApplyResult {
 
 #[tauri::command]
 pub async fn apply_newapi_capability_clear(
-    repo: State<'_, Mutex<Repository>>, provider_id: String, model_id: String,
-    field: router::ClearCapabilityField, config_revision: String,
-    catalog_revision: String, official_revision: String,
+    repo: State<'_, Mutex<Repository>>,
+    provider_id: String,
+    model_id: String,
+    field: router::ClearCapabilityField,
+    config_revision: String,
+    catalog_revision: String,
+    official_revision: String,
 ) -> Result<ClearApplyResult, String> {
     let paths = paths(&repo)?;
     let _guard = routing_runtime::mutation_guard().await;
-    match router::clear_capability_if_current(&paths, &provider_id, &model_id, field,
-        &config_revision, &catalog_revision, &official_revision) {
-        Ok(applied) => Ok(ClearApplyResult { applied: Some(applied), refreshed_preview: None }),
+    match router::clear_capability_if_current(
+        &paths,
+        &provider_id,
+        &model_id,
+        field,
+        &config_revision,
+        &catalog_revision,
+        &official_revision,
+    ) {
+        Ok(applied) => Ok(ClearApplyResult {
+            applied: Some(applied),
+            refreshed_preview: None,
+        }),
         Err(error) if error == "newapi.errors.previewStale" => {
             let store = router::load_store(&paths)?;
             let preview = crate::core::capability_preview::preview_clear(
-                &paths, &store, &provider_id, &model_id, field)?;
-            Ok(ClearApplyResult { applied: None, refreshed_preview: Some(preview) })
+                &paths,
+                &store,
+                &provider_id,
+                &model_id,
+                field,
+            )?;
+            Ok(ClearApplyResult {
+                applied: None,
+                refreshed_preview: Some(preview),
+            })
         }
         Err(error) => Err(error),
     }
@@ -160,6 +206,26 @@ pub async fn load_newapi_state(repo: State<'_, Mutex<Repository>>) -> Result<New
         router_proxy::is_running(),
         Some(&paths),
     ))
+}
+
+/// Reveal one saved provider API key only after an explicit user action in the
+/// provider editor. The regular provider view deliberately keeps credentials
+/// out of the frontend state; this command is the opt-in path behind the eye
+/// button and never persists or logs the returned value.
+#[tauri::command]
+pub async fn reveal_newapi_provider_api_key(
+    repo: State<'_, Mutex<Repository>>,
+    id: String,
+) -> Result<String, String> {
+    let paths = paths(&repo)?;
+    let store = router::load_store(&paths)?;
+    store
+        .providers
+        .into_iter()
+        .find(|provider| provider.id == id)
+        .map(|provider| provider.api_key)
+        .filter(|key| !key.is_empty())
+        .ok_or_else(|| "newapi.errors.apiKeyMissing".to_owned())
 }
 
 #[tauri::command]

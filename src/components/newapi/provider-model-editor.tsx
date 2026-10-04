@@ -7,7 +7,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { effectiveModelProtocol, supportsProtocol } from "@/lib/provider-models";
 import { cn } from "@/lib/utils";
-import type { CompressionPolicy, ModelProtocol, NewApiModel } from "@/types/newapi";
+import { ModelResolutionFields, resolvedLimitPlaceholder } from "./model-resolution-fields";
+import type { ModelResolutionState } from "./use-model-resolutions";
+import type { ModelProtocol, NewApiModel } from "@/types/newapi";
 
 interface Props {
   models: NewApiModel[];
@@ -17,44 +19,28 @@ interface Props {
   disabled: boolean;
   fetching: boolean;
   fetchError: string | null;
+  resolutions: ModelResolutionState;
   onFetch: () => void;
   onModelsChange: (models: NewApiModel[]) => void;
   onDefaultModelChange: (model: string) => void;
 }
 
-export function ProviderModelEditor({ models, providerName, protocol, defaultModel, disabled, fetching, fetchError, onFetch, onModelsChange, onDefaultModelChange }: Props) {
-  const { t } = useTranslation();
+export function ProviderModelEditor({ models, providerName, protocol, defaultModel, disabled, fetching, fetchError, resolutions, onFetch, onModelsChange, onDefaultModelChange }: Props) {
+  const { t, i18n } = useTranslation();
   const [newModel, setNewModel] = useState("");
-  // Drafts keep a half-typed catalog reference visible until it is complete.
-  const [mappingDrafts, setMappingDrafts] = useState<Record<string, string>>({});
+  const [pendingLimit, setPendingLimit] = useState(50);
   const [reasoningDrafts, setReasoningDrafts] = useState<Record<string, string>>({});
   const selected = models.filter(model => model.included).length;
+  const pending = models.filter(model => !model.included);
+  const matchingPending = pending.filter(model => `${model.id} ${model.displayName}`.toLowerCase().includes(newModel.trim().toLowerCase()));
 
   const patch = (id: string, change: Partial<NewApiModel>) => {
     onModelsChange(models.map(model => model.id === id ? { ...model, ...change } : model));
   };
-  const commitMapping = (id: string, text: string) => {
-    const value = text.trim();
-    const reference = (() => {
-      if (!value) return null;
-      const [providerId, ...rest] = value.split("/");
-      const modelId = rest.join("/");
-      if (!providerId || !modelId) return undefined;
-      return { providerId: providerId.toLowerCase(), modelId };
-    })();
-    setMappingDrafts(current => {
-      const next = { ...current };
-      delete next[id];
-      return next;
-    });
-    // `undefined` is an incomplete reference: keep the stored value as is.
-    if (reference === undefined) return;
-    patch(id, { catalogRef: reference });
-  };
   const setIncluded = (model: NewApiModel, included: boolean) => {
     patch(model.id, { included });
     if (!included && defaultModel === model.id) {
-      onDefaultModelChange(models.find(item => item.id !== model.id && item.included)?.id ?? "");
+      onDefaultModelChange("");
     }
   };
   const addModel = () => {
@@ -63,7 +49,6 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
     const existing = models.find(model => model.id === id);
     if (existing) {
       patch(id, { included: true });
-      if (!defaultModel) onDefaultModelChange(id);
     } else {
       onModelsChange([...models, {
         id,
@@ -74,7 +59,6 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
         included: true,
         metadataSource: "local",
       }]);
-      if (!defaultModel) onDefaultModelChange(id);
     }
     setNewModel("");
   };
@@ -82,16 +66,13 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
     const next = models.filter(model => model.id !== id);
     onModelsChange(next);
     if (defaultModel === id) {
-      onDefaultModelChange(next.find(model => model.included)?.id ?? "");
+      onDefaultModelChange("");
     }
   };
   const setAll = (included: boolean) => {
     const next = models.map(model => ({ ...model, included }));
     onModelsChange(next);
     if (!included) onDefaultModelChange("");
-    else if (!next.some(model => model.id === defaultModel && model.included)) {
-      onDefaultModelChange(next.find(model => model.included)?.id ?? "");
-    }
   };
 
   return (
@@ -102,8 +83,8 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
           <span className="text-xs tabular-nums text-muted-foreground">{t("newapi.modelsSelected", { selected, total: models.length })}</span>
         </div>
         <div className="ml-auto flex items-center gap-1">
-          <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={disabled || models.length === 0} onClick={() => setAll(selected !== models.length)}>
-            {t(selected === models.length && models.length > 0 ? "newapi.clearModels" : "newapi.selectAllModels")}
+          <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={disabled || selected === 0} onClick={() => setAll(false)}>
+            {t("newapi.clearModels")}
           </Button>
           <Button type="button" variant="outline" size="sm" className="h-8 px-2.5 text-xs" disabled={disabled} onClick={onFetch}>
             <RefreshCw className={cn("h-3.5 w-3.5", fetching && "animate-spin")} />
@@ -119,7 +100,7 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
           autoComplete="off"
           spellCheck={false}
           placeholder={t("newapi.addModelPlaceholder")}
-          onChange={event => setNewModel(event.target.value)}
+          onChange={event => { setNewModel(event.target.value); setPendingLimit(50); }}
           onKeyDown={event => {
             if (event.key === "Enter") {
               event.preventDefault();
@@ -133,10 +114,36 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
         </Button>
       </div>
 
+      {pending.length > 0 && <details open className="rounded-xl border border-border/60 bg-muted/15 p-3" data-pending-models>
+        <summary className="cursor-pointer text-xs font-medium">{t("newapi.pendingModels", { count: pending.length })}</summary>
+        <p className="mt-1 text-[11px] text-muted-foreground">{t("newapi.pendingModelsHint")}</p>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          <Button type="button" size="sm" variant="ghost" disabled={disabled || matchingPending.length === 0} onClick={() => {
+            const matchingIds = new Set(matchingPending.map(model => model.id));
+            onModelsChange(models.map(model => matchingIds.has(model.id) ? { ...model, included: true } : model));
+          }}>{t(newModel.trim() ? "newapi.selectMatchingModels" : "newapi.selectAllModels")}</Button>
+          <Button type="button" size="sm" variant="ghost" disabled={disabled} onClick={() => onModelsChange(models.filter(model => model.included))}>{t("newapi.clearPendingModels")}</Button>
+        </div>
+        <div className="mt-2 max-h-40 space-y-1 overflow-y-auto">
+          {matchingPending.slice(0, pendingLimit).map(model => <label key={model.id} className="flex min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-muted">
+            <Checkbox checked={false} disabled={disabled} onCheckedChange={value => { if (value === true) setIncluded(model, true); }} aria-label={t("newapi.includeModelAria", { model: model.id })} />
+            <span className="min-w-0 truncate font-mono" title={model.id}>{model.id}</span>
+          </label>)}
+          {matchingPending.length === 0 && <p className="text-xs text-muted-foreground">{t("newapi.noMatchingPendingModels")}</p>}
+          {matchingPending.length > pendingLimit && <Button type="button" variant="ghost" size="sm" onClick={() => setPendingLimit(limit => limit + 50)}>{t("newapi.morePendingModels")}</Button>}
+        </div>
+      </details>}
+      {!defaultModel && <p className="text-xs text-muted-foreground" data-model-default-empty>{t("newapi.noDefaultModel")}</p>}
+      {models.some(model => model.included) && (resolutions.loading || resolutions.error) && <div className="flex items-center gap-2 text-xs text-muted-foreground" role="status">
+        {resolutions.loading ? t("newapi.modelResolution.loading") : <>
+          <span>{t("newapi.modelResolution.unavailable")}</span>
+          <button type="button" disabled={disabled} onClick={resolutions.retry} className="rounded text-primary hover:text-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40">{t("newapi.modelResolution.retry")}</button>
+        </>}
+      </div>}
       {fetchError && <p role="alert" className="text-xs text-destructive">{t(fetchError)}</p>}
-      {models.length === 0 ? (
+      {selected === 0 ? (
         <div className="rounded-xl border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
-          {t(fetching ? "newapi.loadingModels" : "newapi.emptyModelLibrary")}
+          {t(fetching ? "newapi.loadingModels" : pending.length ? "newapi.noIncludedModels" : "newapi.emptyModelLibrary")}
         </div>
       ) : (
         <div className="overflow-hidden rounded-xl border">
@@ -149,20 +156,21 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
             <span><span className="sr-only">{t("newapi.removeModel")}</span></span>
           </div>
           <div className="max-h-[310px] overflow-y-auto">
-            {models.map(model => {
+            {models.filter(model => model.included).map(model => {
+              const resolution = resolutions.models.get(model.id);
               const supported = supportsProtocol(model, effectiveModelProtocol(model, protocol));
               const isDefault = defaultModel === model.id;
               return (
-                <div key={model.id} className="grid gap-2 border-t px-3 py-2.5 first:border-t-0 md:grid-cols-[32px_minmax(130px,1.2fr)_minmax(100px,1fr)_150px_240px_36px] md:items-center">
+                <div key={model.id} data-model-row={model.id} className="grid gap-2 border-t px-3 py-2.5 first:border-t-0 md:grid-cols-[32px_minmax(130px,1.2fr)_minmax(100px,1fr)_150px_240px_36px] md:items-center">
                   <div className="flex items-center gap-2 md:block">
-                    <Checkbox checked={model.included} disabled={disabled || isDefault} onCheckedChange={value => setIncluded(model, value === true)} aria-label={t("newapi.includeModelAria", { model: model.id })} />
+                    <Checkbox checked={model.included} disabled={disabled} onCheckedChange={value => setIncluded(model, value === true)} aria-label={t("newapi.includeModelAria", { model: model.id })} />
                     <span className="text-xs text-muted-foreground md:hidden">{t("newapi.includeModel")}</span>
                   </div>
                   <div className="flex min-w-0 items-center gap-1.5">
                     <button
                       type="button"
                       disabled={disabled || !model.included}
-                      onClick={() => onDefaultModelChange(model.id)}
+                      onClick={() => onDefaultModelChange(isDefault ? "" : model.id)}
                       title={t("newapi.setDefaultModel", { model: model.id })}
                       aria-label={t("newapi.setDefaultModel", { model: model.id })}
                       aria-pressed={isDefault}
@@ -176,111 +184,17 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
                     </div>
                   </div>
                   <Input className="h-8 text-xs" value={model.displayName === model.id && providerName.trim() ? `${providerName.trim()}/${model.id}` : model.displayName} disabled={disabled} aria-label={t("newapi.menuDisplayNameFor", { model: model.id })} onChange={event => patch(model.id, { displayName: event.target.value })} />
-                  <Select value={effectiveModelProtocol(model, protocol)} disabled={disabled} onValueChange={value => patch(model.id, { protocol: value as ModelProtocol })}>
+                  <Select value={model.protocol ?? "inherit"} disabled={disabled} onValueChange={value => patch(model.id, { protocol: value === "inherit" ? null : value as ModelProtocol })}>
                     <SelectTrigger className="h-8 min-w-0 text-xs" aria-label={t("newapi.protocolFor", { model: model.id })}><SelectValue /></SelectTrigger>
                     <SelectContent>
+                      <SelectItem value="inherit">{t("newapi.inheritProtocol", { protocol: t({ responses: "newapi.protocolResponses", chatCompletions: "newapi.protocolChatCompletions", anthropicMessages: "newapi.protocolAnthropicMessages" }[effectiveModelProtocol({ ...model, protocol: null }, protocol)]) })}</SelectItem>
                       <SelectItem value="responses">{t("newapi.protocolResponses")}</SelectItem>
                       <SelectItem value="chatCompletions">{t("newapi.protocolChatCompletions")}</SelectItem>
                       <SelectItem value="anthropicMessages">{t("newapi.protocolAnthropicMessages")}</SelectItem>
                     </SelectContent>
                   </Select>
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-1.5">
-                      <span className="w-8 shrink-0 text-[9px] uppercase tracking-wider text-muted-foreground/70" title={t("newapi.contextWindowShort")}>
-                        {t("newapi.limitShort")}
-                      </span>
-                      <Input className="h-7 text-xs tabular-nums" type="number" min={1024} max={100000000} inputMode="numeric" placeholder={t("clients.limitsAuto")} value={model.overrides?.contextWindow ?? ""} disabled={disabled} aria-label={t("newapi.contextFor", { model: model.id })} onChange={event => patch(model.id, { overrides: { ...model.overrides, contextWindow: event.target.value ? Number(event.target.value) : null } })} />
-                      {model.overrides?.contextWindow != null && (
-                        <button
-                          type="button"
-                          disabled={disabled}
-                          onClick={() => patch(model.id, { overrides: { ...model.overrides, contextWindow: null } })}
-                          className="shrink-0 text-[10px] font-medium text-primary transition-colors hover:text-primary/80 disabled:opacity-40"
-                        >
-                          {t("clients.limitsAuto")}
-                        </button>
-                      )}
-                    </div>
-                    {/* Per-model catalog reference; empty follows the provider mapping. */}
-                    <div className="flex items-center gap-1.5">
-                      <span className="w-8 shrink-0 text-[9px] uppercase tracking-wider text-muted-foreground/70" title={t("newapi.catalogMapping.modelLevel")}>
-                        {t("newapi.mappingShort")}
-                      </span>
-                      <input
-                        type="text"
-                        spellCheck={false}
-                        autoComplete="off"
-                        disabled={disabled}
-                        aria-label={t("newapi.catalogMapping.modelLevel")}
-                        placeholder={t("newapi.catalogMapping.modelPlaceholder")}
-                        className="h-7 w-full min-w-0 rounded-md border border-border/70 bg-background px-1.5 font-mono text-[10px] text-muted-foreground"
-                        value={mappingDrafts[model.id] ?? (model.catalogRef ? `${model.catalogRef.providerId}/${model.catalogRef.modelId}` : "")}
-                        onChange={event => {
-                          const text = event.target.value;
-                          setMappingDrafts(current => ({ ...current, [model.id]: text }));
-                          // Empty clears immediately; a complete reference commits as typed.
-                          if (!text.trim()) commitMapping(model.id, "");
-                          else if (text.includes("/")) commitMapping(model.id, text);
-                        }}
-                        onBlur={event => commitMapping(model.id, event.target.value)}
-                      />
-                    </div>
-                    {/* Per-model compression policy; inherit follows the provider. */}
-                    <div className="flex items-center gap-1.5">
-                      <span className="w-8 shrink-0 text-[9px] uppercase tracking-wider text-muted-foreground/70" title={t("newapi.compression.modelLevel")}>
-                        {t("newapi.compressionShort")}
-                      </span>
-                      <select
-                        disabled={disabled}
-                        aria-label={t("newapi.compression.modelLevel")}
-                        className="h-7 min-w-0 flex-1 rounded-md border border-border/70 bg-background px-1 text-[10px] text-muted-foreground"
-                        value={model.compression?.mode ?? "inherit"}
-                        onChange={event => {
-                          const mode = event.target.value as CompressionPolicy["mode"];
-                          patch(model.id, {
-                            compression:
-                              mode === "percent" ? { mode, percent: 90 }
-                                : mode === "tokens" ? { mode, tokens: 100_000 }
-                                : { mode },
-                          });
-                        }}
-                      >
-                        <option value="inherit">{t("newapi.compression.inherit")}</option>
-                        <option value="percent">{t("newapi.compression.percent")}</option>
-                        <option value="tokens">{t("newapi.compression.tokens")}</option>
-                        <option value="clientDefault">{t("newapi.compression.clientDefault")}</option>
-                      </select>
-                      {(model.compression?.mode === "percent" || model.compression?.mode === "tokens") && (
-                        <>
-                          <input
-                            type="number"
-                            inputMode="numeric"
-                            min={1}
-                            max={model.compression.mode === "percent" ? 99 : 10_000_000}
-                            disabled={disabled}
-                            aria-label={t("newapi.compression.modelLevel")}
-                            className="h-7 w-16 shrink-0 rounded-md border border-border/70 bg-background px-1 text-[10px] tabular-nums"
-                            value={model.compression.mode === "percent" ? model.compression.percent : model.compression.tokens}
-                            onChange={event => {
-                              const value = Number(event.target.value);
-                              const compression = model.compression;
-                              if (!Number.isSafeInteger(value) || value <= 0) return;
-                              if (compression?.mode === "percent") {
-                                if (value > 99) return;
-                                patch(model.id, { compression: { mode: "percent", percent: value } });
-                              } else if (compression?.mode === "tokens") {
-                                patch(model.id, { compression: { mode: "tokens", tokens: value } });
-                              }
-                            }}
-                          />
-                          <span className="shrink-0 text-[9px] text-muted-foreground/70">
-                            {t(model.compression.mode === "percent" ? "newapi.percentUnit" : "newapi.tokenUnit")}
-                          </span>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                  <button type="button" disabled={disabled || isDefault} onClick={() => removeModel(model.id)} className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-30" aria-label={t("newapi.removeModelAria", { model: model.id })}>
+                  <ModelResolutionFields model={model} resolution={resolution} loading={resolutions.loading} error={resolutions.error} disabled={disabled} onChange={change => patch(model.id, change)} />
+                  <button type="button" disabled={disabled} onClick={() => removeModel(model.id)} className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-30" aria-label={t("newapi.removeModelAria", { model: model.id })}>
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
                   {!supported && <p className="text-[10px] text-muted-foreground md:col-start-2 md:col-span-4">{t("newapi.protocolMismatchModel")}</p>}
@@ -291,7 +205,7 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
                         <label key={field} className="space-y-1 text-muted-foreground">
                           <span>{t(field === "inputLimit" ? "newapi.capabilityInput" : "newapi.capabilityOutput")}</span>
                           <Input type="number" min={field === "inputLimit" ? 1024 : 1} max={100000000}
-                            className="h-7 text-xs" disabled={disabled} placeholder={t("clients.limitsAuto")}
+                            className="h-7 text-xs placeholder:text-foreground/75" disabled={disabled} placeholder={resolvedLimitPlaceholder(field === "inputLimit" ? resolution?.inputLimit : resolution?.output, i18n.language, t("newapi.matchKind.unmatched"))}
                             aria-label={`${t(field === "inputLimit" ? "newapi.capabilityInput" : "newapi.capabilityOutput")} · ${model.id}`}
                             value={model.overrides?.[field] ?? ""}
                             onChange={event => patch(model.id, { overrides: { ...model.overrides, [field]: event.target.value ? Number(event.target.value) : null } })} />
