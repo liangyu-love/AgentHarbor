@@ -7,6 +7,8 @@ export const queryKeys = {
   runtimeStateDisplay: ["runtime-state", "display"],
   providers: ["newapi-state"],
   clientConfigs: ["client-configs"],
+  claudeDesktopStatus: ["claude-desktop", "status"],
+  claudeDesktopCandidates: ["claude-desktop", "candidates"],
   codexAccounts: ["codex-accounts"],
   tokenUsage: ["token-usage"],
   mcpServers: ["mcp-servers"],

@@ -12,6 +12,7 @@ import { ProviderBalanceDialog } from "@/components/newapi/provider-balance-dial
 import { ProviderDialog } from "@/components/newapi/provider-dialog";
 import { ProviderTestDialog } from "@/components/newapi/provider-test-dialog";
 import { ClientConfigs } from "@/components/newapi/client-configs";
+import { ClaudeDesktopConfigCard } from "@/components/newapi/claude-desktop-config-card";
 import { CodexAccessCard } from "@/components/newapi/codex-access-card";
 import { RoutingDiagnostics } from "@/components/newapi/routing-diagnostics";
 import { ModelCapabilities } from "@/components/newapi/model-capabilities";
@@ -82,6 +83,8 @@ export function NewApiPage() {
       <CodexAccessCard store={store} providers={providers} selectedProvider={selectedProvider} nativeCompatible={nativeCompatible} onRestart={() => setRestartConfirmOpen(true)} />
 
       <ClientConfigs providers={providers} />
+
+      <ClaudeDesktopConfigCard providers={providers} />
 
       <RoutingDiagnostics failover={router?.sameModelFailover ?? false} disabled={nativeAccess || !state.isSuccess || store.mutationLocked}
         compression={state.data?.compression ?? { mode: "percent", percent: 90 }}

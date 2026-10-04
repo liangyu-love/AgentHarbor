@@ -27,6 +27,7 @@ import type {
   CodexAccountListPayload,
   TokenUsagePayload,
 } from "@/types";
+import { claudeDesktopApi } from "@/lib/claude-desktop";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
 import { errorMessage } from "@/lib/invoke-error";
 import type { TargetId, ClientStatus, ClientConfigRequest, ClientConfigPreview, ClientConfigApplied } from "@/types/clients";
@@ -228,6 +229,7 @@ const accountsApi = {
 export const api = {
   providers: providersApi,
   routing: routingApi,
+  claudeDesktop: claudeDesktopApi,
   image: imageApi,
   targets: targetsApi,
   conversations: conversationsApi,
