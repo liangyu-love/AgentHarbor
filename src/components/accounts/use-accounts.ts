@@ -1,4 +1,4 @@
-import { useContext, useMemo, useState } from "react";
+import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
@@ -8,7 +8,7 @@ import { REFRESH_INTERVAL_MS, type RefreshInterval } from "@/hooks/use-auto-refr
 import { api } from "@/lib/api";
 import type { CodexAccountSummary } from "@/types";
 import { queryKeys } from "@/lib/query-keys";
-import { formatInvokeError } from "@/lib/invoke-error";
+import { errorMessage, formatInvokeError } from "@/lib/invoke-error";
 
 const QUERY_KEY = queryKeys.codexAccounts;
 const TOKEN_USAGE_QUERY_KEY = queryKeys.tokenUsage;
@@ -22,6 +22,14 @@ export function useAccounts(refreshInterval: RefreshInterval) {
   const [search, setSearch] = useState("");
   const [plan, setPlan] = useState("all");
   const [deleteTarget, setDeleteTarget] = useState<CodexAccountSummary | null>(null);
+  const activeLogin = useRef<string | null>(null);
+  const [activeLoginId, setActiveLoginId] = useState<string | null>(null);
+  const clearLogin = () => { activeLogin.current = null; setActiveLoginId(null); };
+  useEffect(() => () => {
+    const id = activeLogin.current;
+    activeLogin.current = null;
+    if (id) void api.accounts.cancelLogin(id).catch(() => {});
+  }, []);
 
   const accountsQuery = useQuery({
     queryKey: QUERY_KEY,
@@ -52,14 +60,45 @@ export function useAccounts(refreshInterval: RefreshInterval) {
 
   const loginMutation = useMutation({
     mutationFn: api.accounts.login,
-    onSuccess: (data) => {
+    onSuccess: (data, id) => {
+      if (activeLogin.current !== id) return;
+      clearLogin();
       setData(data);
       toast({ title: t("accounts.loginSuccess"), variant: "success" });
     },
-    onError: (error) => {
+    onError: (error, id) => {
+      if (activeLogin.current !== id) return;
+      clearLogin();
+      if (errorMessage(error) === "accounts.loginCancelled") return;
       toast({ title: t("common.error"), description: formatInvokeError(error), variant: "destructive" });
     },
   });
+
+  const cancelLoginMutation = useMutation({
+    mutationFn: api.accounts.cancelLogin,
+    onSuccess: (cancelled, id) => {
+      if (!cancelled || activeLogin.current !== id) return;
+      clearLogin();
+      loginMutation.reset();
+      toast({ title: t("accounts.loginCancelled"), variant: "success" });
+    },
+    onError: (error, id) => {
+      if (activeLogin.current !== id) return;
+      toast({ title: t("accounts.cancelFailed"), description: formatInvokeError(error), variant: "destructive" });
+    },
+  });
+  const startLogin = () => {
+    if (activeLogin.current) return;
+    const id = crypto.randomUUID();
+    activeLogin.current = id;
+    setActiveLoginId(id);
+    loginMutation.mutate(id);
+  };
+  const cancelLogin = () => {
+    if (activeLogin.current && !cancelLoginMutation.isPending) cancelLoginMutation.mutate(activeLogin.current);
+  };
+  const loginPending = activeLoginId !== null;
+  const loginCancelling = cancelLoginMutation.isPending && cancelLoginMutation.variables === activeLoginId;
 
   const switchMutation = useMutation({
     mutationFn: async (accountKey: string) => {
@@ -126,6 +165,7 @@ export function useAccounts(refreshInterval: RefreshInterval) {
 
   return {
     accountsQuery, tokenUsageQuery, accounts, plans, filtered, search, setSearch, plan, setPlan,
-    deleteTarget, setDeleteTarget, loginMutation, switchMutation, deleteMutation, refreshQuotaMutation, refresh,
+    deleteTarget, setDeleteTarget, startLogin, cancelLogin, loginPending, loginCancelling,
+    switchMutation, deleteMutation, refreshQuotaMutation, refresh,
   };
 }

@@ -1,8 +1,7 @@
 use super::accounts::{AccountCredential, AccountUsageUpdate, CredentialRefresh};
-use super::auth::{load_auth_file, make_auth_snapshot};
+use super::auth::make_auth_snapshot;
 use super::models::{ApiProxyConfigPayload, RateLimitWindow};
 use super::storage;
-use crate::platform::paths::CodexPaths;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -13,13 +12,7 @@ use tokio::process::Command;
 
 const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 const RESET_CREDITS_URL: &str = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
-const LOGIN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const RPC_TIMEOUT: Duration = Duration::from_secs(20);
-
-pub struct LoginArtifact {
-    pub home_path: PathBuf,
-    pub auth_path: PathBuf,
-}
 
 enum FetchFailure {
     Unauthorized,
@@ -78,13 +71,39 @@ fn candidate_executables() -> Vec<CodexExecutable> {
 }
 
 fn find_codex_executable() -> Option<CodexExecutable> {
-    candidate_executables()
-        .into_iter()
-        .find(|candidate| match candidate {
-            CodexExecutable::Direct(path) | CodexExecutable::WindowsScript(path) => {
-                !path.is_absolute() || path.is_file()
+    let mut candidates = candidate_executables();
+    if let Some(path) = std::env::var_os("PATH") {
+        for directory in std::env::split_paths(&path) {
+            #[cfg(windows)]
+            {
+                candidates.push(CodexExecutable::Direct(directory.join("codex.exe")));
+                candidates.push(CodexExecutable::WindowsScript(directory.join("codex.cmd")));
             }
-        })
+            #[cfg(not(windows))]
+            candidates.push(CodexExecutable::Direct(directory.join("codex")));
+        }
+    }
+    let mut script_fallback = None;
+    for candidate in candidates {
+        match candidate {
+            CodexExecutable::Direct(path) if path.is_absolute() && path.is_file() => return Some(CodexExecutable::Direct(path)),
+            CodexExecutable::WindowsScript(path) if path.is_absolute() && path.is_file() => {
+                if let Some(native) = native_from_launcher(&path) { return Some(CodexExecutable::Direct(native)); }
+                script_fallback.get_or_insert(CodexExecutable::WindowsScript(path));
+            }
+            _ => {}
+        }
+    }
+    script_fallback
+}
+
+fn native_from_launcher(script: &Path) -> Option<PathBuf> {
+    let directory = script.parent()?;
+    let arch = if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86_64" };
+    let package = if cfg!(target_arch = "aarch64") { "codex-win32-arm64" } else { "codex-win32-x64" };
+    let codex = directory.join("node_modules/@openai/codex");
+    let roots = [codex.join(format!("node_modules/@openai/{package}")), directory.join(format!("node_modules/@openai/{package}")), codex];
+    roots.into_iter().flat_map(|root| [root.join(format!("vendor/{arch}-pc-windows-msvc/bin/codex.exe")), root.join(format!("vendor/{arch}-pc-windows-msvc/codex/codex.exe"))]).find(|path| path.is_file())
 }
 
 #[cfg(target_os = "windows")]
@@ -98,12 +117,25 @@ fn quote_windows_arg(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\\\""))
 }
 
-fn codex_command(args: &[&str]) -> Result<Command, String> {
+pub(super) fn codex_command(args: &[&str]) -> Result<Command, String> {
     let executable = find_codex_executable()
         .ok_or_else(|| "未找到 Codex CLI，请先安装 Codex 或确认 codex 命令可用。".to_string())?;
+    executable_command(executable, args)
+}
+
+pub(super) fn codex_login_command(args: &[&str]) -> Result<Command, String> {
+    match find_codex_executable() {
+        Some(executable @ CodexExecutable::Direct(_)) => executable_command(executable, args),
+        _ => Err("accounts.nativeCliRequired".into()),
+    }
+}
+
+fn executable_command(executable: CodexExecutable, args: &[&str]) -> Result<Command, String> {
     match executable {
         CodexExecutable::Direct(path) => {
             let mut command = Command::new(path);
+            #[cfg(target_os = "windows")]
+            command.creation_flags(crate::platform::windows::CREATE_NO_WINDOW);
             command.args(args);
             Ok(command)
         }
@@ -113,6 +145,7 @@ fn codex_command(args: &[&str]) -> Result<Command, String> {
                 let mut parts = vec![quote_windows_arg(&path.display().to_string())];
                 parts.extend(args.iter().map(|arg| quote_windows_arg(arg)));
                 let mut command = Command::new("cmd.exe");
+                command.creation_flags(crate::platform::windows::CREATE_NO_WINDOW);
                 command.args(["/d", "/s", "/c", &parts.join(" ")]);
                 Ok(command)
             }
@@ -125,61 +158,12 @@ fn codex_command(args: &[&str]) -> Result<Command, String> {
     }
 }
 
-fn configure_network(command: &mut Command, proxy: &ApiProxyConfigPayload) -> Result<(), String> {
+pub(super) fn configure_network(command: &mut Command, proxy: &ApiProxyConfigPayload) -> Result<(), String> {
     for key in ["OPENAI_BASE_URL", "OPENAI_API_BASE"] {
         command.env_remove(key);
     }
     super::api_client::configure_codex_cli_network(command.as_std_mut(), proxy)
         .map_err(|error| error.to_string())
-}
-
-pub async fn login(
-    paths: &CodexPaths,
-    proxy: &ApiProxyConfigPayload,
-) -> Result<LoginArtifact, String> {
-    paths
-        .ensure_directories()
-        .map_err(|error| error.to_string())?;
-    let home_path = paths
-        .accounts_dir
-        .join("login")
-        .join(uuid::Uuid::new_v4().to_string());
-    std::fs::create_dir_all(&home_path).map_err(|error| error.to_string())?;
-
-    let mut command = codex_command(&["login"])?;
-    command
-        .env("CODEX_HOME", &home_path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    configure_network(&mut command, proxy)?;
-
-    let output = match tokio::time::timeout(LOGIN_TIMEOUT, command.output()).await {
-        Ok(Ok(output)) => output,
-        Ok(Err(error)) => {
-            let _ = std::fs::remove_dir_all(&home_path);
-            return Err(format!("无法启动 Codex 官方登录：{error}"));
-        }
-        Err(_) => {
-            let _ = std::fs::remove_dir_all(&home_path);
-            return Err("Codex 登录等待超时，请重新尝试。".to_string());
-        }
-    };
-    let auth_path = home_path.join("auth.json");
-    if !output.status.success() || !auth_path.is_file() {
-        let _ = std::fs::remove_dir_all(&home_path);
-        return Err("Codex 官方登录未完成，请在浏览器中完成授权后重试。".to_string());
-    }
-    if let Err(error) = load_auth_file(&auth_path) {
-        // The temporary home can hold partial credentials; never leave it behind.
-        let _ = std::fs::remove_dir_all(&home_path);
-        return Err(error.to_string());
-    }
-    Ok(LoginArtifact {
-        home_path,
-        auth_path,
-    })
 }
 
 fn http_client(proxy: &ApiProxyConfigPayload) -> Result<reqwest::Client, FetchFailure> {
@@ -555,6 +539,24 @@ pub async fn refresh_account(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::auth::load_auth_file;
+
+    #[test]
+    fn npm_launcher_prefers_native_cli_in_new_and_old_layouts() {
+        let root = tempfile::tempdir().unwrap();
+        let script = root.path().join("codex.cmd");
+        let arch = if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86_64" };
+        let package = if cfg!(target_arch = "aarch64") { "codex-win32-arm64" } else { "codex-win32-x64" };
+        let native = root.path().join(format!("node_modules/@openai/codex/node_modules/@openai/{package}/vendor/{arch}-pc-windows-msvc/bin/codex.exe"));
+        std::fs::create_dir_all(native.parent().unwrap()).unwrap();
+        std::fs::write(&native, b"fixture").unwrap();
+        assert_eq!(native_from_launcher(&script), Some(native.clone()));
+        std::fs::remove_file(native).unwrap();
+        let old = root.path().join(format!("node_modules/@openai/codex/vendor/{arch}-pc-windows-msvc/codex/codex.exe"));
+        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+        std::fs::write(&old, b"fixture").unwrap();
+        assert_eq!(native_from_launcher(&script), Some(old));
+    }
 
     #[tokio::test]
     async fn account_metadata_get_preserves_credentials_and_headers() {

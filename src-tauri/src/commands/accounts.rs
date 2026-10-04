@@ -1,4 +1,5 @@
 use crate::core::account_monitor;
+use crate::core::account_login::{self, LoginManager};
 use crate::core::accounts::{self, CodexAccountListPayload};
 use crate::core::repository::Repository;
 use std::sync::Mutex;
@@ -27,7 +28,9 @@ pub async fn refresh_codex_accounts(
 }
 
 /// Shared by the accounts page and the auto-switch loop.
-pub(crate) async fn refresh_all(repo: &Mutex<Repository>) -> Result<CodexAccountListPayload, String> {
+pub(crate) async fn refresh_all(
+    repo: &Mutex<Repository>,
+) -> Result<CodexAccountListPayload, String> {
     let (credentials, proxy) = {
         let repo = repo
             .lock()
@@ -51,7 +54,10 @@ pub(crate) async fn refresh_all(repo: &Mutex<Repository>) -> Result<CodexAccount
 #[tauri::command]
 pub async fn login_codex_account(
     repo: State<'_, Mutex<Repository>>,
+    manager: State<'_, LoginManager>,
+    attempt_id: String,
 ) -> Result<CodexAccountListPayload, String> {
+    let attempt = manager.begin(attempt_id)?;
     let (paths, proxy) = {
         let repo = lock_repo(&repo)?;
         (
@@ -59,13 +65,16 @@ pub async fn login_codex_account(
             crate::core::newapi::proxy_from_settings(&repo.paths().settings_path),
         )
     };
-    let artifact = account_monitor::login(&paths, &proxy).await?;
-    let result = {
+    let artifact = account_login::login(&paths, &proxy, attempt.cancellation()).await?;
+    attempt.commit(|| {
         let repo = lock_repo(&repo)?;
         accounts::register_login(&repo, &artifact.auth_path).map_err(|error| error.to_string())
-    };
-    let _ = std::fs::remove_dir_all(&artifact.home_path);
-    result
+    })
+}
+
+#[tauri::command]
+pub async fn cancel_codex_account_login(manager: State<'_, LoginManager>, attempt_id: String) -> Result<bool, String> {
+    manager.cancel(attempt_id).await
 }
 
 #[tauri::command]

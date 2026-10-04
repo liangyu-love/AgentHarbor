@@ -215,7 +215,8 @@ const usageApi = {
 const accountsApi = {
   list: () => invoke<CodexAccountListPayload>("list_codex_accounts"),
   refresh: () => invoke<CodexAccountListPayload>("refresh_codex_accounts"),
-  login: () => invoke<CodexAccountListPayload>("login_codex_account"),
+  login: (attemptId: string) => invoke<CodexAccountListPayload>("login_codex_account", { attemptId }),
+  cancelLogin: (attemptId: string) => invoke<boolean>("cancel_codex_account_login", { attemptId }),
   switch: (accountKey: string) =>
     invoke<CodexAccountListPayload>("switch_codex_account", { accountKey }),
   delete: (accountKey: string) =>

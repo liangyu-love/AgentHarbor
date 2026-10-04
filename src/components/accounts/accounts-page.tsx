@@ -34,7 +34,8 @@ export function AccountsPage({ refreshInterval, onManageProviders }: { refreshIn
   const { t } = useTranslation();
   const {
     accountsQuery, tokenUsageQuery, accounts, plans, filtered, search, setSearch, plan, setPlan,
-    deleteTarget, setDeleteTarget, loginMutation, switchMutation, deleteMutation, refreshQuotaMutation, refresh,
+    deleteTarget, setDeleteTarget, startLogin, cancelLogin, loginPending, loginCancelling,
+    switchMutation, deleteMutation, refreshQuotaMutation, refresh,
   } = useAccounts(refreshInterval);
 
   return (
@@ -48,7 +49,7 @@ export function AccountsPage({ refreshInterval, onManageProviders }: { refreshIn
               </Badge>
             </div>
           </div>
-          <div className="flex shrink-0 gap-2">
+          <div className="flex flex-wrap items-center gap-2 sm:shrink-0">
             <Button
               variant="outline"
               onClick={() => void refresh()}
@@ -57,12 +58,24 @@ export function AccountsPage({ refreshInterval, onManageProviders }: { refreshIn
               <RefreshCw className={cn((accountsQuery.isFetching || tokenUsageQuery.isFetching) && "animate-spin")} />
               {t("common.refresh")}
             </Button>
-            <Button onClick={() => loginMutation.mutate()} disabled={loginMutation.isPending}>
-              {loginMutation.isPending ? <Loader2 className="animate-spin" /> : <LogIn />}
-              {loginMutation.isPending ? t("accounts.adding") : t("accounts.oauthLogin")}
-            </Button>
+            {!loginPending && <Button onClick={startLogin}><LogIn />{t("accounts.oauthLogin")}</Button>}
           </div>
         </section>
+
+        {loginPending && (
+          <section aria-label={t("accounts.oauthLogin")} className="flex flex-col gap-3 rounded-xl border border-border bg-card px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div role="status" aria-live="polite" className="flex min-w-0 items-start gap-3">
+              <Loader2 aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-primary motion-reduce:animate-none" />
+              <div className="min-w-0 space-y-1">
+                <p className="text-sm font-medium">{t(loginCancelling ? "accounts.cancellingLogin" : "accounts.adding")}</p>
+                <p className="text-sm text-muted-foreground">{t(loginCancelling ? "accounts.cancellingHint" : "accounts.loginHint")}</p>
+              </div>
+            </div>
+            <Button variant="outline" onClick={cancelLogin} disabled={loginCancelling} className="w-full shrink-0 sm:w-auto">
+              {t(loginCancelling ? "accounts.cancellingLogin" : "accounts.cancelLogin")}
+            </Button>
+          </section>
+        )}
 
         <TokenUsagePanel
           data={tokenUsageQuery.data}
@@ -118,7 +131,7 @@ export function AccountsPage({ refreshInterval, onManageProviders }: { refreshIn
             </div>
             <h3 className="font-semibold">{t("accounts.emptyTitle")}</h3>
             <p className="mt-1 max-w-md text-sm text-muted-foreground">{t("accounts.emptyDescription")}</p>
-            <Button className="mt-5" onClick={() => loginMutation.mutate()} disabled={loginMutation.isPending}>
+            <Button className="mt-5" onClick={startLogin} disabled={loginPending}>
               <LogIn />
               {t("accounts.add")}
             </Button>

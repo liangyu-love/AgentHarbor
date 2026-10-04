@@ -59,6 +59,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .manage(Mutex::new(repository))
+        .manage(core::account_login::LoginManager::default())
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
                 let win = window.clone();
@@ -166,6 +167,7 @@ pub fn run() {
             commands::usage::get_token_usage,
             commands::accounts::refresh_codex_accounts,
             commands::accounts::login_codex_account,
+            commands::accounts::cancel_codex_account_login,
             commands::accounts::switch_codex_account,
             commands::accounts::delete_codex_account,
             commands::newapi::load_newapi_state,
@@ -268,6 +270,7 @@ pub fn run() {
 
     app.run(move |_app_handle, event| {
         if matches!(event, RunEvent::Exit) {
+            _app_handle.state::<core::account_login::LoginManager>().shutdown();
             // The proxy lives in this process. Restore every client that points
             // to it before exit; direct upstream configurations remain durable.
             // Tray quit, Windows shutdown/logoff (WM_ENDSESSION) and the Unix
