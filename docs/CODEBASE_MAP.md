@@ -67,6 +67,10 @@ flowchart LR
 
 大型页面按职责拆分为组合页、状态 hook 和视图组件：账号、图片工作台、中转、会话、MCP 页面都把主要数据/交互状态放进各自的 `use-*.ts`，再由页面组合独立组件。回归 fixture 在 `scripts/fixtures/frontend-regressions.tsx`；`scripts/visual-snapshot.mjs` 对页面状态做截图像素比较。
 
+同 URL 堆叠复用 `relay-groups.ts` 的归组与 `use-relay-view.ts` 的成员选择；`relay-deck.tsx` 只负责背景层和点击/键盘输入，`use-relay-deck.ts` 只负责翻页时序、过期取消和减少动画。`relay-card.tsx` 始终只渲染一张可交互卡面，供应商操作仍调用现有 ProviderState，不新增后端数据或合并凭据。
+
+终端代理由 `settings/terminal-proxy-settings.tsx` 独立查询与编辑，通过 `api.terminalProxy` 调用 `load_terminal_proxy_config`、`set_terminal_proxy_config(enabled,url,noProxy)`、`test_terminal_proxy_config(url)`、`open_proxy_terminal`。命令在 `commands/system.rs`；`core/terminal_proxy.rs` 管理字段所有权与恢复日志，`platform/terminal_environment.rs` 执行 Windows 原生注册表操作、广播和交互终端启动。日志在应用数据目录 `terminal-proxy.dat`，使用现有秘密文件存储；不修改本进程环境，独立于 `core/api_client.rs` 的应用代理配置。前端回归在 `scripts/test-terminal-proxy.mjs`、`scripts/test-relay-deck.mjs`。
+
 ## 4. Tauri IPC 接口目录
 
 IPC 命令必须同时在 Rust 命令文件中实现，并通过 `src-tauri/src/lib.rs` 的 `tauri::generate_handler![...]` 注册。下面按页面归类；接口参数名为前端传输的 camelCase 名称，未列出的 `repo`、`app`、`State` 等由 Tauri 注入。
@@ -95,6 +99,7 @@ IPC 命令必须同时在 Rust 命令文件中实现，并通过 `src-tauri/src/
 | `set_newapi_provider_enabled` | `id`, `enabled` | 启停供应商 | 同上 |
 | `set_newapi_provider_network` | `id`, `mode` | 配置该供应商跟随系统代理或直连 | 同上、`core/newapi.rs` |
 | `fetch_newapi_models` | `providerId`, `baseUrl`, `apiKey`, `protocol` | 查询模型与元数据；未保存的供应商可传空 ID | `commands/newapi.rs` → `core/router.rs`、`core/newapi.rs` |
+| `preview_newapi_model_resolutions` | `draft`（连接地址、协议、凭据存在标记、模型与覆盖；无密钥） | 只读解析未保存模型的上限、目录与压缩计划；不联网、不保存 | `commands/newapi.rs` → `core/provider_model_preview.rs` → 共享 metadata / projection |
 | `test_newapi_provider` | `id`, `model`, `onEvent`（Tauri Channel） | 发出流式推理请求；实时发送 request / headers / firstByte / content / complete / failed 阶段、HTTP 状态及实际耗时；最终返回 ProviderView | `commands/newapi.rs` → `core/router.rs`、`core/provider_probe.rs` |
 | `query_newapi_provider_balance` | `id` | 按站点识别官方余额或 New API/Sub2API；统一返回余额和可选多币种 entries，失败保留原值 | `commands/newapi.rs` → `core/router.rs`、`core/router_balance.rs` |
 | `set_newapi_balance_script` | `id`, `expectedBaseUrl`, `script` | 保存并验证查询脚本；空字符串恢复内置适配；站点变化拒绝保存 | `commands/newapi.rs` → `core/router.rs`、`core/balance_script.rs` |
@@ -111,6 +116,8 @@ IPC 命令必须同时在 Rust 命令文件中实现，并通过 `src-tauri/src/
 | `reapply_client_config` | `targetId`, `rebaseline` | 按上次应用的配置重新注入；`rebaseline` 时先把当前值记录为新基线，是冲突的显式出路 | 同上 |
 
 官方预设在 `src/lib/provider-presets.ts`，添加弹窗自动填入渠道地址、协议及部分种子模型；仍支持在线刷新模型与逐模型覆盖协议。非标准官方 API 路径经 `newapi::provider_endpoint` 统一处理，供获取模型、测试、转发与原生配置共用。
+
+模型编辑行的自动值由 `use-model-resolutions.ts` 处理草稿请求、去抖与过期响应隔离，`model-resolution-fields.tsx` 只展示解析结果和编辑手动覆盖。后端 `provider_model_preview.rs` 读取本地配置与快照，复用能力面板的匹配、继承及故障转移预算投影；解析值不会回写到模型草稿。
 
 余额入口在中转卡片的“查询余额”按钮，账户凭据移至独立弹窗。官方适配支持 DeepSeek、StepFun、SiliconFlow（国内/国际）、OpenRouter、Novita AI；按完整域名匹配并使用模型 API Key。自定义站点通过公开元数据识别 New API/Sub2API 后才发送账户令牌，New API 另需用户 ID。多币种不相加，缺失/非法金额报错；API facade 只对网络或超时重试一次。新增 OpenCode Go、Kimi Coding、MiniMax、GLM/Z.AI 的套餐配额窗口（含可用的重置时间）；OpenCode Zen 不等同于 Go，未内置其余额查询。`api.iiiiitoken.com` 支持 API Key `/v1/usage`。卡片弹窗支持 `request + extractor` 自定义 JavaScript：QuickJS 隔离执行，无文件/网络宿主接口，16 MiB 内存、300 ms 每阶段上限；Rust 执行同源 GET/POST，请求头占位符注入凭据，失败保留旧结果。脚本随供应商加密保存，换站清除，导出不包含脚本。此入口不提供 OAuth 订阅登录。
 

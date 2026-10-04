@@ -84,3 +84,9 @@ OpenCode 的管理范围精确到供应商名称、SDK、端点、凭据及模�
 测试使用临时客户端目录和本地模拟上游，覆盖配置保留、恢复、并发变更检测、协议匹配、从生成配置发送请求、SSE 用量记录，以及独立启停和重启后的路由恢复。不修改正式客户端配置，不调用付费上游。
 
 参考：[Claude Code 网关](https://code.claude.com/docs/en/llm-gateway-connect)、[模型配置](https://code.claude.com/docs/en/model-config)、[OpenCode 供应商](https://opencode.ai/docs/providers/)、[配置](https://opencode.ai/docs/config/)。
+
+## 2026-10-03 恢复与备份说明
+
+恢复原配置后保留空的元素所有权记录，用于标记旧版 picker 迁移已经完成。之后再次接管不会重新按 `label == model` 的形状清理用户行。`/model` 切换到接管时已经存在的用户 picker 行，同样视为正常客户端操作。
+
+冲突替换前的客户端文件保存在客户端配置管理器数据目录的 `backups/*.dat` 中，由 `secret_file` 加密存储，最多保留 20 份。它不是可以直接复制回客户端的明文 JSON；当前没有备份列表恢复界面。所有权记录属于辅助持久化数据，写入失败会记录警告，当前没有磁盘故障下的恢复验收；不要手工删除记录后期待迁移标记仍然存在。

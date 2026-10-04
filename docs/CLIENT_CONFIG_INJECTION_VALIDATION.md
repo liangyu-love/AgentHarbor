@@ -36,6 +36,6 @@
 ## 3. 产出
 
 - **代码**：`core/client_config/` 新增 `owned.rs`（所有权记录）、`takeover.rs`（接管与管理级配置警告）、`version.rs`（版本探测）；`claude.rs`/`mod.rs`/`opencode.rs` 适配；命令层新增 `reapply_client_config`；前端 `client-configs.tsx`、`client-config-dialog.tsx`、`claude-model-config.tsx`、`client-config.ts`、类型与 26 个新 i18n 键（zh/en 对齐，后端 56 个错误键全量对账无缺失）。
-- **测试**：新增 18 个针对性测试（云开关三态、SMALL_FAST、subagent 跟随、F2 警告、所有权记录 8 场景、`[1m]` 三态、角色匹配顺序无关、rebaseline 全链路、json5 注释往返、数组键删除语义、版本解析）；回归脚本按数据驱动 `[1m]` 新规范改写。合并后全量：**Rust 499 通过、tsc 0 错误、vite 构建通过、33 条 Playwright 回归通过**，clippy 对本范围零警告。
+- **测试**：新增 18 个针对性测试（云开关三态、SMALL_FAST、subagent 跟随、F2 警告、所有权记录 8 场景、`[1m]` 三态、角色匹配顺序无关、rebaseline 全链路、json5 注释往返、数组键删除语义、版本解析）；回归脚本按数据驱动 `[1m]` 新规范改写。合并后全量：**Rust 507 通过、tsc 0 错误、vite 构建通过、33 条 Playwright 回归通过**，clippy 对本范围零警告。
 - **文档**：`docs/client-configuration.md`（接管警告、元素级数组、重新接管、云开关、版本提示、jsonc 策略）、`docs/CODEBASE_MAP.md`（新命令与新模块）、计划文档归档并标注实施状态。
 - **回滚**：每项一个独立 commit，`git revert <hash>` 可单独撤销；`owned.dat` 缺失或损坏时自动退化为会话种子推导，不会误删用户数据。
