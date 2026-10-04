@@ -472,49 +472,54 @@ body {
 
 .relay-member-nav > button:hover { background: hsl(var(--card)); color: hsl(var(--foreground)); }
 .relay-member-nav > button:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 1px; }
+.relay-member-nav > button:disabled, .relay-member-nav > button[aria-disabled="true"] { opacity: 0.4; }
 .relay-member-name { min-width: 0; flex: 1; overflow: hidden; font-size: 0.65rem; font-weight: 700; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
 .relay-member-name small { margin-left: 0.2rem; color: hsl(var(--muted-foreground)); font-size: 0.58rem; font-weight: 500; }
-.relay-card-swap-next {
-  animation: relay-card-flip-next 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
-  transform-style: preserve-3d;
+.relay-deck { isolation: isolate; }
+.relay-deck-stacked { padding: 8px 10px calc(var(--relay-depth) * 7px + 10px) calc(var(--relay-depth) * 7px + 10px); }
+.relay-deck:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 3px; border-radius: 16px; }
+.relay-deck-stage { position: relative; min-width: 0; perspective: 700px; container: relay-deck / inline-size; }
+.relay-deck-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: 1px solid hsl(var(--border));
+  border-radius: 16px;
+  background: hsl(var(--card));
+  transform-origin: 50% 0;
+  transform: translate(calc(var(--relay-layer) * -7px), calc(var(--relay-layer) * 7px)) rotate(calc(var(--relay-layer) * -1.7deg));
+  box-shadow: 0 5px 12px -8px hsl(var(--foreground) / 0.18);
 }
-.relay-card-swap-prev {
-  animation: relay-card-flip-prev 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
-  transform-style: preserve-3d;
+.relay-deck-face { z-index: 6; transform-origin: 65% 50%; }
+.relay-card-exit-next { animation: relay-deck-away 180ms ease-in both; pointer-events: none; }
+.relay-card-exit-prev { animation: relay-deck-return 180ms ease-in both; pointer-events: none; }
+.relay-card-swap-next { animation: relay-card-flip-next 280ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+.relay-card-swap-prev { animation: relay-card-flip-prev 280ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+@container relay-deck (max-width: 300px) {
+  .relay-card-balance-label { display: none; }
+  .relay-card-header[data-has-members] { flex-wrap: wrap; }
+  .relay-card-header[data-has-members] .relay-card-heading { flex-basis: 100%; }
+  .relay-card-header[data-has-members] .relay-card-controls { width: 100%; justify-content: space-between; }
 }
-
+@keyframes relay-deck-away {
+  from { opacity: 1; transform: translate(0, 0) rotate(0); }
+  to { opacity: 0; transform: translate(18%, -24px) rotate(10deg); }
+}
+@keyframes relay-deck-return {
+  from { opacity: 1; transform: translate(0, 0) rotate(0); }
+  to { opacity: 0; transform: translate(-14px, 14px) rotate(-3.4deg); }
+}
 @keyframes relay-card-flip-next {
-  0% {
-    opacity: 0.35;
-    transform: perspective(700px) rotateY(-36deg) scale(0.96) translateZ(-16px);
-  }
-  60% {
-    opacity: 0.95;
-    transform: perspective(700px) rotateY(4deg) scale(1.01) translateZ(4px);
-  }
-  100% {
-    opacity: 1;
-    transform: perspective(700px) rotateY(0deg) scale(1) translateZ(0);
-  }
+  from { opacity: 0.6; transform: translate(-7px, 7px) rotate(-1.7deg); }
+  to { opacity: 1; transform: translate(0, 0) rotate(0); }
 }
-
 @keyframes relay-card-flip-prev {
-  0% {
-    opacity: 0.35;
-    transform: perspective(700px) rotateY(36deg) scale(0.96) translateZ(-16px);
-  }
-  60% {
-    opacity: 0.95;
-    transform: perspective(700px) rotateY(-4deg) scale(1.01) translateZ(4px);
-  }
-  100% {
-    opacity: 1;
-    transform: perspective(700px) rotateY(0deg) scale(1) translateZ(0);
-  }
+  from { opacity: 0.3; transform: translate(-12%, -18px) rotate(-8deg); }
+  to { opacity: 1; transform: translate(0, 0) rotate(0); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .relay-card-swap-next, .relay-card-swap-prev { animation: none; }
+  .relay-card-swap-next, .relay-card-swap-prev, .relay-card-exit-next, .relay-card-exit-prev { animation: none; }
   .relay-member-nav > button { transition: none; }
 }
 

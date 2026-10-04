@@ -15,6 +15,8 @@ import {
   cardButton, deepSeekPeakNow, hostOf, iconButton, protocolBadgeKey, providerColor, softBadge, type RelayGroup,
 } from "@/components/newapi/relay-groups";
 import { StatusDot } from "@/components/newapi/status-dot";
+import { RelayDeck } from "@/components/newapi/relay-deck";
+import { useRelayDeck } from "@/components/newapi/use-relay-deck";
 import type { ProviderState } from "@/components/newapi/use-provider-state";
 import type { RelayView } from "@/components/newapi/use-relay-view";
 import type { NewApiProvider } from "@/types/newapi";
@@ -78,59 +80,44 @@ export function RelayCard({ group, store, view, onEdit, onTest, onRemove, onBala
   const isExpanded = !!expandedGroups[group.key];
   const cardColor = isGroupActive ? "gold" : providerColor(group.key);
   const memberIndex = group.providers.findIndex(item => item.id === provider.id);
+  const stacked = hasMultiple && !isExpanded;
+  const { turn, exitDirection } = useRelayDeck({
+    activeId: provider.id, memberIds: group.providers.map(item => item.id), stacked,
+    onSelect: (id, direction) => selectMember(group, id, direction),
+  });
   const switchMember = (offset: number) => {
     const nextIndex = (memberIndex + offset + group.providers.length) % group.providers.length;
-    selectMember(group, group.providers[nextIndex].id, offset < 0 ? "prev" : "next");
+    turn(group.providers[nextIndex].id, offset < 0 ? "prev" : "next");
   };
 
   return (
-    <div className="group relative flex min-w-0 flex-col">
-      {/* 3D Physical Card Deck Peek Layers for Same-Relay Groups */}
-      {hasMultiple && !isExpanded && (
-        <>
-          <div
-            aria-hidden
-            className={cn(
-              "pointer-events-none absolute -inset-x-1.5 -bottom-2 top-3 rounded-2xl border transition-all duration-300",
-              cardColor === "gold"
-                ? "border-[#d4af37]/25 bg-amber-950/15 dark:bg-[#14120e]/80 shadow-[0_8px_20px_-8px_rgba(212,175,55,0.15)]"
-                : "border-border/60 bg-card/75 dark:bg-card/60 shadow-sm",
-              "group-hover:-bottom-2.5 group-hover:-inset-x-2",
-            )}
-          />
-          {group.providers.length > 2 && (
-            <div
-              aria-hidden
-              className={cn(
-                "pointer-events-none absolute -inset-x-3 -bottom-3.5 top-6 rounded-2xl border transition-all duration-300",
-                cardColor === "gold"
-                  ? "border-[#d4af37]/15 bg-amber-950/10 dark:bg-[#0f0e0b]/60"
-                  : "border-border/40 bg-card/45 dark:bg-card/35 shadow-xs",
-                "group-hover:-bottom-4 group-hover:-inset-x-3",
-              )}
-            />
-          )}
-        </>
-      )}
-
+    <RelayDeck count={group.providers.length} stacked={stacked}
+      label={`${groupLabel(group)} · ${t("newapi.nextGroupMember")}`} onNext={switchMember}>
       <AuroraCard
-        key={provider.id}
-        onAnimationEnd={event => { if (event.target === event.currentTarget) finishFlip(group); }}
+        onAnimationEnd={event => {
+          // A queued exit animationend may arrive after the timer selected the
+          // next member. Only the current entrance can finish its flip intent.
+          if (event.target === event.currentTarget && !exitDirection
+            && event.animationName === `relay-card-flip-${memberDirection[group.key]}`) finishFlip(group);
+        }}
         data-relay-card-face
+        data-provider-id={provider.id}
+        data-deck-exiting={exitDirection || undefined}
         color={cardColor}
         shine={isGroupActive || selected}
         className={cn(
-          "flex flex-col",
+          "relay-deck-face flex flex-col",
           selected && "rounded-2xl ring-2 ring-primary/40",
-          hasMultiple && !isExpanded && memberDirection[group.key] &&
+          stacked && exitDirection && `relay-card-exit-${exitDirection}`,
+          stacked && !exitDirection && memberDirection[group.key] &&
             (memberDirection[group.key] === "prev" ? "relay-card-swap-prev" : "relay-card-swap-next"),
         )}
       >
         <div className="flex flex-col justify-between p-3.5 sm:p-4">
           <div className="flex flex-col">
             {/* Header: Title + Domain + Badges + Switch */}
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex min-w-0 flex-1 items-center gap-1.5">
+            <div className="relay-card-header flex items-center justify-between gap-2" data-has-members={hasMultiple || undefined}>
+              <div className="relay-card-heading flex min-w-0 flex-1 items-center gap-1.5">
                 <StatusDot provider={provider} />
                 <h3 className="truncate text-[15px] font-semibold tracking-tight" title={groupLabel(group, provider)}>
                   {groupLabel(group, provider)}
@@ -149,16 +136,16 @@ export function RelayCard({ group, store, view, onEdit, onTest, onRemove, onBala
                   </button>
                 )}
               </div>
-              <div className="flex shrink-0 items-center gap-1.5">
+              <div className="relay-card-controls flex shrink-0 items-center gap-1.5">
                 {hasMultiple && (
-                  <div className="relay-member-nav" role="group" aria-label={t("newapi.groupMembers")}>
-                    <button type="button" onClick={() => switchMember(-1)} aria-label={t("newapi.previousGroupMember")} title={t("newapi.previousGroupMember")}>
+                  <div className="relay-member-nav" role="group" data-relay-no-turn aria-label={t("newapi.groupMembers")}>
+                    <button type="button" aria-disabled={!!exitDirection} onClick={() => switchMember(-1)} aria-label={t("newapi.previousGroupMember")} title={t("newapi.previousGroupMember")}>
                       <ChevronLeft className="h-3.5 w-3.5" />
                     </button>
                     <span className="relay-member-name" title={provider.name} aria-live="polite">
                       {provider.name} <small>{memberIndex + 1}/{group.providers.length}</small>
                     </span>
-                    <button type="button" onClick={() => switchMember(1)} aria-label={t("newapi.nextGroupMember")} title={t("newapi.nextGroupMember")}>
+                    <button type="button" aria-disabled={!!exitDirection} onClick={() => switchMember(1)} aria-label={t("newapi.nextGroupMember")} title={t("newapi.nextGroupMember")}>
                       <ChevronRight className="h-3.5 w-3.5" />
                     </button>
                   </div>
@@ -365,8 +352,8 @@ export function RelayCard({ group, store, view, onEdit, onTest, onRemove, onBala
               )}
             </div>
             <div className="flex shrink-0 items-center gap-1">
-              <button type="button" className={cn(cardButton, "w-auto gap-1.5 whitespace-nowrap px-2")} onClick={() => onBalance(provider)} aria-label={`${t("newapi.queryBalance")} ${provider.name}`}>
-                <Wallet className="h-3.5 w-3.5" /><span className="text-[11px]">{t("newapi.queryBalance")}</span>
+              <button type="button" className={cn(cardButton, "w-auto gap-1.5 whitespace-nowrap px-2")} onClick={() => onBalance(provider)} aria-label={`${t("newapi.queryBalance")} ${provider.name}`} title={t("newapi.queryBalance")}>
+                <Wallet className="h-3.5 w-3.5" /><span className="relay-card-balance-label text-[11px]">{t("newapi.queryBalance")}</span>
               </button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -455,6 +442,6 @@ export function RelayCard({ group, store, view, onEdit, onTest, onRemove, onBala
           </div>
         </div>
       </AuroraCard>
-    </div>
+    </RelayDeck>
   );
 }
