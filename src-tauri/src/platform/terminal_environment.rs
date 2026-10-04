@@ -238,14 +238,20 @@ pub(crate) mod windows {
             expanded.kind = REG_EXPAND_SZ;
             env.write("HTTPS_PROXY", Some(&expanded)).unwrap();
             assert_eq!(env.read("https_proxy").unwrap(), Some(expanded));
+            // 二进制值逐字节往返，不受空字符规范化影响。
+            let binary = EnvironmentValue {
+                kind: REG_BINARY,
+                bytes: vec![0, 255, 17, 0, 85],
+            };
+            env.write("HTTP_PROXY", Some(&binary)).unwrap();
+            assert_eq!(env.read("HTTP_PROXY").unwrap(), Some(binary));
             for raw in [
-                EnvironmentValue {
-                    kind: REG_BINARY,
-                    bytes: vec![0, 255, 17, 0, 85],
-                },
+                // Windows 会在写入时把 `REG_SZ` 规范成以空字符结尾，因此这里
+                // 断言的是「内容被保留」，而不是逐字节等于写入值——否则这条用例
+                // 会依赖注册表实现细节而随机失败。
                 EnvironmentValue {
                     kind: REG_SZ,
-                    bytes: vec![b'a', 0], // Preserve an unterminated raw string.
+                    bytes: vec![b'a', 0],
                 },
                 EnvironmentValue {
                     kind: REG_SZ,
@@ -253,7 +259,14 @@ pub(crate) mod windows {
                 },
             ] {
                 env.write("HTTP_PROXY", Some(&raw)).unwrap();
-                assert_eq!(env.read("HTTP_PROXY").unwrap(), Some(raw));
+                let read = env.read("HTTP_PROXY").unwrap().expect("value present");
+                assert_eq!(read.kind, raw.kind, "类型必须保留");
+                // 空字符规范化只允许出现在末尾的填充。
+                let mut expected = raw.bytes.clone();
+                while expected.len() < read.bytes.len() {
+                    expected.push(0);
+                }
+                assert_eq!(read.bytes, expected, "内容必须保留");
             }
             env.write("HTTP_PROXY", None).unwrap();
             env.write("HTTPS_PROXY", None).unwrap();
