@@ -308,6 +308,7 @@
     "fetchModels": "拉取模型",
     "modelLibrary": "模型清单",
     "modelsSelected": "已选 {{selected}} / {{total}}",
+    "balanceWindowRemaining": "窗口剩余额度",
     "selectMatchingModels": "加入搜索匹配的模型",
     "noIncludedModels": "尚未加入模型。请从待加入列表中选择要使用的模型。",
     "selectAllModels": "全选模型",
@@ -421,6 +422,8 @@
     "useSharedBalance": "使用共享余额",
     "useOwnBalance": "单独查询",
     "balanceApiKeyHint": "使用此站点已保存的模型 API Key 查询官方余额。",
+    "balanceMimoHint": "本应用尚未接入 MiMo 官方余额查询。API 余额与 Token Plan 额度分别在官方控制台查看；若已有可用接口，可配置自定义查询脚本。不会将未知余额显示为 0。",
+    "balanceMimoShort": "MiMo 余额暂未接入，请在官方控制台查看",
     "balanceQuerying": "正在查询…",
     "balanceLastGood": "查询未成功，保留上次查询结果。",
     "balanceUnavailable": "余额不足或账户当前不可用",
@@ -435,6 +438,9 @@
     "clickToExpand": "点击展开配置",
     "balanceWindow": {
       "rolling": "滚动窗口剩余",
+      "fiveHour": "5 小时窗口剩余",
+      "purchased": "已购额度剩余",
+      "free": "免费额度剩余",
       "weekly": "本周剩余",
       "monthly": "本月剩余"
     },

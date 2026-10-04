@@ -1,6 +1,7 @@
 const officialHosts = new Set([
   "api.deepseek.com", "api.stepfun.com", "api.stepfun.ai", "api.siliconflow.cn",
   "api.siliconflow.com", "openrouter.ai", "api.novita.ai", "api.iiiiitoken.com", "api.minimaxi.com", "api.minimax.io",
+  "api.xiaomimimo.com", "token-plan-cn.xiaomimimo.com", "api.commandcode.ai",
 ]);
 
 export function isOfficialBalanceSite(baseUrl: string): boolean {
@@ -13,11 +14,18 @@ export function isOfficialBalanceSite(baseUrl: string): boolean {
   } catch { return false; }
 }
 
+export function isMimoBalanceSite(baseUrl: string): boolean {
+  try {
+    const hostname = new URL(baseUrl).hostname.toLowerCase();
+    return hostname === "api.xiaomimimo.com" || hostname === "token-plan-cn.xiaomimimo.com";
+  } catch { return false; }
+}
+
 export function balanceSourceName(source: string | null): string {
   const names: Record<string, string> = {
     newapi: "New API", sub2api: "Sub2API", deepseek: "DeepSeek", stepfun: "StepFun",
     siliconflow: "SiliconFlow", siliconflowIntl: "SiliconFlow International",
-    openrouter: "OpenRouter", novita: "Novita AI", opencodeGo: "OpenCode Go", kimiCoding: "Kimi Coding", minimaxPlan: "MiniMax Plan", glmPlan: "GLM Coding Plan", custom: "Custom", apiKeyQuota: "API Key",
+    openrouter: "OpenRouter", novita: "Novita AI", opencodeGo: "OpenCode Go", kimiCoding: "Kimi Coding", minimaxPlan: "MiniMax Plan", glmPlan: "GLM Coding Plan", commandCode: "Command Code Coding Plan", mimo: "MiMo Token Plan", custom: "Custom", apiKeyQuota: "API Key",
   };
   return source ? names[source] ?? source : "";
 }

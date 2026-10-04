@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Loader2, RefreshCw, Wallet, Code2, KeyRound, AlertTriangle, ShieldCheck } from "lucide-react";
 import { api } from "@/lib/api";
 import { formatInvokeError } from "@/lib/invoke-error";
-import { isOfficialBalanceSite, balanceSourceName, BALANCE_SCRIPT_TEMPLATE } from "@/lib/provider-balance";
+import { isOfficialBalanceSite, isMimoBalanceSite, balanceSourceName, BALANCE_SCRIPT_TEMPLATE } from "@/lib/provider-balance";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -26,9 +26,11 @@ export function ProviderBalanceDialog({ provider, store, onClose }: {
   const saveInFlight = useRef(false);
   const initialUrl = useRef(provider.baseUrl);
   const official = isOfficialBalanceSite(provider.baseUrl);
+  const mimo = isMimoBalanceSite(provider.baseUrl);
   const firstSiteCard = store.state.data?.providers.find(item => relayGroupKey(item.baseUrl) === relayGroupKey(provider.baseUrl));
   const canShare = !!firstSiteCard && firstSiteCard.id !== provider.id;
   const shared = !!provider.balanceSharedFrom;
+  const effectiveScript = shared ? firstSiteCard?.balanceScript : provider.balanceScript;
   const balanceCredentialReady = shared
     ? !!firstSiteCard && (firstSiteCard.hasApiKey || firstSiteCard.hasAccessToken || !!firstSiteCard.balanceScript)
     : provider.hasApiKey || provider.hasAccessToken || !!provider.balanceScript;
@@ -45,9 +47,9 @@ export function ProviderBalanceDialog({ provider, store, onClose }: {
   useEffect(() => {
     if (started.current) return;
     started.current = true;
-    if (provider.balanceScript || provider.hasAccessToken || (official && balanceCredentialReady)) void store.refreshBalance(provider.id);
+    if (provider.balanceScript || (!mimo && (provider.hasAccessToken || (official && balanceCredentialReady)))) void store.refreshBalance(provider.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [provider.id, provider.hasAccessToken, balanceCredentialReady, official]);
+  }, [provider.id, provider.hasAccessToken, balanceCredentialReady, official, mimo, effectiveScript]);
 
   const saveAndQuery = async () => {
     if (saveInFlight.current || busy) return;
@@ -185,7 +187,7 @@ export function ProviderBalanceDialog({ provider, store, onClose }: {
                   {t("newapi.balanceQuerying")}
                 </span>
               ) : (
-                t("newapi.balanceNotQueried")
+                t(mimo && !effectiveScript ? "newapi.balanceMimoShort" : "newapi.balanceNotQueried")
               )}
             </div>
           )}
@@ -269,7 +271,11 @@ export function ProviderBalanceDialog({ provider, store, onClose }: {
         </div>
 
         {/* Credentials / API Key hint */}
-        {official ? (
+        {mimo ? (
+          <p className="rounded-lg bg-sky-500/[0.05] px-3 py-2 text-xs leading-relaxed text-muted-foreground ring-1 ring-sky-500/15">
+            {t("newapi.balanceMimoHint")}
+          </p>
+        ) : official ? (
           <p className="rounded-lg bg-emerald-500/[0.05] px-3 py-2 text-xs leading-relaxed text-muted-foreground ring-1 ring-emerald-500/15">
             {t("newapi.balanceApiKeyHint")}
           </p>
@@ -332,7 +338,7 @@ export function ProviderBalanceDialog({ provider, store, onClose }: {
           <Button
             variant="outline"
             size="sm"
-            disabled={busy || dirty || !balanceCredentialReady}
+            disabled={busy || dirty || !balanceCredentialReady || (mimo && !effectiveScript)}
             onClick={() => {
               setSaveError(null);
               void store.refreshBalance(provider.id);

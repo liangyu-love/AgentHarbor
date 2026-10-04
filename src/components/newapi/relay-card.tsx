@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { Wallet, ChevronLeft, ChevronRight, Layers, List, Loader2, Network, PlugZap, RadioTower, RefreshCw, SquarePen, Trash2 } from "lucide-react";
-import { balanceSourceName } from "@/lib/provider-balance";
+import { balanceSourceName, isMimoBalanceSite } from "@/lib/provider-balance";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -44,10 +44,22 @@ export function RelayCard({ group, store, view, onEdit, onTest, onRemove, onBala
     const symbol = balance.unit === "USD" ? "$" : balance.unit === "CNY" ? "¥" : "";
     return `${symbol}${formatMoney(balance.remaining)}${symbol ? "" : ` ${balance.unit}`}`.trim();
   };
-  const balanceLabel = (provider: NewApiProvider) =>
-    provider.balance && provider.balanceSource !== "deepseek" ? t("newapi.balanceRemaining") : t("newapi.balance");
+  const balanceLabel = (provider: NewApiProvider) => {
+    const entries = provider.balance?.entries;
+    if (provider.balanceSource === "commandCode" && entries?.length && entries.every(entry => entry.label === "fiveHour" || entry.label === "weekly")) {
+      return t("newapi.balanceWindowRemaining");
+    }
+    return provider.balance && provider.balanceSource !== "deepseek" ? t("newapi.balanceRemaining") : t("newapi.balance");
+  };
   const balanceCaption = (provider: NewApiProvider) => {
+    if (isMimoBalanceSite(provider.baseUrl) && !provider.balanceScript && !provider.balance) return t("newapi.balanceMimoShort");
     if (!provider.balance) return t("newapi.balanceNotQueried");
+    if (provider.balanceSource === "commandCode") {
+      const plan = provider.balance.entries?.find(entry => entry.label?.startsWith("Command Code"));
+      if (plan?.label) return plan.label;
+      const window = provider.balance.entries?.[0];
+      if (window?.label === "fiveHour" || window?.label === "weekly") return t(`newapi.balanceWindow.${window.label}`);
+    }
     return balanceSourceName(provider.balanceSource) || t("newapi.balanceUndetected");
   };
 
@@ -55,7 +67,7 @@ export function RelayCard({ group, store, view, onEdit, onTest, onRemove, onBala
   const provider = group.providers.find(item => item.id === activeMemberId) ?? group.providers[0];
   const balanceOwner = provider.balanceSharedFrom
     ? store.state.data?.providers.find(item => item.id === provider.balanceSharedFrom) : provider;
-  const balanceReady = !!balanceOwner && (balanceOwner.hasApiKey || balanceOwner.hasAccessToken || !!balanceOwner.balanceScript);
+  const balanceReady = !!balanceOwner && (!isMimoBalanceSite(balanceOwner.baseUrl) || !!balanceOwner.balanceScript) && (balanceOwner.hasApiKey || balanceOwner.hasAccessToken || !!balanceOwner.balanceScript);
   const isGroupActive = group.providers.some(item => item.id === activeId) && routingEnabled;
   const isCurrentActive = provider.id === activeId && routingEnabled;
   const selected = filter === group.key;

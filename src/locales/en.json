@@ -308,6 +308,7 @@
     "fetchModels": "Fetch models",
     "modelLibrary": "Model catalog",
     "modelsSelected": "{{selected}} / {{total}} selected",
+    "balanceWindowRemaining": "Window quota remaining",
     "selectMatchingModels": "Add matching models",
     "noIncludedModels": "No models added yet. Select the models you want to use from the pending list.",
     "selectAllModels": "Select all",
@@ -421,6 +422,8 @@
     "useSharedBalance": "Use shared balance",
     "useOwnBalance": "Query separately",
     "balanceApiKeyHint": "Uses the saved model API key to query the official balance endpoint.",
+    "balanceMimoHint": "MiMo balance queries are not integrated in this app yet. Check API balance and Token Plan quota separately in the official console, or configure a custom script for an available endpoint. Unknown balances are not shown as zero.",
+    "balanceMimoShort": "MiMo balance not integrated; check the official console",
     "balanceQuerying": "Querying…",
     "balanceLastGood": "Query failed. Showing the last successful result.",
     "balanceUnavailable": "Insufficient balance or account unavailable",
@@ -435,6 +438,9 @@
     "clickToExpand": "Click to expand",
     "balanceWindow": {
       "rolling": "Rolling window remaining",
+      "fiveHour": "5-hour window remaining",
+      "purchased": "Purchased credits remaining",
+      "free": "Free credits remaining",
       "weekly": "Weekly remaining",
       "monthly": "Monthly remaining"
     },

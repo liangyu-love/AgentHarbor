@@ -110,6 +110,27 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     description: "智谱 Z.AI 编程套餐端点",
   },
   {
+    name: "MiMo API",
+    baseUrl: "https://api.xiaomimimo.com/v1",
+    protocol: "chatCompletions",
+    category: "coding",
+    description: "小米 MiMo 官方 API",
+  },
+  {
+    name: "MiMo Token Plan",
+    baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+    protocol: "chatCompletions",
+    category: "coding",
+    description: "小米 MiMo Token Plan 专用入口；模型清单可按密钥拉取",
+  },
+  {
+    name: "Command Code",
+    baseUrl: "https://api.commandcode.ai/provider/v1",
+    protocol: "chatCompletions",
+    category: "coding",
+    description: "Command Code 官方 Coding Plan / Provider API",
+  },
+  {
     name: "StepFun",
     baseUrl: "https://api.stepfun.com/v1",
     protocol: "chatCompletions",

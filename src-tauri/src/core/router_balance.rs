@@ -35,6 +35,15 @@ pub fn query(
         )
         .map(|b| (b, "minimaxPlan"));
     }
+    // Models use /provider/v1; billing is always rooted at /alpha.
+    if host == "api.commandcode.ai"
+        && matches!(
+            root.path().trim_end_matches('/'),
+            "" | "/provider" | "/provider/v1"
+        )
+    {
+        return command_code_balance(connection, proxy).map(|b| (b, "commandCode"));
+    }
     if matches!(host.as_str(), "open.bigmodel.cn" | "api.z.ai")
         && root.path().starts_with("/api/coding/")
     {
@@ -110,6 +119,7 @@ fn is_known_official_host(host: &str) -> bool {
             | "opencode.ai"
             | "api.commandcode.ai"
             | "token-plan-cn.xiaomimimo.com"
+            | "api.xiaomimimo.com"
     )
 }
 
@@ -125,10 +135,7 @@ fn detect_account_platform(
         root.join("api/status").map_err(|_| "newapi.errors.url")?,
         HeaderMap::new(),
     );
-    if newapi_status
-        .as_ref()
-        .is_ok_and(is_newapi_public_status)
-    {
+    if newapi_status.as_ref().is_ok_and(is_newapi_public_status) {
         return Ok(AccountPlatform::NewApi);
     }
 
@@ -280,6 +287,201 @@ fn official_balance(
         .join(path)
         .map_err(|_| "newapi.errors.url".to_owned())?;
     parse_official_balance(source, &newapi::get(&client, url, headers)?)
+}
+
+/// Command Code exposes Coding Plan facts through the account endpoints used
+/// by its official provider integration. Keep the existing balance card shape
+/// and expose monthly credits plus the five-hour and weekly windows as entries.
+fn command_code_balance(
+    connection: &newapi::Connection,
+    proxy: &ApiProxyConfigPayload,
+) -> Result<newapi::Balance, String> {
+    if connection.api_key.is_empty() {
+        return Err("newapi.errors.apiKeyRequired".into());
+    }
+    let client = newapi::client(proxy)?;
+    let mut headers = HeaderMap::new();
+    headers.insert(AUTHORIZATION, newapi::auth_header(&connection.api_key)?);
+    let root = newapi::base_url(&connection.base_url)?;
+    let credits = newapi::get(
+        &client,
+        root.join("/alpha/billing/credits")
+            .map_err(|_| "newapi.errors.url")?,
+        headers.clone(),
+    )?;
+    let account = newapi::get(
+        &client,
+        root.join("/alpha/whoami")
+            .map_err(|_| "newapi.errors.url")?,
+        headers.clone(),
+    )
+    .ok();
+    let mut subscription_url = root
+        .join("/alpha/billing/subscriptions")
+        .map_err(|_| "newapi.errors.url")?;
+    if let Some(org_id) = account
+        .as_ref()
+        .and_then(|item| item.pointer("/org/id"))
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+    {
+        subscription_url
+            .query_pairs_mut()
+            .append_pair("orgId", org_id);
+    }
+    let subscription = newapi::get(&client, subscription_url, headers).ok();
+    parse_command_code_balance(&credits, subscription.as_ref())
+}
+
+fn command_code_plan_id(value: &Value, subscription: Option<&Value>) -> Option<String> {
+    subscription
+        .and_then(|item| item.pointer("/data/planId").or_else(|| item.get("planId")))
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .or_else(|| {
+            value
+                .pointer("/credits/planId")
+                .or_else(|| value.get("planId"))
+                .and_then(Value::as_str)
+        })
+        .map(str::to_owned)
+}
+
+fn command_code_plan_name(plan_id: Option<&str>) -> String {
+    let normalized = plan_id.unwrap_or("").to_ascii_lowercase().replace('_', "-");
+    if normalized == "individual-goat" {
+        "GOAT".into()
+    } else if normalized == "individual-provider" {
+        "Provider".into()
+    } else if normalized == "individual-go-v1" || normalized == "individual-go"
+    {
+        "Go".into()
+    } else if normalized == "individual-pro-v1"
+        || normalized == "individual-pro"
+    {
+        "Pro".into()
+    } else if normalized == "individual-ultra" {
+        "Ultra".into()
+    } else if normalized == "individual-max" {
+        "Max".into()
+    } else if normalized == "teams-pro" {
+        "Teams Pro".into()
+    } else if let Some(plan_id) = plan_id.filter(|id| !id.is_empty()) {
+        plan_id.to_owned()
+    } else {
+        "Coding Plan".into()
+    }
+}
+
+fn command_code_plan_monthly(plan_id: Option<&str>) -> Option<f64> {
+    let normalized = plan_id.unwrap_or("").to_ascii_lowercase().replace('_', "-");
+    if normalized == "individual-goat" {
+        Some(70.0)
+    } else if normalized == "individual-provider" {
+        Some(15.0)
+    } else if normalized == "individual-go-v1" || normalized == "individual-go"
+    {
+        Some(10.0)
+    } else if normalized == "individual-pro-v1" {
+        Some(80.0)
+    } else if normalized == "individual-pro" {
+        Some(30.0)
+    } else if normalized == "individual-ultra" {
+        Some(300.0)
+    } else if normalized == "individual-max" {
+        Some(150.0)
+    } else if normalized == "teams-pro" {
+        Some(40.0)
+    } else {
+        None
+    }
+}
+
+fn command_code_reset(value: Option<&Value>) -> Option<String> {
+    value.and_then(|value| {
+        if let Some(text) = value.as_str() {
+            if let Ok(time) = chrono::DateTime::parse_from_rfc3339(text) {
+                return Some(time.to_rfc3339());
+            }
+        }
+        parse_number(Some(value))
+            .filter(|time| time.is_finite() && *time > 0.0 && *time < i64::MAX as f64)
+            .and_then(|time| {
+                if time < 100_000_000_000.0 {
+                    chrono::DateTime::from_timestamp(time as i64, 0)
+                } else {
+                    chrono::DateTime::from_timestamp_millis(time as i64)
+                }
+            })
+            .map(|time| time.to_rfc3339())
+    })
+}
+
+fn parse_command_code_balance(
+    value: &Value,
+    subscription: Option<&Value>,
+) -> Result<newapi::Balance, String> {
+    let credits = value.get("credits").and_then(Value::as_object);
+    let plan_id = command_code_plan_id(value, subscription);
+    let plan_name = command_code_plan_name(plan_id.as_deref());
+    let monthly_total = command_code_plan_monthly(plan_id.as_deref());
+    let mut entries = Vec::new();
+    if let Some(remaining) = parse_number(credits.and_then(|item| item.get("monthlyCredits"))) {
+        entries.push(newapi::BalanceEntry {
+            label: Some(format!("Command Code 路 {plan_name}")),
+            resets_at: command_code_reset(subscription.and_then(|item| {
+                item.pointer("/data/currentPeriodEnd")
+                    .or_else(|| item.get("currentPeriodEnd"))
+            })),
+            remaining,
+            used: monthly_total.map(|total| (total - remaining).max(0.0)),
+            total: monthly_total,
+            unit: "credits".into(),
+            valid: remaining > 0.0,
+        });
+    }
+    for (label, key) in [("purchased", "purchasedCredits"), ("free", "freeCredits")] {
+        if let Some(remaining) = parse_number(credits.and_then(|item| item.get(key))) {
+            entries.push(newapi::BalanceEntry {
+                label: Some(label.into()),
+                resets_at: None,
+                remaining,
+                used: None,
+                total: None,
+                unit: "credits".into(),
+                valid: remaining > 0.0,
+            });
+        }
+    }
+    if let Some(windows) = value.get("windowLimits").and_then(Value::as_object) {
+        for (label, key) in [("fiveHour", "fiveHour"), ("weekly", "weekly")] {
+            let Some(window) = windows.get(key).and_then(Value::as_object) else {
+                continue;
+            };
+            // Missing fields are unknown; a zero cap is uncapped, not an
+            // exhausted zero-balance window. Neither is a remaining quota.
+            let (Some(used), Some(cap)) = (
+                parse_number(window.get("used")),
+                parse_number(window.get("cap")),
+            ) else {
+                continue;
+            };
+            if used < 0.0 || cap <= 0.0 {
+                continue;
+            }
+            entries.push(newapi::BalanceEntry {
+                label: Some(label.into()),
+                resets_at: command_code_reset(window.get("resetAt")),
+                remaining: (cap - used).max(0.0),
+                used: Some(used),
+                total: Some(cap),
+                unit: "credits".into(),
+                valid: window.get("exceeded").and_then(Value::as_bool) != Some(true)
+                    && (cap <= 0.0 || used < cap),
+            });
+        }
+    }
+    balance_from_entries(entries)
 }
 
 fn parse_official_balance(source: &str, value: &Value) -> Result<newapi::Balance, String> {
@@ -755,6 +957,131 @@ mod tests {
     }
 
     #[test]
+    fn parses_command_code_plan_and_quota_windows() {
+        let balance = parse_command_code_balance(
+            &json!({
+                "planId": "individual-pro-v1",
+                "credits": {
+                    "monthlyCredits": 62.5,
+                    "purchasedCredits": 4,
+                    "freeCredits": 1
+                },
+                "windowLimits": {
+                    "fiveHour": {"used": 30, "cap": 100, "exceeded": false, "resetAt": 1_900_000_000_000_i64},
+                    "weekly": {"used": 120, "cap": 200, "exceeded": false, "resetAt": 1_900_100_000_000_i64}
+                }
+            }),
+            Some(&json!({"currentPeriodEnd": 1_900_200_000_000_i64})),
+        )
+        .unwrap();
+        assert_eq!(balance.entries.len(), 5);
+        assert_eq!(
+            balance.entries[0].label.as_deref(),
+            Some("Command Code 路 Pro")
+        );
+        assert_eq!(balance.entries[0].remaining, 62.5);
+        assert_eq!(balance.entries[0].total, Some(80.0));
+        assert_eq!(balance.entries[1].label.as_deref(), Some("purchased"));
+        assert_eq!(balance.entries[3].label.as_deref(), Some("fiveHour"));
+        assert_eq!(balance.entries[3].remaining, 70.0);
+        assert_eq!(balance.entries[4].label.as_deref(), Some("weekly"));
+        assert_eq!(balance.entries[4].remaining, 80.0);
+    }
+
+    #[test]
+    fn command_code_known_plans_missing_windows_and_dates_are_distinct() {
+        for (id, total) in [
+            ("individual-go", 10.0),
+            ("individual-go-v1", 10.0),
+            ("individual-goat", 70.0),
+            ("individual-pro", 30.0),
+            ("individual-pro-v1", 80.0),
+            ("individual-provider", 15.0),
+            ("individual-max", 150.0),
+            ("individual-ultra", 300.0),
+            ("teams-pro", 40.0),
+        ] {
+            assert_eq!(command_code_plan_monthly(Some(id)), Some(total), "{id}");
+        }
+        assert_eq!(
+            command_code_plan_name(Some("individual-provider")),
+            "Provider"
+        );
+        let balance = parse_command_code_balance(&json!({"credits": {"planId": "individual-pro", "monthlyCredits": 0},
+            "windowLimits": {"fiveHour": {"cap": 10}, "weekly": {"cap": 0, "used": 4}}}),
+            Some(&json!({"data": {"planId": "individual-provider", "currentPeriodEnd": "2030-03-17T00:00:00Z"}}))).unwrap();
+        assert_eq!(
+            balance.entries.len(),
+            1,
+            "Missing or unlimited windows must not become exhausted balances"
+        );
+        assert_eq!(balance.remaining, 0.0);
+        assert_eq!(balance.entries[0].total, Some(15.0));
+        assert!(balance.entries[0]
+            .resets_at
+            .as_ref()
+            .unwrap()
+            .starts_with("2030-03-17"));
+        assert!(command_code_reset(Some(&json!(0))).is_none());
+        assert!(command_code_reset(Some(&json!("invalid"))).is_none());
+        assert!(parse_command_code_balance(&json!({"credits":{}}), None).is_err());
+        let window_only = parse_command_code_balance(
+            &json!({"windowLimits":{"weekly":{"cap":10,"used":3}}}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(window_only.remaining, 7.0);
+        let unknown = parse_command_code_balance(
+            &json!({"credits":{"planId":"future-tier","monthlyCredits":4}}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(unknown.entries[0].total, None);
+    }
+
+    #[test]
+    fn command_code_billing_uses_root_paths_model_key_and_org_scope() {
+        let (base_url, requests, server) = mock_server(vec![
+            ("200 OK", r#"{"credits":{"monthlyCredits":5}}"#),
+            ("200 OK", r#"{"org":{"id":"team one"}}"#),
+            ("200 OK", r#"{"data":{"planId":"teams-pro"}}"#),
+        ]);
+        let balance = command_code_balance(
+            &newapi::Connection {
+                base_url: format!("{base_url}provider/v1/"),
+                api_key: "synthetic-model-key".into(),
+                access_token: "account-token-must-not-be-used".into(),
+                ..Default::default()
+            },
+            &ApiProxyConfigPayload::default(),
+        )
+        .unwrap();
+        server.join().unwrap();
+        let requests = requests.lock().unwrap();
+        assert!(requests[0].starts_with("GET /alpha/billing/credits "));
+        assert!(requests[1].starts_with("GET /alpha/whoami "));
+        assert!(requests[2].starts_with("GET /alpha/billing/subscriptions?orgId=team+one "));
+        for request in requests.iter() {
+            assert!(request.contains("Bearer synthetic-model-key"));
+            assert!(!request.contains("account-token-must-not-be-used"));
+        }
+        assert_eq!(balance.entries[0].total, Some(40.0));
+        assert_eq!(
+            balance.entries[0].label.as_deref(),
+            Some("Command Code 路 Teams Pro")
+        );
+        let missing_key = newapi::Connection {
+            base_url: "https://api.commandcode.ai/provider/v1".into(),
+            access_token: "must-not-be-used".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            query(&missing_key, &ApiProxyConfigPayload::default()).unwrap_err(),
+            "newapi.errors.apiKeyRequired"
+        );
+    }
+
+    #[test]
     fn official_hosts_never_enter_account_protocol_detection() {
         for host in [
             "api.openai.com",
@@ -770,7 +1097,9 @@ mod tests {
         for base_url in [
             "https://api.openai.com/v1",
             "https://opencode.ai/zen/v1",
-            "https://api.commandcode.ai/provider/v1",
+            "https://api.commandcode.ai/unrelated/v1",
+            "https://api.xiaomimimo.com/v1",
+            "https://token-plan-cn.xiaomimimo.com/v1",
         ] {
             let connection = newapi::Connection {
                 base_url: base_url.into(),
@@ -912,4 +1241,14 @@ mod tests {
             .contains("authorization: bearer deepseek-model-key"));
         assert!(!requests[0].contains("account-token-must-not-be-used"));
     }
+    #[test]
+    fn unknown_plan_versions_and_epoch_units_are_safe() {
+        for id in ["individual-pro-v2", "individual-go-v2", "individual-goat-plus", "teams-pro-new"] {
+            assert_eq!(command_code_plan_monthly(Some(id)), None);
+            assert_eq!(command_code_plan_name(Some(id)), id);
+        }
+        assert_eq!(command_code_reset(Some(&json!(1900000000))), command_code_reset(Some(&json!(1900000000000i64))));
+        assert!(command_code_reset(Some(&json!(1900000000))).unwrap().starts_with("2030-"));
+    }
+
 }
