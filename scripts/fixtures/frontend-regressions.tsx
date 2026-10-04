@@ -16,6 +16,7 @@ import { AccountsPage } from "@/components/accounts/accounts-page";
 import { TokenUsagePanel } from "@/components/accounts/token-usage-panel";
 import { McpPage } from "@/components/mcp/mcp-page";
 import { ClientConfigs } from "@/components/newapi/client-configs";
+import { TerminalProxySettings } from "@/components/settings/terminal-proxy-settings";
 import type { NewApiProvider, NewApiState } from "@/types/newapi";
 import type { TokenUsagePayload } from "@/types";
 import type { ClientConfigRequest, ClientStatus } from "@/types/clients";
@@ -220,6 +221,10 @@ api.routing.setEnabled = async enabled => {
   state = { ...state, router: { ...state.router, enabled } };
   return { state, applied: null };
 };
+api.routing.setAccountless = async accountless => {
+  state = { ...state, router: { ...state.router, accountless } };
+  return { state, applied: null };
+};
 api.targets.restart = async target => {
   controls.review.restartCalls.push(target);
 };
@@ -287,20 +292,56 @@ api.image.loadGalleryImage = path => {
 api.providers.fetchModels = () => new Promise(resolve => {
   controls.review.resolveModels = (fetched = [model("model-A-returned")]) => resolve(fetched);
 });
+// Deliberately synthetic resolver output: this fixture verifies rendering and
+// async isolation, while Rust tests verify model matching and precedence.
+const modelResolutionFixture = (draft: any) => ({ models: draft.models.map((item: any) => {
+  const known = ["model-A", "model-B", "newly-fetched-model"].includes(item.id);
+  const ref = known ? { providerId: "fixture-official", modelId: item.id } : null;
+  const field = (value: number | null) => ({ value, source: known ? "catalog" : "unknown", sourceRef: ref, updatedAt: null });
+  const result = {
+    modelId: item.id, matchKind: known ? "exact" : "unmatched", matched: ref,
+    context: field(known ? 1_000_000 : null), inputLimit: field(known ? 800_000 : null), output: field(known ? 65_000 : null),
+    projection: { contextWindow: known ? 1_000_000 : 200_000, contextSource: known ? "catalog" : "fallback", contextIsFallback: !known,
+      budget: known ? 800_000 : 200_000, budgetSource: known ? "catalog" : "fallback", inputLimit: known ? 800_000 : null,
+      outputLimit: known ? 65_000 : 8_192, outputSource: known ? "catalog" : "fallback", reasoning: [], reasoningSource: "unknown", defaultReasoning: null,
+      compression: { mode: "percent", percent: 90, tokens: null, source: "global", budget: known ? 800_000 : 200_000,
+        budgetSource: known ? "catalog" : "fallback", threshold: known ? 720_000 : 180_000, state: "computed", note: null } },
+  };
+  const patch = controls.review.modelResolutionPatches?.[item.id] ?? {};
+  return { ...result, ...patch, projection: { ...result.projection, ...patch.projection,
+    compression: { ...result.projection.compression, ...patch.projection?.compression } } };
+}) });
+api.providers.previewModelResolutions = draft => {
+  const snapshot = JSON.parse(JSON.stringify(draft));
+  controls.review.modelResolutionRequests.push(snapshot);
+  const response = modelResolutionFixture(snapshot);
+  return new Promise((resolve, reject) => {
+    controls.review.modelResolutionResolvers.push((replacement = response) => resolve(replacement));
+    controls.review.modelResolutionRejectors.push(reject);
+    if (!controls.review.holdModelResolutions) resolve(response);
+  });
+};
+api.providers.revealApiKey = id => {
+  controls.review.revealedIds = [...(controls.review.revealedIds ?? []), id];
+  return new Promise((resolve, reject) => {
+    controls.review.resolveApiKey = () => resolve(`synthetic-key-${id}`);
+    controls.review.rejectApiKey = () => reject('newapi.errors.apiKeyMissing');
+  });
+};
 api.providers.save = async input => {
   controls.review.saved = input;
   return { state, applied: null };
 };
 
 function ProviderFixture({ mixed = false }: { mixed?: boolean }) {
-  const [dialog, setDialog] = useState({ open: true, provider: mixed ? mixedProvider : provider("A") });
+  const [dialog, setDialog] = useState({ open: true, provider: controls.review.dialogProviderFixture ?? (mixed ? mixedProvider : provider("A")) });
   return <><button id="open-b" onClick={() => setDialog({ open: true, provider: provider("B") })}>Open B</button>
     <button id="reopen-saved" onClick={() => setDialog(current => ({ open: true, provider: { ...current.provider, ...controls.review.saved } }))}>Reopen saved</button>
     <ProviderDialog open={dialog.open} provider={dialog.provider}
       onOpenChange={open => setDialog(current => ({ ...current, open }))} onSaved={noop} /></>;
 }
 
-type FixtureMode = "thread-details" | "thread-details-missing" | "thread-details-unknown" | "thread-details-error" | "compact" | "grid" | "image" | "mcp" | "accounts" | "account-resets" | "account-resets-unavailable" | "thread-tree" | "groups" | "overview" | "usage" | "provider" | "warnings" | "thread-actions" | "thread-queue-recovery" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-opencode" | "clients-opencode-stale" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official" | "recovery-long" | "recovery-router";
+type FixtureMode = "terminal-proxy" | "thread-details" | "thread-details-missing" | "thread-details-unknown" | "thread-details-error" | "compact" | "grid" | "image" | "mcp" | "accounts" | "account-resets" | "account-resets-unavailable" | "thread-tree" | "groups" | "overview" | "usage" | "provider" | "warnings" | "thread-actions" | "thread-queue-recovery" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-conflict" | "clients-opencode" | "clients-opencode-stale" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official" | "recovery-long" | "recovery-router";
 
 function RecoveryFixture({ thread }: { thread: ThreadSummary }) {
   const [open, setOpen] = useState(true);
@@ -342,6 +383,57 @@ function recoveryPreview(mode: FixtureMode) {
 }
 
 function mount(mode: FixtureMode) {
+  if (mode === "terminal-proxy") {
+    controls.review.terminalSetCalls = [];
+    controls.review.terminalTestCalls = [];
+    controls.review.terminalTestResolvers = [];
+    controls.review.terminalOpenCalls = 0;
+    controls.review.terminalStatus = { supported: true, enabled: false, applied: false,
+      url: null, noProxy: "localhost,127.0.0.1,::1", recoveryRequired: false, conflicts: [],
+      preservedVariables: [], notificationSent: true, ...controls.review.terminalStatusPatch };
+    api.terminalProxy.load = async () => {
+      if (controls.review.terminalLoadFailure) throw "settings.terminalProxy.errors.environment";
+      return controls.review.terminalStatus;
+    };
+    api.terminalProxy.set = async (enabled, url, noProxy) => {
+      controls.review.terminalSetCalls.push({ enabled, url, noProxy });
+      if (controls.review.terminalSaveHold) await new Promise(resolve => { controls.review.terminalSaveResolver = resolve; });
+      if (controls.review.terminalSaveFailure) throw controls.review.terminalSaveFailure;
+      const result = { ...controls.review.terminalStatus, enabled, applied: enabled, url: enabled ? url : controls.review.terminalStatus.url,
+        noProxy, recoveryRequired: false, conflicts: [], ...controls.review.terminalSetResultPatch };
+      controls.review.terminalStatus = result;
+      return result;
+    };
+    api.terminalProxy.test = async url => {
+      controls.review.terminalTestCalls.push(url);
+      const probes = [{ service: "Anthropic", reachable: true, statusCode: 404 },
+        { service: "OpenAI", reachable: true, statusCode: 401 }];
+      if (controls.review.terminalTestHold) return new Promise(resolve => controls.review.terminalTestResolvers.push(resolve));
+      if (controls.review.terminalTestFailure) throw controls.review.terminalTestFailure;
+      return probes;
+    };
+    api.terminalProxy.openTerminal = async () => {
+      controls.review.terminalOpenCalls++;
+      if (controls.review.terminalOpenFailure) throw "settings.terminalProxy.errors.launch";
+    };
+  }
+  controls.review.loginCalls = [];
+  controls.review.cancelCalls = [];
+  controls.review.cancelFailures = 0;
+  controls.review.cancelResult = true;
+  controls.review.cancelHold = false;
+  api.accounts.login = attemptId => new Promise((resolve, reject) => {
+    controls.review.loginCalls.push({ attemptId, resolve: () => resolve(accountList as any), reject });
+  });
+  api.accounts.cancelLogin = async attemptId => {
+    controls.review.cancelCalls.push(attemptId);
+    if (controls.review.cancelFailures > 0) {
+      controls.review.cancelFailures--;
+      throw "accounts.cancelFailed";
+    }
+    if (controls.review.cancelHold) await new Promise(resolve => { controls.review.releaseCancel = resolve; });
+    return controls.review.cancelResult;
+  };
   if (mode.startsWith("account-resets")) {
     const now = Math.floor(Date.now() / 1000);
     const credits = [
@@ -358,11 +450,12 @@ function mount(mode: FixtureMode) {
     api.accounts.refresh = async () => { controls.review.accountRefreshCalls = (controls.review.accountRefreshCalls ?? 0) + 1; return payload as any; };
   } else {
     api.accounts.list = async () => accountList as any;
-    api.accounts.refresh = async () => accountList as any;
+    api.accounts.refresh = async () => (controls.review.emptyAccounts ? { ...accountList, items: [] } : accountList) as any;
   }
   const selectedProvider = mode.startsWith("clients-versions") ? versionedProvider
     : mode === "incompatible" || mode === "native-invalid" ? { ...mixedProvider, model: "chat-model" } : mixedProvider;
   state = { providers: mode === "image" ? [imageProvider] : mode === "groups" ? groupedProviders : mode === "overview" ? [...groupedProviders, provider("extra-1"), provider("extra-2")] : mode === "usage" ? [{ ...groupedProviders[0], balance: { remaining: 12.5, used: 7.5, unit: "USD", rawQuota: 12.5, quotaPerUnit: null, requestCount: 5, checkedAt: Math.floor(Date.now() / 1000), conversionAvailable: true } }] : [selectedProvider], router: { enabled: false, accessMode: mode === "native-invalid" ? "native" : "router", accountless: false, port: 43127, configDrifted: false }, proxyRunning: false, activeProviderId: mode === "image" || mode === "groups" || mode === "overview" || mode === "usage" ? null : selectedProvider.id };
+  if (controls.review.providerFixtures) state.providers = controls.review.providerFixtures;
   if (mode === "incompatible") state.providers.push(provider("alternate"));
   const savedClient: ClientConfigRequest | null = mode === "clients-opencode-stale" ? {
     targetId: "opencode", providerId: "mixed", model: "responses-model", contextWindow: 128000,
@@ -373,7 +466,7 @@ function mount(mode: FixtureMode) {
     maxOutputTokens: 8192, accessMode: "native", providerIds: ["versions"], authField: "authToken",
     claudeModels: { sonnet: "", opus: "claude-opus-4-8", fable: "", haiku: "", subagent: "" },
     claudeModelIds: ["claude-opus-5-5", "claude-opus-4-8"],
-  } : mode === "clients-existing" ? {
+  } : (mode === "clients-existing" || mode === "clients-conflict") ? {
     targetId: "claudeCode", providerId: "mixed", model: "responses-model", contextWindow: 128000,
     maxOutputTokens: 8192, accessMode: "router", providerIds: ["mixed"], authField: "apiKey",
     claudeModels: { sonnet: "chat-model", opus: "", fable: "", haiku: "", subagent: "" },
@@ -382,16 +475,37 @@ function mount(mode: FixtureMode) {
   const clientStatuses: ClientStatus[] = mode.startsWith("clients") ? [{
     targetId: openCode ? "opencode" : "claudeCode", name: openCode ? "OpenCode" : "Claude Code",
     path: "C:/synthetic/config.json", protocols: openCode ? ["responses", "chatCompletions", "anthropicMessages"] : ["anthropicMessages"],
-    configured: !!savedClient, conflict: false, error: null, providerId: savedClient?.providerId ?? null,
+    configured: !!savedClient, conflict: mode === "clients-conflict", conflictFields: mode === "clients-conflict" ? ["model"] : [], error: null, providerId: savedClient?.providerId ?? null,
     model: savedClient?.model ?? null, request: savedClient,
   }] : [];
-  api.targets.configs = async () => clientStatuses;
-  api.targets.applyConfig = async (request, revision) => {
-    controls.review.appliedClient = { request, revision };
-    Object.assign(clientStatuses[0], { configured: true, providerId: request.providerId,
+  api.targets.configs = async () => structuredClone(clientStatuses);
+  controls.review.releasedClientCount = 0;
+  api.targets.previewConfig = async (request, replaceConflicts = false) => {
+    if (clientStatuses[0]?.conflict && !replaceConflicts) throw "clients.errors.conflict";
+    controls.review.previewed = request;
+    controls.review.previewReplacesConflicts = replaceConflicts;
+    return { path: "C:/synthetic/config.json", revision: "mock-revision", content: JSON.stringify({ model: request.model }) };
+  };
+  api.targets.applyConfig = async (request, revision, replaceConflicts = false) => {
+    if (clientStatuses[0]?.conflict && !replaceConflicts) throw "clients.errors.conflict";
+    controls.review.appliedClient = { request, revision, replaceConflicts };
+    Object.assign(clientStatuses[0], { configured: true, conflict: false, conflictFields: [], providerId: request.providerId,
       model: request.model, request: JSON.parse(JSON.stringify(request)) });
     return { path: "C:/synthetic/config.json", backupPath: "C:/synthetic/config.backup" };
   };
+  api.targets.restoreConfig = async (_targetId, replaceConflicts = false) => {
+    if (clientStatuses[0].conflict && !replaceConflicts) throw "clients.errors.conflict";
+    controls.review.restoredClient = { replaceConflicts };
+    Object.assign(clientStatuses[0], { configured: false, conflict: false, conflictFields: [], providerId: null, model: null, request: null });
+    return { path: "C:/synthetic/config.json", backupPath: "C:/synthetic/config.backup" };
+  };
+  api.targets.reapplyConfig = async (_targetId, rebaseline) => {
+    if (clientStatuses[0].conflict && !rebaseline) throw "clients.errors.conflict";
+    controls.review.reappliedClient = { rebaseline };
+    Object.assign(clientStatuses[0], { conflict: false, conflictFields: [] });
+    return { path: "C:/synthetic/config.json", backupPath: "C:/synthetic/config.backup" };
+  };
+  api.targets.releaseConfig = async () => { controls.review.releasedClientCount += 1; };
   const threads = Array.from({ length: 100 }, (_, i) => ({ key: "t" + i, id: "t" + i,
     cwd: "C:/synthetic", folderName: "synthetic", title: "Review thread " + i,
     createdAt: 0, updatedAt: 0, userMessages: 1, agentMessages: 1, fileSize: 100,
@@ -499,10 +613,13 @@ function mount(mode: FixtureMode) {
     folderName: "Workspace " + i, items: threads.slice(i * 10, i * 10 + 10), latestAt: 0,
     totalMessages: 20, totalSize: 1000, userMessages: 10, agentMessages: 10 }));
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (mode === "terminal-proxy") controls.review.terminalClient = queryClient;
+  if (mode === "groups") controls.review.providersClient = queryClient;
   root.render(<QueryClientProvider client={queryClient}><TooltipProvider>
     <div style={{ position: "relative", height: 600 }}><PageStage state="active">
-      {mode.startsWith("thread-details") && <ThreadToastProbe />}
+      {(mode.startsWith("thread-details") || mode === "terminal-proxy") && <ThreadToastProbe />}
       {mode.startsWith("recovery-") ? <RecoveryFixture thread={threads[0] as ThreadSummary} /> :
+        mode === "terminal-proxy" ? <div className="mx-auto max-w-xl rounded-xl bg-card shadow-sm"><TerminalProxySettings currentProxy={{ mode: "manual", url: "http://127.0.0.1:7890" }} /></div> :
         mode === "image" ? <ImageWorkbenchPage /> : mode === "mcp" ? <McpPage /> : mode === "accounts" || mode.startsWith("account-resets") ? <AccountsPage refreshInterval="5m" onManageProviders={noop} /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage" ? <TokenUsagePanel data={{ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } }} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode.startsWith("thread-details") || mode === "thread-tree" || mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :
         mode === "access" || mode === "incompatible" || mode === "native-invalid" || mode === "groups" ? <NewApiPage /> :
         mode === "test" ? <ProviderTestDialog open provider={mixedProvider} onOpenChange={noop} onTested={noop} onFailed={noop} /> :
@@ -515,13 +632,29 @@ function mount(mode: FixtureMode) {
 }
 
 controls.review = { mount, realBalanceQuery, clientDefaults, claudeOneMDefaults, mergeModelCatalog, errors: { errorKey, errorMessage, formatInvokeError }, getState: () => state, pixel, accessCalls: [], thumbnailCalls: [], originalCalls: [], thumbnailResolvers: [],
+  modelResolutionFixture, modelResolutionRequests: [], modelResolutionResolvers: [], modelResolutionRejectors: [], holdModelResolutions: false, modelResolutionPatches: {},
   navigatedTo: null, proxySettingsOpened: false,
   imageRequests: [], imageResolvers: [], imageCancels: {}, cancelledJobs: [], gallerySaves: 0, failGallerySave: false,
   balanceRequests: [], balanceResolvers: [], balanceRejectors: [], balanceCredentialSaves: [],
   restartCalls: [], recoveryApplyCalls: 0, recoveredCalls: 0, deleteCalls: [], openedPath: null,
   holdThumbnails: false, holdOriginal: false, labels: {
     fetchModels: i18n.t("newapi.fetchModels"), cancel: i18n.t("common.cancel"), close: i18n.t("common.close"),
+    clearModels: i18n.t("newapi.clearModels"),
+    selectMatchingModels: i18n.t("newapi.selectMatchingModels"),
+    apiKeyMissing: i18n.t("newapi.errors.apiKeyMissing"),
+    clearPendingModels: i18n.t("newapi.clearPendingModels"),
+    includeModelA: i18n.t("newapi.includeModelAria", { model: "model-A" }),
+    includeFetchedModel: i18n.t("newapi.includeModelAria", { model: "newly-fetched-model" }),
+    windowRemaining: i18n.t("newapi.balanceWindowRemaining"),
+    weeklyWindow: i18n.t("newapi.balanceWindow.weekly"),
+    addModelPlaceholder: i18n.t("newapi.addModelPlaceholder"),
+    addModel: i18n.t("newapi.addModel"),
+    defaultModelA: i18n.t("newapi.setDefaultModel", { model: "model-A" }),
     modelContext: i18n.t("newapi.contextFor", { model: "model-A" }),
+    modelCatalog: i18n.t("newapi.catalogMapping.modelLevel"),
+    modelCompression: i18n.t("newapi.compression.modelLevel"),
+    providerCompression: i18n.t("newapi.compression.providerLevel"),
+    modelResolutionRetry: i18n.t("newapi.modelResolution.retry"),
     modelInput: `${i18n.t("newapi.capabilityInput")} · model-A`,
     modelOutput: `${i18n.t("newapi.capabilityOutput")} · model-A`,
     modelReasoning: `${i18n.t("newapi.capabilityReasoning")} · model-A`,
@@ -543,7 +676,10 @@ controls.review = { mount, realBalanceQuery, clientDefaults, claudeOneMDefaults,
     configure: i18n.t("clients.configure"), changeClient: i18n.t("clients.change"), preview: i18n.t("clients.preview"), incompatibleClient: i18n.t("clients.errors.protocol"),
     clientNative: i18n.t("clients.accessNative"), clientRouter: i18n.t("clients.accessRouter"),
     clientAdvanced: i18n.t("clients.advanced"), clientApply: i18n.t("clients.apply"),
+    clientApplyConflict: i18n.t("clients.applyConflict"), clientRestore: i18n.t("clients.restore"),
+    clientReapply: i18n.t("clients.reapply"), clientRebaseline: i18n.t("clients.rebaseline"),
     clientSelectAllModels: i18n.t("clients.selectAllModels"),
+    clientDeselectAllModels: i18n.t("clients.deselectAllModels"),
     oneMStartup: i18n.t("clients.oneMStartup"),
     oneMRoles: ["sonnet", "opus", "fable", "haiku", "subagent"].map(role => i18n.t("clients.oneMForRole", { role: i18n.t("clients." + role) })),
     openCodeModelsUnavailable: i18n.t("clients.errors.openCodeModelsUnavailable"),

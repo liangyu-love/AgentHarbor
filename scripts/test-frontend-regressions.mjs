@@ -1,3 +1,4 @@
+import { testOAuthLogin } from "./test-oauth-login.mjs";
 // Run after npm run build. No real Tauri backend, profiles, or external network.
 // Optional: --playwright-module=/path/to/playwright-core or PLAYWRIGHT_MODULE_PATH.
 import assert from "node:assert/strict";
@@ -10,6 +11,10 @@ import { testAccountThreadNavigation } from "./test-account-thread-navigation.mj
 import { testThreadDetails } from "./test-thread-details.mjs";
 import { testThreadUiFixes } from "./test-thread-ui-fixes.mjs";
 import { testMagpieOptimizations } from "./test-magpie-optimizations.mjs";
+import { testProviderFeedback } from "./test-provider-feedback.mjs";
+import { testProviderModelResolutions } from "./test-provider-model-resolutions.mjs";
+import { testTerminalProxy } from "./test-terminal-proxy.mjs";
+import { testRelayDeck } from "./test-relay-deck.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -68,7 +73,17 @@ try {
     await page.evaluate(value => window.review.mount(value), mode);
   };
 
-  if (process.env.FRONTEND_QA_SCOPE === "magpie-optimizations") {
+  if (process.env.FRONTEND_QA_SCOPE === "terminal-proxy") {
+    await testTerminalProxy({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "relay-deck") {
+    await testRelayDeck({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "oauth-login") {
+    await testOAuthLogin({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "provider-model-preview") {
+    await testProviderModelResolutions({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "provider-feedback") {
+    await testProviderFeedback({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "magpie-optimizations") {
     await testMagpieOptimizations({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "ui-review-fixes") {
     await testThreadUiFixes({ page, reset, captureDir });
@@ -322,6 +337,8 @@ try {
   assert.equal(await page.locator("#newapi-provider-userId, #newapi-provider-accessToken").count(), 0);
   console.log("PASS card balance dialog saves credentials, preserves last good result and does not flip the stack");
 
+  await testOAuthLogin({ page, reset, captureDir });
+
   await reset("accounts");
   const accountCard = page.locator("article").filter({ has: page.getByText("Alpha", { exact: true }) }).first();
   const showEmail = accountCard.getByRole("button", { name: "显示邮箱" });
@@ -399,6 +416,86 @@ try {
 
   await reset("provider");
   const labels = await page.evaluate(() => window.review.labels);
+  const keyInput = page.locator('#newapi-provider-apiKey');
+  assert.equal(await keyInput.inputValue(), '');
+  await page.getByRole('button', { name: 'show', exact: true }).click();
+  await page.evaluate(() => window.review.resolveApiKey());
+  await page.waitForFunction(() => document.querySelector('#newapi-provider-apiKey').type === 'text');
+  assert.equal(await keyInput.inputValue(), 'synthetic-key-A');
+  await page.getByRole('button', { name: 'hide', exact: true }).click();
+  assert.equal(await keyInput.getAttribute('type'), 'password');
+  await keyInput.fill('synthetic-replacement');
+  await page.getByRole('button', { name: 'show', exact: true }).click();
+  assert.equal(await keyInput.inputValue(), 'synthetic-replacement');
+  assert.deepEqual(await page.evaluate(() => window.review.revealedIds), ['A']);
+  await reset('provider');
+  await page.getByRole('button', { name: 'show', exact: true }).click();
+  await page.getByRole('button', { name: labels.cancel, exact: true }).click();
+  await page.locator('#open-b').click();
+  await page.evaluate(() => window.review.resolveApiKey());
+  assert.equal(await keyInput.inputValue(), '');
+  assert.equal(await keyInput.getAttribute('type'), 'password');
+  await page.getByRole('button', { name: 'show', exact: true }).click();
+  await page.evaluate(() => window.review.rejectApiKey());
+  await page.getByText(labels.apiKeyMissing, { exact: true }).waitFor();
+  assert.equal(await keyInput.inputValue(), '');
+  await page.getByRole('button', { name: 'show', exact: true }).click();
+  await page.evaluate(() => window.review.resolveApiKey());
+  await page.waitForFunction(() => document.querySelector('#newapi-provider-apiKey').value === 'synthetic-key-B');
+  console.log('PASS API key reveal is explicit, hides correctly, preserves replacements, ignores stale dialog responses and retries errors');
+  await reset('provider');
+  // A model discovered during refresh must stay in the pending list until the
+  // user explicitly includes it. Refreshes also keep the existing default.
+  await page.getByRole("button", { name: labels.fetchModels, exact: true }).click();
+  await page.evaluate(() => window.review.resolveModels([
+    { id: "model-A", displayName: "model-A", contextWindow: null, maxOutputTokens: null, endpointTypes: ["responses"], included: true, metadataSource: "upstream" },
+    { id: "newly-fetched-model", displayName: "newly-fetched-model", contextWindow: null, maxOutputTokens: null, endpointTypes: ["responses"], included: true, metadataSource: "upstream" },
+  ]));
+  await page.getByText("newly-fetched-model", { exact: true }).waitFor();
+  assert.equal(await page.locator('[data-pending-models]').getByText('newly-fetched-model', { exact: true }).count(), 1);
+  assert.equal(await page.getByRole('button', { name: /newly-fetched-model/ }).count(), 0, 'Pending models have no default or editing controls');
+  assert.equal(await page.getByRole("checkbox", { name: labels.includeFetchedModel, exact: true }).isChecked(), false);
+  assert.equal(await page.getByRole("button", { name: labels.defaultModelA, exact: true }).getAttribute("aria-pressed"), "true");
+  // Unchecking or removing the default is allowed and clears the default
+  // instead of silently moving it to another model.
+  await page.getByRole("checkbox", { name: labels.includeModelA, exact: true }).uncheck();
+  assert.equal(await page.locator('[data-model-default-empty]').count(), 1);
+  assert.equal(await page.getByRole("button", { name: labels.defaultModelA, exact: true }).count(), 0);
+  await page.getByRole("checkbox", { name: labels.includeModelA, exact: true }).check();
+  await page.getByRole("button", { name: labels.defaultModelA, exact: true }).click();
+  await page.getByRole("button", { name: labels.defaultModelA, exact: true }).click();
+  assert.equal(await page.getByRole("button", { name: labels.defaultModelA, exact: true }).getAttribute("aria-pressed"), "false");
+  await page.getByRole("button", { name: labels.clearModels, exact: true }).click();
+  assert.equal(await page.locator('[data-model-default-empty]').count(), 1);
+  assert.equal(await page.getByRole('checkbox', { checked: true }).count(), 0);
+  await page.getByRole('button', { name: labels.clearPendingModels, exact: true }).click();
+  await page.locator('button[type="submit"]').click();
+  await page.waitForFunction(() => Boolean(window.review.saved));
+  assert.equal(await page.evaluate(() => window.review.saved.model), '');
+  assert.deepEqual(await page.evaluate(() => window.review.saved.models), []);
+  console.log("PASS refresh keeps new models pending, and default model can be cleared without replacement");
+  await reset("provider");
+  await page.getByRole("button", { name: labels.fetchModels, exact: true }).click();
+  await page.evaluate(() => window.review.resolveModels([
+    { id: "match-one", endpointTypes: ["responses"], included: true },
+    { id: "match-two", endpointTypes: ["responses"], included: true },
+    { id: "other-model", endpointTypes: ["responses"], included: true },
+  ]));
+  await page.locator('[data-pending-models]').getByText("other-model", { exact: true }).waitFor();
+  const search = page.getByPlaceholder(labels.addModelPlaceholder, { exact: true });
+  await search.fill("match-");
+  if (captureDir) await page.screenshot({ path: path.join(captureDir, "provider-model-search.png"), animations: "disabled" });
+  await page.getByRole("button", { name: labels.selectMatchingModels, exact: true }).click();
+  await search.fill("");
+  assert.equal(await page.locator('[data-pending-models]').getByText("other-model", { exact: true }).count(), 1);
+  assert.equal(await page.locator('[data-pending-models]').getByText("match-one", { exact: true }).count(), 0);
+  await page.locator('button[type="submit"]').click();
+  await page.waitForFunction(() => Boolean(window.review.saved));
+  assert.deepEqual(await page.evaluate(() => window.review.saved.models.filter(model => model.included).map(model => model.id).sort()), ["match-one", "match-two", "model-A"]);
+  console.log("PASS bulk model inclusion respects search and preserves unrelated pending models");
+
+
+  await reset("provider");
   await page.getByRole("button", { name: labels.fetchModels, exact: true }).click();
   await page.getByRole("button", { name: labels.cancel, exact: true }).click();
   await page.locator("#open-b").click();
@@ -447,7 +544,7 @@ try {
 
   await reset("mixed");
   const chatProtocol = page.getByRole("combobox", { name: labels.chatProtocol, exact: true });
-  assert.equal(await chatProtocol.textContent(), labels.chat);
+  assert.ok((await chatProtocol.textContent()).includes(labels.chat));
   assert.equal(await page.getByRole("button", { name: labels.defaultResponses, exact: true }).getAttribute("aria-pressed"), "true");
   assert.equal(await page.getByRole("button", { name: labels.defaultChat, exact: true }).isEnabled(), true);
   await chatProtocol.click();
@@ -456,7 +553,7 @@ try {
   await page.getByRole("option", { name: labels.anthropic, exact: true }).click();
   assert.equal(await page.getByRole("button", { name: labels.defaultResponses, exact: true }).getAttribute("aria-pressed"), "true");
   assert.equal(await chatProtocol.textContent(), labels.responses);
-  assert.equal(await page.getByRole("combobox", { name: labels.inheritedProtocol, exact: true }).textContent(), labels.anthropic);
+  assert.ok((await page.getByRole("combobox", { name: labels.inheritedProtocol, exact: true }).textContent()).includes(labels.anthropic));
   await page.getByRole("button", { name: labels.defaultChat, exact: true }).click();
   await page.getByRole("button", { name: labels.fetchModels, exact: true }).click();
   await page.evaluate(() => window.review.resolveModels([
@@ -470,6 +567,18 @@ try {
     chatIncluded: window.review.saved.models.find(model => model.id === "chat-model").included })),
   { protocol: "anthropicMessages", model: "chat-model", overrides: { "chat-model": "responses", "inherited-model": null, "responses-model": "responses", "anthropic-model": "anthropicMessages" }, chatIncluded: true });
   console.log("PASS model protocols inherit independently, cross-protocol defaults work, and refresh preserves overrides");
+  await page.locator("#reopen-saved").click();
+  await page.getByRole("combobox", { name: labels.chatProtocol, exact: true }).click();
+  const inheritOption = page.getByRole("option").filter({ hasText: /^Default:|^跟随默认：/ });
+  assert.ok((await inheritOption.textContent()).includes(labels.anthropic), "inherit option must show provider default, not model override");
+  await inheritOption.click();
+  await page.locator("#newapi-provider-protocol").click();
+  await page.getByRole("option", { name: labels.responses, exact: true }).click();
+  assert.ok((await page.getByRole("combobox", { name: labels.chatProtocol, exact: true }).textContent()).includes(labels.responses));
+  await page.locator('button[type="submit"]').click();
+  await page.waitForFunction(() => window.review.saved.models.find(model => model.id === "chat-model").protocol === null);
+  assert.equal(await page.evaluate(() => window.review.saved.protocol), "responses");
+  console.log("PASS a per-model protocol override can be cleared and follows later provider default changes");
   assert.deepEqual(await page.evaluate(() => window.review.saved.models.slice(0, 2).map(model => ({
     levels: model.supportedReasoningLevels, default: model.defaultReasoningLevel,
   }))), [
@@ -489,6 +598,12 @@ try {
   await page.getByText(labels.modelCount, { exact: true }).waitFor();
   assert.equal(await page.getByText("Responses", { exact: true }).count(), 1);
   assert.equal(await page.getByRole("switch", { name: labels.accountless, exact: true }).count(), 1);
+  assert.equal(await page.getByRole("switch", { name: labels.accountless, exact: true }).isEnabled(), true);
+  await page.getByRole("switch", { name: labels.accountless, exact: true }).click();
+  await page.waitForFunction(() => window.review.getState().router.accountless);
+  assert.equal(await page.evaluate(() => window.review.getState().router.enabled), false);
+  await page.getByRole("switch", { name: labels.accountless, exact: true }).click();
+  await page.waitForFunction(() => !window.review.getState().router.accountless);
   await page.locator("#codex-access-mode").click();
   assert.equal(await page.getByRole("option", { name: labels.accessNative, exact: true }).isEnabled(), true);
   await page.getByRole("option", { name: labels.accessNative, exact: true }).click();
@@ -720,6 +835,42 @@ try {
   assert.deepEqual(await page.evaluate(() => window.review.pendingDeletionKeys), []);
   console.log("PASS queued thread deletion is visible and can be cancelled from the page");
 
+  await reset("clients-conflict");
+  assert.equal(await page.getByRole("button", { name: labels.changeClient, exact: true }).isEnabled(), true);
+  assert.equal(await page.getByRole("button", { name: labels.clientRestore, exact: true }).isEnabled(), true);
+  await page.getByRole("button", { name: labels.changeClient, exact: true }).click();
+  await page.getByRole("button", { name: labels.preview, exact: true }).click();
+  await page.getByRole("button", { name: labels.clientApplyConflict, exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => window.review.previewReplacesConflicts), true);
+  if (captureDir) await page.screenshot({ path: path.join(captureDir, "client-conflict-preview.png"), animations: "disabled" });
+  await page.getByRole("button", { name: labels.clientApplyConflict, exact: true }).click();
+  await page.getByRole("dialog").waitFor({ state: "hidden" });
+  assert.equal(await page.evaluate(() => window.review.appliedClient.replaceConflicts), true);
+  assert.equal(await page.evaluate(() => window.review.releasedClientCount), 0);
+  assert.equal(await page.getByRole("button", { name: labels.changeClient, exact: true }).isEnabled(), true);
+  console.log("PASS conflicting client configuration opens directly and applies a confirmed preview without releasing management");
+
+  for (const [mode, action, configure] of [
+    ["clients-conflict", labels.clientRestore, labels.configure],
+    ["clients-conflict", labels.clientRebaseline, labels.changeClient],
+    ["clients-existing", labels.clientReapply, labels.changeClient],
+  ]) {
+    await reset(mode);
+    await page.getByRole("button", { name: action, exact: true }).click();
+    await confirmAlert(action);
+    const configureButton = page.getByRole("button", { name: configure, exact: true });
+    await configureButton.waitFor();
+    assert.equal(await configureButton.isEnabled(), true);
+    await configureButton.click();
+    await page.getByRole("button", { name: labels.preview, exact: true }).click();
+    await page.getByRole("button", { name: labels.clientApply, exact: true }).click();
+    await page.getByRole("dialog").waitFor({ state: "hidden" });
+    assert.equal(await page.evaluate(() => window.review.appliedClient.replaceConflicts), false);
+    assert.equal(await page.evaluate(() => window.review.releasedClientCount), 0);
+    assert.equal(await page.getByRole("button", { name: labels.changeClient, exact: true }).isEnabled(), true);
+  }
+  console.log("PASS restore, rebaseline and reapply all leave client configuration directly usable without releasing management");
+
   await reset("clients");
   await page.getByRole("button", { name: labels.configure, exact: true }).click();
   const screenshots = path.join(screenshotDir, "client-config");
@@ -805,7 +956,11 @@ try {
   assert.equal(await page.evaluate(() => window.review.previewed.claudeModels.opus), "");
   await selectedVersion("claude-opus-5-5").uncheck();
   assert.equal(await page.locator("#client-model").textContent(), "Fable 5.1");
-  assert.equal(await selectedVersion("claude-fable-5-1").isDisabled(), true);
+  assert.equal(await selectedVersion("claude-fable-5-1").isDisabled(), false);
+  await page.getByRole("button", { name: labels.clientDeselectAllModels, exact: true }).click();
+  for (const id of versionIds) assert.equal(await selectedVersion(id).isChecked(), false);
+  assert.equal(await page.getByRole("button", { name: labels.preview, exact: true }).isDisabled(), true);
+  await selectedVersion("claude-fable-5-1").check();
   await page.getByRole("button", { name: labels.clientSelectAllModels, exact: true }).click();
   for (const id of versionIds) assert.equal(await selectedVersion(id).isChecked(), true);
   await page.getByRole("button", { name: labels.preview, exact: true }).click();
@@ -1079,6 +1234,10 @@ try {
   await testThreadDetails({ page, reset, captureDir });
   await testThreadUiFixes({ page, reset, captureDir });
   await testMagpieOptimizations({ page, reset, captureDir });
+  await testProviderFeedback({ page, reset, captureDir });
+  await testProviderModelResolutions({ page, reset, captureDir });
+  await testTerminalProxy({ page, reset, captureDir });
+  await testRelayDeck({ page, reset, captureDir });
   await reset("warnings");
   await page.getByText("Review thread 0", { exact: true }).waitFor();
   const warning = page.getByRole("status");

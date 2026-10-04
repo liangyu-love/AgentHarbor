@@ -130,10 +130,19 @@ export async function testThreadDetails({ page, reset, captureDir }) {
   await search.fill('Review thread');
   await page.getByRole('checkbox').first().click();
   const scroller = page.locator('[data-page-scroll-container]');
-  await scroller.evaluate(element => { element.scrollTop = 750; });
+  await scroller.evaluate(async element => {
+    element.scrollTop = 750;
+    // Let the scroll event update the virtual rows before choosing a title.
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
   const sourceLabel = await page.locator('[data-thread-title]').evaluateAll(elements => {
     const viewport = document.querySelector('[data-page-scroll-container]').getBoundingClientRect();
-    return elements.find(element => { const box = element.getBoundingClientRect(); return box.top >= viewport.top + 20 && box.bottom < viewport.bottom - 20; })?.getAttribute('aria-label');
+    return elements.find(element => {
+      const box = element.getBoundingClientRect();
+      const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+      // A sticky selection bar can cover a geometrically visible title.
+      return box.top >= viewport.top + 20 && box.bottom < viewport.bottom - 20 && element.contains(hit);
+    })?.getAttribute('aria-label');
   });
   assert.ok(sourceLabel, 'A visible virtualized thread is available');
   const savedScroll = await scroller.evaluate(element => element.scrollTop);
@@ -144,7 +153,14 @@ export async function testThreadDetails({ page, reset, captureDir }) {
   await page.waitForFunction(({ top, label }) => {
     const scroller = document.querySelector('[data-page-scroll-container]');
     return Math.abs(scroller.scrollTop - top) <= 1 && document.activeElement?.getAttribute('aria-label') === label;
-  }, { top: savedScroll, label: sourceLabel });
+  }, { top: savedScroll, label: sourceLabel }).catch(async error => {
+    const actual = await page.evaluate(() => ({
+      top: document.querySelector('[data-page-scroll-container]').scrollTop,
+      focus: document.activeElement?.getAttribute('aria-label'),
+      visible: [...document.querySelectorAll('[data-thread-title]')].map(el => el.getAttribute('aria-label')),
+    }));
+    throw new Error(`Restore failed: ${JSON.stringify({ savedScroll, sourceLabel, actual })}`, { cause: error });
+  });
   assert.equal(await search.inputValue(), 'Review thread', 'Closing details preserves the search');
   assert.equal(await page.getByRole('checkbox', { checked: true }).count(), 1, 'Closing details preserves batch selection');
   console.log('PASS inline details allow direct switching; narrow layouts restore virtual-list scroll, focus, filters and selection');

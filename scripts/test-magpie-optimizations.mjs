@@ -21,8 +21,9 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="同模型渠道故障切换"]')?.getAttribute("aria-checked") === "true");
   const catalog = page.getByRole("region", { name: "模型能力目录与匹配预览" });
   await catalog.getByRole("button", { name: "模型能力目录与匹配预览", exact: true }).click();
-  await catalog.locator("summary").waitFor();
-  await catalog.locator("summary").click();
+  const modelSummary = catalog.locator("summary").filter({ hasText: "Synthetic channel" });
+  await modelSummary.waitFor();
+  await modelSummary.click();
   assert.equal(await catalog.getByText("My custom alias", { exact: false }).isVisible(), true);
   assert.match(await catalog.innerText(), /继续使用上一份有效目录/);
   assert.match(await catalog.innerText(), /1,000,000/);
@@ -46,7 +47,7 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   await catalog.getByRole("textbox").fill("absent-model");
   await catalog.getByText("没有匹配的已配置模型。", { exact: true }).waitFor();
   await catalog.getByRole("textbox").fill("kiro");
-  await catalog.locator("summary").waitFor();
+  await modelSummary.waitFor();
   if (captureDir) { await routes.scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(captureDir, "routing-diagnostics.png"), fullPage: true }); }
   for (const dark of [false, true]) {
     await page.evaluate(dark => {
