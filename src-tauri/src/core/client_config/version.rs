@@ -37,6 +37,11 @@ fn candidates() -> Vec<Command> {
 }
 
 fn run_with_timeout(command: &mut Command) -> Option<String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(crate::platform::windows::CREATE_NO_WINDOW);
+    }
     let mut child = command
         .arg("--version")
         .stdout(Stdio::piped())
@@ -84,7 +89,10 @@ mod tests {
 
     #[test]
     fn parses_the_first_version_like_token() {
-        assert_eq!(parse_version("2.1.285 (Claude Code)\n"), Some("2.1.285".into()));
+        assert_eq!(
+            parse_version("2.1.285 (Claude Code)\n"),
+            Some("2.1.285".into())
+        );
         assert_eq!(parse_version("2.0.14\nmore text\n"), Some("2.0.14".into()));
         assert_eq!(parse_version("bash: claude: command not found\n"), None);
         assert_eq!(parse_version("2.1.x\n"), None);

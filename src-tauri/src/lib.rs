@@ -22,6 +22,7 @@ pub fn run() {
         }
     }
 
+    let activation_baseline = platform::single_instance::activation_baseline();
     let single_instance_guard = match platform::single_instance::acquire(&shared_paths) {
         Ok(guard) => guard,
         Err(error) => {
@@ -60,6 +61,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(Mutex::new(repository))
         .manage(core::account_login::LoginManager::default())
+        .manage(commands::hotspot::WindowRevealState::default())
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
                 let win = window.clone();
@@ -81,8 +83,7 @@ pub fn run() {
                     tauri::async_runtime::spawn(async move {
                         let _guard = core::routing_runtime::mutation_guard().await;
                         if let Err(error) =
-                            core::routing_runtime::reconcile_on_startup(&reconciliation_paths)
-                                .await
+                            core::routing_runtime::reconcile_on_startup(&reconciliation_paths).await
                         {
                             eprintln!("[AgentHarbor] local router startup failed: {error}");
                         }
@@ -255,7 +256,7 @@ pub fn run() {
         .build(context)
         .expect("error while building AgentHarbor");
 
-    let activation_watcher_guard = platform::single_instance::start_activation_watcher({
+    let activation_watcher_guard = platform::single_instance::start_activation_watcher(activation_baseline, {
         let handle = app.handle().clone();
         move || commands::hotspot::force_reveal_main_window(&handle)
     })
@@ -303,7 +304,7 @@ fn schedule_startup_main_window_reveal(app: &tauri::AppHandle) {
     let handle = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(180));
-        commands::hotspot::reveal_main_window(&handle);
+        commands::hotspot::reveal_visible_main_window(&handle);
     });
 }
 

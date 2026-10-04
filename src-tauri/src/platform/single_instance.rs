@@ -4,7 +4,6 @@
 //! AgentHarbor process cannot rewrite Codex config.
 
 use crate::platform::paths::CodexPaths;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -138,7 +137,24 @@ pub fn acquire(_paths: &CodexPaths) -> Result<SingleInstanceGuard, String> {
     imp::acquire(&instance_scope())
 }
 
-pub fn start_activation_watcher<F>(on_activate: F) -> Result<ActivationWatcherGuard, String>
+pub fn activation_baseline() -> Option<Uuid> {
+    read_activation_request(&activation_request_path())
+}
+
+fn read_activation_request(path: &Path) -> Option<Uuid> {
+    let text = std::fs::read_to_string(path).ok()?;
+    // Only accept the complete canonical marker, never a partial write.
+    let text = text.trim();
+    if text.len() != 36 {
+        return None;
+    }
+    Uuid::parse_str(text).ok()
+}
+
+pub fn start_activation_watcher<F>(
+    baseline: Option<Uuid>,
+    on_activate: F,
+) -> Result<ActivationWatcherGuard, String>
 where
     F: Fn() + Send + 'static,
 {
@@ -147,10 +163,10 @@ where
     let shutdown = Arc::new(AtomicBool::new(false));
     let thread_shutdown = Arc::clone(&shutdown);
     std::thread::spawn(move || {
-        let mut last_seen: Option<String> = None;
+        let mut last_seen = baseline;
         while !thread_shutdown.load(Ordering::Relaxed) {
-            if let Ok(current) = std::fs::read_to_string(&request_path) {
-                if !current.trim().is_empty() && last_seen.as_deref() != Some(current.as_str()) {
+            if let Some(current) = read_activation_request(&request_path) {
+                if last_seen != Some(current) {
                     last_seen = Some(current);
                     on_activate();
                 }
@@ -195,8 +211,23 @@ fn prepare_activation_dir(path: &Path) -> Result<(), String> {
 
 fn write_activation_request(path: &Path) -> Result<(), String> {
     prepare_activation_dir(path)?;
-    let mut file = std::fs::File::create(path)
-        .map_err(|e| format!("create activation request failed: {e}"))?;
-    writeln!(file, "{}", Uuid::new_v4())
+    crate::core::storage::write_atomic(path, Uuid::new_v4().to_string().as_bytes())
         .map_err(|e| format!("write activation request failed: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn activation_markers_are_complete_and_replace_existing_requests() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("activate.request");
+        std::fs::write(&path, "partial").unwrap();
+        assert_eq!(read_activation_request(&path), None);
+        write_activation_request(&path).unwrap();
+        let first = read_activation_request(&path).unwrap();
+        write_activation_request(&path).unwrap();
+        assert_ne!(read_activation_request(&path).unwrap(), first);
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    }
 }
