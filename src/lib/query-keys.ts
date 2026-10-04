@@ -19,4 +19,5 @@ export const queryKeys = {
   threadDetails: (key: string) => ["threads", "codex", "details", key],
   threadMessages: (key: string, snapshot: number, offset: number) => ["threads", "codex", "messages", key, snapshot, offset],
   systemInfo: ["system-info"],
+  terminalProxy: ["terminal-proxy"],
 } as const;

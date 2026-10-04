@@ -125,6 +125,46 @@ pub async fn detect_api_proxy_config() -> Result<CoreEnvelope<ApiProxyDetectPayl
 }
 
 #[tauri::command]
+pub async fn load_terminal_proxy_config(
+    app: AppHandle,
+) -> Result<crate::core::terminal_proxy::TerminalProxyStatus, String> {
+    super::with_repo(app, |repo| {
+        crate::core::terminal_proxy::load_status(repo.paths())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_terminal_proxy_config(
+    app: AppHandle,
+    enabled: bool,
+    url: String,
+    no_proxy: String,
+) -> Result<crate::core::terminal_proxy::TerminalProxyStatus, String> {
+    super::with_repo(app, move |repo| {
+        crate::core::terminal_proxy::set(repo.paths(), enabled, &url, &no_proxy)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn open_proxy_terminal(app: AppHandle) -> Result<(), String> {
+    super::with_repo(app, |repo| {
+        crate::core::terminal_proxy::open_terminal(repo.paths())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn test_terminal_proxy_config(
+    url: String,
+) -> Result<Vec<crate::core::terminal_proxy::ProxyProbe>, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::core::terminal_proxy::test(&url))
+        .await
+        .map_err(|_| "settings.terminalProxy.errors.test".to_owned())?
+}
+
+#[tauri::command]
 pub async fn diagnose(app: AppHandle) -> Result<CoreEnvelope<DiagnosePayload>, String> {
     super::with_repo(app, |repo| repo.diagnose().map_err(|e| e.to_string())).await
 }

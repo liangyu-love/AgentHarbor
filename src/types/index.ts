@@ -37,6 +37,24 @@ export interface ApiProxyConfigPayload {
   url: string | null;
 }
 
+export interface TerminalProxyStatus {
+  supported: boolean;
+  enabled: boolean;
+  applied: boolean;
+  url: string | null;
+  noProxy: string;
+  recoveryRequired: boolean;
+  conflicts: string[];
+  preservedVariables: string[];
+  notificationSent: boolean;
+}
+
+export interface TerminalProxyProbe {
+  service: string;
+  reachable: boolean;
+  statusCode: number | null;
+}
+
 export interface ApiConnectivityPayload {
   usageStatus: ApiReachabilityStatus;
   usageLastError: string | null;

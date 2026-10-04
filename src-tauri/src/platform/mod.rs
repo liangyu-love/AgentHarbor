@@ -6,5 +6,6 @@ pub mod paths;
 pub mod process;
 pub mod proxy;
 pub mod single_instance;
+pub(crate) mod terminal_environment;
 pub mod update;
 pub mod windows;

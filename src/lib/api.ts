@@ -9,6 +9,8 @@ import type {
   ApiModePayload,
   ApiProxyDetectPayload,
   ApiProxyTestPayload,
+  TerminalProxyStatus,
+  TerminalProxyProbe,
   UpdateInstallabilityPayload,
   DiagnosePayload,
   McpServerListPayload,
@@ -264,6 +266,14 @@ export const api = {
 
   detectApiProxyConfig: () =>
     invoke<CoreEnvelope<ApiProxyDetectPayload>>("detect_api_proxy_config"),
+
+  terminalProxy: {
+    load: () => invoke<TerminalProxyStatus>("load_terminal_proxy_config"),
+    set: (enabled: boolean, url: string, noProxy: string) =>
+      invoke<TerminalProxyStatus>("set_terminal_proxy_config", { enabled, url, noProxy }),
+    test: (url: string) => invoke<TerminalProxyProbe[]>("test_terminal_proxy_config", { url }),
+    openTerminal: () => invoke<void>("open_proxy_terminal"),
+  },
 
   checkUpdateInstallability: () =>
     invoke<UpdateInstallabilityPayload>("check_update_installability"),
