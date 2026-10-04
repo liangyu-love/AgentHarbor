@@ -134,7 +134,7 @@ export function CodexAccessCard({ store, providers, selectedProvider, nativeComp
             <Switch
               aria-label={t("newapi.accountless")}
               checked={!!router?.accountless}
-              disabled={!routingEnabled || mutationLocked}
+              disabled={mutationLocked}
               onCheckedChange={value =>
                 void run("accountless", async () => {
                   const change = await api.routing.setAccountless(value);

@@ -1,6 +1,23 @@
 use super::*;
 use std::{fs, path::Path};
 
+#[test]
+fn accountless_can_be_selected_before_injection_without_changing_client_files() {
+    let (_directory, paths) = fixture();
+    let before = file_state(&paths);
+    let change = set_accountless(&paths, true).unwrap();
+    assert!(change.state.router.accountless);
+    assert!(!change.state.router.enabled);
+    assert!(change.applied.is_none());
+    assert_eq!(file_state(&paths)[1..], before[1..]);
+    set_smart_routing(&paths, true).unwrap();
+    let applied = config(&paths);
+    assert_eq!(applied["preferred_auth_method"].as_str(), Some("apikey"));
+    assert_eq!(applied["model_providers"][CATALOG_PROVIDER_KEY]["requires_openai_auth"].as_bool(), Some(false));
+    set_smart_routing(&paths, false).unwrap();
+    assert_eq!(config(&paths)["preferred_auth_method"].as_str(), Some("chatgpt"));
+}
+
 const ORIGINAL_CONFIG: &str = r#"# Existing user configuration
 model = 'original-model'
 model_provider = 'user-provider'
