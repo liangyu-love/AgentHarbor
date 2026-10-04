@@ -20,7 +20,7 @@ fn config_guard() -> Result<MutexGuard<'static, ()>, CoreError> {
 /// Backups written by this build. Builds before the router sidecar wrote bare
 /// `<uuid>.toml` files; legacy router recovery searches only those for the
 /// pre-router baseline, so they are never pruned and never added to. Backups
-/// with this prefix are not recovery inputs and are kept to a bounded window.
+/// with this prefix are also checked by Native journal recovery and bounded.
 const BACKUP_PREFIX: &str = "agentharbor-";
 const BACKUP_LIMIT: usize = 30;
 

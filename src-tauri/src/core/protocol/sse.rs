@@ -805,7 +805,7 @@ mod tests {
                 feed(&mut t, json!({"type":"message_stop"}))
             };
             assert_eq!(
-                terminal_response(&events)["error"]["code"],
+                terminal_response(&events)["error"]["reason"],
                 "missing_finish_reason"
             );
         }

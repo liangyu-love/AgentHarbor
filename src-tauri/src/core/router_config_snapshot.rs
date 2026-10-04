@@ -406,7 +406,14 @@ pub(super) fn recover_legacy(
     let provider_key = current
         .get("model_provider")
         .and_then(Item::as_str)
-        .filter(|key| matches!(*key, CATALOG_PROVIDER_KEY | PREVIOUS_CATALOG_PROVIDER_KEY))
+        .filter(|key| {
+            matches!(
+                *key,
+                CATALOG_PROVIDER_KEY
+                    | PREVIOUS_CATALOG_PROVIDER_KEY
+                    | super::native_config::PROVIDER_KEY
+            )
+        })
         .ok_or_else(snapshot_error)?;
     let provider = current
         .get("model_providers")
@@ -427,14 +434,18 @@ pub(super) fn recover_legacy(
                 .get("experimental_bearer_token")
                 .and_then(Item::as_str)
         });
-    if !is_loopback_route
-        || !matches!(
-            provider.get("wire_api").and_then(Item::as_str),
-            Some("responses" | "chat")
-        )
-        || local_token != Some(store.router.bearer_token.as_str())
-        || store.router.bearer_token.is_empty()
-    {
+    let native = provider_key == super::native_config::PROVIDER_KEY;
+    if if native {
+        !super::native_config::proven_installation(paths, current)
+    } else {
+        !is_loopback_route
+            || !matches!(
+                provider.get("wire_api").and_then(Item::as_str),
+                Some("responses" | "chat")
+            )
+            || local_token != Some(store.router.bearer_token.as_str())
+            || store.router.bearer_token.is_empty()
+    } {
         return Err(snapshot_error());
     }
     let unrelated = unrelated_config(current)?;
@@ -449,7 +460,14 @@ pub(super) fn recover_legacy(
             || !backup_path
                 .file_stem()
                 .and_then(|value| value.to_str())
-                .is_some_and(|value| uuid::Uuid::parse_str(value).is_ok())
+                .is_some_and(|value| {
+                    uuid::Uuid::parse_str(value).is_ok()
+                        || (native
+                            && value
+                                .strip_prefix("agentharbor-")
+                                .and_then(|value| value.get(value.len().checked_sub(36)?..))
+                                .is_some_and(|value| uuid::Uuid::parse_str(value).is_ok()))
+                })
         {
             continue;
         }
@@ -474,6 +492,39 @@ pub(super) fn recover_legacy(
     }
     let baseline = baseline.ok_or_else(snapshot_error)?;
     let mut snapshot = Snapshot::capture(paths, &baseline)?;
+    if native {
+        let mut applied = Fields::new();
+        let current_fields = fields(current)?;
+        for key in ["model_provider", "model_catalog_json"] {
+            applied.insert(key.into(), current_fields[key].clone());
+        }
+        if super::native_config::installed_catalog_model(paths, current) {
+            applied.insert("model".into(), current_fields["model"].clone());
+        }
+        // Infer limits only from a provider matching the installed endpoint and
+        // owned credential. Snapshot::restore preserves drifted user fields.
+        if let Some(previous) = store
+            .providers
+            .iter()
+            .find(|previous| super::native_config::matches_installation(paths, current, previous))
+        {
+            let (context, threshold) = super::native_config::native_limits(paths, store, previous);
+            applied.insert(
+                "model_context_window".into(),
+                context.map(|v| Scalar::Integer(v as i64)),
+            );
+            applied.insert(
+                "model_auto_compact_token_limit".into(),
+                threshold.map(|v| Scalar::Integer(v as i64)),
+            );
+        }
+        applied.insert(
+            "preferred_auth_method".into(),
+            Some(Scalar::Text("apikey".into())),
+        );
+        snapshot.applied = Some(applied);
+        return Ok(snapshot);
+    }
     let current_model = current.get("model").and_then(Item::as_str);
     let previous_provider = current_model
         .and_then(|model| model.split_once("::"))

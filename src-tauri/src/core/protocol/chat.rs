@@ -67,7 +67,7 @@ pub(super) fn request_from_responses(
         _ => return Err("protocol.errors.unsupportedTranslation".into()),
     }
     if let Some(choice) = object.get("tool_choice") {
-        out.insert("tool_choice".into(), tool_choice(target, choice));
+        out.insert("tool_choice".into(), tool_choice(target, choice)?);
     }
     if target == ModelProtocol::ChatCompletions {
         if let Some(parallel) = object.get("parallel_tool_calls") {
@@ -108,7 +108,72 @@ pub(super) fn request_from_responses(
             }
         }
     }
+    apply_text_format(target, object, &mut out)?;
     Ok(Value::Object(out))
+}
+
+/// Preserve structured output constraints instead of silently requesting prose.
+fn apply_text_format(
+    target: ModelProtocol,
+    object: &Map<String, Value>,
+    out: &mut Map<String, Value>,
+) -> Result<(), String> {
+    let Some(text) = object.get("text").filter(|text| !text.is_null()) else {
+        return Ok(());
+    };
+    let text = text.as_object().ok_or("protocol.errors.invalidRequest")?;
+    let Some(format) = text.get("format").filter(|format| !format.is_null()) else {
+        return Ok(());
+    };
+    let format = format.as_object().ok_or("protocol.errors.invalidRequest")?;
+    match format.get("type").and_then(Value::as_str) {
+        Some("text") => {}
+        Some("json_object") if target == ModelProtocol::ChatCompletions => {
+            out.insert("response_format".into(), json!({"type":"json_object"}));
+        }
+        Some("json_schema") => {
+            let name = format
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| {
+                    !name.is_empty()
+                        && name.len() <= 64
+                        && name
+                            .bytes()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+                })
+                .ok_or("protocol.errors.invalidRequest")?;
+            let schema = format
+                .get("schema")
+                .filter(|schema| schema.is_object())
+                .ok_or("protocol.errors.invalidRequest")?;
+            if format
+                .get("strict")
+                .is_some_and(|v| !v.is_null() && !v.is_boolean())
+                || format.get("description").is_some_and(|v| !v.is_string())
+            {
+                return Err("protocol.errors.invalidRequest".into());
+            }
+            if target == ModelProtocol::ChatCompletions {
+                let mut schema_config = json!({"name":name,"schema":schema});
+                for key in ["strict", "description"] {
+                    if let Some(value) = format.get(key) {
+                        schema_config[key] = value.clone();
+                    }
+                }
+                out.insert(
+                    "response_format".into(),
+                    json!({"type":"json_schema","json_schema":schema_config}),
+                );
+            } else {
+                // Merge after reasoning conversion, which also uses output_config.
+                out.entry("output_config").or_insert_with(|| json!({}))["format"] =
+                    json!({"type":"json_schema","schema":schema});
+            }
+        }
+        _ => return Err("protocol.errors.unsupportedContent".into()),
+    }
+    Ok(())
 }
 
 /// With thinking enabled, Anthropic requires the latest assistant turn of an
@@ -206,12 +271,13 @@ fn messages_from_responses(
                             messages.push(json!({"role":"assistant", "content":format!("[Previous reasoning summary]\n{summary}")}));
                         }
                     }
-                    Some("item_reference") => {}
-                    // A `message` item, or anything carrying a role.
-                    _ => {
+                    Some("message") | None => {
                         let Some(role) = item.get("role").and_then(Value::as_str) else {
-                            continue;
+                            return Err("protocol.errors.unsupportedContent".into());
                         };
+                        if !matches!(role, "user" | "assistant" | "system" | "developer") {
+                            return Err("protocol.errors.unsupportedContent".into());
+                        }
                         flush_calls(target, &mut messages, &mut pending_calls)?;
                         let content = content_of(target, item.get("content"))?;
                         if role == "system" || role == "developer" {
@@ -228,6 +294,9 @@ fn messages_from_responses(
                         }
                         messages.push(json!({ "role": role, "content": content }));
                     }
+                    // References, hosted/custom calls and opaque history cannot
+                    // be reconstructed as ordinary function messages.
+                    _ => return Err("protocol.errors.unsupportedContent".into()),
                 }
             }
             flush_calls(target, &mut messages, &mut pending_calls)?;
@@ -447,31 +516,27 @@ fn prefers_completion_tokens(model: &str) -> bool {
 /// Both name options, but Responses may also force a specific tool by name
 /// instead of an object, so the string form is normalised to the object form
 /// whenever a tool list is present.
-fn tool_choice(target: ModelProtocol, choice: &Value) -> Value {
-    if target == ModelProtocol::AnthropicMessages {
-        return match choice {
-            Value::String(kind) if kind == "required" => json!({ "type": "any" }),
-            Value::String(kind) if ["auto", "none"].contains(&kind.as_str()) => {
-                json!({ "type": kind })
-            }
-            Value::String(name) => json!({ "type": "tool", "name": name }),
-            Value::Object(object) => {
-                let name = object
-                    .get("name")
-                    .or_else(|| object.get("function").and_then(|f| f.get("name")));
-                name.map(|name| json!({ "type": "tool", "name": name }))
-                    .unwrap_or_else(|| json!({ "type": "auto" }))
-            }
-            _ => json!({ "type": "auto" }),
-        };
+fn tool_choice(target: ModelProtocol, choice: &Value) -> Result<Value, String> {
+    let name = match choice {
+        Value::String(kind) if matches!(kind.as_str(), "auto" | "none" | "required") => {
+            return Ok(if target == ModelProtocol::AnthropicMessages {
+                json!({"type":if kind == "required" { "any" } else { kind }})
+            } else {
+                choice.clone()
+            });
+        }
+        Value::String(name) => Some(name.as_str()),
+        Value::Object(object) if object.get("type").and_then(Value::as_str) == Some("function") => {
+            object.get("name").and_then(Value::as_str)
+        }
+        _ => None,
     }
-    match choice {
-        Value::String(kind) => match kind.as_str() {
-            "auto" | "none" | "required" => json!(kind),
-            // A bare string naming a function is the forced-function form.
-            name => json!({ "type": "function", "function": { "name": name } }),
-        },
-        _ => choice.clone(),
+    .filter(|name| !name.is_empty())
+    .ok_or("protocol.errors.unsupportedToolDefinition")?;
+    if target == ModelProtocol::AnthropicMessages {
+        Ok(json!({"type":"tool","name":name}))
+    } else {
+        Ok(json!({"type":"function","function":{"name":name}}))
     }
 }
 
@@ -486,21 +551,52 @@ fn tools_from_responses(
     let tools = tools.as_array().ok_or("protocol.errors.invalidRequest")?;
     let mut converted = Vec::new();
     for tool in tools {
-        let Some(name) = tool.get("name").and_then(Value::as_str) else {
-            continue;
-        };
-        let description = tool.get("description").cloned().unwrap_or(json!(""));
+        if tool.get("type").and_then(Value::as_str) != Some("function") {
+            return Err(match tool.get("type").and_then(Value::as_str) {
+                Some("namespace") => "protocol.errors.unsupportedNamespacedTool",
+                Some("custom") => "protocol.errors.unsupportedCustomTool",
+                _ => "protocol.errors.unsupportedHostedTool",
+            }
+            .into());
+        }
+        let name = tool
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+            .ok_or("protocol.errors.unsupportedToolDefinition")?;
+        let description = tool
+            .get("description")
+            .filter(|v| !v.is_null())
+            .cloned()
+            .unwrap_or(json!(""));
         let parameters = tool
             .get("parameters")
+            .filter(|value| !value.is_null())
             .cloned()
             .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
-        converted.push(if target == ModelProtocol::AnthropicMessages {
+        if !parameters.is_object()
+            || !description.is_string()
+            || tool
+                .get("strict")
+                .is_some_and(|value| !value.is_null() && !value.is_boolean())
+        {
+            return Err("protocol.errors.unsupportedToolDefinition".into());
+        }
+        let mut mapped = if target == ModelProtocol::AnthropicMessages {
             json!({ "name": name, "description": description, "input_schema": parameters })
         } else {
             json!({ "type": "function", "function": {
                 "name": name, "description": description, "parameters": parameters
             } })
-        });
+        };
+        if let Some(strict) = tool.get("strict").filter(|v| !v.is_null()) {
+            if target == ModelProtocol::AnthropicMessages {
+                mapped["strict"] = strict.clone();
+            } else {
+                mapped["function"]["strict"] = strict.clone();
+            }
+        }
+        converted.push(mapped);
     }
     Ok(converted)
 }
@@ -508,6 +604,103 @@ fn tools_from_responses(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn translated_tools_and_history_never_silently_drop_unsupported_items() {
+        for target in [
+            ModelProtocol::ChatCompletions,
+            ModelProtocol::AnthropicMessages,
+        ] {
+            for tool in [
+                json!({"type":"web_search"}),
+                json!({"type":"custom","name":"apply_patch"}),
+                json!({"type":"function"}),
+                json!({"type":"function","name":"lookup","parameters":[]}),
+            ] {
+                let result = request_from_responses(
+                    target,
+                    &json!({"model":"m","input":"hi","tools":[tool]}),
+                );
+                let expected = match tool["type"].as_str() {
+                    Some("web_search") => "protocol.errors.unsupportedHostedTool",
+                    Some("custom") => "protocol.errors.unsupportedCustomTool",
+                    _ => "protocol.errors.unsupportedToolDefinition",
+                };
+                assert_eq!(result.unwrap_err(), expected);
+            }
+            for item in [
+                json!({"type":"custom_tool_call","name":"apply_patch","input":"patch"}),
+                json!({"type":"custom_tool_call_output","call_id":"c","output":"done"}),
+                json!({"type":"web_search_call","status":"completed"}),
+                json!({"type":"item_reference","id":"x"}),
+                json!({"type":"future_item","role":"assistant","content":"important"}),
+            ] {
+                let result = request_from_responses(target, &json!({"model":"m","input":[item]}));
+                assert_eq!(result.unwrap_err(), "protocol.errors.unsupportedContent");
+            }
+            let result = request_from_responses(
+                target,
+                &json!({"model":"m","input":"hi","tool_choice":{"type":"web_search"}}),
+            );
+            assert_eq!(
+                result.unwrap_err(),
+                "protocol.errors.unsupportedToolDefinition"
+            );
+        }
+    }
+
+    #[test]
+    fn structured_output_and_strict_function_choice_reach_both_targets() {
+        let schema = json!({"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false});
+        let request = json!({"model":"claude-opus-4-6","input":"hi","reasoning":{"effort":"high"},
+            "text":{"format":{"type":"json_schema","name":"answer","schema":schema,"strict":true,"description":"Answer"}},
+            "tools":[{"type":"function","name":"lookup","strict":true,"parameters":schema}],
+            "tool_choice":{"type":"function","name":"lookup"}});
+        let chat = request_from_responses(ModelProtocol::ChatCompletions, &request).unwrap();
+        assert_eq!(
+            chat["response_format"],
+            json!({"type":"json_schema","json_schema":{"name":"answer","schema":schema,"strict":true,"description":"Answer"}})
+        );
+        assert_eq!(chat["tools"][0]["function"]["strict"], true);
+        assert_eq!(
+            chat["tool_choice"],
+            json!({"type":"function","function":{"name":"lookup"}})
+        );
+        let messages = request_from_responses(ModelProtocol::AnthropicMessages, &request).unwrap();
+        assert_eq!(
+            messages["output_config"]["format"],
+            json!({"type":"json_schema","schema":schema})
+        );
+        assert_eq!(messages["output_config"]["effort"], "high");
+        assert_eq!(messages["tools"][0]["strict"], true);
+        assert_eq!(
+            messages["tool_choice"],
+            json!({"type":"tool","name":"lookup"})
+        );
+        let json_mode = json!({"model":"m","input":"hi","text":{"format":{"type":"json_object"}}});
+        assert_eq!(
+            request_from_responses(ModelProtocol::ChatCompletions, &json_mode).unwrap()
+                ["response_format"],
+            json!({"type":"json_object"})
+        );
+        assert_eq!(
+            request_from_responses(ModelProtocol::AnthropicMessages, &json_mode).unwrap_err(),
+            "protocol.errors.unsupportedContent"
+        );
+        for format in [
+            json!({"type":"json_schema","name":"answer"}),
+            json!({"type":"json_schema","name":"answer","schema":[],"strict":true}),
+        ] {
+            assert_eq!(
+                request_from_responses(
+                    ModelProtocol::ChatCompletions,
+                    &json!({"model":"m","input":"hi","text":{"format":format}})
+                )
+                .unwrap_err(),
+                "protocol.errors.invalidRequest"
+            );
+        }
+    }
 
     #[test]
     fn chat_tools_use_function_schema() {

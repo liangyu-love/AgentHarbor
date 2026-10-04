@@ -12,6 +12,7 @@ pub mod message_history;
 mod reasoning;
 mod responses;
 mod sse;
+pub mod tool_namespaces;
 
 use crate::core::router::ModelProtocol;
 use serde_json::Value;
@@ -142,6 +143,7 @@ pub struct TranslatedRequest {
     pub body: Value,
     /// Canonical input without request-scoped instructions, ready for history.
     pub input: Vec<Value>,
+    pub namespaces: tool_namespaces::ToolNamespaces,
 }
 
 pub fn request_body(translation: Translation, value: &Value) -> Result<TranslatedRequest, String> {
@@ -155,13 +157,19 @@ pub fn request_body(translation: Translation, value: &Value) -> Result<Translate
                 .ok_or("protocol.errors.invalidRequest")?;
             object.remove("previous_response_id");
             object.insert("input".into(), Value::Array(input.clone()));
+            let namespaces = tool_namespaces::ToolNamespaces::prepare(&mut expanded)?;
             let body = chat::request_from_responses(translation.to, &expanded)?;
-            Ok(TranslatedRequest { body, input })
+            Ok(TranslatedRequest {
+                body,
+                input,
+                namespaces,
+            })
         }
         (AnthropicMessages, ChatCompletions) | (AnthropicMessages, Responses) => {
             Ok(TranslatedRequest {
                 body: anthropic::request_body(translation.to, value)?,
                 input: Vec::new(),
+                namespaces: Default::default(),
             })
         }
         _ => Err("protocol.errors.unsupportedTranslation".into()),

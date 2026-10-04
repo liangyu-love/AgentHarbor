@@ -3,14 +3,17 @@
 use super::*;
 use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 const KEEP: usize = 1024;
+const IDLE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 #[derive(Clone)]
 pub(super) struct Binding {
     pub provider_id: String,
     pub(super) model: String,
     protocol: router::ModelProtocol,
     endpoint: String,
+    last_used: Instant,
 }
 static AFFINITY: OnceLock<Mutex<VecDeque<(String, Binding)>>> = OnceLock::new();
 // Serialize route decisions through response headers, not the long-lived stream.
@@ -57,13 +60,21 @@ pub(super) fn key(scope: &std::path::Path, headers: &HeaderMap, model: &str) -> 
     Some(format!("{:x}", hash.finalize()))
 }
 pub(super) fn bound(key: &str) -> Option<Binding> {
+    let mut cache = AFFINITY
+        .get_or_init(|| Mutex::new(VecDeque::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    cache.retain(|(_, binding)| binding.last_used.elapsed() < IDLE_TTL);
+    let (_, binding) = cache.iter_mut().find(|(k, _)| k == key)?;
+    binding.last_used = Instant::now();
+    Some(binding.clone())
+}
+pub(super) fn release(key: &str) {
     AFFINITY
         .get_or_init(|| Mutex::new(VecDeque::new()))
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .find(|(k, _)| k == key)
-        .map(|(_, id)| id.clone())
+        .retain(|(k, _)| k != key);
 }
 fn endpoint(provider: &router::Provider) -> String {
     let mut hash = Sha256::new();
@@ -91,6 +102,7 @@ pub(super) fn bind(key: &str, destination: &Destination) -> bool {
         .get_or_init(|| Mutex::new(VecDeque::new()))
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    cache.retain(|(_, binding)| binding.last_used.elapsed() < IDLE_TTL);
     // Never evict a live binding and silently reassign a later tool turn. At
     // capacity, the caller must reject a new session before contacting upstream.
     if cache.len() >= KEEP && !cache.iter().any(|(k, _)| k == key) {
@@ -106,6 +118,7 @@ pub(super) fn bind(key: &str, destination: &Destination) -> bool {
                 .unwrap_or_else(|| provider.model.clone()),
             protocol: *upstream_protocol,
             endpoint: endpoint(provider),
+            last_used: Instant::now(),
         },
     ));
     true
@@ -185,6 +198,49 @@ pub(super) fn alternative(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn expired_bindings_release_capacity_and_active_sessions_refresh_their_idle_time() {
+        let _guard = global_router_test_lock();
+        let provider = router::Provider {
+            id: "expiry".into(),
+            enabled: true,
+            api_key: "synthetic".into(),
+            model: "m".into(),
+            ..Default::default()
+        };
+        let store = router::Store {
+            providers: vec![provider],
+            ..Default::default()
+        };
+        let destination = provider_destination(
+            &store,
+            "expiry",
+            Some(router::ModelProtocol::Responses),
+            None,
+        )
+        .unwrap();
+        let previous = std::mem::take(
+            &mut *AFFINITY
+                .get_or_init(|| Mutex::new(VecDeque::new()))
+                .lock()
+                .unwrap(),
+        );
+        for i in 0..KEEP {
+            assert!(bind(&format!("idle-{i}"), &destination));
+        }
+        assert!(!bind("overflow", &destination));
+        {
+            let mut cache = AFFINITY.get().unwrap().lock().unwrap();
+            cache[0].1.last_used = Instant::now() - IDLE_TTL - Duration::from_secs(1);
+            cache[1].1.last_used = Instant::now() - Duration::from_secs(60);
+        }
+        assert!(bound("idle-0").is_none());
+        assert!(bound("idle-1").unwrap().last_used.elapsed() < Duration::from_secs(1));
+        assert!(bind("new-session", &destination));
+        release("new-session");
+        assert!(bound("new-session").is_none());
+        *AFFINITY.get().unwrap().lock().unwrap() = previous;
+    }
     #[test]
     fn full_registry_rejects_new_sessions_before_upstream_and_keeps_existing_bindings() {
         use super::super::failover_tests::{mock, persist, RESPONSE};

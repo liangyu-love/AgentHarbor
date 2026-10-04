@@ -47,8 +47,20 @@ impl Completion {
             Self::Completed => {}
             Self::Incomplete(reason) => response["incomplete_details"] = json!({"reason":reason}),
             Self::Failed(code) => {
+                // Codex treats unknown response.failed codes as retryable.
+                // Use its invalid_prompt class for deterministic adapter errors;
+                // preserve our exact reason separately for diagnostics. Transport
+                // failures remain retryable and real upstream errors retain theirs.
+                let deterministic = matches!(
+                    code,
+                    "invalid_tool_arguments"
+                        | "invalid_stream_frame"
+                        | "missing_finish_reason"
+                        | "unsupported_finish_reason"
+                );
                 response["error"] = json!({
-                    "code":code,
+                    "code":if deterministic { "invalid_prompt" } else { code },
+                    "reason":code,
                     "message": match code {
                         "invalid_tool_arguments" => "Provider returned an invalid or incomplete function call",
                         "upstream_stream_truncated" => "Provider stream ended before its terminal event",
@@ -492,7 +504,8 @@ mod terminal_tests {
             )
             .unwrap();
             assert_eq!(result["status"], "failed");
-            assert_eq!(result["error"]["code"], "invalid_tool_arguments");
+            assert_eq!(result["error"]["code"], "invalid_prompt");
+            assert_eq!(result["error"]["reason"], "invalid_tool_arguments");
         }
     }
 

@@ -89,8 +89,15 @@ fn failover_is_opt_in_bounded_and_keeps_followups_on_the_actual_channel() {
         assert_eq!(requests.lock().unwrap()[0]["model"],"gpt-6-astra");
         assert_eq!(requests.lock().unwrap()[0]["reasoning"]["effort"],"high");
         let followup=json!({"model":"a::gpt-6-astra","previous_response_id":"response-test","input":[{"type":"function_call_output","call_id":"tool","output":"DONE ONCE"}]});
-        let response=send("new-turn",followup).await.unwrap(); assert_eq!(response.status(),200);response.bytes().await.unwrap();
+        let response=send("new-turn",followup.clone()).await.unwrap(); assert_eq!(response.status(),200);response.bytes().await.unwrap();
         assert_eq!(a.load(Ordering::SeqCst),2);assert_eq!(b.load(Ordering::SeqCst),2);
+        store.router.same_model_failover=false;persist(&paths,&store);
+        let response=send("new-turn",followup).await.unwrap();assert_eq!(response.status(),409);
+        assert_eq!(a.load(Ordering::SeqCst),2);assert_eq!(b.load(Ordering::SeqCst),2);
+        // Enabling again retains the original channel; a new stateless session
+        // while disabled follows the requested route and does not retry.
+        let response=send("disabled-new",body.clone()).await.unwrap();assert_eq!(response.status(),429);response.bytes().await.unwrap();
+        store.router.same_model_failover=true;persist(&paths,&store);
         let mut tools=body.clone();tools["tools"]=json!([{"type":"function","name":"execute"}]);
         let response=send("tool-first",tools).await.unwrap();assert_eq!(response.status(),429);response.bytes().await.unwrap();
         assert_eq!(b.load(Ordering::SeqCst),2);
@@ -98,17 +105,17 @@ fn failover_is_opt_in_bounded_and_keeps_followups_on_the_actual_channel() {
         // availability may decide whether this conversation can continue.
         store.providers[0].enabled=false;persist(&paths,&store);
         let response=send("new-turn",body.clone()).await.unwrap();assert_eq!(response.status(),200);response.bytes().await.unwrap();
-        assert_eq!(a.load(Ordering::SeqCst),3);assert_eq!(b.load(Ordering::SeqCst),3);
+        assert_eq!(a.load(Ordering::SeqCst),4);assert_eq!(b.load(Ordering::SeqCst),3);
         store.providers.remove(0);persist(&paths,&store);
         let response=send("new-turn",body.clone()).await.unwrap();assert_eq!(response.status(),200);response.bytes().await.unwrap();
-        assert_eq!(a.load(Ordering::SeqCst),3);assert_eq!(b.load(Ordering::SeqCst),4);
+        assert_eq!(a.load(Ordering::SeqCst),4);assert_eq!(b.load(Ordering::SeqCst),4);
         // A binding must not bypass a direct route's namespace validation.
         let response=client.post(format!("http://127.0.0.1:{port}/p/b/v1/responses"))
             .bearer_auth("local-only").header("session_id","new-turn").json(&body).send().await.unwrap();
         assert_eq!(response.status(),400);assert_eq!(b.load(Ordering::SeqCst),4);
         store.providers[0].enabled=false;persist(&paths,&store);
         let response=send("new-turn",body.clone()).await.unwrap();assert_eq!(response.status(),503);
-        assert_eq!(a.load(Ordering::SeqCst),3);assert_eq!(b.load(Ordering::SeqCst),4);
+        assert_eq!(a.load(Ordering::SeqCst),4);assert_eq!(b.load(Ordering::SeqCst),4);
         let traces=super::super::route_trace::recent();
         let route=traces.iter().find(|r| r.attempts.len()==2 && r.requested_model=="a::gpt-6-astra").unwrap();
         assert_eq!(route.attempts[0].status,Some(429));assert_eq!(route.attempts[1].provider_id,"b");
@@ -213,6 +220,72 @@ fn raw_upstream_model_declaration_is_shared_without_changing_response() {
             .contains("secret-version"));
         stop();
         server.abort();
+    });
+}
+
+#[test]
+fn responses_namespace_tools_keep_identity_through_http_and_cached_followups() {
+    let _guard = global_router_test_lock();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        for protocol in [router::ModelProtocol::ChatCompletions, router::ModelProtocol::AnthropicMessages] {
+            for streaming in [false, true] {
+                let translation = protocol::Translation { from:router::ModelProtocol::Responses, to:protocol };
+                let request = json!({"model":"wire-model","input":"fixture","stream":streaming,"tools":[
+                    {"type":"namespace","name":"mcp_fixture","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}
+                ]});
+                let prepared = protocol::request_body(translation, &request).unwrap();
+                let encoded = if protocol == router::ModelProtocol::ChatCompletions {
+                    prepared.body["tools"][0]["function"]["name"].as_str().unwrap()
+                } else { prepared.body["tools"][0]["name"].as_str().unwrap() };
+                let json_response = if protocol == router::ModelProtocol::ChatCompletions {
+                    json!({"id":"fixture","model":"wire-model","choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_fixture","type":"function","function":{"name":encoded,"arguments":"{}"}}]},"finish_reason":"tool_calls"}]})
+                } else {
+                    json!({"id":"fixture","model":"wire-model","type":"message","role":"assistant","content":[{"type":"tool_use","id":"call_fixture","name":encoded,"input":{}}],"stop_reason":"tool_use"})
+                };
+                let raw = if !streaming { json_response.to_string() } else if protocol == router::ModelProtocol::ChatCompletions {
+                    format!("data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                        json!({"model":"wire-model","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_fixture","type":"function","function":{"name":encoded,"arguments":"{}"}}]},"finish_reason":null}]}),
+                        json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]}))
+                } else {
+                    format!("event: message_start\ndata: {}\n\nevent: content_block_start\ndata: {}\n\nevent: content_block_stop\ndata: {}\n\nevent: message_delta\ndata: {}\n\nevent: message_stop\ndata: {}\n\n",
+                        json!({"type":"message_start","message":{"id":"fixture","model":"wire-model","usage":{"input_tokens":1}}}),
+                        json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_fixture","name":encoded,"input":{}}}),
+                        json!({"type":"content_block_stop","index":0}),
+                        json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":1}}),
+                        json!({"type":"message_stop"}))
+                };
+                let (upstream, calls, captured, server) = mock(200, Box::leak(raw.into_boxed_str()), if streaming { "text/event-stream" } else { "application/json" }).await;
+                let dir = tempfile::tempdir().unwrap();
+                let paths = CodexPaths::from_home(dir.path().into());
+                let store = router::Store { providers:vec![router::Provider { id:"namespace-fixture".into(), base_url:upstream, model:"wire-model".into(), protocol, api_key:"synthetic".into(), enabled:true, ..Default::default() }],
+                    router:router::RouterSettings { bearer_token:"local".into(), ..Default::default() }, ..Default::default() };
+                persist(&paths, &store);
+                let port = ensure_running(0, paths, ApiProxyConfigPayload { mode:super::super::models::ApiProxyMode::Direct, url:None }).await.unwrap();
+                let client = Client::builder().no_proxy().build().unwrap();
+                let url = format!("http://127.0.0.1:{port}/p/namespace-fixture/v1/responses");
+                let response = client.post(&url).bearer_auth("local").json(&request).send().await.unwrap();
+                assert_eq!(response.status(), 200);
+                let text = response.text().await.unwrap();
+                let response: Value = if streaming {
+                    text.lines().filter_map(|line| line.strip_prefix("data: ")).filter_map(|data| serde_json::from_str::<Value>(data).ok())
+                        .find(|event| event["type"] == "response.completed").unwrap()["response"].clone()
+                } else { serde_json::from_str(&text).unwrap() };
+                assert_eq!(response["output"][0]["name"], "lookup");
+                assert_eq!(response["output"][0]["namespace"], "mcp_fixture");
+                assert_eq!(response["output"][0]["call_id"], "call_fixture");
+                let followup = json!({"model":"wire-model","previous_response_id":response["id"],"input":[{"type":"function_call_output","call_id":"call_fixture","output":"done"}]});
+                let next = client.post(&url).bearer_auth("local").json(&followup).send().await.unwrap();
+                assert_eq!(next.status(), 200);
+                next.bytes().await.unwrap();
+                assert_eq!(calls.load(Ordering::SeqCst), 2);
+                let captured = captured.lock().unwrap();
+                let call = if protocol == router::ModelProtocol::ChatCompletions {
+                    &captured[1]["messages"][1]["tool_calls"][0]["function"]["name"]
+                } else { &captured[1]["messages"][1]["content"][0]["name"] };
+                assert_eq!(call.as_str(), Some(encoded));
+                stop(); server.abort();
+            }
+        }
     });
 }
 

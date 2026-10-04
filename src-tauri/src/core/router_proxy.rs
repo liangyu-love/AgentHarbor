@@ -374,6 +374,25 @@ fn request_protocol(segments: &[&str]) -> Option<router::ModelProtocol> {
     }
 }
 
+/// This local token grants inference access, not access to arbitrary upstream
+/// administration, file storage or billing APIs with a provider's credentials.
+fn validate_endpoint(method: &hyper::Method, segments: &[&str]) -> ForwardResult<()> {
+    let suffix = match segments {
+        ["codex", "v1", suffix @ ..] | ["p", _, "v1", suffix @ ..] | ["v1", suffix @ ..] => suffix,
+        _ => return Err((StatusCode::NOT_FOUND, "unknown router endpoint")),
+    };
+    let allowed = match suffix {
+        ["models"] | ["models", _] => matches!(*method, hyper::Method::GET | hyper::Method::HEAD),
+        ["responses"] | ["responses", "compact"] | ["messages"] | ["messages", "count_tokens"]
+            | ["chat", "completions"] => *method == hyper::Method::POST,
+        ["responses", _] => matches!(*method, hyper::Method::GET | hyper::Method::HEAD | hyper::Method::DELETE),
+        ["responses", _, "cancel"] => *method == hyper::Method::POST,
+        ["responses", _, "input_items"] => matches!(*method, hyper::Method::GET | hyper::Method::HEAD),
+        _ => return Err((StatusCode::NOT_FOUND, "unsupported router endpoint")),
+    };
+    if allowed { Ok(()) } else { Err((StatusCode::METHOD_NOT_ALLOWED, "unsupported method for router endpoint")) }
+}
+
 fn provider_destination(
     store: &router::Store,
     provider_id: &str,
@@ -455,6 +474,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
     }
 
     let method = request.method().clone();
+    validate_endpoint(&method, &segments)?;
     let has_body = !matches!(method, hyper::Method::GET | hyper::Method::HEAD);
     let codex_auth = codex_request_auth(request.headers(), &store.router.bearer_token);
     if request
@@ -509,7 +529,15 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         } else {
             None
         };
-        let binding = affinity_key.as_deref().and_then(failover::bound);
+        let mut binding = affinity_key.as_deref().and_then(failover::bound);
+        if !store.router.same_model_failover && binding.is_some() {
+            if failover::continuation(body.as_deref()) {
+                return Err((StatusCode::CONFLICT,
+                    "failover is disabled for this bound conversation; re-enable it or start a new conversation"));
+            }
+            if let Some(key) = &affinity_key { failover::release(key); }
+            binding = None;
+        }
         let (mut destination, mut selection_reason) = resolve_destination_explain(
             &store,
             &segments,
@@ -542,7 +570,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         {
             return Err((
                 StatusCode::CONFLICT,
-                "conversation channel is unknown; disable failover or start a new conversation",
+                "conversation channel is unknown or expired; start a new conversation",
             ));
         }
         let reserved = (store.router.same_model_failover || binding.is_some())
@@ -552,7 +580,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         if store.router.same_model_failover && affinity_key.is_some() && !reserved {
             return Err((
                 StatusCode::SERVICE_UNAVAILABLE,
-                "conversation routing capacity reached; disable failover or restart the application",
+                "conversation routing capacity reached; wait for idle sessions to expire or start without failover",
             ));
         }
         let can_retry = store.router.same_model_failover
@@ -663,7 +691,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                 }
                 _ => None,
             };
-            let (mut sent, translated_input) = upstream_body(&destination, body.clone())?;
+            let (mut sent, translated_input, tool_namespaces) = upstream_body(&destination, body.clone())?;
             if let (Some(history), Some(bytes)) = (&message_context, &sent) {
                 let mut value: Value = serde_json::from_slice(bytes).map_err(|_| (StatusCode::BAD_REQUEST, "invalid translated request"))?;
                 history.restore(&mut value);
@@ -780,6 +808,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                 attempt_id,
                 message_context,
                 tool_adapter,
+                tool_namespaces,
             )
             .await;
         }
@@ -1244,7 +1273,7 @@ fn official_target(
 fn upstream_body(
     destination: &Destination,
     body: Option<Bytes>,
-) -> ForwardResult<(Option<Bytes>, Vec<Value>)> {
+) -> ForwardResult<(Option<Bytes>, Vec<Value>, protocol::tool_namespaces::ToolNamespaces)> {
     let (
         Destination::Provider {
             model_override,
@@ -1255,7 +1284,7 @@ fn upstream_body(
         Some(bytes),
     ) = (destination, &body)
     else {
-        return Ok((body, Vec::new()));
+        return Ok((body, Vec::new(), Default::default()));
     };
     match translation {
         // A translated request is rebuilt for the provider's protocol,
@@ -1275,11 +1304,17 @@ fn upstream_body(
                         "protocol.errors.unsupportedMessageRole" =>
                             "cannot translate request: unsupported conversation role",
                         "protocol.errors.unsupportedToolDefinition" =>
-                            "cannot translate request: unsupported hosted tool or missing tool input_schema; use a native Messages provider for hosted tools",
+                            "cannot translate request: unsupported hosted/custom tool, tool choice or function schema; select a provider using the caller's native protocol",
+                        "protocol.errors.unsupportedHostedTool" =>
+                            "cannot translate hosted tools; select a Responses provider or disable hosted web search in the caller",
+                        "protocol.errors.unsupportedNamespacedTool" =>
+                            "cannot translate namespaced tools; select a Responses provider or disable namespaced agent/MCP tools in the caller",
+                        "protocol.errors.unsupportedCustomTool" =>
+                            "cannot translate custom/freeform tools; select a Responses provider or use function tools in the caller",
                         "protocol.errors.invalidToolArguments" =>
                             "cannot translate request: tool arguments must be a JSON object",
                         "protocol.errors.unsupportedContent" =>
-                            "cannot translate request: unsupported content block or parameter for the target protocol",
+                            "cannot translate request without loss: unsupported content block, history item or output format; select a provider using the caller's protocol",
                         "protocol.errors.invalidRequest" =>
                             "cannot translate request: invalid request fields or message structure",
                         _ => "cannot translate request",
@@ -1297,16 +1332,16 @@ fn upstream_body(
                     "cannot re-encode request",
                 )
             })?;
-            Ok((Some(Bytes::from(encoded)), rewritten.input))
+            Ok((Some(Bytes::from(encoded)), rewritten.input, rewritten.namespaces))
         }
         None if model_override.is_some()
             || *upstream_protocol == router::ModelProtocol::ChatCompletions =>
         {
             let prepared =
                 prepare_relay_body(bytes, model_override.as_deref(), *upstream_protocol)?;
-            Ok((Some(prepared), Vec::new()))
+            Ok((Some(prepared), Vec::new(), Default::default()))
         }
-        None => Ok((body, Vec::new())),
+        None => Ok((body, Vec::new(), Default::default())),
     }
 }
 
@@ -1342,6 +1377,7 @@ async fn relay_response(
     attempt_id: String,
     message_context: Option<protocol::message_history::Context>,
     tool_adapter: tool_schema::Adapter,
+    tool_namespaces: protocol::tool_namespaces::ToolNamespaces,
 ) -> ForwardResult {
     let response_status = response.status();
     let is_event_stream = response
@@ -1387,6 +1423,7 @@ async fn relay_response(
             attempt_id,
             message_context,
             tool_adapter,
+            tool_namespaces,
         ),
         Some(translation) if response_status.is_success() => {
             let mut diagnostic = ResponseObservation::new(
@@ -1415,13 +1452,14 @@ async fn relay_response(
                 diagnostic.translation_error(code);
                 (StatusCode::BAD_GATEWAY, "invalid Gemini tool arguments")
             })?;
-            let converted = protocol::response_body(translation, &value).map_err(|_| {
+            let mut converted = protocol::response_body(translation, &value).map_err(|_| {
                 diagnostic.translation_error("invalid_upstream_response");
                 (
                     StatusCode::BAD_GATEWAY,
                     "cannot translate provider response",
                 )
             })?;
+            tool_namespaces.restore_response(&mut converted);
             diagnostic.finish();
             if translation.from == router::ModelProtocol::Responses {
                 protocol::history::remember(&converted, translated_input);
@@ -1511,6 +1549,7 @@ fn translated_stream(
     attempt_id: String,
     message_context: Option<protocol::message_history::Context>,
     tool_adapter: tool_schema::Adapter,
+    tool_namespaces: protocol::tool_namespaces::ToolNamespaces,
 ) -> ResponseBody {
     let observer = ResponseObservation::new(
         trace,
@@ -1531,9 +1570,10 @@ fn translated_stream(
             Some(translated_input),
             message_context,
             tool_adapter.stream(upstream_protocol),
+            tool_namespaces,
             false,
         ),
-        move |(mut source, mut observer, mut translator, mut recorded, history, mut tools, done)| async move {
+        move |(mut source, mut observer, mut translator, mut recorded, history, mut tools, namespaces, done)| async move {
             if done {
                 return None;
             }
@@ -1563,7 +1603,9 @@ fn translated_stream(
             if let Some(response) = translator.completed_response() {
                 if let Some(input) = recorded.take() {
                     if translation.from == router::ModelProtocol::Responses {
-                        protocol::history::remember(response, input);
+                        let mut response = response.clone();
+                        namespaces.restore_response(&mut response);
+                        protocol::history::remember(&response, input);
                     } else if let Some(history) = &history {
                         history.remember(response);
                     }
@@ -1572,12 +1614,13 @@ fn translated_stream(
             if done {
                 observer.finish();
             }
+            let events: Vec<_> = events.into_iter().map(|event| namespaces.restore_event(event)).collect();
             let frames = futures_util::stream::iter(events.into_iter().map(|event| {
                 Ok::<_, Box<dyn std::error::Error + Send + Sync>>(Frame::data(Bytes::from(event)))
             }));
             Some((
                 frames,
-                (source, observer, translator, recorded, history, tools, done),
+                (source, observer, translator, recorded, history, tools, namespaces, done),
             ))
         },
     )
@@ -2205,6 +2248,28 @@ mod tests {
     }
 
     #[test]
+    fn local_token_only_allows_inference_models_and_supported_response_resources() {
+        use hyper::Method;
+        for prefix in [vec!["v1"], vec!["codex", "v1"], vec!["p", "fixture", "v1"]] {
+            for (method, suffix) in [(Method::GET, vec!["models"]), (Method::GET, vec!["models", "m"]),
+                (Method::POST, vec!["responses"]), (Method::POST, vec!["responses", "compact"]),
+                (Method::GET, vec!["responses", "r"]), (Method::DELETE, vec!["responses", "r"]),
+                (Method::POST, vec!["responses", "r", "cancel"]), (Method::GET, vec!["responses", "r", "input_items"]),
+                (Method::POST, vec!["messages", "count_tokens"]), (Method::POST, vec!["messages"]),
+                (Method::POST, vec!["chat", "completions"])] {
+                let mut path = prefix.clone(); path.extend(suffix);
+                assert!(validate_endpoint(&method, &path).is_ok());
+            }
+            for suffix in [vec!["files"], vec!["organization", "admin_keys"], vec!["fine_tuning", "jobs"], vec!["responses", "r", "unknown"]] {
+                let mut path = prefix.clone(); path.extend(suffix);
+                assert_eq!(validate_endpoint(&Method::POST, &path).unwrap_err().0, StatusCode::NOT_FOUND);
+            }
+            let mut path = prefix.clone(); path.push("responses");
+            assert_eq!(validate_endpoint(&Method::PUT, &path).unwrap_err().0, StatusCode::METHOD_NOT_ALLOWED);
+        }
+    }
+
+    #[test]
     fn translated_continuations_preserve_plain_reasoning_summaries() {
         for target in [
             router::ModelProtocol::ChatCompletions,
@@ -2237,7 +2302,7 @@ mod tests {
             )
             .unwrap();
             let body = Bytes::from(json!({"model":"relay::model","previous_response_id":response_id,"input":"Follow-up"}).to_string());
-            let (body, _) = upstream_body(&destination, Some(body)).unwrap();
+            let (body, _, _) = upstream_body(&destination, Some(body)).unwrap();
             let translated: Value = serde_json::from_slice(&body.unwrap()).unwrap();
             let messages = translated["messages"].to_string();
             for text in [

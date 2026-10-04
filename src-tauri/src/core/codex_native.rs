@@ -55,6 +55,17 @@ fn catalog_path(paths: &CodexPaths, id: Uuid) -> PathBuf {
     paths.app_data_dir.join(format!("codex-native-{id}.json"))
 }
 
+fn installed_catalog_path(paths: &CodexPaths, document: &DocumentMut) -> Option<PathBuf> {
+    let path = PathBuf::from(document.get("model_catalog_json")?.as_str()?);
+    let id = path
+        .file_name()?
+        .to_str()?
+        .strip_prefix("codex-native-")?
+        .strip_suffix(".json")?;
+    let id = Uuid::parse_str(id).ok()?;
+    (path == catalog_path(paths, id)).then_some(path)
+}
+
 fn credential_error() -> CoreError {
     CoreError::OperationFailed(CREDENTIAL_ERROR.into())
 }
@@ -93,26 +104,39 @@ impl EnvFile {
         let path = env_path(paths);
         let original = match std::fs::symlink_metadata(&path) {
             Ok(metadata) => {
-                if !metadata.file_type().is_file() || metadata.len() > MAX_ENV_BYTES {
-                    return Err(credential_error());
+                if !metadata.file_type().is_file() {
+                    return Err(CoreError::OperationFailed(
+                        "newapi.errors.nativeEnvFileType".into(),
+                    ));
                 }
-                Some(std::fs::read(&path).map_err(|_| credential_error())?)
+                if metadata.len() > MAX_ENV_BYTES {
+                    return Err(CoreError::OperationFailed(
+                        "newapi.errors.nativeEnvTooLarge".into(),
+                    ));
+                }
+                Some(std::fs::read(&path).map_err(|_| {
+                    CoreError::OperationFailed("newapi.errors.nativeEnvRead".into())
+                })?)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(_) => return Err(credential_error()),
+            Err(_) => {
+                return Err(CoreError::OperationFailed(
+                    "newapi.errors.nativeEnvRead".into(),
+                ))
+            }
         };
         Self::parse(original)
     }
 
     fn parse(original: Option<Vec<u8>>) -> Result<Self, CoreError> {
         let text = String::from_utf8(original.clone().unwrap_or_default())
-            .map_err(|_| credential_error())?;
+            .map_err(|_| CoreError::OperationFailed("newapi.errors.nativeEnvSyntax".into()))?;
         // This iterator parses only. It never installs variables into this
         // process, and parser errors (which can contain secret lines) are redacted.
         let variables: Vec<(String, String)> =
             dotenvy::from_read_iter(Cursor::new(text.as_bytes()))
                 .collect::<Result<_, _>>()
-                .map_err(|_| credential_error())?;
+                .map_err(|_| CoreError::OperationFailed("newapi.errors.nativeEnvSyntax".into()))?;
         let mut lines = Vec::new();
         let mut offset = 0;
         for line in text.split_inclusive('\n') {
@@ -199,17 +223,22 @@ impl EnvFile {
 
     fn write(&self, paths: &CodexPaths, updated: &str) -> Result<(), CoreError> {
         if updated.len() as u64 > MAX_ENV_BYTES {
-            return Err(credential_error());
+            return Err(CoreError::OperationFailed(
+                "newapi.errors.nativeEnvTooLarge".into(),
+            ));
         }
         // Check again immediately before replacing; preserve concurrent edits
         // visible here. This is not an interprocess compare-and-swap guarantee.
         if Self::load(paths)?.original != self.original {
-            return Err(credential_error());
+            return Err(CoreError::OperationFailed(
+                "newapi.errors.nativeEnvChanged".into(),
+            ));
         }
         if updated.as_bytes() == self.original.as_deref().unwrap_or_default() {
             return Ok(());
         }
-        storage::write_atomic(&env_path(paths), updated.as_bytes()).map_err(|_| credential_error())
+        storage::write_atomic(&env_path(paths), updated.as_bytes())
+            .map_err(|_| CoreError::OperationFailed("newapi.errors.nativeEnvWrite".into()))
     }
 }
 
@@ -232,10 +261,14 @@ fn selected_provider(store: &Store) -> Result<&Provider, String> {
 }
 
 fn endpoint(provider: &Provider) -> Result<String, String> {
-    newapi::base_url(&provider.base_url)?
-        .join("v1")
-        .map(|url| url.to_string())
-        .map_err(|_| "newapi.errors.url".into())
+    let mut url = newapi::provider_endpoint(&provider.base_url, "v1/responses")?;
+    let root = url
+        .path()
+        .strip_suffix("/responses")
+        .ok_or("newapi.errors.url")?
+        .to_owned();
+    url.set_path(&root);
+    Ok(url.to_string())
 }
 
 fn api_key(provider: &Provider) -> Result<String, String> {
@@ -270,6 +303,7 @@ struct NativeConfigurationPlan {
     catalog: serde_json::Value,
     models: Vec<String>,
     compression: model_policy::SharedCompressionPlan,
+    context: Option<u64>,
 }
 
 fn configuration_plan(
@@ -298,6 +332,13 @@ fn configuration_plan(
             .map(|(id, (_, projection))| (id.as_str(), projection))
             .collect::<Vec<_>>(),
     );
+    let context = provider.context_window.map(|context| {
+        resolved
+            .iter()
+            .map(|(_, projection)| projection.context_window)
+            .min()
+            .map_or(context, |smallest| context.min(smallest))
+    });
     let models: Vec<_> = ids
         .iter()
         .zip(resolved)
@@ -318,6 +359,7 @@ fn configuration_plan(
         catalog: serde_json::json!({ "models": models }),
         models: ids,
         compression,
+        context,
     }
 }
 
@@ -337,7 +379,7 @@ fn catalog(paths: &CodexPaths, store: &Store, provider: &Provider) -> serde_json
 }
 
 /// Effective values the native config applies globally for this provider.
-/// The context window stays the user's provider setting. The compaction
+/// An explicit context override is capped by the smallest selected model. The compaction
 /// threshold is the conservative minimum across this provider's selected
 /// models so switching models inside one shared config never overstates a
 /// smaller model's budget. Invalid or unknown models block a shared override.
@@ -346,12 +388,8 @@ pub(super) fn native_limits(
     store: &Store,
     provider: &Provider,
 ) -> (Option<u64>, Option<u64>) {
-    (
-        provider.context_window,
-        load_configuration_plan(paths, store, provider)
-            .compression
-            .threshold,
-    )
+    let plan = load_configuration_plan(paths, store, provider);
+    (plan.context, plan.compression.threshold)
 }
 
 pub(crate) struct NativeCompressionState {
@@ -376,7 +414,11 @@ pub(super) fn compression_state(
     let _guard = config_snapshot::guard().ok()?;
     let applied = intact_unlocked(paths, store, &plan)
         .ok()
-        .map(|intact| intact && !matches!(plan.compression.state.as_str(), "invalid" | "unknown"));
+        .and_then(|intact| {
+            (plan.compression.state != "clientDefault").then_some(
+                intact && !matches!(plan.compression.state.as_str(), "invalid" | "unknown"),
+            )
+        });
     let document = config(paths).ok();
     let config_active = document.as_ref().is_some_and(|document| {
         let owns_scope = document.get("model_provider").and_then(Item::as_str)
@@ -400,12 +442,10 @@ pub(super) fn compression_state(
         owns_scope
             && credential.is_some_and(|credential| {
                 api_key(provider).ok().as_deref() == Some(credential.key.as_str())
-                    && document.get("model_catalog_json").and_then(Item::as_str)
-                        == Some(
-                            catalog_path(paths, credential.id)
-                                .to_string_lossy()
-                                .as_ref(),
-                        )
+                    && document
+                        .get("model_catalog_json")
+                        .and_then(Item::as_str)
+                        .is_some_and(|_| installed_catalog_path(paths, document).is_some())
             })
     });
     let applied_threshold = config_active
@@ -450,21 +490,55 @@ fn referenced_variables(document: &DocumentMut) -> HashSet<String> {
 fn cleanup_unlocked(paths: &CodexPaths, only: Option<Uuid>) -> Result<(), CoreError> {
     let document = config(paths)?;
     let referenced = referenced_variables(&document);
+    let foreign_references: HashSet<_> = document
+        .get("model_providers")
+        .and_then(Item::as_table_like)
+        .into_iter()
+        .flat_map(|table| table.iter())
+        .filter(|(key, _)| *key != PROVIDER_KEY)
+        .filter_map(|(_, entry)| entry.get("env_key").and_then(Item::as_str))
+        .collect();
     let file = EnvFile::load(paths)?;
     let removing: Vec<_> = file
         .owned
         .iter()
         .filter(|entry| only.map_or(true, |id| entry.id == id) && !referenced.contains(&entry.name))
         .collect();
-    if removing.is_empty() {
-        return Ok(());
-    }
     let mut updated = file.text.clone();
     for entry in removing.iter().rev() {
         updated.replace_range(entry.range.clone(), "");
     }
-    for entry in removing {
-        let path = catalog_path(paths, entry.id);
+    // Remove secrets first. Catalogs contain no secrets and can be rediscovered
+    // by their reserved canonical UUID names if their deletion needs a retry.
+    if !removing.is_empty() {
+        file.write(paths, &updated)?;
+    }
+    let entries = match std::fs::read_dir(&paths.app_data_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let Some(id) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix("codex-native-"))
+            .and_then(|name| name.strip_suffix(".json"))
+            .and_then(|name| Uuid::parse_str(name).ok())
+        else {
+            continue;
+        };
+        if path != catalog_path(paths, id)
+            || only.is_some_and(|only| only != id)
+            || foreign_references.contains(variable_name(id).as_str())
+        {
+            continue;
+        }
         if document.get("model_catalog_json").and_then(Item::as_str)
             == Some(path.to_string_lossy().as_ref())
         {
@@ -476,8 +550,7 @@ fn cleanup_unlocked(paths: &CodexPaths, only: Option<Uuid>) -> Result<(), CoreEr
             Err(_) => return Err(CoreError::OperationFailed(STORAGE_ERROR.into())),
         }
     }
-    // Keep the record until both removals succeed, so failures remain retryable.
-    file.write(paths, &updated)
+    Ok(())
 }
 
 pub(super) fn cleanup_credentials(paths: &CodexPaths) -> Result<(), String> {
@@ -489,6 +562,50 @@ pub(super) fn intact(paths: &CodexPaths, store: &Store) -> Result<bool, String> 
     let _guard = config_snapshot::guard().map_err(config_update_error)?;
     let plan = load_configuration_plan(paths, store, selected_provider(store)?);
     intact_unlocked(paths, store, &plan)
+}
+
+fn supplemental_headers(
+    document: &DocumentMut,
+    expected_base: &str,
+) -> Result<Vec<(&'static str, Item)>, CoreError> {
+    if document.get("model_provider").and_then(Item::as_str) != Some(PROVIDER_KEY) {
+        return Ok(Vec::new());
+    }
+    let existing = document
+        .get("model_providers")
+        .and_then(|p| p.get(PROVIDER_KEY));
+    if ["experimental_bearer_token", "auth", "aws"]
+        .iter()
+        .any(|key| existing.and_then(|entry| entry.get(key)).is_some())
+    {
+        return Err(CoreError::OperationFailed(
+            "newapi.errors.nativeAuthOverrides".into(),
+        ));
+    }
+    let mut headers = Vec::new();
+    for key in ["http_headers", "env_http_headers"] {
+        if let Some(value) = existing.and_then(|entry| entry.get(key)) {
+            if !value
+                .as_table_like()
+                .is_some_and(|table| table.iter().all(|(_, value)| value.as_str().is_some()))
+            {
+                return Err(CoreError::OperationFailed(
+                    "newapi.errors.nativeHeaders".into(),
+                ));
+            }
+            if existing
+                .and_then(|entry| entry.get("base_url"))
+                .and_then(Item::as_str)
+                != Some(expected_base)
+            {
+                return Err(CoreError::OperationFailed(
+                    "newapi.errors.nativeHeaderScope".into(),
+                ));
+            }
+            headers.push((key, value.clone()));
+        }
+    }
+    Ok(headers)
 }
 
 fn intact_unlocked(
@@ -530,9 +647,10 @@ fn intact_unlocked(
     {
         return Err(CREDENTIAL_ERROR.into());
     }
-    let expected_catalog = catalog_path(paths, credential.id);
-    let (expected_context, expected_threshold) =
-        (provider.context_window, plan.compression.threshold);
+    let Some(expected_catalog) = installed_catalog_path(paths, &document) else {
+        return Ok(false);
+    };
+    let (expected_context, expected_threshold) = (plan.context, plan.compression.threshold);
     let catalog_matches = std::fs::read(&expected_catalog)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
@@ -556,15 +674,10 @@ fn intact_unlocked(
         && entry.get("base_url").and_then(Item::as_str) == Some(expected_base.as_str())
         && entry.get("wire_api").and_then(Item::as_str) == Some("responses")
         && entry.get("requires_openai_auth").and_then(Item::as_bool) == Some(false)
-        && [
-            "experimental_bearer_token",
-            "http_headers",
-            "env_http_headers",
-            "auth",
-            "aws",
-        ]
-        .iter()
-        .all(|key| entry.get(key).is_none())
+        && ["experimental_bearer_token", "auth", "aws"]
+            .iter()
+            .all(|key| entry.get(key).is_none())
+        && supplemental_headers(&document, &expected_base).is_ok()
         && catalog_matches)
 }
 
@@ -574,7 +687,7 @@ pub(super) fn apply(paths: &CodexPaths, store: &Store) -> Result<newapi::Applied
     let expected_base = endpoint(provider)?;
     let key = api_key(provider)?;
     let plan = load_configuration_plan(paths, store, provider);
-    let (limit_context, limit_threshold) = (provider.context_window, plan.compression.threshold);
+    let (limit_context, limit_threshold) = (plan.context, plan.compression.threshold);
     newapi::validate_limits(&newapi::Connection {
         model: provider.model.clone(),
         context_window: limit_context,
@@ -590,16 +703,42 @@ pub(super) fn apply(paths: &CodexPaths, store: &Store) -> Result<newapi::Applied
             backup_path: None,
         });
     }
+    // Preserve supplemental headers only within their original endpoint scope.
+    // Never silently drop them, or copy header credentials to another host.
+    supplemental_headers(&config(paths).map_err(config_update_error)?, &expected_base)
+        .map_err(config_update_error)?;
     let file = EnvFile::load(paths).map_err(config_update_error)?;
     let id = Uuid::new_v4();
-    let name = variable_name(id);
+    let document = config(paths).map_err(config_update_error)?;
+    let reusable = (document.get("model_provider").and_then(Item::as_str) == Some(PROVIDER_KEY))
+        .then(|| {
+            document
+                .get("model_providers")
+                .and_then(|entries| entries.get(PROVIDER_KEY))
+        })
+        .flatten()
+        .filter(|entry| {
+            entry.get("base_url").and_then(Item::as_str) == Some(expected_base.as_str())
+        })
+        .and_then(|entry| entry.get("env_key").and_then(Item::as_str))
+        .and_then(|name| file.owned.iter().find(|credential| credential.name == name))
+        .filter(|credential| {
+            credential.key == key
+                && std::env::var_os(&credential.name)
+                    .is_none_or(|value| value.to_str() == Some(key.as_str()))
+        });
+    let name = reusable
+        .map(|credential| credential.name.clone())
+        .unwrap_or_else(|| variable_name(id));
     let catalog_path = catalog_path(paths, id);
-    if std::env::var_os(&name).is_some() || catalog_path.exists() {
+    if (reusable.is_none() && std::env::var_os(&name).is_some()) || catalog_path.exists() {
         return Err(CREDENTIAL_ERROR.into());
     }
-    let updated = format!("{}{}", file.text, credential_block(id, &key));
-    EnvFile::parse(Some(updated.as_bytes().to_vec())).map_err(config_update_error)?;
-    file.write(paths, &updated).map_err(config_update_error)?;
+    if reusable.is_none() {
+        let updated = format!("{}{}", file.text, credential_block(id, &key));
+        EnvFile::parse(Some(updated.as_bytes().to_vec())).map_err(config_update_error)?;
+        file.write(paths, &updated).map_err(config_update_error)?;
+    }
     let mut pending = None;
     let result = (|| -> Result<_, CoreError> {
         storage::write_atomic(&catalog_path, &serde_json::to_vec_pretty(&plan.catalog)?)?;
@@ -615,16 +754,12 @@ pub(super) fn apply(paths: &CodexPaths, store: &Store) -> Result<newapi::Applied
                     "model_providers must be a TOML table".into(),
                 ));
             }
+            // Read again inside the repository's guarded update so a user edit
+            // between preflight and commit is never replaced by stale headers.
+            let headers = supplemental_headers(&document, &expected_base)?;
             let mut snapshot = match config_snapshot::load(paths, original)? {
                 Some(snapshot) if snapshot.selected_provider_is_ours(&document) => snapshot,
                 Some(_) => config_snapshot::Snapshot::capture(paths, &document)?,
-                None if document.get("model_provider").and_then(Item::as_str)
-                    == Some(PROVIDER_KEY) =>
-                {
-                    return Err(CoreError::OperationFailed(
-                        "newapi.errors.routerSnapshot".into(),
-                    ));
-                }
                 None if model_provider_is_ours(&document) => {
                     config_snapshot::recover_legacy(paths, &document, store)?
                 }
@@ -674,6 +809,9 @@ pub(super) fn apply(paths: &CodexPaths, store: &Store) -> Result<newapi::Applied
             entry["env_key"] = toml_edit::value(&name);
             // Never permit a third-party endpoint to select official tokens.
             entry["requires_openai_auth"] = toml_edit::value(false);
+            for (key, value) in &headers {
+                entry[key] = value.clone();
+            }
             snapshot.apply_auth(&mut document, true)?;
             snapshot.prepare(paths, original, &document, config_snapshot::Action::Apply)?;
             pending = Some(snapshot);
@@ -700,29 +838,68 @@ pub(super) fn apply(paths: &CodexPaths, store: &Store) -> Result<newapi::Applied
     Ok(applied_config(result))
 }
 
+/// The reserved env variable, checksummed owned block and catalog path together
+/// prove a native installation when its nonsecret journal was lost.
+pub(super) fn proven_installation(paths: &CodexPaths, document: &DocumentMut) -> bool {
+    if document.get("model_provider").and_then(Item::as_str) != Some(PROVIDER_KEY) {
+        return false;
+    }
+    let Some(entry) = document
+        .get("model_providers")
+        .and_then(|p| p.get(PROVIDER_KEY))
+    else {
+        return false;
+    };
+    let Ok(file) = EnvFile::load(paths) else {
+        return false;
+    };
+    let Some(_credential) = entry
+        .get("env_key")
+        .and_then(Item::as_str)
+        .and_then(|name| file.owned.iter().find(|entry| entry.name == name))
+    else {
+        return false;
+    };
+    entry.get("wire_api").and_then(Item::as_str) == Some("responses")
+        && entry.get("requires_openai_auth").and_then(Item::as_bool) == Some(false)
+        && entry
+            .get("base_url")
+            .and_then(Item::as_str)
+            .is_some_and(|url| newapi::base_url(url).is_ok())
+        && installed_catalog_path(paths, document).is_some_and(|path| path.is_file())
+}
+
+pub(super) fn matches_installation(
+    paths: &CodexPaths,
+    document: &DocumentMut,
+    provider: &Provider,
+) -> bool {
+    let Some(entry) = document
+        .get("model_providers")
+        .and_then(|p| p.get(PROVIDER_KEY))
+    else {
+        return false;
+    };
+    let Ok(file) = EnvFile::load(paths) else {
+        return false;
+    };
+    entry.get("base_url").and_then(Item::as_str) == endpoint(provider).ok().as_deref()
+        && entry
+            .get("env_key")
+            .and_then(Item::as_str)
+            .and_then(|name| file.owned.iter().find(|entry| entry.name == name))
+            .is_some_and(|credential| {
+                api_key(provider).ok().as_deref() == Some(credential.key.as_str())
+            })
+}
+
 pub(super) fn installed_catalog_model(paths: &CodexPaths, document: &DocumentMut) -> bool {
     if document.get("model_provider").and_then(Item::as_str) != Some(PROVIDER_KEY) {
         return false;
     }
-    let Some(path) = document
-        .get("model_catalog_json")
-        .and_then(Item::as_str)
-        .map(PathBuf::from)
-    else {
+    let Some(path) = installed_catalog_path(paths, document) else {
         return false;
     };
-    let Some(id) = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .and_then(|name| name.strip_prefix("codex-native-"))
-        .and_then(|name| name.strip_suffix(".json"))
-        .and_then(|id| Uuid::parse_str(id).ok())
-    else {
-        return false;
-    };
-    if path != catalog_path(paths, id) {
-        return false;
-    }
     let Some(model) = document.get("model").and_then(Item::as_str) else {
         return false;
     };
@@ -1242,6 +1419,31 @@ mod tests {
     }
 
     #[test]
+    fn native_metadata_updates_keep_loaded_credentials_and_replace_only_the_catalog() {
+        let (_directory, paths, mut store) = fixture();
+        apply(&paths, &store).unwrap();
+        let original_id = installed_id(&paths);
+        let original_catalog = installed_catalog_path(&paths, &document(&paths)).unwrap();
+        let env = std::fs::read(env_path(&paths)).unwrap();
+        store.providers[0].name = "Updated model metadata".into();
+        store.providers[0].models[0].context_window = Some(250000);
+        apply(&paths, &store).unwrap();
+        assert_eq!(installed_id(&paths), original_id);
+        assert_eq!(std::fs::read(env_path(&paths)).unwrap(), env);
+        assert!(!original_catalog.exists());
+        assert_eq!(generated_catalogs(&paths).len(), 1);
+        assert!(intact(&paths, &store).unwrap());
+        std::fs::remove_file(config_snapshot::path(&paths)).unwrap();
+        remove_routing_config(&paths, &store).unwrap();
+        assert!(EnvFile::load(&paths).unwrap().owned.is_empty());
+        assert!(generated_catalogs(&paths).is_empty());
+        assert_eq!(
+            text(&paths).parse::<toml::Value>().unwrap(),
+            ORIGINAL.parse::<toml::Value>().unwrap()
+        );
+    }
+
+    #[test]
     fn native_provider_or_key_switch_allocates_a_new_generation() {
         let (_directory, paths, mut store) = fixture();
         apply(&paths, &store).unwrap();
@@ -1301,7 +1503,6 @@ mod tests {
             format!("{block}{block}"),
             format!("{}=\"synthetic-env-secret\"\n", variable_name(id)),
             block.replace(&format!("{END}{id} ---"), "# damaged closing marker"),
-            "USER_KEY=\"unterminated-synthetic-secret\n".into(),
         ];
         for original in variants {
             let (_directory, paths, store) = fixture();
@@ -1312,6 +1513,70 @@ mod tests {
             assert_eq!(std::fs::read_to_string(env_path(&paths)).unwrap(), original);
             assert_eq!(text(&paths), ORIGINAL);
             assert!(!config_snapshot::path(&paths).exists());
+        }
+    }
+
+    #[test]
+    fn native_env_errors_explain_safe_rejection_without_exposing_or_overwriting_secrets() {
+        let (_directory, paths, store) = fixture();
+        for (bytes, expected) in [
+            (
+                b"USER_KEY=\"unterminated-synthetic-secret\n".to_vec(),
+                "newapi.errors.nativeEnvSyntax",
+            ),
+            (vec![0xff], "newapi.errors.nativeEnvSyntax"),
+            (
+                vec![b' '; MAX_ENV_BYTES as usize + 1],
+                "newapi.errors.nativeEnvTooLarge",
+            ),
+        ] {
+            std::fs::write(env_path(&paths), &bytes).unwrap();
+            let error = apply(&paths, &store).unwrap_err();
+            assert_eq!(error, expected);
+            assert!(!error.contains("synthetic"));
+            assert_eq!(std::fs::read(env_path(&paths)).unwrap(), bytes);
+            assert_eq!(text(&paths), ORIGINAL);
+        }
+        std::fs::remove_file(env_path(&paths)).unwrap();
+        std::fs::create_dir(env_path(&paths)).unwrap();
+        assert_eq!(
+            apply(&paths, &store).unwrap_err(),
+            "newapi.errors.nativeEnvFileType"
+        );
+        assert!(env_path(&paths).is_dir());
+        std::fs::remove_dir(env_path(&paths)).unwrap();
+        std::fs::write(env_path(&paths), USER_ENV).unwrap();
+        let file = EnvFile::load(&paths).unwrap();
+        let changed = format!("{USER_ENV}\nCONCURRENT_USER_KEY=synthetic-secret\n");
+        std::fs::write(env_path(&paths), &changed).unwrap();
+        assert_eq!(
+            config_update_error(file.write(&paths, USER_ENV).unwrap_err()),
+            "newapi.errors.nativeEnvChanged"
+        );
+        assert_eq!(std::fs::read_to_string(env_path(&paths)).unwrap(), changed);
+        assert_eq!(text(&paths), ORIGINAL);
+    }
+
+    #[test]
+    fn native_reapply_rejects_manual_auth_overrides_without_erasing_them() {
+        for key in ["experimental_bearer_token", "auth", "aws"] {
+            let (_directory, paths, mut store) = fixture();
+            apply(&paths, &store).unwrap();
+            let mut edited = document(&paths);
+            edited["model_providers"][PROVIDER_KEY][key] = toml_edit::value("synthetic-user-auth");
+            std::fs::write(&paths.config_path, edited.to_string()).unwrap();
+            let before = text(&paths);
+            let env = std::fs::read(env_path(&paths)).unwrap();
+            let catalogs = generated_catalogs(&paths);
+            store.providers[0].name = "Updated metadata".into();
+            assert_eq!(
+                apply(&paths, &store).unwrap_err(),
+                "newapi.errors.nativeAuthOverrides"
+            );
+            assert_eq!(text(&paths), before);
+            assert_eq!(std::fs::read(env_path(&paths)).unwrap(), env);
+            assert_eq!(generated_catalogs(&paths), catalogs);
+            assert_eq!(std::fs::read(&paths.auth_path).unwrap(), AUTH);
         }
     }
 
@@ -1384,7 +1649,7 @@ mod tests {
     }
 
     #[test]
-    fn native_postcommit_cleanup_failure_still_succeeds_and_can_retry() {
+    fn native_cleanup_removes_stale_secrets_even_when_catalog_path_is_not_a_file() {
         let (_directory, paths, mut store) = fixture();
         apply(&paths, &store).unwrap();
         let previous_catalog = catalog_path(&paths, installed_id(&paths));
@@ -1393,7 +1658,11 @@ mod tests {
         store.providers[0].api_key = "synthetic-next-key".into();
         apply(&paths, &store).unwrap();
         assert!(intact(&paths, &store).unwrap());
-        assert_eq!(EnvFile::load(&paths).unwrap().owned.len(), 2);
+        assert_eq!(EnvFile::load(&paths).unwrap().owned.len(), 1);
+        assert!(
+            previous_catalog.is_dir(),
+            "Never delete a directory in place of a catalog"
+        );
         std::fs::remove_dir(&previous_catalog).unwrap();
         cleanup_credentials(&paths).unwrap();
         assert_eq!(EnvFile::load(&paths).unwrap().owned.len(), 1);
@@ -1404,10 +1673,49 @@ mod tests {
     }
 
     #[test]
-    fn native_missing_snapshot_cannot_claim_intact_or_replace_existing_baseline() {
+    fn native_cleanup_discovers_orphan_catalogs_without_an_env_block() {
+        let (_directory, paths, store) = fixture();
+        apply(&paths, &store).unwrap();
+        let active = catalog_path(&paths, installed_id(&paths));
+        let orphan = catalog_path(&paths, Uuid::new_v4());
+        std::fs::write(&orphan, "{}").unwrap();
+        cleanup_credentials(&paths).unwrap();
+        assert!(!orphan.exists());
+        assert!(active.exists());
+        assert!(intact(&paths, &store).unwrap());
+    }
+
+    #[test]
+    fn native_shared_context_never_overstates_a_model_override_and_default_is_not_applied() {
+        let (_directory, paths, mut store) = fixture();
+        store.providers[0].context_window = Some(200000);
+        store.providers[0].models[1].overrides.context_window = Some(100000);
+        apply(&paths, &store).unwrap();
+        assert_eq!(
+            document(&paths)["model_context_window"].as_integer(),
+            Some(100000)
+        );
+        assert_eq!(
+            native_limits(&paths, &store, &store.providers[0]).0,
+            Some(100000)
+        );
+        store.compression = model_policy::CompressionPolicy::ClientDefault;
+        apply(&paths, &store).unwrap();
+        let catalog = models_dev::load(&paths.app_data_dir);
+        let state = compression_state(&paths, &store, &catalog, &[]).unwrap();
+        assert!(state.config_active);
+        assert_eq!(state.applied, None);
+        assert_eq!(state.applied_threshold, None);
+    }
+
+    #[test]
+    fn native_missing_snapshot_without_backup_cannot_replace_existing_baseline() {
         let (_directory, paths, store) = fixture();
         apply(&paths, &store).unwrap();
         std::fs::remove_file(config_snapshot::path(&paths)).unwrap();
+        for entry in std::fs::read_dir(paths.app_data_dir.join("config-backups")).unwrap() {
+            std::fs::remove_file(entry.unwrap().path()).unwrap();
+        }
         let installed = text(&paths);
         let env = std::fs::read(env_path(&paths)).unwrap();
         let catalogs = generated_catalogs(&paths);
@@ -1419,6 +1727,135 @@ mod tests {
         assert_eq!(text(&paths), installed);
         assert_eq!(std::fs::read(env_path(&paths)).unwrap(), env);
         assert_eq!(generated_catalogs(&paths), catalogs);
+    }
+
+    #[test]
+    fn native_missing_journal_recovers_for_reapply_remove_and_router_switch() {
+        for action in ["reapply", "remove", "router"] {
+            let (_directory, paths, store) = fixture();
+            apply(&paths, &store).unwrap();
+            std::fs::remove_file(config_snapshot::path(&paths)).unwrap();
+            assert!(!intact(&paths, &store).unwrap());
+            match action {
+                "reapply" => {
+                    apply(&paths, &store).unwrap();
+                    assert!(intact(&paths, &store).unwrap());
+                }
+                "router" => {
+                    super::super::apply_routing_config(&paths, &store).unwrap();
+                }
+                _ => {}
+            }
+            remove_routing_config(&paths, &store).unwrap();
+            let restored: toml::Value = text(&paths).parse().unwrap();
+            assert_eq!(restored, ORIGINAL.parse::<toml::Value>().unwrap());
+            assert!(EnvFile::load(&paths).unwrap().owned.is_empty());
+            assert!(generated_catalogs(&paths).is_empty());
+            assert_eq!(std::fs::read(&paths.auth_path).unwrap(), AUTH);
+        }
+    }
+
+    #[test]
+    fn native_missing_journal_rejects_ambiguous_baseline_and_preserves_user_drift() {
+        let (_directory, paths, store) = fixture();
+        apply(&paths, &store).unwrap();
+        std::fs::remove_file(config_snapshot::path(&paths)).unwrap();
+        let backup = paths
+            .app_data_dir
+            .join("config-backups")
+            .join(format!("{}.toml", Uuid::new_v4()));
+        std::fs::write(&backup, ORIGINAL.replace("user-model", "another-model")).unwrap();
+        let installed = text(&paths);
+        let env = std::fs::read(env_path(&paths)).unwrap();
+        assert_eq!(
+            remove_routing_config(&paths, &store).unwrap_err(),
+            "newapi.errors.routerSnapshot"
+        );
+        assert_eq!(text(&paths), installed);
+        assert_eq!(std::fs::read(env_path(&paths)).unwrap(), env);
+        std::fs::remove_file(backup).unwrap();
+        let mut changed = document(&paths);
+        changed["model"] = toml_edit::value("user-edited-model");
+        changed["model_context_window"] = toml_edit::value(123456);
+        std::fs::write(&paths.config_path, changed.to_string()).unwrap();
+        remove_routing_config(&paths, &store).unwrap();
+        assert_eq!(
+            document(&paths)["model"].as_str(),
+            Some("user-edited-model")
+        );
+        assert_eq!(
+            document(&paths)["model_context_window"].as_integer(),
+            Some(123456)
+        );
+    }
+
+    #[test]
+    fn native_headers_survive_reapply_and_are_never_copied_to_another_endpoint() {
+        let (_directory, paths, mut store) = fixture();
+        apply(&paths, &store).unwrap();
+        let mut changed = document(&paths);
+        changed["model_providers"][PROVIDER_KEY]["http_headers"] =
+            toml_edit::value(toml_edit::InlineTable::new());
+        changed["model_providers"][PROVIDER_KEY]["http_headers"]["X-Organization"] =
+            toml_edit::value("fixture-org");
+        changed["model_providers"][PROVIDER_KEY]["env_http_headers"] =
+            toml_edit::value(toml_edit::InlineTable::new());
+        changed["model_providers"][PROVIDER_KEY]["env_http_headers"]["X-API-Key"] =
+            toml_edit::value("USER_KEY");
+        std::fs::write(&paths.config_path, changed.to_string()).unwrap();
+        assert!(intact(&paths, &store).unwrap());
+        let id = installed_id(&paths);
+        assert!(apply(&paths, &store).unwrap().backup_path.is_none());
+        assert_eq!(installed_id(&paths), id);
+        store.providers[0].name = "Renamed".into();
+        store.providers[0].models[0].context_window = Some(250000);
+        apply(&paths, &store).unwrap();
+        let applied = document(&paths);
+        for key in ["http_headers", "env_http_headers"] {
+            assert_eq!(
+                applied["model_providers"][PROVIDER_KEY][key]
+                    .to_string()
+                    .trim(),
+                changed["model_providers"][PROVIDER_KEY][key]
+                    .to_string()
+                    .trim()
+            );
+        }
+        let env = std::fs::read(env_path(&paths)).unwrap();
+        store.providers[0].base_url = "https://another.example.invalid".into();
+        assert_eq!(
+            apply(&paths, &store).unwrap_err(),
+            "newapi.errors.nativeHeaderScope"
+        );
+        assert_eq!(text(&paths), applied.to_string());
+        assert_eq!(std::fs::read(env_path(&paths)).unwrap(), env);
+    }
+
+    #[test]
+    fn native_endpoint_matches_routed_responses_for_non_v1_and_custom_roots() {
+        for base in [
+            "https://api.novita.ai/v3/openai",
+            "https://api.z.ai/api/coding/paas/v4/",
+            "https://open.bigmodel.cn/api/paas/v4",
+            "https://api.deepseek.com/anthropic",
+            "https://custom.example.invalid/prefix/v1/",
+            "https://custom.example.invalid/prefix/",
+        ] {
+            let provider = Provider {
+                base_url: base.into(),
+                ..Default::default()
+            };
+            let routed = newapi::provider_endpoint(base, "v1/responses")
+                .unwrap()
+                .to_string();
+            assert_eq!(
+                format!(
+                    "{}/responses",
+                    endpoint(&provider).unwrap().trim_end_matches('/')
+                ),
+                routed
+            );
+        }
     }
 
     #[test]
@@ -1453,5 +1890,4 @@ mod tests {
         };
         assert_eq!(model_ids(&provider), vec!["responses-model"]);
     }
-
 }

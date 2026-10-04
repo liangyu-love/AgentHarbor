@@ -145,6 +145,10 @@ impl MockResponses {
     }
 
     fn for_protocol(protocol: ModelProtocol) -> Self {
+        Self::with_stream(protocol, mock_stream(protocol))
+    }
+
+    fn with_stream(protocol: ModelProtocol, event: String) -> Self {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         listener.set_nonblocking(true).unwrap();
@@ -205,7 +209,6 @@ impl MockResponses {
                         headers,
                         body,
                     });
-                    let event = mock_stream(protocol);
                     let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", event.len(), event);
                     let _ = reader.get_mut().write_all(response.as_bytes());
                 } else {
@@ -973,7 +976,18 @@ fn mock_stream(protocol: ModelProtocol) -> String {
     }
 }
 
-fn assert_real_codex_translated_text(protocol: ModelProtocol, context_override: Option<u64>) {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TranslationFixture {
+    Text,
+    Structured,
+    InvalidStream,
+}
+
+fn assert_real_codex_translated_text(
+    protocol: ModelProtocol,
+    context_override: Option<u64>,
+    fixture: TranslationFixture,
+) {
     let _serial = ROUTER_TEST_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
@@ -988,9 +1002,13 @@ fn assert_real_codex_translated_text(protocol: ModelProtocol, context_override: 
     let paths = CodexPaths::from_home(temp.path().join("codex"));
     paths.ensure_directories().unwrap();
     let proxy = RejectingProxy::start();
-    let mock = MockResponses::for_protocol(protocol);
+    let mock = if fixture == TranslationFixture::InvalidStream {
+        MockResponses::with_stream(protocol, "data: {invalid JSON}\n\n".into())
+    } else {
+        MockResponses::for_protocol(protocol)
+    };
     fs::write(&paths.config_path, format!(
-        "cli_auth_credentials_store = 'file'\ncheck_for_update_on_startup = false\nchatgpt_base_url = '{}'\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n", proxy.url
+        "cli_auth_credentials_store = 'file'\ncheck_for_update_on_startup = false\nweb_search = 'disabled'\nchatgpt_base_url = '{}'\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n", proxy.url
     )).unwrap();
     let auth = synthetic_auth();
     fs::write(&paths.auth_path, &auth).unwrap();
@@ -1037,17 +1055,25 @@ fn assert_real_codex_translated_text(protocol: ModelProtocol, context_override: 
     let thread_id = started["thread"]["id"].as_str().expect("thread id");
     // Drain the RPC reply and notifications together so fast local replies do
     // not lose text events while waiting for the turn/start result.
-    server.send(json!({"id":3,"method":"turn/start","params":{
+    let mut params = json!({
         "threadId":thread_id,
         "input":[{"type":"text","text":"Return the fixed fixture text without calling tools.","text_elements":[]}],
-    }}));
+    });
+    let schema = json!({"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false});
+    if fixture == TranslationFixture::Structured {
+        params["outputSchema"] = schema.clone();
+    }
+    server.send(json!({"id":3,"method":"turn/start","params":params}));
     let deadline = Instant::now() + RPC_TIMEOUT;
     let mut turn_id = None;
     let mut completed_id = None;
     let mut deltas = String::new();
     let mut final_text = String::new();
     let mut effective_context = None;
-    while turn_id.is_none() || completed_id.is_none() || effective_context.is_none() {
+    while turn_id.is_none()
+        || completed_id.is_none()
+        || (fixture != TranslationFixture::InvalidStream && effective_context.is_none())
+    {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let message = server.messages.recv_timeout(remaining).unwrap_or_else(|error| {
             panic!("Codex {protocol:?} stream did not complete: {error}; deltas={deltas:?}; stderr: {}", server.stderr.lock().unwrap())
@@ -1085,15 +1111,36 @@ fn assert_real_codex_translated_text(protocol: ModelProtocol, context_override: 
             }
             Some("turn/completed") => {
                 assert_eq!(
-                    params["turn"]["status"], "completed",
+                    params["turn"]["status"],
+                    if fixture == TranslationFixture::InvalidStream {
+                        "failed"
+                    } else {
+                        "completed"
+                    },
                     "{protocol:?}: {message}"
                 );
-                assert!(params["turn"]["error"].is_null(), "{protocol:?}: {message}");
+                if fixture == TranslationFixture::InvalidStream {
+                    assert!(
+                        params["turn"]["error"]["message"]
+                            .as_str()
+                            .unwrap()
+                            .contains("invalid stream frame"),
+                        "{message}"
+                    );
+                } else {
+                    assert!(params["turn"]["error"].is_null(), "{protocol:?}: {message}");
+                }
                 completed_id = Some(
                     params["turn"]["id"]
                         .as_str()
                         .expect("completed turn id")
                         .to_owned(),
+                );
+            }
+            Some("error") if fixture == TranslationFixture::InvalidStream => {
+                assert_eq!(
+                    params["willRetry"], false,
+                    "deterministic failures must not retry: {message}"
                 );
             }
             Some("error") => panic!("Codex {protocol:?} reported an error: {message}"),
@@ -1110,18 +1157,40 @@ fn assert_real_codex_translated_text(protocol: ModelProtocol, context_override: 
         }
     }
     assert_eq!(turn_id, completed_id);
-    assert_eq!(deltas, STREAM_TEXT, "{protocol:?} streaming text");
-    assert_eq!(final_text, STREAM_TEXT, "{protocol:?} completed text");
+    let expected_text = if fixture == TranslationFixture::InvalidStream {
+        ""
+    } else {
+        STREAM_TEXT
+    };
+    assert_eq!(deltas, expected_text, "{protocol:?} streaming text");
+    assert_eq!(final_text, expected_text, "{protocol:?} completed text");
     let upstream = mock.requests.recv_timeout(RPC_TIMEOUT).unwrap();
     let body: Value = serde_json::from_slice(&upstream.body).unwrap();
     assert_eq!(body["model"], model);
     assert_eq!(body["stream"], true);
+    if fixture == TranslationFixture::Structured {
+        assert_eq!(
+            if protocol == ModelProtocol::ChatCompletions {
+                &body["response_format"]["json_schema"]["schema"]
+            } else {
+                &body["output_config"]["format"]["schema"]
+            },
+            &schema
+        );
+    }
     assert!(!body["messages"]
         .as_array()
         .expect("translated messages")
         .is_empty());
     assert!(upstream.header("x-agentharbor-token").is_none());
     assert_eq!(fs::read(&paths.auth_path).unwrap(), auth);
+    if fixture == TranslationFixture::InvalidStream {
+        assert!(
+            mock.requests.try_recv().is_err(),
+            "Codex retried a deterministic translation failure"
+        );
+        return;
+    }
     let context = context_override.unwrap_or(if protocol == ModelProtocol::AnthropicMessages {
         200_000
     } else {
@@ -1135,14 +1204,56 @@ fn assert_real_codex_translated_text(protocol: ModelProtocol, context_override: 
 #[test]
 #[ignore = "requires AGENTHARBOR_TEST_CODEX_BIN pointing to an installed Codex CLI"]
 fn real_codex_completes_chat_stream_through_actual_router() {
-    assert_real_codex_translated_text(ModelProtocol::ChatCompletions, None);
+    assert_real_codex_translated_text(
+        ModelProtocol::ChatCompletions,
+        None,
+        TranslationFixture::Text,
+    );
 }
 
 #[test]
 #[ignore = "requires AGENTHARBOR_TEST_CODEX_BIN pointing to an installed Codex CLI"]
 fn real_codex_completes_anthropic_stream_through_actual_router() {
-    assert_real_codex_translated_text(ModelProtocol::AnthropicMessages, None);
-    assert_real_codex_translated_text(ModelProtocol::AnthropicMessages, Some(200_000));
+    assert_real_codex_translated_text(
+        ModelProtocol::AnthropicMessages,
+        None,
+        TranslationFixture::Text,
+    );
+    assert_real_codex_translated_text(
+        ModelProtocol::AnthropicMessages,
+        Some(200_000),
+        TranslationFixture::Text,
+    );
+}
+
+#[test]
+#[ignore = "requires AGENTHARBOR_TEST_CODEX_BIN pointing to an installed Codex CLI"]
+fn real_codex_output_schema_reaches_both_translated_upstreams() {
+    assert_real_codex_translated_text(
+        ModelProtocol::ChatCompletions,
+        None,
+        TranslationFixture::Structured,
+    );
+    assert_real_codex_translated_text(
+        ModelProtocol::AnthropicMessages,
+        None,
+        TranslationFixture::Structured,
+    );
+}
+
+#[test]
+#[ignore = "requires AGENTHARBOR_TEST_CODEX_BIN pointing to an installed Codex CLI"]
+fn real_codex_does_not_retry_deterministic_translated_stream_errors() {
+    assert_real_codex_translated_text(
+        ModelProtocol::ChatCompletions,
+        None,
+        TranslationFixture::InvalidStream,
+    );
+    assert_real_codex_translated_text(
+        ModelProtocol::AnthropicMessages,
+        None,
+        TranslationFixture::InvalidStream,
+    );
 }
 
 #[test]
@@ -1178,6 +1289,14 @@ fn real_codex_reasoning_menu_uses_model_identity_across_channels() {
     for mode in [CodexAccessMode::Router, CodexAccessMode::Native] {
         store.codex_access_mode = mode;
         router::apply_routing_config(&paths, &store).unwrap();
+        let config: toml::Value = fs::read_to_string(&paths.config_path)
+            .unwrap()
+            .parse()
+            .unwrap();
+        let catalog: Value = serde_json::from_slice(
+            &fs::read(config["model_catalog_json"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
         let mut server = AppServer::start(&binary, &paths, &cwd, &proxy);
         let menu = server.request(2, "model/list", json!({}));
         for (id, expected) in [
@@ -1202,6 +1321,21 @@ fn real_codex_reasoning_menu_uses_model_identity_across_channels() {
                 .iter()
                 .map(|level| level["reasoningEffort"].as_str().unwrap())
                 .collect();
+            let expected = if id.ends_with("gpt-6.1-sol") {
+                catalog["models"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|entry| entry["slug"] == id)
+                    .unwrap()["supported_reasoning_levels"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|level| level["effort"].as_str().unwrap())
+                    .collect()
+            } else {
+                expected
+            };
             assert_eq!(efforts, expected, "{id}: {model}");
         }
     }
@@ -1212,7 +1346,7 @@ fn real_codex_reasoning_menu_uses_model_identity_across_channels() {
 fn real_codex_adopts_same_thread_and_switches_relays_without_changing_provider() {
     fn turn(server: &mut AppServer, thread_id: &str, model: &str, text: &str) {
         server
-            .turn(thread_id, model, "none", text, RPC_TIMEOUT)
+            .turn(thread_id, model, "high", text, RPC_TIMEOUT)
             .unwrap();
     }
 
@@ -1369,8 +1503,21 @@ fn real_codex_adopts_same_thread_and_switches_relays_without_changing_provider()
                 .iter()
                 .map(|level| level["reasoningEffort"].as_str().unwrap())
                 .collect();
-            // Unscoped catalog conflicts do not invent reasoning choices.
-            assert!(efforts.is_empty(), "{model}");
+            // Compare the client's menu with the resolver's declared catalog;
+            // catalog updates may resolve identities that used to be ambiguous.
+            let declared = catalog["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["slug"].as_str() == Some(alias))
+                .unwrap();
+            let expected: Vec<_> = declared["supported_reasoning_levels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|level| level["effort"].as_str().unwrap())
+                .collect();
+            assert_eq!(efforts, expected, "{model}");
             assert!(!efforts.contains(&"none"));
         }
         for index in [0, 1, 0] {
@@ -1384,7 +1531,7 @@ fn real_codex_adopts_same_thread_and_switches_relays_without_changing_provider()
             let captured = mock.requests.recv_timeout(RPC_TIMEOUT).unwrap();
             let body: Value = serde_json::from_slice(&captured.body).unwrap();
             assert_eq!(body["model"], "gpt-6-astra");
-            assert_eq!(body["reasoning"]["effort"], "none");
+            assert_eq!(body["reasoning"]["effort"], "high");
             assert!(body["input"]
                 .to_string()
                 .contains("SYNTHETIC_ORIGINAL_CONTEXT"));
