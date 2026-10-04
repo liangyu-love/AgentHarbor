@@ -8,6 +8,7 @@ mod anthropic_sse;
 mod anthropic_tests;
 mod chat;
 pub mod history;
+pub mod message_history;
 mod reasoning;
 mod responses;
 mod sse;
@@ -18,15 +19,19 @@ use serde_json::Value;
 pub use responses::is_responses_body;
 
 pub fn response_body(translation: Translation, value: &Value) -> Result<Value, String> {
-    let canonical = if is_responses_body(value) {
-        value.clone()
-    } else {
-        responses::response_body(translation, value)?
-    };
+    let canonical = canonical_response(translation, value)?;
     if translation.from == ModelProtocol::AnthropicMessages {
         anthropic::response_body(&canonical)
     } else {
         Ok(canonical)
+    }
+}
+
+pub fn canonical_response(translation: Translation, value: &Value) -> Result<Value, String> {
+    if is_responses_body(value) {
+        Ok(value.clone())
+    } else {
+        responses::response_body(translation, value)
     }
 }
 
@@ -173,6 +178,15 @@ pub struct StreamTranslator {
 }
 
 impl StreamTranslator {
+    pub fn is_finished(&self) -> bool {
+        self.responses
+            .as_ref()
+            .is_some_and(sse::StreamTranslator::is_finished)
+            || self
+                .anthropic
+                .as_ref()
+                .is_some_and(anthropic_sse::StreamTranslator::is_finished)
+    }
     pub fn push(&mut self, chunk: &[u8]) -> Vec<String> {
         if let Some(translator) = self.responses.as_mut() {
             translator.push(chunk)
@@ -207,6 +221,21 @@ impl StreamTranslator {
         self.responses
             .as_ref()
             .and_then(sse::StreamTranslator::completed_response)
+            .or_else(|| {
+                self.anthropic
+                    .as_ref()
+                    .and_then(anthropic_sse::StreamTranslator::completed_response)
+            })
+    }
+    pub fn failure(&self) -> Option<&'static str> {
+        self.responses
+            .as_ref()
+            .and_then(sse::StreamTranslator::failure)
+            .or_else(|| {
+                self.anthropic
+                    .as_ref()
+                    .and_then(anthropic_sse::StreamTranslator::failure)
+            })
     }
 }
 

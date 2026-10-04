@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+fn deepseek_native_messages_injection_uses_anthropic_root_and_keeps_model_marker() {
+    for base in ["https://api.deepseek.com/", "https://api.deepseek.com/v1", "https://api.deepseek.com/anthropic/v1"] {
+        let (_temp, manager, mut store, mut request) = fixture();
+        let provider=&mut store.providers[0];
+        provider.base_url=base.into();
+        provider.model="deepseek-flash".into();
+        provider.protocol=ModelProtocol::AnthropicMessages;
+        request.model="deepseek-flash".into();
+        request.options.access_mode=ClientAccessMode::Native;
+        request.options.claude_one_m.startup=true;
+        apply(&manager,&store,&request);
+        let installed=read(&manager.paths.claude);
+        assert_eq!(installed["env"]["ANTHROPIC_BASE_URL"],"https://api.deepseek.com/anthropic");
+        assert_eq!(installed["env"]["ANTHROPIC_MODEL"],"deepseek-flash[1m]");
+        assert_eq!(installed["env"]["ANTHROPIC_AUTH_TOKEN"],store.providers[0].api_key);
+        manager.restore(TargetId::ClaudeCode).unwrap();
+    }
+}
+
+#[test]
 fn claude_one_m_defaults_on_and_explicit_off_survives_serialization_and_reopen() {
     let (temp, manager, store, mut request) = fixture();
     request.options = serde_json::from_value(json!({})).unwrap();

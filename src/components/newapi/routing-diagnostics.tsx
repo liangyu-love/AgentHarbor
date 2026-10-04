@@ -186,6 +186,12 @@ export function RoutingDiagnostics({
         {t("newapi.compression.description")}
       </p>
 
+      <div className="mt-2 rounded-xl border border-sky-500/20 bg-sky-500/[0.045] px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+        <p className="font-semibold text-foreground">{t("newapi.traceSourceTitle")}</p>
+        <p className="mt-0.5">{t("newapi.traceSourceRouter")}</p>
+        <p>{t("newapi.traceSourceLocal")}</p>
+      </div>
+
       {/* Expanded Content */}
       {open && (
         <div className="mt-4 space-y-3.5 border-t border-border/50 pt-3">

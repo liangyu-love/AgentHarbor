@@ -163,7 +163,15 @@ pub(crate) fn endpoint(config: &Connection, path: &str) -> Result<Url, String> {
 }
 
 pub(crate) fn provider_endpoint(base: &str, path: &str) -> Result<Url, String> {
-    let root = base_url(base)?;
+    let root = if path == "v1/messages" || path.starts_with("v1/messages/") {
+        protocol_base_url(base, super::router::ModelProtocol::AnthropicMessages)?
+    } else if path == "v1/responses" || path.starts_with("v1/responses/")
+        || path == "v1/chat/completions"
+    {
+        protocol_base_url(base, super::router::ModelProtocol::Responses)?
+    } else {
+        base_url(base)?
+    };
     let non_v1 = matches!(
         (root.host_str().unwrap_or_default(), root.path()),
         ("api.novita.ai", "/v3/openai/")
@@ -182,6 +190,26 @@ pub(crate) fn provider_endpoint(base: &str, path: &str) -> Result<Url, String> {
         path
     };
     root.join(path).map_err(|_| "newapi.errors.url".into())
+}
+
+/// DeepSeek hosts Messages below /anthropic while Chat/Responses use the site
+/// root. Only its exact official host and standard roots receive this mapping;
+/// custom gateways and user-supplied path prefixes stay intact.
+pub(crate) fn protocol_base_url(
+    base: &str,
+    protocol: super::router::ModelProtocol,
+) -> Result<Url, String> {
+    let mut root = base_url(base)?;
+    if root.host_str() == Some("api.deepseek.com")
+        && matches!(root.path(), "/" | "/anthropic/")
+    {
+        root.set_path(if protocol == super::router::ModelProtocol::AnthropicMessages {
+            "/anthropic/"
+        } else {
+            "/"
+        });
+    }
+    Ok(root)
 }
 
 fn data(value: &Value) -> Result<&Value, String> {
@@ -635,6 +663,22 @@ pub fn proxy_from_settings(path: &Path) -> ApiProxyConfigPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deepseek_official_protocol_roots_are_shared_by_probes_and_router() {
+        for base in ["https://api.deepseek.com", "https://api.deepseek.com/v1/", "https://api.deepseek.com/anthropic", "https://api.deepseek.com/anthropic/v1"] {
+            for (path, expected) in [
+                ("v1/messages", "https://api.deepseek.com/anthropic/v1/messages"),
+                ("v1/messages/count_tokens", "https://api.deepseek.com/anthropic/v1/messages/count_tokens"),
+                ("v1/chat/completions", "https://api.deepseek.com/v1/chat/completions"),
+                ("v1/responses", "https://api.deepseek.com/v1/responses"),
+            ] { assert_eq!(provider_endpoint(base, path).unwrap().as_str(), expected); }
+        }
+        for base in ["https://api.deepseek.com/custom/v1", "https://api.deepseek.com.fake.invalid/v1", "http://localhost/anthropic/v1"] {
+            let expected=base_url(base).unwrap().join("v1/messages").unwrap();
+            assert_eq!(provider_endpoint(base,"v1/messages").unwrap(),expected);
+        }
+    }
     use serde_json::json;
     use std::io::{Read, Write};
 
@@ -773,13 +817,23 @@ mod tests {
     #[test]
     fn output_only_declarations_survive_resolution_and_client_projection() {
         use super::super::{model_policy, models_dev, router};
-        let models = parse_models(&json!({"data":[{"id":"output-only-fixture","max_output_tokens":4096}]})).unwrap();
+        let models =
+            parse_models(&json!({"data":[{"id":"output-only-fixture","max_output_tokens":4096}]}))
+                .unwrap();
         assert_eq!(models[0].metadata_source, "upstream");
         assert!(models[0].context_window.is_none());
-        let provider = router::Provider { models, ..Default::default() };
+        let provider = router::Provider {
+            models,
+            ..Default::default()
+        };
         let dir = tempfile::tempdir().unwrap();
-        let (metadata, projection) = router::model_projection(&provider, "output-only-fixture", None,
-            &models_dev::load(dir.path()), &model_policy::CompressionPolicy::percent(90));
+        let (metadata, projection) = router::model_projection(
+            &provider,
+            "output-only-fixture",
+            None,
+            &models_dev::load(dir.path()),
+            &model_policy::CompressionPolicy::percent(90),
+        );
         assert_eq!(metadata.output_limit.value, Some(4096));
         assert_eq!(metadata.output_limit.source, "upstream");
         assert_eq!(projection.output_limit, Some(4096));

@@ -104,8 +104,11 @@ pub(super) fn request_body(target: ModelProtocol, value: &Value) -> Result<Value
     let mut input = Vec::new();
     for message in messages {
         let role = string(message, "role")?;
-        if !matches!(role, "user" | "assistant") {
-            return Err(INVALID.into());
+        // Current Claude Code adds dynamic system messages to the conversation.
+        // Preserve their role and position instead of rejecting them or moving
+        // them into the leading system prompt (which changes their scope).
+        if !matches!(role, "user" | "assistant" | "system" | "developer") {
+            return Err("protocol.errors.unsupportedMessageRole".into());
         }
         let text_type = if role == "assistant" {
             "output_text"
@@ -113,6 +116,8 @@ pub(super) fn request_body(target: ModelProtocol, value: &Value) -> Result<Value
             "input_text"
         };
         let mut parts = Vec::new();
+        let mut chat_calls = Vec::new();
+        let turn_start = input.len();
         match &message["content"] {
             Value::String(text) => parts.push(json!({"type":text_type,"text":text})),
             Value::Array(blocks) => {
@@ -148,13 +153,19 @@ pub(super) fn request_body(target: ModelProtocol, value: &Value) -> Result<Value
                             "image" if role == "user" => parts.push(image(block)?),
                             "document" if role == "user" => parts.push(document(block)?),
                             "tool_use" if role == "assistant" => {
-                                flush(&mut input, &mut parts, role);
+                                if target != ModelProtocol::ChatCompletions {
+                                    flush(&mut input, &mut parts, role);
+                                }
                                 let call = json!({"type":"function_call","call_id":string(block,"id")?,
                                 "name":string(block,"name")?,"arguments":block["input"].to_string()});
                                 if !valid_function_call(&call) {
                                     return Err("protocol.errors.invalidToolArguments".into());
                                 }
-                                input.push(call);
+                                if target == ModelProtocol::ChatCompletions {
+                                    chat_calls.push(call);
+                                } else {
+                                    input.push(call);
+                                }
                             }
                             "tool_result" if role == "user" => {
                                 flush(&mut input, &mut parts, role);
@@ -174,6 +185,14 @@ pub(super) fn request_body(target: ModelProtocol, value: &Value) -> Result<Value
             _ => return Err(INVALID.into()),
         }
         flush(&mut input, &mut parts, role);
+        // Chat has one assistant message per tool-call group, regardless of
+        // how text and tool blocks were interleaved within the Messages turn.
+        // A tool-only assistant turn still needs its own boundary. Otherwise
+        // Chat conversion attaches its calls to the previous assistant turn.
+        if !chat_calls.is_empty() && input.len() == turn_start {
+            input.push(json!({"role":"assistant","content":[]}));
+        }
+        input.extend(chat_calls);
     }
     let mut response = json!({"model":model,"input":input,"max_output_tokens":max,
         "stream":value.get("stream").and_then(Value::as_bool).unwrap_or(false),"store":false});
@@ -203,7 +222,7 @@ pub(super) fn request_body(target: ModelProtocol, value: &Value) -> Result<Value
                 if tool.get("type").is_some_and(|kind| kind != "custom")
                     || !tool["input_schema"].is_object()
                 {
-                    return Err(UNSUPPORTED.to_owned());
+                    return Err("protocol.errors.unsupportedToolDefinition".to_owned());
                 }
                 Ok(json!({"type":"function","name":string(tool,"name")?,
                 "description":tool.get("description").and_then(Value::as_str).unwrap_or(""),
@@ -228,12 +247,8 @@ pub(super) fn request_body(target: ModelProtocol, value: &Value) -> Result<Value
             response[key] = setting.clone();
         }
     }
-    if matches!(
-        value["thinking"]["type"].as_str(),
-        Some("enabled" | "adaptive")
-    ) {
-        let effort = value["output_config"]["effort"].as_str().unwrap_or("high");
-        response["reasoning"] = json!({"effort":if effort == "max" {"xhigh"} else {effort}});
+    if let Some(effort) = super::reasoning::messages_effort(value) {
+        response["reasoning"] = json!({"effort":effort});
     }
     if let Some(format) = value.get("output_config").and_then(|c| c.get("format")) {
         if format["type"] != "json_schema" || !format["schema"].is_object() {

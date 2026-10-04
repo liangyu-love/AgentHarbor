@@ -19,11 +19,17 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
+#[cfg(test)]
+#[path = "router_proxy/claude_cli_tests.rs"]
+mod claude_cli_tests;
+#[cfg(test)]
+mod claude_continuation_tests;
 mod failover;
 #[cfg(test)]
 #[path = "router_proxy/failover_tests.rs"]
 mod failover_tests;
 mod session_compat;
+mod tool_schema;
 
 const MAX_REQUEST_BODY: usize = 64 * 1024 * 1024;
 const CHATGPT_CODEX_BASE: &str = "https://chatgpt.com/backend-api/codex/";
@@ -647,7 +653,36 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             if one_m_context {
                 append_anthropic_beta(&mut attempt_headers);
             }
-            let (sent, translated_input) = upstream_body(&destination, body.clone())?;
+            let message_context = match &destination {
+                Destination::Provider { provider, translation: Some(pair), .. }
+                    if pair.from == router::ModelProtocol::AnthropicMessages => {
+                    body.as_deref().and_then(|bytes| protocol::message_history::Context::new_with_session(
+                        &[&context.store_path.to_string_lossy(), &provider.id, &url,
+                          attempt_headers.get(AUTHORIZATION).or_else(|| attempt_headers.get("x-api-key")).and_then(|v| v.to_str().ok()).unwrap_or_default(),
+                          &upstream_model, affinity_key.as_deref().unwrap_or_default()], pair.to, bytes, affinity_key.as_deref()))
+                }
+                _ => None,
+            };
+            let (mut sent, translated_input) = upstream_body(&destination, body.clone())?;
+            if let (Some(history), Some(bytes)) = (&message_context, &sent) {
+                let mut value: Value = serde_json::from_slice(bytes).map_err(|_| (StatusCode::BAD_REQUEST, "invalid translated request"))?;
+                history.restore(&mut value);
+                sent = Some(Bytes::from(value.to_string()));
+            }
+            let sent = if let Destination::Provider { provider, translation: Some(translation), .. } = &destination {
+                if translation.from == router::ModelProtocol::AnthropicMessages {
+                    let official_snapshot = router::official_endpoint_applies(provider)
+                        .then(|| super::model_catalog::official(&context.codex_home, &context.app_data_dir));
+                    let official = official_snapshot.as_ref()
+                        .and_then(|snapshot| router::matched_official_model(&snapshot.models, &upstream_model));
+                    let metadata = router::resolve_model_metadata(
+                        provider, &upstream_model, official,
+                        &super::models_dev::load(&context.app_data_dir),
+                    );
+                    session_compat::prepare_message_translation(sent, translation.to, &metadata)?
+                } else { sent }
+            } else { sent };
+            let (sent, tool_adapter) = tool_schema::prepare(sent, &upstream_model, upstream_protocol)?;
             let outbound_client = client_for(&context, &destination)?;
             let credential_kind = if matches!(destination, Destination::Official) { "codexLocal" } else { "providerApiKey" };
             let credential_header = attempt_headers.get(AUTHORIZATION)
@@ -743,6 +778,8 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                 upstream_protocol,
                 upstream_model,
                 attempt_id,
+                message_context,
+                tool_adapter,
             )
             .await;
         }
@@ -1232,10 +1269,20 @@ fn upstream_body(
             let rewritten = protocol::request_body(*translation, &value).map_err(|error| {
                 (
                     StatusCode::BAD_REQUEST,
-                    if error == "protocol.errors.unknownPreviousResponse" {
-                        "previous_response_id is unknown or expired; resend the full conversation"
-                    } else {
-                        "cannot translate request"
+                    match error.as_str() {
+                        "protocol.errors.unknownPreviousResponse" =>
+                            "previous_response_id is unknown or expired; resend the full conversation",
+                        "protocol.errors.unsupportedMessageRole" =>
+                            "cannot translate request: unsupported conversation role",
+                        "protocol.errors.unsupportedToolDefinition" =>
+                            "cannot translate request: unsupported hosted tool or missing tool input_schema; use a native Messages provider for hosted tools",
+                        "protocol.errors.invalidToolArguments" =>
+                            "cannot translate request: tool arguments must be a JSON object",
+                        "protocol.errors.unsupportedContent" =>
+                            "cannot translate request: unsupported content block or parameter for the target protocol",
+                        "protocol.errors.invalidRequest" =>
+                            "cannot translate request: invalid request fields or message structure",
+                        _ => "cannot translate request",
                     },
                 )
             })?;
@@ -1293,6 +1340,8 @@ async fn relay_response(
     upstream_protocol: router::ModelProtocol,
     upstream_model: String,
     attempt_id: String,
+    message_context: Option<protocol::message_history::Context>,
+    tool_adapter: tool_schema::Adapter,
 ) -> ForwardResult {
     let response_status = response.status();
     let is_event_stream = response
@@ -1336,6 +1385,8 @@ async fn relay_response(
             upstream_protocol,
             upstream_model,
             attempt_id,
+            message_context,
+            tool_adapter,
         ),
         Some(translation) if response_status.is_success() => {
             let mut diagnostic = ResponseObservation::new(
@@ -1356,10 +1407,16 @@ async fn relay_response(
                 }
             };
             diagnostic.push(&bytes);
-            diagnostic.finalize(true);
-            let value: Value = serde_json::from_slice(&bytes)
-                .map_err(|_| (StatusCode::BAD_GATEWAY, "invalid provider response"))?;
+            let mut value: Value = serde_json::from_slice(&bytes).map_err(|_| {
+                diagnostic.translation_error("invalid_provider_response");
+                (StatusCode::BAD_GATEWAY, "invalid provider response")
+            })?;
+            tool_adapter.response(&mut value, upstream_protocol).map_err(|code| {
+                diagnostic.translation_error(code);
+                (StatusCode::BAD_GATEWAY, "invalid Gemini tool arguments")
+            })?;
             let converted = protocol::response_body(translation, &value).map_err(|_| {
+                diagnostic.translation_error("invalid_upstream_response");
                 (
                     StatusCode::BAD_GATEWAY,
                     "cannot translate provider response",
@@ -1368,6 +1425,10 @@ async fn relay_response(
             diagnostic.finish();
             if translation.from == router::ModelProtocol::Responses {
                 protocol::history::remember(&converted, translated_input);
+            } else if let Some(history) = message_context {
+                if let Ok(canonical) = protocol::canonical_response(translation, &value) {
+                    history.remember(&canonical);
+                }
             }
             BodyExt::boxed(
                 Full::new(Bytes::from(converted.to_string())).map_err(|never| match never {}),
@@ -1391,6 +1452,28 @@ async fn relay_response(
             let body = translated_error_body(translation.from, response_status, &bytes);
             trace.fail("headers", "upstream_http_error");
             BodyExt::boxed(Full::new(Bytes::from(body)).map_err(|never| match never {}))
+        }
+        None if response_status.is_success() && !tool_adapter.is_empty() && !is_event_stream => {
+            let mut diagnostic = ResponseObservation::new(trace, relay_request, upstream_protocol,
+                &upstream_model, &attempt_id, response_status.as_u16(), false);
+            let bytes = response.bytes().await.map_err(|_| {
+                diagnostic.error();
+                (StatusCode::BAD_GATEWAY, "cannot read provider response")
+            })?;
+            diagnostic.push(&bytes);
+            let mut value: Value = serde_json::from_slice(&bytes).map_err(|_| {
+                diagnostic.translation_error("invalid_provider_response");
+                (StatusCode::BAD_GATEWAY, "invalid provider response")
+            })?;
+            tool_adapter.response(&mut value, upstream_protocol).map_err(|code| {
+                diagnostic.translation_error(code);
+                (StatusCode::BAD_GATEWAY, "invalid Gemini tool arguments")
+            })?;
+            diagnostic.finish();
+            BodyExt::boxed(Full::new(Bytes::from(value.to_string())).map_err(|never| match never {}))
+        }
+        None if response_status.is_success() && !tool_adapter.is_empty() => {
+            adapted_native_stream(response, trace, relay_request, upstream_protocol, upstream_model, attempt_id, tool_adapter)
         }
         None => {
             let stream = observed_stream(
@@ -1426,66 +1509,121 @@ fn translated_stream(
     upstream_protocol: router::ModelProtocol,
     upstream_model: String,
     attempt_id: String,
+    message_context: Option<protocol::message_history::Context>,
+    tool_adapter: tool_schema::Adapter,
 ) -> ResponseBody {
-    // The turn is recorded once it completes, so the next follow-up that
-    // quotes this response id can be rebuilt from it.
-    let mut recorded = Some(translated_input);
-    // Shared so the same translator can still emit its closing events after
-    // the body stream itself has been moved into the response.
-    let translator = Arc::new(Mutex::new(protocol::stream_translator(translation)));
-    let body_translator = Arc::clone(&translator);
-    let stream = observed_stream(
-        response,
+    let observer = ResponseObservation::new(
         trace,
         relay_request,
         upstream_protocol,
-        upstream_model,
-        attempt_id,
+        &upstream_model,
+        &attempt_id,
+        response.status().as_u16(),
         true,
+    );
+    // One owner finalizes usage after translation. Dropping this stream also
+    // drops the observer, marking an interrupted delivery without losing usage.
+    let stream = futures_util::stream::unfold(
+        (
+            response.bytes_stream(),
+            observer,
+            protocol::stream_translator(translation),
+            Some(translated_input),
+            message_context,
+            tool_adapter.stream(upstream_protocol),
+            false,
+        ),
+        move |(mut source, mut observer, mut translator, mut recorded, history, mut tools, done)| async move {
+            if done {
+                return None;
+            }
+            let (events, done) = match source.next().await {
+                Some(Ok(bytes)) => {
+                    observer.push(&bytes);
+                    (match tools.push(&bytes) {
+                        Ok(decoded) => translator.push(&decoded),
+                        Err(code) => translator.fail(code),
+                    }, false)
+                }
+                Some(Err(_)) => {
+                    observer.error();
+                    (translator.fail("upstream_stream_error"), true)
+                }
+                None => (match tools.finish() {
+                    Ok(()) => translator.finish(),
+                    Err(code) => translator.fail(code),
+                }, true),
+            };
+            if let Some(code) = translator.failure() {
+                observer.translation_error(code);
+            }
+            let done = done || translator.is_finished();
+            // Commit before exposing terminal events: a follow-up may arrive
+            // before the upstream connection reaches EOF.
+            if let Some(response) = translator.completed_response() {
+                if let Some(input) = recorded.take() {
+                    if translation.from == router::ModelProtocol::Responses {
+                        protocol::history::remember(response, input);
+                    } else if let Some(history) = &history {
+                        history.remember(response);
+                    }
+                }
+            }
+            if done {
+                observer.finish();
+            }
+            let frames = futures_util::stream::iter(events.into_iter().map(|event| {
+                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(Frame::data(Bytes::from(event)))
+            }));
+            Some((
+                frames,
+                (source, observer, translator, recorded, history, tools, done),
+            ))
+        },
     )
-    .flat_map(move |chunk| {
-        let mut frames: Vec<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>> =
-            Vec::new();
-        match chunk {
-            Ok(bytes) => {
-                if let Ok(mut translator) = body_translator.lock() {
-                    let events = translator.push(&bytes);
-                    // Record before exposing response.completed: a follow-up
-                    // can arrive before the upstream socket reaches EOF.
-                    if let Some(response) = translator.completed_response() {
-                        if let Some(input) = recorded.take() {
-                            protocol::history::remember(response, input);
-                        }
-                    }
-                    for event in events {
-                        frames.push(Ok(Frame::data(Bytes::from(event))));
-                    }
-                }
-            }
-            Err(_) => {
-                if let Ok(mut translator) = body_translator.lock() {
-                    for event in translator.fail("upstream_stream_error") {
-                        frames.push(Ok(Frame::data(Bytes::from(event))));
-                    }
-                }
-            }
-        }
-        futures_util::stream::iter(frames)
-    });
-    // The closing events are emitted once, after the upstream stream ends.
-    let tail = futures_util::stream::once(async move {
-        let events = match translator.lock() {
-            Ok(mut translator) => translator.finish(),
-            Err(_) => Vec::new(),
-        };
-        futures_util::stream::iter(
-            events
-                .into_iter()
-                .map(|event| Ok(Frame::data(Bytes::from(event)))),
-        )
-    })
     .flatten();
-    BodyExt::boxed(StreamBody::new(stream.chain(tail)))
+    BodyExt::boxed(StreamBody::new(stream))
+}
+
+fn adapted_native_stream(
+    response: reqwest::Response,
+    trace: route_trace::Trace,
+    relay_request: Option<relay_usage::RelayUsageRequest>,
+    protocol: router::ModelProtocol,
+    model: String,
+    attempt_id: String,
+    adapter: tool_schema::Adapter,
+) -> ResponseBody {
+    let observer = ResponseObservation::new(trace, relay_request, protocol, &model, &attempt_id, response.status().as_u16(), true);
+    let stream = futures_util::stream::unfold(
+        (response.bytes_stream(), observer, adapter.stream(protocol), false),
+        |(mut source, mut observer, mut adapter, done)| async move {
+            if done { return None; }
+            let (result, done) = match source.next().await {
+                Some(Ok(bytes)) => { observer.push(&bytes); (adapter.push(&bytes), false) }
+                Some(Err(_)) => { observer.error(); (Err("upstream_stream_error"), true) }
+                None => (adapter.finish().map(|()| Bytes::new()), true),
+            };
+            let (bytes, done) = match result {
+                Ok(bytes) => {
+                    let done = done || adapter.is_finished();
+                    if done { observer.finish(); }
+                    (bytes, done)
+                }
+                Err(code) => {
+                    observer.translation_error(code);
+                    observer.finalize(false);
+                    // End the body with an error, never with an executable tool
+                    // or a success terminal frame after invalid JSON arguments.
+                    return Some((Err::<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>(
+                        Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, code))),
+                        (source, observer, adapter, true)));
+                }
+            };
+            Some((Ok(Frame::data(bytes)), (source, observer, adapter, done)))
+        },
+    );
+    BodyExt::boxed(StreamBody::new(stream))
 }
 
 fn observed_stream(
@@ -1535,6 +1673,7 @@ struct ResponseObservation {
     served: request_diagnostics::ServedModelObserver,
     attempt_id: String,
     finalized: bool,
+    delivered: bool,
 }
 
 impl ResponseObservation {
@@ -1554,6 +1693,7 @@ impl ResponseObservation {
             served: request_diagnostics::ServedModelObserver::new(protocol, model, status, sse),
             attempt_id: attempt_id.into(),
             finalized: false,
+            delivered: false,
         }
     }
     fn push(&mut self, bytes: &[u8]) {
@@ -1566,8 +1706,18 @@ impl ResponseObservation {
     fn error(&mut self) {
         self.diagnostic.error();
         self.served.error();
+        if let Some(usage) = self.usage.as_mut() {
+            usage.fail_delivery();
+        }
+    }
+    fn translation_error(&mut self, code: &'static str) {
+        self.trace.fail("translation", code);
+        if let Some(usage) = self.usage.as_mut() {
+            usage.fail_delivery();
+        }
     }
     fn finish(&mut self) {
+        self.delivered = true;
         self.finalize(true);
         self.diagnostic.finish();
     }
@@ -1586,6 +1736,12 @@ impl ResponseObservation {
 
 impl Drop for ResponseObservation {
     fn drop(&mut self) {
+        if !self.delivered {
+            self.trace.fail("stream", "delivery_interrupted");
+            if let Some(usage) = self.usage.as_mut() {
+                usage.fail_delivery();
+            }
+        }
         self.finalize(false);
     }
 }
@@ -2321,6 +2477,14 @@ mod tests {
                         assert!(!request.contains("anthropic-version:"));
                         assert!(!request.contains("anthropic-beta:"));
                         assert!(!request.lines().next().unwrap().contains("beta=true"));
+                        let messages = if request.contains(" /v1/responses ") { &payload["input"] } else { &payload["messages"] };
+                        assert_eq!(messages[0]["role"], "user");
+                        assert_eq!(messages[1]["role"], "system");
+                        if request.contains(" /v1/responses ") {
+                            assert_eq!(payload["reasoning"]["effort"], "high");
+                        } else {
+                            assert_eq!(payload["reasoning_effort"], "high");
+                        }
                     }
                     assert!(request.contains("/v1/"), "path must be rewritten to the provider root");
                     for prefix in ["agentharbor_fixture", "chat_fixture", "anthropic_fixture"] {
@@ -2765,7 +2929,10 @@ mod tests {
                         .header("anthropic-version", "2023-06-01")
                         .header("anthropic-beta", "fixture-beta")
                         .header("x-fixture-claude", "true")
-                        .json(&json!({"model":model,"max_tokens":32,"stream":stream,"messages":[{"role":"user","content":"hi"}]}))
+                        .json(&json!({"model":model,"max_tokens":32,"stream":stream,
+                            "thinking":{"type":"adaptive"},"output_config":{"effort":"high"},
+                            "messages":[{"role":"user","content":"hi"},
+                                {"role":"system","content":[{"type":"text","text":"Dynamic system"}]}]}))
                         .send().await.unwrap();
                     assert_eq!(response.status(),200,"{provider_id}, stream={stream}");
                     if stream {

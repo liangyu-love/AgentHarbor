@@ -21,6 +21,8 @@ pub(super) struct StreamTranslator {
     blocks: Vec<Block>,
     started: bool,
     finished: bool,
+    completed_response: Option<Value>,
+    failure: Option<&'static str>,
 }
 
 fn event(kind: &str, mut value: Value) -> String {
@@ -42,6 +44,8 @@ impl StreamTranslator {
             blocks: Vec::new(),
             started: false,
             finished: false,
+            completed_response: None,
+            failure: None,
         }
     }
 
@@ -61,11 +65,22 @@ impl StreamTranslator {
         self.fail("upstream_stream_truncated")
     }
 
+    pub fn completed_response(&self) -> Option<&Value> {
+        self.completed_response.as_ref()
+    }
+    pub fn failure(&self) -> Option<&'static str> {
+        self.failure
+    }
+    pub fn is_finished(&self) -> bool {
+        self.finished
+    }
+
     pub fn fail(&mut self, code: &'static str) -> Vec<String> {
         if self.finished {
             return Vec::new();
         }
         self.finished = true;
+        self.failure = Some(code);
         self.pending.clear();
         // Never close a partial tool or send message_stop after an error.
         vec![event(
@@ -379,6 +394,9 @@ impl StreamTranslator {
                 }
                 out.push(event("message_delta",json!({"delta":{"stop_reason":message["stop_reason"],"stop_sequence":null},"usage":message["usage"]})));
                 out.push(event("message_stop", json!({})));
+                if super::message_history::cacheable_response(response) {
+                    self.completed_response = Some(response.clone());
+                }
                 self.finished = true;
             }
             "response.failed" | "error" => return Err("upstream_error"),

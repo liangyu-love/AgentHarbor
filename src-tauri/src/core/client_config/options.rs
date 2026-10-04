@@ -129,18 +129,27 @@ pub(super) fn client_endpoint<'a>(
             &store.router.bearer_token,
         ))
     } else {
-        Ok((native_base(provider, with_version)?, &provider.api_key))
+        Ok((
+            native_base(
+                provider,
+                with_version,
+                provider.protocol_for_model(&request.model),
+            )?,
+            &provider.api_key,
+        ))
     }
 }
 
-fn native_base(provider: &Provider, with_version: bool) -> Result<String, String> {
-    let base = super::super::newapi::base_url(&provider.base_url)?;
+fn native_base(
+    provider: &Provider,
+    with_version: bool,
+    protocol: ModelProtocol,
+) -> Result<String, String> {
+    let base = super::super::newapi::protocol_base_url(&provider.base_url, protocol)?;
     if with_version {
-        Ok(
-            super::super::newapi::provider_endpoint(&provider.base_url, "v1")
-                .map_err(|_| "newapi.errors.url")?
-                .to_string(),
-        )
+        Ok(super::super::newapi::provider_endpoint(base.as_str(), "v1")
+            .map_err(|_| "newapi.errors.url")?
+            .to_string())
     } else {
         Ok(base.as_str().trim_end_matches('/').to_owned())
     }

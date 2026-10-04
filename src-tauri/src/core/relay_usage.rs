@@ -497,7 +497,14 @@ impl RelayUsageRequest {
     pub fn failed(self, status_code: u16, unknown_reason: &'static str) {
         let mut request = self;
         request.model_observation.unknown_reason = Some(unknown_reason.into());
-        request.persist(status_code, false, false, TokenCounts::default(), None);
+        request.persist(
+            status_code,
+            false,
+            false,
+            TokenCounts::default(),
+            None,
+            false,
+        );
     }
 
     pub fn with_request_id(mut self, request_id: &str) -> Self {
@@ -524,6 +531,7 @@ impl RelayUsageRequest {
             usage: UsageAccumulator::default(),
             capture_truncated: false,
             first_token_ms: None,
+            delivery_failed: false,
         }
     }
 
@@ -534,6 +542,7 @@ impl RelayUsageRequest {
         usage_complete: bool,
         mut tokens: TokenCounts,
         first_token_ms: Option<u64>,
+        delivered: bool,
     ) {
         tokens.normalize_total();
         // A request can carry reliable usage even when it failed or was cut
@@ -576,7 +585,7 @@ impl RelayUsageRequest {
             status_code,
             duration_ms: self.started.elapsed().as_millis().min(u64::MAX as u128) as u64,
             first_token_ms,
-            success: (200..300).contains(&status_code),
+            success: (200..300).contains(&status_code) && delivered,
             usage_reported,
             usage_complete,
             tokens,
@@ -605,9 +614,13 @@ pub struct RelayUsageObserver {
     usage: UsageAccumulator,
     capture_truncated: bool,
     first_token_ms: Option<u64>,
+    delivery_failed: bool,
 }
 
 impl RelayUsageObserver {
+    pub fn fail_delivery(&mut self) {
+        self.delivery_failed = true;
+    }
     pub fn set_model_observation(&mut self, observation: ServedModelObservation) {
         if let Some(request) = self.request.as_mut() {
             request.model_observation = observation;
@@ -661,6 +674,11 @@ impl RelayUsageObserver {
     }
 
     fn merge_value(&mut self, value: &Value) {
+        if !value["error"].is_null()
+            || matches!(value["type"].as_str(), Some("error" | "response.failed"))
+        {
+            self.delivery_failed = true;
+        }
         visit_usage_values(value, &mut self.usage);
     }
 }
@@ -681,6 +699,7 @@ impl Drop for RelayUsageObserver {
                 self.usage.fields.input && self.usage.fields.output && !self.capture_truncated,
                 self.usage.normalized(),
                 self.first_token_ms,
+                !self.delivery_failed,
             );
         }
     }
@@ -1132,7 +1151,10 @@ mod tests {
         let legacy: RelayUsageRecord = serde_json::from_value(value).unwrap();
         assert_eq!(legacy.credential.status, "not_recorded");
         assert_eq!(legacy.model_observation.model_match_status, "unknown");
-        assert_eq!(legacy.model_observation.unknown_reason.as_deref(), Some("not_recorded"));
+        assert_eq!(
+            legacy.model_observation.unknown_reason.as_deref(),
+            Some("not_recorded")
+        );
     }
 
     fn record_on(date: &str, provider: &str, model: &str, tokens: u64) -> RelayUsageRecord {

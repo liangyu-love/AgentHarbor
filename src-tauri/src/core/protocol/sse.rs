@@ -26,6 +26,7 @@ pub struct StreamTranslator {
     usage: Option<Value>,
     completed_response: Option<Value>,
     include_tool_metadata: bool,
+    failure: Option<&'static str>,
 }
 
 impl StreamTranslator {
@@ -46,6 +47,7 @@ impl StreamTranslator {
             usage: None,
             completed_response: None,
             include_tool_metadata: false,
+            failure: None,
         }
     }
 
@@ -58,6 +60,12 @@ impl StreamTranslator {
     /// Only explicitly completed, validated responses may enter history.
     pub fn completed_response(&self) -> Option<&Value> {
         self.completed_response.as_ref()
+    }
+    pub fn failure(&self) -> Option<&'static str> {
+        self.failure
+    }
+    pub fn is_finished(&self) -> bool {
+        self.finished
     }
 
     pub fn push(&mut self, chunk: &[u8]) -> Vec<String> {
@@ -212,10 +220,11 @@ impl StreamTranslator {
                     if let Some(name) = function.get("name").and_then(Value::as_str) {
                         // Some relays repeat the whole call header (same id and full
                         // name) on every chunk; that is not a new name fragment.
-                        let repeated_header = call.get("id").and_then(Value::as_str).is_some_and(|id| {
-                            self.output[output_index]["call_id"] == id
-                                && self.output[output_index]["name"] == name
-                        });
+                        let repeated_header =
+                            call.get("id").and_then(Value::as_str).is_some_and(|id| {
+                                self.output[output_index]["call_id"] == id
+                                    && self.output[output_index]["name"] == name
+                            });
                         if !is_new && !repeated_header {
                             append_string(&mut self.output[output_index]["name"], name);
                         }
@@ -495,6 +504,9 @@ impl StreamTranslator {
             return Vec::new();
         }
         self.finished = true;
+        if let Completion::Failed(code) = completion {
+            self.failure = Some(code);
+        }
         let success = completion == Completion::Completed;
         let mut events = Vec::new();
         for (index, item) in self.output.iter_mut().enumerate() {

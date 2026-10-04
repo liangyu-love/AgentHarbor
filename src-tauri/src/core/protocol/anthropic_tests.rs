@@ -20,6 +20,36 @@ fn values(events: &[String]) -> Vec<Value> {
 fn tool() -> Value {
     json!({"type":"function_call","id":"fc1","call_id":"c1","name":"read_file","arguments":"{\"path\":\"a\"}","status":"completed"})
 }
+
+#[test]
+fn interleaved_text_and_tools_stay_in_one_chat_assistant_turn() {
+    let a = json!({"type":"tool_use","id":"a","name":"one","input":{}});
+    let b = json!({"type":"tool_use","id":"b","name":"two","input":{}});
+    let text = json!({"type":"text","text":"between"});
+    for blocks in [
+        vec![a.clone(), text.clone(), b.clone()],
+        vec![a.clone(), b.clone(), text.clone()],
+        vec![
+            text.clone(),
+            a.clone(),
+            text.clone(),
+            b.clone(),
+            text.clone(),
+        ],
+    ] {
+        let source = json!({"model":"m","max_tokens":128,"messages":[
+            {"role":"user","content":"start"}, {"role":"assistant","content":blocks},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"1"},{"type":"tool_result","tool_use_id":"b","content":"2"}]}]});
+        let body = request_body(pair(ModelProtocol::ChatCompletions), &source)
+            .unwrap()
+            .body;
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 4, "{body}");
+        assert_eq!(messages[1]["tool_calls"].as_array().unwrap().len(), 2);
+        assert_eq!(messages[2]["tool_call_id"], "a");
+        assert_eq!(messages[3]["tool_call_id"], "b");
+    }
+}
 fn response(output: Vec<Value>) -> Value {
     json!({"object":"response","id":"resp1","status":"completed","model":"upstream-model","output":output,
         "usage":{"input_tokens":20,"output_tokens":4,"input_tokens_details":{"cached_tokens":6}}})
@@ -67,6 +97,43 @@ fn messages_tools_images_and_results_translate_to_both_upstreams() {
 }
 
 #[test]
+fn current_claude_system_messages_and_effort_translate_without_reordering() {
+    // Structure observed from a local-only Claude Code capture.
+    for model in [
+        "deepseek-flash",
+        "gpt-6-luna",
+        "glm-5.3-flash",
+        "gemini-3.8-flash-high",
+    ] {
+        let source = json!({"model":model,"max_tokens":64000,"system":[{"type":"text","text":"Leading system"}],
+            "thinking":{"type":"adaptive","display":"omitted"},"output_config":{"effort":"high"},
+            "messages":[{"role":"user","content":[{"type":"text","text":"Hello"}]},
+                {"role":"system","content":[{"type":"text","text":"Dynamic system"}]},
+                {"role":"assistant","content":"Hello back"},
+                {"role":"developer","content":"Keep this position"}],
+            "tools":[{"name":"Read","input_schema":{"type":"object","properties":{"path":{"type":"string"}}}}]});
+        for target in [ModelProtocol::Responses, ModelProtocol::ChatCompletions] {
+            let converted = request_body(pair(target), &source).unwrap().body;
+            assert_eq!(converted["model"], model);
+            if target == ModelProtocol::Responses {
+                assert_eq!(converted["input"][1]["role"], "system");
+                assert_eq!(
+                    converted["input"][1]["content"][0]["text"],
+                    "Dynamic system"
+                );
+                assert_eq!(converted["input"][3]["role"], "developer");
+                assert_eq!(converted["reasoning"]["effort"], "high");
+            } else {
+                assert_eq!(converted["messages"][2]["role"], "system");
+                assert_eq!(converted["messages"][2]["content"], "Dynamic system");
+                assert_eq!(converted["messages"][4]["role"], "system");
+                assert_eq!(converted["reasoning_effort"], "high");
+            }
+        }
+    }
+}
+
+#[test]
 fn anthropic_document_inputs_map_to_responses_and_chat_file_parts() {
     let source = json!({"model":"m","max_tokens":128,"messages":[{"role":"user","content":[
         {"type":"text","text":"Summarize this"},
@@ -97,6 +164,32 @@ fn anthropic_document_inputs_map_to_responses_and_chat_file_parts() {
         chat["messages"][0]["content"][1]["file"]["file_data"],
         "data:application/pdf;base64,JVBERi0="
     );
+}
+
+#[test]
+fn system_and_developer_messages_reject_non_text_blocks_and_unknown_roles() {
+    for target in [ModelProtocol::ChatCompletions, ModelProtocol::Responses] {
+        for role in ["system", "developer"] {
+            for block in [
+                json!({"type":"image","source":{"type":"url","url":"https://example.test/a.png"}}),
+                json!({"type":"tool_use","id":"c1","name":"tool","input":{}}),
+                json!({"type":"tool_result","tool_use_id":"c1","content":"result"}),
+                json!({"type":"thinking","thinking":"thought"}),
+            ] {
+                let source = json!({"model":"m","max_tokens":128,"messages":[{"role":role,"content":[block]}]});
+                assert_eq!(
+                    request_body(pair(target), &source).err().unwrap(),
+                    "protocol.errors.unsupportedContent"
+                );
+            }
+        }
+        let source =
+            json!({"model":"m","max_tokens":128,"messages":[{"role":"unknown","content":"text"}]});
+        assert_eq!(
+            request_body(pair(target), &source).err().unwrap(),
+            "protocol.errors.unsupportedMessageRole"
+        );
+    }
 }
 
 #[test]
@@ -208,7 +301,10 @@ fn chat_sse_streams_text_and_tool_arguments_before_completion() {
     assert!(v.iter().any(|v| v["type"] == "message_delta"
         && v["usage"]["input_tokens"] == 10
         && v["delta"]["stop_reason"] == "tool_use"));
-    assert!(stream.completed_response().is_none());
+    assert!(
+        stream.completed_response().is_some(),
+        "validated upstream output is retained for Messages reasoning replay"
+    );
     assert!(stream.finish().is_empty());
 }
 
@@ -312,4 +408,32 @@ fn length_limited_text_is_not_reported_as_a_normal_turn() {
         .iter()
         .any(|v| v["delta"]["stop_reason"] == "max_tokens"));
     assert_eq!(values(&events).last().unwrap()["type"], "message_stop");
+}
+
+#[test]
+fn streamed_token_limited_text_retains_reasoning_for_tool_continuation() {
+    use super::message_history::Context;
+    for target in [ModelProtocol::Responses, ModelProtocol::ChatCompletions] {
+        let scope = uuid::Uuid::new_v4().to_string();
+        let first = json!({"model":"m","max_tokens":12,"tools":[{"name":"read_file","input_schema":{"type":"object","properties":{"path":{"type":"string"}}}}],"messages":[{"role":"user","content":"hi"}]});
+        let mut stream = stream_translator(pair(target));
+        let frames = if target == ModelProtocol::Responses {
+            let value = json!({"object":"response","model":"m","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[
+                {"type":"reasoning","id":"rs-partial","summary":[{"type":"summary_text","text":"partial thinking"}]},
+                {"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]}]});
+            frame(json!({"type":"response.incomplete","response":value}))
+        } else {
+            frame(json!({"id":"chat-partial","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"partial","reasoning_content":"partial thinking"},"finish_reason":null}]}))
+                + &frame(json!({"choices":[{"index":0,"delta":{},"finish_reason":"length"}]})) + "data: [DONE]\n\n"
+        };
+        let events = stream.push(frames.as_bytes());
+        assert!(stream.failure().is_none());
+        assert_eq!(values(&events).last().unwrap()["type"],"message_stop");
+        Context::new(&[&scope],target,first.to_string().as_bytes()).unwrap().remember(stream.completed_response().expect("delivered token-limited text must enter history"));
+        let mut next = first;
+        next["messages"].as_array_mut().unwrap().extend([json!({"role":"assistant","content":"partial"}),json!({"role":"user","content":"now read a file"})]);
+        let mut body = request_body(pair(target),&next).unwrap().body;
+        Context::new(&[&scope],target,next.to_string().as_bytes()).unwrap().restore(&mut body);
+        assert!(body.to_string().contains("partial thinking"));
+    }
 }

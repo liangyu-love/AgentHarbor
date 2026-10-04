@@ -3,6 +3,39 @@
 
 use serde_json::{json, Map, Value};
 
+/// Intent from a Messages client. An explicit effort wins over a budget;
+/// unknown levels are never emitted as arbitrary upstream parameters.
+pub(super) fn messages_effort(value: &Value) -> Option<&'static str> {
+    if let Some(effort) = value
+        .pointer("/output_config/effort")
+        .and_then(Value::as_str)
+    {
+        return match effort {
+            "none" => Some("none"),
+            "minimal" => Some("minimal"),
+            "low" => Some("low"),
+            "medium" => Some("medium"),
+            "high" => Some("high"),
+            "xhigh" => Some("xhigh"),
+            "max" => Some("max"),
+            "ultra" => Some("ultra"),
+            _ => None,
+        };
+    }
+    match value.pointer("/thinking/type").and_then(Value::as_str) {
+        Some("adaptive") => Some("high"),
+        Some("enabled") => match value
+            .pointer("/thinking/budget_tokens")
+            .and_then(Value::as_u64)
+        {
+            Some(budget) if budget < 4_000 => Some("low"),
+            Some(budget) if budget < 16_000 => Some("medium"),
+            _ => Some("high"),
+        },
+        _ => None,
+    }
+}
+
 pub(super) fn anthropic(out: &mut Map<String, Value>, model: &str, effort: &str) -> bool {
     let budget: u64 = match effort {
         "minimal" => 1024,
@@ -68,6 +101,39 @@ fn adaptive(model: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn messages_effort_preserves_explicit_levels_and_maps_budget_intent() {
+        for level in ["none", "low", "medium", "high", "xhigh", "max", "ultra"] {
+            assert_eq!(
+                messages_effort(
+                    &json!({"output_config":{"effort":level},"thinking":{"type":"adaptive"}})
+                ),
+                Some(level)
+            );
+        }
+        for (budget, effort) in [
+            (1024, "low"),
+            (4000, "medium"),
+            (15999, "medium"),
+            (16000, "high"),
+        ] {
+            assert_eq!(
+                messages_effort(&json!({"thinking":{"type":"enabled","budget_tokens":budget}})),
+                Some(effort)
+            );
+        }
+        assert_eq!(
+            messages_effort(&json!({"thinking":{"type":"disabled"}})),
+            None
+        );
+        assert_eq!(
+            messages_effort(
+                &json!({"output_config":{"effort":"future"},"thinking":{"type":"adaptive"}})
+            ),
+            None
+        );
+    }
 
     #[test]
     fn adaptive_names_do_not_match_older_or_unrelated_models() {
