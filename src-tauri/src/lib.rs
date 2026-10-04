@@ -155,9 +155,25 @@ pub fn run() {
             schedule_startup_main_window_reveal(app.handle());
             commands::auto_switch::spawn(app.handle().clone());
 
+            // Claude Desktop：清理过期预览 ticket，并提示未完成事务。
+            // 不启动、不停止任何路由进程，也不触碰 Desktop 外部文件。
+            if let Some(app_data_dir) = repo_state
+                .lock()
+                .ok()
+                .map(|repo| repo.paths().app_data_dir.clone())
+            {
+                commands::claude_desktop::startup_recovery(&app_data_dir);
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::claude_desktop::get_claude_desktop_status,
+            commands::claude_desktop::list_claude_desktop_candidates,
+            commands::claude_desktop::preview_claude_desktop_change,
+            commands::claude_desktop::commit_claude_desktop_change,
+            commands::claude_desktop::probe_claude_desktop_provider,
+            commands::claude_desktop::restart_claude_desktop,
             commands::client_config::list_client_configs,
             commands::client_config::preview_client_config,
             commands::client_config::apply_client_config,

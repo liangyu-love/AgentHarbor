@@ -2527,6 +2527,16 @@ pub(super) fn resolve_model_metadata(
     )
 }
 
+/// 与 [`resolve_model_metadata`] 相同的有效能力解析，供 `core` 内的只读消费者
+/// （Claude Desktop 直连的能力投影）复用，不改变任何既有调用方的语义。
+pub(super) fn model_metadata_for(
+    provider: &Provider,
+    model_id: &str,
+    models_dev: &models_dev::Catalog,
+) -> model_metadata::ResolvedMetadata {
+    resolve_model_metadata(provider, model_id, None, models_dev)
+}
+
 fn official_values(entry: &Value) -> Option<model_metadata::OfficialValues> {
     let number = |key: &str| {
         entry

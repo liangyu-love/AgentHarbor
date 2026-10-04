@@ -1,0 +1,214 @@
+//! Claude Desktop 直连配置命令。
+//!
+//! 与既有客户端命令一样：返回 `Result<T, String>`，错误是稳定错误码或本地化
+//! key，绝不携带密钥。**除 `restart_claude_desktop` 之外，这些命令不启动、
+//! 不停止任何进程；全部命令都不改动 Provider 的 enabled / 默认模型 / 协议 /
+//! 全局 active 状态，也不启动或停止本项目的路由服务。**
+
+use crate::core::claude_desktop::{self, paths_from_state, types as desktop, Manager};
+use crate::core::newapi;
+use crate::core::repository::Repository;
+use crate::core::router;
+use crate::core::routing_runtime;
+use crate::platform::paths::CodexPaths;
+use std::sync::Mutex;
+use tauri::{AppHandle, Manager as _, State};
+
+/// Desktop 版本提示：来自应用自身包信息时不可靠，因此只在显式提供时使用。
+fn paths(repo: &State<'_, Mutex<Repository>>) -> Result<CodexPaths, String> {
+    Ok(repo
+        .lock()
+        .map_err(|_| "claudeDesktop.errors.storage")?
+        .paths()
+        .clone())
+}
+
+fn manager(app_data_dir: &std::path::Path) -> Manager {
+    Manager::new(app_data_dir)
+}
+
+/// 把结构化错误序列化为前端可消费的 JSON 字符串。
+fn encode(error: Box<desktop::DesktopError>) -> String {
+    serde_json::to_string(&*error)
+        .unwrap_or_else(|_| "{\"code\":\"storage\",\"message\":\"claudeDesktop.errors.storage\",\"retryable\":false,\"params\":[]}".to_owned())
+}
+
+#[tauri::command]
+pub async fn get_claude_desktop_status(
+    repo: State<'_, Mutex<Repository>>,
+) -> Result<desktop::DesktopStatus, String> {
+    let paths = paths(&repo)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = router::load_store(&paths)?;
+        let manager = manager(&paths.app_data_dir);
+        Ok(manager.status(&store))
+    })
+    .await
+    .map_err(|_| "claudeDesktop.errors.storage".to_owned())?
+}
+
+#[tauri::command]
+pub async fn list_claude_desktop_candidates(
+    repo: State<'_, Mutex<Repository>>,
+    paths_choice: Option<desktop::PathsChoice>,
+) -> Result<desktop::DesktopCandidates, String> {
+    let paths = paths(&repo)?;
+    let choice = paths_choice.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = router::load_store(&paths)?;
+        let manager = manager(&paths.app_data_dir);
+        manager.candidates(&store, &choice).map_err(encode)
+    })
+    .await
+    .map_err(|_| "claudeDesktop.errors.storage".to_owned())?
+}
+
+#[tauri::command]
+pub async fn preview_claude_desktop_change(
+    repo: State<'_, Mutex<Repository>>,
+    action: desktop::DesktopAction,
+    request: desktop::ActionRequest,
+) -> Result<desktop::DesktopPreview, String> {
+    let paths = paths(&repo)?;
+    let _guard = routing_runtime::mutation_guard().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = router::load_store(&paths)?;
+        let manager = manager(&paths.app_data_dir);
+        let prepared = manager
+            .prepare(&store, action, &request)
+            .map_err(encode)?;
+        manager.issue_ticket(&prepared).map_err(encode)
+    })
+    .await
+    .map_err(|_| "claudeDesktop.errors.storage".to_owned())?
+}
+
+#[tauri::command]
+pub async fn commit_claude_desktop_change(
+    repo: State<'_, Mutex<Repository>>,
+    action: desktop::DesktopAction,
+    revision: String,
+    request: desktop::ActionRequest,
+) -> Result<desktop::DesktopApplied, String> {
+    let paths = paths(&repo)?;
+    let _guard = routing_runtime::mutation_guard().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = router::load_store(&paths)?;
+        let manager = manager(&paths.app_data_dir);
+        manager
+            .commit(&store, action, &revision, &request)
+            .map_err(encode)
+    })
+    .await
+    .map_err(|_| "claudeDesktop.errors.storage".to_owned())?
+}
+
+/// 检测结果：列表检测始终执行；Messages 核对只在显式请求时执行。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeOutcome {
+    pub bearer: claude_desktop::probe::BearerReport,
+    /// `None` 表示本次没有请求 Messages 核对。
+    pub messages: Option<claude_desktop::probe::MessagesReport>,
+}
+
+/// 只读检测。默认只发一次 `/v1/models` GET；只有 `checkMessages` 为真时才
+/// 额外发一次 `max_tokens: 1` 的 Messages 请求。两种情况都不改动 Provider 的
+/// 测试状态，也不写任何 Desktop 文件。
+#[tauri::command]
+pub async fn probe_claude_desktop_provider(
+    repo: State<'_, Mutex<Repository>>,
+    request: desktop::ProbeRequest,
+) -> Result<ProbeOutcome, String> {
+    let (paths, proxy) = {
+        let repo = repo.lock().map_err(|_| "claudeDesktop.errors.storage")?;
+        (repo.paths().clone(), repo.api_proxy_config())
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = router::load_store(&paths)?;
+        let manager = manager(&paths.app_data_dir);
+        let bearer = manager
+            .probe(&store, &request.provider_id, &request.model_ids, &proxy)
+            .map_err(encode)?;
+        let messages = if request.check_messages {
+            let model = request
+                .model_ids
+                .first()
+                .cloned()
+                .unwrap_or_default();
+            let provider = store
+                .providers
+                .iter()
+                .find(|entry| entry.id == request.provider_id)
+                .ok_or_else(|| {
+                    encode(Box::new(desktop::DesktopError::new(
+                        desktop::error_code::PROVIDER_MISSING,
+                        "claudeDesktop.errors.providerMissing",
+                    )))
+                })?;
+            Some(
+                claude_desktop::probe::run_messages_check(provider, &model, &proxy)
+                    .map_err(encode)?,
+            )
+        } else {
+            None
+        };
+        Ok(ProbeOutcome { bearer, messages })
+    })
+    .await
+    .map_err(|_| "claudeDesktop.errors.storage".to_owned())?
+}
+
+/// 让 Claude Desktop 立即使用刚应用的配置：先完全退出，再启动。
+///
+/// 顺序由 `Manager::restart_app` 保证（Desktop 退出时会回写状态）。写操作与
+/// 进程操作共用同一把跨进程锁，避免与另一个实例的配置提交交错。
+///
+/// 只有当配置已经提交时才应调用；本命令不修改任何配置文件。
+#[tauri::command]
+pub async fn restart_claude_desktop(
+    repo: State<'_, Mutex<Repository>>,
+) -> Result<desktop::DesktopRestartResult, String> {
+    let paths = paths(&repo)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let manager = manager(&paths.app_data_dir);
+        // 用已保存的状态解析路径：不重新做平台发现，避免重启到另一个安装。
+        let desktop_paths = match manager.load_state().map_err(encode)? {
+            Some(state) => paths_from_state(&state),
+            None => manager
+                .resolve_paths(&desktop::PathsChoice::default())
+                .map_err(encode)?,
+        };
+        let launch_method = manager.restart_app(&desktop_paths).map_err(encode)?;
+        let app = manager.app_state(&desktop_paths);
+        Ok(desktop::DesktopRestartResult {
+            launch_method,
+            running: app.running,
+            restart_capable: app.launch_method.is_some(),
+        })
+    })
+    .await
+    .map_err(|_| "claudeDesktop.errors.storage".to_owned())?
+}
+
+/// 启动恢复入口：清理过期预览 ticket，并在存在未完成事务时提示。
+pub fn startup_recovery(app_data_dir: &std::path::Path) {
+    let manager = Manager::new(app_data_dir);
+    if let Err(error) = manager.cleanup_previews() {
+        eprintln!("[AgentHarbor] claude desktop preview cleanup failed: {}", error.message);
+    }
+    if manager.has_pending() {
+        eprintln!("[AgentHarbor] claude desktop has an unfinished transaction; open the card to recover");
+    }
+}
+
+/// `AppHandle` 版本提示入口，保留给后续把 Desktop 版本写进状态使用。
+pub fn app_data_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
+    let state = app.state::<Mutex<Repository>>();
+    state.lock().ok().map(|repo| repo.paths().app_data_dir.clone())
+}
+
+/// 让 `newapi` 的代理配置类型在签名里可见（避免未使用导入告警）。
+pub fn _proxy_type_hint() -> Option<newapi::AppliedConfig> {
+    None
+}

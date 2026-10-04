@@ -7,6 +7,7 @@ pub mod auth;
 pub mod auto_switch;
 mod balance_script;
 pub mod capability_preview;
+pub mod claude_desktop;
 pub mod client_config;
 pub mod codex_config;
 pub mod custom_instructions;
