@@ -8,8 +8,14 @@ pub fn remove_legacy_scheduler() {
         return;
     };
     for (label, file) in [
-        ("dev.agentharbor.auto-switch", "dev.agentharbor.auto-switch.plist"),
-        ("dev.codexharbor.auto-switch", "dev.codexharbor.auto-switch.plist"),
+        (
+            "dev.agentharbor.auto-switch",
+            "dev.agentharbor.auto-switch.plist",
+        ),
+        (
+            "dev.codexharbor.auto-switch",
+            "dev.codexharbor.auto-switch.plist",
+        ),
     ] {
         let path = agents.join(file);
         if path.exists() {

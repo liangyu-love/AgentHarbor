@@ -24,9 +24,13 @@ pub struct ServedModelObservation {
 
 impl Default for ServedModelObservation {
     fn default() -> Self {
-        Self { served_model: None, model_match_status: "unknown".into(),
-            model_match_basis: None, unknown_reason: Some("not_recorded".into()),
-            conflicting_model: None }
+        Self {
+            served_model: None,
+            model_match_status: "unknown".into(),
+            model_match_basis: None,
+            unknown_reason: Some("not_recorded".into()),
+            conflicting_model: None,
+        }
     }
 }
 
@@ -44,9 +48,15 @@ pub struct CredentialSnapshot {
 
 impl Default for CredentialSnapshot {
     fn default() -> Self {
-        Self { kind: "unknown".into(), status: "not_recorded".into(),
-            reason: Some("not_recorded".into()), version_fingerprint: None,
-            account_id: None, account_status: "not_recorded".into(), label: None }
+        Self {
+            kind: "unknown".into(),
+            status: "not_recorded".into(),
+            reason: Some("not_recorded".into()),
+            version_fingerprint: None,
+            account_id: None,
+            account_status: "not_recorded".into(),
+            label: None,
+        }
     }
 }
 
@@ -90,7 +100,12 @@ impl CredentialSnapshot {
         snapshot.account_id = account
             .filter(|value| !value.is_empty())
             .map(|value| fingerprint(&key, b"codex-account", value.as_bytes()));
-        snapshot.account_status = if snapshot.account_id.is_some() { "recorded" } else { "not_recorded" }.into();
+        snapshot.account_status = if snapshot.account_id.is_some() {
+            "recorded"
+        } else {
+            "not_recorded"
+        }
+        .into();
         snapshot.status = "recorded".into();
         snapshot.reason = None;
         snapshot
@@ -179,7 +194,11 @@ impl ServedModelObserver {
         };
         Self {
             protocol,
-            upstream_model: if request_model_issue.is_none() { upstream_model.into() } else { String::new() },
+            upstream_model: if request_model_issue.is_none() {
+                upstream_model.into()
+            } else {
+                String::new()
+            },
             request_model_issue,
             status,
             sse,
@@ -262,18 +281,22 @@ impl ServedModelObserver {
             return;
         };
         let kind = value.get("type").and_then(Value::as_str).unwrap_or(&name);
-        if matches!(kind, "error" | "response.failed")
-            || !value["error"].is_null()
-        {
+        if matches!(kind, "error" | "response.failed") || !value["error"].is_null() {
             self.reason = Some("response_failed");
         }
-        if matches!(kind, "response.completed" | "response.incomplete" | "message_stop") {
+        if matches!(
+            kind,
+            "response.completed" | "response.incomplete" | "message_stop"
+        ) {
             self.terminal = true;
         }
         let declared = match self.protocol {
             ModelProtocol::Responses => {
                 if !self.sse {
-                    value.get("model").or_else(|| value.pointer("/response/model")).and_then(Value::as_str)
+                    value
+                        .get("model")
+                        .or_else(|| value.pointer("/response/model"))
+                        .and_then(Value::as_str)
                 } else if kind.starts_with("response.") {
                     value.pointer("/response/model").and_then(Value::as_str)
                 } else {
@@ -311,7 +334,9 @@ impl ServedModelObserver {
             }
             match &self.served {
                 Some(first) if first != declared => {
-                    if self.conflict.is_none() { self.conflict = Some(declared.into()); }
+                    if self.conflict.is_none() {
+                        self.conflict = Some(declared.into());
+                    }
                     self.reason = Some("conflicting_declarations");
                 }
                 None => self.served = Some(declared.into()),
@@ -325,7 +350,9 @@ impl ServedModelObserver {
     }
 
     pub fn finish(&mut self, eof: bool) -> ServedModelObservation {
-        if let Some(result) = &self.final_result { return result.clone(); }
+        if let Some(result) = &self.final_result {
+            return result.clone();
+        }
         {
             if self.sse {
                 if eof && !self.buffer.is_empty() {
@@ -372,9 +399,13 @@ impl ServedModelObserver {
                 None => "declared_different",
             }
             .into(),
-            model_match_basis: reason.is_none().then(|| if self.served.as_deref() == Some(self.upstream_model.as_str()) {
-                "raw_exact".into()
-            } else { "raw_comparison".into() }),
+            model_match_basis: reason.is_none().then(|| {
+                if self.served.as_deref() == Some(self.upstream_model.as_str()) {
+                    "raw_exact".into()
+                } else {
+                    "raw_comparison".into()
+                }
+            }),
             unknown_reason: reason.map(str::to_owned),
             conflicting_model: self.conflict.clone(),
         };
@@ -389,35 +420,49 @@ mod tests {
 
     #[test]
     fn json_uses_only_protocol_fields_and_declared_difference_is_not_proof() {
-        let mut observer = ServedModelObserver::new(ModelProtocol::Responses, "wire-v1", 200, false);
+        let mut observer =
+            ServedModelObserver::new(ModelProtocol::Responses, "wire-v1", 200, false);
         observer.push(br#"{"model":"wire-v1","output":[{"model":"decoy"}]}"#);
         let result = observer.finish(true);
         assert_eq!(result.model_match_status, "same");
         assert_eq!(result.served_model.as_deref(), Some("wire-v1"));
         assert_eq!(observer.finish(false).model_match_status, "same");
 
-        let mut observer = ServedModelObserver::new(ModelProtocol::Responses, "wire-v1", 200, false);
+        let mut observer =
+            ServedModelObserver::new(ModelProtocol::Responses, "wire-v1", 200, false);
         observer.push(br#"{"response":{"model":"served-v2"}}"#);
         let result = observer.finish(true);
         assert_eq!(result.model_match_status, "declared_different");
         assert_eq!(result.served_model.as_deref(), Some("served-v2"));
 
-        let mut conflict = ServedModelObserver::new(ModelProtocol::Responses, "wire-v1", 200, false);
+        let mut conflict =
+            ServedModelObserver::new(ModelProtocol::Responses, "wire-v1", 200, false);
         conflict.push(br#"{"model":"wire-v1","response":{"model":"served-v2"}}"#);
-        assert_eq!(conflict.finish(true).unknown_reason.as_deref(), Some("conflicting_declarations"));
+        assert_eq!(
+            conflict.finish(true).unknown_reason.as_deref(),
+            Some("conflicting_declarations")
+        );
     }
 
     #[test]
     fn sse_joins_multiline_data_across_chunks_and_requires_completion() {
         let mut observer = ServedModelObserver::new(ModelProtocol::Responses, "wire", 200, true);
-        observer.push(b": keepalive\r\nevent: response.created\r\ndata: {\"type\":\"response.created\",\r\n");
+        observer.push(
+            b": keepalive\r\nevent: response.created\r\ndata: {\"type\":\"response.created\",\r\n",
+        );
         observer.push(b"data: \"response\":{\"model\":\"wire\"}}\r\n\r\n");
-        observer.push(b"data: {\"type\":\"response.completed\",\"response\":{\"model\":\"wire\"}}\r\n\r\n");
+        observer.push(
+            b"data: {\"type\":\"response.completed\",\"response\":{\"model\":\"wire\"}}\r\n\r\n",
+        );
         assert_eq!(observer.finish(true).model_match_status, "same");
 
-        let mut incomplete = ServedModelObserver::new(ModelProtocol::ChatCompletions, "wire", 200, true);
+        let mut incomplete =
+            ServedModelObserver::new(ModelProtocol::ChatCompletions, "wire", 200, true);
         incomplete.push(b"data: {\"model\":\"wire\"}\n\n");
-        assert_eq!(incomplete.finish(true).unknown_reason.as_deref(), Some("incomplete_stream"));
+        assert_eq!(
+            incomplete.finish(true).unknown_reason.as_deref(),
+            Some("incomplete_stream")
+        );
     }
 
     #[test]
@@ -435,39 +480,76 @@ mod tests {
         observer.push(br#"{"model":"wire"}"#);
         let result = observer.finish(true);
         assert_eq!(result.model_match_status, "unknown");
-        assert_eq!(result.unknown_reason.as_deref(), Some("request_model_missing"));
+        assert_eq!(
+            result.unknown_reason.as_deref(),
+            Some("request_model_missing")
+        );
     }
 
     #[test]
     fn conflicting_failure_truncation_and_status_remain_unknown() {
-        let mut conflict = ServedModelObserver::new(ModelProtocol::AnthropicMessages, "a", 200, true);
+        let mut conflict =
+            ServedModelObserver::new(ModelProtocol::AnthropicMessages, "a", 200, true);
         conflict.push(b"data: {\"type\":\"message_start\",\"message\":{\"model\":\"a\"}}\n\n");
         conflict.push(b"data: {\"type\":\"message_start\",\"message\":{\"model\":\"b\"}}\n\n");
         conflict.push(b"data: {\"type\":\"message_stop\"}\n\n");
-        assert_eq!(conflict.finish(true).unknown_reason.as_deref(), Some("conflicting_declarations"));
+        assert_eq!(
+            conflict.finish(true).unknown_reason.as_deref(),
+            Some("conflicting_declarations")
+        );
 
         let mut failed = ServedModelObserver::new(ModelProtocol::Responses, "a", 500, false);
         failed.push(br#"{"model":"a"}"#);
-        assert_eq!(failed.finish(true).unknown_reason.as_deref(), Some("upstream_http_error"));
+        assert_eq!(
+            failed.finish(true).unknown_reason.as_deref(),
+            Some("upstream_http_error")
+        );
 
         let mut oversized = ServedModelObserver::new(ModelProtocol::Responses, "a", 200, false);
         oversized.push(&vec![b'x'; MAX_OBSERVATION + 1]);
-        assert_eq!(oversized.finish(true).unknown_reason.as_deref(), Some("observation_limit"));
+        assert_eq!(
+            oversized.finish(true).unknown_reason.as_deref(),
+            Some("observation_limit")
+        );
 
-        let mut interrupted = ServedModelObserver::new(ModelProtocol::ChatCompletions, "a", 200, true);
+        let mut interrupted =
+            ServedModelObserver::new(ModelProtocol::ChatCompletions, "a", 200, true);
         interrupted.push(b"data: {\"model\":\"a\"}\n\n");
-        assert_eq!(interrupted.finish(false).unknown_reason.as_deref(), Some("stream_interrupted"));
+        assert_eq!(
+            interrupted.finish(false).unknown_reason.as_deref(),
+            Some("stream_interrupted")
+        );
     }
 
     #[test]
     fn protected_fingerprint_changes_with_key_and_never_contains_secret() {
         let dir = tempfile::tempdir().unwrap();
-        let first = CredentialSnapshot::from_header(dir.path(), "providerApiKey", "p@endpoint", Some("Bearer secret-one"), None);
-        let again = CredentialSnapshot::from_header(dir.path(), "providerApiKey", "p@endpoint", Some("Bearer secret-one"), None);
-        let rotated = CredentialSnapshot::from_header(dir.path(), "providerApiKey", "p@endpoint", Some("Bearer secret-two"), None);
+        let first = CredentialSnapshot::from_header(
+            dir.path(),
+            "providerApiKey",
+            "p@endpoint",
+            Some("Bearer secret-one"),
+            None,
+        );
+        let again = CredentialSnapshot::from_header(
+            dir.path(),
+            "providerApiKey",
+            "p@endpoint",
+            Some("Bearer secret-one"),
+            None,
+        );
+        let rotated = CredentialSnapshot::from_header(
+            dir.path(),
+            "providerApiKey",
+            "p@endpoint",
+            Some("Bearer secret-two"),
+            None,
+        );
         assert_eq!(first.status, "recorded");
         assert_eq!(first.version_fingerprint, again.version_fingerprint);
         assert_ne!(first.version_fingerprint, rotated.version_fingerprint);
-        assert!(!serde_json::to_string(&first).unwrap().contains("secret-one"));
+        assert!(!serde_json::to_string(&first)
+            .unwrap()
+            .contains("secret-one"));
     }
 }

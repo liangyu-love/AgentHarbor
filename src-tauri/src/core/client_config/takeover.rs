@@ -10,7 +10,11 @@ fn edit_after<'a>(edits: &'a [Edit], path: &[&str]) -> Option<&'a Value> {
         .iter()
         .find(|edit| {
             edit.path.len() == path.len()
-                && edit.path.iter().zip(path).all(|(left, right)| left == right)
+                && edit
+                    .path
+                    .iter()
+                    .zip(path)
+                    .all(|(left, right)| left == right)
         })
         .and_then(|edit| edit.value.as_ref())
 }
@@ -101,7 +105,9 @@ static MANAGED_PATH: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(N
 
 #[cfg(windows)]
 fn default_managed_path() -> Option<PathBuf> {
-    Some(PathBuf::from(r"C:\ProgramData\ClaudeCode\managed-settings.json"))
+    Some(PathBuf::from(
+        r"C:\ProgramData\ClaudeCode\managed-settings.json",
+    ))
 }
 
 #[cfg(target_os = "macos")]

@@ -116,12 +116,20 @@ mod tests {
         for index in 0..5 {
             let path = temp.path().join(format!("backup-{index}.dat"));
             std::fs::write(&path, b"x").unwrap();
-            let time = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000 + index);
-            std::fs::File::options().write(true).open(&path).unwrap().set_modified(time).unwrap();
+            let time =
+                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000 + index);
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(time)
+                .unwrap();
         }
         std::fs::write(temp.path().join("keep-me.txt"), b"x").unwrap();
         prune_backups(temp.path(), 2, |path| {
-            path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with("backup-"))
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("backup-"))
         });
         let mut left: Vec<String> = std::fs::read_dir(temp.path())
             .unwrap()

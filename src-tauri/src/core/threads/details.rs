@@ -146,11 +146,8 @@ impl TokenUsageTracker {
             }
             return self.push(last);
         }
-        let is_present = |pointer: &str| {
-            value
-                .pointer(pointer)
-                .is_some_and(|value| !value.is_null())
-        };
+        let is_present =
+            |pointer: &str| value.pointer(pointer).is_some_and(|value| !value.is_null());
         if is_present("/payload/info/total_token_usage")
             || is_present("/payload/info/last_token_usage")
         {

@@ -938,14 +938,17 @@ mod tests {
         };
         repo.persist_registry(&registry, false).unwrap();
         fs::write(
-            repo.paths.registry_backups_dir.join(format!(
-                "registry-1700000000-{}.json",
-                uuid::Uuid::new_v4()
-            )),
+            repo.paths
+                .registry_backups_dir
+                .join(format!("registry-1700000000-{}.json", uuid::Uuid::new_v4())),
             "{}",
         )
         .unwrap();
-        fs::write(repo.paths.registry_backups_dir.join("user-notes.json"), "{}").unwrap();
+        fs::write(
+            repo.paths.registry_backups_dir.join("user-notes.json"),
+            "{}",
+        )
+        .unwrap();
 
         let result = repo.clean().unwrap();
         assert_eq!(result.data.registry_backups_removed, 1);
@@ -964,7 +967,13 @@ mod tests {
         repo.configure_auto_switch(Some(20), Some(5)).unwrap();
         let enabled = repo.set_auto_switch(true).unwrap().data.auto_switch;
         assert!(enabled.supported && enabled.enabled);
-        assert_eq!((enabled.threshold_5h_percent, enabled.threshold_weekly_percent), (20, 5));
+        assert_eq!(
+            (
+                enabled.threshold_5h_percent,
+                enabled.threshold_weekly_percent
+            ),
+            (20, 5)
+        );
         assert!(repo.auto_switch_config().enabled);
 
         let status = repo.load_snapshot_local().unwrap().data.status.auto_switch;

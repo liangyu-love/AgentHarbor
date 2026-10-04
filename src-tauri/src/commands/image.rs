@@ -4,8 +4,8 @@ use crate::core::{
 };
 use crate::platform::paths::CodexPaths;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use reqwest::multipart;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::multipart;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -355,10 +355,7 @@ async fn download_client(
     builder.build().map_err(|_| "image.errors.network".into())
 }
 
-async fn image_to_data_url(
-    value: &Value,
-    proxy: &ApiProxyConfigPayload,
-) -> Result<String, String> {
+async fn image_to_data_url(value: &Value, proxy: &ApiProxyConfigPayload) -> Result<String, String> {
     if let Some(encoded) = value.get("b64_json").and_then(Value::as_str) {
         if encoded.len() > MAX_IMAGE_BYTES * 4 / 3 + 8 {
             return Err("image.errors.responseTooLarge".into());
@@ -1331,7 +1328,10 @@ mod tests {
     fn save_path_rejects_traversal_and_unknown_extension() {
         let absolute = std::env::temp_dir().join("ok.png");
         assert!(resolve_save_path(absolute.to_str().unwrap()).is_ok());
-        assert_eq!(resolve_save_path("ok.png").unwrap_err(), "image.errors.save");
+        assert_eq!(
+            resolve_save_path("ok.png").unwrap_err(),
+            "image.errors.save"
+        );
         assert_eq!(
             resolve_save_path("../escape.png").unwrap_err(),
             "image.errors.save"
@@ -1404,17 +1404,42 @@ mod tests {
         let paths = CodexPaths::from_home(dir.path().join("codex"));
         write_key(&paths, "https://a.example.org", "sk-a").unwrap();
         write_key(&paths, "https://b.example.org", "sk-b").unwrap();
-        assert_eq!(read_key(&paths, "https://a.example.org").unwrap().as_deref(), Some("sk-a"));
-        assert_eq!(read_key(&paths, "https://b.example.org").unwrap().as_deref(), Some("sk-b"));
+        assert_eq!(
+            read_key(&paths, "https://a.example.org")
+                .unwrap()
+                .as_deref(),
+            Some("sk-a")
+        );
+        assert_eq!(
+            read_key(&paths, "https://b.example.org")
+                .unwrap()
+                .as_deref(),
+            Some("sk-b")
+        );
         // Re-saving moves a site to the front and replaces its key.
         write_key(&paths, "https://a.example.org/", "sk-a2").unwrap();
-        let sites: Vec<_> = read_keys(&paths).unwrap().sites.into_iter().map(|s| s.base_url).collect();
+        let sites: Vec<_> = read_keys(&paths)
+            .unwrap()
+            .sites
+            .into_iter()
+            .map(|s| s.base_url)
+            .collect();
         assert_eq!(sites, ["https://a.example.org/", "https://b.example.org/"]);
-        assert_eq!(read_key(&paths, "https://a.example.org").unwrap().as_deref(), Some("sk-a2"));
+        assert_eq!(
+            read_key(&paths, "https://a.example.org")
+                .unwrap()
+                .as_deref(),
+            Some("sk-a2")
+        );
 
         delete_key(&paths, "https://a.example.org").unwrap();
         assert_eq!(read_key(&paths, "https://a.example.org").unwrap(), None);
-        assert_eq!(read_key(&paths, "https://b.example.org").unwrap().as_deref(), Some("sk-b"));
+        assert_eq!(
+            read_key(&paths, "https://b.example.org")
+                .unwrap()
+                .as_deref(),
+            Some("sk-b")
+        );
         delete_key(&paths, "https://missing.example.org").unwrap();
     }
 
@@ -1424,9 +1449,19 @@ mod tests {
         let paths = CodexPaths::from_home(dir.path().join("codex"));
         let legacy = serde_json::json!({"baseUrl":"https://old.example.org/","apiKey":"sk-old"});
         secret_file::write(&key_path(&paths), legacy.to_string().as_bytes()).unwrap();
-        assert_eq!(read_key(&paths, "https://old.example.org").unwrap().as_deref(), Some("sk-old"));
+        assert_eq!(
+            read_key(&paths, "https://old.example.org")
+                .unwrap()
+                .as_deref(),
+            Some("sk-old")
+        );
         write_key(&paths, "https://new.example.org", "sk-new").unwrap();
-        assert_eq!(read_key(&paths, "https://old.example.org").unwrap().as_deref(), Some("sk-old"));
+        assert_eq!(
+            read_key(&paths, "https://old.example.org")
+                .unwrap()
+                .as_deref(),
+            Some("sk-old")
+        );
     }
 
     #[test]
@@ -1438,7 +1473,11 @@ mod tests {
         }
         assert_eq!(read_keys(&paths).unwrap().sites.len(), MAX_SAVED_KEYS);
         assert_eq!(read_key(&paths, "https://s0.example.org").unwrap(), None);
-        assert!(read_key(&paths, &format!("https://s{MAX_SAVED_KEYS}.example.org")).unwrap().is_some());
+        assert!(
+            read_key(&paths, &format!("https://s{MAX_SAVED_KEYS}.example.org"))
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
@@ -1483,7 +1522,11 @@ mod tests {
         };
         let started = std::time::Instant::now();
         let result = tauri::async_runtime::block_on(async {
-            let job = tokio::spawn(run_generation(Some("job-cancel".into()), request(), paths.clone()));
+            let job = tokio::spawn(run_generation(
+                Some("job-cancel".into()),
+                request(),
+                paths.clone(),
+            ));
             // Cancel only once the request is actually in flight upstream.
             tokio::task::spawn_blocking(move || connected_rx.recv_timeout(Duration::from_secs(10)))
                 .await
@@ -1496,7 +1539,10 @@ mod tests {
                 .unwrap()
         });
         assert_eq!(result.unwrap_err(), "image.errors.cancelled");
-        assert!(started.elapsed() < Duration::from_secs(4), "cancel must not wait for the upstream");
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "cancel must not wait for the upstream"
+        );
         assert!(!generation_jobs().lock().unwrap().contains_key("job-cancel"));
         assert!(!cancel_image_generation("job-cancel".into()));
         // Both generation slots are free again.

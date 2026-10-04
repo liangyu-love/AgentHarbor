@@ -145,34 +145,74 @@ fn raw_upstream_model_declaration_is_shared_without_changing_response() {
         let paths = CodexPaths::from_home(dir.path().into());
         let store = router::Store {
             providers: vec![router::Provider {
-                id: "source".into(), name: "Source".into(), base_url: upstream,
-                api_key: "secret-version".into(), model: "wire-model".into(), enabled: true,
+                id: "source".into(),
+                name: "Source".into(),
+                base_url: upstream,
+                api_key: "secret-version".into(),
+                model: "wire-model".into(),
+                enabled: true,
                 ..Default::default()
             }],
-            router: router::RouterSettings { bearer_token: "local-only".into(), ..Default::default() },
+            router: router::RouterSettings {
+                bearer_token: "local-only".into(),
+                ..Default::default()
+            },
             ..Default::default()
         };
         persist(&paths, &store);
-        let port = ensure_running(0, paths.clone(), ApiProxyConfigPayload {
-            mode: super::super::models::ApiProxyMode::Direct, url: None,
-        }).await.unwrap();
+        let port = ensure_running(
+            0,
+            paths.clone(),
+            ApiProxyConfigPayload {
+                mode: super::super::models::ApiProxyMode::Direct,
+                url: None,
+            },
+        )
+        .await
+        .unwrap();
         let client = Client::builder().no_proxy().build().unwrap();
-        let response = client.post(format!("http://127.0.0.1:{port}/p/source/v1/responses"))
+        let response = client
+            .post(format!("http://127.0.0.1:{port}/p/source/v1/responses"))
             .bearer_auth("local-only")
-            .json(&json!({"model":"wire-model","input":"fixture"})).send().await.unwrap();
+            .json(&json!({"model":"wire-model","input":"fixture"}))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(response.status(), 200);
         assert_eq!(response.text().await.unwrap(), body);
-        assert_eq!(captured.lock().unwrap()[0], json!({"model":"wire-model","input":"fixture"}));
-        let record = relay_usage::load(&paths.app_data_dir).unwrap().recent.pop().unwrap();
-        let trace = route_trace::recent().into_iter().find(|route| route.id == record.request_id).unwrap();
+        assert_eq!(
+            captured.lock().unwrap()[0],
+            json!({"model":"wire-model","input":"fixture"})
+        );
+        let record = relay_usage::load(&paths.app_data_dir)
+            .unwrap()
+            .recent
+            .pop()
+            .unwrap();
+        let trace = route_trace::recent()
+            .into_iter()
+            .find(|route| route.id == record.request_id)
+            .unwrap();
         let attempt = &trace.attempts[0];
         assert_eq!(attempt.attempt_id, record.attempt_id);
-        assert_eq!(attempt.model_observation.served_model.as_deref(), Some("declared-other"));
-        assert_eq!(attempt.model_observation.model_match_status, "declared_different");
-        assert_eq!(record.model_observation.served_model, attempt.model_observation.served_model);
+        assert_eq!(
+            attempt.model_observation.served_model.as_deref(),
+            Some("declared-other")
+        );
+        assert_eq!(
+            attempt.model_observation.model_match_status,
+            "declared_different"
+        );
+        assert_eq!(
+            record.model_observation.served_model,
+            attempt.model_observation.served_model
+        );
         assert_eq!(record.credential.status, "recorded");
-        assert!(!serde_json::to_string(&record).unwrap().contains("secret-version"));
-        stop(); server.abort();
+        assert!(!serde_json::to_string(&record)
+            .unwrap()
+            .contains("secret-version"));
+        stop();
+        server.abort();
     });
 }
 

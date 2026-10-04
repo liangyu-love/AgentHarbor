@@ -505,7 +505,10 @@ mod tests {
         assert_eq!(parsed.managed_content, "old\nline");
 
         let next = compose_with_managed_content(&parsed, "new\nline").unwrap();
-        assert!(!next.replace("\r\n", "").contains('\n'), "no bare LF: {next:?}");
+        assert!(
+            !next.replace("\r\n", "").contains('\n'),
+            "no bare LF: {next:?}"
+        );
         assert!(next.contains("new\r\nline"));
         assert!(next.ends_with("tail\r\n"));
 
@@ -518,8 +521,13 @@ mod tests {
         let raw = format!("a\n\n{MANAGED_START_MARKER}\nold\n{MANAGED_END_MARKER}\n");
         let parsed = parse_content(true, raw).unwrap();
         let next = compose_with_managed_content(&parsed, "new").unwrap();
-        assert_eq!(next, format!("a\n\n{MANAGED_START_MARKER}\nnew\n{MANAGED_END_MARKER}\n"));
-        let again = compose_with_managed_content(&parse_content(true, next.clone()).unwrap(), "new").unwrap();
+        assert_eq!(
+            next,
+            format!("a\n\n{MANAGED_START_MARKER}\nnew\n{MANAGED_END_MARKER}\n")
+        );
+        let again =
+            compose_with_managed_content(&parse_content(true, next.clone()).unwrap(), "new")
+                .unwrap();
         assert_eq!(again, next, "re-applying must be idempotent");
     }
 }

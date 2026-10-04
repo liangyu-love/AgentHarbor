@@ -12,7 +12,11 @@ pub async fn restart_target(
     repo: State<'_, Mutex<Repository>>,
     target_id: TargetId,
 ) -> Result<(), String> {
-    let paths = repo.lock().map_err(|error| error.to_string())?.paths().clone();
+    let paths = repo
+        .lock()
+        .map_err(|error| error.to_string())?
+        .paths()
+        .clone();
     tauri::async_runtime::spawn_blocking(move || {
         let registry = TargetRegistry::new(paths);
         let controller = registry

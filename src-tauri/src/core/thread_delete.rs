@@ -148,9 +148,12 @@ fn recover_journals(state_database_path: &Path) -> Vec<String> {
 
 fn has_journals(state_database_path: &Path) -> bool {
     std::fs::read_dir(journal_dir(state_database_path)).is_ok_and(|entries| {
-        entries
-            .flatten()
-            .any(|entry| entry.path().extension().is_some_and(|extension| extension == "json"))
+        entries.flatten().any(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "json")
+        })
     })
 }
 
@@ -401,8 +404,13 @@ fn process_pending_deletes_inner(
                     let result = if unchanged.is_empty() {
                         Ok(())
                     } else {
-                        delete_threads_inner(state_database_path, sessions_dir, archived_dir, &unchanged)
-                            .map(|_| ())
+                        delete_threads_inner(
+                            state_database_path,
+                            sessions_dir,
+                            archived_dir,
+                            &unchanged,
+                        )
+                        .map(|_| ())
                     };
                     match result {
                         Ok(()) => {
@@ -673,7 +681,8 @@ fn delete_threads_inner(
     let journal_path = journal_dir(state_database_path).join(format!("{}.json", Uuid::new_v4()));
     storage::write_atomic(
         &journal_path,
-        &serde_json::to_vec(&journal).map_err(|error| CoreError::OperationFailed(error.to_string()))?,
+        &serde_json::to_vec(&journal)
+            .map_err(|error| CoreError::OperationFailed(error.to_string()))?,
     )?;
     let outcome = remove_and_commit(connection.as_mut(), &catalog_ids, &journal.rollouts);
     // On failure the rollouts were already put back; settling re-checks that from disk and
@@ -1020,7 +1029,10 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM threads", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 0);
-        assert!(!has_journals(&database), "a finished deletion leaves no journal");
+        assert!(
+            !has_journals(&database),
+            "a finished deletion leaves no journal"
+        );
     }
 
     /// Simulates a crash after the rollout was removed: writes the journal the way
@@ -1118,7 +1130,11 @@ mod tests {
     fn rollout_id_ignores_truncated_lines_like_the_scanner() {
         let (_temp, sessions, _archived, _database) = fixture();
         let path = sessions.join("rollout-one.jsonl");
-        std::fs::write(&path, format!("{}{{\"type\":\"event\",\"payl", rollout("one"))).unwrap();
+        std::fs::write(
+            &path,
+            format!("{}{{\"type\":\"event\",\"payl", rollout("one")),
+        )
+        .unwrap();
         assert_eq!(read_rollout_id(&path).unwrap(), "one");
     }
 
@@ -1228,7 +1244,10 @@ mod tests {
             &database,
             &sessions,
             &archived,
-            &["active:rollout-one.jsonl".into(), "active:rollout-two.jsonl".into()],
+            &[
+                "active:rollout-one.jsonl".into(),
+                "active:rollout-two.jsonl".into(),
+            ],
         )
         .unwrap();
         let changed = sessions.join("rollout-one.jsonl");
@@ -1240,10 +1259,16 @@ mod tests {
             pending_jobs(&database).unwrap().jobs,
             true,
         );
-        assert!(status.warnings.iter().any(|w| w.contains("active:rollout-one.jsonl")));
+        assert!(status
+            .warnings
+            .iter()
+            .any(|w| w.contains("active:rollout-one.jsonl")));
         assert!(pending_jobs(&database).unwrap().jobs.is_empty());
         assert!(changed.is_file(), "the changed thread is kept");
-        assert!(!sessions.join("rollout-two.jsonl").exists(), "the unchanged thread is deleted");
+        assert!(
+            !sessions.join("rollout-two.jsonl").exists(),
+            "the unchanged thread is deleted"
+        );
         let remaining: String = Connection::open(&database)
             .unwrap()
             .query_row("SELECT id FROM threads", [], |row| row.get(0))
@@ -1313,7 +1338,10 @@ mod tests {
         let status = process_pending_deletes(&database, &sessions, &archived);
         assert!(status.recovery_required);
         assert!(status.keys.is_empty());
-        assert!(status.warnings.is_empty(), "corrupt records use the recovery flag");
+        assert!(
+            status.warnings.is_empty(),
+            "corrupt records use the recovery flag"
+        );
         assert_eq!(cancel_pending_deletes(&database).unwrap(), 1);
         assert!(!process_pending_deletes(&database, &sessions, &archived).recovery_required);
     }

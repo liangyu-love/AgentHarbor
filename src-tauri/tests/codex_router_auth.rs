@@ -1148,8 +1148,11 @@ fn real_codex_completes_anthropic_stream_through_actual_router() {
 #[test]
 #[ignore = "requires AGENTHARBOR_TEST_CODEX_BIN pointing to an installed Codex CLI"]
 fn real_codex_reasoning_menu_uses_model_identity_across_channels() {
-    let _serial = ROUTER_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let binary = PathBuf::from(std::env::var_os("AGENTHARBOR_TEST_CODEX_BIN").expect("installed binary"));
+    let _serial = ROUTER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let binary =
+        PathBuf::from(std::env::var_os("AGENTHARBOR_TEST_CODEX_BIN").expect("installed binary"));
     let temp = tempfile::tempdir().unwrap();
     let cwd = temp.path().join("workspace");
     fs::create_dir_all(&cwd).unwrap();
@@ -1182,11 +1185,23 @@ fn real_codex_reasoning_menu_uses_model_identity_across_channels() {
             ("gpt-6-sol", vec!["low"]),
             ("gpt-6-luna", vec![]),
         ] {
-            let id = if mode == CodexAccessMode::Router { format!("synthetic-reasoning::{id}") } else { id.to_owned() };
-            let model = menu["data"].as_array().unwrap().iter().find(|model| model["id"] == id)
+            let id = if mode == CodexAccessMode::Router {
+                format!("synthetic-reasoning::{id}")
+            } else {
+                id.to_owned()
+            };
+            let model = menu["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|model| model["id"] == id)
                 .unwrap_or_else(|| panic!("Missing {id} in {menu}"));
-            let efforts: Vec<_> = model["supportedReasoningEfforts"].as_array().unwrap().iter()
-                .map(|level| level["reasoningEffort"].as_str().unwrap()).collect();
+            let efforts: Vec<_> = model["supportedReasoningEfforts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|level| level["reasoningEffort"].as_str().unwrap())
+                .collect();
             assert_eq!(efforts, expected, "{id}: {model}");
         }
     }

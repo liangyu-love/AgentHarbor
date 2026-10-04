@@ -30,7 +30,8 @@ fn remaining(window: Option<&RateLimitWindow>) -> Option<i32> {
 
 /// True when any known window is at or below its threshold.
 fn is_low(account: &CodexAccountSummary, config: &AutoSwitchConfig) -> bool {
-    remaining(account.primary_window.as_ref()).is_some_and(|value| value <= config.threshold_5h_percent)
+    remaining(account.primary_window.as_ref())
+        .is_some_and(|value| value <= config.threshold_5h_percent)
         || remaining(account.secondary_window.as_ref())
             .is_some_and(|value| value <= config.threshold_weekly_percent)
 }
@@ -164,7 +165,10 @@ mod tests {
 
     #[test]
     fn stays_while_the_active_account_has_quota() {
-        let accounts = list(vec![account("a", true, 16, 11), account("b", false, 90, 90)]);
+        let accounts = list(vec![
+            account("a", true, 16, 11),
+            account("b", false, 90, 90),
+        ]);
         assert_eq!(decide(&accounts, &config()), Decision::Stay);
     }
 
@@ -188,7 +192,10 @@ mod tests {
 
     #[test]
     fn weekly_threshold_alone_triggers_a_switch() {
-        let accounts = list(vec![account("a", true, 90, 10), account("b", false, 50, 50)]);
+        let accounts = list(vec![
+            account("a", true, 90, 10),
+            account("b", false, 50, 50),
+        ]);
         assert!(matches!(decide(&accounts, &config()), Decision::Switch { to, .. } if to == "b"));
     }
 

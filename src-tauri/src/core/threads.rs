@@ -1603,21 +1603,13 @@ mod tests {
         .unwrap();
 
         let scan = scan_threads_with_warnings(&sessions, &archived).unwrap();
-        let with_usage = scan
-            .items
-            .iter()
-            .find(|item| item.id == "usage")
-            .unwrap();
+        let with_usage = scan.items.iter().find(|item| item.id == "usage").unwrap();
         assert_eq!(with_usage.tokens_used, 350);
         assert_eq!(with_usage.input_tokens, Some(300));
         assert_eq!(with_usage.cached_tokens, Some(130));
         assert_eq!(with_usage.output_tokens, Some(50));
 
-        let plain = scan
-            .items
-            .iter()
-            .find(|item| item.id == "plain")
-            .unwrap();
+        let plain = scan.items.iter().find(|item| item.id == "plain").unwrap();
         assert_eq!(plain.tokens_used, 0);
         assert_eq!(plain.input_tokens, None);
         assert_eq!(plain.cached_tokens, None);

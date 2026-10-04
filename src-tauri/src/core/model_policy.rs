@@ -184,7 +184,8 @@ pub fn plan(
                     return plan;
                 }
             } else {
-                plan.note = Some("prompt budget is unknown; fixed threshold is used as entered".into());
+                plan.note =
+                    Some("prompt budget is unknown; fixed threshold is used as entered".into());
             }
             plan.threshold = Some(*tokens);
             plan.state = "computed".into();
@@ -237,25 +238,58 @@ pub struct SharedCompressionPlan {
 }
 
 pub fn shared_plan(models: &[(&str, &ClientProjection)]) -> SharedCompressionPlan {
-    let invalid: Vec<_> = models.iter().filter(|(_, p)| p.compression.state == "invalid")
-        .map(|(id, _)| (*id).to_owned()).collect();
-    let delegated: Vec<_> = models.iter().filter(|(_, p)| p.compression.mode == "clientDefault")
-        .map(|(id, _)| (*id).to_owned()).collect();
-    let unknown: Vec<_> = models.iter().filter(|(_, p)| p.budget_source == model_metadata::source::FALLBACK
-        || p.compression.threshold.is_none()).map(|(id, _)| (*id).to_owned()).collect();
-    let blocked = if !invalid.is_empty() { Some(("invalid", invalid)) }
-        else if !delegated.is_empty() { Some(("clientDefault", delegated)) }
-        else if !unknown.is_empty() { Some(("unknown", unknown)) } else { None };
+    let invalid: Vec<_> = models
+        .iter()
+        .filter(|(_, p)| p.compression.state == "invalid")
+        .map(|(id, _)| (*id).to_owned())
+        .collect();
+    let delegated: Vec<_> = models
+        .iter()
+        .filter(|(_, p)| p.compression.mode == "clientDefault")
+        .map(|(id, _)| (*id).to_owned())
+        .collect();
+    let unknown: Vec<_> = models
+        .iter()
+        .filter(|(_, p)| {
+            p.budget_source == model_metadata::source::FALLBACK || p.compression.threshold.is_none()
+        })
+        .map(|(id, _)| (*id).to_owned())
+        .collect();
+    let blocked = if !invalid.is_empty() {
+        Some(("invalid", invalid))
+    } else if !delegated.is_empty() {
+        Some(("clientDefault", delegated))
+    } else if !unknown.is_empty() {
+        Some(("unknown", unknown))
+    } else {
+        None
+    };
     if let Some((state, models)) = blocked {
-        return SharedCompressionPlan { threshold: None, limiting_models: vec![], blocking_models: models, state: state.into() };
+        return SharedCompressionPlan {
+            threshold: None,
+            limiting_models: vec![],
+            blocking_models: models,
+            state: state.into(),
+        };
     }
-    let threshold = models.iter().filter_map(|(_, p)| p.compression.threshold).min();
+    let threshold = models
+        .iter()
+        .filter_map(|(_, p)| p.compression.threshold)
+        .min();
     SharedCompressionPlan {
         threshold,
-        limiting_models: models.iter().filter(|(_, p)| threshold.is_some() && p.compression.threshold == threshold)
-            .map(|(id, _)| (*id).to_owned()).collect(),
+        limiting_models: models
+            .iter()
+            .filter(|(_, p)| threshold.is_some() && p.compression.threshold == threshold)
+            .map(|(id, _)| (*id).to_owned())
+            .collect(),
         blocking_models: vec![],
-        state: if threshold.is_some() { "computed" } else { "unknown" }.into(),
+        state: if threshold.is_some() {
+            "computed"
+        } else {
+            "unknown"
+        }
+        .into(),
     }
 }
 
@@ -266,16 +300,23 @@ pub fn project(
     policy: (&CompressionPolicy, PolicySource),
 ) -> ClientProjection {
     let (fallback_context, fallback_output) = model_metadata::fallback_values();
-    let (context_window, context_source, context_is_fallback) =
-        match metadata.context_window.value {
-            Some(value) => (value, metadata.context_window.source.clone(), false),
-            None => (fallback_context, model_metadata::source::FALLBACK.to_owned(), true),
-        };
+    let (context_window, context_source, context_is_fallback) = match metadata.context_window.value
+    {
+        Some(value) => (value, metadata.context_window.source.clone(), false),
+        None => (
+            fallback_context,
+            model_metadata::source::FALLBACK.to_owned(),
+            true,
+        ),
+    };
     // An output cap above the context window cannot be satisfied; keep the
     // existing client-side clamp while leaving the raw catalog value visible
     // through the resolver fields.
     let (output_limit, output_source) = match metadata.output_limit.value {
-        Some(value) => (Some(value.min(context_window)), metadata.output_limit.source.clone()),
+        Some(value) => (
+            Some(value.min(context_window)),
+            metadata.output_limit.source.clone(),
+        ),
         None => (
             Some(fallback_output.min(context_window)),
             model_metadata::source::FALLBACK.to_owned(),
@@ -291,10 +332,11 @@ pub fn project(
         .iter()
         .filter_map(|level| serde_json::to_value(level).ok())
         .collect();
-    let default_reasoning = metadata
-        .default_effort
-        .clone()
-        .filter(|effort| levels.iter().any(|level| level.effort.eq_ignore_ascii_case(effort)));
+    let default_reasoning = metadata.default_effort.clone().filter(|effort| {
+        levels
+            .iter()
+            .any(|level| level.effort.eq_ignore_ascii_case(effort))
+    });
     let budget = budget.max(1);
     let compression = plan(policy.0, policy.1, Some(budget), &budget_source);
     ClientProjection {

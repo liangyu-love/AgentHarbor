@@ -130,7 +130,9 @@ fn public_api_refresh_transforms_and_preserves_last_good_cache_on_failure_and_30
     assert_eq!(model.limit.input, Some(180000));
     assert_eq!(model.reasoning_options.len(), 2);
     assert_eq!(model.reasoning_options_declared, Some(true));
-    assert!(matches!(model.interleaved, Some(dev::Interleaved::Field { ref field }) if field == "reasoning_content"));
+    assert!(
+        matches!(model.interleaved, Some(dev::Interleaved::Field { ref field }) if field == "reasoning_content")
+    );
     assert_eq!(model.cost.as_ref().unwrap().cache_read, Some(0.5));
     assert_eq!(
         model.cost.as_ref().unwrap().tiers[0].rates.cache_write,
@@ -369,10 +371,15 @@ fn prices_obey_independent_bindings_and_manual_overrides() {
 #[test]
 fn capability_reference_does_not_replace_the_full_billing_identity() {
     let mut data = snapshot(dev::DEFAULT_SOURCE_URL);
-    data["providers"][1]["models"].as_array_mut().unwrap()
+    data["providers"][1]["models"]
+        .as_array_mut()
+        .unwrap()
         .push(json!({"id":"custom","cost":{"input":100,"output":200}}));
     let cat = catalog(&data);
-    let capability = dev::ModelRef { provider_id: "openai".into(), model_id: "model".into() };
+    let capability = dev::ModelRef {
+        provider_id: "openai".into(),
+        model_id: "model".into(),
+    };
     let billing = vec!["billing".into()];
     let mut req = request("custom", &billing);
     req.explicit_ref = Some(&capability);
@@ -390,10 +397,22 @@ fn each_field_points_to_a_record_that_actually_declares_it() {
     data["providers"][1]["models"][0]["lastUpdated"] = json!("2026-10-01");
     let result = md::resolve(&catalog(&data), &request("model", &[]));
     assert_eq!(result.context_window.value, Some(100000));
-    assert_eq!(result.context_window.source_ref.unwrap().provider_id, "billing");
-    assert_eq!(result.context_window.updated_at.as_deref(), Some("2026-10-01"));
-    assert_eq!(result.output_limit.source_ref.unwrap().provider_id, "openai");
-    assert_eq!(result.output_limit.updated_at.as_deref(), Some("2020-01-01"));
+    assert_eq!(
+        result.context_window.source_ref.unwrap().provider_id,
+        "billing"
+    );
+    assert_eq!(
+        result.context_window.updated_at.as_deref(),
+        Some("2026-10-01")
+    );
+    assert_eq!(
+        result.output_limit.source_ref.unwrap().provider_id,
+        "openai"
+    );
+    assert_eq!(
+        result.output_limit.updated_at.as_deref(),
+        Some("2020-01-01")
+    );
 }
 
 #[test]
@@ -412,7 +431,10 @@ fn audio_and_conditional_rates_survive_resolution_and_pricing_snapshots() {
     let pricing = router::pricing_for(&p, "model", &cat);
     let serialized = serde_json::to_value(&pricing).unwrap();
     assert_eq!(serialized["inputAudio"].as_f64(), Some(10.0));
-    assert_eq!(serialized["contextOver200k"]["inputAudio"].as_f64(), Some(30.0));
+    assert_eq!(
+        serialized["contextOver200k"]["inputAudio"].as_f64(),
+        Some(30.0)
+    );
     assert_eq!(serialized["tiers"][0]["outputAudio"].as_f64(), Some(40.0));
     assert!(!pricing.complete);
 }
@@ -532,26 +554,44 @@ fn native_shared_compression_checks_every_selected_model() {
         p.models[0].compression = match state {
             "invalid" => policy::CompressionPolicy::Tokens { tokens: 20000 },
             "clientDefault" => policy::CompressionPolicy::ClientDefault,
-            _ => { p.models[0].overrides.context_window = None; policy::CompressionPolicy::Inherit }
+            _ => {
+                p.models[0].overrides.context_window = None;
+                policy::CompressionPolicy::Inherit
+            }
         };
         let mut large = p.models[0].clone();
         large.id = "large".into();
         large.overrides.context_window = Some(1000000);
         large.compression = policy::CompressionPolicy::Inherit;
         p.models.push(large);
-        let store = router::Store { providers: vec![p], active_provider_id: Some("p".into()),
-            codex_access_mode: router::CodexAccessMode::Native, ..Default::default() };
+        let store = router::Store {
+            providers: vec![p],
+            active_provider_id: Some("p".into()),
+            codex_access_mode: router::CodexAccessMode::Native,
+            ..Default::default()
+        };
         router::apply_routing_config(&paths, &store).unwrap();
-        let config: toml_edit::DocumentMut = std::fs::read_to_string(&paths.config_path).unwrap().parse().unwrap();
-        assert!(config.get("model_auto_compact_token_limit").is_none(), "{state}");
+        let config: toml_edit::DocumentMut = std::fs::read_to_string(&paths.config_path)
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            config.get("model_auto_compact_token_limit").is_none(),
+            "{state}"
+        );
         let view = capability_preview::preview(&paths, &store);
         let shared = view.models[1].compression_shared_plan.as_ref().unwrap();
         assert_eq!(shared.state, state);
         assert_eq!(shared.blocking_models, vec!["model"]);
         assert!(shared.threshold.is_none());
-        let native_catalog: Value = serde_json::from_slice(&std::fs::read(config["model_catalog_json"].as_str().unwrap()).unwrap()).unwrap();
+        let native_catalog: Value = serde_json::from_slice(
+            &std::fs::read(config["model_catalog_json"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
         assert_eq!(native_catalog["models"].as_array().unwrap().len(), 2);
-        if state != "clientDefault" { assert_eq!(view.models[1].compression_shared_applied, Some(false)); }
+        if state != "clientDefault" {
+            assert_eq!(view.models[1].compression_shared_applied, Some(false));
+        }
     }
 }
 
@@ -559,35 +599,72 @@ fn native_shared_compression_checks_every_selected_model() {
 fn native_and_opencode_use_the_same_applicable_official_snapshot_as_preview() {
     use super::{client_config, targets::TargetId};
     let (_dir, paths) = paths();
-    std::fs::write(paths.app_data_dir.join(dev::CACHE_FILE), snapshot(dev::DEFAULT_SOURCE_URL).to_string()).unwrap();
-    std::fs::write(paths.codex_home.join("models_cache.json"),
-        json!({"models":[{"slug":"model","context_window":100000,"max_output_tokens":8192}]}).to_string()).unwrap();
+    std::fs::write(
+        paths.app_data_dir.join(dev::CACHE_FILE),
+        snapshot(dev::DEFAULT_SOURCE_URL).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        paths.codex_home.join("models_cache.json"),
+        json!({"models":[{"slug":"model","context_window":100000,"max_output_tokens":8192}]})
+            .to_string(),
+    )
+    .unwrap();
     let mut p = provider("p", 400000);
     p.models[0].overrides = Default::default();
     p.base_url = "https://api.openai.com/v1".into();
     p.catalog_providers = vec!["openai".into()];
-    let store = router::Store { providers: vec![p], active_provider_id: Some("p".into()),
-        codex_access_mode: router::CodexAccessMode::Native, ..Default::default() };
+    let store = router::Store {
+        providers: vec![p],
+        active_provider_id: Some("p".into()),
+        codex_access_mode: router::CodexAccessMode::Native,
+        ..Default::default()
+    };
     router::apply_routing_config(&paths, &store).unwrap();
     let view = capability_preview::preview(&paths, &store);
     assert_eq!(view.models[0].projection.context_window, 100000);
     assert_eq!(view.models[0].compression_shared_threshold, Some(90000));
-    let config: toml_edit::DocumentMut = std::fs::read_to_string(&paths.config_path).unwrap().parse().unwrap();
-    assert_eq!(config["model_auto_compact_token_limit"].as_integer(), Some(90000));
-    let native_catalog: Value = serde_json::from_slice(&std::fs::read(config["model_catalog_json"].as_str().unwrap()).unwrap()).unwrap();
+    let config: toml_edit::DocumentMut = std::fs::read_to_string(&paths.config_path)
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        config["model_auto_compact_token_limit"].as_integer(),
+        Some(90000)
+    );
+    let native_catalog: Value = serde_json::from_slice(
+        &std::fs::read(config["model_catalog_json"].as_str().unwrap()).unwrap(),
+    )
+    .unwrap();
     assert_eq!(native_catalog["models"][0]["context_window"], 100000);
-    let manager = client_config::ConfigManager::new(&paths.app_data_dir,
-        client_config::ClientPaths::from_home(&paths.app_data_dir.join("clients"))).with_official_home(&paths.codex_home);
-    let request = client_config::ConfigRequest { target_id: TargetId::OpenCode, provider_id: "p".into(), model: "model".into(),
-        context_window: None, max_output_tokens: None, options: Default::default() };
-    let preview: Value = serde_json::from_str(&manager.preview(&store, &request).unwrap().content).unwrap();
-    assert_eq!(preview["provider"]["agentharbor_p"]["models"]["model"]["limit"]["context"], 100000);
+    let manager = client_config::ConfigManager::new(
+        &paths.app_data_dir,
+        client_config::ClientPaths::from_home(&paths.app_data_dir.join("clients")),
+    )
+    .with_official_home(&paths.codex_home);
+    let request = client_config::ConfigRequest {
+        target_id: TargetId::OpenCode,
+        provider_id: "p".into(),
+        model: "model".into(),
+        context_window: None,
+        max_output_tokens: None,
+        options: Default::default(),
+    };
+    let preview: Value =
+        serde_json::from_str(&manager.preview(&store, &request).unwrap().content).unwrap();
+    assert_eq!(
+        preview["provider"]["agentharbor_p"]["models"]["model"]["limit"]["context"],
+        100000
+    );
 }
 
 #[test]
 fn a_stale_catalog_does_not_imply_an_active_router_configuration() {
     let (_dir, paths) = paths();
-    let mut store = router::Store { providers: vec![provider("p", 10000)], ..Default::default() };
+    let mut store = router::Store {
+        providers: vec![provider("p", 10000)],
+        ..Default::default()
+    };
     router::write_catalog(&paths, &store).unwrap();
     std::fs::write(&paths.config_path, "model_provider = 'foreign'\n").unwrap();
     let row = &capability_preview::preview(&paths, &store).models[0];
@@ -598,12 +675,18 @@ fn a_stale_catalog_does_not_imply_an_active_router_configuration() {
     store.router.enabled = true;
     store.router.bearer_token = "synthetic-bearer".into();
     router::apply_routing_config(&paths, &store).unwrap();
-    assert_eq!(capability_preview::preview(&paths, &store).models[0].compression_applied, Some(true));
+    assert_eq!(
+        capability_preview::preview(&paths, &store).models[0].compression_applied,
+        Some(true)
+    );
     let config = std::fs::read_to_string(&paths.config_path).unwrap();
     let mut doc: toml_edit::DocumentMut = config.parse().unwrap();
     doc["model_catalog_json"] = toml_edit::value("foreign-catalog.json");
     std::fs::write(&paths.config_path, doc.to_string()).unwrap();
-    assert_eq!(capability_preview::preview(&paths, &store).models[0].compression_applied, Some(false));
+    assert_eq!(
+        capability_preview::preview(&paths, &store).models[0].compression_applied,
+        Some(false)
+    );
 }
 
 #[test]

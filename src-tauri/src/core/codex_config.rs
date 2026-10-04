@@ -406,7 +406,10 @@ mod tests {
             .collect();
         assert_eq!(rotating.len(), BACKUP_LIMIT);
         assert!(last.unwrap().is_file(), "the newest backup is kept");
-        assert_eq!(std::fs::read_to_string(&legacy).unwrap(), "model = 'pre-router'\n");
+        assert_eq!(
+            std::fs::read_to_string(&legacy).unwrap(),
+            "model = 'pre-router'\n"
+        );
         assert!(unrelated.is_file());
     }
 

@@ -133,7 +133,9 @@ mod tests {
             };
             let preview = manager.preview(&store, &request).unwrap();
             manager.apply(&store, &request, &preview.revision).unwrap();
-            assert!(std::fs::read_to_string(&clients.claude).unwrap().contains("127.0.0.1"));
+            assert!(std::fs::read_to_string(&clients.claude)
+                .unwrap()
+                .contains("127.0.0.1"));
 
             let result = reconcile_on_startup_at(&paths, clients.clone()).await;
             assert_eq!(result.unwrap_err(), "newapi.errors.portBusy");

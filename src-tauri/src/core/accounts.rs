@@ -467,7 +467,13 @@ mod tests {
         )
         .unwrap();
         let status = |key: &str| {
-            listed.items.iter().find(|item| item.account_key == key).unwrap().usage_status.clone()
+            listed
+                .items
+                .iter()
+                .find(|item| item.account_key == key)
+                .unwrap()
+                .usage_status
+                .clone()
         };
         assert_eq!(status(&bad.account_key), "error");
         assert_eq!(status(&credentials[1].account_key), "healthy");
