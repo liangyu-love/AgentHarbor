@@ -15,6 +15,7 @@ import { testProviderFeedback } from "./test-provider-feedback.mjs";
 import { testProviderModelResolutions } from "./test-provider-model-resolutions.mjs";
 import { testTerminalProxy } from "./test-terminal-proxy.mjs";
 import { testRelayDeck } from "./test-relay-deck.mjs";
+import { testClaudeDesktopCard } from "./test-claude-desktop-card.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -91,6 +92,8 @@ try {
     await testAccountThreadNavigation({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "thread-details") {
     await testThreadDetails({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "claude-desktop-card") {
+    await testClaudeDesktopCard({ page, reset, captureDir });
   } else {
   await reset("compact");
   const errorCases = await page.evaluate(() => {
@@ -1238,6 +1241,7 @@ try {
   await testProviderModelResolutions({ page, reset, captureDir });
   await testTerminalProxy({ page, reset, captureDir });
   await testRelayDeck({ page, reset, captureDir });
+  await testClaudeDesktopCard({ page, reset, captureDir });
   await reset("warnings");
   await page.getByText("Review thread 0", { exact: true }).waitFor();
   const warning = page.getByRole("status");

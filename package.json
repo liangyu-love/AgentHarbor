@@ -11,7 +11,8 @@
     "preview": "vite preview",
     "tauri": "node scripts/tauri.mjs",
     "test:rust": "node scripts/tauri.mjs --test-rust",
-    "test:frontend": "node scripts/test-frontend-regressions.mjs"
+    "test:claude-desktop-config": "node scripts/test-claude-desktop-config.mjs",
+    "test:frontend": "node scripts/test-claude-desktop-config.mjs && node scripts/test-frontend-regressions.mjs"
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.1.15",
