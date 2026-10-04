@@ -77,6 +77,9 @@ export async function testRelayDeck({ page, reset, captureDir }) {
   await page.evaluate(() => {
     window.review.deckMutations = [];
     window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      // Provider changes also refresh the independently managed Desktop card.
+      // This fixture has no Desktop configuration and counts only relay mutations.
+      if (command === "get_claude_desktop_status") throw "claudeDesktop.errors.pathsNotDetected";
       window.review.deckMutations.push({ command, args });
       const state = window.review.getState();
       state.providers = state.providers.map(provider => provider.id === args.id ? { ...provider, enabled: args.enabled } : provider);

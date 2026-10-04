@@ -1871,6 +1871,11 @@ fn switching_to_official_mode_preserves_foreign_entries() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["id"], serde_json::json!(CC_SWITCH_ID));
     assert!(!fixture.paths.profile_path.exists());
+    let status = fixture.manager.status(&store);
+    assert!(!status.is_managed);
+    assert_eq!(status.management_state, "unmanaged");
+    assert!(status.restart_required, "切回官方模式后仍需提供启动入口");
+    assert!(!status.app_running);
 }
 
 #[test]

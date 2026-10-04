@@ -34,7 +34,7 @@ const PROBE_STATUSES = ["notChecked", "modelsAccessible", "authRejected", "endpo
 // `probe::MessagesStatus` 的变体；同样由后端在运行时选取。
 const MESSAGES_STATUSES = ["notChecked", "messagesAccessible", "authRejected", "endpointUnavailable",
   "requestRejected", "rateLimited", "networkFailed", "serverError", "invalidResponse"];
-const CONFIRM_SUFFIXES = ["restoreTitle", "restoreDescription", "switchOfficialTitle",
+const CONFIRM_SUFFIXES = ["restoreTitle", "restoreDescription", "reapplyTitle", "reapplyDescription", "switchOfficialTitle",
   "switchOfficialDescription", "releaseTitle", "releaseDescription", "recoverTitle", "recoverDescription"];
 // A zh leaf may stay ASCII only when it is nothing but these product nouns.
 const PROPER_NOUNS = ["Claude Desktop", "Claude Code", "AgentHarbor", "1M", "Bearer", "/v1/models", "3P", "URL", "JSON", "Desktop"];
@@ -137,6 +137,7 @@ const DYNAMIC_SUFFIXES = new Map([
   ["claudeDesktop.messages.", MESSAGES_STATUSES],
   ["claudeDesktop.dialog.", CONFIRM_SUFFIXES],
   ["claudeDesktop.errors.", null],
+  ["claudeDesktop.fileRoles.", ["normalConfig", "thirdPartyConfig", "profile", "meta"]],
 ]);
 
 group("locales: every claudeDesktop.* key literal in the card, dialog and Rust module exists", () => {

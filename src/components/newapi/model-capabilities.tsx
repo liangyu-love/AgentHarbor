@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { invalidateClaudeDesktop } from "@/lib/claude-desktop";
 import { formatInvokeError } from "@/lib/invoke-error";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -723,7 +724,10 @@ export function ModelCapabilities() {
     setRefreshError(null);
     try {
       await api.routing.refreshCatalog();
-      await queryClient.invalidateQueries({ queryKey: ["model-capabilities"] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["model-capabilities"] }),
+        invalidateClaudeDesktop(queryClient),
+      ]);
     } catch (error) {
       setRefreshError(formatInvokeError(error));
     } finally {
@@ -856,7 +860,10 @@ export function ModelCapabilities() {
               <CapabilityCard
                 key={model.providerId + "::" + model.upstreamModel}
                 model={model}
-                onSaved={() => void queryClient.invalidateQueries({ queryKey: ["model-capabilities"] })}
+                onSaved={() => {
+                  void queryClient.invalidateQueries({ queryKey: ["model-capabilities"] });
+                  void invalidateClaudeDesktop(queryClient);
+                }}
               />
             ))}
           </div>

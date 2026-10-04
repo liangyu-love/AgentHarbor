@@ -616,7 +616,10 @@ fn included_false_is_not_bypassed_by_being_the_default_model() {
     let mut card = provider("https://relay.example", vec![model("claude-sonnet-4-6", None, &[])]);
     card.models[0].included = false;
     let (eligible, _, models) = provider::provider_qualification(&card, policy, &catalog);
-    assert!(models.is_empty(), "included=false 的条目不能成为候选");
+    assert_eq!(models.len(), 1, "保留 excluded 条目供界面解释原因");
+    assert!(!models[0].included);
+    assert!(!models[0].selectable, "included=false 不能成为可选候选");
+    assert_eq!(models[0].exclude_reason.as_deref(), Some(super::types::reason::MODEL_NOT_INCLUDED));
     assert!(!eligible);
 }
 
@@ -806,6 +809,20 @@ fn restore_is_idempotent_and_repeatable() {
     transaction::restore_all(&state, &paths).unwrap();
     assert!(!paths.profile_path.exists());
     assert!(!paths.meta_path.exists());
+}
+
+#[test]
+fn restoring_managed_values_does_not_resurrect_deleted_unrelated_content() {
+    let (_, paths) = test_paths("restoreWithoutFullAfter");
+    let config = transaction::config_edition(Some(r#"{"mcpServers":{"external":true}}"#), role::NORMAL_CONFIG).unwrap();
+    transaction::restore_edition(&config, &paths.normal_config,
+        &ManagedValues::Fields { values: Default::default() }).unwrap();
+    assert!(!paths.normal_config.exists(), "没有完整 after 快照时不能恢复不受管的旧 MCP 内容");
+
+    let meta = transaction::meta_edition(Some(r#"{"entries":[{"id":"external","name":"External"}],"preference":true}"#)).unwrap();
+    transaction::restore_edition(&meta, &paths.meta_path,
+        &ManagedValues::Meta { own_entry: None, applied_id: None }).unwrap();
+    assert!(!paths.meta_path.exists(), "缺失文件不能被误判为删除 after 而复活外部条目");
 }
 
 #[test]
@@ -1143,7 +1160,7 @@ fn a_failed_write_point_rolls_back_and_never_reports_success() {
     .unwrap();
 
     // 事务开始前的四文件快照必须在改动任何文件之前取。
-    let before = transaction::snapshot(&paths);
+    let before = transaction::snapshot(&paths).unwrap();
 
     // 先写完 profile，再把 3P config 变成无法被文件替换覆盖的目录。
     let profile_plan = plans
@@ -1380,16 +1397,6 @@ fn withdraw_restores_a_pre_existing_profile_instead_of_deleting_it() {
     assert_eq!(now["note"], json!("pre-existing"));
 }
 
-/// 与 [`super::baseline_profile`] 相同语义，供测试直接取用。
-fn baseline_profile_of(state: &transaction::State) -> Option<Value> {
-    match state
-        .edition(role::PROFILE)
-        .map(|edition| &edition.baseline)
-    {
-        Some(ManagedValues::Whole { value }) => value.clone(),
-        _ => None,
-    }
-}
 // ---------------------------------------------------------------------------
 // 崩溃恢复（A23）：按持久提交点判定实际文件态
 // ---------------------------------------------------------------------------
@@ -1402,8 +1409,13 @@ fn craft_pending(
     generation: u64,
     wrote_profile: bool,
     previous: Option<transaction::State>,
-    next: transaction::State,
+    mut next: transaction::State,
 ) {
+    next.normal_root = paths.normal_root.clone();
+    next.third_party_root = paths.third_party_root.clone();
+    next.paths_identity = paths.identity();
+    next.paths_isolated = paths.isolated;
+    next.paths_overridden = true;
     use super::constants::PROFILE_ID;
     let plans = vec![transaction::FilePlan {
         role: role::PROFILE.to_owned(),
@@ -1422,7 +1434,7 @@ fn craft_pending(
         created_at: chrono::Utc::now().timestamp(),
         paths_identity: paths.identity(),
         files: plans,
-        before: transaction::snapshot(paths),
+        before: transaction::snapshot(paths).unwrap(),
         previous_state: previous,
         next_state: next,
         backup_id: Some("test-backup".to_owned()),
@@ -1446,10 +1458,14 @@ fn direct_state(transaction_id: &str, generation: u64) -> transaction::State {
         paths_identity: String::new(),
         normal_root: PathBuf::new(),
         third_party_root: PathBuf::new(),
+        paths_isolated: false,
+        paths_overridden: true,
         provider_id: "p1".into(),
         provider_name: "中转 A".into(),
         credential_fingerprint: None,
         models: vec![],
+        model_choices: vec![],
+        profile_base_url: None,
         last_applied_at: 0,
         restart_required: true,
         data: transaction::ManagedData {
@@ -1619,9 +1635,9 @@ fn sibling_data_directories_are_not_desktop_candidates() {
     // `-Data` 命名本身是合法的同渠道命名；它是否算安装由「安装痕迹」决定。
     assert!(paths::is_channel_name("Claude-Data", false));
     assert!(paths::is_channel_name("Claude-Data-3p", true));
-    // 渠道归属由安装痕迹决定，名字筛选对两个渠道一致。
-    assert!(paths::is_channel_name("Claude-3p", false));
-    assert!(paths::is_channel_name("Claude", true));
+    // 两个渠道不能互相充当根：3P 也可能有 logs，但不是 normal。
+    assert!(!paths::is_channel_name("Claude-3p", false));
+    assert!(!paths::is_channel_name("Claude", true));
     // 空后缀与其它品牌都排除。
     assert!(!paths::is_channel_name("Claude-", false));
     assert!(!paths::is_channel_name("Claude-   ", false));
@@ -1634,7 +1650,7 @@ fn sibling_data_directories_are_not_desktop_candidates() {
 /// 变成写回自己而不是删除。这里用纯逻辑复现并锁定。
 #[test]
 fn repeated_applies_never_move_the_first_baseline() {
-    let (base, paths) = test_paths("baselineStable");
+    let (_, paths) = test_paths("baselineStable");
     write(&paths.normal_config, r#"{"deploymentMode":"1p"}"#);
     write(&paths.third_party_config, r#"{"deploymentMode":"3p"}"#);
 
@@ -1698,4 +1714,341 @@ fn repeated_applies_never_move_the_first_baseline() {
         .find(|plan| plan.role == role::PROFILE)
         .expect("恢复必须为 profile 生成计划");
     assert!(profile_plan.after_text.is_none(), "恢复应当删除自身 profile");
+}
+
+// ---------------------------------------------------------------------------
+// 审查回归：真实编排入口、每笔事务回滚与受管动作所有权
+// ---------------------------------------------------------------------------
+
+fn managed_fixture(name: &str) -> (PathBuf, DesktopPaths, super::Manager, crate::core::router::Store, super::types::ActionRequest) {
+    let (base, paths) = test_paths(name);
+    let manager = super::Manager::new(&base).with_paths(paths.clone())
+        .with_detected_version(Some("1.12603.1".into()));
+    let card = provider("https://relay.example", vec![model("claude-sonnet-4-6", None, &[])]);
+    let store = crate::core::router::Store { providers: vec![card], ..Default::default() };
+    let request = super::types::ActionRequest {
+        provider_id: Some("p1".into()),
+        models: vec![super::types::DesktopModelChoice {
+            model_id: "claude-sonnet-4-6".into(), label_override: None, one_m_mode: OneMMode::Auto,
+        }],
+        paths: Default::default(), rebaseline: false,
+    };
+    let prepared = manager.prepare(&store, DesktopAction::ApplyDirect, &request).unwrap();
+    let preview = manager.issue_ticket(&prepared).unwrap();
+    manager.commit(&store, DesktopAction::ApplyDirect, &preview.revision, &request).unwrap();
+    (base, paths, manager, store, request)
+}
+
+fn pending_from_prepared(prepared: &super::PreparedChange) -> transaction::Pending {
+    transaction::Pending {
+        schema: transaction::STATE_SCHEMA, transaction_id: prepared.next_state.transaction_id.clone(),
+        generation: prepared.next_state.generation, action: prepared.action.as_str().into(),
+        created_at: chrono::Utc::now().timestamp(), paths_identity: prepared.paths.identity(),
+        files: prepared.plans.clone(), before: prepared.before.clone(),
+        previous_state: prepared.previous_state.clone(), next_state: prepared.next_state.clone(), backup_id: None,
+    }
+}
+
+#[test]
+fn interrupted_reapply_rolls_back_to_the_previous_successful_transaction() {
+    let (_, paths, manager, mut store, _) = managed_fixture("transactionBefore");
+    let previous_profile = read(&paths.profile_path).unwrap();
+    let previous_state = manager.load_state().unwrap().unwrap();
+    store.providers[0].api_key = "sk-ROTATED-SECOND-TRANSACTION".into();
+    let request = super::types::ActionRequest {
+        provider_id: None, models: vec![], paths: Default::default(), rebaseline: false,
+    };
+    let prepared = manager.prepare(&store, DesktopAction::Reapply, &request).unwrap();
+    let pending = pending_from_prepared(&prepared);
+    manager.write_pending_for_test(&serde_json::to_vec(&pending).unwrap()).unwrap();
+    let profile_plan = prepared.plans.iter().find(|plan| plan.role == role::PROFILE).unwrap();
+    transaction::apply_plan(profile_plan).unwrap();
+    assert_ne!(read(&paths.profile_path).unwrap(), previous_profile);
+    let applied = manager.recover_pending().unwrap();
+    assert_eq!(read(&paths.profile_path).unwrap(), previous_profile, "恢复最近成功应用，不能回到首次接管前而删除 profile");
+    assert_eq!(applied.management_state, "managed");
+    assert_eq!(manager.load_state().unwrap().unwrap().transaction_id, previous_state.transaction_id);
+    assert!(manager.load_pending().unwrap().is_none());
+}
+
+#[test]
+fn first_apply_recovery_preserves_external_third_values_and_the_journal() {
+    let (base, paths) = test_paths("firstApplyThirdValue");
+    let manager = super::Manager::new(&base).with_paths(paths.clone());
+    craft_pending(&manager, &paths, "tx-third", 1, true, None, direct_state("tx-third", 1));
+    let external = r#"{"external":true}"#;
+    write(&paths.profile_path, external);
+    let error = manager.recover_pending().unwrap_err();
+    assert_eq!(error.code, super::types::error_code::RECOVERY_REQUIRED);
+    assert_eq!(read(&paths.profile_path).as_deref(), Some(external));
+    assert!(manager.load_pending().unwrap().is_some());
+}
+
+#[test]
+fn committed_recovery_keeps_evidence_if_managed_content_has_drifted() {
+    let (base, paths) = test_paths("committedThirdValue");
+    let manager = super::Manager::new(&base).with_paths(paths.clone());
+    let next = direct_state("tx-committed-drift", 2);
+    craft_pending(&manager, &paths, "tx-committed-drift", 2, true,
+        Some(direct_state("tx-before", 1)), next.clone());
+    manager.write_state_for_test(&next).unwrap();
+    write(&paths.profile_path, r#"{"external":true}"#);
+    let error = manager.recover_pending().unwrap_err();
+    assert_eq!(error.message, "claudeDesktop.errors.recoveryConflict");
+    assert!(manager.load_pending().unwrap().is_some());
+    assert_eq!(serde_json::from_str::<Value>(&read(&paths.profile_path).unwrap()).unwrap()["external"], true);
+}
+
+#[test]
+fn committed_recovery_allows_unrelated_shared_file_changes() {
+    let (base, paths) = test_paths("committedUnmanagedChanges");
+    let manager = super::Manager::new(&base).with_paths(paths.clone());
+    let card = provider("https://relay.example", vec![model("claude-sonnet-4-6", None, &[])]);
+    let store = crate::core::router::Store { providers: vec![card], ..Default::default() };
+    let request = super::types::ActionRequest { provider_id: Some("p1".into()),
+        models: vec![super::types::DesktopModelChoice { model_id: "claude-sonnet-4-6".into(), label_override: None, one_m_mode: OneMMode::Auto }],
+        paths: Default::default(), rebaseline: false };
+    let prepared = manager.prepare(&store, DesktopAction::ApplyDirect, &request).unwrap();
+    let pending = pending_from_prepared(&prepared);
+    assert_eq!(pending.files.len(), 4);
+    apply_all(&pending.files);
+    for file_role in [role::NORMAL_CONFIG, role::THIRD_PARTY_CONFIG, role::META] {
+        let path = match file_role { role::NORMAL_CONFIG => &paths.normal_config, role::THIRD_PARTY_CONFIG => &paths.third_party_config, _ => &paths.meta_path };
+        let mut changed: Value = serde_json::from_str(&read(path).unwrap()).unwrap();
+        if file_role == role::META {
+            changed[profile::KEY_ENTRIES].as_array_mut().unwrap().push(json!({"id":"external-new", "name":"kept"}));
+            changed["preference"] = json!("external-new");
+        } else {
+            changed["mcpServers"] = json!({"externalNew":true});
+        }
+        write(path, &changed.to_string());
+    }
+    let before_recovery = transaction::snapshot(&paths).unwrap();
+    manager.write_pending_for_test(&serde_json::to_vec(&pending).unwrap()).unwrap();
+    manager.write_state_for_test(&pending.next_state).unwrap();
+    let recovered = manager.recover_pending().unwrap();
+    assert_eq!(recovered.management_state, "managed");
+    assert!(manager.load_pending().unwrap().is_none());
+    for snapshot in before_recovery {
+        assert_eq!(read(&snapshot.path), snapshot.text, "committed 恢复只读核验，不能重写任何共享内容");
+    }
+}
+
+#[test]
+fn direct_apply_rejects_raw_whitespace_and_keeps_original_model_ids() {
+    let (_, paths, manager, mut store, mut request) = managed_fixture("rawModelIds");
+    let before = transaction::snapshot(&paths).unwrap();
+    for raw in ["", " \t", " claude-sonnet-4-6", "claude-sonnet-4-6 ", "claude-sonnet-4-6\n"] {
+        request.models[0].model_id = raw.into();
+        let error = manager.prepare(&store, DesktopAction::ApplyDirect, &request).unwrap_err();
+        assert_eq!(error.code, super::types::error_code::MODEL_REJECTED);
+        assert_eq!(error.model_id.as_deref(), Some(raw));
+        assert!(error.params[0].starts_with(super::types::reason::UNSAFE_MODEL_NAME));
+    }
+    let original = "Claude-Sonnet-4-6";
+    store.providers[0].models[0].id = original.into();
+    request.models[0].model_id = original.into();
+    let prepared = manager.prepare(&store, DesktopAction::ApplyDirect, &request).unwrap();
+    assert_eq!(prepared.models[0].model_id, original);
+    assert_eq!(prepared.next_state.model_choices, request.models);
+    let profile_plan = prepared.plans.iter().find(|plan| plan.role == role::PROFILE).unwrap();
+    let projected: Value = serde_json::from_str(profile_plan.after_text.as_ref().unwrap()).unwrap();
+    let projected_model = &projected[profile::KEY_MODELS][0];
+    assert_eq!(projected_model.as_str().or_else(|| projected_model["name"].as_str()), Some(original));
+    for snapshot in before { assert_eq!(read(&snapshot.path), snapshot.text); }
+    assert!(manager.load_pending().unwrap().is_none());
+}
+
+#[test]
+fn direct_apply_returns_specific_removed_and_excluded_model_messages() {
+    let (_, _, manager, mut store, mut request) = managed_fixture("specificModelErrors");
+    store.providers[0].models[0].included = false;
+    let excluded = manager.prepare(&store, DesktopAction::ApplyDirect, &request).unwrap_err();
+    assert_eq!(excluded.message, "claudeDesktop.errors.modelNotIncluded");
+    assert_eq!(excluded.params, vec![super::types::reason::MODEL_NOT_INCLUDED]);
+    request.models[0].model_id = "claude-opus-4-6".into();
+    let removed = manager.prepare(&store, DesktopAction::ApplyDirect, &request).unwrap_err();
+    assert_eq!(removed.message, "claudeDesktop.errors.modelRemoved");
+    assert_eq!(removed.params, vec![super::types::reason::MODEL_REMOVED]);
+}
+
+#[test]
+fn backend_management_actions_require_a_live_journal_not_a_profile_shape() {
+    let (base, paths) = test_paths("noJournalOwnership");
+    let manager = super::Manager::new(&base).with_paths(paths.clone());
+    let original = profile::profile_json("https://external.example", "sk-EXTERNAL", &state_models()).to_string();
+    write(&paths.profile_path, &original);
+    write(&paths.meta_path, &format!(r#"{{"appliedId":"{CC_SWITCH_ID}","entries":[]}}"#));
+    let request = super::types::ActionRequest { provider_id: None, models: vec![], paths: Default::default(), rebaseline: false };
+    for action in [DesktopAction::Reapply, DesktopAction::RestorePrevious, DesktopAction::SwitchOfficial, DesktopAction::Release] {
+        let error = manager.prepare(&crate::core::router::Store::default(), action, &request).unwrap_err();
+        assert_eq!(error.code, super::types::error_code::NOT_MANAGED);
+    }
+    assert_eq!(read(&paths.profile_path).as_deref(), Some(original.as_str()));
+    assert!(read(&paths.meta_path).unwrap().contains(CC_SWITCH_ID));
+}
+
+#[test]
+fn commit_enforces_the_preview_conflict_gate() {
+    let (_, paths, manager, store, request) = managed_fixture("conflictCommitGate");
+    let mut external: Value = serde_json::from_str(&read(&paths.meta_path).unwrap()).unwrap();
+    external[profile::KEY_APPLIED_ID] = json!(CC_SWITCH_ID);
+    write(&paths.meta_path, &external.to_string());
+    let prepared = manager.prepare(&store, DesktopAction::Reapply, &request).unwrap();
+    assert!(prepared.conflicts.contains(&"drift:meta".into()));
+    let preview = manager.issue_ticket(&prepared).unwrap();
+    let error = manager.commit(&store, DesktopAction::Reapply, &preview.revision, &request).unwrap_err();
+    assert_eq!(error.code, super::types::error_code::CONFLICT);
+    assert_eq!(serde_json::from_str::<Value>(&read(&paths.meta_path).unwrap()).unwrap()[profile::KEY_APPLIED_ID], CC_SWITCH_ID);
+    assert!(manager.load_pending().unwrap().is_none());
+}
+
+#[test]
+fn ended_restore_sessions_have_a_tombstone_and_no_remaining_management() {
+    let (_, paths, manager, store, _) = managed_fixture("restoreEndsSession");
+    let request = super::types::ActionRequest { provider_id: None, models: vec![], paths: Default::default(), rebaseline: false };
+    let prepared = manager.prepare(&store, DesktopAction::RestorePrevious, &request).unwrap();
+    let preview = manager.issue_ticket(&prepared).unwrap();
+    let applied = manager.commit(&store, DesktopAction::RestorePrevious, &preview.revision, &request).unwrap();
+    assert_eq!(applied.management_state, "unmanaged");
+    let state = manager.load_state().unwrap().unwrap();
+    assert!(state.tombstone);
+    assert!(state.restart_required, "结束管理后仍要提供启动已撤回配置的入口");
+    assert!(state.data.files.is_empty());
+    assert!(state.models.is_empty());
+    assert!(state.model_choices.is_empty());
+    for path in [&paths.profile_path, &paths.meta_path, &paths.normal_config, &paths.third_party_config] {
+        assert!(!path.exists(), "首次不存在的空共享文件也应撤回: {}", path.display());
+    }
+    let status = manager.status(&store);
+    assert!(!status.is_managed);
+    assert_eq!(status.management_state, "unmanaged");
+    assert!(status.restart_required);
+    assert!(!status.app_running);
+    assert!(status.conflicts.is_empty());
+    assert_eq!(manager.prepare(&store, DesktopAction::RestorePrevious, &request).unwrap_err().code, super::types::error_code::NOT_MANAGED);
+}
+
+#[test]
+fn applying_identical_files_does_not_require_a_restart() {
+    let (_, paths, manager, store, request) = managed_fixture("unchangedApplyRestart");
+    let before = transaction::snapshot(&paths).unwrap();
+    let prepared = manager.prepare(&store, DesktopAction::ApplyDirect, &request).unwrap();
+    assert!(prepared.plans.is_empty());
+    assert!(!prepared.requires_restart);
+    assert!(!prepared.next_state.restart_required);
+    let preview = manager.issue_ticket(&prepared).unwrap();
+    let applied = manager.commit(&store, DesktopAction::ApplyDirect, &preview.revision, &request).unwrap();
+    assert!(!applied.requires_restart);
+    assert!(applied.changed_paths.is_empty());
+    assert!(!manager.status(&store).restart_required);
+    for snapshot in before { assert_eq!(read(&snapshot.path), snapshot.text); }
+}
+
+
+#[test]
+fn ticket_binds_the_action_and_every_request_flag() {
+    let (_, _, manager, store, request) = managed_fixture("ticketBindings");
+    let prepared = manager.prepare(&store, DesktopAction::ApplyDirect, &request).unwrap();
+    let preview = manager.issue_ticket(&prepared).unwrap();
+    let mut altered = request.clone();
+    altered.rebaseline = true;
+    let error = manager.commit(&store, DesktopAction::ApplyDirect, &preview.revision, &altered).unwrap_err();
+    assert_eq!(error.code, super::types::error_code::CHANGED);
+    let preview = manager.issue_ticket(&prepared).unwrap();
+    let error = manager.commit(&store, DesktopAction::Reapply, &preview.revision, &request).unwrap_err();
+    assert_eq!(error.code, super::types::error_code::CHANGED);
+    assert!(manager.load_pending().unwrap().is_none());
+}
+
+#[test]
+fn release_ticket_includes_full_current_files_even_without_write_plans() {
+    let (_, paths, manager, store, _) = managed_fixture("releaseFullBefore");
+    let request = super::types::ActionRequest { provider_id: None, models: vec![], paths: Default::default(), rebaseline: false };
+    let prepared = manager.prepare(&store, DesktopAction::Release, &request).unwrap();
+    assert!(prepared.plans.is_empty());
+    let preview = manager.issue_ticket(&prepared).unwrap();
+    let mut current: Value = serde_json::from_str(&read(&paths.normal_config).unwrap()).unwrap();
+    current["newPreference"] = json!(true);
+    write(&paths.normal_config, &current.to_string());
+    let error = manager.commit(&store, DesktopAction::Release, &preview.revision, &request).unwrap_err();
+    assert_eq!(error.code, super::types::error_code::CHANGED);
+    assert!(!manager.load_state().unwrap().unwrap().tombstone);
+}
+
+#[test]
+fn release_preserves_and_backs_up_corrupt_external_files_without_parsing_them() {
+    let (base, paths, manager, store, _) = managed_fixture("releaseCorruptJson");
+    write(&paths.normal_config, "{broken-json");
+    write(&paths.third_party_config, r#"["external config"]"#);
+    write(&paths.profile_path, "external profile is no longer JSON");
+    write(&paths.meta_path, r#"{"entries":"external-invalid-entries"}"#);
+    let before = transaction::snapshot(&paths).unwrap();
+    let provider_before = serde_json::to_value(&store).unwrap();
+    let request = super::types::ActionRequest { provider_id: None, models: vec![], paths: Default::default(), rebaseline: false };
+    let prepared = manager.prepare(&store, DesktopAction::Release, &request).unwrap();
+    assert!(prepared.plans.is_empty());
+    assert!(prepared.conflicts.is_empty());
+    let preview = manager.issue_ticket(&prepared).unwrap();
+    let applied = manager.commit(&store, DesktopAction::Release, &preview.revision, &request).unwrap();
+    assert_eq!(applied.management_state, "unmanaged");
+    assert!(applied.changed_paths.is_empty());
+    assert!(!applied.requires_restart);
+    assert!(manager.load_pending().unwrap().is_none());
+    let state = manager.load_state().unwrap().unwrap();
+    assert!(state.tombstone);
+    assert!(state.data.files.is_empty());
+    assert!(state.credential_fingerprint.is_none());
+    assert_eq!(serde_json::to_value(&store).unwrap(), provider_before);
+    for snapshot in &before { assert_eq!(read(&snapshot.path), snapshot.text); }
+    let backup_path = transaction::backups_dir(&base).join(format!("{}.dat", applied.backup_id.unwrap()));
+    let backup = crate::core::secret_file::read(&backup_path).unwrap().unwrap();
+    let snapshots: Vec<transaction::FileSnapshot> = serde_json::from_slice(&backup).unwrap();
+    assert_eq!(serde_json::to_value(snapshots).unwrap(), serde_json::to_value(before).unwrap());
+}
+
+#[test]
+fn reapply_retains_auto_and_explicit_label_and_off_intent() {
+    let (_, _, manager, mut store, mut request) = managed_fixture("reapplyChoiceIntent");
+    let saved = manager.load_state().unwrap().unwrap();
+    assert_eq!(saved.model_choices, request.models);
+    assert_eq!(saved.profile_base_url.as_deref(), Some("https://relay.example"));
+    assert!(saved.paths_overridden);
+    store.providers[0].models[0].display_name = "Updated automatic label".into();
+    let reapply = super::types::ActionRequest { provider_id: None, models: vec![], paths: Default::default(), rebaseline: false };
+    let prepared = manager.prepare(&store, DesktopAction::Reapply, &reapply).unwrap();
+    assert_eq!(prepared.models[0].label, "Updated automatic label");
+    assert!(matches!(prepared.next_state.model_choices[0].one_m_mode, OneMMode::Auto));
+    assert!(prepared.next_state.model_choices[0].label_override.is_none());
+    request.models[0].one_m_mode = OneMMode::Off;
+    request.models[0].label_override = Some("My label".into());
+    let prepared = manager.prepare(&store, DesktopAction::ApplyDirect, &request).unwrap();
+    let preview = manager.issue_ticket(&prepared).unwrap();
+    manager.commit(&store, DesktopAction::ApplyDirect, &preview.revision, &request).unwrap();
+    store.providers[0].models[0].display_name = "Another automatic label".into();
+    let prepared = manager.prepare(&store, DesktopAction::Reapply, &reapply).unwrap();
+    assert_eq!(prepared.models[0].label, "My label");
+    assert!(!prepared.models[0].one_m);
+    assert_eq!(prepared.next_state.model_choices, request.models);
+}
+
+#[test]
+fn explicit_first_takeover_restores_a_preexisting_profile_even_if_its_shape_matches_ours() {
+    let (base, paths) = test_paths("shapeIsNotOwnership");
+    let manager = super::Manager::new(&base).with_paths(paths.clone());
+    let card = provider("https://relay.example", vec![model("claude-sonnet-4-6", None, &[])]);
+    let store = crate::core::router::Store { providers: vec![card], ..Default::default() };
+    let original = format!("{}\n", profile::profile_json("https://external.example", "sk-EXTERNAL", &state_models()));
+    write(&paths.profile_path, &original);
+    let request = super::types::ActionRequest { provider_id: Some("p1".into()),
+        models: vec![super::types::DesktopModelChoice { model_id: "claude-sonnet-4-6".into(), label_override: None, one_m_mode: OneMMode::Auto }],
+        paths: Default::default(), rebaseline: false };
+    let prepared = manager.prepare(&store, DesktopAction::ApplyDirect, &request).unwrap();
+    let preview = manager.issue_ticket(&prepared).unwrap();
+    manager.commit(&store, DesktopAction::ApplyDirect, &preview.revision, &request).unwrap();
+    let restore = super::types::ActionRequest { provider_id: None, models: vec![], paths: Default::default(), rebaseline: false };
+    let prepared = manager.prepare(&store, DesktopAction::RestorePrevious, &restore).unwrap();
+    let preview = manager.issue_ticket(&prepared).unwrap();
+    manager.commit(&store, DesktopAction::RestorePrevious, &preview.revision, &restore).unwrap();
+    assert_eq!(read(&paths.profile_path).unwrap(), original, "按字节恢复原有 profile，不按 Bearer/gateway 键形状猜所有权");
 }

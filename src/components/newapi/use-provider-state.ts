@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
 import { queryKeys } from "@/lib/query-keys";
+import { invalidateClaudeDesktop } from "@/lib/claude-desktop";
 import { providerErrorKey } from "@/components/newapi/relay-groups";
 import type { NewApiProvider, NewApiState, NewApiStateChange } from "@/types/newapi";
 
@@ -29,6 +30,7 @@ export function useProviderState() {
   const applyChange = (change: NewApiStateChange) => {
     replaceState(change.state);
     if (change.applied) setAppliedNote(change.applied);
+    void invalidateClaudeDesktop(queryClient);
   };
 
   // Check if provider matches balance query context

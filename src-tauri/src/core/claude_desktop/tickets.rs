@@ -8,6 +8,7 @@
 //! 不含密钥；文件本身仍走 `secret_file` 写入。
 
 use std::path::Path;
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +27,14 @@ pub struct Ticket {
     pub paths_identity: String,
     pub created_at: i64,
     pub request: ActionRequest,
+    #[serde(default)]
+    pub process_epoch: String,
+}
+
+/// 命令层每次创建 Manager，进程 epoch 必须在整个应用进程内共享。
+pub fn process_epoch() -> &'static str {
+    static EPOCH: OnceLock<String> = OnceLock::new();
+    EPOCH.get_or_init(|| uuid::Uuid::new_v4().to_string())
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -63,7 +72,7 @@ impl<'a> Tickets<'a> {
     }
 
     /// 记录一张预览。超过上限时返回可重试错误而不是静默丢弃。
-    pub fn issue(&self, ticket: Ticket) -> DesktopResult<()> {
+    pub fn issue(&self, ticket: Ticket) -> DesktopResult<String> {
         let mut store = self.load()?;
         prune(&mut store);
         let open = store
@@ -80,11 +89,13 @@ impl<'a> Tickets<'a> {
                 .retryable(),
             ));
         }
+        let id = uuid::Uuid::new_v4().to_string();
         store.tickets.push(TicketEntry {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: id.clone(),
             ticket,
         });
-        self.save(&store)
+        self.save(&store)?;
+        Ok(id)
     }
 
     /// 消费一张预览。过期、已消费或不存在的 revision 一律报「预览已失效」，
@@ -95,7 +106,7 @@ impl<'a> Tickets<'a> {
         let index = store
             .tickets
             .iter()
-            .position(|entry| entry.ticket.revision == revision)
+            .position(|entry| entry.id == revision)
             .ok_or_else(|| {
                 Box::new(
                     DesktopError::new(
@@ -148,5 +159,68 @@ fn prune(store: &mut TicketStore) {
     let now = chrono::Utc::now().timestamp();
     store
         .tickets
-        .retain(|entry| now - entry.ticket.created_at <= TICKET_TTL_SECONDS);
+        .retain(|entry| entry.ticket.process_epoch == process_epoch()
+            && now.checked_sub(entry.ticket.created_at)
+                .is_some_and(|age| (0..=TICKET_TTL_SECONDS).contains(&age)));
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ticket() -> Ticket {
+        Ticket {
+            revision: "identical-private-input-revision".into(), action: DesktopAction::ApplyDirect,
+            paths_identity: "temporary-roots".into(), created_at: chrono::Utc::now().timestamp(),
+            request: ActionRequest { provider_id: None, models: vec![], paths: Default::default(), rebaseline: false },
+            process_epoch: process_epoch().to_owned(),
+        }
+    }
+
+    #[test]
+    fn tickets_from_a_previous_process_epoch_are_rejected() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("previews.dat");
+        let store = Tickets::new(&path);
+        let mut old = ticket();
+        old.process_epoch = "terminated-process-epoch".into();
+        let id = store.issue(old).unwrap();
+        assert_eq!(store.take(&id).unwrap_err().code, error_code::PREVIEW_EXPIRED);
+        assert!(!store.has_open());
+        store.prune_expired().unwrap();
+        assert!(store.load().unwrap().tickets.is_empty());
+    }
+
+    #[test]
+    fn identical_new_previews_do_not_revive_a_consumed_ticket() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("previews.dat");
+        let store = Tickets::new(&path);
+        let first = store.issue(ticket()).unwrap();
+        store.take(&first).unwrap();
+        let second = Tickets::new(&path).issue(ticket()).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(store.take(&first).unwrap_err().code, error_code::PREVIEW_EXPIRED);
+        assert_eq!(store.take(&second).unwrap().revision, "identical-private-input-revision");
+    }
+
+    #[test]
+    fn extreme_and_future_ticket_times_expire_without_overflow() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("previews.dat");
+        let store = Tickets::new(&path);
+        for created_at in [i64::MIN, i64::MAX, chrono::Utc::now().timestamp() + TICKET_TTL_SECONDS] {
+            let mut invalid = ticket();
+            invalid.created_at = created_at;
+            let id = store.issue(invalid).unwrap();
+            assert!(!store.has_open());
+            assert_eq!(store.take(&id).unwrap_err().code, error_code::PREVIEW_EXPIRED);
+            store.prune_expired().unwrap();
+            assert!(store.load().unwrap().tickets.is_empty());
+        }
+        let id = store.issue(ticket()).unwrap();
+        assert!(store.has_open());
+        store.take(&id).unwrap();
+    }
 }

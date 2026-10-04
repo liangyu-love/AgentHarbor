@@ -269,7 +269,8 @@
       "launchUnavailable": "No usable launch method was confirmed; start Claude Desktop by hand.",
       "launchFailed": "Could not start Claude Desktop: {{0}}",
       "launchTimeout": "Starting Claude Desktop timed out; open it by hand to confirm.",
-      "process": "Controlling the Claude Desktop process failed."
+      "process": "Controlling the Claude Desktop process failed.",
+      "desktopRunning": "Fully quit Claude Desktop, including its tray process, then preview again before applying."
     },
     "warnings": {
       "keepsEnterprise": "Enterprise inference and deployment policy in the config is preserved; it may override this profile.",
@@ -287,7 +288,8 @@
       "released": "Management was released; the profile on disk was left in place.",
       "openPreviews": "There are unconsumed previews for this configuration.",
       "isolated": "Running with AGENT_HARBOR_CLIENT_HOME set; only the isolated directory is read and written.",
-      "noChanges": "The four files already match the target state, so nothing was written and no restart is needed."
+      "noChanges": "The four files already match the target state, so nothing was written and no restart is needed.",
+      "ticketCleanup": "The configuration was committed, but old previews could not be cleaned up. Refresh the status and preview again before another operation."
     },
     "notes": {
       "isolated": "Isolated directory (AGENT_HARBOR_CLIENT_HOME)",
@@ -416,7 +418,11 @@
       "needEligible": "This card does not meet the direct-connection requirements; pick another one or add its inference key first.",
       "connectivityTitle": "Connectivity checks",
       "modelsCheckLabel": "Model list",
-      "messagesCheckLabel": "Messages request"
+      "messagesCheckLabel": "Messages request",
+      "providerDisabledBadge": "Outside routing pool",
+      "reapplyTitle": "Re-apply the direct configuration?",
+      "reapplyDescription": "Update the direct configuration with the card's current address and inference key and your saved model settings. The original restoration point is preserved.",
+      "needPaths": "Choose the Claude Desktop configuration location first."
     },
     "banner": {
       "independent": "This is independent from the Claude Code client; neither one changes the other."
@@ -431,6 +437,23 @@
       "serverError": "The Messages endpoint returned a server error",
       "invalidResponse": "The response is not a recognizable Messages payload",
       "notChecked": "Messages not checked yet"
+    },
+    "flags": {
+      "name": "Provider name changed",
+      "credential": "Inference key changed",
+      "endpoint": "Relay address changed",
+      "model": "Model configuration changed",
+      "label": "Model display name changed",
+      "context": "Model context capability changed",
+      "paths": "Configuration location changed",
+      "drift": "Managed configuration was changed externally",
+      "unknown": "Configuration needs verification"
+    },
+    "fileRoles": {
+      "normalConfig": "Normal configuration",
+      "thirdPartyConfig": "Third-party configuration",
+      "profile": "AgentHarbor profile",
+      "meta": "Configuration library index"
     }
   },
   "newapi": {

@@ -1,14 +1,11 @@
 //! Claude Desktop 直连：跨进程 writer 互斥。
 //!
-//! 项目已有单实例约束，但那只覆盖同一个交互会话：Windows 的命名 mutex 在
-//! `Local\` 作用域内、Unix 的 flock 只对同一台机器上的同一用户生效。两个
-//! 会话（或用户）仍可能同时管理同一份 Desktop 配置，因此写操作前先取一个
-//! 跨进程 writer 锁。
-//!
-//! 锁文件由**本项目**独占（`<app_data_dir>/claude-desktop/writer.lock`），
-//! 不会写进 Claude Desktop 的目录。持有者的活体判定用 pid + 进程启动时间：
-//! pid 会被复用，只看 pid 会在复用后误判为“仍在运行”而永久阻塞写入。
+//! 对本项目的持久 writer.lock 取得操作系统文件锁。锁的有效期跟随文件句柄，
+//! 进程退出或崩溃会自动释放；文件内的 pid 仅用于提示，不参与所有权判断。
+//! 始终保留同一个锁文件，避免删除/重建让等待者锁住不同文件的竞争。
 
+use std::fs::{File, OpenOptions, TryLockError};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use super::constants::DATA_DIR_NAME;
@@ -20,207 +17,61 @@ fn lock_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join(DATA_DIR_NAME).join(LOCK_FILE)
 }
 
-/// 记录持有者身份；`started_at` 用来区分被复用的 pid。
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
-pub struct Owner {
-    pub pid: u32,
-    pub started_at: Option<u64>,
-    pub label: String,
-}
-
-impl Owner {
-    pub fn current(label: &str) -> Self {
-        Self {
-            pid: std::process::id(),
-            started_at: process_started_at(std::process::id()),
-            label: label.to_owned(),
-        }
-    }
-
-    fn encode(&self) -> String {
-        format!(
-            "pid={}\nstartedAt={}\nlabel={}\n",
-            self.pid,
-            self.started_at.map(|v| v.to_string()).unwrap_or_default(),
-            self.label
-        )
-    }
-
-    fn decode(text: &str) -> Option<Self> {
-        let mut pid = None;
-        let mut started_at = None;
-        let mut label = String::new();
-        for line in text.lines() {
-            let Some((key, value)) = line.split_once('=') else {
-                continue;
-            };
-            match key.trim() {
-                "pid" => pid = value.trim().parse::<u32>().ok(),
-                "startedAt" => {
-                    started_at = value.trim().parse::<u64>().ok();
-                }
-                "label" => label = value.trim().to_owned(),
-                _ => {}
-            }
-        }
-        Some(Self {
-            pid: pid?,
-            started_at,
-            label,
-        })
-    }
-
-    /// 该持有者是否仍然活着。无法确认时按“活着”处理，避免误抢锁。
-    pub fn is_alive(&self) -> bool {
-        if self.pid == std::process::id() {
-            return true;
-        }
-        let Some(current) = process_started_at(self.pid) else {
-            return false;
-        };
-        match self.started_at {
-            // 启动时间不一致说明 pid 已被复用，旧持有者已经退出。
-            Some(recorded) => recorded == current,
-            None => true,
-        }
-    }
-}
-
-/// 已持有的 writer 锁；drop 时清理锁文件。
+/// 持有句柄期间排他；关闭句柄释放锁，不删除锁文件。
 #[derive(Debug)]
 pub struct DesktopLock {
-    path: PathBuf,
-    owner: Owner,
+    _file: File,
 }
 
-impl Drop for DesktopLock {
-    fn drop(&mut self) {
-        // 只清理仍属于自己的锁文件，避免删掉后来者刚写入的记录。
-        if let Ok(text) = std::fs::read_to_string(&self.path) {
-            if Owner::decode(&text).as_ref() == Some(&self.owner) {
-                let _ = std::fs::remove_file(&self.path);
-            }
-        }
-    }
-}
-
-fn busy_error(owner: &Owner) -> Box<DesktopError> {
+fn busy_error(file: &mut File) -> Box<DesktopError> {
+    let mut text = String::new();
+    let _ = file.read_to_string(&mut text);
+    let pid = text
+        .lines()
+        .find_map(|line| line.strip_prefix("pid="))
+        .and_then(|pid| pid.parse::<u32>().ok())
+        .map(|pid| pid.to_string())
+        .unwrap_or_else(|| "?".into());
     Box::new(
         DesktopError::new(error_code::WRITER_BUSY, "claudeDesktop.errors.writerBusy")
-            .param(owner.pid.to_string())
+            .param(pid)
             .retryable(),
     )
 }
 
-/// 取得 writer 锁。已有活着的持有者时立即失败，不阻塞、不排队。
+/// 已有持有者时立即失败；空、损坏或旧记录均不影响操作系统的互斥判断。
 pub fn acquire(app_data_dir: &Path, label: &str) -> DesktopResult<DesktopLock> {
     let path = lock_path(app_data_dir);
-    let owner = Owner::current(label);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|_| super::transaction::storage_error())?;
     }
-
-    // 独占创建；已存在时检查现有持有者。
-    match std::fs::OpenOptions::new()
+    let mut file = OpenOptions::new()
+        .read(true)
         .write(true)
-        .create_new(true)
-        .open(&path)
-    {
-        Ok(mut file) => {
-            use std::io::Write;
-            file.write_all(owner.encode().as_bytes())
-                .map_err(|_| super::transaction::storage_error())?;
-            file.sync_all()
-                .map_err(|_| super::transaction::storage_error())?;
-            return Ok(DesktopLock { path, owner });
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(_) => return Err(super::transaction::storage_error()),
-    }
-
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
-    let existing = Owner::decode(&text);
-    if let Some(existing) = &existing {
-        if existing.is_alive() {
-            return Err(busy_error(existing));
-        }
-    }
-
-    // 残留的失效记录：条带化替换成自己的记录。
-    let _ = std::fs::remove_file(&path);
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
+        .create(true)
+        .truncate(false)
         .open(&path)
         .map_err(|_| super::transaction::storage_error())?;
-    use std::io::Write;
-    file.write_all(owner.encode().as_bytes())
-        .map_err(|_| super::transaction::storage_error())?;
-    file.sync_all()
-        .map_err(|_| super::transaction::storage_error())?;
-    Ok(DesktopLock { path, owner })
-}
-
-// ---------------------------------------------------------------------------
-// 进程启动时间
-// ---------------------------------------------------------------------------
-
-#[cfg(windows)]
-fn process_started_at(pid: u32) -> Option<u64> {
-    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
-    use windows_sys::Win32::System::Threading::{
-        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle.is_null() {
-            return None;
-        }
-        let mut creation = FILETIME {
-            dwLowDateTime: 0,
-            dwHighDateTime: 0,
-        };
-        let mut exit = creation;
-        let mut kernel = creation;
-        let mut user = creation;
-        let ok = GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user);
-        let _ = CloseHandle(handle);
-        if ok == 0 {
-            return None;
-        }
-        Some(((creation.dwHighDateTime as u64) << 32) | creation.dwLowDateTime as u64)
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(TryLockError::WouldBlock) => return Err(busy_error(&mut file)),
+        Err(TryLockError::Error(_)) => return Err(super::transaction::storage_error()),
     }
-}
 
-#[cfg(all(unix, not(target_os = "macos")))]
-fn process_started_at(pid: u32) -> Option<u64> {
-    // /proc/<pid>/stat 的第 22 个字段是启动时间（jiffies）。
-    let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let after_name = text.rsplit_once(')')?.1;
-    after_name
-        .split_whitespace()
-        .nth(19)
-        .and_then(|value| value.parse::<u64>().ok())
-}
-
-#[cfg(target_os = "macos")]
-fn process_started_at(pid: u32) -> Option<u64> {
-    // macOS 上不读取启动时间；pid 复用只会让写入多等一次进程退出后的清理，
-    // 不会误删他人配置（写入前仍有文件级重读校验）。
-    let _ = pid;
-    None
-}
-
-#[cfg(not(any(windows, unix)))]
-fn process_started_at(pid: u32) -> Option<u64> {
-    let _ = pid;
-    None
+    // 只能在取得锁后更新诊断记录；失败会关闭句柄并释放锁。
+    file.set_len(0)
+        .and_then(|()| file.seek(SeekFrom::Start(0)).map(|_| ()))
+        .and_then(|()| writeln!(file, "pid={}\nlabel={label}", std::process::id()))
+        .and_then(|()| file.sync_all())
+        .map_err(|_| super::transaction::storage_error())?;
+    Ok(DesktopLock { _file: file })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -239,80 +90,93 @@ mod tests {
         assert_eq!(second.code, error_code::WRITER_BUSY);
         assert!(second.retryable);
         drop(first);
-        // 释放后可以再次取得。
         acquire(&dir, "third").expect("lock released");
+        assert!(
+            lock_path(&dir).exists(),
+            "never unlink the shared lock file"
+        );
     }
 
     #[test]
-    fn a_dead_holder_does_not_block_forever() {
-        let dir = temp_dir("stale");
+    fn an_empty_record_during_initialization_cannot_be_reclaimed() {
+        let dir = temp_dir("initializing");
         let path = lock_path(&dir);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        // 一个几乎不可能存在的 pid，且 pid 与自己不同。
-        std::fs::write(&path, "pid=4294967294\nstartedAt=1\nlabel=ghost\n").unwrap();
-        acquire(&dir, "recover").expect("a dead holder must not block");
-    }
-
-    #[test]
-    fn a_reused_pid_with_a_different_start_time_is_treated_as_stale() {
-        let dir = temp_dir("reuse");
-        let path = lock_path(&dir);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let owner = Owner {
-            pid: std::process::id(),
-            // 自己的 pid，但启动时间对不上：模拟 pid 复用。
-            started_at: Some(1),
-            label: "reused".into(),
-        };
-        // 自身 pid 视为活体，因此仍应阻塞（这是保守方向）。
-        assert!(owner.is_alive());
-        std::fs::write(&path, owner.encode()).unwrap();
-        assert!(acquire(&dir, "next").is_err());
-    }
-
-    /// 模拟另一个**活着的进程**持有锁：写一个不同的、可确认为活体的 pid。
-    #[test]
-    fn a_foreign_live_process_blocks_and_is_never_deleted() {
-        let dir = temp_dir("foreign");
-        let path = lock_path(&dir);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        // pid 1 在任何支持的平台上都是一个长期存在的进程。
-        let foreign = Owner {
-            pid: 1,
-            started_at: process_started_at(1),
-            label: "other-instance".into(),
-        };
-        if !foreign.is_alive() {
-            // 无法确认为活体的平台跳过这条断言。
-            return;
-        }
-        std::fs::write(&path, foreign.encode()).unwrap();
-        let error = acquire(&dir, "self").expect_err("foreign writer must block");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        file.try_lock().unwrap();
+        let error = acquire(&dir, "second").expect_err("empty active lock must block");
         assert_eq!(error.code, error_code::WRITER_BUSY);
-        assert!(error.retryable);
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("label=other-instance"), "失败路径不得改动他人记录");
-    }
-
-    /// 一个连 pid 都解析不出来的残留文件不能永久阻塞。
-    #[test]
-    fn a_garbage_lock_file_is_reclaimable() {
-        let dir = temp_dir("garbage");
-        let path = lock_path(&dir);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "").unwrap();
-        acquire(&dir, "reclaim").expect("空锁文件可以回收");
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+        drop(file);
+        acquire(&dir, "after-drop").expect("released empty lock is reusable");
     }
 
     #[test]
-    fn dropping_one_writer_never_removes_another_writers_lock() {
-        let dir = temp_dir("handover");
-        let first = acquire(&dir, "first").unwrap();
-        let path = lock_path(&dir);
-        // 模拟“另一个进程接管了锁文件”。
-        std::fs::write(&path, Owner::current("other").encode()).unwrap();
-        drop(first);
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("label=other"), "不得删除他人记录");
+    fn a_stale_or_corrupt_record_without_a_holder_is_reusable() {
+        for record in ["", "garbage", "pid=4294967294\nlabel=ghost\n"] {
+            let dir = temp_dir("stale");
+            let path = lock_path(&dir);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, record).unwrap();
+            acquire(&dir, "recover").expect("unlocked records do not block");
+        }
+    }
+
+    // The parent starts this exact test in a separate test process with a private root.
+    #[test]
+    fn subprocess_lock_holder() {
+        let Some(dir) = std::env::var_os("AGENTHARBOR_DESKTOP_LOCK_TEST_ROOT") else {
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        let _guard = acquire(&dir, "child").unwrap();
+        std::fs::write(dir.join("ready"), b"ready").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn a_foreign_process_blocks_and_crash_releases_the_lock() {
+        let dir = temp_dir("subprocess");
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "core::claude_desktop::lock::tests::subprocess_lock_holder",
+                "--nocapture",
+            ])
+            .env("AGENTHARBOR_DESKTOP_LOCK_TEST_ROOT", &dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !dir.join("ready").exists() && Instant::now() < deadline {
+            if child.try_wait().unwrap().is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let ready = dir.join("ready").exists();
+        if !ready {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("isolated child did not acquire its lock");
+        }
+        // Always stop/reap the synthetic child before asserting the outcome.
+        let blocked = acquire(&dir, "parent");
+        let _ = child.kill();
+        child.wait().unwrap();
+        assert_eq!(
+            blocked.expect_err("another process holds the lock").code,
+            error_code::WRITER_BUSY
+        );
+        acquire(&dir, "after-crash").expect("OS releases the terminated holder's lock");
     }
 }

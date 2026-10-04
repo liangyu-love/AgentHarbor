@@ -9,8 +9,8 @@ use crate::core::router::{ModelProtocol, Provider};
 
 use super::constants::ONE_M_CONTEXT;
 use super::types::{
-    error_code, protocol_source, reason, DesktopError, DesktopResult, EndpointView, ModelCandidateView,
-    MAX_KEY_BYTES, MAX_LABEL_CHARS, MAX_MODEL_ID_CHARS,
+    error_code, protocol_source, reason, DesktopError, DesktopResult, EndpointView,
+    ModelCandidateView, MAX_KEY_BYTES, MAX_LABEL_CHARS, MAX_MODEL_ID_CHARS,
 };
 
 /// 上下文来源中可视为“有依据”的取值；其余（fallback/unknown/policy）不足以
@@ -73,8 +73,7 @@ impl DesktopVersionPolicy {
     pub fn from_version(version: Option<&str>) -> Self {
         let parsed = version.and_then(parse_version);
         Self {
-            fable_allowed: parsed
-                .is_some_and(|value| value >= super::constants::FABLE_MIN_VERSION),
+            fable_allowed: parsed.is_some_and(|value| value >= super::constants::FABLE_MIN_VERSION),
         }
     }
 
@@ -131,13 +130,11 @@ pub fn safe_model_id(model_id: &str, policy: DesktopVersionPolicy) -> bool {
             None => return false,
         },
     };
-    super::constants::roles_for(policy)
-        .iter()
-        .any(|role| {
-            tail.strip_prefix(role)
-                .and_then(|rest| rest.strip_prefix('-'))
-                .is_some_and(|rest| !rest.is_empty())
-        })
+    super::constants::roles_for(policy).iter().any(|role| {
+        tail.strip_prefix(role)
+            .and_then(|rest| rest.strip_prefix('-'))
+            .is_some_and(|rest| !rest.is_empty())
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -187,7 +184,8 @@ pub fn protocol_decision(provider: &Provider, model_id: &str) -> ProtocolDecisio
             };
         }
         if claude_name {
-            if let Some(declared) = crate::core::protocol::declared_protocol(&entry.endpoint_types) {
+            if let Some(declared) = crate::core::protocol::declared_protocol(&entry.endpoint_types)
+            {
                 return ProtocolDecision {
                     protocol: declared,
                     source: protocol_source::DECLARED,
@@ -280,8 +278,8 @@ pub fn resolve_direct_endpoints(provider: &Provider) -> DesktopResult<(String, S
     }
 
     // DeepSeek 的 Messages 挂在 /anthropic，其它网关保留用户前缀。
-    let protocol_root = newapi::protocol_base_url(base, ModelProtocol::AnthropicMessages)
-        .map_err(|_| {
+    let protocol_root =
+        newapi::protocol_base_url(base, ModelProtocol::AnthropicMessages).map_err(|_| {
             Box::new(
                 DesktopError::new(error_code::INVALID_URL, "claudeDesktop.errors.invalidUrl")
                     .retryable(),
@@ -389,7 +387,8 @@ fn candidate_ids(provider: &Provider) -> Vec<(String, bool)> {
     if !default_id.is_empty() && default_entry.is_none() {
         out.push((default_id.to_owned(), true));
     }
-    for entry in provider.models.iter().filter(|entry| entry.included) {
+    // 排除项也返回原因，只有 selectable 项可提交。
+    for entry in &provider.models {
         if entry.id.trim().is_empty() {
             continue;
         }
@@ -452,6 +451,13 @@ fn model_exclusion(
     if !safe_model_id(model_id, policy) {
         return Some(reason::UNSUPPORTED_DESKTOP_ROLE.to_owned());
     }
+    match provider.models.iter().find(|entry| entry.id == model_id) {
+        Some(entry) if !entry.included => return Some(reason::MODEL_NOT_INCLUDED.to_owned()),
+        None if model_id != provider.model.trim() => {
+            return Some(reason::MODEL_REMOVED.to_owned());
+        }
+        _ => {}
+    }
     // 显式协议为 Responses/Chat 时，即使名字符合白名单也拒绝直连。
     if decision.protocol != ModelProtocol::AnthropicMessages {
         return Some(reason::INCOMPATIBLE_PROTOCOL.to_owned());
@@ -503,8 +509,11 @@ pub fn credential_fingerprint(provider: &Provider) -> Option<String> {
 pub fn require_inference_key(provider: &Provider) -> DesktopResult<String> {
     let key = inference_key(provider).ok_or_else(|| {
         Box::new(
-            DesktopError::new(error_code::NO_INFERENCE_KEY, "claudeDesktop.errors.noInferenceKey")
-                .action("editProvider"),
+            DesktopError::new(
+                error_code::NO_INFERENCE_KEY,
+                "claudeDesktop.errors.noInferenceKey",
+            )
+            .action("editProvider"),
         )
     })?;
     if !key_is_writable(&key) {
@@ -517,4 +526,40 @@ pub fn require_inference_key(provider: &Provider) -> DesktopResult<String> {
         ));
     }
     Ok(key)
+}
+
+#[cfg(test)]
+mod candidate_membership_tests {
+    use super::*;
+
+    #[test]
+    fn only_saved_included_models_or_the_exact_manual_default_are_selectable() {
+        let root =
+            std::env::temp_dir().join(format!("desktop-candidates-{}", uuid::Uuid::new_v4()));
+        let catalog = models_dev::load(&root);
+        let mut card = Provider {
+            model: "claude-sonnet-4-6".into(),
+            ..Default::default()
+        };
+        let policy = DesktopVersionPolicy::conservative();
+        assert!(model_candidate(&card, &card.model, &catalog, policy).selectable);
+        let missing = model_candidate(&card, "claude-haiku-4-5-DELETED", &catalog, policy);
+        assert_eq!(
+            missing.exclude_reason.as_deref(),
+            Some(reason::MODEL_REMOVED)
+        );
+        card.models.push(newapi::Model {
+            id: card.model.clone(),
+            included: false,
+            ..Default::default()
+        });
+        let excluded = model_candidate(&card, &card.model, &catalog, policy);
+        assert_eq!(
+            excluded.exclude_reason.as_deref(),
+            Some(reason::MODEL_NOT_INCLUDED)
+        );
+        let (_, _, views) = provider_qualification(&card, policy, &catalog);
+        assert_eq!(views.len(), 1, "排除模型保留可解释的原因");
+        assert!(!views[0].selectable);
+    }
 }

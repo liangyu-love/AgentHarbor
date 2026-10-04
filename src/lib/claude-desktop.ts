@@ -12,6 +12,16 @@ import type {
   DesktopAction,
 } from "@/types/claude-desktop";
 import { errorMessage } from "@/lib/invoke-error";
+import type { QueryClient } from "@tanstack/react-query";
+import { queryKeys } from "@/lib/query-keys";
+
+/** 供应商与能力变更只刷新投影，不自动重写 Desktop 文件。 */
+export async function invalidateClaudeDesktop(queryClient: QueryClient) {
+  await Promise.all([
+    queryClient.invalidateQueries({ queryKey: queryKeys.claudeDesktopStatus }),
+    queryClient.invalidateQueries({ queryKey: queryKeys.claudeDesktopCandidates }),
+  ]);
+}
 
 /**
  * 后端返回结构化错误时会给出 JSON 文本；其余情况保持原样。

@@ -42,6 +42,7 @@ import type {
  * 避免把地址等参数拼进 key。
  */
 function reasonKey(reason: string | null | undefined): string {
+  if (reason && i18n.exists(reason)) return reason;
   const code = (reason ?? "").split(":")[0]?.trim();
   if (!code) return "claudeDesktop.errors.storage";
   const camel = code.replace(/_([a-z0-9])/g, (_, ch: string) => ch.toUpperCase());
@@ -69,6 +70,9 @@ interface ModelRow {
 interface Props {
   candidates: ClaudeDesktopCandidates | undefined;
   candidatesLoading: boolean;
+  candidatesError: unknown;
+  /** 即使凭据变更后的候选内容相同，新的查询结果也使检测失效。 */
+  candidatesRevision: number;
   initialProviderId: string | null;
   /** 后端给出的可选操作；对话框只在直连可用时允许提交。 */
   availableActions: DesktopAction[];
@@ -84,6 +88,8 @@ interface Props {
 export function ClaudeDesktopDialog({
   candidates,
   candidatesLoading,
+  candidatesError,
+  candidatesRevision,
   initialProviderId,
   availableActions,
   onClose,
@@ -101,6 +107,7 @@ export function ClaudeDesktopDialog({
   const [error, setError] = useState<string | null>(null);
   // 递增序号忽略迟到的异步预览/检测结果，避免旧响应覆盖新表单。
   const seq = useRef(0);
+  const pendingToken = useRef<number | null>(null);
 
   // 首次进入时把候选的默认选择固化到表单。
   useEffect(() => {
@@ -124,12 +131,24 @@ export function ClaudeDesktopDialog({
     [candidate],
   );
   const chosenModels = Object.keys(selected);
+  const pathSelected = !!pathsChoice.normalRoot && !!pathsChoice.thirdPartyRoot;
+  const formSnapshot = JSON.stringify({
+    providerId, pathId, selected, rebaseline, pathsChoice,
+    candidatesRevision, candidate, detector: candidates?.detector,
+  });
+  const currentSnapshot = useRef(formSnapshot);
+  currentSnapshot.current = formSnapshot;
 
   // 任意表单输入变化都立即作废旧预览，并让在途响应失效。
   useEffect(() => {
     seq.current += 1;
     setPreview(null);
-  }, [providerId, pathId, selected, rebaseline]);
+    setProbe(null);
+    setMessages(null);
+  }, [formSnapshot]);
+
+  // 卸载后的响应也失效；组件状态关闭不取消已经授权的后端操作。
+  useEffect(() => () => { seq.current += 1; }, []);
 
   if (!candidates) {
     return (
@@ -139,8 +158,10 @@ export function ClaudeDesktopDialog({
             <DialogTitle>{t("claudeDesktop.dialog.title")}</DialogTitle>
             <DialogDescription>{t("claudeDesktop.dialog.description")}</DialogDescription>
           </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            {candidatesLoading ? t("common.loading") : t("claudeDesktop.dialog.noEligibleProvider")}
+          <p role={candidatesError ? "alert" : "status"} className="text-sm text-muted-foreground">
+            {candidatesError
+              ? t(desktopErrorKey(candidatesError, "claudeDesktop.errors.storage"))
+              : candidatesLoading ? t("common.loading") : t("claudeDesktop.dialog.noEligibleProvider")}
           </p>
         </DialogContent>
       </Dialog>
@@ -160,30 +181,35 @@ export function ClaudeDesktopDialog({
 
   const runPreview = async () => {
     const token = ++seq.current;
+    const form = formSnapshot;
     const snapshot = requestOf();
+    pendingToken.current = token;
     setBusy("preview");
     setError(null);
     try {
       const result = await api.claudeDesktop.preview("applyDirect", snapshot);
-      if (token !== seq.current) return;
+      if (token !== seq.current || form !== currentSnapshot.current) return;
       setPreview(result);
     } catch (cause) {
-      if (token !== seq.current) return;
+      if (token !== seq.current || form !== currentSnapshot.current) return;
       setPreview(null);
       setError(desktopErrorKey(cause, "claudeDesktop.errors.storage"));
     } finally {
-      if (token === seq.current) setBusy(null);
+      if (pendingToken.current === token) {
+        pendingToken.current = null;
+        setBusy(null);
+      }
     }
   };
 
   const runApply = async () => {
     if (!preview) return;
-    const token = seq.current;
+    const token = ++seq.current;
+    pendingToken.current = token;
     setBusy("apply");
     setError(null);
     try {
       await api.claudeDesktop.commit("applyDirect", preview.revision, requestOf());
-      if (token !== seq.current) return;
       toast({
         title: t("claudeDesktop.dialog.appliedTitle"),
         description: t("claudeDesktop.dialog.appliedDescription"),
@@ -199,14 +225,20 @@ export function ClaudeDesktopDialog({
         setPreview(null);
       }
     } finally {
+      pendingToken.current = null;
       setBusy(null);
     }
   };
 
   const runProbe = async (checkMessages: boolean) => {
-    if (!providerId) return;
+    if (!providerId || !pathSelected) return;
+    const token = ++seq.current;
+    const form = formSnapshot;
+    pendingToken.current = token;
     setBusy(checkMessages ? "messages" : "probe");
     setError(null);
+    setProbe(null);
+    setMessages(null);
     try {
       const outcome = await api.claudeDesktop.probe({
         providerId,
@@ -214,12 +246,17 @@ export function ClaudeDesktopDialog({
         paths: pathsChoice,
         checkMessages,
       });
+      if (token !== seq.current || form !== currentSnapshot.current) return;
       setProbe(outcome.bearer);
-      if (outcome.messages) setMessages(outcome.messages);
+      setMessages(outcome.messages);
     } catch (cause) {
+      if (token !== seq.current || form !== currentSnapshot.current) return;
       setError(desktopErrorKey(cause, "claudeDesktop.errors.storage"));
     } finally {
-      setBusy(null);
+      if (pendingToken.current === token) {
+        pendingToken.current = null;
+        setBusy(null);
+      }
     }
   };
 
@@ -227,6 +264,7 @@ export function ClaudeDesktopDialog({
     setProviderId(id);
     setSelected({});
     setProbe(null);
+    setMessages(null);
   };
 
   const endpoint = candidate?.endpoint ?? null;
@@ -234,6 +272,7 @@ export function ClaudeDesktopDialog({
   const submitBlockedReason = (() => {
     if (busy !== null) return t("claudeDesktop.dialog.busyHint");
     if (!providerId) return t("claudeDesktop.dialog.needProvider");
+    if (!pathSelected) return t("claudeDesktop.dialog.needPaths");
     if (chosenModels.length === 0) return t("claudeDesktop.dialog.needModels");
     if (!candidate?.eligible) return t("claudeDesktop.dialog.needEligible");
     if (!preview && !availableActions.includes("applyDirect")) {
@@ -262,6 +301,12 @@ export function ClaudeDesktopDialog({
             </p>
           )}
 
+          {!!candidatesError && (
+            <p role="alert" className="text-xs text-destructive">
+              {t(desktopErrorKey(candidatesError, "claudeDesktop.errors.storage"))}
+            </p>
+          )}
+
           <fieldset disabled={busy !== null} className="min-w-0 space-y-4">
             {/* 1. 供应商 */}
             <div className="space-y-2">
@@ -276,30 +321,40 @@ export function ClaudeDesktopDialog({
                 {candidates.providers.map(entry => {
                   const active = entry.providerId === providerId;
                   return (
-                    <button
-                      key={entry.providerId}
-                      type="button"
-                      aria-pressed={active}
-                      disabled={!entry.eligible}
-                      onClick={() => pickProvider(entry.providerId)}
-                      className={[
-                        "min-w-0 rounded-lg border px-3 py-2 text-left text-sm transition-colors",
-                        active ? "border-primary bg-primary/5" : "border-border hover:bg-muted/50",
-                        entry.eligible ? "" : "cursor-not-allowed opacity-60",
-                      ].join(" ")}
-                    >
-                      <span className="flex min-w-0 flex-wrap items-center gap-2">
-                        <span className="min-w-0 truncate font-medium">{entry.name}</span>
-                        {!entry.enabled && (
-                          <Badge variant="secondary" className="shrink-0 text-[10px]">
-                            {t("claudeDesktop.dialog.providerDisabled")}
-                          </Badge>
-                        )}
-                      </span>
-                      <span className="mt-1 block break-all font-mono text-[11px] text-muted-foreground">
-                        {entry.endpoint?.profileBaseUrl ?? t(reasonKey(entry.reason))}
-                      </span>
-                    </button>
+                    <div key={entry.providerId} className="min-w-0 space-y-1">
+                      <button
+                        type="button"
+                        aria-pressed={active}
+                        disabled={!entry.eligible}
+                        onClick={() => pickProvider(entry.providerId)}
+                        className={[
+                          "w-full",
+                          "min-w-0 rounded-lg border px-3 py-2 text-left text-sm transition-colors",
+                          active ? "border-primary bg-primary/5" : "border-border hover:bg-muted/50",
+                          entry.eligible ? "" : "cursor-not-allowed opacity-60",
+                        ].join(" ")}
+                      >
+                        <span className="flex min-w-0 flex-wrap items-center gap-2">
+                          <span className="min-w-0 truncate font-medium">{entry.name}</span>
+                          {!entry.enabled && (
+                            <Badge variant="secondary" className="text-[10px]">
+                              {t("claudeDesktop.dialog.providerDisabledBadge")}
+                            </Badge>
+                          )}
+                        </span>
+                        <span className="mt-1 block break-all font-mono text-[11px] text-muted-foreground">
+                          {entry.endpoint?.profileBaseUrl}
+                        </span>
+                      </button>
+                      {!entry.enabled && (
+                        <p className="break-words text-[11px] text-muted-foreground">{t("claudeDesktop.dialog.providerDisabled")}</p>
+                      )}
+                      {!entry.eligible && (
+                        <p className="break-words text-[11px] text-destructive">
+                          {t(reasonKey(entry.reason ?? entry.models.find(model => model.excludeReason)?.excludeReason ?? "provider_not_eligible"))}
+                        </p>
+                      )}
+                    </div>
                   );
                 })}
               </div>
@@ -312,7 +367,7 @@ export function ClaudeDesktopDialog({
                 <Label>{t("claudeDesktop.pathsLabel")}</Label>
                 <Select value={pathId ?? ""} onValueChange={setPathId}>
                   <SelectTrigger className="text-xs">
-                    <SelectValue placeholder={candidates.paths.normalRoot} />
+                    <SelectValue placeholder={t("claudeDesktop.dialog.needPaths")} />
                   </SelectTrigger>
                   <SelectContent>
                     {candidates.pathCandidates.map(entry => (
@@ -418,6 +473,16 @@ export function ClaudeDesktopDialog({
                   );
                 })}
               </ul>
+              {(candidate?.models ?? []).some(model => !model.selectable) && (
+                <div data-desktop-excluded-models className="space-y-1 rounded-lg border bg-muted/20 px-3 py-2">
+                  <p className="text-xs font-medium">{t("claudeDesktop.dialog.modelExcluded")}</p>
+                  {(candidate?.models ?? []).filter(model => !model.selectable).map(model => (
+                    <p key={model.modelId} className="break-all text-[11px] text-muted-foreground">
+                      <span className="font-mono">{model.modelId}</span>{" · "}{t(reasonKey(model.excludeReason))}
+                    </p>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
@@ -440,7 +505,7 @@ export function ClaudeDesktopDialog({
                   type="button"
                   size="sm"
                   variant="outline"
-                  disabled={!providerId}
+                  disabled={!providerId || !pathSelected}
                   onClick={() => void runProbe(false)}
                 >
                   {busy === "probe" ? (
@@ -454,7 +519,7 @@ export function ClaudeDesktopDialog({
                   type="button"
                   size="sm"
                   variant="ghost"
-                  disabled={!providerId || chosenModels.length === 0}
+                  disabled={!providerId || !pathSelected || chosenModels.length === 0}
                   title={t("claudeDesktop.dialog.messagesCheckCost")}
                   onClick={() => void runProbe(true)}
                 >

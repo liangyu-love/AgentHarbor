@@ -1,7 +1,7 @@
 //! Claude Desktop 直连：请求、视图与错误类型。
 //!
 //! 这里的类型只描述 Desktop 独立配置能力，**不复用** `ClientConfigRequest`
-//! 或 `TargetId`：Desktop 是四文件事务，且不需要进程重启能力。
+//! 或 `TargetId`：Desktop 使用独立的四文件事务和应用生命周期契约。
 
 use serde::{Deserialize, Serialize};
 
@@ -131,6 +131,7 @@ pub mod reason {
     pub const INCOMPATIBLE_PROTOCOL: &str = "incompatible_protocol";
     pub const UNSUPPORTED_MODEL_ENDPOINT: &str = "unsupported_model_endpoint";
     pub const MODEL_NOT_INCLUDED: &str = "model_not_included";
+    pub const MODEL_REMOVED: &str = "model_removed";
     pub const UNSAFE_MODEL_NAME: &str = "unsafe_model_name";
     pub const UNSUPPORTED_DESKTOP_ROLE: &str = "unsupported_desktop_role";
     pub const ENDPOINT_LAYOUT_UNSUPPORTED: &str = "endpoint_layout_unsupported";
@@ -228,7 +229,8 @@ pub struct ProviderCandidateView {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DesktopCandidates {
-    pub paths: PathsSummary,
+    /// 多安装尚未选择时为空，仍返回完整候选供前端选择。
+    pub paths: Option<PathsSummary>,
     /// 多渠道时的候选；由用户明确选择，不按字典序自动挑。
     pub path_candidates: Vec<PathCandidateView>,
     /// 与 `paths` 对应的候选 id。
@@ -268,6 +270,8 @@ pub struct DesktopStatus {
     pub provider_name: Option<String>,
     pub provider_missing: bool,
     pub models: Vec<ManagedModelView>,
+    /// 用户原始选择，重新应用不能从最终 supports1m 反推 auto/off。
+    pub model_choices: Vec<DesktopModelChoice>,
     pub stale_reasons: Vec<String>,
     pub conflicts: Vec<String>,
     pub recovery_state: Option<String>,

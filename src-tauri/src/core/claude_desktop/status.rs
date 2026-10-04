@@ -7,7 +7,7 @@
 use super::desktop_app;
 use super::paths::{self, DesktopPaths};
 use super::transaction;
-use super::types::{DesktopAction, DesktopActionView, DesktopDetection, DesktopStatus};
+use super::types::{DesktopAction, DesktopActionView, DesktopDetection, DesktopStatus, OneMMode};
 use crate::core::models_dev;
 use crate::core::router::{Provider, Store};
 
@@ -44,33 +44,44 @@ pub fn project(input: StatusInput<'_>) -> DesktopStatus {
     let mut warnings: Vec<String> = Vec::new();
     let mut conflicts: Vec<String> = Vec::new();
 
-    let paths = state.map(state_paths).or(fallback_paths);
+    let mut paths = state.map(state_paths).or(fallback_paths);
+    // 切换隔离根后，旧生产会话的状态查询也不能读取真实 Desktop 文件。
+    if paths::isolated_home().is_some()
+        && paths
+            .as_ref()
+            .is_some_and(|paths| paths::validate_session_paths(paths).is_err())
+    {
+        conflicts.push("paths".to_owned());
+        paths = None;
+    }
     let mode = paths
         .as_ref()
         .map(read_mode)
         .unwrap_or_else(|| "unknown".to_owned());
 
-    let provider_id = state.map(|state| state.provider_id.clone());
+    let active_state = state.filter(|state| !state.tombstone);
+    let provider_id = active_state.map(|state| state.provider_id.clone());
     let provider = provider_id
         .as_ref()
         .and_then(|id| store.providers.iter().find(|entry| &entry.id == id));
-    let provider_missing =
-        provider_id.as_ref().is_some_and(|id| !id.is_empty() && provider.is_none());
+    let provider_missing = provider_id
+        .as_ref()
+        .is_some_and(|id| !id.is_empty() && provider.is_none());
 
-    let stale_reasons = match (state, provider) {
+    let stale_reasons = match (active_state, provider) {
         (Some(state), Some(provider)) => stale_reasons_for(state, provider, app_data_dir),
         _ => Vec::new(),
     };
 
-    if let (Some(state), Some(paths)) = (state, &paths) {
+    if let (Some(state), Some(paths)) = (active_state, &paths) {
         match transaction::drifted_roles(state, paths) {
             Ok(roles) => conflicts.extend(roles.iter().map(|name| format!("drift:{name}"))),
             Err(error) => warnings.push(error.message.clone()),
         }
     }
 
-    let recovery_state = pending
-        .map(|pending| format!("{}:{}", pending.action, pending.transaction_id));
+    let recovery_state =
+        pending.map(|pending| format!("{}:{}", pending.action, pending.transaction_id));
     if pending.is_some() {
         warnings.push("claudeDesktop.warnings.pendingRecovery".to_owned());
     }
@@ -80,7 +91,7 @@ pub fn project(input: StatusInput<'_>) -> DesktopStatus {
     if open_previews {
         warnings.push("claudeDesktop.warnings.openPreviews".to_owned());
     }
-    if isolated {
+    if isolated || paths.as_ref().is_some_and(|paths| paths.isolated) {
         warnings.push("claudeDesktop.warnings.isolated".to_owned());
     }
 
@@ -122,9 +133,14 @@ pub fn project(input: StatusInput<'_>) -> DesktopStatus {
         provider_id,
         provider_name: provider
             .map(|provider| provider.name.clone())
-            .or_else(|| state.map(|state| state.provider_name.clone())),
+            .or_else(|| active_state.map(|state| state.provider_name.clone())),
         provider_missing,
-        models: state.map(|state| state.models.clone()).unwrap_or_default(),
+        models: active_state
+            .map(|state| state.models.clone())
+            .unwrap_or_default(),
+        model_choices: active_state
+            .map(|state| state.model_choices.clone())
+            .unwrap_or_default(),
         stale_reasons,
         conflicts,
         recovery_state,
@@ -155,8 +171,9 @@ pub fn state_paths(state: &transaction::State) -> DesktopPaths {
             .third_party_root
             .join(super::constants::CONFIG_LIBRARY_DIR)
             .join(super::constants::META_FILE),
-        isolated: false,
-        overridden: false,
+        // 旧记录的 identity 已含隔离来源，不能因新增字段缺失变成生产路径。
+        isolated: state.paths_isolated || state.paths_identity.ends_with("|isolated"),
+        overridden: state.paths_overridden,
     }
 }
 
@@ -168,7 +185,8 @@ pub fn read_mode(paths: &DesktopPaths) -> String {
     else {
         return "unknown".to_owned();
     };
-    let Ok(map) = super::profile::parse_object(Some(&text), super::paths::role::THIRD_PARTY_CONFIG) else {
+    let Ok(map) = super::profile::parse_object(Some(&text), super::paths::role::THIRD_PARTY_CONFIG)
+    else {
         return "unknown".to_owned();
     };
     match super::profile::deployment_mode(&map) {
@@ -205,22 +223,56 @@ pub fn stale_reasons_for(
             reasons.push("credential".to_owned());
         }
     }
+    // 旧记录也可从受保护的安装投影中读取地址，避免无声遗漏上游变更。
+    let recorded_endpoint = state.profile_base_url.as_deref().or_else(|| {
+        state
+            .edition(paths::role::PROFILE)
+            .and_then(|edition| match &edition.installed {
+                transaction::ManagedValues::Whole { value: Some(value) } => value
+                    .get(super::profile::KEY_BASE_URL)
+                    .and_then(serde_json::Value::as_str),
+                _ => None,
+            })
+    });
+    match super::provider::endpoint_view(provider) {
+        Ok(endpoint)
+            if recorded_endpoint.is_some_and(|value| value != endpoint.profile_base_url) =>
+        {
+            reasons.push("endpoint".to_owned());
+        }
+        Err(_) => reasons.push("endpoint".to_owned()),
+        _ => {}
+    }
     let catalog = models_dev::load(app_data_dir);
-    // 版本只影响可用角色；stale 判定不用版本策略，否则一次版本探测差异
-    // 会凭空制造 stale。
-    let policy = super::provider::DesktopVersionPolicy::from_version(None);
+    // 已安装的模型通过过版本门禁；这里只检查供应商变化，不再次用未知版本
+    // 将合法 Fable 排除。新应用的版本门禁仍由 prepare 执行。
+    let policy = super::provider::DesktopVersionPolicy {
+        fable_allowed: true,
+    };
     for model in &state.models {
-        let candidate = super::provider::model_candidate(provider, &model.model_id, &catalog, policy);
+        let candidate =
+            super::provider::model_candidate(provider, &model.model_id, &catalog, policy);
         if candidate.exclude_reason.is_some() {
             reasons.push(format!("model:{}", model.model_id));
             continue;
         }
-        // 用户显式填写的展示名被固定下来：卡片改名不应让它变成 stale。
-        let pinned = model.label != candidate.label && model.label != model.model_id;
+        let choice = state
+            .model_choices
+            .iter()
+            .find(|choice| choice.model_id == model.model_id);
+        // 新记录按原始选择判定；旧记录保留已固定的展示名，升级不改用户配置。
+        let pinned = choice
+            .map(|choice| choice.label_override.is_some())
+            .unwrap_or_else(|| model.label != candidate.label && model.label != model.model_id);
         if !pinned && candidate.label != model.label {
             reasons.push(format!("label:{}", model.model_id));
         }
-        if model.one_m && !candidate.supports1m {
+        let context_changed = match choice.map(|choice| choice.one_m_mode) {
+            Some(OneMMode::Auto) => model.one_m != candidate.supports1m,
+            Some(OneMMode::Off) => model.one_m,
+            None => model.one_m && !candidate.supports1m,
+        };
+        if context_changed {
             reasons.push(format!("context:{}", model.model_id));
         }
     }
@@ -279,4 +331,150 @@ fn action_views(
 /// 供 Manager 复用的「没有管理记录时」的路径提示。
 pub fn describe_isolated(paths: &DesktopPaths) -> bool {
     paths.isolated || paths::isolated_home().is_some()
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::super::types::{DesktopModelChoice, ManagedModelView};
+    use super::*;
+    use crate::core::newapi;
+
+    fn fixture(model_id: &str) -> (std::path::PathBuf, Provider, transaction::State) {
+        let root = std::env::temp_dir().join(format!("desktop-status-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("Claude")).unwrap();
+        let mut paths =
+            DesktopPaths::from_roots(root.join("Claude"), root.join("Claude-3p")).unwrap();
+        paths.overridden = true;
+        let provider = Provider {
+            id: "status-fixture".into(),
+            name: "Fixture".into(),
+            base_url: "https://relay.example".into(),
+            api_key: "synthetic-status-key".into(),
+            model: model_id.into(),
+            models: vec![newapi::Model {
+                id: model_id.into(),
+                overrides: newapi::ModelOverrides {
+                    context_window: Some(100_000),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut state = transaction::next_state(
+            &[],
+            &[],
+            &paths,
+            1,
+            "fixture-tx",
+            &provider.id,
+            &provider.name,
+            super::super::provider::credential_fingerprint(&provider),
+            &[ManagedModelView {
+                model_id: model_id.into(),
+                label: model_id.into(),
+                one_m: false,
+            }],
+            transaction::AppliedMode::Direct,
+        )
+        .unwrap();
+        state.model_choices = vec![DesktopModelChoice {
+            model_id: model_id.into(),
+            label_override: None,
+            one_m_mode: OneMMode::Auto,
+        }];
+        state.profile_base_url = Some(
+            super::super::provider::endpoint_view(&provider)
+                .unwrap()
+                .profile_base_url,
+        );
+        (root, provider, state)
+    }
+
+    #[test]
+    fn endpoint_and_removed_or_excluded_models_are_stale() {
+        let (root, card, state) = fixture("claude-sonnet-4-6");
+        assert!(stale_reasons_for(&state, &card, &root).is_empty());
+        let mut changed = card.clone();
+        changed.base_url = "https://another-relay.example".into();
+        assert!(stale_reasons_for(&state, &changed, &root).contains(&"endpoint".into()));
+        changed = card.clone();
+        changed.models[0].included = false;
+        assert!(
+            stale_reasons_for(&state, &changed, &root).contains(&"model:claude-sonnet-4-6".into())
+        );
+        changed.models.clear();
+        changed.model = "claude-haiku-4-5".into();
+        assert!(
+            stale_reasons_for(&state, &changed, &root).contains(&"model:claude-sonnet-4-6".into())
+        );
+    }
+
+    #[test]
+    fn auto_capability_changes_and_labels_use_original_choices() {
+        let (root, mut card, mut state) = fixture("claude-sonnet-4-6");
+        card.models[0].overrides.context_window = Some(1_000_000);
+        assert!(
+            stale_reasons_for(&state, &card, &root).contains(&"context:claude-sonnet-4-6".into())
+        );
+        state.model_choices[0].one_m_mode = OneMMode::Off;
+        assert!(
+            !stale_reasons_for(&state, &card, &root).contains(&"context:claude-sonnet-4-6".into())
+        );
+        card.models[0].display_name = "Updated label".into();
+        assert!(stale_reasons_for(&state, &card, &root).contains(&"label:claude-sonnet-4-6".into()));
+        state.model_choices[0].label_override = Some(state.models[0].label.clone());
+        assert!(
+            !stale_reasons_for(&state, &card, &root).contains(&"label:claude-sonnet-4-6".into())
+        );
+    }
+
+    #[test]
+    fn installed_fable_is_not_rejected_by_an_unknown_detection_version() {
+        let (root, card, state) = fixture("claude-fable-5");
+        assert!(stale_reasons_for(&state, &card, &root).is_empty());
+    }
+
+    #[test]
+    fn a_legacy_isolated_identity_remains_isolated() {
+        let (_, _, mut state) = fixture("claude-sonnet-4-6");
+        state.paths_identity = format!(
+            "{}|{}|isolated",
+            paths::display(&state.normal_root),
+            paths::display(&state.third_party_root)
+        );
+        state.paths_isolated = false;
+        assert!(state_paths(&state).isolated);
+        state.paths_overridden = true;
+        assert!(state_paths(&state).overridden);
+    }
+
+    #[test]
+    fn ended_sessions_do_not_report_orphaned_or_stale_provider_state() {
+        let _env_guard = super::super::env_test_lock();
+        let (root, _, mut state) = fixture("claude-sonnet-4-6");
+        state.tombstone = true;
+        let status = project(StatusInput {
+            detection: DesktopDetection {
+                platform: "fixture".into(),
+                version: "unknown".into(),
+                version_source: "fixture".into(),
+                installed: true,
+                notes: vec![],
+            },
+            state: Some(&state),
+            pending: None,
+            open_previews: false,
+            store: &Store::default(),
+            app_data_dir: &root,
+            fallback_paths: None,
+            isolated: false,
+            backup_count: 0,
+        });
+        assert!(!status.is_managed);
+        assert!(!status.provider_missing);
+        assert_eq!(status.management_state, "unmanaged");
+        assert!(status.models.is_empty() && status.model_choices.is_empty());
+        assert!(status.conflicts.is_empty() && status.stale_reasons.is_empty());
+    }
 }

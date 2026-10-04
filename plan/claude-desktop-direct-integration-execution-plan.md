@@ -2,19 +2,18 @@
 
 日期：2026-10-04
 
-状态：**首期已实施（P0–P5 自动化部分通过）**；本文既是实施规格也是验收依据。
+状态：**首期核心实现已落地，复审修复完成，完整发布验收仍未通过**；本文既是实施规格也是验收依据。
 
-实施状态（自动化）：
+当前实施状态（替代早期阶段性结论）：
 
-- 后端独立模块 `src-tauri/src/core/claude_desktop/`（constants/types/paths/provider/profile/transaction/probe/lock/mod）与命令层 `src-tauri/src/commands/claude_desktop.rs` 已按第 4 节落地；五类命令已注册。
+- 后端独立模块与命令层、供应商页卡片和对话框已落地，复用已有中转卡片；未接本地路由模式。
 - 前端独立卡片与对话框 `src/components/newapi/claude-desktop-config-{card,dialog}.tsx`、`src/lib/claude-desktop.ts`、`src/types/claude-desktop.ts` 已接入 NewApiPage，复用既有中转卡片，不重新填写地址与密钥。
-- 自动化结果：`pnpm test:rust` 693 个库测试 + 9 个 local_workflows 全通过（其中 `core::claude_desktop` 单元测试、`tests/claude_desktop_workflows.rs` 端到端 9 例）；`pnpm test:claude-desktop-config` 10 组检查全通过；`pnpm test:frontend` 与 `pnpm build` 通过。
+- 修复基线为六个实施提交的末端 `5030efd`。复审发现事务失败回滚、冲突门禁、进程身份与隔离来源等边界缺陷；已按优先级修复、补回归并完成修复自审。实际修复后测试结果见验收记录的“复审修复”节。
 - 上游连通性已按用户指定的测试中转核对通过：卡片 `kiro-fucheers`（`https://www.fucheers.top/`）配 `claude-haiku-4-5-20251001`，`/v1/models` 与 `/v1/messages` 在**裸 Bearer**（Desktop 的鉴权形态、不带 `x-api-key`）下均为 200，且上游自报模型与请求一致。
-- **真实接管已在本机执行（用户显式授权）**：四文件已写入并重启 Desktop。Desktop 日志证明 profile 被接受（`Credentials loaded from managed config`）、3P 模式生效、`picker = 1 (inferenceModels)`、`inference apiHost=https://www.fucheers.top`、`ConfigHealth=healthy`。因此 **L01、L03 的“配置被接受并生效”部分已验证**；省略 `coworkEgressAllowedHosts` 的最小 profile 在该版本（2.19675.0）上可用。
-- **仍未验证**：真实对话往返（L02/L04/L05）——需要在 Desktop 里实际发消息并核对中转侧日志里的 model 字段；多轮、流式、工具调用同理。因此首期仍不声明“整体真实可用”。
-- 新增「重启 Claude Desktop」能力：先完全退出（含托盘）再启动，使刚写入的配置立即生效。顺序是**先停、再写、最后启动**，因为 Desktop 在退出时会回写自身状态。本机已核实启动方式为 MSIX 包激活（`Claude_pzs8sxrjxfjjc!Claude`），应用未运行。隔离根下不提供重启。
-- A01–A40 当前为 **22 项通过、18 项部分通过、0 项未覆盖**。
-- 真实 Desktop 实测补充：**L01 通过**、**L02 通过**（抓包证实 `POST /v1/messages` 只带 `Authorization`、`model` 原样出站）、**L04 部分通过**（多轮上下文 `is_resume=true` 且 transcript 递增，流式链路已单独验证）、**L05 通过**（真实工具调用回合 `Turn succeeded`）、**L06/L08 部分通过**；L03 菜单已呈现 3 个模型待确认，L07/L09/L10 未执行。
+- 已有 Windows + Desktop 2.19675.0 实施记录支持 L01/L02/L03/L05/L10 的核心链路，L09 由 loopback mock 验证限制路径；L07 仅文件层通过。复审修复不重新执行真实接管、真实进程控制或计费请求。
+- 写入前必须完全退出 Desktop（含托盘）；预览和提交检测到运行会拒绝写入，退出后重新预览。提交后的启动入口仅控制已确认的安装；隔离或覆盖路径不提供真实进程控制。
+- 原记录 A01–A40 为 22 项通过、18 项部分通过。补充回归不自动将整张验收表改为通过；发布仍按第 9.3 节门槛逐项核验。
+- 尚缺 L04 的 Desktop 流式渲染观察、L06 真实恢复、L08“本地路由启动后退出”组合、L07 官方流程以及 macOS/Linux 真机验证；Cowork 首期不承诺。
 - 实施后代码审查：删除 6 处冗余/死代码，把只读状态投影与预览票据从 1396 行的 `mod.rs` 抽出为 `status.rs` / `tickets.rs`，能力探测从 `probe.rs` 抽出为 `capability.rs`；对外行为不变。
 - 实施中发现并修复的缺陷、逐条 A01–A40 映射与回滚路径见 `docs/claude-desktop-acceptance-record.md`；用户文档见 `docs/claude-desktop-direct-connection.md`。
 
@@ -33,8 +32,8 @@
 1. 打开现有中转页面的 **Claude Desktop** 卡片。
 2. 选择一张已经保存的供应商卡片，无需重新输入地址、密钥或余额凭据。
 3. 从该卡片的兼容模型中选取要展示的模型，可调整展示名称和关闭 1M 标记。
-4. 查看四个文件的变更摘要、实际请求地址、兼容性提示，再应用。
-5. 完全退出并重新启动 Claude Desktop，在真实应用内确认模型菜单和对话。
+4. 完全退出 Desktop（含托盘），再查看四文件摘要、实际地址与兼容性提示并应用；运行时拒绝写入，退出后重新预览。
+5. 启动 Claude Desktop，在真实应用内确认模型菜单和对话。
 6. 需要撤销时选择“恢复接管前配置”；确实需要官方模式时使用独立的“切换官方模式”。
 
 首期与后续范围：

@@ -172,9 +172,30 @@ pub async fn restart_claude_desktop(
     let paths = paths(&repo)?;
     tauri::async_runtime::spawn_blocking(move || {
         let manager = manager(&paths.app_data_dir);
-        // 用已保存的状态解析路径：不重新做平台发现，避免重启到另一个安装。
+        // Stored roots are references, not process-control authorization. Recheck
+        // their current candidate membership and isolation before using them.
         let desktop_paths = match manager.load_state().map_err(encode)? {
-            Some(state) => paths_from_state(&state),
+            Some(state) => {
+                let saved = paths_from_state(&state);
+                claude_desktop::paths::validate_session_paths(&saved).map_err(encode)?;
+                if saved.isolated || saved.overridden {
+                    return Err(encode(Box::new(
+                        desktop::DesktopError::new(
+                            desktop::error_code::PROCESS,
+                            "claudeDesktop.errors.launchUnavailable",
+                        )
+                        .action("openManually"),
+                    )));
+                }
+                manager
+                    .resolve_paths(&desktop::PathsChoice {
+                        normal_root: Some(claude_desktop::paths::display(&saved.normal_root)),
+                        third_party_root: Some(claude_desktop::paths::display(
+                            &saved.third_party_root,
+                        )),
+                    })
+                    .map_err(encode)?
+            }
             None => manager
                 .resolve_paths(&desktop::PathsChoice::default())
                 .map_err(encode)?,

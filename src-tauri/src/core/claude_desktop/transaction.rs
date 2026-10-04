@@ -16,7 +16,8 @@ use super::constants::MAX_BACKUPS;
 use super::paths::{self, role, DesktopPaths};
 use super::profile::{self, MetaDocument, MetaEntry};
 use super::types::{
-    error_code, DesktopError, DesktopResult, FileChangeView, ManagedChangeView, ManagedModelView,
+    error_code, DesktopError, DesktopModelChoice, DesktopResult, FileChangeView, ManagedChangeView,
+    ManagedModelView,
 };
 
 pub const STATE_SCHEMA: u32 = 1;
@@ -245,6 +246,10 @@ pub struct State {
     pub paths_identity: String,
     pub normal_root: PathBuf,
     pub third_party_root: PathBuf,
+    #[serde(default)]
+    pub paths_isolated: bool,
+    #[serde(default)]
+    pub paths_overridden: bool,
     pub provider_id: String,
     pub provider_name: String,
     /// 上次应用时所用推理密钥的**指纹**（SHA-256 十六进制）。
@@ -255,6 +260,12 @@ pub struct State {
     #[serde(default)]
     pub credential_fingerprint: Option<String>,
     pub models: Vec<ManagedModelView>,
+    /// 用户原始选择：Auto/Off 和显式展示名必须在重新应用时保留。
+    #[serde(default)]
+    pub model_choices: Vec<DesktopModelChoice>,
+    /// Desktop 实际使用的端点根，用于判断供应商端点变更。
+    #[serde(default)]
+    pub profile_base_url: Option<String>,
     pub last_applied_at: i64,
     pub restart_required: bool,
     pub data: ManagedData,
@@ -271,6 +282,8 @@ impl State {
         self.tombstone = true;
         self.data.files.clear();
         self.models.clear();
+        self.model_choices.clear();
+        self.profile_base_url = None;
         // 管理已结束：不再保留凭据指纹。
         self.credential_fingerprint = None;
         self.restart_required = false;
@@ -536,6 +549,10 @@ impl Default for ProfileBaseline {
 #[derive(Debug, Clone, Default)]
 pub struct TakeoverBaseline {
     pub profile: ProfileBaseline,
+    /// 原文仅在撤回自己 profile 时使用，确保既有文件字节不被重排。
+    pub profile_text: Option<String>,
+    pub meta_before: Option<String>,
+    pub configs_existed: std::collections::HashMap<String, bool>,
     /// 按文件角色索引的接管前模式。
     pub modes: std::collections::HashMap<String, String>,
 }
@@ -549,6 +566,7 @@ impl TakeoverBaseline {
         for edition in editions {
             match (edition.role.as_str(), &edition.baseline) {
                 (role::PROFILE, ManagedValues::Whole { value }) => {
+                    baseline.profile_text = edition.before.clone();
                     baseline.profile = match value {
                         None => ProfileBaseline::Absent,
                         Some(text) => {
@@ -563,6 +581,7 @@ impl TakeoverBaseline {
                     };
                 }
                 (_, ManagedValues::Fields { values }) => {
+                    baseline.configs_existed.insert(edition.role.clone(), edition.existed_before);
                     if let Some(mode) = values
                         .get(profile::KEY_DEPLOYMENT_MODE)
                         .and_then(Value::as_str)
@@ -570,6 +589,7 @@ impl TakeoverBaseline {
                         baseline.modes.insert(edition.role.clone(), mode.to_owned());
                     }
                 }
+                (role::META, _) => baseline.meta_before = edition.before.clone(),
                 _ => {}
             }
         }
@@ -592,27 +612,35 @@ pub fn build_plan(
     // 顺序：自己的 profile → meta 注册/选中 → 3P config → normal config。
     // 先准备好 profile 再切 normal mode，减少指向尚不存在 profile 的时间。
     match &desired.profile {
-        Some(value) => plans.push(FilePlan {
-            role: role::PROFILE.to_owned(),
-            path: paths.profile_path.clone(),
-            after_text: Some(profile::to_text(value, role::PROFILE)?),
-            after: ManagedValues::Whole {
-                value: Some(value.clone()),
-            },
-            after_keys: profile_plan_keys(profile_before.as_deref()),
-        }),
+        Some(value) => {
+            let text = profile::to_text(value, role::PROFILE)?;
+            if profile_before.as_deref() != Some(text.as_str()) {
+                plans.push(FilePlan {
+                    role: role::PROFILE.to_owned(),
+                    path: paths.profile_path.clone(),
+                    after_text: Some(text),
+                    after: ManagedValues::Whole {
+                        value: Some(value.clone()),
+                    },
+                    after_keys: profile_plan_keys(profile_before.as_deref()),
+                });
+            }
+        }
         None => {
             match &baseline.profile {
                 // 接管前就有内容：写回原始字节，不能凭同一个 id 删除。
-                ProfileBaseline::PreExisting(baseline) => {
-                    let text = profile::to_text(baseline, role::PROFILE)?;
+                ProfileBaseline::PreExisting(original) => {
+                    let text = match &baseline.profile_text {
+                        Some(text) => text.clone(),
+                        None => profile::to_text(original, role::PROFILE)?,
+                    };
                     if profile_before.as_deref() != Some(text.as_str()) {
                         plans.push(FilePlan {
                             role: role::PROFILE.to_owned(),
                             path: paths.profile_path.clone(),
                             after_text: Some(text),
                             after: ManagedValues::Whole {
-                                value: Some(baseline.clone()),
+                                value: Some(original.clone()),
                             },
                             after_keys: vec![KeyValue {
                                 path: paths::display(&paths.profile_path),
@@ -644,11 +672,28 @@ pub fn build_plan(
     }
 
     let meta_document = MetaDocument::parse(meta_before.as_deref())?;
-    let meta_next = meta_document.render(
+    let mut meta_next = meta_document.render(
         desired.own_entry.as_ref(),
         Some(desired.applied_id.as_deref()),
         desired.entry_insert_at,
     )?;
+    if desired.mode.is_none() && desired.profile.is_none() {
+        let original = MetaDocument::parse(baseline.meta_before.as_deref())?;
+        let original_entries = original.entry_list()?;
+        let original_index = original_entries.iter().position(MetaEntry::is_own).unwrap_or(0);
+        meta_next = meta_document.render(desired.own_entry.as_ref(), Some(None), original_index)?;
+        if let Some(object) = meta_next.as_object_mut() {
+            if let Some(value) = original.applied_id {
+                object.insert(profile::KEY_APPLIED_ID.to_owned(), value);
+            }
+            if original.entries.is_none()
+                && object.get(profile::KEY_ENTRIES).and_then(Value::as_array)
+                    .is_some_and(|entries| entries.is_empty())
+            {
+                object.remove(profile::KEY_ENTRIES);
+            }
+        }
+    }
     let meta_current = Value::Object(profile::parse_object(meta_before.as_deref(), role::META)?);
     if meta_next != meta_current {
         let own_present = meta_document.own_entry_present()?;
@@ -668,17 +713,18 @@ pub fn build_plan(
                 after: Some(applied_label(desired.applied_id.as_deref(), &before_applied)),
             });
         }
+        let after_text = if desired.mode.is_none() && desired.profile.is_none()
+            && baseline.meta_before.is_none() && meta_is_empty(&meta_next)
+        {
+            None
+        } else {
+            Some(profile::to_text(&meta_next, role::META)?)
+        };
         plans.push(FilePlan {
             role: role::META.to_owned(),
             path: paths.meta_path.clone(),
-            after_text: Some(profile::to_text(&meta_next, role::META)?),
-            after: ManagedValues::Meta {
-                own_entry: desired.own_entry.as_ref().map(MetaEntry::to_value),
-                applied_id: desired
-                    .applied_id
-                    .as_ref()
-                    .map(|id| Value::String(id.clone())),
-            },
+            after_text,
+            after: meta_values(&meta_next),
             after_keys: keys,
         });
     }
@@ -713,10 +759,17 @@ pub fn build_plan(
         } else {
             single_field(profile::KEY_DEPLOYMENT_MODE, after_value.clone())
         };
+        let after_text = if desired.mode.is_none() && map.is_empty()
+            && baseline.configs_existed.get(file_role) == Some(&false)
+        {
+            None
+        } else {
+            Some(profile::to_text(&Value::Object(map), file_role)?)
+        };
         plans.push(FilePlan {
             role: file_role.to_owned(),
             path: path.to_path_buf(),
-            after_text: Some(profile::to_text(&Value::Object(map), file_role)?),
+            after_text,
             after: ManagedValues::Fields {
                 values: after_fields,
             },
@@ -728,6 +781,15 @@ pub fn build_plan(
         });
     }
 
+    if desired.profile.is_none() {
+        // 撤回时先取消启用/选中，最后撤回 profile，避免指向已删除文件。
+        plans.sort_by_key(|plan| match plan.role.as_str() {
+            role::NORMAL_CONFIG => 0,
+            role::THIRD_PARTY_CONFIG => 1,
+            role::META => 2,
+            _ => 3,
+        });
+    }
     Ok(plans)
 }
 
@@ -796,10 +858,14 @@ pub fn next_state(
         paths_identity: paths.identity(),
         normal_root: paths.normal_root.clone(),
         third_party_root: paths.third_party_root.clone(),
+        paths_isolated: paths.isolated,
+        paths_overridden: paths.overridden,
         provider_id: provider_id.to_owned(),
         provider_name: provider_name.to_owned(),
         credential_fingerprint: credential_fingerprint.clone(),
         models: models.to_vec(),
+        model_choices: Vec::new(),
+        profile_base_url: None,
         last_applied_at: chrono::Utc::now().timestamp(),
         restart_required: true,
         data: ManagedData { files, applied_mode },
@@ -834,7 +900,11 @@ pub fn drifted_roles(state: &State, paths: &DesktopPaths) -> DesktopResult<Vec<S
             None => null_for(edition),
             Some(text) => parse_for(edition, text)?,
         };
-        let now = read_managed(&current, edition);
+        let now = if text.is_none() && matches!(edition.baseline, ManagedValues::Whole { .. }) {
+            ManagedValues::Whole { value: None }
+        } else {
+            read_managed(&current, edition)
+        };
         if edition.installed.drifted(&now) {
             out.push(edition.role.clone());
         }
@@ -869,101 +939,20 @@ fn parse_for(edition: &Edition, text: &str) -> DesktopResult<Value> {
 
 /// 依据基线撤回本工具写入的受管目标。幂等：只有当前值与预期吻合才写。
 pub fn restore_edition(edition: &Edition, path: &Path, after: &ManagedValues) -> DesktopResult<()> {
-    let current = read_text_or(path)?;
-    match &edition.baseline {
-        ManagedValues::Whole { value: baseline_value } => {
-            let Some(text) = &current else {
-                // 文件已不存在：目标态已达成。
-                return Ok(());
-            };
-            let now: Value = serde_json::from_str(text).unwrap_or(Value::Null);
-            // 已经被外部改写时不能整体还原，只报告冲突。
-            let installed = value_of(after);
-            let is_installed = !installed.is_null() && now == installed;
-            let is_baseline = baseline_value.as_ref().is_some_and(|value| now == *value);
-            if !is_installed && !is_baseline {
-                return Err(conflict_error());
-            }
-            match baseline_value {
-                // 文件在本工具接管前存在：写回原字节。
-                Some(_) => match &edition.before {
-                    Some(text) => write_text(path, text),
-                    None => Ok(()),
-                },
-                // 接管前不存在：只有内容确实仍是我们写入的 profile 才删除。
-                None => {
-                    if is_installed {
-                        remove_file(path)
-                    } else {
-                        Ok(())
-                    }
-                }
-            }
-        }
-        ManagedValues::Fields { values } => {
-            let Some(text) = current else {
-                return Ok(());
-            };
-            let mut map = profile::parse_object(Some(&text), &edition.role)?;
-            // 只在当前受管值仍等于安装值时才撤；否则说明外部改过。
-            for key in managed_keys(edition) {
-                let installed = installed_field(edition, &key);
-                let now = map.get(&key).cloned();
-                if installed.is_some() && now != installed {
-                    return Err(conflict_error());
-                }
-            }
-            for key in managed_keys(edition) {
-                match values.get(&key) {
-                    Some(value) => {
-                        map.insert(key.clone(), value.clone());
-                    }
-                    None => {
-                        map.remove(&key);
-                    }
-                }
-            }
-            if !edition.existed_before && map.is_empty() {
-                return remove_file(path);
-            }
-            write_document(path, &Value::Object(map), &edition.role)
-        }
-        ManagedValues::Meta { applied_id, .. } => {
-            let Some(text) = current else {
-                return Ok(());
-            };
-            let meta = MetaDocument::parse(Some(&text))?;
-            // 自身条目仍是我们写入的才撤；已被外部改写则冲突。
-            let current_own = meta
-                .entry_list()?
-                .into_iter()
-                .find(MetaEntry::is_own)
-                .map(|entry| entry.to_value());
-            let installed_own = installed_own_entry(edition);
-            if current_own.is_some() && current_own != installed_own {
-                return Err(conflict_error());
-            }
-            if let Some(pointer) = meta.applied_id_str() {
-                if pointer != super::constants::PROFILE_ID {
-                    return Err(Box::new(
-                        DesktopError::new(
-                            error_code::CONFLICT,
-                            "claudeDesktop.errors.pointerMovedExternally",
-                        )
-                        .file(role::META)
-                        .action("rebaseline"),
-                    ));
-                }
-            }
-            let next = meta.render(None, Some(applied_id.as_ref().and_then(Value::as_str)), 0)?;
-            // 接管前该文件不存在、且清空自身内容后确实没有别的键时才删除；
-            // 仍有外部条目或未知键时保留文件。
-            if !edition.existed_before && meta_is_empty(&next) {
-                return remove_file(path);
-            }
-            write_document(path, &next, &edition.role)
-        }
-    }
+    let after_text = match after {
+        ManagedValues::Whole { value: Some(value) } => Some(profile::to_text(value, &edition.role)?),
+        _ => None,
+    };
+    let plan = FilePlan {
+        role: edition.role.clone(), path: path.to_path_buf(), after_text,
+        after: after.clone(), after_keys: Vec::new(),
+    };
+    let before = FileSnapshot {
+        role: edition.role.clone(), path: path.to_path_buf(),
+        existed: edition.existed_before, text: edition.before.clone(),
+    };
+    // Fields/Meta 只有受管值，没有完整的 after 文本；None 不能被当成删除快照。
+    rollback_file(&plan, &before, matches!(after, ManagedValues::Whole { .. }))
 }
 
 /// 空 meta：没有条目、没有 `appliedId`，也没有未知键。
@@ -973,27 +962,6 @@ fn meta_is_empty(document: &Value) -> bool {
     };
     let entries_empty = meta.entry_list().map(|list| list.is_empty()).unwrap_or(false);
     entries_empty && meta.applied_id.is_none() && meta.extra.is_empty()
-}
-
-fn value_of(values: &ManagedValues) -> Value {
-    match values {
-        ManagedValues::Whole { value } => value.clone().unwrap_or(Value::Null),
-        _ => Value::Null,
-    }
-}
-
-fn installed_field(edition: &Edition, key: &str) -> Option<Value> {
-    match &edition.installed {
-        ManagedValues::Fields { values } => values.get(key).cloned(),
-        _ => None,
-    }
-}
-
-fn installed_own_entry(edition: &Edition) -> Option<Value> {
-    match &edition.installed {
-        ManagedValues::Meta { own_entry, .. } => own_entry.clone(),
-        _ => None,
-    }
 }
 
 fn managed_keys(edition: &Edition) -> Vec<String> {
@@ -1046,7 +1014,7 @@ pub fn backup_count(app_data_dir: &Path) -> usize {
 }
 
 /// 读取四文件当前快照。
-pub fn snapshot(paths: &DesktopPaths) -> Vec<FileSnapshot> {
+pub fn snapshot(paths: &DesktopPaths) -> DesktopResult<Vec<FileSnapshot>> {
     [
         (role::NORMAL_CONFIG, &paths.normal_config),
         (role::THIRD_PARTY_CONFIG, &paths.third_party_config),
@@ -1054,11 +1022,14 @@ pub fn snapshot(paths: &DesktopPaths) -> Vec<FileSnapshot> {
         (role::META, &paths.meta_path),
     ]
     .into_iter()
-    .map(|(file_role, path)| FileSnapshot {
-        role: file_role.to_owned(),
-        path: path.clone(),
-        existed: path.exists(),
-        text: read_text(path).ok().flatten(),
+    .map(|(file_role, path)| {
+        let text = read_text_or(path)?;
+        Ok(FileSnapshot {
+            role: file_role.to_owned(),
+            path: path.clone(),
+            existed: text.is_some(),
+            text,
+        })
     })
     .collect()
 }
@@ -1086,27 +1057,14 @@ pub fn apply_plan(plan: &FilePlan) -> DesktopResult<()> {
 /// 依据 before 快照逆向恢复已经改动的文件。
 pub fn rollback(pending: &Pending) -> DesktopResult<Vec<String>> {
     let mut failed = Vec::new();
-    for plan in &pending.files {
-        let Some(edition) = pending
-            .previous_state
-            .as_ref()
-            .and_then(|state| state.edition(&plan.role))
-        else {
-            // 没有基线记录（首次接管前状态缺失）时用 pending.before 原文兜底。
-            let snapshot = pending.before.iter().find(|item| item.role == plan.role);
-            let result = match snapshot {
-                Some(snapshot) => match &snapshot.text {
-                    Some(text) => write_text(&plan.path, text),
-                    None => remove_file(&plan.path),
-                },
-                None => Ok(()),
-            };
-            if result.is_err() {
-                failed.push(plan.role.clone());
-            }
-            continue;
-        };
-        if restore_edition(edition, &plan.path, &plan.after).is_err() {
+    // 与写入相反的顺序，先撤回启用指针，再撤回 profile。
+    for plan in pending.files.iter().rev() {
+        let snapshot = pending.before.iter().find(|item| item.role == plan.role);
+        if snapshot
+            .ok_or_else(conflict_error)
+            .and_then(|before| rollback_file(plan, before, true))
+            .is_err()
+        {
             failed.push(plan.role.clone());
         }
     }
@@ -1117,6 +1075,132 @@ pub fn rollback(pending: &Pending) -> DesktopResult<Vec<String>> {
             DesktopError::new(error_code::RECOVERY_REQUIRED, "claudeDesktop.errors.recoveryRequired")
                 .param(failed.join(",")),
         ))
+    }
+}
+
+fn text_equivalent(left: Option<&str>, right: Option<&str>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => match (
+            serde_json::from_str::<Value>(left),
+            serde_json::from_str::<Value>(right),
+        ) {
+            (Ok(left), Ok(right)) => left == right,
+            _ => left == right,
+        },
+        _ => false,
+    }
+}
+
+/// 已提交的恢复只核对本工具负责的值，外部新增 MCP/偏好/meta 条目不阻止清理。
+pub fn after_matches(plan: &FilePlan) -> DesktopResult<bool> {
+    let current = read_text_or(&plan.path)?;
+    managed_after_matches(plan, current.as_deref())
+}
+
+fn managed_after_matches(plan: &FilePlan, current: Option<&str>) -> DesktopResult<bool> {
+    Ok(match &plan.after {
+        ManagedValues::Whole { value } => {
+            let now = current.map(serde_json::from_str::<Value>).transpose()
+                .map_err(|_| conflict_error())?;
+            &now == value
+        }
+        ManagedValues::Fields { values } => {
+            let now = profile::parse_object(current, &plan.role)?;
+            now.get(profile::KEY_DEPLOYMENT_MODE) == values.get(profile::KEY_DEPLOYMENT_MODE)
+        }
+        ManagedValues::Meta { own_entry, applied_id } => {
+            let now = MetaDocument::parse(current)?;
+            let entry = now.entry_list()?.iter().find(|entry| entry.is_own()).map(MetaEntry::to_value);
+            &entry == own_entry && &now.applied_id == applied_id
+        }
+    })
+}
+
+/// 回滚只回到本笔事务开始时的状态，绝不使用首次接管基线。
+/// 共享文件允许保留外部无关键，但受管值若是 before/after 之外的第三值必须报冲突。
+fn rollback_file(plan: &FilePlan, before: &FileSnapshot, full_after_snapshot: bool) -> DesktopResult<()> {
+    if before.path != plan.path || before.existed != before.text.is_some() {
+        return Err(conflict_error());
+    }
+    let current = read_text_or(&plan.path)?;
+    if text_equivalent(current.as_deref(), before.text.as_deref()) {
+        return Ok(());
+    }
+    let target = if full_after_snapshot
+        && text_equivalent(current.as_deref(), plan.after_text.as_deref())
+        && managed_after_matches(plan, current.as_deref())?
+    {
+        before.text.clone()
+    } else {
+        match &plan.after {
+            ManagedValues::Whole { .. } => return Err(conflict_error()),
+            ManagedValues::Fields { values: after } => {
+                let baseline = profile::parse_object(before.text.as_deref(), &plan.role)?;
+                let mut now = profile::parse_object(current.as_deref(), &plan.role)?;
+                if now.get(profile::KEY_DEPLOYMENT_MODE) == baseline.get(profile::KEY_DEPLOYMENT_MODE) {
+                    return Ok(());
+                }
+                let keys = [profile::KEY_DEPLOYMENT_MODE];
+                for key in keys {
+                    if now.get(key) != baseline.get(key) && now.get(key) != after.get(key) {
+                        return Err(conflict_error());
+                    }
+                    match baseline.get(key) {
+                        Some(value) => { now.insert(key.to_owned(), value.clone()); }
+                        None => { now.remove(key); }
+                    }
+                }
+                if !before.existed && now.is_empty() {
+                    None
+                } else {
+                    Some(profile::to_text(&Value::Object(now), &plan.role)?)
+                }
+            }
+            ManagedValues::Meta { own_entry: after_entry, applied_id: after_id } => {
+                let baseline = MetaDocument::parse(before.text.as_deref())?;
+                let now = MetaDocument::parse(current.as_deref())?;
+                let entries = baseline.entry_list()?;
+                let old_entry = entries.iter().find(|entry| entry.is_own());
+                let old_value = old_entry.map(MetaEntry::to_value);
+                let current_entry = now.entry_list()?.iter().find(|entry| entry.is_own())
+                    .map(MetaEntry::to_value);
+                if current_entry == old_value && now.applied_id == baseline.applied_id {
+                    return Ok(());
+                }
+                if (current_entry != old_value && current_entry != *after_entry)
+                    || (now.applied_id != baseline.applied_id && now.applied_id != *after_id)
+                {
+                    return Err(conflict_error());
+                }
+                let index = entries.iter().position(MetaEntry::is_own).unwrap_or(0);
+                let mut merged = now.render(old_entry, Some(None), index)?;
+                let object = merged.as_object_mut().ok_or_else(conflict_error)?;
+                if let Some(value) = &baseline.applied_id {
+                    object.insert(profile::KEY_APPLIED_ID.to_owned(), value.clone());
+                }
+                // render 会生成 entries=[]；接管前没有这个键时撤回空容器。
+                if baseline.entries.is_none()
+                    && object.get(profile::KEY_ENTRIES).and_then(Value::as_array)
+                        .is_some_and(|entries| entries.is_empty())
+                {
+                    object.remove(profile::KEY_ENTRIES);
+                }
+                if !before.existed && object.is_empty() {
+                    None
+                } else {
+                    Some(profile::to_text(&merged, &plan.role)?)
+                }
+            }
+        }
+    };
+    // 不在读取与回写之间静默覆盖新修改。
+    if read_text_or(&plan.path)? != current {
+        return Err(conflict_error());
+    }
+    match target {
+        Some(text) => write_text(&plan.path, &text),
+        None => remove_file(&plan.path),
     }
 }
 

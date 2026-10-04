@@ -33,7 +33,12 @@ pub mod role {
     pub const META: &str = "meta";
 }
 
-pub const FILE_ROLES: [&str; 4] = [role::PROFILE, role::META, role::THIRD_PARTY_CONFIG, role::NORMAL_CONFIG];
+pub const FILE_ROLES: [&str; 4] = [
+    role::PROFILE,
+    role::META,
+    role::THIRD_PARTY_CONFIG,
+    role::NORMAL_CONFIG,
+];
 
 pub fn isolated_home() -> Option<PathBuf> {
     std::env::var_os("AGENT_HARBOR_CLIENT_HOME")
@@ -62,14 +67,14 @@ pub fn normalize(path: &Path) -> PathBuf {
 }
 
 fn roots_identity_conflict(normal: &Path, third_party: &Path) -> Option<String> {
-    if normal == third_party {
+    if paths_equal(normal, third_party) {
         return Some("sameRoot".into());
     }
     // 一个根不能包含另一个根，否则四文件会互相覆盖。
-    if normal.starts_with(third_party) {
+    if path_is_within(normal, third_party) {
         return Some("normalInsideThirdParty".into());
     }
-    if third_party.starts_with(normal) {
+    if path_is_within(third_party, normal) {
         return Some("thirdPartyInsideNormal".into());
     }
     None
@@ -82,8 +87,11 @@ impl DesktopPaths {
         let third_party_root = normalize(&third_party);
         if let Some(reason) = roots_identity_conflict(&normal_root, &third_party_root) {
             return Err(Box::new(
-                DesktopError::new(error_code::PATHS_COLLISION, "claudeDesktop.errors.pathsCollision")
-                    .param(reason),
+                DesktopError::new(
+                    error_code::PATHS_COLLISION,
+                    "claudeDesktop.errors.pathsCollision",
+                )
+                .param(reason),
             ));
         }
         let config_library = third_party_root.join(CONFIG_LIBRARY_DIR);
@@ -110,11 +118,14 @@ impl DesktopPaths {
         ];
         for (index, (path, file_role)) in targets.iter().enumerate() {
             for (other, other_role) in targets.iter().skip(index + 1) {
-                if path == other {
+                if paths_equal(path, other) {
                     return Err(Box::new(
-                        DesktopError::new(error_code::PATHS_COLLISION, "claudeDesktop.errors.pathCollision")
-                            .file(file_role)
-                            .param(*other_role),
+                        DesktopError::new(
+                            error_code::PATHS_COLLISION,
+                            "claudeDesktop.errors.pathCollision",
+                        )
+                        .file(file_role)
+                        .param(*other_role),
                     ));
                 }
             }
@@ -140,7 +151,11 @@ impl DesktopPaths {
             "{}|{}|{}",
             display(&self.normal_root),
             display(&self.third_party_root),
-            if self.isolated { "isolated" } else { "production" }
+            if self.isolated {
+                "isolated"
+            } else {
+                "production"
+            }
         )
     }
 
@@ -221,7 +236,6 @@ fn isolated_candidates(home: &Path) -> Vec<DesktopPaths> {
         .collect()
 }
 
-
 /// 精确目录名匹配的候选。
 #[cfg(windows)]
 fn platform_bases() -> Vec<PathBuf> {
@@ -229,7 +243,10 @@ fn platform_bases() -> Vec<PathBuf> {
     let local = std::env::var("LOCALAPPDATA").ok();
     let base = windows_local_app_data(local.as_deref(), &home);
     // 环境变量不可信时优先使用平台 API 的取值。
-    let base = if local.as_deref().is_some_and(|value| !value.trim().is_empty()) {
+    let base = if local
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
         base
     } else {
         dirs::data_local_dir().unwrap_or(base)
@@ -289,11 +306,23 @@ pub fn channel_dir_names(names: &[String], third_party: bool) -> Vec<String> {
 /// 具体属于哪个渠道、以及是否真的是一个安装，由 `channel_has_evidence`
 /// 另行判定——名字相近但为空的目录（真实机器上存在 `Claude-Data`）不能
 /// 仅凭名字成为候选，否则会把本来无歧义的安装变成「必须让用户选」。
-pub fn is_channel_name(name: &str, _third_party: bool) -> bool {
-    name == "Claude"
+pub fn is_channel_name(name: &str, third_party: bool) -> bool {
+    let is_third = name == "Claude-3p"
+        || name
+            .strip_prefix("Claude-3p-")
+            .is_some_and(|rest| !rest.trim().is_empty())
         || name
             .strip_prefix("Claude-")
-            .is_some_and(|rest| !rest.trim().is_empty())
+            .and_then(|rest| rest.strip_suffix("-3p"))
+            .is_some_and(|rest| !rest.trim().is_empty());
+    if third_party {
+        is_third
+    } else {
+        name == "Claude"
+            || name
+                .strip_prefix("Claude-")
+                .is_some_and(|rest| !rest.trim().is_empty() && !is_third)
+    }
 }
 
 /// 精确名优先，其次才是同渠道的其它命名。
@@ -352,18 +381,29 @@ pub fn windows_local_app_data(local_app_data: Option<&str>, home: &Path) -> Path
 
 fn pair_candidates(normal: &[PathBuf], third_party: &[PathBuf]) -> Vec<PathCandidate> {
     let mut out: Vec<PathCandidate> = Vec::new();
-    // 同索引优先（约定命名），再补齐精确目录的交叉配对。
-    for (index, normal_root) in normal.iter().enumerate() {
-        let third = third_party
-            .get(index)
-            .or_else(|| third_party.first())
-            .or_else(|| Some(&normal_root));
-        let Some(third) = third else { continue };
-        push_pair(&mut out, normal_root.clone(), third.clone());
-    }
-    for normal_root in normal.iter().skip(1) {
-        for third in third_party.iter().skip(1) {
-            push_pair(&mut out, normal_root.clone(), third.clone());
+    // 同渠道按名字配对，不按两个扫描列表的索引交叉配对。首次官方安装
+    // 尚没有 3P 根时，保留已确认 normal 根对应的待创建路径。
+    for normal_root in normal {
+        let Some(name) = normal_root.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(suffix) = name.strip_prefix("Claude") else {
+            continue;
+        };
+        let expected = normal_root.with_file_name(format!("{name}-3p"));
+        let alternate = normal_root.with_file_name(format!("Claude-3p{suffix}"));
+        let matches = third_party
+            .iter()
+            .filter(|candidate| {
+                paths_equal(candidate, &expected) || paths_equal(candidate, &alternate)
+            })
+            .collect::<Vec<_>>();
+        if matches.is_empty() {
+            push_pair(&mut out, normal_root.clone(), expected);
+        } else {
+            for third in matches {
+                push_pair(&mut out, normal_root.clone(), third.clone());
+            }
         }
     }
     out
@@ -401,9 +441,13 @@ pub fn discover() -> Discovery {
         };
     }
 
+    discover_in_bases(&platform_bases())
+}
+
+fn discover_in_bases(bases: &[PathBuf]) -> Discovery {
     let mut candidates: Vec<PathCandidate> = Vec::new();
     let mut notes = Vec::new();
-    for base in platform_bases() {
+    for base in bases {
         let normal = channel_candidates(&base, false);
         let third_party = channel_candidates(&base, true);
         if normal.is_empty() && third_party.is_empty() {
@@ -453,8 +497,26 @@ pub fn resolve_in(
                     "claudeDesktop.errors.pathsNotDetected",
                 )));
             }
-            let paths = DesktopPaths::from_roots(PathBuf::from(normal), PathBuf::from(third_party))?;
-            Ok(with_isolation(paths, discovery_paths_isolated(discovery)))
+            let requested =
+                DesktopPaths::from_roots(PathBuf::from(normal), PathBuf::from(third_party))?;
+            if !requested.normal_root.is_absolute() || !requested.third_party_root.is_absolute() {
+                return Err(paths_not_detected());
+            }
+            // 两根 DTO 只是对后端候选的选择，绝不能成为任意文件写入接口。
+            let paths = discovery
+                .candidates
+                .iter()
+                .find(|candidate| {
+                    paths_equal(&candidate.paths.normal_root, &requested.normal_root)
+                        && paths_equal(
+                            &candidate.paths.third_party_root,
+                            &requested.third_party_root,
+                        )
+                })
+                .map(|candidate| candidate.paths.clone())
+                .ok_or_else(paths_not_detected)?;
+            validate_selection(discovery, &paths)?;
+            Ok(paths)
         }
         (None, None) => {
             let paths = discovery.default.clone().ok_or_else(|| {
@@ -463,7 +525,7 @@ pub fn resolve_in(
                     "claudeDesktop.errors.pathsNotDetected",
                 ))
             })?;
-            validate_detected(&paths)?;
+            validate_selection(discovery, &paths)?;
             Ok(paths)
         }
         _ => Err(Box::new(
@@ -476,12 +538,136 @@ pub fn resolve_in(
     }
 }
 
-fn discovery_paths_isolated(discovery: &Discovery) -> bool {
-    discovery
+fn paths_not_detected() -> Box<DesktopError> {
+    Box::new(
+        DesktopError::new(
+            error_code::PATHS_NOT_DETECTED,
+            "claudeDesktop.errors.pathsNotDetected",
+        )
+        .action("selectPaths"),
+    )
+}
+
+fn path_identity(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let normalized = normalize(path).to_string_lossy().to_ascii_lowercase();
+        // canonicalize uses extended Windows paths; user-selected roots may not.
+        let normalized = if let Some(unc) = normalized.strip_prefix(r"\\?\unc\") {
+            format!(r"\\{unc}")
+        } else {
+            normalized.trim_start_matches(r"\\?\").to_owned()
+        };
+        PathBuf::from(normalized)
+    }
+    #[cfg(not(windows))]
+    {
+        normalize(path)
+    }
+}
+
+pub(super) fn paths_equal(left: &Path, right: &Path) -> bool {
+    path_identity(left) == path_identity(right)
+}
+
+fn path_is_within(path: &Path, root: &Path) -> bool {
+    path_identity(path).starts_with(path_identity(root))
+}
+
+/// Resolve existing ancestors too: the 3P/configLibrary directories may not have
+/// been created yet, but a junction/symlink must not redirect isolated writes.
+fn resolved_location(path: &Path) -> Option<PathBuf> {
+    let mut ancestor = path;
+    let mut tail = Vec::new();
+    loop {
+        match std::fs::symlink_metadata(ancestor) {
+            Ok(_) => {
+                let mut resolved = std::fs::canonicalize(ancestor).ok()?;
+                for name in tail.iter().rev() {
+                    resolved.push(name);
+                }
+                return Some(resolved);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return None,
+        }
+        tail.push(ancestor.file_name()?.to_owned());
+        ancestor = ancestor.parent()?;
+    }
+}
+
+/// A saved session cannot be reused across production/isolated client homes.
+/// Explicit Manager test overrides must be checked by that Manager separately.
+pub fn validate_session_paths(paths: &DesktopPaths) -> DesktopResult<()> {
+    if !paths.normal_root.is_absolute() || !paths.third_party_root.is_absolute() {
+        return Err(paths_not_detected());
+    }
+    let normal_location = resolved_location(&paths.normal_root).ok_or_else(paths_not_detected)?;
+    let third_party_location =
+        resolved_location(&paths.third_party_root).ok_or_else(paths_not_detected)?;
+    if let Some(reason) = roots_identity_conflict(&normal_location, &third_party_location) {
+        return Err(Box::new(
+            DesktopError::new(
+                error_code::PATHS_COLLISION,
+                "claudeDesktop.errors.pathsCollision",
+            )
+            .param(reason),
+        ));
+    }
+    // A configuration file or configLibrary link must stay in its selected root.
+    // Otherwise two nominally distinct roles can write the same physical target.
+    for (target, root) in [
+        (&paths.normal_config, &normal_location),
+        (&paths.third_party_config, &third_party_location),
+        (&paths.profile_path, &third_party_location),
+        (&paths.meta_path, &third_party_location),
+    ] {
+        if !resolved_location(target).is_some_and(|target| path_is_within(&target, root)) {
+            return Err(paths_not_detected());
+        }
+    }
+    if let Some(home) = isolated_home() {
+        let expected = isolated_candidates(&home)
+            .into_iter()
+            .next()
+            .ok_or_else(paths_not_detected)?;
+        if !paths.isolated
+            || !paths_equal(&paths.normal_root, &expected.normal_root)
+            || !paths_equal(&paths.third_party_root, &expected.third_party_root)
+        {
+            return Err(paths_not_detected());
+        }
+        let canonical_home = resolved_location(&home).ok_or_else(paths_not_detected)?;
+        for target in [
+            &paths.normal_root,
+            &paths.third_party_root,
+            &paths.normal_config,
+            &paths.third_party_config,
+            &paths.profile_path,
+            &paths.meta_path,
+        ] {
+            if !resolved_location(target)
+                .is_some_and(|target| path_is_within(&target, &canonical_home))
+            {
+                return Err(paths_not_detected());
+            }
+        }
+    } else if paths.isolated {
+        return Err(paths_not_detected());
+    }
+    Ok(())
+}
+
+fn validate_selection(discovery: &Discovery, paths: &DesktopPaths) -> DesktopResult<()> {
+    validate_session_paths(paths)?;
+    if !discovery
         .candidates
-        .first()
-        .map(|candidate| candidate.paths.isolated)
-        .unwrap_or(false)
+        .iter()
+        .any(|candidate| candidate.paths == *paths)
+    {
+        return Err(paths_not_detected());
+    }
+    validate_detected(paths)
 }
 
 /// 3P 目录缺失但 normal root 已确认时允许创建；normal root 未确认时返回
@@ -497,4 +683,224 @@ pub fn validate_detected(paths: &DesktopPaths) -> DesktopResult<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::types::PathsChoice;
+    use super::*;
+
+    struct HomeGuard(Option<std::ffi::OsString>);
+    impl HomeGuard {
+        fn set(home: Option<&Path>) -> Self {
+            let previous = std::env::var_os("AGENT_HARBOR_CLIENT_HOME");
+            match home {
+                Some(home) => std::env::set_var("AGENT_HARBOR_CLIENT_HOME", home),
+                None => std::env::remove_var("AGENT_HARBOR_CLIENT_HOME"),
+            }
+            Self(previous)
+        }
+    }
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(home) => std::env::set_var("AGENT_HARBOR_CLIENT_HOME", home),
+                None => std::env::remove_var("AGENT_HARBOR_CLIENT_HOME"),
+            }
+        }
+    }
+
+    fn temp_base() -> PathBuf {
+        let base = std::env::temp_dir().join(format!(
+            "agentharbor-path-selection-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    fn choice(paths: &DesktopPaths) -> PathsChoice {
+        PathsChoice {
+            normal_root: Some(display(&paths.normal_root)),
+            third_party_root: Some(display(&paths.third_party_root)),
+        }
+    }
+
+    #[cfg(any(windows, unix))]
+    fn directory_link(target: &Path, link: &Path) {
+        #[cfg(windows)]
+        {
+            let output = crate::platform::windows::background_command("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "create temporary test junction");
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_roots_cannot_hide_collisions_with_case_or_extended_prefixes() {
+        assert!(DesktopPaths::from_roots(
+            PathBuf::from(r"C:\temp\Claude"),
+            PathBuf::from(r"c:\TEMP\claude"),
+        )
+        .is_err());
+        assert!(DesktopPaths::from_roots(
+            PathBuf::from(r"C:\temp\Claude"),
+            PathBuf::from(r"\\?\c:\TEMP\claude\child"),
+        )
+        .is_err());
+        assert!(paths_equal(
+            Path::new(r"\\?\UNC\server\share\Claude"),
+            Path::new(r"\\server\share\claude"),
+        ));
+    }
+
+    #[cfg(any(windows, unix))]
+    #[test]
+    fn directory_aliases_cannot_make_two_roots_share_configuration() {
+        let _lock = super::super::env_test_lock();
+        let _home = HomeGuard::set(None);
+        let base = tempfile::tempdir().unwrap();
+        let normal = base.path().join("Claude");
+        let third = base.path().join("Claude-3p");
+        std::fs::create_dir_all(normal.join("logs")).unwrap();
+        std::fs::create_dir_all(normal.join(CONFIG_LIBRARY_DIR)).unwrap();
+        directory_link(&normal, &third);
+        let paths = DesktopPaths::from_roots(normal, third).unwrap();
+        assert_eq!(
+            validate_session_paths(&paths).unwrap_err().code,
+            error_code::PATHS_COLLISION
+        );
+        assert!(resolve_in(
+            &discover_in_bases(&[base.path().to_owned()]),
+            &PathsChoice::default()
+        )
+        .is_err());
+    }
+
+    #[cfg(any(windows, unix))]
+    #[test]
+    fn a_config_library_link_cannot_redirect_an_isolated_session() {
+        let _lock = super::super::env_test_lock();
+        let base = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(base.path().join("Claude")).unwrap();
+        std::fs::create_dir_all(base.path().join("Claude-3p")).unwrap();
+        directory_link(
+            outside.path(),
+            &base.path().join("Claude-3p").join(CONFIG_LIBRARY_DIR),
+        );
+        let _home = HomeGuard::set(Some(base.path()));
+        assert!(resolve_in(&discover(), &PathsChoice::default()).is_err());
+    }
+
+    #[test]
+    fn first_official_installation_derives_a_missing_third_party_root() {
+        let _lock = super::super::env_test_lock();
+        let _home = HomeGuard::set(None);
+        let base = temp_base();
+        std::fs::create_dir_all(base.join("Claude/logs")).unwrap();
+        let discovery = discover_in_bases(&[base.clone()]);
+        assert_eq!(discovery.candidates.len(), 1);
+        let paths = resolve_in(&discovery, &PathsChoice::default()).unwrap();
+        assert_eq!(paths.normal_root, base.join("Claude"));
+        assert_eq!(paths.third_party_root, base.join("Claude-3p"));
+        assert!(
+            !paths.third_party_root.exists(),
+            "discovery must not create configuration"
+        );
+    }
+
+    #[test]
+    fn channels_pair_by_identity_without_cross_pairing_or_treating_3p_as_normal() {
+        let base = temp_base();
+        for root in ["Claude", "Claude-preview"] {
+            std::fs::create_dir_all(base.join(root).join("logs")).unwrap();
+        }
+        std::fs::create_dir_all(base.join("Claude-3p/logs")).unwrap();
+        std::fs::create_dir_all(base.join("Claude-3p/configLibrary")).unwrap();
+        std::fs::create_dir_all(base.join("Claude-preview-3p/configLibrary")).unwrap();
+        let discovery = discover_in_bases(&[base.clone()]);
+        assert_eq!(discovery.candidates.len(), 2);
+        assert!(discovery.default.is_none());
+        for candidate in &discovery.candidates {
+            let name = candidate
+                .paths
+                .normal_root
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap();
+            assert_eq!(
+                candidate.paths.third_party_root,
+                base.join(format!("{name}-3p"))
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_paths_must_select_a_backend_candidate() {
+        let _lock = super::super::env_test_lock();
+        let _home = HomeGuard::set(None);
+        let base = temp_base();
+        std::fs::create_dir_all(base.join("Claude/logs")).unwrap();
+        let discovery = discover_in_bases(&[base.clone()]);
+        let allowed = discovery.default.as_ref().unwrap();
+        assert_eq!(resolve_in(&discovery, &choice(allowed)).unwrap(), *allowed);
+        let foreign =
+            DesktopPaths::from_roots(base.join("outside/Claude"), base.join("outside/Claude-3p"))
+                .unwrap();
+        assert!(resolve_in(&discovery, &choice(&foreign)).is_err());
+        let relative = PathsChoice {
+            normal_root: Some("Claude".into()),
+            third_party_root: Some("Claude-3p".into()),
+        };
+        assert!(resolve_in(&discovery, &relative).is_err());
+    }
+
+    #[test]
+    fn explicit_paths_keep_the_backend_isolation_provenance_and_reject_escape() {
+        let _lock = super::super::env_test_lock();
+        let base = temp_base();
+        std::fs::create_dir_all(base.join("Claude")).unwrap();
+        let _home = HomeGuard::set(Some(&base));
+        let discovery = discover();
+        let allowed = discovery.default.as_ref().unwrap();
+        let selected = resolve_in(&discovery, &choice(allowed)).unwrap();
+        assert!(selected.isolated && selected.overridden);
+        let foreign =
+            DesktopPaths::from_roots(base.join("outside/Claude"), base.join("outside/Claude-3p"))
+                .unwrap();
+        assert!(resolve_in(&discovery, &choice(&foreign)).is_err());
+        assert!(validate_session_paths(&foreign).is_err());
+    }
+
+    #[test]
+    fn saved_isolated_sessions_cannot_be_reused_in_production() {
+        let _lock = super::super::env_test_lock();
+        let _home = HomeGuard::set(None);
+        let base = temp_base();
+        let mut paths =
+            DesktopPaths::from_roots(base.join("Claude"), base.join("Claude-3p")).unwrap();
+        paths.isolated = true;
+        paths.overridden = true;
+        assert!(validate_session_paths(&paths).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn isolated_symlink_roots_cannot_redirect_writes_outside_the_home() {
+        let _lock = super::super::env_test_lock();
+        let base = temp_base();
+        let outside = temp_base();
+        std::os::unix::fs::symlink(&outside, base.join("Claude")).unwrap();
+        let _home = HomeGuard::set(Some(&base));
+        assert!(resolve_in(&discover(), &PathsChoice::default()).is_err());
+    }
 }

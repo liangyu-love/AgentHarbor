@@ -10,7 +10,7 @@ if (process.platform === "win32" && !env.RUSTUP_TOOLCHAIN) {
 const args = process.argv.slice(2);
 const testing = args[0] === "--test-rust";
 const result = testing
-  ? spawnSync("cargo", ["test", "--manifest-path", "src-tauri/Cargo.toml", "--lib", "--test", "local_workflows", ...args.slice(1)], { env, stdio: "inherit" })
+  ? spawnSync("cargo", ["test", "--manifest-path", "src-tauri/Cargo.toml", "--lib", "--test", "local_workflows", "--test", "claude_desktop_workflows", ...args.slice(1)], { env, stdio: "inherit" })
   : spawnSync(process.execPath, [fileURLToPath(new URL("../node_modules/@tauri-apps/cli/tauri.js", import.meta.url)), ...args], { env, stdio: "inherit" });
 if (result.error) console.error(result.error.message);
 process.exit(result.status ?? 1);

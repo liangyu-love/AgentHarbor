@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Loader2, RefreshCw, Rocket, RotateCcw, Settings2, ShieldCheck, Unlink } from "lucide-react";
 import { api } from "@/lib/api";
-import { desktopErrorKey } from "@/lib/claude-desktop";
+import { desktopErrorKey, invalidateClaudeDesktop } from "@/lib/claude-desktop";
 import { ClaudeDesktopDialog } from "./claude-desktop-config-dialog";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -37,21 +37,29 @@ const CONFIRMABLE: DesktopAction[] = [
 const confirmKey = (action: DesktopAction) =>
   action === "restorePrevious"
     ? { title: "restoreTitle", description: "restoreDescription" }
-    : action === "switchOfficial"
-      ? { title: "switchOfficialTitle", description: "switchOfficialDescription" }
-      : action === "release"
-        ? { title: "releaseTitle", description: "releaseDescription" }
-        : action === "recoverRollback"
-          ? { title: "recoverTitle", description: "recoverDescription" }
-          : { title: "restoreTitle", description: "restoreDescription" };
+    : action === "reapply"
+      ? { title: "reapplyTitle", description: "reapplyDescription" }
+      : action === "switchOfficial"
+        ? { title: "switchOfficialTitle", description: "switchOfficialDescription" }
+        : action === "release"
+          ? { title: "releaseTitle", description: "releaseDescription" }
+          : action === "recoverRollback"
+            ? { title: "recoverTitle", description: "recoverDescription" }
+            : { title: "restoreTitle", description: "restoreDescription" };
 
 const stateKey = (status: ClaudeDesktopStatus) => `claudeDesktop.state.${status.managementState}`;
 
 /** 后端返回 `kind:detail` 形式的标记；`:detail` 可能是文件角色或模型 ID。 */
-const describeFlag = (flag: string) => {
-  const [kind, ...rest] = flag.split(":");
-  const detail = rest.join(":");
-  return detail ? `${kind}(${detail})` : kind;
+const FLAG_KEYS: Record<string, string> = {
+  name: "claudeDesktop.flags.name",
+  credential: "claudeDesktop.flags.credential",
+  endpoint: "claudeDesktop.flags.endpoint",
+  model: "claudeDesktop.flags.model",
+  label: "claudeDesktop.flags.label",
+  context: "claudeDesktop.flags.context",
+  drift: "claudeDesktop.flags.drift",
+  paths: "claudeDesktop.flags.paths",
+  pointerMovedExternally: "claudeDesktop.errors.pointerMovedExternally",
 };
 
 const modeKey = (status: ClaudeDesktopStatus) => {
@@ -70,6 +78,7 @@ const modeKey = (status: ClaudeDesktopStatus) => {
 export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvider[] }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const [dialog, setDialog] = useState(false);
   const status = useQuery({
     queryKey: STATUS_KEY,
     queryFn: api.claudeDesktop.status,
@@ -79,10 +88,9 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
   const candidates = useQuery({
     queryKey: CANDIDATES_KEY,
     queryFn: () => api.claudeDesktop.candidates(),
-    enabled: false,
+    enabled: dialog,
     refetchOnWindowFocus: false,
   });
-  const [dialog, setDialog] = useState(false);
   const [pending, setPending] = useState<DesktopAction | null>(null);
   const [busy, setBusy] = useState(false);
   const [restarting, setRestarting] = useState(false);
@@ -90,17 +98,11 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
   const [restartError, setRestartError] = useState<string | null>(null);
 
   const data = status.data;
-  const refresh = async () => {
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: STATUS_KEY }),
-      queryClient.invalidateQueries({ queryKey: CANDIDATES_KEY }),
-    ]);
-  };
+  const refresh = () => invalidateClaudeDesktop(queryClient);
 
   const openDialog = () => {
     setError(null);
     setDialog(true);
-    void candidates.refetch();
   };
 
   const actionOf = (action: DesktopAction) => data?.actions.find(entry => entry.action === action);
@@ -120,7 +122,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
     if (!data?.providerId) return null;
     return {
       providerId: data.providerId,
-      models: data.models.map(model => ({
+      models: data.modelChoices?.length ? data.modelChoices : data.models.map(model => ({
         modelId: model.modelId,
         labelOverride: model.label || null,
         oneMMode: model.oneM ? "auto" : "off",
@@ -184,6 +186,13 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
   };
 
   const confirm = pending ? confirmKey(pending) : null;
+  const describeFlag = (flag: string) => {
+    const [kind, ...rest] = flag.split(":");
+    const detail = rest.join(":");
+    const text = t(FLAG_KEYS[kind] ?? "claudeDesktop.flags.unknown");
+    const roleKey = `claudeDesktop.fileRoles.${detail}`;
+    return detail ? `${text}（${kind === "drift" ? t(roleKey, { defaultValue: detail }) : detail}）` : text;
+  };
 
   return (
     <section className="space-y-3" aria-labelledby="claude-desktop-title">
@@ -375,7 +384,9 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
       {dialog && (
         <ClaudeDesktopDialog
           candidates={candidates.data}
-          candidatesLoading={candidates.isPending}
+          candidatesLoading={candidates.isFetching}
+          candidatesError={candidates.error}
+          candidatesRevision={candidates.dataUpdatedAt}
           initialProviderId={data?.providerId ?? null}
           availableActions={(data?.actions ?? []).filter(view => view.enabled).map(view => view.action)}
           onClose={() => setDialog(false)}

@@ -95,7 +95,7 @@ export interface ClaudeDesktopProviderCandidate {
 }
 
 export interface ClaudeDesktopCandidates {
-  paths: ClaudeDesktopPathsSummary;
+  paths: ClaudeDesktopPathsSummary | null;
   /** 多渠道候选；由用户明确选择，不按字典序自动挑。 */
   pathCandidates: ClaudeDesktopPathCandidate[];
   selectedPathId: string | null;
@@ -132,6 +132,8 @@ export interface ClaudeDesktopStatus {
   providerName: string | null;
   providerMissing: boolean;
   models: ClaudeDesktopManagedModel[];
+  /** 保留用户的自动/关闭与显示名选择，重新应用时不可从有效值反推。 */
+  modelChoices: ClaudeDesktopModelChoice[];
   staleReasons: string[];
   conflicts: string[];
   recoveryState: string | null;

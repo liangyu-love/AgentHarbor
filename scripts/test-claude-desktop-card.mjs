@@ -21,6 +21,7 @@ const ZH = {
   stateManaged: "已配置",
   modeDirect: "AgentHarbor 直连",
   requiresRestart: "需要重启",
+  restart: "重启 Claude Desktop",
   hintManaged: "Claude Desktop 正在直接使用一张已保存的中转卡片。",
   warningRequiresRestart: "请完全退出 Claude Desktop（包括托盘进程）后重新启动，设置才会生效。",
   change: "切换 / 更新",
@@ -44,6 +45,8 @@ const ZH = {
   confirm: "确认",
   restoreTitle: "恢复接管前的配置？",
   restoreDescription: "将撤回 AgentHarbor 写入的部署模式和配置，并恢复之前的生效配置选择；外部配置与无关键都会保留。",
+  reapplyTitle: "重新应用直连配置？",
+  reapplyDescription: "使用当前卡片的地址、推理密钥与上次保存的模型设置更新直连配置，接管前的还原点保持不变。",
   externalProfiles: "保留的外部配置",
   previewRestart: "应用后请完全退出并重新启动 Claude Desktop。",
 };
@@ -76,6 +79,8 @@ const statusFixture = {
   providerName: "Relay Alpha",
   providerMissing: false,
   models: [{ modelId: LONG_MODEL_ID, label: LONG_MODEL_ID, oneM: true }, { modelId: SHORT_MODEL_ID, label: "", oneM: false }],
+  modelChoices: [{ modelId: LONG_MODEL_ID, labelOverride: null, oneMMode: "auto" },
+    { modelId: SHORT_MODEL_ID, labelOverride: null, oneMMode: "auto" }],
   staleReasons: [],
   conflicts: [],
   recoveryState: null,
@@ -83,6 +88,9 @@ const statusFixture = {
   warnings: ["claudeDesktop.warnings.requiresRestart"],
   lastAppliedAt: 1_790_000_000,
   restartRequired: true,
+  appRunning: false,
+  restartCapable: false,
+  launchMethod: null,
   actions: [
     { action: "applyDirect", enabled: true, disabledReason: null },
     { action: "reapply", enabled: true, disabledReason: null },
@@ -113,7 +121,8 @@ const candidatesFixture = {
         model("chat-only-model", { selectable: false, excludeReason: "claudeDesktop.errors.incompatibleProtocol" }),
       ] },
     { providerId: "group-b", name: "Relay Beta", enabled: false, hasInferenceKey: false, eligible: false,
-      reason: "no_inference_key", endpoint: null, models: [] },
+      reason: "no_inference_key", endpoint: { profileBaseUrl: "https://beta.invalid", messagesUrl: "https://beta.invalid/v1/messages",
+        modelsUrl: "https://beta.invalid/v1/models", plaintext: false }, models: [] },
   ],
   selectedProviderId: "group-a",
 };
@@ -173,12 +182,15 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
     review.desktopPreview = fixture.preview;
     review.desktopApplied = fixture.applied;
     review.desktopProbe = fixture.probe;
-    review.desktopCalls = { candidates: [], preview: [], commit: [], probe: [], other: [] };
+    review.desktopCalls = { status: 0, candidates: [], preview: [], commit: [], probe: [], other: [] };
     review.desktopHoldPreview = false;
     review.desktopPreviewResolvers = [];
     review.desktopPreviewFailure = null;
+    review.desktopHoldProbe = false;
+    review.desktopProbeResolvers = [];
+    review.desktopProbeFailure = null;
     window.__TAURI_INTERNALS__.invoke = async (command, args) => {
-      if (command === "get_claude_desktop_status") return clone(review.desktopStatus);
+      if (command === "get_claude_desktop_status") { review.desktopCalls.status++; return clone(review.desktopStatus); }
       if (command === "list_claude_desktop_candidates") {
         review.desktopCalls.candidates.push(clone(args));
         return clone(review.desktopCandidates);
@@ -197,7 +209,17 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
       }
       if (command === "probe_claude_desktop_provider") {
         review.desktopCalls.probe.push(clone(args));
+        if (review.desktopProbeFailure) throw review.desktopProbeFailure;
+        if (review.desktopHoldProbe) return new Promise(resolve => review.desktopProbeResolvers.push(() => resolve(clone(review.desktopProbe))));
         return clone(review.desktopProbe);
+      }
+      if (command === "delete_newapi_provider") {
+        const state = review.getState();
+        state.providers = state.providers.filter(provider => provider.id !== args.id);
+        review.desktopStatus.managementState = "orphaned";
+        review.desktopStatus.providerMissing = true;
+        review.desktopCandidates.providers = review.desktopCandidates.providers.filter(provider => provider.providerId !== args.id);
+        return { state: clone(state), applied: null };
       }
       review.desktopCalls.other.push(command);
       throw new Error("unexpected command in the Claude Desktop card suite: " + command);
@@ -399,9 +421,6 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
     const buttonNamed = text => [...node.querySelectorAll("button")].find(button => button.innerText.includes(text));
     // The dialog clips its own content (overflow-hidden), so this is the harness-wide
     // "no horizontal overflow" contract; the long model rows are measured separately below.
-    // NOTE: the ineligible-provider badge (shrink-0 with a full sentence) currently spills
-    // ~24px past this scroll area at a ~660px dialog and adds an inner horizontal scrollbar.
-    // That lives in src/ and is reported as a finding, not asserted here.
     const box = scrollArea?.getBoundingClientRect();
     const limit = box ? box.right - (parseFloat(getComputedStyle(scrollArea).paddingRight) || 0) : null;
     return {
@@ -444,8 +463,10 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
     { text: "Relay Beta", pressed: "false", disabled: true }]);
   assert.equal(dialogSurface.messagesCheckDisabled, true, "the Messages check needs a selected model");
   assert.equal(dialogSurface.probeDisabled, false);
-  assert.ok((await dialog().getByRole("button", { name: /Relay Beta/ }).innerText()).includes(ZH.providerDisabled),
+  assert.equal(await dialog().getByText(ZH.providerDisabled, { exact: true }).count(), 1,
     "an ineligible provider must explain why it cannot be picked");
+  assert.equal(await dialog().getByText(ZH.noInferenceKey, { exact: true }).count(), 1,
+    "an existing endpoint must not hide the credential exclusion reason");
   assert.equal(await dialog().getByRole("button", { name: ZH.preview, exact: true }).isDisabled(), true,
     "preview must stay disabled until a model is selected");
   assert.equal(await dialog().locator('[role="status"]').filter({ hasText: ZH.needModels }).count(), 1,
@@ -477,7 +498,8 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
     assert.equal(await page.getByRole("checkbox", { name: modelId, exact: true }).count(), 1,
       "the associated label must give the checkbox its accessible name: " + modelId);
   }
-  assert.equal(await dialog().getByText("chat-only-model", { exact: true }).count(), 0, "non-selectable models must stay hidden");
+  assert.equal(await dialog().getByText("chat-only-model", { exact: true }).count(), 1, "excluded models must explain their reason");
+  assert.match(await dialog().locator("[data-desktop-excluded-models]").innerText(), /协议不是 Anthropic Messages/);
 
   const tabWalk = [];
   for (let step = 0; step < 90; step++) {
@@ -524,7 +546,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   assert.equal(await dialog().getByRole("button", { name: ZH.cancel, exact: true }).isDisabled(), true);
   assert.equal(await dialog().locator('[role="status"]').filter({ hasText: ZH.busyHint }).count(), 1,
     "a busy dialog must say why its controls are locked");
-  await page.evaluate(() => { window.review.desktopPreviewResolvers.shift()(); });
+  await page.evaluate(() => { window.review.desktopPreviewResolvers.shift()(); window.review.desktopHoldPreview = false; });
   await dialog().getByText("normalConfig", { exact: true }).waitFor();
   assert.equal(await fieldset.evaluate(node => node.disabled), false, "the fieldset must unlock when the request settles");
   assert.deepEqual(await page.evaluate(() => window.review.desktopCalls.preview[0]), {
@@ -574,8 +596,10 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   await page.evaluate(() => { window.review.desktopPreviewFailure = "claudeDesktop.errors.noInferenceKey"; });
   await actionButton(ZH.reapply).click();
   const confirm = page.getByRole("alertdialog");
-  await confirm.getByRole("heading", { name: ZH.restoreTitle, exact: true }).waitFor();
-  assert.equal(await confirm.getByText(ZH.restoreDescription, { exact: true }).count(), 1);
+  await confirm.getByRole("heading", { name: ZH.reapplyTitle, exact: true }).waitFor();
+  assert.equal(await confirm.getByText(ZH.reapplyDescription, { exact: true }).count(), 1);
+  assert.equal(await confirm.getByText(ZH.restoreDescription, { exact: true }).count(), 0,
+    "reapply must not promise restoration");
   await confirm.getByRole("button", { name: ZH.confirm, exact: true }).click();
   // The confirm dialog stays open on failure and owns the first role=alert; the card behind it is
   // aria-hidden until the dialog closes, so both alerts are checked in order.
@@ -591,6 +615,150 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   await page.evaluate(() => { window.review.desktopPreviewFailure = null; });
   assert.equal(await actionButton(ZH.change).isEnabled(), true);
   console.log("PASS applying re-uses the previewed revision and failed management actions stay recoverable with role=alert");
+
+  // 7. Reapply consumes the original intent, including auto on a currently non-1M model.
+  await actionButton(ZH.reapply).click();
+  await confirm.getByRole("heading", { name: ZH.reapplyTitle, exact: true }).waitFor();
+  await confirm.getByRole("button", { name: ZH.confirm, exact: true }).click();
+  await confirm.waitFor({ state: "detached", timeout: 5000 }).catch(async () => {
+    throw new Error("reapply remained open: " + await confirm.innerText() + " calls=" + JSON.stringify(await page.evaluate(() => window.review.desktopCalls)));
+  });
+  assert.deepEqual(await page.evaluate(() => window.review.desktopCalls.preview.at(-1).request.models), statusFixture.modelChoices,
+    "a resolved oneM=false must not turn the user's auto selection into off");
+  console.log("PASS reapply has its own confirmation and preserves automatic 1M and unpinned labels");
+
+  // 8. A real save callback must invalidate Desktop state; balance-only updates are not used.
+  const beforeSave = await page.evaluate(() => window.review.desktopCalls.status);
+  await page.evaluate(() => {
+    window.review.desktopStatus.managementState = "stale";
+    window.review.desktopStatus.staleReasons = ["credential"];
+  });
+  const providerFace = page.locator('[data-relay-card-face][data-provider-id="group-a"]');
+  await providerFace.getByRole("button", { name: "编辑", exact: true }).click();
+  await dialog().locator("#newapi-provider-name").fill("Relay Alpha edited");
+  await dialog().getByRole("button", { name: "把 model-group-a 设为默认模型", exact: true }).click();
+  await dialog().getByRole("button", { name: "保存", exact: true }).click();
+  await dialog().waitFor({ state: "hidden" });
+  await card().getByText("需重新应用", { exact: true }).waitFor();
+  assert.ok(await page.evaluate(() => window.review.desktopCalls.status) > beforeSave,
+    "saving the original provider must reload Desktop status without navigating away");
+  assert.match(await card().innerText(), /推理密钥已变化/);
+  assert.doesNotMatch(await card().innerText(), /credential/);
+  console.log("PASS saving a provider refreshes Desktop stale status and translates the specific reason");
+
+  // 9. Reports must disappear on provider/model/path changes, and a refreshed candidate invalidates a pending probe.
+  await page.evaluate(() => {
+    const review = window.review;
+    const second = structuredClone(review.desktopCandidates.providers[0]);
+    second.providerId = "group-c";
+    second.name = "Relay Gamma";
+    second.endpoint = { profileBaseUrl: "https://gamma.invalid", messagesUrl: "https://gamma.invalid/v1/messages",
+      modelsUrl: "https://gamma.invalid/v1/models", plaintext: false };
+    review.desktopCandidates.providers.push(second);
+    review.desktopProbe.messages = { url: "https://relay.invalid/v1/messages", model: "claude-sonnet-4-5", status: "messagesAccessible",
+      httpStatus: 200, responseModel: "claude-sonnet-4-5", stopReason: "end_turn", checkedAt: 1_790_000_000, note: null };
+  });
+  await actionButton(ZH.change).click();
+  await dialog().getByRole("button", { name: /Relay Gamma/ }).waitFor();
+  await modelCheckbox(SHORT_MODEL_ID).check();
+  const success = dialog().getByText("Messages 端点接受裸 Bearer，并返回了合法的 Messages 响应", { exact: true });
+  await dialog().getByRole("button", { name: ZH.messagesCheck, exact: true }).click();
+  await success.waitFor();
+  await page.evaluate(() => { window.review.desktopProbeFailure = "claudeDesktop.errors.noInferenceKey"; });
+  await dialog().getByRole("button", { name: ZH.messagesCheck, exact: true }).click();
+  await dialog().getByRole("alert").filter({ hasText: ZH.noInferenceKey }).waitFor();
+  assert.equal(await success.count(), 0, "a failed recheck cannot retain an older green Messages report");
+  await page.evaluate(() => { window.review.desktopProbeFailure = null; });
+  await dialog().getByRole("button", { name: ZH.messagesCheck, exact: true }).click();
+  await success.waitFor();
+  await modelCheckbox(LONG_MODEL_ID).check();
+  assert.equal(await success.count(), 0, "changing the selected model list must invalidate Messages evidence");
+  await dialog().getByRole("button", { name: ZH.messagesCheck, exact: true }).click();
+  await success.waitFor();
+  await dialog().getByRole("button", { name: /Relay Gamma/ }).click();
+  assert.equal(await success.count(), 0, "a new provider cannot retain another provider's green Messages report");
+  assert.equal(await dialog().getByText("https://relay.invalid/v1/messages", { exact: true }).count(), 0,
+    "the old endpoint must disappear with its evidence");
+  await modelCheckbox(SHORT_MODEL_ID).check();
+  await page.evaluate(() => { window.review.desktopHoldProbe = true; });
+  await dialog().getByRole("button", { name: ZH.messagesCheck, exact: true }).click();
+  await page.waitForFunction(() => window.review.desktopProbeResolvers.length === 1);
+  // Even an identical candidate payload can hide a changed credential: dataUpdatedAt must invalidate it.
+  await page.evaluate(() => window.review.providersClient.invalidateQueries({ queryKey: ["claude-desktop", "candidates"] }));
+  await page.evaluate(() => { window.review.desktopProbeResolvers.shift()(); window.review.desktopHoldProbe = false; });
+  await dialog().getByRole("button", { name: ZH.cancel, exact: true }).waitFor({ state: "visible" });
+  await page.waitForFunction(() => !document.querySelector('[data-claude-desktop-scroll] fieldset')?.disabled);
+  assert.equal(await success.count(), 0, "a late result from before a candidate/credential refresh must be ignored");
+  await dialog().getByRole("button", { name: ZH.cancel, exact: true }).click();
+  await dialog().waitFor({ state: "hidden" });
+  console.log("PASS model/provider changes clear evidence and candidate refresh ignores an in-flight old probe");
+
+  // 10. First discovery with no default still exposes all installations and requires an explicit choice.
+  await page.evaluate(() => {
+    const candidates = window.review.desktopCandidates;
+    candidates.paths = null;
+    candidates.selectedPathId = null;
+    candidates.pathCandidates.push({ id: "path-beta", normalRoot: "C:/synthetic/Claude-Beta", thirdPartyRoot: "C:/synthetic/Claude-Beta-3p",
+      normalExists: true, thirdPartyExists: false, hasInstallEvidence: true });
+    window.review.mount("mcp");
+  });
+  await page.evaluate(() => window.review.mount("groups"));
+  await actionButton(ZH.change).waitFor();
+  await actionButton(ZH.change).click();
+  await dialog().getByRole("combobox").waitFor();
+  await modelCheckbox(SHORT_MODEL_ID).check();
+  assert.equal(await dialog().getByRole("button", { name: ZH.preview, exact: true }).isDisabled(), true);
+  assert.equal(await dialog().getByRole("button", { name: ZH.messagesCheck, exact: true }).isDisabled(), true);
+  assert.equal(await dialog().getByText("请先选择 Claude Desktop 的配置位置。", { exact: true }).count(), 2,
+    "path selection and disabled-action explanation must both identify the missing choice");
+  const pathSelect = dialog().getByRole("combobox").first();
+  await pathSelect.click();
+  await page.getByRole("option", { name: "C:/synthetic/Claude-Beta", exact: true }).click();
+  assert.equal(await dialog().getByRole("button", { name: ZH.preview, exact: true }).isEnabled(), true);
+  await dialog().getByRole("button", { name: ZH.preview, exact: true }).click();
+  await dialog().getByText("normalConfig", { exact: true }).waitFor();
+  assert.deepEqual(await page.evaluate(() => window.review.desktopCalls.preview.at(-1).request.paths),
+    { normalRoot: "C:/synthetic/Claude-Beta", thirdPartyRoot: "C:/synthetic/Claude-Beta-3p" });
+  await dialog().getByRole("button", { name: ZH.cancel, exact: true }).click();
+  console.log("PASS multiple installations without a default remain selectable and bind the selected roots to preview");
+
+  // 11. Catalog metadata refresh and provider deletion must invalidate the same projection.
+  const beforeCatalog = await page.evaluate(() => window.review.desktopCalls.status);
+  await page.evaluate(() => { window.review.desktopStatus.staleReasons = ["context:claude-sonnet-4-5"]; });
+  const capabilityPanel = page.getByRole("region", { name: "模型能力目录与匹配预览" });
+  await capabilityPanel.getByRole("button", { name: "模型能力目录与匹配预览", exact: true }).click();
+  await capabilityPanel.getByRole("button", { name: "刷新目录", exact: true }).click();
+  await card().getByText(/模型上下文能力已变化/).waitFor();
+  assert.ok(await page.evaluate(() => window.review.desktopCalls.status) > beforeCatalog,
+    "catalog refresh must reload the Desktop projection");
+  const beforeDelete = await page.evaluate(() => window.review.desktopCalls.status);
+  await page.locator('[data-relay-card-face][data-provider-id="group-a"]').getByRole("button", { name: "删除", exact: true }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: ZH.confirm, exact: true }).click();
+  await card().getByText("供应商已删除", { exact: true }).waitFor();
+  assert.ok(await page.evaluate(() => window.review.desktopCalls.status) > beforeDelete,
+    "provider deletion must reload status before the user navigates away");
+  console.log("PASS catalog refresh and provider deletion refresh Desktop capability and orphaned status");
+
+  // 12. Restoring/switching may release management while still requiring a restart for the written files.
+  await page.evaluate(async () => {
+    Object.assign(window.review.desktopStatus, {
+      managementState: "unmanaged", isManaged: false, mode: "official", providerId: null,
+      providerName: null, providerMissing: false, models: [], modelChoices: [], staleReasons: [], warnings: [],
+      restartRequired: true, restartCapable: true, appRunning: false, launchMethod: "windowsExe",
+    });
+    await window.review.providersClient.invalidateQueries({ queryKey: ["claude-desktop", "status"] });
+  });
+  await card().getByText("未配置", { exact: true }).waitFor();
+  assert.equal(await actionButton(ZH.restart).isEnabled(), true,
+    "a restored unmanaged configuration must still expose its required restart");
+  await page.evaluate(async () => {
+    window.review.desktopStatus.restartRequired = false;
+    await window.review.providersClient.invalidateQueries({ queryKey: ["claude-desktop", "status"] });
+  });
+  await actionButton(ZH.restart).waitFor({ state: "hidden" });
+  assert.equal(await actionButton(ZH.restart).count(), 0,
+    "releasing management without pending file changes cannot invent a restart requirement");
+  console.log("PASS an unmanaged restored configuration exposes its required restart and a clean release does not");
 
   await page.evaluate(() => { delete window.__TAURI_INTERNALS__.invoke; });
   await page.setViewportSize({ width: 1200, height: 700 });

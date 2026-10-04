@@ -2,11 +2,33 @@
 
 本记录对应 Claude Desktop 直连功能的实施验收，按[实施计划](../plan/claude-desktop-direct-integration-execution-plan.md)第 9.1 节（A01–A40）、第 9.3 节（L01–L10）与第 12 节编写。配套的用户说明见[直连配置说明](./claude-desktop-direct-connection.md)。
 
+## 当前结论：复审修复完成（2026-10-04）
+
+六个实施提交 `e8af8f8..5030efd` 的核心直连链路已实现，但复审确认恢复、所有权、进程与隔离边界存在缺陷，不能按“全部完成”验收。本轮已按优先级修复并复审，使用临时根、合成凭据、mock HTTP 与前端 fixture；没有修改真实 Desktop 配置、真实 Provider 或执行 ignored/live 用例。
+
+补充回归覆盖：失败重新应用恢复本次 before、首次应用后的外部改动保留 pending、外部 pointer/profile 冲突零写入、无 journal 禁止切官方、提交后漂移保留 journal、结束管理状态、进程身份与隔离边界、首次/多安装发现、原始模型选择与 stale、旧检测结果和迟到响应、重启后票据失效、极端票据时间戳安全失效、坏 JSON 下备份后释放管理、跨进程文件锁竞争及崩溃释放。`pnpm test:rust` 已接入 `claude_desktop_workflows`，不再将单独运行结果混入原默认入口。
+
+修复后自动化结果（最终源码）：
+
+| 命令 | 结果 |
+| --- | --- |
+| `pnpm test:rust` | exit 0；742 项 lib 通过（10 ignored），11 项 Desktop workflows 通过（11 ignored），9 项 local_workflows 通过，0 失败 |
+| `pnpm test:frontend` | exit 0；包含 10 组 Desktop 配置契约检查与 12 组 Desktop Playwright 行为回归 |
+| `pnpm exec tsc --noEmit` | exit 0 |
+| `pnpm build` | exit 0；既有动态/静态 import 分块提示仍存在，无构建错误 |
+| `git diff --check` | exit 0 |
+
+本轮修复后自审未发现剩余阻断项。事务失败仅回滚本笔 before；第三值保留 journal 供恢复；无有效管理记录不能按 profile 外形恢复/删除；会话路径、隔离来源和进程操作绑定到确认安装。原始模型选择、地址/能力 stale、检测结果有效期和一次性票据均有补充回归。释放管理可备份并保留坏 JSON 原文。跨进程锁改用持久文件上的系统排他锁，实际隔离子进程验证竞争及崩溃释放。升级测试期间不支持旧 PID 锁协议程序与新程序混合并行写入，应先退出旧实例。
+
+已有真实证据以第三节 L 表格及后续执行记录为准：L01/L02/L03/L05/L10 核心链路已有实施证据，L09 为 mock 限制路径；L04/L06/L08 仍部分通过，L07 仅文件层通过。macOS/Linux 与 Cowork 的完整支持仍未验收。**补充自动化通过不等于计划全部发布门槛通过。**
+
+下文保留实施阶段的历史日志、测试数量与当时状态；“未执行”“尚未提交”等时点描述不代表当前现状。早期 `pnpm test:rust` 实际只覆盖 lib 和 local_workflows，Desktop workflows 是独立命令执行。
+
 记录口径：
 
 - 只写能指向具体用例、具体命令输出或磁盘可复核事实的结论。
 - 自动化用例的“存在”与“通过”分开表述：第 2.1 节列出实际执行的命令与结果，2.3 节表格里的状态表示该场景是否有可指向的用例。
-- **真实 Claude Desktop 验收（L01–L10）没有执行**，第三节只给出步骤、判定标准与所需证据。
+- 真实验收按第三节及追加记录区分完整、部分和文件层证据，不把 mock 结果升级为真机结论。
 
 ## 一、执行环境
 
@@ -74,7 +96,7 @@
 | 文件 | 内容 |
 | --- | --- |
 | [tests.rs](../src-tauri/src/core/claude_desktop/tests.rs) | 模块单测 53 项：路径、模型名、协议、地址、凭据、profile/meta、1M、资格、事务、崩溃恢复（A23 三分支）、写入点失败回滚（A22）与跨平台路径规则（A33） |
-| [lock.rs](../src-tauri/src/core/claude_desktop/lock.rs) | 跨进程 writer 锁 4 项 |
+| [lock.rs](../src-tauri/src/core/claude_desktop/lock.rs) | 当前跨进程 writer 锁 4 项回归 + 1 项子进程测试入口：空记录竞争、持有者互斥、失效记录重用、独立进程阻塞与崩溃释放 |
 | [probe.rs](../src-tauri/src/core/claude_desktop/probe.rs)（`mod parse_tests`） | 模型列表解析 1 项 |
 | [mod.rs](../src-tauri/src/core/claude_desktop/mod.rs)（`mod version_tests`） | 版本探测 2 项：`the_last_app_version_wins_over_the_installed_one`、`a_single_entry_and_a_missing_file_are_handled` |
 | [claude_desktop_workflows.rs](../src-tauri/tests/claude_desktop_workflows.rs) | 端到端 9 项 |
@@ -116,7 +138,7 @@
 | A29 | restorePrevious vs switchOfficial vs release/rebaseline | tests.rs `restore_previous_returns_each_config_to_its_own_mode`、`switch_official_writes_1p_and_withdraws_the_own_entry`、`release_writes_no_desktop_file`、`withdraw_restores_a_pre_existing_profile_instead_of_deleting_it`；workflows.rs `release_keeps_the_files_and_records_a_tombstone`、`switching_to_official_mode_preserves_foreign_entries` | 部分通过 | 三种拆除语义分别有用例；`rebaseline=true` 没有用例（`first_baseline_is_preserved_across_reapply` 验证的是普通 reapply 不移动基线）。 |
 | A30 | Provider 改 key/删除后 | workflows.rs `provider_removal_marks_the_configuration_orphaned_but_still_restorable` | 部分通过 | 删除后 `orphaned` 且离线可恢复已覆盖；“改密钥后 stale”没有用例（`stale_reasons_for` 不比较密钥）。 |
 | A31 | 项目关闭/路由关闭 | workflows.rs `unrelated_provider_changes_do_not_invalidate_the_profile` | 部分通过 | 路由关闭不改变 profile 已覆盖；“关闭 AgentHarbor 进程后 Desktop 仍可直连”只能由真实环境验证（L08）。 |
-| A32 | 两个合作 writer/应用实例，以及写前已发生外部变更 | lock.rs `a_live_holder_blocks_a_second_writer`、`a_dead_holder_does_not_block_forever`、`a_reused_pid_with_a_different_start_time_is_treated_as_stale`、`dropping_one_writer_never_removes_another_writers_lock`；workflows.rs `commit_rejects_a_stale_ticket_after_the_inputs_change` | 部分通过 | 跨进程互斥与旧 revision 被拒已覆盖；提交前“文件已被外部改动”（`verify_unchanged`）没有用例；跨工具的检查与替换不承诺 CAS。 |
+| A32 | 两个合作 writer/应用实例，以及写前已发生外部变更 | lock.rs `a_live_holder_blocks_a_second_writer`、`an_empty_record_during_initialization_cannot_be_reclaimed`、`a_stale_or_corrupt_record_without_a_holder_is_reusable`、`a_foreign_process_blocks_and_crash_releases_the_lock`；workflows.rs `commit_rejects_a_stale_ticket_after_the_inputs_change` | 部分通过 | 跨进程互斥与旧 revision 被拒已覆盖；提交前“文件已被外部改动”（`verify_unchanged`）没有用例；跨工具的检查与替换不承诺 CAS。 |
 | A33 | Windows 多候选 / macOS / Linux 绝对与相对 XDG | tests.rs `exact_names_win_and_candidates_are_never_picked_by_sort_order`、`linux_requires_an_absolute_xdg_config_home`、`macos_and_windows_roots_follow_the_documented_layout`、`every_channel_layout_yields_a_distinct_four_file_set` | 通过 | 路径规则已从 `#[cfg]` 分支抽成纯函数：精确名优先且不按字典序挑选、两个渠道互不串台、Linux 只接受绝对 XDG 否则回落 `~/.config`、macOS Application Support 与 Windows LOCALAPPDATA 回落、两种渠道命名都得到互不相同的四文件路径。仍无真实 macOS/Linux 主机实测。 |
 | A34 | AGENT_HARBOR_CLIENT_HOME 隔离、路径身份改变、碰撞 | tests.rs `isolated_home_confines_discovery_to_the_isolated_root`、`roots_must_be_distinct_and_non_nested`、`four_target_paths_are_always_distinct` | 部分通过 | 隔离与碰撞零写入已覆盖；“路径身份变化使已发出的 revision 失效”只由 `paths.identity()` 比较实现，没有用例。 |
 | A35 | Bearer 检查 200 合法/200 HTML/401/403/404/429/超时 | probe.rs（`mod parse_tests`）`accepts_data_models_and_bare_arrays_but_rejects_html` | 部分通过 | “200 + HTML/残缺结构不算通过”已覆盖；401/403、404/405、429、超时与网络失败的分类没有用例（没有 mock HTTP 服务）。 |
@@ -340,9 +362,9 @@ Turn failed                     = 1，时间为 2026-07-09（历史记录，与�
 
 ### 附带的行为保证：跨进程 writer 锁
 
-- 第二个 AgentHarbor 实例或会话在写入时会立即以可重试的 `writer_busy` 失败，而不是并发写入；锁文件在应用数据目录的 `claude-desktop/writer.lock`（记录 pid 与进程启动时间，drop 时只清理属于自己的记录，pid 复用不会造成永久阻塞）。
+- 第二个 AgentHarbor 实例或会话在写入时会立即以可重试的 `writer_busy` 失败，而不是并发写入；锁文件在应用数据目录的 `claude-desktop/writer.lock`（当前使用操作系统排他文件锁，关闭句柄/崩溃自动释放；锁文件保留，pid 仅用于提示，不再以进程启动时间或删文件判断所有权）。
 - Claude Desktop 与 CC Switch **不遵守这把锁**，因此“完全退出 Desktop、暂停其它配置管理工具”仍然是操作前提。
-- 证据：`a_live_holder_blocks_a_second_writer`、`a_dead_holder_does_not_block_forever`、`a_reused_pid_with_a_different_start_time_is_treated_as_stale`、`dropping_one_writer_never_removes_another_writers_lock`（lock.rs）。
+- 证据：`a_live_holder_blocks_a_second_writer`、`an_empty_record_during_initialization_cannot_be_reclaimed`、`a_stale_or_corrupt_record_without_a_holder_is_reusable`、`a_foreign_process_blocks_and_crash_releases_the_lock`（lock.rs；最后一项实际启动并终止隔离测试子进程）。
 
 ## 四之二、实施后的代码审查与解耦
 
@@ -445,14 +467,14 @@ profileExists=false   L10: 无密钥残留
 - 计划侧：A01–A40 中 **22 项通过、18 项部分通过、0 项未覆盖**；部分通过的具体缺口见 2.3 节“说明”列。
 - 真实侧：**L07 通过（文件层）**（切官方模式后两处 `1p`、外部条目保留、非受管键逐字节未变、profile 撤回，随后立即恢复直连）。**L10 通过**（密钥变更 → stale → 重新应用 → 恢复，无密钥残留）。**L01 通过**（profile 被接受、3P 生效、`ConfigHealth healthy`、省略 `coworkEgressAllowedHosts` 的候选在该版本可用）、**L02 通过**（抓包证实 `POST /v1/messages`、只带 `Authorization`、模型名原样出站）、**L03 通过**（配置 3 个模型并带展示名后，界面模型选择器显示 `Sonnet 4.6`，证明菜单确实按 `inferenceModels` 切换）、**L04 部分通过**（多轮对话成功且 `is_resume=true`、transcript 递增；**流式在链路侧已验证**（`text/event-stream` + 完整事件序列），Desktop 侧未单独观察）、**L05 通过**（真实工具调用：`Read a file` → `Turn succeeded`）、**L06 部分通过**（应用侧已实测，本机未做过一次真实恢复）、**L08 部分通过**（本轮真实对话都在本项目未运行时发生，但"本地路由已启动后再退出"这一组合未验）。**L 系列 10 项全部执行完毕，其中 7 项完全通过、3 项部分通过（L04 的 Desktop 侧流式渲染、L06 的真实恢复、L08 的"本地路由已启动后再退出"组合），L07 的官方登录流程本身未验证（文件层已通过）。**
 - 本机 Desktop 曾被本次实施接管，并已按要求还原到真实上游；四文件内容与接管前一致（`appliedId` 仍为 AgentHarbor，CC Switch 条目保留）。执行前副本见 3.1b。
-- 因此本功能可以表述为“**实现完成、自动化验收通过，并在 Windows + Claude Desktop 2.19675.0 上完成核心链路实测**”。仍不能表述为“所有平台与全部客户端功能均已验证”：**Desktop 侧的流式渲染、L07/L09/L10、macOS/Linux、Cowork 均未验证。**
+- 本段记录的是实施阶段的核心链路结果。复审发现的恢复与隔离缺陷及其修复结果见文首；当前不能表述为“计划完整验收通过”。仍缺 Desktop 流式渲染、L06 真实恢复、L08 组合和 L07 官方流程；macOS/Linux、Cowork 未完整验证。
 
 **还没做的（按优先级）**
 
-1. **L07 与 L09 两条真实场景未执行**。L09 可用 mock 模拟「只接受 `x-api-key`」与「只有非 v1 端点」两种形态，不必真有这样一张卡；L07 取决于该环境是否允许进入官方流程。
+1. **L07 的官方流程未执行**；文件切换已验证。L09 已由 loopback mock 核对限制路径，不代表某个真实中转的兼容结论。
 2. **Desktop 侧的流式渲染未单独观察**。链路已验证支持 SSE，捕获到的 Desktop 请求是它的验证请求（`stream=false`）；要确认 Desktop 自己走流式，需要发一条较长回复的消息并核对日志。
 3. **仍未覆盖的分支**：A22 的 `pendingCleanup` 具体触发路径（需要确定性制造文件删除失败，当前只断言了它的承诺）、A32 的提交前 `verify_unchanged`（预览后、提交前文件被外部改动）、A35 的 401/403/404/429/超时分类（需要 mock HTTP 服务）、A29 的 `rebaseline` 端到端、A14 的重复模型选择、A19 以具体 `enterpriseConfig` 键为对象的用例、A27「接管前不存在 + 应用后用户又加外部键」的组合。
 4. **macOS / Linux 未在真机验证**。启动方式与路径规则都有纯函数用例，但 `macos_bundle_installed`（`mdfind`）与 Linux 的桌面文件/PATH 探测只在代码层面成立；本轮修掉了它们「无条件报告可重启」的缺陷，但没有真机证据。
 5. **Cowork 未验证**。首期 profile 省略 `coworkEgressAllowedHosts`，而本机 Cowork 实际能跑（用户截图里的 `Read a file` 就是 Cowork 回合），但「省略该字段是否在所有网络策略下都可行」没有结论，首期不承诺。
 6. **抓包验证网关仍是一次性工具**（`--ignored` 的 `verify_relay`）。已修为「按 `Content-Length` 读满 + 窗口期内不限连接 + `Drop` 兜底还原 profile」，但它不是交付物；**不得在用户正在使用 Desktop 时运行**。
-7. **工作区改动仍未提交**（基线 `e8af8f8`）。
+7. 实施阶段已形成六个提交，末端为 `5030efd`；复审修复在此基线上进行。
