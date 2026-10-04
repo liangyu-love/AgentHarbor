@@ -35,10 +35,11 @@ pub(super) async fn mock(
                             let calls = calls.clone();
                             async move {
                                 let bytes = request.into_body().collect().await.unwrap().to_bytes();
-                                captured
-                                    .lock()
-                                    .unwrap()
-                                    .push(serde_json::from_slice(&bytes).unwrap());
+                                captured.lock().unwrap().push(if bytes.is_empty() {
+                                    Value::Null
+                                } else {
+                                    serde_json::from_slice(&bytes).unwrap()
+                                });
                                 calls.fetch_add(1, Ordering::SeqCst);
                                 Ok::<_, std::convert::Infallible>(
                                     Response::builder()
@@ -65,6 +66,253 @@ pub(super) fn persist(paths: &CodexPaths, store: &router::Store) {
         &serde_json::to_vec(store).unwrap(),
     )
     .unwrap();
+}
+
+#[test]
+fn always_disabled_failover_does_not_reject_ordinary_continuations() {
+    let _guard = global_router_test_lock();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let (upstream, calls, _, server) = mock(200, RESPONSE, "application/json").await;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().into());
+        let store = router::Store { providers:vec![router::Provider { id:"a".into(), base_url:upstream,
+            model:"gpt-6-astra".into(), api_key:"synthetic".into(), enabled:true, ..Default::default() }],
+            router:router::RouterSettings { bearer_token:"local".into(), ..Default::default() }, ..Default::default() };
+        persist(&paths, &store);
+        let port = ensure_running(0, paths, ApiProxyConfigPayload { mode:super::super::models::ApiProxyMode::Direct, url:None }).await.unwrap();
+        let response = Client::builder().no_proxy().build().unwrap().post(format!("http://127.0.0.1:{port}/codex/v1/responses"))
+            .bearer_auth("local").header("session_id", "default-disabled").json(&json!({"model":"a::gpt-6-astra", "previous_response_id":"existing", "input":"next"})).send().await.unwrap();
+        assert_eq!(response.status(), 200); response.bytes().await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        stop(); server.abort();
+    });
+}
+
+#[test]
+fn disabling_failover_keeps_rejected_requests_and_new_ordinary_conversations_safe() {
+    let _guard = global_router_test_lock();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let (url_a, a, _, server_a) = mock(429, r#"{"error":{"message":"rate limit"}}"#, "application/json").await;
+        let (url_b, b, _, server_b) = mock(200, RESPONSE, "application/json").await;
+        let (url_c, c, _, server_c) = mock(200, RESPONSE, "application/json").await;
+        let dir = tempfile::tempdir().unwrap(); let paths = CodexPaths::from_home(dir.path().into());
+        let provider = |id: &str, base_url| router::Provider { id:id.into(), base_url, model:"gpt-6-astra".into(),
+            api_key:"synthetic".into(), enabled:true, ..Default::default() };
+        let mut store = router::Store { providers:vec![provider("a",url_a),provider("b",url_b)],
+            router:router::RouterSettings { same_model_failover:true, bearer_token:"local".into(), ..Default::default() }, ..Default::default() };
+        persist(&paths, &store);
+        let port = ensure_running(0, paths.clone(), ApiProxyConfigPayload { mode:super::super::models::ApiProxyMode::Direct, url:None }).await.unwrap();
+        let client = Client::builder().no_proxy().build().unwrap(); let base = format!("http://127.0.0.1:{port}");
+        let first = json!({"model":"a::gpt-6-astra", "input":"hello"});
+        let followup = json!({"model":"a::gpt-6-astra", "previous_response_id":"response-test", "input":"next"});
+        let send = |path: &str, session: &str, body: &Value| client.post(format!("{base}/{path}"))
+            .bearer_auth("local").header("session_id", session).json(body).send();
+        let response = send("codex/v1/responses", "old", &first).await.unwrap();
+        assert_eq!(response.status(),200); response.bytes().await.unwrap();
+        store.router.same_model_failover=false; persist(&paths,&store);
+        let response = send("p/b/v1/responses", "old", &first).await.unwrap();
+        assert_eq!(response.status(),400); response.bytes().await.unwrap();
+        assert_eq!(a.load(Ordering::SeqCst),1); assert_eq!(b.load(Ordering::SeqCst),1);
+        let response = send("codex/v1/responses", "old", &followup).await.unwrap();
+        assert_eq!(response.status(),409); response.bytes().await.unwrap();
+        store.router.same_model_failover=true; persist(&paths,&store);
+        let response = send("codex/v1/responses", "old", &followup).await.unwrap();
+        assert_eq!(response.status(),200); response.bytes().await.unwrap();
+        assert_eq!(a.load(Ordering::SeqCst),1); assert_eq!(b.load(Ordering::SeqCst),2);
+        // Compact reads the established channel without creating a new route.
+        let response = send("codex/v1/responses/compact", "old", &first).await.unwrap();
+        assert_eq!(response.status(),200); response.bytes().await.unwrap();
+        assert_eq!(a.load(Ordering::SeqCst),1); assert_eq!(b.load(Ordering::SeqCst),3);
+        store.router.same_model_failover=false; store.providers[0].base_url=url_c; persist(&paths,&store);
+        let response = send("codex/v1/responses/compact", "old", &first).await.unwrap();
+        assert_eq!(response.status(),409); response.bytes().await.unwrap();
+        let response = send("codex/v1/responses", "old", &first).await.unwrap();
+        assert_eq!(response.status(),200); response.bytes().await.unwrap();
+        let response = send("codex/v1/responses", "old", &followup).await.unwrap();
+        assert_eq!(response.status(),200); response.bytes().await.unwrap();
+        assert_eq!(c.load(Ordering::SeqCst),2); assert_eq!(b.load(Ordering::SeqCst),3);
+        stop(); server_a.abort(); server_b.abort(); server_c.abort();
+    });
+}
+
+#[test]
+fn expired_failover_continuations_stay_rejected_after_cleanup_and_listener_restart() {
+    let _guard = global_router_test_lock();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let (url_a, a, _, server_a) = mock(429, r#"{"error":{"message":"rate limit"}}"#, "application/json").await;
+        let (url_b, b, _, server_b) = mock(200, RESPONSE, "application/json").await;
+        let dir = tempfile::tempdir().unwrap(); let paths = CodexPaths::from_home(dir.path().into());
+        let provider = |id: &str, base_url| router::Provider { id:id.into(), base_url, model:"gpt-6-astra".into(), api_key:"synthetic".into(), enabled:true, ..Default::default() };
+        let mut store = router::Store { providers:vec![provider("a",url_a),provider("b",url_b)],
+            router:router::RouterSettings { same_model_failover:true, bearer_token:"local".into(), ..Default::default() }, ..Default::default() };
+        persist(&paths, &store);
+        let proxy = ApiProxyConfigPayload { mode:super::super::models::ApiProxyMode::Direct, url:None };
+        let port = ensure_running(0, paths.clone(), proxy.clone()).await.unwrap();
+        let client = Client::builder().no_proxy().build().unwrap();
+        let first = json!({"model":"a::gpt-6-astra", "input":"hello"});
+        let response=client.post(format!("http://127.0.0.1:{port}/codex/v1/responses")).bearer_auth("local").header("session_id","expired").json(&first).send().await.unwrap();
+        assert_eq!(response.status(),200); response.bytes().await.unwrap();
+        let mut headers=HeaderMap::new(); headers.insert("session_id",HeaderValue::from_static("expired"));
+        let key=failover::key(&paths.app_data_dir.join("newapi-providers.dat"),&headers,"a::gpt-6-astra").unwrap();
+        failover::expire(&key);
+        // Another conversation prunes the expired record before it is queried.
+        let response=client.post(format!("http://127.0.0.1:{port}/codex/v1/responses")).bearer_auth("local").header("session_id","cleanup").json(&first).send().await.unwrap();
+        assert_eq!(response.status(),200); response.bytes().await.unwrap();
+        assert!(failover::bound(&key).is_none());
+        store.router.same_model_failover=false;persist(&paths,&store);
+        stop();
+        let port=ensure_running(0,paths,proxy).await.unwrap();
+        for _ in 0..2 {
+            let response=client.post(format!("http://127.0.0.1:{port}/codex/v1/responses")).bearer_auth("local").header("session_id","expired")
+                .json(&json!({"model":"a::gpt-6-astra","previous_response_id":"response-test","input":"next"})).send().await.unwrap();
+            assert_eq!(response.status(),409); assert!(response.text().await.unwrap().contains("unknown or expired"));
+        }
+        assert_eq!(a.load(Ordering::SeqCst),2);assert_eq!(b.load(Ordering::SeqCst),2);
+        stop();server_a.abort();server_b.abort();
+    });
+}
+
+#[test]
+fn bodyless_resources_do_not_release_or_create_conversation_bindings() {
+    let _guard = global_router_test_lock();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let (url_a, a, _, server_a) = mock(
+            429,
+            r#"{"error":{"message":"rate limit"}}"#,
+            "application/json",
+        )
+        .await;
+        let (url_b, b, captured_b, server_b) = mock(200, RESPONSE, "application/json").await;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().into());
+        let provider = |id: &str, base_url| router::Provider {
+            id: id.into(),
+            base_url,
+            model: "gpt-6-astra".into(),
+            api_key: "synthetic".into(),
+            enabled: true,
+            ..Default::default()
+        };
+        let mut store = router::Store {
+            providers: vec![provider("a", url_a), provider("b", url_b)],
+            router: router::RouterSettings {
+                same_model_failover: true,
+                bearer_token: "local".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        persist(&paths, &store);
+        let port = ensure_running(
+            0,
+            paths.clone(),
+            ApiProxyConfigPayload {
+                mode: super::super::models::ApiProxyMode::Direct,
+                url: None,
+            },
+        )
+        .await
+        .unwrap();
+        let client = Client::builder().no_proxy().build().unwrap();
+        let base = format!("http://127.0.0.1:{port}");
+        // Native direct routes can omit model; resource requests share that same
+        // empty model affinity key, so they previously cleared this binding.
+        let response = client
+            .post(format!("{base}/p/a/v1/responses"))
+            .bearer_auth("local")
+            .header("session_id", "no-model")
+            .json(&json!({"input":"hello"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        response.bytes().await.unwrap();
+        store.router.same_model_failover = false;
+        persist(&paths, &store);
+        for (method, path) in [
+            (hyper::Method::GET, "p/a/v1/responses/response-test"),
+            (hyper::Method::HEAD, "p/a/v1/responses/response-test"),
+            (hyper::Method::DELETE, "p/a/v1/responses/response-test"),
+            (hyper::Method::POST, "p/a/v1/responses/response-test/cancel"),
+            (hyper::Method::GET, "p/a/v1/responses/response-test/input_items"),
+            (hyper::Method::GET, "v1/responses/response-test"),
+        ] {
+            let response = client
+                .request(method, format!("{base}/{path}"))
+                .bearer_auth("local")
+                .header("session_id", "no-model")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            response.bytes().await.unwrap();
+        }
+        assert!(captured_b.lock().unwrap().iter().skip(1).all(Value::is_null));
+        let cancel_body = json!({"reason":"client_request"});
+        let response = client
+            .post(format!("{base}/p/a/v1/responses/response-test/cancel"))
+            .bearer_auth("local")
+            .header("session_id", "no-model")
+            .json(&cancel_body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        response.bytes().await.unwrap();
+        assert_eq!(captured_b.lock().unwrap().last(), Some(&cancel_body));
+        // Model catalog requests use their explicit route, never a response's
+        // channel binding, even when the same session header is present.
+        let response = client
+            .head(format!("{base}/p/a/v1/models"))
+            .bearer_auth("local")
+            .header("session_id", "no-model")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 429);
+        response.bytes().await.unwrap();
+        store.router.same_model_failover = true;
+        persist(&paths, &store);
+        let response = client
+            .post(format!("{base}/p/a/v1/responses"))
+            .bearer_auth("local")
+            .header("session_id", "no-model")
+            .json(&json!({"previous_response_id":"response-test","input":"next"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        response.bytes().await.unwrap();
+        assert_eq!(a.load(Ordering::SeqCst), 2);
+        assert_eq!(b.load(Ordering::SeqCst), 9);
+        let mut headers = HeaderMap::new();
+        headers.insert("session_id", HeaderValue::from_static("only-resources"));
+        let key = failover::key(
+            &paths.app_data_dir.join("newapi-providers.dat"),
+            &headers,
+            "",
+        )
+        .unwrap();
+        for (method, path) in [
+            (hyper::Method::GET, "p/b/v1/models"),
+            (hyper::Method::GET, "p/b/v1/responses/response-test"),
+            (hyper::Method::POST, "p/b/v1/responses/response-test/cancel"),
+        ] {
+            let response = client
+                .request(method, format!("{base}/{path}"))
+                .bearer_auth("local")
+                .header("session_id", "only-resources")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            response.bytes().await.unwrap();
+            assert!(failover::bound(&key).is_none());
+        }
+        stop();
+        server_a.abort();
+        server_b.abort();
+    });
 }
 
 #[test]

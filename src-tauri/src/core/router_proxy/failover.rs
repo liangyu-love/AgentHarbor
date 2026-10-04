@@ -14,6 +14,7 @@ pub(super) struct Binding {
     protocol: router::ModelProtocol,
     endpoint: String,
     last_used: Instant,
+    pub(super) requires_failover: bool,
 }
 static AFFINITY: OnceLock<Mutex<VecDeque<(String, Binding)>>> = OnceLock::new();
 // Serialize route decisions through response headers, not the long-lived stream.
@@ -69,7 +70,8 @@ pub(super) fn bound(key: &str) -> Option<Binding> {
     binding.last_used = Instant::now();
     Some(binding.clone())
 }
-pub(super) fn release(key: &str) {
+#[cfg(test)]
+fn release(key: &str) {
     AFFINITY
         .get_or_init(|| Mutex::new(VecDeque::new()))
         .lock()
@@ -88,7 +90,11 @@ pub(super) fn agrees(binding: &Binding, destination: &Destination) -> bool {
     matches!(destination, Destination::Provider { provider, model_override, upstream_protocol, .. }
         if provider.id == binding.provider_id && model_override.as_deref().unwrap_or(&provider.model) == binding.model && *upstream_protocol == binding.protocol && endpoint(provider) == binding.endpoint)
 }
-pub(super) fn bind(key: &str, destination: &Destination) -> bool {
+#[cfg(test)]
+fn bind(key: &str, destination: &Destination) -> bool {
+    bind_for_mode(key, destination, true)
+}
+pub(super) fn bind_for_mode(key: &str, destination: &Destination, requires_failover: bool) -> bool {
     let Destination::Provider {
         provider,
         model_override,
@@ -119,6 +125,7 @@ pub(super) fn bind(key: &str, destination: &Destination) -> bool {
             protocol: *upstream_protocol,
             endpoint: endpoint(provider),
             last_used: Instant::now(),
+            requires_failover,
         },
     ));
     true
@@ -172,6 +179,24 @@ pub(super) fn continuation(body: Option<&[u8]>) -> bool {
         object.remove("background");
     }
     !stateless(Some(v.to_string().as_bytes()))
+}
+pub(super) fn fresh_turn(body: Option<&[u8]>) -> bool {
+    body.and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())
+        .is_some_and(|value| value.is_object())
+        && !continuation(body)
+}
+#[cfg(test)]
+pub(super) fn expire(key: &str) {
+    if let Some((_, binding)) = AFFINITY
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .iter_mut()
+        .find(|(k, _)| k == key)
+    {
+        binding.last_used = Instant::now() - IDLE_TTL - Duration::from_secs(1);
+    }
 }
 pub(super) fn alternative(
     store: &router::Store,

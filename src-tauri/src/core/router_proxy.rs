@@ -45,6 +45,23 @@ struct ProxyHandle {
 
 static HANDLE: OnceLock<Mutex<Option<ProxyHandle>>> = OnceLock::new();
 static START_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+type FailoverScope = Option<(PathBuf, Arc<std::sync::atomic::AtomicBool>)>;
+static FAILOVER_SCOPE: OnceLock<Mutex<FailoverScope>> = OnceLock::new();
+
+fn failover_seen_for(store_path: &std::path::Path) -> Arc<std::sync::atomic::AtomicBool> {
+    let mut scope = FAILOVER_SCOPE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some((path, seen)) = &*scope {
+        if path == store_path {
+            return seen.clone();
+        }
+    }
+    let seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    *scope = Some((store_path.to_owned(), seen.clone()));
+    seen
+}
 
 fn handle_slot() -> &'static Mutex<Option<ProxyHandle>> {
     HANDLE.get_or_init(|| Mutex::new(None))
@@ -158,6 +175,7 @@ pub async fn ensure_running(
             mode: super::models::ApiProxyMode::Direct,
             url: None,
         })?,
+        failover_seen: failover_seen_for(&paths.app_data_dir.join("newapi-providers.dat")),
     });
     tokio::spawn(accept_loop(listener, shutdown_rx, context));
     *handle_slot().lock().map_err(|_| "newapi.errors.storage")? = Some(ProxyHandle {
@@ -176,6 +194,9 @@ struct ArcContext {
     outbound: Arc<RwLock<Client>>,
     /// 供应商网络模式为 direct 时使用的无代理客户端。
     outbound_direct: Client,
+    /// Once this process has routed with failover, missing affinity is no longer
+    /// evidence that a continuation is safe to send to its original channel.
+    failover_seen: Arc<std::sync::atomic::AtomicBool>,
 }
 
 async fn accept_loop(
@@ -393,6 +414,30 @@ fn validate_endpoint(method: &hyper::Method, segments: &[&str]) -> ForwardResult
     if allowed { Ok(()) } else { Err((StatusCode::METHOD_NOT_ALLOWED, "unsupported method for router endpoint")) }
 }
 
+fn is_inference_create(method: &hyper::Method, segments: &[&str]) -> bool {
+    if *method != hyper::Method::POST {
+        return false;
+    }
+    matches!(
+        segments,
+        ["codex", "v1", "responses" | "messages"]
+            | ["codex", "v1", "chat", "completions"]
+            | ["p", _, "v1", "responses" | "messages"]
+            | ["p", _, "v1", "chat", "completions"]
+            | ["v1", "responses" | "messages"]
+            | ["v1", "chat", "completions"]
+    )
+}
+
+fn is_response_resource(segments: &[&str]) -> bool {
+    let suffix = match segments {
+        ["codex", "v1", suffix @ ..] | ["p", _, "v1", suffix @ ..] | ["v1", suffix @ ..] => suffix,
+        _ => return false,
+    };
+    matches!(suffix, ["responses", id] if *id != "compact")
+        || matches!(suffix, ["responses", _, "cancel" | "input_items"])
+}
+
 fn provider_destination(
     store: &router::Store,
     provider_id: &str,
@@ -496,6 +541,23 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
 
     let required_protocol = request_protocol(&segments);
     let (requested_model, one_m_context) = requested_model(body.as_deref(), required_protocol);
+    let inference_create = is_inference_create(&method, &segments);
+    let response_resource = is_response_resource(&segments);
+    let compact = method == hyper::Method::POST
+        && matches!(
+            segments.as_slice(),
+            ["codex", "v1", "responses", "compact"]
+                | ["p", _, "v1", "responses", "compact"]
+                | ["v1", "responses", "compact"]
+        );
+    if (inference_create || compact) && store.router.same_model_failover {
+        context
+            .failover_seen
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+    let failover_seen = context
+        .failover_seen
+        .load(std::sync::atomic::Ordering::Acquire);
 
     // Codex model catalog for the model picker (`model_catalog_json` mirror).
     if matches!(segments.as_slice(), ["codex", "v1", "models"]) && !has_body {
@@ -515,7 +577,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             ["p", _, "v1", ..] | ["v1", ..] => true,
             _ => false,
         };
-        let affinity_key = provider_route
+        let affinity_key = (provider_route && (inference_create || compact || response_resource))
             .then(|| {
                 failover::key(
                     &context.store_path,
@@ -529,21 +591,25 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         } else {
             None
         };
-        let mut binding = affinity_key.as_deref().and_then(failover::bound);
-        if !store.router.same_model_failover && binding.is_some() {
-            if failover::continuation(body.as_deref()) {
+        let binding = affinity_key.as_deref().and_then(failover::bound);
+        let continuation = compact || (inference_create && failover::continuation(body.as_deref()));
+        let fresh_turn = inference_create && failover::fresh_turn(body.as_deref());
+        if !store.router.same_model_failover && binding.as_ref().is_some_and(|binding| binding.requires_failover) {
+            if continuation {
                 return Err((StatusCode::CONFLICT,
                     "failover is disabled for this bound conversation; re-enable it or start a new conversation"));
             }
-            if let Some(key) = &affinity_key { failover::release(key); }
-            binding = None;
         }
+        // A new turn while disabled selects the ordinary route. Replace the old
+        // binding only after all path/body/tool checks succeed, immediately
+        // before forwarding; rejected requests must not destroy affinity.
+        let selected_binding = if !store.router.same_model_failover && fresh_turn { None } else { binding.as_ref() };
         let (mut destination, mut selection_reason) = resolve_destination_explain(
             &store,
             &segments,
             required_protocol,
             requested_model.as_deref(),
-            binding.as_ref(),
+            selected_binding,
         )?;
         if one_m_context
             && !matches!(
@@ -563,37 +629,23 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             && binding.is_none()
             && affinity_key.is_some()
             && failover::stateless(body.as_deref());
-        if store.router.same_model_failover
+        if failover_seen
             && affinity_key.is_some()
             && binding.is_none()
-            && failover::continuation(body.as_deref())
+            && continuation
         {
             return Err((
                 StatusCode::CONFLICT,
                 "conversation channel is unknown or expired; start a new conversation",
             ));
         }
-        let reserved = (store.router.same_model_failover || binding.is_some())
-            && affinity_key
-                .as_deref()
-                .is_some_and(|key| failover::bind(key, &destination));
-        if store.router.same_model_failover && affinity_key.is_some() && !reserved {
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                "conversation routing capacity reached; wait for idle sessions to expire or start without failover",
-            ));
-        }
         let can_retry = store.router.same_model_failover
             && binding.is_none()
-            && reserved
-            && method == hyper::Method::POST
-            && stateless
-            && matches!(
-                segments.last(),
-                Some(&"responses" | &"messages" | &"completions")
-            );
+            && affinity_key.is_some()
+            && fresh_turn
+            && stateless;
         trace.stage("build");
-        let body = if required_protocol == Some(router::ModelProtocol::Responses) {
+        let body = if required_protocol == Some(router::ModelProtocol::Responses) && !response_resource {
             session_compat::prepare_reasoning(body, || {
                 requested_model.as_deref().and_then(|slug| {
                     router::catalog_entry_for_slug(
@@ -691,7 +743,14 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                 }
                 _ => None,
             };
-            let (mut sent, translated_input, tool_namespaces) = upstream_body(&destination, body.clone())?;
+            // Resource operations read the established channel but do not carry
+            // a create request; preserve their body, including an empty cancel.
+            // upstream_suffix already rejects translated Responses resources.
+            let (mut sent, translated_input, tool_namespaces) = if response_resource {
+                (body.clone(), Vec::new(), Default::default())
+            } else {
+                upstream_body(&destination, body.clone())?
+            };
             if let (Some(history), Some(bytes)) = (&message_context, &sent) {
                 let mut value: Value = serde_json::from_slice(bytes).map_err(|_| (StatusCode::BAD_REQUEST, "invalid translated request"))?;
                 history.restore(&mut value);
@@ -710,7 +769,11 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                     session_compat::prepare_message_translation(sent, translation.to, &metadata)?
                 } else { sent }
             } else { sent };
-            let (sent, tool_adapter) = tool_schema::prepare(sent, &upstream_model, upstream_protocol)?;
+            let (sent, tool_adapter) = if response_resource {
+                (sent, Default::default())
+            } else {
+                tool_schema::prepare(sent, &upstream_model, upstream_protocol)?
+            };
             let outbound_client = client_for(&context, &destination)?;
             let credential_kind = if matches!(destination, Destination::Official) { "codexLocal" } else { "providerApiKey" };
             let credential_header = attempt_headers.get(AUTHORIZATION)
@@ -731,6 +794,14 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                 .headers(attempt_headers);
             if let Some(sent) = sent {
                 outbound = outbound.body(sent);
+            }
+            if inference_create && failover_seen && (fresh_turn || continuation) {
+                if let Some(key) = &affinity_key {
+                    if !failover::bind_for_mode(key, &destination, store.router.same_model_failover) {
+                        return Err((StatusCode::SERVICE_UNAVAILABLE,
+                            "conversation routing capacity reached; wait for idle sessions to expire or start a new conversation"));
+                    }
+                }
             }
             let alternative = (can_retry && attempt == 0)
                 .then(|| failover::alternative(&store, &destination, required_protocol))
@@ -756,7 +827,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                             destination = next;
                             selection_reason = "failover_connect_error".into();
                             if let Some(key) = &affinity_key {
-                                failover::bind(key, &destination);
+                                failover::bind_for_mode(key, &destination, true);
                             }
                             continue;
                         }
@@ -787,7 +858,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                     destination = next;
                     selection_reason = "failover_rate_limited".into();
                     if let Some(key) = &affinity_key {
-                        failover::bind(key, &destination);
+                        failover::bind_for_mode(key, &destination, true);
                     }
                     continue;
                 }
@@ -2419,6 +2490,7 @@ mod tests {
             crate::core::secret_file::write(&store_path, &serde_json::to_vec(&store).unwrap()).unwrap();
             let client = Client::builder().no_proxy().timeout(Duration::from_secs(5)).build().unwrap();
             let context = Arc::new(ArcContext {
+                failover_seen: failover_seen_for(&store_path),
                 store_path, app_data_dir, codex_home:fixture.path().to_owned(), auth_path:auth_path.clone(),
                 outbound:Arc::new(RwLock::new(client.clone())), outbound_direct:client.clone()
             });

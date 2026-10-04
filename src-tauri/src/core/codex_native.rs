@@ -476,13 +476,28 @@ fn config(paths: &CodexPaths) -> Result<DocumentMut, CoreError> {
         .map_err(|_| CoreError::InvalidData("Invalid Codex config TOML".into()))
 }
 
+fn provider_credential_variables(entry: &Item) -> impl Iterator<Item = &str> {
+    entry
+        .get("env_key")
+        .and_then(Item::as_str)
+        .into_iter()
+        .chain(
+            entry
+                .get("env_http_headers")
+                .and_then(Item::as_table_like)
+                .into_iter()
+                .flat_map(|headers| headers.iter())
+                .filter_map(|(_, value)| value.as_str()),
+        )
+}
+
 fn referenced_variables(document: &DocumentMut) -> HashSet<String> {
     document
         .get("model_providers")
         .and_then(Item::as_table_like)
         .into_iter()
         .flat_map(|providers| providers.iter())
-        .filter_map(|(_, provider)| provider.get("env_key").and_then(Item::as_str))
+        .flat_map(|(_, provider)| provider_credential_variables(provider))
         .map(str::to_owned)
         .collect()
 }
@@ -496,8 +511,15 @@ fn cleanup_unlocked(paths: &CodexPaths, only: Option<Uuid>) -> Result<(), CoreEr
         .into_iter()
         .flat_map(|table| table.iter())
         .filter(|(key, _)| *key != PROVIDER_KEY)
-        .filter_map(|(_, entry)| entry.get("env_key").and_then(Item::as_str))
+        .flat_map(|(_, entry)| provider_credential_variables(entry))
         .collect();
+    let active_catalog = document
+        .get("model_catalog_json")
+        .and_then(Item::as_str)
+        .map(PathBuf::from);
+    let canonical_active_catalog = active_catalog
+        .as_ref()
+        .and_then(|path| std::fs::canonicalize(path).ok());
     let file = EnvFile::load(paths)?;
     let removing: Vec<_> = file
         .owned
@@ -539,8 +561,12 @@ fn cleanup_unlocked(paths: &CodexPaths, only: Option<Uuid>) -> Result<(), CoreEr
         {
             continue;
         }
-        if document.get("model_catalog_json").and_then(Item::as_str)
-            == Some(path.to_string_lossy().as_ref())
+        // Config paths may use equivalent separators or case on Windows.
+        // Protect the current file by its path identity, not its TOML spelling.
+        if active_catalog.as_ref() == Some(&path)
+            || canonical_active_catalog
+                .as_ref()
+                .is_some_and(|active| std::fs::canonicalize(&path).ok().as_ref() == Some(active))
         {
             continue;
         }
@@ -1632,6 +1658,71 @@ mod tests {
         assert_eq!(std::fs::read(env_path(&paths)).unwrap(), env);
         assert!(catalog_path(&paths, id).exists());
         assert_eq!(text(&paths), changed);
+    }
+
+    #[test]
+    fn native_key_rotation_keeps_credentials_referenced_by_supplemental_headers() {
+        let (_directory, paths, mut store) = fixture();
+        apply(&paths, &store).unwrap();
+        let original_id = installed_id(&paths);
+        let original_name = variable_name(original_id);
+        let mut changed = document(&paths);
+        changed["model_providers"][PROVIDER_KEY]["env_http_headers"] =
+            toml_edit::value(toml_edit::InlineTable::new());
+        changed["model_providers"][PROVIDER_KEY]["env_http_headers"]["X-API-Key"] =
+            toml_edit::value(&original_name);
+        changed["model_providers"]["foreign"] = Item::Table(toml_edit::Table::new());
+        changed["model_providers"]["foreign"]["env_http_headers"] =
+            Item::Table(toml_edit::Table::new());
+        changed["model_providers"]["foreign"]["env_http_headers"]["X-API-Key"] =
+            toml_edit::value(&original_name);
+        std::fs::write(&paths.config_path, changed.to_string()).unwrap();
+        store.providers[0].api_key = "synthetic-rotated-secret".into();
+        apply(&paths, &store).unwrap();
+        assert_ne!(installed_id(&paths), original_id);
+        assert!(EnvFile::load(&paths)
+            .unwrap()
+            .owned
+            .iter()
+            .any(|entry| entry.id == original_id));
+        assert_eq!(
+            document(&paths)["model_providers"][PROVIDER_KEY]["env_http_headers"]["X-API-Key"]
+                .as_str(),
+            Some(original_name.as_str())
+        );
+        remove_routing_config(&paths, &store).unwrap();
+        let owned = EnvFile::load(&paths).unwrap().owned;
+        assert_eq!(owned.len(), 1);
+        assert_eq!(owned[0].id, original_id);
+        let mut changed = document(&paths);
+        changed["model_providers"]["foreign"]
+            .as_table_mut()
+            .unwrap()
+            .remove("env_http_headers");
+        std::fs::write(&paths.config_path, changed.to_string()).unwrap();
+        cleanup_credentials(&paths).unwrap();
+        assert!(EnvFile::load(&paths).unwrap().owned.is_empty());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn native_cleanup_keeps_current_catalog_with_equivalent_windows_spelling() {
+        let (_directory, paths, store) = fixture();
+        apply(&paths, &store).unwrap();
+        let mut changed = document(&paths);
+        let original = changed["model_catalog_json"].as_str().unwrap().to_owned();
+        let alternate = original.replace('\\', "/");
+        assert_ne!(original, alternate);
+        assert_eq!(PathBuf::from(&original), PathBuf::from(&alternate));
+        changed["model_catalog_json"] = toml_edit::value(&alternate);
+        std::fs::write(&paths.config_path, changed.to_string()).unwrap();
+        apply(&paths, &store).unwrap();
+        assert!(PathBuf::from(&alternate).is_file());
+        assert!(intact(&paths, &store).unwrap());
+        changed["model_catalog_json"] = toml_edit::value(original.to_ascii_uppercase());
+        std::fs::write(&paths.config_path, changed.to_string()).unwrap();
+        cleanup_credentials(&paths).unwrap();
+        assert!(PathBuf::from(&original).is_file());
     }
 
     #[test]
