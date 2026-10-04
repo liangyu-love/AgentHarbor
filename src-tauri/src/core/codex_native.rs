@@ -8,8 +8,8 @@ use super::{
 };
 use crate::{
     core::{
-        codex_config::CodexConfigRepository, model_catalog, model_policy, models::CoreError, models_dev,
-        newapi, storage,
+        codex_config::CodexConfigRepository, model_catalog, model_policy, models::CoreError,
+        models_dev, newapi, storage,
     },
     platform::paths::CodexPaths,
 };
@@ -246,12 +246,23 @@ fn api_key(provider: &Provider) -> Result<String, String> {
 }
 
 fn model_ids(provider: &Provider) -> Vec<String> {
-    let mut ids: Vec<String> = provider.models.iter()
-        .filter(|model| model.included
-            && provider.protocol_for_model(&model.id) == ModelProtocol::Responses
-            && provider.supports_model(&model.id))
-        .map(|model| model.id.clone()).collect();
-    if !provider.model.is_empty() && !ids.contains(&provider.model) { ids.push(provider.model.clone()); }
+    let mut ids: Vec<String> = provider
+        .models
+        .iter()
+        .filter(|model| {
+            model.included
+                && provider.protocol_for_model(&model.id) == ModelProtocol::Responses
+                && provider.supports_model(&model.id)
+        })
+        .map(|model| model.id.clone())
+        .collect();
+    if !provider.model.is_empty()
+        && provider.protocol_for_model(&provider.model) == ModelProtocol::Responses
+        && provider.supports_model(&provider.model)
+        && !ids.contains(&provider.model)
+    {
+        ids.push(provider.model.clone());
+    }
     ids
 }
 
@@ -269,21 +280,28 @@ fn configuration_plan(
 ) -> NativeConfigurationPlan {
     let global_compression = store.global_compression();
     let mut seen = HashSet::new();
-    let ids: Vec<_> = model_ids(provider).into_iter().filter(|id| seen.insert(id.clone())).collect();
-    let resolved: Vec<_> = ids.iter().map(|id| {
+    let ids: Vec<_> = model_ids(provider)
+        .into_iter()
+        .filter(|id| seen.insert(id.clone()))
+        .collect();
+    let resolved: Vec<_> = ids
+        .iter()
+        .map(|id| {
             let official = super::matched_official_model(official_models, &id)
                 .filter(|_| super::official_endpoint_applies(provider));
-            super::model_projection(
-                provider,
-                &id,
-                official,
-                models_dev,
-                &global_compression,
-            )
-        }).collect();
-    let compression = model_policy::shared_plan(&ids.iter().zip(&resolved)
-        .map(|(id, (_, projection))| (id.as_str(), projection)).collect::<Vec<_>>());
-    let models: Vec<_> = ids.iter().zip(resolved).map(|(id, (metadata, projection))| {
+            super::model_projection(provider, &id, official, models_dev, &global_compression)
+        })
+        .collect();
+    let compression = model_policy::shared_plan(
+        &ids.iter()
+            .zip(&resolved)
+            .map(|(id, (_, projection))| (id.as_str(), projection))
+            .collect::<Vec<_>>(),
+    );
+    let models: Vec<_> = ids
+        .iter()
+        .zip(resolved)
+        .map(|(id, (metadata, projection))| {
             let alias = metadata.display_name.trim();
             super::relay_catalog_entry(
                 id.clone(),
@@ -296,10 +314,18 @@ fn configuration_plan(
             )
         })
         .collect();
-    NativeConfigurationPlan { catalog: serde_json::json!({ "models": models }), models: ids, compression }
+    NativeConfigurationPlan {
+        catalog: serde_json::json!({ "models": models }),
+        models: ids,
+        compression,
+    }
 }
 
-fn load_configuration_plan(paths: &CodexPaths, store: &Store, provider: &Provider) -> NativeConfigurationPlan {
+fn load_configuration_plan(
+    paths: &CodexPaths,
+    store: &Store,
+    provider: &Provider,
+) -> NativeConfigurationPlan {
     let catalog = models_dev::load(&paths.app_data_dir);
     let official = model_catalog::official(&paths.codex_home, &paths.app_data_dir);
     configuration_plan(store, provider, &catalog, &official.models)
@@ -320,7 +346,12 @@ pub(super) fn native_limits(
     store: &Store,
     provider: &Provider,
 ) -> (Option<u64>, Option<u64>) {
-    (provider.context_window, load_configuration_plan(paths, store, provider).compression.threshold)
+    (
+        provider.context_window,
+        load_configuration_plan(paths, store, provider)
+            .compression
+            .threshold,
+    )
 }
 
 pub(crate) struct NativeCompressionState {
@@ -334,32 +365,68 @@ pub(crate) struct NativeCompressionState {
     pub config_active: bool,
 }
 
-pub(super) fn compression_state(paths: &CodexPaths, store: &Store,
-    catalog: &models_dev::Catalog, official_models: &[serde_json::Value]) -> Option<NativeCompressionState> {
+pub(super) fn compression_state(
+    paths: &CodexPaths,
+    store: &Store,
+    catalog: &models_dev::Catalog,
+    official_models: &[serde_json::Value],
+) -> Option<NativeCompressionState> {
     let provider = selected_provider(store).ok()?;
     let plan = configuration_plan(store, provider, catalog, official_models);
     let _guard = config_snapshot::guard().ok()?;
-    let applied = intact_unlocked(paths, store, &plan).ok().map(|intact|
-        intact && !matches!(plan.compression.state.as_str(), "invalid" | "unknown"));
-    let config_active = config(paths).ok().is_some_and(|document| {
-        let owns_scope = document.get("model_provider").and_then(Item::as_str) == Some(PROVIDER_KEY)
-            && document.get("model_providers").and_then(|entries| entries.get(PROVIDER_KEY))
-                .and_then(|entry| entry.get("base_url")).and_then(Item::as_str) == endpoint(provider).ok().as_deref();
-        let credential = document.get("model_providers").and_then(|entries| entries.get(PROVIDER_KEY))
-            .and_then(|entry| entry.get("env_key")).and_then(Item::as_str)
-            .and_then(|name| EnvFile::load(paths).ok().and_then(|file| file.owned.into_iter().find(|entry| entry.name == name)));
-        owns_scope && credential.is_some_and(|credential|
-            api_key(provider).ok().as_deref() == Some(credential.key.as_str())
-                && document.get("model_catalog_json").and_then(Item::as_str)
-                    == Some(catalog_path(paths, credential.id).to_string_lossy().as_ref()))
+    let applied = intact_unlocked(paths, store, &plan)
+        .ok()
+        .map(|intact| intact && !matches!(plan.compression.state.as_str(), "invalid" | "unknown"));
+    let document = config(paths).ok();
+    let config_active = document.as_ref().is_some_and(|document| {
+        let owns_scope = document.get("model_provider").and_then(Item::as_str)
+            == Some(PROVIDER_KEY)
+            && document
+                .get("model_providers")
+                .and_then(|entries| entries.get(PROVIDER_KEY))
+                .and_then(|entry| entry.get("base_url"))
+                .and_then(Item::as_str)
+                == endpoint(provider).ok().as_deref();
+        let credential = document
+            .get("model_providers")
+            .and_then(|entries| entries.get(PROVIDER_KEY))
+            .and_then(|entry| entry.get("env_key"))
+            .and_then(Item::as_str)
+            .and_then(|name| {
+                EnvFile::load(paths)
+                    .ok()
+                    .and_then(|file| file.owned.into_iter().find(|entry| entry.name == name))
+            });
+        owns_scope
+            && credential.is_some_and(|credential| {
+                api_key(provider).ok().as_deref() == Some(credential.key.as_str())
+                    && document.get("model_catalog_json").and_then(Item::as_str)
+                        == Some(
+                            catalog_path(paths, credential.id)
+                                .to_string_lossy()
+                                .as_ref(),
+                        )
+            })
     });
-    let applied_threshold = config_active.then(|| config(paths).ok()).flatten().and_then(|document| {
-        document.get("model_auto_compact_token_limit").and_then(Item::as_integer)
-            .and_then(|value| u64::try_from(value).ok())
-    });
-    Some(NativeCompressionState { provider_id: provider.id.clone(), models: plan.models,
-        threshold: plan.compression.threshold, limiting_models: plan.compression.limiting_models.clone(),
-        applied_threshold, applied, shared_plan: plan.compression, config_active })
+    let applied_threshold = config_active
+        .then_some(document)
+        .flatten()
+        .and_then(|document| {
+            document
+                .get("model_auto_compact_token_limit")
+                .and_then(Item::as_integer)
+                .and_then(|value| u64::try_from(value).ok())
+        });
+    Some(NativeCompressionState {
+        provider_id: provider.id.clone(),
+        models: plan.models,
+        threshold: plan.compression.threshold,
+        limiting_models: plan.compression.limiting_models.clone(),
+        applied_threshold,
+        applied,
+        shared_plan: plan.compression,
+        config_active,
+    })
 }
 
 fn config(paths: &CodexPaths) -> Result<DocumentMut, CoreError> {
@@ -424,7 +491,11 @@ pub(super) fn intact(paths: &CodexPaths, store: &Store) -> Result<bool, String> 
     intact_unlocked(paths, store, &plan)
 }
 
-fn intact_unlocked(paths: &CodexPaths, store: &Store, plan: &NativeConfigurationPlan) -> Result<bool, String> {
+fn intact_unlocked(
+    paths: &CodexPaths,
+    store: &Store,
+    plan: &NativeConfigurationPlan,
+) -> Result<bool, String> {
     let provider = selected_provider(store)?;
     let expected_base = endpoint(provider)?;
     let expected_key = api_key(provider)?;
@@ -460,7 +531,8 @@ fn intact_unlocked(paths: &CodexPaths, store: &Store, plan: &NativeConfiguration
         return Err(CREDENTIAL_ERROR.into());
     }
     let expected_catalog = catalog_path(paths, credential.id);
-    let (expected_context, expected_threshold) = (provider.context_window, plan.compression.threshold);
+    let (expected_context, expected_threshold) =
+        (provider.context_window, plan.compression.threshold);
     let catalog_matches = std::fs::read(&expected_catalog)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
@@ -530,10 +602,7 @@ pub(super) fn apply(paths: &CodexPaths, store: &Store) -> Result<newapi::Applied
     file.write(paths, &updated).map_err(config_update_error)?;
     let mut pending = None;
     let result = (|| -> Result<_, CoreError> {
-        storage::write_atomic(
-            &catalog_path,
-            &serde_json::to_vec_pretty(&plan.catalog)?,
-        )?;
+        storage::write_atomic(&catalog_path, &serde_json::to_vec_pretty(&plan.catalog)?)?;
         CodexConfigRepository::new(paths).update(|original| {
             let mut document = original
                 .parse::<DocumentMut>()
@@ -838,10 +907,13 @@ mod tests {
         let provider = &mut store.providers[0];
         provider.model = "claude-opus-5-5-kiro".into();
         provider.models = vec![newapi::Model {
-            id: provider.model.clone(), display_name: "Opus 自定义别名".into(),
+            id: provider.model.clone(),
+            display_name: "Opus 自定义别名".into(),
             protocol: Some(ModelProtocol::Responses),
-            context_window: Some(32000), max_output_tokens: Some(1024),
-            metadata_source: "upstream".into(), supported_reasoning_levels: Some(vec![]),
+            context_window: Some(32000),
+            max_output_tokens: Some(1024),
+            metadata_source: "upstream".into(),
+            supported_reasoning_levels: Some(vec![]),
             ..Default::default()
         }];
         // The account snapshot exists, but this relay does not target the
@@ -851,11 +923,18 @@ mod tests {
             "supported_reasoning_levels":[{"effort":"high","description":"Model high"},{"effort":"max","description":"Model max"}],
             "default_reasoning_level":"high"
         }]});
-        std::fs::write(paths.codex_home.join("models_cache.json"), official.to_string()).unwrap();
+        std::fs::write(
+            paths.codex_home.join("models_cache.json"),
+            official.to_string(),
+        )
+        .unwrap();
         let native = catalog(&paths, &store, &store.providers[0]);
         let router = super::super::catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
         assert_eq!(native["models"][0]["slug"], "claude-opus-5-5-kiro");
-        assert_eq!(router["models"][1]["slug"], "fixture-native::claude-opus-5-5-kiro");
+        assert_eq!(
+            router["models"][1]["slug"],
+            "fixture-native::claude-opus-5-5-kiro"
+        );
         for entry in [&native["models"][0], &router["models"][1]] {
             assert_eq!(entry["display_name"], "Fixture native/Opus 自定义别名");
             // The relay's own declaration stays authoritative.
@@ -880,7 +959,11 @@ mod tests {
         let template = store.providers[0].clone();
         // No channel records a declaration: identity matching supplies the
         // shared value instead of each channel inventing its own.
-        let ids = ["unify-model-x", "OpenAI/UNIFY-MODEL-X@fast", "channel__unify-model-x:free"];
+        let ids = [
+            "unify-model-x",
+            "OpenAI/UNIFY-MODEL-X@fast",
+            "channel__unify-model-x:free",
+        ];
         store.providers = ids
             .iter()
             .enumerate()
@@ -899,10 +982,21 @@ mod tests {
         let router = super::super::catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
         for (index, provider) in store.providers.iter().enumerate() {
             let native = catalog(&paths, &store, provider);
-            assert_eq!(native["models"][0]["slug"], provider.model, "Routing ID is preserved");
+            assert_eq!(
+                native["models"][0]["slug"], provider.model,
+                "Routing ID is preserved"
+            );
             for entry in [&native["models"][0], &router["models"][index]] {
-                for field in ["context_window", "max_output_tokens", "supported_reasoning_levels", "default_reasoning_level"] {
-                    assert_eq!(entry[field], native["models"][0][field], "channel {index}: {field}");
+                for field in [
+                    "context_window",
+                    "max_output_tokens",
+                    "supported_reasoning_levels",
+                    "default_reasoning_level",
+                ] {
+                    assert_eq!(
+                        entry[field], native["models"][0][field],
+                        "channel {index}: {field}"
+                    );
                 }
                 assert_eq!(entry["context_window"], 128_000);
             }
@@ -929,23 +1023,36 @@ mod tests {
             "slug":"gpt-6-astra", "supported_reasoning_levels":[{"effort":"high","description":"Official high"}],
             "default_reasoning_level":"high"
         }]});
-        std::fs::write(paths.codex_home.join("models_cache.json"), official.to_string()).unwrap();
+        std::fs::write(
+            paths.codex_home.join("models_cache.json"),
+            official.to_string(),
+        )
+        .unwrap();
         for (levels, default, expected_levels, expected_default) in [
             (
-                Some(vec![newapi::ReasoningLevel { effort: "low".into(), description: "Provider low".into() }]),
+                Some(vec![newapi::ReasoningLevel {
+                    effort: "low".into(),
+                    description: "Provider low".into(),
+                }]),
                 Some("high"),
                 vec!["low"],
                 Some("low"),
             ),
             (Some(vec![]), Some("high"), vec![], None),
-            // No declaration at all: the relay keeps an explicit empty list
-            // rather than borrowing the account's levels.
-            (None, Some("low"), vec![], None),
+            // Without an upstream declaration, publisher catalog levels apply.
+            // The account snapshot's single `high` level still cannot leak in.
+            (
+                None,
+                Some("low"),
+                vec!["low", "medium", "high", "xhigh", "max"],
+                Some("medium"),
+            ),
         ] {
             store.providers[0].models[0].supported_reasoning_levels = levels;
             store.providers[0].models[0].default_reasoning_level = default.map(str::to_owned);
             let native = catalog(&paths, &store, &store.providers[0]);
-            let router = super::super::catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
+            let router =
+                super::super::catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
             for entry in [&native["models"][0], &router["models"][1]] {
                 let efforts: Vec<&str> = entry["supported_reasoning_levels"]
                     .as_array()
@@ -954,9 +1061,15 @@ mod tests {
                     .map(|level| level["effort"].as_str().unwrap())
                     .collect();
                 assert_eq!(efforts, expected_levels);
-                assert_eq!(entry["default_reasoning_level"], serde_json::json!(expected_default));
+                assert_eq!(
+                    entry["default_reasoning_level"],
+                    serde_json::json!(expected_default)
+                );
             }
-            assert_eq!(router["models"][0], official["models"][0], "Official model stays untouched");
+            assert_eq!(
+                router["models"][0], official["models"][0],
+                "Official model stays untouched"
+            );
         }
     }
 
@@ -994,11 +1107,19 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("Fixture native/"));
-        // The relay's own collected declaration, not the account snapshot and
-        // not a family guess.
+        // Limits still follow the upstream declaration. Undeclared reasoning
+        // levels use OpenAI's model catalog, never the account cache's `ultra`.
         assert_eq!(models[0]["context_window"], 240_000);
-        assert_eq!(models[0]["supported_reasoning_levels"], serde_json::json!([]));
-        assert!(models[0]["default_reasoning_level"].is_null());
+        assert_eq!(
+            models[0]["supported_reasoning_levels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|level| level["effort"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["low", "medium", "high", "xhigh", "max"]
+        );
+        assert_eq!(models[0]["default_reasoning_level"], "medium");
         assert!(models[0].get("comp_hash").is_none());
         assert!(models[0].get("use_responses_lite").is_none());
         assert_eq!(models[1]["slug"], "gpt-6-astra-preview");
@@ -1322,4 +1443,15 @@ mod tests {
             assert!(!config_snapshot::path(&paths).exists());
         }
     }
+    #[test]
+    fn native_model_ids_exclude_a_chat_default() {
+        let provider = Provider {
+            model: "chat-default".into(),
+            protocol: ModelProtocol::ChatCompletions,
+            models: vec![model("responses-model", ModelProtocol::Responses, 1000)],
+            ..Default::default()
+        };
+        assert_eq!(model_ids(&provider), vec!["responses-model"]);
+    }
+
 }

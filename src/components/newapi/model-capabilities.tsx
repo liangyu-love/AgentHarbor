@@ -549,6 +549,8 @@ function CapabilityCard({ model, onSaved }: { model: ModelCapability; onSaved: (
                 {t("newapi.capabilityNoConflicts")}
               </p>
             ) : (
+              <>
+              <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">{t("newapi.capabilityConflictHint")}</p>
               <ul className="mt-1 space-y-1">
                 {conflicts.map((conflict) => (
                   <li key={conflict.field} className="font-mono text-[10px] text-amber-600 dark:text-amber-400">
@@ -557,11 +559,12 @@ function CapabilityCard({ model, onSaved }: { model: ModelCapability; onSaved: (
                     })}
                     :{" "}
                     {conflict.candidates
-                      .map((candidate) => `${candidate.value} (${candidate.modelRef.providerId})`)
+                      .map((candidate) => `${candidate.value} (${candidate.modelRef.providerId}/${candidate.modelRef.modelId})`)
                       .join(" / ")}
                   </li>
                 ))}
               </ul>
+              </>
             )}
           </div>
         </div>
@@ -573,7 +576,7 @@ function CapabilityCard({ model, onSaved }: { model: ModelCapability; onSaved: (
           <ul className="mt-2 space-y-1">
             {model.steps.map((step) => (
               <li key={step.step + step.modelId} className="font-mono text-[10px] text-muted-foreground">
-                <span className="text-foreground">{step.modelId}</span> · {step.step} · {step.note}
+                <span className="text-foreground">{step.modelId}</span> · {t("newapi.capabilityMatchStep." + step.step, { defaultValue: step.step })} · {step.note}
               </li>
             ))}
           </ul>

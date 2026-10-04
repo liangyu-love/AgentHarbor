@@ -14,7 +14,7 @@ pub struct CatalogHint {
     pub source: models_dev::ModelRef,
     pub canonical_raw: Option<String>,
     pub canonical_target: Option<models_dev::ModelRef>,
-    /// absent | invalid | missingTarget | verified | self | sourceMissing
+    /// absent | invalid | missingTarget | verified | self | declaredAlias | sourceMissing
     pub canonical_status: String,
     /// declared | absent | unknown (older embedded/runtime snapshot)
     pub reasoning_options_presence: String,
@@ -23,36 +23,73 @@ pub struct CatalogHint {
 }
 
 fn catalog_hints(catalog: &models_dev::Catalog, steps: &[MatchStep]) -> Vec<CatalogHint> {
-    let Some(step) = steps.iter().rev().find(|step| !step.matched.is_empty()) else { return Vec::new(); };
+    let Some(step) = steps.iter().rev().find(|step| !step.matched.is_empty()) else {
+        return Vec::new();
+    };
     let mut hints = Vec::new();
     for source in &step.matched {
-        if hints.iter().any(|hint: &CatalogHint| hint.source == *source) { continue; }
+        if hints
+            .iter()
+            .any(|hint: &CatalogHint| hint.source == *source)
+        {
+            continue;
+        }
         let Some(found) = catalog.exact_in(&source.provider_id, &source.model_id) else {
-            hints.push(CatalogHint { source: source.clone(), canonical_raw: None,
-                canonical_target: None, canonical_status: "sourceMissing".into(),
-                reasoning_options_presence: "unknown".into(), reasoning_options: Vec::new(), interleaved: None });
+            hints.push(CatalogHint {
+                source: source.clone(),
+                canonical_raw: None,
+                canonical_target: None,
+                canonical_status: "sourceMissing".into(),
+                reasoning_options_presence: "unknown".into(),
+                reasoning_options: Vec::new(),
+                interleaved: None,
+            });
             continue;
         };
         let raw = found.model.canonical_model_id.clone();
         let (target, status) = match raw.as_deref() {
             None => (None, "absent"),
             Some(raw) => match raw.split_once('/') {
-                Some((provider, model)) if !provider.is_empty() && !model.is_empty()
-                    && !raw.chars().any(char::is_control) => {
-                    let reference = models_dev::ModelRef { provider_id: provider.into(), model_id: model.into() };
+                Some((provider, model))
+                    if !provider.is_empty()
+                        && !model.is_empty()
+                        && !raw.chars().any(char::is_control) =>
+                {
+                    let reference = models_dev::ModelRef {
+                        provider_id: provider.into(),
+                        model_id: model.into(),
+                    };
                     if catalog.exact_in(provider, model).is_some() {
-                        (Some(reference), if provider == source.provider_id && model == source.model_id { "self" } else { "verified" })
-                    } else { (Some(reference), "missingTarget") }
+                        (
+                            Some(reference),
+                            if provider == source.provider_id && model == source.model_id {
+                                "self"
+                            } else {
+                                "verified"
+                            },
+                        )
+                    } else if provider.eq_ignore_ascii_case(&source.provider_id) {
+                        // Some publishers expose an API alias while declaring
+                        // the versioned canonical name on that same record.
+                        (Some(reference), "declaredAlias")
+                    } else {
+                        (Some(reference), "missingTarget")
+                    }
                 }
                 _ => (None, "invalid"),
-            }
+            },
         };
         hints.push(CatalogHint {
-            source: source.clone(), canonical_raw: raw, canonical_target: target,
+            source: source.clone(),
+            canonical_raw: raw,
+            canonical_target: target,
             canonical_status: status.into(),
             reasoning_options_presence: match found.model.reasoning_options_declared {
-                Some(true) => "declared", Some(false) => "absent", None => "unknown"
-            }.into(),
+                Some(true) => "declared",
+                Some(false) => "absent",
+                None => "unknown",
+            }
+            .into(),
             reasoning_options: super::model_metadata::option_infos(found.model),
             interleaved: found.model.interleaved.clone(),
         });
@@ -124,24 +161,37 @@ pub struct ClearPreview {
 }
 
 pub fn preview_clear(
-    paths: &CodexPaths, store: &router::Store, provider_id: &str, model_id: &str,
+    paths: &CodexPaths,
+    store: &router::Store,
+    provider_id: &str,
+    model_id: &str,
     field: router::ClearCapabilityField,
 ) -> Result<ClearPreview, String> {
     let official = model_catalog::official(&paths.codex_home, &paths.app_data_dir);
     let catalog = models_dev::load(&paths.app_data_dir);
     let mut after_store = store.clone();
     router::clear_capability_on_store(&mut after_store, provider_id, model_id, field)?;
-    let find = |view: CatalogView| view.models.into_iter()
-        .find(|model| model.provider_id == provider_id && model.upstream_model == model_id)
-        .ok_or_else(|| "newapi.errors.notFound".to_owned());
+    let find = |view: CatalogView| {
+        view.models
+            .into_iter()
+            .find(|model| model.provider_id == provider_id && model.upstream_model == model_id)
+            .ok_or_else(|| "newapi.errors.notFound".to_owned())
+    };
     let before = find(preview_with_sources(paths, store, &official, &catalog))?;
-    let after = find(preview_with_sources(paths, &after_store, &official, &catalog))?;
-    let official_bytes = serde_json::to_vec(&official.models).map_err(|_| "newapi.errors.storage")?;
+    let after = find(preview_with_sources(
+        paths,
+        &after_store,
+        &official,
+        &catalog,
+    ))?;
+    let official_bytes =
+        serde_json::to_vec(&official.models).map_err(|_| "newapi.errors.storage")?;
     Ok(ClearPreview {
         config_revision: router::config_revision(store)?,
         catalog_revision: catalog.snapshot.revision.clone(),
         official_revision: super::request_diagnostics::state_revision(&official_bytes),
-        before, after,
+        before,
+        after,
     })
 }
 
@@ -163,7 +213,8 @@ pub(crate) fn preview_with_sources(
     // native configuration when that mode owns Codex. Both are read-only.
     let applied_thresholds = router::applied_catalog_thresholds(paths);
     let native_mode = store.codex_access_mode == router::CodexAccessMode::Native;
-    let router_active = !native_mode && store.router.enabled && router::routing_config_intact(paths);
+    let router_active =
+        !native_mode && store.router.enabled && router::routing_config_intact(paths);
     let native_state = native_mode
         .then(|| router::native_compression_state(paths, store, &models_dev, &snapshot.models))
         .flatten();
@@ -176,29 +227,42 @@ pub(crate) fn preview_with_sources(
         for id in ids {
             let official = router::matched_official_model(&snapshot.models, id)
                 .filter(|_| router::official_endpoint_applies(provider));
-            let (metadata, projection) = if native_mode { router::model_projection(
-                provider,
-                id,
-                official,
-                &models_dev,
-                &global_compression,
-            ) } else { router::relay_model_projection(store, provider, id, official, &models_dev, &global_compression) };
+            let (metadata, projection) = if native_mode {
+                router::model_projection(provider, id, official, &models_dev, &global_compression)
+            } else {
+                router::relay_model_projection(
+                    store,
+                    provider,
+                    id,
+                    official,
+                    &models_dev,
+                    &global_compression,
+                )
+            };
             let matched_model = metadata
                 .matched
                 .as_ref()
                 .map(|reference| format!("{}/{}", reference.provider_id, reference.model_id))
                 .unwrap_or_else(|| model_defaults::model_key(id));
-            let native_scope = native_state.as_ref().filter(|state|
-                state.provider_id == provider.id && state.models.iter().any(|model| model == id));
+            let native_scope = native_state.as_ref().filter(|state| {
+                state.provider_id == provider.id && state.models.iter().any(|model| model == id)
+            });
             let (compression_applied, applied_source) = if native_mode {
-                (Some(native_scope.is_some_and(|state| state.applied == Some(true)
-                    && state.applied_threshold == projection.compression.threshold)), "config".to_owned())
+                (
+                    Some(native_scope.is_some_and(|state| {
+                        state.applied == Some(true)
+                            && state.applied_threshold == projection.compression.threshold
+                    })),
+                    "config".to_owned(),
+                )
             } else if !router_active {
                 (Some(false), "none".to_owned())
-            } else { match &applied_thresholds {
+            } else {
+                match &applied_thresholds {
                     Some(thresholds) => {
                         let slug = format!("{}::{id}", provider.id);
-                        let applied = thresholds.get(&slug) == Some(&projection.compression.threshold);
+                        let applied =
+                            thresholds.get(&slug) == Some(&projection.compression.threshold);
                         (Some(applied), "catalog".to_owned())
                     }
                     None => (None, "none".to_owned()),
@@ -227,18 +291,52 @@ pub(crate) fn preview_with_sources(
                 projection,
                 compression_applied,
                 compression_applied_source: applied_source,
-                compression_applied_threshold: if native_mode { native_scope.and_then(|state| state.applied_threshold) }
-                    else { router_active.then(|| applied_thresholds.as_ref().and_then(|entries| entries.get(&format!("{}::{id}", provider.id)).copied().flatten())).flatten() },
+                compression_applied_threshold: if native_mode {
+                    native_scope.and_then(|state| state.applied_threshold)
+                } else {
+                    router_active
+                        .then(|| {
+                            applied_thresholds.as_ref().and_then(|entries| {
+                                entries
+                                    .get(&format!("{}::{id}", provider.id))
+                                    .copied()
+                                    .flatten()
+                            })
+                        })
+                        .flatten()
+                },
                 compression_shared_threshold: native_scope.and_then(|state| state.threshold),
-                compression_limiting_models: native_scope.map(|state| state.limiting_models.clone()).unwrap_or_default(),
+                compression_limiting_models: native_scope
+                    .map(|state| state.limiting_models.clone())
+                    .unwrap_or_default(),
                 compression_scope: if native_mode {
-                    if native_scope.is_some() { "nativeShared" } else { "inactive" }
-                } else if router_active { "routerModel" } else { "inactive" }.into(),
+                    if native_scope.is_some() {
+                        "nativeShared"
+                    } else {
+                        "inactive"
+                    }
+                } else if router_active {
+                    "routerModel"
+                } else {
+                    "inactive"
+                }
+                .into(),
                 compression_shared_applied: native_scope.and_then(|state| state.applied),
                 compression_shared_plan: native_scope.map(|state| state.shared_plan.clone()),
-                compression_config_active: if native_mode { native_scope.is_some_and(|state| state.config_active) } else { router_active },
-                compression_written_threshold: if native_mode { None } else {
-                    applied_thresholds.as_ref().and_then(|entries| entries.get(&format!("{}::{id}", provider.id)).copied().flatten())
+                compression_config_active: if native_mode {
+                    native_scope.is_some_and(|state| state.config_active)
+                } else {
+                    router_active
+                },
+                compression_written_threshold: if native_mode {
+                    None
+                } else {
+                    applied_thresholds.as_ref().and_then(|entries| {
+                        entries
+                            .get(&format!("{}::{id}", provider.id))
+                            .copied()
+                            .flatten()
+                    })
                 },
             });
         }
@@ -266,19 +364,58 @@ mod tests {
                     {"id":"b", "limit":{"context": 80000}, "canonicalModelId":"official/missing"},
                     {"id":"c", "limit":{"context": 70000}, "canonicalModelId":"broken"}
                 ]},
-                {"id":"official", "models":[{"id":"a", "limit":{"context": 200000}}]}
+                {"id":"official", "models":[{"id":"a", "limit":{"context": 200000}}]},
+                {"id":"deepseek", "models":[{"id":"deepseek-flash", "canonicalModelId":"deepseek/deepseek-v4.1-flash", "limit":{"context": 1000000}}]}
             ]
         }).to_string().as_bytes(), models_dev::Origin::Embedded).unwrap();
-        let steps = vec![MatchStep { model_id: "a".into(), step: "exact".into(),
-            matched: ["a", "b", "c"].into_iter().map(|model| models_dev::ModelRef {
-                provider_id: "relay".into(), model_id: model.into() }).collect(), note: String::new() }];
+        let steps = vec![MatchStep {
+            model_id: "a".into(),
+            step: "exact".into(),
+            matched: ["a", "b", "c"]
+                .into_iter()
+                .map(|model| models_dev::ModelRef {
+                    provider_id: "relay".into(),
+                    model_id: model.into(),
+                })
+                .collect(),
+            note: String::new(),
+        }];
         let hints = catalog_hints(&catalog, &steps);
-        assert_eq!(hints.iter().map(|hint| hint.canonical_status.as_str()).collect::<Vec<_>>(),
-            vec!["verified", "missingTarget", "invalid"]);
+        assert_eq!(
+            hints
+                .iter()
+                .map(|hint| hint.canonical_status.as_str())
+                .collect::<Vec<_>>(),
+            vec!["verified", "missingTarget", "invalid"]
+        );
         assert_eq!(hints[0].reasoning_options_presence, "declared");
         assert_eq!(hints[1].reasoning_options_presence, "unknown");
-        assert_eq!(catalog.exact_in("relay", "a").unwrap().model.limit.context, Some(100000));
-        assert_eq!(catalog.exact_in("official", "a").unwrap().model.limit.context, Some(200000));
+        assert_eq!(
+            catalog.exact_in("relay", "a").unwrap().model.limit.context,
+            Some(100000)
+        );
+        assert_eq!(
+            catalog
+                .exact_in("official", "a")
+                .unwrap()
+                .model
+                .limit
+                .context,
+            Some(200000)
+        );
+        let alias_hint = catalog_hints(
+            &catalog,
+            &[MatchStep {
+                model_id: "deepseek-v4.1-flash".into(),
+                step: "canonicalIdentity".into(),
+                matched: vec![models_dev::ModelRef {
+                    provider_id: "deepseek".into(),
+                    model_id: "deepseek-flash".into(),
+                }],
+                note: String::new(),
+            }],
+        );
+        assert_eq!(alias_hint[0].canonical_status, "declaredAlias");
     }
 
     #[test]
@@ -289,24 +426,50 @@ mod tests {
         let mut entry = provider("relay", "fixture-model");
         entry.context_window = Some(200_000);
         entry.models[0].overrides.context_window = Some(300_000);
-        let store = router::Store { providers: vec![entry], ..Default::default() };
-        super::super::secret_file::write(&paths.app_data_dir.join("newapi-providers.dat"),
-            &serde_json::to_vec(&store).unwrap()).unwrap();
+        let store = router::Store {
+            providers: vec![entry],
+            ..Default::default()
+        };
+        super::super::secret_file::write(
+            &paths.app_data_dir.join("newapi-providers.dat"),
+            &serde_json::to_vec(&store).unwrap(),
+        )
+        .unwrap();
         let loaded = router::load_store(&paths).unwrap();
-        let dry_run = preview_clear(&paths, &loaded, "relay", "fixture-model",
-            router::ClearCapabilityField::ContextWindow).unwrap();
+        let dry_run = preview_clear(
+            &paths,
+            &loaded,
+            "relay",
+            "fixture-model",
+            router::ClearCapabilityField::ContextWindow,
+        )
+        .unwrap();
         assert_eq!(dry_run.before.context.value, Some(300_000));
         assert_eq!(dry_run.before.context.source, "manual");
         assert_eq!(dry_run.after.context.value, Some(200_000));
         assert_eq!(dry_run.after.context.source, "providerSetting");
-        router::clear_capability_if_current(&paths, "relay", "fixture-model",
+        router::clear_capability_if_current(
+            &paths,
+            "relay",
+            "fixture-model",
             router::ClearCapabilityField::ContextWindow,
-            &dry_run.config_revision, &dry_run.catalog_revision, &dry_run.official_revision).unwrap();
+            &dry_run.config_revision,
+            &dry_run.catalog_revision,
+            &dry_run.official_revision,
+        )
+        .unwrap();
         let actual = preview(&paths, &router::load_store(&paths).unwrap());
         assert_eq!(actual.models[0].context.value, dry_run.after.context.value);
-        assert!(router::clear_capability_if_current(&paths, "relay", "fixture-model",
+        assert!(router::clear_capability_if_current(
+            &paths,
+            "relay",
+            "fixture-model",
             router::ClearCapabilityField::ContextWindow,
-            &dry_run.config_revision, &dry_run.catalog_revision, &dry_run.official_revision).is_err());
+            &dry_run.config_revision,
+            &dry_run.catalog_revision,
+            &dry_run.official_revision
+        )
+        .is_err());
     }
 
     fn provider(id: &str, model: &str) -> router::Provider {
@@ -396,7 +559,10 @@ mod tests {
 
         // A written file alone never proves that Codex consumes it.
         router::write_catalog(&paths, &store).unwrap();
-        assert_eq!(preview(&paths, &store).models[0].compression_scope, "inactive");
+        assert_eq!(
+            preview(&paths, &store).models[0].compression_scope,
+            "inactive"
+        );
         store.router.enabled = true;
         store.router.bearer_token = "synthetic-bearer".into();
         router::apply_routing_config(&paths, &store).unwrap();

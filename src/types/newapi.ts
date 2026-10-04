@@ -193,7 +193,7 @@ export interface CatalogHint {
   source: ModelRef;
   canonicalRaw: string | null;
   canonicalTarget: ModelRef | null;
-  canonicalStatus: "absent" | "invalid" | "missingTarget" | "verified" | "self" | "sourceMissing";
+  canonicalStatus: "absent" | "invalid" | "missingTarget" | "verified" | "self" | "declaredAlias" | "sourceMissing";
   reasoningOptionsPresence: "declared" | "absent" | "unknown";
   reasoningOptions: ReasoningOptionInfo[];
   interleaved: boolean | { field: string } | null;

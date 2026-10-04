@@ -26,11 +26,24 @@ Versions, dates and `-preview` suffixes are never removed. Matching kinds:
 - `explicit` – a user-bound `{providerId, modelId}`; a stale binding fails closed.
 - `exact` / `normalized` – a scoped match inside the provider's configured
   capability catalogs (`catalogProviders`).
-- `consensus` – a generic reference across the whole catalog; only fields that
-  agree everywhere are filled in, listed as `catalogGeneric`.
+- `consensus` – an automatic generic reference limited to supported publisher
+  catalogs; only agreeing fields are filled in, listed as `catalogGeneric`.
 - `ambiguous` – same-priority candidates disagree; agreeing fields are kept and
   the rest are reported as conflicts instead of guessed.
 - `unmatched` – nothing matched; clients see the shared fallback, marked as such.
+
+Automatic scopes prefer the recognized model publisher. Aggregator catalogs
+require a saved user binding. Scoped canonical identities declared by the
+catalog are considered after direct IDs, with active entries preferred over
+deprecated aliases. Known thinking/effort suffixes can be normalized for
+capabilities while keeping the original request ID and version intact.
+
+When every normal candidate misses inside Google's catalog, a Gemini ID that
+omits `preview` may reference the active, same-version `<candidate>-preview`
+entry. The trace marks this as `previewReference`, not a publisher-declared
+alias. No version, dated preview or custom-tools variant is guessed; deprecated
+entries are excluded and case conflicts remain visible. This capability-only
+reference never changes the actual request ID or establishes preview pricing.
 
 Prices require an independent billing binding (`priceCatalogProvider` or a model
 `priceRef`) or an explicit user price. Capability mappings and capability
@@ -70,6 +83,15 @@ values remain visible separately. Router failover reads the proxy's existing
 same-model candidate predicate and limits only that relay entry's budget.
 Unknown candidate budgets are called out without disabling the candidate.
 
+The provider editor resolves selected models from its unsaved draft through
+`preview_newapi_model_resolutions`. Context/input/output placeholders and the
+catalog reference show the shared resolver's values; compression shows the
+effective source and threshold. The preview reads local snapshots and stored
+policy without writing or fetching, and never sends credentials. Automatic
+values remain display-only: saving leaves manual overrides and explicit catalog
+references empty until the user edits them. Pending models are resolved when
+added, independently of the size of the fetched list.
+
 Native Codex applies a shared minimum threshold across the active provider's
 selected Responses models. The preview shows each model's suggestion, the
 planned shared threshold, the value read from config, the limiting models and
@@ -98,7 +120,7 @@ Field coverage measured on the real document before implementation:
 | `reasoning_options` | 6148 (74%) — effort 3829, toggle 1384, budget_tokens 598 | Reasoning levels and raw capabilities. |
 | `cost` | 7915 (95%) — `cache_read` 5368, `cache_write` 1790, `reasoning` 152, `tiers` 614, `context_over_200k` 519 | Estimated pricing. |
 | `modalities` | 8339 (100%) | Input/output modality list. |
-| `canonical_model_id` | 5274 (63%) | Kept for reference; identity matching does not depend on it. |
+| `canonical_model_id` | 5274 (63%) | Scoped identity lookup and displayed provenance. |
 | `status` | 324 | Deprecation marker, shown in the catalog view. |
 
 `budget_tokens.min` uses `-1` upstream for "unset"; the snapshot drops it and
@@ -175,3 +197,12 @@ Matching behaviour (bare-ID lookup, path/channel prefixes, budget preference for
 fallback) was observed from [Magpie](https://github.com/yetone/magpie) at commit
 `7a3337dd25bd759b1a73a051cdefeab6033b63f6`. Only behaviour was studied; no
 Magpie source code was copied, so its license is not inherited here.
+
+## 2026-10-03 自动匹配边界补充
+
+- `nova-*` 属于原厂 `nova` 目录；`amazon.nova-*`、已识别区域前缀的 Amazon Nova ID 和 `amazon/nova-*` 可使用 Bedrock 的 Amazon 自有模型记录。该规则不把 Bedrock 托管的 Claude 等其他品牌加入自动匹配来源。
+- 聚合服务商的 `canonicalModelId` 不参与自动判断原厂身份；用户显式绑定目录仍按用户选择解析。
+- 原厂白名单中的部分供应商 ID 是预留项：嵌入快照缺失时保持严格未匹配，后续目录更新可直接使用。当前缺失的 ID 为 `microsoft`、`baidu`、`01-ai`、`internlm`、`baichuan`、`bytedance`。
+- `MatchKind::Invalid` 表示显式引用无效，不回退到其他目录冒充匹配。
+- `-max`、`-ultra`（含下划线变体）保留为产品型号；`(max)`、`:max`、`@ultra` 等明确标记仍可作为思考档位归约。候选最多 16 个，深层装饰可能保持未匹配，不放宽到其他品牌或第三方。
+- API 主机索引随 Catalog 构建，按主机精确查询，不在每次请求中重新解析所有供应商 URL。

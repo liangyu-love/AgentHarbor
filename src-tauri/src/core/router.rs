@@ -1,8 +1,8 @@
 use super::{
     codex_config::{CodexConfigRepository, ConfigWriteResult},
-    model_defaults, model_metadata, model_policy, models_dev,
+    model_defaults, model_metadata, model_policy,
     models::{ApiProxyConfigPayload, CoreError},
-    newapi, protocol, relay_usage, router_balance, secret_file, storage,
+    models_dev, newapi, protocol, relay_usage, router_balance, secret_file, storage,
 };
 use crate::platform::paths::CodexPaths;
 use chrono::Utc;
@@ -978,10 +978,7 @@ fn sanitized_ref(reference: Option<models_dev::ModelRef>) -> Option<models_dev::
     })
 }
 
-fn normalize_models(
-    models: &mut Vec<newapi::Model>,
-    default_model: &str,
-) -> Result<(), String> {
+fn normalize_models(models: &mut Vec<newapi::Model>, default_model: &str) -> Result<(), String> {
     if models.len() > MAX_MODELS_PER_PROVIDER {
         return Err("newapi.errors.tooManyModels".into());
     }
@@ -1023,19 +1020,22 @@ fn normalize_models(
         {
             return Err("newapi.errors.context".into());
         }
-        if overrides
-            .reasoning
-            .as_ref()
-            .is_some_and(|levels| {
-                levels.len() > 32 || !levels.iter().all(newapi::ReasoningLevel::valid)
-            })
-        {
+        if overrides.reasoning.as_ref().is_some_and(|levels| {
+            levels.len() > 32 || !levels.iter().all(newapi::ReasoningLevel::valid)
+        }) {
             return Err("newapi.errors.modelList".into());
         }
         if overrides.price.as_ref().is_some_and(|price| {
-            [price.input, price.output, price.cache_read, price.cache_write]
-                .iter()
-                .any(|rate| rate.is_some_and(|rate| !rate.is_finite() || rate < 0.0 || rate > 1_000_000.0))
+            [
+                price.input,
+                price.output,
+                price.cache_read,
+                price.cache_write,
+            ]
+            .iter()
+            .any(|rate| {
+                rate.is_some_and(|rate| !rate.is_finite() || rate < 0.0 || rate > 1_000_000.0)
+            })
         }) {
             return Err("newapi.errors.context".into());
         }
@@ -1246,17 +1246,30 @@ pub enum ClearCapabilityField {
 }
 
 pub(crate) fn clear_capability_on_store(
-    store: &mut Store, provider_id: &str, model_id: &str, field: ClearCapabilityField,
+    store: &mut Store,
+    provider_id: &str,
+    model_id: &str,
+    field: ClearCapabilityField,
 ) -> Result<(), String> {
-    let provider = store.providers.iter_mut().find(|p| p.id == provider_id)
+    let provider = store
+        .providers
+        .iter_mut()
+        .find(|p| p.id == provider_id)
         .ok_or("newapi.errors.notFound")?;
     match field {
         ClearCapabilityField::ProviderContextWindow => provider.context_window = None,
         ClearCapabilityField::ProviderCatalogProviders => provider.catalog_providers.clear(),
-        ClearCapabilityField::ProviderPriceCatalogProvider => provider.price_catalog_provider = None,
-        ClearCapabilityField::ProviderCompression => provider.compression = model_policy::CompressionPolicy::Inherit,
+        ClearCapabilityField::ProviderPriceCatalogProvider => {
+            provider.price_catalog_provider = None
+        }
+        ClearCapabilityField::ProviderCompression => {
+            provider.compression = model_policy::CompressionPolicy::Inherit
+        }
         _ => {
-            let model = provider.models.iter_mut().find(|m| m.id == model_id)
+            let model = provider
+                .models
+                .iter_mut()
+                .find(|m| m.id == model_id)
                 .ok_or("newapi.errors.notFound")?;
             match field {
                 ClearCapabilityField::ContextWindow => model.overrides.context_window = None,
@@ -1267,7 +1280,9 @@ pub(crate) fn clear_capability_on_store(
                 ClearCapabilityField::Price => model.overrides.price = None,
                 ClearCapabilityField::CatalogRef => model.catalog_ref = None,
                 ClearCapabilityField::PriceRef => model.price_ref = None,
-                ClearCapabilityField::Compression => model.compression = model_policy::CompressionPolicy::Inherit,
+                ClearCapabilityField::Compression => {
+                    model.compression = model_policy::CompressionPolicy::Inherit
+                }
                 _ => unreachable!(),
             }
         }
@@ -1281,18 +1296,24 @@ pub(crate) fn config_revision(store: &Store) -> Result<String, String> {
 }
 
 pub fn clear_capability_if_current(
-    paths: &CodexPaths, provider_id: &str, model_id: &str,
-    field: ClearCapabilityField, expected_config: &str, expected_catalog: &str,
+    paths: &CodexPaths,
+    provider_id: &str,
+    model_id: &str,
+    field: ClearCapabilityField,
+    expected_config: &str,
+    expected_catalog: &str,
     expected_official: &str,
 ) -> Result<StateChange, String> {
     let _guard = store_write_guard()?;
     let mut store = load_store_unlocked(paths)?;
     let catalog = super::models_dev::load(&paths.app_data_dir);
     let official = super::model_catalog::official(&paths.codex_home, &paths.app_data_dir);
-    let official_bytes = serde_json::to_vec(&official.models).map_err(|_| "newapi.errors.storage")?;
+    let official_bytes =
+        serde_json::to_vec(&official.models).map_err(|_| "newapi.errors.storage")?;
     if config_revision(&store)? != expected_config
         || catalog.snapshot.revision != expected_catalog
-        || super::request_diagnostics::state_revision(&official_bytes) != expected_official {
+        || super::request_diagnostics::state_revision(&official_bytes) != expected_official
+    {
         return Err("newapi.errors.previewStale".into());
     }
     let previous = store.clone();
@@ -1763,7 +1784,10 @@ pub fn set_same_model_failover(paths: &CodexPaths, enabled: bool) -> Result<Stat
     let mut store = load_store_unlocked(paths)?;
     store.router.same_model_failover = enabled;
     save_store_unlocked(paths, &store)?;
-    Ok(StateChange { state: state_from_store_at(&store, super::router_proxy::is_running(), Some(paths)), applied: None })
+    Ok(StateChange {
+        state: state_from_store_at(&store, super::router_proxy::is_running(), Some(paths)),
+        applied: None,
+    })
 }
 
 /// Global compression policy. Applying it re-derives every injected threshold,
@@ -1794,14 +1818,24 @@ pub fn set_model_price_override(
     price: Option<newapi::PriceOverrides>,
 ) -> Result<StateChange, String> {
     let price = price.filter(|rates| {
-        [rates.input, rates.output, rates.cache_read, rates.cache_write]
-            .iter()
-            .any(|rate| rate.is_some())
+        [
+            rates.input,
+            rates.output,
+            rates.cache_read,
+            rates.cache_write,
+        ]
+        .iter()
+        .any(|rate| rate.is_some())
     });
     if price.as_ref().is_some_and(|rates| {
-        [rates.input, rates.output, rates.cache_read, rates.cache_write]
-            .iter()
-            .any(|rate| rate.is_some_and(|rate| !rate.is_finite() || rate < 0.0 || rate > 1_000_000.0))
+        [
+            rates.input,
+            rates.output,
+            rates.cache_read,
+            rates.cache_write,
+        ]
+        .iter()
+        .any(|rate| rate.is_some_and(|rate| !rate.is_finite() || rate < 0.0 || rate > 1_000_000.0))
     }) {
         return Err("newapi.errors.context".into());
     }
@@ -2034,13 +2068,23 @@ pub(crate) fn routing_config_intact(paths: &CodexPaths) -> bool {
             .get("model_provider")
             .and_then(toml_edit::Item::as_str)
             == Some(CATALOG_PROVIDER_KEY)
-        && document.get("model_catalog_json").and_then(toml_edit::Item::as_str)
+        && document
+            .get("model_catalog_json")
+            .and_then(toml_edit::Item::as_str)
             .is_some_and(|reference| {
                 let referenced = PathBuf::from(reference);
-                let referenced = if referenced.is_absolute() { referenced } else { paths.codex_home.join(referenced) };
+                let referenced = if referenced.is_absolute() {
+                    referenced
+                } else {
+                    paths.codex_home.join(referenced)
+                };
                 let expected = catalog_path(paths);
-                referenced == expected || referenced.canonicalize().ok()
-                    .zip(expected.canonicalize().ok()).is_some_and(|(a, b)| a == b)
+                referenced == expected
+                    || referenced
+                        .canonicalize()
+                        .ok()
+                        .zip(expected.canonicalize().ok())
+                        .is_some_and(|(a, b)| a == b)
             })
 }
 
@@ -2070,9 +2114,7 @@ pub(crate) fn catalog_value(
     let mut slugs = HashSet::new();
     // Codex refreshes this cache from the official service. It is the most accurate
     // local source for models available to the currently signed-in account.
-    for snapshot in [
-        super::model_catalog::official(codex_home, app_data_dir),
-    ] {
+    for snapshot in [super::model_catalog::official(codex_home, app_data_dir)] {
         for entry in &snapshot.models {
             let Some(slug) = entry.get("slug").and_then(Value::as_str) else {
                 continue;
@@ -2143,8 +2185,14 @@ fn relay_menu_entry(
     models_dev: &models_dev::Catalog,
     global_compression: &model_policy::CompressionPolicy,
 ) -> Value {
-    let (metadata, projection) =
-        relay_model_projection(store, provider, model_id, official, models_dev, global_compression);
+    let (metadata, projection) = relay_model_projection(
+        store,
+        provider,
+        model_id,
+        official,
+        models_dev,
+        global_compression,
+    );
     let alias = metadata.display_name.trim();
     let display_name = menu_display_name(&provider.name, alias, model_id);
     // Codex parses every entry in model_catalog_json as a complete model
@@ -2191,11 +2239,10 @@ pub(crate) fn catalog_entry_for_slug(
         .find(|provider| provider.id == provider_id && provider.has_route_credentials())?;
     // Mirror the menu's inclusion rules; a request for a model the menu does not
     // list must not silently gain an entry.
-    let listed = provider
-        .models
-        .iter()
-        .any(|model| model.id == model_id && model.included && provider.supports_model(&model.id))
-        || (provider.model == model_id
+    let listed =
+        provider.models.iter().any(|model| {
+            model.id == model_id && model.included && provider.supports_model(&model.id)
+        }) || (provider.model == model_id
             && !provider.model.trim().is_empty()
             && provider.supports_model(&provider.model));
     if !listed {
@@ -2216,8 +2263,14 @@ pub(crate) fn catalog_entry_for_slug(
 
 pub(super) fn matched_official_model<'a>(models: &'a [Value], model_id: &str) -> Option<&'a Value> {
     let key = model_defaults::model_key(model_id);
-    models.iter().find(|entry| entry.get("slug").and_then(Value::as_str)
-        .is_some_and(|slug| !model_defaults::channel_entry(slug) && model_defaults::model_key(slug) == key))
+    models.iter().find(|entry| {
+        entry
+            .get("slug")
+            .and_then(Value::as_str)
+            .is_some_and(|slug| {
+                !model_defaults::channel_entry(slug) && model_defaults::model_key(slug) == key
+            })
+    })
 }
 
 /// The official account snapshot describes the signed-in plan's own models. It
@@ -2236,6 +2289,208 @@ pub(super) fn official_endpoint_applies(provider: &Provider) -> bool {
         })
 }
 
+/// Publisher catalogs allowed for automatic metadata references. Hosting and
+/// aggregation services remain available through explicit user bindings only.
+/// Publisher IDs absent from the bundled snapshot are reserved for future
+/// refreshes; recognized families still fail closed when their records are absent.
+const OFFICIAL_CATALOGS: &[&str] = &[
+    "openai",
+    "nova",
+    "anthropic",
+    "google",
+    "deepseek",
+    "xiaomi",
+    "alibaba",
+    "moonshotai",
+    "zhipuai",
+    "xai",
+    "mistral",
+    "meta",
+    "llama",
+    "cohere",
+    "microsoft",
+    "ai21",
+    "minimax",
+    "baidu",
+    "tencent-tokenhub",
+    "stepfun",
+    "01-ai",
+    "internlm",
+    "baichuan",
+    "bytedance",
+    "perplexity",
+    "inception",
+    "morph",
+    "longcat",
+    "sarvam",
+    "sensenova",
+    "thinkingmachines",
+    "poolside",
+    "bailing",
+];
+
+/// Bind to the publisher first, then an official endpoint for otherwise opaque
+/// model IDs. Host matching is exact; a relay cannot claim an official endpoint
+/// through a similar domain name.
+fn effective_catalog_scope(
+    provider: &Provider,
+    model_id: &str,
+    catalog: &models_dev::Catalog,
+) -> (Vec<String>, bool) {
+    if !provider.catalog_providers.is_empty() {
+        return (provider.catalog_providers.clone(), false);
+    }
+    // A model's publisher is the authoritative metadata source even when the
+    // request itself goes through an OpenAI-compatible relay. Endpoint scope
+    // is only the fallback for model IDs without a recognized publisher.
+    if let Some(provider_id) = official_catalog_for_model(model_id, catalog) {
+        return (vec![provider_id], true);
+    }
+    let Some(host) = reqwest::Url::parse(provider.base_url.trim())
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+    else {
+        return (Vec::new(), false);
+    };
+    let mut matches = catalog.providers_for_host(&host).iter()
+        .filter(|id| official_catalog_namespace(id).is_some())
+        .cloned().collect::<Vec<_>>();
+    matches.sort();
+    matches.dedup();
+    let inferred = !matches.is_empty();
+    (matches, inferred)
+}
+
+fn official_catalog_for_model(model_id: &str, catalog: &models_dev::Catalog) -> Option<String> {
+    // Reuse the resolver's safe normalization for namespaced/channel model IDs.
+    // A recognized publisher stays strict even if its catalog is absent, rather
+    // than silently borrowing a different service's data.
+    for candidate in model_metadata::candidates(model_id) {
+        let id = candidate.value.to_ascii_lowercase();
+        // Bedrock is a host for many publishers. Only Amazon's own Nova IDs
+        // receive this scope; Bedrock's Claude/GPT entries remain excluded
+        // from automatic global metadata references.
+        // Recognized region prefixes are removed by candidates(); do not
+        // accept arbitrary namespaces merely ending in amazon.nova-*.
+        let bedrock_id = id.strip_prefix("amazon.");
+        if bedrock_id.is_some_and(|name| name.starts_with("nova-")) {
+            return Some("amazon-bedrock".to_owned());
+        }
+        if id.strip_prefix("amazon/").is_some_and(|name| name.starts_with("nova-")) {
+            return Some("amazon-bedrock".to_owned());
+        }
+        let model_name = id.rsplit_once('/').map_or(id.as_str(), |(_, name)| name);
+        if let Some(owner) = official_model_family(model_name) {
+            return Some(owner.to_owned());
+        }
+        if let Some(owner) = id
+            .split_once('/')
+            .and_then(|(namespace, _)| official_catalog_namespace(namespace))
+        {
+            return Some(owner.to_owned());
+        }
+        let mut identities = catalog.global(&id).into_iter()
+            .filter(|entry| official_catalog_namespace(&entry.provider.id).is_some())
+            .collect::<Vec<_>>();
+        identities.extend(catalog.canonical_scoped(OFFICIAL_CATALOGS, &id));
+        let mut owners = identities
+            .into_iter()
+            .filter_map(|entry| {
+                let namespace = entry
+                    .model
+                    .canonical_model_id
+                    .as_deref()?
+                    .split('/')
+                    .next()?;
+                official_catalog_namespace(namespace)
+            })
+            .collect::<Vec<_>>();
+        owners.sort_unstable();
+        owners.dedup();
+        if owners.len() == 1 {
+            return Some(owners[0].to_owned());
+        }
+    }
+    None
+}
+
+fn official_model_family(id: &str) -> Option<&'static str> {
+    if ["o1", "o3", "o4"].iter().any(|prefix| {
+        id == *prefix
+            || id
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with('-'))
+    }) {
+        return Some("openai");
+    }
+    [
+        ("gpt-", "openai"),
+        ("chatgpt-", "openai"),
+        ("codex-mini", "openai"),
+        ("claude-", "anthropic"),
+        ("gemini-", "google"),
+        ("gemma-", "google"),
+        ("deepseek-", "deepseek"),
+        ("mimo-", "xiaomi"),
+        ("qwen", "alibaba"),
+        ("qwq-", "alibaba"),
+        ("qvq-", "alibaba"),
+        ("kimi-", "moonshotai"),
+        ("moonshot-", "moonshotai"),
+        ("glm-", "zhipuai"),
+        ("grok-", "xai"),
+        ("mistral-", "mistral"),
+        ("codestral-", "mistral"),
+        ("magistral-", "mistral"),
+        ("ministral-", "mistral"),
+        ("pixtral-", "mistral"),
+        ("devstral-", "mistral"),
+        ("llama-", "llama"),
+        ("muse-", "meta"),
+        ("command-", "cohere"),
+        ("phi-", "microsoft"),
+        ("nova-", "nova"),
+        ("jamba-", "ai21"),
+        ("minimax-", "minimax"),
+        ("ernie-", "baidu"),
+        ("hunyuan-", "tencent-tokenhub"),
+        ("hy3", "tencent-tokenhub"),
+        ("hy4", "tencent-tokenhub"),
+        ("step-", "stepfun"),
+        ("sonar", "perplexity"),
+        ("mercury-", "inception"),
+        ("morph-", "morph"),
+        ("longcat-", "longcat"),
+        ("sarvam-", "sarvam"),
+        ("bailing-", "bailing"),
+    ]
+    .into_iter()
+    .find_map(|(prefix, owner)| id.starts_with(prefix).then_some(owner))
+}
+
+fn official_catalog_namespace(namespace: &str) -> Option<&'static str> {
+    let normalized = namespace.to_ascii_lowercase();
+    let namespace = match normalized.as_str() {
+        "alibaba-cn"
+        | "alibaba-coding-plan"
+        | "alibaba-coding-plan-cn"
+        | "alibaba-token-plan"
+        | "alibaba-token-plan-cn" => "alibaba",
+        "xiaomi-token-plan-cn" => "xiaomi",
+        "moonshotai-cn" | "kimi-code-plan-cn" | "kimi-code-plan-global" => "moonshotai",
+        "minimax-cn" | "minimax-coding-plan" | "minimax-cn-coding-plan" => "minimax",
+        "zai" | "zai-coding-plan" | "zhipuai-coding-plan" => "zhipuai",
+        "stepfun-ai" | "stepfun-ai-step-plan" | "stepfun-step-plan" => "stepfun",
+        "meituan" => "longcat",
+        "tencent" => "tencent-tokenhub",
+        other => other,
+    };
+    OFFICIAL_CATALOGS
+        .iter()
+        .copied()
+        .find(|id| *id == namespace)
+}
+
 pub(super) fn resolve_model_metadata(
     provider: &Provider,
     model_id: &str,
@@ -2243,6 +2498,8 @@ pub(super) fn resolve_model_metadata(
     models_dev: &models_dev::Catalog,
 ) -> model_metadata::ResolvedMetadata {
     let saved = provider.models.iter().find(|model| model.id == model_id);
+    let (catalog_scope, strict_catalog_scope) =
+        effective_catalog_scope(provider, model_id, models_dev);
     // Prices are scoped to the billing provider: an explicit price binding
     // wins over the capability mapping, so borrowing a vendor's capability
     // never implies borrowing its price.
@@ -2253,7 +2510,7 @@ pub(super) fn resolve_model_metadata(
     let request = model_metadata::ResolutionRequest {
         raw_model_id: model_id,
         display_name: saved.map(|model| model.display_name.as_str()).unwrap_or(""),
-        catalog_providers: &provider.catalog_providers,
+        catalog_providers: &catalog_scope,
         price_providers: &price_scope,
         explicit_ref: saved.and_then(|model| model.catalog_ref.as_ref()),
         price_ref: saved.and_then(|model| model.price_ref.as_ref()),
@@ -2262,7 +2519,12 @@ pub(super) fn resolve_model_metadata(
         official: official.and_then(official_values),
         upstream: saved.and_then(newapi::Model::upstream_values),
     };
-    model_metadata::resolve(models_dev, &request)
+    model_metadata::resolve_with_global_fallback(
+        models_dev,
+        &request,
+        !strict_catalog_scope,
+        Some(OFFICIAL_CATALOGS),
+    )
 }
 
 fn official_values(entry: &Value) -> Option<model_metadata::OfficialValues> {
@@ -2275,22 +2537,21 @@ fn official_values(entry: &Value) -> Option<model_metadata::OfficialValues> {
     let levels = entry
         .get("supported_reasoning_levels")
         .and_then(Value::as_array)
+        .filter(|levels| levels.len() <= 32)
         .map(|levels| {
             levels
                 .iter()
                 .filter_map(|level| {
                     let effort = level.get("effort")?.as_str()?.trim();
-                    if effort.is_empty() || effort.len() > 32 {
-                        return None;
-                    }
                     let description = level
                         .get("description")
                         .and_then(Value::as_str)
                         .unwrap_or(effort);
-                    Some(newapi::ReasoningLevel {
+                    let level = newapi::ReasoningLevel {
                         effort: effort.to_owned(),
                         description: description.to_owned(),
-                    })
+                    };
+                    level.valid().then_some(level)
                 })
                 .collect::<Vec<_>>()
         });
@@ -2337,10 +2598,17 @@ pub(crate) fn pricing_for(
     // Static preview completeness and request-time evaluability differ:
     // supported conditional tiers can be settled once prompt usage is known.
     let complete = price.source != model_metadata::source::UNKNOWN
-        && price.input_audio.is_none() && price.output_audio.is_none()
-        && price.context_over_200k.as_ref().is_none_or(|rates| !rates.has_audio())
+        && price.input_audio.is_none()
+        && price.output_audio.is_none()
+        && price
+            .context_over_200k
+            .as_ref()
+            .is_none_or(|rates| !rates.has_audio())
         && price.tiers.iter().all(|tier| !tier.rates.has_audio())
-        && price.tiers.iter().all(|tier| tier.tier.condition_type == "context" && tier.tier.size.is_some());
+        && price
+            .tiers
+            .iter()
+            .all(|tier| tier.tier.condition_type == "context" && tier.tier.size.is_some());
     relay_usage::PricingSnapshot {
         input: price.input,
         output: price.output,
@@ -2373,14 +2641,20 @@ pub(crate) fn pricing_for_app_data(
 /// Whether the native Codex configuration still matches what we would apply.
 /// Read-only; used by the capability preview to separate "pending" from
 /// "applied" thresholds.
-pub(crate) fn native_compression_state(paths: &CodexPaths, store: &Store,
-    catalog: &models_dev::Catalog, official: &[Value]) -> Option<native_config::NativeCompressionState> {
+pub(crate) fn native_compression_state(
+    paths: &CodexPaths,
+    store: &Store,
+    catalog: &models_dev::Catalog,
+    official: &[Value],
+) -> Option<native_config::NativeCompressionState> {
     native_config::compression_state(paths, store, catalog, official)
 }
 
 /// Auto-compact thresholds recorded in the currently written router catalog,
 /// keyed by model slug (`provider::model`). `None` when no catalog is on disk.
-pub(crate) fn applied_catalog_thresholds(paths: &CodexPaths) -> Option<HashMap<String, Option<u64>>> {
+pub(crate) fn applied_catalog_thresholds(
+    paths: &CodexPaths,
+) -> Option<HashMap<String, Option<u64>>> {
     let bytes = std::fs::read(catalog_path(paths)).ok()?;
     let value: Value = serde_json::from_slice(&bytes).ok()?;
     let models = value.get("models")?.as_array()?;
@@ -2389,7 +2663,12 @@ pub(crate) fn applied_catalog_thresholds(paths: &CodexPaths) -> Option<HashMap<S
         let Some(slug) = entry.get("slug").and_then(Value::as_str) else {
             continue;
         };
-        thresholds.insert(slug.to_owned(), entry.get("auto_compact_token_limit").and_then(Value::as_u64));
+        thresholds.insert(
+            slug.to_owned(),
+            entry
+                .get("auto_compact_token_limit")
+                .and_then(Value::as_u64),
+        );
     }
     Some(thresholds)
 }
@@ -2402,7 +2681,10 @@ pub(super) fn model_projection(
     official: Option<&Value>,
     models_dev: &models_dev::Catalog,
     global_compression: &model_policy::CompressionPolicy,
-) -> (model_metadata::ResolvedMetadata, model_policy::ClientProjection) {
+) -> (
+    model_metadata::ResolvedMetadata,
+    model_policy::ClientProjection,
+) {
     let metadata = resolve_model_metadata(provider, model_id, official, models_dev);
     let model_policy_ref = provider
         .models
@@ -2418,9 +2700,17 @@ pub(super) fn model_projection(
 
 /// The exact eligibility predicate used by the proxy's existing failover.
 /// Budget planning reads this set without changing its order or routing it.
-pub(crate) fn same_model_failover_candidate(candidate: &Provider, current: &Provider, model: &str) -> bool {
+pub(crate) fn same_model_failover_candidate(
+    candidate: &Provider,
+    current: &Provider,
+    model: &str,
+) -> bool {
     candidate.id != current.id
-        && (candidate.model == model || candidate.models.iter().any(|entry| entry.id == model && entry.included))
+        && (candidate.model == model
+            || candidate
+                .models
+                .iter()
+                .any(|entry| entry.id == model && entry.included))
         && candidate.can_route_model(model)
         && candidate.protocol_for_model(model) == current.protocol_for_model(model)
 }
@@ -2432,17 +2722,29 @@ pub(super) fn relay_model_projection(
     official: Option<&Value>,
     catalog: &models_dev::Catalog,
     global: &model_policy::CompressionPolicy,
-) -> (model_metadata::ResolvedMetadata, model_policy::ClientProjection) {
-    let (metadata, mut projection) = model_projection(provider, model_id, official, catalog, global);
+) -> (
+    model_metadata::ResolvedMetadata,
+    model_policy::ClientProjection,
+) {
+    let (metadata, mut projection) =
+        model_projection(provider, model_id, official, catalog, global);
     if !store.router.same_model_failover || !provider.can_route_model(model_id) {
         return (metadata, projection);
     }
     let mut unknown = projection.budget_source == model_metadata::source::FALLBACK;
     let mut limiting_provider = None;
-    for candidate in store.providers.iter().filter(|candidate|
-        same_model_failover_candidate(candidate, provider, model_id)) {
-        let (_, other) = model_projection(candidate, model_id,
-            official.filter(|_| official_endpoint_applies(candidate)), catalog, global);
+    for candidate in store
+        .providers
+        .iter()
+        .filter(|candidate| same_model_failover_candidate(candidate, provider, model_id))
+    {
+        let (_, other) = model_projection(
+            candidate,
+            model_id,
+            official.filter(|_| official_endpoint_applies(candidate)),
+            catalog,
+            global,
+        );
         unknown |= other.budget_source == model_metadata::source::FALLBACK;
         if other.budget < projection.budget {
             projection.budget = other.budget;
@@ -2452,9 +2754,14 @@ pub(super) fn relay_model_projection(
     if limiting_provider.is_some() {
         projection.budget_source = "failover".into();
         let provider_policy = provider_compression(provider);
-        let model_policy = provider.models.iter().find(|entry| entry.id == model_id).map(|entry| &entry.compression);
+        let model_policy = provider
+            .models
+            .iter()
+            .find(|entry| entry.id == model_id)
+            .map(|entry| &entry.compression);
         let (policy, source) = model_policy::resolve(model_policy, Some(&provider_policy), global);
-        projection.compression = model_policy::plan(policy, source, Some(projection.budget), "failover");
+        projection.compression =
+            model_policy::plan(policy, source, Some(projection.budget), "failover");
     }
     let note = if unknown {
         Some("Some failover candidate budgets are unknown; capacity cannot be confirmed for all candidates".to_owned())
@@ -2978,7 +3285,13 @@ mod tests {
         let store = load_store(&paths).unwrap();
         let catalog = models_dev::load(&paths.app_data_dir);
         // Without an override the catalog price applies (or stays unknown).
-        let before = model_projection(&store.providers[0], "gpt-5.2", None, &catalog, &store.global_compression());
+        let before = model_projection(
+            &store.providers[0],
+            "gpt-5.2",
+            None,
+            &catalog,
+            &store.global_compression(),
+        );
         assert_ne!(before.0.price.source, "manual");
 
         set_model_price_override(
@@ -2994,7 +3307,13 @@ mod tests {
         )
         .unwrap();
         let store = load_store(&paths).unwrap();
-        let after = model_projection(&store.providers[0], "gpt-5.2", None, &catalog, &store.global_compression());
+        let after = model_projection(
+            &store.providers[0],
+            "gpt-5.2",
+            None,
+            &catalog,
+            &store.global_compression(),
+        );
         assert_eq!(after.0.price.source, "manual");
         assert_eq!(after.0.price.input, Some(1.5));
         assert_eq!(after.0.price.output, Some(7.5));
@@ -3004,7 +3323,13 @@ mod tests {
         set_model_price_override(&paths, &provider_id, "gpt-5.2", None).unwrap();
         let store = load_store(&paths).unwrap();
         assert!(store.providers[0].models[0].overrides.price.is_none());
-        let cleared = model_projection(&store.providers[0], "gpt-5.2", None, &catalog, &store.global_compression());
+        let cleared = model_projection(
+            &store.providers[0],
+            "gpt-5.2",
+            None,
+            &catalog,
+            &store.global_compression(),
+        );
         assert_ne!(cleared.0.price.source, "manual");
 
         // Negative or absurd rates are rejected.
@@ -3012,7 +3337,10 @@ mod tests {
             &paths,
             &provider_id,
             "gpt-5.2",
-            Some(newapi::PriceOverrides { input: Some(-1.0), ..Default::default() }),
+            Some(newapi::PriceOverrides {
+                input: Some(-1.0),
+                ..Default::default()
+            }),
         )
         .is_err());
     }
@@ -3027,10 +3355,22 @@ mod tests {
         assert_eq!(normalized.provider_id, "anthropic");
         assert_eq!(normalized.model_id, "claude-opus-4-5");
         for invalid in [
-            models_dev::ModelRef { provider_id: String::new(), model_id: "x".into() },
-            models_dev::ModelRef { provider_id: "p".into(), model_id: String::new() },
-            models_dev::ModelRef { provider_id: "p".into(), model_id: "x".repeat(300) },
-            models_dev::ModelRef { provider_id: "p".into(), model_id: "bad\nmodel".into() },
+            models_dev::ModelRef {
+                provider_id: String::new(),
+                model_id: "x".into(),
+            },
+            models_dev::ModelRef {
+                provider_id: "p".into(),
+                model_id: String::new(),
+            },
+            models_dev::ModelRef {
+                provider_id: "p".into(),
+                model_id: "x".repeat(300),
+            },
+            models_dev::ModelRef {
+                provider_id: "p".into(),
+                model_id: "bad\nmodel".into(),
+            },
         ] {
             assert!(sanitized_ref(Some(invalid)).is_none());
         }
@@ -3066,9 +3406,13 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         // A different tool replacing the pointer is exactly the reported failure.
         repository
             .update(|original| {
-                let replaced = original
-                    .replace("agentharbor_relay", "aimai1")
-                    .replace(&format!("model_catalog_json = '{}'\n", catalog_path(&paths).display()), "");
+                let replaced = original.replace("agentharbor_relay", "aimai1").replace(
+                    &format!(
+                        "model_catalog_json = '{}'\n",
+                        catalog_path(&paths).display()
+                    ),
+                    "",
+                );
                 Ok(replaced)
             })
             .unwrap();
@@ -3272,7 +3616,8 @@ base_url = "http://127.0.0.1:43127/codex/v1"
                 included: true,
                 metadata_source: "manual".into(),
                 supported_reasoning_levels: Some(vec![newapi::ReasoningLevel {
-                    effort: "low".into(), description: "Provider low".into(),
+                    effort: "low".into(),
+                    description: "Provider low".into(),
                 }]),
                 default_reasoning_level: Some("low".into()),
                 ..Default::default()
@@ -3298,8 +3643,18 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         let provider = &load_store(&paths).unwrap().providers[0];
         assert_eq!(provider.model, "model-fast");
         assert_eq!(provider.models.len(), 2);
-        assert_eq!(provider.models[0].supported_reasoning_levels.as_ref().unwrap()[0].effort, "low");
-        assert_eq!(provider.models[0].default_reasoning_level.as_deref(), Some("low"));
+        assert_eq!(
+            provider.models[0]
+                .supported_reasoning_levels
+                .as_ref()
+                .unwrap()[0]
+                .effort,
+            "low"
+        );
+        assert_eq!(
+            provider.models[0].default_reasoning_level.as_deref(),
+            Some("low")
+        );
         assert_eq!(provider.models[1].supported_reasoning_levels, Some(vec![]));
         assert_eq!(provider.models[1].display_name, "Deep reasoning");
         assert_eq!(provider.models[1].context_window, Some(400_000));
@@ -3437,7 +3792,10 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             .find(|model| model["slug"] == "relay::gpt-6-luna")
             .unwrap();
         assert_eq!(entry["context_window"], 272_000);
-        assert_eq!(repaired.providers[0].models[0].display_name, "Upstream display name");
+        assert_eq!(
+            repaired.providers[0].models[0].display_name,
+            "Upstream display name"
+        );
     }
 
     #[test]
@@ -3909,7 +4267,11 @@ base_url = "http://127.0.0.1:43127/codex/v1"
                         endpoint_types: vec!["openai-response".into()],
                         included: true,
                         metadata_source: "manual".into(),
-                        overrides: newapi::ModelOverrides { context_window: Some(400_000), max_output_tokens: Some(32_768), ..Default::default() },
+                        overrides: newapi::ModelOverrides {
+                            context_window: Some(400_000),
+                            max_output_tokens: Some(32_768),
+                            ..Default::default()
+                        },
                         ..Default::default()
                     },
                     newapi::Model {
@@ -3954,6 +4316,263 @@ base_url = "http://127.0.0.1:43127/codex/v1"
     }
 
     #[test]
+    fn capability_catalog_is_inferred_from_an_exact_endpoint_host() {
+        let (_dir, paths) = paths();
+        let catalog = models_dev::load(&paths.app_data_dir);
+        let official = Provider {
+            base_url: "https://api.deepseek.com/v1".into(),
+            ..Default::default()
+        };
+        let (scope, strict) = effective_catalog_scope(&official, "deepseek-flash", &catalog);
+        assert_eq!(scope, vec!["deepseek"]);
+        assert!(strict);
+        let resolved = resolve_model_metadata(&official, "deepseek-flash", None, &catalog);
+        assert_eq!(resolved.context_window.value, Some(1_000_000));
+        // The official entry currently declares 393216 output tokens; 302.AI
+        // has 384000 for the same model ID, so this also guards source choice.
+        assert_eq!(resolved.output_limit.value, Some(393_216));
+
+        let relay = Provider {
+            base_url: "https://api.302.ai/v1".into(),
+            ..Default::default()
+        };
+        let (scope, strict) = effective_catalog_scope(&relay, "deepseek-flash", &catalog);
+        assert_eq!(scope, vec!["deepseek"]);
+        assert!(strict);
+        let resolved = resolve_model_metadata(&relay, "deepseek-flash", None, &catalog);
+        assert_eq!(resolved.output_limit.value, Some(393_216));
+    }
+
+    #[test]
+    fn gpt_models_prefer_openai_catalog_even_behind_a_compatible_relay() {
+        let (_dir, paths) = paths();
+        let catalog = models_dev::load(&paths.app_data_dir);
+        let provider = Provider {
+            // The endpoint routes requests through a relay; it must not change
+            // the authoritative publisher used for GPT capability metadata.
+            base_url: "https://api.302.ai/v1".into(),
+            ..Default::default()
+        };
+        let (scope, strict) = effective_catalog_scope(&provider, "gpt-5.2", &catalog);
+        assert_eq!(scope, vec!["openai"]);
+        assert!(strict);
+        let resolved = resolve_model_metadata(&provider, "gpt-5.2", None, &catalog);
+        assert_eq!(
+            resolved
+                .matched
+                .as_ref()
+                .map(|entry| entry.provider_id.as_str()),
+            Some("openai")
+        );
+        assert_eq!(resolved.context_window.value, Some(400_000));
+    }
+
+    #[test]
+    fn claude_gemini_and_mimo_models_prefer_their_official_catalogs() {
+        let (_dir, paths) = paths();
+        let catalog = models_dev::load(&paths.app_data_dir);
+        let relay = Provider {
+            base_url: "https://relay.example.com/v1".into(),
+            ..Default::default()
+        };
+        for (model_id, expected_owner) in [
+            ("claude-sonnet-4-5-20250929", "anthropic"),
+            ("anthropic/claude-sonnet-4-5-20250929", "anthropic"),
+            ("gemini-2.5-flash", "google"),
+            ("channel::gemini-2.5-flash", "google"),
+            ("mimo-v2.5-pro", "xiaomi"),
+            ("provider__mimo-v2.5-pro", "xiaomi"),
+            ("qwen-flash", "alibaba"),
+            ("kimi-k2.6", "moonshotai"),
+            ("glm-4.5", "zhipuai"),
+            ("grok-4.20-0309-reasoning", "xai"),
+            ("MiniMax-M2.5", "minimax"),
+            ("step-3.5-flash", "stepfun"),
+            ("mistral-large-2411", "mistral"),
+            // Canonical model IDs also cover families without a simple prefix.
+            ("deep-research-max-preview-04-2026", "google"),
+        ] {
+            let (scope, strict) = effective_catalog_scope(&relay, model_id, &catalog);
+            assert_eq!(scope, vec![expected_owner], "{model_id}");
+            assert!(strict, "{model_id}");
+            let resolved = resolve_model_metadata(&relay, model_id, None, &catalog);
+            assert_eq!(
+                resolved
+                    .matched
+                    .as_ref()
+                    .map(|entry| entry.provider_id.as_str()),
+                Some(expected_owner),
+                "{model_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn publisher_aliases_resolve_reasoning_suffixes_and_canonical_model_names() {
+        let (_dir, paths) = paths();
+        let catalog = models_dev::load(&paths.app_data_dir);
+        let provider = Provider {
+            base_url: "https://relay.example.com/v1".into(),
+            ..Default::default()
+        };
+        for (requested, owner, official_model) in [
+            ("claude-opus-4-8-thinking", "anthropic", "claude-opus-4-8"),
+            (
+                "kiro__claude-opus-4-8-thinking",
+                "anthropic",
+                "claude-opus-4-8",
+            ),
+            ("gemini-3.8-flash-high", "google", "gemini-3.8-flash"),
+            (
+                "gemini-3.8-flash-thinking-high",
+                "google",
+                "gemini-3.8-flash",
+            ),
+            ("gemini-3.8-flash_high", "google", "gemini-3.8-flash"),
+            ("gemini-3.8-flash:high", "google", "gemini-3.8-flash"),
+            ("gemini-3.1-pro-high", "google", "gemini-3.1-pro-preview"),
+            ("gemini-3.1-pro", "google", "gemini-3.1-pro-preview"),
+            (
+                "woyao/gemini-3.1-pro-thinking-high",
+                "google",
+                "gemini-3.1-pro-preview",
+            ),
+            ("deepseek-v4.1-flash", "deepseek", "deepseek-flash"),
+            ("deepseek/deepseek-v4.1-flash", "deepseek", "deepseek-flash"),
+            ("alibaba/deepseek-v4.1-flash", "deepseek", "deepseek-flash"),
+            ("deepseek-v4.1-flash-thinking", "deepseek", "deepseek-flash"),
+        ] {
+            let resolved = resolve_model_metadata(&provider, requested, None, &catalog);
+            let matched = resolved
+                .matched
+                .as_ref()
+                .unwrap_or_else(|| panic!("{requested} should match"));
+            assert_eq!(matched.provider_id, owner, "{requested}");
+            assert_eq!(matched.model_id, official_model, "{requested}");
+            assert_eq!(resolved.raw_model_id, requested);
+            assert_eq!(resolved.match_kind, model_metadata::MatchKind::Normalized);
+            assert!(resolved.conflicts.is_empty(), "{requested}");
+        }
+        let resolved = resolve_model_metadata(&provider, "deepseek-v4.2-flash", None, &catalog);
+        assert!(resolved.matched.is_none(), "versions must never be guessed");
+    }
+
+    #[test]
+    fn endpoint_catalog_inference_uses_exact_hosts_and_respects_explicit_binding() {
+        let (_dir, paths) = paths();
+        let catalog = models_dev::load(&paths.app_data_dir);
+        let lookalike = Provider {
+            base_url: "https://api.deepseek.com.evil.test/v1".into(),
+            ..Default::default()
+        };
+        let (scope, strict) = effective_catalog_scope(&lookalike, "private-model", &catalog);
+        assert!(scope.is_empty());
+        assert!(!strict);
+
+        let official = Provider {
+            base_url: "https://api.deepseek.com/v1".into(),
+            ..Default::default()
+        };
+        let (scope, strict) = effective_catalog_scope(&official, "private-model", &catalog);
+        assert_eq!(scope, vec!["deepseek"]);
+        assert!(strict);
+
+        let explicit = Provider {
+            base_url: "https://api.deepseek.com/v1".into(),
+            catalog_providers: vec!["302ai".into()],
+            ..Default::default()
+        };
+        let (scope, strict) = effective_catalog_scope(&explicit, "private-model", &catalog);
+        assert_eq!(scope, vec!["302ai"]);
+        assert!(!strict);
+    }
+
+    #[test]
+    fn inferred_official_scope_does_not_fall_back_to_a_relay_only_model() {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "providers": [
+                {"id": "deepseek", "api": "https://api.deepseek.com", "models": []},
+                {"id": "302ai", "api": "https://api.302.ai/v1", "models": [
+                    {"id": "relay-only", "name": "Relay only", "limit": {"context": 1000}}
+                ]}
+            ]
+        }))
+        .unwrap();
+        let catalog = models_dev::Catalog::parse(&bytes, models_dev::Origin::Runtime).unwrap();
+        let scope = vec!["deepseek".to_owned()];
+        let request = model_metadata::ResolutionRequest {
+            raw_model_id: "relay-only",
+            display_name: "",
+            catalog_providers: &scope,
+            price_providers: &[],
+            explicit_ref: None,
+            price_ref: None,
+            user: model_metadata::UserValues::default(),
+            provider_context: None,
+            official: None,
+            upstream: None,
+        };
+        let resolved =
+            model_metadata::resolve_with_global_fallback(&catalog, &request, false, None);
+        assert_eq!(resolved.context_window.value, None);
+        assert_eq!(
+            resolved.context_window.source,
+            model_metadata::source::UNKNOWN
+        );
+    }
+
+    #[test]
+    fn automatic_generic_metadata_uses_only_publishers() {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "providers": [
+                {"id": "302ai", "models": [
+                    {"id": "relay-only", "limit": {"context": 1000}},
+                    {"id": "publisher-model", "limit": {"context": 1000}}
+                ]},
+                {"id": "openrouter", "models": [
+                    {"id": "relay-only", "limit": {"context": 9999}},
+                    {"id": "publisher-model", "limit": {"context": 9999}}
+                ]},
+                {"id": "openai", "models": [
+                    {"id": "publisher-model", "limit": {"context": 456000}},
+                    {"id": "claude-relay-only", "limit": {"context": 5000}}
+                ]}
+            ]
+        }))
+        .unwrap();
+        let catalog = models_dev::Catalog::parse(&bytes, models_dev::Origin::Runtime).unwrap();
+        let provider = Provider {
+            base_url: "https://relay.example.com/v1".into(),
+            ..Default::default()
+        };
+        let resolved = resolve_model_metadata(&provider, "relay-only", None, &catalog);
+        assert!(resolved.matched.is_none());
+        assert_eq!(resolved.context_window.value, None);
+
+        let resolved = resolve_model_metadata(&provider, "publisher-model", None, &catalog);
+        assert_eq!(resolved.matched.as_ref().unwrap().provider_id, "openai");
+        assert_eq!(resolved.context_window.value, Some(456_000));
+
+        // Missing publisher data stays unknown even if another official service
+        // hosts a same-named model. It cannot impersonate the model's origin.
+        let resolved = resolve_model_metadata(&provider, "claude-relay-only", None, &catalog);
+        assert!(resolved.matched.is_none());
+        assert_eq!(resolved.context_window.value, None);
+
+        // A deliberate user binding can still describe that service's own
+        // metadata, while automatic references remain limited to publishers.
+        let manual = Provider {
+            catalog_providers: vec!["openrouter".into()],
+            ..provider
+        };
+        let resolved = resolve_model_metadata(&manual, "publisher-model", None, &catalog);
+        assert_eq!(resolved.matched.as_ref().unwrap().provider_id, "openrouter");
+        assert_eq!(resolved.context_window.value, Some(9999));
+    }
+
+    #[test]
     fn catalog_fills_unknown_relay_model_context() {
         let (_dir, paths) = paths();
         let store = Store {
@@ -3991,7 +4610,10 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             Some("medium".into()),
         );
         assert_eq!(claude["default_reasoning_level"], "medium");
-        assert_eq!(claude["supported_reasoning_levels"], serde_json::json!(levels));
+        assert_eq!(
+            claude["supported_reasoning_levels"],
+            serde_json::json!(levels)
+        );
         assert_eq!(claude["context_window"], 1_000_000);
 
         // An unknown model carries an explicit empty list and no default; the
@@ -4130,7 +4752,10 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         assert_eq!(account["context_window"], 999_000);
         assert_eq!(account["default_reasoning_level"], "low");
         assert_eq!(
-            account["supported_reasoning_levels"].as_array().unwrap().len(),
+            account["supported_reasoning_levels"]
+                .as_array()
+                .unwrap()
+                .len(),
             2
         );
 
@@ -4167,7 +4792,10 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             let catalog = catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
             let relay = &catalog["models"][0];
             let levels = relay["supported_reasoning_levels"].as_array().unwrap();
-            assert!(levels.is_empty(), "invented reasoning support for {model_id}");
+            assert!(
+                levels.is_empty(),
+                "invented reasoning support for {model_id}"
+            );
             assert!(relay["default_reasoning_level"].is_null());
             // The shared fallback still gives Codex a usable window and the
             // 90% default threshold, clearly derived from the fallback budget.
@@ -4328,7 +4956,10 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             id: "gpt-6-luna".into(),
             context_window: Some(272_000),
             metadata_source: "manual".into(),
-            overrides: newapi::ModelOverrides { context_window: Some(272_000), ..Default::default() },
+            overrides: newapi::ModelOverrides {
+                context_window: Some(272_000),
+                ..Default::default()
+            },
             ..Default::default()
         }];
         let state = save_provider(&paths, draft).unwrap();
@@ -4417,11 +5048,10 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         assert_eq!(astra["context_window"], 400_000);
         // The provider's own fixed threshold stays authoritative for its models.
         assert_eq!(astra["auto_compact_token_limit"], 350_000);
-        // Nothing leaks into the other provider: no declarations, no mapping,
-        // and claude-sonnet-4-6 has conflicting catalog values, so the shared
-        // fallback applies and 90% of it becomes the threshold.
-        assert_eq!(claude["context_window"], 128_000);
-        assert_eq!(claude["auto_compact_token_limit"], 115_200);
+        // Claude metadata follows Anthropic's catalog even without an explicit
+        // provider binding; 90% of the official context window is the threshold.
+        assert_eq!(claude["context_window"], 1_000_000);
+        assert_eq!(claude["auto_compact_token_limit"], 900_000);
         assert!(routing_config_matches(&paths, &store).unwrap());
         remove_routing_config(&paths, &store).unwrap();
         let (_, restored) = open_config(&paths).unwrap();
@@ -4603,4 +5233,28 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         assert_eq!(effective_active(&store).unwrap().id, "b");
         let _ = ApiProxyConfigPayload::default();
     }
+    #[test]
+    fn nova_and_publisher_identity_scopes_remain_strict() {
+        let catalog = models_dev::Catalog::parse(serde_json::json!({"schemaVersion":1,"providers":[
+            {"id":"nova","models":[{"id":"nova-2-lite-v1","name":"Nova","limit":{"context":1000}}]},
+            {"id":"302ai","models":[{"id":"opaque-alias","name":"Alias","limit":{"context":1000},"canonicalModelId":"google/gemini-fake"}]}
+        ]}).to_string().as_bytes(), models_dev::Origin::Runtime).unwrap();
+        assert_eq!(official_catalog_for_model("nova-2-lite-v1", &catalog).as_deref(), Some("nova"));
+        for id in ["amazon.nova-lite-v1:0", "us.amazon.nova-lite-v1:0", "amazon/nova-lite"] {
+            assert_eq!(official_catalog_for_model(id, &catalog).as_deref(), Some("amazon-bedrock"));
+        }
+        assert_eq!(official_catalog_for_model("opaque-alias", &catalog), None);
+        assert_ne!(official_catalog_for_model("anthropic.claude-sonnet-4", &catalog).as_deref(), Some("amazon-bedrock"));
+    }
+
+    #[test]
+    fn official_reasoning_values_use_shared_validation() {
+        let value = serde_json::json!({"context_window":1000,"supported_reasoning_levels":[
+            {"effort":"high","description":"Valid"},{"effort":"bad effort"},
+            {"effort":"low","description":"x".repeat(1025)}]});
+        assert_eq!(official_values(&value).unwrap().reasoning.unwrap().len(), 1);
+        let value = serde_json::json!({"context_window":1000,"supported_reasoning_levels":vec![serde_json::json!({"effort":"high"});33]});
+        assert!(official_values(&value).unwrap().reasoning.is_none());
+    }
+
 }

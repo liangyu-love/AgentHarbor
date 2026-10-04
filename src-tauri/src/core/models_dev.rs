@@ -97,9 +97,15 @@ where
     let value = Value::deserialize(deserializer)?;
     Ok(match value {
         Value::Bool(enabled) => Some(Interleaved::Enabled(enabled)),
-        Value::Object(object) => object.get("field").and_then(Value::as_str)
-            .filter(|field| !field.is_empty() && field.len() <= 128 && !field.chars().any(char::is_control))
-            .map(|field| Interleaved::Field { field: field.into() }),
+        Value::Object(object) => object
+            .get("field")
+            .and_then(Value::as_str)
+            .filter(|field| {
+                !field.is_empty() && field.len() <= 128 && !field.chars().any(char::is_control)
+            })
+            .map(|field| Interleaved::Field {
+                field: field.into(),
+            }),
         _ => None,
     })
 }
@@ -256,7 +262,11 @@ struct Index {
     providers: HashMap<String, usize>,
     /// provider id (lower) -> model id (lower) -> positions in that provider
     provider_models: HashMap<String, HashMap<String, Vec<usize>>>,
+    /// Scoped canonical identities and their unqualified model names. Kept
+    /// separate from exact IDs so aliases never masquerade as exact matches.
+    provider_canonical: HashMap<String, HashMap<String, Vec<usize>>>,
     global: HashMap<String, Vec<Entry>>,
+    api_hosts: HashMap<String, Vec<String>>,
 }
 
 #[derive(Clone, Copy)]
@@ -279,8 +289,8 @@ impl Catalog {
     /// The public API is a provider-keyed object with snake_case model fields;
     /// the cache and embedded assets use our versioned camelCase snapshot.
     fn from_api(bytes: &[u8], source_url: &str, fetched_at: i64) -> Result<Self, String> {
-        let value: Value = serde_json::from_slice(bytes)
-            .map_err(|error| format!("invalid_api: {error}"))?;
+        let value: Value =
+            serde_json::from_slice(bytes).map_err(|error| format!("invalid_api: {error}"))?;
         let Value::Object(providers) = value else {
             return Err("invalid_api_providers".into());
         };
@@ -304,21 +314,34 @@ impl Catalog {
                     return Err("invalid_api_model".into());
                 };
                 let reasoning_declared = model.contains_key("reasoning_options");
-                rename_fields(&mut model, &[
-                    ("reasoning_options", "reasoningOptions"),
-                    ("tool_call", "toolCall"), ("structured_output", "structuredOutput"),
-                    ("open_weights", "openWeights"), ("release_date", "releaseDate"),
-                    ("last_updated", "lastUpdated"), ("canonical_model_id", "canonicalModelId"),
-                    ("provider", "providerHint"),
-                ]);
-                model.insert("reasoningOptionsDeclared".into(), Value::Bool(reasoning_declared));
+                rename_fields(
+                    &mut model,
+                    &[
+                        ("reasoning_options", "reasoningOptions"),
+                        ("tool_call", "toolCall"),
+                        ("structured_output", "structuredOutput"),
+                        ("open_weights", "openWeights"),
+                        ("release_date", "releaseDate"),
+                        ("last_updated", "lastUpdated"),
+                        ("canonical_model_id", "canonicalModelId"),
+                        ("provider", "providerHint"),
+                    ],
+                );
+                model.insert(
+                    "reasoningOptionsDeclared".into(),
+                    Value::Bool(reasoning_declared),
+                );
                 if let Some(Value::Array(options)) = model.get_mut("reasoningOptions") {
                     // Unknown option variants are future diagnostics, not a
                     // reason to discard the whole catalog.
                     options.retain_mut(|option| match option["type"].as_str() {
                         Some("effort") => {
-                            let Some(Value::Array(values)) = option.get_mut("values") else { return false; };
-                            values.retain(|value| value.as_str().is_some_and(|value| !value.is_empty()));
+                            let Some(Value::Array(values)) = option.get_mut("values") else {
+                                return false;
+                            };
+                            values.retain(|value| {
+                                value.as_str().is_some_and(|value| !value.is_empty())
+                            });
                             !values.is_empty()
                         }
                         Some("toggle" | "budget_tokens") => true,
@@ -333,28 +356,37 @@ impl Catalog {
                     }
                     if let Some(Value::Array(tiers)) = cost.get_mut("tiers") {
                         for tier in tiers {
-                            if let Value::Object(tier) = tier { rename_rates(tier); }
+                            if let Value::Object(tier) = tier {
+                                rename_rates(tier);
+                            }
                         }
                     }
                 }
                 entries.push(Value::Object(model));
             }
             provider.insert("models".into(), Value::Array(entries));
-            transformed.push(serde_json::from_value::<Provider>(Value::Object(provider))
-                .map_err(|error| format!("invalid_api_provider: {error}"))?);
+            transformed.push(
+                serde_json::from_value::<Provider>(Value::Object(provider))
+                    .map_err(|error| format!("invalid_api_provider: {error}"))?,
+            );
         }
-        for provider in &mut transformed { provider.models.sort_by(|a, b| a.id.cmp(&b.id)); }
+        for provider in &mut transformed {
+            provider.models.sort_by(|a, b| a.id.cmp(&b.id));
+        }
         transformed.sort_by(|a, b| a.id.cmp(&b.id));
-        Self::from_snapshot(Snapshot {
-            schema_version: SCHEMA_VERSION,
-            source_url: source_url.into(),
-            fetched_at,
-            // Both refresh paths hash the source bytes; timestamps do not
-            // invent new revisions for identical catalog content.
-            revision: format!("{:x}", Sha256::digest(bytes)),
-            providers: transformed,
-            ..Default::default()
-        }, Origin::Runtime)
+        Self::from_snapshot(
+            Snapshot {
+                schema_version: SCHEMA_VERSION,
+                source_url: source_url.into(),
+                fetched_at,
+                // Both refresh paths hash the source bytes; timestamps do not
+                // invent new revisions for identical catalog content.
+                revision: format!("{:x}", Sha256::digest(bytes)),
+                providers: transformed,
+                ..Default::default()
+            },
+            Origin::Runtime,
+        )
     }
 
     pub fn from_snapshot(mut snapshot: Snapshot, origin: Origin) -> Result<Self, String> {
@@ -409,6 +441,11 @@ impl Catalog {
             .and_then(|index| self.snapshot.providers.get(*index))
     }
 
+    /// Endpoint hosts are parsed once per catalog revision, not per request.
+    pub fn providers_for_host(&self, host: &str) -> &[String] {
+        self.index.api_hosts.get(&lower(host)).map(Vec::as_slice).unwrap_or(&[])
+    }
+
     /// Case-sensitive lookup inside one provider. Used for explicit references.
     pub fn exact_in(&self, provider_id: &str, model_id: &str) -> Option<Match<'_>> {
         let provider = self.provider(provider_id)?;
@@ -451,6 +488,50 @@ impl Catalog {
         matches
     }
 
+    /// Match a publisher-declared canonical identity within the selected
+    /// catalogs. Deprecated aliases only participate if that provider has no
+    /// active record for the identity; distinct active records remain visible.
+    pub fn canonical_scoped(
+        &self,
+        provider_ids: &[impl AsRef<str>],
+        model_id: &str,
+    ) -> Vec<Match<'_>> {
+        let key = lower(model_id);
+        let mut matches = Vec::new();
+        for provider_id in provider_ids {
+            let provider_id = lower(provider_id.as_ref());
+            let Some(provider) = self.provider(&provider_id) else {
+                continue;
+            };
+            let Some(indices) = self
+                .index
+                .provider_canonical
+                .get(&provider_id)
+                .and_then(|models| models.get(&key))
+            else {
+                continue;
+            };
+            let entries = indices
+                .iter()
+                .filter_map(|index| provider.models.get(*index))
+                .collect::<Vec<_>>();
+            let deprecated = |model: &Model| {
+                model
+                    .status
+                    .as_deref()
+                    .is_some_and(|status| status.eq_ignore_ascii_case("deprecated"))
+            };
+            let has_active = entries.iter().any(|model| !deprecated(model));
+            matches.extend(
+                entries
+                    .into_iter()
+                    .filter(|model| !has_active || !deprecated(model))
+                    .map(|model| Match { provider, model }),
+            );
+        }
+        matches
+    }
+
     /// Case-insensitive matches across the whole catalog, for generic
     /// (unscoped) reference resolution.
     pub fn global(&self, model_id: &str) -> Vec<Match<'_>> {
@@ -469,11 +550,7 @@ impl Catalog {
     }
 
     pub fn model_count(&self) -> usize {
-        self.index
-            .global
-            .values()
-            .map(Vec::len)
-            .sum()
+        self.index.global.values().map(Vec::len).sum()
     }
 
     pub fn is_stale(&self, now: i64) -> bool {
@@ -503,13 +580,22 @@ impl Catalog {
 
 fn rename_fields(object: &mut serde_json::Map<String, Value>, fields: &[(&str, &str)]) {
     for (from, to) in fields {
-        if let Some(value) = object.remove(*from) { object.insert((*to).into(), value); }
+        if let Some(value) = object.remove(*from) {
+            object.insert((*to).into(), value);
+        }
     }
 }
 
 fn rename_rates(object: &mut serde_json::Map<String, Value>) {
-    rename_fields(object, &[("cache_read", "cacheRead"), ("cache_write", "cacheWrite"),
-        ("input_audio", "inputAudio"), ("output_audio", "outputAudio")]);
+    rename_fields(
+        object,
+        &[
+            ("cache_read", "cacheRead"),
+            ("cache_write", "cacheWrite"),
+            ("input_audio", "inputAudio"),
+            ("output_audio", "outputAudio"),
+        ],
+    );
 }
 
 fn valid_model(model: &Model) -> bool {
@@ -522,7 +608,8 @@ fn valid_model(model: &Model) -> bool {
     {
         return false;
     }
-    let valid_limit = |value: Option<u64>| value.is_none_or(|value| value > 0 && value <= 100_000_000);
+    let valid_limit =
+        |value: Option<u64>| value.is_none_or(|value| value > 0 && value <= 100_000_000);
     if !valid_limit(model.limit.context)
         || !valid_limit(model.limit.input)
         || !valid_limit(model.limit.output)
@@ -532,8 +619,19 @@ fn valid_model(model: &Model) -> bool {
     let valid_rate = |value: Option<f64>| {
         value.is_none_or(|value| value.is_finite() && value >= 0.0 && value < 1_000_000.0)
     };
-    let valid_rates = |rates: &CostRates| [rates.input, rates.output, rates.cache_read,
-        rates.cache_write, rates.reasoning, rates.input_audio, rates.output_audio].into_iter().all(valid_rate);
+    let valid_rates = |rates: &CostRates| {
+        [
+            rates.input,
+            rates.output,
+            rates.cache_read,
+            rates.cache_write,
+            rates.reasoning,
+            rates.input_audio,
+            rates.output_audio,
+        ]
+        .into_iter()
+        .all(valid_rate)
+    };
     if model.cost.as_ref().is_some_and(|cost| {
         !valid_rate(cost.input)
             || !valid_rate(cost.output)
@@ -542,39 +640,42 @@ fn valid_model(model: &Model) -> bool {
             || !valid_rate(cost.reasoning)
             || !valid_rate(cost.input_audio)
             || !valid_rate(cost.output_audio)
-            || cost.context_over_200k.as_ref().is_some_and(|rates| !valid_rates(rates))
+            || cost
+                .context_over_200k
+                .as_ref()
+                .is_some_and(|rates| !valid_rates(rates))
             || cost.tiers.iter().any(|tier| !valid_rates(&tier.rates))
     }) {
         return false;
     }
-    model
-        .reasoning_options
-        .iter()
-        .all(|option| match option {
-            ReasoningOption::Effort { values } => {
-                !values.is_empty()
-                    && values.len() <= 16
-                    && values
-                        .iter()
-                        .all(|value| !value.is_empty() && value.len() <= 32)
-            }
-            ReasoningOption::Toggle => true,
-            ReasoningOption::BudgetTokens { min, max } => {
-                min.is_none_or(|min| min > 0) && max.is_none_or(|max| max > 0)
-            }
-        })
+    model.reasoning_options.iter().all(|option| match option {
+        ReasoningOption::Effort { values } => {
+            !values.is_empty()
+                && values.len() <= 16
+                && values
+                    .iter()
+                    .all(|value| !value.is_empty() && value.len() <= 32)
+        }
+        ReasoningOption::Toggle => true,
+        ReasoningOption::BudgetTokens { min, max } => {
+            min.is_none_or(|min| min > 0) && max.is_none_or(|max| max > 0)
+        }
+    })
 }
 
 impl Index {
     fn build(providers: &[Provider]) -> Self {
         let mut index = Index::default();
         for (provider_index, provider) in providers.iter().enumerate() {
+            if let Some(host) = provider.api.as_deref()
+                .and_then(|api| reqwest::Url::parse(api).ok())
+                .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+            {
+                index.api_hosts.entry(host).or_default().push(provider.id.clone());
+            }
             let provider_key = lower(&provider.id);
             index.providers.insert(provider_key.clone(), provider_index);
-            let by_model = index
-                .provider_models
-                .entry(provider_key)
-                .or_default();
+            let by_model = index.provider_models.entry(provider_key).or_default();
             for (model_index, model) in provider.models.iter().enumerate() {
                 by_model
                     .entry(lower(&model.id))
@@ -588,6 +689,27 @@ impl Index {
                         provider: provider_index,
                         model: model_index,
                     });
+                if let Some(canonical) = model
+                    .canonical_model_id
+                    .as_deref()
+                    .filter(|id| id.len() <= 512 && !id.chars().any(char::is_control))
+                {
+                    if let Some((owner, name)) = canonical
+                        .split_once('/')
+                        .filter(|(owner, name)| !owner.is_empty() && !name.is_empty())
+                    {
+                        let canonical_models = index
+                            .provider_canonical
+                            .entry(lower(&provider.id))
+                            .or_default();
+                        for key in [format!("{owner}/{name}"), name.to_owned()] {
+                            canonical_models
+                                .entry(lower(&key))
+                                .or_default()
+                                .push(model_index);
+                        }
+                    }
+                }
             }
         }
         index
@@ -617,6 +739,18 @@ struct State {
 fn states() -> &'static Mutex<HashMap<PathBuf, State>> {
     static STATES: OnceLock<Mutex<HashMap<PathBuf, State>>> = OnceLock::new();
     STATES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn evict_oldest(states: &mut HashMap<PathBuf, State>) {
+    // Preserve fresh refresh results and retry status when another directory
+    // is loaded. HashMap iteration order must not choose the victim.
+    let oldest = states
+        .iter()
+        .min_by_key(|(_, state)| state.checked)
+        .map(|(path, _)| path.clone());
+    if let Some(path) = oldest {
+        states.remove(&path);
+    }
 }
 
 fn refresh_guard() -> &'static Mutex<()> {
@@ -652,22 +786,24 @@ fn bounded_read(path: &Path) -> Option<Vec<u8>> {
 fn embedded() -> Arc<Catalog> {
     static EMBEDDED_CATALOG: OnceLock<Arc<Catalog>> = OnceLock::new();
     EMBEDDED_CATALOG
-        .get_or_init(|| match Catalog::parse(EMBEDDED.as_bytes(), Origin::Embedded) {
-            Ok(catalog) => Arc::new(catalog),
-            Err(error) => {
-                log::error!("embedded models.dev snapshot rejected: {error}");
-                Arc::new(Catalog {
-                    snapshot: Snapshot {
-                        schema_version: SCHEMA_VERSION,
-                        source_url: DEFAULT_SOURCE_URL.into(),
-                        ..Default::default()
-                    },
-                    origin: Origin::Embedded,
-                    error: Some(error),
-                    index: Index::default(),
-                })
-            }
-        })
+        .get_or_init(
+            || match Catalog::parse(EMBEDDED.as_bytes(), Origin::Embedded) {
+                Ok(catalog) => Arc::new(catalog),
+                Err(error) => {
+                    log::error!("embedded models.dev snapshot rejected: {error}");
+                    Arc::new(Catalog {
+                        snapshot: Snapshot {
+                            schema_version: SCHEMA_VERSION,
+                            source_url: DEFAULT_SOURCE_URL.into(),
+                            ..Default::default()
+                        },
+                        origin: Origin::Embedded,
+                        error: Some(error),
+                        index: Index::default(),
+                    })
+                }
+            },
+        )
         .clone()
 }
 
@@ -691,9 +827,7 @@ pub fn load(app_data_dir: &Path) -> Arc<Catalog> {
         }
     };
     if states.len() >= 32 && !states.contains_key(app_data_dir) {
-        if let Some(key) = states.keys().next().cloned() {
-            states.remove(&key);
-        }
+        evict_oldest(&mut states);
     }
     states.insert(
         app_data_dir.to_path_buf(),
@@ -747,7 +881,10 @@ fn write_cache(app_data_dir: &Path, snapshot: &Snapshot) -> Result<(), String> {
 
 /// Download and validate a fresh snapshot, then replace the runtime cache
 /// atomically. Any failure keeps the previously valid catalog active.
-pub fn refresh(app_data_dir: &Path, proxy: &ApiProxyConfigPayload) -> Result<CatalogStatus, String> {
+pub fn refresh(
+    app_data_dir: &Path,
+    proxy: &ApiProxyConfigPayload,
+) -> Result<CatalogStatus, String> {
     let _guard = refresh_guard()
         .lock()
         .map_err(|_| "refresh_busy".to_owned())?;
@@ -803,7 +940,9 @@ fn download(catalog: &Catalog, proxy: &ApiProxyConfigPayload) -> Result<Download
     if let Some(etag) = catalog.snapshot.etag.as_deref() {
         request = request.header(reqwest::header::IF_NONE_MATCH, etag);
     }
-    let response = request.send().map_err(|error| error.without_url().to_string())?;
+    let response = request
+        .send()
+        .map_err(|error| error.without_url().to_string())?;
     if response.status() == reqwest::StatusCode::NOT_MODIFIED {
         return Ok(Download::NotModified);
     }
@@ -903,6 +1042,38 @@ mod tests {
     }
 
     #[test]
+    fn canonical_aliases_stay_scoped_and_prefer_active_publisher_records() {
+        let catalog = Catalog::parse(&snapshot_bytes(serde_json::json!([
+            {"id": "deepseek", "models": [
+                {"id": "deepseek-flash", "canonicalModelId": "deepseek/deepseek-v4.1-flash", "limit": {"context": 1000000}},
+                {"id": "deepseek-v4-flash", "canonicalModelId": "deepseek/deepseek-v4.1-flash", "status": "deprecated", "limit": {"context": 128000}}
+            ]},
+            {"id": "302ai", "models": [
+                {"id": "deepseek-flash", "canonicalModelId": "deepseek/deepseek-v4.1-flash", "limit": {"context": 4000}}
+            ]}
+        ])), Origin::Embedded).unwrap();
+        for id in ["deepseek-v4.1-flash", "DEEPSEEK/deepseek-v4.1-flash"] {
+            let matches = catalog.canonical_scoped(&["deepseek"], id);
+            assert_eq!(matches.len(), 1);
+            assert_eq!(matches[0].provider.id, "deepseek");
+            assert_eq!(matches[0].model.id, "deepseek-flash");
+        }
+        assert!(catalog
+            .canonical_scoped(&["deepseek"], "deepseek-v4.2-flash")
+            .is_empty());
+        // Direct requests for a deprecated ID still resolve that exact entry.
+        assert_eq!(
+            catalog
+                .exact_in("deepseek", "deepseek-v4-flash")
+                .unwrap()
+                .model
+                .limit
+                .context,
+            Some(128000)
+        );
+    }
+
+    #[test]
     fn rejects_malformed_documents_instead_of_publishing_them() {
         for bytes in [
             b"{}".to_vec(),
@@ -925,21 +1096,29 @@ mod tests {
     #[test]
     fn malformed_interleaved_hints_never_drop_models_or_the_catalog() {
         for hint in [
-            serde_json::json!({"field": 5}), serde_json::json!([]), serde_json::json!("x"),
-            serde_json::json!({"field": ""}), serde_json::json!({"field": "x".repeat(129)}),
+            serde_json::json!({"field": 5}),
+            serde_json::json!([]),
+            serde_json::json!("x"),
+            serde_json::json!({"field": ""}),
+            serde_json::json!({"field": "x".repeat(129)}),
             serde_json::json!({"field": "bad\nfield"}),
         ] {
             let mut snapshot: Value = serde_json::from_slice(&fixture()).unwrap();
             snapshot["providers"][0]["models"][0]["interleaved"] = hint.clone();
-            let catalog = Catalog::parse(&serde_json::to_vec(&snapshot).unwrap(), Origin::Runtime).unwrap();
-            let model = catalog.exact_in("anthropic", "claude-opus-4-5").unwrap().model;
+            let catalog =
+                Catalog::parse(&serde_json::to_vec(&snapshot).unwrap(), Origin::Runtime).unwrap();
+            let model = catalog
+                .exact_in("anthropic", "claude-opus-4-5")
+                .unwrap()
+                .model;
             assert!(model.interleaved.is_none(), "snapshot hint: {hint}");
             assert_eq!(catalog.model_count(), 4);
 
             let api = serde_json::json!({"p": {"id": "p", "name": "P", "models": {
                 "m": {"id": "m", "name": "M", "limit": {"context": 100}, "interleaved": hint}
             }}});
-            let catalog = Catalog::from_api(api.to_string().as_bytes(), DEFAULT_SOURCE_URL, 1).unwrap();
+            let catalog =
+                Catalog::from_api(api.to_string().as_bytes(), DEFAULT_SOURCE_URL, 1).unwrap();
             let model = catalog.exact_in("p", "m").unwrap().model;
             assert!(model.interleaved.is_none(), "API hint: {hint}");
             assert_eq!(catalog.model_count(), 1);
@@ -984,10 +1163,38 @@ mod tests {
         record_failure(dir.path(), "network_error");
         let after = load(dir.path());
         assert_eq!(after.snapshot.revision, before.snapshot.revision);
-        assert_eq!(after.snapshot.providers.len(), before.snapshot.providers.len());
+        assert_eq!(
+            after.snapshot.providers.len(),
+            before.snapshot.providers.len()
+        );
         assert_eq!(after.error.as_deref(), Some("network_error"));
         assert!(after.provider("anthropic").is_some());
         states().lock().unwrap().remove(dir.path());
+    }
+
+    #[test]
+    fn path_cache_eviction_keeps_fresh_failure_status() {
+        let catalog = Arc::new(Catalog::parse(&fixture(), Origin::Runtime).unwrap());
+        let checked = Instant::now();
+        let mut entries = HashMap::from([
+            (PathBuf::from("old"), State {
+                catalog: catalog.clone(),
+                checked: checked - Duration::from_secs(10),
+            }),
+            (PathBuf::from("recent"), State {
+                catalog,
+                checked: checked - Duration::from_secs(1),
+            }),
+            (PathBuf::from("failed"), State {
+                catalog: Arc::new(Catalog::parse(&fixture(), Origin::Runtime).unwrap()
+                    .with_error(Some("network_error".into()))),
+                checked,
+            }),
+        ]);
+        evict_oldest(&mut entries);
+        assert!(!entries.contains_key(Path::new("old")));
+        assert!(entries.contains_key(Path::new("recent")));
+        assert_eq!(entries[Path::new("failed")].catalog.error.as_deref(), Some("network_error"));
     }
 
     #[test]
