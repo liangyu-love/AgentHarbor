@@ -173,11 +173,7 @@ impl ClientAdapter for ClaudeCode {
                 // silence. Drop the variable and let the role variables decide;
                 // when all of them equal the startup model the two are
                 // equivalent anyway.
-                if document
-                    .get("env")
-                    .and_then(|env| env.get(name))
-                    .is_some()
-                {
+                if document.get("env").and_then(|env| env.get(name)).is_some() {
                     edits.push(remove(&["env", name]));
                 }
                 continue;
@@ -240,8 +236,9 @@ impl ClientAdapter for ClaudeCode {
         // Older builds left their plain model/label rows behind when switching
         // relays. Without a journal and an ownership record nothing else
         // identifies them, so this narrow shape check is the one-time
-        // migration; once a record exists it does the withdrawing, and user
-        // rows — including minimal ones — are never shape-guessed.
+        // migration; once a record exists it does the withdrawing. Restore
+        // keeps the empty record so user rows, including minimal ones, are
+        // never shape-guessed on subsequent applies.
         let mut stale_generated = Vec::new();
         if ctx.legacy_picker_cleanup {
             entries.retain(|entry| {
@@ -350,7 +347,10 @@ fn version_order(a: &str, b: &str) -> std::cmp::Ordering {
         _ => {}
     }
     let segments = |id: &str| -> Vec<String> {
-        id.to_ascii_lowercase().split(['-', '_', '.']).map(str::to_owned).collect()
+        id.to_ascii_lowercase()
+            .split(['-', '_', '.'])
+            .map(str::to_owned)
+            .collect()
     };
     let left = segments(a);
     let right = segments(b);

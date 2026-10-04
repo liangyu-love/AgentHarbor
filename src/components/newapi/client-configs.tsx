@@ -56,7 +56,7 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
     setBusy(true);
     setError(null);
     try {
-      const restored = await api.targets.restoreConfig(restoring.targetId);
+      const restored = await api.targets.restoreConfig(restoring.targetId, restoring.conflict);
       toast({
         title: t("clients.restored"),
         description: restored.warnings?.length ? restored.warnings.map(key => t(key)).join(" ") : undefined,
@@ -143,11 +143,11 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
                   {t("clients.noEligibleProviders")} {reasons.join(" · ")}
                 </p>
               )}
-              <div className="flex gap-2">
-                <Button size="sm" variant="outline" disabled={busy || !!client.error || client.conflict} onClick={() => setSelected(client)}>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="outline" disabled={busy || !!client.error} onClick={() => setSelected(client)}>
                   <Settings2 className="h-3.5 w-3.5" />{t(client.configured ? "clients.change" : "clients.configure")}
                 </Button>
-                {client.configured && <Button size="sm" variant="ghost" disabled={busy || client.conflict || !!client.error} onClick={() => setRestoring(client)}>
+                {client.configured && <Button size="sm" variant="ghost" disabled={busy || !!client.error} onClick={() => setRestoring(client)}>
                   <RotateCcw className="h-3.5 w-3.5" />{t("clients.restore")}
                 </Button>}
                 {client.configured && !client.conflict && !client.error && !unavailable && <Button size="sm" variant="ghost" disabled={busy} onClick={() => setReapplying({ client, rebaseline: false })}>
@@ -166,12 +166,12 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
           );
         })}
       </div>
-      {selected && <ConfigDialog client={selected} providers={providers} onClose={() => setSelected(null)} onApplied={refresh} />}
+      {selected && <ConfigDialog client={clients.data?.find(client => client.targetId === selected.targetId) ?? selected} providers={providers} onClose={() => setSelected(null)} onApplied={refresh} />}
       <AlertDialog open={!!restoring} onOpenChange={open => { if (!open && !busy) setRestoring(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{t("clients.restoreTitle", { name: restoring?.name })}</AlertDialogTitle>
-            <AlertDialogDescription>{t("clients.restoreDescription")}</AlertDialogDescription>
+            <AlertDialogDescription>{t(restoring?.conflict ? "clients.restoreConflictDescription" : "clients.restoreDescription")}</AlertDialogDescription>
           </AlertDialogHeader>
           {error && <p role="alert" className="text-sm text-destructive">{t(error)}</p>}
           <AlertDialogFooter>

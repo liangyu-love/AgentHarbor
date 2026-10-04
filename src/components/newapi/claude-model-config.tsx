@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Search, X } from "lucide-react";
 import { autoRoleModel, claudeRoles, emptyClaudeRoles, knownSmallContext, effectiveContext, pickerVersionState } from "@/lib/client-config";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,22 +31,34 @@ export function ClaudeModelConfig({ provider, models, selected, mapping, default
   const filtered = models.filter(id => (id + " " + label(id)).toLowerCase().includes(query));
 
   return <div className="space-y-4">
-    <section aria-labelledby="client-model-list-label" className="space-y-2">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+    <section aria-labelledby="client-model-list-label" className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <h3 id="client-model-list-label" className="text-sm font-medium">{t("clients.modelList")}
-          <span className="ml-2 text-xs font-normal text-muted-foreground">{t("clients.modelsSelected", { count: selected.length })}</span>
+          <span aria-live="polite" className="ml-2 text-xs font-normal tabular-nums text-muted-foreground">{t("clients.selectedOfAvailable", { selected: selected.length, total: models.length })}</span>
         </h3>
-        <Button type="button" size="sm" variant="ghost" disabled={disabled || selected.length === models.length}
-          onClick={() => onSelectedChange(models)}>{t("clients.selectAllModels")}</Button>
+        <div className="flex items-center gap-1">
+          <Button type="button" size="sm" variant="ghost" disabled={disabled || selected.length === models.length}
+            onClick={() => onSelectedChange(models)}>{t("clients.selectAllModels")}</Button>
+          <Button type="button" size="sm" variant="ghost" disabled={disabled || selected.length === 0}
+            onClick={() => onSelectedChange([])}>{t("clients.deselectAllModels")}</Button>
+        </div>
       </div>
-      {models.length > 8 && <Input aria-label={t("clients.searchModels")} placeholder={t("clients.searchModels")}
-        value={search} onChange={event => setSearch(event.target.value)} disabled={disabled} />}
-      <div className="max-h-44 divide-y overflow-y-auto rounded-lg border">
+      {models.length > 8 && <div className="relative">
+        <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <Input aria-label={t("clients.searchModels")} placeholder={t("clients.searchModels")}
+          value={search} onChange={event => setSearch(event.target.value)} disabled={disabled} className="pl-9 pr-10" />
+        {search && <Button type="button" size="icon-sm" variant="ghost" disabled={disabled}
+          aria-label={t("clients.clearModelSearch")} onClick={() => setSearch("")} className="absolute right-1 top-1/2 -translate-y-1/2">
+          <X aria-hidden="true" />
+        </Button>}
+      </div>}
+      <div className="max-h-60 divide-y overflow-y-auto rounded-xl border border-border">
         {filtered.map(id => {
           const checked = selected.includes(id);
-          return <label key={id} className="flex min-w-0 items-center gap-3 px-3 py-2 hover:bg-muted/40">
+          return <label key={id} className={"flex min-h-11 min-w-0 cursor-pointer items-center gap-3 px-3 py-2.5 transition-colors hover:bg-muted/40 focus-within:bg-muted/40 "
+            + (checked ? "bg-primary/5" : "") + (disabled ? " cursor-not-allowed opacity-60" : "")}>
             <input type="checkbox" data-client-model-id={id} aria-label={t("clients.includeModel", { model: label(id) })}
-              checked={checked} disabled={disabled || (checked && selected.length === 1)}
+              checked={checked} disabled={disabled}
               className="h-4 w-4 shrink-0 accent-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-50"
               onChange={() => onSelectedChange(checked ? selected.filter(model => model !== id) : [...selected, id])} />
             <span className="min-w-0 flex-1">
@@ -56,6 +69,7 @@ export function ClaudeModelConfig({ provider, models, selected, mapping, default
         })}
         {filtered.length === 0 && <p className="px-3 py-3 text-sm text-muted-foreground">{t("clients.noMatchingModels")}</p>}
       </div>
+      {selected.length === 0 && <p role="status" className="text-xs text-muted-foreground">{t("clients.modelSelectionEmpty")}</p>}
       <p className={versionState === "tooOld" ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
         {t(versionState === "tooOld" ? "clients.modelPickerVersion"
           : versionState === "unknown" ? "clients.versionUnknown" : "clients.modelPickerOk")}

@@ -4,7 +4,9 @@
 //! (keyed by the row's `model` id) and `availableModels` (keyed by the value
 //! itself). The record lives beside the session journal, survives `release`
 //! (the file keeps our rows, so a later apply must still withdraw them) and
-//! is cleared on `restore` (nothing of ours remains afterwards).
+//! retains an empty record on `restore`. The record's presence also marks the
+//! legacy picker migration as complete, so restored user rows stay untouched
+//! on a later apply.
 
 use super::*;
 
@@ -14,8 +16,13 @@ const AVAILABLE_MODELS: [&str; 1] = ["availableModels"];
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(super) struct OwnedRecord {
-    /// Model ids this app last added to `modelPicker.options`.
+    /// Model ids this app last added to `modelPicker.options`. Kept so records
+    /// written by older versions can still be read; new withdrawal decisions
+    /// use the complete row snapshots below.
     pub picker_models: Vec<String>,
+    /// Exact rows this app last added. If a user edits one in place, it no
+    /// longer matches this snapshot and is adopted instead of withdrawn.
+    pub picker_entries: Vec<Value>,
     /// Values this app last added to `availableModels`.
     pub available_models: Vec<String>,
 }
@@ -25,8 +32,7 @@ pub(super) fn is_element_array_path(path: &[String]) -> bool {
 }
 
 fn is_path(path: &[String], expected: &[&str]) -> bool {
-    path.len() == expected.len()
-        && path.iter().zip(expected).all(|(left, right)| left == right)
+    path.len() == expected.len() && path.iter().zip(expected).all(|(left, right)| left == right)
 }
 
 fn element_keys(path: &[String], array: &[Value]) -> Vec<String> {
@@ -68,7 +74,12 @@ impl OwnedRecord {
             for key in added {
                 if !existing.contains(&key) {
                     if is_path(&change.path, &PICKER_OPTIONS) {
-                        record.picker_models.push(key);
+                        if let Some(entry) = after.iter().find(|entry| {
+                            entry.get("model").and_then(Value::as_str) == Some(key.as_str())
+                        }) {
+                            record.picker_models.push(key);
+                            record.picker_entries.push(entry.clone());
+                        }
                     } else {
                         record.available_models.push(key);
                     }
@@ -82,15 +93,32 @@ impl OwnedRecord {
         Self::from_changes(&session.changes)
     }
 
+    /// Upgrade older key-only ownership records from their session journal.
+    /// A released legacy session has no snapshots to recover, so its rows are
+    /// conservatively treated as user data rather than risking edits being lost.
+    pub(super) fn recover_picker_entries(&mut self, session: Option<&Session>) {
+        if !self.picker_entries.is_empty() {
+            return;
+        }
+        let Some(session) = session else {
+            return;
+        };
+        let recovered = Self::seed_from_session(session);
+        self.picker_entries = recovered.picker_entries;
+    }
+
     /// A copy of the array without the elements this app owns; everything the
     /// user added, edited or kept — including rows whose shape we no longer
     /// recognize — stays exactly as it is.
     pub(super) fn withdraw(&self, path: &[String], array: &[Value]) -> Vec<Value> {
-        let owned = if is_path(path, &PICKER_OPTIONS) {
-            &self.picker_models
-        } else {
-            &self.available_models
-        };
+        if is_path(path, &PICKER_OPTIONS) {
+            return array
+                .iter()
+                .filter(|entry| !self.picker_entries.contains(entry))
+                .cloned()
+                .collect();
+        }
+        let owned = &self.available_models;
         array
             .iter()
             .filter(|entry| {
@@ -125,15 +153,6 @@ pub(super) fn save(data_dir: &Path, id: TargetId, record: &OwnedRecord) {
     if let Ok(bytes) = serde_json::to_vec(record) {
         if let Err(error) = secret_file::write(&path(data_dir, id), &bytes) {
             log::warn!("could not save the {id:?} ownership record: {error}");
-        }
-    }
-}
-
-pub(super) fn clear(data_dir: &Path, id: TargetId) {
-    let path = path(data_dir, id);
-    if path.exists() {
-        if let Err(error) = storage::remove_file_durable(&path) {
-            log::warn!("could not clear the {id:?} ownership record: {error}");
         }
     }
 }

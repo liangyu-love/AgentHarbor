@@ -195,6 +195,47 @@ fn changed_owned_fields_are_not_overwritten_or_restored() {
 }
 
 #[test]
+fn external_baseline_restore_allows_new_configuration_without_release() {
+    let (_temp, manager, store, mut request) = fixture();
+    let original = json!({"env":{"CUSTOM":"original"},"model":"original-model"});
+    write(&manager.paths.claude, &original);
+    apply(&manager, &store, &request);
+    write(&manager.paths.claude, &original);
+    assert!(!manager.list()[0].conflict);
+    request.model = "second-model".into();
+    apply(&manager, &store, &request);
+    manager.restore(request.target_id).unwrap();
+    assert_eq!(read(&manager.paths.claude), original);
+    assert!(!manager.list()[0].configured);
+}
+
+#[test]
+fn confirmed_conflict_restore_keeps_independent_settings_and_model_rows() {
+    let (_temp, manager, store, request) = fixture();
+    write(&manager.paths.claude, &json!({"model":"original-model"}));
+    apply(&manager, &store, &request);
+    let mut changed = read(&manager.paths.claude);
+    changed["model"] = json!("other-model");
+    changed["theme"] = json!("dark");
+    changed["modelPicker"]["options"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"model":"user-model","label":"User"}));
+    write(&manager.paths.claude, &changed);
+    assert!(manager.restore(request.target_id).is_err());
+    manager.restore_confirmed(request.target_id, true).unwrap();
+    let restored = read(&manager.paths.claude);
+    assert_eq!(restored["model"], "original-model");
+    assert_eq!(restored["theme"], "dark");
+    assert_eq!(
+        restored["modelPicker"]["options"],
+        json!([{"model":"user-model","label":"User"}])
+    );
+    assert!(!manager.list()[0].configured);
+    apply(&manager, &store, &request);
+}
+
+#[test]
 fn preview_revision_rejects_config_or_provider_changes() {
     let (_temp, manager, mut store, request) = fixture();
     let preview = manager.preview(&store, &request).unwrap();
@@ -204,6 +245,154 @@ fn preview_revision_rejects_config_or_provider_changes() {
     store.router.port += 1;
     assert!(manager.apply(&store, &request, &preview.revision).is_err());
     assert!(!manager.list()[0].configured);
+}
+
+#[test]
+fn claude_picker_selection_allows_restore_reapply_and_update_without_release() {
+    for action in ["restore", "reapply", "update"] {
+        let (_temp, manager, mut store, mut request) = fixture();
+        store.providers[0].models = ["claude-test", "second-model"]
+            .into_iter()
+            .map(|id| crate::core::newapi::Model {
+                id: id.into(),
+                included: true,
+                ..Default::default()
+            })
+            .collect();
+        request.options.claude_model_ids = Some(vec!["claude-test".into(), "second-model".into()]);
+        let original = json!({"model":"original-model","theme":"dark"});
+        write(&manager.paths.claude, &original);
+        apply(&manager, &store, &request);
+        let mut current = read(&manager.paths.claude);
+        current["model"] = json!("second-model[1m]");
+        write(&manager.paths.claude, &current);
+        assert!(!manager.list()[0].conflict, "{action}");
+        match action {
+            "restore" => {
+                manager.restore(request.target_id).unwrap();
+                assert_eq!(read(&manager.paths.claude), original);
+            }
+            "reapply" => {
+                manager.reapply(&store, request.target_id, false).unwrap();
+            }
+            _ => {
+                request.model = "second-model".into();
+                apply(&manager, &store, &request);
+            }
+        }
+        assert!(!manager.list()[0].conflict);
+        request.model = "second-model".into();
+        apply(&manager, &store, &request);
+        assert_eq!(read(&manager.paths.claude)["model"], "second-model");
+        manager.restore(request.target_id).unwrap();
+        assert_eq!(read(&manager.paths.claude), original);
+    }
+}
+
+#[test]
+fn conflicting_configuration_can_be_previewed_and_replaced_without_release() {
+    let (_temp, manager, store, mut request) = fixture();
+    let original = json!({"model":"original-model","env":{"CUSTOM":"keep"}});
+    write(&manager.paths.claude, &original);
+    apply(&manager, &store, &request);
+    let mut changed = read(&manager.paths.claude);
+    changed["model"] = json!("external-model");
+    changed["env"]["ANTHROPIC_BASE_URL"] = json!("https://external.example");
+    changed["theme"] = json!("dark");
+    changed["modelPicker"]["options"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"model":"user-model","label":"Mine"}));
+    write(&manager.paths.claude, &changed);
+    assert!(manager.list()[0].conflict);
+    assert!(manager.preview(&store, &request).is_err());
+    request.model = "second-model".into();
+    let preview = manager
+        .preview_with_conflicts(&store, &request, true)
+        .unwrap();
+    assert_eq!(read(&manager.paths.claude), changed, "preview is read-only");
+    let applied = manager
+        .apply_with_conflicts(&store, &request, &preview.revision, true)
+        .unwrap();
+    let backup: Option<String> = serde_json::from_slice(
+        &secret_file::read(Path::new(&applied.backup_path))
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(backup.as_deref().unwrap()).unwrap(),
+        changed
+    );
+    assert!(!manager.list()[0].conflict);
+    assert_eq!(read(&manager.paths.claude)["model"], "second-model");
+    manager.reapply(&store, request.target_id, false).unwrap();
+    manager.restore(request.target_id).unwrap();
+    let restored = read(&manager.paths.claude);
+    assert_eq!(restored["model"], "original-model");
+    assert_eq!(restored["theme"], "dark");
+    assert_eq!(restored["env"], original["env"]);
+    assert_eq!(
+        restored["modelPicker"]["options"],
+        json!([{"model":"user-model","label":"Mine"}])
+    );
+    assert!(!manager.list()[0].configured);
+    apply(&manager, &store, &request);
+}
+
+#[test]
+fn confirmed_update_rejects_changes_after_preview() {
+    let (_temp, manager, store, request) = fixture();
+    apply(&manager, &store, &request);
+    let mut current = read(&manager.paths.claude);
+    current["model"] = json!("external-model");
+    write(&manager.paths.claude, &current);
+    let preview = manager
+        .preview_with_conflicts(&store, &request, true)
+        .unwrap();
+    assert!(manager.apply(&store, &request, &preview.revision).is_err());
+    current["model"] = json!("changed-again");
+    write(&manager.paths.claude, &current);
+    assert_eq!(
+        manager
+            .apply_with_conflicts(&store, &request, &preview.revision, true)
+            .err()
+            .unwrap(),
+        "clients.errors.changed"
+    );
+    assert_eq!(read(&manager.paths.claude), current);
+}
+
+#[test]
+fn rebaseline_uses_the_same_restore_point_with_or_without_later_edits() {
+    for later_edit in [false, true] {
+        let (_temp, manager, store, mut request) = fixture();
+        write(
+            &manager.paths.claude,
+            &json!({"model":"original-model","theme":"light"}),
+        );
+        apply(&manager, &store, &request);
+        let mut current = read(&manager.paths.claude);
+        current["model"] = json!("external-model");
+        current["theme"] = json!("dark");
+        write(&manager.paths.claude, &current);
+        manager.reapply(&store, request.target_id, true).unwrap();
+        assert!(!manager.list()[0].conflict);
+        request.model = "second-model".into();
+        apply(&manager, &store, &request);
+        if later_edit {
+            let mut current = read(&manager.paths.claude);
+            current["theme"] = json!("blue");
+            write(&manager.paths.claude, &current);
+        }
+        manager.restore(request.target_id).unwrap();
+        let restored = read(&manager.paths.claude);
+        assert_eq!(restored["model"], "external-model");
+        assert_eq!(restored["theme"], if later_edit { "blue" } else { "dark" });
+        assert!(restored.pointer("/env/ANTHROPIC_BASE_URL").is_none());
+        assert!(!manager.list()[0].configured);
+        apply(&manager, &store, &request);
+    }
 }
 
 #[test]
@@ -453,5 +642,36 @@ fn claude_settings_with_comments_can_be_injected_and_the_original_is_restored() 
     assert_eq!(installed["permissions"]["allow"][0], "Read");
     assert!(installed["env"]["ANTHROPIC_BASE_URL"].is_string());
     manager.restore(request.target_id).unwrap();
-    assert_eq!(std::fs::read_to_string(&manager.paths.claude).unwrap(), original);
+    assert_eq!(
+        std::fs::read_to_string(&manager.paths.claude).unwrap(),
+        original
+    );
+}
+
+#[test]
+fn restore_then_fresh_apply_preserves_plain_user_picker_rows() {
+    let (_temp, manager, store, request) = fixture();
+    apply(&manager, &store, &request);
+    let mut current = read(&manager.paths.claude);
+    current["modelPicker"]["options"].as_array_mut().unwrap().push(json!({"model":"user-model","label":"user-model"}));
+    write(&manager.paths.claude, &current);
+    manager.restore(request.target_id).unwrap();
+    apply(&manager, &store, &request);
+    assert!(read(&manager.paths.claude)["modelPicker"]["options"].as_array().unwrap().iter().any(|row| row["model"] == "user-model"));
+    manager.restore(request.target_id).unwrap();
+    assert!(read(&manager.paths.claude)["modelPicker"]["options"].as_array().unwrap().iter().any(|row| row["model"] == "user-model"));
+}
+
+#[test]
+fn installed_user_picker_selection_is_allowed_outside_requested_ids() {
+    let (_temp, manager, store, mut request) = fixture();
+    request.options.claude_model_ids = Some(vec!["claude-test".into()]);
+    write(&manager.paths.claude, &json!({"model":"original","modelPicker":{"options":[{"model":"user-model","label":"Custom"}]}}));
+    apply(&manager, &store, &request);
+    let mut current = read(&manager.paths.claude);
+    current["model"] = json!("user-model");
+    write(&manager.paths.claude, &current);
+    assert!(!manager.list()[0].conflict);
+    manager.restore(request.target_id).unwrap();
+    assert_eq!(read(&manager.paths.claude)["model"], "original");
 }

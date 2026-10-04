@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { BookmarkPlus, Check, ChevronDown, Eye, Loader2, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
@@ -86,6 +86,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
     };
   });
   const [preview, setPreview] = useState<ClientConfigPreview | null>(null);
+  useEffect(() => { setPreview(null); }, [client.conflict]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [claudeProfiles, setClaudeProfiles] = useState<ClaudeConfigProfile[]>(() => isClaude ? readClaudeProfiles() : []);
@@ -128,8 +129,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
   };
   const selectClaudeModels = (next: string[]) => {
     const ids = models.filter(id => next.includes(id));
-    if (ids.length === 0) return;
-    const model = ids.includes(request.model) ? request.model : ids[0];
+    const model = ids.includes(request.model) ? request.model : ids[0] ?? "";
     update({ claudeModelIds: ids, model,
       ...(model !== request.model ? clientDefaults(provider, model) : {}),
       claudeModels: roles.reduce<ClaudeModels>((mapping, role) => {
@@ -140,10 +140,9 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
   };
   const selectOpenCodeModels = (entry: NewApiProvider, next: string[]) => {
     const ids = clientModels(entry, protocols).filter(id => next.includes(id));
-    if (ids.length === 0) return;
     const providerModelIds = { ...request.providerModelIds, [entry.id]: ids };
     if (entry.id === request.providerId && !ids.includes(request.model)) {
-      const nextModel = ids[0];
+      const nextModel = ids[0] ?? "";
       update({ providerModelIds, ...chooseDefault(entry, nextModel) });
     } else update({ providerModelIds });
   };
@@ -267,13 +266,17 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
     try {
       // Show the change first; the user applies it with the regular Apply button,
       // just like a manual edit.
-      setPreview(await api.targets.previewConfig(profileRequest));
+      setPreview(await api.targets.previewConfig(profileRequest, client.conflict));
     } catch (cause) {
       setError(clientErrorKey(cause));
     } finally { setBusy(false); }
   };
   const run = async () => {
     if (busy) return;
+    if ((isClaude && configuredModels.length === 0)
+      || (client.targetId === "opencode" && selected.some(entry => modelIdsForProvider(entry).length === 0))) {
+      setError("clients.errors.modelSelection"); return;
+    }
     if (staleOpenCodeModelSelection) {
       setError("clients.errors.openCodeModelsUnavailable"); return;
     }
@@ -302,7 +305,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
         selected.map(entry => [entry.id, modelIdsForProvider(entry)]),
       ) };
       if (preview) {
-        const applied = await api.targets.applyConfig(configuredRequest, preview.revision);
+        const applied = await api.targets.applyConfig(configuredRequest, preview.revision, client.conflict);
         await onApplied();
         toast({
           title: t("clients.applied"),
@@ -312,7 +315,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
           variant: applied.warnings?.length ? "destructive" : "success",
         });
         onClose();
-      } else { setPreview(await api.targets.previewConfig(configuredRequest)); }
+      } else { setPreview(await api.targets.previewConfig(configuredRequest, client.conflict)); }
     } catch (cause) {
       setError(clientErrorKey(cause)); setPreview(null); await onApplied();
     } finally { setBusy(false); }
@@ -326,6 +329,9 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
           <DialogDescription>{t(request.accessMode === "native" ? "clients.nativeHint" : "clients.localHint")}</DialogDescription>
         </DialogHeader>
         <div data-client-config-scroll className="-mx-1 min-h-0 space-y-4 overflow-y-auto px-1">
+        {client.conflict && <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm">
+          {t("clients.updateConflictDescription")}
+        </p>}
         <fieldset disabled={busy} className="min-w-0 space-y-4">
           {isClaude && <section className="space-y-2 border-b border-border/60 pb-4" aria-label={t("clients.savedProfiles")}>
             <div className="flex flex-wrap items-center gap-2">
@@ -402,10 +408,16 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
                   <span className="ml-auto shrink-0 text-xs font-normal tabular-nums text-muted-foreground">{t("clients.selectedOfAvailable", { selected: checkedModels.length, total: allModels.length })}</span>
                   <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 group-open:rotate-180 motion-reduce:transition-none" />
                 </summary>
+                <div className="flex flex-wrap items-center justify-end gap-1 border-t px-2 py-1.5">
+                  <Button type="button" size="sm" variant="ghost" disabled={busy || checkedModels.length === allModels.length}
+                    onClick={() => selectOpenCodeModels(entry, allModels)}>{t("clients.selectAllModels")}</Button>
+                  <Button type="button" size="sm" variant="ghost" disabled={busy || checkedModels.length === 0}
+                    onClick={() => selectOpenCodeModels(entry, [])}>{t("clients.deselectAllModels")}</Button>
+                </div>
                 <div className="max-h-48 divide-y overflow-y-auto border-t motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-150">
                   {allModels.map(id => <label key={id} className="flex min-w-0 items-center gap-3 px-3 py-2 transition-colors hover:bg-muted/40">
                     <input type="checkbox" aria-label={t("clients.includeModel", { model: modelLabel(entry, id) })}
-                      checked={checkedModels.includes(id)} disabled={busy || (checkedModels.includes(id) && checkedModels.length === 1)}
+                      checked={checkedModels.includes(id)} disabled={busy}
                       className="h-4 w-4 shrink-0 accent-primary focus-visible:ring-2 focus-visible:ring-ring" onChange={() => selectOpenCodeModels(entry,
                         checkedModels.includes(id) ? checkedModels.filter(model => model !== id) : [...checkedModels, id])} />
                     <span className="min-w-0 flex-1 break-words text-sm">{modelLabel(entry, id)}</span>
@@ -492,7 +504,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
         </div>
         <DialogFooter className="shrink-0 gap-2 sm:gap-0"><Button variant="outline" onClick={onClose} disabled={busy}>{t("common.cancel")}</Button>
           <Button disabled={busy || !modelCompatible || selected.length === 0} onClick={() => void run()}>
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}{t(preview ? "clients.apply" : "clients.preview")}
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}{t(preview ? client.conflict ? "clients.applyConflict" : "clients.apply" : "clients.preview")}
           </Button>
         </DialogFooter>
         <ConfirmDialog request={confirmRequest} onClose={() => setConfirmRequest(null)} />

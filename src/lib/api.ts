@@ -162,9 +162,9 @@ const imageApi = {
 const targetsApi = {
   restart: (targetId: TargetId) => invoke<void>("restart_target", { targetId }),
   configs: () => invoke<ClientStatus[]>("list_client_configs"),
-  previewConfig: (request: ClientConfigRequest) => invoke<ClientConfigPreview>("preview_client_config", { request }),
-  applyConfig: (request: ClientConfigRequest, revision: string) => invoke<ClientConfigApplied>("apply_client_config", { request, revision }),
-  restoreConfig: (targetId: TargetId) => invoke<ClientConfigApplied>("restore_client_config", { targetId }),
+  previewConfig: (request: ClientConfigRequest, replaceConflicts = false) => invoke<ClientConfigPreview>("preview_client_config", { request, replaceConflicts }),
+  applyConfig: (request: ClientConfigRequest, revision: string, replaceConflicts = false) => invoke<ClientConfigApplied>("apply_client_config", { request, revision, replaceConflicts }),
+  restoreConfig: (targetId: TargetId, replaceConflicts = false) => invoke<ClientConfigApplied>("restore_client_config", { targetId, replaceConflicts }),
   releaseConfig: (targetId: TargetId) => invoke<void>("release_client_config", { targetId }),
   reapplyConfig: (targetId: TargetId, rebaseline: boolean) =>
     invoke<ClientConfigApplied>("reapply_client_config", { targetId, rebaseline }),

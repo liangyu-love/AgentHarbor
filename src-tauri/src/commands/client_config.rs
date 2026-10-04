@@ -17,7 +17,9 @@ fn attach_reconcile_warning(
     match (result, reconcile) {
         (Ok(mut applied), Err(error)) => {
             log::warn!("client config was applied but router reconciliation failed: {error}");
-            applied.warnings.push("clients.errors.routerReconcile".into());
+            applied
+                .warnings
+                .push("clients.errors.routerReconcile".into());
             Ok(applied)
         }
         (result, _) => result,
@@ -48,9 +50,14 @@ pub fn list_client_configs(
 pub fn preview_client_config(
     repo: State<'_, Mutex<Repository>>,
     request: ConfigRequest,
+    replace_conflicts: Option<bool>,
 ) -> Result<ConfigPreview, String> {
     let paths = paths(&repo)?;
-    manager(&paths).preview(&router::load_store(&paths)?, &request)
+    manager(&paths).preview_with_conflicts(
+        &router::load_store(&paths)?,
+        &request,
+        replace_conflicts.unwrap_or(false),
+    )
 }
 
 #[tauri::command]
@@ -58,14 +65,21 @@ pub async fn apply_client_config(
     repo: State<'_, Mutex<Repository>>,
     request: ConfigRequest,
     revision: String,
+    replace_conflicts: Option<bool>,
 ) -> Result<ConfigApplied, String> {
     let paths = paths(&repo)?;
     let _guard = routing_runtime::mutation_guard().await;
     if request.needs_router() {
         routing_runtime::ensure_available(&paths).await?;
     }
-    let result = router::load_store(&paths)
-        .and_then(|store| manager(&paths).apply(&store, &request, &revision));
+    let result = router::load_store(&paths).and_then(|store| {
+        manager(&paths).apply_with_conflicts(
+            &store,
+            &request,
+            &revision,
+            replace_conflicts.unwrap_or(false),
+        )
+    });
     attach_reconcile_warning(result, routing_runtime::reconcile(&paths).await)
 }
 
@@ -73,10 +87,11 @@ pub async fn apply_client_config(
 pub async fn restore_client_config(
     repo: State<'_, Mutex<Repository>>,
     target_id: TargetId,
+    replace_conflicts: Option<bool>,
 ) -> Result<ConfigApplied, String> {
     let paths = paths(&repo)?;
     let _guard = routing_runtime::mutation_guard().await;
-    let result = manager(&paths).restore(target_id);
+    let result = manager(&paths).restore_confirmed(target_id, replace_conflicts.unwrap_or(false));
     attach_reconcile_warning(result, routing_runtime::reconcile(&paths).await)
 }
 

@@ -14,7 +14,7 @@ pub use options::{ClaudeAuthField, ClaudeModels, ClaudeOneM, ClientAccessMode, C
 mod tests;
 
 use super::{
-    models_dev, model_catalog,
+    model_catalog, models_dev,
     router::{ModelProtocol, Provider, Store},
     secret_file, storage,
     targets::TargetId,
@@ -266,9 +266,12 @@ impl ConfigManager {
                         status.model = Some(session.request.model.clone());
                         status.request = Some(session.request.clone());
                         let current = parse(read_text(&session.path)?.as_deref(), id)?;
-                        let conflict_fields = conflicting_fields(&current, session);
-                        status.conflict = !conflict_fields.is_empty();
-                        status.conflict_fields = conflict_fields;
+                        let conflict_paths = conflicting_paths(&current, session);
+                        status.conflict = !conflict_paths.is_empty();
+                        status.conflict_fields = conflict_paths
+                            .iter()
+                            .map(|path| path.join("."))
+                            .collect();
                     } else {
                         parse(read_text(adapter.path(&self.paths))?.as_deref(), id)?;
                     }
@@ -306,7 +309,16 @@ impl ConfigManager {
     }
 
     pub fn preview(&self, store: &Store, request: &ConfigRequest) -> Result<ConfigPreview, String> {
-        let plan = self.prepare(store, request, false)?;
+        self.preview_with_conflicts(store, request, false)
+    }
+
+    pub fn preview_with_conflicts(
+        &self,
+        store: &Store,
+        request: &ConfigRequest,
+        replace_conflicts: bool,
+    ) -> Result<ConfigPreview, String> {
+        let plan = self.prepare(store, request, false, replace_conflicts)?;
         let mut patch = json!({});
         for change in &plan.session.changes {
             set_field(&mut patch, &change.path, change.after.clone())?;
@@ -333,11 +345,23 @@ impl ConfigManager {
         request: &ConfigRequest,
         expected_revision: &str,
     ) -> Result<ConfigApplied, String> {
+        self.apply_with_conflicts(store, request, expected_revision, false)
+    }
+
+    /// Explicit, previewed replacement keeps the original rollback point.
+    /// The commit backs up the current file before replacing managed fields.
+    pub fn apply_with_conflicts(
+        &self,
+        store: &Store,
+        request: &ConfigRequest,
+        expected_revision: &str,
+        replace_conflicts: bool,
+    ) -> Result<ConfigApplied, String> {
         let _guard = WRITE_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
             .map_err(|_| "clients.errors.storage")?;
-        let plan = self.prepare(store, request, false)?;
+        let plan = self.prepare(store, request, false, replace_conflicts)?;
         if plan.revision != expected_revision {
             return Err("clients.errors.changed".into());
         }
@@ -357,6 +381,16 @@ impl ConfigManager {
     }
 
     pub fn restore(&self, id: TargetId) -> Result<ConfigApplied, String> {
+        self.restore_confirmed(id, false)
+    }
+
+    /// Only an explicit restore confirmation may replace conflicting managed
+    /// fields. Automatic exit restoration always uses the strict wrapper.
+    pub fn restore_confirmed(
+        &self,
+        id: TargetId,
+        replace_conflicts: bool,
+    ) -> Result<ConfigApplied, String> {
         let _guard = WRITE_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
@@ -365,13 +399,42 @@ impl ConfigManager {
         let session = self.session(id)?.ok_or("clients.errors.notConfigured")?;
         let current = read_text(&session.path)?;
         let document = parse(current.as_deref(), id)?;
-        verify_fields(&document, &session)?;
+        if !replace_conflicts {
+            verify_fields(&document, &session)?;
+        }
         let restored = if document == session.installed {
             // If there were no independent edits, restore exact bytes (including comments).
             session.original.clone()
         } else {
             let mut document = document;
+            let mut owned = if owned::path(&self.data_dir, id).exists() {
+                owned::load(&self.data_dir, id)
+            } else {
+                owned::OwnedRecord::seed_from_session(&session)
+            };
+            owned.recover_picker_entries(Some(&session));
+            // Element arrays may contain independent user edits. Withdraw our
+            // exact rows, instead of replacing the array with the old snapshot.
+            let arrays: Vec<_> = session
+                .changes
+                .iter()
+                .filter(|change| owned::is_element_array_path(&change.path))
+                .map(|change| {
+                    let current = field(&document, &change.path).cloned();
+                    let restored = match current.as_ref().and_then(Value::as_array) {
+                        Some(entries) => {
+                            let entries = owned.withdraw(&change.path, entries);
+                            (!entries.is_empty() || change.before.is_some()).then(|| json!(entries))
+                        }
+                        None => current,
+                    };
+                    (change.path.clone(), restored)
+                })
+                .collect();
             undo(&mut document, &session)?;
+            for (path, restored) in arrays {
+                set_field(&mut document, &path, restored)?;
+            }
             Some(format!(
                 "{}\n",
                 serde_json::to_string_pretty(&document).map_err(|_| "clients.errors.storage")?
@@ -396,7 +459,7 @@ impl ConfigManager {
             .map_err(|_| "clients.errors.storage")?;
         adapter(id)?;
         let session = self.session(id)?.ok_or("clients.errors.notConfigured")?;
-        let plan = self.prepare(store, &session.request, rebaseline)?;
+        let plan = self.prepare(store, &session.request, rebaseline, false)?;
         let text = format!(
             "{}\n",
             serde_json::to_string_pretty(&plan.session.installed)
@@ -450,7 +513,13 @@ impl ConfigManager {
             .collect()
     }
 
-    fn prepare(&self, store: &Store, request: &ConfigRequest, rebaseline: bool) -> Result<Plan, String> {
+    fn prepare(
+        &self,
+        store: &Store,
+        request: &ConfigRequest,
+        rebaseline: bool,
+        replace_conflicts: bool,
+    ) -> Result<Plan, String> {
         let adapter = adapter(request.target_id)?;
         let provider = selected_provider(store, request)?;
         if !request.accepts_model(provider, &request.model) {
@@ -489,7 +558,7 @@ impl ConfigManager {
         // apply are adopted and rows we wrote are regenerated. The snapshot is
         // taken before undo, which resets arrays to the previous apply's state.
         let owned_recorded = owned::path(&self.data_dir, request.target_id).exists();
-        let owned = if owned_recorded {
+        let mut owned = if owned_recorded {
             owned::load(&self.data_dir, request.target_id)
         } else {
             // Pre-upgrade journals carry their additions in the recorded changes.
@@ -498,6 +567,7 @@ impl ConfigManager {
                 .map(owned::OwnedRecord::seed_from_session)
                 .unwrap_or_default()
         };
+        owned.recover_picker_entries(previous.as_ref());
         let picker_options = document
             .get("modelPicker")
             .and_then(|picker| picker.get("options"));
@@ -516,20 +586,21 @@ impl ConfigManager {
         let rebaselined = rebaseline && previous.is_some();
         if let Some(previous_session) = previous.as_mut() {
             if rebaselined {
-                // Explicit re-takeover: adopt the file's current managed values
-                // as the rollback point instead of rejecting them, the way the
-                // Codex path starts a new session from another switcher's live
-                // settings. The original snapshot is kept, so a later restore
-                // can still go back past this point.
+                // Adopt externally changed fields as the new rollback point;
+                // unchanged values still belong to our previous injection.
+                // Both exact and merged restoration must use this same point.
+                let conflicts = conflicting_paths(&document, previous_session);
                 for change in &mut previous_session.changes {
-                    change.before = field(&document, &change.path).cloned();
+                    if conflicts.contains(&change.path) {
+                        change.before = field(&document, &change.path).cloned();
+                    }
                 }
-            } else {
+            } else if !replace_conflicts {
                 verify_fields(&document, previous_session)?;
-                undo(&mut document, previous_session)?;
             }
+            undo(&mut document, previous_session)?;
         }
-        let original = if independently_changed && !rebaselined {
+        let mut original = if independently_changed && !rebaselined {
             Some(format!(
                 "{}\n",
                 serde_json::to_string_pretty(&document).map_err(|_| "clients.errors.storage")?
@@ -553,31 +624,75 @@ impl ConfigManager {
             None if !had_picker
                 && field(&document, &["modelPicker".into(), "options".into()]).is_some() =>
             {
-                set_field(&mut document, &["modelPicker".into(), "options".into()], None)?
+                set_field(
+                    &mut document,
+                    &["modelPicker".into(), "options".into()],
+                    None,
+                )?
             }
             None => {}
         }
         match baseline_available {
-            Some(values) => {
-                set_field(&mut document, &["availableModels".into()], Some(json!(values)))?
-            }
+            Some(values) => set_field(
+                &mut document,
+                &["availableModels".into()],
+                Some(json!(values)),
+            )?,
             None if !had_available && field(&document, &["availableModels".into()]).is_some() => {
                 set_field(&mut document, &["availableModels".into()], None)?
             }
             None => {}
         }
+        if rebaselined {
+            original = Some(format!(
+                "{}\n",
+                serde_json::to_string_pretty(&document).map_err(|_| "clients.errors.storage")?
+            ));
+        } else if independently_changed {
+            // The exact-byte restore path must retain the same adopted user
+            // rows as the field-merge path. Build it after withdrawing our rows.
+            let mut baseline = parse(original.as_deref(), request.target_id)?;
+            for (present, path) in [
+                (had_picker, vec!["modelPicker".into(), "options".into()]),
+                (had_available, vec!["availableModels".into()]),
+            ] {
+                if present {
+                    let value = field(&document, &path)
+                        .filter(|value| {
+                            !value.as_array().is_some_and(Vec::is_empty)
+                                || field(&baseline, &path).is_some()
+                        })
+                        .cloned();
+                    set_field(&mut baseline, &path, value)?;
+                }
+            }
+            original = Some(format!(
+                "{}\n",
+                serde_json::to_string_pretty(&baseline).map_err(|_| "clients.errors.storage")?
+            ));
+        }
         let mut warnings = Vec::new();
         let edits = {
             let catalog = models_dev::load(&self.app_data_dir);
-            let official = self.official_home.as_ref().map(|home|
-                model_catalog::official(home, &self.app_data_dir)).unwrap_or_default();
+            let official = self
+                .official_home
+                .as_ref()
+                .map(|home| model_catalog::official(home, &self.app_data_dir))
+                .unwrap_or_default();
             let mut ctx = EditContext {
                 // Legacy shape-based cleanup only where nothing else identifies
                 // this app's rows: no journal and no ownership record.
                 legacy_picker_cleanup: previous.is_none() && !owned_recorded,
                 warnings: &mut warnings,
             };
-            adapter.edits(&document, store, request, &catalog, &official.models, &mut ctx)?
+            adapter.edits(
+                &document,
+                store,
+                request,
+                &catalog,
+                &official.models,
+                &mut ctx,
+            )?
         };
         // `document` here is the file as it exists right now, before the edits
         // are applied — exactly what the takeover analysis compares against.
@@ -608,7 +723,8 @@ impl ConfigManager {
         };
         let mut hasher = Sha256::new();
         hasher.update(
-            serde_json::to_vec(&(&current, &session)).map_err(|_| "clients.errors.storage")?,
+            serde_json::to_vec(&(&current, &session, rebaseline, replace_conflicts))
+                .map_err(|_| "clients.errors.storage")?,
         );
         Ok(Plan {
             revision: format!("{:x}", hasher.finalize()),
@@ -685,13 +801,15 @@ impl ConfigManager {
             }
         }
         // Record what this apply added to the element-keyed arrays so the next
-        // apply withdraws exactly those; restore clears the record because
-        // nothing of ours remains in the file.
+        // apply withdraws exactly those. Restore keeps an empty record: no
+        // owned rows remain, but the legacy migration must not run again.
         match session {
-            Some(session) => {
-                owned::save(&self.data_dir, id, &owned::OwnedRecord::from_changes(&session.changes))
-            }
-            None => owned::clear(&self.data_dir, id),
+            Some(session) => owned::save(
+                &self.data_dir,
+                id,
+                &owned::OwnedRecord::from_changes(&session.changes),
+            ),
+            None => owned::save(&self.data_dir, id, &owned::OwnedRecord::default()),
         }
         Ok(ConfigApplied {
             path: path.to_string_lossy().into(),
@@ -792,25 +910,65 @@ fn set_field(document: &mut Value, path: &[String], value: Option<Value>) -> Res
 }
 
 fn verify_fields(document: &Value, session: &Session) -> Result<(), String> {
-    if !conflicting_fields(document, session).is_empty() {
+    if !conflicting_paths(document, session).is_empty() {
         return Err("clients.errors.conflict".into());
     }
     Ok(())
 }
 
-/// Managed paths whose current value differs from what the last apply wrote.
+/// Managed paths changed to a value other than our last write or the baseline.
+/// Returning a field to its baseline is an external restore, not a conflict.
 /// Element-keyed arrays are excluded: additions and deletions by the user are
 /// adopted on the next apply instead of being reported as conflicts.
-fn conflicting_fields(document: &Value, session: &Session) -> Vec<String> {
+fn conflicting_paths(document: &Value, session: &Session) -> Vec<Vec<String>> {
     session
         .changes
         .iter()
         .filter(|change| {
             !owned::is_element_array_path(&change.path)
+                && !is_claude_model_selection(document, session, &change.path)
                 && field(document, &change.path) != change.after.as_ref()
+                && field(document, &change.path) != change.before.as_ref()
         })
-        .map(|change| change.path.join("."))
+        .map(|change| change.path.clone())
         .collect()
+}
+
+/// Claude Code persists /model selections in this field. Selecting one of
+/// the installed models is normal client activity, not an ownership conflict.
+/// Endpoint, credential and role-mapping fields still use strict checks.
+fn is_claude_model_selection(document: &Value, session: &Session, path: &[String]) -> bool {
+    if session.request.target_id != TargetId::ClaudeCode || path != ["model"] {
+        return false;
+    }
+    let Some(current) = document.get("model").and_then(Value::as_str) else {
+        return false;
+    };
+    fn unmarked(model: &str) -> &str {
+        model
+            .strip_suffix("[1m]")
+            .or_else(|| model.strip_suffix("[1M]"))
+            .unwrap_or(model)
+    }
+    let matches = |model: &str| unmarked(model) == unmarked(current);
+    if matches(&session.request.model) {
+        return true;
+    }
+    if let Some(selected) = &session.request.options.claude_model_ids {
+        if selected.iter().any(|model| matches(model)) {
+            return true;
+        }
+    }
+    session
+        .installed
+        .pointer("/modelPicker/options")
+        .and_then(Value::as_array)
+        .is_some_and(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| entry["model"].as_str())
+                .any(matches)
+        })
 }
 
 fn undo(document: &mut Value, session: &Session) -> Result<(), String> {
