@@ -301,6 +301,8 @@ export const api = {
 
   setSkillEnabled: (id: string, enabled: boolean) =>
     invoke<CoreEnvelope<InstalledSkillSummary>>("set_skill_enabled", { id, enabled }),
+  resolveSkillConflict: (id: string, keepEnabled: boolean) =>
+    invoke<CoreEnvelope<InstalledSkillSummary>>("resolve_skill_conflict", { id, keepEnabled }),
 
   loadSkillBackups: () =>
     invoke<CoreEnvelope<SkillBackupListPayload>>("load_skill_backups"),

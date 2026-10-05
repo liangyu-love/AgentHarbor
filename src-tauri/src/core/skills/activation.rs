@@ -38,6 +38,10 @@ pub(super) fn prepare_roots(skills_dir: &Path, app_data_dir: &Path) -> Result<()
     }
     std::fs::create_dir_all(skills_dir)?;
     std::fs::create_dir_all(disabled_root(app_data_dir))?;
+    cleanup_staging(skills_dir)?;
+    cleanup_staging(&disabled_root(app_data_dir))?;
+    let backups = app_data_dir.join("skill-backups");
+    if backups.is_dir() { cleanup_staging(&backups)?; }
     Ok(())
 }
 
@@ -147,10 +151,13 @@ pub fn set_skill_enabled(
     // An ancestor SKILL.md would hide a restored nested skill from the scanner.
     validate_destination(&root, &target)?;
     std::fs::create_dir_all(target.parent().unwrap())?;
-    move_directory(&source, &target)?;
-    let mut summary = load_skill_summary(&target.join("SKILL.md"), &root)
+    let disabled = disabled_root(app_data_dir);
+    let mut summary = load_skill_summary(&source.join("SKILL.md"), if was_enabled { skills_dir } else { &disabled })
         .ok_or_else(|| CoreError::InvalidData("Invalid skill after activation".into()))?;
+    move_directory(&source, &target)?;
     summary.enabled = enabled;
+    summary.directory_path = target.display().to_string();
+    summary.skill_file_path = target.join("SKILL.md").display().to_string();
     Ok(summary)
 }
 
@@ -202,12 +209,14 @@ fn copy_then_retire(source: &Path, target: &Path) -> Result<(), CoreError> {
     let previous = source
         .parent()
         .unwrap()
-        .join(format!(".agentharbor-previous-{}", uuid::Uuid::new_v4()));
+        .join(format!(".agentharbor-retired-{}", uuid::Uuid::new_v4()));
     let result = (|| -> Result<(), CoreError> {
         copy_dir_all(source, &staged)?;
         std::fs::rename(&staged, target)?;
         if let Err(error) = std::fs::rename(source, &previous) {
-            let _ = std::fs::remove_dir_all(target);
+            if let Err(rollback) = retire_directory(target) {
+                return Err(CoreError::InvalidData(format!("Skill move failed: {error}; rollback failed: {rollback}; both copies retained at {} and {}. Resolve the conflict in Skills.", source.display(), target.display())));
+            }
             return Err(error.into());
         }
         let _ = std::fs::remove_dir_all(&previous);
@@ -217,6 +226,57 @@ fn copy_then_retire(source: &Path, target: &Path) -> Result<(), CoreError> {
         let _ = std::fs::remove_dir_all(staged);
     }
     result
+}
+
+pub(super) fn retire_directory(source: &Path) -> Result<(), CoreError> {
+    validate_tree(source)?;
+    let previous = source.parent().unwrap().join(format!(".agentharbor-retired-{}", uuid::Uuid::new_v4()));
+    std::fs::rename(source, &previous)?;
+    // The backup is already durable. Cleanup is retryable, not a failed removal.
+    let _ = std::fs::remove_dir_all(previous);
+    Ok(())
+}
+
+/// These names only contain disposable copies with a separate visible source or
+/// backup. Run under the writer lock; do not traverse links or unknown dot dirs.
+fn cleanup_staging(root: &Path) -> Result<(), CoreError> {
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let owned = [".agentharbor-stage-", ".agentharbor-retired-"].iter()
+            .any(|prefix| name.strip_prefix(prefix).is_some_and(|id| uuid::Uuid::parse_str(id).is_ok()));
+        let meta = std::fs::symlink_metadata(&path)?;
+        if is_link(&meta) { continue; }
+        if !owned {
+            if meta.is_dir() && !name.starts_with('.') && !path.join("SKILL.md").exists() { cleanup_staging(&path)?; }
+            continue;
+        }
+        let _ = std::fs::remove_dir_all(path);
+    }
+    Ok(())
+}
+
+/// Keep the chosen placement and archive the other complete copy before hiding
+/// it. Neither conflicting copy is overwritten or merged by guesswork.
+pub fn resolve_skill_conflict(skills_dir: &Path, app_data_dir: &Path, id: &str, keep_enabled: bool) -> Result<InstalledSkillSummary, CoreError> {
+    let _guard = write_guard(app_data_dir)?;
+    prepare_roots(skills_dir, app_data_dir)?;
+    let inactive_root = disabled_root(app_data_dir);
+    let active = checked_child(skills_dir, id)?;
+    let inactive = checked_child(&inactive_root, id)?;
+    let (keep, discard, keep_root, discard_root) = if keep_enabled {
+        (&active, &inactive, skills_dir, inactive_root.as_path())
+    } else { (&inactive, &active, inactive_root.as_path(), skills_dir) };
+    validate_tree(keep)?;
+    validate_tree(discard)?;
+    let mut result = load_skill_summary(&keep.join("SKILL.md"), keep_root)
+        .ok_or_else(|| CoreError::InvalidData("Invalid chosen skill".into()))?;
+    backup_skill_directory(discard, discard_root, &app_data_dir.join("skill-backups"), "conflict")?;
+    retire_directory(discard)?;
+    result.enabled = keep_enabled;
+    result.conflict = false;
+    Ok(result)
 }
 
 #[cfg(test)]

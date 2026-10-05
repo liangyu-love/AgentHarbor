@@ -40,6 +40,15 @@ pub async fn set_skill_enabled(
 }
 
 #[tauri::command]
+pub async fn resolve_skill_conflict(repo: State<'_, Mutex<Repository>>, id: String, keep_enabled: bool) -> Result<CoreEnvelope<InstalledSkillSummary>, String> {
+    let paths = repo.lock().map_err(|e| e.to_string())?.paths().clone();
+    super::blocking(move || {
+        let item = skills::resolve_skill_conflict(&paths.skills_dir, &paths.app_data_dir, &id, keep_enabled).map_err(|e| e.to_string())?;
+        Ok(CoreEnvelope::ok(item))
+    }).await
+}
+
+#[tauri::command]
 pub async fn load_skill_backups(
     repo: State<'_, Mutex<Repository>>,
 ) -> Result<CoreEnvelope<SkillBackupListPayload>, String> {

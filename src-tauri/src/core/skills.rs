@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 mod activation;
-pub use activation::{load_skill_catalog, set_skill_enabled};
+pub use activation::{load_skill_catalog, resolve_skill_conflict, set_skill_enabled};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,11 +20,13 @@ struct SkillBackupMetadata {
 }
 
 pub fn load_installed_skills(skills_dir: &Path) -> Result<Vec<InstalledSkillSummary>, CoreError> {
-    if !skills_dir.exists() {
-        return Ok(vec![]);
+    match std::fs::symlink_metadata(skills_dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(error) => return Err(error.into()),
+        Ok(_) => {}
     }
     let mut items = Vec::new();
-    scan_skills_recursive(skills_dir, skills_dir, &mut items);
+    scan_skills_recursive(skills_dir, skills_dir, &mut items)?;
     items.sort_by(|a, b| {
         b.updated_at
             .unwrap_or(0)
@@ -34,14 +36,13 @@ pub fn load_installed_skills(skills_dir: &Path) -> Result<Vec<InstalledSkillSumm
     Ok(items)
 }
 
-fn scan_skills_recursive(dir: &Path, root: &Path, items: &mut Vec<InstalledSkillSummary>) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
+fn scan_skills_recursive(dir: &Path, root: &Path, items: &mut Vec<InstalledSkillSummary>) -> Result<(), CoreError> {
+    let entries = std::fs::read_dir(dir)?;
+    for entry in entries {
+        let entry = entry?;
         let path = entry.path();
-        if std::fs::symlink_metadata(&path).map_or(true, |meta| activation::is_link(&meta)) {
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if activation::is_link(&metadata) {
             continue;
         }
         if path
@@ -50,21 +51,28 @@ fn scan_skills_recursive(dir: &Path, root: &Path, items: &mut Vec<InstalledSkill
         {
             continue;
         }
-        if path.is_dir() {
+        if metadata.is_dir() {
             let skill_file = path.join("SKILL.md");
-            if skill_file.exists() {
-                if let Some(summary) = load_skill_summary(&skill_file, root) {
-                    items.push(summary);
+            match std::fs::read_to_string(&skill_file) {
+                Ok(text) => {
+                    if let Some(summary) = skill_summary_from_text(&skill_file, root, &text) {
+                        items.push(summary);
+                    }
                 }
-            } else {
-                scan_skills_recursive(&path, root, items);
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => scan_skills_recursive(&path, root, items)?,
+                Err(error) => return Err(error.into()),
             }
         }
     }
+    Ok(())
 }
 
 fn load_skill_summary(skill_file: &Path, root: &Path) -> Option<InstalledSkillSummary> {
     let text = std::fs::read_to_string(skill_file).ok()?;
+    skill_summary_from_text(skill_file, root, &text)
+}
+
+fn skill_summary_from_text(skill_file: &Path, root: &Path, text: &str) -> Option<InstalledSkillSummary> {
     let dir = skill_file.parent()?;
     let title = first_markdown_heading(&text);
     let summary = first_skill_summary_line(&text);
@@ -96,34 +104,35 @@ fn load_skill_summary(skill_file: &Path, root: &Path) -> Option<InstalledSkillSu
 }
 
 pub fn load_skill_backups(backup_dir: &Path) -> Result<Vec<SkillBackupSummary>, CoreError> {
-    if !backup_dir.exists() {
-        return Ok(vec![]);
+    match std::fs::symlink_metadata(backup_dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(error) => return Err(error.into()),
+        Ok(_) => {}
     }
     let mut items = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(backup_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let meta_path = path.join("metadata.json");
-            if !meta_path.exists() {
-                continue;
-            }
-            if let Ok(data) = std::fs::read_to_string(&meta_path) {
-                if let Ok(meta) = serde_json::from_str::<SkillBackupMetadata>(&data) {
-                    items.push(SkillBackupSummary {
-                        id: meta.backup_id,
-                        skill_id: meta.skill_id,
-                        name: meta.name,
-                        title: meta.title,
-                        relative_path: meta.relative_path,
-                        backup_path: path.join("skill").display().to_string(),
-                        created_at: meta.created_at,
-                    });
-                }
-            }
+    for entry in std::fs::read_dir(backup_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if !metadata.is_dir() || activation::is_link(&metadata) || entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
         }
+        let meta_path = path.join("metadata.json");
+        let data = match std::fs::read_to_string(&meta_path) {
+            Ok(data) => data,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        let meta: SkillBackupMetadata = serde_json::from_str(&data)?;
+        items.push(SkillBackupSummary {
+            id: meta.backup_id,
+            skill_id: meta.skill_id,
+            name: meta.name,
+            title: meta.title,
+            relative_path: meta.relative_path,
+            backup_path: path.join("skill").display().to_string(),
+            created_at: meta.created_at,
+        });
     }
     items.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     Ok(items)
@@ -184,9 +193,13 @@ pub fn import_skill(
         )?);
     }
 
-    replace_skill_directory(&source, &target)?;
-    let mut skill = load_skill_summary(&target.join("SKILL.md"), &root)
+    let mut skill = load_skill_summary(&source.join("SKILL.md"), &source)
         .ok_or_else(|| CoreError::InvalidData("Invalid skill after import".into()))?;
+    replace_skill_directory(&source, &target)?;
+    skill.id = id.to_string();
+    skill.relative_path = id.to_string();
+    skill.directory_path = target.display().to_string();
+    skill.skill_file_path = target.join("SKILL.md").display().to_string();
     skill.enabled = enabled;
 
     Ok(SkillImportPayload {
@@ -213,10 +226,10 @@ pub fn remove_skill(
     let (root, dir, _) = activation::target_for(skills_dir, app_data_dir, id)?;
     let backup = backup_skill_directory(&dir, &root, &backup_dir, "remove")?;
 
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir)?;
-    }
-    let remaining = activation::catalog(skills_dir, app_data_dir)?.len() as i32;
+    // The complete backup exists before the atomic retirement. A failed cleanup
+    // leaves only a hidden tombstone; never partially delete a visible skill.
+    activation::retire_directory(&dir)?;
+    let remaining = (installed.len() - 1) as i32;
 
     Ok(SkillRemovePayload {
         removed_skill_id: id.to_string(),
@@ -263,9 +276,14 @@ pub fn restore_skill_backup(
         )?);
     }
 
-    replace_skill_directory(&staged, &target)?;
-    let mut restored = load_skill_summary(&target.join("SKILL.md"), &root)
+    let mut restored = load_skill_summary(&staged.join("SKILL.md"), &staged)
         .ok_or_else(|| CoreError::InvalidData("Backup corrupted".into()))?;
+    replace_skill_directory(&staged, &target)?;
+    restored.id = meta.relative_path.clone();
+    restored.name = meta.name.clone();
+    restored.relative_path = meta.relative_path.clone();
+    restored.directory_path = target.display().to_string();
+    restored.skill_file_path = target.join("SKILL.md").display().to_string();
     restored.enabled = enabled;
 
     let backup_summary = SkillBackupSummary {
@@ -297,8 +315,8 @@ pub fn delete_skill_backup(
             "Backup not found: {backup_id}"
         )));
     }
-    std::fs::remove_dir_all(&path)?;
-    let remaining = load_skill_backups(&backup_dir)?.len() as i32;
+    let remaining = load_skill_backups(&backup_dir)?.len().saturating_sub(1) as i32;
+    activation::retire_directory(&path)?;
     Ok(SkillDeleteBackupPayload {
         deleted_backup_id: backup_id.to_string(),
         remaining_backup_count: remaining,
@@ -409,13 +427,13 @@ fn replace_skill_directory(source: &Path, target: &Path) -> Result<(), CoreError
         }
         if let Err(error) = std::fs::rename(&staged, target) {
             if replacing {
-                std::fs::rename(&previous, target)?;
+                if let Err(rollback) = std::fs::rename(&previous, target) {
+                    return Err(CoreError::InvalidData(format!("Skill publish failed: {error}; rollback failed: {rollback}; original retained at {}", previous.display())));
+                }
             }
             return Err(error.into());
         }
-        if replacing {
-            let _ = std::fs::remove_dir_all(&previous);
-        }
+        if replacing { let _ = activation::retire_directory(&previous); }
         Ok(())
     })();
     if staged.exists() {

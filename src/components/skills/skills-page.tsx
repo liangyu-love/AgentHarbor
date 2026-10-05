@@ -71,6 +71,10 @@ export function SkillsPage() {
     });
   };
 
+  const refreshSkills = () => Promise.all([
+    queryClient.invalidateQueries({ queryKey: queryKeys.installedSkills }),
+    queryClient.invalidateQueries({ queryKey: queryKeys.skillBackups }),
+  ]);
   const importMutation = useMutation({
     mutationFn: async () => {
       const { open } = await import("@tauri-apps/plugin-dialog");
@@ -79,8 +83,6 @@ export function SkillsPage() {
       throw new Error("cancelled");
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.installedSkills });
-      queryClient.invalidateQueries({ queryKey: queryKeys.skillBackups });
       toast({
         title: t("common.success"),
         variant: "default",
@@ -94,6 +96,7 @@ export function SkillsPage() {
         variant: "destructive",
       });
     },
+    onSettled: refreshSkills,
   });
 
   const showMutationError = (err: unknown) => toast({
@@ -101,43 +104,47 @@ export function SkillsPage() {
   });
   const toggleMutation = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => api.setSkillEnabled(id, enabled),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.installedSkills }),
     onError: showMutationError,
+    onSettled: refreshSkills,
+  });
+
+  const conflictMutation = useMutation({
+    mutationFn: ({ id, keepEnabled }: { id: string; keepEnabled: boolean }) => api.resolveSkillConflict(id, keepEnabled),
+    onError: showMutationError,
+    onSettled: refreshSkills,
   });
 
   const removeMutation = useMutation({
     mutationFn: (id: string) => api.removeSkill(id),
     onSuccess: () => {
       setRemoving(null);
-      queryClient.invalidateQueries({ queryKey: queryKeys.installedSkills });
-      queryClient.invalidateQueries({ queryKey: queryKeys.skillBackups });
     },
     onError: showMutationError,
+    onSettled: refreshSkills,
   });
 
   const restoreMutation = useMutation({
     mutationFn: (id: string) => api.restoreSkillBackup(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.installedSkills });
-      queryClient.invalidateQueries({ queryKey: queryKeys.skillBackups });
       toast({
         title: t("common.success"),
         variant: "default",
       });
     },
     onError: showMutationError,
+    onSettled: refreshSkills,
   });
 
   const deleteBackupMutation = useMutation({
     mutationFn: (id: string) => api.deleteSkillBackup(id),
     onSuccess: () => {
       setDeletingBackup(null);
-      queryClient.invalidateQueries({ queryKey: queryKeys.skillBackups });
     },
     onError: showMutationError,
+    onSettled: refreshSkills,
   });
 
-  const skillsBusy = toggleMutation.isPending || importMutation.isPending || removeMutation.isPending || restoreMutation.isPending;
+  const skillsBusy = toggleMutation.isPending || conflictMutation.isPending || importMutation.isPending || removeMutation.isPending || restoreMutation.isPending || deleteBackupMutation.isPending;
   const skills = skillsQuery.data?.data.items ?? [];
   const backups = backupsQuery.data?.data.items ?? [];
   const skillsRootPath = skillsQuery.data?.data.rootPath ?? "";
@@ -437,6 +444,10 @@ export function SkillsPage() {
                 </div>
 
                 {/* Card Footer: Open Folder & Remove Action */}
+                {skill.conflict && <div className="mt-3 flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" disabled={skillsBusy} onClick={() => conflictMutation.mutate({ id: skill.id, keepEnabled: true })}>{t("skills.keepActive")}</Button>
+                  <Button size="sm" variant="outline" disabled={skillsBusy} onClick={() => conflictMutation.mutate({ id: skill.id, keepEnabled: false })}>{t("skills.keepDisabled")}</Button>
+                </div>}
                 <div className="mt-4 pt-3 border-t border-border/50 flex flex-wrap gap-2 items-center justify-between">
                   <label className="flex items-center gap-2 text-xs text-muted-foreground">
                     <Switch checked={skill.enabled !== false}

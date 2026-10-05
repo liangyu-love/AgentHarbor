@@ -219,6 +219,12 @@ api.setSkillEnabled = async (id, enabled) => {
   Object.assign(skill, { enabled, directoryPath: enabled ? "C:/synthetic/.codex/skills/sample" : "C:/synthetic/app/disabled-skills/sample" });
   return { data: skill } as any;
 };
+api.resolveSkillConflict = async (id, keepEnabled) => {
+  const skill = controls.review.skillItems.find((item: any) => item.id === id);
+  Object.assign(skill, { enabled: keepEnabled, conflict: false });
+  controls.review.skillConflictChoice = { id, keepEnabled };
+  return { data: skill } as any;
+};
 api.loadSkillBackups = async () => ({ data: { total: 0, items: [] } }) as any;
 api.loadCustomInstructionState = async () => ({ data: { current: { managedBlockPresent: false, lastTemplateTitle: null } } }) as any;
 api.getSystemInfo = async () => ({ os: "Windows", arch: "x64" }) as any;

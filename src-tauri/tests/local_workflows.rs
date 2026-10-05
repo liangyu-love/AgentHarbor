@@ -2,6 +2,65 @@ use agentharbor_lib::core::models::{McpServerSummary, McpTransport};
 use agentharbor_lib::core::{custom_instructions, mcp, skills};
 
 #[test]
+fn skill_conflicts_can_keep_either_copy_and_archive_the_other() {
+    for keep_enabled in [true, false] {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(temp.path().join("codex"));
+        paths.ensure_directories().unwrap();
+        let active = paths.skills_dir.join("group/sample");
+        let inactive = paths.app_data_dir.join("disabled-skills/group/sample");
+        for (path, text) in [(&active, "# Active"), (&inactive, "# Disabled")] {
+            fs::create_dir_all(path.join(".private")).unwrap();
+            fs::write(path.join("SKILL.md"), text).unwrap();
+            fs::write(path.join(".private/data"), text).unwrap();
+        }
+        let id = skills::load_skill_catalog(&paths.skills_dir, &paths.app_data_dir).unwrap()[0].id.clone();
+        let result = skills::resolve_skill_conflict(&paths.skills_dir, &paths.app_data_dir, &id, keep_enabled).unwrap();
+        assert_eq!(result.enabled, keep_enabled);
+        assert!(!result.conflict);
+        let text = if keep_enabled { "# Active" } else { "# Disabled" };
+        assert_eq!(fs::read_to_string(&result.skill_file_path).unwrap(), text);
+        assert_eq!(active.exists(), keep_enabled);
+        assert_eq!(inactive.exists(), !keep_enabled);
+        let backups = skills::load_skill_backups(&paths.skill_backups_dir).unwrap();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(fs::read_to_string(std::path::Path::new(&backups[0].backup_path).join(".private/data")).unwrap(), if keep_enabled { "# Disabled" } else { "# Active" });
+        // The chosen inactive copy remains eligible for a later enable.
+        assert!(skills::set_skill_enabled(&paths.skills_dir, &paths.app_data_dir, &id, true).unwrap().enabled);
+    }
+}
+
+#[test]
+fn failed_skill_scans_are_errors_instead_of_empty_catalogs() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("root");
+    fs::write(&root, "not a directory").unwrap();
+    assert!(skills::load_installed_skills(&root).is_err());
+    assert!(skills::load_skill_backups(&root).is_err());
+    fs::remove_file(&root).unwrap();
+    fs::create_dir_all(root.join("sample/SKILL.md")).unwrap();
+    assert!(skills::load_installed_skills(&root).is_err());
+    assert!(skills::load_installed_skills(&temp.path().join("absent")).unwrap().is_empty());
+}
+
+#[test]
+fn only_owned_disposable_staging_is_cleaned_and_recovery_copies_survive() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CodexPaths::from_home(temp.path().join("codex"));
+    paths.ensure_directories().unwrap();
+    let stage = paths.skills_dir.join(format!(".agentharbor-stage-{}", uuid::Uuid::new_v4()));
+    let retired = paths.skills_dir.join(format!(".agentharbor-retired-{}", uuid::Uuid::new_v4()));
+    let previous = paths.skills_dir.join(format!(".agentharbor-previous-{}", uuid::Uuid::new_v4()));
+    let foreign = paths.skills_dir.join(".agentharbor-stage-user-data");
+    for path in [&stage, &retired, &previous, &foreign] { fs::create_dir_all(path).unwrap(); fs::write(path.join("SKILL.md"), "# Copy").unwrap(); }
+    let source = temp.path().join("sample");
+    fs::create_dir_all(&source).unwrap(); fs::write(source.join("SKILL.md"), "# Sample").unwrap();
+    skills::import_skill(&paths.skills_dir, &paths.app_data_dir, source.to_str().unwrap()).unwrap();
+    assert!(!stage.exists() && !retired.exists());
+    assert!(previous.exists() && foreign.exists());
+}
+
+#[test]
 fn skill_disable_enable_preserves_nested_and_hidden_content() {
     let temp = tempfile::tempdir().unwrap();
     let paths = CodexPaths::from_home(temp.path().join("codex"));
@@ -82,6 +141,7 @@ fn disabled_skill_reimport_restore_and_uninstall_keep_activation_consistent() {
     )
     .unwrap();
     assert!(!restored.restored_skill.enabled);
+    assert_eq!(restored.restored_skill.name, "sample");
     assert_eq!(
         fs::read_to_string(&restored.restored_skill.skill_file_path).unwrap(),
         "# Original"

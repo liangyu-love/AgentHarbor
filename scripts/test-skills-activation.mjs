@@ -25,6 +25,10 @@ export async function testSkillsActivation({ page, reset, captureDir }) {
   await toggle.click();
   await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="启用 Sample Skill"]')?.getAttribute("aria-checked") === "true");
   assert.deepEqual(await page.evaluate(() => window.review.skillToggleCalls.map(call => call.enabled)), [false, true, true]);
+  await page.getByRole("button", { name: "保留禁用副本", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="启用 Conflict Skill"]')?.disabled === false);
+  assert.equal(await conflict.getAttribute("aria-checked"), "false");
+  assert.deepEqual(await page.evaluate(() => window.review.skillConflictChoice), { id: "conflict", keepEnabled: false });
   for (const width of [1200, 390]) {
     await page.setViewportSize({ width, height: 900 });
     assert.equal(await toggle.isVisible(), true);
