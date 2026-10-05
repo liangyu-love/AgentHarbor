@@ -1,10 +1,10 @@
 # Claude Desktop 路由模式：参考核对与实施计划
 
-日期：2026-10-05。状态：**设计与源码核对完成，路由模式尚未实现**。
+日期：2026-10-05。状态：**R1–R3 已实现；R4 本地回归与打包完成，真实 Desktop 路由验收待执行**。
 
-本文接续 [直连接入计划](claude-desktop-direct-integration-execution-plan.md) 第 10 节。第 1–2 节描述 cc-switch 当前源码；第 3–10 节是 AgentHarbor 的实施规格，不是现有功能清单。直连的实现、四文件事务与验收缺口仍以原计划和 [验收记录](../docs/claude-desktop-acceptance-record.md) 为准。
+本文接续 [直连接入计划](claude-desktop-direct-integration-execution-plan.md) 第 10 节。第 1–2 节描述研究基线的 cc-switch 源码；第 3–10 节保留实施规格，第 12 节记录实际交付。路由的逐项证据与剩余缺口见 [路由验收记录](../docs/claude-desktop-routing-acceptance-record.md)，操作说明见 [路由使用说明](../docs/claude-desktop-routing.md)。直连的实现、四文件事务与验收缺口仍以原计划和 [直连验收记录](../docs/claude-desktop-acceptance-record.md) 为准。
 
-参考根目录：`D:/workspace/temp/cc-switch`，提交 `1ee2fdc3a791f1e73476c631c7ab7ce8fac0638f`。本项目设计基线：`70da81f`。本轮只读研究源码，没有执行真实 Desktop 接管、进程控制、登录或计费请求。
+参考根目录：`D:/workspace/temp/cc-switch`，提交 `1ee2fdc3a791f1e73476c631c7ab7ce8fac0638f`。本项目设计基线：`70da81f`，实施起点：`596c856`。设计阶段仅只读研究；实施验证使用隔离配置、本地 HTTP 模拟服务和浏览器 fixture，没有执行真实 Desktop 接管、进程控制、登录或计费请求。
 
 ## 1. cc-switch 的路由模式究竟做什么
 
@@ -305,7 +305,7 @@ UI 在现有 Desktop 卡片中加模式选择，不新建供应商页面。路�
 
 | 批次 | 交付内容 | 验收门槛 |
 | --- | --- | --- |
-| R0（本轮） | 源码事实、设计、测试矩阵及兼容决策 | 文档区分已核对/拟实现/待真机验证 |
+| R0（设计阶段） | 源码事实、设计、测试矩阵及兼容决策 | 文档区分已核对/拟实现/待真机验证 |
 | R1 | routes/token/状态兼容、实际 listener lease 与 pin | 旧 direct 不变；候选严格；token越界拒绝；lease失效零写入 |
 | R2 | Desktop 两端点、唯一目标转发、scope隔离、诊断/账本 | 三协议 mock 非流/SSE/工具/用量；实际型号与价格身份准确 |
 | R3 | 四文件路由事务、模式切换、重应用、启动/退出/释放、UI | 首次基线不移动；其他客户端独立；退出失败可恢复 |
@@ -378,3 +378,28 @@ Windows 为第一验收平台。macOS/Linux、Fable、跨协议 1M、托管工�
 | `commands/tray_menu.rs:63`、`commands/system.rs:275` | 实际完整退出与更新重启入口，须共用协调且不提前spawn重启helper |
 
 源码行号对应本文基线，实施后以函数与契约为准更新，不据旧行号推定实现仍相同。
+
+## 12. 实施结果与规格适配
+
+2026-10-05 的本地实现已接通 `ApplyRouter`、两个 Desktop 专属端点、三协议转发、角色映射、四文件事务、诊断/用量来源、共享监听引用与完整退出协调。已有直连入口继续可用，卡片凭据和默认模型由原有 Provider 数据管理。
+
+实际代码有三项需要明确的规格适配：
+
+1. **发布权威是受保护的整份 State**：`gateway::committed_snapshot` 读取已提交的 token、routes、revision 和固定端口。State 原子替换就是发布点，不额外复制一份 active table，避免磁盘与内存两套权威之间的发布故障。Pending 含整代 before/next；提交前恢复旧代，提交后只核验并清理新代。运行请求冻结同一份 State、Store 和 Catalog 快照。
+2. **监听健康与配置陈旧独立**：状态 DTO 的 `listenerReady` 表示当前监听是否在已保存端口。端口冲突不会把配置标成 stale，也不会擅自写运行中的 Desktop；端口恢复后重新协调。模式按已提交状态及实际受管 profile 判定，不靠 URL 含 localhost 推断。
+3. **后端 R1/R2 合并为一项完整提交**：状态、监听租约和 HTTP 鉴权存在编译依赖，一起提交以保证每个提交可运行；生命周期/API/UI 与验收文档分别提交。没有改全局 Provider schema、协议转换器的职责或另建账本。
+
+实际复用入口：
+
+| 模块 | 实施职责 |
+| --- | --- |
+| `claude_desktop/routes.rs` | 角色 alias、Provider/model 资格、协议与 1M 投影 |
+| `claude_desktop/gateway.rs` | 已提交网关快照、token 作用域、精确模型解析 |
+| `claude_desktop/mod.rs`、`transaction.rs`、`tickets.rs` | 四文件事务、首次基线、模式切换、监听绑定票据 |
+| `router_proxy.rs`、`routing_runtime.rs` | Desktop 专属入口、共享转发、lease/pin、预览需求与启动恢复 |
+| `protocol/message_history.rs` | 客户端/配置/角色/路由版本的历史隔离 |
+| `request_diagnostics.rs`、`route_trace.rs`、`relay_usage.rs` | 来源、请求 alias、真实出站型号及真实计价身份 |
+| `core/desktop_exit.rs`、`commands/desktop_exit.rs` | 完整退出或更新重启之前停止 Desktop、恢复首次基线、失败重试 |
+| `claude-desktop-route-mapping.tsx`、`claude-desktop-router-exit-dialog.tsx` | 现有卡片选目标、单击 1M、配置文件预览与退出决策 |
+
+**验收边界**：R1–R3 的主要自动化场景已验证，R-A12 的真实 I/O 故障全组合和部分组合矩阵尚未穷举；R-L01–R-L09 本轮均未执行。当前安装包供本地验收，不能把三协议模拟服务通过等同于真实 Desktop 三协议、工具或逐段 SSE 渲染通过。macOS/Linux、Fable、Cowork 和跨协议 1M 没有新增实测承诺。
