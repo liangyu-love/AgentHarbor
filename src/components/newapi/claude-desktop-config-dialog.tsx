@@ -426,11 +426,6 @@ export function ClaudeDesktopDialog({
                         >
                           {model.modelId}
                         </label>
-                        {!model.protocolVerified && (
-                          <Badge variant="outline" className="shrink-0 text-[10px]">
-                            {t("claudeDesktop.dialog.protocolInferred")}
-                          </Badge>
-                        )}
                       </div>
                       {row && (
                         <div className="mt-2 flex flex-wrap items-center gap-2 pl-6">
@@ -447,25 +442,21 @@ export function ClaudeDesktopDialog({
                               }))
                             }
                           />
-                          <div className="flex items-center gap-2">
-                          <span className="text-[11px] text-muted-foreground">{t("claudeDesktop.dialog.oneMOptions")}</span>
-                          <Select
-                            value={row.oneMMode}
-                            onValueChange={value =>
-                              setSelected(current => ({
-                                ...current,
-                                [model.modelId]: { ...row, oneMMode: value as OneMMode },
-                              }))
-                            }
-                          >
-                            <SelectTrigger aria-label={t("claudeDesktop.dialog.oneMOptions")} className="h-8 w-24 text-xs">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="auto">{t("claudeDesktop.dialog.oneMAuto")}</SelectItem>
-                              <SelectItem value="off">{t("claudeDesktop.dialog.oneMOff")}</SelectItem>
-                            </SelectContent>
-                          </Select>
+                          <div className="flex items-center gap-2" title={!model.supports1m ? t("claudeDesktop.dialog.oneMNeedsCapability") : undefined}>
+                            <Checkbox
+                              id={`desktop-onem-${model.modelId}`}
+                              checked={row.oneMMode === "auto"}
+                              disabled={!model.supports1m && row.oneMMode !== "auto"}
+                              onCheckedChange={checked =>
+                                setSelected(current => ({
+                                  ...current,
+                                  [model.modelId]: { ...row, oneMMode: checked === true ? "auto" : "off" },
+                                }))
+                              }
+                            />
+                            <label htmlFor={`desktop-onem-${model.modelId}`} className="cursor-pointer text-xs">
+                              {t("claudeDesktop.dialog.oneMOptions")}
+                            </label>
                           </div>
                         </div>
                       )}
@@ -643,30 +634,7 @@ export function ClaudeDesktopDialog({
               <StepHeading step="3" text={t("claudeDesktop.dialog.stepPreview")} />
               {preview && (
                 <div className="space-y-2">
-                  <div data-desktop-preview-summary className="space-y-3 rounded-lg border px-3 py-3">
-                    <p className="text-sm font-medium">{preview.providerName}</p>
-                    {preview.messagesUrl && (
-                      <p className="break-all font-mono text-xs text-muted-foreground">{preview.messagesUrl}</p>
-                    )}
-                    <ul className="space-y-2">
-                      {preview.models.map(model => (
-                        <li key={model.modelId} className="min-w-0">
-                          <p className="flex flex-wrap items-center gap-2 text-sm">
-                            <span className="break-words font-medium">{model.label || model.modelId}</span>
-                            {model.oneM && <Badge variant="outline" className="text-[10px]">{t("claudeDesktop.dialog.oneMEnabled")}</Badge>}
-                          </p>
-                          {model.label && model.label !== model.modelId && (
-                            <p className="break-all font-mono text-xs text-muted-foreground">{model.modelId}</p>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                  <details data-desktop-preview-files className="text-xs">
-                    <summary className="w-fit cursor-pointer rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                      {t("claudeDesktop.dialog.fileDetails")}
-                    </summary>
-                    <div className="mt-2 space-y-3">
+                  <div data-desktop-preview-files className="space-y-3 text-xs">
                       {preview.files.map(file => (
                         <div key={file.role} className="space-y-2 border-t pt-3">
                           <div className="flex flex-wrap items-center gap-2">
@@ -676,11 +644,11 @@ export function ClaudeDesktopDialog({
                           <p className="break-all font-mono text-[11px] text-muted-foreground">{file.path}</p>
                           <dl className="space-y-2">
                             {file.managedChanges.map(change => (
-                              <div key={change.path} className="space-y-1">
+                              <div key={change.path} data-desktop-managed-change={change.path} className="space-y-1">
                                 <dt className="break-all font-mono text-[11px]">{change.path}</dt>
                                 <dd className="grid gap-2 sm:grid-cols-2">
                                   {(["before", "after"] as const).map(side => (
-                                    <div key={side} className="min-w-0 bg-muted/40 px-2 py-1.5">
+                                    <div key={side} data-desktop-change-side={side} className="min-w-0 bg-muted/40 px-2 py-1.5">
                                       <p className="mb-1 text-[11px] text-muted-foreground">{t(`claudeDesktop.dialog.${side}`)}</p>
                                       <pre className="whitespace-pre-wrap break-all font-mono text-[11px]">{formatManagedValue(change[side])}</pre>
                                     </div>
@@ -694,8 +662,7 @@ export function ClaudeDesktopDialog({
                       {preview.externalProfileCount > 0 && (
                         <p className="text-muted-foreground">{t("claudeDesktop.dialog.externalProfiles")}: {preview.externalProfileCount}</p>
                       )}
-                    </div>
-                  </details>
+                  </div>
                   {preview.warnings.filter(key => key !== "claudeDesktop.warnings.requiresRestart").map(key => (
                     <p
                       key={key}

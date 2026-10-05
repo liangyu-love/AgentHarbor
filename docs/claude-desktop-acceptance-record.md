@@ -2,6 +2,17 @@
 
 本记录对应 Claude Desktop 直连功能的实施验收，按[实施计划](../plan/claude-desktop-direct-integration-execution-plan.md)第 9.1 节（A01–A40）、第 9.3 节（L01–L10）与第 12 节编写。配套的用户说明见[直连配置说明](./claude-desktop-direct-connection.md)。
 
+## 1M 契约核对与控件精简（2026-10-05）
+
+- 本项目每个模型只生成一条 `inferenceModels`，不把 `[1m]` 写入中转模型 ID。CC Switch 与本机 Desktop 2.19675.0 的静态代码均确认 `supports1m` 的用途是追加 1M 菜单变体，Desktop picker 为同一项生成普通 ID 和带 `[1m]` 的 ID；`prefer1m` 只控制首项默认选择，未发现仅显示 1M 项的配置字段。
+- Desktop 下载的 SDK 2.1.286 标准会话请求静态路径在创建 Messages 请求前去除 `[1m]`/`[2m]`；该标记另参与 beta 与本地上下文计算。SDK 还区分原生 `native_1m` 与供应商识别，因此关闭额外菜单项不改变上游能力，但不能据此承诺 Desktop 普通项仍使用 1M 本地预算。模型在对话中的自述不能证明实际路由或模型身份。
+- 当前 Desktop 已支持将 `[1m]` 作为模型配置 shorthand；早期 CC Switch 调研文档的“不接受后缀”不能推广到当前版本。本项目仍用原始 ID + `supports1m` 对象字段，保持直连 ID 与中转配置的一致性，校验行为不变。
+- 1M 下拉改为单击复选框，保留 Auto/Off；没有有效能力时不能新开启，旧 Auto 可以取消。移除协议推断徽标；预览直接展示配置文件原值/新值，删除重复供应商/模型摘要。修正前端 fixture 的模型对象字段为真实后端的 `labelOverride`。
+
+最终 `pnpm test:frontend` exit 0（10 组契约、14 组 Desktop 行为回归），`pnpm exec tsc --noEmit` exit 0，宽/窄文件预览截图无溢出，修复复查和 `git diff --check` 通过。后端运行逻辑未变，仅更正一条模型 ID 校验注释；下文上一轮同一后端基线的 773 项 Rust 结果不冒充本轮重跑。Windows 产物重构建和隔离启动记录随本轮交付。
+
+本轮静态核对和前端 mock 没有写真实 Desktop 配置、控制真实 Desktop 进程或发送计费请求；出站结论限已定位的 SDK 标准路径，本轮未做 live 抓包。静态摘录与来源哈希保存在 `.runtime-test/desktop-onem-contract/`，先前真机及跨平台验收缺口仍按下文记录。
+
 ## 截图反馈修复（2026-10-05）
 
 本轮对应“重启后仍显示需要重启、只读预览要求退出、1M 菜单成对、预览未显示 Opus 4.7、重复说明过多”的反馈。只使用临时根与 mock 验证，没有改动用户真实 Desktop 或中转配置。

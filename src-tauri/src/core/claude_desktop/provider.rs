@@ -108,7 +108,7 @@ pub fn basic_model_id_error(model_id: &str) -> Option<&'static str> {
     if model_id.chars().any(char::is_whitespace) || model_id.trim() != model_id {
         return Some("whitespace");
     }
-    // Claude Code 的 1M 标记不是 Desktop 的语法；Desktop 用对象键 `supports1m`。
+    // 本工具保留中转原始 ID；1M 菜单变体通过 supports1m 表达，不将标记当上游 ID。
     if model_id.to_ascii_lowercase().contains("[1m]") {
         return Some("oneMMarker");
     }

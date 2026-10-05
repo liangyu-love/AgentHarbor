@@ -141,6 +141,9 @@ const previewFixture = {
       managedChanges: [{ path: "deploymentMode", before: "1p", after: "3p" }], note: null },
     { role: "thirdPartyConfig", path: THIRD_PARTY_ROOT + "/claude_desktop_config.json", kind: "create",
       managedChanges: [{ path: "deploymentMode", before: null, after: "3p" }], note: null },
+    { role: "profile", path: THIRD_PARTY_ROOT + "/configLibrary/profile.json", kind: "update",
+      managedChanges: [{ path: "inferenceModels", before: '["claude-opus-4-6"]', after: null },
+        { path: "inferenceGatewayApiKey", before: "<redacted>", after: "<redacted>" }], note: null },
   ],
   warnings: ["claudeDesktop.warnings.requiresRestart"],
   conflicts: [],
@@ -207,6 +210,18 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
           return { modelId: choice.modelId, label: choice.labelOverride ?? candidate?.label ?? choice.modelId,
             oneM: choice.oneMMode === "auto" && !!candidate?.supports1m };
         });
+        for (const file of preview.files) {
+          for (const change of file.managedChanges) {
+            if (change.path === "inferenceModels") {
+              change.after = JSON.stringify(preview.models.map(model => {
+                const value = { name: model.modelId };
+                if (model.label && model.label !== model.modelId) value.labelOverride = model.label;
+                if (model.oneM) value.supports1m = true;
+                return Object.keys(value).length === 1 ? model.modelId : value;
+              }));
+            }
+          }
+        }
         if (review.desktopHoldPreview) {
           return new Promise(resolve => review.desktopPreviewResolvers.push(() => resolve(preview)));
         }
@@ -499,7 +514,16 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
     assert.equal(await modelCheckbox(modelId).getAttribute("aria-checked"), "true", "saved choices must be checked");
     const row = dialog().locator("li").filter({ has: modelCheckbox(modelId) });
     assert.equal(await row.getByRole("textbox").inputValue(), "", "automatic labels must remain unpinned");
-    assert.equal((await row.getByRole("combobox").innerText()).trim(), ZH.oneMAuto, "saved Auto intent must survive opening");
+    assert.equal(await row.getByRole("checkbox", { name: "额外 1M 选项", exact: true }).getAttribute("aria-checked"), "true",
+      "saved Auto intent must survive opening");
+    if (modelId === SHORT_MODEL_ID) {
+      const legacyOneM = row.getByRole("checkbox", { name: "额外 1M 选项", exact: true });
+      assert.equal(await legacyOneM.isEnabled(), true, "an existing Auto choice stays cancellable when capability is unavailable");
+      await legacyOneM.click();
+      assert.equal(await legacyOneM.getAttribute("aria-checked"), "false");
+      assert.equal(await legacyOneM.isDisabled(), true, "after cancellation an unsupported choice cannot be newly enabled");
+      assert.equal(await legacyOneM.locator("..").getAttribute("title"), "请先在中转卡片确认 1M 上下文能力");
+    }
     await modelCheckbox(modelId).uncheck();
   }
   // The dialog also renders the rebaseline checkbox, so count the model checkboxes by id.
@@ -550,19 +574,25 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   assert.equal(await dialog().getByRole("button", { name: ZH.messagesCheck, exact: true }).isDisabled(), true);
   console.log("PASS every model checkbox is tabbable, labelled through htmlFor and toggled with Space");
 
-  // Select both models, then drive the 1M Select on the long row.
+  // Select both models, then click and keyboard-toggle the 1M checkbox on the long row.
   for (const modelId of modelIds) await modelCheckbox(modelId).check();
   assert.equal(await dialog().getByRole("button", { name: ZH.messagesCheck, exact: true }).isEnabled(), true);
   const longRow = dialog().locator("li").filter({ has: page.locator('[id="desktop-model-' + LONG_MODEL_ID + '"]') });
-  const oneM = longRow.getByRole("combobox");
-  assert.equal(await oneM.count(), 1, "a selected model must expose the 1M select");
+  const oneM = longRow.getByRole("checkbox", { name: "额外 1M 选项", exact: true });
+  assert.equal(await oneM.count(), 1, "a selected model must expose the 1M checkbox");
   assert.equal(await longRow.getByRole("textbox", { name: ZH.labelPlaceholder, exact: true }).getAttribute("maxlength"), "64");
-  assert.equal((await oneM.innerText()).trim(), ZH.oneMOff, "new choices must not add a duplicate 1M menu option by default");
+  assert.equal(await oneM.getAttribute("aria-checked"), "false", "new choices must not add a duplicate 1M menu option by default");
   assert.equal(await longRow.getByRole("textbox").inputValue(), "", "new automatic labels are placeholders, not overrides");
+  const shortRow = dialog().locator("li").filter({ has: modelCheckbox(SHORT_MODEL_ID) });
+  assert.equal(await shortRow.getByRole("checkbox", { name: "额外 1M 选项", exact: true }).isDisabled(), true,
+    "a new selection cannot offer an unsupported 1M variant");
   await oneM.click();
-  assert.deepEqual(await page.getByRole("option").allInnerTexts(), [ZH.oneMAuto, ZH.oneMOff]);
-  await page.getByRole("option", { name: ZH.oneMOff, exact: true }).click();
-  assert.equal((await oneM.innerText()).trim(), ZH.oneMOff);
+  assert.equal(await oneM.getAttribute("aria-checked"), "true", "a single click enables the 1M intent");
+  await oneM.focus();
+  await page.keyboard.press("Space");
+  assert.equal(await oneM.getAttribute("aria-checked"), "false", "Space toggles the labelled 1M checkbox off");
+  assert.equal(await dialog().getByRole("combobox").count(), 0, "a single installation and 1M controls must not require dropdowns");
+  assert.doesNotMatch(await dialog().innerText(), /协议由模型名称推断|未经上游验证/, "the protocol inference badge is omitted");
   if (captureDir) await page.screenshot({ path: path.join(captureDir, "claude-desktop-dialog.png"), animations: "disabled" });
 
   // 5. Busy state, preview request shape and the preview file cards.
@@ -578,14 +608,14 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   assert.equal(await dialog().locator('[role="status"]').filter({ hasText: ZH.busyHint }).count(), 1,
     "a busy dialog must say why its controls are locked");
   await page.evaluate(() => { window.review.desktopPreviewResolvers.shift()(); window.review.desktopHoldPreview = false; });
-  await dialog().locator("[data-desktop-preview-summary]").waitFor();
+  await dialog().locator("[data-desktop-preview-files]").waitFor();
   assert.equal(await fieldset.evaluate(node => node.disabled), false, "the fieldset must unlock when the request settles");
   assert.deepEqual(await page.evaluate(() => window.review.desktopCalls.preview[0]), {
     action: "applyDirect",
     request: {
       providerId: "group-a",
       models: [
-        // The long row was switched to "1M: off" through the select above.
+        // The long row was switched off through its checkbox above.
         { modelId: LONG_MODEL_ID, labelOverride: null, oneMMode: "off" },
         { modelId: SHORT_MODEL_ID, labelOverride: null, oneMMode: "off" },
       ],
@@ -593,11 +623,10 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
       rebaseline: false,
     },
   });
-  const summary = dialog().locator("[data-desktop-preview-summary]");
-  assert.match(await summary.innerText(), /Relay Alpha/);
-  for (const modelId of modelIds) assert.ok((await summary.innerText()).includes(modelId), "the selected model must appear in the preview");
-  assert.equal(await dialog().locator("[data-desktop-preview-files]").getAttribute("open"), null, "technical diffs stay collapsed");
-  await dialog().locator("[data-desktop-preview-files] > summary").click();
+  assert.equal(await dialog().locator("[data-desktop-preview-summary]").count(), 0, "preview must not duplicate provider and model summaries");
+  const modelAfter = dialog().locator('[data-desktop-managed-change="inferenceModels"] [data-desktop-change-side="after"] pre');
+  assert.deepEqual(JSON.parse(await modelAfter.innerText()), modelIds, "the file preview must show the actual selected IDs in inferenceModels after");
+  assert.equal(await modelAfter.isVisible(), true, "file changes are directly visible without expanding details");
   const previewCards = await dialog().evaluate(node => {
     const files = node.querySelector("[data-desktop-preview-files]")?.innerText ?? "";
     return { files, primary: files,
@@ -751,7 +780,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   await page.getByRole("option", { name: "C:/synthetic/Claude-Beta", exact: true }).click();
   assert.equal(await dialog().getByRole("button", { name: ZH.preview, exact: true }).isEnabled(), true);
   await dialog().getByRole("button", { name: ZH.preview, exact: true }).click();
-  await dialog().locator("[data-desktop-preview-summary]").waitFor();
+  await dialog().locator("[data-desktop-preview-files]").waitFor();
   assert.deepEqual(await page.evaluate(() => window.review.desktopCalls.preview.at(-1).request.paths),
     { normalRoot: "C:/synthetic/Claude-Beta", thirdPartyRoot: "C:/synthetic/Claude-Beta-3p" });
   await dialog().getByRole("button", { name: ZH.cancel, exact: true }).click();
@@ -823,25 +852,35 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   const opusRow = dialog().locator("li").filter({ has: modelCheckbox("claude-opus-4-7") });
   assert.equal(await opusRow.getByRole("textbox").inputValue(), "");
   assert.equal(await opusRow.getByRole("textbox").getAttribute("placeholder"), "Opus 4.7");
-  assert.equal((await opusRow.getByRole("combobox").innerText()).trim(), ZH.oneMOff);
+  const opusOneM = opusRow.getByRole("checkbox", { name: "额外 1M 选项", exact: true });
+  assert.equal(await opusOneM.getAttribute("aria-checked"), "false");
   await dialog().getByRole("button", { name: ZH.preview, exact: true }).click();
-  await dialog().locator("[data-desktop-preview-summary]").waitFor();
-  const opusPreview = dialog().locator("[data-desktop-preview-summary]");
-  assert.match(await opusPreview.innerText(), /Opus 4\.7[\s\S]*claude-opus-4-7/);
-  assert.doesNotMatch(await opusPreview.innerText(), /claude-opus-4-6/, "the old profile must not stand in for the new selection");
-  assert.doesNotMatch(await opusPreview.innerText(), /包含 1M 选项/, "ordinary selection should create one Desktop menu option");
+  await dialog().locator("[data-desktop-preview-files]").waitFor();
+  const opusPreview = dialog().locator("[data-desktop-preview-files]");
+  const opusAfter = opusPreview.locator('[data-desktop-managed-change="inferenceModels"] [data-desktop-change-side="after"] pre');
+  assert.deepEqual(JSON.parse(await opusAfter.innerText()), [{ name: "claude-opus-4-7", labelOverride: "Opus 4.7" }]);
+  assert.doesNotMatch(await opusAfter.innerText(), /claude-opus-4-6/, "the old profile must not stand in for the new selection");
+  assert.doesNotMatch(await opusAfter.innerText(), /supports1m/, "ordinary selection should create one Desktop menu option");
   assert.deepEqual(await page.evaluate(() => window.review.desktopCalls.preview.at(-1).request.models),
     [{ modelId: "claude-opus-4-7", labelOverride: null, oneMMode: "off" }]);
-  await opusRow.getByRole("combobox").click();
-  await page.getByRole("option", { name: ZH.oneMAuto, exact: true }).click();
+  await opusOneM.click();
   assert.equal(await opusPreview.count(), 0, "changing the 1M intent must invalidate its preview");
   await dialog().getByRole("button", { name: ZH.preview, exact: true }).click();
-  await opusPreview.getByText("包含 1M 选项", { exact: true }).waitFor();
+  await opusAfter.waitFor();
+  assert.deepEqual(JSON.parse(await opusAfter.innerText()), [{ name: "claude-opus-4-7", labelOverride: "Opus 4.7", supports1m: true }],
+    "the explicit checkbox enables the additional 1M variant in the actual new profile");
   assert.deepEqual(await page.evaluate(() => window.review.desktopCalls.preview.at(-1).request.models),
     [{ modelId: "claude-opus-4-7", labelOverride: null, oneMMode: "auto" }]);
   if (captureDir) {
-    await opusPreview.scrollIntoViewIfNeeded();
-    await page.screenshot({ path: path.join(captureDir, "claude-desktop-opus-preview.png"), animations: "disabled" });
+    for (const width of [1200, 480]) {
+      await page.setViewportSize({ width, height: 900 });
+      await opusPreview.scrollIntoViewIfNeeded();
+      const fit = await dialog().evaluate(node => ({ dialog: node.scrollWidth - node.clientWidth,
+        files: node.querySelector("[data-desktop-preview-files]").scrollWidth - node.querySelector("[data-desktop-preview-files]").clientWidth }));
+      assert.ok(fit.dialog <= 1 && fit.files <= 1, "file-only preview must fit at " + width + "px: " + JSON.stringify(fit));
+      await page.screenshot({ path: path.join(captureDir, "claude-desktop-opus-file-preview-" + width + ".png"), animations: "disabled" });
+    }
+    await page.setViewportSize({ width: 1200, height: 700 });
   }
   await page.evaluate(() => { window.review.desktopCommitFailure = "claudeDesktop.errors.desktopRunning"; });
   await dialog().getByRole("button", { name: ZH.apply, exact: true }).click();
@@ -849,7 +888,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   assert.equal(await dialog().getByRole("button", { name: ZH.preview, exact: true }).isEnabled(), true,
     "a failed commit consumes its ticket and must return to preview");
   assert.equal(await modelCheckbox("claude-opus-4-7").getAttribute("aria-checked"), "true", "failure must retain the selected model");
-  assert.equal((await opusRow.getByRole("combobox").innerText()).trim(), ZH.oneMAuto, "failure must retain the 1M intent");
+  assert.equal(await opusOneM.getAttribute("aria-checked"), "true", "failure must retain the 1M intent");
   await dialog().getByRole("button", { name: ZH.cancel, exact: true }).click();
   console.log("PASS a running Desktop allows Opus 4.7 preview, 1M is opt-in, and failed apply retains input with a fresh-preview action");
 
@@ -888,7 +927,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   assert.equal(await unavailable.count(), 0);
   await modelCheckbox("claude-opus-4-7").check();
   await dialog().getByRole("button", { name: ZH.preview, exact: true }).click();
-  await dialog().locator("[data-desktop-preview-summary]").waitFor();
+  await dialog().locator("[data-desktop-preview-files]").waitFor();
   assert.deepEqual(await page.evaluate(() => window.review.desktopCalls.preview.at(-1).request.models),
     [{ modelId: "claude-opus-4-7", labelOverride: null, oneMMode: "off" }],
     "after explicitly removing obsolete choices, only the new selected model is sent");
