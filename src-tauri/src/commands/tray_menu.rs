@@ -60,6 +60,6 @@ pub fn handle_tray_menu_event(app: &AppHandle, event_id: &str) {
     }
 
     if event_id == QUIT_ID {
-        app.exit(0);
+        crate::commands::desktop_exit::request_exit(app, crate::commands::desktop_exit::ExitIntent::Quit);
     }
 }

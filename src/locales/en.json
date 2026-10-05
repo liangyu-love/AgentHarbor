@@ -270,7 +270,15 @@
       "launchFailed": "Could not start Claude Desktop: {{0}}",
       "launchTimeout": "Starting Claude Desktop timed out; open it by hand to confirm.",
       "process": "Controlling the Claude Desktop process failed.",
-      "desktopRunning": "Fully quit Claude Desktop, including its tray process, before applying."
+      "desktopRunning": "Fully quit Claude Desktop, including its tray process, before applying.",
+      "noRoutesSelected": "Configure at least one role.",
+      "invalidRouteRole": "The selected role or menu alias is unavailable. Choose it again.",
+      "routeUnavailable": "This role’s provider or model is unavailable. Update its mapping.",
+      "unknownRouteAlias": "This model menu item has no mapping. Update the Claude Desktop role mappings.",
+      "route1mUnavailable": "This target does not support the extra 1M option.",
+      "routerReleaseBlocked": "Switch to direct or official mode, or restore the previous configuration, before releasing management.",
+      "listenerUnavailable": "The local router could not start. Check the port and retry.",
+      "providerDisabled": "This provider is disabled. Enable it on its card first."
     },
     "warnings": {
       "keepsEnterprise": "Enterprise inference and deployment policy in the config is preserved; it may override this profile.",
@@ -325,7 +333,8 @@
       "pendingRecovery": "Recover the unfinished transaction first.",
       "notManaged": "AgentHarbor is not managing Claude Desktop.",
       "providerMissing": "The referenced provider no longer exists.",
-      "noPending": "There is no unfinished transaction."
+      "noPending": "There is no unfinished transaction.",
+      "routerReleaseBlocked": "Switch to direct or official mode, or restore the previous configuration, before releasing management."
     },
     "actions": {
       "applyDirect": "Apply direct connection",
@@ -333,7 +342,8 @@
       "restorePrevious": "Restore the configuration from before takeover",
       "switchOfficial": "Switch to official mode",
       "release": "Release management",
-      "recoverRollback": "Recover the unfinished transaction"
+      "recoverRollback": "Recover the unfinished transaction",
+      "applyRouter": "Apply routing"
     },
     "card": {
       "hintUnmanaged": "Choose a relay card and models to get started.",
@@ -364,7 +374,7 @@
       "launchTimeout": "Starting Claude Desktop timed out; open it by hand to confirm."
     },
     "dialog": {
-      "title": "Configure Claude Desktop direct connection",
+      "title": "Configure Claude Desktop",
       "description": "Choose a relay card and models, then preview the configuration.",
       "stepProvider": "Relay card",
       "stepModels": "Models",
@@ -431,8 +441,8 @@
       "modelsCheckLabel": "Model list",
       "messagesCheckLabel": "Messages request",
       "providerDisabledBadge": "Outside routing pool",
-      "reapplyTitle": "Re-apply the direct configuration?",
-      "reapplyDescription": "Update the direct configuration with the card's current address and inference key and your saved model settings. The original restoration point is preserved.",
+      "reapplyTitle": "Reapply configuration?",
+      "reapplyDescription": "Update the saved mode and model settings while keeping the original restore point.",
       "needPaths": "Choose the Claude Desktop configuration location first."
     },
     "banner": {
@@ -458,7 +468,10 @@
       "context": "Model context capability changed",
       "paths": "Configuration location changed",
       "drift": "Managed configuration was changed externally",
-      "unknown": "Configuration needs verification"
+      "unknown": "Configuration needs verification",
+      "routes": "Role targets changed",
+      "protocol": "Model protocol changed",
+      "gateway": "Local gateway needs recovery"
     },
     "fileRoles": {
       "normalConfig": "Normal configuration",
@@ -471,6 +484,37 @@
       "update": "Update",
       "delete": "Delete",
       "noop": "No change"
+    },
+    "modeRouter": "AgentHarbor routing",
+    "routing": {
+      "modeLabel": "Connection mode",
+      "modeDirect": "Direct",
+      "modeRouter": "Routing",
+      "listenerNotReady": "Gateway not ready",
+      "stepRoutes": "Role mappings",
+      "unconfigured": "Not configured",
+      "providerForRole": "{{role}} provider",
+      "modelForRole": "{{role}} model",
+      "labelForRole": "{{role}} display name",
+      "chooseProvider": "Choose a provider",
+      "chooseModel": "Choose a model",
+      "providerDisabled": "Disabled",
+      "noKey": "Missing inference key",
+      "unavailable": "Unavailable",
+      "oneMUnavailable": "Turn off the extra 1M option or choose a Messages model that supports 1M.",
+      "noProviders": "No saved providers are available for routing.",
+      "needRoute": "Configure at least one role.",
+      "needValidRoutes": "Complete each selected role’s provider and model.",
+      "rotateToken": "Rotate local gateway key"
+    },
+    "exit": {
+      "quitTitle": "Restore Claude Desktop before quitting?",
+      "restartTitle": "Restore Claude Desktop before restarting?",
+      "description": "Claude Desktop is using the local router. Stop Desktop and restore its previous configuration before exiting.",
+      "background": "Keep running in background",
+      "stopAndExit": "Stop Desktop, restore and quit",
+      "stopAndRestart": "Stop Desktop, restore and restart",
+      "restoring": "Stopping and restoring"
     }
   },
   "newapi": {
@@ -1017,7 +1061,11 @@
       "fallback": "Shared fallback",
       "unknown": "Not declared",
       "contextLimit": "Constrained by manual context limit"
-    }
+    },
+    "routeSourceLabel": "Client source",
+    "routeSourceAll": "All sources",
+    "routeSourceOther": "Other / unrecorded",
+    "routeSourceUnknown": "Unrecorded"
   },
   "avatar": {
     "title": "App avatar",
@@ -1850,6 +1898,10 @@
   },
   "update": {
     "title": "Update Available",
+    "readyTitle": "Update installed",
+    "readyDescription": "Restart AgentHarbor to use the update.",
+    "restartNow": "Restart now",
+    "restartLater": "Restart later",
     "checkTitle": "Check for Updates",
     "checking": "Checking for updates...",
     "downloading": "Downloading",

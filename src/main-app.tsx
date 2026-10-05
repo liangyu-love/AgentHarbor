@@ -106,6 +106,7 @@ function MainApp() {
     update.status === "available" ||
     update.status === "downloading" ||
     update.status === "installing" ||
+    update.status === "ready" ||
     update.status === "error";
 
   const installLocationPrompt = useInstallLocationPrompt();
@@ -289,7 +290,7 @@ function MainApp() {
       <InstallLocationPromptDialog prompt={installLocationPrompt} />
       {showUpdateOverlay && !installLocationPrompt.open && (
         <UpdateOverlay
-          status={update.status as "checking" | "available" | "downloading" | "installing" | "error"}
+          status={update.status as "checking" | "available" | "downloading" | "installing" | "ready" | "error"}
           currentVersion={update.updateInfo?.currentVersion ?? "0.0.0"}
           newVersion={update.updateInfo?.version}
           body={update.updateInfo?.body}

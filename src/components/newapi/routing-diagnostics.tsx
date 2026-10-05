@@ -63,6 +63,7 @@ export function RoutingDiagnostics({
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const [source, setSource] = useState("all");
   const [compressionValue, setCompressionValue] = useState("");
   const query = useQuery({
     queryKey: ["route-diagnostics"],
@@ -74,6 +75,8 @@ export function RoutingDiagnostics({
     compression.mode === "tokens" || compression.mode === "clientDefault"
       ? compression.mode
       : "percent";
+  const visibleRoutes = query.data?.filter(route => source === "all" ||
+    (source === "claudeDesktop" ? route.clientSource === "claudeDesktop" : route.clientSource !== "claudeDesktop"));
   const currentValue =
     compression.mode === "tokens"
       ? String(compression.tokens)
@@ -200,6 +203,14 @@ export function RoutingDiagnostics({
             <p className="text-muted-foreground/90 leading-relaxed max-w-xl">
               {t("newapi.tracePrivacy")}
             </p>
+            <Select value={source} onValueChange={setSource}>
+              <SelectTrigger className="h-8 w-40 text-xs" aria-label={t("newapi.routeSourceLabel")}><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{t("newapi.routeSourceAll")}</SelectItem>
+                <SelectItem value="claudeDesktop">Claude Desktop</SelectItem>
+                <SelectItem value="other">{t("newapi.routeSourceOther")}</SelectItem>
+              </SelectContent>
+            </Select>
             <Button
               size="sm"
               variant="outline"
@@ -227,7 +238,7 @@ export function RoutingDiagnostics({
             </div>
           )}
 
-          {!query.isLoading && query.data?.length === 0 && (
+          {!query.isLoading && visibleRoutes?.length === 0 && (
             <div className="rounded-xl border border-dashed border-border/70 p-8 text-center text-muted-foreground">
               <Activity className="mx-auto h-8 w-8 opacity-40 mb-2" />
               <p className="text-xs font-medium">{t("newapi.traceEmpty")}</p>
@@ -236,7 +247,7 @@ export function RoutingDiagnostics({
 
           {/* Trace Items List */}
           <div className="max-h-[32rem] space-y-2.5 overflow-y-auto pr-0.5">
-            {query.data?.map((route) => {
+            {visibleRoutes?.map((route) => {
               const state =
                 route.error || (route.status != null && route.status >= 400)
                   ? "failed"
@@ -276,7 +287,9 @@ export function RoutingDiagnostics({
 
                       <span className="font-mono font-bold text-foreground">
                         {route.requestedModel || "—"}
+                        {route.resolvedModel && route.resolvedModel !== route.requestedModel && ` → ${route.resolvedModel}`}
                       </span>
+                      {route.clientSource === "claudeDesktop" && <Badge variant="outline">Claude Desktop</Badge>}
 
                       <span className="rounded bg-muted px-1.5 py-0 font-mono text-[10px] text-muted-foreground">
                         HTTP {route.status ?? "—"}

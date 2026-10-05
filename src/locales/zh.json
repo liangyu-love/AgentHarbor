@@ -270,7 +270,15 @@
       "launchFailed": "启动 Claude Desktop 失败：{{0}}",
       "launchTimeout": "启动 Claude Desktop 超时，请手动打开确认。",
       "process": "操作 Claude Desktop 进程失败。",
-      "desktopRunning": "请完全退出 Claude Desktop（包括托盘进程）后应用。"
+      "desktopRunning": "请完全退出 Claude Desktop（包括托盘进程）后应用。",
+      "noRoutesSelected": "请配置至少一个角色。",
+      "invalidRouteRole": "所选角色或菜单名称不可用，请重新选择。",
+      "routeUnavailable": "该角色的中转卡片或模型不可用，请更新映射。",
+      "unknownRouteAlias": "这个模型菜单项未配置，请更新 Claude Desktop 的角色映射。",
+      "route1mUnavailable": "该目标不支持额外 1M 选项。",
+      "routerReleaseBlocked": "请先切换直连、官方模式或恢复接管前配置，再释放管理。",
+      "listenerUnavailable": "本地路由无法启动，请检查端口后重试。",
+      "providerDisabled": "该中转卡片未启用，请先在卡片上启用。"
     },
     "warnings": {
       "keepsEnterprise": "配置中的企业推理与部署策略会被保留，并可能覆盖本次配置。",
@@ -325,7 +333,8 @@
       "pendingRecovery": "请先恢复未完成的事务。",
       "notManaged": "AgentHarbor 未托管 Claude Desktop。",
       "providerMissing": "引用的供应商已不存在。",
-      "noPending": "没有未完成的事务。"
+      "noPending": "没有未完成的事务。",
+      "routerReleaseBlocked": "请先切换直连、官方模式或恢复接管前配置，再释放管理。"
     },
     "actions": {
       "applyDirect": "应用直连",
@@ -333,7 +342,8 @@
       "restorePrevious": "恢复接管前配置",
       "switchOfficial": "切换官方模式",
       "release": "释放管理",
-      "recoverRollback": "恢复未完成的事务"
+      "recoverRollback": "恢复未完成的事务",
+      "applyRouter": "应用路由"
     },
     "card": {
       "hintUnmanaged": "选择中转卡片和模型开始配置。",
@@ -364,7 +374,7 @@
       "launchTimeout": "启动 Claude Desktop 超时，请手动打开确认。"
     },
     "dialog": {
-      "title": "配置 Claude Desktop 直连",
+      "title": "配置 Claude Desktop",
       "description": "选择中转卡片、模型并预览配置。",
       "stepProvider": "中转卡片",
       "stepModels": "模型",
@@ -431,8 +441,8 @@
       "modelsCheckLabel": "模型列表",
       "messagesCheckLabel": "Messages 请求",
       "providerDisabledBadge": "未加入路由池",
-      "reapplyTitle": "重新应用直连配置？",
-      "reapplyDescription": "使用当前卡片的地址、推理密钥与上次保存的模型设置更新直连配置，接管前的还原点保持不变。",
+      "reapplyTitle": "重新应用配置？",
+      "reapplyDescription": "按已保存的模式与模型设置更新配置，接管前的还原点保持不变。",
       "needPaths": "请先选择 Claude Desktop 的配置位置。"
     },
     "banner": {
@@ -458,7 +468,10 @@
       "context": "模型上下文能力已变化",
       "paths": "配置位置已变化",
       "drift": "受管配置被外部修改",
-      "unknown": "配置需要核对"
+      "unknown": "配置需要核对",
+      "routes": "角色目标已变化",
+      "protocol": "模型协议已变化",
+      "gateway": "本地网关需要恢复"
     },
     "fileRoles": {
       "normalConfig": "常规配置",
@@ -471,6 +484,37 @@
       "update": "更新",
       "delete": "删除",
       "noop": "无改动"
+    },
+    "modeRouter": "AgentHarbor 路由",
+    "routing": {
+      "modeLabel": "连接模式",
+      "modeDirect": "直连",
+      "modeRouter": "路由",
+      "listenerNotReady": "网关未就绪",
+      "stepRoutes": "角色映射",
+      "unconfigured": "未配置",
+      "providerForRole": "{{role}} 中转卡片",
+      "modelForRole": "{{role}} 模型",
+      "labelForRole": "{{role}} 显示名称",
+      "chooseProvider": "选择中转卡片",
+      "chooseModel": "选择模型",
+      "providerDisabled": "未启用",
+      "noKey": "缺少推理密钥",
+      "unavailable": "不可用",
+      "oneMUnavailable": "请关闭额外 1M 选项或选择支持 1M 的 Messages 模型。",
+      "noProviders": "没有可用于路由的中转卡片。",
+      "needRoute": "请配置至少一个角色。",
+      "needValidRoutes": "请完成角色的卡片和模型选择。",
+      "rotateToken": "更新本地网关密钥"
+    },
+    "exit": {
+      "quitTitle": "退出前恢复 Claude Desktop？",
+      "restartTitle": "重启前恢复 Claude Desktop？",
+      "description": "Claude Desktop 正在使用本地路由。停止 Desktop 并恢复接管前配置后，即可退出。",
+      "background": "保持后台运行",
+      "stopAndExit": "停止 Desktop 并恢复退出",
+      "stopAndRestart": "停止 Desktop 并恢复重启",
+      "restoring": "正在停止并恢复"
     }
   },
   "newapi": {
@@ -1017,7 +1061,11 @@
       "fallback": "通用兜底",
       "unknown": "未声明",
       "contextLimit": "受手动上下文上限约束"
-    }
+    },
+    "routeSourceLabel": "客户端来源",
+    "routeSourceAll": "全部来源",
+    "routeSourceOther": "其他 / 未记录",
+    "routeSourceUnknown": "未记录"
   },
   "avatar": {
     "title": "应用头像",
@@ -1850,6 +1898,10 @@
   },
   "update": {
     "title": "发现新版本",
+    "readyTitle": "更新已安装",
+    "readyDescription": "重启 AgentHarbor 后生效。",
+    "restartNow": "立即重启",
+    "restartLater": "稍后重启",
     "checkTitle": "检查更新",
     "checking": "正在检查更新...",
     "downloading": "正在下载",

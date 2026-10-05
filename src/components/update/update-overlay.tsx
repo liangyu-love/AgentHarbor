@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
 interface UpdateOverlayProps {
-  status: "checking" | "available" | "downloading" | "installing" | "error";
+  status: "checking" | "available" | "downloading" | "installing" | "ready" | "error";
   currentVersion: string;
   newVersion: string | undefined;
   body: string | null | undefined;
@@ -44,7 +44,7 @@ export function UpdateOverlay({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm dark:bg-black/40">
       <div className="w-full max-w-md rounded-2xl border border-border bg-card p-8 shadow-2xl">
         <h2 className="text-xl font-bold">
-          {status === "error" ? t("update.checkTitle") : t("update.title")}
+          {status === "error" ? t("update.checkTitle") : status === "ready" ? t("update.readyTitle") : t("update.title")}
         </h2>
 
         {status === "checking" && (
@@ -56,7 +56,7 @@ export function UpdateOverlay({
 
         {(status === "available" ||
           status === "downloading" ||
-          status === "installing") && (
+          status === "installing" || status === "ready") && (
           <div className="mt-5 space-y-5">
             <div className="flex items-center gap-3 text-sm">
               <span className="rounded-xl bg-muted px-2.5 py-1  text-muted-foreground">
@@ -105,6 +105,15 @@ export function UpdateOverlay({
                 <Download className="h-4 w-4" />
                 {t("update.installAndRestart")}
               </Button>
+            )}
+            {status === "ready" && (
+              <div className="space-y-2">
+                <p className="text-sm text-muted-foreground">{t("update.readyDescription")}</p>
+                <Button className="w-full" onClick={onInstall}>
+                  <RotateCw className="h-4 w-4" />{t("update.restartNow")}
+                </Button>
+                <Button variant="ghost" className="w-full" onClick={onSkip}>{t("update.restartLater")}</Button>
+              </div>
             )}
           </div>
         )}

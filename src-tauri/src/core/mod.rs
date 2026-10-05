@@ -11,6 +11,7 @@ pub mod claude_desktop;
 pub mod client_config;
 pub mod codex_config;
 pub mod custom_instructions;
+pub mod desktop_exit;
 pub mod local_usage;
 pub mod mcp;
 pub mod model_catalog;

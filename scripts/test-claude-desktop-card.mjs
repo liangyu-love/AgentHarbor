@@ -31,7 +31,7 @@ const ZH = {
   conflictReason: "请先解决冲突或按当前状态重新接管。",
   needModels: "请至少选择一个模型。",
   busyHint: "正在处理，请稍候。",
-  dialogTitle: "配置 Claude Desktop 直连",
+  dialogTitle: "配置 Claude Desktop",
   providerDisabled: "该卡片未加入路由池；直连不要求启用它，本次选择也不会启用。",
   noInferenceKey: "该卡片没有推理密钥；请先在卡片上补充，余额 token 不能作为推理凭据。",
   labelPlaceholder: "显示名称（可选）",
@@ -44,8 +44,8 @@ const ZH = {
   confirm: "确认",
   restoreTitle: "恢复接管前的配置？",
   restoreDescription: "将撤回 AgentHarbor 写入的部署模式和配置，并恢复之前的生效配置选择；外部配置与无关键都会保留。",
-  reapplyTitle: "重新应用直连配置？",
-  reapplyDescription: "使用当前卡片的地址、推理密钥与上次保存的模型设置更新直连配置，接管前的还原点保持不变。",
+  reapplyTitle: "重新应用配置？",
+  reapplyDescription: "按已保存的模式与模型设置更新配置，接管前的还原点保持不变。",
   externalProfiles: "保留的外部配置",
   previewRestart: "应用后请完全退出并重新启动 Claude Desktop。",
 };
@@ -92,6 +92,7 @@ const statusFixture = {
   launchMethod: null,
   actions: [
     { action: "applyDirect", enabled: true, disabledReason: null },
+    { action: "applyRouter", enabled: true, disabledReason: null },
     { action: "reapply", enabled: true, disabledReason: null },
     { action: "restorePrevious", enabled: true, disabledReason: null },
     { action: "switchOfficial", enabled: false, disabledReason: "claudeDesktop.actionReasons.conflict" },
@@ -184,7 +185,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
     review.desktopPreview = fixture.preview;
     review.desktopApplied = fixture.applied;
     review.desktopProbe = fixture.probe;
-    review.desktopCalls = { status: 0, candidates: [], preview: [], commit: [], probe: [], restart: 0, other: [] };
+    review.desktopCalls = { status: 0, candidates: [], preview: [], commit: [], probe: [], cancelPreview: [], restart: 0, other: [] };
     review.desktopHoldPreview = false;
     review.desktopPreviewResolvers = [];
     review.desktopPreviewFailure = null;
@@ -202,10 +203,18 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
         review.desktopCalls.preview.push(clone(args));
         if (review.desktopPreviewFailure) throw review.desktopPreviewFailure;
         const preview = clone(review.desktopPreview);
+        preview.action = args.action;
+        preview.router = args.action === "applyRouter"
+          ? { boundPort: 43127, routeRevision: 2, gatewayTokenVersion: 1, listenerReady: true } : null;
         const provider = review.desktopCandidates.providers.find(entry => entry.providerId === args.request.providerId);
         preview.providerName = provider?.name ?? preview.providerName;
         preview.messagesUrl = provider?.endpoint?.messagesUrl ?? preview.messagesUrl;
-        preview.models = (args.request.models ?? []).map(choice => {
+        preview.models = args.action === "applyRouter" ? (args.request.routes ?? []).map(choice => {
+          const target = review.desktopCandidates.routeProviders.find(entry => entry.providerId === choice.providerId);
+          const candidate = target?.models.find(entry => entry.modelId === choice.modelId);
+          return { modelId: choice.roleAlias, label: choice.labelOverride ?? `${target?.name} · ${candidate?.label ?? choice.modelId}`,
+            oneM: choice.oneMMode === "auto" && !!candidate?.supports1m };
+        }) : (args.request.models ?? []).map(choice => {
           const candidate = provider?.models.find(entry => entry.modelId === choice.modelId);
           return { modelId: choice.modelId, label: choice.labelOverride ?? candidate?.label ?? choice.modelId,
             oneM: choice.oneMMode === "auto" && !!candidate?.supports1m };
@@ -230,8 +239,23 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
       if (command === "commit_claude_desktop_change") {
         review.desktopCalls.commit.push(clone(args));
         if (review.desktopCommitFailure) throw review.desktopCommitFailure;
+        if (args.action === "applyRouter") {
+          Object.assign(review.desktopStatus, { mode: "router", managementState: "managed", isManaged: true,
+            staleReasons: [], conflicts: [], providerMissing: false, providerId: null, providerName: null,
+            modelChoices: [], routeChoices: clone(args.request.routes),
+            routeViews: args.request.routes.map(choice => {
+              const target = review.desktopCandidates.routeProviders.find(entry => entry.providerId === choice.providerId);
+              const candidate = target?.models.find(entry => entry.modelId === choice.modelId);
+              return { ...choice, providerName: target?.name, label: choice.labelOverride ?? candidate?.label,
+                oneM: choice.oneMMode === "auto", protocol: candidate?.protocol, available: true, reason: null };
+            }), router: { boundPort: 43127, routeRevision: 2, gatewayTokenVersion: 1, listenerReady: true }, restartRequired: true,
+            restartCapable: true, appRunning: false });
+          review.desktopStatus.actions.find(entry => entry.action === "release").enabled = false;
+          review.desktopStatus.actions.find(entry => entry.action === "release").disabledReason = "claudeDesktop.actionReasons.routerReleaseBlocked";
+        }
         return clone(review.desktopApplied);
       }
+      if (command === "cancel_claude_desktop_preview") { review.desktopCalls.cancelPreview.push(args.revision); return; }
       if (command === "probe_claude_desktop_provider") {
         review.desktopCalls.probe.push(clone(args));
         if (review.desktopProbeFailure) throw review.desktopProbeFailure;
@@ -248,6 +272,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
       }
       if (command === "restart_claude_desktop") {
         review.desktopCalls.restart++;
+        if (review.desktopRestartFailure) throw review.desktopRestartFailure;
         review.desktopStatus.restartRequired = false;
         review.desktopStatus.warnings = review.desktopStatus.warnings.filter(key => key !== "claudeDesktop.warnings.requiresRestart");
         review.desktopStatus.appRunning = true;
@@ -471,7 +496,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
           labelTruncated: label ? label.scrollWidth > label.clientWidth : null };
       }) : [],
       fieldsetDisabled: Boolean(fieldset?.disabled),
-      providerButtons: [...node.querySelectorAll("button[aria-pressed]")].map(button => ({ text: button.innerText.trim().split("\n")[0],
+      providerButtons: [...node.querySelectorAll("button[data-desktop-provider-choice]")].map(button => ({ text: button.innerText.trim().split("\n")[0],
         pressed: button.getAttribute("aria-pressed"), disabled: button.disabled })),
       messagesCheckDisabled: buttonNamed("Messages")?.disabled ?? null,
       probeDisabled: buttonNamed("Bearer")?.disabled ?? null,
@@ -933,6 +958,300 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
     "after explicitly removing obsolete choices, only the new selected model is sent");
   await dialog().getByRole("button", { name: ZH.cancel, exact: true }).click();
   console.log("PASS removed and excluded saved models remain visible with their original intent and can be replaced explicitly");
+
+  // R-A02/03/04/10/19/22: map roles explicitly, retaining existing cards and one profile preview.
+  await page.evaluate(() => {
+    const review = window.review;
+    const candidate = (providerId, name, models, eligible = true) => ({ providerId, name, models, enabled: eligible,
+      hasInferenceKey: true, eligible, reason: eligible ? null : "provider_disabled", endpoint: null });
+    const model = (modelId, protocol, supports1m = false, selectable = true) => ({ modelId, label: modelId,
+      displayName: modelId, protocol, protocolSource: "catalog", protocolVerified: true, included: selectable,
+      supports1m, contextWindow: supports1m ? 1_000_000 : 200_000, contextSource: "catalog", selectable,
+      excludeReason: selectable ? null : "model_not_included" });
+    review.desktopCandidates.routeProviders = [
+      candidate("route-chat", "Chat Relay", [model("deepseek-chat", "chatCompletions", true), model("excluded-model", "chatCompletions", false, false)]),
+      candidate("route-messages", "Messages Relay", [model("claude-opus-4-7", "anthropicMessages", true)]),
+      candidate("route-responses", "Responses Relay", [model("gpt-5", "responses", true)]),
+      candidate("route-disabled", "Disabled Relay", [model("disabled-model", "anthropicMessages")], false),
+    ];
+    review.desktopCandidates.routeRoles = [
+      { role: "sonnet", roleAlias: "claude-sonnet-4-6" }, { role: "opus", roleAlias: "claude-opus-4-7" },
+      { role: "haiku", roleAlias: "claude-haiku-4-5" },
+    ];
+    review.desktopStatus.routeChoices = [];
+    review.desktopCandidates.pathCandidates = review.desktopCandidates.pathCandidates.slice(0, 1);
+  });
+  const stateBeforeRoutes = await page.evaluate(() => structuredClone(window.review.getState()));
+  await actionButton(ZH.change).click();
+  await dialog().getByRole("button", { name: "路由", exact: true }).click();
+  const roleRow = role => dialog().locator(`[data-desktop-route-role="${role}"]`);
+  const pick = async (role, field, option) => {
+    await roleRow(role).getByRole("combobox", { name: `${role} ${field === "provider" ? "中转卡片" : "模型"}`, exact: true }).click();
+    await page.getByRole("option", { name: option, exact: true }).click();
+  };
+  assert.equal(await dialog().getByText("未配置", { exact: true }).count(), 6,
+    "all roles remain visibly empty until the user assigns them");
+  assert.equal(await dialog().getByRole("button", { name: ZH.preview, exact: true }).isDisabled(), true);
+  await roleRow("sonnet").getByRole("combobox", { name: "sonnet 中转卡片", exact: true }).click();
+  assert.equal(await page.getByRole("option", { name: "Disabled Relay · 未启用", exact: true }).getAttribute("aria-disabled"), "true");
+  await page.getByRole("option", { name: "Chat Relay", exact: true }).click();
+  await roleRow("sonnet").getByRole("combobox", { name: "sonnet 模型", exact: true }).click();
+  assert.equal(await page.getByRole("option", { name: "excluded-model · 不可用", exact: true }).getAttribute("aria-disabled"), "true");
+  await page.getByRole("option", { name: "deepseek-chat", exact: true }).click();
+  assert.equal(await roleRow("sonnet").getByRole("checkbox", { name: "额外 1M 选项", exact: true }).isDisabled(), true,
+    "a million-token Chat target cannot opt into cross-protocol 1M");
+  await pick("opus", "provider", "Responses Relay");
+  await pick("opus", "model", "gpt-5");
+  assert.equal(await roleRow("opus").getByRole("checkbox", { name: "额外 1M 选项", exact: true }).isDisabled(), true);
+  await pick("opus", "provider", "Messages Relay");
+  await pick("opus", "model", "claude-opus-4-7");
+  const opusRouteOneM = roleRow("opus").getByRole("checkbox", { name: "额外 1M 选项", exact: true });
+  assert.equal(await opusRouteOneM.getAttribute("aria-checked"), "false");
+  assert.equal(await tabTo("desktop-route-opus-onem"), true, "role 1M toggle remains keyboard reachable");
+  await page.keyboard.press("Space");
+  await roleRow("sonnet").getByRole("textbox", { name: "sonnet 显示名称", exact: true }).fill("我的 Chat");
+  await dialog().getByRole("checkbox", { name: "更新本地网关密钥", exact: true }).check();
+  await dialog().getByRole("button", { name: ZH.preview, exact: true }).click();
+  const routeFiles = dialog().locator("[data-desktop-preview-files]");
+  await routeFiles.waitFor();
+  const routeRequest = await page.evaluate(() => window.review.desktopCalls.preview.at(-1));
+  assert.deepEqual(routeRequest, { action: "applyRouter", request: { routes: [
+    { role: "sonnet", roleAlias: "claude-sonnet-4-6", providerId: "route-chat", modelId: "deepseek-chat", labelOverride: "我的 Chat", oneMMode: "off" },
+    { role: "opus", roleAlias: "claude-opus-4-7", providerId: "route-messages", modelId: "claude-opus-4-7", labelOverride: null, oneMMode: "auto" },
+  ], rotateGatewayToken: true, paths: { normalRoot: NORMAL_ROOT, thirdPartyRoot: THIRD_PARTY_ROOT }, rebaseline: false } });
+  const roleProfile = JSON.parse(await routeFiles.locator('[data-desktop-managed-change="inferenceModels"] [data-desktop-change-side="after"] pre').innerText());
+  assert.deepEqual(roleProfile, [{ name: "claude-sonnet-4-6", labelOverride: "我的 Chat" },
+    { name: "claude-opus-4-7", labelOverride: "Messages Relay · claude-opus-4-7", supports1m: true }]);
+  assert.equal(roleProfile.some(model => model.name === "deepseek-chat"), false);
+  assert.equal(await dialog().locator("[data-desktop-preview-models]").count(), 0);
+  assert.equal(await dialog().getByRole("button", { name: ZH.messagesCheck, exact: true }).count(), 0,
+    "routing previews must not offer a direct-only upstream probe");
+  assert.doesNotMatch(JSON.stringify(routeRequest), /apiKey|accessToken|gatewayToken"/);
+  assert.deepEqual(await page.evaluate(() => window.review.getState()), stateBeforeRoutes,
+    "choosing role targets cannot enable cards or change the global router/default model");
+  console.log("PASS routing explicitly maps different saved cards with empty roles, safe aliases, opt-in native 1M and no provider mutation");
+
+  await page.evaluate(async () => {
+    window.review.desktopCandidates.routeProviders.push({ providerId: "unrelated", name: "Unrelated", models: [], enabled: false, hasInferenceKey: false, eligible: false, reason: "provider_disabled", endpoint: null });
+    await window.review.providersClient.invalidateQueries({ queryKey: ["claude-desktop", "candidates"] });
+  });
+  assert.equal(await routeFiles.count(), 1, "unrelated candidate updates must retain the current route file preview");
+  await page.evaluate(async () => {
+    window.review.desktopCandidates.routeProviders.find(provider => provider.providerId === "route-messages").models[0].label = "Opus updated";
+    await window.review.providersClient.invalidateQueries({ queryKey: ["claude-desktop", "candidates"] });
+  });
+  await routeFiles.waitFor({ state: "hidden" });
+  await page.waitForFunction(() => window.review.desktopCalls.cancelPreview.length > 0);
+  await dialog().getByRole("button", { name: ZH.preview, exact: true }).click();
+  await routeFiles.waitFor();
+  {
+    for (const theme of ["light", "dark"]) {
+      await page.evaluate(value => document.documentElement.classList.toggle("dark", value === "dark"), theme);
+      for (const width of [1200, 390]) {
+        await page.setViewportSize({ width, height: 900 });
+        await dialog().locator("[data-desktop-route-mapping]").scrollIntoViewIfNeeded();
+        const overflow = await dialog().evaluate(node => ({ outer: node.scrollWidth - node.clientWidth,
+          mapping: node.querySelector("[data-desktop-route-mapping]").scrollWidth - node.querySelector("[data-desktop-route-mapping]").clientWidth }));
+        assert.ok(overflow.outer <= 1 && overflow.mapping <= 1, "routing controls overflow: " + JSON.stringify({ width, theme, overflow }));
+        if (captureDir) await page.screenshot({ path: path.join(captureDir, `claude-desktop-routing-${width}-${theme}.png`), animations: "disabled" });
+      }
+    }
+    await page.setViewportSize({ width: 1200, height: 700 });
+    await page.evaluate(() => document.documentElement.classList.remove("dark"));
+  }
+  await page.evaluate(() => { window.review.desktopCommitFailure = "claudeDesktop.errors.previewExpired"; });
+  await dialog().getByRole("button", { name: ZH.apply, exact: true }).click();
+  await dialog().getByRole("alert").filter({ hasText: "该预览已过期" }).waitFor();
+  assert.equal(await roleRow("sonnet").getByRole("textbox").inputValue(), "我的 Chat");
+  assert.equal(await opusRouteOneM.getAttribute("aria-checked"), "true");
+  await page.evaluate(() => { window.review.desktopCommitFailure = null; });
+  await dialog().getByRole("button", { name: ZH.preview, exact: true }).click();
+  await routeFiles.waitFor();
+  await dialog().getByRole("button", { name: ZH.apply, exact: true }).click();
+  await dialog().waitFor({ state: "hidden" });
+  await card().getByText("AgentHarbor 路由", { exact: true }).waitFor();
+  assert.equal(await card().getByText("网关未就绪", { exact: true }).count(), 0,
+    "a ready listener must not add a normal-state warning");
+  await page.evaluate(async () => {
+    window.review.desktopStatus.router.listenerReady = false;
+    await window.review.providersClient.invalidateQueries({ queryKey: ["claude-desktop", "status"] });
+  });
+  await card().getByText("网关未就绪", { exact: true }).waitFor();
+  assert.equal(await card().getByText("已配置", { exact: true }).count(), 1,
+    "listener availability is independent of the saved configuration state");
+  assert.equal(await card().getByText("需重新应用", { exact: true }).count(), 0,
+    "a listener outage alone must not claim the profile needs reapplying");
+  await page.evaluate(async () => {
+    window.review.desktopStatus.router.listenerReady = true;
+    await window.review.providersClient.invalidateQueries({ queryKey: ["claude-desktop", "status"] });
+  });
+  await card().getByText("网关未就绪", { exact: true }).waitFor({ state: "hidden" });
+  assert.match(await card().locator("[data-desktop-route-targets]").innerText(), /Chat Relay · deepseek-chat[\s\S]*Messages Relay · claude-opus-4-7/);
+  assert.equal(await actionButton(ZH.release).isDisabled(), true, "localhost routing must restore before releasing management");
+  await actionButton(ZH.reapply).click();
+  await confirm.getByRole("button", { name: ZH.confirm, exact: true }).click();
+  await confirm.waitFor({ state: "hidden" });
+  assert.deepEqual(await page.evaluate(() => window.review.desktopCalls.preview.at(-1).request.routes), routeRequest.request.routes,
+    "router reapply preserves role choices even without a single direct provider");
+  await page.evaluate(() => { window.review.desktopRestartFailure = "claudeDesktop.errors.processStopTimeout"; });
+  await actionButton(ZH.restart).click();
+  await card().getByRole("alert").filter({ hasText: "无法结束 Claude Desktop" }).waitFor();
+  assert.equal(await actionButton(ZH.restart).isEnabled(), true);
+  assert.equal(await card().getByText(ZH.requiresRestart, { exact: true }).count(), 1);
+  await page.evaluate(() => { window.review.desktopRestartFailure = null; });
+  await actionButton(ZH.restart).click();
+  await card().getByText(ZH.requiresRestart, { exact: true }).waitFor({ state: "hidden" });
+  console.log("PASS routing previews release temporary leases, retain input after expired tickets, show actual targets and retry restart failures");
+
+  await actionButton(ZH.change).click();
+  assert.equal(await dialog().getByRole("button", { name: "路由", exact: true }).getAttribute("aria-pressed"), "true");
+  await dialog().getByRole("button", { name: ZH.preview, exact: true }).click();
+  await routeFiles.waitFor();
+  const cancelledBefore = await page.evaluate(() => window.review.desktopCalls.cancelPreview.length);
+  await dialog().getByRole("button", { name: "直连", exact: true }).click();
+  await routeFiles.waitFor({ state: "hidden" });
+  await page.waitForFunction(before => window.review.desktopCalls.cancelPreview.length > before, cancelledBefore);
+  await dialog().getByRole("button", { name: ZH.cancel, exact: true }).click();
+  console.log("PASS switching a routing form back to direct explicitly cancels its preview");
+
+  // R-A14: the global exit dialog recovers early requests and delegates every action to the coordinator.
+  await page.evaluate(() => {
+    window.review.mount("mcp");
+    const review = window.review;
+    let nextId = 0;
+    const callbacks = new Map();
+    review.desktopExitRequest = { intent: "quit" };
+    review.desktopExitCalls = [];
+    review.desktopExitFailure = null;
+    review.desktopExitUnlisten = 0;
+    window.__TAURI_INTERNALS__.transformCallback = callback => { const id = ++nextId; callbacks.set(id, callback); return id; };
+    window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      if (command === "plugin:event|listen") { review.desktopExitHandler = args.handler; return 1; }
+      if (command === "plugin:event|unlisten") { review.desktopExitUnlisten++; return; }
+      if (command === "get_claude_desktop_exit_request") {
+        const snapshot = structuredClone(review.desktopExitRequest);
+        if (review.desktopExitHoldQuery) return new Promise(resolve => { review.desktopExitQueryResolver = () => resolve(snapshot); });
+        return snapshot;
+      }
+      if (command === "resolve_claude_desktop_exit") {
+        review.desktopExitCalls.push(args.decision);
+        if (review.desktopExitFailure) throw review.desktopExitFailure;
+        review.desktopExitRequest = null;
+        return;
+      }
+      throw new Error("unexpected command in exit suite: " + command);
+    };
+    review.emitDesktopExit = request => {
+      review.desktopExitRequest = request;
+      callbacks.get(review.desktopExitHandler)({ event: "claude-desktop-exit-required", id: 1, payload: request });
+    };
+  });
+  await page.evaluate(() => window.review.mount("desktop-exit"));
+  const exit = page.locator("[data-desktop-exit-dialog]");
+  await exit.getByRole("heading", { name: "退出前恢复 Claude Desktop？", exact: true }).waitFor();
+  await exit.getByRole("button", { name: "保持后台运行", exact: true }).click();
+  await exit.waitFor({ state: "hidden" });
+  assert.deepEqual(await page.evaluate(() => window.review.desktopExitCalls), ["background"]);
+  await page.evaluate(() => window.review.emitDesktopExit({ intent: "restart" }));
+  await exit.getByRole("heading", { name: "重启前恢复 Claude Desktop？", exact: true }).waitFor();
+  await page.evaluate(() => { window.review.desktopExitFailure = "claudeDesktop.errors.processStopTimeout"; });
+  await exit.getByRole("button", { name: "停止 Desktop 并恢复重启", exact: true }).click();
+  await exit.getByRole("alert").filter({ hasText: "无法结束 Claude Desktop" }).waitFor();
+  assert.equal(await exit.getByRole("button", { name: "停止 Desktop 并恢复重启", exact: true }).isEnabled(), true);
+  await page.evaluate(() => { window.review.desktopExitFailure = null; });
+  await exit.getByRole("button", { name: "停止 Desktop 并恢复重启", exact: true }).click();
+  await exit.waitFor({ state: "hidden" });
+  assert.deepEqual(await page.evaluate(() => window.review.desktopExitCalls), ["background", "stopAndExit", "stopAndExit"]);
+  await page.evaluate(() => window.review.mount("mcp"));
+  await page.waitForFunction(() => window.review.desktopExitUnlisten === 1);
+  await page.evaluate(() => {
+    window.review.desktopExitRequest = { intent: "quit" };
+    window.review.desktopExitHoldQuery = true;
+    window.review.mount("desktop-exit");
+  });
+  await page.waitForFunction(() => !!window.review.desktopExitQueryResolver);
+  await page.evaluate(() => {
+    window.review.emitDesktopExit({ intent: "restart" });
+    window.review.desktopExitQueryResolver();
+    window.review.desktopExitHoldQuery = false;
+  });
+  await exit.getByRole("heading", { name: "重启前恢复 Claude Desktop？", exact: true }).waitFor();
+  assert.equal(await exit.getByRole("heading", { name: "退出前恢复 Claude Desktop？", exact: true }).count(), 0,
+    "a late startup query cannot overwrite a newer restart event");
+  await exit.getByRole("button", { name: "保持后台运行", exact: true }).click();
+  await exit.waitFor({ state: "hidden" });
+  await page.evaluate(() => window.review.mount("mcp"));
+  await page.waitForFunction(() => window.review.desktopExitUnlisten === 2);
+  console.log("PASS full exit honors background choice, preserves restart intent on failure, retries and cleans its listener");
+
+  // The updater can install once, keep the gateway in the background and restart later without reinstalling.
+  await page.evaluate(() => {
+    const review = window.review;
+    let nextId = 0;
+    const callbacks = new Map();
+    const events = new Map();
+    review.updaterCalls = { checks: 0, installs: 0, restarts: 0, decisions: [] };
+    review.desktopExitRequest = null;
+    window.__TAURI_INTERNALS__.transformCallback = callback => { const id = ++nextId; callbacks.set(id, callback); return id; };
+    window.__TAURI_INTERNALS__.unregisterCallback = id => callbacks.delete(id);
+    window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: event => events.delete(event) };
+    const emit = (event, payload) => callbacks.get(events.get(event))?.({ event, id: 1, payload });
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      if (command === "plugin:event|listen") { events.set(args.event, args.handler); return args.handler; }
+      if (command === "plugin:event|unlisten") return;
+      if (command === "get_claude_desktop_exit_request") return review.desktopExitRequest;
+      if (command === "is_updater_configured") return true;
+      if (command === "plugin:updater|check") {
+        review.updaterCalls.checks++;
+        return { rid: 1, currentVersion: "1.0.0", version: "1.0.1", body: null, rawJson: {} };
+      }
+      if (command === "check_update_installability") return { canInstall: true };
+      if (command === "plugin:updater|download_and_install") {
+        review.updaterCalls.installs++;
+        args.onEvent.onmessage({ event: "Started", data: { contentLength: 100 } });
+        args.onEvent.onmessage({ event: "Progress", data: { chunkLength: 100 } });
+        args.onEvent.onmessage({ event: "Finished" });
+        return;
+      }
+      if (command === "graceful_restart_for_update") {
+        review.updaterCalls.restarts++;
+        review.desktopExitRequest = { intent: "restart" };
+        emit("claude-desktop-exit-required", review.desktopExitRequest);
+        return;
+      }
+      if (command === "resolve_claude_desktop_exit") {
+        review.updaterCalls.decisions.push(args.decision);
+        const intent = review.desktopExitRequest.intent;
+        review.desktopExitRequest = null;
+        if (args.decision === "background") emit("claude-desktop-exit-cancelled", { intent, error: null });
+        return;
+      }
+      if (command === "plugin:resources|close") return;
+      throw new Error("unexpected updater mock command: " + command);
+    };
+    review.mount("desktop-updater");
+  });
+  await page.getByRole("button", { name: "立即更新并重启", exact: true }).waitFor();
+  await page.getByRole("button", { name: "立即更新并重启", exact: true }).click();
+  await exit.getByRole("heading", { name: "重启前恢复 Claude Desktop？", exact: true }).waitFor();
+  await exit.getByRole("button", { name: "保持后台运行", exact: true }).click();
+  await exit.waitFor({ state: "hidden" });
+  await page.waitForFunction(() => document.querySelector("[data-updater-status]")?.textContent === "idle");
+  assert.equal(await page.getByText("更新已安装", { exact: true }).count(), 0,
+    "keeping the gateway in the background dismisses the completed update overlay");
+  await page.getByRole("button", { name: "检查测试更新", exact: true }).click();
+  await page.getByRole("heading", { name: "更新已安装", exact: true }).waitFor();
+  await page.getByRole("button", { name: "稍后重启", exact: true }).click();
+  await page.getByRole("button", { name: "检查测试更新", exact: true }).click();
+  await page.getByRole("button", { name: "立即重启", exact: true }).click();
+  await exit.getByRole("button", { name: "停止 Desktop 并恢复重启", exact: true }).click();
+  await exit.waitFor({ state: "hidden" });
+  assert.deepEqual(await page.evaluate(() => window.review.updaterCalls),
+    { checks: 1, installs: 1, restarts: 2, decisions: ["background", "stopAndExit"] },
+    "a ready update must request only the coordinated restart without downloading or installing twice");
+  await page.evaluate(() => window.review.mount("mcp"));
+  console.log("PASS an installed update supports background cancellation and a later coordinated restart without reinstalling");
 
   await page.evaluate(() => { delete window.__TAURI_INTERNALS__.invoke; });
   await page.setViewportSize({ width: 1200, height: 700 });

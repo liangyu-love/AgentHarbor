@@ -14,10 +14,13 @@ const read = relative => readFileSync(path.join(root, relative), "utf8");
 
 const CARD = "src/components/newapi/claude-desktop-config-card.tsx";
 const DIALOG = "src/components/newapi/claude-desktop-config-dialog.tsx";
+const MAPPING = "src/components/newapi/claude-desktop-route-mapping.tsx";
+const EXIT_DIALOG = "src/components/newapi/claude-desktop-router-exit-dialog.tsx";
 const TYPES = "src/types/claude-desktop.ts";
 const LIB = "src/lib/claude-desktop.ts";
 const QUERY_KEYS = "src/lib/query-keys.ts";
 const COMMANDS_FILE = "src-tauri/src/commands/claude_desktop.rs";
+const EXIT_COMMANDS_FILE = "src-tauri/src/commands/desktop_exit.rs";
 const RUST_DIR = "src-tauri/src/core/claude_desktop";
 const RUST_TYPES = RUST_DIR + "/types.rs";
 const LIB_RS = "src-tauri/src/lib.rs";
@@ -25,9 +28,10 @@ const LIB_RS = "src-tauri/src/lib.rs";
 // Tauri commands of the feature, in registration order.
 const COMMANDS = ["get_claude_desktop_status", "list_claude_desktop_candidates",
   "restart_claude_desktop",
+  "cancel_claude_desktop_preview", "get_claude_desktop_exit_request", "resolve_claude_desktop_exit",
   "preview_claude_desktop_change", "commit_claude_desktop_change", "probe_claude_desktop_provider"];
 // Enum values the UI interpolates into locale keys at runtime.
-const ACTIONS = ["applyDirect", "reapply", "restorePrevious", "switchOfficial", "release", "recoverRollback"];
+const ACTIONS = ["applyDirect", "applyRouter", "reapply", "restorePrevious", "switchOfficial", "release", "recoverRollback"];
 const STATES = ["managed", "unmanaged", "stale", "orphaned", "conflict", "recoveryRequired"];
 const PROBE_STATUSES = ["notChecked", "modelsAccessible", "authRejected", "endpointUnavailable",
   "networkFailed", "invalidResponse", "rateLimited"];
@@ -54,6 +58,12 @@ const DTO_PAIRS = {
   ManagedModelView: "ClaudeDesktopManagedModel",
   DesktopError: "ClaudeDesktopError",
   DesktopActionView: "ClaudeDesktopActionView",
+  DesktopRouteRole: "ClaudeDesktopRouteRoleView",
+  DesktopRouteChoice: "ClaudeDesktopRouteChoice",
+  DesktopRouteView: "ClaudeDesktopRouteView",
+  DesktopRouterView: "ClaudeDesktopRouterSummary",
+  DesktopRestartResult: "ClaudeDesktopRestartResult",
+  ActionRequest: "ClaudeDesktopActionRequest",
 };
 
 const group = (name, body) => {
@@ -116,6 +126,8 @@ group("locales: zh leaves contain CJK unless they are allow-listed product nouns
 const SOURCES = [
   { label: CARD, text: read(CARD) },
   { label: DIALOG, text: read(DIALOG) },
+  { label: MAPPING, text: read(MAPPING) },
+  { label: EXIT_DIALOG, text: read(EXIT_DIALOG) },
   ...readdirSync(path.join(root, RUST_DIR)).filter(name => name.endsWith(".rs")).sort()
     .map(name => ({ label: RUST_DIR + "/" + name, text: read(RUST_DIR + "/" + name) })),
 ];
@@ -179,6 +191,9 @@ group("errors: every Rust reason/error code resolves to a camelCase locale key",
 group("DTOs: every Rust DTO field appears in the matching TS interface", () => {
   const structs = fieldsOf(read(RUST_TYPES), /pub struct (\w+)\s*\{([\s\S]*?)\n\}/g);
   const interfaces = fieldsOf(read(TYPES), /export interface (\w+)[^{]*\{([\s\S]*?)\n\}/g);
+  for (const [, name, parent] of read(TYPES).matchAll(/export interface (\w+) extends (\w+)/g)) {
+    interfaces.set(name, [...(interfaces.get(parent) ?? []), ...(interfaces.get(name) ?? [])]);
+  }
   const problems = [];
   for (const [structName, interfaceName] of Object.entries(DTO_PAIRS)) {
     const rustFields = structs.get(structName);
@@ -192,13 +207,13 @@ group("DTOs: every Rust DTO field appears in the matching TS interface", () => {
 });
 
 group("commands: every Desktop Tauri command is declared, registered and invoked by name", () => {
-  const declared = [...read(COMMANDS_FILE).matchAll(/pub async fn (\w+)/g)].map(match => match[1]);
+  const declared = [...(read(COMMANDS_FILE) + read(EXIT_COMMANDS_FILE)).matchAll(/pub (?:async )?fn (\w+)/g)].map(match => match[1]);
   const undeclared = COMMANDS.filter(name => !declared.includes(name));
   assertEmpty(undeclared, COMMANDS_FILE + " does not declare");
 
   const handler = read(LIB_RS).match(/generate_handler!\[([\s\S]*?)\n\s*\]/);
   assert.ok(handler, "no generate_handler! [ ... ] list found in " + LIB_RS);
-  const registered = [...handler[1].matchAll(/commands::claude_desktop::(\w+)/g)].map(match => match[1]);
+  const registered = [...handler[1].matchAll(/commands::(?:claude_desktop|desktop_exit)::(\w+)/g)].map(match => match[1]);
   assertEmpty(registered.slice().sort().filter((name, index, all) => all.indexOf(name) === index)
     .filter(name => !COMMANDS.includes(name)).concat(COMMANDS.filter(name => !registered.includes(name))),
   LIB_RS + " registers");
@@ -211,7 +226,7 @@ group("commands: every Desktop Tauri command is declared, registered and invoked
 group("secrets: no key material and no provider credential fields in the Desktop flow", () => {
   const offenders = [];
   for (const [key, value] of [...zh, ...en]) if (SECRET.test(value)) offenders.push(key + " looks like an API key");
-  for (const file of [TYPES, LIB, CARD, DIALOG]) {
+  for (const file of [TYPES, LIB, CARD, DIALOG, MAPPING, EXIT_DIALOG]) {
     const text = read(file);
     if (SECRET.test(text)) offenders.push(file + " contains a hard-coded API key");
     const hit = text.match(PROVIDER_KEY_FIELDS);

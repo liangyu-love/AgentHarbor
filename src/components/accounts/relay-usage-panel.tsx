@@ -108,8 +108,19 @@ function RelayTrend({ relay }: { relay: RelayUsagePayload }) {
 
 function RelayRequests({ relay }: { relay: RelayUsagePayload }) {
   const { t } = useTranslation();
+  const [source, setSource] = useState("all");
+  const records = relay.recent.filter(record => source === "all" ||
+    (source === "claudeDesktop" ? record.clientSource === "claudeDesktop" : record.clientSource !== "claudeDesktop"));
   if (!relay.recent.length) return <p className="usage-empty-state">{t("accounts.relayEmpty")}</p>;
   return <div className="usage-request-scroll">
+    <label className="flex items-center gap-2 px-2 pb-2 text-xs">
+      {t("newapi.routeSourceLabel")}
+      <select aria-label={t("newapi.routeSourceLabel")} className="rounded-md border bg-background px-2 py-1" value={source} onChange={event => setSource(event.target.value)}>
+        <option value="all">{t("newapi.routeSourceAll")}</option>
+        <option value="claudeDesktop">Claude Desktop</option>
+        <option value="other">{t("newapi.routeSourceOther")}</option>
+      </select>
+    </label>
     <p className="px-2 pb-2 text-[11px] text-muted-foreground">{t("accounts.relayDetailRetention")}</p>
     <table className="usage-request-table">
       <thead><tr>
@@ -118,10 +129,13 @@ function RelayRequests({ relay }: { relay: RelayUsagePayload }) {
         <th>{t("accounts.costColumn")}</th><th>{t("accounts.timingColumn")}</th>
         <th>{t("accounts.statusColumn")}</th><th>{t("accounts.sourceColumn")}</th><th>{t("accounts.timeColumn")}</th>
       </tr></thead>
-      <tbody>{relay.recent.map((record, index) => <tr key={`${record.timestamp}-${record.providerId}-${index}`}>
+      <tbody>{records.map((record, index) => <tr key={`${record.timestamp}-${record.providerId}-${index}`}>
         <td className="font-medium" title={record.providerName}>{record.providerName}</td>
         <td className="font-mono" title={record.model}>
           {record.model || "—"}
+          {record.clientSource === "claudeDesktop" && <small className="block text-[10px] text-muted-foreground">
+            {record.requestedModel || "—"} → {record.resolvedModel || record.model}
+          </small>}
           <small className="block text-[10px] text-muted-foreground">
             {t("accounts.relayServedModel")}: {record.modelObservation?.servedModel ?? "—"}
             {" · "}{t("accounts.relayModelStatus." + (record.modelObservation?.modelMatchStatus || "unknown"))}
@@ -155,10 +169,11 @@ function RelayRequests({ relay }: { relay: RelayUsagePayload }) {
         </td>
         <td className="font-mono"><strong>{record.durationMs} ms</strong><small>{t("accounts.firstTokenShort")} {record.firstTokenMs == null ? "—" : `${record.firstTokenMs} ms`}</small></td>
         <td><span className={cn("usage-request-status", record.success ? "is-good" : "is-error")}>{record.statusCode}</span></td>
-        <td><span className="usage-request-source">{t("accounts.relaySource")}</span></td>
+        <td><span className="usage-request-source">{record.clientSource === "claudeDesktop" ? "Claude Desktop" : t("newapi.routeSourceUnknown")}</span></td>
         <td className="whitespace-nowrap">{new Date(record.timestamp * 1000).toLocaleString()}</td>
       </tr>)}</tbody>
     </table>
+    {records.length === 0 && <p className="usage-empty-state">{t("accounts.relayEmpty")}</p>}
   </div>;
 }
 

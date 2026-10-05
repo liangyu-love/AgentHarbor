@@ -3,6 +3,7 @@ pub mod auto_switch;
 pub mod claude_desktop;
 pub mod client_config;
 pub mod custom_instructions;
+pub mod desktop_exit;
 pub mod hotspot;
 pub mod image;
 pub mod mcp;

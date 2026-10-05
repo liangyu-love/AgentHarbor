@@ -167,6 +167,9 @@ export interface RouteDiagnostic {
   id: string;
   timestamp: number;
   requestedModel: string;
+  clientSource?: string | null;
+  resolvedModel?: string | null;
+  routeRevision?: number | null;
   requested: Record<string, string | number>;
   attempts: RouteAttempt[];
   stage: string;

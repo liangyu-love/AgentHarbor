@@ -21,6 +21,7 @@ import {
 import { queryKeys } from "@/lib/query-keys";
 import type { ClaudeDesktopActionRequest, ClaudeDesktopStatus, DesktopAction } from "@/types/claude-desktop";
 import type { NewApiProvider } from "@/types/newapi";
+import { desktopProtocolLabel } from "./claude-desktop-route-mapping";
 
 const STATUS_KEY = queryKeys.claudeDesktopStatus;
 const CANDIDATES_KEY = queryKeys.claudeDesktopCandidates;
@@ -65,6 +66,10 @@ const FLAG_KEYS: Record<string, string> = {
   drift: "claudeDesktop.flags.drift",
   paths: "claudeDesktop.flags.paths",
   pointerMovedExternally: "claudeDesktop.errors.pointerMovedExternally",
+  routes: "claudeDesktop.flags.routes",
+  route: "claudeDesktop.flags.routes",
+  protocol: "claudeDesktop.flags.protocol",
+  gateway: "claudeDesktop.flags.gateway",
 };
 
 const modeKey = (status: ClaudeDesktopStatus) => {
@@ -75,6 +80,8 @@ const modeKey = (status: ClaudeDesktopStatus) => {
       return "claudeDesktop.modeForeignThirdParty";
     case "direct":
       return "claudeDesktop.modeDirect";
+    case "router":
+      return "claudeDesktop.modeRouter";
     default:
       return "claudeDesktop.modeUnknown";
   }
@@ -117,7 +124,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
     if (!data) return null;
     if (data.pendingRecovery) return t("claudeDesktop.actionReasons.pendingRecovery");
     if (!hasSavedCards) return t("claudeDesktop.card.emptyProviders");
-    const configure = actionOf("applyDirect");
+    const configure = actionOf("applyDirect")?.enabled ? actionOf("applyDirect") : actionOf("applyRouter");
     return !configure?.enabled && configure?.disabledReason ? t(configure.disabledReason) : null;
   })();
 
@@ -128,10 +135,10 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
   }));
 
   const sessionRequest = (): ClaudeDesktopActionRequest | null => {
-    if (!data?.providerId) return null;
+    if (!data || (data.mode !== "router" && !data.providerId)) return null;
     return {
-      providerId: data.providerId,
-      models: savedModelChoices,
+      ...(data.mode === "router" ? { routes: data.routeChoices ?? [] }
+        : { providerId: data.providerId, models: savedModelChoices }),
       paths: data.paths
         ? { normalRoot: data.paths.normalRoot, thirdPartyRoot: data.paths.thirdPartyRoot }
         : {},
@@ -223,6 +230,11 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
               <Badge variant="outline" className="text-xs">
                 {t(modeKey(data))}
               </Badge>
+              {data.mode === "router" && data.router?.listenerReady === false && (
+                <Badge variant="destructive" className="text-xs" role="status">
+                  {t("claudeDesktop.routing.listenerNotReady")}
+                </Badge>
+              )}
               {data.detection.version !== "unknown" && (
                 <span className="text-xs tabular-nums text-muted-foreground">
                   v{data.detection.version}
@@ -236,16 +248,28 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
             </div>
 
             {/* 供应商与模型是这张卡片的主信息。 */}
-            <p data-desktop-provider className="break-words text-sm font-medium">
+            {data.mode !== "router" && <p data-desktop-provider className="break-words text-sm font-medium">
               {data.isManaged
                 ? data.providerName ?? "—"
                 : t("claudeDesktop.card.hintUnmanaged")}
-            </p>
+            </p>}
 
-            {data.models.length > 0 && (
+            {data.mode !== "router" && data.models.length > 0 && (
               <p data-desktop-models className="break-words font-mono text-xs text-muted-foreground">
                 {data.models.map(model => model.modelId).join(" · ")}
               </p>
+            )}
+            {data.mode === "router" && (data.routeViews ?? []).length > 0 && (
+              <ul data-desktop-route-targets className="space-y-1.5">
+                {(data.routeViews ?? []).map(route => (
+                  <li key={route.role} className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
+                    <span className="w-12 shrink-0 capitalize text-muted-foreground">{route.role}</span>
+                    <span className="min-w-0 break-all font-medium">{route.providerName} · {route.modelId}</span>
+                    <span className="text-[10px] text-muted-foreground">{desktopProtocolLabel(route.protocol)}</span>
+                    {!route.available && <span className="text-destructive">{t("claudeDesktop.routing.unavailable")}</span>}
+                  </li>
+                ))}
+              </ul>
             )}
 
             {/* 未完成事务优先于一切：它阻止其它写操作。 */}
@@ -291,6 +315,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
                   {data.paths && (
                     <p data-desktop-config-path className="break-all font-mono">{data.paths.normalConfig}</p>
                   )}
+                  {data.router && <p className="font-mono">127.0.0.1:{data.router.boundPort}</p>}
                   <p>
                     {data.lastAppliedAt
                       ? `${t("claudeDesktop.card.lastApplied")}: ${new Date(data.lastAppliedAt * 1000).toLocaleString()}`
@@ -326,7 +351,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
                 <Button
                   size="sm"
                   variant={data.isManaged ? "outline" : "default"}
-                  disabled={busy || !hasSavedCards || !actionOf("applyDirect")?.enabled}
+                  disabled={busy || !hasSavedCards || (!actionOf("applyDirect")?.enabled && !actionOf("applyRouter")?.enabled)}
                   onClick={openDialog}
                 >
                   <Settings2 className="h-3.5 w-3.5" />
@@ -395,6 +420,8 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
           candidatesRevision={candidates.dataUpdatedAt}
           initialProviderId={data?.providerId ?? null}
           initialModelChoices={savedModelChoices}
+          initialMode={data?.mode === "router" ? "router" : "direct"}
+          initialRouteChoices={data?.routeChoices ?? []}
           availableActions={(data?.actions ?? []).filter(view => view.enabled).map(view => view.action)}
           onClose={() => setDialog(false)}
           onApplied={refresh}

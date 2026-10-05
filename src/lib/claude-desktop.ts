@@ -5,6 +5,7 @@ import type {
   ClaudeDesktopRestartResult,
   ClaudeDesktopCandidates,
   ClaudeDesktopError,
+  ClaudeDesktopExitRequest,
   ClaudeDesktopPathsChoice,
   ClaudeDesktopPreview,
   ClaudeDesktopProbeRequest,
@@ -70,7 +71,7 @@ export function desktopPathsChoice(choice: ClaudeDesktopPathsChoice): ClaudeDesk
 /**
  * Desktop 状态、候选与操作。
  *
- * 这些调用**不会**启动或停止本地路由进程，也不会修改供应商的
+ * 路由预览准备共享 listener；所有模式都不修改供应商的
  * enabled / 默认模型 / 协议。
  */
 export const claudeDesktopApi = {
@@ -81,6 +82,7 @@ export const claudeDesktopApi = {
     }),
   preview: (action: DesktopAction, request: ClaudeDesktopActionRequest) =>
     invokeDesktop<ClaudeDesktopPreview>("preview_claude_desktop_change", { action, request }),
+  cancelPreview: (revision: string) => invokeDesktop<void>("cancel_claude_desktop_preview", { revision }),
   commit: (action: DesktopAction, revision: string, request: ClaudeDesktopActionRequest) =>
     invokeDesktop<ClaudeDesktopApplied>("commit_claude_desktop_change", {
       action,
@@ -91,6 +93,9 @@ export const claudeDesktopApi = {
     invokeDesktop<ClaudeDesktopProbeOutcome>("probe_claude_desktop_provider", { request }),
   /** 先完全退出 Claude Desktop 再启动，让刚写入的配置立即生效。 */
   restart: () => invokeDesktop<ClaudeDesktopRestartResult>("restart_claude_desktop"),
+  exitRequest: () => invokeDesktop<ClaudeDesktopExitRequest | null>("get_claude_desktop_exit_request"),
+  resolveExit: (decision: "background" | "stopAndExit") =>
+    invokeDesktop<void>("resolve_claude_desktop_exit", { decision }),
 };
 
 async function invokeDesktop<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {

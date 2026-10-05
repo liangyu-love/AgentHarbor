@@ -273,31 +273,7 @@ fn get_windows_os_version() -> Option<String> {
 
 #[tauri::command]
 pub fn graceful_restart_for_update(app: tauri::AppHandle) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        let bundle = exe
-            .parent()
-            .and_then(|p| p.parent())
-            .and_then(|p| p.parent())
-            .ok_or_else(|| "cannot resolve app bundle path".to_string())?;
-        let bundle_str = bundle.to_string_lossy().to_string();
-
-        std::process::Command::new("sh")
-            .arg("-c")
-            .arg(format!("sleep 1 && open \"{}\"", bundle_str))
-            .spawn()
-            .map_err(|e| e.to_string())?;
-
-        app.exit(0);
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        app.restart();
-    }
-
-    #[allow(unreachable_code)]
+    super::desktop_exit::request_exit(&app, super::desktop_exit::ExitIntent::Restart);
     Ok(())
 }
 

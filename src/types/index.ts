@@ -347,6 +347,10 @@ export interface RelayUsageDay {
 }
 
 export interface RelayUsageRecord {
+  clientSource?: string | null;
+  requestedModel?: string | null;
+  resolvedModel?: string | null;
+  routeRevision?: number | null;
   schemaVersion?: number;
   requestId?: string;
   attemptId?: string;

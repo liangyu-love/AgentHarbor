@@ -172,4 +172,47 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   assert.equal(await usage.evaluate(element => element.scrollWidth <= element.clientWidth), true, "pricing coverage must wrap within the model panel");
   await page.setViewportSize({ width: 1200, height: 700 });
   console.log("PASS seven-day costs and partial/unknown coverage survive summaries, trends, merged model views and narrow screens");
+
+  await reset("access");
+  await page.evaluate(() => { window.review.desktopDiagnostics = true; });
+  const desktopRoutes = page.getByRole("region", { name: "请求级路由诊断" });
+  await desktopRoutes.getByRole("button", { name: "请求级路由诊断", exact: true }).click();
+  await desktopRoutes.getByText("claude-sonnet-4-6 → deepseek-fixture", { exact: true }).waitFor();
+  assert.equal(await desktopRoutes.locator("summary").count(), 2);
+  await desktopRoutes.getByRole("combobox", { name: "客户端来源" }).click();
+  await page.getByRole("option", { name: "Claude Desktop", exact: true }).click();
+  await desktopRoutes.getByText("claude-sonnet-4-6 → deepseek-fixture", { exact: true }).waitFor();
+  assert.equal(await desktopRoutes.locator("summary").count(), 1);
+  assert.match(await desktopRoutes.locator("summary").innerText(), /claude-sonnet-4-6 → deepseek-fixture/);
+  await desktopRoutes.getByRole("combobox", { name: "客户端来源" }).click();
+  await page.getByRole("option", { name: "其他 / 未记录", exact: true }).click();
+  await desktopRoutes.getByText("relay::claude-opus-5-5-kiro", { exact: true }).waitFor();
+  assert.equal(await desktopRoutes.locator("summary").count(), 1);
+  assert.match(await desktopRoutes.locator("summary").innerText(), /relay::claude-opus-5-5-kiro/);
+
+  await reset("usage");
+  await page.evaluate(() => {
+    const base = { timestamp: 1790000000, date: "2026-10-05", providerId: "fixture", providerName: "Relay Fixture",
+      model: "deepseek-fixture", protocol: "chatCompletions", statusCode: 200, durationMs: 20, success: true,
+      usageReported: true, inputTokens: 3, outputTokens: 4, totalTokens: 7, reasoningTokens: 0,
+      cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, pricingStatus: "priced", pricingSource: "override", catalogRevision: "fixture" };
+    window.review.relayPatch = { recent: [base, { ...base, timestamp: 1790000001, clientSource: "claudeDesktop",
+      requestedModel: "claude-sonnet-4-6", resolvedModel: "deepseek-fixture", routeRevision: 3 }] };
+    window.review.mount("usage");
+  });
+  const desktopUsage = page.locator(".usage-relay-panel");
+  await desktopUsage.getByRole("tab", { name: "请求明细" }).click();
+  await desktopUsage.locator("tbody tr").nth(1).waitFor();
+  assert.equal(await desktopUsage.locator("tbody tr").count(), 2);
+  await desktopUsage.getByLabel("客户端来源", { exact: true }).selectOption("claudeDesktop");
+  await desktopUsage.getByText("claude-sonnet-4-6 → deepseek-fixture", { exact: true }).waitFor();
+  assert.equal(await desktopUsage.locator("tbody tr").count(), 1);
+  assert.match(await desktopUsage.locator("tbody tr").innerText(), /claude-sonnet-4-6 → deepseek-fixture/);
+  assert.match(await desktopUsage.locator("tbody tr").innerText(), /Claude Desktop/);
+  assert.match(await desktopUsage.locator("tbody tr").innerText(), /\$0/);
+  await desktopUsage.getByLabel("客户端来源", { exact: true }).selectOption("other");
+  await desktopUsage.getByText("未记录", { exact: true }).waitFor();
+  assert.equal(await desktopUsage.locator("tbody tr").count(), 1);
+  assert.match(await desktopUsage.locator("tbody tr").innerText(), /未记录/);
+  console.log("PASS Desktop diagnostics and usage filter client source while retaining alias, actual billing model and zero cost");
 }

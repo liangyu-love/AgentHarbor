@@ -62,6 +62,7 @@ pub fn run() {
         .manage(Mutex::new(repository))
         .manage(core::account_login::LoginManager::default())
         .manage(commands::hotspot::WindowRevealState::default())
+        .manage(commands::desktop_exit::ExitCoordinator::default())
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
                 let win = window.clone();
@@ -81,11 +82,21 @@ pub fn run() {
                 if let Ok(paths) = paths {
                     let reconciliation_paths = paths.clone();
                     tauri::async_runtime::spawn(async move {
-                        let _guard = core::routing_runtime::mutation_guard().await;
-                        if let Err(error) =
-                            core::routing_runtime::reconcile_on_startup(&reconciliation_paths).await
                         {
-                            eprintln!("[AgentHarbor] local router startup failed: {error}");
+                            let _guard = core::routing_runtime::mutation_guard().await;
+                            if let Err(error) =
+                                core::routing_runtime::reconcile_on_startup(&reconciliation_paths)
+                                    .await
+                            {
+                                eprintln!("[AgentHarbor] local router startup failed: {error}");
+                            }
+                        }
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                            let _guard = core::routing_runtime::mutation_guard().await;
+                            // Ticket reservations have a bounded lifetime even
+                            // when the window closes before sending cancellation.
+                            let _ = core::routing_runtime::reconcile(&reconciliation_paths).await;
                         }
                     });
                     // Refresh the models.dev catalog when it is stale, then keep
@@ -120,7 +131,10 @@ pub fn run() {
                         _ = hangup.recv() => {}
                         _ = interrupt.recv() => {}
                     }
-                    handle.exit(0);
+                    commands::desktop_exit::request_exit(
+                        &handle,
+                        commands::desktop_exit::ExitIntent::Quit,
+                    );
                 });
             }
             // Release builds have no console; this covers Ctrl+C in a dev terminal.
@@ -131,7 +145,10 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     if let Ok(mut ctrl_c) = tokio::signal::windows::ctrl_c() {
                         ctrl_c.recv().await;
-                        handle.exit(0);
+                        commands::desktop_exit::request_exit(
+                            &handle,
+                            commands::desktop_exit::ExitIntent::Quit,
+                        );
                     }
                 });
             }
@@ -155,16 +172,6 @@ pub fn run() {
             schedule_startup_main_window_reveal(app.handle());
             commands::auto_switch::spawn(app.handle().clone());
 
-            // Claude Desktop：清理过期预览 ticket，并提示未完成事务。
-            // 不启动、不停止任何路由进程，也不触碰 Desktop 外部文件。
-            if let Some(app_data_dir) = repo_state
-                .lock()
-                .ok()
-                .map(|repo| repo.paths().app_data_dir.clone())
-            {
-                commands::claude_desktop::startup_recovery(&app_data_dir);
-            }
-
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -172,8 +179,11 @@ pub fn run() {
             commands::claude_desktop::list_claude_desktop_candidates,
             commands::claude_desktop::preview_claude_desktop_change,
             commands::claude_desktop::commit_claude_desktop_change,
+            commands::claude_desktop::cancel_claude_desktop_preview,
             commands::claude_desktop::probe_claude_desktop_provider,
             commands::claude_desktop::restart_claude_desktop,
+            commands::desktop_exit::get_claude_desktop_exit_request,
+            commands::desktop_exit::resolve_claude_desktop_exit,
             commands::client_config::list_client_configs,
             commands::client_config::preview_client_config,
             commands::client_config::apply_client_config,
@@ -276,27 +286,45 @@ pub fn run() {
         .build(context)
         .expect("error while building AgentHarbor");
 
-    let activation_watcher_guard = platform::single_instance::start_activation_watcher(activation_baseline, {
-        let handle = app.handle().clone();
-        move || commands::hotspot::force_reveal_main_window(&handle)
-    })
-    .map_err(|error| {
-        eprintln!("[AgentHarbor] failed to start single-instance activation watcher: {error}");
-        error
-    })
-    .ok();
+    let activation_watcher_guard =
+        platform::single_instance::start_activation_watcher(activation_baseline, {
+            let handle = app.handle().clone();
+            move || commands::hotspot::force_reveal_main_window(&handle)
+        })
+        .map_err(|error| {
+            eprintln!("[AgentHarbor] failed to start single-instance activation watcher: {error}");
+            error
+        })
+        .ok();
     let activation_watcher_guard = Rc::new(RefCell::new(activation_watcher_guard));
     let single_instance_guard_for_exit = Rc::clone(&single_instance_guard);
     let activation_watcher_guard_for_exit = Rc::clone(&activation_watcher_guard);
 
     app.run(move |_app_handle, event| {
+        if let RunEvent::ExitRequested { api, .. } = &event {
+            if !_app_handle
+                .state::<commands::desktop_exit::ExitCoordinator>()
+                .approved()
+            {
+                api.prevent_exit();
+                commands::desktop_exit::request_exit(
+                    _app_handle,
+                    commands::desktop_exit::ExitIntent::Quit,
+                );
+            }
+        }
         if matches!(event, RunEvent::Exit) {
-            _app_handle.state::<core::account_login::LoginManager>().shutdown();
+            _app_handle
+                .state::<core::account_login::LoginManager>()
+                .shutdown();
             // The proxy lives in this process. Restore every client that points
             // to it before exit; direct upstream configurations remain durable.
             // Tray quit, Windows shutdown/logoff (WM_ENDSESSION) and the Unix
             // termination signals handled in setup all arrive here.
             core::routing_runtime::release_router_clients(&shared_paths);
+            // Forced shutdown may bypass preflight. Preserve Desktop State and
+            // its journal so the next process can recover the fixed gateway.
+            core::router_proxy::stop_unchecked();
             let _ = activation_watcher_guard_for_exit.borrow_mut().take();
             let _ = single_instance_guard_for_exit.borrow_mut().take();
         }

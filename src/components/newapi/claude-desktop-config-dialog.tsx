@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { ClaudeDesktopRouteMapping, desktopRouteSupports1m } from "./claude-desktop-route-mapping";
 import {
   Dialog,
   DialogContent,
@@ -33,6 +34,7 @@ import type {
   ClaudeDesktopPathsChoice,
   ClaudeDesktopModelChoice,
   ClaudeDesktopPreview,
+  ClaudeDesktopRouteChoice,
   DesktopAction,
   OneMMode,
 } from "@/types/claude-desktop";
@@ -82,6 +84,8 @@ interface Props {
   candidatesRevision: number;
   initialProviderId: string | null;
   initialModelChoices: ClaudeDesktopModelChoice[];
+  initialMode?: "direct" | "router";
+  initialRouteChoices?: ClaudeDesktopRouteChoice[];
   /** 后端给出的可选操作；对话框只在直连可用时允许提交。 */
   availableActions: DesktopAction[];
   onClose: () => void;
@@ -100,11 +104,16 @@ export function ClaudeDesktopDialog({
   candidatesRevision,
   initialProviderId,
   initialModelChoices,
+  initialMode = "direct",
+  initialRouteChoices = [],
   availableActions,
   onClose,
   onApplied,
 }: Props) {
   const { t } = useTranslation();
+  const [mode, setMode] = useState<"direct" | "router">(initialMode);
+  const [routes, setRoutes] = useState<ClaudeDesktopRouteChoice[]>(initialRouteChoices);
+  const [rotateGatewayToken, setRotateGatewayToken] = useState(false);
   const [providerId, setProviderId] = useState<string | null>(initialProviderId);
   const [pathId, setPathId] = useState<string | null>(null);
   const [selected, setSelected] = useState<Record<string, ModelRow>>(() => Object.fromEntries(
@@ -122,6 +131,10 @@ export function ClaudeDesktopDialog({
   // 递增序号忽略迟到的异步预览/检测结果，避免旧响应覆盖新表单。
   const seq = useRef(0);
   const pendingToken = useRef<number | null>(null);
+  const previewRef = useRef<ClaudeDesktopPreview | null>(null);
+  const discardPreview = (value: ClaudeDesktopPreview | null) => {
+    if (value?.action === "applyRouter") void api.claudeDesktop.cancelPreview(value.revision).catch(() => {});
+  };
 
   // 首次进入时把候选的默认选择固化到表单。
   useEffect(() => {
@@ -148,9 +161,26 @@ export function ClaudeDesktopDialog({
   const unavailableChoices = chosenModels.filter(modelId => !models.some(model => model.modelId === modelId));
   const excludedModels = (candidate?.models ?? []).filter(model => !model.selectable && !selected[model.modelId]);
   const pathSelected = !!pathsChoice.normalRoot && !!pathsChoice.thirdPartyRoot;
+  const routeProviders = candidates?.routeProviders ?? [];
+  const routeRoles = candidates?.routeRoles ?? [];
+  const routeInputs = routes.map(route => {
+    const provider = routeProviders.find(entry => entry.providerId === route.providerId);
+    const model = provider?.models.find(entry => entry.modelId === route.modelId);
+    return { providerId: route.providerId, eligible: provider?.eligible, name: provider?.name,
+      model: model ? { modelId: model.modelId, label: model.label, protocol: model.protocol,
+        selectable: model.selectable, supports1m: model.supports1m } : null };
+  });
+  const routesValid = routes.length > 0 && routes.every(route => {
+    const provider = routeProviders.find(entry => entry.providerId === route.providerId);
+    const model = provider?.models.find(entry => entry.modelId === route.modelId);
+    return routeRoles.some(role => role.role === route.role && role.roleAlias === route.roleAlias)
+      && provider?.eligible && model?.selectable && (route.oneMMode !== "auto" || desktopRouteSupports1m(model));
+  });
+  const action: DesktopAction = mode === "router" ? "applyRouter" : "applyDirect";
   const formSnapshot = JSON.stringify({
-    providerId, pathId, selected, rebaseline, pathsChoice,
-    candidatesRevision, candidate, detector: candidates?.detector,
+    mode, pathId, rebaseline, pathsChoice, detector: candidates?.detector,
+    ...(mode === "router" ? { routes, routeInputs, routeRoles, rotateGatewayToken }
+      : { providerId, selected, candidatesRevision, candidate }),
   });
   const currentSnapshot = useRef(formSnapshot);
   currentSnapshot.current = formSnapshot;
@@ -158,13 +188,15 @@ export function ClaudeDesktopDialog({
   // 任意表单输入变化都立即作废旧预览，并让在途响应失效。
   useEffect(() => {
     seq.current += 1;
+    discardPreview(previewRef.current);
+    previewRef.current = null;
     setPreview(null);
     setProbe(null);
     setMessages(null);
   }, [formSnapshot]);
 
   // 卸载后的响应也失效；组件状态关闭不取消已经授权的后端操作。
-  useEffect(() => () => { seq.current += 1; }, []);
+  useEffect(() => () => { seq.current += 1; discardPreview(previewRef.current); previewRef.current = null; }, []);
 
   if (!candidates) {
     return (
@@ -185,12 +217,15 @@ export function ClaudeDesktopDialog({
   }
 
   const requestOf = (): ClaudeDesktopActionRequest => ({
-    providerId,
-    models: chosenModels.map(modelId => ({
-      modelId,
-      labelOverride: selected[modelId]?.label.trim() ? selected[modelId].label : null,
-      oneMMode: selected[modelId]?.oneMMode ?? "off",
-    })),
+    ...(mode === "router" ? { routes: routes.map(route => ({ ...route,
+      labelOverride: route.labelOverride?.trim() ? route.labelOverride : null })), rotateGatewayToken }
+      : { providerId,
+        models: chosenModels.map(modelId => ({
+          modelId,
+          labelOverride: selected[modelId]?.label.trim() ? selected[modelId].label : null,
+          oneMMode: selected[modelId]?.oneMMode ?? "off",
+        })),
+      }),
     paths: pathsChoice,
     rebaseline,
   });
@@ -203,12 +238,14 @@ export function ClaudeDesktopDialog({
     setBusy("preview");
     setError(null);
     try {
-      const result = await api.claudeDesktop.preview("applyDirect", snapshot);
-      if (token !== seq.current || form !== currentSnapshot.current) return;
+      const result = await api.claudeDesktop.preview(action, snapshot);
+      if (token !== seq.current || form !== currentSnapshot.current) { discardPreview(result); return; }
+      previewRef.current = result;
       setPreview(result);
     } catch (cause) {
       if (token !== seq.current || form !== currentSnapshot.current) return;
       setPreview(null);
+      previewRef.current = null;
       setError(desktopErrorKey(cause, "claudeDesktop.errors.storage"));
     } finally {
       if (pendingToken.current === token) {
@@ -225,7 +262,7 @@ export function ClaudeDesktopDialog({
     setBusy("apply");
     setError(null);
     try {
-      await api.claudeDesktop.commit("applyDirect", preview.revision, requestOf());
+      await api.claudeDesktop.commit(action, preview.revision, requestOf());
       toast({
         title: t("claudeDesktop.dialog.appliedTitle"),
         description: t("claudeDesktop.dialog.appliedDescription"),
@@ -237,6 +274,7 @@ export function ClaudeDesktopDialog({
       setError(desktopErrorKey(cause, "claudeDesktop.errors.storage"));
       // 提交已消费票据；失败后保留表单，下一次重新预览。
       setPreview(null);
+      previewRef.current = null;
     } finally {
       pendingToken.current = null;
       setBusy(null);
@@ -284,8 +322,14 @@ export function ClaudeDesktopDialog({
   // 提交按钮不可用时说明原因，而不是只把它变灰。
   const submitBlockedReason = (() => {
     if (busy !== null) return t("claudeDesktop.dialog.busyHint");
-    if (!providerId) return t("claudeDesktop.dialog.needProvider");
     if (!pathSelected) return t("claudeDesktop.dialog.needPaths");
+    if (mode === "router") {
+      if (!routes.length) return t("claudeDesktop.routing.needRoute");
+      if (!routesValid) return t("claudeDesktop.routing.needValidRoutes");
+      if (!availableActions.includes("applyRouter")) return t("claudeDesktop.actionReasons.pendingRecovery");
+      return null;
+    }
+    if (!providerId) return t("claudeDesktop.dialog.needProvider");
     if (chosenModels.length === 0) return t("claudeDesktop.dialog.needModels");
     if (!candidate?.eligible) return t("claudeDesktop.dialog.needEligible");
     if (!preview && !availableActions.includes("applyDirect")) {
@@ -317,8 +361,17 @@ export function ClaudeDesktopDialog({
           )}
 
           <fieldset disabled={busy !== null} className="min-w-0 space-y-4">
+            <div aria-label={t("claudeDesktop.routing.modeLabel")} className="inline-flex rounded-lg border bg-muted/30 p-1">
+              {(["direct", "router"] as const).map(value => (
+                <button key={value} type="button" aria-pressed={mode === value}
+                  onClick={() => setMode(value)}
+                  className={`rounded-md px-4 py-1.5 text-xs font-medium transition-colors ${mode === value ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>
+                  {t(value === "router" ? "claudeDesktop.routing.modeRouter" : "claudeDesktop.routing.modeDirect")}
+                </button>
+              ))}
+            </div>
             {/* 1. 供应商 */}
-            <div className="space-y-2">
+            {mode === "direct" && <div className="space-y-2">
               <StepHeading step="1" text={t("claudeDesktop.dialog.stepProvider")} />
               {candidatesLoading && <p className="text-sm text-muted-foreground">{t("common.loading")}</p>}
               {!candidatesLoading && candidates.providers.length === 0 && (
@@ -333,6 +386,7 @@ export function ClaudeDesktopDialog({
                     <div key={entry.providerId} className="min-w-0 space-y-1">
                       <button
                         type="button"
+                        data-desktop-provider-choice
                         aria-pressed={active}
                         disabled={!entry.eligible}
                         onClick={() => pickProvider(entry.providerId)}
@@ -367,7 +421,18 @@ export function ClaudeDesktopDialog({
                   );
                 })}
               </div>
-            </div>
+            </div>}
+
+            {mode === "router" && <div className="space-y-2">
+              <StepHeading step="1" text={t("claudeDesktop.routing.stepRoutes")} />
+              <ClaudeDesktopRouteMapping roles={[...routeRoles, ...routes.filter(route => !routeRoles.some(role => role.role === route.role))]}
+                providers={routeProviders} choices={routes} onChange={setRoutes} />
+              {routeProviders.length === 0 && <p role="status" className="text-xs text-muted-foreground">{t("claudeDesktop.routing.noProviders")}</p>}
+              <div className="flex items-center gap-2 pt-1">
+                <Checkbox id="desktop-rotate-gateway-token" checked={rotateGatewayToken} onCheckedChange={checked => setRotateGatewayToken(checked === true)} />
+                <label htmlFor="desktop-rotate-gateway-token" className="cursor-pointer text-xs">{t("claudeDesktop.routing.rotateToken")}</label>
+              </div>
+            </div>}
 
             {/* 路径：多渠道时必须由用户明确选择 */}
             {candidates.pathCandidates.length > 1 && (
@@ -389,7 +454,7 @@ export function ClaudeDesktopDialog({
             )}
 
             {/* 2. 模型与能力 */}
-            <div className="space-y-2">
+            {mode === "direct" && <div className="space-y-2">
               <StepHeading step="2" text={t("claudeDesktop.dialog.stepModels")} />
               {models.length === 0 && (
                 <p role="status" className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
@@ -510,7 +575,7 @@ export function ClaudeDesktopDialog({
                   ))}
                 </div>
               )}
-            </div>
+            </div>}
 
             <div className="flex flex-wrap items-center gap-2">
               <Checkbox
@@ -523,7 +588,7 @@ export function ClaudeDesktopDialog({
               </label>
             </div>
 
-            <div className="space-y-2">
+            {mode === "direct" && <div className="space-y-2">
               <div className="flex flex-wrap items-center gap-2">
                 <Button
                   type="button"
@@ -562,7 +627,7 @@ export function ClaudeDesktopDialog({
               <p className="text-[11px] text-muted-foreground">
                 {t("claudeDesktop.dialog.messagesCheckCost")}
               </p>
-            </div>
+            </div>}
 
             {(probe || messages) && (
               <div className="space-y-2 rounded-lg border bg-muted/20 px-3 py-2">
@@ -631,7 +696,7 @@ export function ClaudeDesktopDialog({
 
             {/* 3. 预览 */}
             <div className="space-y-2">
-              <StepHeading step="3" text={t("claudeDesktop.dialog.stepPreview")} />
+              <StepHeading step={mode === "router" ? "2" : "3"} text={t("claudeDesktop.dialog.stepPreview")} />
               {preview && (
                 <div className="space-y-2">
                   <div data-desktop-preview-files className="space-y-3 text-xs">
@@ -695,7 +760,7 @@ export function ClaudeDesktopDialog({
               </div>
             </details>
 
-            {eligible.length === 0 && (
+            {mode === "direct" && eligible.length === 0 && (
               <p role="status" className="text-[11px] text-muted-foreground">
                 {t("claudeDesktop.dialog.noEligibleProvider")}
               </p>
@@ -719,7 +784,7 @@ export function ClaudeDesktopDialog({
             </p>
           )}
           <Button
-            disabled={submitBlockedReason !== null || unavailableChoices.length > 0}
+            disabled={submitBlockedReason !== null || (mode === "direct" && unavailableChoices.length > 0)}
             onClick={() => void (preview ? runApply() : runPreview())}
           >
             {busy === "preview" || busy === "apply" ? (

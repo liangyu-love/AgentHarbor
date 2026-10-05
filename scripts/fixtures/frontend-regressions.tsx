@@ -11,6 +11,9 @@ import { ImageWorkbenchPage } from "@/components/image-workbench/image-workbench
 import { ProviderDialog } from "@/components/newapi/provider-dialog";
 import { ProviderTestDialog } from "@/components/newapi/provider-test-dialog";
 import { NewApiPage } from "@/components/newapi/newapi-page";
+import { ClaudeDesktopRouterExitDialog } from "@/components/newapi/claude-desktop-router-exit-dialog";
+import { UpdateOverlay } from "@/components/update/update-overlay";
+import { useUpdateCheck } from "@/hooks/use-update-check";
 import { OverviewPage } from "@/components/overview/overview-page";
 import { AccountsPage } from "@/components/accounts/accounts-page";
 import { TokenUsagePanel } from "@/components/accounts/token-usage-panel";
@@ -36,6 +39,17 @@ function ThreadToastProbe() {
   const { toasts } = useToast();
   controls.review.lastToast = toasts[0]?.title;
   return null;
+}
+function DesktopUpdaterFixture() {
+  const update = useUpdateCheck();
+  return <>
+    <button onClick={() => void update.checkForUpdate()}>检查测试更新</button>
+    <p data-updater-status>{update.status}</p>
+    <ClaudeDesktopRouterExitDialog />
+    {update.status !== "idle" && <UpdateOverlay status={update.status} currentVersion={update.updateInfo?.currentVersion ?? "1.0.0"}
+      newVersion={update.updateInfo?.version} body={update.updateInfo?.body} progress={update.progress} error={update.error}
+      onInstall={() => void update.installUpdate()} onRetry={() => void update.checkForUpdate()} onSkip={update.dismiss} />}
+  </>;
 }
 const noop = () => {};
 const model = (id: string) => ({ id, displayName: id, contextWindow: null, maxOutputTokens: null,
@@ -117,14 +131,18 @@ const usageFixture: TokenUsagePayload = {
 };
 let state: NewApiState = { providers: [imageProvider], router: { enabled: false, accessMode: "router", accountless: false, port: 0, configDrifted: false }, proxyRunning: false, activeProviderId: null };
 api.providers.loadState = async () => state;
-api.routing.diagnostics = async () => [{ id: "synthetic-route", timestamp: 1_790_740_800, requestedModel: "relay::claude-opus-5-5-kiro",
+api.routing.diagnostics = async () => {
+  const base = { id: "synthetic-route", timestamp: 1_790_740_800, requestedModel: "relay::claude-opus-5-5-kiro",
   requested: { "reasoning.effort": "high" }, stage: "complete", done: true, status: 200, failureStage: null, error: null, durationMs: 840, firstTokenMs: 230,
   attempts: [{ providerId: "relay", providerName: "Synthetic channel", upstreamModel: "claude-opus-5-5-kiro", matchedModel: "claude-opus-5-5", protocol: "anthropicMessages",
     sent: { "thinking.type": "adaptive", "output_config.effort": "high", max_tokens: 8192 }, status: 200, failureStage: null, error: null, durationMs: 830,
     catalogRevision: "abcdef1234567890", matchKind: "normalized", pricingStatus: "priced", pricingSource: "catalog",
     attemptId: "synthetic-attempt", selectionReason: "active_provider", failoverReason: null,
     credential: { kind: "providerApiKey", status: "recorded", reason: null, versionFingerprint: "fixture-version", accountId: null, accountStatus: "not_recorded", label: null },
-    modelObservation: { servedModel: "claude-opus-5-5-kiro", modelMatchStatus: "same", modelMatchBasis: "raw_exact", unknownReason: null, conflictingModel: null } }] }];
+    modelObservation: { servedModel: "claude-opus-5-5-kiro", modelMatchStatus: "same", modelMatchBasis: "raw_exact", unknownReason: null, conflictingModel: null } }] };
+  return controls.review.desktopDiagnostics ? [base, { ...base, id: "desktop-route", clientSource: "claudeDesktop",
+    requestedModel: "claude-sonnet-4-6", resolvedModel: "deepseek-fixture", routeRevision: 3 }] : [base];
+};
 const capabilityRef = { providerId: "anthropic", modelId: "claude-opus-5-5" };
 api.routing.capabilities = async () => ({ stale: true, error: "catalog_unavailable_or_invalid", updatedAt: 1_790_740_800,
   catalog: { schemaVersion: 1, sourceUrl: "https://models.dev/api.json", fetchedAt: 1_790_740_000, lastCheckedAt: 1_790_740_800,
@@ -341,7 +359,7 @@ function ProviderFixture({ mixed = false }: { mixed?: boolean }) {
       onOpenChange={open => setDialog(current => ({ ...current, open }))} onSaved={noop} /></>;
 }
 
-type FixtureMode = "terminal-proxy" | "thread-details" | "thread-details-missing" | "thread-details-unknown" | "thread-details-error" | "compact" | "grid" | "image" | "mcp" | "accounts" | "account-resets" | "account-resets-unavailable" | "thread-tree" | "groups" | "overview" | "usage" | "provider" | "warnings" | "thread-actions" | "thread-queue-recovery" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-conflict" | "clients-opencode" | "clients-opencode-stale" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official" | "recovery-long" | "recovery-router";
+type FixtureMode = "desktop-updater" | "desktop-exit" | "terminal-proxy" | "thread-details" | "thread-details-missing" | "thread-details-unknown" | "thread-details-error" | "compact" | "grid" | "image" | "mcp" | "accounts" | "account-resets" | "account-resets-unavailable" | "thread-tree" | "groups" | "overview" | "usage" | "provider" | "warnings" | "thread-actions" | "thread-queue-recovery" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-conflict" | "clients-opencode" | "clients-opencode-stale" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official" | "recovery-long" | "recovery-router";
 
 function RecoveryFixture({ thread }: { thread: ThreadSummary }) {
   const [open, setOpen] = useState(true);
@@ -618,7 +636,7 @@ function mount(mode: FixtureMode) {
   root.render(<QueryClientProvider client={queryClient}><TooltipProvider>
     <div style={{ position: "relative", height: 600 }}><PageStage state="active">
       {(mode.startsWith("thread-details") || mode === "terminal-proxy") && <ThreadToastProbe />}
-      {mode.startsWith("recovery-") ? <RecoveryFixture thread={threads[0] as ThreadSummary} /> :
+      {mode === "desktop-updater" ? <DesktopUpdaterFixture /> : mode === "desktop-exit" ? <ClaudeDesktopRouterExitDialog /> : mode.startsWith("recovery-") ? <RecoveryFixture thread={threads[0] as ThreadSummary} /> :
         mode === "terminal-proxy" ? <div className="mx-auto max-w-xl rounded-xl bg-card shadow-sm"><TerminalProxySettings currentProxy={{ mode: "manual", url: "http://127.0.0.1:7890" }} /></div> :
         mode === "image" ? <ImageWorkbenchPage /> : mode === "mcp" ? <McpPage /> : mode === "accounts" || mode.startsWith("account-resets") ? <AccountsPage refreshInterval="5m" onManageProviders={noop} /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage" ? <TokenUsagePanel data={{ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } }} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode.startsWith("thread-details") || mode === "thread-tree" || mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :
         mode === "access" || mode === "incompatible" || mode === "native-invalid" || mode === "groups" ? <NewApiPage /> :

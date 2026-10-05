@@ -1,5 +1,5 @@
 /**
- * Claude Desktop 直连配置的前端类型。
+ * Claude Desktop 配置的前端类型。
  *
  * 与 Claude Code 客户端配置**完全独立**：Desktop 是四文件事务，不复用
  * `ClientConfigRequest` / `ClientStatus`。
@@ -7,6 +7,7 @@
 
 export type DesktopAction =
   | "applyDirect"
+  | "applyRouter"
   | "reapply"
   | "restorePrevious"
   | "switchOfficial"
@@ -26,9 +27,43 @@ export interface ClaudeDesktopModelChoice {
   oneMMode: OneMMode;
 }
 
+export type ClaudeDesktopRouteRole = "sonnet" | "opus" | "haiku" | "fable";
+
+export interface ClaudeDesktopRouteRoleView {
+  role: ClaudeDesktopRouteRole;
+  roleAlias: string;
+}
+
+export interface ClaudeDesktopRouteChoice extends ClaudeDesktopRouteRoleView {
+  providerId: string;
+  modelId: string;
+  labelOverride?: string | null;
+  oneMMode: OneMMode;
+}
+
+export interface ClaudeDesktopRouteView extends ClaudeDesktopRouteRoleView {
+  providerId: string;
+  providerName: string;
+  modelId: string;
+  label: string;
+  oneM: boolean;
+  protocol: string;
+  available: boolean;
+  reason: string | null;
+}
+
+export interface ClaudeDesktopRouterSummary {
+  boundPort: number;
+  routeRevision: number;
+  gatewayTokenVersion: number;
+  listenerReady: boolean;
+}
+
 export interface ClaudeDesktopActionRequest {
   providerId?: string | null;
   models?: ClaudeDesktopModelChoice[];
+  routes?: ClaudeDesktopRouteChoice[];
+  rotateGatewayToken?: boolean;
   paths?: ClaudeDesktopPathsChoice;
   rebaseline?: boolean;
 }
@@ -101,6 +136,8 @@ export interface ClaudeDesktopCandidates {
   selectedPathId: string | null;
   detector: ClaudeDesktopDetection;
   providers: ClaudeDesktopProviderCandidate[];
+  routeProviders?: ClaudeDesktopProviderCandidate[];
+  routeRoles?: ClaudeDesktopRouteRoleView[];
   selectedProviderId: string | null;
 }
 
@@ -119,7 +156,7 @@ export interface ClaudeDesktopActionView {
 export interface ClaudeDesktopStatus {
   detection: ClaudeDesktopDetection;
   paths: ClaudeDesktopPathsSummary | null;
-  mode: "unknown" | "official" | "foreignThirdParty" | "direct";
+  mode: "unknown" | "official" | "foreignThirdParty" | "direct" | "router";
   managementState:
     | "managed"
     | "unmanaged"
@@ -134,6 +171,9 @@ export interface ClaudeDesktopStatus {
   models: ClaudeDesktopManagedModel[];
   /** 保留用户的自动/关闭与显示名选择，重新应用时不可从有效值反推。 */
   modelChoices: ClaudeDesktopModelChoice[];
+  routeChoices?: ClaudeDesktopRouteChoice[];
+  routeViews?: ClaudeDesktopRouteView[];
+  router?: ClaudeDesktopRouterSummary | null;
   staleReasons: string[];
   conflicts: string[];
   recoveryState: string | null;
@@ -156,6 +196,11 @@ export interface ClaudeDesktopRestartResult {
   restartCapable: boolean;
 }
 
+export interface ClaudeDesktopExitRequest {
+  intent: "quit" | "restart";
+  error?: string | null;
+}
+
 export interface ClaudeDesktopManagedChange {
   path: string;
   before: string | null;
@@ -176,6 +221,8 @@ export interface ClaudeDesktopPreview {
   providerId: string | null;
   providerName: string | null;
   models: ClaudeDesktopManagedModel[];
+  routeViews?: ClaudeDesktopRouteView[];
+  router?: ClaudeDesktopRouterSummary | null;
   messagesUrl: string | null;
   modelsUrl: string | null;
   files: ClaudeDesktopFileChange[];

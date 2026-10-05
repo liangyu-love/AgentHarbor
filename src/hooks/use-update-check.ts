@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import type { Update, DownloadEvent } from "@tauri-apps/plugin-updater";
 import { useTranslation } from "react-i18next";
 import type { UpdateInstallabilityPayload } from "@/types";
@@ -17,7 +18,7 @@ interface DownloadProgress {
   downloaded: number;
 }
 
-type UpdateStatus = "idle" | "checking" | "available" | "downloading" | "installing" | "error";
+type UpdateStatus = "idle" | "checking" | "available" | "downloading" | "installing" | "ready" | "error";
 
 export function useUpdateCheck() {
   const { t } = useTranslation();
@@ -26,10 +27,16 @@ export function useUpdateCheck() {
   const [progress, setProgress] = useState<DownloadProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const updateRef = useRef<Update | null>(null);
+  const installedRef = useRef(false);
 
   const checkForUpdate = useCallback(async (): Promise<"available" | "up-to-date" | "error" | "unconfigured"> => {
     if (!isTauriRuntime()) {
       return "unconfigured";
+    }
+    if (installedRef.current) {
+      setStatus("ready");
+      setError(null);
+      return "available";
     }
     setStatus("checking");
     setError(null);
@@ -61,10 +68,16 @@ export function useUpdateCheck() {
 
   const installUpdate = useCallback(async () => {
     const update = updateRef.current;
-    if (!update) return;
+    if (!update && !installedRef.current) return;
 
     try {
       const { invoke } = await import("@tauri-apps/api/core");
+      if (installedRef.current) {
+        setStatus("ready");
+        setError(null);
+        await invoke("graceful_restart_for_update");
+        return;
+      }
       const installability = await invoke<UpdateInstallabilityPayload>(
         "check_update_installability",
       );
@@ -80,7 +93,7 @@ export function useUpdateCheck() {
       let totalBytes = 0;
       let downloadedBytes = 0;
 
-      await update.downloadAndInstall((event: DownloadEvent) => {
+      await update!.downloadAndInstall((event: DownloadEvent) => {
         if (event.event === "Started" && event.data.contentLength) {
           totalBytes = event.data.contentLength;
           setProgress({ total: totalBytes, downloaded: 0 });
@@ -92,12 +105,25 @@ export function useUpdateCheck() {
         }
       });
 
+      installedRef.current = true;
+      setStatus("ready");
       await invoke("graceful_restart_for_update");
     } catch (e) {
       setError(localizeUpdateRuntimeError(t, e));
       setStatus("error");
     }
   }, [t]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const unlisten = listen<{ intent: "quit" | "restart" }>("claude-desktop-exit-cancelled", event => {
+      if (event.payload.intent === "restart" && installedRef.current) {
+        setStatus("idle");
+        setError(null);
+      }
+    });
+    return () => { void unlisten.then(remove => remove()).catch(() => {}); };
+  }, []);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
