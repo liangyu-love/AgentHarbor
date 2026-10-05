@@ -8,7 +8,7 @@ use super::{
 };
 use crate::core::{
     models_dev, newapi,
-    router::{ModelProtocol, Provider, Store},
+    router::{Provider, Store},
 };
 
 #[derive(Clone)]
@@ -81,7 +81,6 @@ pub fn model_candidate(
         }
         None
     });
-    view.supports1m &= card.protocol_for_model(model) == ModelProtocol::AnthropicMessages;
     view.selectable = reason.is_none();
     view.exclude_reason = reason;
     view

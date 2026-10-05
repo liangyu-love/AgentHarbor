@@ -141,7 +141,8 @@ api.routing.diagnostics = async () => {
     credential: { kind: "providerApiKey", status: "recorded", reason: null, versionFingerprint: "fixture-version", accountId: null, accountStatus: "not_recorded", label: null },
     modelObservation: { servedModel: "claude-opus-5-5-kiro", modelMatchStatus: "same", modelMatchBasis: "raw_exact", unknownReason: null, conflictingModel: null } }] };
   return controls.review.desktopDiagnostics ? [base, { ...base, id: "desktop-route", clientSource: "claudeDesktop",
-    requestedModel: "claude-sonnet-4-6", resolvedModel: "deepseek-fixture", routeRevision: 3 }] : [base];
+    requestedModel: "claude-sonnet-4-6", resolvedModel: "deepseek-fixture", routeRevision: 3,
+    attempts: base.attempts.map(attempt => ({ ...attempt, selectionReason: "desktop_role_mapping" })) }] : [base];
 };
 const capabilityRef = { providerId: "anthropic", modelId: "claude-opus-5-5" };
 api.routing.capabilities = async () => ({ stale: true, error: "catalog_unavailable_or_invalid", updatedAt: 1_790_740_800,

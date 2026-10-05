@@ -1,8 +1,8 @@
 # Claude Desktop 路由模式实施验收
 
-日期：2026-10-05。设计计划：[路由接入实施计划](../plan/claude-desktop-routing-integration-execution-plan.md)。实施起点：`596c856`；最终提交与产物 SHA256 见交付目录 `build-manifest.json`。
+日期：2026-10-05。设计计划：[路由接入实施计划](../plan/claude-desktop-routing-integration-execution-plan.md)。实施起点：`596c856`，基础路由提交：`ea7cb17`；本轮最终提交、tree 与产物 SHA256 见交付目录 `build-manifest.json`。
 
-**结论：R1–R3 已实现，主要自动化回归通过；R4 的真实 Desktop 验收未完成。** 安装包是本地验收产物，三协议模拟测试不代表真实客户端行为已全部通过。
+**结论：R1–R3 已实现，本轮 Fast 上下文引用与三协议 1M 的完整 Rust、前端和构建回归通过。R4 仅有用户截图提供的 Chat 普通多轮部分证据，完整真机验收未完成。** 安装包是本地验收产物，三协议模拟测试不代表真实客户端行为已全部通过。
 
 ## 实现与结构
 
@@ -14,24 +14,26 @@
 - 用量及诊断增加可选身份字段，JSONL 旧记录兼容，费用继续按真实出站 model 聚合。
 - 共享 listener 的 lease/pin 分别约束预览与已提交配置，不与 Codex 开关绑定。未监听提示与 stale 状态分开。
 - 完整退出、托盘退出、信号和更新重启共用前置协调；正常关窗仍隐藏。macOS 延迟 helper 只在恢复成功后创建；Windows 重启在前置完成后调用 `request_restart`。
+- 本轮 Fast 匹配优先完整型号或显式目录引用；完整匹配缺失时，末尾 `-fast` / `_fast` / `@fast` / `:fast` 仅参考同版本基础型号的 context。真实 ID、展示名、输入/输出、思考字段和独立价格身份不随该引用变更。
+- Desktop 路由的 1M 资格改为有据的生效 context ≥ 1,000,000；Messages/Chat/Responses 共用此资格。Chat/Responses 不添加虚构 1M 参数，不向上游传 Claude beta header；普通客户端边界保留。
 
 ## 自动化结果
 
-最终执行日志：
+下列记录为本轮新增规则的最终执行结果，打包和隔离启动证据随交付目录保存：
 
 | 命令 | 结果 | 日志 |
 | --- | --- | --- |
-| `pnpm test:rust` | 779 lib + 11 Desktop 集成 + 9 本地集成通过；21 个 ignored（含真机、手工及辅助用例） | `.runtime-test/desktop-router-rust-verified.log` |
-| `pnpm build` | TypeScript 与 Vite 通过 | `.runtime-test/desktop-router-build-verified.log` |
-| `pnpm test:frontend` | 静态契约及全量 Playwright 通过 | `.runtime-test/desktop-router-frontend-verified.log` |
-| 诊断/用量定向回归 | 来源筛选、alias/真实型号、零价通过 | `.runtime-test/desktop-router-diagnostics-verified.log` |
-| `pnpm tauri build --bundles nsis` | x64 GUI EXE 与 NSIS；隔离启动结果见产物 manifest | `.runtime-test/desktop-router-release.log` |
+| `pnpm test:rust` | 789 lib + 11 Desktop 集成 + 9 本地集成通过；21 个 ignored（含真机、手工及辅助用例），未计为通过 | `.runtime-test/desktop-fast-1m-rust.log` |
+| `pnpm build` | TypeScript 与 Vite 通过 | `.runtime-test/desktop-fast-1m-build.log` |
+| `pnpm test:frontend` | 静态契约及全量 Playwright 通过；三协议 1M 单击选择、容量不足、保存后失去能力均覆盖 | `.runtime-test/desktop-fast-1m-frontend.log` |
+| 诊断/用量前端回归 | 来源筛选、Desktop 映射原因与 Fast 来源文案通过；并入全量前端 | `.runtime-test/desktop-fast-1m-frontend.log` |
+| `pnpm tauri build --bundles nsis` | EXE、NSIS、SHA256 和隔离启动最终结果见交付目录 manifest | `.runtime-test/desktop-fast-1m-release.log`、交付目录 `build-manifest.json` / `startup-check.json` |
 
-所有配置和 Key 均为隔离根合成数据，HTTP 上游为本地 mock；浏览器测试拦截外部网络。忽略的真机用例没有计为通过。截图在 `.runtime-test/desktop-router-ui/`，交付目录附相应合成截图及完整日志。
+所有配置和 Key 均为隔离根合成数据，HTTP 上游为本地 mock；浏览器测试拦截外部网络。忽略的真机用例没有计为通过。本轮截图目录为 `.runtime-test/desktop-fast-1m-ui/`，交付目录附相应合成截图及完整日志。
 
 ## 计划逐项对应
 
-“已验证”指表中自动化证据通过；“部分”表示剩余组合没有专用测试，并不等于实现已知失败。
+“已验证”指本轮完整回归中自动化证据通过；“部分”表示剩余组合没有专用测试，并不等于实现已知失败。R-A19 的本地 HTTP 矩阵覆盖三协议 × 普通/1M × 非流/SSE × 两轮工具往返，共 24 次成功请求；开关关闭及当前容量下降时，旧 marker/beta 被拒绝且不触发上游。
 
 | ID | 状态 | 自动化证据和边界 |
 | --- | --- | --- |
@@ -53,23 +55,35 @@
 | R-A16 | 已验证 | HTTP 同 history/session/真实目标跨角色、路由版本、普通路由的私有输出隔离；seen/failover 状态无污染。 |
 | R-A17 | 已验证 | Messages/Chat/Responses 各非流及 SSE 的工具定义、执行回传、多轮；6 种形态均用本地模拟上游。 |
 | R-A18 | 部分 | HTTP bad-tool/truncated/upstream-error/bad-json/cancel 只落账一次并保留已报用量；共享 diagnostics incomplete 终止测试存在，Desktop 入口尚无专门 incomplete HTTP 案例。 |
-| R-A19 | 已验证 | native Messages 1M 能力/菜单、off/跨协议/旧 marker/beta、UI 单击 checkbox；profile 每个 alias 只有一条记录。 |
+| R-A19 | 已验证 | 三协议有据 context ≥ 1M 可选，能力不足/失去能力与 off/旧 marker/beta 拒绝，单击 checkbox 默认关闭；Chat/Responses 无虚构参数、无 Claude beta，profile 每个 alias 只有一条记录。普通路由原有协议限制单独保留。 |
 | R-A20 | 已验证 | HTTP 真实 fixture-model 计价，零价/未知价/缓存 read/write 分拆断言；trace/ledger 保留 requested/resolved。 |
 | R-A21 | 已验证 | 旧 JSONL 身份缺省、compaction 保留可选身份并按实际 model 汇总；来源未知不补造。 |
 | R-A22 | 部分 | 路由表单 390/1200 深浅主题、键盘、失败重试；Desktop 卡片 80–150% 缩放。未对路由表单单独穷举全部缩放矩阵。 |
 
-## 真机缺口
+## 用户证据与真机缺口
 
-R-L01–R-L09 **本轮全部未执行**。没有修改真实 Desktop 配置、控制真实进程或发送真实计费请求。
+实现会话没有执行真实 Desktop 接管、进程控制或计费请求。用户随后提供了真实 Desktop/Cowork 界面及请求诊断截图：Command Code 目标显示普通至少两轮；诊断记录请求 alias `claude-sonnet-4-6` → 实际型号 `deepseek/deepseek-v4.1-flash`，协议 `chatCompletions`，HTTP 200，上游回显与真实出站型号一致。这些是 Chat 通路和模型映射的部分真机证据。仍缺完整 Desktop 版本/安装渠道、受管文件核对、逐次独立抓包及工具/SSE/1M 验收，不能直接把 R-L02 标为全部通过。
+
+| 项目 | 当前证据 |
+| --- | --- |
+| R-L02：Chat 普通多轮 | Desktop/Cowork 的 Command Code 目标至少两轮；诊断协议 `chatCompletions`、HTTP 200，仍缺逐次独立抓包与完整版本记录 |
+| R-L02：Messages / Responses | 未完成真实客户端验收 |
+| R-L03 / R-L04 / R-L05：工具 / SSE / 1M | 未完成真实客户端验收；截图中的回答不能证明工具执行或逐段流式 |
+| R-L01 / R-L09：alias 与型号身份 | 诊断显示 `claude-sonnet-4-6` → `deepseek/deepseek-v4.1-flash`，上游回显与出站一致；完整 profile/菜单读取及实际价格快照核对未完成 |
+| R-L06–R-L08 | 未完成独立启停、退出恢复与故障恢复的完整真机验收 |
 
 后续需记录 Windows Desktop 的版本/安装渠道和明确选择的卡片，逐项验收：角色菜单与请求 alias、三协议普通/多轮对话、工具执行回传、逐段 SSE/截断/取消、1M marker、其他客户端开关与托盘后台、模式切换与完整退出恢复、崩溃/端口冲突、实际价格身份。不得把现有直连 L01–L10 结果迁移为路由真机结果。
 
-macOS/Linux、Fable、Cowork、托管工具、跨协议 1M 和百万 token 压力测试仍无新增实测证据。
+macOS/Linux、Fable、Cowork、托管工具、三协议 1M 和百万 token 压力测试仍无新增实测证据。
 
 ## 自审修正
 
 本轮自审修正了上游 `Bearer` 前缀重复拼接、请求目录跨版本、localhost 直连误判 Router、监听健康混入 stale、过期预览 pin 临时阻挡操作、恢复已提交 cleanup 后再次要求停 Desktop、更新保持后台后的重复安装，以及本地 token 的 Debug 输出风险。
 
 前端诊断筛选测试补了渲染等待，用量来源筛选补明确的可访问名称；退出恢复测试按 JSON 内容核对共享配置，仍对不可写/停止失败路径逐字核对零修改。
+
+本轮还将 `desktop_role_mapping`、`speedVariantReference` 和 `catalogSpeedReference` 转为界面本地化文案，新增三协议 1M 可选/能力不足/已保存选择失去能力的回归断言。Fast 解析用例要求完整匹配优先、只参考同版本 context、原 ID/输出/思考/价格身份保留；同时修正目录提示消费，避免把基础型号的 canonical/思考选项/interleaved 误展示为 Fast 能力。最终通过计数见上方执行表。独立只读自审未发现新增阻断问题。
+
+新增 Fast 文案断言曾因整行文字使用独立文字精确定位而超时，已改为按局部文案定位；针对性及全量前端重跑通过。
 
 回归中一次既有 Sub2API 本地 mock 出现 `newapi.errors.network`，完整重跑结果以最终日志为准；没有将失败记录改写成通过，也没有为本功能修改余额协议。

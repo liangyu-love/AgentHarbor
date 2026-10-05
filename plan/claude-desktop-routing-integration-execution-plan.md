@@ -1,10 +1,10 @@
 # Claude Desktop 路由模式：参考核对与实施计划
 
-日期：2026-10-05。状态：**R1–R3 已实现；R4 本地回归与打包完成，真实 Desktop 路由验收待执行**。
+日期：2026-10-05。状态：**R1–R3 已实现；基础路由提交 `ea7cb17`。本轮 Fast/1M 的 Rust、全量前端与构建通过，打包和隔离启动结果随交付目录保存；真实 Desktop 仅有 Chat 普通多轮部分截图证据**。
 
 本文接续 [直连接入计划](claude-desktop-direct-integration-execution-plan.md) 第 10 节。第 1–2 节描述研究基线的 cc-switch 源码；第 3–10 节保留实施规格，第 12 节记录实际交付。路由的逐项证据与剩余缺口见 [路由验收记录](../docs/claude-desktop-routing-acceptance-record.md)，操作说明见 [路由使用说明](../docs/claude-desktop-routing.md)。直连的实现、四文件事务与验收缺口仍以原计划和 [直连验收记录](../docs/claude-desktop-acceptance-record.md) 为准。
 
-参考根目录：`D:/workspace/temp/cc-switch`，提交 `1ee2fdc3a791f1e73476c631c7ab7ce8fac0638f`。本项目设计基线：`70da81f`，实施起点：`596c856`。设计阶段仅只读研究；实施验证使用隔离配置、本地 HTTP 模拟服务和浏览器 fixture，没有执行真实 Desktop 接管、进程控制、登录或计费请求。
+参考根目录：`D:/workspace/temp/cc-switch`，提交 `1ee2fdc3a791f1e73476c631c7ab7ce8fac0638f`。本项目设计基线：`70da81f`，实施起点：`596c856`。设计阶段仅只读研究；实现会话验证使用隔离配置、本地 HTTP 模拟服务和浏览器 fixture，没有执行真实 Desktop 接管、进程控制、登录或计费请求。用户后续提供的 Chat 普通多轮截图单独计为部分真机证据，不扩大为三协议、工具或 1M 通过。
 
 ## 1. cc-switch 的路由模式究竟做什么
 
@@ -106,6 +106,7 @@ Desktop profile 中的安全 alias + 本地 token
 | 空档 | 明确未配置；不复制 cc-switch 自动回填，不隐藏增加请求目标 |
 | 缺失的子任务角色 | 明确报缺档；UI 可显式把该档选成同一模型，不运行时降级 |
 | 真实模型限制 | 不套用直连 Claude 名白名单；支持既有 Messages/Chat/Responses 目标 |
+| 额外 1M | 三协议按有据的生效 context ≥ 1,000,000 判断；默认关闭，不放宽普通客户端原有边界 |
 | Provider.enabled | 路由按现有资格要求 true；用户显式启用，提交不偷偷改开关 |
 | Codex 总开关/默认卡片 | 不改 router.enabled、active_provider_id 或其他客户端选择 |
 | failover | Desktop 首版关闭，不继承全局 Codex failover/亲和 |
@@ -173,10 +174,20 @@ DesktopRouterConfig {
 ### 4.3 1M 与请求改写
 
 - 继续使用单击“额外 1M 选项”复选框，新选择默认关闭。`supports1m=true` 只给 Desktop 生成菜单变体，不再增加一条模型，也不把 `[1m]` 写入 route/modelId。
-- 不只看 context ≥ 1M：当前共享管线拒绝 1M 请求转 Chat/Responses（`router_proxy.rs:618`）。首版仅对已具备能力的原生 Messages 目标开放；跨协议 1M 后续单独验收。
+- Messages、Chat、Responses 三协议的 Desktop 目标统一依据有据的生效 context ≥ 1,000,000 判断。用户覆盖、卡片设置、上游声明、适用官方快照和目录引用可提供依据；共享 fallback 不可启用。资格检查使用同一模型能力解析结果，不凭角色 alias 或型号名猜测。
 - 客户端请求末尾 `[1m]` 只在 alias 层剥离；保存的真实 modelId 保持原样。不凭 alias 创建另一种上游型号。
 - 额外 1M 关闭或能力不满足时，旧缓存的 1M 请求明确拒绝；不能静默降成普通请求。
+- Chat/Responses 转换沿用既有消息、工具和请求参数，不编造 `context_window` 等 1M 参数，也不向这些上游转发 Claude beta header。原生 Messages 继续使用对应 Claude 1M 请求语义。此例外限定 Desktop 路由；普通客户端仍保留既有 1M 协议限制。
+- 已保存的 auto 选择失去有效能力后继续显示且可关闭，预览必须等待用户调整；不自动丢弃选择或把 auto 改成 off。
 - 映射发生在协议转换前；客户端原始 alias 交给诊断，转换器收到真实 Provider/model。映射不改消息、工具或用户正文。
+
+### 4.4 Fast 变体的能力参考
+
+完整 Fast 型号匹配和显式 `catalogRef` 优先。只有完整能力匹配缺失时，末尾大小写不敏感的 `-fast`、`_fast`、`@fast`、`:fast` 才可参考同版本基础型号的 context，匹配步骤为 `speedVariantReference`，字段来源为 `catalogSpeedReference`。
+
+该参考保留请求 ID、展示名、版本、日期、preview 和其他产品标记，不借用基础型号的输入上限、输出上限、思考能力/档位或价格。基础型号没有可用 context 或目录出现冲突时保持未知，不跨版本猜测。完整 Fast 记录或用户显式引用可按既有字段规则提供完整能力，价格仍按独立计费绑定解析；基础型号 context 参考本身不能建立价格身份。
+
+Fast 参考得到的有据生效 context 可用于第 4.3 节的 Desktop 1M 资格判断，但不等于已经证明真实上游接受百万 token。实际菜单、请求标记、SSE 和模型上下文行为分别完成真机验收。
 
 ## 5. 鉴权、监听 lease 和会话隔离
 
@@ -337,7 +348,7 @@ R1–R3 各批必须自审后独立提交；未达状态/恢复门槛时不开�
 | R-A16 | 两客户端/角色同session和真实模型 | 亲和、seen、工具/思考历史隔离；不继承全局failover |
 | R-A17 | Messages/Chat/Responses，非流和SSE | 文本、多轮、工具定义/执行/回传与真实模型改写正确 |
 | R-A18 | 流式错误/incomplete/断连/取消 | 终止分类与诊断准确，用量保留且仅落账一次 |
-| R-A19 | 1M开/关、旧缓存marker、跨协议目标 | 一条菜单ID；off拒绝marker；Chat/Responses首版不宣称1M |
+| R-A19 | 三协议 1M开/关、能力不足/下降、旧缓存marker/beta | 一条菜单ID；有据 context≥1M 可选、默认off；off/能力不足拒绝；Chat/Responses不编造参数、不传Claude beta；普通客户端边界保留 |
 | R-A20 | alias像Opus但真实模型为DeepSeek等 | 按真实Provider/model价格绑定，零价/未知/缓存拆分保留 |
 | R-A21 | 旧JSONL、compaction、同型号不同入口 | 兼容旧记录；汇总不以alias合并费用或伪造历史来源 |
 | R-A22 | 浅深主题、缩放、窄窗、键盘、失败重试 | 卡片/映射/配置预览可操作，无重复说明/横向溢出 |
@@ -358,7 +369,7 @@ R1–R3 各批必须自审后独立提交；未达状态/恢复门槛时不开�
 | R-L08 | 原固定端口冲突、进程崩溃后启动恢复 | 明确可恢复路径，不把旧地址误报健康 |
 | R-L09 | 真实身份与本地用量/价格快照核对 | 不用客户端alias或自报型号重定价 |
 
-Windows 为第一验收平台。macOS/Linux、Fable、跨协议 1M、托管工具和 Cowork 都按各自证据另列，不因源码有分支就勾选通过。发布前 R-A01–R-A22 通过；R-L01–R-L09 中首版承诺的协议/功能必须有实测，其余标记缺口。
+Windows 为第一验收平台。macOS/Linux、Fable、三协议 1M、托管工具和 Cowork 都按各自证据另列，不因源码有分支就勾选通过。发布前 R-A01–R-A22 通过；R-L01–R-L09 中承诺的协议/功能必须有实测，其余标记缺口。用户 Desktop/Cowork 截图显示 Command Code 目标普通至少两轮；诊断为 `claude-sonnet-4-6` → `deepseek/deepseek-v4.1-flash`、`chatCompletions`、HTTP 200，上游回显与出站一致，提供 R-L02 及 alias/型号身份的部分证据。版本/安装渠道、逐次独立抓包、真实工具、1M、逐段 SSE 尚未补齐。
 
 ## 11. 本项目源码核对索引
 
@@ -370,7 +381,7 @@ Windows 为第一验收平台。macOS/Linux、Fable、跨协议 1M、托管工�
 | `claude_desktop/status.rs:181` | mode当前由own UUID推direct，须增加router识别 |
 | `router_proxy.rs:40,141` | 当前ProxyHandle与ensure_running实际端口 |
 | `router_proxy.rs:441,493,1948` | Provider目标、路径处理及现有全局鉴权 |
-| `router_proxy.rs:618,739` | 1M跨协议限制、历史上下文scope |
+| `router_proxy.rs:618,739` | 设计基线的普通客户端1M协议限制、历史上下文scope；Desktop例外见第4.3节 |
 | `router_proxy.rs:1165,1232,1344,1440` | 真实价格、URL/鉴权、模型改写、响应/SSE管线 |
 | `routing_runtime.rs:14,26,59` | 丢弃实际端口、CLI退出恢复、needs_server无Desktop |
 | `relay_usage.rs:257` | 当前记录真实model，新增可选来源/alias须兼容 |
@@ -383,11 +394,12 @@ Windows 为第一验收平台。macOS/Linux、Fable、跨协议 1M、托管工�
 
 2026-10-05 的本地实现已接通 `ApplyRouter`、两个 Desktop 专属端点、三协议转发、角色映射、四文件事务、诊断/用量来源、共享监听引用与完整退出协调。已有直连入口继续可用，卡片凭据和默认模型由原有 Provider 数据管理。
 
-实际代码有三项需要明确的规格适配：
+实际代码有四项需要明确的规格适配：
 
 1. **发布权威是受保护的整份 State**：`gateway::committed_snapshot` 读取已提交的 token、routes、revision 和固定端口。State 原子替换就是发布点，不额外复制一份 active table，避免磁盘与内存两套权威之间的发布故障。Pending 含整代 before/next；提交前恢复旧代，提交后只核验并清理新代。运行请求冻结同一份 State、Store 和 Catalog 快照。
 2. **监听健康与配置陈旧独立**：状态 DTO 的 `listenerReady` 表示当前监听是否在已保存端口。端口冲突不会把配置标成 stale，也不会擅自写运行中的 Desktop；端口恢复后重新协调。模式按已提交状态及实际受管 profile 判定，不靠 URL 含 localhost 推断。
 3. **后端 R1/R2 合并为一项完整提交**：状态、监听租约和 HTTP 鉴权存在编译依赖，一起提交以保证每个提交可运行；生命周期/API/UI 与验收文档分别提交。没有改全局 Provider schema、协议转换器的职责或另建账本。
+4. **Desktop 1M 由有效能力判断**：本轮移除 Desktop 的 Messages-only 限定，三协议使用有据 context≥1M；Chat/Responses 不传 Claude beta、不造 1M 参数。Fast 同版本 context 参考只参与能力解析，不改实际型号、其他字段或计价身份；普通客户端旧规则保留。
 
 实际复用入口：
 
@@ -402,4 +414,4 @@ Windows 为第一验收平台。macOS/Linux、Fable、跨协议 1M、托管工�
 | `core/desktop_exit.rs`、`commands/desktop_exit.rs` | 完整退出或更新重启之前停止 Desktop、恢复首次基线、失败重试 |
 | `claude-desktop-route-mapping.tsx`、`claude-desktop-router-exit-dialog.tsx` | 现有卡片选目标、单击 1M、配置文件预览与退出决策 |
 
-**验收边界**：R1–R3 的主要自动化场景已验证，R-A12 的真实 I/O 故障全组合和部分组合矩阵尚未穷举；R-L01–R-L09 本轮均未执行。当前安装包供本地验收，不能把三协议模拟服务通过等同于真实 Desktop 三协议、工具或逐段 SSE 渲染通过。macOS/Linux、Fable、Cowork 和跨协议 1M 没有新增实测承诺。
+**验收边界**：R1–R3 的主要自动化场景已验证，本轮 Fast/三协议 1M 的完整回归通过，计数和产物证据见验收记录及交付目录 manifest。R-A12 的真实 I/O 故障全组合和部分组合矩阵尚未穷举；用户截图提供了 R-L02 的 Chat 普通多轮部分证据，其余真机矩阵未完成。当前安装包供本地验收，不能把三协议模拟服务或 Chat 回答截图等同于真实 Desktop 三协议、工具、1M 或逐段 SSE 渲染通过。macOS/Linux、Fable、Cowork 和百万 token 压力测试没有新增实测承诺。

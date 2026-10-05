@@ -308,9 +308,9 @@ fn listener_readiness_is_separate_from_route_configuration_staleness() {
 }
 
 #[test]
-fn router_one_m_requires_native_messages_evidence_and_the_menu_option() {
+fn router_one_m_requires_context_evidence_and_the_menu_option_across_protocols() {
     let _env = env_lock();
-    let (base, _, manager, store, mut request) = router_fixture("router1m");
+    let (base, _, manager, mut store, mut request) = router_fixture("router1m");
     request.routes[0].one_m_mode = OneMMode::Auto;
     apply_router(&manager, &store, &request);
     let catalog = models_dev::load(&base);
@@ -319,6 +319,28 @@ fn router_one_m_requires_native_messages_evidence_and_the_menu_option() {
         super::gateway::resolve_message(&snapshot, &store, &catalog, "claude-sonnet-4-6[1m]")
             .is_err()
     );
+    store.providers[0].models[0].overrides.context_window = Some(1_000_000);
+    for protocol in [ModelProtocol::Responses, ModelProtocol::ChatCompletions] {
+        store.providers[0].models[0].protocol = Some(protocol);
+        apply_router(&manager, &store, &request);
+        let snapshot = super::gateway::committed_snapshot(&base).unwrap().unwrap();
+        let route =
+            super::gateway::resolve_message(&snapshot, &store, &catalog, "claude-sonnet-4-6[1m]")
+                .unwrap();
+        assert!(route.view.one_m);
+        assert_eq!(route.choice.model_id, "gpt-fixture");
+        assert_eq!(route.provider.protocol_for_model("gpt-fixture"), protocol);
+        assert_eq!(manager.load_state().unwrap().unwrap().models.len(), 1);
+        store.providers[0].models[0].overrides.context_window = Some(200_000);
+        assert!(super::gateway::resolve_message(
+            &snapshot,
+            &store,
+            &catalog,
+            "claude-sonnet-4-6[1m]"
+        )
+        .is_err());
+        store.providers[0].models[0].overrides.context_window = Some(1_000_000);
+    }
     request.routes[0].model_id = "claude-opus-4-7".into();
     apply_router(&manager, &store, &request);
     let snapshot = super::gateway::committed_snapshot(&base).unwrap().unwrap();
@@ -1331,6 +1353,48 @@ fn context_projection_is_fallback_aware() {
     let mut small = explicit.clone();
     small.models[0].overrides.context_window = Some(200_000);
     assert!(!provider::model_candidate(&small, "claude-sonnet-4-6", &catalog, policy).supports1m);
+}
+
+#[test]
+fn router_fast_context_reference_can_enable_1m_without_changing_the_real_model() {
+    let catalog = models_dev::Catalog::parse(
+        json!({
+            "schemaVersion": 1,
+            "providers": [{"id": "vendor", "models": [{
+                "id": "engine-v4.1-flash", "limit": {"context": 1_000_000}
+            }]}]
+        })
+        .to_string()
+        .as_bytes(),
+        models_dev::Origin::Embedded,
+    )
+    .unwrap();
+    let mut card = provider(
+        "https://relay.example",
+        vec![model(
+            "engine-v4.1-flash-fast",
+            Some(ModelProtocol::ChatCompletions),
+            &[],
+        )],
+    );
+    card.enabled = true;
+    card.catalog_providers = vec!["vendor".into()];
+    let candidate = super::routes::model_candidate(&card, "engine-v4.1-flash-fast", &catalog);
+    assert!(candidate.selectable);
+    assert!(candidate.supports1m);
+    assert_eq!(candidate.model_id, "engine-v4.1-flash-fast");
+    assert_eq!(
+        candidate.context_source,
+        crate::core::model_metadata::source::CATALOG_SPEED_REFERENCE
+    );
+    card.models[0].context_window = Some(200_000);
+    card.models[0].metadata_source = "upstream".into();
+    let candidate = super::routes::model_candidate(&card, "engine-v4.1-flash-fast", &catalog);
+    assert_eq!(candidate.context_window, Some(200_000));
+    assert!(
+        !candidate.supports1m,
+        "real fast deployment capacity wins over the reference"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -501,7 +501,7 @@
       "providerDisabled": "Disabled",
       "noKey": "Missing inference key",
       "unavailable": "Unavailable",
-      "oneMUnavailable": "Turn off the extra 1M option or choose a Messages model that supports 1M.",
+      "oneMUnavailable": "Turn off the extra 1M option or choose a model that supports 1M.",
       "noProviders": "No saved providers are available for routing.",
       "needRoute": "Configure at least one role.",
       "needValidRoutes": "Complete each selected role’s provider and model.",
@@ -855,6 +855,7 @@
       "request_model_missing": "Sent model ID missing"
     },
     "traceSelectionReason": {
+      "desktop_role_mapping": "Claude Desktop role mapping",
       "official": "Official Codex destination",
       "codex_slug": "Codex model slug",
       "path_provider": "Provider path",
@@ -886,6 +887,7 @@
     "capabilityRules": "Automatic matching uses model publisher catalogs. Aggregator catalogs require a manual binding. Each model shows raw values, effective values, overrides, the match trace and sources. Preview and injection share the same resolution.",
     "capabilityConflictHint": "These are the candidate sources and values for the same field. Conflicting values are not written automatically without a safe consensus.",
     "capabilityMatchStep": {
+      "speedVariantReference": "Fast variant: base-model context reference",
       "reasoningSuffix": "Reasoning mode/effort alias",
       "effortSuffix": "Reasoning effort alias",
       "canonicalIdentity": "Publisher-declared canonical alias",
@@ -1048,6 +1050,7 @@
       "priceHint": "Only independent billing bindings establish prices. Leaving this empty does not borrow capability catalog prices; model prices can be set separately."
     },
     "capabilitySource": {
+      "catalogSpeedReference": "Base-model catalog context",
       "catalog": "models.dev catalog",
       "catalogGeneric": "Generic model reference",
       "catalogAlias": "Catalog alias fallback",

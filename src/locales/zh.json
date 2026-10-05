@@ -501,7 +501,7 @@
       "providerDisabled": "未启用",
       "noKey": "缺少推理密钥",
       "unavailable": "不可用",
-      "oneMUnavailable": "请关闭额外 1M 选项或选择支持 1M 的 Messages 模型。",
+      "oneMUnavailable": "请关闭额外 1M 选项或选择支持 1M 的模型。",
       "noProviders": "没有可用于路由的中转卡片。",
       "needRoute": "请配置至少一个角色。",
       "needValidRoutes": "请完成角色的卡片和模型选择。",
@@ -855,6 +855,7 @@
       "request_model_missing": "出站请求缺少模型 ID"
     },
     "traceSelectionReason": {
+      "desktop_role_mapping": "Claude Desktop 角色映射",
       "official": "Codex 官方目的地",
       "codex_slug": "Codex 模型 slug",
       "path_provider": "供应商路径",
@@ -886,6 +887,7 @@
     "capabilityRules": "自动匹配使用模型原厂目录；聚合商目录仅在手动绑定时使用。每条模型展示原始目录值、生效值、用户覆盖、匹配过程与来源；预览与实际注入使用同一次解析结果。",
     "capabilityConflictHint": "下面列出同一字段的候选来源和值；没有安全共识时不会自动把冲突值写入配置。",
     "capabilityMatchStep": {
+      "speedVariantReference": "Fast 模式：参考基础型号的上下文上限",
       "reasoningSuffix": "思考模式/档位别名",
       "effortSuffix": "思考档位别名",
       "canonicalIdentity": "原厂声明的 canonical 别名",
@@ -1048,6 +1050,7 @@
       "priceHint": "价格只按独立计费绑定匹配；留空时不会借用能力目录的价格，可单独设置模型价格。"
     },
     "capabilitySource": {
+      "catalogSpeedReference": "基础型号目录上下文",
       "catalog": "models.dev 目录",
       "catalogGeneric": "通用模型参考",
       "catalogAlias": "目录别名回退",

@@ -197,25 +197,44 @@ fn desktop_namespace_routes_three_protocols_tools_and_actual_model_accounting() 
         let models: Value = client.get(format!("{base}/claude-desktop/v1/models")).bearer_auth("desktop-fixture").send().await.unwrap().json().await.unwrap();
         assert_eq!(models["data"].as_array().unwrap().len(),3);
         assert!(!models.to_string().contains("fixture-model"));
-        assert_eq!(models["data"][2]["supports1m"],true);
+        assert!(models["data"].as_array().unwrap().iter().all(|model| model["supports1m"] == true));
         let url = format!("{base}/claude-desktop/v1/messages");
-        for route in &routes { for streaming in [false,true] {
-            let mut body = json!({"model":route.role_alias,"max_tokens":128,"stream":streaming,
-                "tools":[{"name":"lookup","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":format!("case {}/{}",route.role,streaming)}]});
-            let first = client.post(&url).bearer_auth("desktop-fixture").json(&body).send().await.unwrap();
+        for route in &routes { for streaming in [false,true] { for one_m in [false,true] {
+            // Exercise both Desktop spellings without ever changing the real upstream ID.
+            let alias = if one_m && !streaming {format!("{}[1M]",route.role_alias)} else {route.role_alias.clone()};
+            let beta = if one_m && streaming {format!("existing-beta,{CLAUDE_ONE_M_BETA}")} else {"existing-beta".into()};
+            let mut body = json!({"model":alias,"max_tokens":128,"stream":streaming,
+                "tools":[{"name":"lookup","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":format!("case {}/{}/{}",route.role,streaming,one_m)}]});
+            let first = client.post(&url).bearer_auth("desktop-fixture").header("anthropic-beta",&beta).json(&body).send().await.unwrap();
             assert_eq!(first.status(),StatusCode::OK);
             let text = first.text().await.unwrap();
             let content = if streaming {claude_continuation_tests::streamed_content(&text)} else {serde_json::from_str::<Value>(&text).unwrap()["content"].clone()};
             assert_eq!(content[0]["type"],"tool_use");
             body["messages"].as_array_mut().unwrap().extend([json!({"role":"assistant","content":content}),json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"c1","content":"result"}]})]);
-            let second = client.post(&url).bearer_auth("desktop-fixture").json(&body).send().await.unwrap();
+            let second = client.post(&url).bearer_auth("desktop-fixture").header("anthropic-beta",&beta).json(&body).send().await.unwrap();
             assert_eq!(second.status(),StatusCode::OK);
             assert!(second.text().await.unwrap().contains("done"));
-        }}
+            let captured = captured.lock().unwrap();
+            for attempt in captured.iter().rev().take(2) {
+                assert_eq!(attempt["body"]["model"],"fixture-model");
+                assert!(attempt["body"]["supports1m"].is_null());
+                assert!(attempt["body"]["context_window"].is_null());
+                assert!(attempt["body"]["1m"].is_null());
+                let output_key = if attempt["path"] == "/v1/responses" {"max_output_tokens"} else {"max_tokens"};
+                assert_eq!(attempt["body"][output_key],128,"translation must preserve the requested output budget");
+                let forwarded_beta = attempt["beta"].as_str().unwrap();
+                if route.role == "haiku" {
+                    assert!(forwarded_beta.contains("existing-beta"));
+                    assert_eq!(forwarded_beta.contains(CLAUDE_ONE_M_BETA),one_m);
+                } else {
+                    assert!(forwarded_beta.is_empty(),"Claude beta must not leak into Chat or Responses");
+                }
+            }
+        }}}
         assert!(!context_failover_seen(&paths), "Desktop must not touch Codex global seen/bindings");
         let usage = relay_usage::load(&paths.app_data_dir).unwrap();
-        assert_eq!(usage.all_time.request_count,12);
-        assert_eq!(usage.all_time.successful_count,12);
+        assert_eq!(usage.all_time.request_count,24);
+        assert_eq!(usage.all_time.successful_count,24);
         for record in &usage.recent {
             assert_eq!(record.model,"fixture-model");
             assert_eq!(record.identity.client_source.as_deref(),Some("claudeDesktop"));
@@ -230,7 +249,10 @@ fn desktop_namespace_routes_three_protocols_tools_and_actual_model_accounting() 
             }
         }
         assert!(route_trace::recent().iter().any(|r| r.client_source.as_deref()==Some("claudeDesktop") && r.requested_model=="claude-opus-4-7" && r.resolved_model.as_deref()==Some("fixture-model") && r.attempts[0].upstream_model=="fixture-model"));
-        for alias in ["claude-opus-5", "unknown", "claude-sonnet-4-6[1m]", "claude-opus-4-7[1m]"] {
+        assert_eq!(client.post(format!("{base}/v1/messages")).bearer_auth("router-fixture")
+            .json(&json!({"model":"desktop0::fixture-model[1m]","max_tokens":128,"messages":[]})).send().await.unwrap().status(),StatusCode::BAD_REQUEST,
+            "cross-protocol 1M authorization applies only to the Desktop namespace");
+        for alias in ["claude-opus-5", "unknown"] {
             let response = client.post(&url).bearer_auth("desktop-fixture").json(&json!({"model":alias,"messages":[]})).send().await.unwrap();
             assert_eq!(response.status(),StatusCode::BAD_REQUEST, "{alias}");
         }
@@ -241,15 +263,31 @@ fn desktop_namespace_routes_three_protocols_tools_and_actual_model_accounting() 
         store.providers[2].api_key = "".into();
         write_store(&paths,&store);
         assert_eq!(client.post(&url).bearer_auth("desktop-fixture").json(&json!({"model":"claude-haiku-4-5","messages":[]})).send().await.unwrap().status(),StatusCode::BAD_REQUEST);
-        let mut config = routes.clone(); config[2].one_m_mode = OneMMode::Off;
+        let mut config = routes.clone();
+        for route in &mut config { route.one_m_mode = OneMMode::Off; }
         store.providers[2].api_key = "upstream-fixture".into(); write_store(&paths,&store);
         write_state(&paths,port,config,2,"rotated-fixture");
         assert_eq!(client.get(format!("{base}/claude-desktop/v1/models")).bearer_auth("desktop-fixture").send().await.unwrap().status(),StatusCode::UNAUTHORIZED);
-        assert_eq!(client.post(&url).bearer_auth("rotated-fixture").json(&json!({"model":"claude-haiku-4-5[1m]","messages":[]})).send().await.unwrap().status(),StatusCode::BAD_REQUEST);
-        assert_eq!(client.post(&url).bearer_auth("rotated-fixture").header("anthropic-beta",CLAUDE_ONE_M_BETA)
-            .json(&json!({"model":"claude-haiku-4-5","messages":[]})).send().await.unwrap().status(),StatusCode::BAD_REQUEST,
-            "cached beta headers must not bypass the disabled 1M option");
-        assert_eq!(captured.lock().unwrap().len(),13, "all rejected requests must produce no upstream calls");
+        for route in &routes {
+            assert_eq!(client.post(&url).bearer_auth("rotated-fixture").json(&json!({"model":format!("{}[1m]",route.role_alias),"messages":[]})).send().await.unwrap().status(),StatusCode::BAD_REQUEST);
+            assert_eq!(client.post(&url).bearer_auth("rotated-fixture").header("anthropic-beta",CLAUDE_ONE_M_BETA)
+                .json(&json!({"model":route.role_alias,"messages":[]})).send().await.unwrap().status(),StatusCode::BAD_REQUEST,
+                "cached beta headers must not bypass the disabled 1M option");
+        }
+        write_state(&paths,port,routes.clone(),2,"rotated-fixture");
+        for card in &mut store.providers { card.models[0].context_window = Some(200_000); }
+        write_store(&paths,&store);
+        let models:Value = client.get(format!("{base}/claude-desktop/v1/models")).bearer_auth("rotated-fixture").send().await.unwrap().json().await.unwrap();
+        assert!(models["data"].as_array().unwrap().iter().all(|model| model["supports1m"].is_null()),"saved Auto intent must not claim stale 1M capacity");
+        for route in &routes {
+            assert_eq!(client.post(&url).bearer_auth("rotated-fixture").json(&json!({"model":format!("{}[1m]",route.role_alias),"messages":[]})).send().await.unwrap().status(),StatusCode::BAD_REQUEST);
+            assert_eq!(client.post(&url).bearer_auth("rotated-fixture").header("anthropic-beta",CLAUDE_ONE_M_BETA)
+                .json(&json!({"model":route.role_alias,"messages":[]})).send().await.unwrap().status(),StatusCode::BAD_REQUEST,
+                "current capacity must be checked for cached beta headers as well as aliases");
+        }
+        for card in &mut store.providers { card.models[0].context_window = Some(1_000_000); }
+        write_store(&paths,&store);
+        assert_eq!(captured.lock().unwrap().len(),25, "all rejected requests must produce no upstream calls");
 
         // Identical histories and session IDs sharing one real target must not
         // cross role, committed revision, or ordinary router entry points.

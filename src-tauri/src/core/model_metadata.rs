@@ -46,6 +46,9 @@ pub mod source {
     /// Unscoped models.dev reference where every filled field agrees.
     pub const CATALOG_GENERIC: &str = "catalogGeneric";
     pub const CATALOG_ALIAS: &str = "catalogAlias";
+    /// A speed variant may reference the base context, without claiming its
+    /// output, reasoning, display identity or billing contract.
+    pub const CATALOG_SPEED_REFERENCE: &str = "catalogSpeedReference";
     pub const POLICY: &str = "policy";
     pub const FALLBACK: &str = "fallback";
     pub const UNKNOWN: &str = "unknown";
@@ -285,6 +288,8 @@ pub struct Candidate {
     pub step: &'static str,
     /// Safety of the entire reduction path, not just its final step.
     pub price_safe: bool,
+    /// Inherited across every reduction after removing a speed marker.
+    pub context_reference: bool,
 }
 
 const KNOWN_EFFORTS: &[&str] = &[
@@ -321,11 +326,16 @@ fn strip_suffix_ci<'a>(value: &'a str, suffix: &str) -> Option<&'a str> {
 /// one explicit step so the preview can explain exactly what was attempted.
 /// Version numbers, dates and `-preview` suffixes are never removed.
 pub fn candidates(raw_model_id: &str) -> Vec<Candidate> {
-    let mut queue: VecDeque<(&'static str, String, bool)> = VecDeque::new();
+    let mut queue: VecDeque<(&'static str, String, bool, bool)> = VecDeque::new();
+    let mut references = VecDeque::new();
     let mut seen = HashSet::new();
     let mut out = Vec::new();
-    queue.push_back(("exact", raw_model_id.trim().to_owned(), true));
-    while let Some((step, current, safe)) = queue.pop_front() {
+    queue.push_back(("exact", raw_model_id.trim().to_owned(), true, false));
+    // Resolve every identity that retains the speed marker before a base
+    // reference, including exact records behind multiple namespace prefixes.
+    while let Some((step, current, safe, context_reference)) =
+        queue.pop_front().or_else(|| references.pop_front())
+    {
         if current.is_empty() || !seen.insert(current.clone()) {
             continue;
         }
@@ -333,13 +343,20 @@ pub fn candidates(raw_model_id: &str) -> Vec<Candidate> {
             value: current.clone(),
             step,
             price_safe: safe,
+            context_reference,
         });
         if out.len() >= MAX_CANDIDATES {
             break;
         }
         for (next_step, next) in reductions(&current) {
             if !seen.contains(&next) {
-                queue.push_back((next_step, next, safe && price_safe(next_step)));
+                let reference = context_reference || next_step == "speedVariantReference";
+                let candidate = (next_step, next, safe && price_safe(next_step), reference);
+                if reference {
+                    references.push_back(candidate);
+                } else {
+                    queue.push_back(candidate);
+                }
             }
         }
     }
@@ -390,12 +407,26 @@ fn reductions(current: &str) -> Vec<(&'static str, String)> {
     }
     if let Some((base, tag)) = current.rsplit_once(':') {
         if is_known_tag(tag) || is_known_effort(tag) {
-            push("tagSuffix", base);
+            push(
+                if tag.eq_ignore_ascii_case("fast") {
+                    "speedVariantReference"
+                } else {
+                    "tagSuffix"
+                },
+                base,
+            );
         }
     }
     if let Some((base, tag)) = current.rsplit_once('@') {
         if is_known_tag(tag) || is_known_effort(tag) {
-            push("atTag", base);
+            push(
+                if tag.eq_ignore_ascii_case("fast") {
+                    "speedVariantReference"
+                } else {
+                    "atTag"
+                },
+                base,
+            );
         }
     }
     if let Some(base) = strip_suffix_ci(current, "-kiro") {
@@ -406,8 +437,12 @@ fn reductions(current: &str) -> Vec<(&'static str, String)> {
     // dates, preview/vision variants or arbitrary trailing words.
     for separator in ['-', '_'] {
         if let Some((base, mode)) = current.rsplit_once(separator) {
-            if mode.eq_ignore_ascii_case("thinking")
-                || (is_known_effort(mode) && !matches!(mode.to_ascii_lowercase().as_str(), "max" | "ultra")) {
+            if mode.eq_ignore_ascii_case("fast") {
+                push("speedVariantReference", base);
+            } else if mode.eq_ignore_ascii_case("thinking")
+                || (is_known_effort(mode)
+                    && !matches!(mode.to_ascii_lowercase().as_str(), "max" | "ultra"))
+            {
                 push("reasoningSuffix", base);
             }
         }
@@ -422,7 +457,7 @@ fn reductions(current: &str) -> Vec<(&'static str, String)> {
 fn price_safe(step: &str) -> bool {
     !matches!(
         step,
-        "tagSuffix" | "atTag" | "reasoningSuffix" | "effortSuffix"
+        "tagSuffix" | "atTag" | "reasoningSuffix" | "effortSuffix" | "speedVariantReference"
     )
 }
 
@@ -694,6 +729,7 @@ pub fn resolve_with_global_fallback(
     let mut matches: Vec<CatalogMatch<'_>> = Vec::new();
     let mut kind = MatchKind::Unmatched;
     let mut matched_scoped = false;
+    let mut context_reference = false;
 
     if let Some(reference) = request.explicit_ref {
         match catalog.exact_in(&reference.provider_id, &reference.model_id) {
@@ -719,54 +755,63 @@ pub fn resolve_with_global_fallback(
             }
         }
     } else {
-        for candidate in &candidates {
-            let mut found = Vec::new();
-            let mut canonical = false;
-            if !request.catalog_providers.is_empty() {
-                for entry in catalog.scoped(request.catalog_providers, &candidate.value) {
-                    found.push(to_match(entry));
+        // Retain the existing exact/canonical/preview precedence for a real
+        // speed variant before considering any context-only base references.
+        for references_only in [false, true] {
+            for candidate in candidates
+                .iter()
+                .filter(|candidate| candidate.context_reference == references_only)
+            {
+                let mut found = Vec::new();
+                let mut canonical = false;
+                if !request.catalog_providers.is_empty() {
+                    for entry in catalog.scoped(request.catalog_providers, &candidate.value) {
+                        found.push(to_match(entry));
+                    }
+                    if found.is_empty() {
+                        for entry in
+                            catalog.canonical_scoped(request.catalog_providers, &candidate.value)
+                        {
+                            found.push(to_match(entry));
+                        }
+                        canonical = !found.is_empty();
+                    }
+                }
+                let scoped = !found.is_empty();
+                if !scoped && (request.catalog_providers.is_empty() || allow_global_fallback) {
+                    for entry in catalog.global(&candidate.value) {
+                        if allowed_global_providers.is_none_or(|providers| {
+                            providers
+                                .iter()
+                                .any(|id| id.eq_ignore_ascii_case(&entry.provider.id))
+                        }) {
+                            found.push(to_match(entry));
+                        }
+                    }
                 }
                 if found.is_empty() {
-                    for entry in
-                        catalog.canonical_scoped(request.catalog_providers, &candidate.value)
-                    {
-                        found.push(to_match(entry));
-                    }
-                    canonical = !found.is_empty();
+                    result.steps.push(MatchStep {
+                        model_id: candidate.value.clone(),
+                        step: candidate.step.into(),
+                        matched: Vec::new(),
+                        note: "no catalog match".into(),
+                    });
+                    continue;
                 }
-            }
-            let scoped = !found.is_empty();
-            if !scoped && (request.catalog_providers.is_empty() || allow_global_fallback) {
-                for entry in catalog.global(&candidate.value) {
-                    if allowed_global_providers.is_none_or(|providers| {
-                        providers
-                            .iter()
-                            .any(|id| id.eq_ignore_ascii_case(&entry.provider.id))
-                    }) {
-                        found.push(to_match(entry));
-                    }
-                }
-            }
-            if found.is_empty() {
-                result.steps.push(MatchStep {
-                    model_id: candidate.value.clone(),
-                    step: candidate.step.into(),
-                    matched: Vec::new(),
-                    note: "no catalog match".into(),
-                });
-                continue;
-            }
-            let refs: Vec<ModelRef> = found.iter().map(CatalogMatch::model_ref).collect();
-            result.steps.push(MatchStep {
-                model_id: candidate.value.clone(),
-                step: if canonical {
+                let refs: Vec<ModelRef> = found.iter().map(CatalogMatch::model_ref).collect();
+                let step = if candidate.context_reference {
+                    "speedVariantReference"
+                } else if canonical {
                     "canonicalIdentity"
                 } else {
                     candidate.step
-                }
-                .into(),
-                matched: refs.clone(),
-                note: if canonical {
+                };
+                let note = if candidate.context_reference {
+                    format!(
+                        "speed variant context-only reference across {} catalog entries; request ID, output, reasoning and billing unchanged",
+                        refs.len()
+                    )
+                } else if canonical {
                     format!(
                         "publisher-declared canonical identity; matched {} scoped catalog entries",
                         refs.len()
@@ -783,83 +828,113 @@ pub fn resolve_with_global_fallback(
                         refs.len(),
                         if refs.len() == 1 { "y" } else { "ies" }
                     )
-                },
-            });
-            matched_scoped = scoped;
-            let distinct: HashSet<(&str, &str)> = found
-                .iter()
-                .map(|entry| (entry.provider_id, entry.model_id))
-                .collect();
-            kind = if !scoped {
-                // A generic reference stays a consensus suggestion as long as
-                // at least one field agrees; per-field conflicts are reported
-                // separately and never injected.
-                if has_agreement(&found) {
-                    MatchKind::Consensus
-                } else {
-                    MatchKind::Ambiguous
-                }
-            } else if distinct.len() > 1 {
-                MatchKind::Ambiguous
-            } else if !canonical && candidate.step == "exact" && candidate.value == raw {
-                MatchKind::Exact
-            } else {
-                MatchKind::Normalized
-            };
-            matches = found;
-            break;
-        }
-        // Some relays omit Google's preview marker from Gemini names. Only
-        // consult the same-version `-preview` entry after every exact/canonical
-        // candidate has missed. This is a capability reference, not a declared
-        // identity alias; never feed the added marker into price resolution.
-        if matches.is_empty()
-            && request
-                .catalog_providers
-                .iter()
-                .any(|provider| provider.eq_ignore_ascii_case("google"))
-        {
-            let scope = ["google".to_owned()];
-            for candidate in &candidates {
-                let id = candidate.value.to_ascii_lowercase();
-                if !id.starts_with("gemini-") || id.contains("-preview") {
-                    continue;
-                }
-                let preview_id = format!("{}-preview", candidate.value);
-                let found: Vec<_> = catalog
-                    .scoped(&scope, &preview_id)
-                    .into_iter()
-                    .filter(|entry| {
-                        !entry
-                            .model
-                            .status
-                            .as_deref()
-                            .is_some_and(|status| status.eq_ignore_ascii_case("deprecated"))
-                    })
-                    .map(to_match)
-                    .collect();
-                if found.is_empty() {
-                    continue;
-                }
+                };
                 result.steps.push(MatchStep {
                     model_id: candidate.value.clone(),
-                    step: "previewReference".into(),
-                    matched: found.iter().map(CatalogMatch::model_ref).collect(),
-                    note: format!(
-                        "Google same-version preview capability reference: {preview_id}; request ID and billing unchanged"
-                    ),
+                    step: step.into(),
+                    matched: refs.clone(),
+                    note,
                 });
-                let distinct: HashSet<_> = found
+                matched_scoped = scoped;
+                context_reference = candidate.context_reference;
+                let distinct: HashSet<(&str, &str)> = found
                     .iter()
                     .map(|entry| (entry.provider_id, entry.model_id))
                     .collect();
-                kind = if distinct.len() > 1 {
+                kind = if !scoped {
+                    // A generic reference stays a consensus suggestion as long as
+                    // at least one field agrees; per-field conflicts are reported
+                    // separately and never injected.
+                    let agreed = if context_reference {
+                        matches!(
+                            agreement(&found, |entry| entry.model.limit.context),
+                            Agreement::Agreed(_)
+                        )
+                    } else {
+                        has_agreement(&found)
+                    };
+                    if agreed {
+                        MatchKind::Consensus
+                    } else {
+                        MatchKind::Ambiguous
+                    }
+                } else if distinct.len() > 1 {
                     MatchKind::Ambiguous
+                } else if !canonical && candidate.step == "exact" && candidate.value == raw {
+                    MatchKind::Exact
                 } else {
                     MatchKind::Normalized
                 };
-                matched_scoped = true;
                 matches = found;
+                break;
+            }
+            // Some relays omit Google's preview marker from Gemini names. Only
+            // consult the same-version `-preview` entry after every exact/canonical
+            // candidate has missed. This is a capability reference, not a declared
+            // identity alias; never feed the added marker into price resolution.
+            if matches.is_empty()
+                && request
+                    .catalog_providers
+                    .iter()
+                    .any(|provider| provider.eq_ignore_ascii_case("google"))
+            {
+                let scope = ["google".to_owned()];
+                for candidate in candidates
+                    .iter()
+                    .filter(|candidate| candidate.context_reference == references_only)
+                {
+                    let id = candidate.value.to_ascii_lowercase();
+                    if !id.starts_with("gemini-") || id.contains("-preview") {
+                        continue;
+                    }
+                    let preview_id = format!("{}-preview", candidate.value);
+                    let found: Vec<_> = catalog
+                        .scoped(&scope, &preview_id)
+                        .into_iter()
+                        .filter(|entry| {
+                            !entry
+                                .model
+                                .status
+                                .as_deref()
+                                .is_some_and(|status| status.eq_ignore_ascii_case("deprecated"))
+                        })
+                        .map(to_match)
+                        .collect();
+                    if found.is_empty() {
+                        continue;
+                    }
+                    let step = if candidate.context_reference {
+                        "speedVariantReference"
+                    } else {
+                        "previewReference"
+                    };
+                    let note = if candidate.context_reference {
+                        format!("speed variant context-only reference to Google same-version preview: {preview_id}; request ID, output, reasoning and billing unchanged")
+                    } else {
+                        format!("Google same-version preview capability reference: {preview_id}; request ID and billing unchanged")
+                    };
+                    result.steps.push(MatchStep {
+                        model_id: candidate.value.clone(),
+                        step: step.into(),
+                        matched: found.iter().map(CatalogMatch::model_ref).collect(),
+                        note,
+                    });
+                    let distinct: HashSet<_> = found
+                        .iter()
+                        .map(|entry| (entry.provider_id, entry.model_id))
+                        .collect();
+                    kind = if distinct.len() > 1 {
+                        MatchKind::Ambiguous
+                    } else {
+                        MatchKind::Normalized
+                    };
+                    matched_scoped = true;
+                    context_reference = candidate.context_reference;
+                    matches = found;
+                    break;
+                }
+            }
+            if !matches.is_empty() {
                 break;
             }
         }
@@ -870,13 +945,15 @@ pub fn resolve_with_global_fallback(
     }
     result.match_kind = kind;
 
-    // Name: explicit alias → catalog name → raw ID.
+    // Name: explicit alias → catalog name → raw ID. A context-only reference
+    // does not rename the actual speed deployment to the base model.
     let saved_alias = request.display_name.trim();
     if !saved_alias.is_empty() {
         result.display_name = saved_alias.to_owned();
         result.display_source = source::MANUAL.into();
     } else if let Some(name) = matches
         .iter()
+        .filter(|_| !context_reference)
         .find_map(|entry| (!entry.model.name.is_empty()).then_some(entry.model.name.as_str()))
     {
         result.display_name = name.to_owned();
@@ -886,24 +963,31 @@ pub fn resolve_with_global_fallback(
         result.display_source = source::UNKNOWN.into();
     }
 
-    let catalog_source = if matched_scoped {
+    let catalog_source = if context_reference {
+        source::CATALOG_SPEED_REFERENCE
+    } else if matched_scoped {
         source::CATALOG
     } else {
         source::CATALOG_GENERIC
     };
 
+    // A speed deployment can have different ceilings and reasoning controls.
+    // Keep those unknown unless the actual variant, user or upstream declares
+    // them. The reference's only transferable field is the total context.
+    let variant_matches: &[CatalogMatch<'_>] = if context_reference { &[] } else { &matches };
+
     // Numbers.
     let context = agreement(&matches, |entry| entry.model.limit.context);
-    let input = agreement(&matches, |entry| entry.model.limit.input);
-    let output = agreement(&matches, |entry| entry.model.limit.output);
+    let input = agreement(variant_matches, |entry| entry.model.limit.input);
+    let output = agreement(variant_matches, |entry| entry.model.limit.output);
     let (context_ref, context_updated) =
         field_provenance(&matches, |model| model.limit.context.is_some());
     let (input_ref, input_updated) =
-        field_provenance(&matches, |model| model.limit.input.is_some());
+        field_provenance(variant_matches, |model| model.limit.input.is_some());
     let (output_ref, output_updated) =
-        field_provenance(&matches, |model| model.limit.output.is_some());
+        field_provenance(variant_matches, |model| model.limit.output.is_some());
     let (reasoning_ref, reasoning_updated) =
-        field_provenance(&matches, |model| effective_levels(model).is_some());
+        field_provenance(variant_matches, |model| effective_levels(model).is_some());
     let official_time = request
         .official
         .as_ref()
@@ -990,8 +1074,8 @@ pub fn resolve_with_global_fallback(
     result.output_limit = output_field;
 
     // Reasoning.
-    let levels = agreement(&matches, |entry| effective_levels(entry.model));
-    let supports = agreement(&matches, |entry| entry.model.reasoning);
+    let levels = agreement(variant_matches, |entry| effective_levels(entry.model));
+    let supports = agreement(variant_matches, |entry| entry.model.reasoning);
     let levels_field = if let Some(user) = request.user.reasoning.clone() {
         Field::new(user, source::MANUAL, None, None)
     } else if let Some(upstream) = live_upstream.and_then(|values| values.reasoning.clone()) {
@@ -1040,7 +1124,7 @@ pub fn resolve_with_global_fallback(
     result.reasoning = ReasoningInfo {
         levels: levels_field,
         supports: supports.agreed().copied(),
-        options: matches
+        options: variant_matches
             .first()
             .map(|entry| option_infos(entry.model))
             .unwrap_or_default(),
@@ -1432,6 +1516,291 @@ mod tests {
                 resolved.matched.is_none(),
                 "{raw} must not reduce to another version or variant"
             );
+        }
+    }
+
+    fn speed_catalog() -> Catalog {
+        Catalog::parse(
+            serde_json::json!({
+                "schemaVersion": 1,
+                "providers": [{"id": "vendor", "models": [
+                    {"id": "engine-v4.1-flash", "name": "Base deployment",
+                     "reasoning": true, "reasoningOptions": [
+                         {"type": "toggle"}, {"type": "effort", "values": ["off", "low", "high"]}
+                     ], "limit": {"context": 1000000, "input": 950000, "output": 393216},
+                     "cost": {"input": 1, "output": 2}, "lastUpdated": "2026-10-01"},
+                    {"id": "engine-v4.1-flash-preview", "limit": {"context": 800000}},
+                    {"id": "engine-v4.1-flash-vision", "limit": {"context": 700000}},
+                    {"id": "engine-v4.1-flash-20261001", "limit": {"context": 600000}}
+                ]}]
+            })
+            .to_string()
+            .as_bytes(),
+            super::super::models_dev::Origin::Embedded,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn terminal_speed_markers_reference_only_context_without_changing_the_request_id() {
+        let catalog = speed_catalog();
+        let scope = ["vendor".to_owned()];
+        for suffix in ["-fast", "_FAST", "@fast", ":FaSt"] {
+            let raw = format!("channel__lane::vendor/engine-v4.1-flash{suffix}");
+            let mut request = input_for(&raw);
+            request.catalog_providers = &scope;
+            request.price_providers = &scope;
+            let resolved = resolve(&catalog, &request);
+            assert_eq!(resolved.raw_model_id, raw);
+            assert_eq!(resolved.display_name, raw);
+            assert_eq!(resolved.match_kind, MatchKind::Normalized);
+            assert_eq!(resolved.context_window.value, Some(1000000), "{suffix}");
+            assert_eq!(
+                resolved.context_window.source,
+                source::CATALOG_SPEED_REFERENCE
+            );
+            assert_eq!(
+                resolved
+                    .context_window
+                    .source_ref
+                    .as_ref()
+                    .unwrap()
+                    .model_id,
+                "engine-v4.1-flash"
+            );
+            assert_eq!(
+                resolved.context_window.updated_at.as_deref(),
+                Some("2026-10-01")
+            );
+            assert!(resolved.input_limit.value.is_none());
+            assert!(resolved.output_limit.value.is_none());
+            assert!(resolved.reasoning.levels.value.is_none());
+            assert!(resolved.reasoning.supports.is_none());
+            assert!(resolved.reasoning.options.is_empty());
+            assert!(resolved.default_effort.is_none());
+            assert!(resolved.price.input.is_none());
+            assert_eq!(resolved.price.source, source::UNKNOWN);
+            assert!(resolved
+                .steps
+                .iter()
+                .any(|step| step.step == "speedVariantReference" && !step.matched.is_empty()));
+            assert!(candidates(&raw)
+                .iter()
+                .filter(|candidate| candidate.context_reference)
+                .all(|candidate| !candidate.price_safe));
+        }
+    }
+
+    #[test]
+    fn speed_references_keep_versions_dates_and_product_variants() {
+        let catalog = speed_catalog();
+        let scope = ["vendor".to_owned()];
+        for (raw, expected) in [
+            ("engine-v4.1-flash-preview-fast", 800000),
+            ("engine-v4.1-flash-vision_fast", 700000),
+            ("engine-v4.1-flash-20261001@fast", 600000),
+        ] {
+            let mut request = input_for(raw);
+            request.catalog_providers = &scope;
+            let resolved = resolve(&catalog, &request);
+            assert_eq!(resolved.context_window.value, Some(expected), "{raw}");
+            assert_eq!(
+                resolved.context_window.source,
+                source::CATALOG_SPEED_REFERENCE
+            );
+        }
+        for raw in [
+            "engine-v4.2-flash-fast",
+            "engine-v4.1-flash-20261002-fast",
+            "engine-v4.1-flash-vision-exp-fast",
+            "engine-v4.1-flash-fast-preview",
+            "engine-v4.1-flash-fastest",
+            "engine-fast-v4.1-flash",
+        ] {
+            let mut request = input_for(raw);
+            request.catalog_providers = &scope;
+            let resolved = resolve_with_global_fallback(&catalog, &request, false, None);
+            assert_eq!(resolved.match_kind, MatchKind::Unmatched, "{raw}");
+            assert!(resolved.context_window.value.is_none(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn a_namespaced_exact_fast_record_wins_before_any_base_reference() {
+        let catalog = Catalog::parse(serde_json::json!({
+            "schemaVersion": 1,
+            "providers": [{"id": "vendor", "models": [
+                {"id": "vendor/engine-v4.1-flash", "limit": {"context": 1000000, "output": 393216}, "cost": {"input": 1, "output": 2}},
+                {"id": "engine-v4.1-flash-fast", "name": "Actual fast deployment", "reasoning": false,
+                 "limit": {"context": 300000, "input": 250000, "output": 1024}, "cost": {"input": 9, "output": 10}}
+            ]}]
+        }).to_string().as_bytes(), super::super::models_dev::Origin::Embedded).unwrap();
+        let scope = ["vendor".to_owned()];
+        for raw in [
+            "engine-v4.1-flash-fast",
+            "vendor/engine-v4.1-flash-fast",
+            "channel::vendor/engine-v4.1-flash-fast",
+        ] {
+            let mut request = input_for(raw);
+            request.catalog_providers = &scope;
+            request.price_providers = &scope;
+            let resolved = resolve(&catalog, &request);
+            assert_eq!(resolved.raw_model_id, raw);
+            assert_eq!(resolved.context_window.value, Some(300000), "{raw}");
+            assert_eq!(resolved.context_window.source, source::CATALOG);
+            assert_eq!(resolved.display_name, "Actual fast deployment");
+            assert_eq!(resolved.input_limit.value, Some(250000));
+            assert_eq!(resolved.output_limit.value, Some(1024));
+            assert_eq!(resolved.reasoning.supports, Some(false));
+            assert!(resolved.reasoning.levels.value.as_ref().unwrap().is_empty());
+            assert_eq!(resolved.price.input, Some(9.0));
+            assert!(!resolved
+                .steps
+                .iter()
+                .any(|step| step.step == "speedVariantReference" && !step.matched.is_empty()));
+        }
+    }
+
+    #[test]
+    fn the_same_version_fast_preview_is_preferred_to_the_plain_base_context() {
+        let catalog = Catalog::parse(serde_json::json!({
+            "schemaVersion": 1,
+            "providers": [{"id": "google", "models": [
+                {"id": "gemini-3.8-flash", "limit": {"context": 1000000, "output": 64000}},
+                {"id": "gemini-3.8-flash-fast-preview", "limit": {"context": 200000, "output": 1024}}
+            ]}]
+        }).to_string().as_bytes(), super::super::models_dev::Origin::Embedded).unwrap();
+        let scope = ["google".to_owned()];
+        let mut request = input_for("google/gemini-3.8-flash-fast");
+        request.catalog_providers = &scope;
+        let resolved = resolve_with_global_fallback(&catalog, &request, false, None);
+        assert_eq!(resolved.context_window.value, Some(200000));
+        assert_eq!(resolved.context_window.source, source::CATALOG);
+        assert_eq!(resolved.output_limit.value, Some(1024));
+        assert_eq!(
+            resolved.matched.as_ref().unwrap().model_id,
+            "gemini-3.8-flash-fast-preview"
+        );
+        assert!(resolved
+            .steps
+            .iter()
+            .any(|step| step.step == "previewReference"));
+        assert!(!resolved
+            .steps
+            .iter()
+            .any(|step| step.step == "speedVariantReference" && !step.matched.is_empty()));
+    }
+
+    #[test]
+    fn explicit_bindings_and_live_variant_declarations_override_speed_references() {
+        let catalog = speed_catalog();
+        let scope = ["vendor".to_owned()];
+        let reference = ModelRef {
+            provider_id: "vendor".into(),
+            model_id: "engine-v4.1-flash".into(),
+        };
+        let mut request = input_for("engine-v4.1-flash-fast");
+        request.catalog_providers = &scope;
+        request.explicit_ref = Some(&reference);
+        let resolved = resolve(&catalog, &request);
+        assert_eq!(resolved.match_kind, MatchKind::Explicit);
+        assert_eq!(resolved.output_limit.value, Some(393216));
+        assert_eq!(resolved.reasoning.supports, Some(true));
+        assert_eq!(resolved.context_window.source, source::CATALOG);
+        assert_eq!(resolved.price.source, source::UNKNOWN);
+
+        request.explicit_ref = None;
+        request.upstream = Some(UpstreamValues {
+            context_window: Some(200000),
+            input_limit: Some(180000),
+            max_output_tokens: Some(1024),
+            reasoning: Some(vec![ReasoningLevel {
+                effort: "high".into(),
+                description: "Declared by the variant".into(),
+            }]),
+            default_effort: Some("high".into()),
+            ..Default::default()
+        });
+        let resolved = resolve(&catalog, &request);
+        assert_eq!(resolved.context_window.value, Some(200000));
+        assert_eq!(resolved.context_window.source, source::UPSTREAM);
+        assert_eq!(resolved.input_limit.value, Some(180000));
+        assert_eq!(resolved.output_limit.value, Some(1024));
+        assert_eq!(resolved.output_limit.source, source::UPSTREAM);
+        assert_eq!(
+            resolved.reasoning.levels.value.as_ref().unwrap()[0].effort,
+            "high"
+        );
+        assert_eq!(resolved.reasoning.levels.source, source::UPSTREAM);
+        assert_eq!(resolved.default_effort.as_deref(), Some("high"));
+        request.user.context_window = Some(250000);
+        assert_eq!(
+            resolve(&catalog, &request).context_window.source,
+            source::MANUAL
+        );
+
+        request.price_ref = Some(&reference);
+        assert_eq!(resolve(&catalog, &request).price.input, Some(1.0));
+    }
+
+    #[test]
+    fn deepseek_speed_variants_can_reference_same_version_canonical_contexts() {
+        let catalog = Catalog::parse(serde_json::json!({
+            "schemaVersion": 1,
+            "providers": [{"id": "deepseek", "models": [
+                {"id": "deepseek-v4-flash", "canonicalModelId": "deepseek/deepseek-v4.1-flash",
+                 "limit": {"context": 1000000, "output": 393216}, "cost": {"input": 0.15, "output": 0.6}}
+            ]}]
+        }).to_string().as_bytes(), super::super::models_dev::Origin::Embedded).unwrap();
+        let scope = ["deepseek".to_owned()];
+        for raw in [
+            "deepseek/deepseek-v4-flash-fast",
+            "deepseek/deepseek-v4.1-flash-fast",
+        ] {
+            let mut request = input_for(raw);
+            request.catalog_providers = &scope;
+            request.price_providers = &scope;
+            let resolved = resolve_with_global_fallback(&catalog, &request, false, None);
+            assert_eq!(resolved.context_window.value, Some(1000000), "{raw}");
+            assert_eq!(
+                resolved.context_window.source,
+                source::CATALOG_SPEED_REFERENCE
+            );
+            assert!(resolved.output_limit.value.is_none());
+            assert!(resolved.price.input.is_none());
+            assert_eq!(resolved.raw_model_id, raw);
+        }
+    }
+
+    #[test]
+    fn speed_reference_consensus_considers_only_the_context_field() {
+        for (second_context, expected_kind) in [
+            (1000000, MatchKind::Consensus),
+            (200000, MatchKind::Ambiguous),
+        ] {
+            let catalog = Catalog::parse(serde_json::json!({
+                "schemaVersion": 1,
+                "providers": [
+                    {"id": "a", "models": [{"id": "opaque-model", "limit": {"context": 1000000, "output": 1024}}]},
+                    {"id": "b", "models": [{"id": "opaque-model", "limit": {"context": second_context, "output": 1024}}]}
+                ]
+            }).to_string().as_bytes(), super::super::models_dev::Origin::Embedded).unwrap();
+            let resolved = resolve(&catalog, &input_for("opaque-model-fast"));
+            assert_eq!(resolved.match_kind, expected_kind);
+            assert!(resolved.output_limit.value.is_none());
+            if expected_kind == MatchKind::Consensus {
+                assert_eq!(resolved.context_window.value, Some(1000000));
+                assert_eq!(
+                    resolved.context_window.source,
+                    source::CATALOG_SPEED_REFERENCE
+                );
+            } else {
+                assert!(resolved.context_window.value.is_none());
+                assert!(resolved
+                    .conflicts
+                    .iter()
+                    .any(|conflict| conflict.field == "contextWindow"));
+            }
         }
     }
 
@@ -1865,11 +2234,16 @@ mod tests {
     #[test]
     fn product_max_and_ultra_are_not_effort_aliases() {
         for id in ["gpt-5.1-codex-max", "imagen-4-ultra", "model_MAX"] {
-            assert_eq!(candidates(id).iter().map(|c| c.value.as_str()).collect::<Vec<_>>(), vec![id]);
+            assert_eq!(
+                candidates(id)
+                    .iter()
+                    .map(|c| c.value.as_str())
+                    .collect::<Vec<_>>(),
+                vec![id]
+            );
         }
         for id in ["gpt-5(max)", "gpt-5:max", "gpt-5@ultra"] {
             assert!(candidates(id).iter().any(|c| c.value == "gpt-5"));
         }
     }
-
 }

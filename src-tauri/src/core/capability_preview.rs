@@ -26,6 +26,11 @@ fn catalog_hints(catalog: &models_dev::Catalog, steps: &[MatchStep]) -> Vec<Cata
     let Some(step) = steps.iter().rev().find(|step| !step.matched.is_empty()) else {
         return Vec::new();
     };
+    // A speed reference transfers context only. The base record's identity,
+    // reasoning controls and interleaving are not declarations for the variant.
+    if step.step == "speedVariantReference" {
+        return Vec::new();
+    }
     let mut hints = Vec::new();
     for source in &step.matched {
         if hints
@@ -353,6 +358,47 @@ pub(crate) fn preview_with_sources(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::model_metadata;
+
+    #[test]
+    fn speed_reference_does_not_publish_base_identity_or_reasoning_hints() {
+        let catalog = models_dev::Catalog::parse(
+            serde_json::json!({
+                "schemaVersion": 1,
+                "providers": [{"id": "deepseek", "models": [{
+                    "id": "deepseek-flash", "canonicalModelId": "deepseek/deepseek-v4.1-flash",
+                    "limit": {"context": 1000000}, "reasoning": true,
+                    "reasoningOptionsDeclared": true, "reasoningOptions": [{"type": "toggle"}],
+                    "interleaved": {"field": "reasoning_content"}
+                }]}]
+            })
+            .to_string()
+            .as_bytes(),
+            models_dev::Origin::Embedded,
+        )
+        .unwrap();
+        let resolved = model_metadata::resolve(
+            &catalog,
+            &model_metadata::ResolutionRequest {
+                raw_model_id: "deepseek/deepseek-v4.1-flash-fast",
+                display_name: "",
+                catalog_providers: &["deepseek".into()],
+                price_providers: &[],
+                explicit_ref: None,
+                price_ref: None,
+                user: Default::default(),
+                provider_context: None,
+                official: None,
+                upstream: None,
+            },
+        );
+        assert_eq!(resolved.context_window.value, Some(1000000));
+        assert_eq!(
+            resolved.context_window.source,
+            model_metadata::source::CATALOG_SPEED_REFERENCE
+        );
+        assert!(catalog_hints(&catalog, &resolved.steps).is_empty());
+    }
 
     #[test]
     fn canonical_links_only_validate_identity_and_keep_source_records() {

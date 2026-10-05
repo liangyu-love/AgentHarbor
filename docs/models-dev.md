@@ -45,6 +45,17 @@ alias. No version, dated preview or custom-tools variant is guessed; deprecated
 entries are excluded and case conflicts remain visible. This capability-only
 reference never changes the actual request ID or establishes preview pricing.
 
+Fast variants follow the same separation between request identity and metadata.
+An exact full Fast record or an explicit `catalogRef` takes precedence. If the
+full variant has no capability match, a terminal `-fast`, `_fast`, `@fast` or
+`:fast` marker (case-insensitive) may reference the same-version base model's
+context window. This is a `speedVariantReference` step with the field source
+`catalogSpeedReference`. The resolver keeps the configured request ID and its
+display name. It does not borrow the base model's input limit, output limit,
+reasoning support, reasoning levels or price. Versions, dates, `preview` and
+other product qualifiers remain part of the identity; an unavailable or
+conflicting base context stays unknown rather than selecting another version.
+
 Prices require an independent billing binding (`priceCatalogProvider` or a model
 `priceRef`) or an explicit user price. Capability mappings and capability
 references never establish billing prices. Without a billing binding, price
@@ -56,6 +67,17 @@ model's price.
 The safety check covers the entire candidate reduction path, including combined
 prefixes and tags. Catalog agreement compares every stored price field and tier;
 a conflict stays unknown with an explanation.
+
+Claude Desktop routing uses the effective context from this shared resolver to
+offer the extra 1M menu option. A context of at least 1,000,000 tokens must come
+from an evidenced source, such as a user override, provider setting, upstream
+declaration, applicable official snapshot or catalog reference. The shared
+fallback is insufficient. Messages, Chat Completions and Responses targets use
+the same capability check; the checkbox remains off by default. This Desktop
+rule does not widen the ordinary router's existing Claude 1M protocol boundary.
+Chat/Responses conversions do not invent a 1M request parameter or forward
+Claude beta headers. Client rendering and actual upstream context acceptance
+still require live verification.
 
 ## Field precedence
 

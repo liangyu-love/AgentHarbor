@@ -969,9 +969,9 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
       supports1m, contextWindow: supports1m ? 1_000_000 : 200_000, contextSource: "catalog", selectable,
       excludeReason: selectable ? null : "model_not_included" });
     review.desktopCandidates.routeProviders = [
-      candidate("route-chat", "Chat Relay", [model("deepseek-chat", "chatCompletions", true), model("excluded-model", "chatCompletions", false, false)]),
-      candidate("route-messages", "Messages Relay", [model("claude-opus-4-7", "anthropicMessages", true)]),
-      candidate("route-responses", "Responses Relay", [model("gpt-5", "responses", true)]),
+      candidate("route-chat", "Chat Relay", [model("deepseek-chat", "chatCompletions", true), model("small-chat", "chatCompletions"), model("excluded-model", "chatCompletions", false, false)]),
+      candidate("route-messages", "Messages Relay", [model("claude-opus-4-7", "anthropicMessages", true), model("small-messages", "anthropicMessages")]),
+      candidate("route-responses", "Responses Relay", [model("gpt-5", "responses", true), model("small-responses", "responses")]),
       candidate("route-disabled", "Disabled Relay", [model("disabled-model", "anthropicMessages")], false),
     ];
     review.desktopCandidates.routeRoles = [
@@ -998,14 +998,31 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   await roleRow("sonnet").getByRole("combobox", { name: "sonnet 模型", exact: true }).click();
   assert.equal(await page.getByRole("option", { name: "excluded-model · 不可用", exact: true }).getAttribute("aria-disabled"), "true");
   await page.getByRole("option", { name: "deepseek-chat", exact: true }).click();
-  assert.equal(await roleRow("sonnet").getByRole("checkbox", { name: "额外 1M 选项", exact: true }).isDisabled(), true,
-    "a million-token Chat target cannot opt into cross-protocol 1M");
+  const sonnetRouteOneM = roleRow("sonnet").getByRole("checkbox", { name: "额外 1M 选项", exact: true });
+  assert.equal(await sonnetRouteOneM.isEnabled(), true, "a capable Chat target can opt into 1M");
+  assert.equal(await sonnetRouteOneM.getAttribute("aria-checked"), "false", "Chat 1M stays off until explicitly selected");
+  await sonnetRouteOneM.click();
+  assert.equal(await sonnetRouteOneM.getAttribute("aria-checked"), "true");
+  await sonnetRouteOneM.click();
+  await pick("sonnet", "model", "small-chat");
+  assert.equal(await sonnetRouteOneM.isDisabled(), true, "Chat with insufficient context cannot offer 1M");
+  await pick("sonnet", "model", "deepseek-chat");
   await pick("opus", "provider", "Responses Relay");
   await pick("opus", "model", "gpt-5");
-  assert.equal(await roleRow("opus").getByRole("checkbox", { name: "额外 1M 选项", exact: true }).isDisabled(), true);
+  const responsesRouteOneM = roleRow("opus").getByRole("checkbox", { name: "额外 1M 选项", exact: true });
+  assert.equal(await responsesRouteOneM.isEnabled(), true, "a capable Responses target can opt into 1M");
+  assert.equal(await responsesRouteOneM.getAttribute("aria-checked"), "false", "Responses 1M defaults off");
+  await responsesRouteOneM.click();
+  assert.equal(await responsesRouteOneM.getAttribute("aria-checked"), "true");
+  await pick("opus", "model", "small-responses");
+  assert.equal(await responsesRouteOneM.isDisabled(), true, "Responses with insufficient context cannot offer 1M");
   await pick("opus", "provider", "Messages Relay");
+  await pick("opus", "model", "small-messages");
+  assert.equal(await roleRow("opus").getByRole("checkbox", { name: "额外 1M 选项", exact: true }).isDisabled(), true,
+    "Messages with insufficient context cannot offer 1M");
   await pick("opus", "model", "claude-opus-4-7");
   const opusRouteOneM = roleRow("opus").getByRole("checkbox", { name: "额外 1M 选项", exact: true });
+  assert.equal(await opusRouteOneM.isEnabled(), true, "Messages uses the same effective context capability");
   assert.equal(await opusRouteOneM.getAttribute("aria-checked"), "false");
   assert.equal(await tabTo("desktop-route-opus-onem"), true, "role 1M toggle remains keyboard reachable");
   await page.keyboard.press("Space");
@@ -1029,7 +1046,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   assert.doesNotMatch(JSON.stringify(routeRequest), /apiKey|accessToken|gatewayToken"/);
   assert.deepEqual(await page.evaluate(() => window.review.getState()), stateBeforeRoutes,
     "choosing role targets cannot enable cards or change the global router/default model");
-  console.log("PASS routing explicitly maps different saved cards with empty roles, safe aliases, opt-in native 1M and no provider mutation");
+  console.log("PASS routing explicitly maps saved cards with empty roles, safe aliases, capability-based opt-in 1M across three protocols and no provider mutation");
 
   await page.evaluate(async () => {
     window.review.desktopCandidates.routeProviders.push({ providerId: "unrelated", name: "Unrelated", models: [], enabled: false, hasInferenceKey: false, eligible: false, reason: "provider_disabled", endpoint: null });
@@ -1105,6 +1122,21 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
 
   await actionButton(ZH.change).click();
   assert.equal(await dialog().getByRole("button", { name: "路由", exact: true }).getAttribute("aria-pressed"), "true");
+  await page.evaluate(async () => {
+    const model = window.review.desktopCandidates.routeProviders.find(provider => provider.providerId === "route-messages").models[0];
+    model.supports1m = false;
+    model.contextWindow = 200_000;
+    await window.review.providersClient.invalidateQueries({ queryKey: ["claude-desktop", "candidates"] });
+  });
+  const savedOneM = roleRow("opus").getByRole("checkbox", { name: "额外 1M 选项", exact: true });
+  await roleRow("opus").getByText("请关闭额外 1M 选项或选择支持 1M 的模型。", { exact: true }).waitFor();
+  assert.equal(await savedOneM.getAttribute("aria-checked"), "true", "a saved 1M choice remains visible after its effective capability changes");
+  assert.equal(await savedOneM.isEnabled(), true, "an obsolete 1M choice must remain operable so the user can turn it off");
+  assert.equal(await dialog().getByRole("button", { name: ZH.preview, exact: true }).isDisabled(), true,
+    "stale 1M intent must be resolved before preview");
+  await savedOneM.click();
+  assert.equal(await savedOneM.getAttribute("aria-checked"), "false");
+  assert.equal(await savedOneM.isDisabled(), true, "a target that lost the capability cannot turn 1M back on");
   await dialog().getByRole("button", { name: ZH.preview, exact: true }).click();
   await routeFiles.waitFor();
   const cancelledBefore = await page.evaluate(() => window.review.desktopCalls.cancelPreview.length);
@@ -1112,7 +1144,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   await routeFiles.waitFor({ state: "hidden" });
   await page.waitForFunction(before => window.review.desktopCalls.cancelPreview.length > before, cancelledBefore);
   await dialog().getByRole("button", { name: ZH.cancel, exact: true }).click();
-  console.log("PASS switching a routing form back to direct explicitly cancels its preview");
+  console.log("PASS saved 1M intent remains visible after capability loss and switching a routing form cancels its preview");
 
   // R-A14: the global exit dialog recovers early requests and delegates every action to the coordinator.
   await page.evaluate(() => {

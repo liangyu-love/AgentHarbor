@@ -12,8 +12,8 @@ import type {
 
 const EMPTY = "__unconfigured__";
 
-export function desktopRouteSupports1m(model: { protocol: string; supports1m: boolean } | undefined) {
-  return !!model?.supports1m && model.protocol === "anthropicMessages";
+export function desktopRouteSupports1m(model: { supports1m: boolean } | undefined) {
+  return !!model?.supports1m;
 }
 
 export function desktopProtocolLabel(protocol: string) {

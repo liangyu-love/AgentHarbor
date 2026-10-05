@@ -174,6 +174,23 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   console.log("PASS seven-day costs and partial/unknown coverage survive summaries, trends, merged model views and narrow screens");
 
   await reset("access");
+  await page.evaluate(() => {
+    const reference = { providerId: "anthropic", modelId: "claude-opus-4-7" };
+    window.review.capabilityVariants = [{ upstreamModel: "claude-opus-4-7-fast", displayName: "Opus Fast",
+      context: { value: 1_000_000, source: "catalogSpeedReference", sourceRef: reference, updatedAt: null },
+      steps: [{ modelId: "claude-opus-4-7", step: "speedVariantReference", matched: [reference], note: "1M" }] }];
+  });
+  const fastCatalog = page.getByRole("region", { name: "模型能力目录与匹配预览" });
+  await fastCatalog.getByRole("button", { name: "模型能力目录与匹配预览", exact: true }).click();
+  await fastCatalog.locator("summary").first().waitFor();
+  await fastCatalog.locator("summary").first().click();
+  await fastCatalog.getByText("基础型号目录上下文", { exact: true }).waitFor();
+  await fastCatalog.getByText(/Fast 模式：参考基础型号的上下文上限/).waitFor();
+  assert.doesNotMatch(await fastCatalog.innerText(), /catalogSpeedReference|speedVariantReference/,
+    "Fast context provenance must display localized names rather than resolver codes");
+  console.log("PASS Fast context references show localized source and match steps");
+
+  await reset("access");
   await page.evaluate(() => { window.review.desktopDiagnostics = true; });
   const desktopRoutes = page.getByRole("region", { name: "请求级路由诊断" });
   await desktopRoutes.getByRole("button", { name: "请求级路由诊断", exact: true }).click();
@@ -184,6 +201,10 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   await desktopRoutes.getByText("claude-sonnet-4-6 → deepseek-fixture", { exact: true }).waitFor();
   assert.equal(await desktopRoutes.locator("summary").count(), 1);
   assert.match(await desktopRoutes.locator("summary").innerText(), /claude-sonnet-4-6 → deepseek-fixture/);
+  await desktopRoutes.locator("summary").click();
+  await desktopRoutes.getByText("Claude Desktop 角色映射", { exact: true }).waitFor();
+  assert.doesNotMatch(await desktopRoutes.innerText(), /desktop_role_mapping/,
+    "Desktop mapping reasons must be localized in expanded request diagnostics");
   await desktopRoutes.getByRole("combobox", { name: "客户端来源" }).click();
   await page.getByRole("option", { name: "其他 / 未记录", exact: true }).click();
   await desktopRoutes.getByText("relay::claude-opus-5-5-kiro", { exact: true }).waitFor();

@@ -786,6 +786,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             selected_binding,
         )? };
         if one_m_context
+            && desktop.is_none()
             && !matches!(
                 &destination,
                 Destination::Provider {
@@ -907,7 +908,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                     )?
                 }
             };
-            if one_m_context {
+            if one_m_context && upstream_protocol == router::ModelProtocol::AnthropicMessages {
                 append_anthropic_beta(&mut attempt_headers);
             }
             let desktop_history_scope = desktop_route.as_ref().zip(desktop.as_ref()).map(|(route, snapshot)| {

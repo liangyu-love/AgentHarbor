@@ -26,6 +26,7 @@ fn context_source_is_evidence(source: &str) -> bool {
             | source::CATALOG
             | source::CATALOG_GENERIC
             | source::CATALOG_ALIAS
+            | source::CATALOG_SPEED_REFERENCE
     )
 }
 

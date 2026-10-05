@@ -473,6 +473,51 @@ mod tests {
     }
 
     #[test]
+    fn speed_variant_preview_uses_the_shared_context_reference_and_keeps_its_raw_id() {
+        let mut draft = draft();
+        draft.models[0].id = "openai/gpt-6-luna-fast".into();
+        let global = model_policy::CompressionPolicy::percent(90);
+        let resolved = resolve_with_sources(&draft, &store(&global), &[], &catalog());
+        let entry = &resolved.models[0];
+        assert_eq!(entry.model_id, "openai/gpt-6-luna-fast");
+        assert_eq!(entry.match_kind, model_metadata::MatchKind::Normalized);
+        assert_eq!(entry.context.value, Some(400_000));
+        assert_eq!(
+            entry.context.source,
+            model_metadata::source::CATALOG_SPEED_REFERENCE
+        );
+        assert!(entry.input_limit.value.is_none());
+        assert!(entry.output.value.is_none());
+        assert_eq!(entry.projection.compression.threshold, Some(360_000));
+        assert_eq!(
+            entry.projection.output_limit,
+            Some(model_metadata::FALLBACK_MAX_OUTPUT_TOKENS)
+        );
+        assert_eq!(
+            entry.projection.output_source,
+            model_metadata::source::FALLBACK
+        );
+        assert!(entry.projection.reasoning.is_empty());
+        let (metadata, projection) = router::model_projection(
+            &draft.provider(&store(&global)),
+            &entry.model_id,
+            None,
+            &catalog(),
+            &global,
+        );
+        assert_eq!(
+            serde_json::to_value(&entry.context).unwrap(),
+            serde_json::to_value(metadata.context_window).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&entry.projection).unwrap(),
+            serde_json::to_value(projection).unwrap()
+        );
+        assert_eq!(draft.models[0].id, "openai/gpt-6-luna-fast");
+        assert!(draft.models[0].overrides.is_empty());
+    }
+
+    #[test]
     fn unknown_or_invalid_reference_never_fabricates_matching_information() {
         let mut draft = draft();
         draft.models[0].id = "opaque-private-model".into();
