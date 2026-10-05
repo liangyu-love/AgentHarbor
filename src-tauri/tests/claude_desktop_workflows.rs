@@ -1548,7 +1548,7 @@ fn direct_connection_preview_commit_and_restore_roundtrip() {
     assert_eq!(profile["inferenceModels"][1]["labelOverride"], serde_json::json!("中转 · Opus"));
     assert!(profile["inferenceModels"][1].get("supports1m").is_none());
     assert!(!profile.to_string().contains("[1m]"));
-    assert!(profile.get("coworkEgressAllowedHosts").is_none());
+    assert_eq!(profile["coworkEgressAllowedHosts"], serde_json::json!(["*"]));
     let threep: serde_json::Value =
         serde_json::from_str(&read(&fixture.paths.third_party_config).unwrap()).unwrap();
     assert_eq!(threep["mcpServers"]["keep"], serde_json::json!(1));

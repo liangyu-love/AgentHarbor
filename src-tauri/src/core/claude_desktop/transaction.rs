@@ -499,6 +499,7 @@ fn profile_plan_keys(before: Option<&str>, after: Option<&Value>) -> Vec<KeyValu
         profile::KEY_INFERENCE_PROVIDER,
         profile::KEY_AUTH_SCHEME,
         profile::KEY_MODELS,
+        profile::KEY_EGRESS_HOSTS,
         profile::KEY_API_KEY,
     ]
     .into_iter()
@@ -541,6 +542,15 @@ fn profile_preview_value(document: &Value, key: &str) -> Option<String> {
             Some(render(&Value::Array(models)))
         }
         profile::KEY_DISABLE_CHOOSER => value.as_bool().map(|enabled| enabled.to_string()),
+        profile::KEY_EGRESS_HOSTS => value.as_array().map(|hosts| {
+            render(&Value::Array(
+                hosts
+                    .iter()
+                    .filter(|host| host.is_string())
+                    .cloned()
+                    .collect(),
+            ))
+        }),
         _ => value.as_str().map(str::to_owned),
     }
 }
@@ -1379,6 +1389,13 @@ mod preview_projection_tests {
             .find(|change| change.path == profile::KEY_BASE_URL)
             .unwrap();
         assert_eq!(endpoint.after.as_deref(), Some("https://relay.example"));
+        let egress = view
+            .managed_changes
+            .iter()
+            .find(|change| change.path == profile::KEY_EGRESS_HOSTS)
+            .unwrap();
+        assert!(egress.before.is_none());
+        assert_eq!(egress.after.as_deref(), Some("[\"*\"]"));
         let encoded = serde_json::to_string(&view).unwrap();
         assert!(!encoded.contains("new-secret-sentinel"));
         assert!(encoded.contains("<redacted>"));

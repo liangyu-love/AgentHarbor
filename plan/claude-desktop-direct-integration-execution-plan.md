@@ -82,7 +82,7 @@
 | 删除自己的 meta 条目后选择第一个外部 profile | 按 journal 恢复原 `appliedId`；不擅自选择外部条目 |
 | 四文件内存快照与异常回滚 | 写前持久事务日志，覆盖进程中断及部分回滚失败 |
 | 四档模型缺省 `supports1m=true` | 从有效能力和来源推导，未知不声明 1M |
-| profile 总写 `coworkEgressAllowedHosts: ["*"]` | P0 先验证省略该键的最小推理 profile；不把省略视为已证实可行，不自动扩大权限 |
+| profile 总写 `coworkEgressAllowedHosts: ["*"]` | 初期仅验证省略键的推理 profile；2026-10-05 按用户网页访问故障修复请求补齐该键，纳入预览与恢复，不改管理员策略 |
 | Windows `Claude*` 候选排序选第一项 | 验证配置证据，多候选让用户选择，不误选 Claude Code/另一安装渠道 |
 
 ## 3. 如何直接使用现有中转
@@ -285,7 +285,7 @@ scripts/test-claude-desktop-config.mjs
 
 上面的模型仅为合法形态示例，不预置为用户可用模型。没有 label/1M 选项时使用字符串；有选项时使用对象。false 的 1M 默认省略，保持参考输出形态。
 
-CC Switch 始终额外写 `coworkEgressAllowedHosts: ["*"]`，没有省略成功的源码证据。**省略该字段是 P0 待验证的最小候选**：必须验证启动、模型菜单、普通真实请求、多轮、重启和恢复。失败则阻断该候选交付，记录版本与失败表现，再评审有依据的最小策略；不得失败后自动写入 `*`。首期不承诺 Cowork 可用。
+初期省略 `coworkEgressAllowedHosts` 的最小候选通过了普通推理，但这不证明工具联网可用。2026-10-05 用户提供 `cowork-egress-blocked / Allowed: 127.0.0.1` 的实际失败证据；核对 Desktop 2.19675.0 的契约确认，省略时只允许推理主机。按本次故障修复请求，直连与路由统一写入 `coworkEgressAllowedHosts: ["*"]`，与 CC Switch 一致；通过原有配置预览、退出后提交和基线恢复生效，不直接改运行中的客户端文件。该修复开放工具公网访问，不等于新增 provider 原生 WebSearch，完整 Cowork 仍需真实验收。
 
 `disableDeploymentModeChooser=true` 与参考一致，预览说明会隐藏应用内模式选择；项目必须提供恢复路径。Desktop 可读取的 profile 必须为普通 JSON，不能用 `secret_file` 把客户端文件加密。
 

@@ -130,6 +130,7 @@ fn router_profile_exposes_only_safe_aliases_and_a_local_credential() {
     assert_eq!(file[profile::KEY_MODELS].as_array().unwrap().len(), 2);
     assert_eq!(file[profile::KEY_MODELS][0]["name"], "claude-sonnet-4-6");
     assert_eq!(file[profile::KEY_MODELS][1]["supports1m"], true);
+    assert_eq!(file[profile::KEY_EGRESS_HOSTS], json!(["*"]));
     assert!(!file.to_string().contains(SENTINEL_KEY));
     let snapshot = super::gateway::committed_snapshot(&base).unwrap().unwrap();
     let catalog = models_dev::load(&base);
@@ -1199,8 +1200,8 @@ fn profile_uses_strings_without_options_and_objects_with_them() {
     assert_eq!(profile[profile::KEY_DISABLE_CHOOSER], json!(true));
     assert_eq!(profile[profile::KEY_INFERENCE_PROVIDER], json!("gateway"));
     assert_eq!(profile[profile::KEY_AUTH_SCHEME], json!("bearer"));
-    // 首期最小候选：不写 Cowork 出口字段，也不写 Claude Code 的 [1m] 后缀。
-    assert!(profile.get("coworkEgressAllowedHosts").is_none());
+    // Tool web access must not be confined to the inference host.
+    assert_eq!(profile[profile::KEY_EGRESS_HOSTS], json!(["*"]));
     assert!(!profile.to_string().contains("[1m]"));
 }
 
@@ -2342,7 +2343,7 @@ fn restore_removes_a_deployment_mode_that_the_takeover_introduced() {
 #[test]
 fn withdraw_restores_a_pre_existing_profile_instead_of_deleting_it() {
     let (base, paths) = test_paths("preExisting");
-    let original = r#"{"inferenceProvider":"gateway","note":"pre-existing"}"#;
+    let original = r#"{"inferenceProvider":"gateway","note":"pre-existing","coworkEgressAllowedHosts":["docs.example"]}"#;
     write(&paths.profile_path, original);
     let state = commit_plan(&base, &paths);
 

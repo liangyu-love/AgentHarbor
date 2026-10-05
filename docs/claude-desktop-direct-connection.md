@@ -103,7 +103,7 @@
 ```
 
 - `inferenceModels` 的每一项：没有显示名也没有 1M 时是字符串；有显示名或 1M 时是对象 `{ name, labelOverride?, supports1m? }`，且 `supports1m` **只在为 true 时出现**。
-- 不写 Claude Code 的 `[1m]` 后缀；首期也不写 `coworkEgressAllowedHosts`（见第 8 节）。
+- 不写 Claude Code 的 `[1m]` 后缀；写入 `coworkEgressAllowedHosts: ["*"]` 供客户端工具访问公网（见 [网页访问与搜索](claude-desktop-web-access.md)）。
 - 1M 只在模型的有效上下文窗口不小于 1,000,000 且来源是可依据的来源（手动设置、供应商设置、上游、官方、目录及其别名/通用目录）时才声明；未知、兜底或纯名称推断一律不声明。开启后 Desktop 同时提供普通与 1M 项，模型 ID 只写一次；直连新选择在支持 1M 时默认勾选，用户可取消，已有选择不自动改变。
 - 本机 Desktop 2.19675.0 的 `supports1m` 契约是“追加 1M 变体”，`prefer1m` 只控制首项默认选择，均不能只显示 1M 单项。关闭该选项只省略这个菜单标记，不修改中转模型能力；Desktop 实际窗口还依赖其 SDK 对模型、原生 1M 和供应商的识别，不能凭中转上下文值承诺普通项的本地预算。
 
@@ -149,7 +149,7 @@
 
 - 最小 profile、模型菜单、真实 Bearer 请求、多轮和普通工具调用已有实施记录；Desktop 侧流式渲染未单独观察。
 - 真实恢复、路由启动后完全退出的组合和官方登录流程仍未完成；本轮代码修复只运行隔离自动化，不重做真实接管。
-- Cowork：未验证；首期 profile **省略** `coworkEgressAllowedHosts` 字段（有用例断言该字段不被写入），省略是否可行没有在真实 Desktop 上确认。
+- 网页访问：直连与路由 profile 均写入 `coworkEgressAllowedHosts: ["*"]`，与 CC Switch 一致；省略时客户端只允许工具访问推理地址。旧配置需要重新应用并重启 Desktop。此字段不提供上游原生 WebSearch，也不覆盖单独部署的管理员策略；完整 Cowork 工具仍待真实验收。
 - macOS / Linux：路径发现按平台分支实现，但未在这两个平台运行与验收；Unix 的内部记录只有 0600 权限、不做内容加密。
 - **检测成功不等于 Desktop 能连通**：检测使用 AgentHarbor 自身的网络设置与出口，Desktop 走自己的网络。
   - 列表检测只证明"该地址用这张卡片的推理密钥能读到 `/v1/models` 列表"；返回 401/403 也只说明本次校验被拒绝，不等于 `/messages` 永远不接受 Bearer。

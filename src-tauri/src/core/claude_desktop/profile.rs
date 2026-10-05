@@ -19,6 +19,7 @@ pub const KEY_AUTH_SCHEME: &str = "inferenceGatewayAuthScheme";
 pub const KEY_BASE_URL: &str = "inferenceGatewayBaseUrl";
 pub const KEY_API_KEY: &str = "inferenceGatewayApiKey";
 pub const KEY_MODELS: &str = "inferenceModels";
+pub const KEY_EGRESS_HOSTS: &str = "coworkEgressAllowedHosts";
 pub const KEY_ENTRIES: &str = "entries";
 pub const KEY_APPLIED_ID: &str = "appliedId";
 
@@ -252,6 +253,10 @@ pub fn looks_like_ours(value: &Value) -> bool {
 
 pub fn profile_json(base_url: &str, api_key: &str, models: &[ManagedModelView]) -> Value {
     let mut map = Map::new();
+    // Unset confines tool traffic to the inference host (127.0.0.1 in router
+    // mode). Allow public web access, as CC Switch does; this does not add a
+    // provider-side WebSearch implementation or override managed policies.
+    map.insert(KEY_EGRESS_HOSTS.into(), json!(["*"]));
     map.insert(KEY_DISABLE_CHOOSER.into(), Value::Bool(true));
     map.insert(
         KEY_INFERENCE_PROVIDER.into(),
@@ -299,6 +304,7 @@ pub fn strip_inference_keys(profile: &mut Map<String, Value>) {
         KEY_BASE_URL,
         KEY_API_KEY,
         KEY_MODELS,
+        KEY_EGRESS_HOSTS,
     ] {
         profile.remove(key);
     }
