@@ -194,7 +194,7 @@ export async function testProviderFeedback({ page, reset, captureDir }) {
   assert.equal(await dialog.getByRole("button", { name: "刷新余额", exact: true }).isEnabled(), true);
   console.log("PASS OpenCode Go shows official percentage windows with resets, zero/exhausted states and retains results after a failed refresh");
 
-  await loadGo({ ...goBalance, remaining: 58, rawQuota: 58, used: null, entries: [] });
+  await loadGo({ ...goBalance, remaining: 58, rawQuota: 58, used: 42, entries: [] });
   await page.getByRole("button", { name: "查询余额 Quota fixture", exact: true }).click();
   await goSummary.waitFor();
   assert.match(await goSummary.innerText(), /58%/);

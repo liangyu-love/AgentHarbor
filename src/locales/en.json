@@ -461,6 +461,7 @@
     "flags": {
       "name": "Provider name changed",
       "credential": "Inference key changed",
+      "webAccess": "Web access configuration needs updating",
       "endpoint": "Relay address changed",
       "model": "Model configuration changed",
       "label": "Model display name changed",

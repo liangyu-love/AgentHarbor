@@ -59,6 +59,7 @@ const stateKey = (status: ClaudeDesktopStatus) => `claudeDesktop.state.${status.
 const FLAG_KEYS: Record<string, string> = {
   name: "claudeDesktop.flags.name",
   credential: "claudeDesktop.flags.credential",
+  webAccess: "claudeDesktop.flags.webAccess",
   endpoint: "claudeDesktop.flags.endpoint",
   model: "claudeDesktop.flags.model",
   label: "claudeDesktop.flags.label",

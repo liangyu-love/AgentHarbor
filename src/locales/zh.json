@@ -461,6 +461,7 @@
     "flags": {
       "name": "供应商名称已变化",
       "credential": "推理密钥已变化",
+      "webAccess": "网页访问配置待更新",
       "endpoint": "中转地址已变化",
       "model": "模型配置已变化",
       "label": "模型显示名称已变化",

@@ -92,7 +92,7 @@ pub fn project(input: StatusInput<'_>) -> DesktopStatus {
             });
 
     let mut route_views = Vec::new();
-    let stale_reasons = match (active_state, provider) {
+    let mut stale_reasons = match (active_state, provider) {
         (Some(state), _) if state.data.applied_mode == transaction::AppliedMode::Router => {
             let catalog = models_dev::load(app_data_dir);
             let mut reasons = Vec::new();
@@ -140,6 +140,9 @@ pub fn project(input: StatusInput<'_>) -> DesktopStatus {
         (Some(state), Some(provider)) => stale_reasons_for(state, provider, app_data_dir),
         _ => Vec::new(),
     };
+    if active_state.is_some_and(profile_needs_web_access_update) {
+        stale_reasons.push("webAccess".into());
+    }
 
     if let (Some(state), Some(paths)) = (active_state, &paths) {
         match transaction::drifted_roles(state, paths) {
@@ -280,6 +283,17 @@ pub fn read_mode(paths: &DesktopPaths) -> String {
         }
         None => "unknown".to_owned(),
     }
+}
+
+fn profile_needs_web_access_update(state: &transaction::State) -> bool {
+    if state.data.applied_mode == transaction::AppliedMode::Official {
+        return false;
+    }
+    matches!(state.edition(paths::role::PROFILE).map(|edition| &edition.installed),
+        Some(transaction::ManagedValues::Whole { value: Some(value) })
+        if !value.get(super::profile::KEY_EGRESS_HOSTS)
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|hosts| hosts.iter().any(|host| host.as_str() == Some("*"))))
 }
 
 fn installed_profile_matches(state: &transaction::State, paths: &DesktopPaths) -> bool {
@@ -440,6 +454,29 @@ mod projection_tests {
     use super::super::types::{DesktopModelChoice, ManagedModelView};
     use super::*;
     use crate::core::newapi;
+
+    #[test]
+    fn old_profiles_need_web_access_update_in_both_modes() {
+        let (root, _, mut state) = fixture("claude-sonnet-4-6");
+        assert!(!profile_needs_web_access_update(&state));
+        state.data.files.push(transaction::Edition {
+            role: paths::role::PROFILE.into(), existed_before: false, before: None,
+            baseline: transaction::ManagedValues::Whole { value: None },
+            installed: transaction::ManagedValues::Whole { value: Some(serde_json::json!({})) },
+        });
+        for mode in [transaction::AppliedMode::Direct, transaction::AppliedMode::Router] {
+            state.data.applied_mode = mode;
+            assert!(profile_needs_web_access_update(&state));
+        }
+        state.data.files[0].installed = transaction::ManagedValues::Whole {
+            value: Some(serde_json::json!({"coworkEgressAllowedHosts": ["*"]})),
+        };
+        assert!(!profile_needs_web_access_update(&state));
+        state.data.applied_mode = transaction::AppliedMode::Official;
+        state.data.files[0].installed = transaction::ManagedValues::Whole { value: Some(serde_json::json!({})) };
+        assert!(!profile_needs_web_access_update(&state));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn fixture(model_id: &str) -> (std::path::PathBuf, Provider, transaction::State) {
         let root = std::env::temp_dir().join(format!("desktop-status-{}", uuid::Uuid::new_v4()));

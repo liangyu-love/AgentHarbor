@@ -25,7 +25,7 @@ export function OpenCodeGoBalanceSummary({ balance, providerName }: {
         return (
           <div key={`${entry.label}-${index}`} data-opencode-go-window={entry.label ?? "remaining"}>
             <BalanceWindowRow entry={entry} label={label} amount={amount} unavailableText={t("newapi.go.windowUnavailable")} />
-            {entry.total != null && <p className="mt-1.5 text-[11px] text-muted-foreground">{t("newapi.balanceRemaining")}: {amount(entry.remaining)}</p>}
+            {(entry.used != null || entry.total != null) && <p className="mt-1.5 text-[11px] text-muted-foreground">{t("newapi.balanceRemaining")}: {amount(entry.remaining)}</p>}
           </div>
         );
       })}
