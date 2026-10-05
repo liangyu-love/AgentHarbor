@@ -725,6 +725,11 @@ fn router_each_role_resolves_its_card_and_invalid_current_cards_do_not_fallback(
         super::gateway::resolve_message(&snapshot, &store, &catalog, "claude-haiku-4-5").unwrap();
     assert_eq!(first.provider.id, "p1");
     assert_eq!(second.provider.id, "p2");
+    let dated = super::gateway::resolve_message(&snapshot, &store, &catalog, "claude-haiku-4-5-20251001").unwrap();
+    assert_eq!(dated.provider.id, "p2");
+    for alias in ["claude-haiku-garbage", "prefix-claude-haiku-4-5", "claude-haiku-4-5-fast", "claude-opus-4-7-20261001", "claude-haiku-4-5-20251001[1m]"] {
+        assert!(super::gateway::resolve_message(&snapshot, &store, &catalog, alias).is_err(), "{alias}");
+    }
     assert_eq!(
         first.provider.protocol_for_model(&first.choice.model_id),
         ModelProtocol::Responses
@@ -734,6 +739,7 @@ fn router_each_role_resolves_its_card_and_invalid_current_cards_do_not_fallback(
         ModelProtocol::ChatCompletions
     );
     store.providers[1].enabled = false;
+    assert!(super::gateway::resolve_message(&snapshot, &store, &catalog, "claude-haiku-4-5-20251001").is_err());
     assert!(
         super::gateway::resolve_message(&snapshot, &store, &catalog, "claude-haiku-4-5").is_err()
     );

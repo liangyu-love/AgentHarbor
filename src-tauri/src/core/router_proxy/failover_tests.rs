@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub(super) async fn mock(
     status: u16,
-    body: &'static str,
+    body: impl AsRef<[u8]>,
     content_type: &'static str,
 ) -> (
     String,
@@ -19,6 +19,7 @@ pub(super) async fn mock(
     let requests = Arc::new(Mutex::new(Vec::new()));
     let captured = requests.clone();
     let calls = count.clone();
+    let body = Bytes::copy_from_slice(body.as_ref());
     let task = tokio::spawn(async move {
         loop {
             let Ok((socket, _)) = listener.accept().await else {
@@ -26,6 +27,7 @@ pub(super) async fn mock(
             };
             let captured = captured.clone();
             let calls = calls.clone();
+            let body = body.clone();
             tokio::spawn(async move {
                 let _ = http1::Builder::new()
                     .serve_connection(
@@ -33,6 +35,7 @@ pub(super) async fn mock(
                         service_fn(move |request: Request<Incoming>| {
                             let captured = captured.clone();
                             let calls = calls.clone();
+                            let body = body.clone();
                             async move {
                                 let bytes = request.into_body().collect().await.unwrap().to_bytes();
                                 captured.lock().unwrap().push(if bytes.is_empty() {
@@ -45,7 +48,7 @@ pub(super) async fn mock(
                                     Response::builder()
                                         .status(status)
                                         .header(CONTENT_TYPE, content_type)
-                                        .body(Full::new(Bytes::from_static(body.as_bytes())))
+                                        .body(Full::new(body))
                                         .unwrap(),
                                 )
                             }
@@ -502,7 +505,7 @@ fn responses_namespace_tools_keep_identity_through_http_and_cached_followups() {
                         json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":1}}),
                         json!({"type":"message_stop"}))
                 };
-                let (upstream, calls, captured, server) = mock(200, Box::leak(raw.into_boxed_str()), if streaming { "text/event-stream" } else { "application/json" }).await;
+            let (upstream, calls, captured, server) = mock(200, raw, if streaming { "text/event-stream" } else { "application/json" }).await;
                 let dir = tempfile::tempdir().unwrap();
                 let paths = CodexPaths::from_home(dir.path().into());
                 let store = router::Store { providers:vec![router::Provider { id:"namespace-fixture".into(), base_url:upstream, model:"wire-model".into(), protocol, api_key:"synthetic".into(), enabled:true, ..Default::default() }],

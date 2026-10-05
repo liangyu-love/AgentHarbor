@@ -10,6 +10,25 @@ use serde_json::{json, Map, Value};
 /// Used when a Responses request carries no `max_output_tokens`.
 const ANTHROPIC_DEFAULT_MAX_TOKENS: u64 = 32_000;
 
+/// Chat requires a contiguous response to every call before any later message.
+/// Refuse malformed history locally; never invent successful tool results.
+pub(super) fn validate_tool_history(body: &Value) -> Result<(), String> {
+    let mut pending = std::collections::HashSet::new();
+    for message in body["messages"].as_array().ok_or("protocol.errors.invalidRequest")? {
+        if message["role"] == "tool" {
+            let id = message["tool_call_id"].as_str().ok_or("protocol.errors.unansweredToolCall")?;
+            if !pending.remove(id) { return Err("protocol.errors.unansweredToolCall".into()); }
+        } else {
+            if !pending.is_empty() { return Err("protocol.errors.unansweredToolCall".into()); }
+            for call in message["tool_calls"].as_array().into_iter().flatten() {
+                let id = call["id"].as_str().filter(|s| !s.is_empty()).ok_or("protocol.errors.unansweredToolCall")?;
+                if !pending.insert(id) { return Err("protocol.errors.unansweredToolCall".into()); }
+            }
+        }
+    }
+    if pending.is_empty() { Ok(()) } else { Err("protocol.errors.unansweredToolCall".into()) }
+}
+
 /// Translate a Responses request body into the provider's protocol.
 pub(super) fn request_from_responses(
     target: ModelProtocol,
@@ -253,6 +272,7 @@ fn messages_from_responses(
                         }
                     }
                     Some("reasoning") => {
+                        flush_calls(target, &mut messages, &mut pending_calls)?;
                         // Plain summaries can cross protocols as assistant text;
                         // do not invent Anthropic signatures or silently lose them.
                         // Opaque reasoning is rejected by the Router before send.
@@ -268,7 +288,26 @@ fn messages_from_responses(
                             })
                             .unwrap_or_default();
                         if !summary.is_empty() {
-                            messages.push(json!({"role":"assistant", "content":format!("[Previous reasoning summary]\n{summary}")}));
+                            let text = format!("[Previous reasoning summary]\n{summary}");
+                            let previous = messages.last_mut().filter(|m| m["role"] == "assistant" &&
+                                (m["tool_calls"].is_array() || m["content"].as_array().is_some_and(|parts| parts.iter().any(|p| p["type"] == "tool_use"))));
+                            if let Some(previous) = previous {
+                                // Reasoning reported after a call belongs to that
+                                // same turn. Do not insert a message between a
+                                // Chat call group and its contiguous tool replies.
+                                if target == ModelProtocol::ChatCompletions {
+                                    match &mut previous["content"] {
+                                        Value::Array(parts) => parts.push(json!({"type":"text","text":text})),
+                                        Value::String(content) => { *content = if content.is_empty() { text } else { format!("{content}\n{text}") }; }
+                                        Value::Null => previous["content"] = json!(text),
+                                        _ => return Err("protocol.errors.unsupportedContent".into()),
+                                    }
+                                } else {
+                                    previous["content"].as_array_mut().unwrap().push(json!({"type":"text","text":text}));
+                                }
+                            } else {
+                                messages.push(json!({"role":"assistant", "content":text}));
+                            }
                         }
                     }
                     Some("message") | None => {
@@ -604,6 +643,25 @@ fn tools_from_responses(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reasoning_after_a_call_keeps_the_call_and_reply_in_their_original_turn() {
+        let request = json!({"model":"m","input":[
+            {"role":"assistant","content":"Checking"},
+            {"type":"function_call","call_id":"c1","name":"lookup","arguments":"{}"},
+            {"type":"reasoning","summary":[{"type":"summary_text","text":"Need lookup"}]},
+            {"type":"function_call_output","call_id":"c1","output":"ok"}]});
+        let chat = request_from_responses(ModelProtocol::ChatCompletions, &request).unwrap();
+        validate_tool_history(&chat).unwrap();
+        assert_eq!(chat["messages"].as_array().unwrap().len(), 2);
+        assert_eq!(chat["messages"][0]["tool_calls"][0]["id"], "c1");
+        assert!(chat["messages"][0]["content"].as_str().unwrap().contains("Checking\n[Previous reasoning summary]\nNeed lookup"));
+        assert_eq!(chat["messages"][1]["tool_call_id"], "c1");
+        let messages = request_from_responses(ModelProtocol::AnthropicMessages, &request).unwrap();
+        assert_eq!(messages["messages"].as_array().unwrap().len(), 2);
+        assert_eq!(messages["messages"][0]["content"][1]["type"], "tool_use");
+        assert_eq!(messages["messages"][0]["content"][2]["type"], "text");
+    }
 
     #[test]
     fn translated_tools_and_history_never_silently_drop_unsupported_items() {

@@ -88,6 +88,56 @@ impl Drop for Stop {
     }
 }
 
+#[test]
+fn hosted_search_reaches_responses_through_both_messages_ingresses_and_replays_history() {
+    let _lock = global_router_test_lock();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        const REPLY: &str = r#"{"object":"response","id":"resp-search","status":"completed","model":"fixture-model","output":[{"type":"web_search_call","id":"ws1","status":"completed","action":{"type":"search","query":"Rust","sources":[{"type":"url","url":"https://rust-lang.org"}]}},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Rust answer","annotations":[{"type":"url_citation","url":"https://rust-lang.org","title":"Rust","start_index":0,"end_index":4}]}]}],"usage":{"input_tokens":3,"output_tokens":4}}"#;
+        let stream = format!("data: {{\"type\":\"response.completed\",\"response\":{REPLY}}}\n\n");
+        for streaming in [false, true] {
+            let (url, calls, captured, server) = failover_tests::mock(200, if streaming { stream.clone() } else { REPLY.to_owned() }, if streaming { "text/event-stream" } else { "application/json" }).await;
+            let temp = tempfile::tempdir().unwrap();
+            let paths = CodexPaths::from_home(temp.path().join("codex"));
+            std::fs::create_dir_all(&paths.app_data_dir).unwrap();
+            let store = Store { providers: vec![Provider { id:"desktop0".into(), api_key:"fixture-upstream".into(), base_url:url,
+                protocol:ModelProtocol::Responses, enabled:true, model:"fixture-model".into(), network_mode:"direct".into(), ..Default::default() }],
+                router:RouterSettings { bearer_token:"router-fixture".into(), ..Default::default() }, ..Default::default() };
+            write_store(&paths, &store);
+            let port = ensure_running(0, paths.clone(), ApiProxyConfigPayload::default()).await.unwrap();
+            let _stop = Stop;
+            let mut routes = choices(); routes.retain(|r| r.role == "haiku"); routes[0].provider_id = "desktop0".into();
+            write_state(&paths, port, routes, 1, "desktop-fixture");
+            let client = Client::builder().no_proxy().timeout(Duration::from_secs(5)).build().unwrap();
+            for desktop in [false, true] {
+                let endpoint = format!("http://127.0.0.1:{port}/{}", if desktop { "claude-desktop/v1/messages" } else { "v1/messages" });
+                let token = if desktop { "desktop-fixture" } else { "router-fixture" };
+                let mut request = json!({"model":if desktop { "claude-haiku-4-5-20251001" } else { "desktop0::fixture-model" }, "max_tokens":128,"stream":streaming,
+                    "tools":[{"type":"web_search_20250305","name":"web_search_next","max_uses":2}],
+                    "tool_choice":{"type":"tool","name":"web_search_next"},
+                    "messages":[{"role":"user","content":format!("Rust search {desktop}/{streaming}")}]});
+                let reply = client.post(&endpoint).bearer_auth(token).json(&request).send().await.unwrap();
+                assert_eq!(reply.status(), StatusCode::OK);
+                let text = reply.text().await.unwrap();
+                assert!(text.contains("web_search_next") && text.contains("https://rust-lang.org"));
+                let content = if streaming { claude_continuation_tests::streamed_content(&text) } else { serde_json::from_str::<Value>(&text).unwrap()["content"].clone() };
+                assert_eq!(content[0]["type"], "server_tool_use");
+                request["messages"].as_array_mut().unwrap().extend([json!({"role":"assistant","content":content}), json!({"role":"user","content":"Details"})]);
+                let reply = client.post(&endpoint).bearer_auth(token).json(&request).send().await.unwrap();
+                assert_eq!(reply.status(), StatusCode::OK); reply.bytes().await.unwrap();
+                let sent = captured.lock().unwrap().last().unwrap().clone();
+                assert_eq!(sent["model"], "fixture-model");
+                assert_eq!(sent["tools"][0]["type"], "web_search");
+                assert_eq!(sent["tool_choice"], json!({"type":"web_search"}));
+                assert_eq!(sent["max_tool_calls"], 2);
+                assert_eq!(sent["input"][1]["id"], "ws1");
+                assert!(sent["input"][1]["action"]["sources"].is_array());
+            }
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 4);
+            server.abort();
+        }
+    });
+}
+
 fn native_reply(body: &Value) -> (String, String) {
     let continued = body["messages"].to_string().contains("tool_result");
     let content = if continued {

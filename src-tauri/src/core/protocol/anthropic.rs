@@ -1,6 +1,6 @@
 //! Claude's Messages protocol translated through the existing Responses format.
 //! Native Messages requests never enter this adapter.
-use super::{chat, responses::valid_function_call};
+use super::{chat, responses::valid_function_call, web_search, ResponseOptions};
 use crate::core::router::ModelProtocol;
 use serde_json::{json, Value};
 
@@ -95,6 +95,10 @@ fn tool_result(block: &Value, target: ModelProtocol) -> Result<(Value, Vec<Value
 }
 
 pub(super) fn request_body(target: ModelProtocol, value: &Value) -> Result<Value, String> {
+    request_with_options(target, value).map(|(body, _)| body)
+}
+
+pub(super) fn request_with_options(target: ModelProtocol, value: &Value) -> Result<(Value, ResponseOptions), String> {
     let model = string(value, "model")?;
     let messages = value["messages"].as_array().ok_or(INVALID)?;
     let max = value["max_tokens"]
@@ -102,6 +106,7 @@ pub(super) fn request_body(target: ModelProtocol, value: &Value) -> Result<Value
         .filter(|n| *n > 0)
         .ok_or(INVALID)?;
     let mut input = Vec::new();
+    let mut options = ResponseOptions::default();
     for message in messages {
         let role = string(message, "role")?;
         // Current Claude Code adds dynamic system messages to the conversation.
@@ -175,6 +180,17 @@ pub(super) fn request_body(target: ModelProtocol, value: &Value) -> Result<Value
                                     input.push(json!({"role":"user","content":attachments}));
                                 }
                             }
+                            "server_tool_use" if role == "assistant" && target == ModelProtocol::Responses => {
+                                let result = blocks.iter().find(|r| r["type"] == "web_search_tool_result" && r["tool_use_id"] == block["id"])
+                                    .ok_or(UNSUPPORTED)?;
+                                flush(&mut input, &mut parts, role);
+                                input.push(web_search::history_call(block, result)?);
+                            }
+                            "web_search_tool_result" if role == "assistant" && target == ModelProtocol::Responses => {
+                                if !blocks.iter().any(|b| b["type"] == "server_tool_use" && b["id"] == block["tool_use_id"]) {
+                                    return Err(INVALID.into());
+                                }
+                            }
                             // Signed Anthropic thinking cannot be replayed to another provider.
                             "thinking" | "redacted_thinking" if role == "assistant" => {}
                             _ => return Err(UNSUPPORTED.into()),
@@ -214,11 +230,19 @@ pub(super) fn request_body(target: ModelProtocol, value: &Value) -> Result<Value
         response["instructions"] = json!(text);
     }
     if let Some(tools) = value.get("tools") {
+        let mut names = std::collections::HashSet::new();
         response["tools"] = json!(tools
             .as_array()
             .ok_or(INVALID)?
             .iter()
             .map(|tool| {
+                if !names.insert(string(tool, "name")?) { return Err(INVALID.into()); }
+                if web_search::is_search(tool) {
+                    if options.search.is_some() { return Err("protocol.errors.unsupportedSearchOptions".into()); }
+                    let (search, mapped) = web_search::prepare(target, tool)?;
+                    options.search = Some(search);
+                    return Ok(mapped);
+                }
                 if tool.get("type").is_some_and(|kind| kind != "custom")
                     || !tool["input_schema"].is_object()
                 {
@@ -230,11 +254,16 @@ pub(super) fn request_body(target: ModelProtocol, value: &Value) -> Result<Value
             })
             .collect::<Result<Vec<_>, String>>()?);
     }
+    if let Some(search) = &options.search {
+        response["include"] = json!(["web_search_call.action.sources"]);
+        if let Some(max) = search.max_uses { response["max_tool_calls"] = json!(max); }
+    }
     if let Some(choice) = value.get("tool_choice") {
         response["tool_choice"] = match string(choice, "type")? {
             "auto" => json!("auto"),
             "any" => json!("required"),
             "none" => json!("none"),
+            "tool" if options.search.as_ref().is_some_and(|s| Some(s.name.as_str()) == choice["name"].as_str()) => json!({"type":"web_search"}),
             "tool" => json!({"type":"function","name":string(choice,"name")?}),
             _ => return Err(UNSUPPORTED.into()),
         };
@@ -266,7 +295,7 @@ pub(super) fn request_body(target: ModelProtocol, value: &Value) -> Result<Value
             if stops.is_some() {
                 return Err(UNSUPPORTED.into());
             }
-            Ok(response)
+            Ok((response, options))
         }
         ModelProtocol::ChatCompletions => {
             let mut chat = chat::request_from_responses(target, &response)?;
@@ -277,7 +306,7 @@ pub(super) fn request_body(target: ModelProtocol, value: &Value) -> Result<Value
                 chat["response_format"] = json!({"type":"json_schema","json_schema":{
                     "name":format["name"],"schema":format["schema"],"strict":true}});
             }
-            Ok(chat)
+            Ok((chat, options))
         }
         _ => Err("protocol.errors.unsupportedTranslation".into()),
     }
@@ -294,6 +323,10 @@ pub(super) fn usage(value: &Value) -> Value {
 }
 
 pub(super) fn response_body(value: &Value) -> Result<Value, String> {
+    response_body_with_options(value, &ResponseOptions::default())
+}
+
+pub(super) fn response_body_with_options(value: &Value, options: &ResponseOptions) -> Result<Value, String> {
     let invalid = "protocol.errors.invalidResponse";
     let status = value["status"].as_str().ok_or(invalid)?;
     if !matches!(status, "completed" | "incomplete") || !value["error"].is_null() {
@@ -302,7 +335,9 @@ pub(super) fn response_body(value: &Value) -> Result<Value, String> {
     let mut content = Vec::new();
     let mut has_tools = false;
     let mut refusal = false;
-    for item in value["output"].as_array().ok_or(invalid)? {
+    let mut searches = 0_u64;
+    let output = web_search::enrich_output(value["output"].as_array().ok_or(invalid)?, options.search.as_ref().and_then(|s| s.max_uses));
+    for item in &output {
         match item["type"].as_str() {
             Some("message") => {
                 for part in item["content"].as_array().ok_or(invalid)? {
@@ -314,7 +349,7 @@ pub(super) fn response_body(value: &Value) -> Result<Value, String> {
                         }
                         _ => return Err(invalid.into()),
                     };
-                    content.push(json!({"type":"text","text":text}));
+                    content.push(json!({"type":"text","text":format!("{text}{}", web_search::citation_suffix(part))}));
                 }
             }
             Some("function_call") => {
@@ -328,6 +363,10 @@ pub(super) fn response_body(value: &Value) -> Result<Value, String> {
             }
             // Provider reasoning cannot be represented as signed Anthropic thinking.
             Some("reasoning") => {}
+            Some("web_search_call") => {
+                content.extend(web_search::blocks(item, options.search.as_ref(), searches)?);
+                searches += 1;
+            }
             _ => return Err(invalid.into()),
         }
     }
@@ -347,9 +386,11 @@ pub(super) fn response_body(value: &Value) -> Result<Value, String> {
     if status == "completed" && content.is_empty() {
         return Err(invalid.into());
     }
+    let mut usage = usage(&value["usage"]);
+    if searches > 0 { usage["server_tool_use"] = json!({"web_search_requests":searches}); }
     Ok(
         json!({"id":format!("msg_{}",uuid::Uuid::new_v4().simple()),"type":"message","role":"assistant",
         "model":value["model"].as_str().unwrap_or_default(),"content":content,
-        "stop_reason":stop,"stop_sequence":null,"usage":usage(&value["usage"])}),
+        "stop_reason":stop,"stop_sequence":null,"usage":usage}),
     )
 }

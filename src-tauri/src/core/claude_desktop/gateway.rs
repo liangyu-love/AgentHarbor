@@ -130,6 +130,7 @@ pub fn resolve_message(
         .routes
         .iter()
         .find(|choice| choice.role_alias == alias)
+        .or_else(|| role_for_alias(alias).and_then(|role| snapshot.routes.iter().find(|choice| choice.role == role)))
         .ok_or_else(|| {
             Box::new(DesktopError::new(
                 error_code::MODEL_REJECTED,
@@ -155,6 +156,23 @@ pub fn resolve_message(
     // This flag describes this request, not a request to enable a menu variant.
     result.view.one_m = one_m;
     Ok(result)
+}
+
+/// Desktop's subagents use dated official names rather than profile aliases.
+/// Match only validated Claude IDs and only an explicitly configured role.
+fn role_for_alias(alias: &str) -> Option<&'static str> {
+    if !provider::safe_model_id(alias, provider::DesktopVersionPolicy { fable_allowed: true }) { return None; }
+    let rest = alias.strip_prefix("claude-")?;
+    ["sonnet", "opus", "haiku", "fable"].into_iter()
+        .find(|role| rest.strip_prefix(role).and_then(|tail| tail.strip_prefix('-')).is_some_and(|tail| {
+            let parts: Vec<_> = tail.split('-').collect();
+            // Official version aliases: major[-minor][-YYYYMMDD]. Arbitrary
+            // provider prefixes/suffixes are not authorized by the role match.
+            matches!(parts.len(), 1..=3) && parts.iter().enumerate().all(|(i, part)| {
+                !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit())
+                    && if part.len() == 8 { i > 0 && i == parts.len() - 1 } else { part.len() <= 2 }
+            })
+        }))
 }
 
 pub fn models(

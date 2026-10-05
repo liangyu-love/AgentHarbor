@@ -327,7 +327,7 @@ fn outbound_client(proxy: &ApiProxyConfigPayload) -> Result<Client, String> {
         // Idle timeout per read (resets on every chunk), so long SSE streams keep working
         // while a hung upstream no longer pins the connection forever. Generous because
         // reasoning models can stay silent for minutes before the first token.
-        .read_timeout(Duration::from_secs(300))
+        .read_timeout(Duration::from_secs(900))
         .redirect(reqwest::redirect::Policy::none());
     let builder = super::api_client::configure_async_client(builder, proxy)
         .map_err(|_| "newapi.errors.proxy")?;
@@ -374,7 +374,12 @@ fn desktop_authorized(headers: &HeaderMap, token: &str) -> bool {
     if token.is_empty() { return false; }
     headers.get(AUTHORIZATION).and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer ").or_else(|| value.strip_prefix("bearer ")))
-        == Some(token)
+        .is_some_and(|candidate| token_matches(candidate, token))
+}
+
+fn token_matches(candidate: &str, expected: &str) -> bool {
+    use subtle::ConstantTimeEq;
+    bool::from(candidate.as_bytes().ct_eq(expected.as_bytes()))
 }
 
 fn is_unsafe_path_segment(segment: &str) -> bool {
@@ -930,8 +935,8 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             // Resource operations read the established channel but do not carry
             // a create request; preserve their body, including an empty cancel.
             // upstream_suffix already rejects translated Responses resources.
-            let (mut sent, translated_input, tool_namespaces) = if response_resource {
-                (body.clone(), Vec::new(), Default::default())
+            let PreparedForward { body: mut sent, input: translated_input, namespaces: tool_namespaces, response_options } = if response_resource {
+                PreparedForward::native(body.clone())
             } else {
                 upstream_body(&destination, body.clone())?
             };
@@ -1064,6 +1069,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                 message_context,
                 tool_adapter,
                 tool_namespaces,
+                response_options,
             )
             .await;
         }
@@ -1530,10 +1536,23 @@ fn official_target(
 
 /// The body to send upstream, and for a translated request the canonical
 /// Responses input (excluding request-scoped instructions) to remember afterwards.
+#[derive(Debug)]
+struct PreparedForward {
+    body: Option<Bytes>,
+    input: Vec<Value>,
+    namespaces: protocol::tool_namespaces::ToolNamespaces,
+    response_options: protocol::ResponseOptions,
+}
+impl PreparedForward {
+    fn native(body: Option<Bytes>) -> Self {
+        Self { body, input: Vec::new(), namespaces: Default::default(), response_options: Default::default() }
+    }
+}
+
 fn upstream_body(
     destination: &Destination,
     body: Option<Bytes>,
-) -> ForwardResult<(Option<Bytes>, Vec<Value>, protocol::tool_namespaces::ToolNamespaces)> {
+) -> ForwardResult<PreparedForward> {
     let (
         Destination::Provider {
             model_override,
@@ -1544,7 +1563,7 @@ fn upstream_body(
         Some(bytes),
     ) = (destination, &body)
     else {
-        return Ok((body, Vec::new(), Default::default()));
+        return Ok(PreparedForward::native(body));
     };
     match translation {
         // A translated request is rebuilt for the provider's protocol,
@@ -1566,7 +1585,11 @@ fn upstream_body(
                         "protocol.errors.unsupportedToolDefinition" =>
                             "cannot translate request: unsupported hosted/custom tool, tool choice or function schema; select a provider using the caller's native protocol",
                         "protocol.errors.unsupportedHostedTool" =>
-                            "cannot translate hosted tools; select a Responses provider or disable hosted web search in the caller",
+                            "this target protocol has no equivalent hosted tool; WebSearch requires a Responses or native Messages provider with search support",
+                        "protocol.errors.unsupportedSearchOptions" =>
+                            "cannot translate WebSearch options without loss: unsupported tool version, programmatic caller, domain exclusion or result policy",
+                        "protocol.errors.unansweredToolCall" =>
+                            "cannot translate conversation: tool calls need matching tool results before the next message",
                         "protocol.errors.unsupportedNamespacedTool" =>
                             "cannot translate namespaced tools; select a Responses provider or disable namespaced agent/MCP tools in the caller",
                         "protocol.errors.unsupportedCustomTool" =>
@@ -1592,16 +1615,16 @@ fn upstream_body(
                     "cannot re-encode request",
                 )
             })?;
-            Ok((Some(Bytes::from(encoded)), rewritten.input, rewritten.namespaces))
+            Ok(PreparedForward { body: Some(Bytes::from(encoded)), input: rewritten.input, namespaces: rewritten.namespaces, response_options: rewritten.response_options })
         }
         None if model_override.is_some()
             || *upstream_protocol == router::ModelProtocol::ChatCompletions =>
         {
             let prepared =
                 prepare_relay_body(bytes, model_override.as_deref(), *upstream_protocol)?;
-            Ok((Some(prepared), Vec::new(), Default::default()))
+            Ok(PreparedForward::native(Some(prepared)))
         }
-        None => Ok((body, Vec::new(), Default::default())),
+        None => Ok(PreparedForward::native(body)),
     }
 }
 
@@ -1638,6 +1661,7 @@ async fn relay_response(
     message_context: Option<protocol::message_history::Context>,
     tool_adapter: tool_schema::Adapter,
     tool_namespaces: protocol::tool_namespaces::ToolNamespaces,
+    response_options: protocol::ResponseOptions,
 ) -> ForwardResult {
     let response_status = response.status();
     let is_event_stream = response
@@ -1684,6 +1708,7 @@ async fn relay_response(
             message_context,
             tool_adapter,
             tool_namespaces,
+            response_options,
         ),
         Some(translation) if response_status.is_success() => {
             let mut diagnostic = ResponseObservation::new(
@@ -1712,7 +1737,7 @@ async fn relay_response(
                 diagnostic.translation_error(code);
                 (StatusCode::BAD_GATEWAY, "invalid Gemini tool arguments")
             })?;
-            let mut converted = protocol::response_body(translation, &value).map_err(|_| {
+            let mut converted = protocol::response_body_with_options(translation, &value, &response_options).map_err(|_| {
                 diagnostic.translation_error("invalid_upstream_response");
                 (
                     StatusCode::BAD_GATEWAY,
@@ -1810,6 +1835,7 @@ fn translated_stream(
     message_context: Option<protocol::message_history::Context>,
     tool_adapter: tool_schema::Adapter,
     tool_namespaces: protocol::tool_namespaces::ToolNamespaces,
+    response_options: protocol::ResponseOptions,
 ) -> ResponseBody {
     let observer = ResponseObservation::new(
         trace,
@@ -1826,7 +1852,7 @@ fn translated_stream(
         (
             response.bytes_stream(),
             observer,
-            protocol::stream_translator(translation),
+            protocol::stream_translator_with_options(translation, response_options),
             Some(translated_input),
             message_context,
             tool_adapter.stream(upstream_protocol),
@@ -1845,9 +1871,9 @@ fn translated_stream(
                         Err(code) => translator.fail(code),
                     }, false)
                 }
-                Some(Err(_)) => {
+                Some(Err(error)) => {
                     observer.error();
-                    (translator.fail("upstream_stream_error"), true)
+                    (translator.fail(if error.is_timeout() { "upstream_stream_timeout" } else { "upstream_stream_error" }), true)
                 }
                 None => (match tools.finish() {
                     Ok(()) => translator.finish(),
@@ -1900,11 +1926,11 @@ fn adapted_native_stream(
     let observer = ResponseObservation::new(trace, relay_request, protocol, &model, &attempt_id, response.status().as_u16(), true);
     let stream = futures_util::stream::unfold(
         (response.bytes_stream(), observer, adapter.stream(protocol), false),
-        |(mut source, mut observer, mut adapter, done)| async move {
+        move |(mut source, mut observer, mut adapter, done)| async move {
             if done { return None; }
             let (result, done) = match source.next().await {
                 Some(Ok(bytes)) => { observer.push(&bytes); (adapter.push(&bytes), false) }
-                Some(Err(_)) => { observer.error(); (Err("upstream_stream_error"), true) }
+                Some(Err(error)) => { observer.error(); (Err(if error.is_timeout() { "upstream_stream_timeout" } else { "upstream_stream_error" }), true) }
                 None => (adapter.finish().map(|()| Bytes::new()), true),
             };
             let (bytes, done) = match result {
@@ -1918,8 +1944,8 @@ fn adapted_native_stream(
                     observer.finalize(false);
                     // End the body with an error, never with an executable tool
                     // or a success terminal frame after invalid JSON arguments.
-                    return Some((Err::<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>(
-                        Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, code))),
+                    return Some((Ok::<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>(
+                        Frame::data(Bytes::from(stream_error_event(protocol, code)))),
                         (source, observer, adapter, true)));
                 }
             };
@@ -1948,15 +1974,24 @@ fn observed_stream(
         sse,
     );
     futures_util::stream::unfold(
-        (response.bytes_stream(), observer),
-        |(mut stream, mut observer)| async move {
+        (response.bytes_stream(), observer, false),
+        move |(mut stream, mut observer, done)| async move {
+            if done { return None; }
             match stream.next().await {
                 Some(chunk) => {
+                    if let Err(error) = &chunk {
+                        observer.error();
+                        observer.finalize(false);
+                        let chunk = if sse {
+                            Ok(Bytes::from(stream_error_event(upstream_protocol, if error.is_timeout() { "upstream_stream_timeout" } else { "upstream_stream_error" })))
+                        } else { chunk };
+                        return Some((chunk, (stream, observer, true)));
+                    }
                     match &chunk {
                         Ok(bytes) => observer.push(bytes),
                         Err(_) => observer.error(),
                     }
-                    Some((chunk, (stream, observer)))
+                    Some((chunk, (stream, observer, false)))
                 }
                 None => {
                     observer.finish();
@@ -1965,6 +2000,15 @@ fn observed_stream(
             }
         },
     )
+}
+
+fn stream_error_event(protocol: router::ModelProtocol, code: &str) -> String {
+    let error = if protocol == router::ModelProtocol::Responses {
+        json!({"type":"error","code":code,"message":code})
+    } else {
+        json!({"type":"error","error":{"type":"api_error","message":code}})
+    };
+    format!("event: error\ndata: {error}\n\n")
 }
 
 /// One raw-byte observation per attempt. The same bounded model result is
@@ -2055,7 +2099,12 @@ fn translated_error_body(
     status: StatusCode,
     bytes: &[u8],
 ) -> String {
-    let value: Option<Value> = serde_json::from_slice(bytes).ok();
+    let value: Option<Value> = serde_json::from_slice(bytes).ok().or_else(|| {
+        let text = std::str::from_utf8(bytes).ok()?;
+        text.lines().filter_map(|line| line.strip_prefix("data:").map(str::trim))
+            .filter_map(|data| serde_json::from_str::<Value>(data).ok())
+            .find(|v| !v["error"].is_null() || v["type"] == "error")
+    });
     let error = value.as_ref().and_then(|value| value.get("error"));
     let message = error
         .and_then(|error| error.get("message").or(Some(error)).and_then(Value::as_str))
@@ -2109,7 +2158,8 @@ fn bearer_matches_chatgpt_auth(authorization: &HeaderValue, auth_path: &std::pat
         .and_then(|auth| auth.tokens.access_token)
         .filter(|token| !token.trim().is_empty())
         .is_some_and(|token| {
-            authorization.to_str().ok() == Some(format!("Bearer {token}").as_str())
+            authorization.to_str().ok().and_then(|v| v.strip_prefix("Bearer "))
+                .is_some_and(|candidate| token_matches(candidate, &token))
         })
 }
 
@@ -2118,7 +2168,7 @@ fn codex_request_auth(
     local_token: &str,
 ) -> Option<(HeaderValue, Option<HeaderValue>)> {
     if local_token.is_empty()
-        || headers.get(router::LOCAL_AUTH_HEADER)?.to_str().ok()? != local_token
+        || !token_matches(headers.get(router::LOCAL_AUTH_HEADER)?.to_str().ok()?, local_token)
     {
         return None;
     }
@@ -2141,16 +2191,14 @@ fn authorized(headers: &HeaderMap, bearer_token: &str) -> bool {
     // A supplied router header must be valid; never let an OpenAI bearer
     // credential substitute for authentication to the local server.
     if let Some(token) = headers.get(router::LOCAL_AUTH_HEADER) {
-        return token.to_str().ok() == Some(bearer_token);
+        return token.to_str().ok().is_some_and(|candidate| token_matches(candidate, bearer_token));
     }
-    let Ok(expected) = HeaderValue::from_str(&format!("Bearer {bearer_token}")) else {
-        return false;
-    };
-    headers.get(AUTHORIZATION) == Some(&expected)
+    headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer "))
+        .is_some_and(|candidate| token_matches(candidate, bearer_token))
         || headers
             .get("x-api-key")
             .and_then(|value| value.to_str().ok())
-            == Some(bearer_token)
+            .is_some_and(|candidate| token_matches(candidate, bearer_token))
 }
 
 fn remove_hop_by_hop_headers(headers: &mut HeaderMap) {
@@ -2234,6 +2282,9 @@ mod tests {
 
     #[test]
     fn upstream_errors_are_reshaped_for_the_caller() {
+        let sse: Value = serde_json::from_str(&translated_error_body(router::ModelProtocol::AnthropicMessages, StatusCode::BAD_REQUEST,
+            b"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"bad search\"}}\n\n")).unwrap();
+        assert_eq!(sse["error"]["message"], "bad search");
         let openai = br#"{"error":{"message":"bad model","type":"invalid_request_error","code":"model_not_found"}}"#;
         let anthropic: Value = serde_json::from_str(&translated_error_body(
             router::ModelProtocol::AnthropicMessages,
@@ -2263,6 +2314,37 @@ mod tests {
         .unwrap();
         assert_eq!(html["error"]["message"], "<html>Bad Gateway</html>");
         assert_eq!(html["error"]["type"], "api_error");
+    }
+
+    #[test]
+    fn native_sse_idle_timeout_has_an_explicit_error_in_each_protocol() {
+        let _lock = global_router_test_lock();
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                while let Ok((socket, _)) = listener.accept().await {
+                    tokio::spawn(async move {
+                        let service = service_fn(|_: Request<Incoming>| async {
+                            let first = futures_util::stream::once(async { Ok::<_, std::convert::Infallible>(Frame::data(Bytes::from_static(b": heartbeat\n\n"))) });
+                            Ok::<_, std::convert::Infallible>(Response::builder().header(CONTENT_TYPE, "text/event-stream")
+                                .body(StreamBody::new(first.chain(futures_util::stream::pending()))).unwrap())
+                        });
+                        let _ = http1::Builder::new().serve_connection(TokioIo::new(socket), service).await;
+                    });
+                }
+            });
+            for protocol in [router::ModelProtocol::Responses, router::ModelProtocol::ChatCompletions, router::ModelProtocol::AnthropicMessages] {
+                let source = Client::builder().no_proxy().read_timeout(Duration::from_millis(50)).build().unwrap()
+                    .get(format!("http://{address}")).send().await.unwrap();
+                let trace = route_trace::Trace::begin("timeout-fixture", None);
+                let chunks: Vec<_> = observed_stream(source, trace, None, protocol, "fixture".into(), "fixture-attempt".into(), true).collect().await;
+                let text = chunks.into_iter().map(|b| String::from_utf8(b.unwrap().to_vec()).unwrap()).collect::<String>();
+                assert!(text.contains("event: error") && text.contains("upstream_stream_timeout"));
+                assert!(!text.contains("message_stop") && !text.contains("[DONE]"));
+            }
+            server.abort();
+        });
     }
 
     #[test]
@@ -2562,7 +2644,7 @@ mod tests {
             )
             .unwrap();
             let body = Bytes::from(json!({"model":"relay::model","previous_response_id":response_id,"input":"Follow-up"}).to_string());
-            let (body, _, _) = upstream_body(&destination, Some(body)).unwrap();
+            let body = upstream_body(&destination, Some(body)).unwrap().body;
             let translated: Value = serde_json::from_slice(&body.unwrap()).unwrap();
             let messages = translated["messages"].to_string();
             for text in [
@@ -2595,7 +2677,7 @@ mod tests {
             assert_eq!(
                 upstream_body(&destination, Some(body.clone()))
                     .unwrap()
-                    .0
+                    .body
                     .unwrap(),
                 body
             );

@@ -21,6 +21,167 @@ fn tool() -> Value {
     json!({"type":"function_call","id":"fc1","call_id":"c1","name":"read_file","arguments":"{\"path\":\"a\"}","status":"completed"})
 }
 
+fn search_request() -> Value {
+    json!({"model":"m","max_tokens":128,"messages":[{"role":"user","content":"Search Rust"}],
+        "tools":[{"type":"web_search_20250305","name":"web_search_next","max_uses":2,
+            "allowed_domains":["rust-lang.org"],"user_location":{"type":"approximate","country":"CN"}}],
+        "tool_choice":{"type":"tool","name":"web_search_next"}})
+}
+
+fn search_output() -> Vec<Value> {
+    vec![json!({"type":"web_search_call","id":"ws1","status":"completed",
+        "action":{"type":"search","queries":["Rust 新版"],"sources":[{"type":"url","url":"https://rust-lang.org","title":"Rust"}]}}),
+        json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"新版已发布。",
+            "annotations":[{"type":"url_citation","start_index":0,"end_index":6,"url":"https://rust-lang.org","title":"Rust"}]}]})]
+}
+
+#[test]
+fn hosted_search_maps_native_tool_options_and_forced_choice() {
+    let request = request_body(pair(ModelProtocol::Responses), &search_request()).unwrap();
+    assert_eq!(request.body["tools"][0], json!({"type":"web_search","filters":{"allowed_domains":["rust-lang.org"]},"user_location":{"type":"approximate","country":"CN"}}));
+    assert_eq!(request.body["max_tool_calls"], 2);
+    assert_eq!(request.body["tool_choice"], json!({"type":"web_search"}));
+    assert_eq!(request.body["include"], json!(["web_search_call.action.sources"]));
+    assert_eq!(request.response_options.search.unwrap().name, "web_search_next");
+    assert_eq!(request_body(pair(ModelProtocol::ChatCompletions), &search_request()).err().unwrap(), "protocol.errors.unsupportedHostedTool");
+    let mut custom = search_request();
+    custom["tools"] = json!([{"name":"web_search_next","input_schema":{"type":"object"}}]);
+    assert_eq!(request_body(pair(ModelProtocol::Responses), &custom).unwrap().body["tool_choice"], json!({"type":"function","name":"web_search_next"}));
+}
+
+#[test]
+fn hosted_search_rejects_lossy_options_and_invalid_limits() {
+    for changes in [json!({"type":"web_search_20991231"}), json!({"blocked_domains":["example.org"]}),
+        json!({"allowed_callers":["code_execution_20260120"]}), json!({"type":"web_search_20260318"}),
+        json!({"response_inclusion":"excluded"}), json!({"defer_loading":true}),
+        json!({"max_uses":0}), json!({"max_uses":1.5}), json!({"allowed_domains":5})] {
+        let mut request = search_request();
+        request["tools"][0].as_object_mut().unwrap().extend(changes.as_object().unwrap().clone());
+        assert!(request_body(pair(ModelProtocol::Responses), &request).is_err(), "{changes}");
+    }
+    let mut request = search_request();
+    request["tools"][0]["type"] = json!("web_search_20260318");
+    request["tools"][0]["allowed_callers"] = json!(["direct"]);
+    assert!(request_body(pair(ModelProtocol::Responses), &request).is_ok());
+}
+
+#[test]
+fn hosted_and_function_tools_cannot_share_a_name() {
+    let mut request = search_request();
+    request["tools"].as_array_mut().unwrap().push(json!({
+        "name":"web_search_next","input_schema":{"type":"object"}
+    }));
+    assert_eq!(request_body(pair(ModelProtocol::Responses), &request).err().unwrap(), "protocol.errors.invalidRequest");
+}
+
+#[test]
+fn hosted_search_nonstream_retains_sources_errors_and_actual_usage() {
+    let request = request_body(pair(ModelProtocol::Responses), &search_request()).unwrap();
+    let mut output = search_output();
+    let mut failed = output[0].clone();
+    failed["id"] = json!("ws2"); failed["status"] = json!("failed");
+    output.insert(1, failed);
+    let converted = response_body_with_options(pair(ModelProtocol::Responses), &response(output), &request.response_options).unwrap();
+    assert_eq!(converted["content"][0]["type"], "server_tool_use");
+    assert_eq!(converted["content"][0]["name"], "web_search_next");
+    assert_eq!(converted["content"][1]["content"][0]["url"], "https://rust-lang.org");
+    assert_eq!(converted["content"][3]["content"]["error_code"], "unavailable");
+    assert!(converted["content"][4]["text"].as_str().unwrap().contains("[1](https://rust-lang.org)"));
+    assert_eq!(converted["stop_reason"], "end_turn");
+    assert_eq!(converted["usage"]["server_tool_use"]["web_search_requests"], 2);
+}
+
+#[test]
+fn hosted_search_stream_matches_nonstream_under_every_byte_split() {
+    let request = request_body(pair(ModelProtocol::Responses), &search_request()).unwrap();
+    let output = search_output();
+    let final_response = response(output.clone());
+    let frames = frame(json!({"type":"response.created","response":{"model":"m"}}))
+        + &frame(json!({"type":"response.output_item.added","output_index":0,"item":{"type":"web_search_call","id":"ws1","status":"in_progress"}}))
+        + &frame(json!({"type":"response.web_search_call.searching","output_index":0,"item_id":"ws1"}))
+        + &frame(json!({"type":"response.output_item.done","output_index":0,"item":output[0]}))
+        + &frame(json!({"type":"response.output_text.delta","output_index":1,"content_index":0,"delta":"新版已发布。"}))
+        // Citations may arrive only with the terminal response.
+        + &frame(json!({"type":"response.output_item.done","output_index":1,"item":{"type":"message","content":[{"type":"output_text","text":"新版已发布。"}]}}))
+        + &frame(json!({"type":"response.completed","response":final_response}));
+    let expected = response_body_with_options(pair(ModelProtocol::Responses), &final_response, &request.response_options).unwrap();
+    for split in 0..=frames.len() {
+        let mut stream = stream_translator_with_options(pair(ModelProtocol::Responses), request.response_options.clone());
+        let mut events = stream.push(&frames.as_bytes()[..split]);
+        events.extend(stream.push(&frames.as_bytes()[split..]));
+        assert_eq!(stream.failure(), None, "split {split}: {}", events.concat());
+        let values = values(&events);
+        assert_eq!(values.last().unwrap()["type"], "message_stop");
+        let blocks: Vec<_> = values.iter().filter(|v| v["type"] == "content_block_start").collect();
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0]["content_block"], expected["content"][0]);
+        assert_eq!(blocks[1]["content_block"], expected["content"][1]);
+        let text: String = values.iter().filter_map(|v| v["delta"]["text"].as_str()).collect();
+        assert_eq!(text, expected["content"][2]["text"]);
+        assert_eq!(stream.completed_response(), Some(&final_response));
+    }
+}
+
+#[test]
+fn hosted_search_history_replays_exact_output_and_isolates_different_searches() {
+    use super::message_history::Context;
+    let scope = uuid::Uuid::new_v4().to_string();
+    let original = search_request();
+    let request = request_body(pair(ModelProtocol::Responses), &original).unwrap();
+    let upstream = response(search_output());
+    let visible = response_body_with_options(pair(ModelProtocol::Responses), &upstream, &request.response_options).unwrap();
+    Context::new(&[&scope], ModelProtocol::Responses, original.to_string().as_bytes()).unwrap().remember(&upstream);
+    let mut next = original;
+    next["messages"].as_array_mut().unwrap().extend([json!({"role":"assistant","content":visible["content"]}), json!({"role":"user","content":"More details"})]);
+    let mut body = request_body(pair(ModelProtocol::Responses), &next).unwrap().body;
+    Context::new(&[&scope], ModelProtocol::Responses, next.to_string().as_bytes()).unwrap().restore(&mut body);
+    assert_eq!(body["input"][1], upstream["output"][0]);
+    assert_eq!(body["input"][2], upstream["output"][1]);
+    next["messages"][1]["content"][0]["input"]["query"] = json!("Different search");
+    let mut other = request_body(pair(ModelProtocol::Responses), &next).unwrap().body;
+    Context::new(&[&scope], ModelProtocol::Responses, next.to_string().as_bytes()).unwrap().restore(&mut other);
+    assert_eq!(other["input"][1]["action"]["query"], "Different search");
+}
+
+#[test]
+fn hosted_search_waits_for_late_sources_and_citation_only_gateways() {
+    let request = request_body(pair(ModelProtocol::Responses), &search_request()).unwrap();
+    for late_sources in [false, true] {
+        let mut output = search_output();
+        output[0]["action"].as_object_mut().unwrap().remove("sources");
+        let early = output[0].clone();
+        if late_sources {
+            output[0]["action"]["sources"] = json!([{"type":"url","url":"https://rust-lang.org"}]);
+        }
+        let final_response = response(output);
+        let expected = response_body_with_options(pair(ModelProtocol::Responses), &final_response, &request.response_options).unwrap();
+        assert_eq!(expected["content"][1]["content"][0]["title"], "Rust");
+        let mut stream = stream_translator_with_options(pair(ModelProtocol::Responses), request.response_options.clone());
+        let mut events = stream.push(frame(json!({"type":"response.created","response":{"model":"m"}})).as_bytes());
+        events.extend(stream.push(frame(json!({"type":"response.output_item.done","output_index":0,"item":early})).as_bytes()));
+        events.extend(stream.push(frame(json!({"type":"response.output_text.delta","output_index":1,"content_index":0,"delta":"新版已发布。"})).as_bytes()));
+        assert!(!events.concat().contains("content_block_start"));
+        assert!(events.concat().contains("event: ping"));
+        events.extend(stream.push(frame(json!({"type":"response.completed","response":final_response})).as_bytes()));
+        assert_eq!(stream.failure(), None);
+        let blocks: Vec<Value> = values(&events).into_iter().filter(|v| v["type"] == "content_block_start").collect();
+        assert_eq!(blocks[0]["index"], 0);
+        assert_eq!(blocks[1]["index"], 1);
+        assert_eq!(blocks[1]["content_block"], expected["content"][1]);
+        assert_eq!(blocks[2]["index"], 2);
+    }
+}
+
+#[test]
+fn malformed_chat_tool_histories_are_rejected_without_fabricating_results() {
+    let call = json!({"role":"assistant","content":[{"type":"tool_use","id":"c1","name":"read","input":{}}]});
+    for messages in [json!([call]), json!([call,{"role":"user","content":"go on"}]),
+        json!([call,{"role":"user","content":[{"type":"tool_result","tool_use_id":"wrong","content":"ok"}]}])] {
+        let request = json!({"model":"m","max_tokens":128,"messages":messages});
+        assert_eq!(request_body(pair(ModelProtocol::ChatCompletions), &request).err().unwrap(), "protocol.errors.unansweredToolCall");
+    }
+}
+
 #[test]
 fn interleaved_text_and_tools_stay_in_one_chat_assistant_turn() {
     let a = json!({"type":"tool_use","id":"a","name":"one","input":{}});

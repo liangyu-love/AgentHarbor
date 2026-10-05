@@ -25,9 +25,23 @@ Command 源码 `src/web-search.ts` 中的 `CommandCodeSearchProvider` 是 dsh �
 - 请求体是 `{ query, numResults }`，响应解析为 `{ results: [{ title, url, snippet }] }`。
 - 插件在 dsh 的 `ctx.web` 注册搜索 provider，`webSearch` 默认开启。
 
-这不等于 Claude Desktop 使用 `/provider/v1/messages` 后自动获得搜索：Desktop 的 WebSearch 属于推理侧托管工具；本项目没有把它桥接到 Command 的独立搜索 REST API。Messages 原生透传取决于上游是否支持该托管工具；Messages 转换到 Chat/Responses 目前只支持普通 function tools，不会将原生 `web_search_*` 类型伪装成普通函数。
+这不等于 Claude Desktop 使用 `/provider/v1/messages` 后自动获得搜索：Desktop 的 WebSearch 属于推理侧托管工具；本项目没有把它桥接到 Command 的独立搜索 REST API。
 
-因此本次修复覆盖截图中确定存在的网页白名单拒绝，不能承诺它同时修复所有上游的原生搜索。Command 独立搜索桥接需要单独设计工具请求、结果、流式与计费契约。不要通过切换模型协议或删除工具字段来伪造支持。
+2026-10-05 路由整改后，Desktop 的入站接口始终是 Anthropic Messages；出站按卡片内该模型的协议配置决定，与 Codex 共享转换器：
+
+| 目标协议 | WebSearch 行为 |
+| --- | --- |
+| Anthropic Messages | 原生透传，由上游执行搜索；仍要求上游实际支持托管工具。 |
+| OpenAI Responses | 转换为原生 `web_search`，带域名白名单、近似位置、`max_tool_calls` 和来源字段；将响应和 SSE 转回 Messages 搜索块及引用链接。 |
+| Chat Completions | 没有标准托管搜索等价物，返回明确能力错误；普通 function/MCP 工具转换继续支持。 |
+
+这不会为搜索自动切换协议、供应商或模型。已配置为 Messages 的 Command/DeepSeek 接口仍走 Messages；已配置为 Chat 的接口仍走 Chat。Responses 是可选的出站协议，不是 Desktop 的新入站接口。
+
+搜索转换接受已知版本的直接调用。新版搜索的程序化调用、非空域名黑名单、`response_inclusion` 等无等价设置会明确拒绝，不静默删掉约束。结果保留真实来源 URL，引用以链接显示；不伪造 Anthropic 的加密引用索引。完整 Responses 搜索输出在有界、按会话和渠道隔离的缓存中保留以供回放。缓存不可用时从已交付的搜索块重建查询及来源。
+
+参照 CC Switch，来源优先取每次搜索的 `action.sources`，终态文本引用补齐标题；未归属的引用补到最后一次成功且未超限的搜索。带托管搜索的流式正文暂存至结束帧，以避免提前发布不完整的搜索结果；期间转发 Messages 启始事件并输出 ping。正文暂存上限 8 MiB，缺少结束帧、超限或传输失败会输出错误事件。普通对话和普通工具调用仍增量输出。
+
+网页白名单修复与托管搜索转换是两项独立能力。Command 独立搜索桥接仍需要另行接入其 REST 工具执行流程；不能通过修改模型的协议标签获得该能力。
 
 ## 验证边界
 

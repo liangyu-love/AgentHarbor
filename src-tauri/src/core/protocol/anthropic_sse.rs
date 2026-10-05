@@ -1,5 +1,5 @@
 //! Incremental OpenAI -> Messages SSE. A missing terminal event is an error.
-use super::{anthropic, sse, Translation};
+use super::{anthropic, sse, web_search, ResponseOptions, Translation};
 use crate::core::router::ModelProtocol;
 use serde_json::{json, Value};
 
@@ -23,6 +23,8 @@ pub(super) struct StreamTranslator {
     finished: bool,
     completed_response: Option<Value>,
     failure: Option<&'static str>,
+    options: ResponseOptions,
+    content_ready: bool,
 }
 
 fn event(kind: &str, mut value: Value) -> String {
@@ -46,7 +48,15 @@ impl StreamTranslator {
             finished: false,
             completed_response: None,
             failure: None,
+            options: Default::default(),
+            content_ready: true,
         }
+    }
+
+    pub fn with_options(mut self, options: ResponseOptions) -> Self {
+        self.content_ready = options.search.is_none();
+        self.options = options;
+        self
     }
 
     pub fn push(&mut self, chunk: &[u8]) -> Vec<String> {
@@ -131,8 +141,13 @@ impl StreamTranslator {
         self.start(&Value::Null, out);
         if let Some(index) = self.blocks.iter().position(|block| block.key == key) {
             let block = &mut self.blocks[index];
+            if block.kind.is_null() { block.kind = kind.clone(); }
             if block.kind["type"] != kind["type"] {
                 return Err("invalid_stream_frame");
+            }
+            if matches!(kind["type"].as_str(), Some("server_tool_use" | "web_search_tool_result")) {
+                if block.opened && block.kind != kind { return Err("invalid_stream_frame"); }
+                block.kind = kind.clone();
             }
             if kind["type"] == "tool_use" {
                 for field in ["id", "name"] {
@@ -164,6 +179,7 @@ impl StreamTranslator {
     }
 
     fn emit(&mut self, index: usize, out: &mut Vec<String>) -> Result<()> {
+        if !self.content_ready { return Ok(()); }
         let block = &mut self.blocks[index];
         let tool = block.kind["type"] == "tool_use";
         if tool
@@ -198,6 +214,9 @@ impl StreamTranslator {
     }
 
     fn append(&mut self, index: usize, delta: &str, out: &mut Vec<String>) -> Result<()> {
+        if !self.content_ready && self.blocks.iter().map(|b| b.text.len()).sum::<usize>() + delta.len() > MAX_BYTES {
+            return Err("invalid_stream_frame");
+        }
         let block = &mut self.blocks[index];
         if block.closed || block.text.len() + delta.len() > MAX_BYTES {
             return Err("invalid_stream_frame");
@@ -227,6 +246,7 @@ impl StreamTranslator {
     }
 
     fn close(&mut self, index: usize, out: &mut Vec<String>) -> Result<()> {
+        if !self.content_ready { return Ok(()); }
         let block = &mut self.blocks[index];
         if block.closed {
             return Ok(());
@@ -244,7 +264,7 @@ impl StreamTranslator {
         Ok(())
     }
 
-    fn item(&mut self, index: u64, item: &Value, out: &mut Vec<String>) -> Result<()> {
+    fn item(&mut self, index: u64, item: &Value, terminal: bool, out: &mut Vec<String>) -> Result<()> {
         match item["type"].as_str() {
             Some("function_call") => {
                 if item["status"] == "incomplete" || !super::responses::valid_function_call(item) {
@@ -280,11 +300,24 @@ impl StreamTranslator {
                         json!({"type":"text","text":""}),
                         out,
                     )?;
-                    self.reconcile(block, text, out)?;
-                    self.close(block, out)?;
+                    let suffix = if self.content_ready { web_search::citation_suffix(part) } else { String::new() };
+                    self.reconcile(block, &format!("{text}{suffix}"), out)?;
+                    // Some relays publish citations only in the terminal
+                    // response. Keep text open for their append-only links.
+                    if terminal { self.close(block, out)?; }
                 }
             }
             Some("reasoning") => {}
+            Some("web_search_call") => {
+                if !terminal && !self.content_ready { return Ok(()); }
+                let ordinal = self.blocks.iter().filter(|b| b.key.0 < index && b.kind["type"] == "server_tool_use").count() as u64;
+                let blocks = web_search::blocks(item, self.options.search.as_ref(), ordinal)
+                    .map_err(|_| "invalid_upstream_response")?;
+                for (part, kind) in blocks.into_iter().enumerate() {
+                    let block = self.block((index, part as u64), kind, out)?;
+                    self.close(block, out)?;
+                }
+            }
             _ => return Err("invalid_stream_frame"),
         }
         Ok(())
@@ -315,7 +348,7 @@ impl StreamTranslator {
                         self.append(block, args, out)?;
                     }
                 }
-                Some("message" | "reasoning") => {}
+                Some("message" | "reasoning" | "web_search_call") => {}
                 _ => return Err("invalid_stream_frame"),
             },
             "response.output_text.delta" | "response.refusal.delta" => {
@@ -353,7 +386,10 @@ impl StreamTranslator {
                     out,
                 )?;
             }
-            "response.output_item.done" => self.item(index()?, &value["item"], out)?,
+            "response.output_item.done" => {
+                self.item(index()?, &value["item"], false, out)?;
+                if !self.content_ready { out.push(event("ping", json!({}))); }
+            }
             "response.completed" | "response.incomplete" => {
                 let response = &value["response"];
                 if (kind == "response.completed" && response["status"] != "completed")
@@ -362,17 +398,16 @@ impl StreamTranslator {
                     return Err("invalid_stream_frame");
                 }
                 let message =
-                    anthropic::response_body(response).map_err(|_| "invalid_upstream_response")?;
+                    anthropic::response_body_with_options(response, &self.options).map_err(|_| "invalid_upstream_response")?;
                 self.start(response, out);
-                let output = response["output"]
-                    .as_array()
-                    .ok_or("invalid_stream_frame")?;
+                let output = web_search::enrich_output(response["output"].as_array().ok_or("invalid_stream_frame")?, self.options.search.as_ref().and_then(|s| s.max_uses));
                 let expected: Vec<(u64, u64)> = output
                     .iter()
                     .enumerate()
                     .flat_map(|(index, item)| {
                         let count = match item["type"].as_str() {
                             Some("function_call") => 1,
+                            Some("web_search_call") => 2,
                             Some("message") => item["content"].as_array().map_or(0, Vec::len),
                             _ => 0,
                         };
@@ -386,8 +421,22 @@ impl StreamTranslator {
                 {
                     return Err("invalid_stream_frame");
                 }
+                if !self.content_ready {
+                    // Hosted results can gain sources only in the terminal
+                    // answer. Keep indices contiguous and in output order before
+                    // emitting any content, while retaining earlier deltas for
+                    // validation. Ordinary replies still stream incrementally.
+                    if expected.len() > 1024 { return Err("invalid_stream_frame"); }
+                    for key in &expected {
+                        if !self.blocks.iter().any(|b| b.key == *key) {
+                            self.blocks.push(Block { key: *key, kind: Value::Null, text: String::new(), emitted: 0, opened: false, closed: false });
+                        }
+                    }
+                    self.blocks.sort_by_key(|b| b.key);
+                    self.content_ready = true;
+                }
                 for (index, item) in output.iter().enumerate() {
-                    self.item(index as u64, item, out)?;
+                    self.item(index as u64, item, true, out)?;
                 }
                 for index in 0..self.blocks.len() {
                     self.close(index, out)?;
@@ -403,6 +452,7 @@ impl StreamTranslator {
             // Part/done and reasoning events are redundant; final items validate them.
             _ => {}
         }
+        if !self.content_ready && out.is_empty() { out.push(event("ping", json!({}))); }
         Ok(())
     }
 }

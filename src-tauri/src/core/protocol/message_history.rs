@@ -154,7 +154,10 @@ fn visible_signature(message: &Value) -> Value {
         .filter(|b| b["type"] == "tool_use")
         .map(|b| json!([b["id"], b["name"], b["input"]]))
         .collect();
-    json!([text, calls])
+    let hosted: Vec<_> = message["content"].as_array().into_iter().flatten()
+        .filter(|b| matches!(b["type"].as_str(), Some("server_tool_use" | "web_search_tool_result")))
+        .cloned().collect();
+    if hosted.is_empty() { json!([text, calls]) } else { json!([text, calls, hosted]) }
 }
 fn chat_signature(message: &Value) -> Value {
     let text = if let Some(text) = message["content"].as_str() {
@@ -224,6 +227,7 @@ pub struct Context {
     protocol: ModelProtocol,
     messages: Vec<Value>,
     prefixes: Vec<String>,
+    response_options: super::ResponseOptions,
 }
 /// Extra client identity is independent of provider credentials and visible
 /// conversation content. Aliases and revisions sharing a target cannot reuse
@@ -306,6 +310,8 @@ impl Context {
             protocol,
             messages,
             prefixes,
+            response_options: super::request_body(super::Translation { from: ModelProtocol::AnthropicMessages, to: protocol }, &value)
+                .map(|r| r.response_options).unwrap_or_default(),
         })
     }
     fn key(&self, prefix_len: usize, calls: &[Value]) -> String {
@@ -318,7 +324,7 @@ impl Context {
         let Some(output) = response["output"].as_array() else {
             return;
         };
-        let Ok(visible) = super::anthropic::response_body(response) else {
+        let Ok(visible) = super::anthropic::response_body_with_options(response, &self.response_options) else {
             return;
         };
         // Every assistant reply matters, including greetings and final answers:

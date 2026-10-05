@@ -12,6 +12,7 @@ pub mod message_history;
 mod reasoning;
 mod responses;
 mod sse;
+mod web_search;
 pub mod tool_namespaces;
 
 use crate::core::router::ModelProtocol;
@@ -20,9 +21,18 @@ use serde_json::Value;
 pub use responses::is_responses_body;
 
 pub fn response_body(translation: Translation, value: &Value) -> Result<Value, String> {
+    response_body_with_options(translation, value, &ResponseOptions::default())
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ResponseOptions {
+    pub search: Option<web_search::Search>,
+}
+
+pub fn response_body_with_options(translation: Translation, value: &Value, options: &ResponseOptions) -> Result<Value, String> {
     let canonical = canonical_response(translation, value)?;
     if translation.from == ModelProtocol::AnthropicMessages {
-        anthropic::response_body(&canonical)
+        anthropic::response_body_with_options(&canonical, options)
     } else {
         Ok(canonical)
     }
@@ -144,6 +154,7 @@ pub struct TranslatedRequest {
     /// Canonical input without request-scoped instructions, ready for history.
     pub input: Vec<Value>,
     pub namespaces: tool_namespaces::ToolNamespaces,
+    pub response_options: ResponseOptions,
 }
 
 pub fn request_body(translation: Translation, value: &Value) -> Result<TranslatedRequest, String> {
@@ -163,13 +174,17 @@ pub fn request_body(translation: Translation, value: &Value) -> Result<Translate
                 body,
                 input,
                 namespaces,
+                response_options: Default::default(),
             })
         }
         (AnthropicMessages, ChatCompletions) | (AnthropicMessages, Responses) => {
+            let (body, response_options) = anthropic::request_with_options(translation.to, value)?;
+            if translation.to == ChatCompletions { chat::validate_tool_history(&body)?; }
             Ok(TranslatedRequest {
-                body: anthropic::request_body(translation.to, value)?,
+                body,
                 input: Vec::new(),
                 namespaces: Default::default(),
+                response_options,
             })
         }
         _ => Err("protocol.errors.unsupportedTranslation".into()),
@@ -248,11 +263,15 @@ impl StreamTranslator {
 }
 
 pub fn stream_translator(translation: Translation) -> StreamTranslator {
+    stream_translator_with_options(translation, ResponseOptions::default())
+}
+
+pub fn stream_translator_with_options(translation: Translation, options: ResponseOptions) -> StreamTranslator {
     StreamTranslator {
         responses: (translation.from == ModelProtocol::Responses)
             .then(|| sse::StreamTranslator::new(translation)),
         anthropic: (translation.from == ModelProtocol::AnthropicMessages)
-            .then(|| anthropic_sse::StreamTranslator::new(translation.to)),
+            .then(|| anthropic_sse::StreamTranslator::new(translation.to).with_options(options)),
     }
 }
 
