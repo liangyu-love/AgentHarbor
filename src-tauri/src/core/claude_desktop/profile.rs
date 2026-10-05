@@ -272,6 +272,7 @@ pub fn profile_json(base_url: &str, api_key: &str, models: &[ManagedModelView]) 
 
 /// 没有 label 与 1M 选项时使用字符串；有选项时使用对象，`supports1m=false`
 /// 沿用参考输出形态并省略。
+/// 一条带 supports1m=true 的记录会由 Desktop 展开为普通和 1M 两个菜单项。
 fn inference_model_json(model: &ManagedModelView) -> Value {
     let label = model.label.trim();
     let has_label = !label.is_empty() && label != model.model_id.trim();

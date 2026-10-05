@@ -173,7 +173,8 @@ DesktopRouterConfig {
 
 ### 4.3 1M 与请求改写
 
-- 继续使用单击“额外 1M 选项”复选框，新选择默认关闭。`supports1m=true` 只给 Desktop 生成菜单变体，不再增加一条模型，也不把 `[1m]` 写入 route/modelId。
+- 继续使用单击“额外 1M 选项”复选框，新选择默认关闭。`supports1m=true` 不增加 profile 记录，却会由 Desktop 生成普通和 1M 两个菜单项；两项使用相同展示名。不能把“profile 只写一条”验收为“Desktop 只显示一项”，也不把 `[1m]` 写入真实 route/modelId。
+- Desktop 2.19675.0 的 `prefer1m` 只控制默认选择，`[1m]` 简写会归一化为 `supports1m=true`，均不隐藏普通项。该版本未发现仅显示 1M 的配置字段；关闭额外菜单项时不能承诺 Desktop 普通项仍有 1M 本地预算。
 - Messages、Chat、Responses 三协议的 Desktop 目标统一依据有据的生效 context ≥ 1,000,000 判断。用户覆盖、卡片设置、上游声明、适用官方快照和目录引用可提供依据；共享 fallback 不可启用。资格检查使用同一模型能力解析结果，不凭角色 alias 或型号名猜测。
 - 客户端请求末尾 `[1m]` 只在 alias 层剥离；保存的真实 modelId 保持原样。不凭 alias 创建另一种上游型号。
 - 额外 1M 关闭或能力不满足时，旧缓存的 1M 请求明确拒绝；不能静默降成普通请求。
@@ -348,7 +349,7 @@ R1–R3 各批必须自审后独立提交；未达状态/恢复门槛时不开�
 | R-A16 | 两客户端/角色同session和真实模型 | 亲和、seen、工具/思考历史隔离；不继承全局failover |
 | R-A17 | Messages/Chat/Responses，非流和SSE | 文本、多轮、工具定义/执行/回传与真实模型改写正确 |
 | R-A18 | 流式错误/incomplete/断连/取消 | 终止分类与诊断准确，用量保留且仅落账一次 |
-| R-A19 | 三协议 1M开/关、能力不足/下降、旧缓存marker/beta | 一条菜单ID；有据 context≥1M 可选、默认off；off/能力不足拒绝；Chat/Responses不编造参数、不传Claude beta；普通客户端边界保留 |
+| R-A19 | 三协议 1M开/关、能力不足/下降、旧缓存marker/beta | 每个角色一条profile记录；开启后Desktop生成普通与1M两项；有据 context≥1M 可选、默认off；off/能力不足拒绝；Chat/Responses不编造参数、不传Claude beta；普通客户端边界保留 |
 | R-A20 | alias像Opus但真实模型为DeepSeek等 | 按真实Provider/model价格绑定，零价/未知/缓存拆分保留 |
 | R-A21 | 旧JSONL、compaction、同型号不同入口 | 兼容旧记录；汇总不以alias合并费用或伪造历史来源 |
 | R-A22 | 浅深主题、缩放、窄窗、键盘、失败重试 | 卡片/映射/配置预览可操作，无重复说明/横向溢出 |

@@ -55,7 +55,7 @@
 | R-A16 | 已验证 | HTTP 同 history/session/真实目标跨角色、路由版本、普通路由的私有输出隔离；seen/failover 状态无污染。 |
 | R-A17 | 已验证 | Messages/Chat/Responses 各非流及 SSE 的工具定义、执行回传、多轮；6 种形态均用本地模拟上游。 |
 | R-A18 | 部分 | HTTP bad-tool/truncated/upstream-error/bad-json/cancel 只落账一次并保留已报用量；共享 diagnostics incomplete 终止测试存在，Desktop 入口尚无专门 incomplete HTTP 案例。 |
-| R-A19 | 已验证 | 三协议有据 context ≥ 1M 可选，能力不足/失去能力与 off/旧 marker/beta 拒绝，单击 checkbox 默认关闭；Chat/Responses 无虚构参数、无 Claude beta，profile 每个 alias 只有一条记录。普通路由原有协议限制单独保留。 |
+| R-A19 | 已验证 | 三协议有据 context ≥ 1M 可选，能力不足/失去能力与 off/旧 marker/beta 拒绝，单击 checkbox 默认关闭；Chat/Responses 无虚构参数、无 Claude beta，profile 每个 alias 只有一条记录。这不表示 Desktop 菜单只有一项：开启后客户端生成普通与 1M 两项。普通路由原有协议限制单独保留。 |
 | R-A20 | 已验证 | HTTP 真实 fixture-model 计价，零价/未知价/缓存 read/write 分拆断言；trace/ledger 保留 requested/resolved。 |
 | R-A21 | 已验证 | 旧 JSONL 身份缺省、compaction 保留可选身份并按实际 model 汇总；来源未知不补造。 |
 | R-A22 | 部分 | 路由表单 390/1200 深浅主题、键盘、失败重试；Desktop 卡片 80–150% 缩放。未对路由表单单独穷举全部缩放矩阵。 |
@@ -68,7 +68,8 @@
 | --- | --- |
 | R-L02：Chat 普通多轮 | Desktop/Cowork 的 Command Code 目标至少两轮；诊断协议 `chatCompletions`、HTTP 200，仍缺逐次独立抓包与完整版本记录 |
 | R-L02：Messages / Responses | 未完成真实客户端验收 |
-| R-L03 / R-L04 / R-L05：工具 / SSE / 1M | 未完成真实客户端验收；截图中的回答不能证明工具执行或逐段流式 |
+| R-L03 / R-L04：工具 / SSE | 未完成真实客户端验收；截图中的回答不能证明工具执行或逐段流式 |
+| R-L05：1M | 后续用户截图确认开启后生成普通与 1M 成对菜单项；实际请求标记、本地预算与百万 token 接受能力仍未验 |
 | R-L01 / R-L09：alias 与型号身份 | 诊断显示 `claude-sonnet-4-6` → `deepseek/deepseek-v4.1-flash`，上游回显与出站一致；完整 profile/菜单读取及实际价格快照核对未完成 |
 | R-L06–R-L08 | 未完成独立启停、退出恢复与故障恢复的完整真机验收 |
 
@@ -77,6 +78,10 @@
 macOS/Linux、Fable、Cowork、托管工具、三协议 1M 和百万 token 压力测试仍无新增实测证据。
 
 ## 自审修正
+
+2026-10-05 用户再次报告开启 1M 后同名菜单成对。核对发现这不是新增重复 profile 记录：`supports1m: true` 的客户端 picker 明确返回基础项及 `${id}[1m]` 项，二者继承同一个 `labelOverride`。旧直连修复只调整默认关闭和交互，并没有实现“开启后单项”。路由说明及此前交付描述把一条 profile 记录推导成单项菜单，结论错误，本次更正。`prefer1m` 只改默认选择，后缀 shorthand 同样产生两项；核对版本 2.19675.0 没有仅保留 1M 项的配置字段。静态证据沿用 `.runtime-test/desktop-onem-contract/evidence.json`，本次未改写真实 Desktop 配置或安装文件。
+
+本次重新计算已安装 `app.asar` 的 SHA256，与上述静态证据完全一致；只读核对受管 profile 的模型名称及布尔标记，得到 4 条记录、4 个唯一 alias，四项 `supports1m` 均为 true，与截图中 4 组成对菜单一致。检查未输出本地 token 或上游凭据，也未停止客户端、执行 SDK 或发起推理请求。
 
 本轮自审修正了上游 `Bearer` 前缀重复拼接、请求目录跨版本、localhost 直连误判 Router、监听健康混入 stale、过期预览 pin 临时阻挡操作、恢复已提交 cleanup 后再次要求停 Desktop、更新保持后台后的重复安装，以及本地 token 的 Debug 输出风险。
 
