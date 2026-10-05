@@ -255,6 +255,8 @@ pub fn micros_to_usd(micros: u64) -> f64 {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelayUsageRecord {
+    #[serde(flatten, default)]
+    pub identity: super::request_diagnostics::RequestIdentity,
     #[serde(default)]
     pub schema_version: u32,
     #[serde(default)]
@@ -449,6 +451,7 @@ pub struct RelayUsagePayload {
 }
 
 pub struct RelayUsageRequest {
+    identity: super::request_diagnostics::RequestIdentity,
     request_id: String,
     attempt_id: String,
     app_data_dir: PathBuf,
@@ -474,6 +477,7 @@ impl RelayUsageRequest {
         pricing: PricingSnapshot,
     ) -> Self {
         Self {
+            identity: Default::default(),
             app_data_dir,
             request_id: uuid::Uuid::new_v4().to_string(),
             attempt_id: uuid::Uuid::new_v4().to_string(),
@@ -509,6 +513,10 @@ impl RelayUsageRequest {
 
     pub fn with_request_id(mut self, request_id: &str) -> Self {
         self.request_id = request_id.into();
+        self
+    }
+    pub fn with_identity(mut self, identity: super::request_diagnostics::RequestIdentity) -> Self {
+        self.identity = identity;
         self
     }
 
@@ -571,6 +579,7 @@ impl RelayUsageRequest {
             rates
         });
         let record = RelayUsageRecord {
+            identity: self.identity,
             schema_version: 2,
             request_id: self.request_id,
             attempt_id: self.attempt_id,
@@ -1149,6 +1158,9 @@ mod tests {
         value.as_object_mut().unwrap().remove("credential");
         value.as_object_mut().unwrap().remove("modelObservation");
         let legacy: RelayUsageRecord = serde_json::from_value(value).unwrap();
+        assert!(legacy.identity.client_source.is_none());
+        assert!(legacy.identity.requested_model.is_none());
+        assert!(legacy.identity.route_revision.is_none());
         assert_eq!(legacy.credential.status, "not_recorded");
         assert_eq!(legacy.model_observation.model_match_status, "unknown");
         assert_eq!(
@@ -1159,6 +1171,7 @@ mod tests {
 
     fn record_on(date: &str, provider: &str, model: &str, tokens: u64) -> RelayUsageRecord {
         RelayUsageRecord {
+            identity: Default::default(),
             schema_version: 1,
             request_id: "fixture-request".into(),
             attempt_id: "fixture-attempt".into(),
@@ -1348,6 +1361,14 @@ mod tests {
         .into_iter()
         .enumerate()
         {
+            if index == 1 || index == 3 {
+                record.identity = super::super::request_diagnostics::RequestIdentity {
+                    client_source: Some("claudeDesktop".into()),
+                    requested_model: Some("claude-opus-4-7".into()),
+                    resolved_model: Some("m".into()),
+                    route_revision: Some(1),
+                };
+            }
             if index != 2 {
                 record.cost_usd = Some((index + 1) as f64 / 1_000_000.0);
                 record.pricing_status = if index == 1 { "partial" } else { "priced" }.into();
@@ -1390,6 +1411,9 @@ mod tests {
             7
         );
         assert_eq!(after.all_time.request_count, 4);
+        assert_eq!(after.by_model.len(), 2);
+        assert!(after.by_model.iter().all(|entry| entry.model != "claude-opus-4-7"));
+        assert_eq!(after.recent[0].identity.client_source.as_deref(), Some("claudeDesktop"));
         assert_eq!(after.today.total_tokens, 11);
         let p = after
             .by_provider

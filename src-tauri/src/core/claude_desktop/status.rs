@@ -54,21 +54,89 @@ pub fn project(input: StatusInput<'_>) -> DesktopStatus {
         conflicts.push("paths".to_owned());
         paths = None;
     }
-    let mode = paths
+    let mut mode = paths
         .as_ref()
         .map(read_mode)
         .unwrap_or_else(|| "unknown".to_owned());
 
     let active_state = state.filter(|state| !state.tombstone);
-    let provider_id = active_state.map(|state| state.provider_id.clone());
+    // A loopback URL can belong to another gateway used as a direct relay.
+    // Only the committed mode plus the actual owned profile identifies our Router.
+    if mode == "direct" {
+        if let (Some(state), Some(paths)) = (active_state, paths.as_ref()) {
+            if installed_profile_matches(state, paths) {
+                mode = match state.data.applied_mode {
+                    transaction::AppliedMode::Router => "router",
+                    transaction::AppliedMode::Direct => "direct",
+                    transaction::AppliedMode::Official => "official",
+                }
+                .into();
+            }
+        }
+    }
+    let provider_id = active_state
+        .filter(|state| state.data.applied_mode != transaction::AppliedMode::Router)
+        .map(|state| state.provider_id.clone());
     let provider = provider_id
         .as_ref()
         .and_then(|id| store.providers.iter().find(|entry| &entry.id == id));
     let provider_missing = provider_id
         .as_ref()
-        .is_some_and(|id| !id.is_empty() && provider.is_none());
+        .is_some_and(|id| !id.is_empty() && provider.is_none())
+        || active_state
+            .and_then(|s| s.router.as_ref())
+            .is_some_and(|r| {
+                r.routes
+                    .iter()
+                    .any(|choice| !store.providers.iter().any(|p| p.id == choice.provider_id))
+            });
 
+    let mut route_views = Vec::new();
     let stale_reasons = match (active_state, provider) {
+        (Some(state), _) if state.data.applied_mode == transaction::AppliedMode::Router => {
+            let catalog = models_dev::load(app_data_dir);
+            let mut reasons = Vec::new();
+            if let Some(config) = &state.router {
+                for choice in &config.routes {
+                    match super::routes::resolve_routes(
+                        store,
+                        std::slice::from_ref(choice),
+                        super::provider::DesktopVersionPolicy {
+                            fable_allowed: true,
+                        },
+                        &catalog,
+                    ) {
+                        Ok(mut routes) => route_views.push(routes.remove(0).view),
+                        Err(error) => {
+                            reasons.push(format!("route:{}", choice.role));
+                            if let Some(view) =
+                                config.route_views.iter().find(|v| v.role == choice.role)
+                            {
+                                let mut view = view.clone();
+                                view.available = false;
+                                view.reason = Some(error.code);
+                                route_views.push(view);
+                            }
+                        }
+                    }
+                }
+                if let Ok(resolved) = super::routes::resolve_routes(
+                    store,
+                    &config.routes,
+                    super::provider::DesktopVersionPolicy {
+                        fable_allowed: true,
+                    },
+                    &catalog,
+                ) {
+                    if super::routes::file_projection(&resolved) != config.file_projection {
+                        reasons.push("routes".into());
+                    }
+                }
+            } else {
+                reasons.push("routes".into());
+            }
+            reasons
+        }
         (Some(state), Some(provider)) => stale_reasons_for(state, provider, app_data_dir),
         _ => Vec::new(),
     };
@@ -141,6 +209,14 @@ pub fn project(input: StatusInput<'_>) -> DesktopStatus {
         model_choices: active_state
             .map(|state| state.model_choices.clone())
             .unwrap_or_default(),
+        route_choices: active_state
+            .and_then(|s| s.router.as_ref())
+            .map(|r| r.routes.clone())
+            .unwrap_or_default(),
+        route_views,
+        router: active_state
+            .and_then(|s| s.router.as_ref())
+            .map(super::gateway::RouterConfig::view),
         stale_reasons,
         conflicts,
         recovery_state,
@@ -204,6 +280,22 @@ pub fn read_mode(paths: &DesktopPaths) -> String {
         }
         None => "unknown".to_owned(),
     }
+}
+
+fn installed_profile_matches(state: &transaction::State, paths: &DesktopPaths) -> bool {
+    let Some(transaction::ManagedValues::Whole {
+        value: Some(installed),
+    }) = state
+        .edition(paths::role::PROFILE)
+        .map(|edition| &edition.installed)
+    else {
+        return false;
+    };
+    transaction::read_text(&paths.profile_path)
+        .ok()
+        .flatten()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .is_some_and(|current| &current == installed)
 }
 
 /// 与磁盘现状相比，哪些受管目标需要重新应用。
@@ -300,6 +392,7 @@ fn action_views(
     };
     vec![
         view(DesktopAction::ApplyDirect, pending_block),
+        view(DesktopAction::ApplyRouter, pending_block),
         view(
             DesktopAction::Reapply,
             pending_block.or(not_managed).or(if provider_missing {
@@ -316,7 +409,16 @@ fn action_views(
             DesktopAction::SwitchOfficial,
             pending_block.or(not_managed).or(conflict_block),
         ),
-        view(DesktopAction::Release, pending_block.or(not_managed)),
+        view(
+            DesktopAction::Release,
+            pending_block.or(not_managed).or_else(|| {
+                state
+                    .filter(|s| {
+                        !s.tombstone && s.data.applied_mode == transaction::AppliedMode::Router
+                    })
+                    .map(|_| "claudeDesktop.actionReasons.routerReleaseBlocked")
+            }),
+        ),
         view(
             DesktopAction::RecoverRollback,
             if pending {

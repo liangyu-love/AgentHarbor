@@ -118,7 +118,7 @@ fn sse(frames: Vec<Value>, chat: bool) -> String {
     }
     out
 }
-fn reply(body: &Value, chat: bool, mode: &str) -> (String, String) {
+pub(super) fn reply(body: &Value, chat: bool, mode: &str) -> (String, String) {
     if mode == "deepseek-history" {
         return deepseek_history_reply(body, chat);
     }
@@ -251,7 +251,7 @@ fn deepseek_history_reply(body: &Value, chat: bool) -> (String, String) {
     ("text/event-stream".into(), sse(frames, chat))
 }
 
-fn streamed_content(text: &str) -> Value {
+pub(super) fn streamed_content(text: &str) -> Value {
     let mut blocks = Vec::new();
     let mut arguments = std::collections::HashMap::<usize, String>::new();
     for line in text.lines().filter_map(|s| s.strip_prefix("data: ")) {

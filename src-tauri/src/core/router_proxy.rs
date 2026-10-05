@@ -24,6 +24,9 @@ use std::time::Duration;
 mod claude_cli_tests;
 #[cfg(test)]
 mod claude_continuation_tests;
+#[cfg(test)]
+#[path = "router_proxy/desktop_gateway_tests.rs"]
+mod desktop_gateway_tests;
 mod failover;
 #[cfg(test)]
 #[path = "router_proxy/failover_tests.rs"]
@@ -39,8 +42,61 @@ pub(crate) type ResponseBody = BoxBody<Bytes, Box<dyn std::error::Error + Send +
 
 struct ProxyHandle {
     port: u16,
+    lease: ListenerLease,
     shutdown: tokio::sync::watch::Sender<bool>,
     outbound: Arc<RwLock<Client>>,
+}
+
+/// A lease identifies one successful bind in this backend process. A port alone
+/// cannot distinguish a stopped/restarted listener or an old preview ticket.
+pub use super::claude_desktop::types::ListenerLease;
+
+#[derive(Default)]
+struct ListenerPins {
+    managed: Option<u16>,
+    reservations: std::collections::HashMap<String, u16>,
+}
+static PINS: OnceLock<Mutex<ListenerPins>> = OnceLock::new();
+fn listener_pins() -> &'static Mutex<ListenerPins> {
+    PINS.get_or_init(Default::default)
+}
+fn pinned_port(pins: &ListenerPins) -> Option<u16> {
+    pins.managed.or_else(|| pins.reservations.values().next().copied())
+}
+pub fn listener_pinned_port() -> Option<u16> {
+    pinned_port(&listener_pins().lock().unwrap_or_else(|e| e.into_inner()))
+}
+pub fn desktop_listener_required() -> bool {
+    listener_pinned_port().is_some()
+}
+pub fn current_lease() -> Option<ListenerLease> {
+    handle_slot().lock().ok().and_then(|slot| slot.as_ref().map(|h| h.lease.clone()))
+}
+pub fn validate_lease(lease: &ListenerLease) -> bool {
+    current_lease().as_ref() == Some(lease)
+}
+pub fn reserve_listener(lease: &ListenerLease) -> Result<String, String> {
+    let mut pins = listener_pins().lock().map_err(|_| "newapi.errors.storage")?;
+    if lease.bound_port == 0 || !validate_lease(lease) {
+        return Err("claudeDesktop.errors.listenerChanged".into());
+    }
+    if pinned_port(&pins).is_some_and(|port| port != lease.bound_port) {
+        return Err("claudeDesktop.errors.listenerPinned".into());
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    pins.reservations.insert(id.clone(), lease.bound_port);
+    Ok(id)
+}
+pub fn release_listener_reservation(id: &str) {
+    listener_pins().lock().unwrap_or_else(|e| e.into_inner()).reservations.remove(id);
+}
+pub fn set_desktop_pin(port: Option<u16>) -> Result<(), String> {
+    let mut pins = listener_pins().lock().map_err(|_| "newapi.errors.storage")?;
+    if port == Some(0) || port.is_some_and(|port| pinned_port(&pins).is_some_and(|p| p != port)) {
+        return Err("claudeDesktop.errors.listenerPinned".into());
+    }
+    pins.managed = port;
+    Ok(())
 }
 
 static HANDLE: OnceLock<Mutex<Option<ProxyHandle>>> = OnceLock::new();
@@ -94,6 +150,15 @@ pub fn running_port() -> Option<u16> {
 }
 
 pub fn stop() {
+    let pins = listener_pins().lock().unwrap_or_else(|e| e.into_inner());
+    if pinned_port(&pins).is_some() {
+        return;
+    }
+    stop_unchecked();
+}
+
+/// Final process shutdown only. Normal client reconciliation must respect pins.
+pub fn stop_unchecked() {
     if let Ok(mut guard) = handle_slot().lock() {
         if let Some(handle) = guard.take() {
             let _ = handle.shutdown.send(true);
@@ -146,7 +211,13 @@ pub async fn ensure_running(
     let _start_guard = start_lock().lock().await;
     let next_outbound = outbound_client(&proxy)?;
     {
-        let guard = handle_slot().lock().map_err(|_| "newapi.errors.storage")?;
+        // Reserve and replace use the same lock order. A ticket cannot acquire
+        // the old lease between checking pins and removing that listener.
+        let pins = listener_pins().lock().map_err(|_| "newapi.errors.storage")?;
+        if pinned_port(&pins).is_some_and(|p| p != port || port == 0) {
+            return Err("claudeDesktop.errors.listenerPinned".into());
+        }
+        let mut guard = handle_slot().lock().map_err(|_| "newapi.errors.storage")?;
         if let Some(handle) = guard.as_ref() {
             if handle.port == port {
                 *handle
@@ -156,16 +227,26 @@ pub async fn ensure_running(
                 return Ok(handle.port);
             }
         }
+        if let Some(handle) = guard.take() {
+            let _ = handle.shutdown.send(true);
+        }
     }
-    stop();
     let listener = bind_localhost(port).await?;
     let bound_port = listener
         .local_addr()
         .map_err(|_| "newapi.errors.network".to_owned())?
         .port();
+    static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    static EPOCH: OnceLock<String> = OnceLock::new();
+    let lease = ListenerLease {
+        bound_port,
+        generation: GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
+        process_epoch: EPOCH.get_or_init(|| uuid::Uuid::new_v4().to_string()).clone(),
+    };
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let outbound = Arc::new(RwLock::new(next_outbound));
     let context = Arc::new(ArcContext {
+        bound_port,
         store_path: paths.app_data_dir.join("newapi-providers.dat"),
         app_data_dir: paths.app_data_dir.clone(),
         codex_home: paths.codex_home.clone(),
@@ -177,16 +258,22 @@ pub async fn ensure_running(
         })?,
         failover_seen: failover_seen_for(&paths.app_data_dir.join("newapi-providers.dat")),
     });
-    tokio::spawn(accept_loop(listener, shutdown_rx, context));
+    let pins = listener_pins().lock().map_err(|_| "newapi.errors.storage")?;
+    if pinned_port(&pins).is_some_and(|p| p != bound_port) {
+        return Err("claudeDesktop.errors.listenerPinned".into());
+    }
     *handle_slot().lock().map_err(|_| "newapi.errors.storage")? = Some(ProxyHandle {
         port: bound_port,
+        lease,
         shutdown: shutdown_tx,
         outbound,
     });
+    tokio::spawn(accept_loop(listener, shutdown_rx, context));
     Ok(bound_port)
 }
 
 struct ArcContext {
+    bound_port: u16,
     store_path: PathBuf,
     app_data_dir: PathBuf,
     codex_home: PathBuf,
@@ -273,6 +360,22 @@ async fn forward(
 }
 
 type ForwardResult<T = Response<ResponseBody>> = Result<T, (StatusCode, &'static str)>;
+
+fn validate_desktop_endpoint(method: &hyper::Method, path: &str) -> ForwardResult<()> {
+    let allowed = match path {
+        "/claude-desktop/v1/models" => *method == hyper::Method::GET,
+        "/claude-desktop/v1/messages" => *method == hyper::Method::POST,
+        _ => return Err((StatusCode::NOT_FOUND, "unsupported Desktop gateway endpoint")),
+    };
+    if allowed { Ok(()) } else { Err((StatusCode::METHOD_NOT_ALLOWED, "unsupported Desktop gateway method")) }
+}
+
+fn desktop_authorized(headers: &HeaderMap, token: &str) -> bool {
+    if token.is_empty() { return false; }
+    headers.get(AUTHORIZATION).and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer ").or_else(|| value.strip_prefix("bearer ")))
+        == Some(token)
+}
 
 fn is_unsafe_path_segment(segment: &str) -> bool {
     let lower = segment.to_ascii_lowercase();
@@ -382,6 +485,7 @@ fn provider_query(query: Option<&str>, translation: Option<protocol::Translation
 
 fn request_protocol(segments: &[&str]) -> Option<router::ModelProtocol> {
     match segments {
+        ["claude-desktop", "v1", "messages"] => Some(router::ModelProtocol::AnthropicMessages),
         ["codex", "v1", ..] | ["v1", "responses", ..] | ["p", _, "v1", "responses", ..] => {
             Some(router::ModelProtocol::Responses)
         }
@@ -420,6 +524,8 @@ fn is_inference_create(method: &hyper::Method, segments: &[&str]) -> bool {
     }
     matches!(
         segments,
+        ["claude-desktop", "v1", "messages"]
+            |
         ["codex", "v1", "responses" | "messages"]
             | ["codex", "v1", "chat", "completions"]
             | ["p", _, "v1", "responses" | "messages"]
@@ -508,20 +614,53 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
     {
         return Err((StatusCode::BAD_REQUEST, "invalid path"));
     }
+    // Select the namespace before authentication. Desktop's local token never
+    // grants the existing /v1, /p or /codex endpoints, and vice versa.
+    let desktop_namespace = segments.first() == Some(&"claude-desktop");
+    let method = request.method().clone();
+    let desktop = if desktop_namespace {
+        validate_desktop_endpoint(&method, &path)?;
+        let snapshot = super::claude_desktop::gateway::committed_snapshot(&context.app_data_dir)
+            .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "Desktop gateway recovery required"))?
+            .ok_or((StatusCode::UNAUTHORIZED, "Desktop gateway is not managed"))?;
+        if !desktop_authorized(request.headers(), &snapshot.token) {
+            return Err((StatusCode::UNAUTHORIZED, "invalid Desktop gateway token"));
+        }
+        if snapshot.bound_port != context.bound_port {
+            return Err((StatusCode::SERVICE_UNAVAILABLE, "Desktop gateway listener changed"));
+        }
+        Some(snapshot)
+    } else {
+        None
+    };
     let store = router::read_store(&context.store_path).map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             "router storage unavailable",
         )
     })?;
-    if !authorized(request.headers(), &store.router.bearer_token) {
+    if desktop.is_none() && !authorized(request.headers(), &store.router.bearer_token) {
         return Err((StatusCode::UNAUTHORIZED, "invalid local router token"));
     }
 
-    let method = request.method().clone();
-    validate_endpoint(&method, &segments)?;
+    if desktop.is_none() {
+        validate_endpoint(&method, &segments)?;
+    }
+    // A refresh can replace the shared catalog Arc while a body is being read
+    // or converted. Desktop eligibility, conversion and pricing must all use
+    // the catalog generation captured for this request.
+    let desktop_catalog = desktop.as_ref().map(|_| super::models_dev::load(&context.app_data_dir));
+    if path == "/claude-desktop/v1/models" {
+        let value = super::claude_desktop::gateway::models(
+            desktop.as_ref().expect("authenticated Desktop namespace"),
+            &store,
+            desktop_catalog.as_deref().expect("Desktop request catalog"),
+        ).map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "no available Desktop routes"))?;
+        return Ok(Response::builder().status(StatusCode::OK).header(CONTENT_TYPE, "application/json")
+            .body(full_body(value.to_string())).expect("static response parts"));
+    }
     let has_body = !matches!(method, hyper::Method::GET | hyper::Method::HEAD);
-    let codex_auth = codex_request_auth(request.headers(), &store.router.bearer_token);
+    let codex_auth = desktop.is_none().then(|| codex_request_auth(request.headers(), &store.router.bearer_token)).flatten();
     if request
         .headers()
         .get(CONTENT_LENGTH)
@@ -532,6 +671,9 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         return Err((StatusCode::PAYLOAD_TOO_LARGE, "request body too large"));
     }
     let headers = forwardable_headers(request.headers());
+    let desktop_one_m_beta = desktop.is_some() && headers.get_all("anthropic-beta").iter()
+        .filter_map(|value| value.to_str().ok()).flat_map(|value| value.split(','))
+        .any(|value| value.trim() == CLAUDE_ONE_M_BETA);
     let body: Option<Bytes> = if has_body {
         Some(read_limited_body(request.into_body()).await?)
     } else {
@@ -550,12 +692,13 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                 | ["p", _, "v1", "responses", "compact"]
                 | ["v1", "responses", "compact"]
         );
-    if (inference_create || compact) && store.router.same_model_failover {
+    let same_model_failover = desktop.is_none() && store.router.same_model_failover;
+    if (inference_create || compact) && same_model_failover {
         context
             .failover_seen
             .store(true, std::sync::atomic::Ordering::Release);
     }
-    let failover_seen = context
+    let failover_seen = desktop.is_none() && context
         .failover_seen
         .load(std::sync::atomic::Ordering::Acquire);
 
@@ -567,6 +710,13 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         requested_model.as_deref().unwrap_or_default(),
         body.as_deref(),
     );
+    if let Some(snapshot) = &desktop {
+        trace.identity(&request_diagnostics::RequestIdentity {
+            client_source: Some("claudeDesktop".into()),
+            route_revision: Some(snapshot.route_revision),
+            ..Default::default()
+        });
+    }
     let result = async {
         // Identify provider routes without consulting the original channel's
         // availability: an existing session may already have switched away.
@@ -594,7 +744,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         let binding = affinity_key.as_deref().and_then(failover::bound);
         let continuation = compact || (inference_create && failover::continuation(body.as_deref()));
         let fresh_turn = inference_create && failover::fresh_turn(body.as_deref());
-        if !store.router.same_model_failover && binding.as_ref().is_some_and(|binding| binding.requires_failover) {
+        if !same_model_failover && binding.as_ref().is_some_and(|binding| binding.requires_failover) {
             if continuation {
                 return Err((StatusCode::CONFLICT,
                     "failover is disabled for this bound conversation; re-enable it or start a new conversation"));
@@ -603,14 +753,38 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         // A new turn while disabled selects the ordinary route. Replace the old
         // binding only after all path/body/tool checks succeed, immediately
         // before forwarding; rejected requests must not destroy affinity.
-        let selected_binding = if !store.router.same_model_failover && fresh_turn { None } else { binding.as_ref() };
-        let (mut destination, mut selection_reason) = resolve_destination_explain(
+        let selected_binding = if !same_model_failover && fresh_turn { None } else { binding.as_ref() };
+        let desktop_alias = desktop.as_ref().and_then(|_| raw_requested_model(body.as_deref()))
+            .map(|alias| alias.trim().to_owned());
+        let desktop_route = if let Some(snapshot) = &desktop {
+            let alias = desktop_alias.as_deref()
+                .ok_or((StatusCode::BAD_REQUEST, "Desktop model alias is required"))?;
+            let with_marker = (desktop_one_m_beta && !strip_claude_one_m_marker(alias).1)
+                .then(|| format!("{alias}[1m]"));
+            Some(super::claude_desktop::gateway::resolve_message(snapshot, &store,
+                desktop_catalog.as_deref().expect("Desktop request catalog"), with_marker.as_deref().unwrap_or(alias))
+                .map_err(|_| (StatusCode::BAD_REQUEST, "Desktop route is unknown or unavailable"))?)
+        } else { None };
+        let one_m_context = desktop_route.as_ref().map(|route| route.view.one_m).unwrap_or(one_m_context);
+        let identity = desktop_route.as_ref().map(|route| request_diagnostics::RequestIdentity {
+            client_source: Some("claudeDesktop".into()),
+            requested_model: desktop_alias.clone(),
+            resolved_model: Some(route.choice.model_id.clone()),
+            route_revision: desktop.as_ref().map(|s| s.route_revision),
+        });
+        if let Some(identity) = &identity { trace.identity(identity); }
+        let (mut destination, mut selection_reason) = if let Some(route) = &desktop_route {
+            let upstream_protocol = route.provider.protocol_for_model(&route.choice.model_id);
+            let translation = protocol::Translation::between(router::ModelProtocol::AnthropicMessages, upstream_protocol);
+            (Destination::Provider { provider: Box::new(route.provider.clone()),
+                model_override: Some(route.choice.model_id.clone()), upstream_protocol, translation }, "desktop_role_mapping".into())
+        } else { resolve_destination_explain(
             &store,
             &segments,
             required_protocol,
             requested_model.as_deref(),
             selected_binding,
-        )?;
+        )? };
         if one_m_context
             && !matches!(
                 &destination,
@@ -625,7 +799,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                 "1M context requires an Anthropic Messages provider",
             ));
         }
-        let stateless = store.router.same_model_failover
+        let stateless = same_model_failover
             && binding.is_none()
             && affinity_key.is_some()
             && failover::stateless(body.as_deref());
@@ -639,7 +813,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                 "conversation channel is unknown or expired; start a new conversation",
             ));
         }
-        let can_retry = store.router.same_model_failover
+        let can_retry = same_model_failover
             && binding.is_none()
             && affinity_key.is_some()
             && fresh_turn
@@ -664,7 +838,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             let attempt_id = uuid::Uuid::new_v4().to_string();
             let started = std::time::Instant::now();
             let suffix = upstream_suffix(&segments, &destination, required_protocol)?;
-            let pricing = relay_pricing(&context, &destination, requested_model.as_deref());
+            let pricing = relay_pricing(&context, &destination, requested_model.as_deref(), desktop_catalog.as_deref());
             let attempt_metadata = route_trace::AttemptMetadata {
                 attempt_id: attempt_id.clone(),
                 catalog_revision: pricing.revision.clone(),
@@ -680,7 +854,10 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                 required_protocol,
                 requested_model.as_deref(),
                 pricing,
-            ).map(|request| request.with_request_id(&usage_request_id).with_attempt_id(&attempt_id));
+            ).map(|request| {
+                let request = request.with_request_id(&usage_request_id).with_attempt_id(&attempt_id);
+                if let Some(identity) = &identity { request.with_identity(identity.clone()) } else { request }
+            });
             let (upstream_protocol, upstream_model) = match &destination {
                 Destination::Provider { provider, model_override, upstream_protocol, .. } =>
                     (*upstream_protocol, model_override.clone().unwrap_or_else(|| provider.model.clone())),
@@ -733,13 +910,19 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             if one_m_context {
                 append_anthropic_beta(&mut attempt_headers);
             }
+            let desktop_history_scope = desktop_route.as_ref().zip(desktop.as_ref()).map(|(route, snapshot)| {
+                protocol::message_history::ClientScope {
+                    client_source: "claudeDesktop", config_identity: &snapshot.paths_identity,
+                    model_alias: &route.choice.role_alias, route_revision: snapshot.route_revision,
+                }
+            });
             let message_context = match &destination {
                 Destination::Provider { provider, translation: Some(pair), .. }
                     if pair.from == router::ModelProtocol::AnthropicMessages => {
-                    body.as_deref().and_then(|bytes| protocol::message_history::Context::new_with_session(
+                    body.as_deref().and_then(|bytes| protocol::message_history::Context::new_with_client_scope(
                         &[&context.store_path.to_string_lossy(), &provider.id, &url,
                           attempt_headers.get(AUTHORIZATION).or_else(|| attempt_headers.get("x-api-key")).and_then(|v| v.to_str().ok()).unwrap_or_default(),
-                          &upstream_model, affinity_key.as_deref().unwrap_or_default()], pair.to, bytes, affinity_key.as_deref()))
+                          &upstream_model, affinity_key.as_deref().unwrap_or_default()], pair.to, bytes, affinity_key.as_deref(), desktop_history_scope.as_ref()))
                 }
                 _ => None,
             };
@@ -764,7 +947,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                         .and_then(|snapshot| router::matched_official_model(&snapshot.models, &upstream_model));
                     let metadata = router::resolve_model_metadata(
                         provider, &upstream_model, official,
-                        &super::models_dev::load(&context.app_data_dir),
+                        &desktop_catalog.clone().unwrap_or_else(|| super::models_dev::load(&context.app_data_dir)),
                     );
                     session_compat::prepare_message_translation(sent, translation.to, &metadata)?
                 } else { sent }
@@ -797,7 +980,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             }
             if inference_create && failover_seen && (fresh_turn || continuation) {
                 if let Some(key) = &affinity_key {
-                    if !failover::bind_for_mode(key, &destination, store.router.same_model_failover) {
+                    if !failover::bind_for_mode(key, &destination, same_model_failover) {
                         return Err((StatusCode::SERVICE_UNAVAILABLE,
                             "conversation routing capacity reached; wait for idle sessions to expire or start a new conversation"));
                     }
@@ -919,14 +1102,7 @@ fn requested_model(
     body: Option<&[u8]>,
     required_protocol: Option<router::ModelProtocol>,
 ) -> (Option<String>, bool) {
-    let raw = body
-        .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())
-        .and_then(|value| {
-            value
-                .get("model")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        });
+    let raw = raw_requested_model(body);
     raw.map_or((None, false), |model| {
         if required_protocol == Some(router::ModelProtocol::AnthropicMessages) {
             let (base, enabled) = strip_claude_one_m_marker(&model);
@@ -935,6 +1111,13 @@ fn requested_model(
             (Some(model), false)
         }
     })
+}
+
+/// Skip message/tool bodies while observing only the model identity.
+fn raw_requested_model(body: Option<&[u8]>) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct ModelOnly { model: Option<String> }
+    body.and_then(|bytes| serde_json::from_slice::<ModelOnly>(bytes).ok()).and_then(|v| v.model)
 }
 
 fn codex_catalog_response(context: &ArcContext, store: &router::Store) -> Response<ResponseBody> {
@@ -1125,6 +1308,7 @@ fn upstream_suffix(
     required_protocol: Option<router::ModelProtocol>,
 ) -> ForwardResult<String> {
     let suffix = match segments {
+        ["claude-desktop", "v1", rest @ ..] => rest.join("/"),
         ["p", _, "v1", rest @ ..] | ["codex", "v1", rest @ ..] | ["v1", rest @ ..] => {
             rest.join("/")
         }
@@ -1166,6 +1350,7 @@ fn relay_pricing(
     context: &ArcContext,
     destination: &Destination,
     requested_model: Option<&str>,
+    catalog: Option<&super::models_dev::Catalog>,
 ) -> relay_usage::PricingSnapshot {
     match destination {
         Destination::Provider {
@@ -1177,7 +1362,10 @@ fn relay_pricing(
                 .clone()
                 .or_else(|| requested_model.map(str::to_owned))
                 .unwrap_or_else(|| provider.model.clone());
-            router::pricing_for_app_data(&context.app_data_dir, provider, &model)
+            match catalog {
+                Some(catalog) => router::pricing_for(provider, &model, catalog),
+                None => router::pricing_for_app_data(&context.app_data_dir, provider, &model),
+            }
         }
         Destination::Official => {
             let revision = crate::core::models_dev::load(&context.app_data_dir)
@@ -2490,6 +2678,7 @@ mod tests {
             crate::core::secret_file::write(&store_path, &serde_json::to_vec(&store).unwrap()).unwrap();
             let client = Client::builder().no_proxy().timeout(Duration::from_secs(5)).build().unwrap();
             let context = Arc::new(ArcContext {
+                bound_port: 0,
                 failover_seen: failover_seen_for(&store_path),
                 store_path, app_data_dir, codex_home:fixture.path().to_owned(), auth_path:auth_path.clone(),
                 outbound:Arc::new(RwLock::new(client.clone())), outbound_direct:client.clone()

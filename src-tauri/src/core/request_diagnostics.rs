@@ -12,6 +12,21 @@ use std::{
 const MAX_OBSERVATION: usize = 256 * 1024;
 const MAX_ID: usize = 200;
 
+/// Entry-point identity supplements the actual model used for accounting. Old
+/// records omit these fields and retain their original unknown source.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RequestIdentity {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route_revision: Option<u64>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ServedModelObservation {

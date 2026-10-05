@@ -29,6 +29,8 @@ pub struct Ticket {
     pub request: ActionRequest,
     #[serde(default)]
     pub process_epoch: String,
+    #[serde(default)]
+    pub listener_lease: Option<super::types::ListenerLease>,
 }
 
 /// 命令层每次创建 Manager，进程 epoch 必须在整个应用进程内共享。
@@ -131,6 +133,13 @@ impl<'a> Tickets<'a> {
         self.save(&store)
     }
 
+    pub fn cancel(&self, revision: &str) -> DesktopResult<()> {
+        let mut store = self.load()?;
+        prune(&mut store);
+        store.tickets.retain(|entry| entry.id != revision);
+        self.save(&store)
+    }
+
     /// 启动时清理过期项。
     pub fn prune_expired(&self) -> DesktopResult<()> {
         let mut store = self.load()?;
@@ -157,13 +166,13 @@ impl<'a> Tickets<'a> {
 
 fn prune(store: &mut TicketStore) {
     let now = chrono::Utc::now().timestamp();
-    store
-        .tickets
-        .retain(|entry| entry.ticket.process_epoch == process_epoch()
-            && now.checked_sub(entry.ticket.created_at)
-                .is_some_and(|age| (0..=TICKET_TTL_SECONDS).contains(&age)));
+    store.tickets.retain(|entry| {
+        entry.ticket.process_epoch == process_epoch()
+            && now
+                .checked_sub(entry.ticket.created_at)
+                .is_some_and(|age| (0..=TICKET_TTL_SECONDS).contains(&age))
+    });
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -171,9 +180,19 @@ mod tests {
 
     fn ticket() -> Ticket {
         Ticket {
-            revision: "identical-private-input-revision".into(), action: DesktopAction::ApplyDirect,
-            paths_identity: "temporary-roots".into(), created_at: chrono::Utc::now().timestamp(),
-            request: ActionRequest { provider_id: None, models: vec![], paths: Default::default(), rebaseline: false },
+            revision: "identical-private-input-revision".into(),
+            action: DesktopAction::ApplyDirect,
+            paths_identity: "temporary-roots".into(),
+            created_at: chrono::Utc::now().timestamp(),
+            listener_lease: None,
+            request: ActionRequest {
+                routes: vec![],
+                rotate_gateway_token: false,
+                provider_id: None,
+                models: vec![],
+                paths: Default::default(),
+                rebaseline: false,
+            },
             process_epoch: process_epoch().to_owned(),
         }
     }
@@ -186,7 +205,10 @@ mod tests {
         let mut old = ticket();
         old.process_epoch = "terminated-process-epoch".into();
         let id = store.issue(old).unwrap();
-        assert_eq!(store.take(&id).unwrap_err().code, error_code::PREVIEW_EXPIRED);
+        assert_eq!(
+            store.take(&id).unwrap_err().code,
+            error_code::PREVIEW_EXPIRED
+        );
         assert!(!store.has_open());
         store.prune_expired().unwrap();
         assert!(store.load().unwrap().tickets.is_empty());
@@ -201,8 +223,14 @@ mod tests {
         store.take(&first).unwrap();
         let second = Tickets::new(&path).issue(ticket()).unwrap();
         assert_ne!(first, second);
-        assert_eq!(store.take(&first).unwrap_err().code, error_code::PREVIEW_EXPIRED);
-        assert_eq!(store.take(&second).unwrap().revision, "identical-private-input-revision");
+        assert_eq!(
+            store.take(&first).unwrap_err().code,
+            error_code::PREVIEW_EXPIRED
+        );
+        assert_eq!(
+            store.take(&second).unwrap().revision,
+            "identical-private-input-revision"
+        );
     }
 
     #[test]
@@ -210,12 +238,19 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("previews.dat");
         let store = Tickets::new(&path);
-        for created_at in [i64::MIN, i64::MAX, chrono::Utc::now().timestamp() + TICKET_TTL_SECONDS] {
+        for created_at in [
+            i64::MIN,
+            i64::MAX,
+            chrono::Utc::now().timestamp() + TICKET_TTL_SECONDS,
+        ] {
             let mut invalid = ticket();
             invalid.created_at = created_at;
             let id = store.issue(invalid).unwrap();
             assert!(!store.has_open());
-            assert_eq!(store.take(&id).unwrap_err().code, error_code::PREVIEW_EXPIRED);
+            assert_eq!(
+                store.take(&id).unwrap_err().code,
+                error_code::PREVIEW_EXPIRED
+            );
             store.prune_expired().unwrap();
             assert!(store.load().unwrap().tickets.is_empty());
         }

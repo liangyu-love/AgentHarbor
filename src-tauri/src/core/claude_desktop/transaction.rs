@@ -45,7 +45,6 @@ pub enum ManagedValues {
 }
 
 impl ManagedValues {
-
     /// `self` 为期望值、`now` 为现状时，现状是否已被外部改写。
     pub fn drifted(&self, now: &ManagedValues) -> bool {
         match (self, now) {
@@ -102,7 +101,6 @@ pub struct Edition {
 }
 
 impl Edition {
-
     /// 事务写入了该文件时，按计划记录“最近安装值”。
     pub fn applied(&self, after: &ManagedValues) -> Self {
         let mut next = self.clone();
@@ -224,6 +222,7 @@ pub struct FileSnapshot {
 #[serde(rename_all = "camelCase")]
 pub enum AppliedMode {
     Direct,
+    Router,
     Official,
 }
 
@@ -266,6 +265,8 @@ pub struct State {
     /// Desktop 实际使用的端点根，用于判断供应商端点变更。
     #[serde(default)]
     pub profile_base_url: Option<String>,
+    #[serde(default)]
+    pub router: Option<super::gateway::RouterConfig>,
     pub last_applied_at: i64,
     pub restart_required: bool,
     pub data: ManagedData,
@@ -284,6 +285,7 @@ impl State {
         self.models.clear();
         self.model_choices.clear();
         self.profile_base_url = None;
+        self.router = None;
         // 管理已结束：不再保留凭据指纹。
         self.credential_fingerprint = None;
         self.restart_required = false;
@@ -296,7 +298,6 @@ impl State {
             .iter()
             .find(|edition| edition.role == file_role)
     }
-
 }
 
 /// 持久 journal。`next_state` 与 state 的 transactionId/generation 一致即为提交点。
@@ -331,9 +332,7 @@ pub fn read_text(path: &Path) -> Result<Option<String>, String> {
 }
 
 pub fn storage_error() -> Box<DesktopError> {
-    Box::new(
-        DesktopError::new(error_code::STORAGE, "claudeDesktop.errors.storage").retryable(),
-    )
+    Box::new(DesktopError::new(error_code::STORAGE, "claudeDesktop.errors.storage").retryable())
 }
 
 pub fn conflict_error() -> Box<DesktopError> {
@@ -359,7 +358,6 @@ pub fn write_document(path: &Path, document: &Value, file_role: &str) -> Desktop
 pub fn remove_file(path: &Path) -> DesktopResult<()> {
     storage::remove_file_durable(path).map_err(|_| storage_error())
 }
-
 
 pub fn render(value: &Value) -> String {
     match value {
@@ -412,12 +410,14 @@ pub fn meta_edition(before: Option<&str>) -> DesktopResult<Edition> {
 
 pub fn profile_edition(before: Option<&str>) -> DesktopResult<Edition> {
     let value = match before {
-        Some(text) if !text.trim().is_empty() => Some(serde_json::from_str::<Value>(text).map_err(|_| {
-            Box::new(
-                DesktopError::new(error_code::INVALID_FILE, "claudeDesktop.errors.invalidJson")
-                    .file(role::PROFILE),
-            )
-        })?),
+        Some(text) if !text.trim().is_empty() => {
+            Some(serde_json::from_str::<Value>(text).map_err(|_| {
+                Box::new(
+                    DesktopError::new(error_code::INVALID_FILE, "claudeDesktop.errors.invalidJson")
+                        .file(role::PROFILE),
+                )
+            })?)
+        }
         _ => None,
     };
     let baseline = ManagedValues::Whole {
@@ -437,11 +437,16 @@ pub fn read_editions(paths: &DesktopPaths) -> DesktopResult<Vec<Edition>> {
     Ok(vec![
         profile_edition(read_text_or(&paths.profile_path)?.as_deref())?,
         meta_edition(read_text_or(&paths.meta_path)?.as_deref())?,
-        config_edition(read_text_or(&paths.third_party_config)?.as_deref(), role::THIRD_PARTY_CONFIG)?,
-        config_edition(read_text_or(&paths.normal_config)?.as_deref(), role::NORMAL_CONFIG)?,
+        config_edition(
+            read_text_or(&paths.third_party_config)?.as_deref(),
+            role::THIRD_PARTY_CONFIG,
+        )?,
+        config_edition(
+            read_text_or(&paths.normal_config)?.as_deref(),
+            role::NORMAL_CONFIG,
+        )?,
     ])
 }
-
 
 /// 计划前的受管值。
 ///
@@ -460,13 +465,14 @@ pub fn editions_before(
     }
     Ok(fresh
         .iter()
-        .map(|edition| match previous.and_then(|state| state.edition(&edition.role)) {
-            Some(kept) => kept.clone(),
-            None => edition.clone(),
-        })
+        .map(
+            |edition| match previous.and_then(|state| state.edition(&edition.role)) {
+                Some(kept) => kept.clone(),
+                None => edition.clone(),
+            },
+        )
         .collect())
 }
-
 
 // ---------------------------------------------------------------------------
 // 计划
@@ -601,7 +607,9 @@ impl TakeoverBaseline {
                     };
                 }
                 (_, ManagedValues::Fields { values }) => {
-                    baseline.configs_existed.insert(edition.role.clone(), edition.existed_before);
+                    baseline
+                        .configs_existed
+                        .insert(edition.role.clone(), edition.existed_before);
                     if let Some(mode) = values
                         .get(profile::KEY_DEPLOYMENT_MODE)
                         .and_then(Value::as_str)
@@ -695,14 +703,19 @@ pub fn build_plan(
     if desired.mode.is_none() && desired.profile.is_none() {
         let original = MetaDocument::parse(baseline.meta_before.as_deref())?;
         let original_entries = original.entry_list()?;
-        let original_index = original_entries.iter().position(MetaEntry::is_own).unwrap_or(0);
+        let original_index = original_entries
+            .iter()
+            .position(MetaEntry::is_own)
+            .unwrap_or(0);
         meta_next = meta_document.render(desired.own_entry.as_ref(), Some(None), original_index)?;
         if let Some(object) = meta_next.as_object_mut() {
             if let Some(value) = original.applied_id {
                 object.insert(profile::KEY_APPLIED_ID.to_owned(), value);
             }
             if original.entries.is_none()
-                && object.get(profile::KEY_ENTRIES).and_then(Value::as_array)
+                && object
+                    .get(profile::KEY_ENTRIES)
+                    .and_then(Value::as_array)
                     .is_some_and(|entries| entries.is_empty())
             {
                 object.remove(profile::KEY_ENTRIES);
@@ -724,12 +737,20 @@ pub fn build_plan(
         if before_applied != desired.applied_id {
             keys.push(KeyValue {
                 path: profile::KEY_APPLIED_ID.to_owned(),
-                before: Some(applied_label(before_applied.as_deref(), &desired.applied_id)),
-                after: Some(applied_label(desired.applied_id.as_deref(), &before_applied)),
+                before: Some(applied_label(
+                    before_applied.as_deref(),
+                    &desired.applied_id,
+                )),
+                after: Some(applied_label(
+                    desired.applied_id.as_deref(),
+                    &before_applied,
+                )),
             });
         }
-        let after_text = if desired.mode.is_none() && desired.profile.is_none()
-            && baseline.meta_before.is_none() && meta_is_empty(&meta_next)
+        let after_text = if desired.mode.is_none()
+            && desired.profile.is_none()
+            && baseline.meta_before.is_none()
+            && meta_is_empty(&meta_next)
         {
             None
         } else {
@@ -745,7 +766,11 @@ pub fn build_plan(
     }
 
     for (file_role, path, before) in [
-        (role::THIRD_PARTY_CONFIG, &paths.third_party_config, &threep_before),
+        (
+            role::THIRD_PARTY_CONFIG,
+            &paths.third_party_config,
+            &threep_before,
+        ),
         (role::NORMAL_CONFIG, &paths.normal_config, &normal_before),
     ] {
         let mut map = profile::parse_object(before.as_deref(), file_role)?;
@@ -774,7 +799,8 @@ pub fn build_plan(
         } else {
             single_field(profile::KEY_DEPLOYMENT_MODE, after_value.clone())
         };
-        let after_text = if desired.mode.is_none() && map.is_empty()
+        let after_text = if desired.mode.is_none()
+            && map.is_empty()
             && baseline.configs_existed.get(file_role) == Some(&false)
         {
             None
@@ -881,13 +907,16 @@ pub fn next_state(
         models: models.to_vec(),
         model_choices: Vec::new(),
         profile_base_url: None,
+        router: None,
         last_applied_at: chrono::Utc::now().timestamp(),
         restart_required: true,
-        data: ManagedData { files, applied_mode },
+        data: ManagedData {
+            files,
+            applied_mode,
+        },
         tombstone: false,
     })
 }
-
 
 fn edition_path(edition: &Edition, paths: &DesktopPaths) -> Option<PathBuf> {
     Some(match edition.role.as_str() {
@@ -955,16 +984,23 @@ fn parse_for(edition: &Edition, text: &str) -> DesktopResult<Value> {
 /// 依据基线撤回本工具写入的受管目标。幂等：只有当前值与预期吻合才写。
 pub fn restore_edition(edition: &Edition, path: &Path, after: &ManagedValues) -> DesktopResult<()> {
     let after_text = match after {
-        ManagedValues::Whole { value: Some(value) } => Some(profile::to_text(value, &edition.role)?),
+        ManagedValues::Whole { value: Some(value) } => {
+            Some(profile::to_text(value, &edition.role)?)
+        }
         _ => None,
     };
     let plan = FilePlan {
-        role: edition.role.clone(), path: path.to_path_buf(), after_text,
-        after: after.clone(), after_keys: Vec::new(),
+        role: edition.role.clone(),
+        path: path.to_path_buf(),
+        after_text,
+        after: after.clone(),
+        after_keys: Vec::new(),
     };
     let before = FileSnapshot {
-        role: edition.role.clone(), path: path.to_path_buf(),
-        existed: edition.existed_before, text: edition.before.clone(),
+        role: edition.role.clone(),
+        path: path.to_path_buf(),
+        existed: edition.existed_before,
+        text: edition.before.clone(),
     };
     // Fields/Meta 只有受管值，没有完整的 after 文本；None 不能被当成删除快照。
     rollback_file(&plan, &before, matches!(after, ManagedValues::Whole { .. }))
@@ -975,7 +1011,10 @@ fn meta_is_empty(document: &Value) -> bool {
     let Ok(meta) = MetaDocument::parse(Some(&document.to_string())) else {
         return false;
     };
-    let entries_empty = meta.entry_list().map(|list| list.is_empty()).unwrap_or(false);
+    let entries_empty = meta
+        .entry_list()
+        .map(|list| list.is_empty())
+        .unwrap_or(false);
     entries_empty && meta.applied_id.is_none() && meta.extra.is_empty()
 }
 
@@ -996,7 +1035,9 @@ fn managed_keys(edition: &Edition) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 pub fn backups_dir(app_data_dir: &Path) -> PathBuf {
-    app_data_dir.join(super::constants::DATA_DIR_NAME).join("backups")
+    app_data_dir
+        .join(super::constants::DATA_DIR_NAME)
+        .join("backups")
 }
 
 /// 写一份受保护的恢复备份；失败则不继续修改外部文件。
@@ -1006,8 +1047,7 @@ pub fn write_backup(app_data_dir: &Path, snapshots: &[FileSnapshot]) -> DesktopR
     let bytes = serde_json::to_vec(snapshots).map_err(|_| storage_error())?;
     secret_file::write(&path, &bytes).map_err(|_| storage_error())?;
     storage::prune_backups(&backups_dir(app_data_dir), MAX_BACKUPS, |path| {
-        path.extension()
-            .is_some_and(|extension| extension == "dat")
+        path.extension().is_some_and(|extension| extension == "dat")
     });
     Ok(id)
 }
@@ -1087,8 +1127,11 @@ pub fn rollback(pending: &Pending) -> DesktopResult<Vec<String>> {
         Ok(Vec::new())
     } else {
         Err(Box::new(
-            DesktopError::new(error_code::RECOVERY_REQUIRED, "claudeDesktop.errors.recoveryRequired")
-                .param(failed.join(",")),
+            DesktopError::new(
+                error_code::RECOVERY_REQUIRED,
+                "claudeDesktop.errors.recoveryRequired",
+            )
+            .param(failed.join(",")),
         ))
     }
 }
@@ -1116,7 +1159,9 @@ pub fn after_matches(plan: &FilePlan) -> DesktopResult<bool> {
 fn managed_after_matches(plan: &FilePlan, current: Option<&str>) -> DesktopResult<bool> {
     Ok(match &plan.after {
         ManagedValues::Whole { value } => {
-            let now = current.map(serde_json::from_str::<Value>).transpose()
+            let now = current
+                .map(serde_json::from_str::<Value>)
+                .transpose()
                 .map_err(|_| conflict_error())?;
             &now == value
         }
@@ -1124,9 +1169,16 @@ fn managed_after_matches(plan: &FilePlan, current: Option<&str>) -> DesktopResul
             let now = profile::parse_object(current, &plan.role)?;
             now.get(profile::KEY_DEPLOYMENT_MODE) == values.get(profile::KEY_DEPLOYMENT_MODE)
         }
-        ManagedValues::Meta { own_entry, applied_id } => {
+        ManagedValues::Meta {
+            own_entry,
+            applied_id,
+        } => {
             let now = MetaDocument::parse(current)?;
-            let entry = now.entry_list()?.iter().find(|entry| entry.is_own()).map(MetaEntry::to_value);
+            let entry = now
+                .entry_list()?
+                .iter()
+                .find(|entry| entry.is_own())
+                .map(MetaEntry::to_value);
             &entry == own_entry && &now.applied_id == applied_id
         }
     })
@@ -1134,7 +1186,11 @@ fn managed_after_matches(plan: &FilePlan, current: Option<&str>) -> DesktopResul
 
 /// 回滚只回到本笔事务开始时的状态，绝不使用首次接管基线。
 /// 共享文件允许保留外部无关键，但受管值若是 before/after 之外的第三值必须报冲突。
-fn rollback_file(plan: &FilePlan, before: &FileSnapshot, full_after_snapshot: bool) -> DesktopResult<()> {
+fn rollback_file(
+    plan: &FilePlan,
+    before: &FileSnapshot,
+    full_after_snapshot: bool,
+) -> DesktopResult<()> {
     if before.path != plan.path || before.existed != before.text.is_some() {
         return Err(conflict_error());
     }
@@ -1153,7 +1209,9 @@ fn rollback_file(plan: &FilePlan, before: &FileSnapshot, full_after_snapshot: bo
             ManagedValues::Fields { values: after } => {
                 let baseline = profile::parse_object(before.text.as_deref(), &plan.role)?;
                 let mut now = profile::parse_object(current.as_deref(), &plan.role)?;
-                if now.get(profile::KEY_DEPLOYMENT_MODE) == baseline.get(profile::KEY_DEPLOYMENT_MODE) {
+                if now.get(profile::KEY_DEPLOYMENT_MODE)
+                    == baseline.get(profile::KEY_DEPLOYMENT_MODE)
+                {
                     return Ok(());
                 }
                 let keys = [profile::KEY_DEPLOYMENT_MODE];
@@ -1162,8 +1220,12 @@ fn rollback_file(plan: &FilePlan, before: &FileSnapshot, full_after_snapshot: bo
                         return Err(conflict_error());
                     }
                     match baseline.get(key) {
-                        Some(value) => { now.insert(key.to_owned(), value.clone()); }
-                        None => { now.remove(key); }
+                        Some(value) => {
+                            now.insert(key.to_owned(), value.clone());
+                        }
+                        None => {
+                            now.remove(key);
+                        }
                     }
                 }
                 if !before.existed && now.is_empty() {
@@ -1172,13 +1234,19 @@ fn rollback_file(plan: &FilePlan, before: &FileSnapshot, full_after_snapshot: bo
                     Some(profile::to_text(&Value::Object(now), &plan.role)?)
                 }
             }
-            ManagedValues::Meta { own_entry: after_entry, applied_id: after_id } => {
+            ManagedValues::Meta {
+                own_entry: after_entry,
+                applied_id: after_id,
+            } => {
                 let baseline = MetaDocument::parse(before.text.as_deref())?;
                 let now = MetaDocument::parse(current.as_deref())?;
                 let entries = baseline.entry_list()?;
                 let old_entry = entries.iter().find(|entry| entry.is_own());
                 let old_value = old_entry.map(MetaEntry::to_value);
-                let current_entry = now.entry_list()?.iter().find(|entry| entry.is_own())
+                let current_entry = now
+                    .entry_list()?
+                    .iter()
+                    .find(|entry| entry.is_own())
                     .map(MetaEntry::to_value);
                 if current_entry == old_value && now.applied_id == baseline.applied_id {
                     return Ok(());
@@ -1196,7 +1264,9 @@ fn rollback_file(plan: &FilePlan, before: &FileSnapshot, full_after_snapshot: bo
                 }
                 // render 会生成 entries=[]；接管前没有这个键时撤回空容器。
                 if baseline.entries.is_none()
-                    && object.get(profile::KEY_ENTRIES).and_then(Value::as_array)
+                    && object
+                        .get(profile::KEY_ENTRIES)
+                        .and_then(Value::as_array)
                         .is_some_and(|entries| entries.is_empty())
                 {
                     object.remove(profile::KEY_ENTRIES);

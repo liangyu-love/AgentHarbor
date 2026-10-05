@@ -46,6 +46,20 @@ pub const MAX_BACKUPS: usize = 20;
 /// 探测到的、其 fail-all 校验器已纳入 fable 角色的最低 Desktop 版本。
 pub const FABLE_MIN_VERSION: (u64, u64, u64) = (1, 12603, 1);
 
+/// Central menu IDs, kept independent of upstream model names.
+pub fn route_alias(
+    role: &str,
+    policy: super::provider::DesktopVersionPolicy,
+) -> Option<&'static str> {
+    match role {
+        "sonnet" => Some("claude-sonnet-4-6"),
+        "opus" => Some("claude-opus-4-7"),
+        "haiku" => Some("claude-haiku-4-5"),
+        "fable" if policy.fable_allowed => Some("claude-fable-5"),
+        _ => None,
+    }
+}
+
 /// 依据版本策略返回可用的 Desktop 角色白名单。
 ///
 /// `mythos` 未纳入参考实现的可用菜单，不由 substring 自动放行。

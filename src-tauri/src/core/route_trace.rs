@@ -58,6 +58,12 @@ pub struct Route {
     pub id: String,
     pub timestamp: i64,
     pub requested_model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route_revision: Option<u64>,
     pub requested: Value,
     pub attempts: Vec<Attempt>,
     pub stage: String,
@@ -200,6 +206,9 @@ impl Trace {
             id: id.clone(),
             timestamp: chrono::Utc::now().timestamp(),
             requested_model: label(model),
+            client_source: None,
+            resolved_model: None,
+            route_revision: None,
             requested: metadata_parameters(&raw),
             attempts: vec![],
             stage: "route".into(),
@@ -231,6 +240,13 @@ impl Trace {
     }
     pub fn stage(&self, stage: &str) {
         self.update(|r| r.stage = stage.into());
+    }
+    pub fn identity(&self, identity: &super::request_diagnostics::RequestIdentity) {
+        self.update(|r| {
+            r.client_source = identity.client_source.as_deref().map(label);
+            r.resolved_model = identity.resolved_model.as_deref().map(label);
+            r.route_revision = identity.route_revision;
+        });
     }
     pub fn attempt(
         &self,

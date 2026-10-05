@@ -216,6 +216,8 @@ fn real_apply_direct() {
         models: models.clone(),
         paths: PathsChoice::default(),
         rebaseline,
+        routes: Vec::new(),
+        rotate_gateway_token: false,
     };
 
     let prepared = manager
@@ -729,6 +731,8 @@ fn real_l10_key_rotation() {
         models,
         paths: PathsChoice::default(),
         rebaseline: false,
+        routes: Vec::new(),
+        rotate_gateway_token: false,
     };
     let prepared = manager
         .prepare(&rotated_store, DesktopAction::Reapply, &request)
@@ -774,6 +778,8 @@ fn real_l10_key_rotation() {
         models: vec![],
         paths: PathsChoice::default(),
         rebaseline: false,
+        routes: Vec::new(),
+        rotate_gateway_token: false,
     };
     let prepared = manager
         .prepare(&rotated_store, DesktopAction::RestorePrevious, &restore)
@@ -1080,6 +1086,8 @@ fn real_l07_switch_official() {
         models: vec![],
         paths: PathsChoice::default(),
         rebaseline: false,
+        routes: Vec::new(),
+        rotate_gateway_token: false,
     };
     let prepared = manager
         .prepare(&store, DesktopAction::SwitchOfficial, &switch_request)
@@ -1126,6 +1134,8 @@ fn real_l07_switch_official() {
         models,
         paths: PathsChoice::default(),
         rebaseline: false,
+        routes: Vec::new(),
+        rotate_gateway_token: false,
     };
     let prepared = manager
         .prepare(&store, DesktopAction::ApplyDirect, &reapply)
@@ -1436,6 +1446,8 @@ fn request() -> ActionRequest {
         ],
         paths: PathsChoice::default(),
         rebaseline: false,
+        routes: Vec::new(),
+        rotate_gateway_token: false,
     }
 }
 
@@ -1572,6 +1584,8 @@ fn direct_connection_preview_commit_and_restore_roundtrip() {
         models: vec![],
         paths: PathsChoice::default(),
         rebaseline: false,
+        routes: Vec::new(),
+        rotate_gateway_token: false,
     };
     let restore_prepared = fixture
         .manager
@@ -1696,6 +1710,8 @@ fn release_keeps_the_files_and_records_a_tombstone() {
         models: vec![],
         paths: PathsChoice::default(),
         rebaseline: false,
+        routes: Vec::new(),
+        rotate_gateway_token: false,
     };
     let release_prepared = fixture
         .manager
@@ -1804,6 +1820,8 @@ fn provider_removal_marks_the_configuration_orphaned_but_still_restorable() {
         models: vec![],
         paths: PathsChoice::default(),
         rebaseline: false,
+        routes: Vec::new(),
+        rotate_gateway_token: false,
     };
     let restore_prepared = fixture
         .manager
@@ -1846,6 +1864,8 @@ fn switching_to_official_mode_preserves_foreign_entries() {
         models: vec![],
         paths: PathsChoice::default(),
         rebaseline: false,
+        routes: Vec::new(),
+        rotate_gateway_token: false,
     };
     let switch_prepared = fixture
         .manager

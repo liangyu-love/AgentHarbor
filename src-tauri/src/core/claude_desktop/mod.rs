@@ -27,17 +27,19 @@ use crate::core::secret_file;
 pub mod capability;
 pub mod constants;
 pub mod desktop_app;
+pub mod gateway;
 pub mod lock;
 pub mod paths;
 pub mod probe;
 pub mod profile;
 pub mod provider;
+pub mod routes;
 pub mod status;
+#[cfg(test)]
+mod tests;
 pub mod tickets;
 pub mod transaction;
 pub mod types;
-#[cfg(test)]
-mod tests;
 
 use constants::{DATA_DIR_NAME, PROFILE_ID};
 use paths::{role, DesktopPaths};
@@ -45,8 +47,8 @@ use profile::MetaEntry;
 use transaction::{AppliedMode, DesiredState, Edition, ManagedValues, Pending, State};
 use types::{
     error_code, ActionRequest, ApplyDirectRequest, DesktopAction, DesktopApplied,
-    DesktopCandidates, DesktopDetection, DesktopError, DesktopPreview, DesktopResult, DesktopStatus,
-    ManagedModelView, OneMMode, PathsChoice, ProviderCandidateView,
+    DesktopCandidates, DesktopDetection, DesktopError, DesktopPreview, DesktopResult,
+    DesktopStatus, ManagedModelView, OneMMode, PathsChoice, ProviderCandidateView,
 };
 
 const STATE_FILE: &str = "state.dat";
@@ -94,6 +96,7 @@ pub struct PreparedChange {
     pub current_applied_id: Option<String>,
     pub requires_restart: bool,
     pub request: ActionRequest,
+    pub listener_lease: Option<types::ListenerLease>,
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +110,7 @@ pub struct Manager {
     version_hint: Option<String>,
     /// 显式路径覆盖；只用于隔离的集成测试，生产路径始终由发现决定。
     paths_override: Option<DesktopPaths>,
+    listener_lease: Option<types::ListenerLease>,
     #[cfg(test)]
     stop_check: Option<std::sync::Arc<dyn Fn(&DesktopPaths) -> DesktopResult<()> + Send + Sync>>,
 }
@@ -117,6 +121,7 @@ impl Manager {
             app_data_dir: app_data_dir.to_path_buf(),
             version_hint: None,
             paths_override: None,
+            listener_lease: None,
             #[cfg(test)]
             stop_check: None,
         }
@@ -124,6 +129,11 @@ impl Manager {
 
     pub fn with_version_hint(mut self, version: Option<String>) -> Self {
         self.version_hint = version;
+        self
+    }
+
+    pub fn with_listener_lease(mut self, lease: types::ListenerLease) -> Self {
+        self.listener_lease = Some(lease);
         self
     }
 
@@ -215,8 +225,14 @@ impl Manager {
     }
 
     /// 一个管理会话只负责最初选中的安装。不能通过恢复/重应用请求搬到别的根。
-    fn session_paths(&self, active: Option<&State>, choice: &PathsChoice) -> DesktopResult<DesktopPaths> {
-        let Some(state) = active else { return self.resolve_paths(choice); };
+    fn session_paths(
+        &self,
+        active: Option<&State>,
+        choice: &PathsChoice,
+    ) -> DesktopResult<DesktopPaths> {
+        let Some(state) = active else {
+            return self.resolve_paths(choice);
+        };
         let mut saved = paths_from_state(state);
         if let Some(overridden) = &self.paths_override {
             if saved.identity() != overridden.identity() {
@@ -227,9 +243,15 @@ impl Manager {
             paths::validate_session_paths(&saved)?;
         }
         if *choice != PathsChoice::default() {
-            let normal = choice.normal_root.as_ref().map(PathBuf::from)
+            let normal = choice
+                .normal_root
+                .as_ref()
+                .map(PathBuf::from)
                 .map(|path| paths::normalize(&path));
-            let third_party = choice.third_party_root.as_ref().map(PathBuf::from)
+            let third_party = choice
+                .third_party_root
+                .as_ref()
+                .map(PathBuf::from)
                 .map(|path| paths::normalize(&path));
             if normal.as_ref() != Some(&saved.normal_root)
                 || third_party.as_ref() != Some(&saved.third_party_root)
@@ -248,11 +270,16 @@ impl Manager {
         desktop_app::ensure_stopped(paths)
     }
 
-    pub fn candidates(&self, store: &Store, choice: &PathsChoice) -> DesktopResult<DesktopCandidates> {
+    pub fn candidates(
+        &self,
+        store: &Store,
+        choice: &PathsChoice,
+    ) -> DesktopResult<DesktopCandidates> {
         let discovery = self.discovery();
         // 显式覆盖（隔离测试）优先；生产路径始终来自发现。
         let paths = if self.paths_override.is_none()
-            && *choice == PathsChoice::default() && discovery.default.is_none()
+            && *choice == PathsChoice::default()
+            && discovery.default.is_none()
         {
             None
         } else {
@@ -291,8 +318,11 @@ impl Manager {
         let selected_path_id = discovery
             .candidates
             .iter()
-            .find(|candidate| paths.as_ref().is_some_and(|paths|
-                candidate.paths.identity() == paths.identity()))
+            .find(|candidate| {
+                paths
+                    .as_ref()
+                    .is_some_and(|paths| candidate.paths.identity() == paths.identity())
+            })
             .map(paths::PathCandidate::id);
         Ok(DesktopCandidates {
             paths: paths.map(|paths| paths.summary()),
@@ -301,6 +331,8 @@ impl Manager {
             detector: detection,
             providers: views,
             selected_provider_id: selected,
+            route_providers: routes::candidates(store, &catalog),
+            route_roles: routes::roles(policy),
         })
     }
 
@@ -321,7 +353,6 @@ impl Manager {
             backup_count: transaction::backup_count(&self.app_data_dir),
         })
     }
-
 
     // -----------------------------------------------------------------------
     // 预览
@@ -345,14 +376,24 @@ impl Manager {
             ));
         }
         let active = previous.as_ref().filter(|state| !state.tombstone);
-        if !matches!(action, DesktopAction::ApplyDirect | DesktopAction::RecoverRollback)
-            && active.is_none()
+        if !matches!(
+            action,
+            DesktopAction::ApplyDirect
+                | DesktopAction::ApplyRouter
+                | DesktopAction::RecoverRollback
+        ) && active.is_none()
         {
             return Err(Box::new(DesktopError::new(
-                error_code::NOT_MANAGED, "claudeDesktop.errors.notManaged",
+                error_code::NOT_MANAGED,
+                "claudeDesktop.errors.notManaged",
             )));
         }
-        if request.rebaseline && !matches!(action, DesktopAction::ApplyDirect | DesktopAction::Reapply) {
+        if request.rebaseline
+            && !matches!(
+                action,
+                DesktopAction::ApplyDirect | DesktopAction::ApplyRouter | DesktopAction::Reapply
+            )
+        {
             return Err(transaction::conflict_error());
         }
         let paths = self.session_paths(active, &request.paths)?;
@@ -361,6 +402,12 @@ impl Manager {
         // 释放只保存原文与结束管理；外部文件即使不再是合法 JSON 也不需要解析。
         if action == DesktopAction::Release {
             let state = active.expect("managed action checked above");
+            if state.data.applied_mode == AppliedMode::Router {
+                return Err(Box::new(DesktopError::new(
+                    error_code::CONFLICT,
+                    "claudeDesktop.errors.routerReleaseBlocked",
+                )));
+            }
             let generation = state.generation + 1;
             let transaction_id = uuid::Uuid::new_v4().to_string();
             let mut next_state = state.clone().into_tombstone(generation, &transaction_id);
@@ -372,8 +419,16 @@ impl Manager {
             if serde_json::to_value(&before).ok() != serde_json::to_value(&after_read).ok() {
                 return Err(changed_error());
             }
-            let revision = revision_of(&action, request, &paths, &before, &plans, &models,
-                previous.as_ref(), &next_state);
+            let revision = revision_of(
+                &action,
+                request,
+                &paths,
+                &before,
+                &plans,
+                &models,
+                previous.as_ref(),
+                &next_state,
+            );
             return Ok(PreparedChange {
                 action,
                 paths,
@@ -394,14 +449,14 @@ impl Manager {
                 current_applied_id: None,
                 requires_restart: false,
                 request: request.clone(),
+                listener_lease: None,
             });
         }
         let detection = self.detection();
         let policy = provider::DesktopVersionPolicy::from_version(Some(&detection.version));
         let catalog = models_dev::load(&self.app_data_dir);
         // 事务开始前的四文件基线；既有接管基线优先，保证 reapply 不移动恢复点。
-        let editions =
-            transaction::editions_before(&paths, previous.as_ref(), request.rebaseline)?;
+        let editions = transaction::editions_before(&paths, previous.as_ref(), request.rebaseline)?;
         let meta_before =
             transaction::read_text(&paths.meta_path).map_err(|_| transaction::storage_error())?;
         let meta = profile::MetaDocument::parse(meta_before.as_deref())?;
@@ -428,31 +483,128 @@ impl Manager {
         let mut credential_fingerprint: Option<String> = None;
         let mut model_choices = Vec::new();
         let mut profile_base_url = None;
-        let desired = match action {
+        let effective_action = if action == DesktopAction::Reapply
+            && active.is_some_and(|s| s.data.applied_mode == AppliedMode::Router)
+        {
+            DesktopAction::ApplyRouter
+        } else {
+            action
+        };
+        if request.rotate_gateway_token && effective_action != DesktopAction::ApplyRouter {
+            return Err(changed_error());
+        }
+        let mut router_config = None;
+        let mut listener_lease = None;
+        let desired = match effective_action {
+            DesktopAction::ApplyRouter => {
+                let lease = self
+                    .listener_lease
+                    .as_ref()
+                    .filter(|lease| lease.bound_port != 0 && lease.bound_port == store.router.port)
+                    .ok_or_else(|| {
+                        Box::new(DesktopError::new(
+                            error_code::CHANGED,
+                            "claudeDesktop.errors.listenerUnavailable",
+                        ))
+                    })?;
+                let choices = if action == DesktopAction::Reapply {
+                    active
+                        .and_then(|s| s.router.as_ref())
+                        .map(|r| r.routes.clone())
+                        .ok_or_else(changed_error)?
+                } else {
+                    request.routes.clone()
+                };
+                let resolved = routes::resolve_routes(store, &choices, policy, &catalog)?;
+                let (token, token_version) =
+                    self.router_token(previous.as_ref(), request.rotate_gateway_token)?;
+                let prior_router = active.and_then(|s| s.router.as_ref());
+                let projection = routes::file_projection(&resolved);
+                let route_revision = match prior_router {
+                    Some(prior)
+                        if prior.routes == choices && prior.file_projection == projection =>
+                    {
+                        prior.route_revision
+                    }
+                    Some(prior) => prior.route_revision + 1,
+                    None => active.map(|s| s.generation + 1).unwrap_or(1),
+                };
+                let config = gateway::RouterConfig {
+                    routes: choices,
+                    route_views: resolved.iter().map(|r| r.view.clone()).collect(),
+                    file_projection: projection,
+                    route_revision,
+                    gateway_token_version: token_version,
+                    gateway_token: token,
+                    bound_port: lease.bound_port,
+                };
+                let base = format!("http://127.0.0.1:{}/claude-desktop", lease.bound_port);
+                models = config
+                    .route_views
+                    .iter()
+                    .map(|r| ManagedModelView {
+                        model_id: r.role_alias.clone(),
+                        label: r.label.clone(),
+                        one_m: r.one_m,
+                    })
+                    .collect();
+                profile_base_url = Some(base.clone());
+                messages_url = Some(format!("{base}/v1/messages"));
+                models_url = Some(format!("{base}/v1/models"));
+                let value = profile::profile_json(&base, &config.gateway_token, &models);
+                router_config = Some(config);
+                listener_lease = Some(lease.clone());
+                DesiredState {
+                    mode: Some(profile::third_party_mode()),
+                    profile: Some(value),
+                    own_entry: Some(MetaEntry::own()),
+                    applied_id: Some(PROFILE_ID.into()),
+                    entry_insert_at: meta
+                        .entry_list()?
+                        .iter()
+                        .position(MetaEntry::is_own)
+                        .unwrap_or(0),
+                }
+            }
             DesktopAction::ApplyDirect | DesktopAction::Reapply => {
                 let direct: ApplyDirectRequest = if action == DesktopAction::Reapply {
                     let state = active.expect("managed action checked above");
-                    if request.provider_id.as_ref().is_some_and(|id| id != &state.provider_id) {
+                    if request
+                        .provider_id
+                        .as_ref()
+                        .is_some_and(|id| id != &state.provider_id)
+                    {
                         return Err(changed_error());
                     }
                     let choices = if state.model_choices.is_empty() {
                         // 旧 journal 只保存结果：保守保留其标签和 1M 开关。
-                        state.models.iter().map(|model| types::DesktopModelChoice {
-                            model_id: model.model_id.clone(),
-                            label_override: Some(model.label.clone()),
-                            one_m_mode: if model.one_m { OneMMode::Auto } else { OneMMode::Off },
-                        }).collect()
+                        state
+                            .models
+                            .iter()
+                            .map(|model| types::DesktopModelChoice {
+                                model_id: model.model_id.clone(),
+                                label_override: Some(model.label.clone()),
+                                one_m_mode: if model.one_m {
+                                    OneMMode::Auto
+                                } else {
+                                    OneMMode::Off
+                                },
+                            })
+                            .collect()
                     } else {
                         state.model_choices.clone()
                     };
                     ApplyDirectRequest {
-                        provider_id: state.provider_id.clone(), models: choices,
-                        paths: request.paths.clone(), rebaseline: request.rebaseline,
+                        provider_id: state.provider_id.clone(),
+                        models: choices,
+                        paths: request.paths.clone(),
+                        rebaseline: request.rebaseline,
                     }
                 } else {
                     request.clone().into_direct()
                 };
-                let (provider, selected, endpoint) = self.direct_plan(store, &direct, policy, &catalog)?;
+                let (provider, selected, endpoint) =
+                    self.direct_plan(store, &direct, policy, &catalog)?;
                 let api_key = provider::require_inference_key(provider)?;
                 credential_fingerprint = provider::credential_fingerprint(provider);
                 model_choices = direct.models;
@@ -546,7 +698,10 @@ impl Manager {
         if external_profile_count > 0 {
             warnings.push("claudeDesktop.warnings.externalProfiles".to_owned());
         }
-        if current_applied_id.as_deref().is_some_and(|id| id != PROFILE_ID) {
+        if current_applied_id
+            .as_deref()
+            .is_some_and(|id| id != PROFILE_ID)
+        {
             warnings.push("claudeDesktop.warnings.takesOverPointer".to_owned());
         }
         if previous.as_ref().is_some_and(|state| state.tombstone) {
@@ -573,13 +728,19 @@ impl Manager {
             &models,
             if desired.mode == Some(profile::official_mode()) {
                 AppliedMode::Official
+            } else if effective_action == DesktopAction::ApplyRouter {
+                AppliedMode::Router
             } else {
                 AppliedMode::Direct
             },
         )?;
         next_state.model_choices = model_choices;
         next_state.profile_base_url = profile_base_url;
-        if matches!(action, DesktopAction::RestorePrevious | DesktopAction::SwitchOfficial) {
+        next_state.router = router_config;
+        if matches!(
+            action,
+            DesktopAction::RestorePrevious | DesktopAction::SwitchOfficial
+        ) {
             next_state = next_state.into_tombstone(generation, &transaction_id);
         }
         // 待启动属于已应用会话的状态：一次无改动的重新应用不能替用户确认已启动。
@@ -593,8 +754,23 @@ impl Manager {
         if serde_json::to_value(&before).ok() != serde_json::to_value(&after_read).ok() {
             return Err(changed_error());
         }
-        let revision = revision_of(&action, request, &paths, &before, &plans, &models,
-            previous.as_ref(), &next_state);
+        let revision = revision_of(
+            &action,
+            request,
+            &paths,
+            &before,
+            &plans,
+            &models,
+            previous.as_ref(),
+            &next_state,
+        );
+        let revision = match &listener_lease {
+            Some(lease) => format!(
+                "{}:{}:{}:{}",
+                revision, lease.bound_port, lease.generation, lease.process_epoch
+            ),
+            None => revision,
+        };
 
         Ok(PreparedChange {
             action,
@@ -616,7 +792,40 @@ impl Manager {
             current_applied_id,
             requires_restart,
             request: request.clone(),
+            listener_lease,
         })
+    }
+
+    fn router_token(&self, previous: Option<&State>, rotate: bool) -> DesktopResult<(String, u64)> {
+        if !rotate {
+            if let Some(router) = previous.and_then(|s| s.router.as_ref()) {
+                return Ok((router.gateway_token.clone(), router.gateway_token_version));
+            }
+        }
+        #[derive(Serialize, Deserialize)]
+        struct Candidate {
+            previous_transaction: Option<String>,
+            token: String,
+            version: u64,
+        }
+        let path = self.data_dir().join("gateway-candidate.dat");
+        let previous_transaction = previous.map(|s| s.transaction_id.clone());
+        if let Some(candidate) = read_secret_json::<Candidate>(&path)? {
+            if candidate.previous_transaction == previous_transaction {
+                return Ok((candidate.token, candidate.version));
+            }
+        }
+        let candidate = Candidate {
+            previous_transaction,
+            token: format!(
+                "ahd-{}{}",
+                uuid::Uuid::new_v4().simple(),
+                uuid::Uuid::new_v4().simple()
+            ),
+            version: previous.map(|s| s.generation + 1).unwrap_or(1),
+        };
+        write_secret_json(&path, &candidate)?;
+        Ok((candidate.token, candidate.version))
     }
 
     /// 解析直连卡片：校验资格、逐模型校验、投影地址。
@@ -626,7 +835,11 @@ impl Manager {
         request: &ApplyDirectRequest,
         policy: provider::DesktopVersionPolicy,
         catalog: &models_dev::Catalog,
-    ) -> DesktopResult<(&'a Provider, Vec<ManagedModelView>, (String, String, String))> {
+    ) -> DesktopResult<(
+        &'a Provider,
+        Vec<ManagedModelView>,
+        (String, String, String),
+    )> {
         let provider = store
             .providers
             .iter()
@@ -727,9 +940,14 @@ impl Manager {
         if ticket.action != action || ticket.request != *request {
             return Err(changed_error());
         }
+        if ticket.listener_lease.is_some() && ticket.listener_lease != self.listener_lease {
+            return Err(changed_error());
+        }
         // 重读全部输入后重新计算 revision；不一致即 changed。
         let prepared = self.prepare(store, action, request)?;
-        if prepared.revision != ticket.revision || ticket.paths_identity != prepared.paths.identity() {
+        if prepared.revision != ticket.revision
+            || ticket.paths_identity != prepared.paths.identity()
+        {
             return Err(changed_error());
         }
         if action != DesktopAction::Release && !prepared.conflicts.is_empty() {
@@ -808,6 +1026,9 @@ impl Manager {
         if self.consume_tickets(&paths.identity()).is_err() {
             warnings.push("claudeDesktop.warnings.ticketCleanup".to_owned());
         }
+        // The committed State/Pending now owns the token. The preparation copy is never
+        // an authorization source and can be removed without changing recovery semantics.
+        let _ = clear_secret_file(&self.data_dir().join("gateway-candidate.dat"));
 
         // 没有新写入也不能清除之前尚未完成的重启要求。
         let wrote_files = !prepared.plans.is_empty();
@@ -822,7 +1043,12 @@ impl Manager {
                 .map(|plan| paths::display(&plan.path))
                 .collect(),
             backup_id: Some(backup_id),
-            management_state: if next_state.tombstone { "unmanaged" } else { "managed" }.to_owned(),
+            management_state: if next_state.tombstone {
+                "unmanaged"
+            } else {
+                "managed"
+            }
+            .to_owned(),
             requires_restart: next_state.restart_required,
             warnings,
         })
@@ -836,10 +1062,7 @@ impl Manager {
             ))
         })?;
         // 释放管理不写任何 Desktop 文件，但要保留可恢复备份。
-        let backup_id = transaction::write_backup(
-            &self.app_data_dir,
-            &prepared.before,
-        )?;
+        let backup_id = transaction::write_backup(&self.app_data_dir, &prepared.before)?;
         let transaction_id = uuid::Uuid::new_v4().to_string();
         let generation = previous.generation + 1;
         let mut tombstone = previous.into_tombstone(generation, &transaction_id);
@@ -869,25 +1092,30 @@ impl Manager {
         // Desktop 一旦在中途启动，退出时可能回写配置：留下 journal，待退出后恢复。
         let paths = self.session_paths(Some(&pending.next_state), &PathsChoice::default())?;
         if self.ensure_stopped(&paths).is_err() {
-            return Err(Box::new(DesktopError::new(
-                error_code::RECOVERY_REQUIRED, "claudeDesktop.errors.pendingRecovery",
-            ).param(pending.transaction_id.clone()).action("recoverRollback")));
+            return Err(Box::new(
+                DesktopError::new(
+                    error_code::RECOVERY_REQUIRED,
+                    "claudeDesktop.errors.pendingRecovery",
+                )
+                .param(pending.transaction_id.clone())
+                .action("recoverRollback"),
+            ));
         }
         match transaction::rollback(pending) {
             Ok(_) => {
                 // 全部恢复成功：还原 previousState，移除 pending，返回原失败。
                 let restored = match &pending.previous_state {
-                    Some(previous) => {
-                        self.save_state(previous)
-                    }
-                    None => {
-                        clear_secret_file(&self.state_path())
-                    }
+                    Some(previous) => self.save_state(previous),
+                    None => clear_secret_file(&self.state_path()),
                 };
                 if restored.is_err() || self.save_pending(None).is_err() {
-                    return Err(Box::new(DesktopError::new(
-                        error_code::RECOVERY_REQUIRED, "claudeDesktop.errors.recoveryRequired",
-                    ).param(pending.transaction_id.clone())));
+                    return Err(Box::new(
+                        DesktopError::new(
+                            error_code::RECOVERY_REQUIRED,
+                            "claudeDesktop.errors.recoveryRequired",
+                        )
+                        .param(pending.transaction_id.clone()),
+                    ));
                 }
                 Err(error)
             }
@@ -906,11 +1134,33 @@ impl Manager {
         self.recover_pending_locked()
     }
 
+    /// Complete journal recovery before serving Desktop. A committed journal only needs
+    /// read-back and protected cleanup, so a running Desktop does not prevent that case.
+    pub fn recover_at_startup(&self) -> DesktopResult<()> {
+        if self.load_pending()?.is_some() {
+            self.recover_pending()?;
+        }
+        self.cleanup_previews()
+    }
+
+    pub fn router_requirement(&self) -> DesktopResult<Option<u16>> {
+        gateway::required_port(&self.app_data_dir)
+    }
+
+    pub fn cancel_preview(&self, revision: &str) -> DesktopResult<()> {
+        let _guard = Self::write_lock()?;
+        self.with_tickets(|store| store.cancel(revision))?;
+        self.cleanup_unused_router_candidate()
+    }
+
     fn recover_pending_locked(&self) -> DesktopResult<DesktopApplied> {
         let Some(pending) = self.load_pending()? else {
             return Err(Box::new(
-                DesktopError::new(error_code::NOT_MANAGED, "claudeDesktop.errors.nothingToRecover")
-                    .retryable(),
+                DesktopError::new(
+                    error_code::NOT_MANAGED,
+                    "claudeDesktop.errors.nothingToRecover",
+                )
+                .retryable(),
             ));
         };
         let state = self.load_state()?;
@@ -928,7 +1178,6 @@ impl Manager {
                 return Err(changed_error());
             }
         }
-        self.ensure_stopped(&paths)?;
         let committed = state.as_ref().is_some_and(|state| {
             state.transaction_id == pending.transaction_id && state.generation == pending.generation
         });
@@ -936,9 +1185,14 @@ impl Manager {
             // 事务已提交：只读回核实并完成 pending 清理，不回滚。
             for plan in &pending.files {
                 if !transaction::after_matches(plan).unwrap_or(false) {
-                    return Err(Box::new(DesktopError::new(
-                        error_code::RECOVERY_REQUIRED, "claudeDesktop.errors.recoveryConflict",
-                    ).file(&plan.role).param(pending.transaction_id.clone())));
+                    return Err(Box::new(
+                        DesktopError::new(
+                            error_code::RECOVERY_REQUIRED,
+                            "claudeDesktop.errors.recoveryConflict",
+                        )
+                        .file(&plan.role)
+                        .param(pending.transaction_id.clone()),
+                    ));
                 }
             }
             self.save_pending(None)?;
@@ -950,7 +1204,12 @@ impl Manager {
                     .map(|plan| paths::display(&plan.path))
                     .collect(),
                 backup_id: pending.backup_id,
-                management_state: if pending.next_state.tombstone { "unmanaged" } else { "managed" }.to_owned(),
+                management_state: if pending.next_state.tombstone {
+                    "unmanaged"
+                } else {
+                    "managed"
+                }
+                .to_owned(),
                 requires_restart: pending.next_state.restart_required,
                 warnings: vec!["claudeDesktop.warnings.recoveredCommitted".to_owned()],
             });
@@ -958,13 +1217,15 @@ impl Manager {
         let before_matches = match (&state, &pending.previous_state) {
             (None, None) => true,
             (Some(now), Some(previous)) => {
-                now.transaction_id == previous.transaction_id && now.generation == previous.generation
+                now.transaction_id == previous.transaction_id
+                    && now.generation == previous.generation
             }
             // 新装：没有旧 state，但事务前也不应有 state。
             (Some(_), None) => false,
             (None, Some(_)) => false,
         };
         if before_matches {
+            self.ensure_stopped(&paths)?;
             // 未提交：按 before 安全恢复。
             transaction::rollback(&pending)?;
             self.save_pending(None)?;
@@ -972,9 +1233,16 @@ impl Manager {
                 transaction_id: pending.transaction_id,
                 changed_paths: Vec::new(),
                 backup_id: pending.backup_id,
-                management_state: if pending.previous_state.as_ref().is_some_and(|state| !state.tombstone) {
+                management_state: if pending
+                    .previous_state
+                    .as_ref()
+                    .is_some_and(|state| !state.tombstone)
+                {
                     "managed"
-                } else { "unmanaged" }.to_owned(),
+                } else {
+                    "unmanaged"
+                }
+                .to_owned(),
                 requires_restart: false,
                 warnings: vec!["claudeDesktop.warnings.recoveredRolledBack".to_owned()],
             });
@@ -993,7 +1261,15 @@ impl Manager {
     /// 只清理 ticket 文件，不写 Desktop 文件，因此不需要 writer 锁。
     pub fn cleanup_previews(&self) -> DesktopResult<()> {
         let _guard = Self::write_lock()?;
-        self.with_tickets(|store| store.prune_expired())
+        self.with_tickets(|store| store.prune_expired())?;
+        self.cleanup_unused_router_candidate()
+    }
+
+    fn cleanup_unused_router_candidate(&self) -> DesktopResult<()> {
+        if !self.with_tickets(|store| store.has_open()) && self.load_pending()?.is_none() {
+            clear_secret_file(&self.data_dir().join("gateway-candidate.dat"))?;
+        }
+        Ok(())
     }
 
     /// 测试专用：直接写入 pending journal，用于模拟进程中断。
@@ -1042,10 +1318,14 @@ impl Manager {
         let _guard = Self::write_lock()?;
         let _process_lock = lock::acquire(&self.app_data_dir, "restartApp")?;
         if let Some(pending) = self.load_pending()? {
-            return Err(Box::new(DesktopError::new(
-                error_code::RECOVERY_REQUIRED,
-                "claudeDesktop.errors.pendingRecovery",
-            ).param(pending.transaction_id).action("recoverRollback")));
+            return Err(Box::new(
+                DesktopError::new(
+                    error_code::RECOVERY_REQUIRED,
+                    "claudeDesktop.errors.pendingRecovery",
+                )
+                .param(pending.transaction_id)
+                .action("recoverRollback"),
+            ));
         }
         let mut state = self.load_state()?;
         let current_paths = self.session_paths(state.as_ref(), &PathsChoice::default())?;
@@ -1091,6 +1371,7 @@ impl Manager {
             created_at: chrono::Utc::now().timestamp(),
             request: prepared.request.clone(),
             process_epoch: tickets::process_epoch().to_owned(),
+            listener_lease: prepared.listener_lease.clone(),
         };
         let ticket_id = self.with_tickets(|store| store.issue(ticket))?;
         Ok(DesktopPreview {
@@ -1099,10 +1380,24 @@ impl Manager {
             provider_id: prepared.provider_id.clone(),
             provider_name: prepared.provider_name.clone(),
             models: prepared.models.clone(),
+            route_views: prepared
+                .next_state
+                .router
+                .as_ref()
+                .map(|r| r.route_views.clone())
+                .unwrap_or_default(),
+            router: prepared
+                .next_state
+                .router
+                .as_ref()
+                .map(gateway::RouterConfig::view),
             messages_url: prepared.messages_url.clone(),
             models_url: prepared.models_url.clone(),
             files: transaction::views(&prepared.plans, |role| {
-                prepared.before.iter().find(|snapshot| snapshot.role == role)
+                prepared
+                    .before
+                    .iter()
+                    .find(|snapshot| snapshot.role == role)
                     .map(|snapshot| snapshot.existed)
                     .unwrap_or(false)
             }),
@@ -1158,7 +1453,6 @@ impl Manager {
 // 自由函数
 // ---------------------------------------------------------------------------
 
-
 fn read_secret_json<T: for<'de> Deserialize<'de>>(path: &Path) -> DesktopResult<Option<T>> {
     let Some(bytes) = secret_file::read(path).map_err(|_| transaction::storage_error())? else {
         return Ok(None);
@@ -1200,9 +1494,10 @@ fn baseline_meta_entry(editions: &[Edition]) -> Option<MetaEntry> {
 
 fn baseline_applied_id(editions: &[Edition]) -> Option<String> {
     match edition_of(editions, role::META).map(|edition| &edition.baseline) {
-        Some(ManagedValues::Meta { applied_id, .. }) => {
-            applied_id.as_ref().and_then(Value::as_str).map(str::to_owned)
-        }
+        Some(ManagedValues::Meta { applied_id, .. }) => applied_id
+            .as_ref()
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         _ => None,
     }
 }
@@ -1225,19 +1520,42 @@ fn revision_of(
     hasher.update(paths.identity().as_bytes());
     // 排除预览中随机生成的 transactionId/time，只绑定会影响实际提交的输入。
     let bytes = serde_json::to_vec(&(
-        request, before, plans, models, previous,
-        &next_state.provider_id, &next_state.provider_name,
-        &next_state.model_choices, &next_state.profile_base_url,
-        &next_state.credential_fingerprint, next_state.generation,
-        next_state.paths_isolated, next_state.paths_overridden, next_state.tombstone,
-    )).expect("revision inputs are JSON serializable");
+        request,
+        before,
+        plans,
+        models,
+        previous,
+        &next_state.provider_id,
+        &next_state.provider_name,
+        &next_state.model_choices,
+        &next_state.profile_base_url,
+        &next_state.credential_fingerprint,
+        next_state.generation,
+        next_state.router.as_ref().map(|router| {
+            (
+                &router.routes,
+                &router.file_projection,
+                router.route_revision,
+                router.gateway_token_version,
+                &router.gateway_token,
+                router.bound_port,
+            )
+        }),
+        next_state.paths_isolated,
+        next_state.paths_overridden,
+        next_state.tombstone,
+    ))
+    .expect("revision inputs are JSON serializable");
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
 }
 
 fn changed_error() -> Box<DesktopError> {
-    Box::new(DesktopError::new(error_code::CHANGED, "claudeDesktop.errors.changed")
-        .retryable().action("repreview"))
+    Box::new(
+        DesktopError::new(error_code::CHANGED, "claudeDesktop.errors.changed")
+            .retryable()
+            .action("repreview"),
+    )
 }
 
 fn expected_path<'a>(paths: &'a DesktopPaths, role: &str) -> Option<&'a PathBuf> {
@@ -1251,10 +1569,7 @@ fn expected_path<'a>(paths: &'a DesktopPaths, role: &str) -> Option<&'a PathBuf>
 }
 
 /// 写前校验：当前文件必须仍等于事务开始时的快照。
-fn verify_unchanged(
-    pending: &Pending,
-    plan: &transaction::FilePlan,
-) -> DesktopResult<()> {
+fn verify_unchanged(pending: &Pending, plan: &transaction::FilePlan) -> DesktopResult<()> {
     let Some(snapshot) = pending.before.iter().find(|item| item.role == plan.role) else {
         return Err(changed_error());
     };
@@ -1299,17 +1614,22 @@ fn verify_written(plan: &transaction::FilePlan) -> DesktopResult<()> {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // 版本探测
 // ---------------------------------------------------------------------------
 
 /// 探测 Desktop 版本；失败返回 `unknown`，不编造版本。
 pub fn detect_desktop(discovery: &paths::Discovery, hint: Option<&str>) -> DesktopDetection {
-    let installed = discovery.candidates.iter().any(|item| item.install_evidence);
+    let installed = discovery
+        .candidates
+        .iter()
+        .any(|item| item.install_evidence);
     let mut notes = discovery.notes.clone();
     let (version, source) = match hint.filter(|value| paths::is_version_like(value)) {
-        Some(hint) => (hint.to_owned(), "claudeDesktop.versionSources.package".to_owned()),
+        Some(hint) => (
+            hint.to_owned(),
+            "claudeDesktop.versionSources.package".to_owned(),
+        ),
         None => match read_version_from_logs(discovery) {
             Some((version, source)) => (version, source),
             None => (
@@ -1338,7 +1658,10 @@ pub fn detect_desktop(discovery: &paths::Discovery, hint: Option<&str>) -> Deskt
 fn read_version_from_logs(discovery: &paths::Discovery) -> Option<(String, String)> {
     let mut fallback: Option<(String, String)> = None;
     for candidate in &discovery.candidates {
-        for root in [&candidate.paths.third_party_root, &candidate.paths.normal_root] {
+        for root in [
+            &candidate.paths.third_party_root,
+            &candidate.paths.normal_root,
+        ] {
             let log = root.join("logs").join("main.log");
             if let Some(version) = read_app_version(&log) {
                 let source = format!("log:{}", paths::display(&log));

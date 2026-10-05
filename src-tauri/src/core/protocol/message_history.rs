@@ -225,6 +225,16 @@ pub struct Context {
     messages: Vec<Value>,
     prefixes: Vec<String>,
 }
+/// Extra client identity is independent of provider credentials and visible
+/// conversation content. Aliases and revisions sharing a target cannot reuse
+/// another client's retained private output.
+#[derive(serde::Serialize)]
+pub struct ClientScope<'a> {
+    pub client_source: &'a str,
+    pub config_identity: &'a str,
+    pub model_alias: &'a str,
+    pub route_revision: u64,
+}
 impl Context {
     #[cfg(test)]
     pub fn new(scope: &[&str], protocol: ModelProtocol, inbound: &[u8]) -> Option<Self> {
@@ -235,6 +245,15 @@ impl Context {
         protocol: ModelProtocol,
         inbound: &[u8],
         session: Option<&str>,
+    ) -> Option<Self> {
+        Self::new_with_client_scope(scope, protocol, inbound, session, None)
+    }
+    pub fn new_with_client_scope(
+        scope: &[&str],
+        protocol: ModelProtocol,
+        inbound: &[u8],
+        session: Option<&str>,
+        client_scope: Option<&ClientScope<'_>>,
     ) -> Option<Self> {
         let value: Value = serde_json::from_slice(inbound).ok()?;
         let messages = value["messages"].as_array()?.clone();
@@ -279,7 +298,11 @@ impl Context {
         };
         let prefixes = prefix_hashes(&messages);
         Some(Self {
-            scope: digest(&json!([scope, protocol, user_id, session, fallback])),
+            scope: digest(&if let Some(client_scope) = client_scope {
+                json!([scope, protocol, user_id, session, fallback, client_scope])
+            } else {
+                json!([scope, protocol, user_id, session, fallback])
+            }),
             protocol,
             messages,
             prefixes,

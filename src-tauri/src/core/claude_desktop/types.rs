@@ -16,6 +16,7 @@ pub const MAX_KEY_BYTES: usize = 8192;
 #[serde(rename_all = "camelCase")]
 pub enum DesktopAction {
     ApplyDirect,
+    ApplyRouter,
     Reapply,
     RestorePrevious,
     SwitchOfficial,
@@ -27,6 +28,7 @@ impl DesktopAction {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ApplyDirect => "applyDirect",
+            Self::ApplyRouter => "applyRouter",
             Self::Reapply => "reapply",
             Self::RestorePrevious => "restorePrevious",
             Self::SwitchOfficial => "switchOfficial",
@@ -92,6 +94,61 @@ pub struct ActionRequest {
     pub paths: PathsChoice,
     #[serde(default)]
     pub rebaseline: bool,
+    #[serde(default)]
+    pub routes: Vec<DesktopRouteChoice>,
+    #[serde(default)]
+    pub rotate_gateway_token: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopRouteChoice {
+    pub role: String,
+    pub role_alias: String,
+    pub provider_id: String,
+    pub model_id: String,
+    #[serde(default)]
+    pub label_override: Option<String>,
+    pub one_m_mode: OneMMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListenerLease {
+    pub bound_port: u16,
+    pub generation: u64,
+    pub process_epoch: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopRouteRole {
+    pub role: String,
+    pub role_alias: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopRouteView {
+    pub role: String,
+    pub role_alias: String,
+    pub provider_id: String,
+    pub provider_name: String,
+    pub model_id: String,
+    pub label: String,
+    pub one_m: bool,
+    pub protocol: String,
+    pub available: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopRouterView {
+    pub bound_port: u16,
+    pub route_revision: u64,
+    pub gateway_token_version: u64,
+    pub listener_ready: bool,
 }
 
 impl ActionRequest {
@@ -238,6 +295,8 @@ pub struct DesktopCandidates {
     pub detector: DesktopDetection,
     pub providers: Vec<ProviderCandidateView>,
     pub selected_provider_id: Option<String>,
+    pub route_providers: Vec<ProviderCandidateView>,
+    pub route_roles: Vec<DesktopRouteRole>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -272,6 +331,9 @@ pub struct DesktopStatus {
     pub models: Vec<ManagedModelView>,
     /// 用户原始选择，重新应用不能从最终 supports1m 反推 auto/off。
     pub model_choices: Vec<DesktopModelChoice>,
+    pub route_choices: Vec<DesktopRouteChoice>,
+    pub route_views: Vec<DesktopRouteView>,
+    pub router: Option<DesktopRouterView>,
     pub stale_reasons: Vec<String>,
     pub conflicts: Vec<String>,
     pub recovery_state: Option<String>,
@@ -316,6 +378,8 @@ pub struct DesktopPreview {
     pub provider_id: Option<String>,
     pub provider_name: Option<String>,
     pub models: Vec<ManagedModelView>,
+    pub route_views: Vec<DesktopRouteView>,
+    pub router: Option<DesktopRouterView>,
     pub messages_url: Option<String>,
     pub models_url: Option<String>,
     pub files: Vec<FileChangeView>,
