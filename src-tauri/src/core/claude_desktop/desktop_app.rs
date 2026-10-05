@@ -52,6 +52,7 @@ impl LaunchMethod {
 /// Desktop 应用当前状态。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppState {
+    pub discovery_error: Option<String>,
     pub running: bool,
     /// 找到的主进程数量。
     pub process_count: usize,
@@ -86,14 +87,19 @@ impl From<Option<PathBuf>> for ProcessImage {
 pub struct StopCheck {
     allowed: bool,
     identity: Option<AppIdentity>,
+    discovery_error: Option<Box<DesktopError>>,
 }
 
 impl StopCheck {
     pub fn new(paths: &DesktopPaths) -> Self {
         let allowed = process_control_allowed(paths);
+        let (identity, discovery_error) = match if allowed { resolve_identity(paths) } else { Ok(None) } {
+            Ok(identity) => (identity, None), Err(error) => (None, Some(error)),
+        };
         Self {
             allowed,
-            identity: allowed.then(|| app_identity(paths)).flatten(),
+            identity,
+            discovery_error,
         }
     }
 
@@ -101,6 +107,7 @@ impl StopCheck {
         if !self.allowed {
             return Ok(());
         }
+        if let Some(error) = &self.discovery_error { return Err(error.clone()); }
         stopped_result(checked_processes(
             self.identity.as_ref(),
             candidate_processes(self.identity.as_ref()),
@@ -159,14 +166,19 @@ pub fn is_msix_app_id(text: &str) -> bool {
 // 状态与操作
 // ---------------------------------------------------------------------------
 
-/// 读取 Desktop 应用状态。发现失败不报错：只是没有重启能力。
+/// 读取 Desktop 应用状态；发现失败保留可重试原因，不当成「未安装」。
 pub fn state(paths: &DesktopPaths) -> AppState {
-    let identity = app_identity(paths);
-    let processes = identity
-        .as_ref()
-        .and_then(|identity| list_processes(identity).ok())
-        .unwrap_or_default();
+    let (identity, mut discovery_error) = match resolve_identity(paths) {
+        Ok(identity) => (identity, None), Err(error) => (None, Some(error.message.clone())),
+    };
+    let processes = if let Some(identity) = &identity {
+        match list_processes(identity) {
+            Ok(processes) => processes,
+            Err(error) => { discovery_error = Some(error.message.clone()); Vec::new() }
+        }
+    } else { Vec::new() };
     AppState {
+        discovery_error,
         running: !processes.is_empty(),
         process_count: processes.len(),
         launch_method: identity.as_ref().map(|identity| identity.method),
@@ -225,7 +237,7 @@ fn list_processes(identity: &AppIdentity) -> DesktopResult<Vec<u32>> {
 
 /// 停止 Desktop，返回是否确实停到了进程。
 pub fn stop(paths: &DesktopPaths, timeout: Duration) -> DesktopResult<bool> {
-    let identity = app_identity(paths).ok_or_else(|| {
+    let identity = resolve_identity(paths)?.ok_or_else(|| {
         Box::new(
             DesktopError::new(
                 error_code::PROCESS,
@@ -238,24 +250,38 @@ pub fn stop(paths: &DesktopPaths, timeout: Duration) -> DesktopResult<bool> {
 }
 
 fn stop_identity(identity: &AppIdentity, timeout: Duration) -> DesktopResult<bool> {
-    let processes = list_processes(identity)?;
+    stop_processes(timeout, || list_processes(identity), |pid, force| signal(identity, pid, force))
+}
+
+fn stop_processes(timeout: Duration, mut list: impl FnMut() -> DesktopResult<Vec<u32>>, mut send: impl FnMut(u32, bool) -> DesktopResult<bool>) -> DesktopResult<bool> {
+    let processes = list()?;
     if processes.is_empty() {
         return Ok(false);
     }
-    let mut close_requested = false;
-    for pid in &processes {
-        close_requested |= signal(identity, *pid, false)?;
-    }
-    if close_requested && wait_until_stopped(identity, timeout)? {
-        return Ok(true);
+    let deadline = Instant::now() + timeout;
+    let mut requested = std::collections::HashSet::new();
+    let mut current = processes;
+    loop {
+        for pid in &current {
+            // Individual posting failures never suppress cleanup of other
+            // verified processes or the forced-stop fallback.
+            if !requested.contains(pid) && send(*pid, false).unwrap_or(false) { requested.insert(*pid); }
+        }
+        if Instant::now() >= deadline { break; }
+        std::thread::sleep(Duration::from_millis(200));
+        current = list()?;
+        if current.is_empty() { return Ok(true); }
     }
     // 优雅退出没完成时强制结束，避免半退出状态下写文件被回写覆盖。
     // Re-enumerate by executable identity before forcing: PIDs can be reused.
-    for pid in &list_processes(identity)? {
-        signal(identity, *pid, true)?;
+    for pid in &list()? {
+        let _ = send(*pid, true);
     }
-    if wait_until_stopped(identity, Duration::from_secs(5))? {
-        return Ok(true);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if list()?.is_empty() { return Ok(true); }
+        if Instant::now() >= deadline { break; }
+        std::thread::sleep(Duration::from_millis(200));
     }
     Err(Box::new(
         DesktopError::new(
@@ -268,7 +294,7 @@ fn stop_identity(identity: &AppIdentity, timeout: Duration) -> DesktopResult<boo
 
 /// 启动 Desktop 并等待主进程出现。
 pub fn launch(paths: &DesktopPaths, timeout: Duration) -> DesktopResult<()> {
-    let Some(identity) = app_identity(paths) else {
+    let Some(identity) = resolve_identity(paths)? else {
         return Err(Box::new(
             DesktopError::new(
                 error_code::PROCESS,
@@ -280,9 +306,13 @@ pub fn launch(paths: &DesktopPaths, timeout: Duration) -> DesktopResult<()> {
     launch_identity(&identity, timeout)
 }
 
-/// Resolve the selected installation once for the whole stop/start operation.
+/// Resolve again after shutdown: an automatic Desktop update may change its executable.
 pub fn restart(paths: &DesktopPaths) -> DesktopResult<String> {
-    let identity = app_identity(paths).ok_or_else(|| {
+    restart_with(|| resolve_identity(paths), stop_identity, launch_identity)
+}
+
+fn restart_with(mut resolve: impl FnMut() -> DesktopResult<Option<AppIdentity>>, mut stop: impl FnMut(&AppIdentity, Duration) -> DesktopResult<bool>, mut launch: impl FnMut(&AppIdentity, Duration) -> DesktopResult<()>) -> DesktopResult<String> {
+    let identity = resolve()?.ok_or_else(|| {
         Box::new(
             DesktopError::new(
                 error_code::PROCESS,
@@ -291,8 +321,9 @@ pub fn restart(paths: &DesktopPaths) -> DesktopResult<String> {
             .action("openManually"),
         )
     })?;
-    stop_identity(&identity, Duration::from_secs(20))?;
-    launch_identity(&identity, Duration::from_secs(25))?;
+    stop(&identity, Duration::from_secs(20))?;
+    let identity = resolve()?.ok_or_else(|| process_error(error_code::PROCESS))?;
+    launch(&identity, Duration::from_secs(25))?;
     Ok(identity.method.as_str().to_owned())
 }
 
@@ -352,7 +383,16 @@ fn process_image(pid: u32) -> ProcessImage {
 
 #[cfg(not(windows))]
 fn process_image(pid: u32) -> ProcessImage {
-    process_executable(pid).into()
+    if let Some(path) = process_executable(pid) { return ProcessImage::Running(path); }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if std::fs::symlink_metadata(format!("/proc/{pid}")).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) { return ProcessImage::Exited; }
+    #[cfg(target_os = "macos")]
+    {
+        let mut cmd = std::process::Command::new("ps");
+        cmd.args(["-p", &pid.to_string(), "-o", "pid="]);
+        if command::output(&mut cmd, Duration::from_secs(2)).is_ok_and(|out| out.status.code() == Some(1) && out.stdout.iter().all(u8::is_ascii_whitespace)) { return ProcessImage::Exited; }
+    }
+    ProcessImage::Unknown
 }
 
 #[cfg(target_os = "windows")]
@@ -370,10 +410,18 @@ fn msix_activate(app_id: &Path) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(any(windows, target_os = "macos"), test))]
 fn app_identity(paths: &DesktopPaths) -> Option<AppIdentity> {
+    resolve_identity(paths).ok().flatten()
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn resolve_identity(paths: &DesktopPaths) -> DesktopResult<Option<AppIdentity>> { Ok(app_identity(paths)) }
+
+#[cfg(windows)]
+fn resolve_identity(paths: &DesktopPaths) -> DesktopResult<Option<AppIdentity>> {
     if !process_control_allowed(paths) {
-        return None;
+        return Ok(None);
     }
     // MSIX is only known to own the standard local-data pair. An unrelated
     // selected channel must not silently restart the global Claude package.
@@ -381,8 +429,8 @@ fn app_identity(paths: &DesktopPaths) -> Option<AppIdentity> {
         if super::paths::paths_equal(&paths.normal_root, &base.join("Claude"))
             && super::paths::paths_equal(&paths.third_party_root, &base.join("Claude-3p"))
         {
-            if let Some(identity) = msix_identity() {
-                return Some(identity);
+            if let Some(identity) = msix_identity()? {
+                return Ok(Some(identity));
             }
         }
     }
@@ -391,42 +439,45 @@ fn app_identity(paths: &DesktopPaths) -> Option<AppIdentity> {
         for relative in [r"app\Claude.exe", "Claude.exe"] {
             let candidate = root.join(relative);
             if candidate.is_file() && !is_cli_path(&candidate.to_string_lossy()) {
-                return Some(AppIdentity {
+                return Ok(Some(AppIdentity {
                     method: LaunchMethod::Executable,
                     target: candidate.clone(),
                     executable: candidate,
-                });
+                }));
             }
         }
     }
-    None
+    Ok(None)
 }
 
 /// Resolve both the exact package activation ID and its manifest executable.
 #[cfg(target_os = "windows")]
-fn msix_identity() -> Option<AppIdentity> {
-    let script = "$p = @(Get-AppxPackage -Name 'Claude' -ErrorAction SilentlyContinue | Where-Object { $_.PackageFamilyName -eq 'Claude_pzs8sxrjxfjjc' }); if ($p.Count -eq 1) { $a = @((Get-AppxPackageManifest $p[0]).Package.Applications.Application | Where-Object { $_.Id -eq 'Claude' }); if ($a.Count -eq 1) { [pscustomobject]@{ appId = $p[0].PackageFamilyName + '!' + $a[0].Id; executable = Join-Path $p[0].InstallLocation $a[0].Executable } | ConvertTo-Json -Compress } }";
+fn msix_identity() -> DesktopResult<Option<AppIdentity>> {
+    let script = "$ErrorActionPreference = 'Stop'; $p = @(Get-AppxPackage -Name 'Claude' -ErrorAction Stop | Where-Object { $_.PackageFamilyName -eq 'Claude_pzs8sxrjxfjjc' }); if ($p.Count -gt 1) { throw 'Ambiguous Desktop package' }; if ($p.Count -eq 1) { $a = @((Get-AppxPackageManifest $p[0] -ErrorAction Stop).Package.Applications.Application | Where-Object { $_.Id -eq 'Claude' }); if ($a.Count -ne 1) { throw 'Desktop entry missing or ambiguous' }; [pscustomobject]@{ appId = $p[0].PackageFamilyName + '!' + $a[0].Id; executable = Join-Path $p[0].InstallLocation $a[0].Executable } | ConvertTo-Json -Compress }";
     let mut command = crate::platform::windows::background_command("powershell");
     command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
-    let output = command::output(&mut command, Duration::from_secs(5)).ok()?;
+    let output = command::output(&mut command, Duration::from_secs(5)).map_err(|_| {
+        Box::new(DesktopError::new(error_code::PROCESS, "claudeDesktop.errors.installationDiscoveryFailed").retryable())
+    })?;
     if !output.status.success() {
-        return None;
+        return Err(Box::new(DesktopError::new(error_code::PROCESS, "claudeDesktop.errors.installationDiscoveryFailed").retryable()));
     }
-    let record: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    let app_id = record["appId"].as_str()?;
-    let executable = PathBuf::from(record["executable"].as_str()?);
+    if output.stdout.iter().all(|b| b.is_ascii_whitespace()) { return Ok(None); }
+    let record: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|_| process_error(error_code::PROCESS))?;
+    let app_id = record["appId"].as_str().ok_or_else(|| process_error(error_code::PROCESS))?;
+    let executable = PathBuf::from(record["executable"].as_str().ok_or_else(|| process_error(error_code::PROCESS))?);
     if !is_msix_app_id(app_id)
         || !executable.is_absolute()
         || !executable.is_file()
         || is_cli_path(&executable.to_string_lossy())
     {
-        return None;
+        return Err(process_error(error_code::PROCESS));
     }
-    Some(AppIdentity {
+    Ok(Some(AppIdentity {
         method: LaunchMethod::MsixActivation,
         target: PathBuf::from(app_id),
         executable,
-    })
+    }))
 }
 
 #[cfg(unix)]
@@ -480,13 +531,20 @@ fn process_executable(pid: u32) -> Option<PathBuf> {
 }
 
 #[cfg(unix)]
-fn signal(_identity: &AppIdentity, pid: u32, force: bool) -> DesktopResult<bool> {
+fn signal(identity: &AppIdentity, pid: u32, force: bool) -> DesktopResult<bool> {
+    if pid == 0 { return Err(process_error(error_code::PROCESS)); }
+    match process_image(pid) {
+        ProcessImage::Exited => return Ok(false),
+        ProcessImage::Running(path) if executable_matches(&path, &identity.executable) => {},
+        _ => return Err(process_error(error_code::PROCESS)),
+    }
     let flag = if force { "-KILL" } else { "-TERM" };
     let mut cmd = std::process::Command::new("kill");
     cmd.args([flag, &pid.to_string()]);
     let output = command::output(&mut cmd, Duration::from_secs(2))
         .map_err(|_| process_error(error_code::PROCESS))?;
     if !output.status.success() {
+        if matches!(process_image(pid), ProcessImage::Exited) { return Ok(false); }
         return Err(process_error(error_code::PROCESS));
     }
     Ok(true)
@@ -497,41 +555,46 @@ fn signal(_identity: &AppIdentity, pid: u32, force: bool) -> DesktopResult<bool>
 const MACOS_BUNDLE_ID: &str = "com.anthropic.claudefordesktop";
 
 #[cfg(target_os = "macos")]
-fn app_identity(paths: &DesktopPaths) -> Option<AppIdentity> {
+fn resolve_identity(paths: &DesktopPaths) -> DesktopResult<Option<AppIdentity>> {
     // 与 Windows 同理：隔离根或显式覆盖下不得触碰用户真实安装。
     if !process_control_allowed(paths) {
-        return None;
+        return Ok(None);
     }
-    let base = super::paths::macos_app_support(&dirs::home_dir()?);
+    let home = dirs::home_dir().ok_or_else(|| process_error(error_code::PROCESS))?;
+    let base = super::paths::macos_app_support(&home);
     if !super::paths::paths_equal(&paths.normal_root, &base.join("Claude"))
         || !super::paths::paths_equal(&paths.third_party_root, &base.join("Claude-3p"))
     {
-        return None;
+        return Ok(None);
     }
     // 只有确实装了才提供重启：否则界面会出现一个点了必然失败的按钮。
-    let bundle = macos_bundle_path(MACOS_BUNDLE_ID)?;
+    let Some(bundle) = macos_bundle_path(MACOS_BUNDLE_ID)? else { return Ok(None); };
     let executable = bundle.join("Contents/MacOS/Claude");
-    executable.is_file().then_some(AppIdentity {
+    Ok(executable.is_file().then_some(AppIdentity {
         method: LaunchMethod::MacBundle,
         target: bundle,
         executable,
-    })
+    }))
 }
 
-/// 用 `mdfind` 查询包是否已安装；查询失败时保守地认为未确认。
+/// 用 `mdfind` 查询包是否已安装；查询失败与未安装必须区分。
 #[cfg(target_os = "macos")]
-fn macos_bundle_path(bundle_id: &str) -> Option<PathBuf> {
+fn macos_bundle_path(bundle_id: &str) -> DesktopResult<Option<PathBuf>> {
     let mut cmd = std::process::Command::new("mdfind");
     cmd.arg(format!("kMDItemCFBundleIdentifier == {bundle_id}"));
-    let output = command::output(&mut cmd, Duration::from_secs(5)).ok()?;
+    let output = command::output(&mut cmd, Duration::from_secs(5)).map_err(|_| {
+        Box::new(DesktopError::new(error_code::PROCESS, "claudeDesktop.errors.installationDiscoveryFailed").retryable())
+    })?;
     if !output.status.success() {
-        return None;
+        return Err(process_error(error_code::PROCESS));
     }
     let text = String::from_utf8_lossy(&output.stdout);
     let mut entries = text.lines().map(str::trim).filter(|line| !line.is_empty());
-    let bundle = PathBuf::from(entries.next()?);
+    let Some(first) = entries.next() else { return Ok(None); };
+    let bundle = PathBuf::from(first);
     // Multiple bundles with one ID cannot be safely selected by global ID.
-    (entries.next().is_none() && bundle.is_absolute()).then_some(bundle)
+    if entries.next().is_some() || !bundle.is_absolute() { return Err(process_error(error_code::PROCESS)); }
+    Ok(Some(bundle))
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -681,17 +744,6 @@ fn linux_launch_command(target: &Path) -> std::process::Command {
     command
 }
 
-fn wait_until_stopped(identity: &AppIdentity, timeout: Duration) -> DesktopResult<bool> {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if list_processes(identity)?.is_empty() {
-            return Ok(true);
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    Ok(list_processes(identity)?.is_empty())
-}
-
 fn wait_until_running(identity: &AppIdentity, timeout: Duration) -> DesktopResult<bool> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -706,6 +758,59 @@ fn wait_until_running(identity: &AppIdentity, timeout: Duration) -> DesktopResul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signal_failures_do_not_skip_other_processes_or_force_fallback() {
+        use std::cell::RefCell;
+        let live = RefCell::new(vec![10, 11]);
+        let mut sent = Vec::new();
+        assert!(stop_processes(Duration::ZERO, || Ok(live.borrow().clone()), |pid, force| {
+            sent.push((pid, force));
+            if force { live.borrow_mut().retain(|p| *p != pid); }
+            // Even a force error can race with a process's successful exit.
+            if pid == 10 { Err(process_error(error_code::PROCESS)) } else { Ok(true) }
+        }).unwrap());
+        assert_eq!(sent, [(10, false), (11, false), (10, true), (11, true)]);
+    }
+
+    #[test]
+    fn a_window_appearing_during_grace_is_retried_before_force() {
+        use std::cell::Cell;
+        let alive = Cell::new(true);
+        let attempts = Cell::new(0);
+        assert!(stop_processes(Duration::from_secs(1), || Ok(if alive.get() { vec![10] } else { vec![] }), |_, force| {
+            assert!(!force, "late window should get a graceful request");
+            attempts.set(attempts.get() + 1);
+            if attempts.get() == 1 { Ok(false) } else { alive.set(false); Ok(true) }
+        }).unwrap());
+        assert_eq!(attempts.get(), 2);
+    }
+
+    #[test]
+    fn failed_enumeration_blocks_forcing_and_a_discovery_error_blocks_writes() {
+        let mut scans = 0;
+        let result = stop_processes(Duration::ZERO, || {
+            scans += 1;
+            if scans == 1 { Ok(vec![10]) } else { Err(process_error(error_code::PROCESS)) }
+        }, |_, force| { assert!(!force); Ok(false) });
+        assert!(result.is_err());
+        let check = StopCheck { identity: None, discovery_error: Some(process_error(error_code::PROCESS)), allowed: true };
+        assert!(check.ensure_stopped().is_err());
+    }
+
+    #[test]
+    fn restart_rediscovers_the_updated_executable_after_shutdown() {
+        let old = std::env::temp_dir().join("old-install/Claude.exe");
+        let new = std::env::temp_dir().join("new-install/Claude.exe");
+        let mut scans = 0;
+        let result = restart_with(|| {
+            scans += 1;
+            let executable = if scans == 1 { old.clone() } else { new.clone() };
+            Ok(Some(AppIdentity { method: LaunchMethod::Executable, target: executable.clone(), executable }))
+        }, |identity, _| { assert_eq!(identity.executable, old); Ok(true) }, |identity, _| { assert_eq!(identity.executable, new); Ok(()) });
+        assert!(result.is_ok());
+        assert_eq!(scans, 2);
+    }
 
     #[test]
     fn only_the_desktop_process_name_matches() {

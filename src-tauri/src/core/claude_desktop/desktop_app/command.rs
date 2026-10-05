@@ -15,7 +15,7 @@ impl Drop for Capture {
     }
 }
 
-fn cleanup(mut child: Child) {
+fn cleanup(mut child: Child, capture_path: &std::path::Path) {
     let _ = child.kill();
     let deadline = Instant::now() + Duration::from_millis(500);
     while Instant::now() < deadline {
@@ -25,8 +25,10 @@ fn cleanup(mut child: Child) {
         std::thread::sleep(Duration::from_millis(10));
     }
     // Keep reaping outside the writer if the OS has not completed termination.
+    let capture_path = capture_path.to_path_buf();
     std::thread::spawn(move || {
         let _ = child.wait();
+        let _ = std::fs::remove_file(capture_path);
     });
 }
 
@@ -54,13 +56,13 @@ pub(super) fn output(command: &mut Command, timeout: Duration) -> std::io::Resul
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Err(error) => {
-                cleanup(child);
+                cleanup(child, &capture.path);
                 return Err(error);
             }
             Ok(None) => {}
         }
         if Instant::now() >= deadline {
-            cleanup(child);
+            cleanup(child, &capture.path);
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "Desktop helper timed out",
@@ -69,12 +71,12 @@ pub(super) fn output(command: &mut Command, timeout: Duration) -> std::io::Resul
         let size = match capture.file.as_ref().unwrap().metadata() {
             Ok(metadata) => metadata.len(),
             Err(error) => {
-                cleanup(child);
+                cleanup(child, &capture.path);
                 return Err(error);
             }
         };
         if size > 1024 * 1024 {
-            cleanup(child);
+            cleanup(child, &capture.path);
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "Desktop helper output too large",

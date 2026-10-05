@@ -34,6 +34,7 @@ pub(super) fn candidates() -> DesktopResult<Vec<u32>> {
         let mut entry: PROCESSENTRY32W = std::mem::zeroed();
         entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
         let mut next = Process32FirstW(snapshot.0, &mut entry);
+        let mut enumeration_error = if next == 0 { GetLastError() } else { 0 };
         let mut result = Vec::new();
         while next != 0 {
             let name = String::from_utf16_lossy(
@@ -47,9 +48,10 @@ pub(super) fn candidates() -> DesktopResult<Vec<u32>> {
                 result.push(entry.th32ProcessID);
             }
             next = Process32NextW(snapshot.0, &mut entry);
+            if next == 0 { enumeration_error = GetLastError(); }
         }
         // A truncated/failed enumeration must never authorize a config write.
-        if GetLastError() != ERROR_NO_MORE_FILES {
+        if enumeration_error != ERROR_NO_MORE_FILES {
             return Err(process_error(error_code::PROCESS));
         }
         Ok(result)

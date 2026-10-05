@@ -295,21 +295,6 @@ fn inference_model_json(model: &ManagedModelView) -> Value {
     Value::Object(item)
 }
 
-/// 移除 profile 中本产品写入的推理键，用于切回官方模式时不再保留自身凭据。
-pub fn strip_inference_keys(profile: &mut Map<String, Value>) {
-    for key in [
-        KEY_DISABLE_CHOOSER,
-        KEY_INFERENCE_PROVIDER,
-        KEY_AUTH_SCHEME,
-        KEY_BASE_URL,
-        KEY_API_KEY,
-        KEY_MODELS,
-        KEY_EGRESS_HOSTS,
-    ] {
-        profile.remove(key);
-    }
-}
-
 pub fn official_mode() -> &'static str {
     DEPLOYMENT_MODE_OFFICIAL
 }

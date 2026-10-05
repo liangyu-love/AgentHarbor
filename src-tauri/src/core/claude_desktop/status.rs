@@ -189,12 +189,14 @@ pub fn project(input: StatusInput<'_>) -> DesktopStatus {
         .as_ref()
         .map(desktop_app::state)
         .unwrap_or(desktop_app::AppState {
+            discovery_error: None,
             running: false,
             process_count: 0,
             launch_method: None,
             launch_target: None,
         });
 
+    if let Some(error) = &app.discovery_error { warnings.push(error.clone()); }
     DesktopStatus {
         detection,
         paths: paths.as_ref().map(DesktopPaths::summary),
