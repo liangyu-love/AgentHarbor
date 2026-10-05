@@ -1,8 +1,6 @@
 import { useTranslation } from "react-i18next";
 import type { NewApiBalance } from "@/types/newapi";
 
-type BalanceEntry = NonNullable<NewApiBalance["entries"]>[number];
-
 export function CommandCodeBalanceSummary({ balance, providerName }: {
   balance: NewApiBalance; providerName: string;
 }) {
@@ -11,7 +9,7 @@ export function CommandCodeBalanceSummary({ balance, providerName }: {
   const tokens = (value: number | null | undefined) => value == null ? "—" : value >= 1_000_000
     ? `${new Intl.NumberFormat(i18n.language, { maximumFractionDigits: 1 }).format(value / 1_000_000)}M`
     : value >= 1_000 ? `${new Intl.NumberFormat(i18n.language, { maximumFractionDigits: 1 }).format(value / 1_000)}K` : number(value);
-  const amount = (entry: BalanceEntry | undefined, value = entry?.remaining) => value == null ? "—" : `${number(value)} ${entry?.unit ?? balance.unit}`;
+  const amount = (value: number | null | undefined) => value == null ? "—" : `$${number(value)}`;
   const date = (value: string | null | undefined) => value && Number.isFinite(Date.parse(value))
     ? new Date(value).toLocaleString(i18n.language) : null;
   const entries: NonNullable<NewApiBalance["entries"]> = balance.entries?.length ? balance.entries : [{
@@ -57,7 +55,7 @@ export function CommandCodeBalanceSummary({ balance, providerName }: {
             <div className="min-w-0 rounded-lg bg-muted/45 p-3" data-command-code-stat="cost">
               <p className="text-[11px] text-muted-foreground">{t("newapi.commandCode.cost")}</p>
               <strong className="mt-1 block break-words text-lg font-semibold tabular-nums">{usage.totalCost == null ? "—" : `$${number(usage.totalCost)}`}</strong>
-              {usage.totalCredits != null && <p className="mt-0.5 break-words text-[11px] text-muted-foreground">{number(usage.totalCredits)} credits</p>}
+              {usage.totalCredits != null && <p className="mt-0.5 break-words text-[11px] text-muted-foreground">{amount(usage.totalCredits)}</p>}
             </div>
             <div className="min-w-0 rounded-lg bg-muted/45 p-3" data-command-code-stat="tokens">
               <p className="text-[11px] text-muted-foreground">Token</p>
@@ -75,7 +73,7 @@ export function CommandCodeBalanceSummary({ balance, providerName }: {
           ] as const).map(([key, entry]) => (
             <div key={key} className="min-w-0 rounded-lg bg-muted/45 p-3">
               <p className="text-[11px] text-muted-foreground">{t(`newapi.commandCode.${key}`)}</p>
-              <strong className="mt-1 block break-words text-sm font-semibold tabular-nums">{amount(entry)}</strong>
+              <strong className="mt-1 block break-words text-sm font-semibold tabular-nums">{amount(entry?.remaining)}</strong>
             </div>
           ))}
         </div>
@@ -88,7 +86,7 @@ export function CommandCodeBalanceSummary({ balance, providerName }: {
           <div key={entry.label} className="space-y-1.5" data-command-code-window={entry.label}>
             <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 text-xs">
               <span className="text-muted-foreground">{t(`newapi.commandCode.${entry.label}`)}</span>
-              <span className="tabular-nums">{entry.used == null ? "—" : number(entry.used)} / {entry.total == null ? "—" : number(entry.total)} {entry.unit}</span>
+              <span className="tabular-nums">{amount(entry.used)} / {amount(entry.total)}</span>
             </div>
             {!entry.valid && <p className="text-[11px] text-destructive">{t("newapi.commandCode.windowExhausted")}</p>}
             {percent != null && (

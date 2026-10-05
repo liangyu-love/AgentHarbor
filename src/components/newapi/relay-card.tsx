@@ -43,7 +43,7 @@ export function RelayCard({ group, store, view, onEdit, onTest, onRemove, onBala
     const balance = provider.balance;
     if (!balance) return null;
     if (!balance.conversionAvailable) return `${formatMoney(balance.rawQuota)} ${t("newapi.balanceQuota")}`;
-    const symbol = balance.unit === "USD" ? "$" : balance.unit === "CNY" ? "¥" : "";
+    const symbol = balance.unit === "USD" || (provider.balanceSource === "commandCode" && balance.unit === "credits") ? "$" : balance.unit === "CNY" ? "¥" : "";
     return `${symbol}${formatMoney(balance.remaining)}${symbol ? "" : ` ${balance.unit}`}`.trim();
   };
   const balanceLabel = (provider: NewApiProvider) => {

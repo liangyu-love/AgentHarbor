@@ -72,7 +72,7 @@ export async function testProviderFeedback({ page, reset, captureDir }) {
   };
   const loadCommand = balance => loadProvider({ baseUrl: "https://api.commandcode.ai/provider/v1", balanceSource: "commandCode", balance });
   await loadCommand({ ...commandBalance, commandCode: details });
-  assert.ok((await face.innerText()).includes("62 credits"));
+  assert.ok((await face.innerText()).includes("$62"));
   assert.match(await face.innerText(), /Command Code · GOAT/);
   await page.getByRole("button", { name: "查询余额 Quota fixture", exact: true }).click();
   const summary = dialog.locator("[data-command-code-balance]");
@@ -82,14 +82,16 @@ export async function testProviderFeedback({ page, reset, captureDir }) {
   assert.match(await summary.locator('[data-command-code-stat="requests"]').innerText(), /失败 0/);
   assert.match(await summary.locator('[data-command-code-stat="successRate"]').innerText(), /100%/);
   assert.match(await summary.locator('[data-command-code-stat="cost"]').innerText(), /\$2\.8453/);
-  assert.match(await summary.locator('[data-command-code-stat="cost"]').innerText(), /2\.85 credits/);
+  assert.match(await summary.locator('[data-command-code-stat="cost"]').innerText(), /\$2\.85/);
   assert.match(await summary.locator('[data-command-code-stat="tokens"]').innerText(), /125\.9M/);
   assert.match(await summary.locator('[data-command-code-stat="tokens"]').innerText(), /124\.8M 入 \/ 1\.1M 出/);
   assert.equal(await summary.locator('[data-command-code-window="fiveHour"] [role="progressbar"]').getAttribute("aria-valuenow"), "0");
   assert.equal(await summary.locator('[data-command-code-window="weekly"] [role="progressbar"]').getAttribute("aria-valuenow"), "25");
   assert.equal(await summary.getByText("余额不足或账户当前不可用", { exact: true }).count(), 0);
   assert.match(await summary.innerText(), /账期截止/);
-  assert.equal(await summary.locator('[data-command-code-credits]').innerText().then(text => text.includes("$")), false);
+  assert.match(await summary.locator('[data-command-code-credits]').innerText(), /\$62[\s\S]*\$0[\s\S]*\$0/);
+  assert.equal((await summary.innerText()).includes("credits"), false);
+  assert.match(await summary.locator('[data-command-code-window="weekly"]').innerText(), /\$10 \/ \$40/);
   if (captureDir) {
     for (const width of [1200, 390]) {
       await page.setViewportSize({ width, height: 900 });
@@ -103,7 +105,7 @@ export async function testProviderFeedback({ page, reset, captureDir }) {
     await page.setViewportSize({ width: 1200, height: 700 });
     await page.evaluate(() => document.documentElement.classList.remove("dark"));
   }
-  console.log("PASS Command Code official account statistics, credits and spent quota render compactly with exact zero values and correct units");
+  console.log("PASS Command Code official account statistics and quota use the requested dollar notation without changing numeric values");
   await page.waitForFunction(() => window.review.balanceRequests.length === 1);
   await page.evaluate(() => window.review.balanceRejectors[0]("newapi.errors.auth"));
   await dialog.getByText("查询未成功，保留上次查询结果。", { exact: true }).waitFor();
@@ -115,7 +117,7 @@ export async function testProviderFeedback({ page, reset, captureDir }) {
   await page.getByRole("button", { name: "查询余额 Quota fixture", exact: true }).click();
   await summary.waitFor();
   assert.equal(await summary.locator('[data-command-code-usage]').count(), 0);
-  assert.match(await summary.innerText(), /62 credits/);
+  assert.match(await summary.innerText(), /\$62/);
   assert.match(await summary.innerText(), /Command Code · GOAT/);
   console.log("PASS old saved Command Code balances still show their credits and windows without inventing missing statistics");
 
@@ -143,7 +145,7 @@ export async function testProviderFeedback({ page, reset, captureDir }) {
   assert.notEqual(quotaLabels.windowRemaining, "newapi.balanceWindowRemaining");
   await face.getByText(quotaLabels.windowRemaining, { exact: true }).waitFor();
   await face.getByText(quotaLabels.weeklyWindow, { exact: true }).waitFor();
-  assert.ok((await face.innerText()).includes("7 credits"));
+  assert.ok((await face.innerText()).includes("$7"));
   if (captureDir) await face.screenshot({ path: path.join(captureDir, "command-code-window-only.png"), animations: "disabled" });
   await page.getByRole("button", { name: "查询余额 Quota fixture", exact: true }).click();
   await summary.waitFor();
@@ -154,6 +156,7 @@ export async function testProviderFeedback({ page, reset, captureDir }) {
   await loadProvider({ baseUrl: "https://api.commandcode.ai/provider/v1", balanceSource: "custom", balanceScript: "return {remaining: 62, unit: 'credits'};", balance: commandBalance });
   await page.getByRole("button", { name: "查询余额 Quota fixture", exact: true }).click();
   assert.equal(await summary.count(), 0);
+  assert.ok((await face.innerText()).includes("62 credits"));
   assert.match(await dialog.innerText(), /已购额度剩余/);
   assert.equal(await dialog.getByText("余额不足或账户当前不可用", { exact: true }).count(), 2);
   console.log("PASS custom balance scripts and other balance sources keep the generic balance interface");
