@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import type { NewApiProvider, NewApiBalance } from "@/types/newapi";
 import type { ProviderState } from "./use-provider-state";
 import { relayGroupKey } from "./relay-groups";
+import { CommandCodeBalanceSummary } from "./command-code-balance-summary";
 
 export function ProviderBalanceDialog({ provider, store, onClose }: {
   provider: NewApiProvider; store: ProviderState; onClose: () => void;
@@ -37,6 +38,10 @@ export function ProviderBalanceDialog({ provider, store, onClose }: {
   const busy = saving || store.balanceBusy.has(provider.id);
   const error = saveError ?? (store.balanceErrors[provider.id] ? t(store.balanceErrors[provider.id]!) : null);
   const balance = provider.balance;
+  const commandCode = provider.balanceSource === "commandCode" && !effectiveScript && (() => {
+    try { return new URL(provider.baseUrl).hostname.toLowerCase() === "api.commandcode.ai"; }
+    catch { return false; }
+  })();
   const dirty = (custom ? script : "") !== (provider.balanceScript ?? "");
   const entries: NonNullable<NewApiBalance["entries"]> = balance?.entries?.length ? balance.entries : balance ? [{
     remaining: balance.conversionAvailable ? balance.remaining : balance.rawQuota,
@@ -74,17 +79,17 @@ export function ProviderBalanceDialog({ provider, store, onClose }: {
 
   return (
     <Dialog open onOpenChange={open => { if (!open) onClose(); }}>
-      <DialogContent className={custom ? "sm:max-w-2xl max-h-[90vh] overflow-y-auto" : "sm:max-w-lg max-h-[90vh] overflow-y-auto"}>
-        <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 -m-6 mb-0 h-24 bg-gradient-to-b from-amber-500/[0.08] via-amber-500/[0.02] to-transparent" />
+      <DialogContent className={custom || commandCode ? "sm:max-w-2xl max-h-[90vh] overflow-y-auto" : "sm:max-w-lg max-h-[90vh] overflow-y-auto"}>
+        <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-24 rounded-t-2xl bg-gradient-to-b from-amber-500/[0.08] via-amber-500/[0.02] to-transparent" />
         
         {/* Header */}
-        <div className="relative flex items-center justify-between gap-3 border-b border-border/40 pb-3">
-          <div className="flex items-center gap-3">
+        <div className="relative flex min-w-0 items-center justify-between gap-3 border-b border-border/40 pb-3 pr-5">
+          <div className="flex min-w-0 items-center gap-3">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-amber-500/20 to-amber-500/5 text-amber-600 dark:text-amber-400 ring-1 ring-inset ring-amber-500/20 shadow-xs">
               <Wallet className="h-5 w-5" />
             </div>
             <DialogHeader className="min-w-0 space-y-0.5 text-left">
-              <DialogTitle className="text-base font-semibold tracking-tight">
+              <DialogTitle className="break-words text-base font-semibold tracking-tight">
                 {t("newapi.queryBalance")} · {provider.name}
               </DialogTitle>
               <DialogDescription className="break-all font-mono text-[11px] text-muted-foreground/80">
@@ -117,7 +122,7 @@ export function ProviderBalanceDialog({ provider, store, onClose }: {
 
         {/* Balance Status Cards */}
         <div className="space-y-2.5 pt-1" aria-busy={busy}>
-          {entries.map((entry, index) => (
+          {commandCode && balance ? <CommandCodeBalanceSummary balance={balance} providerName={provider.name} /> : entries.map((entry, index) => (
             <div
               key={`${entry.unit}-${index}`}
               className="relative overflow-hidden rounded-xl border border-border/60 bg-gradient-to-br from-card via-card to-muted/30 p-4 shadow-xs"
@@ -192,7 +197,7 @@ export function ProviderBalanceDialog({ provider, store, onClose }: {
             </div>
           )}
 
-          {balance && (
+          {balance && !commandCode && (
             <div className="flex items-center justify-between text-[11px] text-muted-foreground px-1">
               <span>{balanceSourceName(provider.balanceSource)} · {new Date(balance.checkedAt * 1000).toLocaleString(i18n.language)}</span>
             </div>
@@ -275,6 +280,11 @@ export function ProviderBalanceDialog({ provider, store, onClose }: {
           <p className="rounded-lg bg-sky-500/[0.05] px-3 py-2 text-xs leading-relaxed text-muted-foreground ring-1 ring-sky-500/15">
             {t("newapi.balanceMimoHint")}
           </p>
+        ) : official && commandCode ? (
+          <details className="text-xs text-muted-foreground">
+            <summary className="cursor-pointer select-none">{t("newapi.balanceCredentials")}</summary>
+            <p className="mt-2 leading-relaxed">{t("newapi.balanceApiKeyHint")}</p>
+          </details>
         ) : official ? (
           <p className="rounded-lg bg-emerald-500/[0.05] px-3 py-2 text-xs leading-relaxed text-muted-foreground ring-1 ring-emerald-500/15">
             {t("newapi.balanceApiKeyHint")}

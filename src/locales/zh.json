@@ -742,6 +742,22 @@
       "weekly": "本周剩余",
       "monthly": "本月剩余"
     },
+    "commandCode": {
+      "monthlyRemaining": "月额度剩余",
+      "purchased": "已购",
+      "free": "赠送",
+      "fiveHour": "5 小时窗口",
+      "weekly": "每周窗口",
+      "requests": "总请求",
+      "windowExhausted": "窗口额度已用尽",
+      "failed": "失败 {{count}}",
+      "successRate": "成功率",
+      "cost": "花费",
+      "tokensDetail": "{{input}} 入 / {{output}} 出",
+      "billingPeriod": "本账期用量",
+      "billingEnds": "账期截止 {{time}}",
+      "updatedAt": "更新于 {{time}}"
+    },
     "probeStages": "测试阶段",
     "probeResponse": "响应流",
     "probeWaiting": "等待发起测试",

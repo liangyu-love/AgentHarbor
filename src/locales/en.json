@@ -742,6 +742,22 @@
       "weekly": "Weekly remaining",
       "monthly": "Monthly remaining"
     },
+    "commandCode": {
+      "monthlyRemaining": "Monthly remaining",
+      "purchased": "Purchased",
+      "free": "Free",
+      "fiveHour": "5-hour window",
+      "weekly": "Weekly window",
+      "requests": "Total requests",
+      "windowExhausted": "Window quota exhausted",
+      "failed": "Failed {{count}}",
+      "successRate": "Success rate",
+      "cost": "Cost",
+      "tokensDetail": "{{input}} in / {{output}} out",
+      "billingPeriod": "Billing-period usage",
+      "billingEnds": "Billing period ends {{time}}",
+      "updatedAt": "Updated at {{time}}"
+    },
     "probeStages": "Test stages",
     "probeResponse": "Response stream",
     "probeWaiting": "Ready to test",

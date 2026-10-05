@@ -1,5 +1,6 @@
 export interface NewApiBalance {
   entries?: { remaining: number; used: number | null; total: number | null; unit: string; valid: boolean; label?: string | null; resetsAt?: string | null }[];
+  commandCode?: CommandCodeBalanceDetails | null;
   remaining: number;
   used: number | null;
   unit: string;
@@ -8,6 +9,29 @@ export interface NewApiBalance {
   requestCount: number | null;
   checkedAt: number;
   conversionAvailable: boolean;
+}
+export interface CommandCodeBalanceDetails {
+  account: { name: string | null; userName: string | null } | null;
+  plan: {
+    id: string | null;
+    name: string | null;
+    status: string | null;
+    currentPeriodStart: string | null;
+    currentPeriodEnd: string | null;
+  } | null;
+  usage: {
+    totalCount: number | null;
+    completedCount: number | null;
+    failedCount: number | null;
+    /** Official percentage, 0..100. */
+    successRate: number | null;
+    /** Official USD cost, distinct from credits. */
+    totalCost: number | null;
+    totalCredits: number | null;
+    totalTokensIn: number | null;
+    totalTokensOut: number | null;
+    periodBasis: string | null;
+  } | null;
 }
 export interface ModelRef {
   providerId: string;

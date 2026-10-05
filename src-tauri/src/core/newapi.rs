@@ -227,6 +227,8 @@ fn data(value: &Value) -> Result<&Value, String> {
 pub struct Balance {
     #[serde(default)]
     pub entries: Vec<BalanceEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command_code: Option<CommandCodeBalanceDetails>,
     pub remaining: f64,
     pub used: Option<f64>,
     pub unit: String,
@@ -235,6 +237,49 @@ pub struct Balance {
     pub request_count: Option<u64>,
     pub checked_at: i64,
     pub conversion_available: bool,
+}
+
+/// Account-wide official Command Code facts, separate from generic balances.
+/// Missing fields are unknown, including when an auxiliary endpoint fails.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CommandCodeBalanceDetails {
+    pub account: Option<CommandCodeBalanceAccount>,
+    pub plan: Option<CommandCodeBalancePlan>,
+    pub usage: Option<CommandCodeBalanceUsage>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CommandCodeBalanceAccount {
+    pub name: Option<String>,
+    pub user_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CommandCodeBalancePlan {
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub status: Option<String>,
+    pub current_period_start: Option<String>,
+    pub current_period_end: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CommandCodeBalanceUsage {
+    pub total_count: Option<u64>,
+    pub completed_count: Option<u64>,
+    pub failed_count: Option<u64>,
+    /// Upstream percentage, in the range 0..=100.
+    pub success_rate: Option<f64>,
+    /// USD cost reported by /alpha/usage/summary, never converted from credits.
+    pub total_cost: Option<f64>,
+    pub total_credits: Option<f64>,
+    pub total_tokens_in: Option<u64>,
+    pub total_tokens_out: Option<u64>,
+    pub period_basis: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -305,6 +350,7 @@ fn parse_balance(user: &Value, status: Option<&Value>, user_id: u64) -> Result<B
     };
     Ok(Balance {
         entries: vec![],
+        command_code: None,
         remaining: quota / divisor * rate,
         used: used.map(|v| v / divisor * rate),
         unit,

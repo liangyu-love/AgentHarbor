@@ -231,6 +231,7 @@ fn parse_sub2api_balance(
     let remaining = parse_number(data.get("balance")).ok_or("newapi.errors.response")?;
     Ok(newapi::Balance {
         entries: vec![],
+        command_code: None,
         remaining,
         used: None,
         unit: "USD".into(),
@@ -290,8 +291,8 @@ fn official_balance(
 }
 
 /// Command Code exposes Coding Plan facts through the account endpoints used
-/// by its official provider integration. Keep the existing balance card shape
-/// and expose monthly credits plus the five-hour and weekly windows as entries.
+/// by its official provider integration. Keep generic balance entries compatible
+/// and attach the account-wide usage summary separately from the credit pools.
 fn command_code_balance(
     connection: &newapi::Connection,
     proxy: &ApiProxyConfigPayload,
@@ -309,28 +310,94 @@ fn command_code_balance(
             .map_err(|_| "newapi.errors.url")?,
         headers.clone(),
     )?;
-    let account = newapi::get(
-        &client,
-        root.join("/alpha/whoami")
-            .map_err(|_| "newapi.errors.url")?,
-        headers.clone(),
-    )
-    .ok();
+    // This is the official account summary, not requests observed by this app.
+    // A missing/unsupported summary must never discard a usable credit balance.
+    let usage_url = root.join("/alpha/usage/summary").map_err(|_| "newapi.errors.url")?;
+    let account_url = root.join("/alpha/whoami").map_err(|_| "newapi.errors.url")?;
     let mut subscription_url = root
         .join("/alpha/billing/subscriptions")
         .map_err(|_| "newapi.errors.url")?;
-    if let Some(org_id) = account
-        .as_ref()
-        .and_then(|item| item.pointer("/org/id"))
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-    {
-        subscription_url
-            .query_pairs_mut()
-            .append_pair("orgId", org_id);
+    // Keep the mandatory credit request's original failure behavior, then
+    // overlap the new summary with identity/subscription reads. Its timeout
+    // must not add another full serial request budget to a balance refresh.
+    let (account, subscription, usage) = std::thread::scope(|scope| {
+        let usage_request = scope.spawn(|| newapi::get(&client, usage_url, headers.clone()).ok());
+        let account = newapi::get(&client, account_url, headers.clone()).ok();
+        if let Some(org_id) = account
+            .as_ref()
+            .filter(|item| item.get("success").and_then(Value::as_bool) != Some(false))
+            .and_then(|item| item.pointer("/org/id"))
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        {
+            subscription_url.query_pairs_mut().append_pair("orgId", org_id);
+        }
+        let subscription = newapi::get(&client, subscription_url, headers.clone()).ok();
+        (account, subscription, usage_request.join().ok().flatten())
+    });
+    let mut balance = parse_command_code_balance(&credits, subscription.as_ref())?;
+    if let Some(details) = balance.command_code.as_mut() {
+        details.account = parse_command_code_account(account.as_ref());
+        details.usage = parse_command_code_usage(usage.as_ref());
+        balance.request_count = details.usage.as_ref().and_then(|usage| usage.total_count);
     }
-    let subscription = newapi::get(&client, subscription_url, headers).ok();
-    parse_command_code_balance(&credits, subscription.as_ref())
+    Ok(balance)
+}
+
+fn command_code_text(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty() && !text.chars().any(char::is_control))
+        .map(|text| text.chars().take(160).collect())
+}
+
+fn parse_command_code_account(value: Option<&Value>) -> Option<newapi::CommandCodeBalanceAccount> {
+    let value = value.filter(|value| value.get("success").and_then(Value::as_bool) != Some(false))?;
+    let user = value.get("user")?.as_object()?;
+    let name = command_code_text(user.get("name"));
+    let user_name = command_code_text(user.get("userName"));
+    (name.is_some() || user_name.is_some())
+        .then_some(newapi::CommandCodeBalanceAccount { name, user_name })
+}
+
+fn command_code_count(value: Option<&Value>) -> Option<u64> {
+    let value = value?;
+    value.as_u64()
+        .or_else(|| value.as_str()?.trim().parse().ok())
+        .or_else(|| {
+            parse_number(Some(value))
+                .filter(|count| *count >= 0.0 && count.fract() == 0.0 && *count <= 9_007_199_254_740_991.0)
+                .map(|count| count as u64)
+        })
+        .filter(|count| *count <= 9_007_199_254_740_991)
+}
+
+fn parse_command_code_usage(value: Option<&Value>) -> Option<newapi::CommandCodeBalanceUsage> {
+    let value = value
+        .filter(|value| value.get("success").and_then(Value::as_bool) != Some(false))?
+        .as_object()?;
+    let amount = |key| parse_number(value.get(key)).filter(|amount| *amount >= 0.0);
+    let usage = newapi::CommandCodeBalanceUsage {
+        total_count: command_code_count(value.get("totalCount")),
+        completed_count: command_code_count(value.get("completedCount")),
+        failed_count: command_code_count(value.get("failedCount")),
+        success_rate: amount("successRate").filter(|rate| *rate <= 100.0),
+        total_cost: amount("totalCost"),
+        total_credits: amount("totalCredits"),
+        total_tokens_in: command_code_count(value.get("totalTokensIn")),
+        total_tokens_out: command_code_count(value.get("totalTokensOut")),
+        period_basis: command_code_text(value.get("periodBasis")),
+    };
+    (usage.total_count.is_some()
+        || usage.completed_count.is_some()
+        || usage.failed_count.is_some()
+        || usage.success_rate.is_some()
+        || usage.total_cost.is_some()
+        || usage.total_credits.is_some()
+        || usage.total_tokens_in.is_some()
+        || usage.total_tokens_out.is_some())
+    .then_some(usage)
 }
 
 fn command_code_plan_id(value: &Value, subscription: Option<&Value>) -> Option<String> {
@@ -421,6 +488,8 @@ fn parse_command_code_balance(
     value: &Value,
     subscription: Option<&Value>,
 ) -> Result<newapi::Balance, String> {
+    let subscription = subscription
+        .filter(|item| item.get("success").and_then(Value::as_bool) != Some(false));
     let credits = value.get("credits").and_then(Value::as_object);
     let plan_id = command_code_plan_id(value, subscription);
     let plan_name = command_code_plan_name(plan_id.as_deref());
@@ -428,7 +497,7 @@ fn parse_command_code_balance(
     let mut entries = Vec::new();
     if let Some(remaining) = parse_number(credits.and_then(|item| item.get("monthlyCredits"))) {
         entries.push(newapi::BalanceEntry {
-            label: Some(format!("Command Code 路 {plan_name}")),
+            label: Some(format!("Command Code · {plan_name}")),
             resets_at: command_code_reset(subscription.and_then(|item| {
                 item.pointer("/data/currentPeriodEnd")
                     .or_else(|| item.get("currentPeriodEnd"))
@@ -481,7 +550,22 @@ fn parse_command_code_balance(
             });
         }
     }
-    balance_from_entries(entries)
+    let mut balance = balance_from_entries(entries)?;
+    let subscription_data = subscription
+        .map(|item| item.get("data").unwrap_or(item))
+        .and_then(Value::as_object);
+    balance.command_code = Some(newapi::CommandCodeBalanceDetails {
+        account: None,
+        plan: (plan_id.is_some() || subscription_data.is_some()).then_some(newapi::CommandCodeBalancePlan {
+            name: plan_id.as_ref().map(|_| plan_name),
+            id: plan_id,
+            status: command_code_text(subscription_data.and_then(|item| item.get("status"))),
+            current_period_start: command_code_reset(subscription_data.and_then(|item| item.get("currentPeriodStart"))),
+            current_period_end: command_code_reset(subscription_data.and_then(|item| item.get("currentPeriodEnd"))),
+        }),
+        usage: None,
+    });
+    Ok(balance)
 }
 
 fn parse_official_balance(source: &str, value: &Value) -> Result<newapi::Balance, String> {
@@ -723,6 +807,7 @@ pub(crate) fn balance_from_entries(
 ) -> Result<newapi::Balance, String> {
     let first = entries.first().ok_or("newapi.errors.response")?;
     Ok(newapi::Balance {
+        command_code: None,
         remaining: first.remaining,
         used: first.used,
         unit: first.unit.clone(),
@@ -913,6 +998,36 @@ mod tests {
         (format!("http://{address}/"), requests, handle)
     }
 
+    // The summary and identity reads overlap; fixtures must dispatch by path,
+    // not accidentally depend on which request reaches the server first.
+    fn mock_command_code_server(
+        responses: Vec<(&'static str, &'static str, &'static str)>,
+    ) -> (String, Arc<Mutex<Vec<String>>>, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&requests);
+        let handle = std::thread::spawn(move || {
+            for _ in 0..responses.len() {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                let mut bytes = [0u8; 16 * 1024];
+                let count = stream.read(&mut bytes).unwrap();
+                let request = String::from_utf8_lossy(&bytes[..count]).to_string();
+                let path = request.split_whitespace().nth(1).unwrap();
+                let (_, status, body) = responses.iter().find(|(expected, _, _)| *expected == path)
+                    .unwrap_or_else(|| panic!("Unexpected mock endpoint: {path}"));
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                captured.lock().unwrap().push(request);
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        (format!("http://{address}/"), requests, handle)
+    }
+
     #[test]
     fn identifies_newapi_and_sub2api_public_metadata() {
         assert!(is_newapi_public_status(&json!({
@@ -977,7 +1092,7 @@ mod tests {
         assert_eq!(balance.entries.len(), 5);
         assert_eq!(
             balance.entries[0].label.as_deref(),
-            Some("Command Code 路 Pro")
+            Some("Command Code · Pro")
         );
         assert_eq!(balance.entries[0].remaining, 62.5);
         assert_eq!(balance.entries[0].total, Some(80.0));
@@ -1041,10 +1156,11 @@ mod tests {
 
     #[test]
     fn command_code_billing_uses_root_paths_model_key_and_org_scope() {
-        let (base_url, requests, server) = mock_server(vec![
-            ("200 OK", r#"{"credits":{"monthlyCredits":5}}"#),
-            ("200 OK", r#"{"org":{"id":"team one"}}"#),
-            ("200 OK", r#"{"data":{"planId":"teams-pro"}}"#),
+        let (base_url, requests, server) = mock_command_code_server(vec![
+            ("/alpha/billing/credits", "200 OK", r#"{"credits":{"monthlyCredits":5}}"#),
+            ("/alpha/whoami", "200 OK", r#"{"user":{"name":"Example","userName":"example-user","apiKey":"response-secret-must-not-leak"},"org":{"id":"team one"}}"#),
+            ("/alpha/billing/subscriptions?orgId=team+one", "200 OK", r#"{"data":{"planId":"teams-pro","status":"active","currentPeriodStart":"2030-01-01T00:00:00Z","currentPeriodEnd":"2030-02-01T00:00:00Z"}}"#),
+            ("/alpha/usage/summary", "200 OK", r#"{"totalCount":2160,"completedCount":2159,"failedCount":1,"totalCost":2.8453,"totalCredits":2.85,"successRate":99.95,"totalTokensIn":124800000,"totalTokensOut":1100000,"periodBasis":"billing-period","apiKey":"usage-secret-must-not-leak"}"#),
         ]);
         let balance = command_code_balance(
             &newapi::Connection {
@@ -1059,8 +1175,9 @@ mod tests {
         server.join().unwrap();
         let requests = requests.lock().unwrap();
         assert!(requests[0].starts_with("GET /alpha/billing/credits "));
-        assert!(requests[1].starts_with("GET /alpha/whoami "));
-        assert!(requests[2].starts_with("GET /alpha/billing/subscriptions?orgId=team+one "));
+        assert!(requests.iter().any(|request| request.starts_with("GET /alpha/whoami ")));
+        assert!(requests.iter().any(|request| request.starts_with("GET /alpha/usage/summary ")));
+        assert!(requests.iter().any(|request| request.starts_with("GET /alpha/billing/subscriptions?orgId=team+one ")));
         for request in requests.iter() {
             assert!(request.contains("Bearer synthetic-model-key"));
             assert!(!request.contains("account-token-must-not-be-used"));
@@ -1068,8 +1185,30 @@ mod tests {
         assert_eq!(balance.entries[0].total, Some(40.0));
         assert_eq!(
             balance.entries[0].label.as_deref(),
-            Some("Command Code 路 Teams Pro")
+            Some("Command Code · Teams Pro")
         );
+        let details = balance.command_code.as_ref().unwrap();
+        let account = details.account.as_ref().unwrap();
+        assert_eq!(account.name.as_deref(), Some("Example"));
+        assert_eq!(account.user_name.as_deref(), Some("example-user"));
+        let plan = details.plan.as_ref().unwrap();
+        assert_eq!(plan.status.as_deref(), Some("active"));
+        assert!(plan.current_period_start.as_ref().unwrap().starts_with("2030-01-01"));
+        assert!(plan.current_period_end.as_ref().unwrap().starts_with("2030-02-01"));
+        let usage = details.usage.as_ref().unwrap();
+        assert_eq!(balance.request_count, Some(2160));
+        assert_eq!(usage.completed_count, Some(2159));
+        assert_eq!(usage.failed_count, Some(1));
+        assert_eq!(usage.success_rate, Some(99.95));
+        assert_eq!(usage.total_cost, Some(2.8453));
+        assert_eq!(usage.total_credits, Some(2.85));
+        assert_eq!(usage.total_tokens_in, Some(124_800_000));
+        assert_eq!(usage.total_tokens_out, Some(1_100_000));
+        assert_eq!(usage.period_basis.as_deref(), Some("billing-period"));
+        assert_eq!(balance.unit, "credits");
+        let serialized = serde_json::to_string(&balance).unwrap();
+        assert!(!serialized.contains("secret-must-not-leak"));
+        assert!(!serialized.contains("apiKey"));
         let missing_key = newapi::Connection {
             base_url: "https://api.commandcode.ai/provider/v1".into(),
             access_token: "must-not-be-used".into(),
@@ -1079,6 +1218,125 @@ mod tests {
             query(&missing_key, &ApiProxyConfigPayload::default()).unwrap_err(),
             "newapi.errors.apiKeyRequired"
         );
+    }
+
+    #[test]
+    fn command_code_auxiliary_failures_keep_credits_without_invented_usage() {
+        for (status, body) in [
+            ("404 Not Found", "{}"),
+            ("503 Service Unavailable", "{}"),
+            ("200 OK", "not valid JSON"),
+            ("200 OK", "{}"),
+            ("200 OK", r#"{"success":false,"totalCount":999}"#),
+        ] {
+            let (base_url, requests, server) = mock_command_code_server(vec![
+                ("/alpha/billing/credits", "200 OK", r#"{"credits":{"planId":"individual-goat","monthlyCredits":58.5,"purchasedCredits":0,"freeCredits":0}}"#),
+                ("/alpha/whoami", "401 Unauthorized", "{}"),
+                ("/alpha/billing/subscriptions", "200 OK", r#"{"success":false,"data":{"planId":"individual-pro","currentPeriodEnd":"2030-01-01T00:00:00Z"}}"#),
+                ("/alpha/usage/summary", status, body),
+            ]);
+            let balance = command_code_balance(
+                &newapi::Connection {
+                    base_url,
+                    api_key: "synthetic-model-key".into(),
+                    ..Default::default()
+                },
+                &ApiProxyConfigPayload::default(),
+            ).unwrap();
+            server.join().unwrap();
+            assert_eq!(requests.lock().unwrap().len(), 4);
+            assert_eq!(balance.remaining, 58.5);
+            assert_eq!(balance.entries[0].total, Some(70.0));
+            assert_eq!(balance.entries[0].resets_at, None);
+            assert_eq!(balance.entries[1].remaining, 0.0);
+            assert_eq!(balance.entries[2].remaining, 0.0);
+            assert_eq!(balance.request_count, None);
+            let details = balance.command_code.unwrap();
+            assert!(details.account.is_none());
+            assert!(details.usage.is_none());
+            assert_eq!(details.plan.unwrap().name.as_deref(), Some("GOAT"));
+        }
+    }
+
+    #[test]
+    fn command_code_usage_preserves_zero_and_keeps_missing_or_malformed_fields_unknown() {
+        for value in [json!(null), json!([]), json!({}), json!({"periodBasis":"billing-period"})] {
+            assert!(parse_command_code_usage(Some(&value)).is_none());
+        }
+        let usage = parse_command_code_usage(Some(&json!({
+            "totalCount": -1,
+            "completedCount": 0.0,
+            "failedCount": "0",
+            "successRate": 0,
+            "totalCost": "NaN",
+            "totalCredits": 0,
+            "totalTokensIn": 1.5,
+            "totalTokensOut": "invalid",
+            "periodBasis": "billing-period"
+        }))).unwrap();
+        assert_eq!(usage.total_count, None);
+        assert_eq!(usage.completed_count, Some(0));
+        assert_eq!(usage.failed_count, Some(0));
+        assert_eq!(usage.success_rate, Some(0.0));
+        assert_eq!(usage.total_cost, None);
+        assert_eq!(usage.total_credits, Some(0.0));
+        assert_eq!(usage.total_tokens_in, None);
+        assert_eq!(usage.total_tokens_out, None);
+        assert_eq!(usage.period_basis.as_deref(), Some("billing-period"));
+        let serialized = serde_json::to_value(&usage).unwrap();
+        assert_eq!(serialized["totalCount"], Value::Null);
+        assert_eq!(serialized["completedCount"], 0);
+        for rate in [-1.0, 100.1] {
+            let usage = parse_command_code_usage(Some(&json!({"totalCount": 3, "successRate": rate}))).unwrap();
+            assert_eq!(usage.success_rate, None);
+        }
+        for count in [json!(9_007_199_254_740_992_u64), json!("9007199254740992"), json!(9_007_199_254_740_992.0)] {
+            assert_eq!(command_code_count(Some(&count)), None);
+        }
+        for count in [json!(9_007_199_254_740_991_u64), json!("9007199254740991")] {
+            assert_eq!(command_code_count(Some(&count)), Some(9_007_199_254_740_991));
+        }
+        let account = parse_command_code_account(Some(&json!({
+            "user":{"name":12,"userName":"valid-user","token":"must-not-leak"}
+        }))).unwrap();
+        assert_eq!(account.name, None);
+        assert_eq!(account.user_name.as_deref(), Some("valid-user"));
+        assert!(!serde_json::to_string(&account).unwrap().contains("must-not-leak"));
+    }
+
+    #[test]
+    fn command_code_credit_failure_still_fails_before_auxiliary_requests() {
+        let (base_url, requests, server) = mock_server(vec![("401 Unauthorized", "{}")]);
+        assert!(command_code_balance(
+            &newapi::Connection { base_url, api_key: "synthetic-model-key".into(), ..Default::default() },
+            &ApiProxyConfigPayload::default(),
+        ).is_err());
+        server.join().unwrap();
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("GET /alpha/billing/credits "));
+    }
+
+    #[test]
+    fn command_code_details_are_optional_in_saved_generic_balances() {
+        let legacy = json!({
+            "entries":[{"remaining":5,"used":null,"total":null,"unit":"USD","valid":true}],
+            "remaining":5,"used":null,"unit":"USD","rawQuota":5,
+            "quotaPerUnit":null,"requestCount":null,"checkedAt":1,"conversionAvailable":true
+        });
+        let balance: newapi::Balance = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(balance.command_code.is_none());
+        assert!(serde_json::to_value(&balance).unwrap().get("commandCode").is_none());
+        let mut old_details = legacy;
+        old_details["commandCode"] = json!({"usage":{"completedCount":1}});
+        let balance: newapi::Balance = serde_json::from_value(old_details).unwrap();
+        let details = balance.command_code.unwrap();
+        assert!(details.account.is_none());
+        assert!(details.plan.is_none());
+        let usage = details.usage.unwrap();
+        assert_eq!(usage.completed_count, Some(1));
+        assert_eq!(usage.total_cost, None);
+        assert_eq!(usage.success_rate, None);
     }
 
     #[test]

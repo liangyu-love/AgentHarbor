@@ -1,4 +1,28 @@
-# 用户反馈修复与验收（2026-10-02）
+# 用户反馈修复与验收（2026-10-02—2026-10-05）
+
+## Command Code 账户总览补充（2026-10-05）
+
+- 最新只读参考为用户指定的 `D:/workspace/temp/dsh-commandcode-provider`，基线 `7152f63cbe80ee2c0ec5ec95fd347971f20e24fc`。核对 `src/adapter.ts` 的 `getUsage()`、`src/client/section.tsx` 和 `src/login.ts`，确认登录最终保存的是模型 API Key，查询无需额外 cookie、session 或登录模块。研究仓库克隆使用用户指定的 `http://127.0.0.1:10808`，未改动应用已保存的代理设置。
+- credits 为必需请求；成功后读取 `/alpha/whoami`、`/alpha/billing/subscriptions?orgId=...` 和 `/alpha/usage/summary`。四接口复用同一 `Authorization: Bearer <模型 API Key>`，组织 ID 仅用于订阅参数。新增 usage 请求与身份/订阅读取重叠，不增加一整段串行超时。
+- 新增可选 `balance.commandCode` 投影账户名称/用户名、套餐及账期、总请求/完成/失败计数、成功率、费用、credits 消耗和输入/输出 Token。仅保存明确的展示字段，不传完整账户响应、密钥或未知字段；旧余额 DTO 保持兼容。
+- 统计为官方账户用量，独立于本项目 Router 账本。`totalCount` 显示为“总请求”；`successRate` 已是 0–100 百分值；`totalCost` 显示 USD；额度、窗口和 `totalCredits` 继续显示 credits，不照抄参考项目将额度标为美元的格式器。
+- 仅内置 Command Code 查询使用紧凑总览：账户/套餐、四项统计、月度/已购/赠送额度、5 小时/周窗口已用进度、重置/账期/更新时间。旧报告、共享余额与自定义脚本继续沿用原契约，脚本结果仍用通用界面。
+- HTTP/JSON/显式 `success:false` 辅助失败保留可用额度；缺失或非法统计显示未知，真实零保留。零已购/赠送额度不再误报账户不可用，真实窗口耗尽仍有短提示；未知未来额度标签不冒充月额度。计数所有解析路径统一限制在 JavaScript 安全整数范围。
+- 布局检查定位并修复余额弹窗装饰背景的横向溢出；标题和总览允许收缩。已审阅 1200px/390px 深浅主题，窄窗口统计自动变为两列，内容可纵向滚动。截图均为合成数据。
+
+| 本轮检查 | 结果与证据 |
+| --- | --- |
+| `pnpm build` | TypeScript/Vite 生产构建成功；`.runtime-test/command-code-build.log` |
+| `RUST_TEST_THREADS=1 pnpm test:rust` | 757 单元、11 Desktop 集成、9 本地流程通过；21 ignored 不计为通过；`.runtime-test/command-code-rust-final.log` |
+| `pnpm test:frontend` | 10 组配置检查 + 115 条浏览器回归，共 125 PASS，exit 0；`.runtime-test/command-code-frontend-final.log` |
+| HTTP/解析回归 | 四接口同 Key、组织参数、辅助 404/503/坏 JSON/空响应/`success:false`、必需接口失败、旧 DTO、零/缺失/非法值与安全整数边界均通过 |
+| 前端回归 | 官方统计、币种、零额度、已用比例、失败保留旧报告、旧 DTO、部分字段、真实窗口限制、未知标签、仅窗口结果及自定义脚本回退均通过 |
+| 独立终审 | 安全整数、月额度识别、窗口耗尽提示三项修复后无新增阻断项 |
+| EXE/安装包 | 交付目录的 `build.log`、`build-manifest.json`、`SHA256SUMS.txt` 与 `startup-check.json` 单独记录本轮构建及隔离启动结果 |
+
+本轮未查询用户真实账户、读取真实认证文件或向计费接口发请求。接口契约与本地 mock 已验证，真实账户返回及安装升级流程尚未验收。
+
+以下保留此前各轮记录；其中测试计数和交付目录属于各自日期的版本。
 
 ## 范围与结果
 
