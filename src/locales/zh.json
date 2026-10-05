@@ -775,6 +775,7 @@
     "customBalanceScript": "自定义余额脚本",
     "balanceScriptHint": "支持 request + extractor。可用 {{baseUrl}}、{{apiKey}}、{{accessToken}}、{{userId}}；密钥只在请求时填入。同站点 GET / POST，返回 remaining、unit，可选 used、total、planName、resetsAt，也支持数组。",
     "balanceResets": "重置于 {{time}}",
+    "balanceUpdatedAt": "更新于 {{time}}",
     "officialEndpoint": "官方接口",
     "clickToExpand": "点击展开配置",
     "balanceWindow": {
@@ -784,6 +785,12 @@
       "free": "免费额度剩余",
       "weekly": "本周剩余",
       "monthly": "本月剩余"
+    },
+    "go": {
+      "rolling": "滚动窗口",
+      "weekly": "每周窗口",
+      "monthly": "每月窗口",
+      "windowUnavailable": "窗口额度暂不可用"
     },
     "commandCode": {
       "monthlyRemaining": "月额度剩余",
@@ -798,8 +805,7 @@
       "cost": "花费",
       "tokensDetail": "{{input}} 入 / {{output}} 出",
       "billingPeriod": "本账期用量",
-      "billingEnds": "账期截止 {{time}}",
-      "updatedAt": "更新于 {{time}}"
+      "billingEnds": "账期截止 {{time}}"
     },
     "probeStages": "测试阶段",
     "probeResponse": "响应流",

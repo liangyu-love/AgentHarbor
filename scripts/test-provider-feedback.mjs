@@ -153,6 +153,57 @@ export async function testProviderFeedback({ page, reset, captureDir }) {
   assert.equal(await summary.locator('[data-command-code-window="weekly"] [role="progressbar"]').getAttribute("aria-valuenow"), "30");
   console.log("PASS window-only Command Code results are labeled as quota instead of account balance");
 
+  const goBalance = { remaining: 0, used: 100, rawQuota: 0, unit: "%", quotaPerUnit: null,
+    requestCount: null, checkedAt: 1800000000, conversionAvailable: true, entries: [
+      { ...entry(100, 100, "rolling"), unit: "%" },
+      { ...entry(58, 100, "weekly"), unit: "%" },
+      { ...entry(0, 100, "monthly"), unit: "%", valid: false },
+    ] };
+  const loadGo = balance => loadProvider({ baseUrl: "https://opencode.ai/zen/go/v1", balanceSource: "opencodeGo", balance });
+  await loadGo(goBalance);
+  await page.getByRole("button", { name: "查询余额 Quota fixture", exact: true }).click();
+  const goSummary = dialog.locator("[data-opencode-go-balance]");
+  await goSummary.waitFor();
+  assert.equal(await summary.count(), 0, "OpenCode Go does not invent Command Code account or billing data");
+  for (const [name, used, remaining] of [["rolling", 0, 100], ["weekly", 42, 58], ["monthly", 100, 0]]) {
+    const window = goSummary.locator(`[data-opencode-go-window="${name}"]`);
+    assert.equal(await window.locator('[role="progressbar"]').getAttribute("aria-valuenow"), String(used));
+    assert.ok((await window.innerText()).includes(`${used}% / 100%`));
+    assert.ok((await window.innerText()).includes(`剩余额度: ${remaining}%`));
+    assert.match(await window.innerText(), /重置于/);
+  }
+  assert.equal(await goSummary.getByText("窗口额度暂不可用", { exact: true }).count(), 1);
+  assert.doesNotMatch(await goSummary.innerText(), /\$|credits/);
+  if (captureDir) {
+    for (const width of [1200, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      for (const dark of [false, true]) {
+        await page.evaluate(value => document.documentElement.classList.toggle("dark", value), dark);
+        await page.screenshot({ path: path.join(captureDir, `opencode-go-${width}-${dark ? "dark" : "light"}.png`), animations: "disabled" });
+        const size = await dialog.evaluate(element => ({ scroll: element.scrollWidth, client: element.clientWidth }));
+        assert.ok(size.scroll <= size.client + 1, `OpenCode Go dialog overflow at ${width}px: ${JSON.stringify(size)}`);
+      }
+    }
+    await page.setViewportSize({ width: 1200, height: 700 });
+    await page.evaluate(() => document.documentElement.classList.remove("dark"));
+  }
+  await page.waitForFunction(() => window.review.balanceRequests.length === 1);
+  await page.evaluate(() => window.review.balanceRejectors[0]("newapi.errors.auth"));
+  await dialog.getByText("查询未成功，保留上次查询结果。", { exact: true }).waitFor();
+  assert.equal(await goSummary.locator('[data-opencode-go-window="weekly"] [role="progressbar"]').getAttribute("aria-valuenow"), "42");
+  assert.equal(await dialog.getByRole("button", { name: "刷新余额", exact: true }).isEnabled(), true);
+  console.log("PASS OpenCode Go shows official percentage windows with resets, zero/exhausted states and retains results after a failed refresh");
+
+  await loadGo({ ...goBalance, remaining: 58, rawQuota: 58, used: null, entries: [] });
+  await page.getByRole("button", { name: "查询余额 Quota fixture", exact: true }).click();
+  await goSummary.waitFor();
+  assert.match(await goSummary.innerText(), /58%/);
+  assert.equal(await goSummary.getByRole("progressbar").count(), 0, "legacy balances cannot invent window totals");
+  await loadProvider({ baseUrl: "https://opencode.ai/zen/go/v1", balanceSource: "custom", balanceScript: "return {remaining: 62, unit: 'USD'};", balance: goBalance });
+  await page.getByRole("button", { name: "查询余额 Quota fixture", exact: true }).click();
+  assert.equal(await goSummary.count(), 0, "custom scripts keep the generic interface");
+  console.log("PASS OpenCode Go legacy balances preserve unknown fields and custom scripts keep their own presentation");
+
   await loadProvider({ baseUrl: "https://api.commandcode.ai/provider/v1", balanceSource: "custom", balanceScript: "return {remaining: 62, unit: 'credits'};", balance: commandBalance });
   await page.getByRole("button", { name: "查询余额 Quota fixture", exact: true }).click();
   assert.equal(await summary.count(), 0);

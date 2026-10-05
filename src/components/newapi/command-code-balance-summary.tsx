@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 import type { NewApiBalance } from "@/types/newapi";
+import { BalanceWindowRow } from "./balance-window-row";
 
 export function CommandCodeBalanceSummary({ balance, providerName }: {
   balance: NewApiBalance; providerName: string;
@@ -79,30 +80,17 @@ export function CommandCodeBalanceSummary({ balance, providerName }: {
         </div>
       )}
 
-      {windows.map(entry => {
-        const percent = entry.used != null && entry.total != null && entry.total > 0
-          ? Math.max(0, Math.min(100, entry.used / entry.total * 100)) : null;
-        return (
-          <div key={entry.label} className="space-y-1.5" data-command-code-window={entry.label}>
-            <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 text-xs">
-              <span className="text-muted-foreground">{t(`newapi.commandCode.${entry.label}`)}</span>
-              <span className="tabular-nums">{amount(entry.used)} / {amount(entry.total)}</span>
-            </div>
-            {!entry.valid && <p className="text-[11px] text-destructive">{t("newapi.commandCode.windowExhausted")}</p>}
-            {percent != null && (
-              <div role="progressbar" aria-label={t(`newapi.commandCode.${entry.label}`)} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} className="h-1.5 overflow-hidden rounded-full bg-muted/70">
-                <div className="h-full rounded-full bg-foreground/80" style={{ width: `${percent}%` }} />
-              </div>
-            )}
-            {date(entry.resetsAt) && <p className="text-[11px] text-muted-foreground">{t("newapi.balanceResets", { time: date(entry.resetsAt) })}</p>}
-          </div>
-        );
-      })}
+      {windows.map(entry => (
+        <div key={entry.label} data-command-code-window={entry.label}>
+          <BalanceWindowRow entry={entry} label={t(`newapi.commandCode.${entry.label}`)} amount={amount}
+            unavailableText={t("newapi.commandCode.windowExhausted")} />
+        </div>
+      ))}
 
       <div className="flex flex-wrap justify-between gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
         {billingEnd && <span>{t("newapi.commandCode.billingEnds", { time: billingEnd })}</span>}
         {monthlyReset && <span>{t("newapi.balanceResets", { time: monthlyReset })}</span>}
-        <span>{t("newapi.commandCode.updatedAt", { time: new Date(balance.checkedAt * 1000).toLocaleTimeString(i18n.language) })}</span>
+        <span>{t("newapi.balanceUpdatedAt", { time: new Date(balance.checkedAt * 1000).toLocaleTimeString(i18n.language) })}</span>
       </div>
     </section>
   );

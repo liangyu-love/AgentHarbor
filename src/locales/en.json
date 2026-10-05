@@ -775,6 +775,7 @@
     "customBalanceScript": "Custom balance script",
     "balanceScriptHint": "Supports request + extractor. Placeholders: {{baseUrl}}, {{apiKey}}, {{accessToken}}, {{userId}}. Secrets are filled only when sending. Same-origin GET / POST; return remaining, unit, optional used, total, planName, resetsAt, or an array.",
     "balanceResets": "Resets at {{time}}",
+    "balanceUpdatedAt": "Updated at {{time}}",
     "officialEndpoint": "Official endpoint",
     "clickToExpand": "Click to expand",
     "balanceWindow": {
@@ -784,6 +785,12 @@
       "free": "Free credits remaining",
       "weekly": "Weekly remaining",
       "monthly": "Monthly remaining"
+    },
+    "go": {
+      "rolling": "Rolling window",
+      "weekly": "Weekly window",
+      "monthly": "Monthly window",
+      "windowUnavailable": "Window quota unavailable"
     },
     "commandCode": {
       "monthlyRemaining": "Monthly remaining",
@@ -798,8 +805,7 @@
       "cost": "Cost",
       "tokensDetail": "{{input}} in / {{output}} out",
       "billingPeriod": "Billing-period usage",
-      "billingEnds": "Billing period ends {{time}}",
-      "updatedAt": "Updated at {{time}}"
+      "billingEnds": "Billing period ends {{time}}"
     },
     "probeStages": "Test stages",
     "probeResponse": "Response stream",

@@ -12,6 +12,7 @@ import type { NewApiProvider, NewApiBalance } from "@/types/newapi";
 import type { ProviderState } from "./use-provider-state";
 import { relayGroupKey } from "./relay-groups";
 import { CommandCodeBalanceSummary } from "./command-code-balance-summary";
+import { OpenCodeGoBalanceSummary } from "./opencode-go-balance-summary";
 
 export function ProviderBalanceDialog({ provider, store, onClose }: {
   provider: NewApiProvider; store: ProviderState; onClose: () => void;
@@ -42,6 +43,13 @@ export function ProviderBalanceDialog({ provider, store, onClose }: {
     try { return new URL(provider.baseUrl).hostname.toLowerCase() === "api.commandcode.ai"; }
     catch { return false; }
   })();
+  const opencodeGo = provider.balanceSource === "opencodeGo" && !effectiveScript && (() => {
+    try {
+      const url = new URL(provider.baseUrl);
+      return url.hostname === "opencode.ai" && /^\/zen\/go(?:\/v1)?\/?$/.test(url.pathname);
+    } catch { return false; }
+  })();
+  const detailedBalance = commandCode || opencodeGo;
   const dirty = (custom ? script : "") !== (provider.balanceScript ?? "");
   const entries: NonNullable<NewApiBalance["entries"]> = balance?.entries?.length ? balance.entries : balance ? [{
     remaining: balance.conversionAvailable ? balance.remaining : balance.rawQuota,
@@ -79,7 +87,7 @@ export function ProviderBalanceDialog({ provider, store, onClose }: {
 
   return (
     <Dialog open onOpenChange={open => { if (!open) onClose(); }}>
-      <DialogContent className={custom || commandCode ? "sm:max-w-2xl max-h-[90vh] overflow-y-auto" : "sm:max-w-lg max-h-[90vh] overflow-y-auto"}>
+      <DialogContent className={custom || detailedBalance ? "sm:max-w-2xl max-h-[90vh] overflow-y-auto" : "sm:max-w-lg max-h-[90vh] overflow-y-auto"}>
         <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-24 rounded-t-2xl bg-gradient-to-b from-amber-500/[0.08] via-amber-500/[0.02] to-transparent" />
         
         {/* Header */}
@@ -122,7 +130,8 @@ export function ProviderBalanceDialog({ provider, store, onClose }: {
 
         {/* Balance Status Cards */}
         <div className="space-y-2.5 pt-1" aria-busy={busy}>
-          {commandCode && balance ? <CommandCodeBalanceSummary balance={balance} providerName={provider.name} /> : entries.map((entry, index) => (
+          {commandCode && balance ? <CommandCodeBalanceSummary balance={balance} providerName={provider.name} />
+            : opencodeGo && balance ? <OpenCodeGoBalanceSummary balance={balance} providerName={provider.name} /> : entries.map((entry, index) => (
             <div
               key={`${entry.unit}-${index}`}
               className="relative overflow-hidden rounded-xl border border-border/60 bg-gradient-to-br from-card via-card to-muted/30 p-4 shadow-xs"
@@ -197,7 +206,7 @@ export function ProviderBalanceDialog({ provider, store, onClose }: {
             </div>
           )}
 
-          {balance && !commandCode && (
+          {balance && !detailedBalance && (
             <div className="flex items-center justify-between text-[11px] text-muted-foreground px-1">
               <span>{balanceSourceName(provider.balanceSource)} · {new Date(balance.checkedAt * 1000).toLocaleString(i18n.language)}</span>
             </div>

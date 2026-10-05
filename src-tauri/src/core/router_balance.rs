@@ -698,14 +698,10 @@ fn parse_official_balance(source: &str, value: &Value) -> Result<newapi::Balance
                     valid: window.get("status").and_then(Value::as_str) != Some("rate-limited")
                         && used < 100.0,
                     label: Some((*name).into()),
-                    resets_at: if used > 0.0 {
-                        window
-                            .get("resetsAt")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
-                    } else {
-                        None
-                    },
+                    resets_at: window
+                        .get("resetsAt")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
                 })
             })
             .collect(),
@@ -884,7 +880,10 @@ mod tests {
         .unwrap();
         assert_eq!(go.entries.len(), 3);
         assert_eq!(go.entries[1].remaining, 58.0);
-        assert_eq!(go.entries[0].resets_at, None);
+        assert_eq!(
+            go.entries[0].resets_at.as_deref(),
+            Some("2030-01-01T00:00:00Z")
+        );
         assert!(!go.entries[2].valid);
         let kimi =
             parse_official_balance("kimiCoding", &json!({"usage":{"limit":100,"remaining":25}}))
