@@ -480,7 +480,7 @@ export function ClaudeDesktopDialog({
                             setSelected(current => {
                               const next = { ...current };
                               if (next[model.modelId]) delete next[model.modelId];
-                              else next[model.modelId] = { label: "", oneMMode: "off" };
+                              else next[model.modelId] = { label: "", oneMMode: model.supports1m ? "auto" : "off" };
                               return next;
                             })
                           }
@@ -507,7 +507,7 @@ export function ClaudeDesktopDialog({
                               }))
                             }
                           />
-                          <div className="flex items-center gap-2" title={!model.supports1m ? t("claudeDesktop.dialog.oneMNeedsCapability") : undefined}>
+                          <div className="flex items-center gap-2">
                             <Checkbox
                               id={`desktop-onem-${model.modelId}`}
                               checked={row.oneMMode === "auto"}

@@ -539,15 +539,15 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
     assert.equal(await modelCheckbox(modelId).getAttribute("aria-checked"), "true", "saved choices must be checked");
     const row = dialog().locator("li").filter({ has: modelCheckbox(modelId) });
     assert.equal(await row.getByRole("textbox").inputValue(), "", "automatic labels must remain unpinned");
-    assert.equal(await row.getByRole("checkbox", { name: "额外 1M 选项", exact: true }).getAttribute("aria-checked"), "true",
+    assert.equal(await row.getByRole("checkbox", { name: "1M", exact: true }).getAttribute("aria-checked"), "true",
       "saved Auto intent must survive opening");
     if (modelId === SHORT_MODEL_ID) {
-      const legacyOneM = row.getByRole("checkbox", { name: "额外 1M 选项", exact: true });
+      const legacyOneM = row.getByRole("checkbox", { name: "1M", exact: true });
       assert.equal(await legacyOneM.isEnabled(), true, "an existing Auto choice stays cancellable when capability is unavailable");
       await legacyOneM.click();
       assert.equal(await legacyOneM.getAttribute("aria-checked"), "false");
       assert.equal(await legacyOneM.isDisabled(), true, "after cancellation an unsupported choice cannot be newly enabled");
-      assert.equal(await legacyOneM.locator("..").getAttribute("title"), "请先在中转卡片确认 1M 上下文能力");
+      assert.equal(await legacyOneM.locator("..").getAttribute("title"), null, "the 1M control has no explanatory tooltip");
     }
     await modelCheckbox(modelId).uncheck();
   }
@@ -603,19 +603,20 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   for (const modelId of modelIds) await modelCheckbox(modelId).check();
   assert.equal(await dialog().getByRole("button", { name: ZH.messagesCheck, exact: true }).isEnabled(), true);
   const longRow = dialog().locator("li").filter({ has: page.locator('[id="desktop-model-' + LONG_MODEL_ID + '"]') });
-  const oneM = longRow.getByRole("checkbox", { name: "额外 1M 选项", exact: true });
+  const oneM = longRow.getByRole("checkbox", { name: "1M", exact: true });
   assert.equal(await oneM.count(), 1, "a selected model must expose the 1M checkbox");
   assert.equal(await longRow.getByRole("textbox", { name: ZH.labelPlaceholder, exact: true }).getAttribute("maxlength"), "64");
-  assert.equal(await oneM.getAttribute("aria-checked"), "false", "new choices must not add a duplicate 1M menu option by default");
+  assert.equal(await oneM.getAttribute("aria-checked"), "true", "supported new direct choices enable 1M by default");
   assert.equal(await longRow.getByRole("textbox").inputValue(), "", "new automatic labels are placeholders, not overrides");
   const shortRow = dialog().locator("li").filter({ has: modelCheckbox(SHORT_MODEL_ID) });
-  assert.equal(await shortRow.getByRole("checkbox", { name: "额外 1M 选项", exact: true }).isDisabled(), true,
+  assert.equal(await shortRow.getByRole("checkbox", { name: "1M", exact: true }).isDisabled(), true,
     "a new selection cannot offer an unsupported 1M variant");
   await oneM.click();
-  assert.equal(await oneM.getAttribute("aria-checked"), "true", "a single click enables the 1M intent");
+  assert.equal(await oneM.getAttribute("aria-checked"), "false", "a single click cancels the default 1M intent");
   await oneM.focus();
   await page.keyboard.press("Space");
-  assert.equal(await oneM.getAttribute("aria-checked"), "false", "Space toggles the labelled 1M checkbox off");
+  assert.equal(await oneM.getAttribute("aria-checked"), "true", "Space toggles the labelled 1M checkbox on");
+  await oneM.uncheck();
   assert.equal(await dialog().getByRole("combobox").count(), 0, "a single installation and 1M controls must not require dropdowns");
   assert.doesNotMatch(await dialog().innerText(), /协议由模型名称推断|未经上游验证/, "the protocol inference badge is omitted");
   if (captureDir) await page.screenshot({ path: path.join(captureDir, "claude-desktop-dialog.png"), animations: "disabled" });
@@ -669,7 +670,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
     "the preview must report the preserved external profiles");
   assert.equal(previewCards.pathsFit, true, "a long preview path must not spill out of its card");
   assert.ok(previewCards.overflow <= 1, "the preview must not widen the dialog: " + previewCards.overflow);
-  console.log("PASS the dialog preserves saved intent, defaults new 1M choices off, previews models and reveals localized file changes");
+  console.log("PASS the dialog preserves saved intent, defaults supported new direct 1M choices on, previews models and reveals localized file changes");
 
   // 6. Apply commits the previewed revision, and a failed action surfaces as role=alert.
   await dialog().getByRole("button", { name: ZH.apply, exact: true }).click();
@@ -877,8 +878,9 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   const opusRow = dialog().locator("li").filter({ has: modelCheckbox("claude-opus-4-7") });
   assert.equal(await opusRow.getByRole("textbox").inputValue(), "");
   assert.equal(await opusRow.getByRole("textbox").getAttribute("placeholder"), "Opus 4.7");
-  const opusOneM = opusRow.getByRole("checkbox", { name: "额外 1M 选项", exact: true });
-  assert.equal(await opusOneM.getAttribute("aria-checked"), "false");
+  const opusOneM = opusRow.getByRole("checkbox", { name: "1M", exact: true });
+  assert.equal(await opusOneM.getAttribute("aria-checked"), "true", "a supported new direct model starts with 1M checked");
+  await opusOneM.uncheck();
   await dialog().getByRole("button", { name: ZH.preview, exact: true }).click();
   await dialog().locator("[data-desktop-preview-files]").waitFor();
   const opusPreview = dialog().locator("[data-desktop-preview-files]");
@@ -915,7 +917,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   assert.equal(await modelCheckbox("claude-opus-4-7").getAttribute("aria-checked"), "true", "failure must retain the selected model");
   assert.equal(await opusOneM.getAttribute("aria-checked"), "true", "failure must retain the 1M intent");
   await dialog().getByRole("button", { name: ZH.cancel, exact: true }).click();
-  console.log("PASS a running Desktop allows Opus 4.7 preview, 1M is opt-in, and failed apply retains input with a fresh-preview action");
+  console.log("PASS a running Desktop allows Opus 4.7 preview, 1M can be unchecked, and failed apply retains input with a fresh-preview action");
 
   // 14. Saved selections that disappeared or became excluded remain visible and removable.
   await page.evaluate(async () => {
@@ -954,7 +956,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   await dialog().getByRole("button", { name: ZH.preview, exact: true }).click();
   await dialog().locator("[data-desktop-preview-files]").waitFor();
   assert.deepEqual(await page.evaluate(() => window.review.desktopCalls.preview.at(-1).request.models),
-    [{ modelId: "claude-opus-4-7", labelOverride: null, oneMMode: "off" }],
+    [{ modelId: "claude-opus-4-7", labelOverride: null, oneMMode: "auto" }],
     "after explicitly removing obsolete choices, only the new selected model is sent");
   await dialog().getByRole("button", { name: ZH.cancel, exact: true }).click();
   console.log("PASS removed and excluded saved models remain visible with their original intent and can be replaced explicitly");
@@ -998,7 +1000,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   await roleRow("sonnet").getByRole("combobox", { name: "sonnet 模型", exact: true }).click();
   assert.equal(await page.getByRole("option", { name: "excluded-model · 不可用", exact: true }).getAttribute("aria-disabled"), "true");
   await page.getByRole("option", { name: "deepseek-chat", exact: true }).click();
-  const sonnetRouteOneM = roleRow("sonnet").getByRole("checkbox", { name: "额外 1M 选项", exact: true });
+  const sonnetRouteOneM = roleRow("sonnet").getByRole("checkbox", { name: "1M", exact: true });
   assert.equal(await sonnetRouteOneM.isEnabled(), true, "a capable Chat target can opt into 1M");
   assert.equal(await sonnetRouteOneM.getAttribute("aria-checked"), "false", "Chat 1M stays off until explicitly selected");
   await sonnetRouteOneM.click();
@@ -1009,7 +1011,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   await pick("sonnet", "model", "deepseek-chat");
   await pick("opus", "provider", "Responses Relay");
   await pick("opus", "model", "gpt-5");
-  const responsesRouteOneM = roleRow("opus").getByRole("checkbox", { name: "额外 1M 选项", exact: true });
+  const responsesRouteOneM = roleRow("opus").getByRole("checkbox", { name: "1M", exact: true });
   assert.equal(await responsesRouteOneM.isEnabled(), true, "a capable Responses target can opt into 1M");
   assert.equal(await responsesRouteOneM.getAttribute("aria-checked"), "false", "Responses 1M defaults off");
   await responsesRouteOneM.click();
@@ -1018,10 +1020,10 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   assert.equal(await responsesRouteOneM.isDisabled(), true, "Responses with insufficient context cannot offer 1M");
   await pick("opus", "provider", "Messages Relay");
   await pick("opus", "model", "small-messages");
-  assert.equal(await roleRow("opus").getByRole("checkbox", { name: "额外 1M 选项", exact: true }).isDisabled(), true,
+  assert.equal(await roleRow("opus").getByRole("checkbox", { name: "1M", exact: true }).isDisabled(), true,
     "Messages with insufficient context cannot offer 1M");
   await pick("opus", "model", "claude-opus-4-7");
-  const opusRouteOneM = roleRow("opus").getByRole("checkbox", { name: "额外 1M 选项", exact: true });
+  const opusRouteOneM = roleRow("opus").getByRole("checkbox", { name: "1M", exact: true });
   assert.equal(await opusRouteOneM.isEnabled(), true, "Messages uses the same effective context capability");
   assert.equal(await opusRouteOneM.getAttribute("aria-checked"), "false");
   assert.equal(await tabTo("desktop-route-opus-onem"), true, "role 1M toggle remains keyboard reachable");
@@ -1128,7 +1130,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
     model.contextWindow = 200_000;
     await window.review.providersClient.invalidateQueries({ queryKey: ["claude-desktop", "candidates"] });
   });
-  const savedOneM = roleRow("opus").getByRole("checkbox", { name: "额外 1M 选项", exact: true });
+  const savedOneM = roleRow("opus").getByRole("checkbox", { name: "1M", exact: true });
   await roleRow("opus").getByText("请关闭额外 1M 选项或选择支持 1M 的模型。", { exact: true }).waitFor();
   assert.equal(await savedOneM.getAttribute("aria-checked"), "true", "a saved 1M choice remains visible after its effective capability changes");
   assert.equal(await savedOneM.isEnabled(), true, "an obsolete 1M choice must remain operable so the user can turn it off");
