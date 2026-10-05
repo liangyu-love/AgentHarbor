@@ -1,5 +1,13 @@
 # 用户反馈修复与验收（2026-10-02—2026-10-05）
 
+## Command Code 金额符号调整与 Desktop 路由文档（2026-10-05）
+
+- 按用户最新要求，Command Code 内置余额卡片、月度/已购/赠送额度、额度窗口与消耗明细统一使用 `$`，例如 `$62`、`$10 / $40`。仅调整显示符号，原始数值、内部 credits 单位、进度比例和查询接口不变；自定义脚本继续采用它自己的单位。下节的 credits 界面说明属于此次符号调整之前的记录。
+- `pnpm build` 通过；`FRONTEND_QA_SCOPE=provider-feedback pnpm test:frontend` 通过 10 组配置检查和 10 条定向浏览器回归，覆盖美元符号、零/缺失、旧 DTO、窗口、自定义脚本保留 credits，以及原 MiMo 余额和共享脚本。日志为 `.runtime-test/command-code-dollar-{build,frontend}.log`。
+- 已审阅 `.runtime-test/command-code-dollar-ui/` 的 1200px/390px 深浅主题截图，无横向溢出。本轮后端未改动，不重复运行上一轮 Rust 全库；上一轮的后端结果见下节独立记录。
+- 新增 [Desktop 路由详细实施计划](../plan/claude-desktop-routing-integration-execution-plan.md)，补齐 cc-switch 实际源码契约、停代理不恢复 Desktop 的限制、角色映射与保存时回填区别，以及本项目的数据/鉴权/lease/缓存/首次基线/退出/计费身份、R1–R4 批次、22 项自动化和 9 项真机验收。原直连计划第 10 节已链接，使用文档不再暗示 Desktop 路由已经可用。
+- 本轮只补文档，未实现或启用 Desktop 路由，未接管真实 Desktop 或查询真实账户。
+
 ## Command Code 账户总览补充（2026-10-05）
 
 - 最新只读参考为用户指定的 `D:/workspace/temp/dsh-commandcode-provider`，基线 `7152f63cbe80ee2c0ec5ec95fd347971f20e24fc`。核对 `src/adapter.ts` 的 `getUsage()`、`src/client/section.tsx` 和 `src/login.ts`，确认登录最终保存的是模型 API Key，查询无需额外 cookie、session 或登录模块。研究仓库克隆使用用户指定的 `http://127.0.0.1:10808`，未改动应用已保存的代理设置。

@@ -577,6 +577,8 @@ git diff --check
 
 ## 10. 路由模式：CC Switch 的实现及本项目后续路线
 
+2026-10-05 补充：完整源码核对、生命周期限制、数据/鉴权/lease/模式切换契约、R1–R4 批次与验收矩阵见 [Claude Desktop 路由详细实施计划](claude-desktop-routing-integration-execution-plan.md)。该文档完成的是设计，路由模式尚未实现。
+
 ### 10.1 已核实的 CC Switch 链路
 
 ```text
@@ -601,7 +603,7 @@ Claude Desktop安全角色ID
 
 映射顺序为：剥离请求末尾 `[1m]` → 精确匹配 → 当前/旧 Opus 别名兼容 → 旧原始 route ID → 合法 Claude 名角色回落 → 无Fable配置时回落Opus → 明确未知模型错误。前端空档回填属于 CC Switch 产品选择，不能默认继承到本项目的首期直连。
 
-调研文档关于 `port=0` 的建议不等于现有实现：`proxy_gateway_base_url_from_db()` 只读 DB listen_port，0 会拒绝；server 实际绑定端口保存在运行态，profile构造没有消费它。
+`proxy_gateway_base_url_from_db()` 读取 DB listen_port 并拒绝 0；代理服务启动会把实际绑定端口保存到 DB。profile 可以消费启动后保存的端口，但没有本项目所需的监听 generation/lease 校验，不能将 0 直接写进 profile。
 
 ### 10.2 本项目路由设计草案
 
@@ -633,7 +635,7 @@ DesktopRoute {
 
 Gemini经OpenAI兼容中转可走Chat路径，与Gemini Native适配不同。CC Switch已有托管Copilot/Codex/xAI OAuth与MiMo专项修补不属于本项目现成能力，不提前写“支持”。
 
-后续路由分为R1 resolved routes/token/listener lease、R2入口与真实身份贯穿、R3生命周期/恢复、R4工具流式与价格验收四批，再补自己的详细计划；不在首期先修改全局Store或偷偷开放半成品路由按钮。
+后续路由分为R1 resolved routes/token/listener lease、R2入口与真实身份贯穿、R3生命周期/恢复、R4工具流式与价格验收四批，详细计划已补齐；不在首期先修改全局Store或开放半成品路由按钮。CC Switch 停服务/退出不会撤回 Desktop 网关 profile，且其默认单路并不等于 Desktop 专属多供应商 failover；本项目必须按新计划补齐这些契约。
 
 ## 11. 交付物与审查清单
 
