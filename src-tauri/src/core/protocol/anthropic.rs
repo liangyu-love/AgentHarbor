@@ -327,6 +327,11 @@ pub(super) fn response_body(value: &Value) -> Result<Value, String> {
 }
 
 pub(super) fn response_body_with_options(value: &Value, options: &ResponseOptions) -> Result<Value, String> {
+    let output = web_search::enrich_output(value["output"].as_array().ok_or("protocol.errors.invalidResponse")?, options.search.as_ref().and_then(|s| s.max_uses));
+    response_body_from_output(value, options, &output)
+}
+
+pub(super) fn response_body_from_output(value: &Value, options: &ResponseOptions, output: &[Value]) -> Result<Value, String> {
     let invalid = "protocol.errors.invalidResponse";
     let status = value["status"].as_str().ok_or(invalid)?;
     if !matches!(status, "completed" | "incomplete") || !value["error"].is_null() {
@@ -336,8 +341,7 @@ pub(super) fn response_body_with_options(value: &Value, options: &ResponseOption
     let mut has_tools = false;
     let mut refusal = false;
     let mut searches = 0_u64;
-    let output = web_search::enrich_output(value["output"].as_array().ok_or(invalid)?, options.search.as_ref().and_then(|s| s.max_uses));
-    for item in &output {
+    for item in output {
         match item["type"].as_str() {
             Some("message") => {
                 for part in item["content"].as_array().ok_or(invalid)? {

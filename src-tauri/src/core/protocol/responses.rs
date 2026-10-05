@@ -9,6 +9,30 @@ use crate::core::protocol::Translation;
 use crate::core::router::ModelProtocol;
 use serde_json::{json, Value};
 
+/// Every client function call in a replayed Messages conversation needs an
+/// actual result. Responses allows interleaved reasoning/messages, unlike Chat;
+/// enforce pairing and uniqueness without requiring Chat's contiguous ordering.
+pub(super) fn validate_tool_history(body: &Value) -> Result<(), String> {
+    let error = "protocol.errors.unansweredToolCall";
+    let mut seen = std::collections::HashSet::new();
+    let mut pending = std::collections::HashSet::new();
+    for item in body["input"].as_array().ok_or("protocol.errors.invalidRequest")? {
+        match item["type"].as_str() {
+            Some("function_call") => {
+                let id = item["call_id"].as_str().filter(|s| !s.is_empty()).ok_or(error)?;
+                if !seen.insert(id) { return Err(error.into()); }
+                pending.insert(id);
+            }
+            Some("function_call_output") => {
+                let id = item["call_id"].as_str().ok_or(error)?;
+                if !pending.remove(id) { return Err(error.into()); }
+            }
+            _ => {}
+        }
+    }
+    if pending.is_empty() { Ok(()) } else { Err(error.into()) }
+}
+
 /// Shared completion semantics for streaming and single-body translations.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Completion {

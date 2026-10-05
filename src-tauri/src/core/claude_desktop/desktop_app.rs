@@ -62,6 +62,12 @@ pub struct AppState {
     pub launch_target: Option<PathBuf>,
 }
 
+impl AppState {
+    pub fn restart_capable(&self) -> bool {
+        self.launch_method.is_some() || self.discovery_error.is_some()
+    }
+}
+
 /// A launch entry and its executable belong to one confirmed installation.
 /// All process operations keep this identity instead of matching a global name.
 struct AppIdentity {
@@ -254,19 +260,37 @@ fn stop_identity(identity: &AppIdentity, timeout: Duration) -> DesktopResult<boo
 }
 
 fn stop_processes(timeout: Duration, mut list: impl FnMut() -> DesktopResult<Vec<u32>>, mut send: impl FnMut(u32, bool) -> DesktopResult<bool>) -> DesktopResult<bool> {
+    stop_processes_with_grace(timeout, Duration::from_secs(2), &mut list, &mut send)
+}
+
+fn stop_processes_with_grace(timeout: Duration, headless_grace: Duration, mut list: impl FnMut() -> DesktopResult<Vec<u32>>, mut send: impl FnMut(u32, bool) -> DesktopResult<bool>) -> DesktopResult<bool> {
     let processes = list()?;
     if processes.is_empty() {
         return Ok(false);
     }
     let deadline = Instant::now() + timeout;
+    let headless_deadline = Instant::now() + headless_grace;
     let mut requested = std::collections::HashSet::new();
+    let mut headless = std::collections::HashSet::new();
+    let mut failures = std::collections::HashSet::new();
     let mut current = processes;
     loop {
         for pid in &current {
             // Individual posting failures never suppress cleanup of other
             // verified processes or the forced-stop fallback.
-            if !requested.contains(pid) && send(*pid, false).unwrap_or(false) { requested.insert(*pid); }
+            if requested.contains(pid) { continue; }
+            match send(*pid, false) {
+                Ok(true) => { requested.insert(*pid); headless.remove(pid); }
+                Ok(false) => { headless.insert(*pid); }
+                Err(error) => {
+                    headless.remove(pid);
+                    if failures.insert(*pid) { log::warn!("Desktop stop signal failed: pid={pid}, force=false, code={}, reason={}, details={:?}", error.code, error.message, error.params); }
+                }
+            }
         }
+        // A late Electron window gets a short chance to appear. Persistent
+        // headless residuals do not need the full main-window shutdown budget.
+        if current.iter().all(|pid| headless.contains(pid)) && Instant::now() >= headless_deadline { break; }
         if Instant::now() >= deadline { break; }
         std::thread::sleep(Duration::from_millis(200));
         current = list()?;
@@ -274,12 +298,14 @@ fn stop_processes(timeout: Duration, mut list: impl FnMut() -> DesktopResult<Vec
     }
     // 优雅退出没完成时强制结束，避免半退出状态下写文件被回写覆盖。
     // Re-enumerate by executable identity before forcing: PIDs can be reused.
-    for pid in &list()? {
-        let _ = send(*pid, true);
+    for pid in &list().map_err(stop_verification_error)? {
+        if let Err(error) = send(*pid, true) {
+            log::warn!("Desktop stop signal failed: pid={pid}, force=true, code={}, reason={}, details={:?}", error.code, error.message, error.params);
+        }
     }
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if list()?.is_empty() { return Ok(true); }
+        if list().map_err(stop_verification_error)?.is_empty() { return Ok(true); }
         if Instant::now() >= deadline { break; }
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -290,6 +316,11 @@ fn stop_processes(timeout: Duration, mut list: impl FnMut() -> DesktopResult<Vec
         )
         .retryable(),
     ))
+}
+
+fn stop_verification_error(error: Box<DesktopError>) -> Box<DesktopError> {
+    Box::new(DesktopError::new(error_code::PROCESS, "claudeDesktop.errors.processStopTimeout")
+        .param(format!("{}: {}; {:?}", error.code, error.message, error.params)).retryable().action("openManually"))
 }
 
 /// 启动 Desktop 并等待主进程出现。
@@ -456,7 +487,7 @@ fn msix_identity() -> DesktopResult<Option<AppIdentity>> {
     let script = "$ErrorActionPreference = 'Stop'; $p = @(Get-AppxPackage -Name 'Claude' -ErrorAction Stop | Where-Object { $_.PackageFamilyName -eq 'Claude_pzs8sxrjxfjjc' }); if ($p.Count -gt 1) { throw 'Ambiguous Desktop package' }; if ($p.Count -eq 1) { $a = @((Get-AppxPackageManifest $p[0] -ErrorAction Stop).Package.Applications.Application | Where-Object { $_.Id -eq 'Claude' }); if ($a.Count -ne 1) { throw 'Desktop entry missing or ambiguous' }; [pscustomobject]@{ appId = $p[0].PackageFamilyName + '!' + $a[0].Id; executable = Join-Path $p[0].InstallLocation $a[0].Executable } | ConvertTo-Json -Compress }";
     let mut command = crate::platform::windows::background_command("powershell");
     command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
-    let output = command::output(&mut command, Duration::from_secs(5)).map_err(|_| {
+    let output = command::output(&mut command, Duration::from_secs(10)).map_err(|_| {
         Box::new(DesktopError::new(error_code::PROCESS, "claudeDesktop.errors.installationDiscoveryFailed").retryable())
     })?;
     if !output.status.success() {
@@ -784,6 +815,49 @@ mod tests {
             if attempts.get() == 1 { Ok(false) } else { alive.set(false); Ok(true) }
         }).unwrap());
         assert_eq!(attempts.get(), 2);
+    }
+
+    #[test]
+    fn persistent_headless_residual_uses_a_short_grace_instead_of_twenty_seconds() {
+        use std::cell::Cell;
+        let live = Cell::new(true);
+        let mut signals = Vec::new();
+        assert!(stop_processes_with_grace(Duration::from_secs(20), Duration::ZERO,
+            || Ok(if live.get() { vec![10] } else { vec![] }), |pid, force| {
+                signals.push((pid, force));
+                if force { live.set(false); }
+                Ok(force)
+            }).unwrap());
+        assert_eq!(signals, [(10, false), (10, true)]);
+    }
+
+    #[test]
+    fn posting_error_does_not_use_headless_shortcut_and_force_query_errors_have_guidance() {
+        let attempts = std::cell::Cell::new(0);
+        let live = std::cell::Cell::new(true);
+        stop_processes_with_grace(Duration::from_secs(1), Duration::ZERO,
+            || Ok(if live.get() { vec![10] } else { vec![] }), |_, force| {
+                assert!(!force);
+                attempts.set(attempts.get() + 1);
+                if attempts.get() == 1 { Err(process_error(error_code::PROCESS)) }
+                else { live.set(false); Ok(true) }
+            }).unwrap();
+        assert_eq!(attempts.get(), 2);
+        let mut scans = 0;
+        let result = stop_processes(Duration::ZERO, || {
+            scans += 1;
+            if scans == 1 { Ok(vec![10]) } else { Err(process_error(error_code::PROCESS)) }
+        }, |_, _| Ok(false)).unwrap_err();
+        assert_eq!(result.message, "claudeDesktop.errors.processStopTimeout");
+        assert!(!result.params.is_empty());
+    }
+
+    #[test]
+    fn discovery_failure_preserves_restart_retry_but_absence_does_not() {
+        let mut state = AppState { discovery_error: Some("claudeDesktop.errors.installationDiscoveryFailed".into()), running: false, process_count: 0, launch_method: None, launch_target: None };
+        assert!(state.restart_capable());
+        state.discovery_error = None;
+        assert!(!state.restart_capable());
     }
 
     #[test]

@@ -310,8 +310,7 @@ impl Context {
             protocol,
             messages,
             prefixes,
-            response_options: super::request_body(super::Translation { from: ModelProtocol::AnthropicMessages, to: protocol }, &value)
-                .map(|r| r.response_options).unwrap_or_default(),
+            response_options: super::web_search::options_from_tools(protocol, &value).unwrap_or_default(),
         })
     }
     fn key(&self, prefix_len: usize, calls: &[Value]) -> String {

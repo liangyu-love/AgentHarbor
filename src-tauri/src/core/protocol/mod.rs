@@ -180,6 +180,7 @@ pub fn request_body(translation: Translation, value: &Value) -> Result<Translate
         (AnthropicMessages, ChatCompletions) | (AnthropicMessages, Responses) => {
             let (body, response_options) = anthropic::request_with_options(translation.to, value)?;
             if translation.to == ChatCompletions { chat::validate_tool_history(&body)?; }
+            if translation.to == Responses { responses::validate_tool_history(&body)?; }
             Ok(TranslatedRequest {
                 body,
                 input: Vec::new(),

@@ -397,10 +397,9 @@ impl StreamTranslator {
                 {
                     return Err("invalid_stream_frame");
                 }
-                let message =
-                    anthropic::response_body_with_options(response, &self.options).map_err(|_| "invalid_upstream_response")?;
-                self.start(response, out);
                 let output = web_search::enrich_output(response["output"].as_array().ok_or("invalid_stream_frame")?, self.options.search.as_ref().and_then(|s| s.max_uses));
+                let message = anthropic::response_body_from_output(response, &self.options, &output).map_err(|_| "invalid_upstream_response")?;
+                self.start(response, out);
                 let expected: Vec<(u64, u64)> = output
                     .iter()
                     .enumerate()

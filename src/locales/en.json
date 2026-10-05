@@ -506,7 +506,8 @@
       "noProviders": "No saved providers are available for routing.",
       "needRoute": "Configure at least one role.",
       "needValidRoutes": "Complete each selected role’s provider and model.",
-      "rotateToken": "Rotate local gateway key"
+      "rotateToken": "Rotate local gateway key",
+      "missingRoles": "{{roles}} is not configured; subagents using these roles cannot make requests."
     },
     "exit": {
       "quitTitle": "Restore Claude Desktop before quitting?",
@@ -1653,6 +1654,14 @@
     "conflict": "Directory conflict",
     "keepActive": "Keep active copy",
     "keepDisabled": "Keep disabled copy",
+    "confirmConflict": "Keep the selected copy and archive the other in Backups.",
+    "openActiveFolder": "Open active copy",
+    "openDisabledFolder": "Open disabled copy",
+    "warnings": {
+      "invalidEncoding": "Skipped a non-UTF-8 SKILL.md",
+      "unreadableMetadata": "Backup metadata cannot be read; files are retained",
+      "corruptMetadata": "Backup metadata is damaged; files are retained"
+    },
     "toggle": "Enable {{name}}",
     "title": "Skills Management",
     "description": "Enable, disable, import and back up local Codex skills.",

@@ -49,6 +49,7 @@ export function SkillsPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [removing, setRemoving] = useState<string | null>(null);
   const [deletingBackup, setDeletingBackup] = useState<string | null>(null);
+  const [conflictChoice, setConflictChoice] = useState<{ id: string; keepEnabled: boolean } | null>(null);
 
   const refreshAction = useBusyAction({ minVisibleMs: 800 });
 
@@ -147,6 +148,7 @@ export function SkillsPage() {
   const skillsBusy = toggleMutation.isPending || conflictMutation.isPending || importMutation.isPending || removeMutation.isPending || restoreMutation.isPending || deleteBackupMutation.isPending;
   const skills = skillsQuery.data?.data.items ?? [];
   const backups = backupsQuery.data?.data.items ?? [];
+  const scanWarnings = (tab === "installed" ? skillsQuery.data?.warnings : backupsQuery.data?.warnings) ?? [];
   const skillsRootPath = skillsQuery.data?.data.rootPath ?? "";
   const backupsRootPath = backupsQuery.data?.data.rootPath ?? "";
 
@@ -356,6 +358,12 @@ export function SkillsPage() {
       </div>
 
       {/* Content Gallery Grid */}
+      {scanWarnings.length > 0 && <div role="status" className="space-y-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+        {scanWarnings.map((warning, index) => <div key={`${warning.code}-${index}`} className="flex min-w-0 flex-wrap items-center gap-2 text-xs">
+          <span>{t(warning.code, { defaultValue: warning.code })}</span>
+          <button type="button" className="min-w-0 break-all font-mono text-muted-foreground underline" onClick={() => handleOpenFolder(warning.message)}>{warning.message}</button>
+        </div>)}
+      </div>}
       {tab === "installed" ? (
         skills.length === 0 ? (
           <BentoCard>
@@ -445,17 +453,18 @@ export function SkillsPage() {
 
                 {/* Card Footer: Open Folder & Remove Action */}
                 {skill.conflict && <div className="mt-3 flex flex-wrap gap-2">
-                  <Button size="sm" variant="outline" disabled={skillsBusy} onClick={() => conflictMutation.mutate({ id: skill.id, keepEnabled: true })}>{t("skills.keepActive")}</Button>
-                  <Button size="sm" variant="outline" disabled={skillsBusy} onClick={() => conflictMutation.mutate({ id: skill.id, keepEnabled: false })}>{t("skills.keepDisabled")}</Button>
+                  <Button size="sm" variant="outline" disabled={skillsBusy} onClick={() => setConflictChoice({ id: skill.id, keepEnabled: true })}>{t("skills.keepActive")}</Button>
+                  <Button size="sm" variant="outline" disabled={skillsBusy} onClick={() => setConflictChoice({ id: skill.id, keepEnabled: false })}>{t("skills.keepDisabled")}</Button>
+                  {skill.conflictDirectoryPath && <Button size="sm" variant="ghost" title={skill.conflictDirectoryPath} onClick={() => handleOpenFolder(skill.conflictDirectoryPath!)}>{t(skill.enabled ? "skills.openDisabledFolder" : "skills.openActiveFolder")}</Button>}
                 </div>}
                 <div className="mt-4 pt-3 border-t border-border/50 flex flex-wrap gap-2 items-center justify-between">
-                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  {skill.conflict ? <span className="text-xs text-muted-foreground">{t("skills.conflict")}</span> : <label className="flex items-center gap-2 text-xs text-muted-foreground">
                     <Switch checked={skill.enabled !== false}
                       disabled={skillsBusy || skill.conflict}
                       aria-label={t("skills.toggle", { name: skill.title || skill.name })}
                       onCheckedChange={(enabled) => toggleMutation.mutate({ id: skill.id, enabled })} />
-                    {t(skill.conflict ? "skills.conflict" : skill.enabled === false ? "skills.disabled" : "skills.enabled")}
-                  </label>
+                    {t(skill.enabled === false ? "skills.disabled" : "skills.enabled")}
+                  </label>}
                   <Button
                     variant="outline"
                     size="sm"
@@ -564,6 +573,7 @@ export function SkillsPage() {
                   variant="ghost"
                   size="icon-sm"
                   onClick={() => setDeletingBackup(backup.id)}
+                  disabled={skillsBusy}
                   className="h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
                   title={t("skills.deleteBackup")}
                 >
@@ -576,6 +586,18 @@ export function SkillsPage() {
       )}
 
       {/* Remove skill confirm dialog */}
+      <AlertDialog open={conflictChoice !== null} onOpenChange={(v) => !v && setConflictChoice(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t(conflictChoice?.keepEnabled ? "skills.keepActive" : "skills.keepDisabled")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("skills.confirmConflict")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction disabled={skillsBusy} onClick={() => { if (conflictChoice && !skillsBusy) conflictMutation.mutate(conflictChoice); }}>{t("common.confirm")}</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog open={removing !== null} onOpenChange={(v) => !v && setRemoving(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -585,8 +607,9 @@ export function SkillsPage() {
           <AlertDialogFooter>
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction
+              disabled={skillsBusy}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={() => removing && removeMutation.mutate(removing)}
+              onClick={() => removing && !skillsBusy && removeMutation.mutate(removing)}
             >
               {t("skills.remove")}
             </AlertDialogAction>
@@ -604,8 +627,9 @@ export function SkillsPage() {
           <AlertDialogFooter>
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction
+              disabled={skillsBusy}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={() => deletingBackup && deleteBackupMutation.mutate(deletingBackup)}
+              onClick={() => deletingBackup && !skillsBusy && deleteBackupMutation.mutate(deletingBackup)}
             >
               {t("skills.deleteBackup")}
             </AlertDialogAction>

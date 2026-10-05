@@ -1009,6 +1009,8 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   await pick("sonnet", "model", "small-chat");
   assert.equal(await sonnetRouteOneM.isDisabled(), true, "Chat with insufficient context cannot offer 1M");
   await pick("sonnet", "model", "deepseek-chat");
+  assert.match(await dialog().locator("[data-desktop-missing-roles]").textContent(), /haiku/,
+    "partial routing warns about subagent roles without guessing their targets");
   await pick("opus", "provider", "Responses Relay");
   await pick("opus", "model", "gpt-5");
   const responsesRouteOneM = roleRow("opus").getByRole("checkbox", { name: "1M", exact: true });

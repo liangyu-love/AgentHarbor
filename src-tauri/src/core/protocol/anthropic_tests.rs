@@ -178,8 +178,51 @@ fn malformed_chat_tool_histories_are_rejected_without_fabricating_results() {
     for messages in [json!([call]), json!([call,{"role":"user","content":"go on"}]),
         json!([call,{"role":"user","content":[{"type":"tool_result","tool_use_id":"wrong","content":"ok"}]}])] {
         let request = json!({"model":"m","max_tokens":128,"messages":messages});
-        assert_eq!(request_body(pair(ModelProtocol::ChatCompletions), &request).err().unwrap(), "protocol.errors.unansweredToolCall");
+        for target in [ModelProtocol::ChatCompletions, ModelProtocol::Responses] {
+            assert_eq!(request_body(pair(target), &request).err().unwrap(), "protocol.errors.unansweredToolCall");
+        }
     }
+}
+
+#[test]
+fn responses_tool_history_pairs_parallel_calls_and_rejects_duplicate_or_orphan_results() {
+    let base = json!({"model":"m","max_tokens":128,"messages":[
+        {"role":"assistant","content":[{"type":"tool_use","id":"c1","name":"read","input":{}},{"type":"tool_use","id":"c2","name":"read","input":{}}]},
+        {"role":"user","content":[{"type":"tool_result","tool_use_id":"c2","content":"two"},{"type":"tool_result","tool_use_id":"c1","content":"one"}]}]});
+    assert!(request_body(pair(ModelProtocol::Responses), &base).is_ok());
+    let mut duplicate = base.clone();
+    duplicate["messages"][1]["content"].as_array_mut().unwrap().push(json!({"type":"tool_result","tool_use_id":"c1","content":"again"}));
+    assert!(request_body(pair(ModelProtocol::Responses), &duplicate).is_err());
+    let mut reused = base.clone();
+    reused["messages"][0]["content"][1]["id"] = json!("c1");
+    assert!(request_body(pair(ModelProtocol::Responses), &reused).is_err());
+    let orphan = json!({"model":"m","max_tokens":128,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"c1","content":"orphan"}]}]});
+    assert!(request_body(pair(ModelProtocol::Responses), &orphan).is_err());
+}
+
+#[test]
+fn search_limits_are_per_request_and_history_context_does_not_translate_messages() {
+    let mut request = search_request();
+    request["tools"][0]["max_uses"] = json!(20);
+    let visible = response_body_with_options(pair(ModelProtocol::Responses), &response(search_output()), &request_body(pair(ModelProtocol::Responses), &request).unwrap().response_options).unwrap();
+    request["messages"].as_array_mut().unwrap().extend([json!({"role":"assistant","content":visible["content"]}), json!({"role":"user","content":"Search again"})]);
+    assert_eq!(request_body(pair(ModelProtocol::Responses), &request).unwrap().body["max_tool_calls"], 20);
+    // Missing max_tokens proves Context only reads tools, not a second complete
+    // request conversion. It still records the configured hosted tool name.
+    request.as_object_mut().unwrap().remove("max_tokens");
+    let scope = uuid::Uuid::new_v4().to_string();
+    let context = super::message_history::Context::new(&[&scope], ModelProtocol::Responses, request.to_string().as_bytes()).unwrap();
+    let mut output = search_output();
+    output[0]["action"]["opaque_marker"] = json!("must-replay");
+    let upstream = response(output);
+    let options = request_body(pair(ModelProtocol::Responses), &search_request()).unwrap().response_options;
+    let visible = response_body_with_options(pair(ModelProtocol::Responses), &upstream, &options).unwrap();
+    context.remember(&upstream);
+    request["messages"].as_array_mut().unwrap().extend([json!({"role":"assistant","content":visible["content"]}), json!({"role":"user","content":"Continue"})]);
+    request["max_tokens"] = json!(128);
+    let mut body = request_body(pair(ModelProtocol::Responses), &request).unwrap().body;
+    super::message_history::Context::new(&[&scope], ModelProtocol::Responses, request.to_string().as_bytes()).unwrap().restore(&mut body);
+    assert!(body.to_string().contains("must-replay"));
 }
 
 #[test]

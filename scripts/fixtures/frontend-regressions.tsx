@@ -209,7 +209,7 @@ const accountList = { activeAccountKey: "acct-a", refreshedAt: 1_800_000_000, it
 api.accounts.refresh = async () => accountList as any;
 api.accounts.list = async () => accountList as any;
 api.usage.overview = async () => ({ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } });
-api.loadInstalledSkills = async () => ({ data: { total: controls.review.skillItems?.length ?? 36,
+api.loadInstalledSkills = async () => ({ warnings: controls.review.skillWarnings ?? [], data: { total: controls.review.skillItems?.length ?? 36,
   items: controls.review.skillItems ?? [], rootPath: "C:/synthetic/.codex/skills" } }) as any;
 api.setSkillEnabled = async (id, enabled) => {
   controls.review.skillToggleCalls.push({ id, enabled });
@@ -420,11 +420,13 @@ function recoveryPreview(mode: FixtureMode) {
 function mount(mode: FixtureMode) {
   if (mode === "skills") {
     controls.review.skillToggleCalls = [];
+    controls.review.skillConflictChoice = null;
+    controls.review.skillWarnings = [{ code: "skills.warnings.invalidEncoding", message: "C:/synthetic/.codex/skills/bad-encoding" }];
     controls.review.skillItems = [
       { id: "sample", name: "sample", title: "Sample Skill", summary: "Synthetic skill", relativePath: "sample",
         directoryPath: "C:/synthetic/.codex/skills/sample", skillFilePath: "C:/synthetic/.codex/skills/sample/SKILL.md", updatedAt: 0, enabled: true },
       { id: "conflict", name: "conflict", title: "Conflict Skill", summary: null, relativePath: "conflict",
-        directoryPath: "C:/synthetic/.codex/skills/conflict", skillFilePath: "C:/synthetic/.codex/skills/conflict/SKILL.md", updatedAt: 0, enabled: true, conflict: true },
+        directoryPath: "C:/synthetic/.codex/skills/conflict", conflictDirectoryPath: "C:/synthetic/app/disabled-skills/conflict", skillFilePath: "C:/synthetic/.codex/skills/conflict/SKILL.md", updatedAt: 0, enabled: true, conflict: true },
     ];
   }
   if (mode === "terminal-proxy") {

@@ -11,15 +11,15 @@ pub async fn load_installed_skills(
 ) -> Result<CoreEnvelope<SkillListPayload>, String> {
     let paths = repo.lock().map_err(|e| e.to_string())?.paths().clone();
     super::blocking(move || {
-        let items = skills::load_skill_catalog(&paths.skills_dir, &paths.app_data_dir)
+        let report = skills::load_skill_catalog_report(&paths.skills_dir, &paths.app_data_dir)
             .map_err(|e| e.to_string())?;
         let payload = SkillListPayload {
-            total: items.len() as i32,
+            total: report.items.len() as i32,
             root_path: paths.skills_dir.display().to_string(),
             last_scan_at: current_timestamp(),
-            items,
+            items: report.items,
         };
-        Ok(CoreEnvelope::ok(payload))
+        Ok(CoreEnvelope::ok_with_warnings(payload, report.warnings))
     })
     .await
 }
@@ -54,14 +54,13 @@ pub async fn load_skill_backups(
 ) -> Result<CoreEnvelope<SkillBackupListPayload>, String> {
     let paths = repo.lock().map_err(|e| e.to_string())?.paths().clone();
     super::blocking(move || {
-        let items =
-            skills::load_skill_backups(&paths.skill_backups_dir).map_err(|e| e.to_string())?;
-        Ok(CoreEnvelope::ok(SkillBackupListPayload {
-            total: items.len() as i32,
+        let report = skills::scan_skill_backups(&paths.skill_backups_dir).map_err(|e| e.to_string())?;
+        Ok(CoreEnvelope::ok_with_warnings(SkillBackupListPayload {
+            total: report.items.len() as i32,
             root_path: paths.skill_backups_dir.display().to_string(),
             last_scan_at: current_timestamp(),
-            items,
-        }))
+            items: report.items,
+        }, report.warnings))
     })
     .await
 }

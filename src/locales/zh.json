@@ -506,7 +506,8 @@
       "noProviders": "没有可用于路由的中转卡片。",
       "needRoute": "请配置至少一个角色。",
       "needValidRoutes": "请完成角色的卡片和模型选择。",
-      "rotateToken": "更新本地网关密钥"
+      "rotateToken": "更新本地网关密钥",
+      "missingRoles": "未配置 {{roles}}；子代理使用这些档位时会无法请求。"
     },
     "exit": {
       "quitTitle": "退出前恢复 Claude Desktop？",
@@ -1653,6 +1654,14 @@
     "conflict": "目录冲突",
     "keepActive": "保留启用副本",
     "keepDisabled": "保留禁用副本",
+    "confirmConflict": "保留所选副本，另一份将存入备份。",
+    "openActiveFolder": "打开启用副本",
+    "openDisabledFolder": "打开禁用副本",
+    "warnings": {
+      "invalidEncoding": "已跳过非 UTF-8 的 SKILL.md",
+      "unreadableMetadata": "备份元数据无法读取，文件仍保留",
+      "corruptMetadata": "备份元数据损坏，文件仍保留"
+    },
     "toggle": "启用 {{name}}",
     "title": "Skills 管理",
     "description": "管理本地 Codex 技能的启停、导入和备份。",

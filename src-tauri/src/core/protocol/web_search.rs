@@ -6,6 +6,17 @@ use serde_json::{json, Value};
 const INVALID: &str = "protocol.errors.invalidRequest";
 const UNSUPPORTED: &str = "protocol.errors.unsupportedSearchOptions";
 
+pub(super) fn options_from_tools(target: ModelProtocol, value: &Value) -> Result<super::ResponseOptions, String> {
+    let mut options = super::ResponseOptions::default();
+    if let Some(tools) = value.get("tools") {
+        for tool in tools.as_array().ok_or(INVALID)?.iter().filter(|tool| is_search(tool)) {
+            if options.search.is_some() { return Err(UNSUPPORTED.into()); }
+            options.search = Some(prepare(target, tool)?.0);
+        }
+    }
+    Ok(options)
+}
+
 #[derive(Clone, Debug)]
 pub struct Search {
     pub name: String,
@@ -246,8 +257,8 @@ pub(super) fn blocks(
                 .unwrap_or_default();
             json!({"query":query})
         }
-        Some("open_page") => json!({"url":action["url"]}),
-        Some("find_in_page") => json!({"url":action["url"],"pattern":action["pattern"]}),
+        Some("open_page") => json!({"url":url(&action["url"]).ok_or("protocol.errors.invalidResponse")?}),
+        Some("find_in_page") => json!({"url":url(&action["url"]).ok_or("protocol.errors.invalidResponse")?,"pattern":action["pattern"].as_str().ok_or("protocol.errors.invalidResponse")?}),
         None if matches!(item["status"].as_str(), Some("failed" | "incomplete")) => json!({}),
         _ => return Err("protocol.errors.invalidResponse".into()),
     };
@@ -314,6 +325,16 @@ pub(super) fn history_call(call: &Value, result: &Value) -> Result<Value, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_navigation_actions_reject_unsafe_urls() {
+        for action in ["open_page", "find_in_page"] {
+            for url in ["javascript:alert(1)", "file:///secret", "https://example.org/a\n"] {
+                assert!(blocks(&json!({"id":"ws","status":"completed","action":{"type":action,"url":url,"pattern":"x"}}), None, 0).is_err());
+            }
+            assert!(blocks(&json!({"id":"ws","status":"completed","action":{"type":action,"url":"https://example.org","pattern":"x"}}), None, 0).is_ok());
+        }
+    }
 
     #[test]
     fn sources_and_citations_exclude_unsafe_urls_and_deduplicate() {

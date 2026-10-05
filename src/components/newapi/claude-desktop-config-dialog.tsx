@@ -163,6 +163,7 @@ export function ClaudeDesktopDialog({
   const pathSelected = !!pathsChoice.normalRoot && !!pathsChoice.thirdPartyRoot;
   const routeProviders = candidates?.routeProviders ?? [];
   const routeRoles = candidates?.routeRoles ?? [];
+  const missingRoles = routeRoles.filter(role => !routes.some(route => route.role === role.role));
   const routeInputs = routes.map(route => {
     const provider = routeProviders.find(entry => entry.providerId === route.providerId);
     const model = provider?.models.find(entry => entry.modelId === route.modelId);
@@ -428,6 +429,7 @@ export function ClaudeDesktopDialog({
               <ClaudeDesktopRouteMapping roles={[...routeRoles, ...routes.filter(route => !routeRoles.some(role => role.role === route.role))]}
                 providers={routeProviders} choices={routes} onChange={setRoutes} />
               {routeProviders.length === 0 && <p role="status" className="text-xs text-muted-foreground">{t("claudeDesktop.routing.noProviders")}</p>}
+              {missingRoles.length > 0 && <p className="text-xs text-amber-600 dark:text-amber-400" data-desktop-missing-roles>{t("claudeDesktop.routing.missingRoles", { roles: missingRoles.map(role => role.role).join(" / ") })}</p>}
               <div className="flex items-center gap-2 pt-1">
                 <Checkbox id="desktop-rotate-gateway-token" checked={rotateGatewayToken} onCheckedChange={checked => setRotateGatewayToken(checked === true)} />
                 <label htmlFor="desktop-rotate-gateway-token" className="cursor-pointer text-xs">{t("claudeDesktop.routing.rotateToken")}</label>

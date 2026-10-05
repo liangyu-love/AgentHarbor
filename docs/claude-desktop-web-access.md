@@ -43,6 +43,10 @@ Command 源码 `src/web-search.ts` 中的 `CommandCodeSearchProvider` 是 dsh �
 
 网页白名单修复与托管搜索转换是两项独立能力。Command 独立搜索桥接仍需要另行接入其 REST 工具执行流程；不能通过修改模型的协议标签获得该能力。
 
+`max_uses` 是单次 API 请求内的上限，不能扣减会话历史次数（[Anthropic 官方字段定义](https://github.com/anthropics/anthropic-sdk-python/blob/main/src/anthropic/types/web_search_tool_20250305_param.py)）。Responses `max_tool_calls` 对单次 response 的全部内置调用限额生效，本转换当前只映射搜索这一种内置工具，因此不与其他内置工具争用预算。两端超限表现不同：Responses 忽略额外调用，Anthropic 可以返回 `max_uses_exceeded` 工具错误；本地响应侧只对实际上游返回的越限调用报错，不会凭调用数达到上限就编造一个错误。
+
+三种路由流式路径在上游响应头已返回后，每 15 秒静默输出一条 SSE 保活注释；它不计入模型响应/用量，也不重置上游 900 秒读取超时。断流或超时仍输出明确错误并结束。
+
 ## 验证边界
 
 本次自动化覆盖直连与路由 profile 写入、出口字段预览、原有受限出口基线恢复和配置回滚。`pnpm test:rust` 通过 789 个 lib、11 个 Desktop 集成与 9 个本地工作流用例，21 个真机/辅助用例仍 ignored；Desktop 前端契约检查、余额界面回归与 `pnpm build` 通过。未修改真实配置，未使用真实推理密钥执行付费搜索；真实 Desktop 的网页访问和各 provider 的搜索结果仍需在重新应用后观察。

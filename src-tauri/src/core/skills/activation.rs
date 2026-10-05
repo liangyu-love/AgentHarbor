@@ -49,19 +49,28 @@ pub(super) fn catalog(
     skills_dir: &Path,
     app_data_dir: &Path,
 ) -> Result<Vec<InstalledSkillSummary>, CoreError> {
-    let mut items = load_installed_skills(skills_dir)?;
-    for active in &mut items {
+    Ok(catalog_report(skills_dir, app_data_dir)?.items)
+}
+
+fn catalog_report(skills_dir: &Path, app_data_dir: &Path) -> Result<ScanReport<InstalledSkillSummary>, CoreError> {
+    let mut report = scan_installed_skills(skills_dir)?;
+    let inactive_report = scan_installed_skills(&disabled_root(app_data_dir))?;
+    report.warnings.extend(inactive_report.warnings);
+    let items = &mut report.items;
+    for active in items.iter_mut() {
         active.conflict =
             std::fs::symlink_metadata(disabled_root(app_data_dir).join(&active.relative_path))
                 .is_ok();
+        if active.conflict { active.conflict_directory_path = Some(disabled_root(app_data_dir).join(&active.relative_path).display().to_string()); }
     }
-    for mut inactive in load_installed_skills(&disabled_root(app_data_dir))? {
+    for mut inactive in inactive_report.items {
         if let Some(active) = items.iter_mut().find(|item| item.id == inactive.id) {
             active.conflict = true;
         } else {
             inactive.enabled = false;
             inactive.conflict =
                 std::fs::symlink_metadata(skills_dir.join(&inactive.relative_path)).is_ok();
+            if inactive.conflict { inactive.conflict_directory_path = Some(skills_dir.join(&inactive.relative_path).display().to_string()); }
             items.push(inactive);
         }
     }
@@ -72,7 +81,7 @@ pub(super) fn catalog(
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
             .then(a.id.cmp(&b.id))
     });
-    Ok(items)
+    Ok(report)
 }
 
 pub fn load_skill_catalog(
@@ -81,6 +90,11 @@ pub fn load_skill_catalog(
 ) -> Result<Vec<InstalledSkillSummary>, CoreError> {
     let _guard = write_guard(app_data_dir)?;
     catalog(skills_dir, app_data_dir)
+}
+
+pub fn load_skill_catalog_report(skills_dir: &Path, app_data_dir: &Path) -> Result<ScanReport<InstalledSkillSummary>, CoreError> {
+    let _guard = write_guard(app_data_dir)?;
+    catalog_report(skills_dir, app_data_dir)
 }
 
 /// Re-import and restore retain the current activation state.
@@ -272,10 +286,11 @@ pub fn resolve_skill_conflict(skills_dir: &Path, app_data_dir: &Path, id: &str, 
     validate_tree(discard)?;
     let mut result = load_skill_summary(&keep.join("SKILL.md"), keep_root)
         .ok_or_else(|| CoreError::InvalidData("Invalid chosen skill".into()))?;
-    backup_skill_directory(discard, discard_root, &app_data_dir.join("skill-backups"), "conflict")?;
-    retire_directory(discard)?;
+    let backup = backup_skill_directory(discard, discard_root, &app_data_dir.join("skill-backups"), "conflict")?;
+    retire_directory(discard).map_err(|error| with_recovery_backup(error, Some(&backup)))?;
     result.enabled = keep_enabled;
     result.conflict = false;
+    result.conflict_directory_path = None;
     Ok(result)
 }
 

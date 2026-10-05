@@ -7,7 +7,9 @@ export async function testSkillsActivation({ page, reset, captureDir }) {
   const conflict = page.getByRole("switch", { name: "启用 Conflict Skill", exact: true });
   await toggle.waitFor();
   assert.equal(await toggle.getAttribute("aria-checked"), "true");
-  assert.equal(await conflict.isDisabled(), true);
+  assert.equal(await conflict.count(), 0, "conflicts do not show a misleading active switch");
+  assert.equal(await page.getByText("已跳过非 UTF-8 的 SKILL.md", { exact: true }).count(), 1);
+  assert.equal(await page.getByRole("button", { name: "打开禁用副本", exact: true }).count(), 1);
   await page.evaluate(() => { window.review.skillToggleHold = true; });
   await toggle.click();
   await page.waitForFunction(() => Boolean(window.review.skillToggleResolve));
@@ -26,6 +28,8 @@ export async function testSkillsActivation({ page, reset, captureDir }) {
   await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="启用 Sample Skill"]')?.getAttribute("aria-checked") === "true");
   assert.deepEqual(await page.evaluate(() => window.review.skillToggleCalls.map(call => call.enabled)), [false, true, true]);
   await page.getByRole("button", { name: "保留禁用副本", exact: true }).click();
+  assert.equal(await page.evaluate(() => window.review.skillConflictChoice), null, "selecting a copy requires confirmation");
+  await page.getByRole("alertdialog").getByRole("button", { name: "确认", exact: true }).click();
   await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="启用 Conflict Skill"]')?.disabled === false);
   assert.equal(await conflict.getAttribute("aria-checked"), "false");
   assert.deepEqual(await page.evaluate(() => window.review.skillConflictChoice), { id: "conflict", keepEnabled: false });

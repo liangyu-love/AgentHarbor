@@ -153,6 +153,7 @@ export interface InstalledSkillSummary {
   id: string;
   enabled: boolean;
   conflict?: boolean;
+  conflictDirectoryPath?: string | null;
   name: string;
   title: string | null;
   summary: string | null;

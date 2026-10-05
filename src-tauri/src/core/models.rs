@@ -299,6 +299,8 @@ pub struct InstalledSkillSummary {
     pub enabled: bool,
     #[serde(default)]
     pub conflict: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict_directory_path: Option<String>,
     pub name: String,
     pub title: Option<String>,
     pub summary: Option<String>,

@@ -2,6 +2,44 @@ use agentharbor_lib::core::models::{McpServerSummary, McpTransport};
 use agentharbor_lib::core::{custom_instructions, mcp, skills};
 
 #[test]
+fn corrupt_skill_files_and_backup_metadata_do_not_hide_healthy_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CodexPaths::from_home(temp.path().join("codex"));
+    paths.ensure_directories().unwrap();
+    for root in [&paths.skills_dir, &paths.app_data_dir.join("disabled-skills")] {
+        fs::create_dir_all(root.join("bad")).unwrap();
+        fs::write(root.join("bad/SKILL.md"), [0xd6, 0xd0]).unwrap();
+    }
+    fs::create_dir_all(paths.skills_dir.join("valid")).unwrap();
+    fs::write(paths.skills_dir.join("valid/SKILL.md"), "# Valid").unwrap();
+    let report = skills::load_skill_catalog_report(&paths.skills_dir, &paths.app_data_dir).unwrap();
+    assert_eq!(report.items.len(), 1);
+    assert_eq!(report.warnings.len(), 2);
+    assert!(report.warnings.iter().all(|w| w.code == "skills.warnings.invalidEncoding"));
+
+    let mut backups = Vec::new();
+    for name in ["healthy", "truncated", "directory", "encoding"] {
+        let dir = paths.skills_dir.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("SKILL.md"), format!("# {name}")).unwrap();
+        backups.push(skills::remove_skill(&paths.skills_dir, &paths.app_data_dir, name).unwrap().backup);
+    }
+    let metadata = |index: usize| std::path::Path::new(&backups[index].backup_path).parent().unwrap().join("metadata.json");
+    fs::write(metadata(1), "{\"backupID\":").unwrap();
+    fs::remove_file(metadata(2)).unwrap();
+    fs::create_dir(metadata(2)).unwrap();
+    fs::write(metadata(3), [0xd6, 0xd0]).unwrap();
+    let report = skills::scan_skill_backups(&paths.skill_backups_dir).unwrap();
+    assert_eq!(report.items.len(), 1);
+    assert_eq!(report.items[0].id, backups[0].id);
+    assert_eq!(report.warnings.len(), 3);
+    assert!(report.warnings.iter().all(|warning| std::path::Path::new(&warning.message).is_dir()));
+    skills::restore_skill_backup(&paths.skills_dir, &paths.app_data_dir, &backups[0].id).unwrap();
+    assert_eq!(fs::read_to_string(paths.skills_dir.join("healthy/SKILL.md")).unwrap(), "# healthy");
+    assert!(metadata(2).is_dir(), "damaged metadata is preserved for manual recovery");
+}
+
+#[test]
 fn skill_conflicts_can_keep_either_copy_and_archive_the_other() {
     for keep_enabled in [true, false] {
         let temp = tempfile::tempdir().unwrap();
@@ -14,10 +52,13 @@ fn skill_conflicts_can_keep_either_copy_and_archive_the_other() {
             fs::write(path.join("SKILL.md"), text).unwrap();
             fs::write(path.join(".private/data"), text).unwrap();
         }
-        let id = skills::load_skill_catalog(&paths.skills_dir, &paths.app_data_dir).unwrap()[0].id.clone();
+        let catalog = skills::load_skill_catalog(&paths.skills_dir, &paths.app_data_dir).unwrap();
+        assert_eq!(std::path::Path::new(catalog[0].conflict_directory_path.as_deref().unwrap()).canonicalize().unwrap(), inactive.canonicalize().unwrap());
+        let id = catalog[0].id.clone();
         let result = skills::resolve_skill_conflict(&paths.skills_dir, &paths.app_data_dir, &id, keep_enabled).unwrap();
         assert_eq!(result.enabled, keep_enabled);
         assert!(!result.conflict);
+        assert!(result.conflict_directory_path.is_none());
         let text = if keep_enabled { "# Active" } else { "# Disabled" };
         assert_eq!(fs::read_to_string(&result.skill_file_path).unwrap(), text);
         assert_eq!(active.exists(), keep_enabled);
@@ -254,6 +295,30 @@ fn concurrent_skill_toggles_are_serialized() {
         fs::read_to_string(&listed[0].skill_file_path).unwrap(),
         "# Sample"
     );
+}
+
+#[cfg(windows)]
+#[test]
+fn failed_skill_replacement_reports_the_completed_recovery_backup() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CodexPaths::from_home(temp.path().join("codex"));
+    paths.ensure_directories().unwrap();
+    let target = paths.skills_dir.join("sample");
+    let source = temp.path().join("incoming/sample");
+    let external = temp.path().join("external");
+    for dir in [&target, &source, &external] { fs::create_dir_all(dir).unwrap(); }
+    fs::write(target.join("SKILL.md"), "# Original").unwrap();
+    fs::write(source.join("SKILL.md"), "# New").unwrap();
+    let status = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", "New-Item -ItemType Junction -Path $env:SKILL_TEST_LINK -Target $env:SKILL_TEST_TARGET -ErrorAction Stop | Out-Null"])
+        .env("SKILL_TEST_LINK", source.join("references")).env("SKILL_TEST_TARGET", &external).status().unwrap();
+    assert!(status.success());
+    let error = skills::import_skill(&paths.skills_dir, &paths.app_data_dir, source.to_str().unwrap()).unwrap_err().to_string();
+    let backups = skills::load_skill_backups(&paths.skill_backups_dir).unwrap();
+    assert_eq!(backups.len(), 1);
+    assert!(error.contains(&backups[0].id));
+    assert!(error.contains(&backups[0].backup_path));
+    assert_eq!(fs::read_to_string(target.join("SKILL.md")).unwrap(), "# Original");
 }
 
 #[cfg(windows)]

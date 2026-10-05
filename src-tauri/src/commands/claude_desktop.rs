@@ -291,7 +291,7 @@ pub async fn restart_claude_desktop(
         Ok(desktop::DesktopRestartResult {
             launch_method,
             running: app.running,
-            restart_capable: app.launch_method.is_some(),
+            restart_capable: app.restart_capable(),
         })
     })
     .await

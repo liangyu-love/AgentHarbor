@@ -1813,7 +1813,9 @@ async fn relay_response(
                     .map(Frame::data)
                     .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
             });
-            BodyExt::boxed(StreamBody::new(stream))
+            if is_event_stream {
+                BodyExt::boxed(StreamBody::new(sse_keepalive(stream, Duration::from_secs(15))))
+            } else { BodyExt::boxed(StreamBody::new(stream)) }
         }
     };
     builder
@@ -1911,7 +1913,7 @@ fn translated_stream(
         },
     )
     .flatten();
-    BodyExt::boxed(StreamBody::new(stream))
+    BodyExt::boxed(StreamBody::new(sse_keepalive(stream, Duration::from_secs(15))))
 }
 
 fn adapted_native_stream(
@@ -1952,7 +1954,23 @@ fn adapted_native_stream(
             Some((Ok(Frame::data(bytes)), (source, observer, adapter, done)))
         },
     );
-    BodyExt::boxed(StreamBody::new(stream))
+    BodyExt::boxed(StreamBody::new(sse_keepalive(stream, Duration::from_secs(15))))
+}
+
+/// Downstream comments keep SDK/proxy connections alive during upstream
+/// silence. They never enter usage observation or reset the upstream read
+/// timeout; EOF/error/cancellation still terminates the source normally.
+fn sse_keepalive<S, E>(source: S, period: Duration) -> impl futures_util::Stream<Item = Result<Frame<Bytes>, E>> + Send
+where S: futures_util::Stream<Item = Result<Frame<Bytes>, E>> + Send, E: Send {
+    futures_util::stream::unfold((Box::pin(source), Box::pin(tokio::time::sleep(period))), move |(mut source, mut timer)| async move {
+        let item = tokio::select! {
+            biased;
+            item = source.next() => item?,
+            _ = timer.as_mut() => Ok(Frame::data(Bytes::from_static(b": keepalive\n\n"))),
+        };
+        timer.as_mut().reset(tokio::time::Instant::now() + period);
+        Some((item, (source, timer)))
+    })
 }
 
 fn observed_stream(
@@ -2317,7 +2335,7 @@ mod tests {
     }
 
     #[test]
-    fn native_sse_idle_timeout_has_an_explicit_error_in_each_protocol() {
+    fn all_stream_paths_report_idle_timeout_without_a_success_terminal() {
         let _lock = global_router_test_lock();
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -2335,15 +2353,51 @@ mod tests {
                 }
             });
             for protocol in [router::ModelProtocol::Responses, router::ModelProtocol::ChatCompletions, router::ModelProtocol::AnthropicMessages] {
+              for path in 0..3 {
                 let source = Client::builder().no_proxy().read_timeout(Duration::from_millis(50)).build().unwrap()
                     .get(format!("http://{address}")).send().await.unwrap();
                 let trace = route_trace::Trace::begin("timeout-fixture", None);
-                let chunks: Vec<_> = observed_stream(source, trace, None, protocol, "fixture".into(), "fixture-attempt".into(), true).collect().await;
-                let text = chunks.into_iter().map(|b| String::from_utf8(b.unwrap().to_vec()).unwrap()).collect::<String>();
-                assert!(text.contains("event: error") && text.contains("upstream_stream_timeout"));
-                assert!(!text.contains("message_stop") && !text.contains("[DONE]"));
+                let bytes = match path {
+                    0 => {
+                        let stream = observed_stream(source, trace, None, protocol, "fixture".into(), "fixture-attempt".into(), true)
+                            .map(|b| b.map(Frame::data));
+                        let frames: Vec<_> = tokio::time::timeout(Duration::from_secs(2), sse_keepalive(stream, Duration::from_millis(10)).collect()).await.unwrap();
+                        let bytes = frames.into_iter().map(|f| f.unwrap().into_data().unwrap()).collect::<Vec<_>>().concat();
+                        assert!(String::from_utf8_lossy(&bytes).contains(": keepalive"));
+                        bytes
+                    }
+                    1 => adapted_native_stream(source, trace, None, protocol, "fixture".into(), "fixture-attempt".into(), Default::default()).collect().await.unwrap().to_bytes().to_vec(),
+                    _ => {
+                        let from = if protocol == router::ModelProtocol::AnthropicMessages { router::ModelProtocol::Responses } else { router::ModelProtocol::AnthropicMessages };
+                        translated_stream(source, protocol::Translation { from, to: protocol }, None, Vec::new(), trace, protocol, "fixture".into(), "fixture-attempt".into(), None, Default::default(), Default::default(), Default::default()).collect().await.unwrap().to_bytes().to_vec()
+                    }
+                };
+                let text = String::from_utf8(bytes).unwrap();
+                let failure_event = if path == 2 && protocol == router::ModelProtocol::AnthropicMessages {
+                    "event: response.failed"
+                } else {
+                    "event: error"
+                };
+                assert!(text.contains(failure_event) && text.contains("upstream_stream_timeout"), "protocol={protocol:?}, path={path}, body={text}");
+                assert!(!text.contains("message_stop") && !text.contains("[DONE]") && !text.contains("event: response.completed"));
+              }
             }
             server.abort();
+        });
+    }
+
+    #[test]
+    fn sse_keepalive_preserves_data_and_ends_at_source_eof() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let source = futures_util::stream::once(async {
+                tokio::time::sleep(Duration::from_millis(40)).await;
+                Ok::<_, std::convert::Infallible>(Frame::data(Bytes::from_static(b"data: final\n\n")))
+            });
+            let frames: Vec<_> = tokio::time::timeout(Duration::from_secs(2), sse_keepalive(source, Duration::from_millis(5)).collect()).await.unwrap();
+            assert!(frames.len() > 1);
+            let bytes: Vec<_> = frames.into_iter().map(|f| f.unwrap().into_data().unwrap()).collect();
+            assert_eq!(bytes.last().unwrap(), b"data: final\n\n".as_slice());
+            assert!(bytes[..bytes.len()-1].iter().all(|b| b.as_ref() == b": keepalive\n\n"));
         });
     }
 

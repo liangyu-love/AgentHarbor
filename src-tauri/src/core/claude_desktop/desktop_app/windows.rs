@@ -24,16 +24,23 @@ impl Drop for Handle {
     }
 }
 
+fn win32_error(operation: &str, code: u32) -> Box<DesktopError> {
+    Box::new(DesktopError::new(error_code::PROCESS, "claudeDesktop.errors.process")
+        .param(format!("{operation}: Win32 {code}")).retryable())
+}
+
 pub(super) fn candidates() -> DesktopResult<Vec<u32>> {
     unsafe {
         let raw = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if raw == INVALID_HANDLE_VALUE {
-            return Err(process_error(error_code::PROCESS));
+            return Err(win32_error("CreateToolhelp32Snapshot", GetLastError()));
         }
         let snapshot = Handle(raw);
         let mut entry: PROCESSENTRY32W = std::mem::zeroed();
         entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
         let mut next = Process32FirstW(snapshot.0, &mut entry);
+        // Capture immediately after the failed Win32 call; any later Win32
+        // operation may overwrite the thread's last-error value.
         let mut enumeration_error = if next == 0 { GetLastError() } else { 0 };
         let mut result = Vec::new();
         while next != 0 {
@@ -48,11 +55,12 @@ pub(super) fn candidates() -> DesktopResult<Vec<u32>> {
                 result.push(entry.th32ProcessID);
             }
             next = Process32NextW(snapshot.0, &mut entry);
+            // Keep GetLastError adjacent to the enumeration call above.
             if next == 0 { enumeration_error = GetLastError(); }
         }
         // A truncated/failed enumeration must never authorize a config write.
         if enumeration_error != ERROR_NO_MORE_FILES {
-            return Err(process_error(error_code::PROCESS));
+            return Err(win32_error("Process32First/Next", enumeration_error));
         }
         Ok(result)
     }
@@ -67,10 +75,11 @@ fn open(pid: u32, force: bool) -> DesktopResult<Option<Handle>> {
         PROCESS_QUERY_LIMITED_INFORMATION | 0x00100000 | if force { PROCESS_TERMINATE } else { 0 };
     let raw = unsafe { OpenProcess(access, 0, pid) };
     if raw.is_null() {
-        return if unsafe { GetLastError() } == ERROR_INVALID_PARAMETER {
+        let error = unsafe { GetLastError() };
+        return if error == ERROR_INVALID_PARAMETER {
             Ok(None)
         } else {
-            Err(process_error(error_code::PROCESS))
+            Err(win32_error("OpenProcess", error))
         };
     }
     Ok(Some(Handle(raw)))
@@ -80,7 +89,7 @@ fn exited(handle: &Handle) -> DesktopResult<bool> {
     match unsafe { WaitForSingleObject(handle.0, 0) } {
         WAIT_OBJECT_0 => Ok(true),
         WAIT_TIMEOUT => Ok(false),
-        _ => Err(process_error(error_code::PROCESS)),
+        _ => Err(win32_error("WaitForSingleObject", unsafe { GetLastError() })),
     }
 }
 
@@ -115,7 +124,7 @@ pub(super) fn image(pid: u32) -> ProcessImage {
 struct CloseWindows {
     pid: u32,
     requested: bool,
-    failed: bool,
+    failed: Option<u32>,
 }
 
 unsafe extern "system" fn close_window(window: HWND, data: LPARAM) -> i32 {
@@ -126,8 +135,10 @@ unsafe extern "system" fn close_window(window: HWND, data: LPARAM) -> i32 {
         // PostMessage is nonblocking even when the Desktop UI is hung.
         if PostMessageW(window, WM_CLOSE, 0, 0) != 0 {
             state.requested = true;
-        } else if IsWindow(window) != 0 {
-            state.failed = true;
+        } else {
+            // IsWindow can change last-error; capture the posting failure first.
+            let error = GetLastError();
+            if IsWindow(window) != 0 { state.failed = Some(error); }
         }
     }
     1
@@ -148,19 +159,23 @@ pub(super) fn signal(identity: &AppIdentity, pid: u32, force: bool) -> DesktopRe
         if unsafe { TerminateProcess(handle.0, 1) } != 0 {
             return Ok(true);
         }
+        let error = unsafe { GetLastError() };
         if exited(&handle)? {
             return Ok(false);
         }
-        return Err(process_error(error_code::PROCESS));
+        return Err(win32_error("TerminateProcess", error));
     }
     let mut state = CloseWindows {
         pid,
         requested: false,
-        failed: false,
+        failed: None,
     };
     let ok = unsafe { EnumWindows(Some(close_window), &mut state as *mut _ as LPARAM) };
-    if ok == 0 || state.failed {
-        return Err(process_error(error_code::PROCESS));
+    if ok == 0 {
+        return Err(win32_error("EnumWindows", unsafe { GetLastError() }));
+    }
+    if let Some(error) = state.failed {
+        return Err(win32_error("PostMessageW", error));
     }
     Ok(state.requested)
 }
@@ -268,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn headless_residual_skips_graceful_wait_and_force_checks_executable_identity() {
+    fn headless_signal_reports_no_window_and_force_checks_executable_identity() {
         let (temp, mut child, identity) = fixture(false);
         assert!(!signal(&identity, child.0.id(), false).unwrap());
         let unrelated = AppIdentity {

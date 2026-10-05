@@ -230,7 +230,7 @@ pub fn project(input: StatusInput<'_>) -> DesktopStatus {
         last_applied_at: state.map(|state| state.last_applied_at),
         restart_required: state.is_some_and(|state| state.restart_required),
         app_running: app.running,
-        restart_capable: app.launch_method.is_some(),
+        restart_capable: app.restart_capable(),
         launch_method: app.launch_method.map(|method| method.as_str().to_owned()),
         actions,
         backup_count,
