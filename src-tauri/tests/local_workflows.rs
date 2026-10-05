@@ -1,5 +1,247 @@
 use agentharbor_lib::core::models::{McpServerSummary, McpTransport};
 use agentharbor_lib::core::{custom_instructions, mcp, skills};
+
+#[test]
+fn skill_disable_enable_preserves_nested_and_hidden_content() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CodexPaths::from_home(temp.path().join("codex"));
+    paths.ensure_directories().unwrap();
+    let dir = paths.skills_dir.join("group/nested");
+    fs::create_dir_all(dir.join(".private")).unwrap();
+    fs::write(dir.join("SKILL.md"), "# Nested\nDetails").unwrap();
+    fs::write(dir.join(".private/data"), [0, 1, 255]).unwrap();
+    let id = skills::load_installed_skills(&paths.skills_dir).unwrap()[0]
+        .id
+        .clone();
+    let disabled =
+        skills::set_skill_enabled(&paths.skills_dir, &paths.app_data_dir, &id, false).unwrap();
+    assert!(!disabled.enabled);
+    assert!(!dir.exists());
+    assert!(skills::load_installed_skills(&paths.skills_dir)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        skills::load_skill_catalog(&paths.skills_dir, &paths.app_data_dir)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        fs::read(std::path::Path::new(&disabled.directory_path).join(".private/data")).unwrap(),
+        [0, 1, 255]
+    );
+    assert!(
+        !skills::set_skill_enabled(&paths.skills_dir, &paths.app_data_dir, &id, false)
+            .unwrap()
+            .enabled
+    );
+    assert!(
+        skills::set_skill_enabled(&paths.skills_dir, &paths.app_data_dir, &id, true)
+            .unwrap()
+            .enabled
+    );
+    assert_eq!(fs::read(dir.join(".private/data")).unwrap(), [0, 1, 255]);
+    assert!(skills::load_skill_backups(&paths.skill_backups_dir)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn disabled_skill_reimport_restore_and_uninstall_keep_activation_consistent() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CodexPaths::from_home(temp.path().join("codex"));
+    let source = temp.path().join("sample");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("SKILL.md"), "# Original").unwrap();
+    let first = skills::import_skill(
+        &paths.skills_dir,
+        &paths.app_data_dir,
+        source.to_str().unwrap(),
+    )
+    .unwrap();
+    skills::set_skill_enabled(
+        &paths.skills_dir,
+        &paths.app_data_dir,
+        &first.skill.id,
+        false,
+    )
+    .unwrap();
+    fs::write(source.join("SKILL.md"), "# Updated").unwrap();
+    let updated = skills::import_skill(
+        &paths.skills_dir,
+        &paths.app_data_dir,
+        source.to_str().unwrap(),
+    )
+    .unwrap();
+    assert!(!updated.skill.enabled && updated.replaced_existing);
+    assert!(!paths.skills_dir.join("sample").exists());
+    let restored = skills::restore_skill_backup(
+        &paths.skills_dir,
+        &paths.app_data_dir,
+        &updated.backup.unwrap().id,
+    )
+    .unwrap();
+    assert!(!restored.restored_skill.enabled);
+    assert_eq!(
+        fs::read_to_string(&restored.restored_skill.skill_file_path).unwrap(),
+        "# Original"
+    );
+    let removed =
+        skills::remove_skill(&paths.skills_dir, &paths.app_data_dir, &first.skill.id).unwrap();
+    assert_eq!(removed.remaining_installed_count, 0);
+    assert!(
+        skills::load_skill_catalog(&paths.skills_dir, &paths.app_data_dir)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        skills::restore_skill_backup(&paths.skills_dir, &paths.app_data_dir, &removed.backup.id)
+            .unwrap()
+            .restored_skill
+            .enabled
+    );
+}
+
+#[test]
+fn skill_activation_conflicts_preserve_both_copies() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CodexPaths::from_home(temp.path().join("codex"));
+    paths.ensure_directories().unwrap();
+    let active = paths.skills_dir.join("sample");
+    fs::create_dir_all(&active).unwrap();
+    fs::write(active.join("SKILL.md"), "# Managed").unwrap();
+    let inactive =
+        skills::set_skill_enabled(&paths.skills_dir, &paths.app_data_dir, "sample", false).unwrap();
+    fs::create_dir_all(&active).unwrap();
+    fs::write(active.join("SKILL.md"), "# External").unwrap();
+    let listed = skills::load_skill_catalog(&paths.skills_dir, &paths.app_data_dir).unwrap();
+    assert!(listed[0].enabled && listed[0].conflict);
+    assert!(
+        skills::set_skill_enabled(&paths.skills_dir, &paths.app_data_dir, "sample", true).is_err()
+    );
+    assert!(skills::remove_skill(&paths.skills_dir, &paths.app_data_dir, "sample").is_err());
+    assert_eq!(
+        fs::read_to_string(active.join("SKILL.md")).unwrap(),
+        "# External"
+    );
+    assert_eq!(
+        fs::read_to_string(inactive.skill_file_path).unwrap(),
+        "# Managed"
+    );
+    fs::remove_file(active.join("SKILL.md")).unwrap();
+    let listed = skills::load_skill_catalog(&paths.skills_dir, &paths.app_data_dir).unwrap();
+    assert!(
+        !listed[0].enabled && listed[0].conflict,
+        "even a non-skill destination must block overwrite"
+    );
+}
+
+#[test]
+fn skill_activation_rejects_escape_overlap_and_hidden_nested_destination() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CodexPaths::from_home(temp.path().join("codex"));
+    paths.ensure_directories().unwrap();
+    assert!(
+        skills::set_skill_enabled(&paths.skills_dir, &paths.app_data_dir, "../outside", false)
+            .is_err()
+    );
+    assert!(skills::set_skill_enabled(
+        &paths.skills_dir,
+        &paths.skills_dir.join("storage"),
+        "sample",
+        false
+    )
+    .is_err());
+    let child = paths.skills_dir.join("group/nested");
+    fs::create_dir_all(&child).unwrap();
+    fs::write(child.join("SKILL.md"), "# Nested").unwrap();
+    let id = skills::load_installed_skills(&paths.skills_dir).unwrap()[0]
+        .id
+        .clone();
+    let inactive =
+        skills::set_skill_enabled(&paths.skills_dir, &paths.app_data_dir, &id, false).unwrap();
+    fs::write(paths.skills_dir.join("group/SKILL.md"), "# Parent").unwrap();
+    assert!(skills::set_skill_enabled(&paths.skills_dir, &paths.app_data_dir, &id, true).is_err());
+    assert!(std::path::Path::new(&inactive.skill_file_path).exists());
+}
+
+#[test]
+fn concurrent_skill_toggles_are_serialized() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CodexPaths::from_home(temp.path().join("codex"));
+    paths.ensure_directories().unwrap();
+    fs::create_dir_all(paths.skills_dir.join("sample")).unwrap();
+    fs::write(paths.skills_dir.join("sample/SKILL.md"), "# Sample").unwrap();
+    std::thread::scope(|scope| {
+        for _ in 0..6 {
+            scope.spawn(|| {
+                for enabled in [false, true, false] {
+                    skills::set_skill_enabled(
+                        &paths.skills_dir,
+                        &paths.app_data_dir,
+                        "sample",
+                        enabled,
+                    )
+                    .unwrap();
+                }
+            });
+        }
+    });
+    let listed = skills::load_skill_catalog(&paths.skills_dir, &paths.app_data_dir).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert!(!listed[0].conflict);
+    assert_eq!(
+        fs::read_to_string(&listed[0].skill_file_path).unwrap(),
+        "# Sample"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn junctions_are_not_followed_by_skill_mutations() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CodexPaths::from_home(temp.path().join("codex"));
+    paths.ensure_directories().unwrap();
+    let external = temp.path().join("external");
+    let skill = paths.skills_dir.join("sample");
+    fs::create_dir_all(&external).unwrap();
+    fs::write(external.join("SKILL.md"), "# External").unwrap();
+    fs::create_dir_all(&skill).unwrap();
+    fs::write(skill.join("SKILL.md"), "# Sample").unwrap();
+    let status = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", "New-Item -ItemType Junction -Path $env:SKILL_TEST_LINK -Target $env:SKILL_TEST_TARGET -ErrorAction Stop | Out-Null"])
+        .env("SKILL_TEST_LINK", skill.join("references"))
+        .env("SKILL_TEST_TARGET", &external).status().unwrap();
+    assert!(status.success());
+    assert!(
+        skills::set_skill_enabled(&paths.skills_dir, &paths.app_data_dir, "sample", false).is_err()
+    );
+    assert!(skill.join("SKILL.md").exists());
+    assert_eq!(
+        fs::read_to_string(external.join("SKILL.md")).unwrap(),
+        "# External"
+    );
+    assert!(skills::import_skill(
+        &paths.skills_dir,
+        &paths.app_data_dir,
+        skill.to_str().unwrap()
+    )
+    .is_ok());
+    // A linked ancestor must also be rejected, even when it points inside the root.
+    let status = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", "New-Item -ItemType Junction -Path $env:SKILL_TEST_LINK -Target $env:SKILL_TEST_TARGET -ErrorAction Stop | Out-Null"])
+        .env("SKILL_TEST_LINK", paths.skills_dir.join("alias"))
+        .env("SKILL_TEST_TARGET", &skill).status().unwrap();
+    assert!(status.success());
+    assert!(skills::set_skill_enabled(
+        &paths.skills_dir,
+        &paths.app_data_dir,
+        "alias/references",
+        false
+    )
+    .is_err());
+    assert!(external.join("SKILL.md").exists());
+}
 use agentharbor_lib::platform::paths::CodexPaths;
 use std::{collections::HashMap, fs};
 

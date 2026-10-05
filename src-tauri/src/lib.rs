@@ -244,6 +244,7 @@ pub fn run() {
             commands::mcp::set_mcp_server_enabled,
             commands::mcp::remove_mcp_server,
             commands::skills::load_installed_skills,
+            commands::skills::set_skill_enabled,
             commands::skills::load_skill_backups,
             commands::skills::import_skill,
             commands::skills::remove_skill,

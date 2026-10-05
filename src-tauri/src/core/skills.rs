@@ -3,6 +3,9 @@ use crate::core::models::*;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+mod activation;
+pub use activation::{load_skill_catalog, set_skill_enabled};
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SkillBackupMetadata {
@@ -38,7 +41,7 @@ fn scan_skills_recursive(dir: &Path, root: &Path, items: &mut Vec<InstalledSkill
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if entry.file_type().map_or(true, |kind| kind.is_symlink()) {
+        if std::fs::symlink_metadata(&path).map_or(true, |meta| activation::is_link(&meta)) {
             continue;
         }
         if path
@@ -80,6 +83,8 @@ fn load_skill_summary(skill_file: &Path, root: &Path) -> Option<InstalledSkillSu
 
     Some(InstalledSkillSummary {
         id: relative_path.clone(),
+        enabled: true,
+        conflict: false,
         name,
         title,
         summary,
@@ -129,18 +134,28 @@ pub fn import_skill(
     app_data_dir: &Path,
     source_path: &str,
 ) -> Result<SkillImportPayload, CoreError> {
-    std::fs::create_dir_all(skills_dir)?;
+    let _guard = activation::write_guard(app_data_dir)?;
+    activation::prepare_roots(skills_dir, app_data_dir)?;
     let backup_dir = app_data_dir.join("skill-backups");
     std::fs::create_dir_all(&backup_dir)?;
 
     let source = resolve_skill_source(Path::new(source_path))?;
-    let target = skills_dir.join(source.file_name().unwrap_or_default());
+    let id = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| CoreError::InvalidData("Invalid skill name".into()))?;
+    if id.starts_with('.') {
+        return Err(CoreError::InvalidData(
+            "Hidden skills cannot be discovered by Codex".into(),
+        ));
+    }
+    let (root, target, enabled) = activation::target_for(skills_dir, app_data_dir, id)?;
 
     let source_canonical = std::fs::canonicalize(&source).unwrap_or_else(|_| source.clone());
     let target_canonical = if target.exists() {
         std::fs::canonicalize(&target).unwrap_or_else(|_| target.clone())
     } else {
-        target.clone()
+        activation::resolved_location(&target)?
     };
     if target_canonical.starts_with(&source_canonical) && target_canonical != source_canonical {
         return Err(CoreError::InvalidData(
@@ -148,8 +163,9 @@ pub fn import_skill(
         ));
     }
     if source_canonical == target_canonical {
-        let skill = load_skill_summary(&target.join("SKILL.md"), skills_dir)
+        let mut skill = load_skill_summary(&target.join("SKILL.md"), &root)
             .ok_or_else(|| CoreError::InvalidData("Invalid skill source".into()))?;
+        skill.enabled = enabled;
         return Ok(SkillImportPayload {
             skill,
             replaced_existing: false,
@@ -162,15 +178,16 @@ pub fn import_skill(
     if replaced {
         backup = Some(backup_skill_directory(
             &target,
-            skills_dir,
+            &root,
             &backup_dir,
             "replace",
         )?);
     }
 
     replace_skill_directory(&source, &target)?;
-    let skill = load_skill_summary(&target.join("SKILL.md"), skills_dir)
+    let mut skill = load_skill_summary(&target.join("SKILL.md"), &root)
         .ok_or_else(|| CoreError::InvalidData("Invalid skill after import".into()))?;
+    skill.enabled = enabled;
 
     Ok(SkillImportPayload {
         skill,
@@ -184,20 +201,22 @@ pub fn remove_skill(
     app_data_dir: &Path,
     id: &str,
 ) -> Result<SkillRemovePayload, CoreError> {
-    let installed = load_installed_skills(skills_dir)?;
-    let skill = installed
+    let _guard = activation::write_guard(app_data_dir)?;
+    activation::prepare_roots(skills_dir, app_data_dir)?;
+    let installed = activation::catalog(skills_dir, app_data_dir)?;
+    installed
         .iter()
         .find(|s| s.id == id)
         .ok_or_else(|| CoreError::NotFound(format!("Skill not found: {id}")))?;
 
     let backup_dir = app_data_dir.join("skill-backups");
-    let dir = PathBuf::from(&skill.directory_path);
-    let backup = backup_skill_directory(&dir, skills_dir, &backup_dir, "remove")?;
+    let (root, dir, _) = activation::target_for(skills_dir, app_data_dir, id)?;
+    let backup = backup_skill_directory(&dir, &root, &backup_dir, "remove")?;
 
     if dir.exists() {
         std::fs::remove_dir_all(&dir)?;
     }
-    let remaining = load_installed_skills(skills_dir)?.len() as i32;
+    let remaining = activation::catalog(skills_dir, app_data_dir)?.len() as i32;
 
     Ok(SkillRemovePayload {
         removed_skill_id: id.to_string(),
@@ -211,6 +230,8 @@ pub fn restore_skill_backup(
     app_data_dir: &Path,
     backup_id: &str,
 ) -> Result<SkillRestorePayload, CoreError> {
+    let _guard = activation::write_guard(app_data_dir)?;
+    activation::prepare_roots(skills_dir, app_data_dir)?;
     let backup_dir = app_data_dir.join("skill-backups");
     let backup_path = checked_child(&backup_dir, backup_id)?;
     if !backup_path.exists() {
@@ -228,23 +249,24 @@ pub fn restore_skill_backup(
         )));
     }
 
-    std::fs::create_dir_all(skills_dir)?;
-    let target = checked_child(skills_dir, &meta.relative_path)?;
-    std::fs::create_dir_all(target.parent().unwrap_or(skills_dir))?;
+    let (root, target, enabled) =
+        activation::target_for(skills_dir, app_data_dir, &meta.relative_path)?;
+    std::fs::create_dir_all(target.parent().unwrap_or(&root))?;
 
     let mut rollback_backup = None;
     if target.exists() {
         rollback_backup = Some(backup_skill_directory(
             &target,
-            skills_dir,
+            &root,
             &backup_dir,
             "restore-rollback",
         )?);
     }
 
     replace_skill_directory(&staged, &target)?;
-    let restored = load_skill_summary(&target.join("SKILL.md"), skills_dir)
+    let mut restored = load_skill_summary(&target.join("SKILL.md"), &root)
         .ok_or_else(|| CoreError::InvalidData("Backup corrupted".into()))?;
+    restored.enabled = enabled;
 
     let backup_summary = SkillBackupSummary {
         id: meta.backup_id,
@@ -267,6 +289,7 @@ pub fn delete_skill_backup(
     app_data_dir: &Path,
     backup_id: &str,
 ) -> Result<SkillDeleteBackupPayload, CoreError> {
+    let _guard = activation::write_guard(app_data_dir)?;
     let backup_dir = app_data_dir.join("skill-backups");
     let path = checked_child(&backup_dir, backup_id)?;
     if !path.exists() {
@@ -351,7 +374,7 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), CoreError> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
-        if entry.file_type()?.is_symlink() {
+        if activation::is_link(&std::fs::symlink_metadata(entry.path())?) {
             return Err(CoreError::InvalidData(
                 "Symbolic links inside skills are not supported".into(),
             ));
@@ -367,7 +390,7 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), CoreError> {
 }
 
 fn replace_skill_directory(source: &Path, target: &Path) -> Result<(), CoreError> {
-    if std::fs::symlink_metadata(target).map_or(false, |meta| meta.file_type().is_symlink()) {
+    if std::fs::symlink_metadata(target).map_or(false, |meta| activation::is_link(&meta)) {
         return Err(CoreError::InvalidData(
             "Cannot replace a linked skill directory".into(),
         ));
@@ -413,6 +436,17 @@ fn checked_child(root: &Path, relative: &str) -> Result<PathBuf, CoreError> {
         ));
     }
     let target = root.join(relative);
+    let mut component_path = target.as_path();
+    while component_path != root {
+        if std::fs::symlink_metadata(component_path).is_ok_and(|meta| activation::is_link(&meta)) {
+            return Err(CoreError::InvalidData(
+                "Linked skill or backup paths are not supported".into(),
+            ));
+        }
+        component_path = component_path
+            .parent()
+            .ok_or_else(|| CoreError::InvalidData("Invalid skill path".into()))?;
+    }
     let root_resolved = std::fs::canonicalize(root)?;
     let mut ancestor = target.as_path();
     while !ancestor.exists() {

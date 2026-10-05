@@ -17,6 +17,7 @@ import type {
   McpServerMutationPayload,
   McpServerRemovePayload,
   SkillListPayload,
+  InstalledSkillSummary,
   SkillBackupListPayload,
   SkillImportPayload,
   SkillRemovePayload,
@@ -297,6 +298,9 @@ export const api = {
 
   loadInstalledSkills: () =>
     invoke<CoreEnvelope<SkillListPayload>>("load_installed_skills"),
+
+  setSkillEnabled: (id: string, enabled: boolean) =>
+    invoke<CoreEnvelope<InstalledSkillSummary>>("set_skill_enabled", { id, enabled }),
 
   loadSkillBackups: () =>
     invoke<CoreEnvelope<SkillBackupListPayload>>("load_skill_backups"),

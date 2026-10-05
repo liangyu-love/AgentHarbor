@@ -18,6 +18,7 @@ import { OverviewPage } from "@/components/overview/overview-page";
 import { AccountsPage } from "@/components/accounts/accounts-page";
 import { TokenUsagePanel } from "@/components/accounts/token-usage-panel";
 import { McpPage } from "@/components/mcp/mcp-page";
+import { SkillsPage } from "@/components/skills/skills-page";
 import { ClientConfigs } from "@/components/newapi/client-configs";
 import { TerminalProxySettings } from "@/components/settings/terminal-proxy-settings";
 import type { NewApiProvider, NewApiState } from "@/types/newapi";
@@ -208,7 +209,16 @@ const accountList = { activeAccountKey: "acct-a", refreshedAt: 1_800_000_000, it
 api.accounts.refresh = async () => accountList as any;
 api.accounts.list = async () => accountList as any;
 api.usage.overview = async () => ({ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } });
-api.loadInstalledSkills = async () => ({ data: { total: 36, items: [] } }) as any;
+api.loadInstalledSkills = async () => ({ data: { total: controls.review.skillItems?.length ?? 36,
+  items: controls.review.skillItems ?? [], rootPath: "C:/synthetic/.codex/skills" } }) as any;
+api.setSkillEnabled = async (id, enabled) => {
+  controls.review.skillToggleCalls.push({ id, enabled });
+  if (controls.review.skillToggleHold) await new Promise(resolve => { controls.review.skillToggleResolve = resolve; });
+  if (controls.review.skillToggleFailure) throw new Error("Synthetic skill permission failure");
+  const skill = controls.review.skillItems.find((item: any) => item.id === id);
+  Object.assign(skill, { enabled, directoryPath: enabled ? "C:/synthetic/.codex/skills/sample" : "C:/synthetic/app/disabled-skills/sample" });
+  return { data: skill } as any;
+};
 api.loadSkillBackups = async () => ({ data: { total: 0, items: [] } }) as any;
 api.loadCustomInstructionState = async () => ({ data: { current: { managedBlockPresent: false, lastTemplateTitle: null } } }) as any;
 api.getSystemInfo = async () => ({ os: "Windows", arch: "x64" }) as any;
@@ -360,7 +370,7 @@ function ProviderFixture({ mixed = false }: { mixed?: boolean }) {
       onOpenChange={open => setDialog(current => ({ ...current, open }))} onSaved={noop} /></>;
 }
 
-type FixtureMode = "desktop-updater" | "desktop-exit" | "terminal-proxy" | "thread-details" | "thread-details-missing" | "thread-details-unknown" | "thread-details-error" | "compact" | "grid" | "image" | "mcp" | "accounts" | "account-resets" | "account-resets-unavailable" | "thread-tree" | "groups" | "overview" | "usage" | "provider" | "warnings" | "thread-actions" | "thread-queue-recovery" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-conflict" | "clients-opencode" | "clients-opencode-stale" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official" | "recovery-long" | "recovery-router";
+type FixtureMode = "skills" | "desktop-updater" | "desktop-exit" | "terminal-proxy" | "thread-details" | "thread-details-missing" | "thread-details-unknown" | "thread-details-error" | "compact" | "grid" | "image" | "mcp" | "accounts" | "account-resets" | "account-resets-unavailable" | "thread-tree" | "groups" | "overview" | "usage" | "provider" | "warnings" | "thread-actions" | "thread-queue-recovery" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-conflict" | "clients-opencode" | "clients-opencode-stale" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official" | "recovery-long" | "recovery-router";
 
 function RecoveryFixture({ thread }: { thread: ThreadSummary }) {
   const [open, setOpen] = useState(true);
@@ -402,6 +412,15 @@ function recoveryPreview(mode: FixtureMode) {
 }
 
 function mount(mode: FixtureMode) {
+  if (mode === "skills") {
+    controls.review.skillToggleCalls = [];
+    controls.review.skillItems = [
+      { id: "sample", name: "sample", title: "Sample Skill", summary: "Synthetic skill", relativePath: "sample",
+        directoryPath: "C:/synthetic/.codex/skills/sample", skillFilePath: "C:/synthetic/.codex/skills/sample/SKILL.md", updatedAt: 0, enabled: true },
+      { id: "conflict", name: "conflict", title: "Conflict Skill", summary: null, relativePath: "conflict",
+        directoryPath: "C:/synthetic/.codex/skills/conflict", skillFilePath: "C:/synthetic/.codex/skills/conflict/SKILL.md", updatedAt: 0, enabled: true, conflict: true },
+    ];
+  }
   if (mode === "terminal-proxy") {
     controls.review.terminalSetCalls = [];
     controls.review.terminalTestCalls = [];
@@ -636,9 +655,9 @@ function mount(mode: FixtureMode) {
   if (mode === "groups") controls.review.providersClient = queryClient;
   root.render(<QueryClientProvider client={queryClient}><TooltipProvider>
     <div style={{ position: "relative", height: 600 }}><PageStage state="active">
-      {(mode.startsWith("thread-details") || mode === "terminal-proxy") && <ThreadToastProbe />}
+      {(mode.startsWith("thread-details") || mode === "terminal-proxy" || mode === "skills") && <ThreadToastProbe />}
       {mode === "desktop-updater" ? <DesktopUpdaterFixture /> : mode === "desktop-exit" ? <ClaudeDesktopRouterExitDialog /> : mode.startsWith("recovery-") ? <RecoveryFixture thread={threads[0] as ThreadSummary} /> :
-        mode === "terminal-proxy" ? <div className="mx-auto max-w-xl rounded-xl bg-card shadow-sm"><TerminalProxySettings currentProxy={{ mode: "manual", url: "http://127.0.0.1:7890" }} /></div> :
+        mode === "skills" ? <SkillsPage /> : mode === "terminal-proxy" ? <div className="mx-auto max-w-xl rounded-xl bg-card shadow-sm"><TerminalProxySettings currentProxy={{ mode: "manual", url: "http://127.0.0.1:7890" }} /></div> :
         mode === "image" ? <ImageWorkbenchPage /> : mode === "mcp" ? <McpPage /> : mode === "accounts" || mode.startsWith("account-resets") ? <AccountsPage refreshInterval="5m" onManageProviders={noop} /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage" ? <TokenUsagePanel data={{ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } }} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode.startsWith("thread-details") || mode === "thread-tree" || mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :
         mode === "access" || mode === "incompatible" || mode === "native-invalid" || mode === "groups" ? <NewApiPage /> :
         mode === "test" ? <ProviderTestDialog open provider={mixedProvider} onOpenChange={noop} onTested={noop} onFailed={noop} /> :

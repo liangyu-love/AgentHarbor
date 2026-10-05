@@ -151,6 +151,8 @@ export interface McpServerRemovePayload {
 
 export interface InstalledSkillSummary {
   id: string;
+  enabled: boolean;
+  conflict?: boolean;
   name: string;
   title: string | null;
   summary: string | null;

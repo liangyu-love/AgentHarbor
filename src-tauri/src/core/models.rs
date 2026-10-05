@@ -295,6 +295,10 @@ pub struct McpServerRemovePayload {
 #[serde(rename_all = "camelCase")]
 pub struct InstalledSkillSummary {
     pub id: String,
+    #[serde(default = "skill_enabled_default")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub conflict: bool,
     pub name: String,
     pub title: Option<String>,
     pub summary: Option<String>,
@@ -302,6 +306,10 @@ pub struct InstalledSkillSummary {
     pub directory_path: String,
     pub skill_file_path: String,
     pub updated_at: Option<i64>,
+}
+
+fn skill_enabled_default() -> bool {
+    true
 }
 
 impl InstalledSkillSummary {

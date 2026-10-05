@@ -16,6 +16,7 @@ import { testProviderModelResolutions } from "./test-provider-model-resolutions.
 import { testTerminalProxy } from "./test-terminal-proxy.mjs";
 import { testRelayDeck } from "./test-relay-deck.mjs";
 import { testClaudeDesktopCard } from "./test-claude-desktop-card.mjs";
+import { testSkillsActivation } from "./test-skills-activation.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -74,7 +75,9 @@ try {
     await page.evaluate(value => window.review.mount(value), mode);
   };
 
-  if (process.env.FRONTEND_QA_SCOPE === "terminal-proxy") {
+  if (process.env.FRONTEND_QA_SCOPE === "skills") {
+    await testSkillsActivation({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "terminal-proxy") {
     await testTerminalProxy({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "relay-deck") {
     await testRelayDeck({ page, reset, captureDir });
@@ -1242,6 +1245,7 @@ try {
   await testTerminalProxy({ page, reset, captureDir });
   await testRelayDeck({ page, reset, captureDir });
   await testClaudeDesktopCard({ page, reset, captureDir });
+  await testSkillsActivation({ page, reset, captureDir });
   await reset("warnings");
   await page.getByText("Review thread 0", { exact: true }).waitFor();
   const warning = page.getByRole("status");

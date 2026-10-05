@@ -11,7 +11,8 @@ pub async fn load_installed_skills(
 ) -> Result<CoreEnvelope<SkillListPayload>, String> {
     let paths = repo.lock().map_err(|e| e.to_string())?.paths().clone();
     super::blocking(move || {
-        let items = skills::load_installed_skills(&paths.skills_dir).map_err(|e| e.to_string())?;
+        let items = skills::load_skill_catalog(&paths.skills_dir, &paths.app_data_dir)
+            .map_err(|e| e.to_string())?;
         let payload = SkillListPayload {
             total: items.len() as i32,
             root_path: paths.skills_dir.display().to_string(),
@@ -19,6 +20,21 @@ pub async fn load_installed_skills(
             items,
         };
         Ok(CoreEnvelope::ok(payload))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_skill_enabled(
+    repo: State<'_, Mutex<Repository>>,
+    id: String,
+    enabled: bool,
+) -> Result<CoreEnvelope<InstalledSkillSummary>, String> {
+    let paths = repo.lock().map_err(|e| e.to_string())?.paths().clone();
+    super::blocking(move || {
+        let skill = skills::set_skill_enabled(&paths.skills_dir, &paths.app_data_dir, &id, enabled)
+            .map_err(|e| e.to_string())?;
+        Ok(CoreEnvelope::ok(skill))
     })
     .await
 }

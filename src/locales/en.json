@@ -1647,8 +1647,12 @@
     }
   },
   "skills": {
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "conflict": "Directory conflict",
+    "toggle": "Enable {{name}}",
     "title": "Skills Management",
-    "description": "Import, remove, backup and restore local Codex skills directly in AgentHarbor.",
+    "description": "Enable, disable, import and back up local Codex skills.",
     "installed": "Installed",
     "backups": "Backups",
     "import": "Import Skill",

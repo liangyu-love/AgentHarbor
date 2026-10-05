@@ -1647,8 +1647,12 @@
     }
   },
   "skills": {
+    "enabled": "已启用",
+    "disabled": "已禁用",
+    "conflict": "目录冲突",
+    "toggle": "启用 {{name}}",
     "title": "Skills 管理",
-    "description": "在 AgentHarbor 中直接完成本地 Codex 技能的导入、移除、备份和恢复。",
+    "description": "管理本地 Codex 技能的启停、导入和备份。",
     "installed": "已安装",
     "backups": "备份",
     "import": "导入 Skill",

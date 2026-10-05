@@ -8,6 +8,7 @@ import { RainbowButton } from "@/registry/magicui/rainbow-button";
 import { Button } from "@/components/ui/button";
 import { ButtonBusyContent } from "@/components/ui/button-busy-content";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { SegmentedOptions } from "@/components/ui/segmented-options";
 import {
   AlertDialog,
@@ -54,7 +55,7 @@ export function SkillsPage() {
   const skillsQuery = useQuery({
     queryKey: queryKeys.installedSkills,
     queryFn: () => api.loadInstalledSkills(),
-    staleTime: Infinity,
+    staleTime: 30_000,
   });
 
   const backupsQuery = useQuery({
@@ -95,6 +96,15 @@ export function SkillsPage() {
     },
   });
 
+  const showMutationError = (err: unknown) => toast({
+    title: t("common.error"), description: formatInvokeError(err), variant: "destructive",
+  });
+  const toggleMutation = useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => api.setSkillEnabled(id, enabled),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.installedSkills }),
+    onError: showMutationError,
+  });
+
   const removeMutation = useMutation({
     mutationFn: (id: string) => api.removeSkill(id),
     onSuccess: () => {
@@ -102,6 +112,7 @@ export function SkillsPage() {
       queryClient.invalidateQueries({ queryKey: queryKeys.installedSkills });
       queryClient.invalidateQueries({ queryKey: queryKeys.skillBackups });
     },
+    onError: showMutationError,
   });
 
   const restoreMutation = useMutation({
@@ -114,6 +125,7 @@ export function SkillsPage() {
         variant: "default",
       });
     },
+    onError: showMutationError,
   });
 
   const deleteBackupMutation = useMutation({
@@ -122,8 +134,10 @@ export function SkillsPage() {
       setDeletingBackup(null);
       queryClient.invalidateQueries({ queryKey: queryKeys.skillBackups });
     },
+    onError: showMutationError,
   });
 
+  const skillsBusy = toggleMutation.isPending || importMutation.isPending || removeMutation.isPending || restoreMutation.isPending;
   const skills = skillsQuery.data?.data.items ?? [];
   const backups = backupsQuery.data?.data.items ?? [];
   const skillsRootPath = skillsQuery.data?.data.rootPath ?? "";
@@ -204,7 +218,7 @@ export function SkillsPage() {
             size="sm"
             className="h-9 rounded-lg font-medium"
             onClick={() => importMutation.mutate()}
-            disabled={importMutation.isPending}
+            disabled={skillsBusy}
           >
             <Upload className="h-4 w-4" />
             {t("skills.import")}
@@ -313,6 +327,7 @@ export function SkillsPage() {
             <button
               type="button"
               onClick={() => setSearchQuery("")}
+              aria-label={t("skills.clearSearch")}
               className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-0.5 rounded"
             >
               <X className="h-3.5 w-3.5" />
@@ -410,7 +425,7 @@ export function SkillsPage() {
                       <Folder className="h-3.5 w-3.5 shrink-0 opacity-60" />
                       <span className="truncate font-mono">{skill.relativePath}</span>
                     </div>
-                    {skill.updatedAt && (
+                    {skill.updatedAt != null && (
                       <div className="flex items-center gap-1.5">
                         <Clock className="h-3.5 w-3.5 shrink-0 opacity-60" />
                         <span>
@@ -422,7 +437,14 @@ export function SkillsPage() {
                 </div>
 
                 {/* Card Footer: Open Folder & Remove Action */}
-                <div className="mt-4 pt-3 border-t border-border/50 flex items-center justify-between">
+                <div className="mt-4 pt-3 border-t border-border/50 flex flex-wrap gap-2 items-center justify-between">
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Switch checked={skill.enabled !== false}
+                      disabled={skillsBusy || skill.conflict}
+                      aria-label={t("skills.toggle", { name: skill.title || skill.name })}
+                      onCheckedChange={(enabled) => toggleMutation.mutate({ id: skill.id, enabled })} />
+                    {t(skill.conflict ? "skills.conflict" : skill.enabled === false ? "skills.disabled" : "skills.enabled")}
+                  </label>
                   <Button
                     variant="outline"
                     size="sm"
@@ -438,8 +460,10 @@ export function SkillsPage() {
                     variant="ghost"
                     size="icon-sm"
                     onClick={() => setRemoving(skill.id)}
+                    disabled={skillsBusy || skill.conflict}
                     className="h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
                     title={t("skills.remove")}
+                    aria-label={t("skills.remove")}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
@@ -519,7 +543,7 @@ export function SkillsPage() {
                   size="sm"
                   className="h-7 px-2.5 text-xs gap-1.5 text-foreground/85 hover:text-foreground"
                   onClick={() => restoreMutation.mutate(backup.id)}
-                  disabled={restoreMutation.isPending}
+                  disabled={skillsBusy}
                 >
                   <RotateCcw className="h-3.5 w-3.5 text-blue-500" />
                   {t("skills.restore")}
