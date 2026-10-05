@@ -135,9 +135,10 @@ const DYNAMIC_SUFFIXES = new Map([
   ["claudeDesktop.state.", STATES],
   ["claudeDesktop.probe.", PROBE_STATUSES],
   ["claudeDesktop.messages.", MESSAGES_STATUSES],
-  ["claudeDesktop.dialog.", CONFIRM_SUFFIXES],
+  ["claudeDesktop.dialog.", [...CONFIRM_SUFFIXES, "before", "after"]],
   ["claudeDesktop.errors.", null],
   ["claudeDesktop.fileRoles.", ["normalConfig", "thirdPartyConfig", "profile", "meta"]],
+  ["claudeDesktop.fileKinds.", ["create", "update", "delete", "noop"]],
 ]);
 
 group("locales: every claudeDesktop.* key literal in the card, dialog and Rust module exists", () => {

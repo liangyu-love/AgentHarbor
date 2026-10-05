@@ -1927,11 +1927,17 @@ fn ended_restore_sessions_have_a_tombstone_and_no_remaining_management() {
     assert!(!status.app_running);
     assert!(status.conflicts.is_empty());
     assert_eq!(manager.prepare(&store, DesktopAction::RestorePrevious, &request).unwrap_err().code, super::types::error_code::NOT_MANAGED);
+    manager.restart_app_with(&paths, |_| Ok("mock".into())).unwrap();
+    let started = manager.load_state().unwrap().unwrap();
+    assert!(started.tombstone, "启动已恢复配置不能恢复管理所有权");
+    assert!(!started.restart_required);
+    assert!(!manager.status(&store).restart_required);
 }
 
 #[test]
 fn applying_identical_files_does_not_require_a_restart() {
     let (_, paths, manager, store, request) = managed_fixture("unchangedApplyRestart");
+    manager.restart_app_with(&paths, |_| Ok("mock".into())).unwrap();
     let before = transaction::snapshot(&paths).unwrap();
     let prepared = manager.prepare(&store, DesktopAction::ApplyDirect, &request).unwrap();
     assert!(prepared.plans.is_empty());
@@ -1943,6 +1949,171 @@ fn applying_identical_files_does_not_require_a_restart() {
     assert!(applied.changed_paths.is_empty());
     assert!(!manager.status(&store).restart_required);
     for snapshot in before { assert_eq!(read(&snapshot.path), snapshot.text); }
+}
+
+fn empty_management_request() -> super::types::ActionRequest {
+    super::types::ActionRequest {
+        provider_id: None, models: vec![], paths: Default::default(), rebaseline: false,
+    }
+}
+
+#[test]
+fn a_noop_reapply_keeps_a_pending_restart_until_launch_succeeds() {
+    let (_, paths, manager, store, _) = managed_fixture("noopPendingRestart");
+    let request = empty_management_request();
+    let prepared = manager.prepare(&store, DesktopAction::Reapply, &request).unwrap();
+    assert!(prepared.plans.is_empty());
+    assert!(prepared.requires_restart);
+    let preview = manager.issue_ticket(&prepared).unwrap();
+    assert!(preview.requires_restart);
+    let applied = manager.commit(&store, DesktopAction::Reapply, &preview.revision, &request).unwrap();
+    assert!(applied.requires_restart);
+    assert!(manager.status(&store).restart_required);
+    manager.restart_app_with(&paths, |_| Ok("mock".into())).unwrap();
+    assert!(!manager.status(&store).restart_required);
+}
+
+#[test]
+fn a_new_installation_does_not_inherit_an_ended_sessions_restart_flag() {
+    let (base, paths, manager, store, request) = managed_fixture("restartDifferentInstallation");
+    let (_, other_paths) = test_paths("restartNewInstallation");
+    for snapshot in transaction::snapshot(&paths).unwrap() {
+        write(super::expected_path(&other_paths, &snapshot.role).unwrap(), snapshot.text.as_deref().unwrap());
+    }
+    let old_state = manager.load_state().unwrap().unwrap();
+    let generation = old_state.generation + 1;
+    let mut ended = old_state.into_tombstone(generation, "ended-awaiting-start");
+    ended.restart_required = true;
+    manager.write_state_for_test(&ended).unwrap();
+
+    let same = manager.prepare(&store, DesktopAction::ApplyDirect, &request).unwrap();
+    assert!(same.plans.is_empty());
+    assert!(same.requires_restart, "同一安装的待启动状态仍需保留");
+
+    let other_manager = super::Manager::new(&base).with_paths(other_paths)
+        .with_detected_version(Some("1.12603.1".into()));
+    let other = other_manager.prepare(&store, DesktopAction::ApplyDirect, &request).unwrap();
+    assert!(other.plans.is_empty(), "新安装配置已经是目标态");
+    assert!(!other.requires_restart, "不能继承另一个安装的待启动状态");
+    assert!(!other.next_state.restart_required);
+}
+
+#[test]
+fn preview_runs_while_desktop_is_running_but_commit_stops_before_journal_or_backup() {
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    let (base, paths, mut manager, mut store, _) = managed_fixture("previewWhileRunning");
+    store.providers[0].api_key = "sk-ROTATED-FOR-PREVIEW".into();
+    let checks = Arc::new(AtomicUsize::new(0));
+    let counter = checks.clone();
+    manager.stop_check = Some(Arc::new(move |_| {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Err(Box::new(super::types::DesktopError::new(
+            super::types::error_code::PROCESS, "claudeDesktop.errors.desktopRunning",
+        )))
+    }));
+    let before = transaction::snapshot(&paths).unwrap();
+    let state_before = serde_json::to_value(manager.load_state().unwrap()).unwrap();
+    let backup_count = std::fs::read_dir(transaction::backups_dir(&base)).unwrap().count();
+    let request = empty_management_request();
+    let prepared = manager.prepare(&store, DesktopAction::Reapply, &request).unwrap();
+    assert!(!prepared.plans.is_empty());
+    let preview = manager.issue_ticket(&prepared).unwrap();
+    assert_eq!(checks.load(Ordering::SeqCst), 0, "只读预览不得执行退出门禁");
+    let error = manager.commit(&store, DesktopAction::Reapply, &preview.revision, &request).unwrap_err();
+    assert_eq!(error.message, "claudeDesktop.errors.desktopRunning");
+    assert_eq!(checks.load(Ordering::SeqCst), 1, "重读输入后、持久 journal 前拒绝写入");
+    assert!(manager.load_pending().unwrap().is_none());
+    assert_eq!(std::fs::read_dir(transaction::backups_dir(&base)).unwrap().count(), backup_count);
+    assert_eq!(serde_json::to_value(manager.load_state().unwrap()).unwrap(), state_before);
+    for snapshot in before { assert_eq!(read(&snapshot.path), snapshot.text); }
+}
+
+#[test]
+fn commit_keeps_stop_checks_before_each_write_and_the_state_commit() {
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    let (base, paths, mut manager, mut store, _) = managed_fixture("commitStopPhases");
+    store.providers[0].api_key = "sk-ROTATED-FOR-COMMIT".into();
+    let checks = Arc::new(AtomicUsize::new(0));
+    let counter = checks.clone();
+    let pending_path = manager.pending_path();
+    let backup_dir = transaction::backups_dir(&base);
+    let backup_count = std::fs::read_dir(&backup_dir).unwrap().count();
+    let identity = paths.identity();
+    manager.stop_check = Some(Arc::new(move |checked_paths| {
+        assert_eq!(checked_paths.identity(), identity);
+        if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+            assert!(!pending_path.exists(), "首次门禁必须早于 journal");
+            assert_eq!(std::fs::read_dir(&backup_dir).unwrap().count(), backup_count);
+        } else {
+            assert!(pending_path.exists(), "写入/提交阶段仍必须核对进程");
+        }
+        Ok(())
+    }));
+    let request = empty_management_request();
+    let prepared = manager.prepare(&store, DesktopAction::Reapply, &request).unwrap();
+    let expected_checks = prepared.plans.len() + 2;
+    let preview = manager.issue_ticket(&prepared).unwrap();
+    manager.commit(&store, DesktopAction::Reapply, &preview.revision, &request).unwrap();
+    assert_eq!(checks.load(Ordering::SeqCst), expected_checks);
+    assert!(manager.load_pending().unwrap().is_none());
+}
+
+#[test]
+fn releasing_management_does_not_require_desktop_to_exit() {
+    let (_, paths, mut manager, store, _) = managed_fixture("releaseWhileRunning");
+    manager.stop_check = Some(std::sync::Arc::new(|_| panic!("release 不写 Desktop，无需退出门禁")));
+    let before = transaction::snapshot(&paths).unwrap();
+    let request = empty_management_request();
+    let prepared = manager.prepare(&store, DesktopAction::Release, &request).unwrap();
+    let preview = manager.issue_ticket(&prepared).unwrap();
+    let applied = manager.commit(&store, DesktopAction::Release, &preview.revision, &request).unwrap();
+    assert!(!applied.requires_restart);
+    for snapshot in before { assert_eq!(read(&snapshot.path), snapshot.text); }
+}
+
+#[test]
+fn successful_restart_clears_only_the_current_session_restart_flag() {
+    let (_, paths, manager, store, _) = managed_fixture("restartSuccessFlag");
+    let mut expected = manager.load_state().unwrap().unwrap();
+    assert!(expected.restart_required);
+    expected.restart_required = false;
+    let before = transaction::snapshot(&paths).unwrap();
+    let launch_method = manager.restart_app_with(&paths, |selected| {
+        assert_eq!(selected.identity(), paths.identity());
+        Ok("mockActivation".into())
+    }).unwrap();
+    assert_eq!(launch_method, "mockActivation");
+    assert_eq!(serde_json::to_value(manager.load_state().unwrap().unwrap()).unwrap(), serde_json::to_value(expected).unwrap());
+    assert!(!manager.status(&store).restart_required);
+    for snapshot in before { assert_eq!(read(&snapshot.path), snapshot.text); }
+}
+
+#[test]
+fn failed_restart_keeps_the_pending_restart_flag() {
+    let (_, paths, manager, store, _) = managed_fixture("restartFailureFlag");
+    let before = serde_json::to_value(manager.load_state().unwrap()).unwrap();
+    let error = manager.restart_app_with(&paths, |_| Err(Box::new(super::types::DesktopError::new(
+        super::types::error_code::PROCESS, "claudeDesktop.errors.process",
+    )))).unwrap_err();
+    assert_eq!(error.code, super::types::error_code::PROCESS);
+    assert_eq!(serde_json::to_value(manager.load_state().unwrap()).unwrap(), before);
+    assert!(manager.status(&store).restart_required);
+}
+
+#[test]
+fn restart_rechecks_pending_recovery_and_the_saved_session_before_process_control() {
+    let (_, paths, manager, store, _) = managed_fixture("restartSessionGate");
+    let (_, other_paths) = test_paths("otherRestartSession");
+    let before = serde_json::to_value(manager.load_state().unwrap()).unwrap();
+    let error = manager.restart_app_with(&other_paths, |_| panic!("错安装不能控制进程")).unwrap_err();
+    assert_eq!(error.code, super::types::error_code::CHANGED);
+    let prepared = manager.prepare(&store, DesktopAction::Reapply, &empty_management_request()).unwrap();
+    let pending = pending_from_prepared(&prepared);
+    manager.write_pending_for_test(&serde_json::to_vec(&pending).unwrap()).unwrap();
+    let error = manager.restart_app_with(&paths, |_| panic!("未完成事务不能启动 Desktop")).unwrap_err();
+    assert_eq!(error.code, super::types::error_code::RECOVERY_REQUIRED);
+    assert!(manager.load_pending().unwrap().is_some());
+    assert_eq!(serde_json::to_value(manager.load_state().unwrap()).unwrap(), before);
 }
 
 

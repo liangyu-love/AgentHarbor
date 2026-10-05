@@ -270,7 +270,7 @@
       "launchFailed": "启动 Claude Desktop 失败：{{0}}",
       "launchTimeout": "启动 Claude Desktop 超时，请手动打开确认。",
       "process": "操作 Claude Desktop 进程失败。",
-      "desktopRunning": "请先完全退出 Claude Desktop（包括托盘进程），然后重新预览再应用。"
+      "desktopRunning": "请完全退出 Claude Desktop（包括托盘进程）后应用。"
     },
     "warnings": {
       "keepsEnterprise": "配置中的企业推理与部署策略会被保留，并可能覆盖本次配置。",
@@ -288,7 +288,7 @@
       "released": "已释放管理，磁盘上的配置保持不变。",
       "openPreviews": "该配置存在未消费的预览。",
       "isolated": "当前设置了 AGENT_HARBOR_CLIENT_HOME，只读写隔离目录。",
-      "noChanges": "四个文件已经是目标状态，本次没有写入任何内容，因此不需要重启。",
+      "noChanges": "配置未发生变化。",
       "ticketCleanup": "配置已提交成功，但旧预览清理失败；请刷新状态并重新预览后再操作。"
     },
     "notes": {
@@ -336,7 +336,7 @@
       "recoverRollback": "恢复未完成的事务"
     },
     "card": {
-      "hintUnmanaged": "选择一张已有的中转卡片，Claude Desktop 会直接连接该中转，无需重新填写地址和密钥。",
+      "hintUnmanaged": "选择中转卡片和模型开始配置。",
       "hintManaged": "Claude Desktop 正在直接使用一张已保存的中转卡片。",
       "configure": "配置",
       "change": "切换 / 更新",
@@ -347,6 +347,7 @@
       "lastApplied": "上次应用",
       "backupCount": "本地恢复备份",
       "paths": "配置位置",
+      "details": "配置详情",
       "version": "Desktop 版本",
       "requiresRestart": "需要重启",
       "restartHint": "完全退出 Claude Desktop 后重新启动，让刚应用的配置立即生效。未保存的输入可能丢失。",
@@ -364,10 +365,10 @@
     },
     "dialog": {
       "title": "配置 Claude Desktop 直连",
-      "description": "选择一张已保存的中转卡片。Claude Desktop 将直接与该中转通信，无需保持 AgentHarbor 运行。",
-      "stepProvider": "1. 供应商",
-      "stepModels": "2. 开放的模型",
-      "stepPreview": "3. 预览",
+      "description": "选择中转卡片、模型并预览配置。",
+      "stepProvider": "中转卡片",
+      "stepModels": "模型",
+      "stepPreview": "预览",
       "noEligibleProvider": "没有可用于直连的已保存卡片。",
       "providerReason": "原因",
       "providerDisabled": "该卡片未加入路由池；直连不要求启用它，本次选择也不会启用。",
@@ -375,9 +376,18 @@
       "modelsHint": "只能选择 Claude Desktop 可接受且支持 Anthropic Messages 协议的模型；卡片默认模型保持不变。",
       "noModels": "该卡片还没有可用于直连的模型；请先在卡片上拉取或添加模型。",
       "modelExcluded": "已排除",
+      "unavailableChoices": "以下已选模型不可用",
+      "removeSelection": "移除",
+      "removeUnavailableModel": "移除 {{model}}",
       "labelPlaceholder": "显示名称（可选）",
-      "oneMAuto": "1M：自动",
-      "oneMOff": "1M：关闭",
+      "oneMAuto": "添加",
+      "oneMOff": "不添加",
+      "oneMOptions": "1M 上下文选项",
+      "oneMEnabled": "包含 1M 选项",
+      "fileDetails": "文件改动",
+      "environmentDetails": "安装信息",
+      "before": "原配置",
+      "after": "新配置",
       "oneMSource": "1M 来源",
       "protocolInferred": "协议由模型名称推断，未经上游验证",
       "previewHint": "预览只显示受管改动，密钥值始终脱敏。",
@@ -404,11 +414,11 @@
       "recoverTitle": "恢复未完成的事务？",
       "recoverDescription": "会将记录的前后状态与磁盘文件比对，然后回滚或确认已提交。",
       "appliedTitle": "配置已应用",
-      "appliedDescription": "请完全退出 Claude Desktop（包括托盘进程）后重新启动，然后查看模型菜单。",
+      "appliedDescription": "启动 Claude Desktop 后生效。",
       "failedTitle": "Claude Desktop 配置失败",
       "messagesCheck": "核对 Messages 兼容性",
       "messagesChecking": "核对中",
-      "messagesCheckCost": "会向该中转发送一次 max_tokens=1 的真实请求（可能产生极少量计费），不写任何配置文件。",
+      "messagesCheckCost": "Messages 检测会发送一次请求，可能产生少量费用。",
       "messagesResponseModel": "上游自报模型",
       "messagesCheckResultHint": "这是直连可用性的最强证据：Claude Desktop 在 /v1/messages 上只发 Bearer。仍建议在真实 Desktop 中确认菜单与多轮对话。",
       "selectedCount": "已选择 {{count}} 个模型",
@@ -454,6 +464,12 @@
       "thirdPartyConfig": "第三方配置",
       "profile": "AgentHarbor 配置",
       "meta": "配置库索引"
+    },
+    "fileKinds": {
+      "create": "新建",
+      "update": "更新",
+      "delete": "删除",
+      "noop": "无改动"
     }
   },
   "newapi": {

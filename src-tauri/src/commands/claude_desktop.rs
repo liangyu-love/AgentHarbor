@@ -164,7 +164,7 @@ pub async fn probe_claude_desktop_provider(
 /// 顺序由 `Manager::restart_app` 保证（Desktop 退出时会回写状态）。写操作与
 /// 进程操作共用同一把跨进程锁，避免与另一个实例的配置提交交错。
 ///
-/// 只有当配置已经提交时才应调用；本命令不修改任何配置文件。
+/// 只有当配置已经提交时才应调用；不改 Desktop 配置，成功后清除内部待启动标记。
 #[tauri::command]
 pub async fn restart_claude_desktop(
     repo: State<'_, Mutex<Repository>>,

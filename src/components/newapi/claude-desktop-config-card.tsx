@@ -24,6 +24,11 @@ import type { NewApiProvider } from "@/types/newapi";
 
 const STATUS_KEY = queryKeys.claudeDesktopStatus;
 const CANDIDATES_KEY = queryKeys.claudeDesktopCandidates;
+const DETAIL_WARNINGS = new Set([
+  "claudeDesktop.warnings.openPreviews",
+  "claudeDesktop.warnings.isolated",
+  "claudeDesktop.warnings.released",
+]);
 
 /** 需要确认的管理操作与它们的文案 key。 */
 const CONFIRMABLE: DesktopAction[] = [
@@ -108,25 +113,25 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
   const actionOf = (action: DesktopAction) => data?.actions.find(entry => entry.action === action);
   // 没有已保存卡片时给出可解释的空状态，而不是一个点不动的按钮。
   const hasSavedCards = providers.length > 0;
-  // 恢复未完成事务之前，其余写操作都会被后端拒绝。
-  const restartHint = data?.restartRequired ? t("claudeDesktop.card.restartHint") : null;
   const blockedReason = (() => {
     if (!data) return null;
     if (data.pendingRecovery) return t("claudeDesktop.actionReasons.pendingRecovery");
     if (!hasSavedCards) return t("claudeDesktop.card.emptyProviders");
-    const first = data.actions.find(entry => !entry.enabled && entry.disabledReason);
-    return first?.disabledReason ? t(first.disabledReason) : null;
+    const configure = actionOf("applyDirect");
+    return !configure?.enabled && configure?.disabledReason ? t(configure.disabledReason) : null;
   })();
+
+  const savedModelChoices = data?.modelChoices?.length ? data.modelChoices : (data?.models ?? []).map(model => ({
+    modelId: model.modelId,
+    labelOverride: model.label || null,
+    oneMMode: model.oneM ? "auto" as const : "off" as const,
+  }));
 
   const sessionRequest = (): ClaudeDesktopActionRequest | null => {
     if (!data?.providerId) return null;
     return {
       providerId: data.providerId,
-      models: data.modelChoices?.length ? data.modelChoices : data.models.map(model => ({
-        modelId: model.modelId,
-        labelOverride: model.label || null,
-        oneMMode: model.oneM ? "auto" : "off",
-      })),
+      models: savedModelChoices,
       paths: data.paths
         ? { normalRoot: data.paths.normalRoot, thirdPartyRoot: data.paths.thirdPartyRoot }
         : {},
@@ -142,7 +147,6 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
       await api.claudeDesktop.restart();
       toast({
         title: t("claudeDesktop.card.restartDone"),
-        description: t("claudeDesktop.card.restartDoneHint"),
         variant: "success",
       });
     } catch (cause) {
@@ -200,7 +204,6 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
         <h2 id="claude-desktop-title" className="text-lg font-semibold">
           {t("claudeDesktop.title")}
         </h2>
-        <p className="text-sm text-muted-foreground">{t("claudeDesktop.description")}</p>
       </div>
 
       {(error || status.error) && (
@@ -232,27 +235,17 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
               )}
             </div>
 
-            {restartHint && (
-              <p className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
-                {restartHint}
-              </p>
-            )}
-
             {/* 供应商与模型是这张卡片的主信息。 */}
-            <p className="break-words text-sm">
+            <p data-desktop-provider className="break-words text-sm font-medium">
               {data.isManaged
-                ? t("claudeDesktop.card.hintManaged", { name: data.providerName ?? "—" })
+                ? data.providerName ?? "—"
                 : t("claudeDesktop.card.hintUnmanaged")}
             </p>
 
             {data.models.length > 0 && (
-              <p className="break-words font-mono text-xs text-muted-foreground">
+              <p data-desktop-models className="break-words font-mono text-xs text-muted-foreground">
                 {data.models.map(model => model.modelId).join(" · ")}
               </p>
-            )}
-
-            {data.paths && (
-              <p className="break-all font-mono text-xs text-muted-foreground">{data.paths.normalConfig}</p>
             )}
 
             {/* 未完成事务优先于一切：它阻止其它写操作。 */}
@@ -289,16 +282,29 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
               </p>
             )}
 
-            {(data.lastAppliedAt !== null || data.backupCount > 0) && (
-              <p className="text-xs text-muted-foreground">
-                {data.lastAppliedAt
-                  ? `${t("claudeDesktop.card.lastApplied")}: ${new Date(data.lastAppliedAt * 1000).toLocaleString()}`
-                  : t("claudeDesktop.card.neverApplied")}
-                {data.backupCount > 0 && ` · ${t("claudeDesktop.card.backupCount")}: ${data.backupCount}`}
-              </p>
+            {(data.paths || data.lastAppliedAt !== null || data.backupCount > 0 || data.warnings.some(key => DETAIL_WARNINGS.has(key))) && (
+              <details className="text-xs text-muted-foreground">
+                <summary className="w-fit cursor-pointer rounded-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  {t("claudeDesktop.card.details")}
+                </summary>
+                <div className="mt-2 space-y-2">
+                  {data.paths && (
+                    <p data-desktop-config-path className="break-all font-mono">{data.paths.normalConfig}</p>
+                  )}
+                  <p>
+                    {data.lastAppliedAt
+                      ? `${t("claudeDesktop.card.lastApplied")}: ${new Date(data.lastAppliedAt * 1000).toLocaleString()}`
+                      : t("claudeDesktop.card.neverApplied")}
+                    {data.backupCount > 0 && ` · ${t("claudeDesktop.card.backupCount")}: ${data.backupCount}`}
+                  </p>
+                  {data.warnings.filter(key => DETAIL_WARNINGS.has(key)).map(key => <p key={key}>{t(key)}</p>)}
+                </div>
+              </details>
             )}
 
-            {data.warnings.map(key => (
+            {data.warnings.filter(key => !DETAIL_WARNINGS.has(key)
+              && key !== "claudeDesktop.warnings.requiresRestart"
+              && key !== "claudeDesktop.warnings.pendingRecovery").map(key => (
               <p
                 key={key}
                 role="status"
@@ -388,6 +394,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
           candidatesError={candidates.error}
           candidatesRevision={candidates.dataUpdatedAt}
           initialProviderId={data?.providerId ?? null}
+          initialModelChoices={savedModelChoices}
           availableActions={(data?.actions ?? []).filter(view => view.enabled).map(view => view.action)}
           onClose={() => setDialog(false)}
           onApplied={refresh}

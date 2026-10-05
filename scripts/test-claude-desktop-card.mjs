@@ -22,7 +22,6 @@ const ZH = {
   modeDirect: "AgentHarbor 直连",
   requiresRestart: "需要重启",
   restart: "重启 Claude Desktop",
-  hintManaged: "Claude Desktop 正在直接使用一张已保存的中转卡片。",
   warningRequiresRestart: "请完全退出 Claude Desktop（包括托盘进程）后重新启动，设置才会生效。",
   change: "切换 / 更新",
   reapply: "重新应用",
@@ -36,8 +35,8 @@ const ZH = {
   providerDisabled: "该卡片未加入路由池；直连不要求启用它，本次选择也不会启用。",
   noInferenceKey: "该卡片没有推理密钥；请先在卡片上补充，余额 token 不能作为推理凭据。",
   labelPlaceholder: "显示名称（可选）",
-  oneMAuto: "1M：自动",
-  oneMOff: "1M：关闭",
+  oneMAuto: "添加",
+  oneMOff: "不添加",
   messagesCheck: "核对 Messages 兼容性",
   preview: "预览",
   apply: "应用",
@@ -85,7 +84,7 @@ const statusFixture = {
   conflicts: [],
   recoveryState: null,
   pendingRecovery: false,
-  warnings: ["claudeDesktop.warnings.requiresRestart"],
+  warnings: ["claudeDesktop.warnings.requiresRestart", "claudeDesktop.warnings.openPreviews", "claudeDesktop.warnings.isolated"],
   lastAppliedAt: 1_790_000_000,
   restartRequired: true,
   appRunning: false,
@@ -182,13 +181,14 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
     review.desktopPreview = fixture.preview;
     review.desktopApplied = fixture.applied;
     review.desktopProbe = fixture.probe;
-    review.desktopCalls = { status: 0, candidates: [], preview: [], commit: [], probe: [], other: [] };
+    review.desktopCalls = { status: 0, candidates: [], preview: [], commit: [], probe: [], restart: 0, other: [] };
     review.desktopHoldPreview = false;
     review.desktopPreviewResolvers = [];
     review.desktopPreviewFailure = null;
     review.desktopHoldProbe = false;
     review.desktopProbeResolvers = [];
     review.desktopProbeFailure = null;
+    review.desktopCommitFailure = null;
     window.__TAURI_INTERNALS__.invoke = async (command, args) => {
       if (command === "get_claude_desktop_status") { review.desktopCalls.status++; return clone(review.desktopStatus); }
       if (command === "list_claude_desktop_candidates") {
@@ -198,13 +198,23 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
       if (command === "preview_claude_desktop_change") {
         review.desktopCalls.preview.push(clone(args));
         if (review.desktopPreviewFailure) throw review.desktopPreviewFailure;
+        const preview = clone(review.desktopPreview);
+        const provider = review.desktopCandidates.providers.find(entry => entry.providerId === args.request.providerId);
+        preview.providerName = provider?.name ?? preview.providerName;
+        preview.messagesUrl = provider?.endpoint?.messagesUrl ?? preview.messagesUrl;
+        preview.models = (args.request.models ?? []).map(choice => {
+          const candidate = provider?.models.find(entry => entry.modelId === choice.modelId);
+          return { modelId: choice.modelId, label: choice.labelOverride ?? candidate?.label ?? choice.modelId,
+            oneM: choice.oneMMode === "auto" && !!candidate?.supports1m };
+        });
         if (review.desktopHoldPreview) {
-          return new Promise(resolve => review.desktopPreviewResolvers.push(() => resolve(clone(review.desktopPreview))));
+          return new Promise(resolve => review.desktopPreviewResolvers.push(() => resolve(preview)));
         }
-        return clone(review.desktopPreview);
+        return preview;
       }
       if (command === "commit_claude_desktop_change") {
         review.desktopCalls.commit.push(clone(args));
+        if (review.desktopCommitFailure) throw review.desktopCommitFailure;
         return clone(review.desktopApplied);
       }
       if (command === "probe_claude_desktop_provider") {
@@ -220,6 +230,13 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
         review.desktopStatus.providerMissing = true;
         review.desktopCandidates.providers = review.desktopCandidates.providers.filter(provider => provider.providerId !== args.id);
         return { state: clone(state), applied: null };
+      }
+      if (command === "restart_claude_desktop") {
+        review.desktopCalls.restart++;
+        review.desktopStatus.restartRequired = false;
+        review.desktopStatus.warnings = review.desktopStatus.warnings.filter(key => key !== "claudeDesktop.warnings.requiresRestart");
+        review.desktopStatus.appRunning = true;
+        return { launchMethod: "windowsExe", running: true, restartCapable: true };
       }
       review.desktopCalls.other.push(command);
       throw new Error("unexpected command in the Claude Desktop card suite: " + command);
@@ -294,7 +311,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
       innerText: node.innerText,
       badgeRow: [...node.querySelectorAll("div.flex.flex-wrap.items-center.gap-2 > *")]
         .map(entry => entry.textContent.trim()).filter(Boolean),
-      hint: text("p.break-words.text-sm"),
+      hint: text("[data-desktop-provider]"),
       models: text("p.break-words.font-mono.text-xs"),
       modelsStyle: styles("p.break-words.font-mono.text-xs"),
       path: text("p.break-all.font-mono"),
@@ -315,16 +332,21 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   assert.ok(content.modelsStyle, "the managed model line is missing");
   assert.equal(content.modelsStyle.overflowWrap, "break-word", "the model list must wrap long ids");
   assert.equal(content.modelsStyle.scrollWidth <= content.modelsStyle.clientWidth + 1, true, JSON.stringify(content.modelsStyle));
-  assert.equal(content.hint, ZH.hintManaged);
+  assert.equal(content.hint, statusFixture.providerName, "the card must name the actual saved relay");
   assert.equal(content.alerts, 0);
-  // Both the restart warning and the reason a manage button is disabled are live regions.
-  assert.deepEqual(content.statuses, [ZH.warningRequiresRestart, ZH.conflictReason],
-    "warnings and disabled-action reasons must render as role=status");
+  assert.deepEqual(content.statuses, [], "an unrelated disabled recovery action must not produce normal-state warnings");
+  assert.doesNotMatch(content.innerText, /将 Claude Desktop 桌面客户端直连到中转|与 Claude Code 相互独立|没有未完成的事务|请完全退出/);
   const badgeTexts = content.badgeRow.join(" | ");
   for (const badge of [ZH.stateManaged, ZH.modeDirect, "v1.2.3", ZH.requiresRestart]) {
     assert.ok(badgeTexts.includes(badge), "missing card badge " + badge + " in " + badgeTexts);
   }
-  assert.match(content.innerText, /本地恢复备份: 3/);
+  assert.equal(await card().getByText("配置详情", { exact: true }).count(), 1);
+  assert.doesNotMatch(content.innerText, /本地恢复备份: 3/, "backup details should stay collapsed by default");
+  assert.doesNotMatch(content.innerText, /未消费的预览|AGENT_HARBOR_CLIENT_HOME/, "technical state belongs in details");
+  await card().locator("details > summary").click();
+  assert.match(await card().innerText(), /本地恢复备份: 3/);
+  assert.match(await card().innerText(), /未消费的预览|AGENT_HARBOR_CLIENT_HOME/);
+  await card().locator("details > summary").click();
   assert.deepEqual(content.buttons.map(button => button.text),
     [ZH.change, ZH.reapply, ZH.restorePrevious, ZH.switchOfficial, ZH.release],
     "the card must expose its manage and confirmable action buttons");
@@ -461,19 +483,25 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   assert.equal(dialogSurface.fieldsetDisabled, false, "the fieldset must only lock while a request is in flight");
   assert.deepEqual(dialogSurface.providerButtons, [{ text: "Relay Alpha", pressed: "true", disabled: false },
     { text: "Relay Beta", pressed: "false", disabled: true }]);
-  assert.equal(dialogSurface.messagesCheckDisabled, true, "the Messages check needs a selected model");
+  assert.equal(dialogSurface.messagesCheckDisabled, false, "an existing configuration must start with its selected models");
   assert.equal(dialogSurface.probeDisabled, false);
   assert.equal(await dialog().getByText(ZH.providerDisabled, { exact: true }).count(), 1,
     "an ineligible provider must explain why it cannot be picked");
   assert.equal(await dialog().getByText(ZH.noInferenceKey, { exact: true }).count(), 1,
     "an existing endpoint must not hide the credential exclusion reason");
-  assert.equal(await dialog().getByRole("button", { name: ZH.preview, exact: true }).isDisabled(), true,
-    "preview must stay disabled until a model is selected");
-  assert.equal(await dialog().locator('[role="status"]').filter({ hasText: ZH.needModels }).count(), 1,
-    "a disabled preview must state its reason");
+  assert.equal(await dialog().getByRole("button", { name: ZH.preview, exact: true }).isEnabled(), true,
+    "opening an existing configuration must retain its saved choices");
+  assert.doesNotMatch(await dialog().innerText(), /相互独立|使用卡片上已保存的推理密钥|预览只显示受管改动/);
 
   // Model rows: checkbox id <-> label for pairing, then Tab reachability and Space toggling.
   const modelIds = [LONG_MODEL_ID, SHORT_MODEL_ID];
+  for (const modelId of modelIds) {
+    assert.equal(await modelCheckbox(modelId).getAttribute("aria-checked"), "true", "saved choices must be checked");
+    const row = dialog().locator("li").filter({ has: modelCheckbox(modelId) });
+    assert.equal(await row.getByRole("textbox").inputValue(), "", "automatic labels must remain unpinned");
+    assert.equal((await row.getByRole("combobox").innerText()).trim(), ZH.oneMAuto, "saved Auto intent must survive opening");
+    await modelCheckbox(modelId).uncheck();
+  }
   // The dialog also renders the rebaseline checkbox, so count the model checkboxes by id.
   assert.equal(await dialog().locator('[id^="desktop-model-"]').count(), modelIds.length, "only selectable models may render a row");
   for (const modelId of modelIds) {
@@ -502,6 +530,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   assert.match(await dialog().locator("[data-desktop-excluded-models]").innerText(), /协议不是 Anthropic Messages/);
 
   const tabWalk = [];
+  await dialog().getByRole("button", { name: /Relay Alpha/ }).focus();
   for (let step = 0; step < 90; step++) {
     const focused = await focusedId();
     if (focused) tabWalk.push(focused);
@@ -528,6 +557,8 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   const oneM = longRow.getByRole("combobox");
   assert.equal(await oneM.count(), 1, "a selected model must expose the 1M select");
   assert.equal(await longRow.getByRole("textbox", { name: ZH.labelPlaceholder, exact: true }).getAttribute("maxlength"), "64");
+  assert.equal((await oneM.innerText()).trim(), ZH.oneMOff, "new choices must not add a duplicate 1M menu option by default");
+  assert.equal(await longRow.getByRole("textbox").inputValue(), "", "new automatic labels are placeholders, not overrides");
   await oneM.click();
   assert.deepEqual(await page.getByRole("option").allInnerTexts(), [ZH.oneMAuto, ZH.oneMOff]);
   await page.getByRole("option", { name: ZH.oneMOff, exact: true }).click();
@@ -547,7 +578,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   assert.equal(await dialog().locator('[role="status"]').filter({ hasText: ZH.busyHint }).count(), 1,
     "a busy dialog must say why its controls are locked");
   await page.evaluate(() => { window.review.desktopPreviewResolvers.shift()(); window.review.desktopHoldPreview = false; });
-  await dialog().getByText("normalConfig", { exact: true }).waitFor();
+  await dialog().locator("[data-desktop-preview-summary]").waitFor();
   assert.equal(await fieldset.evaluate(node => node.disabled), false, "the fieldset must unlock when the request settles");
   assert.deepEqual(await page.evaluate(() => window.review.desktopCalls.preview[0]), {
     action: "applyDirect",
@@ -555,33 +586,36 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
       providerId: "group-a",
       models: [
         // The long row was switched to "1M: off" through the select above.
-        { modelId: LONG_MODEL_ID, labelOverride: LONG_MODEL_ID, oneMMode: "off" },
-        { modelId: SHORT_MODEL_ID, labelOverride: SHORT_MODEL_ID, oneMMode: "auto" },
+        { modelId: LONG_MODEL_ID, labelOverride: null, oneMMode: "off" },
+        { modelId: SHORT_MODEL_ID, labelOverride: null, oneMMode: "off" },
       ],
       paths: { normalRoot: NORMAL_ROOT, thirdPartyRoot: THIRD_PARTY_ROOT },
       rebaseline: false,
     },
   });
+  const summary = dialog().locator("[data-desktop-preview-summary]");
+  assert.match(await summary.innerText(), /Relay Alpha/);
+  for (const modelId of modelIds) assert.ok((await summary.innerText()).includes(modelId), "the selected model must appear in the preview");
+  assert.equal(await dialog().locator("[data-desktop-preview-files]").getAttribute("open"), null, "technical diffs stay collapsed");
+  await dialog().locator("[data-desktop-preview-files] > summary").click();
   const previewCards = await dialog().evaluate(node => {
-    const files = [...node.querySelectorAll("div.rounded-lg.border")].map(entry => entry.innerText.trim());
-    return { files, primary: files.find(text => text.includes("normalConfig")) ?? "",
+    const files = node.querySelector("[data-desktop-preview-files]")?.innerText ?? "";
+    return { files, primary: files,
       statuses: [...node.querySelectorAll('[role="status"]')].map(element => element.textContent.trim()),
       pathsFit: [...node.querySelectorAll("p.font-mono")].every(entry => entry.scrollWidth <= entry.clientWidth + 1),
       overflow: node.scrollWidth - node.clientWidth };
   });
-  assert.ok(previewCards.primary.includes("normalConfig"), "preview file cards are missing: " + JSON.stringify(previewCards.files));
-  assert.ok(previewCards.primary.includes("update"), JSON.stringify(previewCards.primary));
+  assert.ok(previewCards.primary.includes("常规配置"), "preview files must localize their roles");
+  assert.ok(previewCards.primary.includes("更新"), JSON.stringify(previewCards.primary));
   assert.ok(previewCards.primary.includes(LONG_PATH), "the preview card must show the managed file path");
-  assert.ok(previewCards.primary.includes("deploymentMode: 1p → 3p"), "the preview card must show managed changes");
-  assert.ok(previewCards.files.some(text => text.includes("thirdPartyConfig") && text.includes("create")));
-  for (const status of [ZH.warningRequiresRestart, ZH.previewRestart]) {
-    assert.ok(previewCards.statuses.includes(status), "missing preview status " + status + " in " + JSON.stringify(previewCards.statuses));
-  }
+  assert.match(previewCards.primary, /deploymentMode[\s\S]*原配置[\s\S]*1p[\s\S]*新配置[\s\S]*3p/, "managed before/after values must remain available");
+  assert.ok(previewCards.files.includes("第三方配置") && previewCards.files.includes("新建"));
+  assert.equal(previewCards.statuses.includes(ZH.warningRequiresRestart), false, "preview must not repeat exit warnings");
   assert.equal(await dialog().getByText(ZH.externalProfiles + ": 1", { exact: true }).count(), 1,
     "the preview must report the preserved external profiles");
   assert.equal(previewCards.pathsFit, true, "a long preview path must not spill out of its card");
   assert.ok(previewCards.overflow <= 1, "the preview must not widen the dialog: " + previewCards.overflow);
-  console.log("PASS the dialog locks while busy, sends the model/1M/paths selection and renders the preview file cards");
+  console.log("PASS the dialog preserves saved intent, defaults new 1M choices off, previews models and reveals localized file changes");
 
   // 6. Apply commits the previewed revision, and a failed action surfaces as role=alert.
   await dialog().getByRole("button", { name: ZH.apply, exact: true }).click();
@@ -660,6 +694,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   });
   await actionButton(ZH.change).click();
   await dialog().getByRole("button", { name: /Relay Gamma/ }).waitFor();
+  await modelCheckbox(LONG_MODEL_ID).uncheck();
   await modelCheckbox(SHORT_MODEL_ID).check();
   const success = dialog().getByText("Messages 端点接受裸 Bearer，并返回了合法的 Messages 响应", { exact: true });
   await dialog().getByRole("button", { name: ZH.messagesCheck, exact: true }).click();
@@ -705,7 +740,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   await page.evaluate(() => window.review.mount("groups"));
   await actionButton(ZH.change).waitFor();
   await actionButton(ZH.change).click();
-  await dialog().getByRole("combobox").waitFor();
+  await dialog().getByRole("combobox").first().waitFor();
   await modelCheckbox(SHORT_MODEL_ID).check();
   assert.equal(await dialog().getByRole("button", { name: ZH.preview, exact: true }).isDisabled(), true);
   assert.equal(await dialog().getByRole("button", { name: ZH.messagesCheck, exact: true }).isDisabled(), true);
@@ -716,7 +751,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   await page.getByRole("option", { name: "C:/synthetic/Claude-Beta", exact: true }).click();
   assert.equal(await dialog().getByRole("button", { name: ZH.preview, exact: true }).isEnabled(), true);
   await dialog().getByRole("button", { name: ZH.preview, exact: true }).click();
-  await dialog().getByText("normalConfig", { exact: true }).waitFor();
+  await dialog().locator("[data-desktop-preview-summary]").waitFor();
   assert.deepEqual(await page.evaluate(() => window.review.desktopCalls.preview.at(-1).request.paths),
     { normalRoot: "C:/synthetic/Claude-Beta", thirdPartyRoot: "C:/synthetic/Claude-Beta-3p" });
   await dialog().getByRole("button", { name: ZH.cancel, exact: true }).click();
@@ -751,14 +786,114 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   await card().getByText("未配置", { exact: true }).waitFor();
   assert.equal(await actionButton(ZH.restart).isEnabled(), true,
     "a restored unmanaged configuration must still expose its required restart");
+  await actionButton(ZH.restart).click();
+  await page.waitForFunction(() => window.review.desktopCalls.restart === 1);
+  await card().getByText(ZH.requiresRestart, { exact: true }).waitFor({ state: "hidden" });
+  assert.equal(await card().getByText(ZH.requiresRestart, { exact: true }).count(), 0,
+    "a successful restart must refresh status and remove the pending badge");
   await page.evaluate(async () => {
     window.review.desktopStatus.restartRequired = false;
+    window.review.desktopStatus.appRunning = false;
     await window.review.providersClient.invalidateQueries({ queryKey: ["claude-desktop", "status"] });
   });
   await actionButton(ZH.restart).waitFor({ state: "hidden" });
   assert.equal(await actionButton(ZH.restart).count(), 0,
     "releasing management without pending file changes cannot invent a restart requirement");
   console.log("PASS an unmanaged restored configuration exposes its required restart and a clean release does not");
+
+  // 13. Opus 4.7 appears as the new preview, independently of the old profile and the running app.
+  await page.evaluate(() => {
+    const review = window.review;
+    review.desktopCandidates.selectedPathId = "path-normal";
+    review.desktopCandidates.providers.push({
+      providerId: "group-opus", name: "Opus Relay", enabled: true, hasInferenceKey: true, eligible: true, reason: null,
+      endpoint: { profileBaseUrl: "https://opus.invalid", messagesUrl: "https://opus.invalid/v1/messages",
+        modelsUrl: "https://opus.invalid/v1/models", plaintext: false },
+      models: [{ modelId: "claude-opus-4-7", label: "Opus 4.7", displayName: "Opus 4.7", protocol: "anthropicMessages",
+        protocolSource: "catalog", protocolVerified: true, included: true, supports1m: true, contextWindow: 1_000_000,
+        contextSource: "catalog", selectable: true, excludeReason: null }],
+    });
+    review.desktopStatus.appRunning = true;
+    review.desktopPreview.files = [{ role: "profile", path: "C:/synthetic/Claude-3p/configLibrary/profile.json", kind: "update",
+      managedChanges: [{ path: "inferenceModels", before: '["claude-opus-4-6"]', after: '["claude-opus-4-7"]' }], note: null }];
+  });
+  await actionButton("配置").click();
+  await dialog().getByRole("button", { name: /Opus Relay/ }).click();
+  await modelCheckbox("claude-opus-4-7").check();
+  const opusRow = dialog().locator("li").filter({ has: modelCheckbox("claude-opus-4-7") });
+  assert.equal(await opusRow.getByRole("textbox").inputValue(), "");
+  assert.equal(await opusRow.getByRole("textbox").getAttribute("placeholder"), "Opus 4.7");
+  assert.equal((await opusRow.getByRole("combobox").innerText()).trim(), ZH.oneMOff);
+  await dialog().getByRole("button", { name: ZH.preview, exact: true }).click();
+  await dialog().locator("[data-desktop-preview-summary]").waitFor();
+  const opusPreview = dialog().locator("[data-desktop-preview-summary]");
+  assert.match(await opusPreview.innerText(), /Opus 4\.7[\s\S]*claude-opus-4-7/);
+  assert.doesNotMatch(await opusPreview.innerText(), /claude-opus-4-6/, "the old profile must not stand in for the new selection");
+  assert.doesNotMatch(await opusPreview.innerText(), /包含 1M 选项/, "ordinary selection should create one Desktop menu option");
+  assert.deepEqual(await page.evaluate(() => window.review.desktopCalls.preview.at(-1).request.models),
+    [{ modelId: "claude-opus-4-7", labelOverride: null, oneMMode: "off" }]);
+  await opusRow.getByRole("combobox").click();
+  await page.getByRole("option", { name: ZH.oneMAuto, exact: true }).click();
+  assert.equal(await opusPreview.count(), 0, "changing the 1M intent must invalidate its preview");
+  await dialog().getByRole("button", { name: ZH.preview, exact: true }).click();
+  await opusPreview.getByText("包含 1M 选项", { exact: true }).waitFor();
+  assert.deepEqual(await page.evaluate(() => window.review.desktopCalls.preview.at(-1).request.models),
+    [{ modelId: "claude-opus-4-7", labelOverride: null, oneMMode: "auto" }]);
+  if (captureDir) {
+    await opusPreview.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(captureDir, "claude-desktop-opus-preview.png"), animations: "disabled" });
+  }
+  await page.evaluate(() => { window.review.desktopCommitFailure = "claudeDesktop.errors.desktopRunning"; });
+  await dialog().getByRole("button", { name: ZH.apply, exact: true }).click();
+  await dialog().getByRole("alert").filter({ hasText: "请完全退出 Claude Desktop" }).waitFor();
+  assert.equal(await dialog().getByRole("button", { name: ZH.preview, exact: true }).isEnabled(), true,
+    "a failed commit consumes its ticket and must return to preview");
+  assert.equal(await modelCheckbox("claude-opus-4-7").getAttribute("aria-checked"), "true", "failure must retain the selected model");
+  assert.equal((await opusRow.getByRole("combobox").innerText()).trim(), ZH.oneMAuto, "failure must retain the 1M intent");
+  await dialog().getByRole("button", { name: ZH.cancel, exact: true }).click();
+  console.log("PASS a running Desktop allows Opus 4.7 preview, 1M is opt-in, and failed apply retains input with a fresh-preview action");
+
+  // 14. Saved selections that disappeared or became excluded remain visible and removable.
+  await page.evaluate(async () => {
+    const review = window.review;
+    review.desktopCommitFailure = null;
+    const provider = review.desktopCandidates.providers.find(entry => entry.providerId === "group-opus");
+    provider.models.push({ ...provider.models[0], modelId: "claude-sonnet-4-6", label: "Sonnet 4.6",
+      selectable: false, included: false, excludeReason: "model_not_included" });
+    Object.assign(review.desktopStatus, {
+      managementState: "stale", isManaged: true, mode: "direct", providerId: "group-opus", providerName: "Opus Relay",
+      models: [{ modelId: "claude-opus-4-6", label: "My old Opus", oneM: true },
+        { modelId: "claude-sonnet-4-6", label: "Sonnet 4.6", oneM: false }],
+      modelChoices: [{ modelId: "claude-opus-4-6", labelOverride: "My old Opus", oneMMode: "auto" },
+        { modelId: "claude-sonnet-4-6", labelOverride: null, oneMMode: "off" }],
+    });
+    await review.providersClient.invalidateQueries({ queryKey: ["claude-desktop", "status"] });
+  });
+  await actionButton(ZH.change).click();
+  const unavailable = dialog().locator("[data-desktop-unavailable-choices]");
+  await unavailable.getByRole("button", { name: "移除 claude-opus-4-6", exact: true }).waitFor();
+  assert.match(await unavailable.innerText(), /claude-opus-4-6[\s\S]*My old Opus[\s\S]*已不在卡片中[\s\S]*添加/,
+    "removed selections must expose their preserved label, 1M choice and specific reason");
+  assert.match(await unavailable.innerText(), /claude-sonnet-4-6[\s\S]*该模型在卡片中被排除[\s\S]*不添加/,
+    "an excluded saved selection must remain removable instead of being submitted invisibly");
+  assert.equal(await dialog().locator("[data-desktop-excluded-models]").count(), 0, "a selected unavailable model must not be listed twice");
+  assert.equal(await dialog().getByRole("button", { name: ZH.preview, exact: true }).isDisabled(), true,
+    "unavailable selections must be resolved before preview");
+  if (captureDir) {
+    await unavailable.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(captureDir, "claude-desktop-unavailable-selections.png"), animations: "disabled" });
+  }
+  await unavailable.getByRole("button", { name: "移除 claude-opus-4-6", exact: true }).click();
+  await unavailable.getByRole("button", { name: "移除 claude-sonnet-4-6", exact: true }).click();
+  assert.equal(await unavailable.count(), 0);
+  await modelCheckbox("claude-opus-4-7").check();
+  await dialog().getByRole("button", { name: ZH.preview, exact: true }).click();
+  await dialog().locator("[data-desktop-preview-summary]").waitFor();
+  assert.deepEqual(await page.evaluate(() => window.review.desktopCalls.preview.at(-1).request.models),
+    [{ modelId: "claude-opus-4-7", labelOverride: null, oneMMode: "off" }],
+    "after explicitly removing obsolete choices, only the new selected model is sent");
+  await dialog().getByRole("button", { name: ZH.cancel, exact: true }).click();
+  console.log("PASS removed and excluded saved models remain visible with their original intent and can be replaced explicitly");
 
   await page.evaluate(() => { delete window.__TAURI_INTERNALS__.invoke; });
   await page.setViewportSize({ width: 1200, height: 700 });

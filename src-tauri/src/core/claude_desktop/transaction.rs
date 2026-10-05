@@ -485,38 +485,58 @@ pub struct DesiredState {
     pub entry_insert_at: usize,
 }
 
-fn profile_plan_keys(before: Option<&str>) -> Vec<KeyValue> {
-    let previous = |key: &str| -> Option<String> {
-        if key == profile::KEY_API_KEY {
-            return before.map(|_| "<redacted>".to_owned());
-        }
-        let value: Value = serde_json::from_str(before?).ok()?;
-        Some(render(value.get(key)?))
-    };
-    let mut keys = vec![KeyValue {
-        path: profile::KEY_BASE_URL.to_owned(),
-        before: previous(profile::KEY_BASE_URL),
-        after: None,
-    }];
-    for key in [
+fn profile_plan_keys(before: Option<&str>, after: Option<&Value>) -> Vec<KeyValue> {
+    let before = before.and_then(|text| serde_json::from_str::<Value>(text).ok());
+    [
+        profile::KEY_BASE_URL,
         profile::KEY_DISABLE_CHOOSER,
         profile::KEY_INFERENCE_PROVIDER,
         profile::KEY_AUTH_SCHEME,
         profile::KEY_MODELS,
-    ] {
-        keys.push(KeyValue {
-            path: key.to_owned(),
-            before: previous(key),
-            after: None,
-        });
+        profile::KEY_API_KEY,
+    ]
+    .into_iter()
+    .map(|key| KeyValue {
+        path: key.to_owned(),
+        before: before
+            .as_ref()
+            .and_then(|value| profile_preview_value(value, key)),
+        after: after.and_then(|value| profile_preview_value(value, key)),
+    })
+    .collect()
+}
+
+/// 只投影 profile 契约字段；外部模型对象的未知扩展也不能夹带秘密进入预览。
+fn profile_preview_value(document: &Value, key: &str) -> Option<String> {
+    let value = document.get(key)?;
+    match key {
+        profile::KEY_API_KEY => Some("<redacted>".to_owned()),
+        profile::KEY_MODELS => {
+            let models = value
+                .as_array()?
+                .iter()
+                .filter_map(|model| {
+                    if model.is_string() {
+                        return Some(model.clone());
+                    }
+                    let object = model.as_object()?;
+                    let name = object.get("name")?.as_str()?;
+                    let mut safe = Map::new();
+                    safe.insert("name".into(), Value::String(name.to_owned()));
+                    if let Some(label) = object.get("labelOverride").and_then(Value::as_str) {
+                        safe.insert("labelOverride".into(), Value::String(label.to_owned()));
+                    }
+                    if let Some(enabled) = object.get("supports1m").and_then(Value::as_bool) {
+                        safe.insert("supports1m".into(), Value::Bool(enabled));
+                    }
+                    Some(Value::Object(safe))
+                })
+                .collect();
+            Some(render(&Value::Array(models)))
+        }
+        profile::KEY_DISABLE_CHOOSER => value.as_bool().map(|enabled| enabled.to_string()),
+        _ => value.as_str().map(str::to_owned),
     }
-    // 密钥前后值都固定替换为 <redacted>，不回传任何可比较的摘要。
-    keys.push(KeyValue {
-        path: profile::KEY_API_KEY.to_owned(),
-        before: before.map(|_| "<redacted>".to_owned()),
-        after: Some("<redacted>".to_owned()),
-    });
-    keys
 }
 
 /// 接管时 profile 文件的状态。
@@ -622,7 +642,7 @@ pub fn build_plan(
                     after: ManagedValues::Whole {
                         value: Some(value.clone()),
                     },
-                    after_keys: profile_plan_keys(profile_before.as_deref()),
+                    after_keys: profile_plan_keys(profile_before.as_deref(), Some(value)),
                 });
             }
         }
@@ -642,11 +662,10 @@ pub fn build_plan(
                             after: ManagedValues::Whole {
                                 value: Some(original.clone()),
                             },
-                            after_keys: vec![KeyValue {
-                                path: paths::display(&paths.profile_path),
-                                before: Some("<redacted>".to_owned()),
-                                after: Some("<redacted>".to_owned()),
-                            }],
+                            after_keys: profile_plan_keys(
+                                profile_before.as_deref(),
+                                Some(original),
+                            ),
                         });
                     }
                 }
@@ -661,11 +680,7 @@ pub fn build_plan(
                     path: paths.profile_path.clone(),
                     after_text: None,
                     after: ManagedValues::Whole { value: None },
-                    after_keys: vec![KeyValue {
-                        path: paths::display(&paths.profile_path),
-                        before: Some("<redacted>".to_owned()),
-                        after: None,
-                    }],
+                    after_keys: profile_plan_keys(profile_before.as_deref(), None),
                 });
             }
         }
@@ -1225,8 +1240,162 @@ pub fn restore_all(state: &State, paths: &DesktopPaths) -> DesktopResult<Vec<Str
         Ok(Vec::new())
     } else {
         Err(Box::new(
-            DesktopError::new(error_code::RECOVERY_REQUIRED, "claudeDesktop.errors.recoveryRequired")
-                .param(failed.join(",")),
+            DesktopError::new(
+                error_code::RECOVERY_REQUIRED,
+                "claudeDesktop.errors.recoveryRequired",
+            )
+            .param(failed.join(",")),
         ))
+    }
+}
+
+#[cfg(test)]
+mod preview_projection_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn fixture() -> (tempfile::TempDir, DesktopPaths) {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            DesktopPaths::from_roots(root.path().join("Claude"), root.path().join("Claude-3p"))
+                .unwrap();
+        std::fs::create_dir_all(paths.profile_path.parent().unwrap()).unwrap();
+        (root, paths)
+    }
+
+    fn desired(model_id: &str) -> DesiredState {
+        DesiredState {
+            mode: Some(profile::third_party_mode()),
+            profile: Some(profile::profile_json(
+                "https://relay.example",
+                "new-secret-sentinel",
+                &[ManagedModelView {
+                    model_id: model_id.into(),
+                    label: model_id.into(),
+                    one_m: false,
+                }],
+            )),
+            own_entry: Some(MetaEntry::own()),
+            applied_id: Some(super::super::constants::PROFILE_ID.into()),
+            entry_insert_at: 0,
+        }
+    }
+
+    #[test]
+    fn creating_a_profile_previews_the_selected_opus_model_and_endpoint() {
+        let (_root, paths) = fixture();
+        let plans = build_plan(
+            &paths,
+            &desired("claude-opus-4-7"),
+            &TakeoverBaseline::default(),
+        )
+        .unwrap();
+        let view = plans
+            .iter()
+            .find(|plan| plan.role == role::PROFILE)
+            .unwrap()
+            .view(false);
+        assert_eq!(view.kind, "create");
+        let models = view
+            .managed_changes
+            .iter()
+            .find(|change| change.path == profile::KEY_MODELS)
+            .unwrap();
+        assert!(models.before.is_none());
+        assert_eq!(models.after.as_deref(), Some("[\"claude-opus-4-7\"]"));
+        let endpoint = view
+            .managed_changes
+            .iter()
+            .find(|change| change.path == profile::KEY_BASE_URL)
+            .unwrap();
+        assert_eq!(endpoint.after.as_deref(), Some("https://relay.example"));
+        let encoded = serde_json::to_string(&view).unwrap();
+        assert!(!encoded.contains("new-secret-sentinel"));
+        assert!(encoded.contains("<redacted>"));
+        assert!(
+            !paths.profile_path.exists(),
+            "preview must remain read-only"
+        );
+    }
+
+    #[test]
+    fn updating_a_profile_previews_both_models_without_unknown_extensions_or_keys() {
+        let (_root, paths) = fixture();
+        let old = json!({
+            profile::KEY_MODELS: [{ "name": "claude-opus-4-6", "supports1m": true, "privateToken": "extension-secret-sentinel" }],
+            profile::KEY_BASE_URL: "https://old-relay.example",
+            profile::KEY_API_KEY: "old-secret-sentinel",
+            "unknownPrivateField": "root-secret-sentinel",
+        });
+        std::fs::write(&paths.profile_path, old.to_string()).unwrap();
+        let plans = build_plan(
+            &paths,
+            &desired("claude-opus-4-7"),
+            &TakeoverBaseline::default(),
+        )
+        .unwrap();
+        let view = plans
+            .iter()
+            .find(|plan| plan.role == role::PROFILE)
+            .unwrap()
+            .view(true);
+        let models = view
+            .managed_changes
+            .iter()
+            .find(|change| change.path == profile::KEY_MODELS)
+            .unwrap();
+        assert!(models.before.as_ref().unwrap().contains("claude-opus-4-6"));
+        assert_eq!(models.after.as_deref(), Some("[\"claude-opus-4-7\"]"));
+        let encoded = serde_json::to_string(&view).unwrap();
+        for secret in [
+            "extension-secret-sentinel",
+            "old-secret-sentinel",
+            "root-secret-sentinel",
+            "new-secret-sentinel",
+        ] {
+            assert!(!encoded.contains(secret));
+        }
+        assert_eq!(
+            std::fs::read_to_string(&paths.profile_path).unwrap(),
+            old.to_string()
+        );
+    }
+
+    #[test]
+    fn restoring_a_profile_projects_its_actual_target_and_deletion_has_no_target() {
+        let (_root, paths) = fixture();
+        let current = desired("claude-opus-4-7").profile.unwrap();
+        std::fs::write(&paths.profile_path, current.to_string()).unwrap();
+        let old = desired("claude-opus-4-6").profile.unwrap();
+        let restore = DesiredState {
+            mode: None,
+            profile: None,
+            own_entry: None,
+            applied_id: None,
+            entry_insert_at: 0,
+        };
+        let baseline = TakeoverBaseline {
+            profile: ProfileBaseline::PreExisting(old),
+            ..Default::default()
+        };
+        let plans = build_plan(&paths, &restore, &baseline).unwrap();
+        let plan = plans
+            .iter()
+            .find(|plan| plan.role == role::PROFILE)
+            .unwrap();
+        let models = plan
+            .after_keys
+            .iter()
+            .find(|change| change.path == profile::KEY_MODELS)
+            .unwrap();
+        assert_eq!(models.before.as_deref(), Some("[\"claude-opus-4-7\"]"));
+        assert_eq!(models.after.as_deref(), Some("[\"claude-opus-4-6\"]"));
+        let plans = build_plan(&paths, &restore, &TakeoverBaseline::default()).unwrap();
+        let plan = plans
+            .iter()
+            .find(|plan| plan.role == role::PROFILE)
+            .unwrap();
+        assert_eq!(plan.kind(true), "delete");
+        assert!(plan.after_keys.iter().all(|change| change.after.is_none()));
     }
 }

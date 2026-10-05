@@ -270,7 +270,7 @@
       "launchFailed": "Could not start Claude Desktop: {{0}}",
       "launchTimeout": "Starting Claude Desktop timed out; open it by hand to confirm.",
       "process": "Controlling the Claude Desktop process failed.",
-      "desktopRunning": "Fully quit Claude Desktop, including its tray process, then preview again before applying."
+      "desktopRunning": "Fully quit Claude Desktop, including its tray process, before applying."
     },
     "warnings": {
       "keepsEnterprise": "Enterprise inference and deployment policy in the config is preserved; it may override this profile.",
@@ -288,7 +288,7 @@
       "released": "Management was released; the profile on disk was left in place.",
       "openPreviews": "There are unconsumed previews for this configuration.",
       "isolated": "Running with AGENT_HARBOR_CLIENT_HOME set; only the isolated directory is read and written.",
-      "noChanges": "The four files already match the target state, so nothing was written and no restart is needed.",
+      "noChanges": "Configuration is unchanged.",
       "ticketCleanup": "The configuration was committed, but old previews could not be cleaned up. Refresh the status and preview again before another operation."
     },
     "notes": {
@@ -336,7 +336,7 @@
       "recoverRollback": "Recover the unfinished transaction"
     },
     "card": {
-      "hintUnmanaged": "Choose an existing relay card and Claude Desktop connects to that relay directly. No address or key needs to be re-entered.",
+      "hintUnmanaged": "Choose a relay card and models to get started.",
       "hintManaged": "Claude Desktop is using a saved relay card directly.",
       "configure": "Configure",
       "change": "Change",
@@ -347,6 +347,7 @@
       "lastApplied": "Last applied",
       "backupCount": "Local recovery backups",
       "paths": "Config location",
+      "details": "Configuration details",
       "version": "Desktop version",
       "requiresRestart": "Restart required",
       "restartHint": "Fully quits Claude Desktop and starts it again so the applied configuration takes effect. Unsaved input may be lost.",
@@ -364,10 +365,10 @@
     },
     "dialog": {
       "title": "Configure Claude Desktop direct connection",
-      "description": "Pick a saved relay card. Claude Desktop will talk to that relay directly; AgentHarbor does not need to be running.",
-      "stepProvider": "1. Provider",
-      "stepModels": "2. Models to expose",
-      "stepPreview": "3. Preview",
+      "description": "Choose a relay card and models, then preview the configuration.",
+      "stepProvider": "Relay card",
+      "stepModels": "Models",
+      "stepPreview": "Preview",
       "noEligibleProvider": "No saved card can be used for a direct connection.",
       "providerReason": "Reason",
       "providerDisabled": "This card is not enabled in the routing pool. A direct connection does not require it, and this choice does not enable it.",
@@ -375,9 +376,18 @@
       "modelsHint": "Only models that Claude Desktop accepts and that speak Anthropic Messages can be selected. The card's default model is left untouched.",
       "noModels": "This card has no model usable for a direct connection yet; fetch or add models on the card first.",
       "modelExcluded": "Excluded",
+      "unavailableChoices": "Selected models unavailable",
+      "removeSelection": "Remove",
+      "removeUnavailableModel": "Remove {{model}}",
       "labelPlaceholder": "Display name (optional)",
-      "oneMAuto": "1M: auto",
-      "oneMOff": "1M: off",
+      "oneMAuto": "Add",
+      "oneMOff": "Don't add",
+      "oneMOptions": "1M context option",
+      "oneMEnabled": "Includes 1M option",
+      "fileDetails": "File changes",
+      "environmentDetails": "Installation details",
+      "before": "Previous",
+      "after": "New",
       "oneMSource": "1M source",
       "protocolInferred": "Protocol inferred from the model name, not verified upstream",
       "previewHint": "The preview shows only the managed changes; secret values are always redacted.",
@@ -404,11 +414,11 @@
       "recoverTitle": "Recover the unfinished transaction?",
       "recoverDescription": "The recorded before/after state is compared with the files on disk, then either rolled back or confirmed as committed.",
       "appliedTitle": "Configuration applied",
-      "appliedDescription": "Fully quit Claude Desktop (including the tray process) and start it again, then check the model menu.",
+      "appliedDescription": "Start Claude Desktop to use the configuration.",
       "failedTitle": "Claude Desktop configuration failed",
       "messagesCheck": "Check Messages compatibility",
       "messagesChecking": "Checking",
-      "messagesCheckCost": "Sends one real max_tokens=1 request to this relay (a tiny charge is possible). No configuration file is written.",
+      "messagesCheckCost": "The Messages check sends one request and may incur a small charge.",
       "messagesResponseModel": "Upstream-reported model",
       "messagesCheckResultHint": "This is the strongest evidence of direct-connection viability: Claude Desktop only sends Bearer on /v1/messages. Confirming the menu and a multi-turn chat inside the real Desktop is still recommended.",
       "selectedCount": "{{count}} model(s) selected",
@@ -454,6 +464,12 @@
       "thirdPartyConfig": "Third-party configuration",
       "profile": "AgentHarbor profile",
       "meta": "Configuration library index"
+    },
+    "fileKinds": {
+      "create": "Create",
+      "update": "Update",
+      "delete": "Delete",
+      "noop": "No change"
     }
   },
   "newapi": {

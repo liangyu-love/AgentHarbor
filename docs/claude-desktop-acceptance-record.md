@@ -2,6 +2,30 @@
 
 本记录对应 Claude Desktop 直连功能的实施验收，按[实施计划](../plan/claude-desktop-direct-integration-execution-plan.md)第 9.1 节（A01–A40）、第 9.3 节（L01–L10）与第 12 节编写。配套的用户说明见[直连配置说明](./claude-desktop-direct-connection.md)。
 
+## 截图反馈修复（2026-10-05）
+
+本轮对应“重启后仍显示需要重启、只读预览要求退出、1M 菜单成对、预览未显示 Opus 4.7、重复说明过多”的反馈。只使用临时根与 mock 验证，没有改动用户真实 Desktop 或中转配置。
+
+- 重启命令在同一写锁内重验会话与 pending；选定安装的停止、启动都成功后持久清除待启动标记，失败保留。无改动重应用保留同安装已有标记，不继承另一个安装的 tombstone。
+- 预览只读可在运行时执行；配置写入仍检查完全退出，且拒绝发生在 pending/backup/外部写入之前。提交失败时保留表单、重新签预览，不重复使用已消费票据。
+- profile 预览现在投影真实 before 与 after，Opus 4.7 等新选择显示在主区；原始模型 ID 保持不变。只有已知契约字段参与技术预览，密钥及模型对象未知扩展不回传。
+- 卡片移除重复独立性说明、正常“没有未完成事务”等文案；主区显示供应商与模型，路径/备份与原始 diff 收入详情。更新配置保留已保存的原始模型、显示名和 Auto/Off 选择。
+- 已保存模型被删除或排除后，仍显示其原始选择及原因并提供移除入口；先处理失效选择再预览，避免隐藏旧 ID 持续阻断更新。
+- 对照 CC Switch `claude_desktop_config.rs:263` 和 `docs/release-notes/v3.20.4-zh.md:218`：一个 `supports1m: true` 项由 Desktop 生成普通和 1M 两项，属于原生菜单契约。新选择默认不追加 1M，开启后仍按有效能力判断；既有配置不被自动改写。
+
+最终自动化结果：
+
+| 检查 | 结果 |
+| --- | --- |
+| `pnpm test:rust` | exit 0；753 项 lib 通过（10 ignored）、11 项 Desktop workflows 通过（11 ignored）、9 项 local_workflows 通过，0 失败 |
+| `pnpm test:frontend` | 最终源码 exit 0；包含 10 组 Desktop 契约检查与 14 组 Desktop Playwright 行为回归 |
+| `pnpm exec tsc --noEmit` | 最终前端源码 exit 0 |
+| `pnpm build` | exit 0；最终可执行产物的重构建与隔离启动结果另随交付记录 |
+| 视觉检查 | 1280px、480px/150% 缩放、Opus 4.7 预览与失效选择移除；主要内容及操作无横向溢出 |
+| 修复后复查 / `git diff --check` | 无剩余阻断项 / exit 0 |
+
+先前真机验收范围及发布缺口仍按下文记录；本轮 mock 不替代真实 Desktop 或跨平台验收。外部手动启动不会自动将持久标记升级为已确认重载，当前由本项目成功启动来确认。
+
 ## 当前结论：复审修复完成（2026-10-04）
 
 六个实施提交 `e8af8f8..5030efd` 的核心直连链路已实现，但复审确认恢复、所有权、进程与隔离边界存在缺陷，不能按“全部完成”验收。本轮已按优先级修复并复审，使用临时根、合成凭据、mock HTTP 与前端 fixture；没有修改真实 Desktop 配置、真实 Provider 或执行 ignored/live 用例。

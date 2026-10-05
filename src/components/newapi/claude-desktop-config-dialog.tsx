@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import i18n from "@/lib/i18n";
 import { AlertTriangle, CheckCircle2, Eye, Loader2, MessageSquare, ShieldAlert } from "lucide-react";
 import { api } from "@/lib/api";
-import { desktopErrorKey, desktopErrorOf } from "@/lib/claude-desktop";
+import { desktopErrorKey } from "@/lib/claude-desktop";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -31,6 +31,7 @@ import type {
   ClaudeDesktopMessagesReport,
   ClaudeDesktopCandidates,
   ClaudeDesktopPathsChoice,
+  ClaudeDesktopModelChoice,
   ClaudeDesktopPreview,
   DesktopAction,
   OneMMode,
@@ -48,6 +49,12 @@ function reasonKey(reason: string | null | undefined): string {
   const camel = code.replace(/_([a-z0-9])/g, (_, ch: string) => ch.toUpperCase());
   const key = `claudeDesktop.errors.${camel}`;
   return i18n.exists(key) ? key : "claudeDesktop.errors.storage";
+}
+
+function formatManagedValue(value: string | null): string {
+  if (value === null) return "—";
+  try { return JSON.stringify(JSON.parse(value), null, 2); }
+  catch { return value; }
 }
 
 /** 三个步骤共用的标题样式：编号 + 文案，视觉上明确“到哪一步了”。 */
@@ -74,6 +81,7 @@ interface Props {
   /** 即使凭据变更后的候选内容相同，新的查询结果也使检测失效。 */
   candidatesRevision: number;
   initialProviderId: string | null;
+  initialModelChoices: ClaudeDesktopModelChoice[];
   /** 后端给出的可选操作；对话框只在直连可用时允许提交。 */
   availableActions: DesktopAction[];
   onClose: () => void;
@@ -91,6 +99,7 @@ export function ClaudeDesktopDialog({
   candidatesError,
   candidatesRevision,
   initialProviderId,
+  initialModelChoices,
   availableActions,
   onClose,
   onApplied,
@@ -98,7 +107,12 @@ export function ClaudeDesktopDialog({
   const { t } = useTranslation();
   const [providerId, setProviderId] = useState<string | null>(initialProviderId);
   const [pathId, setPathId] = useState<string | null>(null);
-  const [selected, setSelected] = useState<Record<string, ModelRow>>({});
+  const [selected, setSelected] = useState<Record<string, ModelRow>>(() => Object.fromEntries(
+    initialModelChoices.map(model => [model.modelId, {
+      label: model.labelOverride ?? "",
+      oneMMode: model.oneMMode,
+    }]),
+  ));
   const [rebaseline, setRebaseline] = useState(false);
   const [preview, setPreview] = useState<ClaudeDesktopPreview | null>(null);
   const [probe, setProbe] = useState<ClaudeDesktopBearerReport | null>(null);
@@ -131,6 +145,8 @@ export function ClaudeDesktopDialog({
     [candidate],
   );
   const chosenModels = Object.keys(selected);
+  const unavailableChoices = chosenModels.filter(modelId => !models.some(model => model.modelId === modelId));
+  const excludedModels = (candidate?.models ?? []).filter(model => !model.selectable && !selected[model.modelId]);
   const pathSelected = !!pathsChoice.normalRoot && !!pathsChoice.thirdPartyRoot;
   const formSnapshot = JSON.stringify({
     providerId, pathId, selected, rebaseline, pathsChoice,
@@ -156,7 +172,7 @@ export function ClaudeDesktopDialog({
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>{t("claudeDesktop.dialog.title")}</DialogTitle>
-            <DialogDescription>{t("claudeDesktop.dialog.description")}</DialogDescription>
+            <DialogDescription className="sr-only">{t("claudeDesktop.dialog.description")}</DialogDescription>
           </DialogHeader>
           <p role={candidatesError ? "alert" : "status"} className="text-sm text-muted-foreground">
             {candidatesError
@@ -173,7 +189,7 @@ export function ClaudeDesktopDialog({
     models: chosenModels.map(modelId => ({
       modelId,
       labelOverride: selected[modelId]?.label.trim() ? selected[modelId].label : null,
-      oneMMode: selected[modelId]?.oneMMode ?? "auto",
+      oneMMode: selected[modelId]?.oneMMode ?? "off",
     })),
     paths: pathsChoice,
     rebaseline,
@@ -218,12 +234,9 @@ export function ClaudeDesktopDialog({
       await onApplied();
       onClose();
     } catch (cause) {
-      const structured = desktopErrorOf(cause);
       setError(desktopErrorKey(cause, "claudeDesktop.errors.storage"));
-      // `changed` / 过期：保留表单，要求重新预览，不能复用旧 ticket。
-      if (structured?.code === "changed" || structured?.code === "preview_expired") {
-        setPreview(null);
-      }
+      // 提交已消费票据；失败后保留表单，下一次重新预览。
+      setPreview(null);
     } finally {
       pendingToken.current = null;
       setBusy(null);
@@ -261,13 +274,13 @@ export function ClaudeDesktopDialog({
   };
 
   const pickProvider = (id: string) => {
+    if (id === providerId) return;
     setProviderId(id);
     setSelected({});
     setProbe(null);
     setMessages(null);
   };
 
-  const endpoint = candidate?.endpoint ?? null;
   // 提交按钮不可用时说明原因，而不是只把它变灰。
   const submitBlockedReason = (() => {
     if (busy !== null) return t("claudeDesktop.dialog.busyHint");
@@ -287,14 +300,10 @@ export function ClaudeDesktopDialog({
       <DialogContent className="flex max-h-[90vh] flex-col overflow-hidden sm:max-w-3xl">
         <DialogHeader className="shrink-0">
           <DialogTitle>{t("claudeDesktop.dialog.title")}</DialogTitle>
-          <DialogDescription>{t("claudeDesktop.dialog.description")}</DialogDescription>
+          <DialogDescription className="sr-only">{t("claudeDesktop.dialog.description")}</DialogDescription>
         </DialogHeader>
 
         <div data-claude-desktop-scroll className="-mx-1 min-h-0 flex-1 space-y-4 overflow-y-auto px-1">
-          <p role="status" className="rounded-lg border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-            {t("claudeDesktop.banner.independent")}
-          </p>
-
           {!candidates.detector.installed && (
             <p role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
               {t("claudeDesktop.notInstalled")}
@@ -358,7 +367,6 @@ export function ClaudeDesktopDialog({
                   );
                 })}
               </div>
-              <p className="text-xs text-muted-foreground">{t("claudeDesktop.dialog.savedKeyHint")}</p>
             </div>
 
             {/* 路径：多渠道时必须由用户明确选择 */}
@@ -380,17 +388,9 @@ export function ClaudeDesktopDialog({
               </div>
             )}
 
-            {endpoint && (
-              <div className="space-y-1 rounded-lg border bg-card/60 px-3 py-2">
-                <p className="break-all font-mono text-[11px]">{endpoint.messagesUrl}</p>
-                <p className="text-[11px] text-muted-foreground">{t("claudeDesktop.dialog.previewHint")}</p>
-              </div>
-            )}
-
             {/* 2. 模型与能力 */}
             <div className="space-y-2">
               <StepHeading step="2" text={t("claudeDesktop.dialog.stepModels")} />
-              <p className="text-xs text-muted-foreground">{t("claudeDesktop.dialog.modelsHint")}</p>
               {models.length === 0 && (
                 <p role="status" className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
                   {t("claudeDesktop.dialog.noModels")}
@@ -415,7 +415,7 @@ export function ClaudeDesktopDialog({
                             setSelected(current => {
                               const next = { ...current };
                               if (next[model.modelId]) delete next[model.modelId];
-                              else next[model.modelId] = { label: model.label, oneMMode: "auto" };
+                              else next[model.modelId] = { label: "", oneMMode: "off" };
                               return next;
                             })
                           }
@@ -431,9 +431,6 @@ export function ClaudeDesktopDialog({
                             {t("claudeDesktop.dialog.protocolInferred")}
                           </Badge>
                         )}
-                        {model.supports1m && (
-                          <Badge variant="secondary" className="shrink-0 text-[10px]">1M</Badge>
-                        )}
                       </div>
                       {row && (
                         <div className="mt-2 flex flex-wrap items-center gap-2 pl-6">
@@ -441,7 +438,7 @@ export function ClaudeDesktopDialog({
                             value={row.label}
                             maxLength={64}
                             aria-label={t("claudeDesktop.dialog.labelPlaceholder")}
-                            placeholder={t("claudeDesktop.dialog.labelPlaceholder")}
+                            placeholder={model.label}
                             className="h-8 min-w-0 flex-1 text-xs"
                             onChange={event =>
                               setSelected(current => ({
@@ -450,6 +447,8 @@ export function ClaudeDesktopDialog({
                               }))
                             }
                           />
+                          <div className="flex items-center gap-2">
+                          <span className="text-[11px] text-muted-foreground">{t("claudeDesktop.dialog.oneMOptions")}</span>
                           <Select
                             value={row.oneMMode}
                             onValueChange={value =>
@@ -459,7 +458,7 @@ export function ClaudeDesktopDialog({
                               }))
                             }
                           >
-                            <SelectTrigger className="h-8 w-36 text-xs">
+                            <SelectTrigger aria-label={t("claudeDesktop.dialog.oneMOptions")} className="h-8 w-24 text-xs">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -467,16 +466,53 @@ export function ClaudeDesktopDialog({
                               <SelectItem value="off">{t("claudeDesktop.dialog.oneMOff")}</SelectItem>
                             </SelectContent>
                           </Select>
+                          </div>
                         </div>
                       )}
                     </li>
                   );
                 })}
               </ul>
-              {(candidate?.models ?? []).some(model => !model.selectable) && (
+              {unavailableChoices.length > 0 && (
+                <div data-desktop-unavailable-choices className="space-y-2">
+                  <p className="text-xs font-medium text-destructive">{t("claudeDesktop.dialog.unavailableChoices")}</p>
+                  {unavailableChoices.map(modelId => {
+                    const previous = selected[modelId];
+                    const excluded = candidate?.models.find(model => model.modelId === modelId);
+                    return (
+                      <div key={modelId} className="flex min-w-0 items-start gap-2 rounded-lg border border-destructive/30 px-3 py-2">
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <p className="break-all font-mono text-xs">{modelId}</p>
+                          {previous.label && previous.label !== modelId && <p className="break-words text-xs">{previous.label}</p>}
+                          <p className="text-[11px] text-muted-foreground">
+                            {t(reasonKey(excluded?.excludeReason ?? "model_removed"))}
+                          </p>
+                          <p className="text-[11px] text-muted-foreground">
+                            {t("claudeDesktop.dialog.oneMOptions")}: {t(previous.oneMMode === "auto" ? "claudeDesktop.dialog.oneMAuto" : "claudeDesktop.dialog.oneMOff")}
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          aria-label={t("claudeDesktop.dialog.removeUnavailableModel", { model: modelId })}
+                          onClick={() => setSelected(current => {
+                            const next = { ...current };
+                            delete next[modelId];
+                            return next;
+                          })}
+                        >
+                          {t("claudeDesktop.dialog.removeSelection")}
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {excludedModels.length > 0 && (
                 <div data-desktop-excluded-models className="space-y-1 rounded-lg border bg-muted/20 px-3 py-2">
                   <p className="text-xs font-medium">{t("claudeDesktop.dialog.modelExcluded")}</p>
-                  {(candidate?.models ?? []).filter(model => !model.selectable).map(model => (
+                  {excludedModels.map(model => (
                     <p key={model.modelId} className="break-all text-[11px] text-muted-foreground">
                       <span className="font-mono">{model.modelId}</span>{" · "}{t(reasonKey(model.excludeReason))}
                     </p>
@@ -494,9 +530,6 @@ export function ClaudeDesktopDialog({
               <label htmlFor="desktop-rebaseline" className="cursor-pointer text-xs">
                 {t("claudeDesktop.dialog.rebaseline")}
               </label>
-              <span className="text-[11px] text-muted-foreground">
-                {t("claudeDesktop.dialog.rebaselineHint")}
-              </span>
             </div>
 
             <div className="space-y-2">
@@ -535,7 +568,6 @@ export function ClaudeDesktopDialog({
                   )}
                 </Button>
               </div>
-              <p className="text-[11px] text-muted-foreground">{t("claudeDesktop.dialog.probeHint")}</p>
               <p className="text-[11px] text-muted-foreground">
                 {t("claudeDesktop.dialog.messagesCheckCost")}
               </p>
@@ -603,49 +635,68 @@ export function ClaudeDesktopDialog({
                   </div>
                 )}
 
-                <p className="text-[11px] text-muted-foreground">
-                  {t("claudeDesktop.dialog.messagesCheckResultHint")}
-                </p>
               </div>
             )}
 
             {/* 3. 预览 */}
             <div className="space-y-2">
               <StepHeading step="3" text={t("claudeDesktop.dialog.stepPreview")} />
-              {!preview && <p className="text-xs text-muted-foreground">{t("claudeDesktop.dialog.previewHint")}</p>}
               {preview && (
                 <div className="space-y-2">
-                  {preview.messagesUrl && (
-                    <p className="break-all font-mono text-[11px] text-muted-foreground">
-                      {preview.messagesUrl}
-                    </p>
-                  )}
-                  {preview.files.map(file => (
-                    <div key={file.role} className="rounded-lg border px-3 py-2">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Badge variant="outline" className="text-[10px]">{file.kind}</Badge>
-                        <span className="text-xs font-medium">{file.role}</span>
-                      </div>
-                      <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">{file.path}</p>
-                      <ul className="mt-1 space-y-0.5">
-                        {file.managedChanges.map(change => (
-                          <li key={change.path} className="break-all font-mono text-[11px]">
-                            <span className="text-muted-foreground">{change.path}</span>
-                            {": "}
-                            <span className="text-muted-foreground">{change.before ?? "—"}</span>
-                            {" → "}
-                            <span>{change.after ?? "—"}</span>
-                          </li>
-                        ))}
-                      </ul>
+                  <div data-desktop-preview-summary className="space-y-3 rounded-lg border px-3 py-3">
+                    <p className="text-sm font-medium">{preview.providerName}</p>
+                    {preview.messagesUrl && (
+                      <p className="break-all font-mono text-xs text-muted-foreground">{preview.messagesUrl}</p>
+                    )}
+                    <ul className="space-y-2">
+                      {preview.models.map(model => (
+                        <li key={model.modelId} className="min-w-0">
+                          <p className="flex flex-wrap items-center gap-2 text-sm">
+                            <span className="break-words font-medium">{model.label || model.modelId}</span>
+                            {model.oneM && <Badge variant="outline" className="text-[10px]">{t("claudeDesktop.dialog.oneMEnabled")}</Badge>}
+                          </p>
+                          {model.label && model.label !== model.modelId && (
+                            <p className="break-all font-mono text-xs text-muted-foreground">{model.modelId}</p>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                  <details data-desktop-preview-files className="text-xs">
+                    <summary className="w-fit cursor-pointer rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                      {t("claudeDesktop.dialog.fileDetails")}
+                    </summary>
+                    <div className="mt-2 space-y-3">
+                      {preview.files.map(file => (
+                        <div key={file.role} className="space-y-2 border-t pt-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-medium">{t(`claudeDesktop.fileRoles.${file.role}`)}</span>
+                            <Badge variant="outline" className="text-[10px]">{t(`claudeDesktop.fileKinds.${file.kind}`)}</Badge>
+                          </div>
+                          <p className="break-all font-mono text-[11px] text-muted-foreground">{file.path}</p>
+                          <dl className="space-y-2">
+                            {file.managedChanges.map(change => (
+                              <div key={change.path} className="space-y-1">
+                                <dt className="break-all font-mono text-[11px]">{change.path}</dt>
+                                <dd className="grid gap-2 sm:grid-cols-2">
+                                  {(["before", "after"] as const).map(side => (
+                                    <div key={side} className="min-w-0 bg-muted/40 px-2 py-1.5">
+                                      <p className="mb-1 text-[11px] text-muted-foreground">{t(`claudeDesktop.dialog.${side}`)}</p>
+                                      <pre className="whitespace-pre-wrap break-all font-mono text-[11px]">{formatManagedValue(change[side])}</pre>
+                                    </div>
+                                  ))}
+                                </dd>
+                              </div>
+                            ))}
+                          </dl>
+                        </div>
+                      ))}
+                      {preview.externalProfileCount > 0 && (
+                        <p className="text-muted-foreground">{t("claudeDesktop.dialog.externalProfiles")}: {preview.externalProfileCount}</p>
+                      )}
                     </div>
-                  ))}
-                  {preview.externalProfileCount > 0 && (
-                    <p className="text-[11px] text-muted-foreground">
-                      {t("claudeDesktop.dialog.externalProfiles")}: {preview.externalProfileCount}
-                    </p>
-                  )}
-                  {preview.warnings.map(key => (
+                  </details>
+                  {preview.warnings.filter(key => key !== "claudeDesktop.warnings.requiresRestart").map(key => (
                     <p
                       key={key}
                       role="status"
@@ -654,16 +705,13 @@ export function ClaudeDesktopDialog({
                       {t(key)}
                     </p>
                   ))}
-                  {preview.requiresRestart && (
-                    <p role="status" className="text-[11px] text-muted-foreground">
-                      {t("claudeDesktop.dialog.requiresRestart")}
-                    </p>
-                  )}
                 </div>
               )}
             </div>
 
-            <div className="space-y-1">
+            <details className="text-xs text-muted-foreground">
+              <summary className="w-fit cursor-pointer rounded-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{t("claudeDesktop.dialog.environmentDetails")}</summary>
+              <div className="mt-2 space-y-1">
               <Label>{t("claudeDesktop.versionLabel")}</Label>
               <p className="break-all font-mono text-[11px] text-muted-foreground">
                 {candidates.detector.version === "unknown"
@@ -672,13 +720,13 @@ export function ClaudeDesktopDialog({
                 {" · "}
                 {t(candidates.detector.versionSource)}
               </p>
-            </div>
-
-            {candidates.detector.notes.map(note => (
+              {candidates.detector.notes.map(note => (
               <p key={note} role="status" className="text-[11px] text-muted-foreground">
                 {t(note)}
               </p>
-            ))}
+              ))}
+              </div>
+            </details>
 
             {eligible.length === 0 && (
               <p role="status" className="text-[11px] text-muted-foreground">
@@ -704,7 +752,7 @@ export function ClaudeDesktopDialog({
             </p>
           )}
           <Button
-            disabled={submitBlockedReason !== null}
+            disabled={submitBlockedReason !== null || unavailableChoices.length > 0}
             onClick={() => void (preview ? runApply() : runPreview())}
           >
             {busy === "preview" || busy === "apply" ? (

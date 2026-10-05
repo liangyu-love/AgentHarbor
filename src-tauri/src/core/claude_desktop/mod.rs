@@ -107,6 +107,8 @@ pub struct Manager {
     version_hint: Option<String>,
     /// 显式路径覆盖；只用于隔离的集成测试，生产路径始终由发现决定。
     paths_override: Option<DesktopPaths>,
+    #[cfg(test)]
+    stop_check: Option<std::sync::Arc<dyn Fn(&DesktopPaths) -> DesktopResult<()> + Send + Sync>>,
 }
 
 impl Manager {
@@ -115,6 +117,8 @@ impl Manager {
             app_data_dir: app_data_dir.to_path_buf(),
             version_hint: None,
             paths_override: None,
+            #[cfg(test)]
+            stop_check: None,
         }
     }
 
@@ -237,6 +241,10 @@ impl Manager {
     }
 
     fn ensure_stopped(&self, paths: &DesktopPaths) -> DesktopResult<()> {
+        #[cfg(test)]
+        if let Some(check) = &self.stop_check {
+            return check(paths);
+        }
         desktop_app::ensure_stopped(paths)
     }
 
@@ -348,9 +356,7 @@ impl Manager {
             return Err(transaction::conflict_error());
         }
         let paths = self.session_paths(active, &request.paths)?;
-        if action.writes_files() {
-            self.ensure_stopped(&paths)?;
-        }
+        // 预览只读取配置。Desktop 可继续运行；退出门禁放在提交真正写入前。
         let before = transaction::snapshot(&paths)?;
         // 释放只保存原文与结束管理；外部文件即使不再是合法 JSON 也不需要解析。
         if action == DesktopAction::Release {
@@ -576,7 +582,11 @@ impl Manager {
         if matches!(action, DesktopAction::RestorePrevious | DesktopAction::SwitchOfficial) {
             next_state = next_state.into_tombstone(generation, &transaction_id);
         }
-        let requires_restart = !plans.is_empty();
+        // 待启动属于已应用会话的状态：一次无改动的重新应用不能替用户确认已启动。
+        let requires_restart = !plans.is_empty()
+            || previous.as_ref().is_some_and(|state| {
+                state.restart_required && state.paths_identity == paths.identity()
+            });
         next_state.restart_required = requires_restart;
         // 计划读取期间发生变化也必须重新预览；不能拿旧 before 配合新 after。
         let after_read = transaction::snapshot(&paths)?;
@@ -731,6 +741,10 @@ impl Manager {
         }
 
         let paths = &prepared.paths;
+        // 消费票据并重读输入后才检查进程；拒绝时不能产生 pending、备份或外部写入。
+        if action.writes_files() {
+            self.ensure_stopped(paths)?;
+        }
         let transaction_id = uuid::Uuid::new_v4().to_string();
         let generation = prepared
             .previous_state
@@ -795,7 +809,7 @@ impl Manager {
             warnings.push("claudeDesktop.warnings.ticketCleanup".to_owned());
         }
 
-        // 只在真的写了文件时才要求重启：四文件已经是目标态时不制造无谓的重启提示。
+        // 没有新写入也不能清除之前尚未完成的重启要求。
         let wrote_files = !prepared.plans.is_empty();
         if !wrote_files {
             warnings.push("claudeDesktop.warnings.noChanges".to_owned());
@@ -809,7 +823,7 @@ impl Manager {
                 .collect(),
             backup_id: Some(backup_id),
             management_state: if next_state.tombstone { "unmanaged" } else { "managed" }.to_owned(),
-            requires_restart: wrote_files,
+            requires_restart: next_state.restart_required,
             warnings,
         })
     }
@@ -937,7 +951,7 @@ impl Manager {
                     .collect(),
                 backup_id: pending.backup_id,
                 management_state: if pending.next_state.tombstone { "unmanaged" } else { "managed" }.to_owned(),
-                requires_restart: !pending.files.is_empty(),
+                requires_restart: pending.next_state.restart_required,
                 warnings: vec!["claudeDesktop.warnings.recoveredCommitted".to_owned()],
             });
         }
@@ -1001,24 +1015,50 @@ impl Manager {
     /// 已经在运行的实例既不会重新读取配置，也会在它退出时覆盖刚写入的内容。
     /// 调用方必须已经完成配置提交。
     pub fn restart_app(&self, paths: &DesktopPaths) -> DesktopResult<String> {
-        // 状态检查与停止/启动都在锁内，避免等锁期间启动的实例漏过停止阶段。
-        let _process_lock = lock::acquire(&self.app_data_dir, "restartApp")?;
-        let before = desktop_app::state(paths);
-        if before.launch_method.is_none() {
-            return Err(Box::new(
-                DesktopError::new(
-                    error_code::PROCESS,
-                    "claudeDesktop.errors.launchUnavailable",
+        self.restart_app_with(paths, |paths| {
+            let before = desktop_app::state(paths);
+            let launch_method = before.launch_method.ok_or_else(|| {
+                Box::new(
+                    DesktopError::new(
+                        error_code::PROCESS,
+                        "claudeDesktop.errors.launchUnavailable",
+                    )
+                    .action("openManually"),
                 )
-                .action("openManually"),
-            ));
+            })?;
+            desktop_app::stop(paths, std::time::Duration::from_secs(20))?;
+            desktop_app::launch(paths, std::time::Duration::from_secs(25))?;
+            Ok(launch_method.as_str().to_owned())
+        })
+    }
+
+    fn restart_app_with(
+        &self,
+        paths: &DesktopPaths,
+        restart: impl FnOnce(&DesktopPaths) -> DesktopResult<String>,
+    ) -> DesktopResult<String> {
+        // 状态检查与停止/启动都在锁内，避免等锁期间启动的实例漏过停止阶段。
+        // 与提交/恢复保持同一锁顺序；成功后更新 journal 也属于写操作。
+        let _guard = Self::write_lock()?;
+        let _process_lock = lock::acquire(&self.app_data_dir, "restartApp")?;
+        if let Some(pending) = self.load_pending()? {
+            return Err(Box::new(DesktopError::new(
+                error_code::RECOVERY_REQUIRED,
+                "claudeDesktop.errors.pendingRecovery",
+            ).param(pending.transaction_id).action("recoverRollback")));
         }
-        desktop_app::stop(paths, std::time::Duration::from_secs(20))?;
-        desktop_app::launch(paths, std::time::Duration::from_secs(25))?;
-        Ok(before
-            .launch_method
-            .map(|method| method.as_str().to_owned())
-            .unwrap_or_default())
+        let mut state = self.load_state()?;
+        let current_paths = self.session_paths(state.as_ref(), &PathsChoice::default())?;
+        if current_paths.identity() != paths.identity() {
+            return Err(changed_error());
+        }
+        let launch_method = restart(&current_paths)?;
+        // 仅在停止和启动都确认成功后清除当前会话标记，失败时保留原状态。
+        if let Some(state) = state.as_mut().filter(|state| state.restart_required) {
+            state.restart_required = false;
+            self.save_state(state)?;
+        }
+        Ok(launch_method)
     }
 
     /// 当前 Desktop 应用状态，供命令层在重启前判断是否需要先停止。
