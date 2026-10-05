@@ -263,11 +263,19 @@ impl Manager {
     }
 
     fn ensure_stopped(&self, paths: &DesktopPaths) -> DesktopResult<()> {
+        self.ensure_stopped_with(paths, &desktop_app::StopCheck::new(paths))
+    }
+
+    fn ensure_stopped_with(
+        &self,
+        _paths: &DesktopPaths,
+        check: &desktop_app::StopCheck,
+    ) -> DesktopResult<()> {
         #[cfg(test)]
         if let Some(check) = &self.stop_check {
-            return check(paths);
+            return check(_paths);
         }
-        desktop_app::ensure_stopped(paths)
+        check.ensure_stopped()
     }
 
     pub fn candidates(
@@ -959,9 +967,10 @@ impl Manager {
         }
 
         let paths = &prepared.paths;
+        let process_check = desktop_app::StopCheck::new(paths);
         // 消费票据并重读输入后才检查进程；拒绝时不能产生 pending、备份或外部写入。
         if action.writes_files() {
-            self.ensure_stopped(paths)?;
+            self.ensure_stopped_with(paths, &process_check)?;
         }
         let transaction_id = uuid::Uuid::new_v4().to_string();
         let generation = prepared
@@ -996,7 +1005,7 @@ impl Manager {
 
         // 3) 逐文件写入，写前再次校验该文件未被外部改动。
         for plan in &prepared.plans {
-            self.ensure_stopped(paths)?;
+            self.ensure_stopped_with(paths, &process_check)?;
             if let Err(error) = verify_unchanged(&pending, plan) {
                 return self.fail_and_rollback(&pending, error);
             }
@@ -1013,7 +1022,7 @@ impl Manager {
         }
 
         // 5) 持久写入 nextState：这是提交点。
-        self.ensure_stopped(paths)?;
+        self.ensure_stopped_with(paths, &process_check)?;
         if let Err(error) = self.save_state(&next_state) {
             return self.fail_and_rollback(&pending, error);
         }
@@ -1291,21 +1300,7 @@ impl Manager {
     /// 已经在运行的实例既不会重新读取配置，也会在它退出时覆盖刚写入的内容。
     /// 调用方必须已经完成配置提交。
     pub fn restart_app(&self, paths: &DesktopPaths) -> DesktopResult<String> {
-        self.restart_app_with(paths, |paths| {
-            let before = desktop_app::state(paths);
-            let launch_method = before.launch_method.ok_or_else(|| {
-                Box::new(
-                    DesktopError::new(
-                        error_code::PROCESS,
-                        "claudeDesktop.errors.launchUnavailable",
-                    )
-                    .action("openManually"),
-                )
-            })?;
-            desktop_app::stop(paths, std::time::Duration::from_secs(20))?;
-            desktop_app::launch(paths, std::time::Duration::from_secs(25))?;
-            Ok(launch_method.as_str().to_owned())
-        })
+        self.restart_app_with(paths, desktop_app::restart)
     }
 
     fn restart_app_with(

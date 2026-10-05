@@ -15,11 +15,16 @@ pub fn restore_gateway(
     store: &Store,
     stop_running: bool,
 ) -> DesktopResult<bool> {
+    let mut process_check = None;
     restore_gateway_with(
         manager,
         store,
         stop_running,
-        desktop_app::ensure_stopped,
+        |paths| {
+            process_check
+                .get_or_insert_with(|| desktop_app::StopCheck::new(paths))
+                .ensure_stopped()
+        },
         |paths| desktop_app::stop(paths, std::time::Duration::from_secs(10)).map(|_| ()),
     )
 }

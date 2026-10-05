@@ -12,6 +12,10 @@ use std::time::{Duration, Instant};
 use super::paths::DesktopPaths;
 use super::types::{error_code, DesktopError, DesktopResult};
 
+mod command;
+#[cfg(windows)]
+mod windows;
+
 /// Desktop 主进程名（MSIX 包内是 `app` + 分隔符 + `Claude.exe`）。
 ///
 /// **不要**匹配 `Claude-3p` 下的 `claude-code` CLI：那是被 Desktop 当作工具
@@ -65,6 +69,46 @@ struct AppIdentity {
     executable: PathBuf,
 }
 
+enum ProcessImage {
+    Running(PathBuf),
+    Exited,
+    Unknown,
+}
+
+impl From<Option<PathBuf>> for ProcessImage {
+    fn from(path: Option<PathBuf>) -> Self {
+        path.map(Self::Running).unwrap_or(Self::Unknown)
+    }
+}
+
+/// Reuse installation discovery within one transaction, but query live
+/// processes at every write gate. This is not a cache of "already stopped".
+pub struct StopCheck {
+    allowed: bool,
+    identity: Option<AppIdentity>,
+}
+
+impl StopCheck {
+    pub fn new(paths: &DesktopPaths) -> Self {
+        let allowed = process_control_allowed(paths);
+        Self {
+            allowed,
+            identity: allowed.then(|| app_identity(paths)).flatten(),
+        }
+    }
+
+    pub fn ensure_stopped(&self) -> DesktopResult<()> {
+        if !self.allowed {
+            return Ok(());
+        }
+        stopped_result(checked_processes(
+            self.identity.as_ref(),
+            candidate_processes(self.identity.as_ref()),
+            process_image,
+        ))
+    }
+}
+
 fn process_error(code: &str) -> Box<DesktopError> {
     Box::new(DesktopError::new(code, "claudeDesktop.errors.process").retryable())
 }
@@ -103,46 +147,6 @@ fn process_control_allowed(paths: &DesktopPaths) -> bool {
     !paths.isolated && !paths.overridden && super::paths::isolated_home().is_none()
 }
 
-/// 解析 `tasklist /FO CSV /NH` 的输出为 (pid, 镜像名)。
-pub fn parse_tasklist_csv(output: &str) -> Vec<(u32, String)> {
-    let mut out = Vec::new();
-    for line in output.lines() {
-        let line = line.trim();
-        if !line.starts_with('"') {
-            continue;
-        }
-        let fields: Vec<String> = line
-            .split(",")
-            .map(|field| field.trim_matches('"').trim().to_owned())
-            .collect();
-        if fields.len() < 2 {
-            continue;
-        }
-        let Ok(pid) = fields[1].parse::<u32>() else {
-            continue;
-        };
-        out.push((pid, fields[0].clone()));
-    }
-    out
-}
-
-#[cfg(any(windows, test))]
-fn tasklist_candidates(output: &str) -> DesktopResult<Vec<u32>> {
-    let records = parse_tasklist_csv(output);
-    let csv_rows = output
-        .lines()
-        .filter(|line| line.trim().starts_with('"'))
-        .count();
-    if records.len() != csv_rows
-        || records
-            .iter()
-            .any(|(pid, image)| *pid == 0 || !image.eq_ignore_ascii_case("Claude.exe"))
-    {
-        return Err(process_error(error_code::PROCESS));
-    }
-    Ok(records.into_iter().map(|(pid, _)| pid).collect())
-}
-
 /// 只接受本项目已核实的包族名与 `!Claude` 应用 id。
 pub fn is_msix_app_id(text: &str) -> bool {
     let Some((family, app)) = text.trim().split_once('!') else {
@@ -174,16 +178,7 @@ pub fn state(paths: &DesktopPaths) -> AppState {
 /// An unknown Claude installation is never signalled, but blocks a production
 /// write until the user closes it. Test overrides never inspect real processes.
 pub fn ensure_stopped(paths: &DesktopPaths) -> DesktopResult<()> {
-    if !process_control_allowed(paths) {
-        return Ok(());
-    }
-    let identity = app_identity(paths);
-    let processes = checked_processes(
-        identity.as_ref(),
-        candidate_processes(identity.as_ref()),
-        process_executable,
-    );
-    stopped_result(processes)
+    StopCheck::new(paths).ensure_stopped()
 }
 
 fn stopped_result(processes: DesktopResult<Vec<u32>>) -> DesktopResult<()> {
@@ -197,14 +192,18 @@ fn stopped_result(processes: DesktopResult<Vec<u32>>) -> DesktopResult<()> {
     ))
 }
 
-fn checked_processes(
+fn checked_processes<T: Into<ProcessImage>>(
     identity: Option<&AppIdentity>,
     candidates: DesktopResult<Vec<u32>>,
-    mut executable: impl FnMut(u32) -> Option<PathBuf>,
+    mut executable: impl FnMut(u32) -> T,
 ) -> DesktopResult<Vec<u32>> {
     let mut matched = Vec::new();
     for pid in candidates? {
-        let path = executable(pid).ok_or_else(|| process_error(error_code::PROCESS))?;
+        let path = match executable(pid).into() {
+            ProcessImage::Running(path) => path,
+            ProcessImage::Exited => continue,
+            ProcessImage::Unknown => return Err(process_error(error_code::PROCESS)),
+        };
         if is_cli_path(&path.to_string_lossy()) {
             continue;
         }
@@ -220,7 +219,7 @@ fn list_processes(identity: &AppIdentity) -> DesktopResult<Vec<u32>> {
     checked_processes(
         Some(identity),
         candidate_processes(Some(identity)),
-        process_executable,
+        process_image,
     )
 }
 
@@ -235,22 +234,27 @@ pub fn stop(paths: &DesktopPaths, timeout: Duration) -> DesktopResult<bool> {
             .action("openManually"),
         )
     })?;
-    let processes = list_processes(&identity)?;
+    stop_identity(&identity, timeout)
+}
+
+fn stop_identity(identity: &AppIdentity, timeout: Duration) -> DesktopResult<bool> {
+    let processes = list_processes(identity)?;
     if processes.is_empty() {
         return Ok(false);
     }
+    let mut close_requested = false;
     for pid in &processes {
-        signal(*pid, false)?;
+        close_requested |= signal(identity, *pid, false)?;
     }
-    if wait_until_stopped(&identity, timeout)? {
+    if close_requested && wait_until_stopped(identity, timeout)? {
         return Ok(true);
     }
     // 优雅退出没完成时强制结束，避免半退出状态下写文件被回写覆盖。
     // Re-enumerate by executable identity before forcing: PIDs can be reused.
-    for pid in &list_processes(&identity)? {
-        signal(*pid, true)?;
+    for pid in &list_processes(identity)? {
+        signal(identity, *pid, true)?;
     }
-    if wait_until_stopped(&identity, Duration::from_secs(5))? {
+    if wait_until_stopped(identity, Duration::from_secs(5))? {
         return Ok(true);
     }
     Err(Box::new(
@@ -273,6 +277,26 @@ pub fn launch(paths: &DesktopPaths, timeout: Duration) -> DesktopResult<()> {
             .action("openManually"),
         ));
     };
+    launch_identity(&identity, timeout)
+}
+
+/// Resolve the selected installation once for the whole stop/start operation.
+pub fn restart(paths: &DesktopPaths) -> DesktopResult<String> {
+    let identity = app_identity(paths).ok_or_else(|| {
+        Box::new(
+            DesktopError::new(
+                error_code::PROCESS,
+                "claudeDesktop.errors.launchUnavailable",
+            )
+            .action("openManually"),
+        )
+    })?;
+    stop_identity(&identity, Duration::from_secs(20))?;
+    launch_identity(&identity, Duration::from_secs(25))?;
+    Ok(identity.method.as_str().to_owned())
+}
+
+fn launch_identity(identity: &AppIdentity, timeout: Duration) -> DesktopResult<()> {
     let spawned = match identity.method {
         LaunchMethod::MsixActivation => msix_activate(&identity.target),
         LaunchMethod::Executable => cmd_spawn(&identity.target, &[]),
@@ -293,7 +317,7 @@ pub fn launch(paths: &DesktopPaths, timeout: Duration) -> DesktopResult<()> {
                 .action("openManually"),
         ));
     }
-    if wait_until_running(&identity, timeout)? {
+    if wait_until_running(identity, timeout)? {
         Ok(())
     } else {
         Err(Box::new(
@@ -310,49 +334,30 @@ pub fn launch(paths: &DesktopPaths, timeout: Duration) -> DesktopResult<()> {
 
 #[cfg(target_os = "windows")]
 fn candidate_processes(_identity: Option<&AppIdentity>) -> DesktopResult<Vec<u32>> {
-    let filter = format!("IMAGENAME eq {}.exe", PROCESS_STEM);
-    let output = crate::platform::windows::background_command("tasklist")
-        .args(["/FO", "CSV", "/NH", "/FI", &filter])
-        .output()
-        .map_err(|_| process_error(error_code::PROCESS))?;
-    if !output.status.success() {
-        return Err(process_error(error_code::PROCESS));
+    windows::candidates()
+}
+
+#[cfg(all(windows, test))]
+fn process_executable(pid: u32) -> Option<PathBuf> {
+    match process_image(pid) {
+        ProcessImage::Running(path) => Some(path),
+        _ => None,
     }
-    tasklist_candidates(&String::from_utf8_lossy(&output.stdout))
 }
 
 #[cfg(windows)]
-fn process_executable(pid: u32) -> Option<PathBuf> {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle.is_null() {
-            return None;
-        }
-        let mut buffer = vec![0u16; 32768];
-        let mut length = buffer.len() as u32;
-        let ok = QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &mut length);
-        CloseHandle(handle);
-        (ok != 0 && length > 0)
-            .then(|| PathBuf::from(String::from_utf16_lossy(&buffer[..length as usize])))
-    }
+fn process_image(pid: u32) -> ProcessImage {
+    windows::image(pid)
+}
+
+#[cfg(not(windows))]
+fn process_image(pid: u32) -> ProcessImage {
+    process_executable(pid).into()
 }
 
 #[cfg(target_os = "windows")]
-fn signal(pid: u32, force: bool) -> DesktopResult<()> {
-    let mut command = crate::platform::windows::background_command("taskkill");
-    command.args(["/PID", &pid.to_string()]);
-    if force {
-        // /T would also terminate Claude Code tools descended from Desktop.
-        command.arg("/F");
-    }
-    command
-        .output()
-        .map_err(|_| process_error(error_code::PROCESS))?;
-    Ok(())
+fn signal(identity: &AppIdentity, pid: u32, force: bool) -> DesktopResult<bool> {
+    windows::signal(identity, pid, force)
 }
 
 #[cfg(target_os = "windows")]
@@ -401,10 +406,9 @@ fn app_identity(paths: &DesktopPaths) -> Option<AppIdentity> {
 #[cfg(target_os = "windows")]
 fn msix_identity() -> Option<AppIdentity> {
     let script = "$p = @(Get-AppxPackage -Name 'Claude' -ErrorAction SilentlyContinue | Where-Object { $_.PackageFamilyName -eq 'Claude_pzs8sxrjxfjjc' }); if ($p.Count -eq 1) { $a = @((Get-AppxPackageManifest $p[0]).Package.Applications.Application | Where-Object { $_.Id -eq 'Claude' }); if ($a.Count -eq 1) { [pscustomobject]@{ appId = $p[0].PackageFamilyName + '!' + $a[0].Id; executable = Join-Path $p[0].InstallLocation $a[0].Executable } | ConvertTo-Json -Compress } }";
-    let output = crate::platform::windows::background_command("powershell")
-        .args(["-NoProfile", "-Command", script])
-        .output()
-        .ok()?;
+    let mut command = crate::platform::windows::background_command("powershell");
+    command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    let output = command::output(&mut command, Duration::from_secs(5)).ok()?;
     if !output.status.success() {
         return None;
     }
@@ -437,9 +441,9 @@ fn candidate_processes(identity: Option<&AppIdentity>) -> DesktopResult<Vec<u32>
     };
     let mut candidates = Vec::new();
     for name in names {
-        let output = std::process::Command::new("pgrep")
-            .args(["-x", name])
-            .output()
+        let mut cmd = std::process::Command::new("pgrep");
+        cmd.args(["-x", name]);
+        let output = command::output(&mut cmd, Duration::from_secs(2))
             .map_err(|_| process_error(error_code::PROCESS))?;
         if !output.status.success() && output.status.code() != Some(1) {
             return Err(process_error(error_code::PROCESS));
@@ -464,10 +468,9 @@ fn process_executable(pid: u32) -> Option<PathBuf> {
 
 #[cfg(target_os = "macos")]
 fn process_executable(pid: u32) -> Option<PathBuf> {
-    let output = std::process::Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "comm="])
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new("ps");
+    cmd.args(["-p", &pid.to_string(), "-o", "comm="]);
+    let output = command::output(&mut cmd, Duration::from_secs(2)).ok()?;
     if !output.status.success() {
         return None;
     }
@@ -477,13 +480,16 @@ fn process_executable(pid: u32) -> Option<PathBuf> {
 }
 
 #[cfg(unix)]
-fn signal(pid: u32, force: bool) -> DesktopResult<()> {
+fn signal(_identity: &AppIdentity, pid: u32, force: bool) -> DesktopResult<bool> {
     let flag = if force { "-KILL" } else { "-TERM" };
-    std::process::Command::new("kill")
-        .args([flag, &pid.to_string()])
-        .output()
+    let mut cmd = std::process::Command::new("kill");
+    cmd.args([flag, &pid.to_string()]);
+    let output = command::output(&mut cmd, Duration::from_secs(2))
         .map_err(|_| process_error(error_code::PROCESS))?;
-    Ok(())
+    if !output.status.success() {
+        return Err(process_error(error_code::PROCESS));
+    }
+    Ok(true)
 }
 
 /// macOS 的包标识。
@@ -515,10 +521,9 @@ fn app_identity(paths: &DesktopPaths) -> Option<AppIdentity> {
 /// 用 `mdfind` 查询包是否已安装；查询失败时保守地认为未确认。
 #[cfg(target_os = "macos")]
 fn macos_bundle_path(bundle_id: &str) -> Option<PathBuf> {
-    let output = std::process::Command::new("mdfind")
-        .arg(format!("kMDItemCFBundleIdentifier == {bundle_id}"))
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new("mdfind");
+    cmd.arg(format!("kMDItemCFBundleIdentifier == {bundle_id}"));
+    let output = command::output(&mut cmd, Duration::from_secs(5)).ok()?;
     if !output.status.success() {
         return None;
     }
@@ -652,7 +657,7 @@ fn process_executable(_pid: u32) -> Option<PathBuf> {
 }
 
 #[cfg(not(any(windows, unix)))]
-fn signal(_pid: u32, _force: bool) -> DesktopResult<()> {
+fn signal(_identity: &AppIdentity, _pid: u32, _force: bool) -> DesktopResult<bool> {
     Err(process_error(error_code::PROCESS))
 }
 
@@ -725,25 +730,6 @@ mod tests {
     }
 
     #[test]
-    fn tasklist_csv_parsing_ignores_noise() {
-        // 无匹配进程时 tasklist 打印一条信息行，而不是 CSV。
-        let none = "INFO: No tasks are running which match the specified criteria.";
-        assert!(parse_tasklist_csv(none).is_empty());
-        assert!(parse_tasklist_csv("").is_empty());
-        let some = "\"Claude.exe\",\"1234\",\"Console\",\"1\",\"123,456 K\"\r\n\"Claude.exe\",\"5678\",\"Console\",\"1\",\"12,345 K\"\r\n";
-        assert_eq!(
-            parse_tasklist_csv(some),
-            vec![
-                (1234, "Claude.exe".to_owned()),
-                (5678, "Claude.exe".to_owned())
-            ]
-        );
-        assert_eq!(tasklist_candidates(some).unwrap(), vec![1234, 5678]);
-        assert!(tasklist_candidates("\"Claude.exe\",\"not-a-pid\"").is_err());
-        assert!(tasklist_candidates("\"unrelated.exe\",\"1234\"").is_err());
-    }
-
-    #[test]
     fn only_the_verified_package_family_and_app_id_are_accepted() {
         assert!(is_msix_app_id("Claude_pzs8sxrjxfjjc!Claude"));
         // 版本化的完整包名不是 AUMID。
@@ -776,12 +762,26 @@ mod tests {
 
     #[test]
     fn process_query_failures_never_authorize_a_write() {
-        let result = checked_processes(None, Err(process_error(error_code::PROCESS)), |_| {
-            panic!("a failed enumeration must not query any PID")
-        });
+        let result = checked_processes(
+            None,
+            Err(process_error(error_code::PROCESS)),
+            |_| -> Option<PathBuf> { panic!("a failed enumeration must not query any PID") },
+        );
         assert!(stopped_result(result).is_err());
         let result = checked_processes(None, Ok(vec![7]), |_| None);
         assert!(stopped_result(result).is_err());
+    }
+
+    #[test]
+    fn an_exited_candidate_is_ignored_but_unknown_state_still_blocks_writes() {
+        assert!(stopped_result(checked_processes(None, Ok(vec![7]), |_| {
+            ProcessImage::Exited
+        }))
+        .is_ok());
+        assert!(stopped_result(checked_processes(None, Ok(vec![7]), |_| {
+            ProcessImage::Unknown
+        }))
+        .is_err());
     }
 
     #[test]
@@ -797,9 +797,11 @@ mod tests {
             Some(cli.clone())
         }))
         .is_ok());
-        assert!(stopped_result(checked_processes(None, Ok(vec![]), |_| {
-            panic!("an empty enumeration must not query any PID")
-        }))
+        assert!(stopped_result(checked_processes(
+            None,
+            Ok(vec![]),
+            |_| -> Option<PathBuf> { panic!("an empty enumeration must not query any PID") }
+        ))
         .is_ok());
     }
 
