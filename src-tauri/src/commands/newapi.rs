@@ -170,6 +170,16 @@ pub async fn set_newapi_failover(
     router::set_same_model_failover(&paths, enabled)
 }
 
+#[tauri::command]
+pub async fn set_router_web_search_provider(
+    repo: State<'_, Mutex<Repository>>,
+    provider_id: Option<String>,
+) -> Result<StateChange, String> {
+    let paths = paths(&repo)?;
+    let _guard = routing_runtime::mutation_guard().await;
+    router::set_web_search_provider(&paths, provider_id)
+}
+
 /// Global compression policy (default 90%). Existing injections are re-derived.
 #[tauri::command]
 pub async fn set_newapi_compression(

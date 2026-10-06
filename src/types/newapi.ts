@@ -87,6 +87,7 @@ export interface NewApiProvider {
   userId: number | null;
   hasAccessToken: boolean;
   hasApiKey: boolean;
+  webSearchCapable?: boolean;
   protocol: ModelProtocol;
   model: string;
   models: NewApiModel[];
@@ -115,6 +116,7 @@ export interface ProviderProbeEvent {
 export interface NewApiRouterView {
   enabled: boolean;
   sameModelFailover?: boolean;
+  webSearchProviderId?: string | null;
   accessMode: CodexAccessMode;
   accountless: boolean;
   port: number;

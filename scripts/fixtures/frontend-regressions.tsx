@@ -187,6 +187,7 @@ api.routing.setModelPrice = async (providerId, modelId, price) => {
   return { state, applied: null } as any;
 };
 api.routing.setFailover = async enabled => { state = { ...state, router: { ...state.router, sameModelFailover: enabled } }; return { state, applied: null }; };
+api.routing.setWebSearchProvider = async providerId => { state = { ...state, router: { ...state.router, webSearchProviderId: providerId } }; return { state, applied: null }; };
 api.loadSnapshot = async () => ({ data: { status: {
   paths: { codexHome: "C:/synthetic/codex", authExists: true, registryExists: true, sessionsExists: true },
   api: { proxy: { mode: "manual", url: "http://127.0.0.1:7890" } },
@@ -502,6 +503,7 @@ function mount(mode: FixtureMode) {
     : mode === "incompatible" || mode === "native-invalid" ? { ...mixedProvider, model: "chat-model" } : mixedProvider;
   state = { providers: mode === "image" ? [imageProvider] : mode === "groups" ? groupedProviders : mode === "overview" ? [...groupedProviders, provider("extra-1"), provider("extra-2")] : mode === "usage" ? [{ ...groupedProviders[0], balance: { remaining: 12.5, used: 7.5, unit: "USD", rawQuota: 12.5, quotaPerUnit: null, requestCount: 5, checkedAt: Math.floor(Date.now() / 1000), conversionAvailable: true } }] : [selectedProvider], router: { enabled: false, accessMode: mode === "native-invalid" ? "native" : "router", accountless: false, port: 43127, configDrifted: false }, proxyRunning: false, activeProviderId: mode === "image" || mode === "groups" || mode === "overview" || mode === "usage" ? null : selectedProvider.id };
   if (controls.review.providerFixtures) state.providers = controls.review.providerFixtures;
+  if (controls.review.routerPatch) state.router = { ...state.router, ...controls.review.routerPatch };
   if (mode === "incompatible") state.providers.push(provider("alternate"));
   const savedClient: ClientConfigRequest | null = mode === "clients-opencode-stale" ? {
     targetId: "opencode", providerId: "mixed", model: "responses-model", contextWindow: 128000,

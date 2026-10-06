@@ -20,7 +20,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import type { CompressionPolicy } from "@/types/newapi";
+import type { CompressionPolicy, NewApiProvider } from "@/types/newapi";
 
 function Parameters({
   values,
@@ -54,17 +54,27 @@ export function RoutingDiagnostics({
   onFailover,
   compression,
   onCompression,
+  webSearchProviderId,
+  searchProviders,
+  searchDisabled,
+  onWebSearchProvider,
 }: {
   failover: boolean;
   disabled: boolean;
   onFailover: (enabled: boolean) => void;
   compression: CompressionPolicy;
   onCompression: (policy: CompressionPolicy) => void;
+  webSearchProviderId: string | null;
+  searchProviders: NewApiProvider[];
+  searchDisabled: boolean;
+  onWebSearchProvider: (providerId: string | null) => void;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [source, setSource] = useState("all");
   const [compressionValue, setCompressionValue] = useState("");
+  const selectedSearchUnavailable = webSearchProviderId !== null &&
+    !searchProviders.some(provider => provider.id === webSearchProviderId);
   const query = useQuery({
     queryKey: ["route-diagnostics"],
     queryFn: api.routing.diagnostics,
@@ -124,6 +134,22 @@ export function RoutingDiagnostics({
         </Button>
 
         <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-2 rounded-xl border border-border/60 bg-muted/30 px-3 py-1.5 text-xs font-medium">
+            <span className="text-foreground" id="web-search-provider-label">{t("newapi.webSearchService")}</span>
+            <Select value={webSearchProviderId ?? "__automatic"} disabled={searchDisabled}
+              onValueChange={value => onWebSearchProvider(value === "__automatic" ? null : value)}>
+              <SelectTrigger className="h-7 w-40 text-xs" aria-labelledby="web-search-provider-label">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__automatic">{t("newapi.webSearchAutomatic")}</SelectItem>
+                {selectedSearchUnavailable && webSearchProviderId && <SelectItem value={webSearchProviderId} disabled>
+                  {t("newapi.webSearchUnavailable")}
+                </SelectItem>}
+                {searchProviders.map(provider => <SelectItem key={provider.id} value={provider.id}>{provider.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
           <label className="flex items-center gap-2 rounded-xl border border-border/60 bg-muted/30 px-3 py-1.5 text-xs font-medium">
             <Gauge className="h-3.5 w-3.5 text-primary" aria-hidden />
             <span className="text-foreground">{t("newapi.compression.globalDefault")}</span>

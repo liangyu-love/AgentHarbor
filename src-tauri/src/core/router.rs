@@ -124,6 +124,9 @@ fn default_wire_api() -> String {
 pub struct RouterSettings {
     pub enabled: bool,
     pub same_model_failover: bool,
+    /// Independent search service used when a Chat model calls a hosted tool.
+    /// None chooses the current Command card, or the sole available search card.
+    pub web_search_provider_id: Option<String>,
     pub accountless: bool,
     pub port: u16,
     pub bearer_token: String,
@@ -134,6 +137,7 @@ impl Default for RouterSettings {
         Self {
             enabled: false,
             same_model_failover: false,
+            web_search_provider_id: None,
             accountless: false,
             port: DEFAULT_PORT,
             bearer_token: String::new(),
@@ -175,6 +179,7 @@ pub struct ProviderView {
     pub user_id: Option<u64>,
     pub has_access_token: bool,
     pub has_api_key: bool,
+    pub web_search_capable: bool,
     pub protocol: ModelProtocol,
     pub model: String,
     pub context_window: Option<u64>,
@@ -204,6 +209,7 @@ impl Provider {
             user_id: self.user_id,
             has_access_token: !self.access_token.is_empty(),
             has_api_key: !self.api_key.is_empty(),
+            web_search_capable: supports_command_search(self),
             protocol: self.protocol,
             model: self.model.clone(),
             context_window: self.context_window,
@@ -351,6 +357,7 @@ fn model_supports_protocol(model: &newapi::Model, protocol: ModelProtocol) -> bo
 pub struct RouterView {
     pub enabled: bool,
     pub same_model_failover: bool,
+    pub web_search_provider_id: Option<String>,
     pub access_mode: CodexAccessMode,
     pub accountless: bool,
     pub port: u16,
@@ -749,6 +756,7 @@ fn migrate_original_relay(paths: &CodexPaths) -> Result<Option<Store>, String> {
         router: RouterSettings {
             enabled: false,
             same_model_failover: false,
+            web_search_provider_id: None,
             accountless: value
                 .get("codexRouterNoAccountMode")
                 .and_then(Value::as_bool)
@@ -831,6 +839,7 @@ pub(crate) fn state_from_store_at(
         router: RouterView {
             enabled: store.router.enabled,
             same_model_failover: store.router.same_model_failover,
+            web_search_provider_id: store.router.web_search_provider_id.clone(),
             access_mode: store.codex_access_mode,
             accountless: store.router.accountless,
             port: store.router.port,
@@ -1783,6 +1792,45 @@ pub fn set_same_model_failover(paths: &CodexPaths, enabled: bool) -> Result<Stat
     let _guard = store_write_guard()?;
     let mut store = load_store_unlocked(paths)?;
     store.router.same_model_failover = enabled;
+    save_store_unlocked(paths, &store)?;
+    Ok(StateChange {
+        state: state_from_store_at(&store, super::router_proxy::is_running(), Some(paths)),
+        applied: None,
+    })
+}
+
+/// Only identifies the REST search service; model protocols are independent.
+pub(crate) fn supports_command_search(provider: &Provider) -> bool {
+    if provider.model_credential().api_key.trim().is_empty() {
+        return false;
+    }
+    let Ok(url) = reqwest::Url::parse(&provider.base_url) else {
+        return false;
+    };
+    url.scheme() == "https"
+        && url.host_str() == Some("api.commandcode.ai")
+        && url.port_or_known_default() == Some(443)
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && matches!(url.path().trim_end_matches('/'), "" | "/provider" | "/provider/v1")
+}
+
+pub fn set_web_search_provider(
+    paths: &CodexPaths,
+    provider_id: Option<String>,
+) -> Result<StateChange, String> {
+    let _guard = store_write_guard()?;
+    let mut store = load_store_unlocked(paths)?;
+    if let Some(id) = provider_id.as_deref() {
+        let provider = store.providers.iter().find(|provider| provider.id == id)
+            .ok_or("newapi.errors.notFound")?;
+        if !supports_command_search(provider) {
+            return Err("newapi.errors.webSearchProviderUnsupported".into());
+        }
+    }
+    store.router.web_search_provider_id = provider_id;
     save_store_unlocked(paths, &store)?;
     Ok(StateChange {
         state: state_from_store_at(&store, super::router_proxy::is_running(), Some(paths)),
@@ -3277,6 +3325,52 @@ mod tests {
             compression: None,
             network_mode: "proxy".into(),
         }
+    }
+
+    #[test]
+    fn command_search_capability_is_independent_of_model_protocol() {
+        for protocol in [ModelProtocol::Responses, ModelProtocol::ChatCompletions, ModelProtocol::AnthropicMessages] {
+            for suffix in ["", "/", "/provider", "/provider/", "/provider/v1", "/provider/v1/"] {
+                let provider = Provider { base_url: format!("https://api.commandcode.ai{suffix}"),
+                    api_key: "search-fixture".into(), protocol, ..Default::default() };
+                assert!(supports_command_search(&provider));
+                assert!(provider.view().web_search_capable);
+            }
+        }
+        for base_url in ["http://api.commandcode.ai", "https://api.commandcode.ai.invalid", "https://api.commandcode.ai:8443",
+            "https://user@api.commandcode.ai", "https://api.commandcode.ai/provider/v1?secret=1", "https://api.commandcode.ai/#fragment", "https://api.commandcode.ai/v1"] {
+            let provider = Provider { base_url: base_url.into(), api_key: "search-fixture".into(), ..Default::default() };
+            assert!(!supports_command_search(&provider), "{base_url}");
+        }
+        assert!(!supports_command_search(&Provider { base_url: "https://api.commandcode.ai".into(), ..Default::default() }));
+    }
+
+    #[test]
+    fn search_provider_selection_persists_without_reapplying_model_settings() {
+        let (_dir, paths) = paths();
+        let mut draft = input("Search service", "https://api.commandcode.ai/provider/v1");
+        draft.protocol = ModelProtocol::ChatCompletions;
+        let state = save_provider(&paths, draft).unwrap();
+        let id = state.state.providers[0].id.clone();
+        let selected = set_web_search_provider(&paths, Some(id.clone())).unwrap();
+        assert_eq!(selected.state.router.web_search_provider_id.as_deref(), Some(id.as_str()));
+        assert!(selected.applied.is_none());
+        assert_eq!(load_store(&paths).unwrap().router.web_search_provider_id.as_deref(), Some(id.as_str()));
+        assert_eq!(set_web_search_provider(&paths, Some("missing".into())).err().as_deref(), Some("newapi.errors.notFound"));
+        let other = save_provider(&paths, input("Other", "https://relay.example.com")).unwrap();
+        let other_id = other.state.providers.iter().find(|provider| provider.name == "Other").unwrap().id.clone();
+        assert_eq!(set_web_search_provider(&paths, Some(other_id)).err().as_deref(), Some("newapi.errors.webSearchProviderUnsupported"));
+        assert_eq!(load_store(&paths).unwrap().router.web_search_provider_id.as_deref(), Some(id.as_str()));
+        // An explicit selection must not silently switch the search billing account.
+        delete_provider(&paths, &id).unwrap();
+        assert_eq!(load_store(&paths).unwrap().router.web_search_provider_id.as_deref(), Some(id.as_str()));
+        assert!(set_web_search_provider(&paths, None).unwrap().state.router.web_search_provider_id.is_none());
+    }
+
+    #[test]
+    fn legacy_router_settings_default_to_automatic_search() {
+        let router: RouterSettings = serde_json::from_str(r#"{"enabled":false,"port":43127}"#).unwrap();
+        assert!(router.web_search_provider_id.is_none());
     }
 
     #[test]

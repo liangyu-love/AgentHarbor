@@ -154,10 +154,23 @@ fn visible_signature(message: &Value) -> Value {
         .filter(|b| b["type"] == "tool_use")
         .map(|b| json!([b["id"], b["name"], b["input"]]))
         .collect();
-    let hosted: Vec<_> = message["content"].as_array().into_iter().flatten()
-        .filter(|b| matches!(b["type"].as_str(), Some("server_tool_use" | "web_search_tool_result")))
-        .cloned().collect();
-    if hosted.is_empty() { json!([text, calls]) } else { json!([text, calls, hosted]) }
+    let hosted: Vec<_> = message["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|b| {
+            matches!(
+                b["type"].as_str(),
+                Some("server_tool_use" | "web_search_tool_result")
+            )
+        })
+        .cloned()
+        .collect();
+    if hosted.is_empty() {
+        json!([text, calls])
+    } else {
+        json!([text, calls, hosted])
+    }
 }
 fn chat_signature(message: &Value) -> Value {
     let text = if let Some(text) = message["content"].as_str() {
@@ -186,6 +199,126 @@ fn chat_signature(message: &Value) -> Value {
         })
         .collect();
     json!([text, calls])
+}
+
+// Translate a single visible reply into the span already present in the full
+// Chat body. Its final client calls receive temporary placeholders only for
+// validating that isolated translation; placeholders never enter the request.
+fn local_search_span(source: &Value, name: &str, visible_name: &str) -> Option<Vec<Value>> {
+    let mut normalized =
+        super::web_search::local_search_history(std::slice::from_ref(source), name, visible_name)
+            .ok()?;
+    let client_results: Vec<_> = source["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|block| block["type"] == "tool_use")
+        .map(|block| json!({"type":"tool_result","tool_use_id":block["id"],"content":""}))
+        .collect();
+    let placeholders = client_results.len();
+    if placeholders > 0 {
+        normalized.push(json!({"role":"user","content":client_results}));
+    }
+    let single = json!({"model":"history","max_tokens":1,"messages":normalized});
+    let translated =
+        super::anthropic::request_body(ModelProtocol::ChatCompletions, &single).ok()?;
+    let mut expected = translated["messages"].as_array()?.clone();
+    expected.truncate(expected.len().checked_sub(placeholders)?);
+    (!expected.is_empty()).then_some(expected)
+}
+
+fn local_search_name(source: &Value, messages: &[Value]) -> Option<(String, String)> {
+    let call = source["content"]
+        .as_array()?
+        .iter()
+        .find(|block| block["type"] == "server_tool_use")?;
+    let id = call["id"].as_str()?;
+    let upstream = messages
+        .iter()
+        .flat_map(|message| message["tool_calls"].as_array().into_iter().flatten())
+        .find(|candidate| candidate["id"] == id)?;
+    Some((
+        upstream["function"]["name"].as_str()?.to_owned(),
+        call["name"].as_str()?.to_owned(),
+    ))
+}
+
+/// Exact replay may end with unanswered caller tools, but never an unanswered
+/// local search or an extra tool/role absent from the visible reply.
+fn safe_local_replay(source: &Value, name: &str, messages: &[Value]) -> bool {
+    use std::collections::{HashMap, HashSet};
+    let Some(blocks) = source["content"].as_array() else {
+        return messages.len() == 1
+            && messages[0]["role"] == "assistant"
+            && messages[0]
+                .get("tool_calls")
+                .is_none_or(|calls| calls.is_null() || calls == &json!([]));
+    };
+    let expected: HashMap<_, _> = blocks
+        .iter()
+        .filter(|block| matches!(block["type"].as_str(), Some("tool_use" | "server_tool_use")))
+        .filter_map(|block| block["id"].as_str().map(|id| (id, block)))
+        .collect();
+    let client_ids: HashSet<_> = blocks
+        .iter()
+        .filter(|block| block["type"] == "tool_use")
+        .filter_map(|block| block["id"].as_str())
+        .collect();
+    let mut pending = HashMap::new();
+    let mut seen = HashSet::new();
+    if messages
+        .first()
+        .is_none_or(|message| message["role"] != "assistant")
+    {
+        return false;
+    }
+    for message in messages {
+        match message["role"].as_str() {
+            Some("assistant") => {
+                if !pending.is_empty() {
+                    return false;
+                }
+                for call in message["tool_calls"].as_array().into_iter().flatten() {
+                    let Some(id) = call["id"].as_str().filter(|id| !id.is_empty()) else {
+                        return false;
+                    };
+                    let Some(block) = expected.get(id) else {
+                        return false;
+                    };
+                    let search = block["type"] == "server_tool_use";
+                    let correct_name = if search {
+                        call["function"]["name"] == name
+                    } else {
+                        call["function"]["name"] == block["name"]
+                    };
+                    let arguments = call["function"]["arguments"]
+                        .as_str()
+                        .and_then(|text| serde_json::from_str::<Value>(text).ok());
+                    if !seen.insert(id)
+                        || !correct_name
+                        || arguments.as_ref() != Some(&block["input"])
+                    {
+                        return false;
+                    }
+                    pending.insert(id, search);
+                }
+            }
+            Some("tool") => {
+                let Some(id) = message["tool_call_id"].as_str() else {
+                    return false;
+                };
+                if pending.remove(id) != Some(true) {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+    seen.len() == expected.len()
+        && pending.len() == client_ids.len()
+        && pending
+            .iter()
+            .all(|(id, search)| !*search && client_ids.contains(id))
 }
 
 fn prefix_hashes(messages: &[Value]) -> Vec<String> {
@@ -316,6 +449,31 @@ impl Context {
     fn key(&self, prefix_len: usize, calls: &[Value]) -> String {
         digest(&json!([self.scope, self.prefixes[prefix_len], calls]))
     }
+    /// Keep the exact private Chat turns behind one visible hosted-search reply.
+    /// Uses the same bounded, credential/client/session-scoped cache as reasoning.
+    pub(crate) fn remember_local_search(
+        &self,
+        visible: &Value,
+        name: &str,
+        visible_name: &str,
+        messages: &[Value],
+    ) {
+        if self.protocol != ModelProtocol::ChatCompletions
+            || visible["role"] != "assistant"
+            || local_search_span(visible, name, visible_name).is_none()
+            || !safe_local_replay(visible, name, messages)
+        {
+            return;
+        }
+        let signature = visible_signature(visible);
+        let key = self.key(self.messages.len(), signature.as_array().unwrap());
+        let output = json!([{"type":"local_search_replay","name":name,"visible_name":visible_name,"messages":messages}]);
+        if let Ok(bytes) = serde_json::to_vec(&output) {
+            if let Ok(mut cache) = cache().lock() {
+                cache.record(key, CachedOutput::from(bytes));
+            }
+        }
+    }
     pub fn remember(&self, response: &Value) {
         if !cacheable_response(response) {
             return;
@@ -359,6 +517,56 @@ impl Context {
                 .filter(|items| !items.is_empty());
             if self.protocol == ModelProtocol::ChatCompletions {
                 if let Some(messages) = body["messages"].as_array_mut() {
+                    let replay = output
+                        .as_ref()
+                        .and_then(|items| items.first())
+                        .filter(|item| item["type"] == "local_search_replay");
+                    let has_hosted = source["content"].as_array().is_some_and(|blocks| {
+                        blocks.iter().any(|block| {
+                            matches!(
+                                block["type"].as_str(),
+                                Some("server_tool_use" | "web_search_tool_result")
+                            )
+                        })
+                    });
+                    if has_hosted || replay.is_some() {
+                        let names = local_search_name(source, &messages[cursor..]).or_else(|| {
+                            let replay = replay?;
+                            Some((
+                                replay["name"].as_str()?.to_owned(),
+                                replay["visible_name"].as_str()?.to_owned(),
+                            ))
+                        });
+                        if let Some((name, visible_name)) = names {
+                            if let Some(expected) = local_search_span(source, &name, &visible_name)
+                            {
+                                if let Some(relative) = messages[cursor..]
+                                    .windows(expected.len())
+                                    .position(|part| part == expected.as_slice())
+                                {
+                                    let index = cursor + relative;
+                                    cursor = index + expected.len();
+                                    let replayed = replay
+                                        .filter(|replay| {
+                                            replay["name"] == name
+                                                && replay["visible_name"] == visible_name
+                                        })
+                                        .and_then(|replay| replay["messages"].as_array())
+                                        .filter(|replayed| {
+                                            safe_local_replay(source, &name, replayed)
+                                        });
+                                    if let Some(replayed) = replayed {
+                                        messages.splice(
+                                            index..index + expected.len(),
+                                            replayed.iter().cloned(),
+                                        );
+                                        cursor = index + replayed.len();
+                                    }
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     if let Some(relative) = messages[cursor..]
                         .iter()
                         .position(|m| m["role"] == "assistant" && chat_signature(m) == signature)
@@ -454,6 +662,235 @@ mod tests {
         messages.push(json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"c1","content":"ok"}]}));
         value
     }
+
+    fn hosted_visible(mixed: bool) -> Value {
+        let mut blocks = vec![json!({"type":"text","text":"Searching"})];
+        blocks.extend(
+            super::super::web_search::blocks(
+                &json!({"type":"web_search_call",
+            "id":"local1","status":"completed","action":{"type":"search","query":"latest",
+                "sources":[{"url":"https://example.org/latest","title":"Latest source"}]}}),
+                None,
+                0,
+            )
+            .unwrap(),
+        );
+        if mixed {
+            blocks.push(
+                json!({"type":"tool_use","id":"client1","name":"read_file","input":{"path":"a"}}),
+            );
+        } else {
+            blocks.push(json!({"type":"text","text":"Final answer"}));
+        }
+        json!({"role":"assistant","content":blocks})
+    }
+    fn hosted_replay(mixed: bool) -> Vec<Value> {
+        let mut calls = vec![json!({"id":"local1","type":"function","function":{
+            "name":"internal_search","arguments":"{\"query\":\"latest\"}"}})];
+        if mixed {
+            calls.push(json!({"id":"client1","type":"function","function":{
+                "name":"read_file","arguments":"{\"path\":\"a\"}"}}));
+        }
+        let mut replay = vec![
+            json!({"role":"assistant","content":"Searching","reasoning_content":"private search reasoning","tool_calls":calls}),
+            json!({"role":"tool","tool_call_id":"local1","content":"{\"results\":[{\"url\":\"https://example.org/latest\",\"title\":\"Latest source\",\"snippet\":\"Exact search snippet\"}]}"}),
+        ];
+        if !mixed {
+            replay.push(json!({"role":"assistant","content":"Final answer","reasoning_content":"private final reasoning"}));
+        }
+        replay
+    }
+    fn hosted_next(first: &Value, mixed: bool) -> Value {
+        let mut next = first.clone();
+        next["messages"]
+            .as_array_mut()
+            .unwrap()
+            .push(hosted_visible(mixed));
+        next["messages"].as_array_mut().unwrap().push(if mixed {
+            json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"client1","content":"Read succeeded"}]})
+        } else { json!({"role":"user","content":"Continue"}) });
+        next
+    }
+    fn hosted_chat(next: &Value, name: &str) -> Value {
+        let mut normalized = next.clone();
+        normalized["messages"] = json!(super::super::web_search::local_search_history(
+            next["messages"].as_array().unwrap(),
+            name,
+            "web_search"
+        )
+        .unwrap());
+        super::super::anthropic::request_body(ModelProtocol::ChatCompletions, &normalized).unwrap()
+    }
+
+    #[test]
+    fn local_search_replays_exact_private_chat_rounds_and_actual_snippets() {
+        for mixed in [false, true] {
+            let scope = uuid::Uuid::new_v4().to_string();
+            let first = source();
+            let replay = hosted_replay(mixed);
+            Context::new(
+                &[&scope],
+                ModelProtocol::ChatCompletions,
+                first.to_string().as_bytes(),
+            )
+            .unwrap()
+            .remember_local_search(
+                &hosted_visible(mixed),
+                "internal_search",
+                "web_search",
+                &replay,
+            );
+            let next = hosted_next(&first, mixed);
+            let mut body = hosted_chat(&next, "internal_search");
+            Context::new(
+                &[&scope],
+                ModelProtocol::ChatCompletions,
+                next.to_string().as_bytes(),
+            )
+            .unwrap()
+            .restore(&mut body);
+            let messages = body["messages"].as_array().unwrap();
+            assert_eq!(&messages[1..1 + replay.len()], replay.as_slice());
+            assert!(messages[2]["content"]
+                .as_str()
+                .unwrap()
+                .contains("Exact search snippet"));
+            assert!(!next.to_string().contains("private search reasoning"));
+            if mixed {
+                assert_eq!(messages[3]["tool_call_id"], "client1");
+            } else {
+                assert_eq!(messages[3]["reasoning_content"], "private final reasoning");
+            }
+            super::super::chat::validate_tool_history(&body).unwrap();
+        }
+    }
+
+    #[test]
+    fn local_search_replay_misses_preserve_public_context_without_private_leaks() {
+        let scope = uuid::Uuid::new_v4().to_string();
+        let first = source();
+        Context::new(
+            &[&scope],
+            ModelProtocol::ChatCompletions,
+            first.to_string().as_bytes(),
+        )
+        .unwrap()
+        .remember_local_search(
+            &hosted_visible(false),
+            "internal_search",
+            "web_search",
+            &hosted_replay(false),
+        );
+        for case in ["scope", "prefix", "arguments", "internal_name"] {
+            let mut next = hosted_next(&first, false);
+            if case == "prefix" {
+                next["messages"][0]["content"] = json!("Another conversation");
+            }
+            if case == "arguments" {
+                next["messages"][1]["content"][1]["input"]["query"] = json!("different query");
+            }
+            let name = if case == "internal_name" {
+                "new_internal_search"
+            } else {
+                "internal_search"
+            };
+            let mut body = hosted_chat(&next, name);
+            let before = body.clone();
+            Context::new(
+                &[if case == "scope" {
+                    "another credential"
+                } else {
+                    &scope
+                }],
+                ModelProtocol::ChatCompletions,
+                next.to_string().as_bytes(),
+            )
+            .unwrap()
+            .restore(&mut body);
+            assert_eq!(body, before, "{case}");
+            assert!(body.to_string().contains("Latest source"));
+            assert!(!body.to_string().contains("private search reasoning"));
+            assert!(!body.to_string().contains("Exact search snippet"));
+            super::super::chat::validate_tool_history(&body).unwrap();
+        }
+    }
+
+    #[test]
+    fn local_search_replay_validates_pending_client_tools_and_extra_roles() {
+        let visible = hosted_visible(true);
+        let replay = hosted_replay(true);
+        assert!(safe_local_replay(&visible, "internal_search", &replay));
+        for case in 0..5 {
+            let mut invalid = replay.clone();
+            match case {
+                0 => invalid[0]["tool_calls"][0]["id"] = json!("other"),
+                1 => invalid[0]["tool_calls"][0]["function"]["arguments"] = json!("{\"query\":\"changed\"}"),
+                2 => invalid.push(json!({"role":"user","content":"foreign conversation"})),
+                3 => invalid.push(json!({"role":"tool","tool_call_id":"client1","content":"invented client result"})),
+                _ => { invalid.remove(1); },
+            }
+            assert!(
+                !safe_local_replay(&visible, "internal_search", &invalid),
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn consecutive_hosted_turns_restore_their_own_private_rounds() {
+        let scope = uuid::Uuid::new_v4().to_string();
+        let first = source();
+        Context::new(
+            &[&scope],
+            ModelProtocol::ChatCompletions,
+            first.to_string().as_bytes(),
+        )
+        .unwrap()
+        .remember_local_search(
+            &hosted_visible(false),
+            "internal_search",
+            "web_search",
+            &hosted_replay(false),
+        );
+        let second = hosted_next(&first, false);
+        let mut visible = hosted_visible(false);
+        visible["content"][1]["id"] = json!("local2");
+        visible["content"][2]["tool_use_id"] = json!("local2");
+        let mut replay = hosted_replay(false);
+        replay[0]["tool_calls"][0]["id"] = json!("local2");
+        replay[0]["reasoning_content"] = json!("second private reasoning");
+        replay[1]["tool_call_id"] = json!("local2");
+        Context::new(
+            &[&scope],
+            ModelProtocol::ChatCompletions,
+            second.to_string().as_bytes(),
+        )
+        .unwrap()
+        .remember_local_search(&visible, "internal_search", "web_search", &replay);
+        let mut third = second;
+        third["messages"]
+            .as_array_mut()
+            .unwrap()
+            .extend([visible, json!({"role":"user","content":"Third turn"})]);
+        let mut body = hosted_chat(&third, "internal_search");
+        Context::new(
+            &[&scope],
+            ModelProtocol::ChatCompletions,
+            third.to_string().as_bytes(),
+        )
+        .unwrap()
+        .restore(&mut body);
+        assert_eq!(
+            body["messages"][1]["reasoning_content"],
+            "private search reasoning"
+        );
+        assert_eq!(
+            body["messages"][5]["reasoning_content"],
+            "second private reasoning"
+        );
+        super::super::chat::validate_tool_history(&body).unwrap();
+    }
+
     #[test]
     fn reasoning_replay_preserves_chat_text_and_responses_opaque_items() {
         for target in [ModelProtocol::ChatCompletions, ModelProtocol::Responses] {
@@ -895,5 +1332,4 @@ mod tests {
         assert_eq!(body["messages"][1]["reasoning_content"], "first reasoning");
         assert_eq!(body["messages"][2]["reasoning_content"], "exact reasoning");
     }
-
 }

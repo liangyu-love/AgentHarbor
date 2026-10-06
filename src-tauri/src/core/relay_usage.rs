@@ -450,6 +450,7 @@ pub struct RelayUsagePayload {
     pub recent: Vec<RelayUsageRecord>,
 }
 
+#[derive(Clone)]
 pub struct RelayUsageRequest {
     identity: super::request_diagnostics::RequestIdentity,
     request_id: String,
@@ -468,6 +469,14 @@ pub struct RelayUsageRequest {
 }
 
 impl RelayUsageRequest {
+    pub(crate) fn followup(&self, attempt_id: &str) -> Self {
+        let mut request = self.clone();
+        request.attempt_id = attempt_id.into();
+        request.started = Instant::now();
+        request.timestamp = Utc::now().timestamp();
+        request.date = Local::now().format("%Y-%m-%d").to_string();
+        request
+    }
     pub fn new(
         app_data_dir: PathBuf,
         provider_id: String,

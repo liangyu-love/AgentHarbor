@@ -28,6 +28,10 @@ mod claude_continuation_tests;
 #[path = "router_proxy/desktop_gateway_tests.rs"]
 mod desktop_gateway_tests;
 mod failover;
+mod hosted_search;
+#[cfg(test)]
+#[path = "router_proxy/hosted_search_tests.rs"]
+mod hosted_search_tests;
 #[cfg(test)]
 #[path = "router_proxy/failover_tests.rs"]
 mod failover_tests;
@@ -935,10 +939,15 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             // Resource operations read the established channel but do not carry
             // a create request; preserve their body, including an empty cancel.
             // upstream_suffix already rejects translated Responses resources.
+            let hosted_plan = hosted_search::Plan::for_destination(&destination, body.as_deref())?;
+            let search_backend = hosted_plan.as_ref()
+                .map(|_| hosted_search::SearchBackend::select(&context, &store, &destination)).transpose()?;
+            let translation_body = if let Some(plan) = &hosted_plan { Some(plan.normalized.clone()) }
+                else { hosted_search::Plan::history_only(&destination, body.clone())? };
             let PreparedForward { body: mut sent, input: translated_input, namespaces: tool_namespaces, response_options } = if response_resource {
                 PreparedForward::native(body.clone())
             } else {
-                upstream_body(&destination, body.clone())?
+                upstream_body(&destination, translation_body)?
             };
             if let (Some(history), Some(bytes)) = (&message_context, &sent) {
                 let mut value: Value = serde_json::from_slice(bytes).map_err(|_| (StatusCode::BAD_REQUEST, "invalid translated request"))?;
@@ -978,12 +987,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                 &context.app_data_dir, credential_kind, &credential_scope, credential_header, account_id,
             );
             relay_request = relay_request.map(|request| request.with_credential(credential.clone()));
-            trace.sent(sent.as_deref(), credential);
-            let mut outbound = outbound_client.request(method.clone(), url)
-                .headers(attempt_headers);
-            if let Some(sent) = sent {
-                outbound = outbound.body(sent);
-            }
+            trace.sent(sent.as_deref(), credential.clone());
             if inference_create && failover_seen && (fresh_turn || continuation) {
                 if let Some(key) = &affinity_key {
                     if !failover::bind_for_mode(key, &destination, same_model_failover) {
@@ -992,6 +996,19 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                     }
                 }
             }
+            if let Some(plan) = hosted_plan {
+                let Destination::Provider { provider, .. } = &destination else { unreachable!("hosted Chat provider") };
+                drop(_decision);
+                return hosted_search::relay(hosted_search::Execution {
+                    plan, backend: search_backend.expect("validated search service"), client: outbound_client,
+                    url, headers: attempt_headers, body: sent.ok_or((StatusCode::BAD_REQUEST, "WebSearch requires a body"))?,
+                    trace: trace.clone(), usage: relay_request, attempt: attempt_metadata,
+                    provider_id: provider.id.clone(), provider_name: provider.name.clone(), model: upstream_model,
+                    history: message_context, adapter: tool_adapter, credential,
+                }).await;
+            }
+            let mut outbound = outbound_client.request(method.clone(), url).headers(attempt_headers);
+            if let Some(sent) = sent { outbound = outbound.body(sent); }
             let alternative = (can_retry && attempt == 0)
                 .then(|| failover::alternative(&store, &destination, required_protocol))
                 .flatten();

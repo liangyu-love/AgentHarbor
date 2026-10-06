@@ -12,7 +12,7 @@ pub mod message_history;
 mod reasoning;
 mod responses;
 mod sse;
-mod web_search;
+pub(crate) mod web_search;
 pub mod tool_namespaces;
 
 use crate::core::router::ModelProtocol;

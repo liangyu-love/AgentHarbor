@@ -1,12 +1,140 @@
-//! Hosted search is a protocol capability, not a function tool. Only the
-//! Messages -> Responses bridge has an equivalent upstream tool today.
+//! Hosted-search declarations, results and conversation replay. A local search
+//! executor can represent its completed calls as ordinary Chat call/result pairs.
 use crate::core::router::ModelProtocol;
 use serde_json::{json, Value};
 
 const INVALID: &str = "protocol.errors.invalidRequest";
 const UNSUPPORTED: &str = "protocol.errors.unsupportedSearchOptions";
 
-pub(super) fn options_from_tools(target: ModelProtocol, value: &Value) -> Result<super::ResponseOptions, String> {
+/// Split locally completed search rounds without moving the post-search answer
+/// before its results. A final mixed client/server group stays together so the
+/// caller's following tool results can still close that same Chat call group.
+pub(crate) fn local_search_history(
+    messages: &[Value],
+    name: &str,
+    visible_name: &str,
+) -> Result<Vec<Value>, String> {
+    let mut normalized = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for message in messages {
+        let Some(blocks) = message["content"]
+            .as_array()
+            .filter(|_| message["role"] == "assistant")
+        else {
+            normalized.push(message.clone());
+            continue;
+        };
+        let mut pending = std::collections::HashMap::new();
+        for block in blocks {
+            match block["type"].as_str() {
+                Some("server_tool_use" | "tool_use") => {
+                    let id = block["id"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .ok_or(INVALID)?;
+                    if !seen.insert(id) {
+                        return Err(INVALID.into());
+                    }
+                    if block["type"] == "server_tool_use" {
+                        if block["name"] != visible_name {
+                            return Err(UNSUPPORTED.into());
+                        }
+                        if !block["input"].is_object() {
+                            return Err(INVALID.into());
+                        }
+                        pending.insert(id, block);
+                    }
+                }
+                Some("web_search_tool_result") => {
+                    let id = block["tool_use_id"].as_str().ok_or(INVALID)?;
+                    let call = pending.remove(id).ok_or(INVALID)?;
+                    history_call(call, block)?;
+                }
+                _ => {}
+            }
+        }
+        if !pending.is_empty() {
+            return Err(INVALID.into());
+        }
+        if !blocks
+            .iter()
+            .any(|block| block["type"] == "server_tool_use")
+        {
+            normalized.push(message.clone());
+            continue;
+        }
+        let mut content = Vec::new();
+        let mut results = Vec::new();
+        let mut unanswered = std::collections::HashSet::new();
+        let mut client_pending = false;
+        for block in blocks {
+            if !client_pending
+                && unanswered.is_empty()
+                && block["type"] != "web_search_tool_result"
+                && !results.is_empty()
+            {
+                push_local_round(&mut normalized, message, &mut content, &mut results);
+            }
+            match block["type"].as_str() {
+                Some("server_tool_use") => {
+                    unanswered.insert(block["id"].as_str().unwrap());
+                    content.push(json!({"type":"tool_use",
+                        "id":block["id"],"name":name,"input":block["input"]}));
+                }
+                Some("web_search_tool_result") => {
+                    unanswered.remove(block["tool_use_id"].as_str().unwrap());
+                    results.push(json!({"type":"tool_result",
+                        "tool_use_id":block["tool_use_id"],"content":local_result(block).to_string()}));
+                }
+                Some("tool_use") => {
+                    client_pending = true;
+                    content.push(block.clone());
+                }
+                _ => content.push(block.clone()),
+            }
+        }
+        push_local_round(&mut normalized, message, &mut content, &mut results);
+    }
+    Ok(normalized)
+}
+
+fn local_result(block: &Value) -> Value {
+    if let Some(results) = block["content"].as_array() {
+        let results: Vec<_> = results
+            .iter()
+            .filter_map(|result| {
+                url(&result["url"]).map(|url| {
+                    json!({"url":url,
+                "title":result["title"].as_str().unwrap_or(url)})
+                })
+            })
+            .collect();
+        json!({"results":results})
+    } else {
+        json!({"error":block["content"]["error_code"]})
+    }
+}
+
+fn push_local_round(
+    normalized: &mut Vec<Value>,
+    original: &Value,
+    content: &mut Vec<Value>,
+    results: &mut Vec<Value>,
+) {
+    if !content.is_empty() {
+        let mut assistant = original.clone();
+        assistant["content"] = json!(std::mem::take(content));
+        normalized.push(assistant);
+    }
+    if !results.is_empty() {
+        normalized.push(json!({"role":"user","content":std::mem::take(results)}));
+    }
+}
+
+pub(crate) fn options_from_tools(
+    target: ModelProtocol,
+    value: &Value,
+) -> Result<super::ResponseOptions, String> {
     let mut options = super::ResponseOptions::default();
     if let Some(tools) = value.get("tools") {
         for tool in tools.as_array().ok_or(INVALID)?.iter().filter(|tool| is_search(tool)) {
@@ -23,7 +151,7 @@ pub struct Search {
     pub max_uses: Option<u64>,
 }
 
-pub(super) fn is_search(tool: &Value) -> bool {
+pub(crate) fn is_search(tool: &Value) -> bool {
     tool["type"]
         .as_str()
         .is_some_and(|t| t == "web_search" || t.starts_with("web_search_"))
@@ -257,8 +385,12 @@ pub(super) fn blocks(
                 .unwrap_or_default();
             json!({"query":query})
         }
-        Some("open_page") => json!({"url":url(&action["url"]).ok_or("protocol.errors.invalidResponse")?}),
-        Some("find_in_page") => json!({"url":url(&action["url"]).ok_or("protocol.errors.invalidResponse")?,"pattern":action["pattern"].as_str().ok_or("protocol.errors.invalidResponse")?}),
+        Some("open_page") => {
+            json!({"url":url(&action["url"]).ok_or("protocol.errors.invalidResponse")?})
+        }
+        Some("find_in_page") => {
+            json!({"url":url(&action["url"]).ok_or("protocol.errors.invalidResponse")?,"pattern":action["pattern"].as_str().ok_or("protocol.errors.invalidResponse")?})
+        }
         None if matches!(item["status"].as_str(), Some("failed" | "incomplete")) => json!({}),
         _ => return Err("protocol.errors.invalidResponse".into()),
     };
@@ -325,6 +457,136 @@ pub(super) fn history_call(call: &Value, result: &Value) -> Result<Value, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn local_call(id: &str) -> Value {
+        json!({"type":"server_tool_use","id":id,"name":"web_search","input":{"query":id}})
+    }
+    fn local_result_block(id: &str) -> Value {
+        json!({"type":"web_search_tool_result","tool_use_id":id,"content":[
+            {"type":"web_search_result","url":"https://example.org/source","title":"Real source","encrypted_content":"opaque"},
+            {"type":"web_search_result","url":"javascript:alert(1)","title":"unsafe"}
+        ]})
+    }
+
+    #[test]
+    fn local_search_cache_miss_preserves_round_order_and_real_source_metadata() {
+        let source = json!({"role":"assistant","content":[
+            {"type":"text","text":"Searching"},local_call("s1"),local_result_block("s1"),
+            {"type":"text","text":"Checking another source"},local_call("s2"),local_result_block("s2"),
+            {"type":"text","text":"Final answer"}
+        ]});
+        let normalized = local_search_history(&[source], "internal_search", "web_search").unwrap();
+        let chat = super::super::anthropic::request_body(
+            ModelProtocol::ChatCompletions,
+            &json!({"model":"m","max_tokens":100,"messages":normalized}),
+        )
+        .unwrap();
+        super::super::chat::validate_tool_history(&chat).unwrap();
+        let messages = chat["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 5);
+        assert_eq!(messages[0]["content"], "Searching");
+        assert_eq!(
+            messages[0]["tool_calls"][0]["function"]["name"],
+            "internal_search"
+        );
+        let result: Value = serde_json::from_str(messages[1]["content"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            result,
+            json!({"results":[{"url":"https://example.org/source","title":"Real source"}]})
+        );
+        assert_eq!(messages[2]["content"], "Checking another source");
+        assert_eq!(messages[3]["tool_call_id"], "s2");
+        assert_eq!(messages[4]["content"], "Final answer");
+    }
+
+    #[test]
+    fn local_search_mixed_client_calls_keep_contiguous_results() {
+        let assistant = json!({"role":"assistant","content":[
+            {"type":"tool_use","id":"client","name":"read_file","input":{"path":"a"}},
+            local_call("search"),local_result_block("search")
+        ]});
+        let user = json!({"role":"user","content":[
+            {"type":"text","text":"Continue after reading"},
+            {"type":"tool_result","tool_use_id":"client","content":"file contents"}
+        ]});
+        let normalized =
+            local_search_history(&[assistant, user], "internal_search", "web_search").unwrap();
+        let chat = super::super::anthropic::request_body(
+            ModelProtocol::ChatCompletions,
+            &json!({"model":"m","max_tokens":100,"messages":normalized}),
+        )
+        .unwrap();
+        super::super::chat::validate_tool_history(&chat).unwrap();
+        let messages = chat["messages"].as_array().unwrap();
+        assert_eq!(messages[0]["tool_calls"].as_array().unwrap().len(), 2);
+        assert_eq!(messages[1]["tool_call_id"], "search");
+        assert_eq!(messages[2]["tool_call_id"], "client");
+        assert_eq!(messages[3]["content"], "Continue after reading");
+    }
+
+    #[test]
+    fn local_search_rejects_duplicate_ids_or_unpaired_results() {
+        for blocks in [
+            vec![
+                local_call("s"),
+                local_result_block("s"),
+                local_call("s"),
+                local_result_block("s"),
+            ],
+            vec![
+                local_call("s"),
+                local_result_block("s"),
+                local_result_block("s"),
+            ],
+            vec![local_result_block("s"), local_call("s")],
+            vec![local_call("s")],
+            vec![local_call("s"), local_result_block("other")],
+            vec![
+                json!({"type":"tool_use","id":"s","name":"read","input":{}}),
+                local_call("s"),
+                local_result_block("s"),
+            ],
+        ] {
+            assert!(local_search_history(
+                &[json!({"role":"assistant","content":blocks})],
+                "internal_search",
+                "web_search"
+            )
+            .is_err());
+        }
+        let assistant =
+            json!({"role":"assistant","content":[local_call("s"),local_result_block("s")]});
+        assert!(local_search_history(
+            &[assistant.clone(), assistant],
+            "internal_search",
+            "web_search"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn parallel_local_results_are_not_split_before_the_group_completes() {
+        let assistant = json!({"role":"assistant","content":[
+            local_call("a"),local_call("b"),local_result_block("a"),
+            {"type":"text","text":"Checking"},local_result_block("b"),
+            {"type":"text","text":"Done"}
+        ]});
+        let normalized =
+            local_search_history(&[assistant], "internal_search", "web_search").unwrap();
+        let chat = super::super::anthropic::request_body(
+            ModelProtocol::ChatCompletions,
+            &json!({"model":"m","max_tokens":100,"messages":normalized}),
+        )
+        .unwrap();
+        super::super::chat::validate_tool_history(&chat).unwrap();
+        assert_eq!(
+            chat["messages"][0]["tool_calls"].as_array().unwrap().len(),
+            2
+        );
+        assert_eq!(chat["messages"][1]["tool_call_id"], "a");
+        assert_eq!(chat["messages"][2]["tool_call_id"], "b");
+        assert_eq!(chat["messages"][3]["content"], "Done");
+    }
 
     #[test]
     fn search_navigation_actions_reject_unsafe_urls() {

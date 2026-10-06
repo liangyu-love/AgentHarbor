@@ -2,6 +2,34 @@ import assert from "node:assert/strict";
 import path from "node:path";
 
 export async function testMagpieOptimizations({ page, reset, captureDir }) {
+  await reset("compact");
+  await page.evaluate(() => {
+    const base = window.review.getState().providers[0];
+    window.review.providerFixtures = [
+      { ...base, id: "command-chat", name: "Command Chat", protocol: "chatCompletions", webSearchCapable: true },
+      { ...base, id: "command-messages", name: "Command Messages", protocol: "anthropicMessages", webSearchCapable: true },
+      { ...base, id: "unsupported-search", name: "Other relay", webSearchCapable: false },
+    ];
+    // Codex Native does not disable Desktop's independent search settings.
+    window.review.routerPatch = { accessMode: "native" };
+    window.review.mount("access");
+  });
+  const searchService = page.getByRole("combobox", { name: "WebSearch 搜索服务", exact: true });
+  await searchService.waitFor();
+  assert.equal(await searchService.isEnabled(), true);
+  await searchService.click();
+  assert.equal(await page.getByRole("option", { name: "Other relay", exact: true }).count(), 0);
+  await page.getByRole("option", { name: "Command Messages", exact: true }).click();
+  await page.waitForFunction(() => window.review.getState().router.webSearchProviderId === "command-messages");
+  await searchService.click();
+  await page.getByRole("option", { name: "自动", exact: true }).click();
+  await page.waitForFunction(() => window.review.getState().router.webSearchProviderId === null);
+  await page.evaluate(() => window.review.mount("compact"));
+  await searchService.waitFor({ state: "detached" });
+  await page.evaluate(() => { window.review.routerPatch = { webSearchProviderId: "removed-service" }; window.review.mount("access"); });
+  await searchService.getByText("已选搜索服务不可用", { exact: true }).waitFor();
+  await page.evaluate(() => { delete window.review.providerFixtures; delete window.review.routerPatch; });
+  console.log("PASS search service selection accepts either model protocol, saves automatic mode and retains unavailable explicit choices");
   await reset("access");
   const routes = page.getByRole("region", { name: "请求级路由诊断" });
   await routes.getByRole("button", { name: "请求级路由诊断", exact: true }).click();

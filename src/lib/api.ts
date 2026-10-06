@@ -114,6 +114,8 @@ const routingApi = {
   refreshCatalog: () =>
     invoke<import("@/types/newapi").ModelsDevCatalogStatus>("refresh_models_dev_catalog"),
   setFailover: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_failover", { enabled }),
+  setWebSearchProvider: (providerId: string | null) =>
+    invoke<NewApiStateChange>("set_router_web_search_provider", { providerId }),
   setCompression: (policy: import("@/types/newapi").CompressionPolicy) =>
     invoke<NewApiStateChange>("set_newapi_compression", { policy }),
   setModelPrice: (

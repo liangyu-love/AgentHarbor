@@ -87,6 +87,10 @@ export function NewApiPage() {
       <ClaudeDesktopConfigCard providers={providers} />
 
       <RoutingDiagnostics failover={router?.sameModelFailover ?? false} disabled={nativeAccess || !state.isSuccess || store.mutationLocked}
+        webSearchProviderId={router?.webSearchProviderId ?? null}
+        searchProviders={providers.filter(provider => provider.webSearchCapable)}
+        searchDisabled={!state.isSuccess || store.mutationLocked}
+        onWebSearchProvider={providerId => { void run("web-search-provider", async () => applyChange(await api.routing.setWebSearchProvider(providerId)), t("newapi.webSearchSaveFailed")); }}
         compression={state.data?.compression ?? { mode: "percent", percent: 90 }}
         onCompression={policy => { void run("compression", async () => applyChange(await api.routing.setCompression(policy)), t("newapi.compression.saveFailed")); }}
         onFailover={enabled => { void run("failover", async () => applyChange(await api.routing.setFailover(enabled)), t("newapi.traceSettingsFailed")); }} />
