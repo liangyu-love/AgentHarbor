@@ -119,6 +119,24 @@ pub(super) fn client_endpoint<'a>(
     request: &ConfigRequest,
     with_version: bool,
 ) -> Result<(String, &'a str), String> {
+    client_endpoint_for_protocol(
+        store,
+        provider,
+        request,
+        with_version,
+        provider.protocol_for_model(&request.model),
+    )
+}
+
+/// A mixed-protocol client registers each SDK group at that group's upstream
+/// root; its currently selected model must not change another group's URL.
+pub(super) fn client_endpoint_for_protocol<'a>(
+    store: &'a Store,
+    provider: &'a Provider,
+    request: &ConfigRequest,
+    with_version: bool,
+    protocol: ModelProtocol,
+) -> Result<(String, &'a str), String> {
     if request.needs_router() {
         let version = if with_version { "/v1" } else { "" };
         Ok((
@@ -130,11 +148,7 @@ pub(super) fn client_endpoint<'a>(
         ))
     } else {
         Ok((
-            native_base(
-                provider,
-                with_version,
-                provider.protocol_for_model(&request.model),
-            )?,
+            native_base(provider, with_version, protocol)?,
             &provider.api_key,
         ))
     }

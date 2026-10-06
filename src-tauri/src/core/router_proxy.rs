@@ -1454,22 +1454,20 @@ fn provider_target(
         protocol: upstream_protocol,
     };
     let credential = provider.model_credential();
+    let (auth_name, auth_value) = super::newapi::model_auth_header(
+        endpoint.base_url,
+        endpoint.protocol,
+        credential.api_key,
+    ).map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid provider configuration"))?;
+    headers.remove(AUTHORIZATION);
+    headers.remove("x-api-key");
+    headers.insert(auth_name, auth_value);
     match endpoint.protocol {
         router::ModelProtocol::Responses | router::ModelProtocol::ChatCompletions => {
             headers.remove("anthropic-version");
             headers.remove("anthropic-beta");
-            headers.insert(
-                AUTHORIZATION,
-                HeaderValue::from_str(&format!("Bearer {}", credential.api_key))
-                    .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid provider key"))?,
-            );
         }
         router::ModelProtocol::AnthropicMessages => {
-            headers.insert(
-                "x-api-key",
-                HeaderValue::from_str(credential.api_key)
-                    .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid provider key"))?,
-            );
             if !headers.contains_key("anthropic-version") {
                 headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
             }
@@ -2401,6 +2399,35 @@ mod tests {
             }
             server.abort();
         });
+    }
+
+    #[test]
+    fn official_messages_target_uses_gateway_auth_and_selected_protocol_root() {
+        for (base, expected, bearer) in [
+            ("https://api.novita.ai/v3/openai", "https://api.novita.ai/anthropic/v1/messages", true),
+            ("https://api.xiaomimimo.com/v1", "https://api.xiaomimimo.com/anthropic/v1/messages", true),
+            ("https://api.z.ai/api/coding/paas/v4", "https://api.z.ai/api/anthropic/v1/messages", true),
+            ("https://openrouter.ai/api/v1", "https://openrouter.ai/api/v1/messages", true),
+            ("https://api.siliconflow.cn/v1", "https://api.siliconflow.cn/v1/messages", true),
+            ("https://relay.invalid/custom/v1", "https://relay.invalid/custom/v1/messages", false),
+        ] {
+            let provider = router::Provider { base_url: base.into(), api_key: "fixture-upstream-key".into(), ..Default::default() };
+            let mut headers = HeaderMap::new();
+            headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer local-key"));
+            headers.insert("x-api-key", HeaderValue::from_static("local-key"));
+            headers.insert("anthropic-beta", HeaderValue::from_static("fixture-beta"));
+            let (url, headers) = provider_target(&provider, router::ModelProtocol::AnthropicMessages, None, "messages", None, headers).unwrap();
+            assert_eq!(url, expected);
+            if bearer {
+                assert_eq!(headers[AUTHORIZATION], "Bearer fixture-upstream-key");
+                assert!(!headers.contains_key("x-api-key"));
+            } else {
+                assert_eq!(headers["x-api-key"], "fixture-upstream-key");
+                assert!(!headers.contains_key(AUTHORIZATION));
+            }
+            assert_eq!(headers["anthropic-version"], "2023-06-01");
+            assert_eq!(headers["anthropic-beta"], "fixture-beta");
+        }
     }
 
     #[test]

@@ -20,6 +20,163 @@ fn deepseek_native_messages_injection_uses_anthropic_root_and_keeps_model_marker
     }
 }
 
+fn assert_mixed_deepseek_opencode_endpoints(access_mode: ClientAccessMode) {
+    for base in [
+        "https://api.deepseek.com/v1",
+        "https://api.deepseek.com/anthropic/v1",
+    ] {
+        let (_temp, manager, mut store, mut request) = fixture();
+        request.target_id = TargetId::OpenCode;
+        request.options.access_mode = access_mode;
+        store.providers[0].base_url = base.into();
+        store.providers[0].models = vec![
+            crate::core::newapi::Model {
+                id: "deepseek-chat".into(),
+                protocol: Some(ModelProtocol::ChatCompletions),
+                included: true,
+                ..Default::default()
+            },
+            crate::core::newapi::Model {
+                id: "deepseek-messages".into(),
+                protocol: Some(ModelProtocol::AnthropicMessages),
+                included: true,
+                ..Default::default()
+            },
+        ];
+        for default in [
+            ModelProtocol::ChatCompletions,
+            ModelProtocol::AnthropicMessages,
+        ] {
+            store.providers[0].protocol = default;
+            store.providers[0].model = if default == ModelProtocol::ChatCompletions {
+                "deepseek-chat"
+            } else {
+                "deepseek-messages"
+            }
+            .into();
+            for selected in ["deepseek-chat", "deepseek-messages"] {
+                request.model = selected.into();
+                apply(&manager, &store, &request);
+                let installed = read(&manager.paths.opencode);
+                let mut selected_key = String::new();
+                for (protocol, suffix, npm, model, direct_base) in [
+                    (
+                        ModelProtocol::ChatCompletions,
+                        "chat",
+                        "@ai-sdk/openai-compatible",
+                        "deepseek-chat",
+                        "https://api.deepseek.com/v1",
+                    ),
+                    (
+                        ModelProtocol::AnthropicMessages,
+                        "anthropic",
+                        "@ai-sdk/anthropic",
+                        "deepseek-messages",
+                        "https://api.deepseek.com/anthropic/v1",
+                    ),
+                ] {
+                    let key = if protocol == default {
+                        "agentharbor_test-relay".to_owned()
+                    } else {
+                        format!("agentharbor_test-relay_{suffix}")
+                    };
+                    let group = &installed["provider"][&key];
+                    let (expected_base, expected_key) =
+                        if access_mode == ClientAccessMode::Native {
+                            (direct_base, "upstream-secret")
+                        } else {
+                            ("http://127.0.0.1:43127/p/test-relay/v1", "local-secret")
+                        };
+                    assert_eq!(group["options"]["baseURL"], expected_base);
+                    assert_eq!(group["options"]["apiKey"], expected_key);
+                    assert_eq!(group["npm"], npm);
+                    assert_eq!(group["models"].as_object().unwrap().len(), 1);
+                    assert!(group["models"].get(model).is_some());
+                    if selected == model {
+                        selected_key = key;
+                    }
+                }
+                assert_eq!(installed["model"], format!("{selected_key}/{selected}"));
+            }
+        }
+        manager.restore(TargetId::OpenCode).unwrap();
+    }
+}
+
+#[test]
+fn opencode_mixed_deepseek_native_groups_keep_their_own_roots_when_selection_changes() {
+    assert_mixed_deepseek_opencode_endpoints(ClientAccessMode::Native);
+}
+
+#[test]
+fn opencode_mixed_deepseek_router_groups_share_the_local_root() {
+    assert_mixed_deepseek_opencode_endpoints(ClientAccessMode::Router);
+}
+
+#[test]
+fn opencode_native_messages_gateway_auth_is_exclusive_and_restores_user_headers() {
+    for base in [
+        "https://openrouter.ai/api/v1",
+        "https://api.siliconflow.cn/v1",
+        "https://api.siliconflow.com/v1",
+        "https://api.novita.ai/v3/openai",
+        "https://api.xiaomimimo.com/v1",
+        "https://token-plan-cn.xiaomimimo.com/anthropic",
+        "https://open.bigmodel.cn/api/coding/paas/v4",
+        "https://open.bigmodel.cn/api/anthropic",
+        "https://api.z.ai/api/coding/paas/v4",
+        "https://api.z.ai/api/anthropic",
+    ] {
+        let (_temp, manager, mut store, mut request) = fixture();
+        store.providers[0].base_url = base.into();
+        request.target_id = TargetId::OpenCode;
+        request.options.access_mode = ClientAccessMode::Native;
+        let original = json!({"provider":{"agentharbor_test-relay":{"options":{
+            "apiKey":"original-key", "authToken":"original-token",
+            "headers":{
+                "authorization":"Bearer original-header",
+                "X-API-Key":"original-header-key", "X-Custom":"keep"
+            }
+        }}}});
+        write(&manager.paths.opencode, &original);
+        let preview = manager.preview(&store, &request).unwrap();
+        for secret in [
+            "upstream-secret",
+            "original-token",
+            "original-header",
+            "original-key",
+        ] {
+            assert!(!preview.content.contains(secret));
+        }
+        apply(&manager, &store, &request);
+        let installed = read(&manager.paths.opencode);
+        let options = &installed["provider"]["agentharbor_test-relay"]["options"];
+        assert_eq!(options["apiKey"], "");
+        assert_eq!(options["authToken"], "upstream-secret");
+        assert_eq!(options["headers"], json!({"X-Custom":"keep"}));
+
+        store.providers[0].api_key = "Bearer updated-secret".into();
+        apply(&manager, &store, &request);
+        let installed = read(&manager.paths.opencode);
+        assert_eq!(
+            installed["provider"]["agentharbor_test-relay"]["options"]["authToken"],
+            "updated-secret"
+        );
+        assert!(!installed.to_string().contains("upstream-secret"));
+
+        request.options.access_mode = ClientAccessMode::Router;
+        apply(&manager, &store, &request);
+        let installed = read(&manager.paths.opencode);
+        let options = &installed["provider"]["agentharbor_test-relay"]["options"];
+        assert_eq!(options["apiKey"], "local-secret");
+        assert!(options.get("authToken").is_none());
+        assert_eq!(options["headers"], json!({"X-Custom":"keep"}));
+        assert!(!installed.to_string().contains("updated-secret"));
+        manager.restore(TargetId::OpenCode).unwrap();
+        assert_eq!(read(&manager.paths.opencode), original);
+    }
+}
+
 #[test]
 fn claude_one_m_defaults_on_and_explicit_off_survives_serialization_and_reopen() {
     let (temp, manager, store, mut request) = fixture();

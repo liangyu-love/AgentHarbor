@@ -1073,12 +1073,31 @@ fn deepseek_messages_root_is_preserved() {
 }
 
 #[test]
+fn official_messages_roots_are_resolved_before_desktop_layout_validation() {
+    for (base, root) in [
+        ("https://api.minimax.io/v1", "https://api.minimax.io/anthropic"),
+        ("https://api.xiaomimimo.com/v1", "https://api.xiaomimimo.com/anthropic"),
+        ("https://token-plan-cn.xiaomimimo.com/v1", "https://token-plan-cn.xiaomimimo.com/anthropic"),
+        ("https://open.bigmodel.cn/api/coding/paas/v4", "https://open.bigmodel.cn/api/anthropic"),
+        ("https://api.z.ai/api/coding/paas/v4", "https://api.z.ai/api/anthropic"),
+        ("https://api.novita.ai/v3/openai", "https://api.novita.ai/anthropic"),
+        ("https://api.novita.ai/openai/v1", "https://api.novita.ai/anthropic"),
+    ] {
+        let card = provider(base, vec![]);
+        let (actual_root, messages, models) = provider::resolve_direct_endpoints(&card).unwrap();
+        assert_eq!(actual_root, root);
+        assert_eq!(messages, format!("{root}/v1/messages"));
+        assert_eq!(models, format!("{root}/v1/models"));
+        assert_eq!(messages, newapi::provider_endpoint(base, "v1/messages").unwrap().as_str());
+    }
+}
+
+#[test]
 fn non_v1_and_full_endpoint_layouts_are_rejected() {
-    // 非 v1 特例主机：Desktop 只会追加 v1/，与项目自身投影不一致，首期拒绝。
+    // The ordinary GLM API root must not be silently switched to a Coding Plan.
     for base in [
-        "https://api.novita.ai/v3/openai",
         "https://open.bigmodel.cn/api/paas/v4",
-        "https://api.z.ai/api/coding/paas/v4",
+        "https://api.z.ai/api/paas/v4",
     ] {
         let card = provider(base, vec![]);
         let error = provider::resolve_direct_endpoints(&card).expect_err("layout mismatch");
@@ -2596,6 +2615,8 @@ fn prefixed_gateway_paths_are_reported_as_unsupported() {
         // 多段子路径：`/a/b/v1` 归一成 `/a/b`，两边拼出的地址一致，因此可用。
         "https://relay.example/a/b/v1",
         "https://api.deepseek.com",
+        "https://api.z.ai/api/coding/paas/v4",
+        "https://api.novita.ai/v3/openai",
     ] {
         assert!(projectable(base).is_ok(), "{base} 应当可用");
     }
@@ -2604,8 +2625,6 @@ fn prefixed_gateway_paths_are_reported_as_unsupported() {
     for base in [
         "https://open.bigmodel.cn/api/paas/v4",
         "https://api.z.ai/api/paas/v4",
-        "https://api.z.ai/api/coding/paas/v4",
-        "https://api.novita.ai/v3/openai",
     ] {
         let card = provider(base, vec![]);
         let error = provider::resolve_direct_endpoints(&card).expect_err("布局不一致必须被拒绝");

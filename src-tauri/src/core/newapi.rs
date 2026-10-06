@@ -81,6 +81,30 @@ pub(crate) fn api_key_header(token: &str) -> Result<HeaderValue, String> {
     Ok(value)
 }
 
+/// Messages compatibility does not imply Anthropic's authentication scheme.
+/// Apply documented Bearer auth only to the official, standard gateway roots;
+/// custom providers keep their existing x-api-key contract.
+pub(crate) fn model_auth_header(
+    base: &str,
+    protocol: super::router::ModelProtocol,
+    key: &str,
+) -> Result<(&'static str, HeaderValue), String> {
+    let root = base_url(base)?;
+    let messages_bearer = root.scheme() == "https" && root.port_or_known_default() == Some(443) && matches!(
+        (root.host_str().unwrap_or_default(), root.path()),
+        ("openrouter.ai", "/api/")
+            | ("api.siliconflow.cn" | "api.siliconflow.com", "/")
+            | ("api.novita.ai", "/" | "/v3/openai/" | "/openai/" | "/anthropic/")
+            | ("api.xiaomimimo.com" | "token-plan-cn.xiaomimimo.com", "/" | "/anthropic/")
+            | ("open.bigmodel.cn" | "api.z.ai", "/api/coding/paas/v4/" | "/api/anthropic/")
+    );
+    if protocol != super::router::ModelProtocol::AnthropicMessages || messages_bearer {
+        Ok(("authorization", auth_header(key)?))
+    } else {
+        Ok(("x-api-key", api_key_header(key)?))
+    }
+}
+
 pub(crate) fn client(proxy: &ApiProxyConfigPayload) -> Result<Client, String> {
     client_with_timeout(proxy, Duration::from_secs(20))
 }
@@ -165,10 +189,10 @@ pub(crate) fn endpoint(config: &Connection, path: &str) -> Result<Url, String> {
 pub(crate) fn provider_endpoint(base: &str, path: &str) -> Result<Url, String> {
     let root = if path == "v1/messages" || path.starts_with("v1/messages/") {
         protocol_base_url(base, super::router::ModelProtocol::AnthropicMessages)?
-    } else if path == "v1/responses" || path.starts_with("v1/responses/")
-        || path == "v1/chat/completions"
-    {
+    } else if path == "v1/responses" || path.starts_with("v1/responses/") {
         protocol_base_url(base, super::router::ModelProtocol::Responses)?
+    } else if path == "v1/chat/completions" || path.starts_with("v1/chat/completions/") {
+        protocol_base_url(base, super::router::ModelProtocol::ChatCompletions)?
     } else {
         base_url(base)?
     };
@@ -192,22 +216,41 @@ pub(crate) fn provider_endpoint(base: &str, path: &str) -> Result<Url, String> {
     root.join(path).map_err(|_| "newapi.errors.url".into())
 }
 
-/// DeepSeek hosts Messages below /anthropic while Chat/Responses use the site
-/// root. Only its exact official host and standard roots receive this mapping;
-/// custom gateways and user-supplied path prefixes stay intact.
+/// Resolve documented protocol-specific roots without changing the saved card.
+/// Match exact official hosts and standard paths so custom prefixes stay intact.
+/// GLM Coding roots carry product scope: mapping them is one-way because a bare
+/// /api/anthropic or /api/v1 cannot identify the original Chat billing channel.
 pub(crate) fn protocol_base_url(
     base: &str,
     protocol: super::router::ModelProtocol,
 ) -> Result<Url, String> {
+    use super::router::ModelProtocol;
     let mut root = base_url(base)?;
-    if root.host_str() == Some("api.deepseek.com")
-        && matches!(root.path(), "/" | "/anthropic/")
-    {
-        root.set_path(if protocol == super::router::ModelProtocol::AnthropicMessages {
-            "/anthropic/"
-        } else {
-            "/"
-        });
+    if root.scheme() != "https" || root.port_or_known_default() != Some(443) {
+        return Ok(root);
+    }
+    let mapped = match (root.host_str().unwrap_or_default(), root.path()) {
+        (
+            "api.deepseek.com" | "api.minimaxi.com" | "api.minimax.cn" | "api.minimax.io"
+            | "api.xiaomimimo.com" | "token-plan-cn.xiaomimimo.com",
+            "/" | "/anthropic/",
+        ) => Some(if protocol == ModelProtocol::AnthropicMessages { "/anthropic/" } else { "/" }),
+        ("open.bigmodel.cn" | "api.z.ai", "/api/coding/paas/v4/") => Some(match protocol {
+            ModelProtocol::AnthropicMessages => "/api/anthropic/",
+            ModelProtocol::Responses => "/api/",
+            ModelProtocol::ChatCompletions => "/api/coding/paas/v4/",
+        }),
+        ("api.novita.ai", "/" | "/openai/" | "/v3/openai/" | "/anthropic/") => {
+            match protocol {
+                ModelProtocol::AnthropicMessages => Some("/anthropic/"),
+                ModelProtocol::ChatCompletions if root.path() != "/v3/openai/" => Some("/openai/"),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    if let Some(path) = mapped {
+        root.set_path(path);
     }
     Ok(root)
 }
@@ -632,7 +675,12 @@ pub fn anthropic_models(
     proxy: &ApiProxyConfigPayload,
 ) -> Result<Vec<Model>, String> {
     let mut headers = HeaderMap::new();
-    headers.insert("x-api-key", api_key_header(&config.api_key)?);
+    let (name, value) = model_auth_header(
+        &config.base_url,
+        super::router::ModelProtocol::AnthropicMessages,
+        &config.api_key,
+    )?;
+    headers.insert(name, value);
     headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
     parse_models(&get(
         &client(proxy)?,
@@ -728,6 +776,94 @@ mod tests {
     }
     use serde_json::json;
     use std::io::{Read, Write};
+
+    #[test]
+    fn official_protocol_switches_use_documented_roots() {
+        for host in [
+            "api.minimaxi.com", "api.minimax.cn", "api.minimax.io",
+            "api.xiaomimimo.com", "token-plan-cn.xiaomimimo.com",
+        ] {
+            for root in ["", "/v1", "/anthropic", "/anthropic/v1/"] {
+                let base = format!("https://{host}{root}");
+                for (path, expected) in [
+                    ("v1/messages", "anthropic/v1/messages"),
+                    ("v1/messages/count_tokens", "anthropic/v1/messages/count_tokens"),
+                    ("v1/chat/completions", "v1/chat/completions"),
+                    ("v1/responses", "v1/responses"),
+                ] {
+                    assert_eq!(provider_endpoint(&base, path).unwrap().as_str(), format!("https://{host}/{expected}"));
+                }
+            }
+        }
+        for host in ["open.bigmodel.cn", "api.z.ai"] {
+            let base = format!("https://{host}/api/coding/paas/v4");
+            for (path, expected) in [
+                ("v1/messages", "api/anthropic/v1/messages"),
+                ("v1/chat/completions", "api/coding/paas/v4/chat/completions"),
+                ("v1/responses", "api/v1/responses"),
+            ] {
+                assert_eq!(provider_endpoint(&base, path).unwrap().as_str(), format!("https://{host}/{expected}"));
+            }
+            // Do not change an ordinary API card into the Coding Plan channel,
+            // or guess the lost Chat product scope from a Messages/Responses root.
+            assert_eq!(provider_endpoint(&format!("https://{host}/api/paas/v4"), "v1/chat/completions").unwrap().as_str(), format!("https://{host}/api/paas/v4/chat/completions"));
+            for root in ["/api/anthropic", "/api/v1"] {
+                let base = format!("https://{host}{root}");
+                assert_eq!(protocol_base_url(&base, super::super::router::ModelProtocol::ChatCompletions).unwrap(), base_url(&base).unwrap());
+            }
+        }
+        for root in ["/v3/openai", "/openai/v1", "/anthropic/v1"] {
+            let base = format!("https://api.novita.ai{root}");
+            assert_eq!(provider_endpoint(&base, "v1/messages").unwrap().as_str(), "https://api.novita.ai/anthropic/v1/messages");
+            let expected = if root == "/v3/openai" { "https://api.novita.ai/v3/openai/chat/completions" } else { "https://api.novita.ai/openai/v1/chat/completions" };
+            assert_eq!(provider_endpoint(&base, "v1/chat/completions").unwrap().as_str(), expected);
+        }
+    }
+
+    #[test]
+    fn official_root_mapping_preserves_custom_prefixes_and_model_list_locations() {
+        use super::super::router::ModelProtocol;
+        for base in [
+            "https://api.minimax.io/custom/v1", "https://api.xiaomimimo.com/custom/v1",
+            "https://api.z.ai/custom/v1", "https://api.novita.ai/custom/v1",
+            "https://api.minimax.io.fake.invalid/anthropic/v1", "http://localhost/anthropic/v1",
+            "https://api.minimax.io:8443/anthropic/v1", "http://api.xiaomimimo.com/v1",
+        ] {
+            for protocol in [ModelProtocol::AnthropicMessages, ModelProtocol::ChatCompletions, ModelProtocol::Responses] {
+                assert_eq!(protocol_base_url(base, protocol).unwrap(), base_url(base).unwrap());
+            }
+        }
+        for base in ["https://api.minimax.io/anthropic", "https://api.xiaomimimo.com", "https://api.z.ai/api/anthropic", "https://api.novita.ai/openai/v1"] {
+            assert_eq!(provider_endpoint(base, "v1/models").unwrap(), base_url(base).unwrap().join("v1/models").unwrap());
+        }
+    }
+
+    #[test]
+    fn messages_gateway_auth_uses_documented_headers_and_keeps_custom_contracts() {
+        use super::super::router::ModelProtocol;
+        for base in [
+            "https://openrouter.ai/api/v1", "https://api.siliconflow.cn/v1", "https://api.siliconflow.com/v1",
+            "https://api.novita.ai/v3/openai", "https://api.novita.ai/openai/v1", "https://api.novita.ai/anthropic",
+            "https://api.xiaomimimo.com/v1", "https://token-plan-cn.xiaomimimo.com/anthropic",
+            "https://api.z.ai/api/coding/paas/v4", "https://open.bigmodel.cn/api/anthropic",
+        ] {
+            let (name, value) = model_auth_header(base, ModelProtocol::AnthropicMessages, "fixture-key").unwrap();
+            assert_eq!(name, "authorization", "{base}");
+            assert_eq!(value, "Bearer fixture-key");
+            assert!(value.is_sensitive());
+        }
+        for base in [
+            "https://api.anthropic.com/v1", "https://api.deepseek.com/anthropic", "https://relay.invalid/v1",
+            "https://openrouter.ai/custom/v1", "https://api.siliconflow.cn.fake.invalid/v1",
+            "https://api.xiaomimimo.com/custom/v1",
+            "https://openrouter.ai:8443/api/v1", "http://api.xiaomimimo.com/v1",
+        ] {
+            let (name, value) = model_auth_header(base, ModelProtocol::AnthropicMessages, "fixture-key").unwrap();
+            assert_eq!(name, "x-api-key", "{base}");
+            assert_eq!(value, "fixture-key");
+            assert!(value.is_sensitive());
+        }
+    }
 
     #[test]
     fn official_presets_preserve_nonstandard_api_paths() {

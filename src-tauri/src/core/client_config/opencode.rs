@@ -30,6 +30,67 @@ fn provider_key(provider: &Provider, protocol: ModelProtocol) -> String {
     }
 }
 
+fn credential_edits(
+    document: &Value,
+    provider: &Provider,
+    request: &ConfigRequest,
+    protocol: ModelProtocol,
+    key: &str,
+    credential: &str,
+) -> Result<Vec<Edit>, String> {
+    let mut edits = Vec::new();
+    let bearer = if !request.needs_router() && protocol == ModelProtocol::AnthropicMessages {
+        let (header, value) =
+            super::super::newapi::model_auth_header(&provider.base_url, protocol, credential)?;
+        if header == "authorization" {
+            Some(
+                value
+                    .to_str()
+                    .map_err(|_| "newapi.errors.token")?
+                    .strip_prefix("Bearer ")
+                    .ok_or("newapi.errors.token")?
+                    .to_owned(),
+            )
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    if let Some(token) = bearer {
+        // OpenCode fills apiKey only when undefined. AI SDK Anthropic 3.0.111
+        // accepts an empty key with authToken and emits Bearer without x-api-key;
+        // keeping this explicit prevents a saved login from adding a second key.
+        edits.push(edit(&["provider", key, "options", "apiKey"], json!("")));
+        edits.push(edit(
+            &["provider", key, "options", "authToken"],
+            json!(token),
+        ));
+    } else {
+        edits.push(edit(
+            &["provider", key, "options", "apiKey"],
+            json!(credential),
+        ));
+        edits.push(remove(&["provider", key, "options", "authToken"]));
+    }
+    // SDK headers override its authentication options. Withdraw only auth
+    // headers, with field-level backups preserving the user's other headers.
+    if let Some(headers) = document["provider"][key]["options"].get("headers") {
+        for header in headers
+            .as_object()
+            .ok_or("clients.errors.invalidConfig")?
+            .keys()
+        {
+            if header.eq_ignore_ascii_case("authorization")
+                || header.eq_ignore_ascii_case("x-api-key")
+            {
+                edits.push(remove(&["provider", key, "options", "headers", header]));
+            }
+        }
+    }
+    Ok(edits)
+}
+
 impl ClientAdapter for OpenCode {
     fn id(&self) -> TargetId {
         TargetId::OpenCode
@@ -159,20 +220,21 @@ impl ClientAdapter for OpenCode {
                     continue;
                 }
                 keys.push(json!(key));
-                let (base, credential) = client_endpoint(store, provider, request, true)?;
+                let (base, credential) = options::client_endpoint_for_protocol(
+                    store, provider, request, true, protocol,
+                )?;
                 // Own only generated leaves, so later user edits to headers, variants
                 // and custom models remain independent of this configuration session.
                 for (path, value) in [
                     (vec!["provider", &key, "name"], json!(provider.name)),
                     (vec!["provider", &key, "npm"], json!(npm)),
                     (vec!["provider", &key, "options", "baseURL"], json!(base)),
-                    (
-                        vec!["provider", &key, "options", "apiKey"],
-                        json!(credential),
-                    ),
                 ] {
                     edits.push(edit(&path, value));
                 }
+                edits.extend(credential_edits(
+                    document, provider, request, protocol, &key, credential,
+                )?);
                 for (id, model) in models {
                     edits.push(edit(
                         &["provider", &key, "models", &id, "name"],

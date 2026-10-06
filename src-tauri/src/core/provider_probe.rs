@@ -57,12 +57,10 @@ pub fn run(
             .header("Accept", "text/event-stream")
             .header("User-Agent", "AgentHarbor/1.0")
             .json(&body);
+        let (name, value) = newapi::model_auth_header(&config.base_url, protocol, &config.api_key)?;
+        request = request.header(name, value);
         if protocol == ModelProtocol::AnthropicMessages {
-            request = request
-                .header("x-api-key", newapi::api_key_header(&config.api_key)?)
-                .header("anthropic-version", "2023-06-01");
-        } else {
-            request = request.header("Authorization", newapi::auth_header(&config.api_key)?);
+            request = request.header("anthropic-version", "2023-06-01");
         }
         if url.host_str() == Some("opencode.ai") {
             request = request.header("x-opencode-session", uuid::Uuid::new_v4().to_string());

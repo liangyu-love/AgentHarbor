@@ -263,9 +263,17 @@ pub fn resolve_direct_endpoints(provider: &Provider) -> DesktopResult<(String, S
             .action("editProvider"),
         ));
     }
-    // non-v1 特例：Desktop 只会追加 `v1/...`，本项目端点会去掉前缀，布局不一致。
-    let host = parsed.host_str().unwrap_or_default();
-    let path = parsed.path();
+    let protocol_root =
+        newapi::protocol_base_url(base, ModelProtocol::AnthropicMessages).map_err(|_| {
+            Box::new(
+                DesktopError::new(error_code::INVALID_URL, "claudeDesktop.errors.invalidUrl")
+                    .retryable(),
+            )
+        })?;
+    // Check the actual Messages root, after mapping standard official roots.
+    // Desktop appends v1/... and cannot use a remaining non-v1 layout.
+    let host = protocol_root.host_str().unwrap_or_default();
+    let path = protocol_root.path();
     let non_v1 = matches!(
         (host, path),
         ("api.novita.ai", "/v3/openai/")
@@ -278,14 +286,6 @@ pub fn resolve_direct_endpoints(provider: &Provider) -> DesktopResult<(String, S
         return Err(unsupported_layout("nonV1"));
     }
 
-    // DeepSeek 的 Messages 挂在 /anthropic，其它网关保留用户前缀。
-    let protocol_root =
-        newapi::protocol_base_url(base, ModelProtocol::AnthropicMessages).map_err(|_| {
-            Box::new(
-                DesktopError::new(error_code::INVALID_URL, "claudeDesktop.errors.invalidUrl")
-                    .retryable(),
-            )
-        })?;
     let root = desktop_root(protocol_root.as_str());
     let messages = join_desktop(&root, "v1/messages")?;
     let models = join_desktop(&root, "v1/models")?;

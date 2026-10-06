@@ -1,7 +1,7 @@
 //! Claude Desktop 直连：Desktop 实际地址上的只读 Bearer 检测。
 //!
-//! 现有 `provider_probe` / `newapi::anthropic_models` 使用 `x-api-key`，它的成功
-//! **不能**当作 Bearer 成功。这里独立检测 Desktop 真正会访问的 `/v1/models`：
+//! 通用探测按供应商契约选择鉴权，其成功不能替代 Desktop 的地址与 Bearer 检测。
+//! 这里独立检测 Desktop 真正会访问的 `/v1/models`：
 //! - 只读 GET，不自动发送任何计费 Messages 请求；
 //! - 不修改 Provider 的 `test_status`；
 //! - 沿用现有超时、响应大小上限与禁止自动重定向边界；

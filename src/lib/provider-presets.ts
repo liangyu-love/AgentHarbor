@@ -139,7 +139,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   },
   {
     name: "Novita AI",
-    baseUrl: "https://api.novita.ai/v3/openai",
+    baseUrl: "https://api.novita.ai/openai/v1",
     protocol: "chatCompletions",
     category: "aggregator",
     description: "Novita AI 云端推理",

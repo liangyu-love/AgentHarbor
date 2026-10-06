@@ -48,9 +48,11 @@
 | `https://relay.example/custom/v1` | `https://relay.example/custom` | `https://relay.example/custom/v1/messages` |
 | `https://api.deepseek.com` | `https://api.deepseek.com/anthropic` | `https://api.deepseek.com/anthropic/v1/messages` |
 
+MiniMax、MiMo、Novita 的规范 OpenAI 根以及 GLM/Z.AI 的 Coding 根，会先投影到官方 Messages 根，再检查 Desktop 的 `v1/...` 路径布局；不再因原卡片使用 Chat 地址而拒绝直连。自定义前缀保留。详情见[官方协议核查](official-provider-protocol-audit-2026-10-06.md)。
+
 - 会被拒绝的形态：
   - **完整接口地址**：以 `/v1/messages`、`/v1/responses`、`/v1/chat/completions`、`/v1/models`、`/messages`、`/chat/completions` 结尾的地址（不会把它悄悄改成另一种含义，请先在卡片里改成站点根）。
-  - **non-v1 布局**：`api.novita.ai/v3/openai/`、`open.bigmodel.cn/api/paas/v4/`（含 `/api/coding/paas/v4/`）、`api.z.ai/api/coding/paas/v4/`。这些站点本项目会去掉 `v1/` 前缀，而 Desktop 只会追加 `v1/`，两者布局不一致，因此首期直接拒绝直连。后续 Desktop 网关模式计划适配这类布局，目前尚未接入。
+  - **未适配的 non-v1 布局**：GLM/Z.AI 普通 `/api/paas/v4/` 缺少相应产品的 Messages 支持依据，仍不会自动切换到 Coding 入口。
   - **无法解析的地址**：非 `http(s)`、含 userinfo（`user:pass@`）、含 query 或 fragment 的 URL。
   - 与项目自身端点投影不一致的地址（布局不匹配）同样被拒绝。
 - `http://` 明文地址会被接受但会在预览里标记为明文，不会自动升级成 https。
