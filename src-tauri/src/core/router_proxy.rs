@@ -13,12 +13,17 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
+use protocol::adapters::{AdapterRequest, InboundAdapter, OutboundAdapter, WireAdapter};
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
+mod aggregate;
+mod aggregate_output;
+#[cfg(test)]
+mod aggregate_tests;
 #[cfg(test)]
 #[path = "router_proxy/claude_cli_tests.rs"]
 mod claude_cli_tests;
@@ -27,14 +32,15 @@ mod claude_continuation_tests;
 #[cfg(test)]
 #[path = "router_proxy/desktop_gateway_tests.rs"]
 mod desktop_gateway_tests;
-mod failover;
+mod forward;
 mod hosted_search;
 #[cfg(test)]
 #[path = "router_proxy/hosted_search_tests.rs"]
 mod hosted_search_tests;
 #[cfg(test)]
-#[path = "router_proxy/failover_tests.rs"]
-mod failover_tests;
+#[path = "router_proxy/routing_safety_tests.rs"]
+mod routing_safety_tests;
+mod session_affinity;
 mod session_compat;
 mod tool_schema;
 
@@ -105,24 +111,6 @@ pub fn set_desktop_pin(port: Option<u16>) -> Result<(), String> {
 
 static HANDLE: OnceLock<Mutex<Option<ProxyHandle>>> = OnceLock::new();
 static START_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-type FailoverScope = Option<(PathBuf, Arc<std::sync::atomic::AtomicBool>)>;
-static FAILOVER_SCOPE: OnceLock<Mutex<FailoverScope>> = OnceLock::new();
-
-fn failover_seen_for(store_path: &std::path::Path) -> Arc<std::sync::atomic::AtomicBool> {
-    let mut scope = FAILOVER_SCOPE
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    if let Some((path, seen)) = &*scope {
-        if path == store_path {
-            return seen.clone();
-        }
-    }
-    let seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    *scope = Some((store_path.to_owned(), seen.clone()));
-    seen
-}
-
 fn handle_slot() -> &'static Mutex<Option<ProxyHandle>> {
     HANDLE.get_or_init(|| Mutex::new(None))
 }
@@ -260,7 +248,6 @@ pub async fn ensure_running(
             mode: super::models::ApiProxyMode::Direct,
             url: None,
         })?,
-        failover_seen: failover_seen_for(&paths.app_data_dir.join("newapi-providers.dat")),
     });
     let pins = listener_pins().lock().map_err(|_| "newapi.errors.storage")?;
     if pinned_port(&pins).is_some_and(|p| p != bound_port) {
@@ -285,9 +272,6 @@ struct ArcContext {
     outbound: Arc<RwLock<Client>>,
     /// 供应商网络模式为 direct 时使用的无代理客户端。
     outbound_direct: Client,
-    /// Once this process has routed with failover, missing affinity is no longer
-    /// evidence that a continuation is safe to send to its original channel.
-    failover_seen: Arc<std::sync::atomic::AtomicBool>,
 }
 
 async fn accept_loop(
@@ -369,15 +353,21 @@ fn validate_desktop_endpoint(method: &hyper::Method, path: &str) -> ForwardResul
     let allowed = match path {
         "/claude-desktop/v1/models" => *method == hyper::Method::GET,
         "/claude-desktop/v1/messages" => *method == hyper::Method::POST,
-        _ => return Err((StatusCode::NOT_FOUND, "unsupported Desktop gateway endpoint")),
+        _ => {
+            return Err((StatusCode::NOT_FOUND, "unsupported Desktop gateway endpoint",
+            ))
+        }
     };
-    if allowed { Ok(()) } else { Err((StatusCode::METHOD_NOT_ALLOWED, "unsupported Desktop gateway method")) }
+    if allowed { Ok(()) } else { Err((StatusCode::METHOD_NOT_ALLOWED, "unsupported Desktop gateway method",
+        )) }
 }
 
 fn desktop_authorized(headers: &HeaderMap, token: &str) -> bool {
     if token.is_empty() { return false; }
     headers.get(AUTHORIZATION).and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer ").or_else(|| value.strip_prefix("bearer ")))
+        .and_then(|value| {
+            value.strip_prefix("Bearer ").or_else(|| value.strip_prefix("bearer "))
+        })
         .is_some_and(|candidate| token_matches(candidate, token))
 }
 
@@ -424,6 +414,49 @@ fn append_anthropic_beta(headers: &mut HeaderMap) {
     if let Ok(value) = HeaderValue::from_str(&betas.join(", ")) {
         headers.insert("anthropic-beta", value);
     }
+}
+
+/// A context selection depends on capacity, never the member's wire protocol.
+/// Keep the existing explicit opt-in for models without known capacity; a
+/// conservative fallback is not evidence that an upstream only supports 200K.
+fn validate_one_m_capacity(
+    context: &ArcContext,
+    store: &router::Store,
+    destination: &Destination,
+    catalog: &super::models_dev::Catalog,
+) -> ForwardResult<()> {
+    let Destination::Provider {
+        provider,
+        model_override,
+        ..
+    } = destination
+    else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "1M context requires a configured model",
+        ));
+    };
+    let model = model_override.as_deref().unwrap_or(&provider.model);
+    let official_snapshot = router::official_endpoint_applies(provider)
+        .then(|| super::model_catalog::official(&context.codex_home, &context.app_data_dir));
+    let official = official_snapshot
+        .as_ref()
+        .and_then(|snapshot| router::matched_official_model(&snapshot.models, model));
+    let projection = router::model_projection(
+        provider,
+        model,
+        official,
+        catalog,
+        &store.global_compression(),
+    )
+    .1;
+    if !projection.context_is_fallback && projection.context_window < 1_000_000 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "selected model does not support 1M context",
+        ));
+    }
+    Ok(())
 }
 
 enum Destination {
@@ -494,6 +527,9 @@ fn provider_query(query: Option<&str>, translation: Option<protocol::Translation
 
 fn request_protocol(segments: &[&str]) -> Option<router::ModelProtocol> {
     match segments {
+        ["aggregate", "v1", "responses", ..] => Some(router::ModelProtocol::Responses),
+        ["aggregate", "v1", "messages", ..] => Some(router::ModelProtocol::AnthropicMessages),
+        ["aggregate", "v1", "chat", "completions"] => Some(router::ModelProtocol::ChatCompletions),
         ["claude-desktop", "v1", "messages"] => Some(router::ModelProtocol::AnthropicMessages),
         ["codex", "v1", ..] | ["v1", "responses", ..] | ["p", _, "v1", "responses", ..] => {
             Some(router::ModelProtocol::Responses)
@@ -512,6 +548,7 @@ fn request_protocol(segments: &[&str]) -> Option<router::ModelProtocol> {
 /// administration, file storage or billing APIs with a provider's credentials.
 fn validate_endpoint(method: &hyper::Method, segments: &[&str]) -> ForwardResult<()> {
     let suffix = match segments {
+        ["aggregate", "v1", suffix @ ..] => suffix,
         ["codex", "v1", suffix @ ..] | ["p", _, "v1", suffix @ ..] | ["v1", suffix @ ..] => suffix,
         _ => return Err((StatusCode::NOT_FOUND, "unknown router endpoint")),
     };
@@ -521,10 +558,13 @@ fn validate_endpoint(method: &hyper::Method, segments: &[&str]) -> ForwardResult
             | ["chat", "completions"] => *method == hyper::Method::POST,
         ["responses", _] => matches!(*method, hyper::Method::GET | hyper::Method::HEAD | hyper::Method::DELETE),
         ["responses", _, "cancel"] => *method == hyper::Method::POST,
-        ["responses", _, "input_items"] => matches!(*method, hyper::Method::GET | hyper::Method::HEAD),
+        ["responses", _, "input_items"] => {
+            matches!(*method, hyper::Method::GET | hyper::Method::HEAD)
+        }
         _ => return Err((StatusCode::NOT_FOUND, "unsupported router endpoint")),
     };
-    if allowed { Ok(()) } else { Err((StatusCode::METHOD_NOT_ALLOWED, "unsupported method for router endpoint")) }
+    if allowed { Ok(()) } else { Err((StatusCode::METHOD_NOT_ALLOWED, "unsupported method for router endpoint",
+        )) }
 }
 
 fn is_inference_create(method: &hyper::Method, segments: &[&str]) -> bool {
@@ -533,7 +573,9 @@ fn is_inference_create(method: &hyper::Method, segments: &[&str]) -> bool {
     }
     matches!(
         segments,
-        ["claude-desktop", "v1", "messages"]
+        ["aggregate", "v1", "responses" | "messages"]
+            | ["aggregate", "v1", "chat", "completions"]
+            | ["claude-desktop", "v1", "messages"]
             |
         ["codex", "v1", "responses" | "messages"]
             | ["codex", "v1", "chat", "completions"]
@@ -546,6 +588,7 @@ fn is_inference_create(method: &hyper::Method, segments: &[&str]) -> bool {
 
 fn is_response_resource(segments: &[&str]) -> bool {
     let suffix = match segments {
+        ["aggregate", "v1", suffix @ ..] => suffix,
         ["codex", "v1", suffix @ ..] | ["p", _, "v1", suffix @ ..] | ["v1", suffix @ ..] => suffix,
         _ => return false,
     };
@@ -630,13 +673,19 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
     let desktop = if desktop_namespace {
         validate_desktop_endpoint(&method, &path)?;
         let snapshot = super::claude_desktop::gateway::committed_snapshot(&context.app_data_dir)
-            .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "Desktop gateway recovery required"))?
+            .map_err(|_| {
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Desktop gateway recovery required",
+                )
+            })?
             .ok_or((StatusCode::UNAUTHORIZED, "Desktop gateway is not managed"))?;
         if !desktop_authorized(request.headers(), &snapshot.token) {
             return Err((StatusCode::UNAUTHORIZED, "invalid Desktop gateway token"));
         }
         if snapshot.bound_port != context.bound_port {
-            return Err((StatusCode::SERVICE_UNAVAILABLE, "Desktop gateway listener changed"));
+            return Err((StatusCode::SERVICE_UNAVAILABLE, "Desktop gateway listener changed",
+            ));
         }
         Some(snapshot)
     } else {
@@ -659,12 +708,43 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
     // or converted. Desktop eligibility, conversion and pricing must all use
     // the catalog generation captured for this request.
     let desktop_catalog = desktop.as_ref().map(|_| super::models_dev::load(&context.app_data_dir));
+    if matches!(
+        segments.as_slice(),
+        ["aggregate", "v1", "models"] | ["aggregate", "v1", "models", _]
+    ) {
+        let catalog = super::models_dev::load(&context.app_data_dir);
+        let anthropic = query
+            .as_deref()
+            .is_some_and(|query| query.split('&').any(|part| part == "format=anthropic"));
+        let mut value = aggregate::catalog(&store, &catalog, anthropic);
+        if let ["aggregate", "v1", "models", model] = segments.as_slice() {
+            value = value["data"]
+                .as_array()
+                .and_then(|entries| entries.iter().find(|entry| entry["id"] == *model))
+                .cloned()
+                .ok_or((StatusCode::NOT_FOUND, "unknown aggregate model"))?;
+        }
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, "application/json")
+            .body(full_body(if method == hyper::Method::HEAD {
+                String::new()
+            } else {
+                value.to_string()
+            }))
+            .expect("static response parts"));
+    }
     if path == "/claude-desktop/v1/models" {
         let value = super::claude_desktop::gateway::models(
             desktop.as_ref().expect("authenticated Desktop namespace"),
             &store,
             desktop_catalog.as_deref().expect("Desktop request catalog"),
-        ).map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "no available Desktop routes"))?;
+        ).map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "no available Desktop routes",
+            )
+        })?;
         return Ok(Response::builder().status(StatusCode::OK).header(CONTENT_TYPE, "application/json")
             .body(full_body(value.to_string())).expect("static response parts"));
     }
@@ -680,7 +760,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         return Err((StatusCode::PAYLOAD_TOO_LARGE, "request body too large"));
     }
     let headers = forwardable_headers(request.headers());
-    let desktop_one_m_beta = desktop.is_some() && headers.get_all("anthropic-beta").iter()
+    let one_m_beta = headers.get_all("anthropic-beta").iter()
         .filter_map(|value| value.to_str().ok()).flat_map(|value| value.split(','))
         .any(|value| value.trim() == CLAUDE_ONE_M_BETA);
     let body: Option<Bytes> = if has_body {
@@ -692,6 +772,10 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
 
     let required_protocol = request_protocol(&segments);
     let (requested_model, one_m_context) = requested_model(body.as_deref(), required_protocol);
+    // Claude Code normally strips the marker before sending the request and
+    // expresses the selected context through the Messages beta header instead.
+    let one_m_context = one_m_context
+        || (required_protocol == Some(router::ModelProtocol::AnthropicMessages) && one_m_beta);
     let inference_create = is_inference_create(&method, &segments);
     let response_resource = is_response_resource(&segments);
     let compact = method == hyper::Method::POST
@@ -701,16 +785,6 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                 | ["p", _, "v1", "responses", "compact"]
                 | ["v1", "responses", "compact"]
         );
-    let same_model_failover = desktop.is_none() && store.router.same_model_failover;
-    if (inference_create || compact) && same_model_failover {
-        context
-            .failover_seen
-            .store(true, std::sync::atomic::Ordering::Release);
-    }
-    let failover_seen = desktop.is_none() && context
-        .failover_seen
-        .load(std::sync::atomic::Ordering::Acquire);
-
     // Codex model catalog for the model picker (`model_catalog_json` mirror).
     if matches!(segments.as_slice(), ["codex", "v1", "models"]) && !has_body {
         return Ok(codex_catalog_response(&context, &store));
@@ -719,6 +793,37 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         requested_model.as_deref().unwrap_or_default(),
         body.as_deref(),
     );
+    if segments.first() == Some(&"aggregate") {
+        let ingress =
+            required_protocol.ok_or((StatusCode::NOT_FOUND, "unsupported aggregate endpoint"))?;
+        if ingress == router::ModelProtocol::ChatCompletions {
+            return Err((
+                StatusCode::NOT_IMPLEMENTED,
+                "mixed aggregate Chat ingress is not available yet",
+            ));
+        }
+        let catalog = super::models_dev::load(&context.app_data_dir);
+        let result = aggregate::execute(
+            &context,
+            &store,
+            &catalog,
+            &method,
+            &segments,
+            query.as_deref(),
+            &headers,
+            body,
+            ingress,
+            requested_model.as_deref(),
+            one_m_context,
+            None,
+            trace.clone(),
+        )
+        .await;
+        if let Err((status, message)) = &result {
+            trace.reject(status.as_u16(), message);
+        }
+        return result;
+    }
     if let Some(snapshot) = &desktop {
         trace.identity(&request_diagnostics::RequestIdentity {
             client_source: Some("claudeDesktop".into()),
@@ -727,8 +832,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         });
     }
     let result = async {
-        // Identify provider routes without consulting the original channel's
-        // availability: an existing session may already have switched away.
+        // Identify ordinary provider routes for connection identity protection.
         let provider_route = match segments.as_slice() {
             ["codex", "v1", ..] => requested_model
                 .as_deref()
@@ -738,7 +842,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         };
         let affinity_key = (provider_route && (inference_create || compact || response_resource))
             .then(|| {
-                failover::key(
+                session_affinity::key(
                     &context.store_path,
                     &headers,
                     requested_model.as_deref().unwrap_or_default(),
@@ -746,35 +850,38 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             })
             .flatten();
         let _decision = if let Some(key) = &affinity_key {
-            Some(failover::decision_lock(key).await)
+            Some(session_affinity::decision_lock(key).await)
         } else {
             None
         };
-        let binding = affinity_key.as_deref().and_then(failover::bound);
-        let continuation = compact || (inference_create && failover::continuation(body.as_deref()));
-        let fresh_turn = inference_create && failover::fresh_turn(body.as_deref());
-        if !same_model_failover && binding.as_ref().is_some_and(|binding| binding.requires_failover) {
-            if continuation {
-                return Err((StatusCode::CONFLICT,
-                    "failover is disabled for this bound conversation; re-enable it or start a new conversation"));
-            }
-        }
-        // A new turn while disabled selects the ordinary route. Replace the old
-        // binding only after all path/body/tool checks succeed, immediately
-        // before forwarding; rejected requests must not destroy affinity.
-        let selected_binding = if !same_model_failover && fresh_turn { None } else { binding.as_ref() };
+        let binding = affinity_key.as_deref().and_then(session_affinity::bound);
+        let continuation = compact || (inference_create && session_affinity::continuation(body.as_deref()));
+        let fresh_turn = inference_create && session_affinity::fresh_turn(body.as_deref());
+        // A fresh complete history may select the currently configured channel.
+        // Continuations validate the established connection before any dispatch.
+        let selected_binding = if fresh_turn { None } else { binding.as_ref() };
         let desktop_alias = desktop.as_ref().and_then(|_| raw_requested_model(body.as_deref()))
             .map(|alias| alias.trim().to_owned());
         let desktop_route = if let Some(snapshot) = &desktop {
             let alias = desktop_alias.as_deref()
                 .ok_or((StatusCode::BAD_REQUEST, "Desktop model alias is required"))?;
-            let with_marker = (desktop_one_m_beta && !strip_claude_one_m_marker(alias).1)
+            let with_marker = (one_m_beta && !strip_claude_one_m_marker(alias).1)
                 .then(|| format!("{alias}[1m]"));
             Some(super::claude_desktop::gateway::resolve_message(snapshot, &store,
                 desktop_catalog.as_deref().expect("Desktop request catalog"), with_marker.as_deref().unwrap_or(alias))
                 .map_err(|_| (StatusCode::BAD_REQUEST, "Desktop route is unknown or unavailable"))?)
         } else { None };
         let one_m_context = desktop_route.as_ref().map(|route| route.view.one_m).unwrap_or(one_m_context);
+        if let Some(route) = desktop_route.as_ref().filter(|route| route.aggregate_id.is_some()) {
+            let snapshot = desktop.as_ref().expect("Desktop aggregate snapshot");
+            return aggregate::execute(&context, &store,
+                desktop_catalog.as_deref().expect("Desktop catalog"), &method, &segments,
+                query.as_deref(), &headers, body.clone(), router::ModelProtocol::AnthropicMessages,
+                Some(&route.choice.model_id), one_m_context,
+                Some(aggregate::DesktopTarget { aggregate_id: route.aggregate_id.clone().expect("aggregate route"),
+                    alias: route.choice.role_alias.clone(), config_identity: snapshot.paths_identity.clone(),
+                    route_revision: snapshot.route_revision, one_m: one_m_context }), trace.clone()).await;
+        }
         let identity = desktop_route.as_ref().map(|route| request_diagnostics::RequestIdentity {
             client_source: Some("claudeDesktop".into()),
             requested_model: desktop_alias.clone(),
@@ -782,10 +889,11 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             route_revision: desktop.as_ref().map(|s| s.route_revision),
         });
         if let Some(identity) = &identity { trace.identity(identity); }
-        let (mut destination, mut selection_reason) = if let Some(route) = &desktop_route {
-            let upstream_protocol = route.provider.protocol_for_model(&route.choice.model_id);
+        let (mut destination, selection_reason) = if let Some(route) = &desktop_route {
+            let provider = route.provider.as_ref().expect("ordinary Desktop provider");
+            let upstream_protocol = provider.protocol_for_model(&route.choice.model_id);
             let translation = protocol::Translation::between(router::ModelProtocol::AnthropicMessages, upstream_protocol);
-            (Destination::Provider { provider: Box::new(route.provider.clone()),
+            (Destination::Provider { provider: Box::new(provider.clone()),
                 model_override: Some(route.choice.model_id.clone()), upstream_protocol, translation }, "desktop_role_mapping".into())
         } else { resolve_destination_explain(
             &store,
@@ -795,40 +903,12 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             selected_binding,
         )? };
         hosted_search::Plan::command_responses_search_to_chat(&mut destination, body.as_deref());
+        let request_catalog = desktop_catalog.clone()
+            .unwrap_or_else(|| super::models_dev::load(&context.app_data_dir));
         if one_m_context
-            && desktop.is_none()
-            && !matches!(
-                &destination,
-                Destination::Provider {
-                    upstream_protocol: router::ModelProtocol::AnthropicMessages,
-                    ..
-                }
-            )
-        {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "1M context requires an Anthropic Messages provider",
-            ));
+            && desktop.is_none() {
+            validate_one_m_capacity(&context, &store, &destination, &request_catalog)?;
         }
-        let stateless = same_model_failover
-            && binding.is_none()
-            && affinity_key.is_some()
-            && failover::stateless(body.as_deref());
-        if failover_seen
-            && affinity_key.is_some()
-            && binding.is_none()
-            && continuation
-        {
-            return Err((
-                StatusCode::CONFLICT,
-                "conversation channel is unknown or expired; start a new conversation",
-            ));
-        }
-        let can_retry = same_model_failover
-            && binding.is_none()
-            && affinity_key.is_some()
-            && fresh_turn
-            && stateless;
         trace.stage("build");
         let body = if required_protocol == Some(router::ModelProtocol::Responses) && !response_resource {
             session_compat::prepare_reasoning(body, || {
@@ -844,179 +924,48 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         } else {
             body
         };
-        let usage_request_id = trace.request_id().to_owned();
-        for attempt in 0..2 {
-            let attempt_id = uuid::Uuid::new_v4().to_string();
+        let attempt_id = uuid::Uuid::new_v4().to_string();
             let started = std::time::Instant::now();
             let suffix = upstream_suffix(&segments, &destination, required_protocol)?;
-            let pricing = relay_pricing(&context, &destination, requested_model.as_deref(), desktop_catalog.as_deref());
-            let attempt_metadata = route_trace::AttemptMetadata {
-                attempt_id: attempt_id.clone(),
-                catalog_revision: pricing.revision.clone(),
-                match_kind: pricing.match_kind.clone(),
-                pricing_status: pricing.status().into(),
-                pricing_source: pricing.source.clone(),
-                selection_reason: selection_reason.clone(),
-                failover_reason: (attempt > 0).then(|| selection_reason.clone()),
-            };
-            let mut relay_request = relay_usage_request(
-                &context,
-                &destination,
-                required_protocol,
-                requested_model.as_deref(),
-                pricing,
-            ).map(|request| {
-                let request = request.with_request_id(&usage_request_id).with_attempt_id(&attempt_id);
-                if let Some(identity) = &identity { request.with_identity(identity.clone()) } else { request }
-            });
-            let (upstream_protocol, upstream_model) = match &destination {
-                Destination::Provider { provider, model_override, upstream_protocol, .. } =>
-                    (*upstream_protocol, model_override.clone().unwrap_or_else(|| provider.model.clone())),
-                Destination::Official => (router::ModelProtocol::Responses, requested_model.clone().unwrap_or_default()),
-            };
-            let (url, mut attempt_headers) = match &destination {
-                Destination::Provider {
-                    provider,
-                    model_override,
-                    upstream_protocol,
-                    translation,
-                } => {
-                    trace.attempt(
-                        &provider.id,
-                        &provider.name,
-                        model_override.as_deref().unwrap_or(&provider.model),
-                        match upstream_protocol {
-                            router::ModelProtocol::Responses => "responses",
-                            router::ModelProtocol::ChatCompletions => "chatCompletions",
-                            router::ModelProtocol::AnthropicMessages => "anthropicMessages",
-                        },
-                        attempt_metadata.clone(),
-                    );
-                    provider_target(
-                        provider,
-                        *upstream_protocol,
-                        *translation,
-                        &suffix,
-                        query.as_deref(),
-                        headers.clone(),
-                    )?
-                }
-                Destination::Official => {
-                    trace.attempt(
-                        "official",
-                        "OpenAI",
-                        requested_model.as_deref().unwrap_or_default(),
-                        "responses",
-                        attempt_metadata.clone(),
-                    );
-                    official_target(
-                        &context,
-                        codex_auth.clone(),
-                        &suffix,
-                        query.as_deref(),
-                        headers.clone(),
-                    )?
-                }
-            };
-            if one_m_context && upstream_protocol == router::ModelProtocol::AnthropicMessages {
-                append_anthropic_beta(&mut attempt_headers);
-            }
+        if let Destination::Provider { upstream_protocol, .. } = &destination {
             let desktop_history_scope = desktop_route.as_ref().zip(desktop.as_ref()).map(|(route, snapshot)| {
                 protocol::message_history::ClientScope {
                     client_source: "claudeDesktop", config_identity: &snapshot.paths_identity,
                     model_alias: &route.choice.role_alias, route_revision: snapshot.route_revision,
                 }
             });
-            let message_context = match &destination {
-                Destination::Provider { provider, translation: Some(pair), .. }
-                    if pair.from == router::ModelProtocol::AnthropicMessages => {
-                    body.as_deref().and_then(|bytes| protocol::message_history::Context::new_with_client_scope(
-                        &[&context.store_path.to_string_lossy(), &provider.id, &url,
-                          attempt_headers.get(AUTHORIZATION).or_else(|| attempt_headers.get("x-api-key")).and_then(|v| v.to_str().ok()).unwrap_or_default(),
-                          &upstream_model, affinity_key.as_deref().unwrap_or_default()], pair.to, bytes, affinity_key.as_deref(), desktop_history_scope.as_ref()))
-                }
-                _ => None,
-            };
             // Resource operations read the established channel but do not carry
             // a create request; preserve their body, including an empty cancel.
             // upstream_suffix already rejects translated Responses resources.
-            let hosted_plan = hosted_search::Plan::for_destination(&destination, body.as_deref())?;
-            let search_backend = hosted_plan.as_ref()
-                .map(|_| hosted_search::SearchBackend::select(&context, &store, &destination)).transpose()?;
-            let translation_body = if let Some(plan) = &hosted_plan { Some(plan.normalized.clone()) }
-                else { hosted_search::Plan::history_only(&destination, body.clone())? };
-            let PreparedForward { body: mut sent, input: translated_input, namespaces: tool_namespaces, response_options } = if response_resource {
-                PreparedForward::native(body.clone())
-            } else {
-                upstream_body(&destination, translation_body)?
-            };
-            if let (Some(history), Some(bytes)) = (&message_context, &sent) {
-                let mut value: Value = serde_json::from_slice(bytes).map_err(|_| (StatusCode::BAD_REQUEST, "invalid translated request"))?;
-                history.restore(&mut value);
-                sent = Some(Bytes::from(value.to_string()));
-            }
-            let sent = if let Destination::Provider { provider, translation: Some(translation), .. } = &destination {
-                if translation.from == router::ModelProtocol::AnthropicMessages {
-                    let official_snapshot = router::official_endpoint_applies(provider)
-                        .then(|| super::model_catalog::official(&context.codex_home, &context.app_data_dir));
-                    let official = official_snapshot.as_ref()
-                        .and_then(|snapshot| router::matched_official_model(&snapshot.models, &upstream_model));
-                    let metadata = router::resolve_model_metadata(
-                        provider, &upstream_model, official,
-                        &desktop_catalog.clone().unwrap_or_else(|| super::models_dev::load(&context.app_data_dir)),
-                    );
-                    session_compat::prepare_message_translation(sent, translation.to, &metadata)?
-                } else { sent }
-            } else { sent };
-            let (sent, tool_adapter) = if response_resource {
-                (sent, Default::default())
-            } else {
-                tool_schema::prepare(sent, &upstream_model, upstream_protocol)?
-            };
-            let outbound_client = client_for(&context, &destination)?;
-            let credential_kind = if matches!(destination, Destination::Official) { "codexLocal" } else { "providerApiKey" };
-            let credential_header = attempt_headers.get(AUTHORIZATION)
-                .or_else(|| attempt_headers.get("x-api-key"))
-                .and_then(|value| value.to_str().ok());
-            let account_id = attempt_headers.get("chatgpt-account-id").and_then(|value| value.to_str().ok());
-            let provider_id = match &destination {
-                Destination::Provider { provider, .. } => provider.id.as_str(),
-                Destination::Official => "official",
-            };
-            let credential_scope = format!("{}|{}", provider_id, url.split('?').next().unwrap_or(&url));
-            let credential = request_diagnostics::CredentialSnapshot::from_header(
-                &context.app_data_dir, credential_kind, &credential_scope, credential_header, account_id,
-            );
-            relay_request = relay_request.map(|request| request.with_credential(credential.clone()));
-            trace.sent(sent.as_deref(), credential.clone());
-            if inference_create && failover_seen && (fresh_turn || continuation) {
+            let mut prepared = forward::prepare(forward::Input {
+                context: &context, store: &store, catalog: &request_catalog,
+                destination: &destination, suffix: &suffix, query: query.as_deref(), headers: &headers,
+                body, ingress: required_protocol.unwrap_or(*upstream_protocol),
+                resource: response_resource, one_m: one_m_context, affinity_key: affinity_key.as_deref(),
+                client_scope: desktop_history_scope, identity: identity.unwrap_or_default(),
+                trace: trace.clone(), selection_reason, retry_reason: None, attempt_id,
+            })?;
+            // GET /models remains diagnostic-only and does not count as inference.
+            if required_protocol.is_none() { prepared.usage = None; }
+            prepared.sent(&trace);
+            if inference_create && (fresh_turn || continuation) {
                 if let Some(key) = &affinity_key {
-                    if !failover::bind_for_mode(key, &destination, same_model_failover) {
+                    if !session_affinity::bind(key, &destination) {
                         return Err((StatusCode::SERVICE_UNAVAILABLE,
                             "conversation routing capacity reached; wait for idle sessions to expire or start a new conversation"));
                     }
                 }
             }
-            if let Some(plan) = hosted_plan {
-                let Destination::Provider { provider, .. } = &destination else { unreachable!("hosted Chat provider") };
+            if prepared.hosted.is_some() {
                 drop(_decision);
-                return hosted_search::relay(hosted_search::Execution {
-                    plan, backend: search_backend.expect("validated search service"), client: outbound_client,
-                    url, headers: attempt_headers, body: sent.ok_or((StatusCode::BAD_REQUEST, "WebSearch requires a body"))?,
-                    trace: trace.clone(), usage: relay_request, attempt: attempt_metadata,
-                    provider_id: provider.id.clone(), provider_name: provider.name.clone(), model: upstream_model,
-                    history: message_context, adapter: tool_adapter, credential,
-                }).await;
+                return prepared.search(trace.clone()).await;
             }
-            let mut outbound = outbound_client.request(method.clone(), url).headers(attempt_headers);
-            if let Some(sent) = sent { outbound = outbound.body(sent); }
-            let alternative = (can_retry && attempt == 0)
-                .then(|| failover::alternative(&store, &destination, required_protocol))
-                .flatten();
+            let mut outbound = prepared.client.request(method.clone(), &prepared.url).headers(prepared.headers.clone());
+            if let Some(sent) = &prepared.body { outbound = outbound.body(sent.clone()); }
             let response = match outbound.send().await {
                 Ok(response) => response,
                 Err(error) => {
-                    if let Some(request) = relay_request {
+                    if let Some(request) = prepared.usage {
                         request.failed(StatusCode::BAD_GATEWAY.as_u16(), "response_not_received");
                     }
                     trace.failed_attempt(
@@ -1028,17 +977,6 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                         },
                         started.elapsed().as_millis() as u64,
                     );
-                    // A timeout or broken established connection may already have executed.
-                    if error.is_connect() && !error.is_timeout() {
-                        if let Some(next) = alternative {
-                            destination = next;
-                            selection_reason = "failover_connect_error".into();
-                            if let Some(key) = &affinity_key {
-                                failover::bind_for_mode(key, &destination, true);
-                            }
-                            continue;
-                        }
-                    }
                     trace.fail(
                         "connect",
                         if error.is_timeout() {
@@ -1051,47 +989,47 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                 }
             };
             trace.status(response.status().as_u16());
-            // Only explicit admission rejection, never an ambiguous 5xx response.
-            if response.status() == StatusCode::TOO_MANY_REQUESTS {
-                if let Some(next) = alternative {
-                    if let Some(request) = relay_request {
-                        request.failed(429, "upstream_http_error");
-                    }
-                    trace.failed_attempt(
-                        "headers",
-                        "rate_limited",
-                        started.elapsed().as_millis() as u64,
-                    );
-                    destination = next;
-                    selection_reason = "failover_rate_limited".into();
-                    if let Some(key) = &affinity_key {
-                        failover::bind_for_mode(key, &destination, true);
-                    }
-                    continue;
-                }
-            }
             drop(_decision);
-            let translation = match &destination {
-                Destination::Provider { translation, .. } => *translation,
-                Destination::Official => None,
-            };
-            return relay_response(
-                response,
-                translation,
-                relay_request,
-                translated_input,
+            return prepared.response(response, trace.clone()).await;
+        }
+
+        // The official endpoint keeps Codex's local account credentials and
+        // original Responses body; provider attempt preparation does not own it.
+        let upstream_protocol = router::ModelProtocol::Responses;
+        let upstream_model = requested_model.clone().unwrap_or_default();
+        let pricing = relay_usage::PricingSnapshot::unknown("official", &request_catalog.snapshot.revision);
+        trace.attempt("official", "OpenAI", &upstream_model, "responses", route_trace::AttemptMetadata {
+            attempt_id: attempt_id.clone(), catalog_revision: pricing.revision.clone(),
+            match_kind: pricing.match_kind.clone(), pricing_status: pricing.status().into(),
+            pricing_source: pricing.source.clone(), selection_reason, retry_reason: None,
+        });
+        let (url, attempt_headers) = official_target(
+            &context, codex_auth, &suffix, query.as_deref(), headers,
+        )?;
+        let (sent, tool_adapter) = if response_resource { (body, Default::default()) }
+            else { tool_schema::prepare(body, &upstream_model, upstream_protocol)? };
+        let credential = request_diagnostics::CredentialSnapshot::from_header(
+            &context.app_data_dir, "codexLocal", &format!("official|{}", url.split('?').next().unwrap_or(&url)),
+            attempt_headers.get(AUTHORIZATION).and_then(|value| value.to_str().ok()),
+            attempt_headers.get("chatgpt-account-id").and_then(|value| value.to_str().ok()),
+        );
+        trace.sent(sent.as_deref(), credential);
+        let mut outbound = client_for(&context, &destination)?.request(method, url).headers(attempt_headers);
+        if let Some(sent) = sent { outbound = outbound.body(sent); }
+        let response = outbound.send().await.map_err(|error| {
+            let reason = if error.is_timeout() { "timeout" } else { "transport_error" };
+            trace.failed_attempt("connect", reason,
+                        started.elapsed().as_millis() as u64);
+            trace.fail("connect", reason);
+            (StatusCode::BAD_GATEWAY, "cannot reach the provider")
+        })?;
+        trace.status(response.status().as_u16());
+        drop(_decision);
+        relay_response(response, None, None, Vec::new(),
                 trace.clone(),
                 upstream_protocol,
                 upstream_model,
-                attempt_id,
-                message_context,
-                tool_adapter,
-                tool_namespaces,
-                response_options,
-            )
-            .await;
-        }
-        unreachable!("at most one failover")
+                attempt_id, None, tool_adapter, Default::default(), Default::default()).await
     }
     .await;
     if let Err((status, message)) = &result {
@@ -1141,7 +1079,8 @@ fn requested_model(
 /// Skip message/tool bodies while observing only the model identity.
 fn raw_requested_model(body: Option<&[u8]>) -> Option<String> {
     #[derive(serde::Deserialize)]
-    struct ModelOnly { model: Option<String> }
+    struct ModelOnly { model: Option<String>,
+    }
     body.and_then(|bytes| serde_json::from_slice::<ModelOnly>(bytes).ok()).and_then(|v| v.model)
 }
 
@@ -1180,7 +1119,7 @@ fn resolve_destination(
     segments: &[&str],
     required_protocol: Option<router::ModelProtocol>,
     requested_model: Option<&str>,
-    binding: Option<&failover::Binding>,
+    binding: Option<&session_affinity::Binding>,
 ) -> ForwardResult<Destination> {
     resolve_destination_explain(store, segments, required_protocol, requested_model, binding)
         .map(|(destination, _)| destination)
@@ -1191,7 +1130,7 @@ fn resolve_destination_explain(
     segments: &[&str],
     required_protocol: Option<router::ModelProtocol>,
     requested_model: Option<&str>,
-    binding: Option<&failover::Binding>,
+    binding: Option<&session_affinity::Binding>,
 ) -> ForwardResult<(Destination, String)> {
     let prefixed_model = requested_model.and_then(|model| model.split_once("::"));
     let select_provider = |id: &str, protocol, model: Option<String>| {
@@ -1205,7 +1144,7 @@ fn resolve_destination_explain(
                 Some(binding.model.clone()),
             )?;
             if model.as_deref().is_some_and(|m| m != binding.model)
-                || !failover::agrees(binding, &destination)
+                || !session_affinity::agrees(binding, &destination)
             {
                 return Err((
                     StatusCode::CONFLICT,
@@ -1369,39 +1308,6 @@ fn upstream_suffix(
     })
 }
 
-/// Price snapshot for the attempt about to be sent, fixed before the request
-/// leaves so the ledger and diagnostics agree with what was actually used.
-fn relay_pricing(
-    context: &ArcContext,
-    destination: &Destination,
-    requested_model: Option<&str>,
-    catalog: Option<&super::models_dev::Catalog>,
-) -> relay_usage::PricingSnapshot {
-    match destination {
-        Destination::Provider {
-            provider,
-            model_override,
-            ..
-        } => {
-            let model = model_override
-                .clone()
-                .or_else(|| requested_model.map(str::to_owned))
-                .unwrap_or_else(|| provider.model.clone());
-            match catalog {
-                Some(catalog) => router::pricing_for(provider, &model, catalog),
-                None => router::pricing_for_app_data(&context.app_data_dir, provider, &model),
-            }
-        }
-        Destination::Official => {
-            let revision = crate::core::models_dev::load(&context.app_data_dir)
-                .snapshot
-                .revision
-                .clone();
-            relay_usage::PricingSnapshot::unknown("official", &revision)
-        }
-    }
-}
-
 fn relay_usage_request(
     context: &ArcContext,
     destination: &Destination,
@@ -1458,8 +1364,13 @@ fn provider_target(
     let (auth_name, auth_value) = super::newapi::model_auth_header(
         endpoint.base_url,
         endpoint.protocol,
-        credential.api_key,
-    ).map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid provider configuration"))?;
+        credential.api_key)
+            .map_err(|_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "invalid provider configuration",
+                )
+            })?;
     headers.remove(AUTHORIZATION);
     headers.remove("x-api-key");
     headers.insert(auth_name, auth_value);
@@ -1561,14 +1472,14 @@ struct PreparedForward {
 }
 impl PreparedForward {
     fn native(body: Option<Bytes>) -> Self {
-        Self { body, input: Vec::new(), namespaces: Default::default(), response_options: Default::default() }
+        Self { body, input: Vec::new(), namespaces: Default::default(), response_options: Default::default(),
+        }
     }
 }
 
 fn upstream_body(
     destination: &Destination,
-    body: Option<Bytes>,
-) -> ForwardResult<PreparedForward> {
+    body: Option<Bytes>) -> ForwardResult<PreparedForward> {
     let (
         Destination::Provider {
             model_override,
@@ -1590,10 +1501,11 @@ fn upstream_body(
             if let Some(model) = model_override.as_deref() {
                 value["model"] = json!(model);
             }
-            let rewritten = protocol::request_body(*translation, &value).map_err(|error| {
+            let adapted = WireAdapter::new(*upstream_protocol)
+                .encode_request(translation.from, &value).map_err(|error| {
                 (
                     StatusCode::BAD_REQUEST,
-                    match error.as_str() {
+                    match error.code.as_str() {
                         "protocol.errors.unknownPreviousResponse" =>
                             "previous_response_id is unknown or expired; resend the full conversation",
                         "protocol.errors.unsupportedMessageRole" =>
@@ -1620,6 +1532,12 @@ fn upstream_body(
                     },
                 )
             })?;
+            let AdapterRequest::Translated(rewritten) = adapted else {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "invalid provider protocol translation",
+                ));
+            };
             if translation.from == router::ModelProtocol::Responses {
                 // Check the expanded history too: a cached continuation may carry
                 // items that the target protocol cannot represent without loss.
@@ -1631,7 +1549,8 @@ fn upstream_body(
                     "cannot re-encode request",
                 )
             })?;
-            Ok(PreparedForward { body: Some(Bytes::from(encoded)), input: rewritten.input, namespaces: rewritten.namespaces, response_options: rewritten.response_options })
+            Ok(PreparedForward { body: Some(Bytes::from(encoded)), input: rewritten.input, namespaces: rewritten.namespaces, response_options: rewritten.response_options,
+            })
         }
         None if model_override.is_some()
             || *upstream_protocol == router::ModelProtocol::ChatCompletions =>
@@ -1725,7 +1644,7 @@ async fn relay_response(
             tool_adapter,
             tool_namespaces,
             response_options,
-        ),
+        )?,
         Some(translation) if response_status.is_success() => {
             let mut diagnostic = ResponseObservation::new(
                 trace.clone(),
@@ -1753,7 +1672,8 @@ async fn relay_response(
                 diagnostic.translation_error(code);
                 (StatusCode::BAD_GATEWAY, "invalid Gemini tool arguments")
             })?;
-            let mut converted = protocol::response_body_with_options(translation, &value, &response_options).map_err(|_| {
+            let mut converted = WireAdapter::new(translation.from)
+                .encode_response(upstream_protocol, &value, &response_options).map_err(|_| {
                 diagnostic.translation_error("invalid_upstream_response");
                 (
                     StatusCode::BAD_GATEWAY,
@@ -1794,7 +1714,8 @@ async fn relay_response(
         }
         None if response_status.is_success() && !tool_adapter.is_empty() && !is_event_stream => {
             let mut diagnostic = ResponseObservation::new(trace, relay_request, upstream_protocol,
-                &upstream_model, &attempt_id, response_status.as_u16(), false);
+                &upstream_model, &attempt_id, response_status.as_u16(), false,
+            );
             let bytes = response.bytes().await.map_err(|_| {
                 diagnostic.error();
                 (StatusCode::BAD_GATEWAY, "cannot read provider response")
@@ -1809,11 +1730,11 @@ async fn relay_response(
                 (StatusCode::BAD_GATEWAY, "invalid Gemini tool arguments")
             })?;
             diagnostic.finish();
-            BodyExt::boxed(Full::new(Bytes::from(value.to_string())).map_err(|never| match never {}))
+            BodyExt::boxed(Full::new(Bytes::from(value.to_string())).map_err(|never| match never {}),
+            )
         }
-        None if response_status.is_success() && !tool_adapter.is_empty() => {
-            adapted_native_stream(response, trace, relay_request, upstream_protocol, upstream_model, attempt_id, tool_adapter)
-        }
+        None if response_status.is_success() && !tool_adapter.is_empty() => adapted_native_stream(response, trace, relay_request, upstream_protocol, upstream_model, attempt_id, tool_adapter,
+        ),
         None => {
             let stream = observed_stream(
                 response,
@@ -1830,7 +1751,8 @@ async fn relay_response(
                     .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
             });
             if is_event_stream {
-                BodyExt::boxed(StreamBody::new(sse_keepalive(stream, Duration::from_secs(15))))
+                BodyExt::boxed(StreamBody::new(sse_keepalive(stream, Duration::from_secs(15),
+                )))
             } else { BodyExt::boxed(StreamBody::new(stream)) }
         }
     };
@@ -1854,7 +1776,14 @@ fn translated_stream(
     tool_adapter: tool_schema::Adapter,
     tool_namespaces: protocol::tool_namespaces::ToolNamespaces,
     response_options: protocol::ResponseOptions,
-) -> ResponseBody {
+) -> ForwardResult<ResponseBody> {
+    let translator = WireAdapter::new(translation.from)
+        .stream_decoder(upstream_protocol, response_options)
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "cannot translate provider stream"))?
+        .ok_or((
+            StatusCode::BAD_GATEWAY,
+            "invalid provider stream translation",
+        ))?;
     let observer = ResponseObservation::new(
         trace,
         relay_request,
@@ -1870,14 +1799,15 @@ fn translated_stream(
         (
             response.bytes_stream(),
             observer,
-            protocol::stream_translator_with_options(translation, response_options),
+            translator,
             Some(translated_input),
             message_context,
             tool_adapter.stream(upstream_protocol),
             tool_namespaces,
             false,
         ),
-        move |(mut source, mut observer, mut translator, mut recorded, history, mut tools, namespaces, done)| async move {
+        move |(mut source, mut observer, mut translator, mut recorded, history, mut tools, namespaces, done,
+        )| async move {
             if done {
                 return None;
             }
@@ -1887,16 +1817,19 @@ fn translated_stream(
                     (match tools.push(&bytes) {
                         Ok(decoded) => translator.push(&decoded),
                         Err(code) => translator.fail(code),
-                    }, false)
+                    }, false,
+                    )
                 }
                 Some(Err(error)) => {
                     observer.error();
-                    (translator.fail(if error.is_timeout() { "upstream_stream_timeout" } else { "upstream_stream_error" }), true)
+                    (translator.fail(if error.is_timeout() { "upstream_stream_timeout" } else { "upstream_stream_error" }), true,
+                    )
                 }
                 None => (match tools.finish() {
                     Ok(()) => translator.finish(),
                     Err(code) => translator.fail(code),
-                }, true),
+                }, true,
+                ),
             };
             if let Some(code) = translator.failure() {
                 observer.translation_error(code);
@@ -1924,12 +1857,14 @@ fn translated_stream(
             }));
             Some((
                 frames,
-                (source, observer, translator, recorded, history, tools, namespaces, done),
+                (source, observer, translator, recorded, history, tools, namespaces, done,
+                ),
             ))
         },
     )
     .flatten();
-    BodyExt::boxed(StreamBody::new(sse_keepalive(stream, Duration::from_secs(15))))
+    Ok(BodyExt::boxed(StreamBody::new(sse_keepalive(stream, Duration::from_secs(15),
+    ))))
 }
 
 fn adapted_native_stream(
@@ -1941,14 +1876,17 @@ fn adapted_native_stream(
     attempt_id: String,
     adapter: tool_schema::Adapter,
 ) -> ResponseBody {
-    let observer = ResponseObservation::new(trace, relay_request, protocol, &model, &attempt_id, response.status().as_u16(), true);
+    let observer = ResponseObservation::new(trace, relay_request, protocol, &model, &attempt_id, response.status().as_u16(), true,
+    );
     let stream = futures_util::stream::unfold(
-        (response.bytes_stream(), observer, adapter.stream(protocol), false),
+        (response.bytes_stream(), observer, adapter.stream(protocol), false,
+        ),
         move |(mut source, mut observer, mut adapter, done)| async move {
             if done { return None; }
             let (result, done) = match source.next().await {
                 Some(Ok(bytes)) => { observer.push(&bytes); (adapter.push(&bytes), false) }
-                Some(Err(error)) => { observer.error(); (Err(if error.is_timeout() { "upstream_stream_timeout" } else { "upstream_stream_error" }), true) }
+                Some(Err(error)) => { observer.error(); (Err(if error.is_timeout() { "upstream_stream_timeout" } else { "upstream_stream_error" }), true,
+                    ) }
                 None => (adapter.finish().map(|()| Bytes::new()), true),
             };
             let (bytes, done) = match result {
@@ -1963,21 +1901,26 @@ fn adapted_native_stream(
                     // End the body with an error, never with an executable tool
                     // or a success terminal frame after invalid JSON arguments.
                     return Some((Ok::<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>(
-                        Frame::data(Bytes::from(stream_error_event(protocol, code)))),
-                        (source, observer, adapter, true)));
+                        Frame::data(Bytes::from(stream_error_event(protocol, code)),
+                        )),
+                        (source, observer, adapter, true),
+                    ));
                 }
             };
             Some((Ok(Frame::data(bytes)), (source, observer, adapter, done)))
         },
     );
-    BodyExt::boxed(StreamBody::new(sse_keepalive(stream, Duration::from_secs(15))))
+    BodyExt::boxed(StreamBody::new(sse_keepalive(stream, Duration::from_secs(15),
+    )))
 }
 
 /// Downstream comments keep SDK/proxy connections alive during upstream
 /// silence. They never enter usage observation or reset the upstream read
 /// timeout; EOF/error/cancellation still terminates the source normally.
-fn sse_keepalive<S, E>(source: S, period: Duration) -> impl futures_util::Stream<Item = Result<Frame<Bytes>, E>> + Send
-where S: futures_util::Stream<Item = Result<Frame<Bytes>, E>> + Send, E: Send {
+fn sse_keepalive<S, E>(source: S, period: Duration,
+) -> impl futures_util::Stream<Item = Result<Frame<Bytes>, E>> + Send
+where S: futures_util::Stream<Item = Result<Frame<Bytes>, E>> + Send, E: Send,
+{
     futures_util::stream::unfold((Box::pin(source), Box::pin(tokio::time::sleep(period))), move |(mut source, mut timer)| async move {
         let item = tokio::select! {
             biased;
@@ -1986,7 +1929,8 @@ where S: futures_util::Stream<Item = Result<Frame<Bytes>, E>> + Send, E: Send {
         };
         timer.as_mut().reset(tokio::time::Instant::now() + period);
         Some((item, (source, timer)))
-    })
+    },
+    )
 }
 
 fn observed_stream(
@@ -2017,7 +1961,8 @@ fn observed_stream(
                         observer.error();
                         observer.finalize(false);
                         let chunk = if sse {
-                            Ok(Bytes::from(stream_error_event(upstream_protocol, if error.is_timeout() { "upstream_stream_timeout" } else { "upstream_stream_error" })))
+                            Ok(Bytes::from(stream_error_event(upstream_protocol, if error.is_timeout() { "upstream_stream_timeout" } else { "upstream_stream_error" },
+                            )))
                         } else { chunk };
                         return Some((chunk, (stream, observer, true)));
                     }
@@ -2202,7 +2147,8 @@ fn codex_request_auth(
     local_token: &str,
 ) -> Option<(HeaderValue, Option<HeaderValue>)> {
     if local_token.is_empty()
-        || !token_matches(headers.get(router::LOCAL_AUTH_HEADER)?.to_str().ok()?, local_token)
+        || !token_matches(headers.get(router::LOCAL_AUTH_HEADER)?.to_str().ok()?, local_token,
+        )
     {
         return None;
     }
@@ -2283,8 +2229,12 @@ fn prepare_relay_body(
     let object = value
         .as_object_mut()
         .ok_or((StatusCode::BAD_REQUEST, "request body is not an object"))?;
+    let mut changed = false;
     if let Some(model_id) = model_id {
+        if object.get("model").and_then(Value::as_str) != Some(model_id) {
         object.insert("model".to_owned(), json!(model_id));
+            changed = true;
+        }
     }
     if protocol == router::ModelProtocol::ChatCompletions
         && object.get("stream") == Some(&Value::Bool(true))
@@ -2293,10 +2243,16 @@ fn prepare_relay_body(
         if options.is_null() {
             *options = json!({});
         }
-        options
+        let options = options
             .as_object_mut()
-            .ok_or((StatusCode::BAD_REQUEST, "stream_options is not an object"))?
-            .insert("include_usage".into(), json!(true));
+            .ok_or((StatusCode::BAD_REQUEST, "stream_options is not an object"))?;
+        if options.get("include_usage") != Some(&Value::Bool(true)) {
+            options.insert("include_usage".into(), json!(true));
+            changed = true;
+        }
+    }
+    if !changed {
+        return Ok(body.clone());
     }
     let bytes = serde_json::to_vec(&value).map_err(|_| {
         (
@@ -2360,32 +2316,42 @@ mod tests {
                 while let Ok((socket, _)) = listener.accept().await {
                     tokio::spawn(async move {
                         let service = service_fn(|_: Request<Incoming>| async {
-                            let first = futures_util::stream::once(async { Ok::<_, std::convert::Infallible>(Frame::data(Bytes::from_static(b": heartbeat\n\n"))) });
+                            let first = futures_util::stream::once(async { Ok::<_, std::convert::Infallible>(Frame::data(Bytes::from_static(b": heartbeat\n\n",
+                                ))) });
                             Ok::<_, std::convert::Infallible>(Response::builder().header(CONTENT_TYPE, "text/event-stream")
-                                .body(StreamBody::new(first.chain(futures_util::stream::pending()))).unwrap())
+                                .body(StreamBody::new(first.chain(futures_util::stream::pending()),
+                                    ))
+                                    .unwrap(),
+                            )
                         });
                         let _ = http1::Builder::new().serve_connection(TokioIo::new(socket), service).await;
                     });
                 }
             });
-            for protocol in [router::ModelProtocol::Responses, router::ModelProtocol::ChatCompletions, router::ModelProtocol::AnthropicMessages] {
+            for protocol in [router::ModelProtocol::Responses, router::ModelProtocol::ChatCompletions, router::ModelProtocol::AnthropicMessages,
+            ] {
               for path in 0..3 {
                 let source = Client::builder().no_proxy().read_timeout(Duration::from_millis(50)).build().unwrap()
                     .get(format!("http://{address}")).send().await.unwrap();
                 let trace = route_trace::Trace::begin("timeout-fixture", None);
                 let bytes = match path {
                     0 => {
-                        let stream = observed_stream(source, trace, None, protocol, "fixture".into(), "fixture-attempt".into(), true)
+                        let stream = observed_stream(source, trace, None, protocol, "fixture".into(), "fixture-attempt".into(), true,
+                            )
                             .map(|b| b.map(Frame::data));
-                        let frames: Vec<_> = tokio::time::timeout(Duration::from_secs(2), sse_keepalive(stream, Duration::from_millis(10)).collect()).await.unwrap();
+                        let frames: Vec<_> = tokio::time::timeout(Duration::from_secs(2), sse_keepalive(stream, Duration::from_millis(10)).collect(),
+                            ).await.unwrap();
                         let bytes = frames.into_iter().map(|f| f.unwrap().into_data().unwrap()).collect::<Vec<_>>().concat();
                         assert!(String::from_utf8_lossy(&bytes).contains(": keepalive"));
                         bytes
                     }
-                    1 => adapted_native_stream(source, trace, None, protocol, "fixture".into(), "fixture-attempt".into(), Default::default()).collect().await.unwrap().to_bytes().to_vec(),
+                    1 => adapted_native_stream(source, trace, None, protocol, "fixture".into(), "fixture-attempt".into(), Default::default(),
+                        ).collect().await.unwrap().to_bytes().to_vec(),
                     _ => {
                         let from = if protocol == router::ModelProtocol::AnthropicMessages { router::ModelProtocol::Responses } else { router::ModelProtocol::AnthropicMessages };
-                        translated_stream(source, protocol::Translation { from, to: protocol }, None, Vec::new(), trace, protocol, "fixture".into(), "fixture-attempt".into(), None, Default::default(), Default::default(), Default::default()).collect().await.unwrap().to_bytes().to_vec()
+                        translated_stream(source, protocol::Translation { from, to: protocol }, None, Vec::new(), trace, protocol, "fixture".into(), "fixture-attempt".into(), None, Default::default(), Default::default(), Default::default(),
+                            )
+                            .unwrap().collect().await.unwrap().to_bytes().to_vec()
                     }
                 };
                 let text = String::from_utf8(bytes).unwrap();
@@ -2405,19 +2371,26 @@ mod tests {
     #[test]
     fn official_messages_target_uses_gateway_auth_and_selected_protocol_root() {
         for (base, expected, bearer) in [
-            ("https://api.novita.ai/v3/openai", "https://api.novita.ai/anthropic/v1/messages", true),
-            ("https://api.xiaomimimo.com/v1", "https://api.xiaomimimo.com/anthropic/v1/messages", true),
-            ("https://api.z.ai/api/coding/paas/v4", "https://api.z.ai/api/anthropic/v1/messages", true),
-            ("https://openrouter.ai/api/v1", "https://openrouter.ai/api/v1/messages", true),
-            ("https://api.siliconflow.cn/v1", "https://api.siliconflow.cn/v1/messages", true),
-            ("https://relay.invalid/custom/v1", "https://relay.invalid/custom/v1/messages", false),
+            ("https://api.novita.ai/v3/openai", "https://api.novita.ai/anthropic/v1/messages", true,
+            ),
+            ("https://api.xiaomimimo.com/v1", "https://api.xiaomimimo.com/anthropic/v1/messages", true,
+            ),
+            ("https://api.z.ai/api/coding/paas/v4", "https://api.z.ai/api/anthropic/v1/messages", true,
+            ),
+            ("https://openrouter.ai/api/v1", "https://openrouter.ai/api/v1/messages", true,
+            ),
+            ("https://api.siliconflow.cn/v1", "https://api.siliconflow.cn/v1/messages", true,
+            ),
+            ("https://relay.invalid/custom/v1", "https://relay.invalid/custom/v1/messages", false,
+            ),
         ] {
             let provider = router::Provider { base_url: base.into(), api_key: "fixture-upstream-key".into(), ..Default::default() };
             let mut headers = HeaderMap::new();
             headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer local-key"));
             headers.insert("x-api-key", HeaderValue::from_static("local-key"));
             headers.insert("anthropic-beta", HeaderValue::from_static("fixture-beta"));
-            let (url, headers) = provider_target(&provider, router::ModelProtocol::AnthropicMessages, None, "messages", None, headers).unwrap();
+            let (url, headers) = provider_target(&provider, router::ModelProtocol::AnthropicMessages, None, "messages", None, headers,
+            ).unwrap();
             assert_eq!(url, expected);
             if bearer {
                 assert_eq!(headers[AUTHORIZATION], "Bearer fixture-upstream-key");
@@ -2436,9 +2409,11 @@ mod tests {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let source = futures_util::stream::once(async {
                 tokio::time::sleep(Duration::from_millis(40)).await;
-                Ok::<_, std::convert::Infallible>(Frame::data(Bytes::from_static(b"data: final\n\n")))
+                Ok::<_, std::convert::Infallible>(Frame::data(Bytes::from_static(b"data: final\n\n",
+                )))
             });
-            let frames: Vec<_> = tokio::time::timeout(Duration::from_secs(2), sse_keepalive(source, Duration::from_millis(5)).collect()).await.unwrap();
+            let frames: Vec<_> = tokio::time::timeout(Duration::from_secs(2), sse_keepalive(source, Duration::from_millis(5)).collect(),
+            ).await.unwrap();
             assert!(frames.len() > 1);
             let bytes: Vec<_> = frames.into_iter().map(|f| f.unwrap().into_data().unwrap()).collect();
             assert_eq!(bytes.last().unwrap(), b"data: final\n\n".as_slice());
@@ -2495,6 +2470,121 @@ mod tests {
             headers["anthropic-beta"],
             "existing-beta, context-1m-2025-08-07"
         );
+    }
+
+    #[test]
+    fn native_provider_preparation_keeps_original_bytes_without_edits() {
+        let bytes = Bytes::from_static(
+            br#"{
+  "model": "fixture", "stream": false, "opaque": { "signed": "unchanged" }
+}"#,
+        );
+        for wire in [
+            router::ModelProtocol::Responses,
+            router::ModelProtocol::ChatCompletions,
+            router::ModelProtocol::AnthropicMessages,
+        ] {
+            let destination = Destination::Provider {
+                provider: Box::new(Provider::default()),
+                model_override: Some("fixture".into()),
+                upstream_protocol: wire,
+                translation: None,
+            };
+            assert_eq!(
+                upstream_body(&destination, Some(bytes.clone()))
+                    .unwrap()
+                    .body
+                    .unwrap(),
+                bytes
+            );
+        }
+        let stream = Bytes::from_static(
+            br#"{ "model": "fixture", "stream": true,
+ "stream_options": { "include_usage": true, "opaque": 1 } }"#,
+        );
+        assert_eq!(
+            prepare_relay_body(
+                &stream,
+                Some("fixture"),
+                router::ModelProtocol::ChatCompletions
+            )
+            .unwrap(),
+            stream
+        );
+        let changed =
+            prepare_relay_body(&bytes, Some("wire-model"), router::ModelProtocol::Responses)
+                .unwrap();
+        let changed: Value = serde_json::from_slice(&changed).unwrap();
+        assert_eq!(changed["model"], "wire-model");
+        assert_eq!(changed["opaque"]["signed"], "unchanged");
+    }
+
+    #[test]
+    fn ordinary_one_m_admission_uses_capacity_instead_of_egress_protocol() {
+        let fixture = tempfile::tempdir().unwrap();
+        let client = Client::builder().no_proxy().build().unwrap();
+        let context = ArcContext {
+            bound_port: 0,
+            store_path: fixture.path().join("providers.dat"),
+            app_data_dir: fixture.path().to_owned(),
+            codex_home: fixture.path().join("codex"),
+            auth_path: fixture.path().join("auth.json"),
+            outbound: Arc::new(RwLock::new(client.clone())),
+            outbound_direct: client,
+        };
+        let catalog = super::super::models_dev::load(fixture.path());
+        for wire in [
+            router::ModelProtocol::Responses,
+            router::ModelProtocol::ChatCompletions,
+            router::ModelProtocol::AnthropicMessages,
+        ] {
+            let mut provider = Provider {
+                context_window: Some(1_000_000),
+                model: "fixture-model".into(),
+                protocol: wire,
+                ..Default::default()
+            };
+            let destination = |provider| Destination::Provider {
+                provider: Box::new(provider),
+                model_override: Some("fixture-model".into()),
+                upstream_protocol: wire,
+                translation: protocol::Translation::between(
+                    router::ModelProtocol::AnthropicMessages,
+                    wire,
+                ),
+            };
+            assert!(validate_one_m_capacity(
+                &context,
+                &Store::default(),
+                &destination(provider.clone()),
+                &catalog
+            )
+            .is_ok());
+            provider.context_window = Some(128_000);
+            let error = validate_one_m_capacity(
+                &context,
+                &Store::default(),
+                &destination(provider.clone()),
+                &catalog,
+            )
+            .unwrap_err();
+            assert_eq!(
+                error,
+                (
+                    StatusCode::BAD_REQUEST,
+                    "selected model does not support 1M context"
+                )
+            );
+            // Existing user opt-in remains available when no capacity is known.
+            provider.context_window = None;
+            assert!(validate_one_m_capacity(
+                &context,
+                &Store::default(),
+                &destination(provider),
+                &catalog
+            )
+            .is_ok());
+        }
     }
 
     #[test]
@@ -2697,11 +2787,13 @@ mod tests {
                 (Method::GET, vec!["responses", "r"]), (Method::DELETE, vec!["responses", "r"]),
                 (Method::POST, vec!["responses", "r", "cancel"]), (Method::GET, vec!["responses", "r", "input_items"]),
                 (Method::POST, vec!["messages", "count_tokens"]), (Method::POST, vec!["messages"]),
-                (Method::POST, vec!["chat", "completions"])] {
+                (Method::POST, vec!["chat", "completions"]),
+            ] {
                 let mut path = prefix.clone(); path.extend(suffix);
                 assert!(validate_endpoint(&method, &path).is_ok());
             }
-            for suffix in [vec!["files"], vec!["organization", "admin_keys"], vec!["fine_tuning", "jobs"], vec!["responses", "r", "unknown"]] {
+            for suffix in [vec!["files"], vec!["organization", "admin_keys"], vec!["fine_tuning", "jobs"], vec!["responses", "r", "unknown"],
+            ] {
                 let mut path = prefix.clone(); path.extend(suffix);
                 assert_eq!(validate_endpoint(&Method::POST, &path).unwrap_err().0, StatusCode::NOT_FOUND);
             }
@@ -2861,7 +2953,6 @@ mod tests {
             let client = Client::builder().no_proxy().timeout(Duration::from_secs(5)).build().unwrap();
             let context = Arc::new(ArcContext {
                 bound_port: 0,
-                failover_seen: failover_seen_for(&store_path),
                 store_path, app_data_dir, codex_home:fixture.path().to_owned(), auth_path:auth_path.clone(),
                 outbound:Arc::new(RwLock::new(client.clone())), outbound_direct:client.clone()
             });
@@ -3095,6 +3186,7 @@ mod tests {
                 version: 3,
                 codex_access_mode: router::CodexAccessMode::Router,
                 providers: vec![provider, chat_provider, anthropic_provider],
+                aggregates: Vec::new(),
                 active_provider_id: Some("agentharbor_fixture".into()),
                 router: RouterSettings { bearer_token: "router-test-token".into(), ..Default::default() },
                 compression: Default::default(),

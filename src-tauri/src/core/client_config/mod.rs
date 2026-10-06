@@ -2,6 +2,7 @@
 //! This module depends on provider data and the models.dev catalog (read from the
 //! app data directory). An optional official snapshot source is supplied by
 //! the caller, so model inputs match the Codex adapters without owning accounts.
+mod aggregate_models;
 mod claude;
 mod opencode;
 mod options;
@@ -120,7 +121,9 @@ fn adapter(id: TargetId) -> Result<&'static dyn ClientAdapter, String> {
 #[serde(rename_all = "camelCase")]
 pub struct ConfigRequest {
     pub target_id: TargetId,
+    #[serde(default)]
     pub provider_id: String,
+    #[serde(default)]
     pub model: String,
     /// Explicit user-entered prompt budget. `None` follows the resolver
     /// (user overrides, upstream declaration, catalog, then the shared
@@ -520,10 +523,14 @@ impl ConfigManager {
         rebaseline: bool,
         replace_conflicts: bool,
     ) -> Result<Plan, String> {
+        let canonical = aggregate_models::canonical_request(store, request)?;
+        let request = &canonical;
         let adapter = adapter(request.target_id)?;
-        let provider = selected_provider(store, request)?;
+        if request.aggregate_target().is_none() {
+            let provider = selected_provider(store, request)?;
         if !request.accepts_model(provider, &request.model) {
             return Err("clients.errors.protocol".into());
+            }
         }
         validate_model(&request.model)?;
         // Only adapters that consume limits require them. Claude Code ignores

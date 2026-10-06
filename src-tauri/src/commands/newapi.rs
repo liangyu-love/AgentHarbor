@@ -161,16 +161,6 @@ pub async fn apply_newapi_capability_clear(
 }
 
 #[tauri::command]
-pub async fn set_newapi_failover(
-    repo: State<'_, Mutex<Repository>>,
-    enabled: bool,
-) -> Result<StateChange, String> {
-    let paths = paths(&repo)?;
-    let _guard = routing_runtime::mutation_guard().await;
-    router::set_same_model_failover(&paths, enabled)
-}
-
-#[tauri::command]
 pub async fn set_router_web_search_provider(
     repo: State<'_, Mutex<Repository>>,
     provider_id: Option<String>,

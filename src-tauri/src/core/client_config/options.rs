@@ -55,6 +55,11 @@ impl Default for ClaudeOneM {
 #[serde(rename_all = "camelCase", default)]
 pub struct ClientOptions {
     pub access_mode: ClientAccessMode,
+    /// Additive typed selection; old provider lists/journals retain their semantics.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_selection: Option<crate::core::model_targets::ClientModelSelection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aggregate_ingress_protocol: Option<ModelProtocol>,
     pub provider_ids: Vec<String>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub provider_model_ids: HashMap<String, Vec<String>>,
@@ -69,6 +74,31 @@ pub struct ClientOptions {
 impl ConfigRequest {
     pub fn needs_router(&self) -> bool {
         self.options.access_mode == ClientAccessMode::Router
+    }
+
+    pub fn aggregate_target(&self) -> Option<&str> {
+        match self
+            .options
+            .model_selection
+            .as_ref()?
+            .default_target
+            .as_ref()?
+        {
+            crate::core::model_targets::ModelTargetRef::Aggregate { aggregate_id } => {
+                Some(aggregate_id)
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn aggregate_protocol(&self) -> ModelProtocol {
+        if self.target_id == TargetId::ClaudeCode {
+            ModelProtocol::AnthropicMessages
+        } else {
+            self.options
+                .aggregate_ingress_protocol
+                .unwrap_or(ModelProtocol::Responses)
+        }
     }
 
     pub(super) fn accepts_model(&self, provider: &Provider, model: &str) -> bool {

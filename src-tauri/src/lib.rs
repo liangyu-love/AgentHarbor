@@ -175,6 +175,12 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::aggregation::load_aggregation_state,
+            commands::aggregation::save_aggregate_model,
+            commands::aggregation::delete_aggregate_model,
+            commands::aggregation::set_aggregation_external_enabled,
+            commands::aggregation::select_codex_aggregate,
+            commands::aggregation::export_aggregation_connection,
             commands::claude_desktop::get_claude_desktop_status,
             commands::claude_desktop::list_claude_desktop_candidates,
             commands::claude_desktop::preview_claude_desktop_change,
@@ -206,7 +212,6 @@ pub fn run() {
             commands::newapi::apply_newapi_capability_clear,
             commands::newapi::load_models_dev_status,
             commands::newapi::refresh_models_dev_catalog,
-            commands::newapi::set_newapi_failover,
             commands::newapi::set_router_web_search_provider,
             commands::newapi::set_newapi_compression,
             commands::newapi::set_newapi_model_price,

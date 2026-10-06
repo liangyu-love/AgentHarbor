@@ -24,6 +24,7 @@ import { TerminalProxySettings } from "@/components/settings/terminal-proxy-sett
 import type { NewApiProvider, NewApiState } from "@/types/newapi";
 import type { TokenUsagePayload } from "@/types";
 import type { ClientConfigRequest, ClientStatus } from "@/types/clients";
+import type { AggregateModel, AggregateView, AggregationState, ConnectionExportResult } from "@/types/aggregation";
 import type { ThreadSummary } from "@/types/threads";
 import { api } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
@@ -132,13 +133,74 @@ const usageFixture: TokenUsagePayload = {
 };
 let state: NewApiState = { providers: [imageProvider], router: { enabled: false, accessMode: "router", accountless: false, port: 0, configDrifted: false }, proxyRunning: false, activeProviderId: null };
 api.providers.loadState = async () => state;
+// Aggregation fixtures reuse exact saved provider/model identities. Availability
+// changes with those same fixture providers, rather than inventing a fallback.
+const aggregateProjection = (contextWindow = 1_000_000) => ({ contextWindow, contextSource: "catalog", contextIsFallback: false,
+  budget: contextWindow, budgetSource: "catalog", inputLimit: null, outputLimit: 8192, outputSource: "catalog",
+  reasoning: [], reasoningSource: "catalog", defaultReasoning: null,
+  compression: { mode: "percent", percent: 90, tokens: null, source: "global", budget: contextWindow,
+    budgetSource: "catalog", threshold: Math.floor(contextWindow * .9), state: "computed", note: null } });
+const aggregationState = (): AggregationState => ({
+  models: (controls.review.aggregateModels ?? []).map((entry: AggregateModel): AggregateView => {
+    const memberStates = entry.members.map(member => {
+      const p = state.providers.find(item => item.id === member.providerId);
+      const m = p?.models.find(item => item.id === member.actualModelId && item.included);
+      const available = member.enabled && !!p?.enabled && !!p?.hasApiKey && (!!m || p?.model === member.actualModelId);
+      const context = m?.contextWindow ?? p?.contextWindow ?? 1_000_000;
+      return { memberId: member.id, providerName: p?.name ?? member.providerId, protocol: m?.protocol ?? p?.protocol ?? null,
+        available, reason: available ? null : !p ? "provider_missing" : !p.enabled ? "provider_disabled" : !m ? "model_missing" : "member_disabled",
+        projection: available ? aggregateProjection(context) : null } as AggregateView["memberStates"][number];
+    });
+    const eligible = memberStates.filter(member => member.available);
+    return { ...structuredClone(entry), available: entry.enabled && eligible.length > 0,
+      reason: !entry.enabled ? "aggregate_disabled" : eligible.length ? null : "no_eligible_members",
+      projection: eligible.length ? aggregateProjection(Math.min(...eligible.map(member => member.projection!.contextWindow))) as AggregateView["projection"] : null,
+      routeRevision: "fixture-aggregate-v1", memberStates };
+  }), externalEnabled: controls.review.aggregateExternalEnabled ?? false,
+  listenerReady: !!controls.review.aggregateExternalEnabled || !!state.router.enabled,
+});
+api.aggregation.state = async () => aggregationState();
+api.aggregation.save = async entry => {
+  const saved = { ...structuredClone(entry), id: entry.id || "aggregate-" + ((controls.review.aggregateSaves ?? []).length + 1) };
+  controls.review.aggregateSaves = [...(controls.review.aggregateSaves ?? []), saved];
+  controls.review.aggregateModels = [...(controls.review.aggregateModels ?? []).filter((model: AggregateModel) => model.id !== saved.id), saved];
+  return aggregationState();
+};
+api.aggregation.delete = async id => {
+  controls.review.aggregateDeletes = [...(controls.review.aggregateDeletes ?? []), id];
+  controls.review.aggregateModels = (controls.review.aggregateModels ?? []).filter((entry: AggregateModel) => entry.id !== id);
+  return aggregationState();
+};
+api.aggregation.setExternalEnabled = async enabled => { controls.review.aggregateExternalEnabled = enabled; return aggregationState(); };
+api.aggregation.selectCodex = async aggregateId => {
+  controls.review.aggregateCodexSelections = [...(controls.review.aggregateCodexSelections ?? []), aggregateId];
+  state = { ...state, router: { ...state.router, aggregateModelId: aggregateId, accessMode: "router" } };
+  return { state: structuredClone(state), applied: null };
+};
+api.aggregation.exportConnection = async request => {
+  controls.review.aggregateExports = [...(controls.review.aggregateExports ?? []), structuredClone(request)];
+  const models = aggregationState().models.filter(entry => request.aggregateIds.includes(entry.id) && entry.available);
+  const selected = models.find(entry => entry.id === request.selectedAggregateId);
+  if (request.selectedAggregateId && !selected) throw "aggregation.errors.unavailable";
+  const baseUrl = "http://127.0.0.1:43127/aggregate" + (request.consumerProfile === "anthropicSdk" ? "" : "/v1");
+  const configText = JSON.stringify({ baseUrl, model: selected?.publicModelId ?? null,
+    apiKey: request.revealCredential ? "synthetic-local-aggregate-token" : "<redacted>",
+    protocol: request.ingressProtocol }, null, 2);
+  return { configText, connection: { schemaVersion: 1, consumerProfile: { id: request.consumerProfile,
+    ingressProtocol: request.ingressProtocol, modelsFormat: request.ingressProtocol === "anthropicMessages" ? "anthropic" : "openAi" },
+    baseUrl, requestPath: request.ingressProtocol === "anthropicMessages" ? "/v1/messages" : "/responses", modelsPath: "/v1/models",
+    selectedModelId: selected?.publicModelId ?? null, modelCatalog: models.map(entry => ({ targetRef: { kind: "aggregate", aggregateId: entry.id },
+      publicModelId: entry.publicModelId, label: entry.displayName, capabilities: {}, limits: {} })), authScheme: "bearer", localCredentialRef: "fixture-local",
+    listenerReady: aggregationState().listenerReady, runtimeRequirement: "keepApplicationRunning", configRevision: "fixture-v1",
+    catalogRevision: "fixture-catalog-v1", tokenVersion: "fixture-token-v1" } } as ConnectionExportResult;
+};
 api.routing.diagnostics = async () => {
   const base = { id: "synthetic-route", timestamp: 1_790_740_800, requestedModel: "relay::claude-opus-5-5-kiro",
   requested: { "reasoning.effort": "high" }, stage: "complete", done: true, status: 200, failureStage: null, error: null, durationMs: 840, firstTokenMs: 230,
   attempts: [{ providerId: "relay", providerName: "Synthetic channel", upstreamModel: "claude-opus-5-5-kiro", matchedModel: "claude-opus-5-5", protocol: "anthropicMessages",
     sent: { "thinking.type": "adaptive", "output_config.effort": "high", max_tokens: 8192 }, status: 200, failureStage: null, error: null, durationMs: 830,
     catalogRevision: "abcdef1234567890", matchKind: "normalized", pricingStatus: "priced", pricingSource: "catalog",
-    attemptId: "synthetic-attempt", selectionReason: "active_provider", failoverReason: null,
+    attemptId: "synthetic-attempt", selectionReason: "active_provider", retryReason: null,
     credential: { kind: "providerApiKey", status: "recorded", reason: null, versionFingerprint: "fixture-version", accountId: null, accountStatus: "not_recorded", label: null },
     modelObservation: { servedModel: "claude-opus-5-5-kiro", modelMatchStatus: "same", modelMatchBasis: "raw_exact", unknownReason: null, conflictingModel: null } }] };
   return controls.review.desktopDiagnostics ? [base, { ...base, id: "desktop-route", clientSource: "claudeDesktop",
@@ -186,7 +248,6 @@ api.routing.setModelPrice = async (providerId, modelId, price) => {
   controls.review.priceSaves = [...(controls.review.priceSaves ?? []), { providerId, modelId, price }];
   return { state, applied: null } as any;
 };
-api.routing.setFailover = async enabled => { state = { ...state, router: { ...state.router, sameModelFailover: enabled } }; return { state, applied: null }; };
 api.routing.setWebSearchProvider = async providerId => { state = { ...state, router: { ...state.router, webSearchProviderId: providerId } }; return { state, applied: null }; };
 api.loadSnapshot = async () => ({ data: { status: {
   paths: { codexHome: "C:/synthetic/codex", authExists: true, registryExists: true, sessionsExists: true },
@@ -520,12 +581,12 @@ function mount(mode: FixtureMode) {
     claudeModels: { sonnet: "chat-model", opus: "", fable: "", haiku: "", subagent: "" },
   } : null;
   const openCode = mode.startsWith("clients-opencode");
-  const clientStatuses: ClientStatus[] = mode.startsWith("clients") ? [{
+  const clientStatuses: ClientStatus[] = controls.review.clientStatusFixtures ?? (mode.startsWith("clients") ? [{
     targetId: openCode ? "opencode" : "claudeCode", name: openCode ? "OpenCode" : "Claude Code",
     path: "C:/synthetic/config.json", protocols: openCode ? ["responses", "chatCompletions", "anthropicMessages"] : ["anthropicMessages"],
     configured: !!savedClient, conflict: mode === "clients-conflict", conflictFields: mode === "clients-conflict" ? ["model"] : [], error: null, providerId: savedClient?.providerId ?? null,
     model: savedClient?.model ?? null, request: savedClient,
-  }] : [];
+  }] : []);
   api.targets.configs = async () => structuredClone(clientStatuses);
   controls.review.releasedClientCount = 0;
   api.targets.previewConfig = async (request, replaceConflicts = false) => {
@@ -661,6 +722,7 @@ function mount(mode: FixtureMode) {
     folderName: "Workspace " + i, items: threads.slice(i * 10, i * 10 + 10), latestAt: 0,
     totalMessages: 20, totalSize: 1000, userMessages: 10, agentMessages: 10 }));
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  controls.review.frontendClient = queryClient;
   if (mode === "terminal-proxy") controls.review.terminalClient = queryClient;
   if (mode === "groups") controls.review.providersClient = queryClient;
   root.render(<QueryClientProvider client={queryClient}><TooltipProvider>
@@ -671,7 +733,7 @@ function mount(mode: FixtureMode) {
         mode === "image" ? <ImageWorkbenchPage /> : mode === "mcp" ? <McpPage /> : mode === "accounts" || mode.startsWith("account-resets") ? <AccountsPage refreshInterval="5m" onManageProviders={noop} /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage" ? <TokenUsagePanel data={{ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } }} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode.startsWith("thread-details") || mode === "thread-tree" || mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :
         mode === "access" || mode === "incompatible" || mode === "native-invalid" || mode === "groups" ? <NewApiPage /> :
         mode === "test" ? <ProviderTestDialog open provider={mixedProvider} onOpenChange={noop} onTested={noop} onFailed={noop} /> :
-        mode.startsWith("clients") ? <ClientConfigs providers={openCode ? [mixedProvider, provider("alternate")] : [selectedProvider]} /> :
+        mode.startsWith("clients") ? <ClientConfigs providers={controls.review.providerFixtures ? state.providers : openCode ? [mixedProvider, provider("alternate")] : [selectedProvider]} /> :
         <VirtualThreadList groups={groups} collapsedGroups={new Set()} selected={new Set()} viewMode={mode}
           onToggleSelect={noop} onToggleGroup={noop} onToggleCollapse={noop} onExport={noop}
           onOpenPath={noop} onRecover={noop} onDelete={noop} onCopyPath={noop} copiedGroupPath={null} t={key => key} />}
@@ -679,7 +741,8 @@ function mount(mode: FixtureMode) {
   </TooltipProvider></QueryClientProvider>);
 }
 
-controls.review = { mount, realBalanceQuery, clientDefaults, claudeOneMDefaults, mergeModelCatalog, errors: { errorKey, errorMessage, formatInvokeError }, getState: () => state, pixel, accessCalls: [], thumbnailCalls: [], originalCalls: [], thumbnailResolvers: [],
+controls.review = { mount, t: (key: string, options?: Record<string, unknown>) => i18n.t(key, options),
+  realBalanceQuery, clientDefaults, claudeOneMDefaults, mergeModelCatalog, errors: { errorKey, errorMessage, formatInvokeError }, getState: () => state, pixel, accessCalls: [], thumbnailCalls: [], originalCalls: [], thumbnailResolvers: [],
   modelResolutionFixture, modelResolutionRequests: [], modelResolutionResolvers: [], modelResolutionRejectors: [], holdModelResolutions: false, modelResolutionPatches: {},
   navigatedTo: null, proxySettingsOpened: false,
   imageRequests: [], imageResolvers: [], imageCancels: {}, cancelledJobs: [], gallerySaves: 0, failGallerySave: false,

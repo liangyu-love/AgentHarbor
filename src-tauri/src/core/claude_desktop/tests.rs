@@ -22,6 +22,9 @@ use super::types::{DesktopAction, ManagedModelView, OneMMode};
 const SENTINEL_KEY: &str = "sk-SENTINEL-DO-NOT-LEAK-0001";
 const CC_SWITCH_ID: &str = "00000000-0000-4000-8000-000000157210";
 
+#[path = "aggregate_tests.rs"]
+mod aggregate_tests;
+
 fn router_fixture(
     name: &str,
 ) -> (
@@ -60,6 +63,7 @@ fn router_fixture(
         .with_listener_lease(lease);
     let request = super::types::ActionRequest {
         routes: vec![super::types::DesktopRouteChoice {
+            target_ref: None,
             role: "sonnet".into(),
             role_alias: "claude-sonnet-4-6".into(),
             provider_id: "p1".into(),
@@ -100,6 +104,7 @@ fn router_profile_exposes_only_safe_aliases_and_a_local_credential() {
     let _env = env_lock();
     let (base, paths, manager, store, mut request) = router_fixture("routerAliasProfile");
     request.routes.push(super::types::DesktopRouteChoice {
+        target_ref: None,
         role: "opus".into(),
         role_alias: "claude-opus-4-7".into(),
         provider_id: "p1".into(),
@@ -137,7 +142,7 @@ fn router_profile_exposes_only_safe_aliases_and_a_local_credential() {
     let route =
         super::gateway::resolve_message(&snapshot, &store, &catalog, "claude-sonnet-4-6").unwrap();
     assert_eq!(route.choice.model_id, "gpt-fixture");
-    assert_eq!(route.provider.api_key, SENTINEL_KEY);
+    assert_eq!(route.provider.as_ref().unwrap().api_key, SENTINEL_KEY);
     let models = super::gateway::models(&snapshot, &store, &catalog).unwrap();
     assert_eq!(models["data"].as_array().unwrap().len(), 2);
     assert_eq!(manager.status(&store).mode, "router");
@@ -258,7 +263,9 @@ fn router_request_snapshot_normalizes_bearer_without_changing_saved_credentials(
         )
         .unwrap();
         assert_eq!(
-            resolved[0].provider.model_credential().api_key,
+            resolved[0].provider.as_ref()
+                .unwrap()
+                .model_credential().api_key,
             "sk-fixture"
         );
         assert_eq!(store.providers[0].api_key, raw);
@@ -349,7 +356,9 @@ fn router_one_m_requires_context_evidence_and_the_menu_option_across_protocols()
                 .unwrap();
         assert!(route.view.one_m);
         assert_eq!(route.choice.model_id, "gpt-fixture");
-        assert_eq!(route.provider.protocol_for_model("gpt-fixture"), protocol);
+        assert_eq!(route.provider.as_ref()
+                .unwrap()
+                .protocol_for_model("gpt-fixture"), protocol);
         assert_eq!(manager.load_state().unwrap().unwrap().models.len(), 1);
         store.providers[0].models[0].overrides.context_window = Some(200_000);
         assert!(super::gateway::resolve_message(
@@ -458,6 +467,8 @@ fn router_preview_binds_listener_lease_but_not_prices_or_key_contents() {
         )
         .unwrap()
         .provider
+        .as_ref()
+        .unwrap()
         .api_key,
         "rotated-fixture-key"
     );
@@ -470,6 +481,8 @@ fn router_preview_binds_listener_lease_but_not_prices_or_key_contents() {
         )
         .unwrap()
         .provider
+        .as_ref()
+        .unwrap()
         .base_url,
         "https://third-valid-relay.example"
     );
@@ -542,6 +555,7 @@ fn router_switches_preserve_the_first_takeover_baseline_and_release_is_blocked()
     });
     let mut request = empty_management_request();
     request.routes.push(super::types::DesktopRouteChoice {
+        target_ref: None,
         role: "sonnet".into(),
         role_alias: "claude-sonnet-4-6".into(),
         provider_id: "p1".into(),
@@ -728,6 +742,7 @@ fn router_each_role_resolves_its_card_and_invalid_current_cards_do_not_fallback(
     second.models[0].protocol = Some(ModelProtocol::ChatCompletions);
     store.providers.push(second);
     request.routes.push(super::types::DesktopRouteChoice {
+        target_ref: None,
         role: "haiku".into(),
         role_alias: "claude-haiku-4-5".into(),
         provider_id: "p2".into(),
@@ -742,19 +757,25 @@ fn router_each_role_resolves_its_card_and_invalid_current_cards_do_not_fallback(
         super::gateway::resolve_message(&snapshot, &store, &catalog, "claude-sonnet-4-6").unwrap();
     let second =
         super::gateway::resolve_message(&snapshot, &store, &catalog, "claude-haiku-4-5").unwrap();
-    assert_eq!(first.provider.id, "p1");
-    assert_eq!(second.provider.id, "p2");
+    assert_eq!(first.provider.as_ref().unwrap().id, "p1");
+    assert_eq!(second.provider.as_ref().unwrap().id, "p2");
     let dated = super::gateway::resolve_message(&snapshot, &store, &catalog, "claude-haiku-4-5-20251001").unwrap();
-    assert_eq!(dated.provider.id, "p2");
-    for alias in ["claude-haiku-garbage", "prefix-claude-haiku-4-5", "claude-haiku-4-5-fast", "claude-opus-4-7-20261001", "claude-haiku-4-5-20251001[1m]"] {
+    assert_eq!(dated.provider.as_ref().unwrap().id, "p2");
+    for alias in ["claude-haiku-garbage", "prefix-claude-haiku-4-5", "claude-haiku-4-5-fast", "claude-opus-4-7-20261001", "claude-haiku-4-5-20251001[1m]",
+    ] {
         assert!(super::gateway::resolve_message(&snapshot, &store, &catalog, alias).is_err(), "{alias}");
     }
     assert_eq!(
-        first.provider.protocol_for_model(&first.choice.model_id),
+        first.provider.as_ref()
+            .unwrap()
+            .protocol_for_model(&first.choice.model_id),
         ModelProtocol::Responses
     );
     assert_eq!(
-        second.provider.protocol_for_model(&second.choice.model_id),
+        second.provider
+            .as_ref()
+            .unwrap()
+            .protocol_for_model(&second.choice.model_id),
         ModelProtocol::ChatCompletions
     );
     store.providers[1].enabled = false;
@@ -1094,13 +1115,32 @@ fn deepseek_messages_root_is_preserved() {
 #[test]
 fn official_messages_roots_are_resolved_before_desktop_layout_validation() {
     for (base, root) in [
-        ("https://api.minimax.io/v1", "https://api.minimax.io/anthropic"),
-        ("https://api.xiaomimimo.com/v1", "https://api.xiaomimimo.com/anthropic"),
-        ("https://token-plan-cn.xiaomimimo.com/v1", "https://token-plan-cn.xiaomimimo.com/anthropic"),
-        ("https://open.bigmodel.cn/api/coding/paas/v4", "https://open.bigmodel.cn/api/anthropic"),
-        ("https://api.z.ai/api/coding/paas/v4", "https://api.z.ai/api/anthropic"),
-        ("https://api.novita.ai/v3/openai", "https://api.novita.ai/anthropic"),
-        ("https://api.novita.ai/openai/v1", "https://api.novita.ai/anthropic"),
+        ("https://api.minimax.io/v1", "https://api.minimax.io/anthropic",
+        ),
+        (
+            "https://api.xiaomimimo.com/v1",
+            "https://api.xiaomimimo.com/anthropic",
+        ),
+        (
+            "https://token-plan-cn.xiaomimimo.com/v1",
+            "https://token-plan-cn.xiaomimimo.com/anthropic",
+        ),
+        (
+            "https://open.bigmodel.cn/api/coding/paas/v4",
+            "https://open.bigmodel.cn/api/anthropic",
+        ),
+        (
+            "https://api.z.ai/api/coding/paas/v4",
+            "https://api.z.ai/api/anthropic",
+        ),
+        (
+            "https://api.novita.ai/v3/openai",
+            "https://api.novita.ai/anthropic",
+        ),
+        (
+            "https://api.novita.ai/openai/v1",
+            "https://api.novita.ai/anthropic",
+        ),
     ] {
         let card = provider(base, vec![]);
         let (actual_root, messages, models) = provider::resolve_direct_endpoints(&card).unwrap();

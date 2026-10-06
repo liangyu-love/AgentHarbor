@@ -28,6 +28,7 @@ pub const DEFAULT_PORT: u16 = 43127;
 const PREVIOUS_DEFAULT_PORT: u16 = 25817;
 pub const PROVIDER_PREFIX: &str = "agentharbor_p";
 pub const CATALOG_PROVIDER_KEY: &str = "agentharbor_relay";
+pub const AGGREGATE_PROVIDER_KEY: &str = "agentharbor_aggregate";
 pub const NATIVE_PROVIDER_KEY: &str = "agentharbor_native";
 pub(crate) const LOCAL_AUTH_HEADER: &str = "x-agentharbor-token";
 const DIRECT_PROVIDER_KEY: &str = "agentharbor_newapi";
@@ -37,16 +38,11 @@ const PREVIOUS_DIRECT_PROVIDER_KEY: &str = "codexharbor_newapi";
 const PREVIOUS_RELAY_MODEL_PREFIX: &str = "aimami_relay_";
 const MAX_PROVIDERS: usize = 64;
 const MAX_MODELS_PER_PROVIDER: usize = 512;
-const STORE_VERSION: u32 = 8;
+const STORE_VERSION: u32 = 9;
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum ModelProtocol {
-    #[default]
-    Responses,
-    ChatCompletions,
-    AnthropicMessages,
-}
+// Compatibility export for existing provider, injector, and view imports.
+// New components use `protocol::ModelProtocol` directly.
+pub use super::protocol::ModelProtocol;
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -123,7 +119,11 @@ fn default_wire_api() -> String {
 #[serde(rename_all = "camelCase", default)]
 pub struct RouterSettings {
     pub enabled: bool,
-    pub same_model_failover: bool,
+    /// Explicit external consumers need the aggregate listener independently
+    /// of a managed client injection.
+    pub aggregate_external_enabled: bool,
+    /// Codex aggregate target. A missing referenced target never selects a substitute.
+    pub aggregate_model_id: Option<String>,
     /// Independent search service used when a Chat model calls a hosted tool.
     /// None chooses the current Command card, or the sole available search card.
     pub web_search_provider_id: Option<String>,
@@ -136,7 +136,8 @@ impl Default for RouterSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            same_model_failover: false,
+            aggregate_external_enabled: false,
+            aggregate_model_id: None,
             web_search_provider_id: None,
             accountless: false,
             port: DEFAULT_PORT,
@@ -150,6 +151,7 @@ impl Default for RouterSettings {
 pub struct Store {
     pub version: u32,
     pub providers: Vec<Provider>,
+    pub aggregates: Vec<super::aggregation::AggregateModel>,
     pub router: RouterSettings,
     pub codex_access_mode: CodexAccessMode,
     pub active_provider_id: Option<String>,
@@ -360,7 +362,7 @@ fn model_supports_protocol(model: &newapi::Model, protocol: ModelProtocol) -> bo
 #[serde(rename_all = "camelCase")]
 pub struct RouterView {
     pub enabled: bool,
-    pub same_model_failover: bool,
+    pub aggregate_model_id: Option<String>,
     pub web_search_provider_id: Option<String>,
     pub access_mode: CodexAccessMode,
     pub accountless: bool,
@@ -449,7 +451,12 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
     if let Some(bytes) = secret_file::read(&store_path(paths))? {
         let mut store: Store =
             serde_json::from_slice(&bytes).map_err(|_| "newapi.errors.storage")?;
+        super::aggregation::config::validate(&store)?;
         let needs_metadata_backup = store.version < 8;
+        let needs_aggregation_backup = store.version < 9;
+        if store.version > STORE_VERSION {
+            return Err("newapi.errors.storage".into());
+        }
         let mut changed = false;
         if store.version < 2 {
             // Older builds treated a successful model-list request as a
@@ -600,12 +607,22 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
             store.version = STORE_VERSION;
             changed = true;
         }
-        if store.router.enabled && effective_active_for(&store, ModelProtocol::Responses).is_none()
+        if store.router.enabled && !codex_target_available(&store)
         {
             store.router.enabled = false;
             changed = true;
         }
         if changed {
+            if needs_aggregation_backup {
+                let backup = paths.app_data_dir.join("newapi-providers.pre-v9.dat");
+                match secret_file::read(&backup)? {
+                    None => secret_file::write(&backup, &bytes)?,
+                    Some(original) => {
+                        serde_json::from_slice::<Store>(&original)
+                            .map_err(|_| "newapi.errors.storage".to_owned())?;
+                    }
+                }
+            }
             if needs_metadata_backup {
                 let backup = paths.app_data_dir.join("newapi-providers.pre-v8.dat");
                 match secret_file::read(&backup)? {
@@ -636,6 +653,21 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
 pub fn load_store(paths: &CodexPaths) -> Result<Store, String> {
     let _guard = store_write_guard()?;
     load_store_unlocked(paths)
+}
+
+/// Mutate provider and aggregate references under the existing store write lock.
+/// Validation failure never writes the proposed state, and the protected atomic
+/// file write must succeed before callers publish any runtime state.
+pub(crate) fn mutate_store(
+    paths: &CodexPaths,
+    mutate: impl FnOnce(&mut Store) -> Result<(), String>,
+) -> Result<Store, String> {
+    let _guard = store_write_guard()?;
+    let mut store = load_store_unlocked(paths)?;
+    mutate(&mut store)?;
+    super::aggregation::config::validate(&store)?;
+    save_store_unlocked(paths, &store)?;
+    Ok(store)
 }
 
 fn new_router_bearer() -> String {
@@ -755,11 +787,13 @@ fn migrate_original_relay(paths: &CodexPaths) -> Result<Option<Store>, String> {
         version: STORE_VERSION,
         codex_access_mode: CodexAccessMode::Router,
         providers,
+        aggregates: vec![],
         active_provider_id,
         compression: model_policy::CompressionPolicy::percent(model_policy::DEFAULT_PERCENT),
         router: RouterSettings {
             enabled: false,
-            same_model_failover: false,
+            aggregate_external_enabled: false,
+            aggregate_model_id: None,
             web_search_provider_id: None,
             accountless: value
                 .get("codexRouterNoAccountMode")
@@ -774,7 +808,12 @@ fn migrate_original_relay(paths: &CodexPaths) -> Result<Option<Store>, String> {
 /// Read a store from an explicit path (used by the local proxy per request).
 pub fn read_store(path: &Path) -> Result<Store, String> {
     match secret_file::read(path)? {
-        Some(bytes) => serde_json::from_slice(&bytes).map_err(|_| "newapi.errors.storage".into()),
+        Some(bytes) => {
+            let store: Store =
+                serde_json::from_slice(&bytes).map_err(|_| "newapi.errors.storage")?;
+            super::aggregation::config::validate(&store)?;
+            Ok(store)
+        }
         None => Ok(Store::default()),
     }
 }
@@ -842,7 +881,7 @@ pub(crate) fn state_from_store_at(
             .collect(),
         router: RouterView {
             enabled: store.router.enabled,
-            same_model_failover: store.router.same_model_failover,
+            aggregate_model_id: store.router.aggregate_model_id.clone(),
             web_search_provider_id: store.router.web_search_provider_id.clone(),
             access_mode: store.codex_access_mode,
             accountless: store.router.accountless,
@@ -1764,7 +1803,7 @@ pub fn set_smart_routing(paths: &CodexPaths, enabled: bool) -> Result<StateChang
     let applied;
     if enabled {
         validate_native_selection(&store)?;
-        if effective_active_for(&store, ModelProtocol::Responses).is_none() {
+        if !codex_target_available(&store) {
             return Err("newapi.errors.noActiveProvider".into());
         }
         applied = Some(apply_routing_config(paths, &store)?);
@@ -1792,15 +1831,51 @@ pub fn set_smart_routing(paths: &CodexPaths, enabled: bool) -> Result<StateChang
     })
 }
 
-pub fn set_same_model_failover(paths: &CodexPaths, enabled: bool) -> Result<StateChange, String> {
+pub fn select_aggregate(paths: &CodexPaths, id: Option<String>) -> Result<StateChange, String> {
     let _guard = store_write_guard()?;
     let mut store = load_store_unlocked(paths)?;
-    store.router.same_model_failover = enabled;
-    save_store_unlocked(paths, &store)?;
+    if id.is_some() && store.codex_access_mode == CodexAccessMode::Native {
+        return Err("aggregation.errors.routerOnly".into());
+    }
+    if let Some(id) = &id {
+        let aggregate = store
+            .aggregates
+            .iter()
+            .find(|aggregate| aggregate.id == *id)
+            .ok_or("aggregation.errors.notFound")?;
+        if !super::aggregation::project(&store, aggregate, &models_dev::load(&paths.app_data_dir))
+            .available
+        {
+            return Err("aggregation.errors.unavailable".into());
+        }
+    }
+    let previous = store.clone();
+    store.router.aggregate_model_id = id;
+    let applied = apply_routing_if_enabled(paths, &store)?;
+    persist_connection_change(paths, &previous, &store, applied.is_some())?;
     Ok(StateChange {
         state: state_from_store_at(&store, super::router_proxy::is_running(), Some(paths)),
-        applied: None,
+        applied,
     })
+}
+
+fn codex_target_available(store: &Store) -> bool {
+    if let Some(id) = store.router.aggregate_model_id.as_deref() {
+        store.codex_access_mode == CodexAccessMode::Router
+            && store.aggregates.iter().any(|aggregate| {
+                aggregate.id == id
+                    && aggregate.enabled
+                    && aggregate.members.iter().any(|member| {
+                        member.enabled
+                            && store.providers.iter().any(|provider| {
+                                provider.id == member.provider_id
+                                    && provider.can_route_model(&member.actual_model_id)
+                            })
+                    })
+            })
+    } else {
+        effective_active_for(store, ModelProtocol::Responses).is_some()
+    }
 }
 
 /// Only identifies the REST search service; model protocols are independent.
@@ -1936,6 +2011,9 @@ pub fn set_access_mode(paths: &CodexPaths, mode: CodexAccessMode) -> Result<Stat
     }
     let previous = store.clone();
     if mode == CodexAccessMode::Native {
+        if store.router.aggregate_model_id.is_some() {
+            return Err("aggregation.errors.routerOnly".into());
+        }
         // Pin the provider currently shown/used by Codex before changing modes.
         // Native validation must not choose a different provider by protocol.
         store.active_provider_id = effective_active_for(&store, ModelProtocol::Responses)
@@ -2092,6 +2170,7 @@ fn managed_provider_key(key: &str) -> bool {
     key == DIRECT_PROVIDER_KEY
         || key == NATIVE_PROVIDER_KEY
         || key == CATALOG_PROVIDER_KEY
+        || key == AGGREGATE_PROVIDER_KEY
         || key.starts_with(PROVIDER_PREFIX)
         || key == PREVIOUS_DIRECT_PROVIDER_KEY
         || key == PREVIOUS_CATALOG_PROVIDER_KEY
@@ -2111,15 +2190,24 @@ pub(crate) fn routing_config_intact(paths: &CodexPaths) -> bool {
     let Ok(document) = text.parse::<toml_edit::DocumentMut>() else {
         return false;
     };
+    let key = document
+        .get("model_provider")
+        .and_then(toml_edit::Item::as_str)
+        .unwrap_or_default();
+    let expected_catalog = if key == AGGREGATE_PROVIDER_KEY {
+        aggregate_catalog_path(paths)
+    } else {
+        catalog_path(paths)
+    };
     document
         .get("model_providers")
         .and_then(toml_edit::Item::as_table_like)
-        .and_then(|providers| providers.get(CATALOG_PROVIDER_KEY))
+        .and_then(|providers| providers.get(key))
         .is_some()
         && document
             .get("model_provider")
             .and_then(toml_edit::Item::as_str)
-            == Some(CATALOG_PROVIDER_KEY)
+            .is_some_and(|key| matches!(key, CATALOG_PROVIDER_KEY | AGGREGATE_PROVIDER_KEY))
         && document
             .get("model_catalog_json")
             .and_then(toml_edit::Item::as_str)
@@ -2130,7 +2218,7 @@ pub(crate) fn routing_config_intact(paths: &CodexPaths) -> bool {
                 } else {
                     paths.codex_home.join(referenced)
                 };
-                let expected = catalog_path(paths);
+                let expected = expected_catalog.clone();
                 referenced == expected
                     || referenced
                         .canonicalize()
@@ -2144,16 +2232,46 @@ pub(crate) fn catalog_path(paths: &CodexPaths) -> PathBuf {
     paths.app_data_dir.join("newapi-router-catalog.json")
 }
 
+fn aggregate_catalog_path(paths: &CodexPaths) -> PathBuf {
+    paths.app_data_dir.join("aggregate-router-catalog.json")
+}
+fn selected_catalog_path(paths: &CodexPaths, store: &Store) -> PathBuf {
+    if store.router.aggregate_model_id.is_some() {
+        aggregate_catalog_path(paths)
+    } else {
+        catalog_path(paths)
+    }
+}
+pub(crate) fn aggregate_catalog_value(app_data_dir: &std::path::Path, store: &Store) -> Value {
+    let catalog = models_dev::load(app_data_dir);
+    let models: Vec<_> = store
+        .aggregates
+        .iter()
+        .filter_map(|aggregate| {
+            let view = super::aggregation::project(store, aggregate, &catalog);
+            view.projection
+                .filter(|_| view.available)
+                .map(|projection| aggregate_catalog_entry(aggregate, &projection))
+        })
+        .collect();
+    serde_json::json!({"models":models})
+}
+
 /// Codex reads relay + official models from this catalog file (`model_catalog_json`),
 /// matching the original app's protocol. Official entries are borrowed read-only from
 /// the original app's catalog when it is present.
 pub(crate) fn write_catalog(paths: &CodexPaths, store: &Store) -> Result<PathBuf, String> {
-    let document = catalog_value(&paths.app_data_dir, &paths.codex_home, store);
+    let document = if store.router.aggregate_model_id.is_some() {
+        aggregate_catalog_value(&paths.app_data_dir, store)
+    } else {
+        catalog_value(&paths.app_data_dir, &paths.codex_home, store)
+    };
+    let target = selected_catalog_path(paths, store);
     let bytes =
         serde_json::to_vec_pretty(&document).map_err(|_| "newapi.errors.storage".to_owned())?;
-    storage::write_atomic(&catalog_path(paths), &bytes)
+    storage::write_atomic(&target, &bytes)
         .map_err(|_| "newapi.errors.storage".to_owned())?;
-    Ok(catalog_path(paths))
+    Ok(target)
 }
 
 /// Pure catalog builder (no disk writes) so the local proxy can serve it per request.
@@ -2690,16 +2808,6 @@ pub(crate) fn pricing_for(
     }
 }
 
-/// Price snapshot for the proxy hot path; reads the shared in-memory catalog.
-pub(crate) fn pricing_for_app_data(
-    app_data_dir: &std::path::Path,
-    provider: &Provider,
-    model_id: &str,
-) -> relay_usage::PricingSnapshot {
-    let catalog = models_dev::load(app_data_dir);
-    pricing_for(provider, model_id, &catalog)
-}
-
 /// Whether the native Codex configuration still matches what we would apply.
 /// Read-only; used by the capability preview to separate "pending" from
 /// "applied" thresholds.
@@ -2760,25 +2868,10 @@ pub(super) fn model_projection(
     (metadata, projection)
 }
 
-/// The exact eligibility predicate used by the proxy's existing failover.
-/// Budget planning reads this set without changing its order or routing it.
-pub(crate) fn same_model_failover_candidate(
-    candidate: &Provider,
-    current: &Provider,
-    model: &str,
-) -> bool {
-    candidate.id != current.id
-        && (candidate.model == model
-            || candidate
-                .models
-                .iter()
-                .any(|entry| entry.id == model && entry.included))
-        && candidate.can_route_model(model)
-        && candidate.protocol_for_model(model) == current.protocol_for_model(model)
-}
-
+/// Ordinary relay budgets depend only on their own saved model. Explicit
+/// aggregates project their eligible members in aggregation::projection.
 pub(super) fn relay_model_projection(
-    store: &Store,
+    _store: &Store,
     provider: &Provider,
     model_id: &str,
     official: Option<&Value>,
@@ -2788,55 +2881,31 @@ pub(super) fn relay_model_projection(
     model_metadata::ResolvedMetadata,
     model_policy::ClientProjection,
 ) {
-    let (metadata, mut projection) =
-        model_projection(provider, model_id, official, catalog, global);
-    if !store.router.same_model_failover || !provider.can_route_model(model_id) {
-        return (metadata, projection);
-    }
-    let mut unknown = projection.budget_source == model_metadata::source::FALLBACK;
-    let mut limiting_provider = None;
-    for candidate in store
-        .providers
-        .iter()
-        .filter(|candidate| same_model_failover_candidate(candidate, provider, model_id))
-    {
-        let (_, other) = model_projection(
-            candidate,
-            model_id,
-            official.filter(|_| official_endpoint_applies(candidate)),
-            catalog,
-            global,
-        );
-        unknown |= other.budget_source == model_metadata::source::FALLBACK;
-        if other.budget < projection.budget {
-            projection.budget = other.budget;
-            limiting_provider = Some(candidate.id.as_str());
-        }
-    }
-    if limiting_provider.is_some() {
-        projection.budget_source = "failover".into();
-        let provider_policy = provider_compression(provider);
-        let model_policy = provider
-            .models
-            .iter()
-            .find(|entry| entry.id == model_id)
-            .map(|entry| &entry.compression);
-        let (policy, source) = model_policy::resolve(model_policy, Some(&provider_policy), global);
-        projection.compression =
-            model_policy::plan(policy, source, Some(projection.budget), "failover");
-    }
-    let note = if unknown {
-        Some("Some failover candidate budgets are unknown; capacity cannot be confirmed for all candidates".to_owned())
+    model_projection(provider, model_id, official, catalog, global)
+}
+
+pub(crate) fn aggregate_catalog_entry(
+    aggregate: &super::aggregation::AggregateModel,
+    projection: &model_policy::ClientProjection,
+) -> Value {
+    let label = if aggregate.display_name.is_empty() {
+        &aggregate.public_model_id
     } else {
-        limiting_provider.map(|id| format!("Conservative budget limited by failover provider {id}"))
+        &aggregate.display_name
     };
-    if let Some(note) = note {
-        projection.compression.note = Some(match projection.compression.note {
-            Some(existing) => format!("{existing}; {note}"),
-            None => note,
-        });
+    let mut entry = relay_catalog_entry(
+        aggregate.public_model_id.clone(),
+        label.clone(),
+        label.clone(),
+        projection.context_window,
+        projection.output_limit,
+        projection.reasoning.clone(),
+        projection.default_reasoning.clone(),
+    );
+    if let Some(threshold) = projection.compression.threshold {
+        entry["auto_compact_token_limit"] = serde_json::json!(threshold);
     }
-    (metadata, projection)
+    entry
 }
 
 fn relay_catalog_entry(
@@ -2912,9 +2981,8 @@ fn apply_local_router_config(
     if store.router.bearer_token.is_empty() {
         return Err("newapi.errors.storage".into());
     }
-    let active = effective_active_for(store, ModelProtocol::Responses)
-        .ok_or("newapi.errors.noActiveProvider")?;
-    let catalog = catalog_path(paths);
+    let (provider_key, default_model, namespace) = codex_connection(store)?;
+    let catalog = selected_catalog_path(paths, store);
     let mut pending = None;
     let result = CodexConfigRepository::new(paths)
         .update(|original| {
@@ -2946,13 +3014,11 @@ fn apply_local_router_config(
             config_snapshot::set_value(
                 &mut document,
                 "model",
-                Some(format!("{}::{}", active.id, active.model).into()),
-            );
+                Some(default_model.clone().into()));
             config_snapshot::set_value(
                 &mut document,
                 "model_provider",
-                Some(CATALOG_PROVIDER_KEY.into()),
-            );
+                Some(provider_key.into()));
             config_snapshot::set_value(
                 &mut document,
                 "model_catalog_json",
@@ -2971,14 +3037,15 @@ fn apply_local_router_config(
             let inline_providers = document["model_providers"]
                 .as_value()
                 .is_some_and(toml_edit::Value::is_inline_table);
-            let entry = &mut document["model_providers"][CATALOG_PROVIDER_KEY];
+            let entry = &mut document["model_providers"][provider_key];
             *entry = if inline_providers {
                 toml_edit::Item::Value(toml_edit::Value::InlineTable(toml_edit::InlineTable::new()))
             } else {
                 toml_edit::Item::Table(toml_edit::Table::new())
             };
             entry["name"] = value("AgentHarbor 智能路由");
-            entry["base_url"] = value(format!("http://127.0.0.1:{}/codex/v1", store.router.port));
+            entry["base_url"] = value(format!(
+                "http://127.0.0.1:{}/{namespace}/v1", store.router.port));
             entry["wire_api"] = value("responses");
             // Keep Codex's first-party auth pipeline (account display and token
             // refresh) independent of authentication to this loopback router.
@@ -3000,6 +3067,29 @@ fn apply_local_router_config(
         snapshot.finish(paths);
     }
     Ok(applied_config(result))
+}
+
+fn codex_connection(store: &Store) -> Result<(&'static str, String, &'static str), String> {
+    if let Some(id) = &store.router.aggregate_model_id {
+        let aggregate = store
+            .aggregates
+            .iter()
+            .find(|aggregate| aggregate.id == *id && aggregate.enabled)
+            .ok_or("aggregation.errors.unavailable")?;
+        Ok((
+            AGGREGATE_PROVIDER_KEY,
+            aggregate.public_model_id.clone(),
+            "aggregate",
+        ))
+    } else {
+        let provider = effective_active_for(store, ModelProtocol::Responses)
+            .ok_or("newapi.errors.noActiveProvider")?;
+        Ok((
+            CATALOG_PROVIDER_KEY,
+            format!("{}::{}", provider.id, provider.model),
+            "codex",
+        ))
+    }
 }
 
 /// Repair an enabled router configuration only when its critical fields are
@@ -3033,22 +3123,24 @@ pub(crate) fn routing_config_matches(paths: &CodexPaths, store: &Store) -> Resul
     {
         return Ok(false);
     }
-    let active = effective_active_for(store, ModelProtocol::Responses)
-        .ok_or("newapi.errors.noActiveProvider")?;
+    let (provider_key, expected_model, namespace) = codex_connection(store)?;
     let (_, document) = open_config(paths)?;
-    let expected_base = format!("http://127.0.0.1:{}/codex/v1", store.router.port);
-    let expected_model = format!("{}::{}", active.id, active.model);
-    let expected_catalog = catalog_path(paths).to_string_lossy().to_string();
-    let catalog_current = std::fs::read(catalog_path(paths))
+    let expected_base = format!("http://127.0.0.1:{}/{namespace}/v1", store.router.port);
+    let expected_catalog = selected_catalog_path(paths, store).to_string_lossy().to_string();
+    let catalog_current = std::fs::read(selected_catalog_path(paths, store))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .is_some_and(|catalog| {
-            catalog == catalog_value(&paths.app_data_dir, &paths.codex_home, store)
+            catalog == if store.router.aggregate_model_id.is_some() {
+                    aggregate_catalog_value(&paths.app_data_dir, store)
+                } else {
+                    catalog_value(&paths.app_data_dir, &paths.codex_home, store)
+                }
         });
     let provider = document
         .get("model_providers")
         .and_then(toml_edit::Item::as_table_like)
-        .and_then(|providers| providers.get(CATALOG_PROVIDER_KEY))
+        .and_then(|providers| providers.get(provider_key))
         .and_then(toml_edit::Item::as_table_like);
     let current = provider.is_some_and(|provider| {
         provider.get("base_url").and_then(toml_edit::Item::as_str) == Some(expected_base.as_str())
@@ -3079,7 +3171,7 @@ pub(crate) fn routing_config_matches(paths: &CodexPaths, store: &Store) -> Resul
     }) && document
         .get("model_provider")
         .and_then(toml_edit::Item::as_str)
-        == Some(CATALOG_PROVIDER_KEY)
+        == Some(provider_key)
         && document.get("model").and_then(toml_edit::Item::as_str) == Some(expected_model.as_str())
         && document.get("model_context_window").is_none()
         && document.get("model_auto_compact_token_limit").is_none()
@@ -3333,8 +3425,10 @@ mod tests {
 
     #[test]
     fn command_search_capability_is_independent_of_model_protocol() {
-        for protocol in [ModelProtocol::Responses, ModelProtocol::ChatCompletions, ModelProtocol::AnthropicMessages] {
-            for suffix in ["", "/", "/provider", "/provider/", "/provider/v1", "/provider/v1/"] {
+        for protocol in [ModelProtocol::Responses, ModelProtocol::ChatCompletions, ModelProtocol::AnthropicMessages,
+        ] {
+            for suffix in ["", "/", "/provider", "/provider/", "/provider/v1", "/provider/v1/",
+            ] {
                 let provider = Provider { base_url: format!("https://api.commandcode.ai{suffix}"),
                     api_key: "search-fixture".into(), protocol, ..Default::default() };
                 assert!(supports_command_search(&provider));
@@ -3342,7 +3436,8 @@ mod tests {
             }
         }
         for base_url in ["http://api.commandcode.ai", "https://api.commandcode.ai.invalid", "https://api.commandcode.ai:8443",
-            "https://user@api.commandcode.ai", "https://api.commandcode.ai/provider/v1?secret=1", "https://api.commandcode.ai/#fragment", "https://api.commandcode.ai/v1"] {
+            "https://user@api.commandcode.ai", "https://api.commandcode.ai/provider/v1?secret=1", "https://api.commandcode.ai/#fragment", "https://api.commandcode.ai/v1",
+        ] {
             let provider = Provider { base_url: base_url.into(), api_key: "search-fixture".into(), ..Default::default() };
             assert!(!supports_command_search(&provider), "{base_url}");
         }
@@ -3564,6 +3659,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         };
         let store = Store {
             version: 1,
+            aggregates: vec![],
             codex_access_mode: CodexAccessMode::Router,
             providers: vec![provider],
             ..Default::default()
@@ -3938,6 +4034,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         let (_dir, paths) = paths();
         let store = Store {
             version: 1,
+            aggregates: vec![],
             codex_access_mode: CodexAccessMode::Router,
             providers: vec![Provider {
                 id: "aimami_relay_fixture".into(),
@@ -3975,6 +4072,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         let (_dir, paths) = paths();
         let store = Store {
             version: 1,
+            aggregates: vec![],
             codex_access_mode: CodexAccessMode::Router,
             providers: vec![Provider {
                 id: "existing-provider-id".into(),
@@ -4172,6 +4270,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         };
         let store = Store {
             version: 1,
+            aggregates: vec![],
             codex_access_mode: CodexAccessMode::Router,
             providers: vec![provider],
             router: RouterSettings {
@@ -4228,6 +4327,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         let (_dir, paths) = paths();
         let store = Store {
             version: 1,
+            aggregates: vec![],
             codex_access_mode: CodexAccessMode::Router,
             providers: vec![Provider {
                 id: "legacy-chat".into(),
@@ -4278,6 +4378,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         };
         let store = Store {
             version: 1,
+            aggregates: vec![],
             codex_access_mode: CodexAccessMode::Router,
             providers: vec![provider],
             router: RouterSettings {
@@ -5375,7 +5476,8 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             {"id":"302ai","models":[{"id":"opaque-alias","name":"Alias","limit":{"context":1000},"canonicalModelId":"google/gemini-fake"}]}
         ]}).to_string().as_bytes(), models_dev::Origin::Runtime).unwrap();
         assert_eq!(official_catalog_for_model("nova-2-lite-v1", &catalog).as_deref(), Some("nova"));
-        for id in ["amazon.nova-lite-v1:0", "us.amazon.nova-lite-v1:0", "amazon/nova-lite"] {
+        for id in ["amazon.nova-lite-v1:0", "us.amazon.nova-lite-v1:0", "amazon/nova-lite",
+        ] {
             assert_eq!(official_catalog_for_model(id, &catalog).as_deref(), Some("amazon-bedrock"));
         }
         assert_eq!(official_catalog_for_model("opaque-alias", &catalog), None);

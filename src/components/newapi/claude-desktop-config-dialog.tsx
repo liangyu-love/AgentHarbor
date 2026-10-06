@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
-import { ClaudeDesktopRouteMapping, desktopRouteSupports1m } from "./claude-desktop-route-mapping";
+import { ClaudeDesktopRouteMapping, desktopRouteCandidate, desktopRouteSupports1m } from "./claude-desktop-route-mapping";
 import {
   Dialog,
   DialogContent,
@@ -101,7 +101,7 @@ function readSavedDesktopConfigs(): SavedDesktopConfig[] {
           && typeof model.modelId === "string" && (model.oneMMode === "auto" || model.oneMMode === "off"));
       if (value.mode === "router") return Array.isArray(value.routes) && value.routes.every(route => !!route && typeof route === "object"
         && typeof route.role === "string" && typeof route.roleAlias === "string"
-        && typeof route.providerId === "string" && typeof route.modelId === "string"
+        && (typeof route.providerId === "string" || route.targetRef?.kind === "aggregate") && typeof route.modelId === "string"
         && (route.oneMMode === "auto" || route.oneMMode === "off"));
       return false;
     });
@@ -203,20 +203,19 @@ export function ClaudeDesktopDialog({
   const excludedModels = (candidate?.models ?? []).filter(model => !model.selectable && !selected[model.modelId]);
   const pathSelected = !!pathsChoice.normalRoot && !!pathsChoice.thirdPartyRoot;
   const routeProviders = candidates?.routeProviders ?? [];
+  const routeAggregates = candidates?.routeAggregates ?? [];
   const routeRoles = candidates?.routeRoles ?? [];
   const missingRoles = routeRoles.filter(role => !routes.some(route => route.role === role.role));
   const routeInputs = routes.map(route => {
-    const provider = routeProviders.find(entry => entry.providerId === route.providerId);
-    const model = provider?.models.find(entry => entry.modelId === route.modelId);
-    return { providerId: route.providerId, eligible: provider?.eligible, name: provider?.name,
+    const { eligible, name, model } = desktopRouteCandidate(route, routeProviders, routeAggregates);
+    return { targetRef: route.targetRef, providerId: route.providerId, eligible, name,
       model: model ? { modelId: model.modelId, label: model.label, protocol: model.protocol,
         selectable: model.selectable, supports1m: model.supports1m } : null };
   });
   const routesValid = routes.length > 0 && routes.every(route => {
-    const provider = routeProviders.find(entry => entry.providerId === route.providerId);
-    const model = provider?.models.find(entry => entry.modelId === route.modelId);
+    const { eligible, model } = desktopRouteCandidate(route, routeProviders, routeAggregates);
     return routeRoles.some(role => role.role === route.role && role.roleAlias === route.roleAlias)
-      && provider?.eligible && model?.selectable && (route.oneMMode !== "auto" || desktopRouteSupports1m(model));
+      && eligible && model?.selectable && (route.oneMMode !== "auto" || desktopRouteSupports1m(model));
   });
   const action: DesktopAction = mode === "router" ? "applyRouter" : "applyDirect";
   const formSnapshot = JSON.stringify({
@@ -304,9 +303,8 @@ export function ClaudeDesktopDialog({
     });
     const routesAreAvailable = normalizedRoutes.length > 0 && normalizedRoutes.every(route => {
       const role = (candidates.routeRoles ?? []).find(entry => entry.role === route.role);
-      const provider = (candidates.routeProviders ?? []).find(entry => entry.providerId === route.providerId);
-      const model = provider?.models.find(entry => entry.modelId === route.modelId);
-      return role && provider?.eligible && model?.selectable
+      const { eligible, model } = desktopRouteCandidate(route, candidates.routeProviders ?? [], candidates.routeAggregates ?? []);
+      return role && eligible && model?.selectable
         && (route.oneMMode !== "auto" || desktopRouteSupports1m(model));
     });
     if (!routesAreAvailable) {
@@ -656,8 +654,8 @@ export function ClaudeDesktopDialog({
             {mode === "router" && <div className="space-y-2">
               <StepHeading step="1" text={t("claudeDesktop.routing.stepRoutes")} />
               <ClaudeDesktopRouteMapping roles={[...routeRoles, ...routes.filter(route => !routeRoles.some(role => role.role === route.role))]}
-                providers={routeProviders} choices={routes} onChange={setRoutes} />
-              {routeProviders.length === 0 && <p role="status" className="text-xs text-muted-foreground">{t("claudeDesktop.routing.noProviders")}</p>}
+                providers={routeProviders} aggregates={routeAggregates} choices={routes} onChange={setRoutes} />
+              {routeProviders.length === 0 && routeAggregates.length === 0 && <p role="status" className="text-xs text-muted-foreground">{t("claudeDesktop.routing.noProviders")}</p>}
               {missingRoles.length > 0 && <p className="text-xs text-amber-600 dark:text-amber-400" data-desktop-missing-roles>{t("claudeDesktop.routing.missingRoles", { roles: missingRoles.map(role => role.role).join(" / ") })}</p>}
               <div className="flex items-center gap-2 pt-1">
                 <Checkbox id="desktop-rotate-gateway-token" checked={rotateGatewayToken} onCheckedChange={checked => setRotateGatewayToken(checked === true)} />

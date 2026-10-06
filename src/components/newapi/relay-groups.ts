@@ -16,7 +16,7 @@ export const providerColor = (id: string): GlowColor => {
   return cardColors[hash % cardColors.length];
 };
 
-export const providerErrorKey = (e: unknown) => errorKey(e, ["newapi"], "newapi.errors.unexpected");
+export const providerErrorKey = (e: unknown) => errorKey(e, ["newapi", "aggregation", "modelTargets"], "newapi.errors.unexpected");
 
 // DeepSeek peak/off-peak pricing windows in Beijing time: peak 9-12 & 14-18 on
 // weekdays, off-peak (half price) everywhere else including whole weekends.

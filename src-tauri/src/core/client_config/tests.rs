@@ -1,4 +1,6 @@
 use super::*;
+#[path = "aggregate_tests.rs"]
+mod aggregate_tests;
 #[path = "native_tests.rs"]
 mod native_tests;
 #[path = "ownership_tests.rs"]
@@ -666,7 +668,8 @@ fn restore_then_fresh_apply_preserves_plain_user_picker_rows() {
 fn installed_user_picker_selection_is_allowed_outside_requested_ids() {
     let (_temp, manager, store, mut request) = fixture();
     request.options.claude_model_ids = Some(vec!["claude-test".into()]);
-    write(&manager.paths.claude, &json!({"model":"original","modelPicker":{"options":[{"model":"user-model","label":"Custom"}]}}));
+    write(&manager.paths.claude, &json!({"model":"original","modelPicker":{"options":[{"model":"user-model","label":"Custom"}]}}),
+    );
     apply(&manager, &store, &request);
     let mut current = read(&manager.paths.claude);
     current["model"] = json!("user-model");

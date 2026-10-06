@@ -1,4 +1,5 @@
 pub mod accounts;
+pub mod aggregation;
 pub mod auto_switch;
 pub mod claude_desktop;
 pub mod client_config;

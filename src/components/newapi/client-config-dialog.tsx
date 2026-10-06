@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { aggregationQueryKey, type ModelTargetRef } from "@/types/aggregation";
 import { useTranslation } from "react-i18next";
 import { BookmarkPlus, Check, ChevronDown, Eye, Loader2, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
@@ -19,7 +21,7 @@ import { errorKey } from "@/lib/invoke-error";
 import { ConfirmDialog, type ConfirmRequest } from "@/components/ui/confirm-dialog";
 
 const clientErrorKey = (cause: unknown) =>
-  errorKey(cause, ["clients", "newapi"], "clients.errors.storage");
+  errorKey(cause, ["clients", "newapi", "aggregation", "modelTargets"], "clients.errors.storage");
 
 interface ClaudeConfigProfile {
   id: string;
@@ -35,7 +37,8 @@ function readClaudeProfiles(): ClaudeConfigProfile[] {
     return value.filter((item): item is ClaudeConfigProfile =>
       !!item && typeof item === "object" && typeof item.id === "string" && typeof item.name === "string"
       && !!item.request && typeof item.request === "object" && item.request.targetId === "claudeCode"
-      && typeof item.request.providerId === "string" && typeof item.request.model === "string");
+      && (typeof item.request.providerId === "string" || item.request.modelSelection?.defaultTarget?.kind === "aggregate")
+      && typeof item.request.model === "string");
   } catch { return []; }
 }
 
@@ -49,8 +52,11 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
 }) {
   const { t } = useTranslation();
   const isClaude = client.targetId === "claudeCode";
+  const aggregateQuery = useQuery({ queryKey: aggregationQueryKey, queryFn: api.aggregation.state });
+  const aggregates = aggregateQuery.data?.models ?? [];
   const [request, setRequest] = useState<ClientConfigRequest>(() => {
     const saved = client.request;
+    if (saved?.modelSelection) return { ...saved, providerIds: saved.providerIds ?? [], claudeModels: saved.claudeModels ?? emptyRoles() };
     const accessMode = saved?.accessMode ?? (client.configured ? "router" : "native");
     const protocols = clientProtocols(client, accessMode);
     const available = providers.filter(provider => !exclusionOf(provider, protocols));
@@ -95,27 +101,64 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
   const [managingProfiles, setManagingProfiles] = useState(false);
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const protocols = clientProtocols(client, request.accessMode);
+  const defaultTarget = request.modelSelection?.defaultTarget;
+  const aggregateMode = defaultTarget?.kind === "aggregate";
+  const aggregateIds = (request.modelSelection?.availableTargets ?? []).flatMap(target => target.kind === "aggregate" ? [target.aggregateId] : []);
+  const selectedAggregates = aggregates.filter(model => aggregateIds.includes(model.id));
+  const defaultAggregate = defaultTarget?.kind === "aggregate" ? aggregates.find(model => model.id === defaultTarget.aggregateId) : undefined;
+  const aggregateUnavailable = aggregateIds.some(id => !aggregates.some(model => model.id === id && model.available));
   const compatible = providers.filter(provider => !exclusionOf(provider, protocols));
   const selected = compatible.filter(provider => request.providerIds.includes(provider.id));
   const provider = selected.find(provider => provider.id === request.providerId);
-  const models = provider ? clientModels(provider, protocols) : [];
+  const models = isClaude && aggregateMode ? selectedAggregates.map(model => model.publicModelId) : provider ? clientModels(provider, protocols) : [];
   const modelIdsForProvider = (entry: NewApiProvider) => {
     return selectedProviderModels(entry, protocols, request.providerModelIds?.[entry.id]);
   };
   const configuredModels = isClaude ? models.filter(id => request.claudeModelIds?.includes(id) ?? true) : models;
-  const modelCompatible = !!provider && (isClaude ? configuredModels : modelIdsForProvider(provider)).includes(request.model);
+  const modelCompatible = aggregateMode ? !!defaultAggregate?.available && defaultAggregate.publicModelId === request.model
+    : !!provider && (isClaude ? configuredModels : modelIdsForProvider(provider)).includes(request.model);
   const staleClaudeModelSelection = isClaude && !!provider
     && (request.claudeModelIds ?? []).some(id => !models.includes(id));
   const staleOpenCodeModelSelection = client.targetId === "opencode" && selected.some(entry =>
     (request.providerModelIds?.[entry.id] ?? []).some(id => !clientModels(entry, protocols).includes(id)));
   const selectedProtocol = provider ? providerModelProtocol(provider, request.model) : null;
-  const startupOneMUnavailable = isClaude && knownSmallContext(effectiveContext(provider, request.model));
+  const aggregateOneM = (id: string) => selectedAggregates.find(model => model.publicModelId === id)?.memberStates.some(member =>
+    member.available && member.projection && !member.projection.contextIsFallback && member.projection.contextWindow >= 1_000_000) ?? false;
+  const startupOneMUnavailable = isClaude && (aggregateMode ? !aggregateOneM(request.model) : knownSmallContext(effectiveContext(provider, request.model)));
   const modelLabel = (p: NewApiProvider, id: string) => p.models.find(model => model.id === id)?.displayName || id;
+  const profileTargetLabel = (profile: ClaudeConfigProfile) => {
+    const target = profile.request.modelSelection?.defaultTarget;
+    return target?.kind === "aggregate"
+      ? aggregates.find(model => model.id === target.aggregateId)?.displayName ?? t("aggregation.unavailable")
+      : providers.find(p => p.id === profile.request.providerId)?.name ?? profile.request.providerId;
+  };
   const update = (patch: Partial<ClientConfigRequest>) => {
     if (busy) return;
     setRequest(current => ({ ...current, ...patch }));
     setPreview(null);
     setError(null);
+  };
+  const chooseAggregate = (aggregateId: string, ids = aggregateIds) => {
+    const entry = aggregates.find(model => model.id === aggregateId);
+    if (!entry) return;
+    update({ accessMode: "router", providerId: "", model: entry.publicModelId, contextWindow: null, maxOutputTokens: null,
+      ...(isClaude ? { providerIds: [], providerModelIds: undefined,
+        claudeModelIds: ids.flatMap(id => aggregates.find(model => model.id === id)?.publicModelId ?? []),
+        claudeModels: roles.reduce<ClaudeModels>((mapping, role) => {
+          const value = aggregateMode ? request.claudeModels[role] : "";
+          if (ids.some(id => aggregates.find(model => model.id === id)?.publicModelId === value)) mapping[role] = value;
+          return mapping;
+        }, emptyRoles()) } : {}),
+      aggregateIngressProtocol: isClaude ? "anthropicMessages" : request.aggregateIngressProtocol ?? "responses",
+      modelSelection: { defaultTarget: { kind: "aggregate", aggregateId }, availableTargets: ids.map(id => ({ kind: "aggregate", aggregateId: id })) } });
+  };
+  const toggleAggregate = (id: string) => {
+    const ids = aggregateIds.includes(id) ? aggregateIds.filter(value => value !== id) : [...aggregateIds, id];
+    if (isClaude || aggregateMode && defaultTarget?.kind === "aggregate" && !ids.includes(defaultTarget.aggregateId)) {
+      if (ids.length) chooseAggregate(defaultTarget?.kind === "aggregate" && ids.includes(defaultTarget.aggregateId) ? defaultTarget.aggregateId : ids[0], ids);
+      else update({ modelSelection: undefined, providerId: "", model: "", claudeModelIds: undefined });
+    } else update({ modelSelection: { defaultTarget: defaultTarget ?? { kind: "provider", providerId: request.providerId, modelId: request.model },
+      availableTargets: ids.map(aggregateId => ({ kind: "aggregate", aggregateId })) } });
   };
   const chooseDefault = (next: NewApiProvider | undefined, model?: string) => {
     const sameProvider = next?.id === request.providerId;
@@ -124,6 +167,8 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
       : isClaude ? nextModels : next ? modelIdsForProvider(next) : [];
     const id = model ?? (sameProvider && available.includes(request.model) ? request.model : available[0]) ?? "";
     return { providerId: next?.id ?? "", model: id, ...clientDefaults(next, id),
+      modelSelection: isClaude ? undefined : { defaultTarget: { kind: "provider", providerId: next?.id ?? "", modelId: id } as ModelTargetRef,
+        availableTargets: aggregateIds.map(aggregateId => ({ kind: "aggregate", aggregateId }) as ModelTargetRef) },
       claudeModelIds: isClaude ? (sameProvider ? request.claudeModelIds : undefined) : undefined,
       claudeModels: next?.id === request.providerId ? request.claudeModels : emptyRoles() };
   };
@@ -163,7 +208,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
     }, emptyRoles());
     const droppedSelections = isClaude && (request.claudeModelIds ?? []).some(id => !nextModels.includes(id));
     const ids = isClaude ? [] : request.providerIds.filter(id => eligible.some(p => p.id === id));
-    update({ accessMode, providerId: next?.id ?? "", model,
+    update({ accessMode, modelSelection: undefined, providerId: next?.id ?? "", model,
       providerIds: Array.from(new Set([...ids, ...(next ? [next.id] : [])])),
       providerModelIds: isClaude ? undefined : Object.fromEntries(eligible.map(p => [
         p.id, selectedProviderModels(p, nextProtocols, request.providerModelIds?.[p.id]),
@@ -182,16 +227,23 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
     }
     const primary = compatible.find(p => p.id === request.providerId && ids.includes(p.id))
       ?? compatible.find(p => ids.includes(p.id));
-    update({ providerIds: ids, providerModelIds, ...(primary?.id !== request.providerId ? chooseDefault(primary) : {}) });
+    // An aggregate selection is an explicit default. Adding/removing ordinary
+    // provider subsets must not silently replace it with the first provider.
+    if (aggregateMode) {
+      update({ providerIds: ids, providerModelIds });
+    } else {
+      update({ providerIds: ids, providerModelIds, ...(primary?.id !== request.providerId ? chooseDefault(primary) : {}) });
+    }
   };
   const saveClaudeProfile = () => {
-    const name = profileName.trim() || provider?.name || request.providerId;
-    if (!provider || !modelCompatible) return;
+    const name = profileName.trim() || defaultAggregate?.displayName || provider?.name || request.providerId;
+    if (!modelCompatible) return;
     const profile: ClaudeConfigProfile = {
       id: crypto.randomUUID(), name,
-      request: { ...request, claudeModelIds: configuredModels, providerIds: [request.providerId], providerModelIds: undefined },
+      request: { ...request, claudeModelIds: configuredModels, providerIds: aggregateMode ? [] : [request.providerId], providerModelIds: undefined },
     };
-    const next = [...claudeProfiles.filter(item => !(item.name === name && item.request.providerId === request.providerId)), profile];
+    const next = [...claudeProfiles.filter(item => !(item.name === name && item.request.providerId === request.providerId
+      && JSON.stringify(item.request.modelSelection?.defaultTarget) === JSON.stringify(request.modelSelection?.defaultTarget))), profile];
     try {
       localStorage.setItem(CLAUDE_PROFILES_KEY, JSON.stringify(next));
       setClaudeProfiles(next);
@@ -223,6 +275,20 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
     if (busy) return;
     const profile = claudeProfiles.find(item => item.id === id);
     if (!profile) return;
+    if (profile.request.modelSelection?.defaultTarget?.kind === "aggregate") {
+      const selection = profile.request.modelSelection;
+      const chosen = selection.availableTargets.flatMap(target => target.kind === "aggregate" ? [aggregates.find(model => model.id === target.aggregateId && model.available)] : []);
+      const ids = chosen.flatMap(model => model ? [model.publicModelId] : []);
+      if (chosen.some(model => !model) || !ids.includes(profile.request.model) || roles.some(role => profile.request.claudeModels[role] && !ids.includes(profile.request.claudeModels[role]))) {
+        setError("clients.errors.profileModelsUnavailable"); return;
+      }
+      const restored = { ...profile.request, accessMode: "router" as const, providerId: "", providerIds: [], claudeModelIds: ids };
+      setRequest(restored); setProfileName(profile.name); setPreview(null); setBusy(true); setError(null);
+      try { setPreview(await api.targets.previewConfig(restored, client.conflict)); }
+      catch (cause) { setError(clientErrorKey(cause)); }
+      finally { setBusy(false); }
+      return;
+    }
     const accessMode = profile.request.accessMode === "router" ? "router" : "native";
     const profileProtocols = clientProtocols(client, accessMode);
     const nextProvider = providers.find(item => item.id === profile.request.providerId && !exclusionOf(item, profileProtocols));
@@ -273,6 +339,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
   };
   const run = async () => {
     if (busy) return;
+    if (aggregateUnavailable || aggregateMode && request.accessMode !== "router") { setError("clients.errors.provider"); return; }
     if ((isClaude && configuredModels.length === 0)
       || (client.targetId === "opencode" && selected.some(entry => modelIdsForProvider(entry).length === 0))) {
       setError("clients.errors.modelSelection"); return;
@@ -301,7 +368,11 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
     setBusy(true);
     setError(null);
     try {
-      const configuredRequest = isClaude ? { ...request, claudeModelIds: configuredModels } : { ...request, providerModelIds: Object.fromEntries(
+      const availableTargets: ModelTargetRef[] = [...selected.flatMap(entry => modelIdsForProvider(entry).map(modelId => ({ kind: "provider" as const, providerId: entry.id, modelId }))),
+        ...aggregateIds.map(aggregateId => ({ kind: "aggregate" as const, aggregateId }))];
+      const configuredRequest = isClaude ? { ...request, claudeModelIds: configuredModels } : { ...request,
+        modelSelection: aggregateIds.length ? { defaultTarget: aggregateMode ? defaultTarget : { kind: "provider" as const, providerId: request.providerId, modelId: request.model }, availableTargets } : undefined,
+        providerModelIds: Object.fromEntries(
         selected.map(entry => [entry.id, modelIdsForProvider(entry)]),
       ) };
       if (preview) {
@@ -340,7 +411,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
                 : <span className="min-w-0 flex-1 text-sm text-muted-foreground">{t("clients.noSavedProfiles")}</span>}
               {claudeProfiles.length > 0 ? <Select disabled={busy} value="" onValueChange={value => void loadClaudeProfile(value)}>
                 <SelectTrigger id="claude-saved-profile" className="h-9 min-w-44 flex-1"><SelectValue placeholder={t("clients.selectSavedProfile")} /></SelectTrigger>
-                <SelectContent>{claudeProfiles.map(item => <SelectItem key={item.id} value={item.id}>{item.name} · {providers.find(p => p.id === item.request.providerId)?.name ?? item.request.providerId}</SelectItem>)}</SelectContent>
+                <SelectContent>{claudeProfiles.map(item => <SelectItem key={item.id} value={item.id}>{item.name} · {profileTargetLabel(item)}</SelectItem>)}</SelectContent>
               </Select> : null}
               <Button type="button" size="sm" variant="ghost" disabled={busy || (!editingProfile && !modelCompatible)}
                 aria-expanded={editingProfile} aria-controls="claude-profile-editor" onClick={() => setEditingProfile(value => !value)}>
@@ -352,8 +423,8 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
               </Button>}
             </div>
             {editingProfile && <div id="claude-profile-editor" className="flex flex-wrap gap-2 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-150">
-              <Input aria-label={t("clients.profileName")} placeholder={provider?.name ?? t("clients.profileName")} value={profileName}
-                onChange={event => setProfileName(event.target.value)} disabled={busy || !provider} className="h-9 min-w-40 flex-1" />
+              <Input aria-label={t("clients.profileName")} placeholder={defaultAggregate?.displayName ?? provider?.name ?? t("clients.profileName")} value={profileName}
+                onChange={event => setProfileName(event.target.value)} disabled={busy || !modelCompatible} className="h-9 min-w-40 flex-1" />
               <Button type="button" size="sm" variant="outline" disabled={busy || !modelCompatible} onClick={saveClaudeProfile}>
                 {t("clients.confirmSaveProfile")}
               </Button>
@@ -361,8 +432,8 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
             {managingProfiles && <ul id="claude-profile-management" className="space-y-1 rounded-lg border bg-muted/20 p-2 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-150">
               {claudeProfiles.map(item => <li key={item.id} className="flex min-w-0 items-center gap-2 px-1 py-1">
                 <span className="min-w-0 flex-1 truncate text-sm" title={item.name}>{item.name}</span>
-                <span className="max-w-[40%] truncate text-xs text-muted-foreground" title={providers.find(p => p.id === item.request.providerId)?.name ?? item.request.providerId}>
-                  {providers.find(p => p.id === item.request.providerId)?.name ?? item.request.providerId}
+                <span className="max-w-[40%] truncate text-xs text-muted-foreground" title={profileTargetLabel(item)}>
+                  {profileTargetLabel(item)}
                 </span>
                 <Button type="button" size="icon-sm" variant="ghost" disabled={busy}
                   aria-label={t("clients.deleteProfile", { name: item.name })} onClick={() => deleteClaudeProfile(item.id)}>
@@ -376,6 +447,22 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
               variant={request.accessMode === mode ? "secondary" : "ghost"} aria-pressed={request.accessMode === mode}
               disabled={busy} onClick={() => changeMode(mode)}>{t("clients.access" + (mode === "native" ? "Native" : "Router"))}</Button>)}
           </div>
+          {request.accessMode === "router" && <section className="space-y-2" aria-label={t("aggregation.title")}>
+            <p className="text-sm font-medium">{t("aggregation.title")}</p>
+            <div className="grid max-h-48 gap-2 overflow-y-auto sm:grid-cols-2">{aggregates.map(entry => <label key={entry.id}
+              className={"flex min-w-0 items-center gap-3 rounded-lg border p-3 " + (aggregateIds.includes(entry.id) ? "border-primary/50 bg-primary/5" : "bg-card/60")}>
+              <input type="checkbox" checked={aggregateIds.includes(entry.id)} disabled={busy || !entry.available && !aggregateIds.includes(entry.id)}
+                aria-label={t("clients.includeModel", { model: entry.displayName })} onChange={() => toggleAggregate(entry.id)} className="h-4 w-4 shrink-0 accent-primary" />
+              <span className="min-w-0"><span className="block truncate text-sm font-medium">{entry.displayName}</span>
+                <span className="block break-all text-xs text-muted-foreground">{entry.publicModelId}</span></span>
+            </label>)}</div>
+            {aggregateUnavailable && <p role="alert" className="text-xs text-destructive">{t("aggregation.targetUnavailable")}</p>}
+            {!isClaude && aggregateIds.length > 0 && <div className="space-y-1.5"><Label htmlFor="client-aggregate-protocol">{t("aggregation.ingress")}</Label>
+              <Select value={request.aggregateIngressProtocol ?? "responses"} onValueChange={value => update({ aggregateIngressProtocol: value as ClientConfigRequest["aggregateIngressProtocol"] })}>
+                <SelectTrigger id="client-aggregate-protocol"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="responses">Responses</SelectItem>
+                  <SelectItem value="anthropicMessages">Messages</SelectItem></SelectContent></Select>
+            </div>}
+          </section>}
           <div className="space-y-2">
             <p id="client-provider-label" className="text-sm font-medium">{t(isClaude ? "clients.provider" : "clients.providers")}</p>
             <div className="grid max-h-56 gap-2 overflow-y-auto sm:grid-cols-2" aria-labelledby="client-provider-label">
@@ -427,12 +514,25 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
               </details>;
             })}</div>
           </section>}
-          {isClaude && <ClaudeModelConfig key={request.providerId + ":" + request.accessMode}
+          {isClaude && !aggregateMode && <ClaudeModelConfig key={request.providerId + ":" + request.accessMode}
             provider={provider} models={models} selected={configuredModels} mapping={request.claudeModels}
             defaultModel={request.model} disabled={busy} oneM={claudeOneMDefaults(request.claudeOneM)}
             clientVersion={client.clientVersion}
             onSelectedChange={selectClaudeModels} onMappingChange={claudeModels => update({ claudeModels })}
             onOneMChange={claudeOneM => update({ claudeOneM })} />}
+          {isClaude && aggregateMode && <div className="grid gap-3 sm:grid-cols-2" data-aggregate-claude-roles>{roles.map(role => {
+            const id = `aggregate-claude-${role}`;
+            const chosen = request.claudeModels[role] || request.model;
+            const oneM = claudeOneMDefaults(request.claudeOneM);
+            return <div key={role} className="space-y-1.5"><Label htmlFor={id}>{role}</Label>
+              <Select value={request.claudeModels[role] || "__default__"} onValueChange={value => update({ claudeModels: { ...request.claudeModels, [role]: value === "__default__" ? "" : value } })}>
+                <SelectTrigger id={id}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__default__">{t("aggregation.followDefault")}</SelectItem>
+                  {selectedAggregates.map(model => <SelectItem key={model.id} value={model.publicModelId}>{model.displayName}</SelectItem>)}
+                </SelectContent></Select>
+              <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={oneM[role]} disabled={!oneM[role] && !aggregateOneM(chosen)}
+                onChange={event => update({ claudeOneM: { ...oneM, [role]: event.target.checked } })} />1M</label>
+            </div>;
+          })}</div>}
           {client.targetId === "opencode" && staleOpenCodeModelSelection &&
             <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
               {t("clients.staleOpenCodeModels")}
@@ -440,19 +540,25 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
           {isClaude && staleClaudeModelSelection && (() => {
             const stale = (request.claudeModelIds ?? []).filter(id => !models.includes(id));
             return <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
-              {t("clients.staleClaudeModels", { models: stale.map(id => modelLabel(provider, id)).join(" · ") })}
+              {t("clients.staleClaudeModels", { models: stale.map(id => provider ? modelLabel(provider, id) : id).join(" · ") })}
             </p>;
           })()}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between gap-2"><Label htmlFor="client-model">{t(isClaude ? "clients.startupModel" : "clients.model")}</Label>
               {selectedProtocol && <Badge variant="outline" className="text-[10px]">{t("newapi.protocol" + (selectedProtocol === "responses" ? "Responses" : selectedProtocol === "chatCompletions" ? "ChatCompletions" : "AnthropicMessages"))}</Badge>}
             </div>
-            <Select disabled={busy || selected.length === 0} value={modelCompatible ? JSON.stringify([request.providerId, request.model]) : ""}
-              onValueChange={value => { const [id, model] = JSON.parse(value) as [string, string]; update(chooseDefault(selected.find(p => p.id === id), model)); }}>
+            <Select disabled={busy || selected.length + selectedAggregates.length === 0} value={modelCompatible ? JSON.stringify([aggregateMode && defaultTarget?.kind === "aggregate" ? "aggregate:" + defaultTarget.aggregateId : request.providerId, request.model]) : ""}
+              onValueChange={value => { const [id, model] = JSON.parse(value) as [string, string];
+                if (id.startsWith("aggregate:")) chooseAggregate(id.slice("aggregate:".length));
+                else update(chooseDefault(selected.find(p => p.id === id), model)); }}>
               <SelectTrigger id="client-model"><SelectValue placeholder={t("clients.selectModel")} /></SelectTrigger>
               <SelectContent>{selected.flatMap(p => (isClaude ? configuredModels : modelIdsForProvider(p)).map(id => <SelectItem key={JSON.stringify([p.id, id])} value={JSON.stringify([p.id, id])}>
                 {(!isClaude && selected.length > 1 ? p.name + " / " : "") + modelLabel(p, id)}
-              </SelectItem>))}</SelectContent>
+              </SelectItem>))}
+                {selectedAggregates.map(model => <SelectItem key={model.id} value={JSON.stringify(["aggregate:" + model.id, model.publicModelId])}>
+                  {t("aggregation.target")} / {model.displayName}
+                </SelectItem>)}
+              </SelectContent>
             </Select>
             {isClaude && <label className="flex items-center gap-2 pt-1 text-xs text-muted-foreground"
               title={startupOneMUnavailable ? t("clients.oneMUnavailable") : undefined}>
@@ -503,7 +609,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
         {error && <p role="alert" className="text-sm text-destructive">{t(error)}</p>}
         </div>
         <DialogFooter className="shrink-0 gap-2 sm:gap-0"><Button variant="outline" onClick={onClose} disabled={busy}>{t("common.cancel")}</Button>
-          <Button disabled={busy || !modelCompatible || selected.length === 0} onClick={() => void run()}>
+          <Button disabled={busy || !modelCompatible || aggregateUnavailable || selected.length + selectedAggregates.length === 0} onClick={() => void run()}>
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}{t(preview ? client.conflict ? "clients.applyConflict" : "clients.apply" : "clients.preview")}
           </Button>
         </DialogFooter>

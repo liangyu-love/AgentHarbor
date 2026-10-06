@@ -17,7 +17,6 @@ import { formatInvokeError } from "@/lib/invoke-error";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { CompressionPolicy, NewApiProvider } from "@/types/newapi";
@@ -49,9 +48,7 @@ function Parameters({
 }
 
 export function RoutingDiagnostics({
-  failover,
   disabled,
-  onFailover,
   compression,
   onCompression,
   webSearchProviderId,
@@ -59,9 +56,7 @@ export function RoutingDiagnostics({
   searchDisabled,
   onWebSearchProvider,
 }: {
-  failover: boolean;
   disabled: boolean;
-  onFailover: (enabled: boolean) => void;
   compression: CompressionPolicy;
   onCompression: (policy: CompressionPolicy) => void;
   webSearchProviderId: string | null;
@@ -195,21 +190,8 @@ export function RoutingDiagnostics({
             )}
           </label>
 
-          <label className="flex items-center gap-2.5 rounded-xl border border-border/60 bg-muted/30 px-3 py-1.5 text-xs font-medium cursor-pointer hover:bg-muted/50 transition-colors">
-            <Switch
-              checked={failover}
-              disabled={disabled}
-              onCheckedChange={onFailover}
-              aria-label={t("newapi.sameModelFailover")}
-            />
-            <span className="text-foreground">{t("newapi.sameModelFailover")}</span>
-          </label>
         </div>
       </div>
-
-      <p className="mt-2 text-xs text-muted-foreground/80 leading-relaxed px-2">
-        {t("newapi.failoverRules")}
-      </p>
 
       <p className="mt-1 text-xs text-muted-foreground/80 leading-relaxed px-2">
         {t("newapi.compression.description")}
@@ -395,6 +377,15 @@ export function RoutingDiagnostics({
                               { defaultValue: attempt.modelObservation.unknownReason })}</p>}
                             {attempt.modelObservation?.conflictingModel && <p className="break-all">{t("newapi.traceConflictingModel")}: {attempt.modelObservation.conflictingModel}</p>}
                             <p>{t("newapi.traceSelectionReason." + attempt.selectionReason, { defaultValue: attempt.selectionReason })}</p>
+                            {attempt.aggregateId && <p className="break-all font-mono">
+                              {t("newapi.traceAggregate")}: {attempt.aggregateId.slice(0, 8)}
+                              {attempt.memberId && ` · ${t("newapi.traceMember")}: ${attempt.memberId.slice(0, 8)}`}
+                            </p>}
+                            {attempt.configuredProtocol && <p>
+                              {t("newapi.traceProtocolPlan")}: {attempt.configuredProtocol} → {attempt.effectiveProtocol ?? attempt.protocol}
+                              {attempt.compatibilityPlan && ` · ${t("newapi.traceCompatibility." + attempt.compatibilityPlan, { defaultValue: attempt.compatibilityPlan })}`}
+                            </p>}
+                            {attempt.retryReason && <p>{t("newapi.traceRetryReason." + attempt.retryReason, { defaultValue: attempt.retryReason })}</p>}
                             <p className="font-mono">{t("newapi.traceAttemptId")}: {attempt.attemptId?.slice(0, 8) ?? "—"}</p>
                             <p>{t("newapi.traceCredential")}: {t("newapi.traceCredentialStatus." + (attempt.credential?.status ?? "not_recorded"))}
                               {attempt.credential?.versionFingerprint && ` · ${t("newapi.traceCredentialVersion")} ${attempt.credential.versionFingerprint.slice(0, 12)}`}

@@ -136,6 +136,7 @@ async fn reconcile_on_startup_at(
 pub async fn reconcile(paths: &CodexPaths) -> Result<(), String> {
     prune_preview_listeners();
     let store = router::load_store(paths)?;
+    super::aggregation::reconcile_runtime(&store);
     let manager = claude_desktop::Manager::new(&paths.app_data_dir);
     if let Err(error) = manager.cleanup_previews() {
         log::warn!("Claude Desktop preview cleanup failed: {}", error.message);
@@ -163,6 +164,7 @@ fn needs_server(
     desktop_required: bool,
 ) -> bool {
     desktop_required
+        || store.router.aggregate_external_enabled
         || other_clients_active
         || (store.router.enabled
             && codex_route_active

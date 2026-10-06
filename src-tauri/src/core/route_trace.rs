@@ -32,7 +32,19 @@ pub struct Attempt {
     pub pricing_status: String,
     pub pricing_source: String,
     pub selection_reason: String,
-    pub failover_reason: Option<String>,
+    pub retry_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aggregate_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route_revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub member_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub configured_protocol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_protocol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compatibility_plan: Option<String>,
     pub credential: CredentialSnapshot,
     pub model_observation: ServedModelObservation,
     #[serde(skip)]
@@ -50,7 +62,7 @@ pub struct AttemptMetadata {
     pub pricing_status: String,
     pub pricing_source: String,
     pub selection_reason: String,
-    pub failover_reason: Option<String>,
+    pub retry_reason: Option<String>,
 }
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -66,6 +78,7 @@ pub struct Route {
     pub route_revision: Option<u64>,
     pub requested: Value,
     pub attempts: Vec<Attempt>,
+    pub skipped_members: Vec<SkippedMember>,
     pub stage: String,
     pub done: bool,
     pub status: Option<u16>,
@@ -73,6 +86,12 @@ pub struct Route {
     pub error: Option<String>,
     pub duration_ms: u64,
     pub first_token_ms: Option<u64>,
+}
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedMember {
+    pub member_id: String,
+    pub reason: String,
 }
 fn routes() -> &'static Mutex<VecDeque<Route>> {
     static ROUTES: OnceLock<Mutex<VecDeque<Route>>> = OnceLock::new();
@@ -211,6 +230,7 @@ impl Trace {
             route_revision: None,
             requested: metadata_parameters(&raw),
             attempts: vec![],
+            skipped_members: vec![],
             stage: "route".into(),
             done: false,
             status: None,
@@ -275,7 +295,13 @@ impl Trace {
                 pricing_status: metadata.pricing_status,
                 pricing_source: metadata.pricing_source,
                 selection_reason: metadata.selection_reason,
-                failover_reason: metadata.failover_reason,
+                retry_reason: metadata.retry_reason,
+                aggregate_id: None,
+                route_revision: None,
+                member_id: None,
+                configured_protocol: None,
+                effective_protocol: None,
+                compatibility_plan: None,
                 credential: CredentialSnapshot::not_sent(),
                 model_observation: ServedModelObservation {
                     model_match_status: "unknown".into(),
@@ -293,6 +319,36 @@ impl Trace {
                 a.sent = parameters(body);
                 a.credential = credential;
                 a.model_observation.unknown_reason = Some("response_not_received".into());
+            }
+        });
+    }
+    pub fn aggregate_attempt(
+        &self,
+        aggregate_id: &str,
+        member_id: &str,
+        revision: &str,
+        configured: &str,
+        effective: &str,
+        compatibility: Option<&str>,
+    ) {
+        self.update(|route| {
+            if let Some(attempt) = route.attempts.last_mut() {
+                attempt.aggregate_id = Some(label(aggregate_id));
+                attempt.route_revision = Some(label(revision));
+                attempt.member_id = Some(label(member_id));
+                attempt.configured_protocol = Some(label(configured));
+                attempt.effective_protocol = Some(label(effective));
+                attempt.compatibility_plan = compatibility.map(label);
+            }
+        });
+    }
+    pub fn skip_member(&self, member_id: &str, reason: &str) {
+        self.update(|route| {
+            if route.skipped_members.len() < 64 {
+                route.skipped_members.push(SkippedMember {
+                    member_id: label(member_id),
+                    reason: label(reason),
+                });
             }
         });
     }

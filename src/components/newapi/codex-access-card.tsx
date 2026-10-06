@@ -1,4 +1,6 @@
 import { useTranslation } from "react-i18next";
+import { useQuery } from "@tanstack/react-query";
+import { aggregationQueryKey } from "@/types/aggregation";
 import { CircleHelp, Loader2, RefreshCw, Settings2, Sparkles } from "lucide-react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -28,6 +30,10 @@ export function CodexAccessCard({ store, providers, selectedProvider, nativeComp
   const accessMode = router?.accessMode ?? "router";
   const nativeAccess = accessMode === "native";
   const configDrifted = !!router?.configDrifted;
+  const aggregates = useQuery({ queryKey: aggregationQueryKey, queryFn: api.aggregation.state });
+  const aggregate = aggregates.data?.models.find(model => model.id === router?.aggregateModelId);
+  const aggregateSelected = router?.aggregateModelId != null;
+  const aggregateAvailable = !!aggregate?.available;
 
   return (
       <AuroraCard
@@ -69,7 +75,9 @@ export function CodexAccessCard({ store, providers, selectedProvider, nativeComp
               <Switch
                 aria-label={t("newapi.codexAccess")}
                 checked={routingEnabled}
-                disabled={mutationLocked || (!routingEnabled && (providers.length === 0 || (nativeAccess && !nativeCompatible)))}
+                disabled={mutationLocked || (!routingEnabled && (aggregateSelected
+                  ? !aggregateAvailable
+                  : providers.length === 0 || (nativeAccess && !nativeCompatible)))}
                 onCheckedChange={value =>
                   void run("routing", async () => {
                     const change = await api.routing.setEnabled(value);
@@ -93,10 +101,10 @@ export function CodexAccessCard({ store, providers, selectedProvider, nativeComp
                 <SelectTrigger id="codex-access-mode" className="w-full sm:max-w-xs bg-background/80"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="router">{t("newapi.accessRouter")}</SelectItem>
-                  <SelectItem value="native" disabled={!nativeCompatible}>{t("newapi.accessNative")}</SelectItem>
+                  <SelectItem value="native" disabled={!nativeCompatible || !!router?.aggregateModelId}>{t("newapi.accessNative")}</SelectItem>
                 </SelectContent>
               </Select>
-              {selectedProvider && (
+              {!aggregate && selectedProvider && (
                 <div className="text-xs text-muted-foreground truncate">
                   {t("newapi.accessSelectedModel", { provider: selectedProvider.name, model: selectedProvider.model, protocol: t(protocolBadgeKey[providerModelProtocol(selectedProvider)]) })}
                 </div>
@@ -106,6 +114,21 @@ export function CodexAccessCard({ store, providers, selectedProvider, nativeComp
             {nativeAccess && <p className="text-xs leading-relaxed text-muted-foreground">{t("newapi.nativeAuthHint")}</p>}
             <p className="text-xs leading-relaxed text-muted-foreground">{t(nativeAccess ? "newapi.nativeNetworkHint" : "newapi.routerNetworkHint")}</p>
           </div>
+          {!nativeAccess && <div className="mt-3 space-y-1.5">
+            <Label htmlFor="codex-aggregate-model">{t("aggregation.codexTarget")}</Label>
+            <Select value={router?.aggregateModelId ?? "__single__"} disabled={mutationLocked || aggregates.isPending}
+              onValueChange={value => void run("aggregate-target", async () => {
+                applyChange(await api.aggregation.selectCodex(value === "__single__" ? null : value));
+              }, t("newapi.routingFailed"))}>
+              <SelectTrigger id="codex-aggregate-model"><SelectValue /></SelectTrigger>
+              <SelectContent><SelectItem value="__single__">{t("aggregation.singleChannel")}</SelectItem>
+                {router?.aggregateModelId && !aggregate && <SelectItem value={router.aggregateModelId} disabled>{t("aggregation.unavailable")}</SelectItem>}
+                {(aggregates.data?.models ?? []).map(model => <SelectItem key={model.id} value={model.id} disabled={!model.available}>
+                  {model.displayName} · {model.publicModelId}
+                </SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>}
           <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
             {t(routingEnabled ? (nativeAccess ? "newapi.nativeOnHint" : "newapi.routingOnHint") : "newapi.routingOffHint")}
           </p>

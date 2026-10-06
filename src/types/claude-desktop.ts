@@ -35,6 +35,7 @@ export interface ClaudeDesktopRouteRoleView {
 }
 
 export interface ClaudeDesktopRouteChoice extends ClaudeDesktopRouteRoleView {
+  targetRef?: import("./aggregation").ModelTargetRef;
   providerId: string;
   modelId: string;
   labelOverride?: string | null;
@@ -42,6 +43,7 @@ export interface ClaudeDesktopRouteChoice extends ClaudeDesktopRouteRoleView {
 }
 
 export interface ClaudeDesktopRouteView extends ClaudeDesktopRouteRoleView {
+  targetRef?: import("./aggregation").ModelTargetRef;
   providerId: string;
   providerName: string;
   modelId: string;
@@ -130,6 +132,7 @@ export interface ClaudeDesktopProviderCandidate {
 }
 
 export interface ClaudeDesktopCandidates {
+  routeAggregates?: ClaudeDesktopAggregateCandidate[];
   paths: ClaudeDesktopPathsSummary | null;
   /** 多渠道候选；由用户明确选择，不按字典序自动挑。 */
   pathCandidates: ClaudeDesktopPathCandidate[];
@@ -139,6 +142,11 @@ export interface ClaudeDesktopCandidates {
   routeProviders?: ClaudeDesktopProviderCandidate[];
   routeRoles?: ClaudeDesktopRouteRoleView[];
   selectedProviderId: string | null;
+}
+
+export interface ClaudeDesktopAggregateCandidate {
+  aggregateId: string; name: string; enabled: boolean; eligible: boolean; reason: string | null;
+  model: ClaudeDesktopModelCandidate;
 }
 
 export interface ClaudeDesktopManagedModel {

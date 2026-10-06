@@ -124,14 +124,17 @@ impl ClientAdapter for OpenCode {
             .iter()
             .filter(|p| {
                 p.has_route_credentials()
-                    && if request.options.provider_ids.is_empty() {
+                    && if request.options.model_selection.is_some() {
+                        request.options.provider_ids.contains(&p.id)
+                    } else if request.options.provider_ids.is_empty() {
                         request.needs_router() || p.id == request.provider_id
                     } else {
                         request.options.provider_ids.contains(&p.id)
                     }
             })
             .collect();
-        if !providers.iter().any(|p| p.id == request.provider_id)
+        if (request.aggregate_target().is_none()
+            && !providers.iter().any(|p| p.id == request.provider_id))
             || request
                 .options
                 .provider_ids
@@ -249,12 +252,88 @@ impl ClientAdapter for OpenCode {
                 }
             }
         }
-        let selected = selected_provider(store, request)?;
+        let aggregates = aggregate_models::models(store, request, catalog)?;
+        if !aggregates.is_empty() {
+            let protocol = request.aggregate_protocol();
+            let key = aggregate_provider_key(protocol)?;
+            let npm = match protocol {
+                ModelProtocol::Responses => "@ai-sdk/openai",
+                ModelProtocol::AnthropicMessages => "@ai-sdk/anthropic",
+                _ => return Err("clients.errors.protocol".into()),
+            };
+            let (base, credential) = aggregate_models::endpoint(store, true);
+            keys.push(json!(key));
+            edits.extend([
+                edit(&["provider", key, "name"], json!("AgentHarbor Aggregation")),
+                edit(&["provider", key, "npm"], json!(npm)),
+                edit(&["provider", key, "options", "baseURL"], json!(base)),
+                edit(&["provider", key, "options", "apiKey"], json!(credential)),
+                remove(&["provider", key, "options", "authToken"]),
+            ]);
+            if let Some(headers) = document["provider"][key]["options"].get("headers") {
+                for header in headers
+                    .as_object()
+                    .ok_or("clients.errors.invalidConfig")?
+                    .keys()
+                {
+                    if header.eq_ignore_ascii_case("authorization")
+                        || header.eq_ignore_ascii_case("x-api-key")
+                    {
+                        edits.push(remove(&["provider", key, "options", "headers", header]));
+                    }
+                }
+            }
+            for model in aggregates {
+                let selected = request.aggregate_target().is_some() && request.model == model.id;
+                let context = if selected {
+                    request
+                        .context_window
+                        .unwrap_or(model.projection.context_window)
+                } else {
+                    model.projection.context_window
+                };
+                let max_output = model
+                    .projection
+                    .output_limit
+                    .unwrap_or(context)
+                    .min(context);
+                let output = if selected {
+                    request.max_output_tokens.unwrap_or(max_output)
+                } else {
+                    max_output
+                };
+                if context > model.projection.context_window
+                    || output > max_output
+                    || output > context
+                {
+                    return Err("clients.errors.limits".into());
+                }
+                edits.extend([
+                    edit(
+                        &["provider", key, "models", &model.id, "name"],
+                        json!(model.label),
+                    ),
+                    edit(
+                        &["provider", key, "models", &model.id, "limit", "context"],
+                        json!(context),
+                    ),
+                    edit(
+                        &["provider", key, "models", &model.id, "limit", "output"],
+                        json!(output),
+                    ),
+                ]);
+            }
+        }
+        let default_key = if request.aggregate_target().is_some() {
+            aggregate_provider_key(request.aggregate_protocol())?.to_owned()
+        } else {
+            let selected = selected_provider(store, request)?;
+            provider_key(selected, selected.protocol_for_model(&request.model))
+        };
         edits.push(edit(
             &["model"],
             json!(format!(
-                "{}/{}",
-                provider_key(selected, selected.protocol_for_model(&request.model)),
+                "{}/{}", default_key,
                 request.model
             )),
         ));
@@ -281,5 +360,13 @@ impl ClientAdapter for OpenCode {
             ));
         }
         Ok(edits)
+    }
+}
+
+fn aggregate_provider_key(protocol: ModelProtocol) -> Result<&'static str, String> {
+    match protocol {
+        ModelProtocol::Responses => Ok("agentharbor_aggregate_responses"),
+        ModelProtocol::AnthropicMessages => Ok("agentharbor_aggregate_anthropic"),
+        _ => Err("clients.errors.protocol".into()),
     }
 }

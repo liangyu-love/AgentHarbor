@@ -1,4 +1,5 @@
 import type { ModelProtocol } from "./newapi";
+import type { ModelSelection } from "./aggregation";
 
 export type TargetId = "codex" | "claudeCode" | "opencode";
 export interface ClientStatus {
@@ -34,6 +35,8 @@ export interface ClaudeOneM {
   subagent: boolean;
 }
 export interface ClientConfigRequest {
+  modelSelection?: ModelSelection;
+  aggregateIngressProtocol?: ModelProtocol;
   targetId: TargetId;
   providerId: string;
   model: string;

@@ -340,6 +340,7 @@ impl Manager {
             providers: views,
             selected_provider_id: selected,
             route_providers: routes::candidates(store, &catalog),
+            route_aggregates: routes::aggregate_candidates(store, &catalog),
             route_roles: routes::roles(policy),
         })
     }

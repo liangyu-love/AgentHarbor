@@ -15,6 +15,7 @@ import { ClientConfigs } from "@/components/newapi/client-configs";
 import { ClaudeDesktopConfigCard } from "@/components/newapi/claude-desktop-config-card";
 import { CodexAccessCard } from "@/components/newapi/codex-access-card";
 import { RoutingDiagnostics } from "@/components/newapi/routing-diagnostics";
+import { AggregationManager } from "@/components/newapi/aggregation-manager";
 import { ModelCapabilities } from "@/components/newapi/model-capabilities";
 import { GroupAliasDialog } from "@/components/newapi/group-alias-dialog";
 import { RelayList } from "@/components/newapi/relay-list";
@@ -86,14 +87,15 @@ export function NewApiPage() {
 
       <ClaudeDesktopConfigCard providers={providers} />
 
-      <RoutingDiagnostics failover={router?.sameModelFailover ?? false} disabled={nativeAccess || !state.isSuccess || store.mutationLocked}
+      <AggregationManager providers={providers} />
+
+      <RoutingDiagnostics disabled={nativeAccess || !state.isSuccess || store.mutationLocked}
         webSearchProviderId={router?.webSearchProviderId ?? null}
         searchProviders={providers.filter(provider => provider.webSearchCapable)}
         searchDisabled={!state.isSuccess || store.mutationLocked}
         onWebSearchProvider={providerId => { void run("web-search-provider", async () => applyChange(await api.routing.setWebSearchProvider(providerId)), t("newapi.webSearchSaveFailed")); }}
         compression={state.data?.compression ?? { mode: "percent", percent: 90 }}
-        onCompression={policy => { void run("compression", async () => applyChange(await api.routing.setCompression(policy)), t("newapi.compression.saveFailed")); }}
-        onFailover={enabled => { void run("failover", async () => applyChange(await api.routing.setFailover(enabled)), t("newapi.traceSettingsFailed")); }} />
+        onCompression={policy => { void run("compression", async () => applyChange(await api.routing.setCompression(policy)), t("newapi.compression.saveFailed")); }} />
       <ModelCapabilities />
 
       <RelayList store={store} view={view} providers={providers}

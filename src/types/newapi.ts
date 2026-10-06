@@ -115,7 +115,7 @@ export interface ProviderProbeEvent {
 }
 export interface NewApiRouterView {
   enabled: boolean;
-  sameModelFailover?: boolean;
+  aggregateModelId?: string | null;
   webSearchProviderId?: string | null;
   accessMode: CodexAccessMode;
   accountless: boolean;
@@ -143,7 +143,13 @@ export interface RouteAttempt {
   pricingStatus: string;
   pricingSource: string;
   selectionReason: string;
-  failoverReason: string | null;
+  retryReason: string | null;
+  aggregateId?: string | null;
+  routeRevision?: string | null;
+  memberId?: string | null;
+  configuredProtocol?: string | null;
+  effectiveProtocol?: string | null;
+  compatibilityPlan?: string | null;
   credential: CredentialSnapshot;
   modelObservation: ServedModelObservation;
 }
@@ -174,6 +180,7 @@ export interface RouteDiagnostic {
   routeRevision?: number | null;
   requested: Record<string, string | number>;
   attempts: RouteAttempt[];
+  skippedMembers?: { memberId: string; reason: string }[];
   stage: string;
   done: boolean;
   status: number | null;

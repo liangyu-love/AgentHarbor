@@ -105,8 +105,12 @@ pub struct ActionRequest {
 pub struct DesktopRouteChoice {
     pub role: String,
     pub role_alias: String,
+    #[serde(default)]
     pub provider_id: String,
+    #[serde(default)]
     pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_ref: Option<crate::core::model_targets::ModelTargetRef>,
     #[serde(default)]
     pub label_override: Option<String>,
     pub one_m_mode: OneMMode,
@@ -135,6 +139,8 @@ pub struct DesktopRouteView {
     pub provider_id: String,
     pub provider_name: String,
     pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_ref: Option<crate::core::model_targets::ModelTargetRef>,
     pub label: String,
     pub one_m: bool,
     pub protocol: String,
@@ -296,7 +302,19 @@ pub struct DesktopCandidates {
     pub providers: Vec<ProviderCandidateView>,
     pub selected_provider_id: Option<String>,
     pub route_providers: Vec<ProviderCandidateView>,
+    pub route_aggregates: Vec<AggregateRouteCandidateView>,
     pub route_roles: Vec<DesktopRouteRole>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateRouteCandidateView {
+    pub aggregate_id: String,
+    pub name: String,
+    pub enabled: bool,
+    pub eligible: bool,
+    pub reason: Option<String>,
+    pub model: ModelCandidateView,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

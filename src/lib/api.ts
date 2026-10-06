@@ -113,7 +113,6 @@ const routingApi = {
   catalogStatus: () => invoke<import("@/types/newapi").ModelsDevCatalogStatus>("load_models_dev_status"),
   refreshCatalog: () =>
     invoke<import("@/types/newapi").ModelsDevCatalogStatus>("refresh_models_dev_catalog"),
-  setFailover: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_failover", { enabled }),
   setWebSearchProvider: (providerId: string | null) =>
     invoke<NewApiStateChange>("set_router_web_search_provider", { providerId }),
   setCompression: (policy: import("@/types/newapi").CompressionPolicy) =>
@@ -126,6 +125,17 @@ const routingApi = {
   setEnabled: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_smart_routing", { enabled }),
   setAccessMode: (mode: CodexAccessMode) => invoke<NewApiStateChange>("set_newapi_access_mode", { mode }),
   setAccountless: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_accountless", { enabled }),
+};
+
+const aggregationApi = {
+  state: () => invoke<import("@/types/aggregation").AggregationState>("load_aggregation_state"),
+  save: (model: import("@/types/aggregation").AggregateModel) => invoke<import("@/types/aggregation").AggregationState>("save_aggregate_model", { model }),
+  delete: (id: string) => invoke<import("@/types/aggregation").AggregationState>("delete_aggregate_model", { id }),
+  setExternalEnabled: (enabled: boolean) => invoke<import("@/types/aggregation").AggregationState>("set_aggregation_external_enabled", { enabled }),
+  selectCodex: (aggregateId: string | null) => invoke<NewApiStateChange>("select_codex_aggregate", { aggregateId }),
+  exportConnection: (request: { ingressProtocol: ModelProtocol; aggregateIds: string[]; selectedAggregateId: string | null;
+    consumerProfile: "generic" | "anthropicSdk" | "opencode"; revealCredential: boolean }) =>
+    invoke<import("@/types/aggregation").ConnectionExportResult>("export_aggregation_connection", request),
 };
 
 export interface SavedImagesPayload {
@@ -230,6 +240,7 @@ const accountsApi = {
 };
 
 export const api = {
+  aggregation: aggregationApi,
   providers: providersApi,
   routing: routingApi,
   claudeDesktop: claudeDesktopApi,

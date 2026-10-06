@@ -1,6 +1,9 @@
 use super::*;
 use std::{fs, path::Path};
 
+#[path = "router_aggregate_access_tests.rs"]
+mod aggregate_access_tests;
+
 #[test]
 fn accountless_can_be_selected_before_injection_without_changing_client_files() {
     let (_directory, paths) = fixture();

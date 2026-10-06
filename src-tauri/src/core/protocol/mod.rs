@@ -2,6 +2,7 @@
 //! Identical protocols pass through unchanged. Cross-protocol requests and
 //! replies share explicit adapters, including incremental streaming and tools.
 //! Only Responses callers use the continuation history store.
+pub mod adapters;
 mod anthropic;
 mod anthropic_sse;
 #[cfg(test)]
@@ -12,11 +13,12 @@ pub mod message_history;
 mod reasoning;
 mod responses;
 mod sse;
-pub(crate) mod web_search;
 pub mod tool_namespaces;
+mod types;
+pub(crate) mod web_search;
 
-use crate::core::router::ModelProtocol;
 use serde_json::Value;
+pub use types::{ModelProtocol, ProtocolError, ProtocolErrorKind};
 
 pub use responses::is_responses_body;
 
@@ -29,7 +31,8 @@ pub struct ResponseOptions {
     pub search: Option<web_search::Search>,
 }
 
-pub fn response_body_with_options(translation: Translation, value: &Value, options: &ResponseOptions) -> Result<Value, String> {
+pub fn response_body_with_options(translation: Translation, value: &Value, options: &ResponseOptions,
+) -> Result<Value, String> {
     let canonical = canonical_response(translation, value)?;
     if translation.from == ModelProtocol::AnthropicMessages {
         anthropic::response_body_with_options(&canonical, options)
@@ -111,31 +114,27 @@ pub fn infer_protocol_from_models(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Translation {
     /// What the caller sent: Responses for Codex or Messages for Claude.
-    pub from: crate::core::router::ModelProtocol,
+    pub from: ModelProtocol,
     /// What the upstream provider expects.
-    pub to: crate::core::router::ModelProtocol,
+    pub to:ModelProtocol,
 }
 
 impl Translation {
     /// `None` when both sides already agree and bytes can pass through untouched.
     pub fn between(
-        from: crate::core::router::ModelProtocol,
-        to: crate::core::router::ModelProtocol,
-    ) -> Option<Self> {
+        from: ModelProtocol, to: ModelProtocol) -> Option<Self> {
         (from != to).then_some(Self { from, to })
     }
 
     /// True when a caller speaking `from` can reach an upstream speaking `to`,
     /// either directly or through a supported translation.
     pub fn can_serve(
-        from: crate::core::router::ModelProtocol,
-        to: crate::core::router::ModelProtocol,
-    ) -> bool {
+        from: ModelProtocol, to: ModelProtocol) -> bool {
         Self::between(from, to).map_or(true, Self::is_supported)
     }
 
     pub fn is_supported(self) -> bool {
-        use crate::core::router::ModelProtocol::*;
+        use ModelProtocol::*;
         matches!(
             (self.from, self.to),
             (Responses, ChatCompletions)
@@ -158,7 +157,7 @@ pub struct TranslatedRequest {
 }
 
 pub fn request_body(translation: Translation, value: &Value) -> Result<TranslatedRequest, String> {
-    use crate::core::router::ModelProtocol::*;
+    use ModelProtocol::*;
     match (translation.from, translation.to) {
         (Responses, ChatCompletions) | (Responses, AnthropicMessages) => {
             let input = history::input_for_request(value)?;
@@ -267,7 +266,8 @@ pub fn stream_translator(translation: Translation) -> StreamTranslator {
     stream_translator_with_options(translation, ResponseOptions::default())
 }
 
-pub fn stream_translator_with_options(translation: Translation, options: ResponseOptions) -> StreamTranslator {
+pub fn stream_translator_with_options(translation: Translation, options: ResponseOptions,
+) -> StreamTranslator {
     StreamTranslator {
         responses: (translation.from == ModelProtocol::Responses)
             .then(|| sse::StreamTranslator::new(translation)),

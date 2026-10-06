@@ -29,6 +29,7 @@ fn choices() -> Vec<DesktopRouteChoice> {
     .into_iter()
     .enumerate()
     .map(|(i, (role, alias))| DesktopRouteChoice {
+        target_ref: None,
         role: role.into(),
         role_alias: alias.into(),
         provider_id: format!("desktop{i}"),
@@ -95,7 +96,7 @@ fn hosted_search_reaches_responses_through_both_messages_ingresses_and_replays_h
         const REPLY: &str = r#"{"object":"response","id":"resp-search","status":"completed","model":"fixture-model","output":[{"type":"web_search_call","id":"ws1","status":"completed","action":{"type":"search","query":"Rust","sources":[{"type":"url","url":"https://rust-lang.org"}]}},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Rust answer","annotations":[{"type":"url_citation","url":"https://rust-lang.org","title":"Rust","start_index":0,"end_index":4}]}]}],"usage":{"input_tokens":3,"output_tokens":4}}"#;
         let stream = format!("data: {{\"type\":\"response.completed\",\"response\":{REPLY}}}\n\n");
         for streaming in [false, true] {
-            let (url, calls, captured, server) = failover_tests::mock(200, if streaming { stream.clone() } else { REPLY.to_owned() }, if streaming { "text/event-stream" } else { "application/json" }).await;
+            let (url, calls, captured, server) = routing_safety_tests::mock(200, if streaming { stream.clone() } else { REPLY.to_owned() }, if streaming { "text/event-stream" } else { "application/json" }).await;
             let temp = tempfile::tempdir().unwrap();
             let paths = CodexPaths::from_home(temp.path().join("codex"));
             std::fs::create_dir_all(&paths.app_data_dir).unwrap();
@@ -222,7 +223,7 @@ fn desktop_namespace_routes_three_protocols_tools_and_actual_model_accounting() 
                 overrides:ModelOverrides { price:if i == 0 {Some(PriceOverrides {input:Some(0.0),output:Some(0.0),..Default::default()})}
                     else if i == 2 {Some(PriceOverrides {input:Some(4.0),output:Some(20.0),cache_read:Some(0.4),cache_write:Some(5.0)})} else {None}, ..Default::default() }, ..Default::default() }],
             ..Default::default()
-        }).collect(), router:RouterSettings {bearer_token:"router-fixture".into(), same_model_failover:true, ..Default::default()}, ..Default::default() };
+        }).collect(), router:RouterSettings {bearer_token:"router-fixture".into(), ..Default::default()}, ..Default::default() };
         write_store(&paths,&store);
         let port = ensure_running(0,paths.clone(),ApiProxyConfigPayload::default()).await.unwrap();
         let _stop = Stop;
@@ -281,7 +282,6 @@ fn desktop_namespace_routes_three_protocols_tools_and_actual_model_accounting() 
                 }
             }
         }}}
-        assert!(!context_failover_seen(&paths), "Desktop must not touch Codex global seen/bindings");
         let usage = relay_usage::load(&paths.app_data_dir).unwrap();
         assert_eq!(usage.all_time.request_count,24);
         assert_eq!(usage.all_time.successful_count,24);
@@ -299,9 +299,34 @@ fn desktop_namespace_routes_three_protocols_tools_and_actual_model_accounting() 
             }
         }
         assert!(route_trace::recent().iter().any(|r| r.client_source.as_deref()==Some("claudeDesktop") && r.requested_model=="claude-opus-4-7" && r.resolved_model.as_deref()==Some("fixture-model") && r.attempts[0].upstream_model=="fixture-model"));
-        assert_eq!(client.post(format!("{base}/v1/messages")).bearer_auth("router-fixture")
-            .json(&json!({"model":"desktop0::fixture-model[1m]","max_tokens":128,"messages":[]})).send().await.unwrap().status(),StatusCode::BAD_REQUEST,
-            "cross-protocol 1M authorization applies only to the Desktop namespace");
+        // Ordinary Claude Code ingress uses the same capacity admission as
+        // Desktop. The marker and the stripped-marker beta spelling both work
+        // for all egress protocols, without sending Claude headers to OpenAI.
+        for (i, protocol) in protocols.into_iter().enumerate() { for beta_spelling in [false, true] {
+            let model = format!("desktop{i}::fixture-model{}", if beta_spelling { "" } else { "[1M]" });
+            let beta = if beta_spelling { format!("existing-beta,{CLAUDE_ONE_M_BETA}") } else { "existing-beta".into() };
+            let reply = client.post(format!("{base}/v1/messages")).bearer_auth("router-fixture")
+            .header("anthropic-beta", beta)
+                .json(&json!({"model":model,"max_tokens":128,
+                    "tools":[{"name":"lookup","input_schema":{"type":"object"}}],
+                    "messages":[{"role":"user","content":format!("ordinary 1M {i}/{beta_spelling}")}]})).send().await.unwrap();
+            assert_eq!(reply.status(),StatusCode::OK, "{protocol:?}, beta={beta_spelling}");
+            reply.bytes().await.unwrap();
+            let attempt = captured.lock().unwrap().last().unwrap().clone();
+            assert_eq!(attempt["body"]["model"], "fixture-model");
+            assert_eq!(attempt["path"], match protocol {
+                ModelProtocol::Responses => "/v1/responses",
+                ModelProtocol::ChatCompletions => "/v1/chat/completions",
+                ModelProtocol::AnthropicMessages => "/v1/messages",
+            });
+            let forwarded_beta = attempt["beta"].as_str().unwrap();
+            if protocol == ModelProtocol::AnthropicMessages {
+                assert!(forwarded_beta.contains("existing-beta"));
+                assert!(forwarded_beta.contains(CLAUDE_ONE_M_BETA));
+            } else {
+                assert!(forwarded_beta.is_empty());
+            }
+        }}
         for alias in ["claude-opus-5", "unknown"] {
             let response = client.post(&url).bearer_auth("desktop-fixture").json(&json!({"model":alias,"messages":[]})).send().await.unwrap();
             assert_eq!(response.status(),StatusCode::BAD_REQUEST, "{alias}");
@@ -335,9 +360,18 @@ fn desktop_namespace_routes_three_protocols_tools_and_actual_model_accounting() 
                 .json(&json!({"model":route.role_alias,"messages":[]})).send().await.unwrap().status(),StatusCode::BAD_REQUEST,
                 "current capacity must be checked for cached beta headers as well as aliases");
         }
+        for i in 0..protocols.len() { for beta_spelling in [false, true] {
+            let model = format!("desktop{i}::fixture-model{}", if beta_spelling { "" } else { "[1m]" });
+            let reply = client.post(format!("{base}/v1/messages")).bearer_auth("router-fixture")
+                .header("anthropic-beta", if beta_spelling { CLAUDE_ONE_M_BETA } else { "existing-beta" })
+                .json(&json!({"model":model,"max_tokens":128,"messages":[{"role":"user","content":"ordinary small model"}]}))
+                .send().await.unwrap();
+            assert_eq!(reply.status(), StatusCode::BAD_REQUEST, "ordinary 1M requires current model capacity");
+            assert!(reply.text().await.unwrap().contains("selected model does not support 1M context"));
+        }}
         for card in &mut store.providers { card.models[0].context_window = Some(1_000_000); }
         write_store(&paths,&store);
-        assert_eq!(captured.lock().unwrap().len(),25, "all rejected requests must produce no upstream calls");
+        assert_eq!(captured.lock().unwrap().len(),31, "24 Desktop turns, 6 ordinary 1M calls and one native alias call; rejected requests must produce no upstream calls");
 
         // Identical histories and session IDs sharing one real target must not
         // cross role, committed revision, or ordinary router entry points.
@@ -405,11 +439,6 @@ fn desktop_namespace_routes_three_protocols_tools_and_actual_model_accounting() 
             "upstream key rotation must not rewrite the local Desktop credential");
         server.abort();
     });
-}
-
-fn context_failover_seen(paths: &CodexPaths) -> bool {
-    failover_seen_for(&paths.app_data_dir.join("newapi-providers.dat"))
-        .load(std::sync::atomic::Ordering::Acquire)
 }
 
 #[test]

@@ -271,63 +271,41 @@ fn compression_respects_model_and_provider_context_without_rewriting_raw_input()
 }
 
 #[test]
-fn failover_budgets_share_eligibility_and_only_limit_the_corresponding_menu_entry() {
+fn ordinary_budget_is_independent_and_explicit_aggregate_uses_its_members() {
     let (_dir, paths) = paths();
-    let mut store = router::Store {
+    let store = router::Store {
         providers: vec![provider("large", 400000), provider("small", 100000)],
         ..Default::default()
     };
-    store.router.same_model_failover = true;
     let view = capability_preview::preview(&paths, &store);
-    assert_eq!(view.models[0].projection.compression.threshold, Some(90000));
-    assert_eq!(view.models[0].projection.budget_source, "failover");
-    let menu = router::catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
-    assert_eq!(menu["models"][0]["auto_compact_token_limit"], 90000);
-    assert_eq!(
-        router::catalog_entry_for_slug(
-            &paths.app_data_dir,
-            &paths.codex_home,
-            &store,
-            "large::model"
-        )
-        .unwrap()["auto_compact_token_limit"],
-        90000
+    assert_eq!(view.models[0].projection.compression.threshold, Some(360000)
     );
-    // The proxy's predicate still excludes protocol/identity/credential mismatches.
-    for mismatch in ["protocol", "identity", "disabled", "excluded"] {
-        let mut changed = store.clone();
-        match mismatch {
-            "protocol" => changed.providers[1].protocol = router::ModelProtocol::ChatCompletions,
-            "identity" => {
-                changed.providers[1].model = "other".into();
-                changed.providers[1].models[0].id = "other".into();
-            }
-            "disabled" => changed.providers[1].enabled = false,
-            _ => {
-                changed.providers[1].model = "other".into();
-                changed.providers[1].models[0].included = false;
-            }
-        }
-        assert_eq!(
-            capability_preview::preview(&paths, &changed).models[0]
-                .projection
-                .compression
-                .threshold,
-            Some(360000),
-            "{mismatch}"
-        );
-    }
-    store.providers[1].models[0].overrides.context_window = None;
-    assert!(capability_preview::preview(&paths, &store).models[0]
+    let menu = router::catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
+    assert_eq!(menu["models"][0]["auto_compact_token_limit"], 360000);
+    let pool = crate::core::aggregation::AggregateModel {
+        id: "pool".into(),
+        public_model_id: "model".into(),
+        display_name: "Model".into(),
+        members: vec!["large", "small"]
+            .into_iter()
+            .map(|id| crate::core::aggregation::AggregateMember {
+                id: id.into(),
+                provider_id: id.into(),
+                actual_model_id: "model".into(),
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let catalog = crate::core::models_dev::load(&paths.app_data_dir);
+    let projection = crate::core::aggregation::project(&store, &pool, &catalog)
         .projection
-        .compression
-        .note
-        .as_ref()
-        .unwrap()
-        .contains("unknown"));
-    store.router.same_model_failover = false;
+        .unwrap();
+    assert_eq!(projection.compression.threshold, Some(90000));
+    let mut changed = store.clone();
+    changed.providers[1].models[0].overrides.context_window = None;
     assert_eq!(
-        capability_preview::preview(&paths, &store).models[0]
+        capability_preview::preview(&paths, &changed).models[0]
             .projection
             .compression
             .threshold,

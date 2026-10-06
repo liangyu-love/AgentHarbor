@@ -164,6 +164,7 @@ mod tests {
             paths: Default::default(),
             rebaseline: false,
             routes: vec![DesktopRouteChoice {
+                target_ref: None,
                 role: "sonnet".into(),
                 role_alias: "claude-sonnet-4-6".into(),
                 provider_id: "exit-fixture".into(),

@@ -17,6 +17,7 @@ import { testTerminalProxy } from "./test-terminal-proxy.mjs";
 import { testRelayDeck } from "./test-relay-deck.mjs";
 import { testClaudeDesktopCard } from "./test-claude-desktop-card.mjs";
 import { testSkillsActivation } from "./test-skills-activation.mjs";
+import { testAggregation } from "./test-aggregation.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -75,7 +76,9 @@ try {
     await page.evaluate(value => window.review.mount(value), mode);
   };
 
-  if (process.env.FRONTEND_QA_SCOPE === "skills") {
+  if (process.env.FRONTEND_QA_SCOPE === "aggregation") {
+    await testAggregation({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "skills") {
     await testSkillsActivation({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "terminal-proxy") {
     await testTerminalProxy({ page, reset, captureDir });
@@ -602,7 +605,12 @@ try {
 
   await reset("access");
   await page.getByText(labels.modelCount, { exact: true }).waitFor();
-  assert.equal(await page.getByText("Responses", { exact: true }).count(), 1);
+  const codexAccessCard = page.locator('[aria-labelledby="newapi-routing-title"]');
+  const selectedResponsesModel = await page.evaluate(() => window.review.t("newapi.accessSelectedModel", {
+    provider: window.review.getState().providers[0].name,
+    model: "responses-model", protocol: window.review.t("newapi.protocolShortResponses"),
+  }));
+  assert.equal(await codexAccessCard.getByText(selectedResponsesModel, { exact: true }).count(), 1);
   assert.equal(await page.getByRole("switch", { name: labels.accountless, exact: true }).count(), 1);
   assert.equal(await page.getByRole("switch", { name: labels.accountless, exact: true }).isEnabled(), true);
   await page.getByRole("switch", { name: labels.accountless, exact: true }).click();
@@ -1239,6 +1247,7 @@ try {
   await testAccountThreadNavigation({ page, reset, captureDir });
   await testThreadDetails({ page, reset, captureDir });
   await testThreadUiFixes({ page, reset, captureDir });
+  await testAggregation({ page, reset, captureDir });
   await testMagpieOptimizations({ page, reset, captureDir });
   await testProviderFeedback({ page, reset, captureDir });
   await testProviderModelResolutions({ page, reset, captureDir });

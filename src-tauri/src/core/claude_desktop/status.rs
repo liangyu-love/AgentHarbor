@@ -85,11 +85,9 @@ pub fn project(input: StatusInput<'_>) -> DesktopStatus {
         .is_some_and(|id| !id.is_empty() && provider.is_none())
         || active_state
             .and_then(|s| s.router.as_ref())
-            .is_some_and(|r| {
-                r.routes
+            .is_some_and(|r| r.routes
                     .iter()
-                    .any(|choice| !store.providers.iter().any(|p| p.id == choice.provider_id))
-            });
+                    .any(|choice| !choice.target_exists(store)));
 
     let mut route_views = Vec::new();
     let mut stale_reasons = match (active_state, provider) {
@@ -464,9 +462,11 @@ mod projection_tests {
         state.data.files.push(transaction::Edition {
             role: paths::role::PROFILE.into(), existed_before: false, before: None,
             baseline: transaction::ManagedValues::Whole { value: None },
-            installed: transaction::ManagedValues::Whole { value: Some(serde_json::json!({})) },
+            installed: transaction::ManagedValues::Whole { value: Some(serde_json::json!({})),
+            },
         });
-        for mode in [transaction::AppliedMode::Direct, transaction::AppliedMode::Router] {
+        for mode in [transaction::AppliedMode::Direct, transaction::AppliedMode::Router,
+        ] {
             state.data.applied_mode = mode;
             assert!(profile_needs_web_access_update(&state));
         }
@@ -475,7 +475,8 @@ mod projection_tests {
         };
         assert!(!profile_needs_web_access_update(&state));
         state.data.applied_mode = transaction::AppliedMode::Official;
-        state.data.files[0].installed = transaction::ManagedValues::Whole { value: Some(serde_json::json!({})) };
+        state.data.files[0].installed = transaction::ManagedValues::Whole { value: Some(serde_json::json!({})),
+        };
         assert!(!profile_needs_web_access_update(&state));
         std::fs::remove_dir_all(root).unwrap();
     }

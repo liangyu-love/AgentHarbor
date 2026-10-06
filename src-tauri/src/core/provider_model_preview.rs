@@ -155,8 +155,8 @@ impl DraftProviderModels {
             .provider_id
             .as_ref()
             .and_then(|id| store.providers.iter().find(|provider| &provider.id == id));
-        // Saved eligibility is part of the shared failover pool. A new
-        // provider remains disabled, matching save_provider's initial state.
+        // Preserve saved eligibility. A new provider remains disabled,
+        // matching save_provider's initial state.
         let mut provider = saved.cloned().unwrap_or_default();
         provider.id = self.provider_id.clone().unwrap_or_default();
         let same_site = saved.is_some_and(|saved| {
@@ -184,7 +184,7 @@ impl DraftProviderModels {
     }
 }
 
-/// The stored configuration supplies global policy and failover eligibility.
+/// The stored configuration supplies global compression policy.
 /// Avoid load_store's identity/metadata migrations and disk writes; no client
 /// application state or running router is needed for this projection.
 fn load_store_read_only(paths: &CodexPaths) -> Result<router::Store, String> {
@@ -319,7 +319,7 @@ mod tests {
         }
     }
 
-    fn failover_store() -> router::Store {
+    fn peer_store() -> router::Store {
         let mut current = draft().provider(&router::Store::default());
         current.id = "current".into();
         current.base_url = "https://relay.example/".into();
@@ -332,7 +332,6 @@ mod tests {
         router::Store {
             providers: vec![current, peer],
             router: router::RouterSettings {
-                same_model_failover: true,
                 ..Default::default()
             },
             ..Default::default()
@@ -340,18 +339,18 @@ mod tests {
     }
 
     #[test]
-    fn saved_draft_matches_failover_projection_and_native_stays_model_scoped() {
+    fn saved_draft_matches_ordinary_projection_independently_of_peers() {
         let mut draft = draft();
         draft.provider_id = Some("current".into());
         draft.base_url = "https://relay.example/v1".into();
-        let mut store = failover_store();
+        let mut store = peer_store();
         let catalog = catalog();
         let resolved = resolve_with_sources(&draft, &store, &[], &catalog);
         assert_eq!(
             resolved.models[0].projection.compression.threshold,
-            Some(115_200)
+            Some(244_800)
         );
-        assert_eq!(resolved.models[0].projection.budget_source, "failover");
+        assert_ne!(resolved.models[0].projection.budget_source, "aggregate");
         let (_, saved_projection) = router::relay_model_projection(
             &store,
             &store.providers[0],
@@ -381,11 +380,11 @@ mod tests {
     }
 
     #[test]
-    fn draft_key_availability_and_saved_enable_state_control_failover_eligibility() {
+    fn draft_key_and_saved_enable_state_do_not_change_ordinary_budget() {
         let mut draft = draft();
         draft.provider_id = Some("current".into());
         draft.base_url = "https://another.example/v1".into();
-        let mut store = failover_store();
+        let mut store = peer_store();
         store.providers[0].auto_compact_limit = Some(50_000);
         let unavailable = resolve_with_sources(&draft, &store, &[], &catalog());
         assert_eq!(
@@ -398,7 +397,7 @@ mod tests {
         let available = resolve_with_sources(&draft, &store, &[], &catalog());
         assert_eq!(
             available.models[0].projection.compression.threshold,
-            Some(115_200)
+            Some(244_800)
         );
         store.providers[0].enabled = false;
         let disabled = resolve_with_sources(&draft, &store, &[], &catalog());
@@ -436,7 +435,6 @@ mod tests {
             model_policy::CompressionPolicy::percent(90)
         );
         assert_eq!(store.codex_access_mode, router::CodexAccessMode::Router);
-        assert!(!store.router.same_model_failover);
         assert_eq!(std::fs::read(&path).unwrap(), original);
     }
 

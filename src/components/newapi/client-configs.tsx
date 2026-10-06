@@ -13,11 +13,12 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import type { ClientStatus } from "@/types/clients";
 import type { ModelProtocol, NewApiProvider } from "@/types/newapi";
 import { queryKeys } from "@/lib/query-keys";
+import { aggregationQueryKey, type ModelTargetRef } from "@/types/aggregation";
 import { errorKey } from "@/lib/invoke-error";
 
 const CLIENT_KEY = queryKeys.clientConfigs;
 const clientErrorKey = (error: unknown) =>
-  errorKey(error, ["clients", "newapi"], "clients.errors.storage");
+  errorKey(error, ["clients", "newapi", "aggregation", "modelTargets"], "clients.errors.storage");
 
 const summarizeExclusions = (
   providers: NewApiProvider[],
@@ -39,6 +40,7 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const clients = useQuery({ queryKey: CLIENT_KEY, queryFn: api.targets.configs });
+  const aggregates = useQuery({ queryKey: aggregationQueryKey, queryFn: api.aggregation.state });
   const [selected, setSelected] = useState<ClientStatus | null>(null);
   const [restoring, setRestoring] = useState<ClientStatus | null>(null);
   const [releasing, setReleasing] = useState<ClientStatus | null>(null);
@@ -109,16 +111,28 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
           const mode = client.request?.accessMode ?? (client.configured ? "router" : "native");
           const protocols = clientProtocols(client, mode);
           const modelIds = client.targetId === "claudeCode" ? client.request?.claudeModelIds : null;
-          const modelName = provider?.models.find(model => model.id === client.model)?.displayName || client.model;
+          const selection = client.request?.modelSelection;
+          const aggregateId = selection?.defaultTarget?.kind === "aggregate" ? selection.defaultTarget.aggregateId : null;
+          const aggregate = aggregates.data?.models.find(model => model.id === aggregateId);
+          const sourceName = aggregateId ? aggregate?.displayName ?? t("aggregation.unavailable") : provider?.name ?? client.providerId;
+          const modelName = aggregateId ? aggregate?.displayName ?? client.model : provider?.models.find(model => model.id === client.model)?.displayName || client.model;
           const configuredSummary = client.targetId === "claudeCode"
             ? t(modelIds?.length ? "clients.configuredModelsSummary" : "clients.configuredDefaultSummary", {
-              provider: provider?.name ?? client.providerId, count: modelIds ? new Set(modelIds).size : 0, model: modelName })
-            : `${provider?.name ?? client.providerId} / ${client.model}`;
-          const unavailable = client.configured && (!provider || !!exclusionOf(provider, protocols)
-            || !clientModels(provider, protocols).includes(client.model ?? "")
-            || client.request?.providerIds.some(id => !providers.some(p => p.id === id && !exclusionOf(p, protocols))));
+              provider: sourceName, count: modelIds ? new Set(modelIds).size : 0, model: modelName })
+            : `${sourceName} / ${client.model}`;
+          const targetUnavailable = (target: ModelTargetRef) => {
+            if (target.kind === "aggregate") return !aggregates.data?.models.some(model => model.id === target.aggregateId && model.available);
+            const source = providers.find(item => item.id === target.providerId);
+            return !source || !!exclusionOf(source, protocols) || !clientModels(source, protocols).includes(target.modelId);
+          };
+          const unavailable = client.configured && (selection
+            ? !selection.defaultTarget || targetUnavailable(selection.defaultTarget) || selection.availableTargets.some(targetUnavailable)
+            : !provider || !!exclusionOf(provider, protocols)
+              || !clientModels(provider, protocols).includes(client.model ?? "")
+              || client.request?.providerIds.some(id => !providers.some(p => p.id === id && !exclusionOf(p, protocols))));
           const eligible = providers.filter(p => !exclusionOf(p, protocols));
-          const reasons = eligible.length === 0 ? summarizeExclusions(providers, protocols, t) : [];
+          const reasons = eligible.length === 0 && !aggregates.data?.models.some(model => model.available)
+            ? summarizeExclusions(providers, protocols, t) : [];
           return (
             <div key={client.targetId} className="space-y-3 rounded-xl border bg-card/70 p-4">
               <div className="flex items-center gap-2">
@@ -132,7 +146,7 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
               </div>
               <p className="break-all font-mono text-xs text-muted-foreground">{client.path}</p>
               <p className="break-words text-sm">{client.configured ? configuredSummary : t(`clients.${client.targetId}Hint`)}</p>
-              {(client.conflict || client.error || unavailable) && <p role="alert" className="text-xs text-destructive">{t(client.error ?? (client.conflict ? "clients.errors.conflict" : "clients.errors.provider"))}</p>}
+              {(client.conflict || client.error || unavailable) && <p role="alert" className="text-xs text-destructive">{t(client.error ?? (client.conflict ? "clients.errors.conflict" : aggregateId ? "aggregation.targetUnavailable" : "clients.errors.provider"))}</p>}
               {client.conflict && !!client.conflictFields?.length && <p role="status" className="text-xs text-muted-foreground">
                 {t("clients.conflictScope", {
                   fields: conflictScopes(client.conflictFields).map(scope => t("clients.conflictScopes." + scope)).join(" · "),

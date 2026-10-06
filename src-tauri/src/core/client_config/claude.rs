@@ -31,8 +31,50 @@ impl ClientAdapter for ClaudeCode {
         official_models: &[Value],
         ctx: &mut EditContext<'_>,
     ) -> Result<Vec<Edit>, String> {
-        let provider = selected_provider(store, request)?;
-        let (base, credential) = client_endpoint(store, provider, request, false)?;
+        let aggregate_mode = request.aggregate_target().is_some();
+        let aggregate_models = if aggregate_mode {
+            if request
+                .options
+                .model_selection
+                .as_ref()
+                .is_some_and(|selection| {
+                    selection.available_targets.iter().any(|t| {
+                        matches!(
+                            t,
+                            crate::core::model_targets::ModelTargetRef::Provider { .. }
+                        )
+                    })
+                })
+            {
+                return Err("clients.errors.modelSelection".into());
+            }
+            aggregate_models::models(store, request, catalog)?
+        } else {
+            Vec::new()
+        };
+        let provider = if aggregate_mode {
+            None
+        } else {
+            Some(selected_provider(store, request)?)
+        };
+        let (base, credential) = if let Some(provider) = provider {
+            client_endpoint(store, provider, request, false)?
+        } else {
+            aggregate_models::endpoint(store, false)
+        };
+        let label_for = |model: &str| -> String {
+            aggregate_models
+                .iter()
+                .find(|entry| entry.id == model)
+                .map(|entry| entry.label.clone())
+                .or_else(|| {
+                    provider
+                        .and_then(|p| p.models.iter().find(|entry| entry.id == model))
+                        .map(|entry| entry.display_name.clone())
+                        .filter(|name| !name.is_empty())
+                })
+                .unwrap_or_else(|| model.to_owned())
+        };
         // Cloud-provider selectors override ANTHROPIC_BASE_URL, but an unset or
         // falsy one already lets the base URL win. Never create or rewrite these
         // keys: a truthy selector is the user's own Bedrock, Vertex or Foundry
@@ -61,7 +103,12 @@ impl ClientAdapter for ClaudeCode {
             remove(&["env", other_auth]),
         ];
         let mapping = &request.options.claude_models;
-        let mut available = request.models(provider);
+        let mut available = provider.map(|p| request.models(p)).unwrap_or_else(|| {
+            aggregate_models
+                .iter()
+                .map(|entry| entry.id.clone())
+                .collect()
+        });
         // Older requests can explicitly name models before a catalog has been fetched.
         // Keep that behavior when no selection list was supplied; explicit lists stay strict.
         if request.options.claude_model_ids.is_none() {
@@ -74,7 +121,7 @@ impl ClientAdapter for ClaudeCode {
                 &mapping.subagent,
             ] {
                 if !model.is_empty()
-                    && request.accepts_model(provider, model)
+                    && provider.is_some_and(|p| request.accepts_model(p, model))
                     && !available.contains(model)
                 {
                     validate_model(model)?;
@@ -108,6 +155,10 @@ impl ClientAdapter for ClaudeCode {
         // data the explicit opt-in decides. Context-window env vars are left to the user.
         let one_m = &request.options.claude_one_m;
         let known_small = |model: &str| {
+            if let Some(entry) = aggregate_models.iter().find(|entry| entry.id == model) {
+                return !entry.one_m;
+            }
+            let provider = provider.expect("ordinary model projection requires its provider");
             let official = super::super::router::matched_official_model(official_models, model)
                 .filter(|_| super::super::router::official_endpoint_applies(provider));
             let projection = super::super::router::model_projection(
@@ -194,13 +245,7 @@ impl ClientAdapter for ClaudeCode {
             }
             // A previous gateway's display names must not describe a different model.
             if !role.is_empty() {
-                let display_name = provider
-                    .models
-                    .iter()
-                    .find(|entry| entry.id == *model)
-                    .map(|entry| entry.display_name.as_str())
-                    .filter(|name| !name.is_empty())
-                    .unwrap_or(model);
+                let display_name = label_for(model);
                 edits.push(edit(&["env", &format!("{name}_NAME")], json!(display_name)));
             }
             if !allowed_models.iter().any(|id| id == model) {
@@ -264,13 +309,7 @@ impl ClientAdapter for ClaudeCode {
             {
                 continue;
             }
-            let label = provider
-                .models
-                .iter()
-                .find(|entry| entry.id == *model)
-                .map(|entry| entry.display_name.as_str())
-                .filter(|name| !name.is_empty())
-                .unwrap_or(model);
+            let label = label_for(model);
             entries.push(json!({"model": model, "label": label}));
         }
         edits.push(edit(&["modelPicker", "options"], json!(entries)));

@@ -1,5 +1,4 @@
-//! Retry only a new, identified, stateless turn before any output is exposed.
-//! Tool/history turns never retry; an existing conversation binding always wins.
+//! Ordinary single-provider session identity protection. No hidden alternatives.
 use super::*;
 use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
@@ -14,7 +13,6 @@ pub(super) struct Binding {
     protocol: router::ModelProtocol,
     endpoint: String,
     last_used: Instant,
-    pub(super) requires_failover: bool,
 }
 static AFFINITY: OnceLock<Mutex<VecDeque<(String, Binding)>>> = OnceLock::new();
 // Serialize route decisions through response headers, not the long-lived stream.
@@ -80,25 +78,23 @@ fn release(key: &str) {
 }
 fn endpoint(provider: &router::Provider) -> String {
     let mut hash = Sha256::new();
-    for s in [&provider.base_url, &provider.api_key] {
+    for s in [
+        &provider.base_url,
+        &provider.model_credential().api_key.to_owned(),
+    ] {
         hash.update((s.len() as u64).to_le_bytes());
         hash.update(s.as_bytes());
     }
     format!("{:x}", hash.finalize())
 }
 pub(super) fn agrees(binding: &Binding, destination: &Destination) -> bool {
-    matches!(destination, Destination::Provider { provider, model_override, upstream_protocol, .. }
-        if provider.id == binding.provider_id && model_override.as_deref().unwrap_or(&provider.model) == binding.model && *upstream_protocol == binding.protocol && endpoint(provider) == binding.endpoint)
+    matches!(destination, Destination::Provider { provider, model_override, .. }
+        if provider.id == binding.provider_id && model_override.as_deref().unwrap_or(&provider.model) == binding.model && provider.protocol_for_model(model_override.as_deref().unwrap_or(&provider.model)) == binding.protocol && endpoint(provider) == binding.endpoint)
 }
-#[cfg(test)]
-fn bind(key: &str, destination: &Destination) -> bool {
-    bind_for_mode(key, destination, true)
-}
-pub(super) fn bind_for_mode(key: &str, destination: &Destination, requires_failover: bool) -> bool {
+pub(super) fn bind(key: &str, destination: &Destination) -> bool {
     let Destination::Provider {
         provider,
         model_override,
-        upstream_protocol,
         ..
     } = destination
     else {
@@ -122,10 +118,10 @@ pub(super) fn bind_for_mode(key: &str, destination: &Destination, requires_failo
             model: model_override
                 .clone()
                 .unwrap_or_else(|| provider.model.clone()),
-            protocol: *upstream_protocol,
+            protocol: provider
+                .protocol_for_model(model_override.as_deref().unwrap_or(&provider.model)),
             endpoint: endpoint(provider),
             last_used: Instant::now(),
-            requires_failover,
         },
     ));
     true
@@ -198,28 +194,6 @@ pub(super) fn expire(key: &str) {
         binding.last_used = Instant::now() - IDLE_TTL - Duration::from_secs(1);
     }
 }
-pub(super) fn alternative(
-    store: &router::Store,
-    current: &Destination,
-    spoken: Option<router::ModelProtocol>,
-) -> Option<Destination> {
-    let Destination::Provider {
-        provider,
-        model_override,
-        ..
-    } = current
-    else {
-        return None;
-    };
-    let model = model_override.as_deref().unwrap_or(&provider.model);
-    // Exact upstream ID AND protocol, never the looser capability lookup key.
-    store
-        .providers
-        .iter()
-        .filter(|p| router::same_model_failover_candidate(p, provider, model))
-        .find_map(|p| provider_destination(store, &p.id, spoken, Some(model.into())).ok())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,9 +228,9 @@ mod tests {
             assert!(bind(&format!("idle-{i}"), &destination));
         }
         assert!(!bind("overflow", &destination));
+        expire("idle-0");
         {
             let mut cache = AFFINITY.get().unwrap().lock().unwrap();
-            cache[0].1.last_used = Instant::now() - IDLE_TTL - Duration::from_secs(1);
             cache[1].1.last_used = Instant::now() - Duration::from_secs(60);
         }
         assert!(bound("idle-0").is_none());
@@ -268,7 +242,7 @@ mod tests {
     }
     #[test]
     fn full_registry_rejects_new_sessions_before_upstream_and_keeps_existing_bindings() {
-        use super::super::failover_tests::{mock, persist, RESPONSE};
+        use super::super::routing_safety_tests::{mock, persist, RESPONSE};
         use std::sync::atomic::Ordering;
         let _guard = global_router_test_lock();
         tokio::runtime::Runtime::new().unwrap().block_on(async {
@@ -281,7 +255,7 @@ mod tests {
                     api_key: "synthetic".into(), enabled: true, ..Default::default()
                 }],
                 router: router::RouterSettings {
-                    same_model_failover: true, bearer_token: "local".into(), ..Default::default()
+                    bearer_token: "local".into(), ..Default::default()
                 },
                 ..Default::default()
             };
@@ -328,42 +302,5 @@ mod tests {
             assert!(!stateless(Some(v.to_string().as_bytes())));
         }
         assert!(stateless(Some(br#"{"input":"hello"}"#)));
-    }
-    #[test]
-    fn candidates_require_exact_upstream_identity() {
-        let a = router::Provider {
-            id: "a".into(),
-            model: "claude-opus-5-5-kiro".into(),
-            enabled: true,
-            api_key: "test".into(),
-            ..Default::default()
-        };
-        let mut b = a.clone();
-        b.id = "b".into();
-        b.model = "claude-opus-5-5".into();
-        let mut store = router::Store {
-            providers: vec![a, b],
-            ..Default::default()
-        };
-        let first = provider_destination(
-            &store,
-            "a",
-            Some(router::ModelProtocol::AnthropicMessages),
-            None,
-        )
-        .unwrap();
-        assert!(alternative(
-            &store,
-            &first,
-            Some(router::ModelProtocol::AnthropicMessages)
-        )
-        .is_none());
-        store.providers[1].model = "claude-opus-5-5-kiro".into();
-        assert!(alternative(
-            &store,
-            &first,
-            Some(router::ModelProtocol::AnthropicMessages)
-        )
-        .is_some());
     }
 }

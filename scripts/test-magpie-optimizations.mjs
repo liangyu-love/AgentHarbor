@@ -48,10 +48,9 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   assert.match(await routes.innerText(), /230 ms/);
   assert.match(await routes.innerText(), /尝试 ID: syntheti/);
   assert.match(await routes.innerText(), /fixture-vers/);
-  const toggle = routes.getByRole("switch", { name: "同模型渠道故障切换" });
-  assert.equal(await toggle.getAttribute("aria-checked"), "false");
-  await toggle.click();
-  await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="同模型渠道故障切换"]')?.getAttribute("aria-checked") === "true");
+  assert.equal(await routes.getByRole("switch", { name: "同模型渠道故障切换" }).count(), 0,
+    "ordinary provider requests no longer expose hidden cross-card failover");
+  await page.locator('section[aria-labelledby="aggregation-title"]').waitFor();
   const catalog = page.getByRole("region", { name: "模型能力目录与匹配预览" });
   await catalog.getByRole("button", { name: "模型能力目录与匹配预览", exact: true }).click();
   const modelSummary = catalog.locator("summary").filter({ hasText: "Synthetic channel" });
@@ -107,7 +106,7 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   if (captureDir) await page.screenshot({ path: path.join(captureDir, "routing-diagnostics-mobile-dark.png"), fullPage: true });
   await page.evaluate(() => document.documentElement.classList.remove("dark"));
   await page.setViewportSize({ width: 1200, height: 700 });
-  console.log("PASS routing trace exposes requested/sent values, failover is opt-in, and capability sources survive stale cache");
+  console.log("PASS routing trace exposes requested/sent values, old failover is removed, and capability sources survive stale cache");
 
   await reset("access");
   await page.evaluate(() => {

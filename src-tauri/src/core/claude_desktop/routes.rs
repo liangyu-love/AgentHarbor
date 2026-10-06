@@ -2,11 +2,13 @@
 use super::{
     constants, provider,
     types::{
-        self, DesktopError, DesktopResult, DesktopRouteChoice, DesktopRouteRole, DesktopRouteView,
+        self, AggregateRouteCandidateView, DesktopError, DesktopResult, DesktopRouteChoice, DesktopRouteRole, DesktopRouteView,
         ModelCandidateView, OneMMode, ProviderCandidateView,
     },
 };
 use crate::core::{
+    aggregation,
+    model_targets::{self, ModelTargetRef},
     models_dev, newapi,
     router::{Provider, Store},
 };
@@ -14,8 +16,97 @@ use crate::core::{
 #[derive(Clone)]
 pub struct ResolvedRoute {
     pub choice: DesktopRouteChoice,
-    pub provider: Provider,
+    pub provider: Option<Provider>,
+    /// Only an explicit reference, never a member chosen during configuration.
+    pub aggregate_id: Option<String>,
     pub view: DesktopRouteView,
+}
+
+impl DesktopRouteChoice {
+    pub fn target(&self) -> ModelTargetRef {
+        self.target_ref
+            .clone()
+            .unwrap_or_else(|| ModelTargetRef::provider(&self.provider_id, &self.model_id))
+    }
+
+    pub fn target_exists(&self, store: &Store) -> bool {
+        match self.target() {
+            ModelTargetRef::Provider { provider_id, .. } => {
+                store.providers.iter().any(|p| p.id == provider_id)
+            }
+            ModelTargetRef::Aggregate { aggregate_id } => {
+                store.aggregates.iter().any(|a| a.id == aggregate_id)
+            }
+        }
+    }
+}
+
+pub fn aggregate_candidates(
+    store: &Store,
+    catalog: &models_dev::Catalog,
+) -> Vec<AggregateRouteCandidateView> {
+    store
+        .aggregates
+        .iter()
+        .map(|aggregate| aggregate_candidate(store, aggregate, catalog))
+        .collect()
+}
+
+fn aggregate_candidate(
+    store: &Store,
+    aggregate: &aggregation::AggregateModel,
+    catalog: &models_dev::Catalog,
+) -> AggregateRouteCandidateView {
+    let target = ModelTargetRef::aggregate(&aggregate.id);
+    let view = model_targets::resolve_client_target(
+        store,
+        &target,
+        crate::core::protocol::ModelProtocol::AnthropicMessages,
+        catalog,
+    );
+    let supports1m = model_targets::resolve_client_target_with_context(
+        store,
+        &target,
+        crate::core::protocol::ModelProtocol::AnthropicMessages,
+        catalog,
+        Some(constants::ONE_M_CONTEXT),
+    )
+    .is_ok_and(|target| target.supports_one_m());
+    let available = view.as_ref().is_ok_and(|view| view.available);
+    let context_window = view
+        .as_ref()
+        .ok()
+        .and_then(|view| view.projection.as_ref().map(|p| p.context_window));
+    let reason = match view {
+        Ok(view) => view.reason,
+        Err(error) => Some(error),
+    };
+    let label = if aggregate.display_name.trim().is_empty() {
+        aggregate.public_model_id.clone()
+    } else {
+        aggregate.display_name.clone()
+    };
+    AggregateRouteCandidateView {
+        aggregate_id: aggregate.id.clone(),
+        name: label.clone(),
+        enabled: aggregate.enabled,
+        eligible: available,
+        reason: reason.clone(),
+        model: ModelCandidateView {
+            model_id: aggregate.public_model_id.clone(),
+            label: label.clone(),
+            display_name: label,
+            protocol: "aggregate".into(),
+            protocol_source: "aggregate".into(),
+            protocol_verified: true,
+            included: aggregate.enabled,
+            supports1m,
+            context_window,
+            context_source: "aggregate".into(),
+            selectable: available,
+            exclude_reason: reason,
+        },
+    }
 }
 
 impl std::fmt::Debug for ResolvedRoute {
@@ -151,17 +242,96 @@ pub fn resolve_routes(
                 .model(&choice.role_alias),
             ));
         }
+        let target = choice.target();
+        if let ModelTargetRef::Aggregate { aggregate_id } = &target {
+            let target_view = model_targets::resolve_client_target(
+                store,
+                &target,
+                crate::core::router::ModelProtocol::AnthropicMessages,
+                catalog,
+            )
+            .map_err(|reason| {
+                Box::new(
+                    DesktopError::new(
+                        types::error_code::MODEL_REJECTED,
+                        "claudeDesktop.errors.routeUnavailable",
+                    )
+                    .param(reason),
+                )
+            })?;
+            if !target_view.available {
+                return Err(Box::new(
+                    DesktopError::new(
+                        types::error_code::MODEL_REJECTED,
+                        "claudeDesktop.errors.routeUnavailable",
+                    )
+                    .param(target_view.reason.unwrap_or_default()),
+                ));
+            }
+            let aggregate = store
+                .aggregates
+                .iter()
+                .find(|a| &a.id == aggregate_id)
+                .ok_or_else(|| {
+                    Box::new(DesktopError::new(
+                        types::error_code::PROVIDER_MISSING,
+                        "claudeDesktop.errors.providerMissing",
+                    ))
+                })?;
+            let candidate = aggregate_candidate(store, aggregate, catalog);
+            let label = match choice.label_override.as_deref() {
+                Some(raw) => provider::normalize_label(raw).ok_or_else(|| {
+                    Box::new(DesktopError::new(
+                        types::error_code::MODEL_REJECTED,
+                        "claudeDesktop.errors.invalidLabel",
+                    ))
+                })?,
+                None => provider::normalize_label(&target_view.display_name)
+                    .unwrap_or_else(|| target_view.logical_model_id.clone()),
+            };
+            let mut canonical_choice = choice.clone();
+            canonical_choice.role_alias = current_alias.to_owned();
+            canonical_choice.provider_id.clear();
+            canonical_choice.model_id = target_view.logical_model_id.clone();
+            let view = DesktopRouteView {
+                role: choice.role.clone(),
+                role_alias: current_alias.to_owned(),
+                provider_id: String::new(),
+                provider_name: target_view.display_name,
+                model_id: target_view.logical_model_id,
+                target_ref: Some(target.clone()),
+                label,
+                one_m: choice.one_m_mode == OneMMode::Auto && candidate.model.supports1m,
+                protocol: "aggregate".into(),
+                available: true,
+                reason: None,
+            };
+            resolved.push(ResolvedRoute {
+                choice: canonical_choice,
+                provider: None,
+                aggregate_id: Some(aggregate_id.clone()),
+                view,
+            });
+            continue;
+        }
+        let ModelTargetRef::Provider {
+            provider_id,
+            model_id,
+        } = target
+        else {
+            unreachable!()
+        };
         let card = store
             .providers
             .iter()
-            .find(|card| card.id == choice.provider_id)
+            .find(|card| card.id == provider_id)
             .ok_or_else(|| {
                 Box::new(DesktopError::new(
                     types::error_code::PROVIDER_MISSING,
                     "claudeDesktop.errors.providerMissing",
                 ))
             })?;
-        let candidate = model_candidate(card, &choice.model_id, catalog);
+        let candidate = model_candidate(card, &model_id, catalog);
         if let Some(reason) = candidate.exclude_reason {
             return Err(Box::new(
                 DesktopError::new(
@@ -186,12 +356,15 @@ pub fn resolve_routes(
         };
         let mut canonical_choice = choice.clone();
         canonical_choice.role_alias = current_alias.to_owned();
+        canonical_choice.provider_id = provider_id;
+        canonical_choice.model_id = model_id.clone();
         let view = DesktopRouteView {
             role: choice.role.clone(),
             role_alias: current_alias.to_owned(),
             provider_id: card.id.clone(),
             provider_name: card.name.clone(),
-            model_id: choice.model_id.clone(),
+            model_id,
+            target_ref: choice.target_ref.clone(),
             label,
             one_m: choice.one_m_mode == OneMMode::Auto && candidate.supports1m,
             protocol: candidate.protocol,
@@ -204,7 +377,8 @@ pub fn resolve_routes(
         frozen_provider.api_key = provider::require_inference_key(card)?;
         resolved.push(ResolvedRoute {
             choice: canonical_choice,
-            provider: frozen_provider,
+            provider: Some(frozen_provider),
+            aggregate_id: None,
             view,
         });
     }
@@ -228,8 +402,15 @@ pub fn file_projection(resolved: &[ResolvedRoute]) -> String {
             )
         })
         .collect();
-    format!(
-        "{:x}",
-        Sha256::digest(serde_json::to_vec(&inputs).expect("route projection serializes"))
-    )
+    let mut hash = Sha256::new();
+    hash.update(serde_json::to_vec(&inputs).expect("route projection serializes"));
+    // Preserve the exact legacy provider projection across the schema upgrade.
+    let aggregate_ids: Vec<_> = resolved
+        .iter()
+        .filter_map(|r| r.aggregate_id.as_ref())
+        .collect();
+    if !aggregate_ids.is_empty() {
+        hash.update(serde_json::to_vec(&aggregate_ids).expect("aggregate IDs serialize"));
+    }
+    format!("{:x}", hash.finalize())
 }

@@ -741,6 +741,7 @@ fn hosted_chat_search_reaches_the_executor_from_desktop_and_messages_ingresses()
         .unwrap();
         state.router = Some(RouterConfig {
             routes: vec![DesktopRouteChoice {
+                target_ref: None,
                 role: "haiku".into(),
                 role_alias: "claude-haiku-4-5".into(),
                 provider_id: "model-card".into(),
