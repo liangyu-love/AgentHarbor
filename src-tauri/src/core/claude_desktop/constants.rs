@@ -52,12 +52,24 @@ pub fn route_alias(
     policy: super::provider::DesktopVersionPolicy,
 ) -> Option<&'static str> {
     match role {
-        "sonnet" => Some("claude-sonnet-4-6"),
-        "opus" => Some("claude-opus-4-7"),
+        "sonnet" => Some("claude-sonnet-5-5"),
+        "opus" => Some("claude-opus-5-5"),
         "haiku" => Some("claude-haiku-4-5"),
         "fable" if policy.fable_allowed => Some("claude-fable-5"),
         _ => None,
     }
+}
+
+/// Accept aliases saved by earlier releases so an already configured Desktop
+/// keeps routing until the user next applies its configuration.
+pub fn route_alias_matches(role: &str, alias: &str, policy: super::provider::DesktopVersionPolicy) -> bool {
+    route_alias(role, policy) == Some(alias)
+        || match (role, alias) {
+            ("sonnet", "claude-sonnet-4-6") | ("opus", "claude-opus-4-7")
+            | ("haiku", "claude-haiku-4-5") => true,
+            ("fable", "claude-fable-5") => policy.fable_allowed,
+            _ => false,
+        }
 }
 
 /// 依据版本策略返回可用的 Desktop 角色白名单。

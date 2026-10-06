@@ -14,5 +14,6 @@ export const storageKeys = {
   imageWorkbenchConfig: "image-workbench-config",
   imagePromptFavorites: "image-prompt-favorites",
   claudeCodeProfiles: "agentharbor.claude-code-profiles.v1",
+  claudeDesktopProfiles: "agentharbor.claude-desktop-profiles.v1",
   relayGroupAliases: "newapi-relay-group-aliases",
 } as const;

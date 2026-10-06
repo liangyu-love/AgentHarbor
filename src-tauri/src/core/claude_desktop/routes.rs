@@ -131,7 +131,16 @@ pub fn resolve_routes(
     let mut seen = std::collections::HashSet::new();
     let mut resolved = Vec::new();
     for choice in choices {
-        if constants::route_alias(&choice.role, policy) != Some(choice.role_alias.as_str())
+        let Some(current_alias) = constants::route_alias(&choice.role, policy) else {
+            return Err(Box::new(
+                DesktopError::new(
+                    types::error_code::MODEL_REJECTED,
+                    "claudeDesktop.errors.invalidRouteRole",
+                )
+                .model(&choice.role_alias),
+            ));
+        };
+        if !constants::route_alias_matches(&choice.role, &choice.role_alias, policy)
             || !seen.insert(choice.role.clone())
         {
             return Err(Box::new(
@@ -175,9 +184,11 @@ pub fn resolve_routes(
                     .unwrap_or_else(|| choice.model_id.clone())
             }
         };
+        let mut canonical_choice = choice.clone();
+        canonical_choice.role_alias = current_alias.to_owned();
         let view = DesktopRouteView {
             role: choice.role.clone(),
-            role_alias: choice.role_alias.clone(),
+            role_alias: current_alias.to_owned(),
             provider_id: card.id.clone(),
             provider_name: card.name.clone(),
             model_id: choice.model_id.clone(),
@@ -192,7 +203,7 @@ pub fn resolve_routes(
         // Normalize only the request snapshot; the saved card is never rewritten here.
         frozen_provider.api_key = provider::require_inference_key(card)?;
         resolved.push(ResolvedRoute {
-            choice: choice.clone(),
+            choice: canonical_choice,
             provider: frozen_provider,
             view,
         });

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import i18n from "@/lib/i18n";
-import { AlertTriangle, CheckCircle2, Eye, Loader2, MessageSquare, ShieldAlert } from "lucide-react";
+import { AlertTriangle, BookmarkPlus, CheckCircle2, Eye, Loader2, MessageSquare, ShieldAlert, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { desktopErrorKey } from "@/lib/claude-desktop";
 import { toast } from "@/hooks/use-toast";
@@ -38,6 +38,7 @@ import type {
   DesktopAction,
   OneMMode,
 } from "@/types/claude-desktop";
+import { storageKeys } from "@/lib/storage-keys";
 
 /**
  * 后端原因码是 snake_case（`provider_missing`、`unsafe_model_name`），
@@ -74,6 +75,37 @@ function StepHeading({ step, text }: { step: string; text: string }) {
 interface ModelRow {
   label: string;
   oneMMode: OneMMode;
+}
+
+interface SavedDesktopConfig {
+  id: string;
+  name: string;
+  mode: "direct" | "router";
+  providerId?: string;
+  models?: ClaudeDesktopModelChoice[];
+  routes?: ClaudeDesktopRouteChoice[];
+  paths?: ClaudeDesktopPathsChoice;
+}
+
+const DESKTOP_PROFILES_KEY = storageKeys.claudeDesktopProfiles;
+
+function readSavedDesktopConfigs(): SavedDesktopConfig[] {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(DESKTOP_PROFILES_KEY) ?? "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is SavedDesktopConfig => {
+      if (!item || typeof item !== "object" || typeof item.id !== "string" || typeof item.name !== "string") return false;
+      const value = item as Record<string, unknown>;
+      if (value.mode === "direct") return typeof value.providerId === "string" && Array.isArray(value.models)
+        && value.models.every(model => !!model && typeof model === "object"
+          && typeof model.modelId === "string" && (model.oneMMode === "auto" || model.oneMMode === "off"));
+      if (value.mode === "router") return Array.isArray(value.routes) && value.routes.every(route => !!route && typeof route === "object"
+        && typeof route.role === "string" && typeof route.roleAlias === "string"
+        && typeof route.providerId === "string" && typeof route.modelId === "string"
+        && (route.oneMMode === "auto" || route.oneMMode === "off"));
+      return false;
+    });
+  } catch { return []; }
 }
 
 interface Props {
@@ -123,6 +155,10 @@ export function ClaudeDesktopDialog({
     }]),
   ));
   const [rebaseline, setRebaseline] = useState(false);
+  const [savedConfigs, setSavedConfigs] = useState<SavedDesktopConfig[]>(readSavedDesktopConfigs);
+  const [savedConfigId, setSavedConfigId] = useState("");
+  const [editingSavedConfig, setEditingSavedConfig] = useState(false);
+  const [savedConfigName, setSavedConfigName] = useState("");
   const [preview, setPreview] = useState<ClaudeDesktopPreview | null>(null);
   const [probe, setProbe] = useState<ClaudeDesktopBearerReport | null>(null);
   const [messages, setMessages] = useState<ClaudeDesktopMessagesReport | null>(null);
@@ -133,7 +169,7 @@ export function ClaudeDesktopDialog({
   const pendingToken = useRef<number | null>(null);
   const previewRef = useRef<ClaudeDesktopPreview | null>(null);
   const discardPreview = (value: ClaudeDesktopPreview | null) => {
-    if (value?.action === "applyRouter") void api.claudeDesktop.cancelPreview(value.revision).catch(() => {});
+    if (value) void api.claudeDesktop.cancelPreview(value.revision).catch(() => {});
   };
 
   // 首次进入时把候选的默认选择固化到表单。
@@ -141,6 +177,11 @@ export function ClaudeDesktopDialog({
     if (!candidates) return;
     setProviderId(current => current ?? candidates.selectedProviderId);
     setPathId(current => current ?? candidates.selectedPathId);
+    const currentRoles = new Map((candidates.routeRoles ?? []).map(role => [role.role, role.roleAlias]));
+    setRoutes(current => current.map(route => {
+      const roleAlias = currentRoles.get(route.role);
+      return roleAlias && roleAlias !== route.roleAlias ? { ...route, roleAlias } : route;
+    }));
   }, [candidates]);
 
   const pathsChoice = useMemo<ClaudeDesktopPathsChoice>(() => {
@@ -230,6 +271,159 @@ export function ClaudeDesktopDialog({
     paths: pathsChoice,
     rebaseline,
   });
+
+  const resolveSavedConfig = (profile: SavedDesktopConfig) => {
+    const path = candidates.pathCandidates.find(entry => entry.normalRoot === profile.paths?.normalRoot
+      && entry.thirdPartyRoot === profile.paths?.thirdPartyRoot);
+    if (!path) {
+      setError("claudeDesktop.profiles.pathUnavailable");
+      return null;
+    }
+    if (profile.mode === "direct") {
+      const provider = candidates.providers.find(entry => entry.providerId === profile.providerId && entry.eligible);
+      const models = profile.models ?? [];
+      const ids = new Set(provider?.models.filter(model => model.selectable).map(model => model.modelId) ?? []);
+      if (!provider || models.length === 0 || models.some(model => !ids.has(model.modelId))) {
+        setError("claudeDesktop.profiles.modelsUnavailable");
+        return null;
+      }
+      if (models.some(model => model.oneMMode === "auto"
+        && !desktopRouteSupports1m(provider.models.find(candidate => candidate.modelId === model.modelId)!))) {
+        setError("claudeDesktop.profiles.modelsUnavailable");
+        return null;
+      }
+      return {
+        action: "applyDirect" as const,
+        payload: { providerId: provider.providerId, models, paths: profile.paths, rebaseline: false },
+        pathId: path.id,
+      };
+    }
+    const normalizedRoutes = (profile.routes ?? []).map(route => {
+      const role = (candidates.routeRoles ?? []).find(entry => entry.role === route.role);
+      return role ? { ...route, roleAlias: role.roleAlias } : route;
+    });
+    const routesAreAvailable = normalizedRoutes.length > 0 && normalizedRoutes.every(route => {
+      const role = (candidates.routeRoles ?? []).find(entry => entry.role === route.role);
+      const provider = (candidates.routeProviders ?? []).find(entry => entry.providerId === route.providerId);
+      const model = provider?.models.find(entry => entry.modelId === route.modelId);
+      return role && provider?.eligible && model?.selectable
+        && (route.oneMMode !== "auto" || desktopRouteSupports1m(model));
+    });
+    if (!routesAreAvailable) {
+      setError("claudeDesktop.profiles.routesUnavailable");
+      return null;
+    }
+    return {
+      action: "applyRouter" as const,
+      payload: { routes: normalizedRoutes, paths: profile.paths, rebaseline: false },
+      pathId: path.id,
+    };
+  };
+
+  const loadSavedConfig = (id: string) => {
+    setSavedConfigId(id);
+    const profile = savedConfigs.find(entry => entry.id === id);
+    if (!profile) return;
+    const resolved = resolveSavedConfig(profile);
+    if (!resolved) return;
+    setMode(profile.mode);
+    setPathId(resolved.pathId);
+    setSavedConfigName(profile.name);
+    setRebaseline(false);
+    setRotateGatewayToken(false);
+    if (profile.mode === "direct") {
+      setProviderId(profile.providerId ?? null);
+      setSelected(Object.fromEntries((profile.models ?? []).map(model => [model.modelId, {
+        label: model.labelOverride ?? "",
+        oneMMode: model.oneMMode,
+      }])));
+    } else {
+      setRoutes((resolved.payload as { routes: ClaudeDesktopRouteChoice[] }).routes);
+    }
+    setError(null);
+  };
+
+  const profileCanSave = pathSelected && (mode === "router"
+    ? routesValid && availableActions.includes("applyRouter")
+    : !!providerId && !!candidate?.eligible && chosenModels.length > 0 && unavailableChoices.length === 0
+      && chosenModels.every(modelId => selected[modelId]?.oneMMode !== "auto"
+        || desktopRouteSupports1m(models.find(model => model.modelId === modelId)!))
+      && availableActions.includes("applyDirect"));
+
+  const saveCurrentConfig = () => {
+    const request = requestOf();
+    const name = savedConfigName.trim() || (mode === "direct"
+      ? candidate?.name ?? providerId ?? "Claude Desktop"
+      : t("claudeDesktop.routing.modeRouter"));
+    const existing = savedConfigs.find(item => item.id === savedConfigId);
+    if (savedConfigs.some(item => item.id !== existing?.id && item.name.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+      setError("claudeDesktop.profiles.nameInUse");
+      return;
+    }
+    const profile: SavedDesktopConfig = {
+      id: existing?.id ?? crypto.randomUUID(),
+      name,
+      mode,
+      ...(mode === "direct" ? { providerId: providerId ?? undefined, models: request.models ?? [] }
+        : { routes: request.routes ?? [] }),
+      paths: request.paths,
+    };
+    const next = [...savedConfigs.filter(item => item.id !== profile.id), profile];
+    try {
+      localStorage.setItem(DESKTOP_PROFILES_KEY, JSON.stringify(next));
+      setSavedConfigs(next);
+      setSavedConfigId(profile.id);
+      setSavedConfigName(name);
+      setEditingSavedConfig(false);
+      setError(null);
+    } catch {
+      setError("claudeDesktop.profiles.storage");
+    }
+  };
+
+  const deleteSavedConfig = () => {
+    if (!savedConfigId) return;
+    const next = savedConfigs.filter(profile => profile.id !== savedConfigId);
+    try {
+      localStorage.setItem(DESKTOP_PROFILES_KEY, JSON.stringify(next));
+      setSavedConfigs(next);
+      setSavedConfigId("");
+      setSavedConfigName("");
+      setError(null);
+    } catch {
+      setError("claudeDesktop.profiles.storage");
+    }
+  };
+
+  const applySavedConfig = async () => {
+    const profile = savedConfigs.find(entry => entry.id === savedConfigId);
+    if (!profile || busy !== null) return;
+    const resolved = resolveSavedConfig(profile);
+    if (!resolved) return;
+    setBusy("apply");
+    setError(null);
+    discardPreview(previewRef.current);
+    previewRef.current = null;
+    setPreview(null);
+    let revision: string | null = null;
+    try {
+      const preview = await api.claudeDesktop.preview(resolved.action, resolved.payload);
+      revision = preview.revision;
+      await api.claudeDesktop.commit(resolved.action, preview.revision, resolved.payload);
+      toast({
+        title: t("claudeDesktop.dialog.appliedTitle"),
+        description: t("claudeDesktop.dialog.appliedDescription"),
+        variant: "success",
+      });
+      await onApplied();
+      onClose();
+    } catch (cause) {
+      if (revision !== null) void api.claudeDesktop.cancelPreview(revision).catch(() => {});
+      setError(desktopErrorKey(cause, "claudeDesktop.errors.storage"));
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const runPreview = async () => {
     const token = ++seq.current;
@@ -362,6 +556,41 @@ export function ClaudeDesktopDialog({
           )}
 
           <fieldset disabled={busy !== null} className="min-w-0 space-y-4">
+            <section aria-label={t("claudeDesktop.profiles.title")} className="space-y-2 rounded-lg border bg-muted/20 p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Label htmlFor="desktop-saved-config" className="min-w-0 text-sm font-medium">{t("claudeDesktop.profiles.title")}</Label>
+                <Select value={savedConfigId} onValueChange={loadSavedConfig}>
+                  <SelectTrigger id="desktop-saved-config" className="h-9 min-w-44 flex-1">
+                    <SelectValue placeholder={t("claudeDesktop.profiles.choose")} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {savedConfigs.map(profile => <SelectItem key={profile.id} value={profile.id}>{profile.name} · {t(profile.mode === "router" ? "claudeDesktop.routing.modeRouter" : "claudeDesktop.routing.modeDirect")}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                <Button type="button" size="sm" variant="outline" disabled={!savedConfigId || busy !== null}
+                  onClick={() => void applySavedConfig()}>
+                  {busy === "apply" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                  {t("claudeDesktop.profiles.apply")}
+                </Button>
+                {savedConfigId && <Button type="button" size="icon-sm" variant="ghost" disabled={busy !== null}
+                  aria-label={t("claudeDesktop.profiles.delete")} onClick={deleteSavedConfig}>
+                  <Trash2 className="h-4 w-4" />
+                </Button>}
+                <Button type="button" size="sm" variant="ghost" disabled={busy !== null || (!editingSavedConfig && !profileCanSave)}
+                  aria-expanded={editingSavedConfig} onClick={() => setEditingSavedConfig(current => !current)}>
+                  <BookmarkPlus className="h-4 w-4" />
+                  {t(editingSavedConfig ? "common.cancel" : "claudeDesktop.profiles.saveCurrent")}
+                </Button>
+              </div>
+              {editingSavedConfig && <div className="flex flex-wrap gap-2">
+                <Input value={savedConfigName} maxLength={48} aria-label={t("claudeDesktop.profiles.name")}
+                  placeholder={mode === "direct" ? candidate?.name : t("claudeDesktop.routing.modeRouter")}
+                  onChange={event => setSavedConfigName(event.target.value)} className="h-9 min-w-40 flex-1" />
+                <Button type="button" size="sm" disabled={!profileCanSave} onClick={saveCurrentConfig}>
+                  {t("claudeDesktop.profiles.save")}
+                </Button>
+              </div>}
+            </section>
             <div aria-label={t("claudeDesktop.routing.modeLabel")} className="inline-flex rounded-lg border bg-muted/30 p-1">
               {(["direct", "router"] as const).map(value => (
                 <button key={value} type="button" aria-pressed={mode === value}
@@ -439,9 +668,9 @@ export function ClaudeDesktopDialog({
             {/* 路径：多渠道时必须由用户明确选择 */}
             {candidates.pathCandidates.length > 1 && (
               <div className="space-y-2">
-                <Label>{t("claudeDesktop.pathsLabel")}</Label>
+                <Label htmlFor="desktop-path">{t("claudeDesktop.pathsLabel")}</Label>
                 <Select value={pathId ?? ""} onValueChange={setPathId}>
-                  <SelectTrigger className="text-xs">
+                  <SelectTrigger id="desktop-path" className="text-xs">
                     <SelectValue placeholder={t("claudeDesktop.dialog.needPaths")} />
                   </SelectTrigger>
                   <SelectContent>

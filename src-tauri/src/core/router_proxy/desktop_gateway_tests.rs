@@ -127,7 +127,7 @@ fn hosted_search_reaches_responses_through_both_messages_ingresses_and_replays_h
                 let sent = captured.lock().unwrap().last().unwrap().clone();
                 assert_eq!(sent["model"], "fixture-model");
                 assert_eq!(sent["tools"][0]["type"], "web_search");
-                assert_eq!(sent["tool_choice"], json!({"type":"web_search"}));
+                assert_eq!(sent["tool_choice"], json!("required"));
                 assert_eq!(sent["max_tool_calls"], 2);
                 assert_eq!(sent["input"][1]["id"], "ws1");
                 assert!(sent["input"][1]["action"]["sources"].is_array());

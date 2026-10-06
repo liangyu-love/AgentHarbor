@@ -794,6 +794,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             requested_model.as_deref(),
             selected_binding,
         )? };
+        hosted_search::Plan::command_responses_search_to_chat(&mut destination, body.as_deref());
         if one_m_context
             && desktop.is_none()
             && !matches!(

@@ -346,6 +346,20 @@
       "recoverRollback": "恢复未完成的事务",
       "applyRouter": "应用路由"
     },
+    "profiles": {
+      "title": "已保存配置",
+      "choose": "选择配置",
+      "apply": "一键应用",
+      "saveCurrent": "保存当前配置",
+      "name": "配置名称",
+      "save": "保存",
+      "delete": "删除已选配置",
+      "pathUnavailable": "这套配置对应的 Desktop 位置已不存在，请重新保存。",
+      "modelsUnavailable": "配置中的卡片或模型已不可用，请检查后重新保存。",
+      "routesUnavailable": "配置中的路由目标已不可用，请检查后重新保存。",
+      "nameInUse": "这个名称已有配置，请换个名称。",
+      "storage": "无法保存配置，请检查应用存储空间。"
+    },
     "card": {
       "hintUnmanaged": "选择中转卡片和模型开始配置。",
       "hintManaged": "Claude Desktop 正在直接使用一张已保存的中转卡片。",

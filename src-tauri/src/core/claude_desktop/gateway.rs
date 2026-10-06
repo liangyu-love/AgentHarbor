@@ -193,7 +193,7 @@ pub fn models(
                 catalog,
             )
             .ok()
-            .and_then(|mut r| r.pop())
+            .and_then(|mut r| r.pop().map(|resolved| (choice, resolved)))
         })
         .collect();
     if valid.is_empty() {
@@ -202,8 +202,10 @@ pub fn models(
             "claudeDesktop.errors.routeUnavailable",
         )));
     }
-    let data: Vec<_> = valid.iter().map(|r| {
-        let mut row = serde_json::json!({"type":"model", "id":r.choice.role_alias, "created_at":"1970-01-01T00:00:00Z"});
+    let data: Vec<_> = valid.iter().map(|(committed, r)| {
+        // The running Desktop profile still advertises its committed alias.
+        // Canonicalization in resolve_routes applies only when reapplying it.
+        let mut row = serde_json::json!({"type":"model", "id":committed.role_alias, "created_at":"1970-01-01T00:00:00Z"});
         if r.view.one_m { row["supports1m"] = serde_json::json!(true); }
         row
     }).collect();

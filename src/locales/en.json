@@ -346,6 +346,20 @@
       "recoverRollback": "Recover the unfinished transaction",
       "applyRouter": "Apply routing"
     },
+    "profiles": {
+      "title": "Saved configurations",
+      "choose": "Choose configuration",
+      "apply": "Apply",
+      "saveCurrent": "Save current configuration",
+      "name": "Configuration name",
+      "save": "Save",
+      "delete": "Delete selected configuration",
+      "pathUnavailable": "The Desktop location for this configuration is no longer available. Save it again.",
+      "modelsUnavailable": "A card or model in this configuration is unavailable. Check it and save again.",
+      "routesUnavailable": "A routing target in this configuration is unavailable. Check it and save again.",
+      "nameInUse": "A configuration with this name already exists.",
+      "storage": "Could not save the configuration. Check available app storage."
+    },
     "card": {
       "hintUnmanaged": "Choose a relay card and models to get started.",
       "hintManaged": "Claude Desktop is using a saved relay card directly.",

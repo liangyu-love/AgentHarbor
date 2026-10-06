@@ -134,7 +134,7 @@ export function RoutingDiagnostics({
         </Button>
 
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-2 rounded-xl border border-border/60 bg-muted/30 px-3 py-1.5 text-xs font-medium">
+          {(searchProviders.length > 1 || selectedSearchUnavailable) && <div className="flex items-center gap-2 rounded-xl border border-border/60 bg-muted/30 px-3 py-1.5 text-xs font-medium">
             <span className="text-foreground" id="web-search-provider-label">{t("newapi.webSearchService")}</span>
             <Select value={webSearchProviderId ?? "__automatic"} disabled={searchDisabled}
               onValueChange={value => onWebSearchProvider(value === "__automatic" ? null : value)}>
@@ -149,7 +149,7 @@ export function RoutingDiagnostics({
                 {searchProviders.map(provider => <SelectItem key={provider.id} value={provider.id}>{provider.name}</SelectItem>)}
               </SelectContent>
             </Select>
-          </div>
+          </div>}
           <label className="flex items-center gap-2 rounded-xl border border-border/60 bg-muted/30 px-3 py-1.5 text-xs font-medium">
             <Gauge className="h-3.5 w-3.5 text-primary" aria-hidden />
             <span className="text-foreground">{t("newapi.compression.globalDefault")}</span>

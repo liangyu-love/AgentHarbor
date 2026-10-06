@@ -24,6 +24,11 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   await searchService.click();
   await page.getByRole("option", { name: "自动", exact: true }).click();
   await page.waitForFunction(() => window.review.getState().router.webSearchProviderId === null);
+  await page.evaluate(() => {
+    window.review.providerFixtures = window.review.providerFixtures.filter(provider => provider.id === "command-chat");
+    window.review.mount("access");
+  });
+  await searchService.waitFor({ state: "detached" });
   await page.evaluate(() => window.review.mount("compact"));
   await searchService.waitFor({ state: "detached" });
   await page.evaluate(() => { window.review.routerPatch = { webSearchProviderId: "removed-service" }; window.review.mount("access"); });

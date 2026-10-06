@@ -617,7 +617,8 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   await page.keyboard.press("Space");
   assert.equal(await oneM.getAttribute("aria-checked"), "true", "Space toggles the labelled 1M checkbox on");
   await oneM.uncheck();
-  assert.equal(await dialog().getByRole("combobox").count(), 0, "a single installation and 1M controls must not require dropdowns");
+  assert.equal(await dialog().getByRole("combobox").count(), 1, "only saved configurations may use a dropdown; installation and 1M stay one-click controls");
+  assert.equal(await dialog().locator("#desktop-saved-config").count(), 1);
   assert.doesNotMatch(await dialog().innerText(), /协议由模型名称推断|未经上游验证/, "the protocol inference badge is omitted");
   if (captureDir) await page.screenshot({ path: path.join(captureDir, "claude-desktop-dialog.png"), animations: "disabled" });
 
@@ -795,13 +796,13 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   await page.evaluate(() => window.review.mount("groups"));
   await actionButton(ZH.change).waitFor();
   await actionButton(ZH.change).click();
-  await dialog().getByRole("combobox").first().waitFor();
+  await dialog().locator("#desktop-path").waitFor();
   await modelCheckbox(SHORT_MODEL_ID).check();
   assert.equal(await dialog().getByRole("button", { name: ZH.preview, exact: true }).isDisabled(), true);
   assert.equal(await dialog().getByRole("button", { name: ZH.messagesCheck, exact: true }).isDisabled(), true);
   assert.equal(await dialog().getByText("请先选择 Claude Desktop 的配置位置。", { exact: true }).count(), 2,
     "path selection and disabled-action explanation must both identify the missing choice");
-  const pathSelect = dialog().getByRole("combobox").first();
+  const pathSelect = dialog().locator("#desktop-path");
   await pathSelect.click();
   await page.getByRole("option", { name: "C:/synthetic/Claude-Beta", exact: true }).click();
   assert.equal(await dialog().getByRole("button", { name: ZH.preview, exact: true }).isEnabled(), true);
@@ -1288,6 +1289,38 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
     "a ready update must request only the coordinated restart without downloading or installing twice");
   await page.evaluate(() => window.review.mount("mcp"));
   console.log("PASS an installed update supports background cancellation and a later coordinated restart without reinstalling");
+
+  // Saved Desktop configurations must survive closing the form and one-click
+  // apply must commit exactly the validated snapshot, without storing a key.
+  await reset("groups");
+  await install();
+  await page.evaluate(() => window.review.mount("mcp"));
+  await page.evaluate(() => window.review.mount("groups"));
+  await actionButton(ZH.change).waitFor();
+  await actionButton(ZH.change).click();
+  await dialog().waitFor();
+  const savedName = "Desktop saved smoke";
+  await dialog().locator("li").filter({ has: modelCheckbox(SHORT_MODEL_ID) })
+    .getByRole("checkbox", { name: "1M", exact: true }).uncheck();
+  await dialog().getByRole("button", { name: "保存当前配置", exact: true }).click();
+  await dialog().getByRole("textbox", { name: "配置名称", exact: true }).fill(savedName);
+  await dialog().getByRole("button", { name: "保存", exact: true }).click();
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("agentharbor.claude-desktop-profiles.v1")));
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0].name, savedName);
+  assert.equal(stored[0].models.length, 2);
+  assert.doesNotMatch(JSON.stringify(stored), /fixture-upstream|sk-SENTINEL|apiKey|accessToken/);
+  await dialog().getByRole("button", { name: ZH.cancel, exact: true }).click();
+  await actionButton(ZH.change).click();
+  await dialog().locator("#desktop-saved-config").click();
+  await page.getByRole("option", { name: `${savedName} · 直连`, exact: true }).click();
+  await dialog().getByRole("button", { name: "一键应用", exact: true }).click();
+  await dialog().waitFor({ state: "hidden" });
+  const savedCalls = await page.evaluate(() => window.review.desktopCalls);
+  assert.equal(savedCalls.preview.length, 1);
+  assert.equal(savedCalls.commit.length, 1);
+  assert.deepEqual(savedCalls.commit[0].request, savedCalls.preview[0].request);
+  console.log("PASS a saved Desktop configuration survives reopening and one-click applies its previewed request");
 
   await page.evaluate(() => { delete window.__TAURI_INTERNALS__.invoke; });
   await page.setViewportSize({ width: 1200, height: 700 });

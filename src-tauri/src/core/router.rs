@@ -301,9 +301,13 @@ impl Provider {
     }
 
     pub(crate) fn supports_model(&self, model_id: &str) -> bool {
+        self.supports_model_protocol(model_id, self.protocol_for_model(model_id))
+    }
+
+    pub(crate) fn supports_model_protocol(&self, model_id: &str, protocol: ModelProtocol) -> bool {
         match self.models.iter().find(|model| model.id == model_id) {
             None => true,
-            Some(model) => model_supports_protocol(model, self.protocol_for_model(model_id)),
+            Some(model) => model_supports_protocol(model, protocol),
         }
     }
 }

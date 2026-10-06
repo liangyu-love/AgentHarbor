@@ -128,7 +128,7 @@ fn router_profile_exposes_only_safe_aliases_and_a_local_credential() {
         format!("http://127.0.0.1:{}/claude-desktop", store.router.port)
     );
     assert_eq!(file[profile::KEY_MODELS].as_array().unwrap().len(), 2);
-    assert_eq!(file[profile::KEY_MODELS][0]["name"], "claude-sonnet-4-6");
+    assert_eq!(file[profile::KEY_MODELS][0]["name"], "claude-sonnet-5-5");
     assert_eq!(file[profile::KEY_MODELS][1]["supports1m"], true);
     assert_eq!(file[profile::KEY_EGRESS_HOSTS], json!(["*"]));
     assert!(!file.to_string().contains(SENTINEL_KEY));
@@ -141,6 +141,25 @@ fn router_profile_exposes_only_safe_aliases_and_a_local_credential() {
     let models = super::gateway::models(&snapshot, &store, &catalog).unwrap();
     assert_eq!(models["data"].as_array().unwrap().len(), 2);
     assert_eq!(manager.status(&store).mode, "router");
+}
+
+#[test]
+fn legacy_committed_router_lists_its_actual_alias_until_reapplied() {
+    let (base, _, _, store, request) = router_fixture("legacyRouterModels");
+    let mut missing = request.routes[0].clone();
+    missing.provider_id = "missing-provider".into();
+    let snapshot = super::gateway::GatewaySnapshot {
+        token: "fixture".into(),
+        token_version: 1,
+        bound_port: 1,
+        route_revision: 1,
+        paths_identity: "fixture".into(),
+        routes: vec![missing, request.routes[0].clone()],
+    };
+    let catalog = models_dev::load(&base);
+    let models = super::gateway::models(&snapshot, &store, &catalog).unwrap();
+    assert_eq!(models["data"][0]["id"], "claude-sonnet-4-6");
+    assert_eq!(models["first_id"], "claude-sonnet-4-6");
 }
 
 #[test]

@@ -24,6 +24,46 @@ pub(super) struct Plan {
 }
 
 impl Plan {
+    /// Command Code exposes search through /alpha/web-search, not as a hosted
+    /// tool on /responses. Use the existing local executor for search turns
+    /// when the selected model also has a Chat endpoint. Ordinary turns keep
+    /// the configured Responses protocol.
+    pub fn command_responses_search_to_chat(
+        destination: &mut Destination,
+        body: Option<&[u8]>,
+    ) -> bool {
+        #[derive(serde::Deserialize)]
+        struct DeclaredTools {
+            #[serde(default)]
+            tools: Vec<Value>,
+        }
+        let Destination::Provider { provider, model_override, upstream_protocol, translation } = destination else {
+            return false;
+        };
+        if *upstream_protocol != router::ModelProtocol::Responses
+            || !translation.as_ref().is_some_and(|pair| pair.from == router::ModelProtocol::AnthropicMessages
+                && pair.to == router::ModelProtocol::Responses)
+            || !router::supports_command_search(provider)
+            || !provider.supports_model_protocol(
+                model_override.as_deref().unwrap_or(&provider.model),
+                router::ModelProtocol::ChatCompletions,
+            )
+        {
+            return false;
+        }
+        // Ignore the potentially large message history instead of materializing
+        // a second full JSON tree just to inspect tool declarations.
+        let has_search = body.and_then(|bytes| serde_json::from_slice::<DeclaredTools>(bytes).ok())
+            .is_some_and(|value| value.tools.iter().any(protocol::web_search::is_search));
+        if !has_search { return false; }
+        *upstream_protocol = router::ModelProtocol::ChatCompletions;
+        *translation = protocol::Translation::between(
+            router::ModelProtocol::AnthropicMessages,
+            router::ModelProtocol::ChatCompletions,
+        );
+        true
+    }
+
     /// A later turn can disable search while retaining its prior result blocks.
     /// Replaying those blocks must not require a search account or enable a tool.
     pub fn history_only(
@@ -758,6 +798,46 @@ impl Execution {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_responses_search_uses_local_chat_executor_only_when_supported() {
+        let card = router::Provider {
+            api_key: "fixture-key".into(),
+            base_url: "https://api.commandcode.ai/provider/v1".into(),
+            model: "deepseek/deepseek-v4.1-flash-fast".into(),
+            protocol: router::ModelProtocol::Responses,
+            models: vec![crate::core::newapi::Model {
+                id: "deepseek/deepseek-v4.1-flash-fast".into(),
+                endpoint_types: vec!["/chat/completions".into(), "/responses".into()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let destination = |provider| Destination::Provider {
+            provider: Box::new(provider), model_override: None,
+            upstream_protocol: router::ModelProtocol::Responses,
+            translation: protocol::Translation::between(
+                router::ModelProtocol::AnthropicMessages,
+                router::ModelProtocol::Responses,
+            ),
+        };
+        let search = br#"{"model":"claude-haiku-4-5","max_tokens":128,"messages":[{"role":"user","content":"search"}],"tools":[{"type":"web_search_20250305","name":"web_search_next"}]}"#;
+        let mut selected = destination(card.clone());
+        assert!(!Plan::command_responses_search_to_chat(&mut selected, Some(br#"{"messages":[]}"#)));
+        assert!(Plan::command_responses_search_to_chat(&mut selected, Some(search)));
+        assert!(matches!(selected, Destination::Provider { upstream_protocol: router::ModelProtocol::ChatCompletions, .. }));
+        assert!(Plan::for_destination(&selected, Some(search)).unwrap().is_some());
+
+        let mut responses_only = card.clone();
+        responses_only.models[0].endpoint_types = vec!["/responses".into()];
+        let mut selected = destination(responses_only);
+        assert!(!Plan::command_responses_search_to_chat(&mut selected, Some(search)));
+
+        let mut unrelated = card;
+        unrelated.base_url = "https://other.example/v1".into();
+        let mut selected = destination(unrelated);
+        assert!(!Plan::command_responses_search_to_chat(&mut selected, Some(search)));
+    }
 
     #[test]
     fn search_selection_respects_explicit_account_and_ambiguous_automatic_mode() {

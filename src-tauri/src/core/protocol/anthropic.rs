@@ -263,7 +263,13 @@ pub(super) fn request_with_options(target: ModelProtocol, value: &Value) -> Resu
             "auto" => json!("auto"),
             "any" => json!("required"),
             "none" => json!("none"),
-            "tool" if options.search.as_ref().is_some_and(|s| Some(s.name.as_str()) == choice["name"].as_str()) => json!({"type":"web_search"}),
+            "tool" if options.search.as_ref().is_some_and(|s| Some(s.name.as_str()) == choice["name"].as_str()) => {
+                // Responses gateways commonly accept the standard `required` choice,
+                // but reject a search-specific object. Keep only the selected tool
+                // so `required` still means this particular hosted search.
+                response["tools"].as_array_mut().ok_or(INVALID)?.retain(|tool| tool["type"] == "web_search");
+                json!("required")
+            },
             "tool" => json!({"type":"function","name":string(choice,"name")?}),
             _ => return Err(UNSUPPORTED.into()),
         };

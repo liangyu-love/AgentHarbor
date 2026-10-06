@@ -40,13 +40,26 @@ fn hosted_search_maps_native_tool_options_and_forced_choice() {
     let request = request_body(pair(ModelProtocol::Responses), &search_request()).unwrap();
     assert_eq!(request.body["tools"][0], json!({"type":"web_search","filters":{"allowed_domains":["rust-lang.org"]},"user_location":{"type":"approximate","country":"CN"}}));
     assert_eq!(request.body["max_tool_calls"], 2);
-    assert_eq!(request.body["tool_choice"], json!({"type":"web_search"}));
+    assert_eq!(request.body["tool_choice"], json!("required"));
     assert_eq!(request.body["include"], json!(["web_search_call.action.sources"]));
     assert_eq!(request.response_options.search.unwrap().name, "web_search_next");
     assert_eq!(request_body(pair(ModelProtocol::ChatCompletions), &search_request()).err().unwrap(), "protocol.errors.unsupportedHostedTool");
     let mut custom = search_request();
     custom["tools"] = json!([{"name":"web_search_next","input_schema":{"type":"object"}}]);
     assert_eq!(request_body(pair(ModelProtocol::Responses), &custom).unwrap().body["tool_choice"], json!({"type":"function","name":"web_search_next"}));
+}
+
+#[test]
+fn forced_hosted_search_does_not_allow_a_different_tool_to_satisfy_required() {
+    let mut value = search_request();
+    value["tools"].as_array_mut().unwrap().push(json!({
+        "type":"custom","name":"read_file","input_schema":{"type":"object"}
+    }));
+    let request = request_body(pair(ModelProtocol::Responses), &value).unwrap();
+    assert_eq!(request.body["tool_choice"], "required");
+    assert_eq!(request.body["tools"], json!([{"type":"web_search",
+        "filters":{"allowed_domains":["rust-lang.org"]},
+        "user_location":{"type":"approximate","country":"CN"}}]));
 }
 
 #[test]
