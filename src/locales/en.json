@@ -64,7 +64,6 @@
       "no_available_members": "No available channels"
     },
     "errors": {
-      "chatPending": "Aggregation currently supports Responses and Messages ingress.",
       "consumerUnsupported": "This configuration format is incompatible with the client protocol.",
       "duplicateIdentity": "Aggregate or public model ID already exists.",
       "duplicateMember": "The same provider and model cannot appear twice.",

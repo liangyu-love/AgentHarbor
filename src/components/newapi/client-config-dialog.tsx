@@ -457,9 +457,10 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
                 <span className="block break-all text-xs text-muted-foreground">{entry.publicModelId}</span></span>
             </label>)}</div>
             {aggregateUnavailable && <p role="alert" className="text-xs text-destructive">{t("aggregation.targetUnavailable")}</p>}
-            {!isClaude && aggregateIds.length > 0 && <div className="space-y-1.5"><Label htmlFor="client-aggregate-protocol">{t("aggregation.ingress")}</Label>
+            {client.targetId === "opencode" && aggregateIds.length > 0 && <div className="space-y-1.5"><Label htmlFor="client-aggregate-protocol">{t("aggregation.ingress")}</Label>
               <Select value={request.aggregateIngressProtocol ?? "responses"} onValueChange={value => update({ aggregateIngressProtocol: value as ClientConfigRequest["aggregateIngressProtocol"] })}>
                 <SelectTrigger id="client-aggregate-protocol"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="responses">Responses</SelectItem>
+                  <SelectItem value="chatCompletions">Chat</SelectItem>
                   <SelectItem value="anthropicMessages">Messages</SelectItem></SelectContent></Select>
             </div>}
           </section>}

@@ -2,6 +2,7 @@
 //! Request instructions are deliberately excluded: Responses does not carry
 //! them into a continuation. Explicit system/developer input items do persist.
 
+use super::canonical::{OutputItem, TerminalState};
 use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
@@ -23,7 +24,7 @@ struct History {
 
 impl History {
     fn remember(&mut self, response: &Value, mut input: Vec<Value>) -> bool {
-        if response.get("status").and_then(Value::as_str) != Some("completed") {
+        if !TerminalState::from_canonical_response(response).is_success() {
             return false;
         }
         let Some(id) = response
@@ -36,13 +37,10 @@ impl History {
         let Some(output) = response.get("output").and_then(Value::as_array) else {
             return false;
         };
-        if output.iter().any(|item| {
-            item.get("status")
-                .and_then(Value::as_str)
-                .is_some_and(|status| status != "completed")
-                || (item.get("type").and_then(Value::as_str) == Some("function_call")
-                    && !super::responses::valid_function_call(item))
-        }) {
+        if output
+            .iter()
+            .any(|item| !OutputItem::from_legacy(item).replayable())
+        {
             return false;
         }
         input.extend(output.iter().cloned());

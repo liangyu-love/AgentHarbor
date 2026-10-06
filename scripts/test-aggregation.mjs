@@ -108,10 +108,20 @@ export async function testAggregation({ page, reset, captureDir }) {
   await choose(manager().locator("#aggregate-export-profile"), "Anthropic SDK");
   await manager().locator("#aggregate-export-protocol").click();
   assert.equal(await page.getByRole("option", { name: "Responses", exact: true }).getAttribute("aria-disabled"), "true");
+  assert.equal(await page.getByRole("option", { name: "Chat", exact: true }).getAttribute("aria-disabled"), "true");
   await page.keyboard.press("Escape");
   await manager().getByRole("button", { name: await tr("aggregation.previewConnection"), exact: true }).click();
   assert.equal(await page.evaluate(() => window.review.aggregateExports.at(-1).ingressProtocol), "anthropicMessages");
   assert.match(await preview.innerText(), /http:\/\/127\.0\.0\.1:43127\/aggregate"/);
+  await choose(manager().locator("#aggregate-export-profile"), "OpenCode");
+  await choose(manager().locator("#aggregate-export-protocol"), "Chat");
+  assert.equal(await preview.count(), 0, "changing the ingress withdraws the previous connection preview");
+  await manager().getByRole("button", { name: await tr("aggregation.previewConnection"), exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => {
+    const request = window.review.aggregateExports.at(-1);
+    return { consumerProfile: request.consumerProfile, ingressProtocol: request.ingressProtocol };
+  }), { consumerProfile: "opencode", ingressProtocol: "chatCompletions" });
+  assert.match(await preview.innerText(), /"protocol": "chatCompletions"/);
   assert.equal(await manager().locator("#aggregate-external-enabled").getAttribute("aria-checked"), "false");
   await manager().locator("#aggregate-external-enabled").click();
   await page.waitForFunction(() => window.review.aggregateExternalEnabled);
@@ -218,10 +228,12 @@ export async function testAggregation({ page, reset, captureDir }) {
   // Adding a second ordinary provider must not reset the explicit aggregate default.
   await dialog.getByRole("button", { name: "Relay B", exact: false }).click();
   assert.equal(await dialog.locator("#client-model").innerText(), await tr("aggregation.target") + " / " + POOL_NAME);
+  await choose(dialog.locator("#client-aggregate-protocol"), "Chat");
   await dialog.getByRole("button", { name: await tr("clients.preview"), exact: true }).click();
   await page.waitForFunction(() => !!window.review.previewed);
   const openCodeRequest = await page.evaluate(() => window.review.previewed);
   assert.deepEqual(openCodeRequest.modelSelection.defaultTarget, { kind: "aggregate", aggregateId: "pool-main" });
+  assert.equal(openCodeRequest.aggregateIngressProtocol, "chatCompletions");
   assert.deepEqual(openCodeRequest.providerModelIds, { "relay-a": [FAST_WIRE_MODEL], "relay-b": [SECOND_WIRE_MODEL] });
   assert.deepEqual(openCodeRequest.modelSelection.availableTargets, [
     { kind: "provider", providerId: "relay-a", modelId: FAST_WIRE_MODEL },
@@ -231,6 +243,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   await dialog.getByRole("button", { name: await tr("clients.apply"), exact: true }).click();
   await dialog.waitFor({ state: "detached" });
   await clientsCard.getByRole("button", { name: await tr("clients.change"), exact: true }).click();
+  assert.equal(await dialog.locator("#client-aggregate-protocol").innerText(), "Chat");
   assert.equal(await dialog.locator("#client-model").innerText(), await tr("aggregation.target") + " / " + POOL_NAME);
   assert.equal(await dialog.getByRole("checkbox", { name: await tr("clients.includeModel", { model: POOL_NAME }), exact: true }).isChecked(), true);
   console.log("PASS OpenCode combines exact provider subsets and aggregation while retaining its explicit default across save/reopen");

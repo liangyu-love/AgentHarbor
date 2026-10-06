@@ -77,12 +77,6 @@ pub(super) fn models(
     catalog: &models_dev::Catalog,
 ) -> Result<Vec<AggregateClientModel>, String> {
     let protocol = request.aggregate_protocol();
-    if !matches!(
-        protocol,
-        ModelProtocol::Responses | ModelProtocol::AnthropicMessages
-    ) {
-        return Err("clients.errors.protocol".into());
-    }
     let Some(selection) = &request.options.model_selection else {
         return Ok(Vec::new());
     };

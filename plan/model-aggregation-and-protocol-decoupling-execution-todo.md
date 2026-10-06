@@ -1,6 +1,6 @@
 # 模型聚合与协议解耦：实施 TODO
 
-日期：2026-10-06。状态：**基础聚合 P0–P6 已实现并完成自动化验收；P7 协议性能优化、通用 Chat 入口和真实环境验收仍待完成。**
+日期：2026-10-06。状态：**基础聚合 P0–P6 与 P7 公共事件、统一终态、通用 Chat 扩展已交付，完整自动化回归通过；真实环境验收仍待完成。**
 
 项目基线：`main / 9e33d4e903e194bc42d2b56375ecfaa901bbccdb`。
 参考源码：AxonHub `5c78997798b40e44788c38bd6720c0b9c156f26b`；CLIProxyAPI `a2976eb8a303f11b4ea5177bce9f9ff752634dfc`。
@@ -86,7 +86,7 @@ OpenCode 是已经实现的注入器，不能作为尚未存在的新客户端�
 
 ### 4.1 模块边界
 
-基础交付已按下列职责拆分。协议的 typed canonical 与公共事件流属于 P7，尚未建立 `inbound/`、`outbound/` 和 `canonical.rs` 的完整实现。
+基础交付已按下列职责拆分。P7 在现有 `adapters.rs` 的入口/出口接口下新增 `canonical.rs`、`chat_ingress.rs` 和 `chat_sse.rs`，按事件与编码职责渐进解耦，保留旧 JSON 历史结构，不额外建立平行的 `inbound/`、`outbound/` 目录。
 
 ```text
 core/aggregation/
@@ -108,6 +108,10 @@ core/router_proxy/
 core/protocol/
   types.rs          协议身份与通用错误
   adapters.rs       InboundAdapter/OutboundAdapter/WireAdapter
+  canonical.rs      消息/工具/usage 视图、来源扩展、公共事件与终态
+  chat_ingress.rs   Chat 请求与 JSON 响应适配
+  chat_sse.rs       公共事件到 Chat SSE 编码
+  performance_tests.rs 分帧、工具、大历史与分配基线
   原有转换模块      保持现有 JSON 与 SSE 转换实现
 ```
 
@@ -120,8 +124,10 @@ flowchart LR
   CD[Claude Desktop] --> D[Messages 与角色 alias]
   OC[OpenCode / 其它 agent] --> R
   OC --> M
+  OC --> H[Chat 入口]
   R --> T[共享目标解析]
   M --> T
+  H --> T
   D --> T
   T --> A[聚合能力准入与成员调度]
   A --> O[所选成员的出口适配器]
@@ -212,9 +218,9 @@ AgentConnectionExport {
 }
 ```
 
-受管注入与通用导出都消费同一描述。首版提供通用连接信息、Responses/Messages 配置片段及 OpenCode 配置片段；普通预览脱敏，实际复制配置时按明确操作解析本地 token，不导出上游钥匙。未知 agent 只导出连接信息，不猜其配置路径或改用户文件。
+受管注入与通用导出都消费同一描述。首版提供通用连接信息、Responses/Messages/Chat 配置片段及 OpenCode 配置片段；普通预览脱敏，实际复制配置时按明确操作解析本地 token，不导出上游钥匙。未知 agent 只导出连接信息，不猜其配置路径或改用户文件。
 
-`consumerProfile` 声明接受的入口协议、模型目录格式和必须能力；只导出当前已实现并通过验收的组合。支持 Responses 或 Messages 的 agent 可直接使用聚合 endpoint/public ID；只支持 Chat 的 agent 在完成 Chat 入口扩展前不宣称能消费任意混合池。增加自动注入新 agent 只新增配置 adapter 与 ownership/恢复，不能把客户端特例塞进调度器。
+`consumerProfile` 声明接受的入口协议、模型目录格式和必须能力；只导出当前已实现并通过验收的组合。支持 Responses、Messages 或 Chat 的 agent 可使用对应聚合 endpoint/public ID；普通文本与 function tools 已覆盖三入口/三出口，托管工具、搜索与私有历史仍按各自可表达的能力准入。增加自动注入新 agent 只新增配置 adapter 与 ownership/恢复，不能把客户端特例塞进调度器。
 
 `modelsFormat` 明示 Codex/OpenAI 模型列表与内部通用 catalog 的区别。需要 Anthropic HTTP 模型发现的客户端必须使用明确的 Anthropic 投影入口；不能给它一个 OpenAI 列表并称“协议兼容”。模板只生成可消费的字段，不把通用 JSON 当作所有 agent 的原生配置。
 
@@ -245,7 +251,7 @@ URL 也按 consumerProfile 导出：Anthropic SDK 可能自动追加 `/v1/messag
 |---|---|
 | `POST /aggregate/v1/responses` | Codex/Responses 入口，精确 public ID → aggregate → member |
 | `POST /aggregate/v1/messages` | Claude Code/Messages 入口，精确 public ID → aggregate → member |
-| `POST /aggregate/v1/chat/completions` | 独立扩展阶段新增；实现 Chat 解码与缺失转换方向后才能导出通用 Chat 模板 |
+| `POST /aggregate/v1/chat/completions` | P7 新增；精确 public ID → aggregate → member，JSON/SSE 与 function tools 可跨三出口 |
 | `GET /aggregate/v1/models` | OpenAI 目录投影，只公开聚合 public IDs；显式 `?format=anthropic` 返回 Anthropic 目录投影 |
 | `/aggregate/v1/responses/{id}` 及 cancel/input_items | 原资源索引指向原成员；不根据默认模型重选 |
 | `/aggregate/v1/responses/compact` | 仅原生 Responses 成员可接收；无 previous resource 的独立 compact 可选原生成员，带资源则保留原归属；跨协议不伪造 compact |
@@ -256,7 +262,7 @@ URL 也按 consumerProfile 导出：Anthropic SDK 可能自动追加 `/v1/messag
 
 Codex 与 Claude Code 共用 `/aggregate` namespace，但不让 GET `/models` 猜返回协议。Claude Code 的 picker 从内部共享目录写入；Desktop 的 `/models` 继续 Anthropic alias schema。通用 Anthropic SDK 导出使用明确的 `?format=anthropic` 模型发现地址。
 
-基础交付保留现有转换范围：Responses/Messages 两种聚合入口、Responses/Chat/Messages 三种出口。已有普通单渠道 Chat 入口与 Chat→Chat 原生直通继续保留。通用 Chat 聚合入口与 **Chat→Responses/Messages** 是独立增量，按 P7 的扩展任务实现后发布，不算当前代码已经支持。
+基础交付的七条协议路径继续保留。P7 新增通用 Chat 聚合入口与 **Chat→Responses/Messages** 两条转换方向，三入口/三出口共九条路径；原有单渠道入口和原生透传继续可用。
 
 当前矩阵必须在目录/导出/运行时一致表达：
 
@@ -264,9 +270,9 @@ Codex 与 Claude Code 共用 `/aggregate` namespace，但不让 GET `/models` �
 |---|---|---|---|
 | Responses | 原生 | 已有转换 | 已有转换 |
 | Messages | 已有转换 | 已有转换 | 原生 |
-| Chat Completions | 待新增 | 原生 | 待新增 |
+| Chat Completions | P7 转换 | 原生 | P7 转换 |
 
-OpenCode 使用 Responses 或 Messages 的固定入口即可消费混合池，无需先补两个新方向。只有 Chat 模板需要扩展完成；不能将“三出口”写成“已有任意双向互转”。
+OpenCode 可按所选 SDK 消费 Responses、Messages 或 Chat 的固定入口。Chat 使用独立 `agentharbor_aggregate_chat` 分组和 `@ai-sdk/openai-compatible`；既有 Responses/Messages 分组保持原名。普通文本和 function tools 可双向转换，不代表所有原生托管工具和私有扩展等价。
 
 聚合 Responses/Messages 响应中协议定义的 `model` 字段投影为公开逻辑 ID；观察真实上游 model 后再投影，不替换任意文本/工具结果中的字符串，不凭空添加上游没返回的字段。Desktop 聚合响应同样使用 `publicModelId`；普通 Desktop 单渠道响应继续使用角色 alias。诊断保留请求 alias、实际上游 ID 与原始声明值。
 
@@ -538,24 +544,26 @@ Context7 于 2026-10-06 核对的 [OpenCode 官方自定义 provider 文档](htt
 
 ### P7｜可独立发布的协议优化与通用 Chat 扩展
 
-- [ ] P7.1 逐步引入消息/工具/usage/终态类型及带来源 extensions，兼容现有历史条目。
-- [ ] P7.2 Chat decoder → 公共事件 → Messages encoder，移除中间 Responses SSE 编码再解析。
-- [ ] P7.3 统一终态供历史、诊断和用量消费；保留 incomplete 与 truncated 的区别。
-- [ ] P7.4 差分验证同协议未知字段/事件与必要 model patch；验证私有扩展不能越协议回放。
-- [ ] P7.5 建立分帧/工具/大历史性能基线，验证避免重复整段请求解析且内存有界。
-- [ ] P7.6 若启用首段缓冲，独立验证事件/字节/等待上限与 headers/keepalive 提交边界；失败尝试不泄漏事件。
-- [ ] P7.7 新增通用 Chat 聚合入口与 Chat→Responses/Messages 两方向，覆盖请求/响应/流/工具/错误，不改旧矩阵结果。
-- [ ] P7.8 Chat template/SDK group 按新入口实测后开放，能力矩阵、预算、目录与 runtime 同步；托管工具/搜索能力单独验证。
+- [x] P7.1 逐步引入消息/工具/usage/终态类型及带来源 extensions，兼容现有历史条目。
+- [x] P7.2 Chat decoder → 公共事件 → Messages encoder，移除中间 Responses SSE 编码再解析。
+- [x] P7.3 统一终态供历史、诊断和用量消费；保留 incomplete 与 truncated 的区别。
+- [x] P7.4 差分验证同协议未知字段/事件与必要 model patch；验证私有扩展不能越协议回放。
+- [x] P7.5 建立分帧/工具/大历史性能基线，验证避免额外整段转换且保留内容有界；本地编码耗时和累计分配量已记录，真实峰值内存仍待 P8 验证。
+- [x] P7.6 本轮不启用用于重试的首段暂存；隔离回归验证 headers/keepalive 提交后不换成员。原生终态门控仅做有界分帧，不放宽重试边界。
+- [x] P7.7 新增通用 Chat 聚合入口与 Chat→Responses/Messages 两方向，覆盖请求/响应/流/工具/错误，不改旧矩阵结果。
+- [x] P7.8 Chat template/SDK group 经新增入口隔离测试后开放，能力矩阵、预算、目录与 runtime 同步；托管工具/搜索的真实服务能力留在 P8.2 验证。
+
+P7 的源码、自审修正、分帧差分与性能度量见验收记录。P7.6 的条件分支未启用，不把原生 SSE 分帧称为可重试的首段缓冲。
 
 完成条件：七条既有支持路径没有语义回退，事件优化有可测证据；新增两条方向与 Chat 入口有独立增量验收。P7 分批发布，不阻塞基础聚合；未完成时保留 pending 和能力缺口。Gemini 原生协议及自适应延迟评分另立后续任务。
 
 ### P8｜验收与交付
 
-- [x] P8.1 执行下表 mock/隔离测试和现有 Rust/前端/构建检查，补每项证据。串行 Rust：`927 passed, 0 failed, 11 ignored`；Desktop integration：`11 passed, 11 ignored`；local：`20 passed`；aggregate targeted：`16 passed`，另有普通 provider 辅助端点费用边界回归 `1 passed`；前端、生产构建和 `git diff --check` 通过。
+- [x] P8.1 执行下表 mock/隔离测试和现有 Rust/前端/构建检查，补每项证据。P7 最终串行 Rust：`972 passed, 0 failed, 12 ignored`；Desktop integration：`11 passed, 11 ignored`；local：`20 passed`；性能普通测试 `6 passed, 1 ignored`，单独性能基准 `1 passed`；前端、生产构建和 `git diff --check` 通过。基础交付的定向结果另记，不混作本轮数量。
 - [ ] P8.2 使用真实已配置中转验证至少两成员、跨协议、四种注入、多轮/工具/流式/1M/搜索；通用导出至少一个真实消费者。
 - [ ] P8.3 验证单渠道/Native/官方模式和恢复基线不受聚合影响，实测暂停/退出/重启组合。
 - [x] P8.4 聚合使用、迁移与验收记录及测试证据已写；真实凭据、真机和外部消费者验证的项单列，不标为通过。
-- [x] P8.5 已完成实现自审、辅助端点费用边界修复、完整测试和干净提交；需要发布时由通过验收的 commit 打包。
+- [x] P8.5 已完成基础交付与 P7 实现自审、回归修复、完整测试及提交；需要发布时由通过验收的 commit 打包。
 
 推荐提交顺序：行为保持的协议/target 接口 → 聚合配置/迁移/投影 → 调度/归属 → HTTP/计费 → 四种注入与标准导出 → UI/旧功能退役 → 基础交付验收。事件优化与 Chat 扩展各自追加提交/验收，不捆绑一次重写。旧功能仅在新链路已覆盖后删除，最终发行版本不同时提供新旧两套产品开关；基础交付不把 P7 未完成项标成通过。
 

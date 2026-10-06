@@ -37,6 +37,7 @@ mod hosted_search;
 #[cfg(test)]
 #[path = "router_proxy/hosted_search_tests.rs"]
 mod hosted_search_tests;
+mod native_sse;
 #[cfg(test)]
 #[path = "router_proxy/routing_safety_tests.rs"]
 mod routing_safety_tests;
@@ -684,7 +685,9 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             return Err((StatusCode::UNAUTHORIZED, "invalid Desktop gateway token"));
         }
         if snapshot.bound_port != context.bound_port {
-            return Err((StatusCode::SERVICE_UNAVAILABLE, "Desktop gateway listener changed",
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Desktop gateway listener changed",
             ));
         }
         Some(snapshot)
@@ -707,7 +710,9 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
     // A refresh can replace the shared catalog Arc while a body is being read
     // or converted. Desktop eligibility, conversion and pricing must all use
     // the catalog generation captured for this request.
-    let desktop_catalog = desktop.as_ref().map(|_| super::models_dev::load(&context.app_data_dir));
+    let desktop_catalog = desktop
+        .as_ref()
+        .map(|_| super::models_dev::load(&context.app_data_dir));
     if matches!(
         segments.as_slice(),
         ["aggregate", "v1", "models"] | ["aggregate", "v1", "models", _]
@@ -739,17 +744,24 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             desktop.as_ref().expect("authenticated Desktop namespace"),
             &store,
             desktop_catalog.as_deref().expect("Desktop request catalog"),
-        ).map_err(|_| {
+        )
+        .map_err(|_| {
             (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "no available Desktop routes",
             )
         })?;
-        return Ok(Response::builder().status(StatusCode::OK).header(CONTENT_TYPE, "application/json")
-            .body(full_body(value.to_string())).expect("static response parts"));
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, "application/json")
+            .body(full_body(value.to_string()))
+            .expect("static response parts"));
     }
     let has_body = !matches!(method, hyper::Method::GET | hyper::Method::HEAD);
-    let codex_auth = desktop.is_none().then(|| codex_request_auth(request.headers(), &store.router.bearer_token)).flatten();
+    let codex_auth = desktop
+        .is_none()
+        .then(|| codex_request_auth(request.headers(), &store.router.bearer_token))
+        .flatten();
     if request
         .headers()
         .get(CONTENT_LENGTH)
@@ -760,8 +772,11 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         return Err((StatusCode::PAYLOAD_TOO_LARGE, "request body too large"));
     }
     let headers = forwardable_headers(request.headers());
-    let one_m_beta = headers.get_all("anthropic-beta").iter()
-        .filter_map(|value| value.to_str().ok()).flat_map(|value| value.split(','))
+    let one_m_beta = headers
+        .get_all("anthropic-beta")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
         .any(|value| value.trim() == CLAUDE_ONE_M_BETA);
     let body: Option<Bytes> = if has_body {
         Some(read_limited_body(request.into_body()).await?)
@@ -796,12 +811,6 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
     if segments.first() == Some(&"aggregate") {
         let ingress =
             required_protocol.ok_or((StatusCode::NOT_FOUND, "unsupported aggregate endpoint"))?;
-        if ingress == router::ModelProtocol::ChatCompletions {
-            return Err((
-                StatusCode::NOT_IMPLEMENTED,
-                "mixed aggregate Chat ingress is not available yet",
-            ));
-        }
         let catalog = super::models_dev::load(&context.app_data_dir);
         let result = aggregate::execute(
             &context,
@@ -1876,23 +1885,72 @@ fn adapted_native_stream(
     attempt_id: String,
     adapter: tool_schema::Adapter,
 ) -> ResponseBody {
-    let observer = ResponseObservation::new(trace, relay_request, protocol, &model, &attempt_id, response.status().as_u16(), true,
+    let observer = ResponseObservation::new(
+        trace,
+        relay_request,
+        protocol,
+        &model,
+        &attempt_id,
+        response.status().as_u16(),
+        true,
     );
     let stream = futures_util::stream::unfold(
-        (response.bytes_stream(), observer, adapter.stream(protocol), false,
+        (
+            response.bytes_stream(),
+            observer,
+            adapter.stream(protocol),
+            native_sse::TerminalGate::new(protocol),
+            false,
         ),
-        move |(mut source, mut observer, mut adapter, done)| async move {
-            if done { return None; }
+        move |(mut source, mut observer, mut adapter, mut gate, done)| async move {
+            if done {
+                return None;
+            }
             let (result, done) = match source.next().await {
-                Some(Ok(bytes)) => { observer.push(&bytes); (adapter.push(&bytes), false) }
-                Some(Err(error)) => { observer.error(); (Err(if error.is_timeout() { "upstream_stream_timeout" } else { "upstream_stream_error" }), true,
-                    ) }
-                None => (adapter.finish().map(|()| Bytes::new()), true),
+                Some(Ok(bytes)) => {
+                    observer.push(&bytes);
+                    (
+                        gate.push(&bytes).and_then(|bytes| adapter.push(&bytes)),
+                        false,
+                    )
+                }
+                Some(Err(error)) => {
+                    observer.error();
+                    (
+                        Err(if error.is_timeout() {
+                            "upstream_stream_timeout"
+                        } else {
+                            "upstream_stream_error"
+                        }),
+                        true,
+                    )
+                }
+                None => (
+                    gate.flush().and_then(|bytes| {
+                        let bytes = adapter.push(&bytes)?;
+                        adapter.finish()?;
+                        observer.stream_ended().map_or(Ok(bytes), Err)
+                    }),
+                    true,
+                ),
             };
             let (bytes, done) = match result {
                 Ok(bytes) => {
                     let done = done || adapter.is_finished();
-                    if done { observer.finish(); }
+                    if done {
+                        if let Some(code) = observer.stream_ended() {
+                            observer.translation_error(code);
+                            return Some((
+                                Ok::<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>(
+                                    Frame::data(Bytes::from(stream_error_event(protocol, code))),
+                                ),
+                                (source, observer, adapter, gate, true),
+                            ));
+                        }
+                    }
+                    if done {
+                        observer.finish();
+                    }
                     (bytes, done)
                 }
                 Err(code) => {
@@ -1900,17 +1958,23 @@ fn adapted_native_stream(
                     observer.finalize(false);
                     // End the body with an error, never with an executable tool
                     // or a success terminal frame after invalid JSON arguments.
-                    return Some((Ok::<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>(
-                        Frame::data(Bytes::from(stream_error_event(protocol, code)),
+                    return Some((
+                        Ok::<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>(Frame::data(
+                            Bytes::from(stream_error_event(protocol, code)),
                         )),
-                        (source, observer, adapter, true),
+                        (source, observer, adapter, gate, true),
                     ));
                 }
             };
-            Some((Ok(Frame::data(bytes)), (source, observer, adapter, done)))
+            Some((
+                Ok(Frame::data(bytes)),
+                (source, observer, adapter, gate, done),
+            ))
         },
     );
-    BodyExt::boxed(StreamBody::new(sse_keepalive(stream, Duration::from_secs(15),
+    BodyExt::boxed(StreamBody::new(sse_keepalive(
+        stream,
+        Duration::from_secs(15),
     )))
 }
 
@@ -1921,14 +1985,31 @@ fn sse_keepalive<S, E>(source: S, period: Duration,
 ) -> impl futures_util::Stream<Item = Result<Frame<Bytes>, E>> + Send
 where S: futures_util::Stream<Item = Result<Frame<Bytes>, E>> + Send, E: Send,
 {
-    futures_util::stream::unfold((Box::pin(source), Box::pin(tokio::time::sleep(period))), move |(mut source, mut timer)| async move {
-        let item = tokio::select! {
+    futures_util::stream::unfold((Box::pin(source), Box::pin(tokio::time::sleep(period)), false, false), move |(mut source, mut timer, mut sent_keepalive, mut source_started)| async move {
+        let (item, from_source) = tokio::select! {
             biased;
-            item = source.next() => item?,
-            _ = timer.as_mut() => Ok(Frame::data(Bytes::from_static(b": keepalive\n\n"))),
+            item = source.next() => (item?, true),
+            _ = timer.as_mut() => {
+                sent_keepalive = true;
+                (Ok(Frame::data(Bytes::from_static(b": keepalive\n\n"))), false)
+            },
+        };
+        let item = if from_source {
+            item.map(|frame| match frame.into_data() {
+                Ok(bytes) => {
+                    // Native data is already framed. Once our comment precedes
+                    // it, its optional BOM must not become a field-name prefix.
+                    let remove_bom = !source_started && sent_keepalive && bytes.starts_with(b"\xef\xbb\xbf");
+                    source_started |= !bytes.is_empty();
+                    Frame::data(if remove_bom { bytes.slice(3..) } else { bytes })
+                }
+                Err(frame) => frame,
+            })
+        } else {
+            item
         };
         timer.as_mut().reset(tokio::time::Instant::now() + period);
-        Some((item, (source, timer)))
+        Some((item, (source, timer, sent_keepalive, source_started)))
     },
     )
 }
@@ -1942,6 +2023,8 @@ fn observed_stream(
     attempt_id: String,
     sse: bool,
 ) -> impl futures_util::Stream<Item = Result<Bytes, reqwest::Error>> + Send {
+    let gate = (sse && response.status().is_success())
+        .then(|| native_sse::TerminalGate::new(upstream_protocol));
     let observer = ResponseObservation::new(
         trace,
         relay_request,
@@ -1952,29 +2035,74 @@ fn observed_stream(
         sse,
     );
     futures_util::stream::unfold(
-        (response.bytes_stream(), observer, false),
-        move |(mut stream, mut observer, done)| async move {
-            if done { return None; }
+        (response.bytes_stream(), observer, gate, false),
+        move |(mut stream, mut observer, mut gate, done)| async move {
+            if done {
+                return None;
+            }
             match stream.next().await {
                 Some(chunk) => {
                     if let Err(error) = &chunk {
                         observer.error();
                         observer.finalize(false);
                         let chunk = if sse {
-                            Ok(Bytes::from(stream_error_event(upstream_protocol, if error.is_timeout() { "upstream_stream_timeout" } else { "upstream_stream_error" },
+                            Ok(Bytes::from(stream_error_event(
+                                upstream_protocol,
+                                if error.is_timeout() {
+                                    "upstream_stream_timeout"
+                                } else {
+                                    "upstream_stream_error"
+                                },
                             )))
-                        } else { chunk };
-                        return Some((chunk, (stream, observer, true)));
+                        } else {
+                            chunk
+                        };
+                        return Some((chunk, (stream, observer, gate, true)));
                     }
                     match &chunk {
                         Ok(bytes) => observer.push(bytes),
                         Err(_) => observer.error(),
                     }
-                    Some((chunk, (stream, observer, false)))
+                    let chunk = match (chunk, gate.as_mut()) {
+                        (Ok(bytes), Some(parser)) => match parser.push(&bytes) {
+                            Ok(bytes) => Ok(bytes),
+                            Err(code) => {
+                                observer.translation_error(code);
+                                observer.finalize(false);
+                                return Some((
+                                    Ok(Bytes::from(stream_error_event(upstream_protocol, code))),
+                                    (stream, observer, gate, true),
+                                ));
+                            }
+                        },
+                        (chunk, _) => chunk,
+                    };
+                    Some((chunk, (stream, observer, gate, false)))
                 }
                 None => {
+                    let (bytes, gate_error) =
+                        match gate.as_mut().map(native_sse::TerminalGate::flush) {
+                            Some(Ok(bytes)) => (bytes, None),
+                            Some(Err(code)) => (Bytes::new(), Some(code)),
+                            None => (Bytes::new(), None),
+                        };
+                    let error =
+                        gate_error.or_else(|| if sse { observer.stream_ended() } else { None });
+                    if let Some(code) = error {
+                        observer.translation_error(code);
+                    }
                     observer.finish();
-                    None
+                    let mut output = bytes.to_vec();
+                    if let Some(code) = error {
+                        output.extend_from_slice(
+                            stream_error_event(upstream_protocol, code).as_bytes(),
+                        );
+                    }
+                    if output.is_empty() {
+                        None
+                    } else {
+                        Some((Ok(Bytes::from(output)), (stream, observer, gate, true)))
+                    }
                 }
             }
         },
@@ -1982,12 +2110,21 @@ fn observed_stream(
 }
 
 fn stream_error_event(protocol: router::ModelProtocol, code: &str) -> String {
-    let error = if protocol == router::ModelProtocol::Responses {
-        json!({"type":"error","code":code,"message":code})
-    } else {
-        json!({"type":"error","error":{"type":"api_error","message":code}})
+    let error = match protocol {
+        router::ModelProtocol::Responses => json!({"type":"error","code":code,"message":code}),
+        router::ModelProtocol::AnthropicMessages => {
+            json!({"type":"error","error":{"type":"api_error","message":code}})
+        }
+        router::ModelProtocol::ChatCompletions => {
+            return format!(
+                "\n\ndata: {}\n\n",
+                json!({"error":{"type":"api_error","code":code,"message":code}})
+            );
+        }
     };
-    format!("event: error\ndata: {error}\n\n")
+    // A raw upstream may fail halfway through a frame. Start a fresh event so
+    // the error remains parseable after any bytes already sent downstream.
+    format!("\n\nevent: error\ndata: {error}\n\n")
 }
 
 /// One raw-byte observation per attempt. The same bounded model result is
@@ -2046,6 +2183,12 @@ impl ResponseObservation {
         self.delivered = true;
         self.finalize(true);
         self.diagnostic.finish();
+    }
+    fn stream_ended(&mut self) -> Option<&'static str> {
+        self.finalize(true);
+        self.served
+            .stream_truncated()
+            .then_some("upstream_stream_truncated")
     }
     fn finalize(&mut self, eof: bool) {
         if self.finalized {
@@ -2310,61 +2453,226 @@ mod tests {
     fn all_stream_paths_report_idle_timeout_without_a_success_terminal() {
         let _lock = global_router_test_lock();
         tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap();
             let address = listener.local_addr().unwrap();
             let server = tokio::spawn(async move {
                 while let Ok((socket, _)) = listener.accept().await {
                     tokio::spawn(async move {
                         let service = service_fn(|_: Request<Incoming>| async {
-                            let first = futures_util::stream::once(async { Ok::<_, std::convert::Infallible>(Frame::data(Bytes::from_static(b": heartbeat\n\n",
-                                ))) });
-                            Ok::<_, std::convert::Infallible>(Response::builder().header(CONTENT_TYPE, "text/event-stream")
-                                .body(StreamBody::new(first.chain(futures_util::stream::pending()),
+                            let first = futures_util::stream::once(async {
+                                Ok::<_, std::convert::Infallible>(Frame::data(Bytes::from_static(
+                                    b": heartbeat\n\n",
+                                )))
+                            });
+                            Ok::<_, std::convert::Infallible>(
+                                Response::builder()
+                                    .header(CONTENT_TYPE, "text/event-stream")
+                                    .body(StreamBody::new(
+                                        first.chain(futures_util::stream::pending()),
                                     ))
                                     .unwrap(),
                             )
                         });
-                        let _ = http1::Builder::new().serve_connection(TokioIo::new(socket), service).await;
+                        let _ = http1::Builder::new()
+                            .serve_connection(TokioIo::new(socket), service)
+                            .await;
                     });
                 }
             });
-            for protocol in [router::ModelProtocol::Responses, router::ModelProtocol::ChatCompletions, router::ModelProtocol::AnthropicMessages,
+            for protocol in [
+                router::ModelProtocol::Responses,
+                router::ModelProtocol::ChatCompletions,
+                router::ModelProtocol::AnthropicMessages,
             ] {
-              for path in 0..3 {
-                let source = Client::builder().no_proxy().read_timeout(Duration::from_millis(50)).build().unwrap()
-                    .get(format!("http://{address}")).send().await.unwrap();
-                let trace = route_trace::Trace::begin("timeout-fixture", None);
-                let bytes = match path {
-                    0 => {
-                        let stream = observed_stream(source, trace, None, protocol, "fixture".into(), "fixture-attempt".into(), true,
+                for path in 0..3 {
+                    let source = Client::builder()
+                        .no_proxy()
+                        .read_timeout(Duration::from_millis(50))
+                        .build()
+                        .unwrap()
+                        .get(format!("http://{address}"))
+                        .send()
+                        .await
+                        .unwrap();
+                    let trace = route_trace::Trace::begin("timeout-fixture", None);
+                    let bytes = match path {
+                        0 => {
+                            let stream = observed_stream(
+                                source,
+                                trace,
+                                None,
+                                protocol,
+                                "fixture".into(),
+                                "fixture-attempt".into(),
+                                true,
                             )
                             .map(|b| b.map(Frame::data));
-                        let frames: Vec<_> = tokio::time::timeout(Duration::from_secs(2), sse_keepalive(stream, Duration::from_millis(10)).collect(),
-                            ).await.unwrap();
-                        let bytes = frames.into_iter().map(|f| f.unwrap().into_data().unwrap()).collect::<Vec<_>>().concat();
-                        assert!(String::from_utf8_lossy(&bytes).contains(": keepalive"));
-                        bytes
-                    }
-                    1 => adapted_native_stream(source, trace, None, protocol, "fixture".into(), "fixture-attempt".into(), Default::default(),
-                        ).collect().await.unwrap().to_bytes().to_vec(),
-                    _ => {
-                        let from = if protocol == router::ModelProtocol::AnthropicMessages { router::ModelProtocol::Responses } else { router::ModelProtocol::AnthropicMessages };
-                        translated_stream(source, protocol::Translation { from, to: protocol }, None, Vec::new(), trace, protocol, "fixture".into(), "fixture-attempt".into(), None, Default::default(), Default::default(), Default::default(),
+                            let frames: Vec<_> = tokio::time::timeout(
+                                Duration::from_secs(2),
+                                sse_keepalive(stream, Duration::from_millis(10)).collect(),
                             )
-                            .unwrap().collect().await.unwrap().to_bytes().to_vec()
-                    }
-                };
-                let text = String::from_utf8(bytes).unwrap();
-                let failure_event = if path == 2 && protocol == router::ModelProtocol::AnthropicMessages {
-                    "event: response.failed"
-                } else {
-                    "event: error"
-                };
-                assert!(text.contains(failure_event) && text.contains("upstream_stream_timeout"), "protocol={protocol:?}, path={path}, body={text}");
-                assert!(!text.contains("message_stop") && !text.contains("[DONE]") && !text.contains("event: response.completed"));
-              }
+                            .await
+                            .unwrap();
+                            let bytes = frames
+                                .into_iter()
+                                .map(|f| f.unwrap().into_data().unwrap())
+                                .collect::<Vec<_>>()
+                                .concat();
+                            assert!(String::from_utf8_lossy(&bytes).contains(": keepalive"));
+                            bytes
+                        }
+                        1 => adapted_native_stream(
+                            source,
+                            trace,
+                            None,
+                            protocol,
+                            "fixture".into(),
+                            "fixture-attempt".into(),
+                            Default::default(),
+                        )
+                        .collect()
+                        .await
+                        .unwrap()
+                        .to_bytes()
+                        .to_vec(),
+                        _ => {
+                            let from = if protocol == router::ModelProtocol::AnthropicMessages {
+                                router::ModelProtocol::Responses
+                            } else {
+                                router::ModelProtocol::AnthropicMessages
+                            };
+                            translated_stream(
+                                source,
+                                protocol::Translation { from, to: protocol },
+                                None,
+                                Vec::new(),
+                                trace,
+                                protocol,
+                                "fixture".into(),
+                                "fixture-attempt".into(),
+                                None,
+                                Default::default(),
+                                Default::default(),
+                                Default::default(),
+                            )
+                            .unwrap()
+                            .collect()
+                            .await
+                            .unwrap()
+                            .to_bytes()
+                            .to_vec()
+                        }
+                    };
+                    let text = String::from_utf8(bytes).unwrap();
+                    let failure_event =
+                        if path == 2 && protocol == router::ModelProtocol::AnthropicMessages {
+                            "event: response.failed"
+                        } else if path != 2 && protocol == router::ModelProtocol::ChatCompletions {
+                            "\"error\""
+                        } else {
+                            "event: error"
+                        };
+                    assert!(
+                        text.contains(failure_event) && text.contains("upstream_stream_timeout"),
+                        "protocol={protocol:?}, path={path}, body={text}"
+                    );
+                    assert!(
+                        !text.contains("message_stop")
+                            && !text.contains("[DONE]")
+                            && !text.contains("event: response.completed")
+                    );
+                }
             }
             server.abort();
+        });
+    }
+
+    #[test]
+    fn native_eof_requires_real_terminal_and_separates_error_frames() {
+        let _lock = global_router_test_lock();
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            for protocol in [router::ModelProtocol::Responses, router::ModelProtocol::ChatCompletions, router::ModelProtocol::AnthropicMessages] {
+                let start = match protocol {
+                    router::ModelProtocol::Responses => "data: {\"type\":\"response.created\",\"response\":{\"model\":\"fixture\"}}",
+                    router::ModelProtocol::ChatCompletions => "data: {\"model\":\"fixture\",\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}",
+                    router::ModelProtocol::AnthropicMessages => "data: {\"type\":\"message_start\",\"message\":{\"model\":\"fixture\"}}",
+                };
+                let terminal = match protocol {
+                    router::ModelProtocol::Responses => "data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}",
+                    router::ModelProtocol::ChatCompletions => "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]",
+                    router::ModelProtocol::AnthropicMessages => "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}\n\ndata: {\"type\":\"message_stop\"}",
+                };
+                let large_content = "x".repeat(300 * 1024);
+                let large_value = match protocol {
+                    router::ModelProtocol::Responses => json!({"type":"response.output_text.delta","delta":large_content}),
+                    router::ModelProtocol::ChatCompletions => json!({"choices":[{"delta":{"content":large_content},"finish_reason":null}]}),
+                    router::ModelProtocol::AnthropicMessages => json!({"type":"content_block_delta","delta":{"type":"text_delta","text":large_content}}),
+                };
+                let large_start = format!("data: {large_value}\n\n");
+                let mut fixtures: Vec<Bytes> = vec![
+                    start.to_owned(),
+                    format!("{start}\n\n"),
+                    format!("{start}\n\n{terminal}"),
+                    format!("{start}\n\ndata: [DONE]\n\n"),
+                    large_start.clone(),
+                    format!("{large_start}{terminal}\n\n"),
+                    "\u{feff}data: [DONE]\n\n".to_owned(),
+                    format!("\u{feff}{terminal}\n\n"),
+                ].into_iter().map(Bytes::from).collect();
+                fixtures.push(Bytes::from_static(b": \xff\n\ndata: [DONE]\n\n"));
+                let fixtures = Arc::new(fixtures);
+                let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+                let address = listener.local_addr().unwrap();
+                let server = tokio::spawn(async move {
+                    while let Ok((socket, _)) = listener.accept().await {
+                        let fixtures = fixtures.clone();
+                        tokio::spawn(async move {
+                            let service = service_fn(move |request: Request<Incoming>| {
+                                let index: usize = request.uri().path().trim_start_matches('/').parse().unwrap();
+                                let body = fixtures[index].clone();
+                                async move {
+                                    Ok::<_, std::convert::Infallible>(Response::builder()
+                                        .header(CONTENT_TYPE, "text/event-stream")
+                                        .body(Full::new(Bytes::from(body))).unwrap())
+                                }
+                            });
+                            let _ = http1::Builder::new().serve_connection(TokioIo::new(socket), service).await;
+                        });
+                    }
+                });
+                for index in 0..9 {
+                    for path in 0..2 {
+                        let source = Client::builder().no_proxy().timeout(Duration::from_secs(2)).build().unwrap()
+                            .get(format!("http://{address}/{index}")).send().await.unwrap();
+                        let trace = route_trace::Trace::begin("eof-fixture", None);
+                        let bytes = if path == 0 {
+                            observed_stream(source, trace, None, protocol, "fixture".into(), "eof-attempt".into(), true)
+                                .collect::<Vec<_>>().await.into_iter().map(Result::unwrap).collect::<Vec<_>>().concat()
+                        } else {
+                            adapted_native_stream(source, trace, None, protocol, "fixture".into(), "eof-attempt".into(), Default::default())
+                                .collect().await.unwrap().to_bytes().to_vec()
+                        };
+                        let text = String::from_utf8(bytes).unwrap();
+                        let errors: Vec<Value> = text.split("\n\n").filter_map(|frame| {
+                            frame.lines().find_map(|line| line.strip_prefix("data: "))
+                                .and_then(|data| serde_json::from_str::<Value>(data).ok())
+                        }).filter(|value| !value["error"].is_null() || value["type"] == "error").collect();
+                        if matches!(index, 2 | 5 | 7) {
+                            assert!(errors.is_empty(), "valid incomplete response: {protocol:?}/{path}/{index}");
+                        } else {
+                            assert_eq!(errors.len(), 1, "{protocol:?}/{path}/{index}");
+                            let code = if index == 8 { "invalid_stream_frame" } else { "upstream_stream_truncated" };
+                            assert!(text.contains(code), "{protocol:?}/{path}/{index}");
+                            if matches!(index, 3 | 6 | 8) {
+                                assert!(!text.contains("[DONE]"), "an SDK must see the error before any terminal marker: {text}");
+                            }
+                        }
+                    }
+                }
+                server.abort();
+            }
         });
     }
 
@@ -2418,6 +2726,35 @@ mod tests {
             let bytes: Vec<_> = frames.into_iter().map(|f| f.unwrap().into_data().unwrap()).collect();
             assert_eq!(bytes.last().unwrap(), b"data: final\n\n".as_slice());
             assert!(bytes[..bytes.len()-1].iter().all(|b| b.as_ref() == b": keepalive\n\n"));
+        });
+    }
+
+    #[test]
+    fn delayed_native_bom_after_keepalive_does_not_hide_the_first_event() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let wire = Bytes::from_static(b"\xef\xbb\xbfdata: {\"type\":\"response.completed\"}\n\n");
+            let release = Arc::new(tokio::sync::Notify::new());
+            let upstream_release = release.clone();
+            let upstream_wire = wire.clone();
+            let source = futures_util::stream::once(async move {
+                upstream_release.notified().await;
+                Ok::<_, std::convert::Infallible>(Frame::data(upstream_wire))
+            });
+            let mut stream = Box::pin(sse_keepalive(source, Duration::from_millis(1)));
+            let heartbeat = tokio::time::timeout(Duration::from_secs(2), stream.next()).await.unwrap().unwrap().unwrap().into_data().unwrap();
+            assert_eq!(heartbeat, b": keepalive\n\n".as_slice());
+            release.notify_one();
+            let event = tokio::time::timeout(Duration::from_secs(2), stream.next()).await.unwrap().unwrap().unwrap().into_data().unwrap();
+            assert_eq!(event, wire.slice(3..));
+            assert!(stream.next().await.is_none());
+
+            let source = futures_util::stream::once(async move {
+                Ok::<_, std::convert::Infallible>(Frame::data(wire.clone()))
+            });
+            let mut stream = Box::pin(sse_keepalive(source, Duration::from_secs(1)));
+            let event = stream.next().await.unwrap().unwrap().into_data().unwrap();
+            assert!(event.starts_with(b"\xef\xbb\xbf"));
+            assert!(stream.next().await.is_none());
         });
     }
 
@@ -2696,7 +3033,14 @@ mod tests {
             from: router::ModelProtocol::ChatCompletions,
             to: router::ModelProtocol::Responses,
         };
-        assert!(!reverse.is_supported());
+        assert!(reverse.is_supported());
+        let request = protocol::request_body(
+            reverse,
+            &json!({"model":"chat-model","messages":[{"role":"user","content":"hello"}],"max_tokens":32}),
+        ).unwrap();
+        assert_eq!(request.body["input"][0]["role"], "user");
+        assert_eq!(request.body["max_output_tokens"], 32);
+        assert!(request.body.get("messages").is_none());
     }
 
     #[test]

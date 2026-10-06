@@ -258,8 +258,8 @@ impl ClientAdapter for OpenCode {
             let key = aggregate_provider_key(protocol)?;
             let npm = match protocol {
                 ModelProtocol::Responses => "@ai-sdk/openai",
+                ModelProtocol::ChatCompletions => "@ai-sdk/openai-compatible",
                 ModelProtocol::AnthropicMessages => "@ai-sdk/anthropic",
-                _ => return Err("clients.errors.protocol".into()),
             };
             let (base, credential) = aggregate_models::endpoint(store, true);
             keys.push(json!(key));
@@ -332,10 +332,7 @@ impl ClientAdapter for OpenCode {
         };
         edits.push(edit(
             &["model"],
-            json!(format!(
-                "{}/{}", default_key,
-                request.model
-            )),
+            json!(format!("{}/{}", default_key, request.model)),
         ));
         if let Some(enabled) = document.get("enabled_providers") {
             let mut enabled = enabled
@@ -366,7 +363,7 @@ impl ClientAdapter for OpenCode {
 fn aggregate_provider_key(protocol: ModelProtocol) -> Result<&'static str, String> {
     match protocol {
         ModelProtocol::Responses => Ok("agentharbor_aggregate_responses"),
+        ModelProtocol::ChatCompletions => Ok("agentharbor_aggregate_chat"),
         ModelProtocol::AnthropicMessages => Ok("agentharbor_aggregate_anthropic"),
-        _ => Err("clients.errors.protocol".into()),
     }
 }

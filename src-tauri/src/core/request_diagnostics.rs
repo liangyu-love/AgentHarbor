@@ -1,6 +1,6 @@
 //! Bounded observations of the original upstream response and dispatch credential.
 //! These values are diagnostic only; they never select a route or change a body.
-use super::{router::ModelProtocol, secret_file};
+use super::{protocol::canonical::TerminalObservation, router::ModelProtocol, secret_file};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -187,13 +187,14 @@ pub struct ServedModelObserver {
     request_model_issue: Option<&'static str>,
     status: u16,
     sse: bool,
+    at_start: bool,
     buffer: Vec<u8>,
     event_data: Vec<u8>,
     event_name: String,
     served: Option<String>,
     conflict: Option<String>,
     reason: Option<&'static str>,
-    terminal: bool,
+    terminal: TerminalObservation,
     oversized: bool,
     final_result: Option<ServedModelObservation>,
 }
@@ -217,13 +218,14 @@ impl ServedModelObserver {
             request_model_issue,
             status,
             sse,
+            at_start: true,
             buffer: Vec::new(),
             event_data: Vec::new(),
             event_name: String::new(),
             served: None,
             conflict: None,
             reason: None,
-            terminal: false,
+            terminal: TerminalObservation::default(),
             oversized: false,
             final_result: None,
         }
@@ -259,6 +261,7 @@ impl ServedModelObserver {
     }
 
     fn line(&mut self, line: &[u8]) {
+        let line = super::protocol::canonical::strip_stream_bom(line, &mut self.at_start);
         if line.is_empty() {
             self.event();
             return;
@@ -288,7 +291,7 @@ impl ServedModelObserver {
             return;
         }
         if data == b"[DONE]" {
-            self.terminal = true;
+            self.terminal.done();
             return;
         }
         let Ok(value) = serde_json::from_slice::<Value>(&data) else {
@@ -296,14 +299,13 @@ impl ServedModelObserver {
             return;
         };
         let kind = value.get("type").and_then(Value::as_str).unwrap_or(&name);
-        if matches!(kind, "error" | "response.failed") || !value["error"].is_null() {
-            self.reason = Some("response_failed");
+        if self.sse {
+            self.terminal.observe(self.protocol, &value, &name);
+        } else {
+            self.terminal.observe_body(self.protocol, &value);
         }
-        if matches!(
-            kind,
-            "response.completed" | "response.incomplete" | "message_stop"
-        ) {
-            self.terminal = true;
+        if self.terminal.failed() {
+            self.reason = Some("response_failed");
         }
         let declared = match self.protocol {
             ModelProtocol::Responses => {
@@ -364,6 +366,16 @@ impl ServedModelObserver {
         self.reason = Some("upstream_stream_error");
     }
 
+    /// Inspect after `finish(true)` so a final frame without trailing newlines
+    /// has been consumed. An observation limit is unknown, not proof of EOF
+    /// truncation, and an HTTP rejection is not a successful SSE response.
+    pub fn stream_truncated(&self) -> bool {
+        self.sse
+            && (200..300).contains(&self.status)
+            && !self.oversized
+            && !self.terminal.received()
+    }
+
     pub fn finish(&mut self, eof: bool) -> ServedModelObservation {
         if let Some(result) = &self.final_result {
             return result.clone();
@@ -397,7 +409,7 @@ impl ServedModelObserver {
             Some("conflicting_declarations")
         } else if self.reason.is_some() {
             self.reason
-        } else if self.sse && !self.terminal {
+        } else if self.sse && !self.terminal.received() {
             Some("incomplete_stream")
         } else if self.served.is_none() {
             Some("model_not_declared")

@@ -188,7 +188,7 @@ api.aggregation.exportConnection = async request => {
     protocol: request.ingressProtocol }, null, 2);
   return { configText, connection: { schemaVersion: 1, consumerProfile: { id: request.consumerProfile,
     ingressProtocol: request.ingressProtocol, modelsFormat: request.ingressProtocol === "anthropicMessages" ? "anthropic" : "openAi" },
-    baseUrl, requestPath: request.ingressProtocol === "anthropicMessages" ? "/v1/messages" : "/responses", modelsPath: "/v1/models",
+    baseUrl, requestPath: request.ingressProtocol === "chatCompletions" ? "/chat/completions" : request.ingressProtocol === "anthropicMessages" ? "/v1/messages" : "/responses", modelsPath: "/v1/models",
     selectedModelId: selected?.publicModelId ?? null, modelCatalog: models.map(entry => ({ targetRef: { kind: "aggregate", aggregateId: entry.id },
       publicModelId: entry.publicModelId, label: entry.displayName, capabilities: {}, limits: {} })), authScheme: "bearer", localCredentialRef: "fixture-local",
     listenerReady: aggregationState().listenerReady, runtimeRequirement: "keepApplicationRunning", configRevision: "fixture-v1",

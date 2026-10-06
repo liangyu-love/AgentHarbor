@@ -64,7 +64,6 @@
       "no_available_members": "没有可用渠道"
     },
     "errors": {
-      "chatPending": "当前聚合入口支持 Responses 与 Messages。",
       "consumerUnsupported": "此配置格式与客户端协议不兼容。",
       "duplicateIdentity": "聚合 ID 或公开模型 ID 已存在。",
       "duplicateMember": "同一聚合不能重复添加相同渠道与模型。",

@@ -203,7 +203,7 @@ export function AggregationManager({ providers }: { providers: NewApiProvider[] 
             {exportId && !selectedExport && <SelectItem value={exportId} disabled>{t("aggregation.unavailable")}</SelectItem>}
             {available.map(model => <SelectItem key={model.id} value={model.id}>{model.displayName}</SelectItem>)}</SelectContent></Select></div>
         <div className="space-y-1"><Label htmlFor="aggregate-export-protocol">{t("aggregation.ingress")}</Label><Select value={ingressProtocol} onValueChange={value => { setIngressProtocol(value as ModelProtocol); setConfigText(null); }}>
-          <SelectTrigger id="aggregate-export-protocol"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="responses" disabled={consumerProfile === "anthropicSdk"}>Responses</SelectItem><SelectItem value="anthropicMessages">Messages</SelectItem></SelectContent></Select></div>
+          <SelectTrigger id="aggregate-export-protocol"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="responses" disabled={consumerProfile === "anthropicSdk"}>Responses</SelectItem><SelectItem value="chatCompletions" disabled={consumerProfile === "anthropicSdk"}>Chat</SelectItem><SelectItem value="anthropicMessages">Messages</SelectItem></SelectContent></Select></div>
         <div className="space-y-1"><Label htmlFor="aggregate-export-profile">{t("aggregation.template")}</Label><Select value={consumerProfile} onValueChange={value => {
           setConsumerProfile(value as typeof consumerProfile); if (value === "anthropicSdk") setIngressProtocol("anthropicMessages"); setConfigText(null);
         }}>

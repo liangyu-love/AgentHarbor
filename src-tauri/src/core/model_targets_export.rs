@@ -19,9 +19,6 @@ pub fn export(
     profile: &str,
     reveal: bool,
 ) -> Result<ExportBundle, String> {
-    if ingress == ModelProtocol::ChatCompletions {
-        return Err("aggregation.errors.chatPending".into());
-    }
     if !matches!(profile, "generic" | "anthropicSdk" | "opencode")
         || (profile == "anthropicSdk" && ingress != ModelProtocol::AnthropicMessages)
     {
@@ -82,10 +79,10 @@ pub fn export(
     } else {
         (
             format!("{root}/v1"),
-            if ingress == ModelProtocol::Responses {
-                "/responses"
-            } else {
-                "/messages"
+            match ingress {
+                ModelProtocol::Responses => "/responses",
+                ModelProtocol::ChatCompletions => "/chat/completions",
+                ModelProtocol::AnthropicMessages => "/messages",
             },
         )
     };
@@ -137,15 +134,19 @@ pub fn export(
         "<local router token>"
     };
     let config = if profile == "opencode" {
-        let group = if ingress == ModelProtocol::Responses {
-            "agentharbor_aggregate_responses"
-        } else {
-            "agentharbor_aggregate_messages"
+        let (group, npm) = match ingress {
+            ModelProtocol::Responses => ("agentharbor_aggregate_responses", "@ai-sdk/openai"),
+            ModelProtocol::ChatCompletions => {
+                ("agentharbor_aggregate_chat", "@ai-sdk/openai-compatible")
+            }
+            ModelProtocol::AnthropicMessages => {
+                ("agentharbor_aggregate_messages", "@ai-sdk/anthropic")
+            }
         };
         let model_entries: serde_json::Map<String, Value> = models.iter().map(|model| {
             (model.public_model_id.clone(), json!({"name":model.label,"limit":{"context":model.limits.context_window,"output":model.limits.max_output_tokens}}))
         }).collect();
-        json!({"provider":{(group):{"name":"AgentHarbor","npm":if ingress == ModelProtocol::Responses { "@ai-sdk/openai" } else { "@ai-sdk/anthropic" },
+        json!({"provider":{(group):{"name":"AgentHarbor","npm":npm,
             "options":{"baseURL":base_url,"apiKey":token},"models":model_entries}},"model":format!("{group}/{}",selected.public_model_id)})
     } else if profile == "anthropicSdk" {
         json!({"base_url":base_url,"api_key":token,"model":selected.public_model_id})
@@ -254,13 +255,54 @@ mod tests {
         assert!(opencode.connection.base_url.ends_with("/aggregate/v1"));
         assert!(opencode.config_text.contains("@ai-sdk/openai"));
         assert!(!opencode.config_text.contains("local-secret"));
-        assert!(export(
+        let chat = export(
+            &store,
+            &catalog,
+            ModelProtocol::ChatCompletions,
+            &[],
+            None,
+            "opencode",
+            true,
+        )
+        .unwrap();
+        assert_eq!(chat.connection.request_path, "/chat/completions");
+        assert_eq!(
+            chat.connection.consumer_profile.models_format,
+            ModelsFormat::OpenAi
+        );
+        let config: Value = serde_json::from_str(&chat.config_text).unwrap();
+        assert_eq!(
+            config["provider"]["agentharbor_aggregate_chat"]["npm"],
+            "@ai-sdk/openai-compatible"
+        );
+        assert_eq!(
+            config["provider"]["agentharbor_aggregate_chat"]["options"]["baseURL"],
+            chat.connection.base_url
+        );
+        assert_eq!(config["model"], "agentharbor_aggregate_chat/official-model");
+        assert!(config["provider"]["agentharbor_aggregate_chat"]["models"]
+            .get("official-model")
+            .is_some());
+        assert!(!chat.config_text.contains("upstream-secret"));
+        let generic = export(
             &store,
             &catalog,
             ModelProtocol::ChatCompletions,
             &[],
             None,
             "generic",
+            false,
+        )
+        .unwrap();
+        assert_eq!(generic.connection.request_path, "/chat/completions");
+        assert!(!generic.config_text.contains("local-secret"));
+        assert!(export(
+            &store,
+            &catalog,
+            ModelProtocol::ChatCompletions,
+            &[],
+            None,
+            "anthropicSdk",
             true
         )
         .is_err());

@@ -1,6 +1,7 @@
 //! Stateful translation of upstream SSE frames into Responses events.
 //! Only [DONE]/message_stop completes a stream; EOF cannot complete tool calls.
 
+use super::canonical::{CanonicalEvent, MAX_RETAINED_BYTES};
 use super::responses::{openai_usage, valid_function_call, Completion};
 use super::Translation;
 use crate::core::router::ModelProtocol;
@@ -24,9 +25,13 @@ pub struct StreamTranslator {
     tool_indices: HashMap<u64, usize>,
     tool_initial_inputs: HashSet<usize>,
     usage: Option<Value>,
+    anthropic_input_tokens: u64,
+    anthropic_cache_read_tokens: u64,
+    anthropic_cache_write_tokens: u64,
     completed_response: Option<Value>,
     include_tool_metadata: bool,
     failure: Option<&'static str>,
+    retained_bytes: usize,
 }
 
 impl StreamTranslator {
@@ -45,9 +50,13 @@ impl StreamTranslator {
             tool_indices: HashMap::new(),
             tool_initial_inputs: HashSet::new(),
             usage: None,
+            anthropic_input_tokens: 0,
+            anthropic_cache_read_tokens: 0,
+            anthropic_cache_write_tokens: 0,
             completed_response: None,
             include_tool_metadata: false,
             failure: None,
+            retained_bytes: 0,
         }
     }
 
@@ -68,7 +77,30 @@ impl StreamTranslator {
         self.finished
     }
 
+    /// The wire encoder runs only at the final client boundary. Messages and
+    /// Chat encoders consume these owned events without intermediate SSE text.
+    pub(super) fn push_events(&mut self, chunk: &[u8]) -> Vec<CanonicalEvent> {
+        self.decode(chunk)
+            .into_iter()
+            .map(|payload| {
+                CanonicalEvent::from_decoded(
+                    self.translation.to,
+                    ModelProtocol::Responses,
+                    payload,
+                    None,
+                )
+            })
+            .collect()
+    }
+
     pub fn push(&mut self, chunk: &[u8]) -> Vec<String> {
+        self.push_events(chunk)
+            .into_iter()
+            .map(encode_event)
+            .collect()
+    }
+
+    fn decode(&mut self, chunk: &[u8]) -> Vec<Value> {
         if self.finished {
             return Vec::new();
         }
@@ -100,12 +132,29 @@ impl StreamTranslator {
         self.fail("upstream_stream_truncated")
     }
 
-    pub fn fail(&mut self, code: &'static str) -> Vec<String> {
+    pub(super) fn fail_events(&mut self, code: &'static str) -> Vec<CanonicalEvent> {
         let events = self.terminal(Completion::Failed(code));
         self.prepend_created(events)
+            .into_iter()
+            .map(|payload| {
+                CanonicalEvent::from_decoded(
+                    self.translation.to,
+                    ModelProtocol::Responses,
+                    payload,
+                    None,
+                )
+            })
+            .collect()
     }
 
-    fn prepend_created(&mut self, mut events: Vec<String>) -> Vec<String> {
+    pub fn fail(&mut self, code: &'static str) -> Vec<String> {
+        self.fail_events(code)
+            .into_iter()
+            .map(encode_event)
+            .collect()
+    }
+
+    fn prepend_created(&mut self, mut events: Vec<Value>) -> Vec<Value> {
         if !self.created && !events.is_empty() {
             self.created = true;
             events.insert(0, sse_frame("response.created", json!({
@@ -116,7 +165,7 @@ impl StreamTranslator {
         events
     }
 
-    fn handle_frame(&mut self, frame: &str) -> Vec<String> {
+    fn handle_frame(&mut self, frame: &str) -> Vec<Value> {
         let mut data = Vec::new();
         let mut event_name = None;
         for line in frame.lines() {
@@ -164,8 +213,11 @@ impl StreamTranslator {
         }
     }
 
-    fn chat_chunk(&mut self, value: &Value) -> Vec<String> {
+    fn chat_chunk(&mut self, value: &Value) -> Vec<Value> {
         if let Some(model) = value.get("model").and_then(Value::as_str) {
+            if !self.retain_replacing(self.model.len(), model.len()) {
+                return self.terminal(Completion::Failed("invalid_stream_frame"));
+            }
             self.model = model.to_owned();
         }
         if let Some(usage) = value.get("usage").filter(|usage| !usage.is_null()) {
@@ -186,6 +238,9 @@ impl StreamTranslator {
             if let Some(text) = delta.get("content").and_then(Value::as_str) {
                 events.extend(self.text_delta(text, false));
             }
+            if self.finished {
+                return events;
+            }
             if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for call in calls {
                     let Some(index) = call
@@ -201,7 +256,7 @@ impl StreamTranslator {
                     let output_index = match self.tool_indices.get(&index).copied() {
                         Some(index) => index,
                         None => {
-                            let (output_index, event) = self.open_tool(
+                            let Some((output_index, event)) = self.open_tool(
                                 index,
                                 call.get("id").and_then(Value::as_str).unwrap_or_default(),
                                 function
@@ -209,12 +264,28 @@ impl StreamTranslator {
                                     .and_then(Value::as_str)
                                     .unwrap_or_default(),
                                 "",
-                            );
+                            ) else {
+                                events.extend(
+                                    self.terminal(Completion::Failed("invalid_stream_frame")),
+                                );
+                                return events;
+                            };
                             events.push(event);
                             output_index
                         }
                     };
                     if let Some(id) = call.get("id").and_then(Value::as_str) {
+                        if !self.retain_replacing(
+                            self.output[output_index]["call_id"]
+                                .as_str()
+                                .map(str::len)
+                                .unwrap_or(0),
+                            id.len(),
+                        ) {
+                            events
+                                .extend(self.terminal(Completion::Failed("invalid_stream_frame")));
+                            return events;
+                        }
                         self.output[output_index]["call_id"] = json!(id);
                     }
                     if let Some(name) = function.get("name").and_then(Value::as_str) {
@@ -226,11 +297,22 @@ impl StreamTranslator {
                                     && self.output[output_index]["name"] == name
                             });
                         if !is_new && !repeated_header {
+                            if !self.retain_replacing(0, name.len()) {
+                                events.extend(
+                                    self.terminal(Completion::Failed("invalid_stream_frame")),
+                                );
+                                return events;
+                            }
                             append_string(&mut self.output[output_index]["name"], name);
                         }
                     }
                     if let Some(arguments) = function.get("arguments").and_then(Value::as_str) {
-                        events.push(self.argument_delta(output_index, arguments));
+                        let Some(event) = self.argument_delta(output_index, arguments) else {
+                            events
+                                .extend(self.terminal(Completion::Failed("invalid_stream_frame")));
+                            return events;
+                        };
+                        events.push(event);
                     }
                 }
             }
@@ -251,17 +333,32 @@ impl StreamTranslator {
             }
         }
         if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+            if !self.retain_replacing(
+                self.finish_reason.as_deref().map(str::len).unwrap_or(0),
+                reason.len(),
+            ) {
+                events.extend(self.terminal(Completion::Failed("invalid_stream_frame")));
+                return events;
+            }
             self.finish_reason = Some(reason.to_owned());
         }
         // Do not close tools yet: usage and the transport terminator follow.
         events
     }
 
-    fn anthropic_chunk(&mut self, kind: Option<&str>, value: &Value) -> Vec<String> {
+    fn anthropic_chunk(&mut self, kind: Option<&str>, value: &Value) -> Vec<Value> {
+        if self.translation.from == ModelProtocol::ChatCompletions
+            && unsupported_chat_messages_event(kind, value)
+        {
+            return self.terminal(Completion::Failed("unsupported_content"));
+        }
         let mut events = Vec::new();
         match kind {
             Some("message_start") => {
                 if let Some(model) = value["message"].get("model").and_then(Value::as_str) {
+                    if !self.retain_replacing(self.model.len(), model.len()) {
+                        return self.terminal(Completion::Failed("invalid_stream_frame"));
+                    }
                     self.model = model.to_owned();
                 }
                 self.merge_anthropic_usage(&value["message"]["usage"]);
@@ -280,7 +377,7 @@ impl StreamTranslator {
                             .cloned()
                             .unwrap_or_else(|| json!({}))
                             .to_string();
-                        let (index, event) = self.open_tool(
+                        let Some((index, event)) = self.open_tool(
                             index,
                             block.get("id").and_then(Value::as_str).unwrap_or_default(),
                             block
@@ -288,7 +385,9 @@ impl StreamTranslator {
                                 .and_then(Value::as_str)
                                 .unwrap_or_default(),
                             &arguments,
-                        );
+                        ) else {
+                            return self.terminal(Completion::Failed("invalid_stream_frame"));
+                        };
                         self.tool_initial_inputs.insert(index);
                         events.push(event);
                     }
@@ -341,17 +440,24 @@ impl StreamTranslator {
                             return self.terminal(Completion::Failed("invalid_tool_arguments"));
                         };
                         if self.tool_initial_inputs.remove(&index) {
+                            self.retained_bytes = self.retained_bytes.saturating_sub(
+                                self.output[index]["arguments"]
+                                    .as_str()
+                                    .map(str::len)
+                                    .unwrap_or(0),
+                            );
                             self.output[index]["arguments"] = json!("");
                         }
-                        events.push(
-                            self.argument_delta(
-                                index,
-                                delta
-                                    .get("partial_json")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or_default(),
-                            ),
-                        );
+                        let Some(event) = self.argument_delta(
+                            index,
+                            delta
+                                .get("partial_json")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default(),
+                        ) else {
+                            return self.terminal(Completion::Failed("invalid_stream_frame"));
+                        };
+                        events.push(event);
                     }
                     _ => {}
                 }
@@ -359,6 +465,12 @@ impl StreamTranslator {
             Some("message_delta") => {
                 self.merge_anthropic_usage(&value["usage"]);
                 if let Some(reason) = value["delta"].get("stop_reason").and_then(Value::as_str) {
+                    if !self.retain_replacing(
+                        self.finish_reason.as_deref().map(str::len).unwrap_or(0),
+                        reason.len(),
+                    ) {
+                        return self.terminal(Completion::Failed("invalid_stream_frame"));
+                    }
                     self.finish_reason = Some(reason.to_owned());
                 }
             }
@@ -370,6 +482,15 @@ impl StreamTranslator {
     }
 
     fn merge_anthropic_usage(&mut self, usage: &Value) {
+        if let Some(input) = usage["input_tokens"].as_u64() {
+            self.anthropic_input_tokens = input;
+        }
+        if let Some(read) = usage["cache_read_input_tokens"].as_u64() {
+            self.anthropic_cache_read_tokens = read;
+        }
+        if let Some(write) = usage["cache_creation_input_tokens"].as_u64() {
+            self.anthropic_cache_write_tokens = write;
+        }
         let merged = self
             .usage
             .get_or_insert_with(|| json!({"input_tokens":0,"output_tokens":0,"total_tokens":0}));
@@ -378,15 +499,29 @@ impl StreamTranslator {
                 merged[key] = json!(count);
             }
         }
+        if self.translation.from == ModelProtocol::ChatCompletions {
+            merged["input_tokens"] = json!(self
+                .anthropic_input_tokens
+                .saturating_add(self.anthropic_cache_read_tokens)
+                .saturating_add(self.anthropic_cache_write_tokens));
+            merged["input_tokens_details"] =
+                json!({"cached_tokens":self.anthropic_cache_read_tokens});
+        }
         merged["total_tokens"] = json!(
             merged["input_tokens"].as_u64().unwrap_or(0)
                 + merged["output_tokens"].as_u64().unwrap_or(0)
         );
     }
 
-    fn text_delta(&mut self, text: &str, reasoning: bool) -> Vec<String> {
+    fn text_delta(&mut self, text: &str, reasoning: bool) -> Vec<Value> {
+        if self.finished {
+            return Vec::new();
+        }
         if text.is_empty() {
             return Vec::new();
+        }
+        if !self.retain_replacing(0, text.len()) {
+            return self.terminal(Completion::Failed("invalid_stream_frame"));
         }
         let existing = if reasoning {
             self.reasoning_index
@@ -442,7 +577,16 @@ impl StreamTranslator {
         call_id: &str,
         name: &str,
         arguments: &str,
-    ) -> (usize, String) {
+    ) -> Option<(usize, Value)> {
+        if !self.retain_replacing(
+            0,
+            call_id
+                .len()
+                .saturating_add(name.len())
+                .saturating_add(arguments.len()),
+        ) {
+            return None;
+        }
         let index = self.output.len();
         let item = json!({"id":format!("fc_{index}_{}",self.response_id),"type":"function_call","call_id":call_id,"name":name,"arguments":"","status":"in_progress"});
         let event = sse_frame(
@@ -452,30 +596,49 @@ impl StreamTranslator {
         self.output.push(item);
         self.output[index]["arguments"] = json!(arguments);
         self.tool_indices.insert(upstream_index, index);
-        (index, event)
+        Some((index, event))
     }
 
-    fn argument_delta(&mut self, index: usize, delta: &str) -> String {
+    fn argument_delta(&mut self, index: usize, delta: &str) -> Option<Value> {
+        if !self.retain_replacing(0, delta.len()) {
+            return None;
+        }
         append_string(&mut self.output[index]["arguments"], delta);
         if self.include_tool_metadata {
-            return sse_frame(
+            return Some(sse_frame(
                 "response.function_call_arguments.delta",
                 json!({
                     "type":"response.function_call_arguments.delta","item_id":self.output[index]["id"],
                     "output_index":index,"delta":delta,"name":self.output[index]["name"],
                     "call_id":self.output[index]["call_id"],
                 }),
-            );
+            ));
         }
-        sse_frame(
+        Some(sse_frame(
             "response.function_call_arguments.delta",
             json!({
                 "type":"response.function_call_arguments.delta","item_id":self.output[index]["id"],"output_index":index,"delta":delta,
             }),
-        )
+        ))
     }
 
-    fn upstream_terminal(&mut self) -> Vec<String> {
+    /// Bound accumulated text and arguments as well as individual SSE frames.
+    /// Repeated complete metadata replaces its previous byte count; actual
+    /// name/argument/text fragments grow the request budget exactly once.
+    fn retain_replacing(&mut self, removed: usize, added: usize) -> bool {
+        let Some(bytes) = self
+            .retained_bytes
+            .saturating_sub(removed)
+            .checked_add(added)
+            .filter(|bytes| *bytes <= MAX_RETAINED_BYTES)
+        else {
+            return false;
+        };
+        self.retained_bytes = bytes;
+        true
+    }
+
+    fn upstream_terminal(&mut self) -> Vec<Value> {
         let mut completion =
             Completion::from_reason(self.translation.to, self.finish_reason.as_deref());
         if completion == Completion::Completed
@@ -499,7 +662,7 @@ impl StreamTranslator {
         response
     }
 
-    fn terminal(&mut self, completion: Completion) -> Vec<String> {
+    fn terminal(&mut self, completion: Completion) -> Vec<Value> {
         if self.finished {
             return Vec::new();
         }
@@ -553,8 +716,50 @@ fn append_string(target: &mut Value, text: &str) {
     }
 }
 
-fn sse_frame(event: &str, data: Value) -> String {
-    format!("event: {event}\ndata: {data}\n\n")
+/// The new Chat encoder has no representation for hosted blocks or private
+/// signatures. Gate only that path: existing Responses/Message translations
+/// and byte-preserving same-protocol forwarding keep their current behavior.
+fn unsupported_chat_messages_event(kind: Option<&str>, value: &Value) -> bool {
+    let private = |value: &Value| {
+        value.as_object().is_some_and(|object| {
+            ["signature", "encrypted_content", "redacted_thinking"]
+                .iter()
+                .any(|key| object.get(*key).is_some_and(|value| !value.is_null()))
+        })
+    };
+    if private(value)
+        || private(&value["message"])
+        || private(&value["content_block"])
+        || private(&value["delta"])
+    {
+        return true;
+    }
+    match kind {
+        Some("content_block_start") => !matches!(
+            value["content_block"]["type"].as_str(),
+            Some("text" | "thinking" | "tool_use")
+        ),
+        Some("content_block_delta") => !matches!(
+            value["delta"]["type"].as_str(),
+            Some("text_delta" | "thinking_delta" | "input_json_delta")
+        ),
+        // A standard message_start carries no body content. The old decoder
+        // cannot safely reinterpret a provider's complete-message extension.
+        Some("message_start") => value["message"]["content"]
+            .as_array()
+            .is_some_and(|content| !content.is_empty()),
+        _ => false,
+    }
+}
+
+fn sse_frame(event: &str, mut data: Value) -> Value {
+    data["type"] = json!(event);
+    data
+}
+
+fn encode_event(event: CanonicalEvent) -> String {
+    let name = event.payload["type"].as_str().unwrap_or("error");
+    format!("event: {name}\ndata: {}\n\n", event.payload)
 }
 
 pub(super) fn find_separator(buffer: &[u8]) -> Option<(usize, usize)> {

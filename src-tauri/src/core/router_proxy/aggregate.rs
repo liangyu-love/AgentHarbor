@@ -67,7 +67,10 @@ pub(super) async fn execute(
     };
     let compact = suffix == "responses/compact";
     let count_tokens = suffix == "messages/count_tokens";
-    let create = matches!(suffix.as_str(), "responses" | "messages");
+    let create = matches!(
+        suffix.as_str(),
+        "responses" | "messages" | "chat/completions"
+    );
     let client = desktop
         .as_ref()
         .map(|_| "claudeDesktop")
@@ -505,6 +508,8 @@ pub(super) async fn execute(
                     resource: resource_reservation,
                     lease: selected.lease,
                     trace,
+                    terminal: Default::default(),
+                    at_start: true,
                 },
                 *method == hyper::Method::HEAD,
             )
@@ -600,6 +605,8 @@ pub(super) async fn execute(
                 resource: resource_reservation,
                 lease: selected.lease,
                 trace,
+                terminal: Default::default(),
+                at_start: true,
             },
             *method == hyper::Method::HEAD,
         )

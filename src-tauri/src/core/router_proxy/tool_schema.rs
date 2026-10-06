@@ -287,6 +287,7 @@ impl Adapter {
         Stream {
             adapter: self,
             protocol,
+            at_start: true,
             pending: Vec::new(),
             calls: HashMap::new(),
             argument_bytes: 0,
@@ -302,6 +303,7 @@ struct Call {
 pub(super) struct Stream {
     adapter: Adapter,
     protocol: ModelProtocol,
+    at_start: bool,
     pending: Vec<u8>,
     calls: HashMap<(u64, u64), Call>,
     argument_bytes: usize,
@@ -328,7 +330,8 @@ impl Stream {
                 return Err(INVALID);
             }
             let bytes: Vec<_> = self.pending.drain(..next).collect();
-            let raw = std::str::from_utf8(&bytes[..end]).map_err(|_| INVALID)?;
+            let raw = crate::core::protocol::canonical::strip_stream_bom(&bytes[..end], &mut self.at_start);
+            let raw = std::str::from_utf8(raw).map_err(|_| INVALID)?;
             let data = raw
                 .lines()
                 .filter_map(|line| line.strip_prefix("data:").map(str::trim_start))
@@ -765,7 +768,7 @@ mod tests {
                 protocol,
             )
             .unwrap();
-            for valid in [true, false] {
+            for (prefix, valid) in [("", true), ("\u{feff}", true), ("", false), ("\u{feff}", false)] {
                 let arguments = if valid { wrapped() } else { "{broken".into() };
                 let mut wire = events(protocol, &arguments)
                     .iter()
@@ -774,6 +777,7 @@ mod tests {
                 if protocol == ModelProtocol::ChatCompletions {
                     wire.push_str("data: [DONE]\n\n");
                 }
+                wire.insert_str(0, prefix);
                 let mut stream = adapter.clone().stream(protocol);
                 let mut output = Vec::new();
                 let mut failed = false;

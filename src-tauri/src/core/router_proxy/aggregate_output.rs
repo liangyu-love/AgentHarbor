@@ -5,6 +5,7 @@ use super::super::aggregation::{
     runtime::Lease,
 };
 use super::*;
+use crate::core::protocol::canonical::TerminalObservation;
 
 const MAX_EVENT: usize = 256 * 1024;
 const MAX_JSON: usize = 16 * 1024 * 1024;
@@ -15,19 +16,17 @@ pub(super) struct Projection {
     pub resource: Option<ResourceReservation>,
     pub lease: Lease,
     pub trace: route_trace::Trace,
+    pub terminal: TerminalObservation,
+    pub at_start: bool,
 }
 
 impl Projection {
     fn value(&mut self, value: &mut Value) -> Result<bool, &'static str> {
-        let terminal = matches!(
-            value["type"].as_str(),
-            Some("response.completed" | "response.incomplete" | "message_stop")
-        ) || self.protocol == router::ModelProtocol::ChatCompletions
-            && value["choices"].as_array().is_some_and(|choices| {
-                choices
-                    .iter()
-                    .any(|choice| !choice["finish_reason"].is_null())
-            });
+        self.terminal.observe_body(self.protocol, value);
+        self.patch(value)
+    }
+    fn patch(&mut self, value: &mut Value) -> Result<bool, &'static str> {
+        let terminal = self.terminal.state().is_some_and(|state| state.delivered());
         let object = match self.protocol {
             router::ModelProtocol::Responses => {
                 if matches!(
@@ -93,7 +92,9 @@ impl Projection {
         Ok(patched)
     }
     fn event(&mut self, raw: &[u8]) -> Result<Bytes, &'static str> {
-        let Ok(text) = std::str::from_utf8(raw) else {
+        let parsed = crate::core::protocol::canonical::strip_stream_bom(raw, &mut self.at_start);
+        let has_bom = parsed.len() != raw.len();
+        let Ok(text) = std::str::from_utf8(parsed) else {
             return Err("invalid_provider_event");
         };
         let data: Vec<_> = text
@@ -107,16 +108,32 @@ impl Projection {
             return Ok(Bytes::copy_from_slice(raw));
         }
         if data.join("\n").trim() == "[DONE]" {
+            self.terminal.done();
+            let Some(state) = self.terminal.state() else {
+                return Err("upstream_stream_truncated");
+            };
+            if state.delivered() {
+                self.lease.succeed();
+            }
             return Ok(Bytes::copy_from_slice(raw));
         }
         let Ok(mut value) = serde_json::from_str::<Value>(&data.join("\n")) else {
             return Ok(Bytes::copy_from_slice(raw));
         };
-        if !self.value(&mut value)? {
+        let name = text
+            .lines()
+            .find_map(|line| line.strip_prefix("event:"))
+            .unwrap_or("")
+            .trim();
+        self.terminal.observe(self.protocol, &value, name);
+        if !self.patch(&mut value)? {
             return Ok(Bytes::copy_from_slice(raw));
         }
         let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
         let mut output = String::new();
+        if has_bom {
+            output.push('\u{feff}');
+        }
         let mut replaced = false;
         for line in text.lines() {
             if line.starts_with("data:") {
@@ -338,13 +355,18 @@ mod tests {
                 .reserve(&candidate)
                 .unwrap(),
             trace: route_trace::Trace::begin("public", None),
+            terminal: Default::default(),
+            at_start: true,
         }
     }
     #[test]
     fn patch_only_protocol_model_locations_and_preserve_unknown_events() {
         let mut projection = projection();
         let mut value = json!({"object":"response","id":"resp_x","model":"wire","output":[{"text":"wire"}],"unknown":{"model":"wire"}});
+        let original = value.clone();
         assert!(projection.value(&mut value).unwrap());
+        crate::core::protocol::canonical::validate_same_protocol(&original, &value, &["model"])
+            .unwrap();
         assert_eq!(value["model"], "public");
         assert_eq!(value["output"][0]["text"], "wire");
         assert_eq!(value["unknown"]["model"], "wire");
@@ -354,6 +376,51 @@ mod tests {
         assert!(String::from_utf8(projection.event(known).unwrap().to_vec())
             .unwrap()
             .contains("public"));
+    }
+
+    #[test]
+    fn public_model_patch_keeps_nested_private_and_unknown_payloads() {
+        let mut projection = projection();
+        let mut value = json!({"type":"response.completed","response":{
+            "id":"private-differential","model":"wire","status":"completed",
+            "output":[{"type":"reasoning","encrypted_content":"opaque-signature","vendor_reasoning":{"v":1}}],
+            "usage":{"input_tokens":10,"output_tokens":2,"input_tokens_details":{"cached_tokens":4}},
+            "provider_extension":{"model":"private-wire-model","future":true}
+        },"unknown_frame_field":42});
+        let original = value.clone();
+        assert!(projection.value(&mut value).unwrap());
+        assert_eq!(value["response"]["model"], "public");
+        crate::core::protocol::canonical::validate_same_protocol(
+            &original["response"],
+            &value["response"],
+            &["model"],
+        )
+        .unwrap();
+        let mut expected = original;
+        expected["response"]["model"] = json!("public");
+        assert_eq!(value, expected);
+    }
+
+    #[test]
+    fn native_bom_event_projects_public_identity_and_registers_resource() {
+        let mut projection = projection();
+        let registry = aggregation::affinity::Registry::default();
+        let scope = aggregation::affinity::scope(&["bom-resource"]);
+        projection.resource = Some(registry.reserve_resource(&scope).unwrap());
+        let raw = b"\xef\xbb\xbfdata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_bom\",\"model\":\"wire\",\"private\":true}}\r\n\r\n";
+        let bytes = projection.event(raw).unwrap();
+        assert!(bytes.starts_with(b"\xef\xbb\xbf"));
+        let text = std::str::from_utf8(&bytes[3..]).unwrap();
+        let data = text.lines().find_map(|line| line.strip_prefix("data: ")).unwrap();
+        let value: Value = serde_json::from_str(data).unwrap();
+        assert_eq!(value["response"]["model"], "public");
+        assert_eq!(value["response"]["private"], true);
+        assert!(text.ends_with("\r\n\r\n"));
+        assert_eq!(registry.resource(&scope, "resp_bom").unwrap(), projection.owner);
+
+        let mut untouched = self::projection();
+        let unknown = b"\xef\xbb\xbfevent: future\r\ndata: {\"opaque\":true}\r\n\r\n";
+        assert_eq!(untouched.event(unknown).unwrap().as_ref(), unknown);
     }
 
     #[test]
@@ -392,5 +459,36 @@ mod tests {
             runtime.reserve(&candidate),
             Err(aggregation::runtime::SelectionError::ConcurrencyLimit)
         ));
+    }
+
+    #[test]
+    fn chat_probe_recovers_only_after_finish_reason_and_done() {
+        let runtime = aggregation::runtime::Runtime::default();
+        let candidate = Candidate {
+            member_id: "a".into(),
+            provider_id: "a".into(),
+            actual_model_id: "wire".into(),
+            priority: 0,
+            weight: 1,
+            target_key: "chat-probe".into(),
+        };
+        runtime
+            .cooldown(&candidate.target_key, Duration::ZERO)
+            .unwrap();
+        let mut projection = projection();
+        projection.protocol = router::ModelProtocol::ChatCompletions;
+        projection.lease = runtime.reserve(&candidate).unwrap();
+        projection.event(b"data: {\"object\":\"chat.completion.chunk\",\"model\":\"wire\",\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n").unwrap();
+        assert!(!projection.terminal.received());
+        assert!(matches!(
+            runtime.reserve(&candidate),
+            Err(aggregation::runtime::SelectionError::ConcurrencyLimit)
+        ));
+        projection.event(b"data: [DONE]\n\n").unwrap();
+        assert!(projection.terminal.state().unwrap().delivered());
+        let second = runtime
+            .reserve(&candidate)
+            .expect("completed probe clears cooldown");
+        drop(second);
     }
 }

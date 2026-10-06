@@ -1,4 +1,4 @@
-//! Protocol translation for Codex Responses and Claude Messages callers.
+//! Protocol translation for Responses, Messages and Chat callers.
 //! Identical protocols pass through unchanged. Cross-protocol requests and
 //! replies share explicit adapters, including incremental streaming and tools.
 //! Only Responses callers use the continuation history store.
@@ -7,9 +7,16 @@ mod anthropic;
 mod anthropic_sse;
 #[cfg(test)]
 mod anthropic_tests;
+pub mod canonical;
 mod chat;
+mod chat_ingress;
+#[cfg(test)]
+mod chat_ingress_tests;
+mod chat_sse;
 pub mod history;
 pub mod message_history;
+#[cfg(test)]
+mod performance_tests;
 mod reasoning;
 mod responses;
 mod sse;
@@ -29,19 +36,29 @@ pub fn response_body(translation: Translation, value: &Value) -> Result<Value, S
 #[derive(Clone, Debug, Default)]
 pub struct ResponseOptions {
     pub search: Option<web_search::Search>,
+    /// Chat's usage-only terminal chunk is opt-in on its ingress contract.
+    pub chat_include_usage: bool,
 }
 
-pub fn response_body_with_options(translation: Translation, value: &Value, options: &ResponseOptions,
+pub fn response_body_with_options(
+    translation: Translation,
+    value: &Value,
+    options: &ResponseOptions,
 ) -> Result<Value, String> {
     let canonical = canonical_response(translation, value)?;
     if translation.from == ModelProtocol::AnthropicMessages {
         anthropic::response_body_with_options(&canonical, options)
+    } else if translation.from == ModelProtocol::ChatCompletions {
+        chat_ingress::response(&canonical)
     } else {
         Ok(canonical)
     }
 }
 
 pub fn canonical_response(translation: Translation, value: &Value) -> Result<Value, String> {
+    if translation.from == ModelProtocol::ChatCompletions {
+        return chat_ingress::canonical_response(translation, value);
+    }
     if is_responses_body(value) {
         Ok(value.clone())
     } else {
@@ -116,7 +133,7 @@ pub struct Translation {
     /// What the caller sent: Responses for Codex or Messages for Claude.
     pub from: ModelProtocol,
     /// What the upstream provider expects.
-    pub to:ModelProtocol,
+    pub to: ModelProtocol,
 }
 
 impl Translation {
@@ -141,6 +158,8 @@ impl Translation {
                 | (Responses, AnthropicMessages)
                 | (AnthropicMessages, ChatCompletions)
                 | (AnthropicMessages, Responses)
+                | (ChatCompletions, Responses)
+                | (ChatCompletions, AnthropicMessages)
         )
     }
 }
@@ -178,14 +197,21 @@ pub fn request_body(translation: Translation, value: &Value) -> Result<Translate
         }
         (AnthropicMessages, ChatCompletions) | (AnthropicMessages, Responses) => {
             let (body, response_options) = anthropic::request_with_options(translation.to, value)?;
-            if translation.to == ChatCompletions { chat::validate_tool_history(&body)?; }
-            if translation.to == Responses { responses::validate_tool_history(&body)?; }
+            if translation.to == ChatCompletions {
+                chat::validate_tool_history(&body)?;
+            }
+            if translation.to == Responses {
+                responses::validate_tool_history(&body)?;
+            }
             Ok(TranslatedRequest {
                 body,
                 input: Vec::new(),
                 namespaces: Default::default(),
                 response_options,
             })
+        }
+        (ChatCompletions, Responses) | (ChatCompletions, AnthropicMessages) => {
+            chat_ingress::request(translation.to, value)
         }
         _ => Err("protocol.errors.unsupportedTranslation".into()),
     }
@@ -198,6 +224,7 @@ pub fn request_body(translation: Translation, value: &Value) -> Result<Translate
 pub struct StreamTranslator {
     responses: Option<sse::StreamTranslator>,
     anthropic: Option<anthropic_sse::StreamTranslator>,
+    chat: Option<chat_sse::StreamTranslator>,
 }
 
 impl StreamTranslator {
@@ -209,9 +236,15 @@ impl StreamTranslator {
                 .anthropic
                 .as_ref()
                 .is_some_and(anthropic_sse::StreamTranslator::is_finished)
+            || self
+                .chat
+                .as_ref()
+                .is_some_and(chat_sse::StreamTranslator::is_finished)
     }
     pub fn push(&mut self, chunk: &[u8]) -> Vec<String> {
         if let Some(translator) = self.responses.as_mut() {
+            translator.push(chunk)
+        } else if let Some(translator) = self.chat.as_mut() {
             translator.push(chunk)
         } else {
             self.anthropic
@@ -223,6 +256,8 @@ impl StreamTranslator {
     pub fn finish(&mut self) -> Vec<String> {
         if let Some(translator) = self.responses.as_mut() {
             translator.finish()
+        } else if let Some(translator) = self.chat.as_mut() {
+            translator.finish()
         } else {
             self.anthropic
                 .as_mut()
@@ -232,6 +267,8 @@ impl StreamTranslator {
     }
     pub fn fail(&mut self, code: &'static str) -> Vec<String> {
         if let Some(translator) = self.responses.as_mut() {
+            translator.fail(code)
+        } else if let Some(translator) = self.chat.as_mut() {
             translator.fail(code)
         } else {
             self.anthropic
@@ -249,6 +286,11 @@ impl StreamTranslator {
                     .as_ref()
                     .and_then(anthropic_sse::StreamTranslator::completed_response)
             })
+            .or_else(|| {
+                self.chat
+                    .as_ref()
+                    .and_then(chat_sse::StreamTranslator::completed_response)
+            })
     }
     pub fn failure(&self) -> Option<&'static str> {
         self.responses
@@ -259,6 +301,11 @@ impl StreamTranslator {
                     .as_ref()
                     .and_then(anthropic_sse::StreamTranslator::failure)
             })
+            .or_else(|| {
+                self.chat
+                    .as_ref()
+                    .and_then(chat_sse::StreamTranslator::failure)
+            })
     }
 }
 
@@ -266,13 +313,18 @@ pub fn stream_translator(translation: Translation) -> StreamTranslator {
     stream_translator_with_options(translation, ResponseOptions::default())
 }
 
-pub fn stream_translator_with_options(translation: Translation, options: ResponseOptions,
+pub fn stream_translator_with_options(
+    translation: Translation,
+    options: ResponseOptions,
 ) -> StreamTranslator {
     StreamTranslator {
         responses: (translation.from == ModelProtocol::Responses)
             .then(|| sse::StreamTranslator::new(translation)),
-        anthropic: (translation.from == ModelProtocol::AnthropicMessages)
-            .then(|| anthropic_sse::StreamTranslator::new(translation.to).with_options(options)),
+        anthropic: (translation.from == ModelProtocol::AnthropicMessages).then(|| {
+            anthropic_sse::StreamTranslator::new(translation.to).with_options(options.clone())
+        }),
+        chat: (translation.from == ModelProtocol::ChatCompletions)
+            .then(|| chat_sse::StreamTranslator::new(translation.to, options.chat_include_usage)),
     }
 }
 

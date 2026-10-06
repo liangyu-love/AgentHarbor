@@ -1,4 +1,7 @@
-use super::request_diagnostics::{CredentialSnapshot, ServedModelObservation};
+use super::{
+    protocol::canonical::{TerminalObservation, Usage},
+    request_diagnostics::{CredentialSnapshot, ServedModelObservation},
+};
 use chrono::{Datelike, Duration as ChronoDuration, Local, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -544,11 +547,13 @@ impl RelayUsageRequest {
             request: Some(self),
             status_code,
             is_event_stream,
+            at_start: true,
             capture: Vec::new(),
             usage: UsageAccumulator::default(),
             capture_truncated: false,
             first_token_ms: None,
             delivery_failed: false,
+            terminal: TerminalObservation::default(),
         }
     }
 
@@ -628,11 +633,13 @@ pub struct RelayUsageObserver {
     request: Option<RelayUsageRequest>,
     status_code: u16,
     is_event_stream: bool,
+    at_start: bool,
     capture: Vec<u8>,
     usage: UsageAccumulator,
     capture_truncated: bool,
     first_token_ms: Option<u64>,
     delivery_failed: bool,
+    terminal: TerminalObservation,
 }
 
 impl RelayUsageObserver {
@@ -672,13 +679,18 @@ impl RelayUsageObserver {
     }
 
     fn observe_sse_event(&mut self, event: &[u8]) {
+        let event = super::protocol::canonical::strip_stream_bom(event, &mut self.at_start);
         let text = String::from_utf8_lossy(event);
         let data = text
             .lines()
             .filter_map(|line| line.strip_prefix("data:").map(str::trim_start))
             .collect::<Vec<_>>()
             .join("\n");
-        if data.is_empty() || data == "[DONE]" {
+        if data == "[DONE]" {
+            self.terminal.done();
+            return;
+        }
+        if data.is_empty() {
             return;
         }
         if let Ok(value) = serde_json::from_str::<Value>(&data) {
@@ -692,9 +704,8 @@ impl RelayUsageObserver {
     }
 
     fn merge_value(&mut self, value: &Value) {
-        if !value["error"].is_null()
-            || matches!(value["type"].as_str(), Some("error" | "response.failed"))
-        {
+        self.terminal.observe_auto(value, "", self.is_event_stream);
+        if self.terminal.failed() {
             self.delivery_failed = true;
         }
         visit_usage_values(value, &mut self.usage);
@@ -710,6 +721,8 @@ impl Drop for RelayUsageObserver {
                 self.merge_value(&value);
             }
         }
+        self.terminal.finish(true, self.is_event_stream);
+        self.delivery_failed |= self.terminal.failed();
         if let Some(request) = self.request.take() {
             request.persist(
                 self.status_code,
@@ -761,71 +774,17 @@ fn event_boundary(bytes: &[u8]) -> Option<(usize, usize)> {
     }
 }
 
-fn number(value: Option<&Value>) -> u64 {
-    value
-        .and_then(|value| {
-            value
-                .as_u64()
-                .or_else(|| value.as_i64().filter(|n| *n >= 0).map(|n| n as u64))
-        })
-        .unwrap_or(0)
-}
-
 fn counts_from_usage(value: &Value) -> Option<TokenCounts> {
-    let object = value.as_object()?;
-    let has_known_field = [
-        "input_tokens",
-        "output_tokens",
-        "prompt_tokens",
-        "completion_tokens",
-        "total_tokens",
-        "cache_creation_input_tokens",
-        "cache_read_input_tokens",
-        "reasoning_tokens",
-    ]
-    .iter()
-    .any(|key| {
-        object
-            .get(*key)
-            .is_some_and(|value| value.as_u64().is_some())
-    });
-    if !has_known_field {
-        return None;
-    }
-
-    // Cache details: Anthropic reports cache read/write beside an already
-    // uncached input count; OpenAI-family payloads report a cached subset
-    // inside the input total, which must be subtracted to stay non-overlapping.
-    let detail_cached = number(value.pointer("/input_tokens_details/cached_tokens")).max(number(
-        value.pointer("/prompt_tokens_details/cached_tokens"),
-    ));
-    let anthropic_read = number(object.get("cache_read_input_tokens"));
-    let cache_read_tokens = anthropic_read.max(detail_cached);
-    let cache_write_tokens = number(object.get("cache_creation_input_tokens"));
-    let reported_input =
-        number(object.get("input_tokens")).max(number(object.get("prompt_tokens")));
-    let output_tokens =
-        number(object.get("output_tokens")).max(number(object.get("completion_tokens")));
-    let reasoning_tokens = number(object.get("reasoning_tokens"))
-        .max(number(
-            object
-                .get("output_tokens_details")
-                .and_then(|details| details.get("reasoning_tokens")),
-        ))
-        .max(number(
-            object
-                .get("completion_tokens_details")
-                .and_then(|details| details.get("reasoning_tokens")),
-        ));
+    let raw = Usage::raw_from_wire(value)?;
     // Keep protocol counters raw until the complete stream has been merged.
     // Cache details may arrive after the input total and change its split.
     let counts = TokenCounts {
-        input_tokens: reported_input,
-        output_tokens,
-        reasoning_tokens,
-        total_tokens: number(object.get("total_tokens")),
-        cache_read_tokens,
-        cache_write_tokens,
+        input_tokens: raw.input_tokens,
+        output_tokens: raw.output_tokens,
+        reasoning_tokens: raw.reasoning_tokens,
+        total_tokens: raw.total_tokens,
+        cache_read_tokens: raw.cache_read_tokens,
+        cache_write_tokens: raw.cache_write_tokens,
     };
     Some(counts)
 }
@@ -1649,5 +1608,73 @@ mod tests {
         assert_eq!(payload.all_time.successful_count, 0);
         assert_eq!(payload.all_time.reported_count, 0);
         assert_eq!(payload.all_time.total_tokens, 0);
+    }
+
+    #[test]
+    fn terminal_outcomes_keep_valid_incomplete_usage_but_fail_truncated_delivery() {
+        for (mode, success) in [
+            ("completed", true),
+            ("incomplete", true),
+            ("bom_completed", true),
+            ("bom_incomplete", true),
+            ("truncated", false),
+            ("failed", false),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let request = RelayUsageRequest::new(
+                dir.path().to_owned(),
+                "provider".into(),
+                "Provider".into(),
+                "model".into(),
+                "responses".into(),
+                PricingSnapshot::unknown("unknown", "fixture"),
+            );
+            {
+                let mut observer = request.observe(200, true);
+                let status = mode.strip_prefix("bom_").unwrap_or(mode);
+                let kind = match status {
+                    "completed" => "response.completed",
+                    "incomplete" => "response.incomplete",
+                    "failed" => "response.failed",
+                    _ => "response.output_text.delta",
+                };
+                let value = serde_json::json!({"type":kind,"response":{
+                    "status":status,"usage":{"input_tokens":10,"output_tokens":4},
+                    "incomplete_details":{"reason":"max_output_tokens"}
+                }});
+                let prefix = if mode.starts_with("bom_") { "\u{feff}" } else { "" };
+                observer.observe(format!("{prefix}data: {value}\n\n").as_bytes());
+            }
+            let payload = load(dir.path()).unwrap();
+            assert_eq!(payload.all_time.request_count, 1, "{mode}");
+            assert_eq!(payload.all_time.reported_count, 1, "{mode}");
+            assert_eq!(payload.all_time.total_tokens, 14, "{mode}");
+            assert_eq!(
+                payload.all_time.successful_count,
+                u64::from(success),
+                "{mode}"
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_usage_does_not_allow_a_later_done_to_erase_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let request = RelayUsageRequest::new(
+            dir.path().to_owned(),
+            "p".into(),
+            "P".into(),
+            "m".into(),
+            "responses".into(),
+            PricingSnapshot::unknown("unknown", "fixture"),
+        );
+        {
+            let mut observer = request.observe(200, true);
+            observer.observe(b"data: {\"type\":\"response.failed\",\"error\":{\"code\":\"upstream\"},\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}\n\n");
+            observer.observe(b"data: [DONE]\n\n");
+        }
+        let payload = load(dir.path()).unwrap();
+        assert_eq!(payload.all_time.successful_count, 0);
+        assert_eq!(payload.all_time.total_tokens, 1);
     }
 }

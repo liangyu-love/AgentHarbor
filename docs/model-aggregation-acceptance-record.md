@@ -1,6 +1,6 @@
 # 模型聚合与协议解耦验收记录
 
-日期：2026-10-06。本文记录 `plan/model-aggregation-and-protocol-decoupling-execution-todo.md` 的基础交付状态。实施计划提交为 `5fb0f1c`；基础聚合提交为 `9906616`，测试夹具修复为 `b9adcfb`。P7 与真实环境验收仍保持未完成。
+日期：2026-10-06。本文记录 `plan/model-aggregation-and-protocol-decoupling-execution-todo.md` 的基础交付与 P7 补交付状态。实施计划提交为 `5fb0f1c`；基础聚合提交为 `9906616`，测试夹具修复为 `b9adcfb`。P7 公共事件、统一终态与通用 Chat 扩展已补齐，真实环境验收仍单列未完成。
 
 ## 交付范围
 
@@ -12,7 +12,7 @@
 - 聚合成员只引用已有供应商和模型，不复制 endpoint、密钥、协议、能力覆盖或价格。
 - 选择先做能力/协议准入，再按优先级、轮询或平滑加权轮询调度；真实目标共享冷却和并发 lease。
 - 最多两次重试仅适用于连接建立前或 429、请求必须是可移植的新请求且尚未向下游提交内容；工具、搜索、私有历史、资源续接、超时和副作用请求不盲目重放。
-- Responses/Messages 聚合入口使用 `/aggregate/v1`；成员可使用 Responses、Chat Completions 或 Anthropic Messages 出口，入口协议保持稳定。
+- Responses/Messages/Chat 聚合入口使用 `/aggregate/v1`；成员可使用 Responses、Chat Completions 或 Anthropic Messages 出口，入口协议保持稳定。Chat 两个新增转换方向在 P7 补交付中验收。
 - 聚合 Responses/Messages/ Desktop 响应的协议 `model` 字段投影为 `publicModelId`。普通单渠道 Desktop 继续使用角色 alias；诊断和账本保留 alias、实际成员、wire model、有效协议和价格快照。
 - Claude Code 与 Desktop 聚合的 1M 请求按真实容量准入，可跨三种出口筛选；只有 Messages 出口添加 Claude beta，Chat/Responses 不编造 1M 参数。直连客户端原有协议边界不随本轮改变。
 
@@ -21,10 +21,10 @@
 1. 在供应商页的模型聚合入口新建一个公开模型，选择或明确填写官方模型 ID 和展示名。
 2. 添加已配置中转卡中的精确模型为成员，设置优先级、权重、轮询策略和是否保留会话亲和；不需要重复填写中转地址或密钥。
 3. 保存后在 Codex、Claude Code、Claude Desktop 或 OpenCode 的配置选择器中选择该聚合目标，预览后应用。原有单渠道配置、保存卡和恢复入口继续可用。
-4. 其它 agent 使用聚合导出入口，按客户端需要选择 Responses 或 Messages 以及对应模板。预览脱敏；显式复制配置时才解析本地 Router token，导出不包含上游密钥。
+4. 其它 agent 使用聚合导出入口，按客户端需要选择 Responses、Messages 或 Chat 以及对应模板。预览脱敏；显式复制配置时才解析本地 Router token，导出不包含上游密钥。
 5. 仅供外部 agent 使用时启用“保持聚合服务运行”。轮转/权重修改无需重新写入客户端文件；公开身份、所选目标或本地 token 等实际配置内容改变后，再预览或重新导出。
 
-公开模型 ID 创建后保持固定，关联建议不会改写实际 wire ID。只支持 Chat 的 agent 当前没有通用混合池模板；不能用成员恰好包含 Chat 出口来推断 Chat 入口已开放。
+公开模型 ID 创建后保持固定，关联建议不会改写实际 wire ID。Chat 入口通过新增请求/响应/SSE 转换消费混合池，并非仅把 Chat 出口成员包装成一个模板。OpenCode 的新增 Chat 分组是 `agentharbor_aggregate_chat`，使用 `@ai-sdk/openai-compatible`；既有 Responses/Messages 分组保持原名。
 
 ## 实现位置
 
@@ -32,7 +32,7 @@
 | --- | --- | --- |
 | 聚合配置 | `src-tauri/src/core/aggregation/{types,config,projection,selector,runtime,affinity,execution,tests,mod}.rs` | Store v9、引用完整性、保守能力投影、轮询/权重、冷却、lease、亲和、重试边界 |
 | 共享目标 | `src-tauri/src/core/model_targets.rs`、`model_targets_export.rs` | Provider/Aggregate typed target、可用性/修订、无密钥 resolver、通用/Anthropic SDK/OpenCode 导出 |
-| 协议边界 | `src-tauri/src/core/protocol/{types,adapters}.rs`、`router_proxy/forward.rs` | 同协议透传、跨协议适配、结构化错误，普通 provider 与聚合共用准备/传输/落账逻辑 |
+| 协议边界 | `src-tauri/src/core/protocol/{types,adapters,canonical,chat_ingress,chat_sse}.rs`、`router_proxy/{forward,native_sse}.rs` | 公共事件、统一终态、同协议保留、跨协议适配、结构化错误，普通 provider 与聚合共用准备/传输/落账逻辑 |
 | 聚合 HTTP | `src-tauri/src/core/router_proxy/{aggregate,aggregate_output,aggregate_tests}.rs` | `/aggregate/v1` 路径、目录投影、资源归属、`count_tokens`、Responses `compact`、SSE/JSON 投影、流取消和 lease 释放 |
 | 路由诊断/账本 | `src-tauri/src/core/route_trace.rs`、`relay_usage.rs`、`router_proxy.rs` | request/attempt/member/route/catalog 修订、跳过原因、有界诊断、真实模型与实际价格记录 |
 | 注入器 | Codex、Claude Code、Desktop、OpenCode 的 client_config/commands/UI | typed target、保存卡/预览/reapply/restore、原有 ownership 与多模型选择不缩水 |
@@ -73,7 +73,7 @@
 - `claude_aggregate_saved_request_reapplies_public_identity_and_restores_original`
 - `opencode_aggregate_and_exact_provider_subset_survive_reapply_and_restore`
 
-## 已取得的自动化证据
+## 基础交付的自动化证据
 
 | 命令/检查 | 状态 | 说明 |
 | --- | --- | --- |
@@ -88,18 +88,72 @@
 | Aggregate targeted tests | 通过 | `16 passed`；另有普通 provider 辅助端点费用边界回归 `1 passed`。 |
 | `git diff --check` | 通过 | 最终源码、测试和文档差分无空白错误。 |
 
+## P7 补交付：公共事件、终态与 Chat
+
+新增 `canonical.rs` 的消息/工具 borrowed views、usage、来源扩展与公共事件，兼容现有 JSON 历史。事件区分上游 `source`、内部 `payloadProtocol` 和是否原始 wire：解码后的 Responses 载荷不能冒充上游 Chat/Messages 回放。原生路径保留原始字段/事件；跨协议无法表达的 hosted/custom tool、私有签名、加密 reasoning 和非法工具历史明确拒绝。
+
+Chat→Messages 的增量链路改为 Chat decoder→公共事件→Messages encoder，省去中间 Responses SSE 的序列化和再次解析。新增 Chat→Responses/Messages 请求及对应 JSON/SSE 返回转换，覆盖文本/图片、并行 function tools、参数增量、工具结果历史、tool choice、usage 与正常 incomplete。`/aggregate/v1/chat/completions` 可在三种出口成员间轮转，导出、共享目标与 OpenCode Chat SDK 分组已同步。
+
+历史、请求诊断、trace、实际费用和聚合健康恢复共用终态语义：completed、合法 incomplete、failed、EOF truncated 分开处理。Responses `response.incomplete` 可展示，不能默认当失败；切断工具参数不进入成功历史。Chat 的正常完成要求 finish_reason 后收到 `[DONE]`，裸 `[DONE]` 不代替 Messages/Responses 终态。原生帧门控在转发前阻止非法 DONE，避免 SDK 提前结束而漏读后续错误；EOF 判断独立于诊断采样上限，故障帧有独立空行边界。half-open 渠道只在有效终止后恢复。
+
+SSE 首帧 BOM 在门控、诊断、用量、工具适配和聚合身份投影中统一识别，非法 UTF-8 帧明确失败。合法原生 BOM 与未知事件保留原字节；只有本地 keepalive 已先行输出时，去掉首个上游帧的 BOM，避免它落到流中间变成字段名前缀。聚合 BOM 回归还验证 model 改写、CRLF 与资源 ID 登记；keepalive 顺序通过 Notify 控制，避免仅靠计时猜测。
+
+没有启用用于重试的首段暂存：headers/keepalive 提交后仍不换成员。原生门控仅做有界 SSE 分帧，单帧 8 MiB；跨协议帧仍限 8 MiB、累计保留内容限 16 MiB，超限不发送成功终态。聚合公开身份投影仍限单事件 256 KiB、JSON 16 MiB；两个历史缓存各自保留全局 512 项/16 MiB 上限，Messages 缓存还有 1h TTL。不是按每个聚合各开一份无界历史。
+
+### 分帧与性能基线
+
+`performance_tests.rs` 正常执行 6 项，覆盖逐字节 Unicode、每个双段切分位置、交错工具、历史与事件差分、单帧超限和多块累计超限。测量基准单独执行 1 项，MSVC debug、每项预热并采样 9 次，取总耗时中位数。模拟旧桥接用当前 decoder/encoder 重建字符串路径；差分只归一化随机 ID，没有对旧版独立 EXE 作比较。
+
+| fixture / 指标 | 公共事件 | 模拟旧字符串桥接 |
+| --- | ---: | ---: |
+| 2,011 B 工具流总耗时 | 2,328 µs | 6,878 µs |
+| 工具流首文本编码耗时 | 221 µs | 814 µs |
+| 工具流分配次数 | 2,147 | 2,747 |
+| 155,867 B 文本＋工具流总耗时 | 10,772 µs | 47,056 µs |
+| 文本＋工具流中间 JSON 编码/解析 | 0 / 0 | 154 / 154 |
+| 文本＋工具流累计申请分配字节 | 5,108,617 B | 10,674,669 B |
+
+1,549,546 B / 545 条消息历史：现有 tools-only context 构建中位数 89,191 µs、21,408 次分配；模拟再做一次全历史转换为 120,206 µs、38,693 次分配。context 仍解析入站 JSON 一次，避免的是额外完整转换。累计申请分配量不是峰值内存，首文本编码耗时不含网络与推理，不能外推固定性能倍数；真实长流/并发的进程峰值和网络首 token 留在 P8。
+
+复现命令：
+
+```powershell
+node scripts/tauri.mjs --test-rust performance_tests -- --nocapture --test-threads=1
+node scripts/tauri.mjs --test-rust p7_measure_stream_and_large_history_baselines -- --ignored --nocapture --test-threads=1
+```
+
+### 本轮自审修正
+
+- 新 Chat 路径不再忽略 Messages hosted/未知内容与私有扩展。
+- 原生 EOF 输出可解析的错误帧；非法 DONE 在普通和聚合路径都先拦截。
+- Chat 故障探活不会在仅 finish_reason、未 DONE 时提前清除冷却。
+- 事件来源与载荷格式分开，生成的内部 Responses JSON 不能作原始 Chat 回放。
+- 持续小帧/多块输出共享累计限制，超限释放保留内容；原生分隔符从新增字节附近继续扫描。
+- 大于诊断采样预算的原生事件仍独立检查 EOF 终态；普通/工具适配两路径覆盖三种协议的大事件有/无结束帧。
+- 非 UTF-8 和首帧 BOM 不能隐藏非法 DONE；合法 BOM 的投影、工具参数、费用及 keepalive 顺序均有回归覆盖。
+- 聚合注入的协议选择仅向 OpenCode 开放；Codex 继续使用 Responses，Claude Code 继续使用 Messages。
+- 旧“反向 Chat 转换不支持”断言更新为实际生成请求的验证，原有 Responses→Chat 行为断言保留。
+
+A44（Chat 新入口）与 A45（接口/事件差分）已有独立隔离回归。托管搜索的真实服务能力、旧/新独立版本的网络性能和全部私有扩展组合仍不由这些 fixtures 代替。
+
+### 本轮最终自动化结果
+
+| 命令/检查 | 结果 | 范围 |
+| --- | --- | --- |
+| `pnpm test:rust`（`RUST_TEST_THREADS=1`） | 通过 | 库测试 `972 passed, 0 failed, 12 ignored`；Desktop 工作流 `11 passed, 11 ignored`；本地工作流 `20 passed`。包含最终原生终态门控、BOM/keepalive 及既有四类注入回归。 |
+| `pnpm test:frontend` | 通过 | Desktop 配置契约、聚合管理与既有前端回归。 |
+| `FRONTEND_QA_SCOPE=aggregation pnpm test:frontend` | 通过 | 最后一次 UI 调整后复跑聚合编辑/导出、四种注入、保存卡、协议选择和移动布局；Desktop 配置契约检查同时通过。 |
+| `pnpm build` | 通过 | TypeScript 与 Vite 生产构建。 |
+| Chat 入口定向测试 | 通过 | `14 passed`；完整 Rust 回归再次覆盖。 |
+| 分帧/性能普通测试 | 通过 | `6 passed, 1 ignored`；完整 Rust 回归再次覆盖。 |
+| 单独性能基准 | 通过 | `1 passed`；结果与限制见上表。 |
+| `git diff --check` | 通过 | 本轮源码、测试、文档没有空白错误。 |
+
+第一轮完整 Rust 唯一失败是旧测试仍断言 Chat→Responses 不支持；修正为验证真实请求转换并保留原有 Responses→Chat 断言后，最终完整回归全部通过。未运行需要真实凭据、计费请求或真实客户端文件修改的 ignored 用例。
+
+完整套件包含既有余额用例；P7 本轮未调整余额产品逻辑，也未重复查询真实余额。基础交付的 `b9adcfb` 只修复全量回归暴露的本地回环测试隔离与等待上限。
+
 ## 尚未完成或未运行
-
-### P7：协议 canonical/performance/通用 Chat
-
-当前没有把 Chat decoder→公共 canonical event→Messages/Responses encoder 宣称为已交付。已有 `WireAdapter` 是行为保持的边界，仍复用现有 JSON/Responses 中间表示。以下内容继续 pending：
-
-- 通用 `/aggregate/v1/chat/completions` 混合池入口及 Chat→Responses/Messages 两方向；当前入口明确返回 unsupported，不生成 Chat 导出模板。
-- typed message/tool/usage/终态事件层、同协议未知字段差分验证、跨协议私有扩展约束。
-- 大历史、分帧、首 token、峰值内存和重复转换的性能基线；首段缓冲/keepalive 的独立验收。
-- Chat 模板/SDK group、托管工具/搜索在真实支持矩阵上的确认。
-
-计划验收项 A44（Chat 新入口）和 A45（接口/事件优化前后差分）因此保持 pending。
 
 ### P8：真实环境与交付
 

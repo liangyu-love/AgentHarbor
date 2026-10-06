@@ -19,6 +19,7 @@ pub(super) struct StreamTranslator {
     chat: Option<sse::StreamTranslator>,
     pending: Vec<u8>,
     blocks: Vec<Block>,
+    retained_bytes: usize,
     started: bool,
     finished: bool,
     completed_response: Option<Value>,
@@ -44,6 +45,7 @@ impl StreamTranslator {
             }),
             pending: Vec::new(),
             blocks: Vec::new(),
+            retained_bytes: 0,
             started: false,
             finished: false,
             completed_response: None,
@@ -64,8 +66,17 @@ impl StreamTranslator {
             return Vec::new();
         }
         if let Some(chat) = self.chat.as_mut() {
-            let frames = chat.push(chunk).concat();
-            self.consume(frames.as_bytes())
+            let events = chat.push_events(chunk);
+            let mut out = Vec::new();
+            for event in events {
+                if let Err(code) = self.value(&event.payload, &mut out) {
+                    out.extend(self.fail(code));
+                }
+                if self.finished {
+                    break;
+                }
+            }
+            out
         } else {
             self.consume(chunk)
         }
@@ -92,6 +103,9 @@ impl StreamTranslator {
         self.finished = true;
         self.failure = Some(code);
         self.pending.clear();
+        self.blocks.clear();
+        self.retained_bytes = 0;
+        self.chat = None;
         // Never close a partial tool or send message_stop after an error.
         vec![event(
             "error",
@@ -140,14 +154,23 @@ impl StreamTranslator {
     fn block(&mut self, key: (u64, u64), kind: Value, out: &mut Vec<String>) -> Result<usize> {
         self.start(&Value::Null, out);
         if let Some(index) = self.blocks.iter().position(|block| block.key == key) {
-            let block = &mut self.blocks[index];
-            if block.kind.is_null() { block.kind = kind.clone(); }
-            if block.kind["type"] != kind["type"] {
+            let block = &self.blocks[index];
+            let mut updated = if block.kind.is_null() {
+                kind.clone()
+            } else {
+                block.kind.clone()
+            };
+            if updated["type"] != kind["type"] {
                 return Err("invalid_stream_frame");
             }
-            if matches!(kind["type"].as_str(), Some("server_tool_use" | "web_search_tool_result")) {
-                if block.opened && block.kind != kind { return Err("invalid_stream_frame"); }
-                block.kind = kind.clone();
+            if matches!(
+                kind["type"].as_str(),
+                Some("server_tool_use" | "web_search_tool_result")
+            ) {
+                if block.opened && block.kind != kind {
+                    return Err("invalid_stream_frame");
+                }
+                updated = kind.clone();
             }
             if kind["type"] == "tool_use" {
                 for field in ["id", "name"] {
@@ -155,16 +178,30 @@ impl StreamTranslator {
                         if block.opened && block.kind[field] != value {
                             return Err("invalid_tool_arguments");
                         }
-                        block.kind[field] = json!(value);
+                        updated[field] = json!(value);
                     }
                 }
             }
+            let bytes = self
+                .retained_bytes
+                .saturating_sub(block.kind.to_string().len())
+                .saturating_add(updated.to_string().len());
+            if bytes > super::canonical::MAX_RETAINED_BYTES {
+                return Err("stream_output_limit");
+            }
+            self.retained_bytes = bytes;
+            self.blocks[index].kind = updated;
             self.emit(index, out)?;
             return Ok(index);
         }
         if self.blocks.len() >= 1024 {
             return Err("invalid_stream_frame");
         }
+        let bytes = self.retained_bytes.saturating_add(kind.to_string().len());
+        if bytes > super::canonical::MAX_RETAINED_BYTES {
+            return Err("stream_output_limit");
+        }
+        self.retained_bytes = bytes;
         let index = self.blocks.len();
         self.blocks.push(Block {
             key,
@@ -214,7 +251,11 @@ impl StreamTranslator {
     }
 
     fn append(&mut self, index: usize, delta: &str, out: &mut Vec<String>) -> Result<()> {
-        if !self.content_ready && self.blocks.iter().map(|b| b.text.len()).sum::<usize>() + delta.len() > MAX_BYTES {
+        let bytes = self.retained_bytes.saturating_add(delta.len());
+        if bytes > super::canonical::MAX_RETAINED_BYTES {
+            return Err("stream_output_limit");
+        }
+        if !self.content_ready && bytes > MAX_BYTES {
             return Err("invalid_stream_frame");
         }
         let block = &mut self.blocks[index];
@@ -222,6 +263,7 @@ impl StreamTranslator {
             return Err("invalid_stream_frame");
         }
         block.text.push_str(delta);
+        self.retained_bytes = bytes;
         self.emit(index, out)
     }
 
@@ -264,7 +306,13 @@ impl StreamTranslator {
         Ok(())
     }
 
-    fn item(&mut self, index: u64, item: &Value, terminal: bool, out: &mut Vec<String>) -> Result<()> {
+    fn item(
+        &mut self,
+        index: u64,
+        item: &Value,
+        terminal: bool,
+        out: &mut Vec<String>,
+    ) -> Result<()> {
         match item["type"].as_str() {
             Some("function_call") => {
                 if item["status"] == "incomplete" || !super::responses::valid_function_call(item) {
@@ -300,17 +348,29 @@ impl StreamTranslator {
                         json!({"type":"text","text":""}),
                         out,
                     )?;
-                    let suffix = if self.content_ready { web_search::citation_suffix(part) } else { String::new() };
+                    let suffix = if self.content_ready {
+                        web_search::citation_suffix(part)
+                    } else {
+                        String::new()
+                    };
                     self.reconcile(block, &format!("{text}{suffix}"), out)?;
                     // Some relays publish citations only in the terminal
                     // response. Keep text open for their append-only links.
-                    if terminal { self.close(block, out)?; }
+                    if terminal {
+                        self.close(block, out)?;
+                    }
                 }
             }
             Some("reasoning") => {}
             Some("web_search_call") => {
-                if !terminal && !self.content_ready { return Ok(()); }
-                let ordinal = self.blocks.iter().filter(|b| b.key.0 < index && b.kind["type"] == "server_tool_use").count() as u64;
+                if !terminal && !self.content_ready {
+                    return Ok(());
+                }
+                let ordinal = self
+                    .blocks
+                    .iter()
+                    .filter(|b| b.key.0 < index && b.kind["type"] == "server_tool_use")
+                    .count() as u64;
                 let blocks = web_search::blocks(item, self.options.search.as_ref(), ordinal)
                     .map_err(|_| "invalid_upstream_response")?;
                 for (part, kind) in blocks.into_iter().enumerate() {
@@ -333,6 +393,10 @@ impl StreamTranslator {
             return Ok(());
         }
         let value: Value = serde_json::from_str(&data).map_err(|_| "invalid_stream_frame")?;
+        self.value(&value, out)
+    }
+
+    fn value(&mut self, value: &Value, out: &mut Vec<String>) -> Result<()> {
         if !value["error"].is_null() {
             return Err("upstream_error");
         }
@@ -388,7 +452,9 @@ impl StreamTranslator {
             }
             "response.output_item.done" => {
                 self.item(index()?, &value["item"], false, out)?;
-                if !self.content_ready { out.push(event("ping", json!({}))); }
+                if !self.content_ready {
+                    out.push(event("ping", json!({})));
+                }
             }
             "response.completed" | "response.incomplete" => {
                 let response = &value["response"];
@@ -397,8 +463,15 @@ impl StreamTranslator {
                 {
                     return Err("invalid_stream_frame");
                 }
-                let output = web_search::enrich_output(response["output"].as_array().ok_or("invalid_stream_frame")?, self.options.search.as_ref().and_then(|s| s.max_uses));
-                let message = anthropic::response_body_from_output(response, &self.options, &output).map_err(|_| "invalid_upstream_response")?;
+                let output = web_search::enrich_output(
+                    response["output"]
+                        .as_array()
+                        .ok_or("invalid_stream_frame")?,
+                    self.options.search.as_ref().and_then(|s| s.max_uses),
+                );
+                let message =
+                    anthropic::response_body_from_output(response, &self.options, &output)
+                        .map_err(|_| "invalid_upstream_response")?;
                 self.start(response, out);
                 let expected: Vec<(u64, u64)> = output
                     .iter()
@@ -425,10 +498,23 @@ impl StreamTranslator {
                     // answer. Keep indices contiguous and in output order before
                     // emitting any content, while retaining earlier deltas for
                     // validation. Ordinary replies still stream incrementally.
-                    if expected.len() > 1024 { return Err("invalid_stream_frame"); }
+                    if expected.len() > 1024 {
+                        return Err("invalid_stream_frame");
+                    }
                     for key in &expected {
                         if !self.blocks.iter().any(|b| b.key == *key) {
-                            self.blocks.push(Block { key: *key, kind: Value::Null, text: String::new(), emitted: 0, opened: false, closed: false });
+                            self.retained_bytes = self.retained_bytes.saturating_add(4);
+                            if self.retained_bytes > super::canonical::MAX_RETAINED_BYTES {
+                                return Err("stream_output_limit");
+                            }
+                            self.blocks.push(Block {
+                                key: *key,
+                                kind: Value::Null,
+                                text: String::new(),
+                                emitted: 0,
+                                opened: false,
+                                closed: false,
+                            });
                         }
                     }
                     self.blocks.sort_by_key(|b| b.key);
@@ -451,7 +537,9 @@ impl StreamTranslator {
             // Part/done and reasoning events are redundant; final items validate them.
             _ => {}
         }
-        if !self.content_ready && out.is_empty() { out.push(event("ping", json!({}))); }
+        if !self.content_ready && out.is_empty() {
+            out.push(event("ping", json!({})));
+        }
         Ok(())
     }
 }

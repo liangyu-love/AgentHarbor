@@ -30,11 +30,17 @@ attempt 共用 `forward` 的请求准备、鉴权、history/tool、stream 和 us
 不会被无提示删除。聚合响应在确认上游身份后只投影协议定义的 `model` 字段为
 `publicModelId`，诊断和账本仍保存真实 served model 与实际成员价格快照。
 
-当前基础交付支持 Responses/Messages 聚合入口和 Responses/Chat/Messages 三种
-成员出口，并明确处理资源归属、`count_tokens`、Responses `compact`、1M 容量准入、
-有限 429/连接前重试及有界诊断。通用 `/aggregate/v1/chat/completions` 入口、
-Chat→Responses/Messages 的公共 canonical 事件层、分帧性能基线和完整托管工具矩阵
-属于 P7，当前保持 pending；只支持 Chat 的外部 agent 不应被导出为可消费的混合池模板。
+P7 已新增 `/aggregate/v1/chat/completions` 入口和 Chat→Responses/Messages 两个
+转换方向，支持通用 Chat 导出及 OpenCode 的独立 Chat SDK 分组。九条协议路径的
+普通文本/function tools 由隔离回归验证；Chat→Messages 的公共事件路径省去中间
+Responses SSE 字符串编码和重新解析。同协议继续保留未知字段和事件，私有签名、
+hosted/custom tool 等无法跨协议表达的内容明确拒绝。终态统一区分 completed、
+incomplete、failed 和 truncated；裸 `[DONE]` 不作为有效完成证明，Chat 的故障恢复
+须等 finish_reason 与 `[DONE]`，截断错误帧有独立边界。
+
+分帧、工具、大历史及分配基线见 `docs/model-aggregation-acceptance-record.md`。
+首段缓冲没有启用；现有 headers/keepalive 提交后不会再换成员。搜索与托管工具
+仍按已实现的具体执行矩阵准入，不能把普通工具通过误解为所有 hosted tool 都支持。
 
 本增量没有运行真实中转凭据、付费搜索或真实 Desktop/其它 agent 的全组合验收。
 mock/隔离测试只能证明本地契约，不能替代上游协议能力结论。

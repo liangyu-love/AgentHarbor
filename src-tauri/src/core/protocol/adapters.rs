@@ -172,11 +172,17 @@ mod tests {
 
     #[test]
     fn adapter_request_matches_the_legacy_converter_in_all_cross_pairs() {
-        for caller in [ModelProtocol::Responses, ModelProtocol::AnthropicMessages] {
+        for caller in [
+            ModelProtocol::Responses,
+            ModelProtocol::AnthropicMessages,
+            ModelProtocol::ChatCompletions,
+        ] {
             let value = if caller == ModelProtocol::Responses {
                 json!({"model":"fixture", "input":"hello"})
-            } else {
+            } else if caller == ModelProtocol::AnthropicMessages {
                 json!({"model":"fixture", "max_tokens":20, "messages":[{"role":"user", "content":"hello"}]})
+            } else {
+                json!({"model":"fixture", "max_completion_tokens":20, "messages":[{"role":"user", "content":"hello"}]})
             };
             for upstream in [
                 ModelProtocol::Responses,
@@ -196,15 +202,15 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_chat_conversion_returns_structured_error_without_relaxing_support() {
+    fn invalid_chat_ingress_returns_structured_error_after_support_is_enabled() {
         let error = match WireAdapter::new(ModelProtocol::Responses)
             .encode_request(ModelProtocol::ChatCompletions, &json!({"messages":[]}))
         {
-            Ok(_) => panic!("unsupported direction must remain unavailable"),
+            Ok(_) => panic!("invalid Chat body must be rejected before forwarding"),
             Err(error) => error,
         };
-        assert_eq!(error.kind, ProtocolErrorKind::UnsupportedTranslation);
-        assert_eq!(error.code, "protocol.errors.unsupportedTranslation");
+        assert_eq!(error.kind, ProtocolErrorKind::InvalidRequest);
+        assert_eq!(error.code, "protocol.errors.invalidRequest");
     }
 
     #[test]

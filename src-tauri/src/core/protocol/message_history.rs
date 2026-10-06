@@ -2,6 +2,7 @@
 //! Private reasoning is never persisted or exposed as fabricated Anthropic
 //! thinking/signatures. Keys include route scope, conversation prefix, visible
 //! text and the complete tool-call group, not just a provider ID.
+use super::canonical::{IncompleteReason, TerminalState};
 use crate::core::router::ModelProtocol;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -24,7 +25,10 @@ struct CachedOutput {
 impl From<Vec<u8>> for CachedOutput {
     fn from(bytes: Vec<u8>) -> Self {
         let fingerprint = Sha256::digest(&bytes).into();
-        Self { reasoning: Arc::from(bytes), fingerprint }
+        Self {
+            reasoning: Arc::from(bytes),
+            fingerprint,
+        }
     }
 }
 
@@ -68,7 +72,10 @@ impl Cache {
         Some(reasoning)
     }
     fn insert(&mut self, key: String, output: CachedOutput) {
-        let CachedOutput { reasoning, fingerprint } = output;
+        let CachedOutput {
+            reasoning,
+            fingerprint,
+        } = output;
         self.prune();
         if let Some(index) = self.turns.iter().position(|t| t.key == key) {
             let old = self.turns.remove(index).unwrap();
@@ -632,14 +639,20 @@ impl Context {
 /// Token-limited text is a delivered assistant turn too. Never replay a failed
 /// response or a tool call whose arguments were cut short.
 pub(super) fn cacheable_response(response: &Value) -> bool {
-    let safe_status = response["status"] == "completed"
-        || (response["status"] == "incomplete"
-            && response["incomplete_details"]["reason"] == "max_output_tokens"
-            && response["output"]
-                .as_array()
-                .is_some_and(|items| items.iter().all(|item| item["type"] != "function_call")));
+    let state = TerminalState::from_canonical_response(response);
+    let safe_status = state.is_success()
+        || (matches!(
+            state,
+            TerminalState::Incomplete {
+                reason: IncompleteReason::MaxOutputTokens
+            }
+        ) && response["output"]
+            .as_array()
+            .is_some_and(|items| items.iter().all(|item| item["type"] != "function_call")));
     safe_status
-        && response["output"].as_array().is_some_and(|items| !items.is_empty())
+        && response["output"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
         && super::anthropic::response_body(response).is_ok()
 }
 
@@ -1281,7 +1294,10 @@ mod tests {
         cache.record("same-turn".into(), b"first output".to_vec().into());
         cache.record("same-turn".into(), b"first output".to_vec().into());
         assert_eq!(&*cache.get("same-turn").unwrap(), b"first output");
-        cache.record("same-turn".into(), b"another session output".to_vec().into());
+        cache.record(
+            "same-turn".into(),
+            b"another session output".to_vec().into(),
+        );
         assert!(cache.get("same-turn").is_none());
         assert_eq!(cache.bytes, "same-turn".len());
         cache.record("same-turn".into(), b"first output".to_vec().into());
@@ -1295,16 +1311,31 @@ mod tests {
     #[test]
     fn empty_output_and_blank_reasoning_are_not_replayed() {
         for status in ["completed", "incomplete"] {
-            assert!(!cacheable_response(&json!({"status":status,"incomplete_details":{"reason":"max_output_tokens"},"output":[]})));
+            assert!(!cacheable_response(
+                &json!({"status":status,"incomplete_details":{"reason":"max_output_tokens"},"output":[]})
+            ));
         }
         let scope = uuid::Uuid::new_v4().to_string();
         let original = source();
         let mut response = canonical();
         response["output"][0]["summary"][0]["text"] = json!("  ");
-        Context::new(&[&scope], ModelProtocol::ChatCompletions, original.to_string().as_bytes()).unwrap().remember(&response);
+        Context::new(
+            &[&scope],
+            ModelProtocol::ChatCompletions,
+            original.to_string().as_bytes(),
+        )
+        .unwrap()
+        .remember(&response);
         let next = next(&original);
-        let mut body = super::super::anthropic::request_body(ModelProtocol::ChatCompletions, &next).unwrap();
-        Context::new(&[&scope], ModelProtocol::ChatCompletions, next.to_string().as_bytes()).unwrap().restore(&mut body);
+        let mut body =
+            super::super::anthropic::request_body(ModelProtocol::ChatCompletions, &next).unwrap();
+        Context::new(
+            &[&scope],
+            ModelProtocol::ChatCompletions,
+            next.to_string().as_bytes(),
+        )
+        .unwrap()
+        .restore(&mut body);
         assert!(body["messages"][1].get("reasoning_content").is_none());
     }
 
@@ -1322,10 +1353,27 @@ mod tests {
             .remember(&json!({"status":"completed","output":[
                 {"type":"reasoning","summary":[{"type":"summary_text","text":"first reasoning"}]},
                 {"type":"message","role":"assistant","content":[{"type":"output_text","text":"Earlier reply"}]}]}));
-        before["messages"].as_array_mut().unwrap().push(request["messages"][1].clone());
-        Context::new(&[&scope], ModelProtocol::ChatCompletions, before.to_string().as_bytes()).unwrap().remember(&canonical());
-        let mut body = super::super::anthropic::request_body(ModelProtocol::ChatCompletions, &request).unwrap();
-        Context::new(&[&scope], ModelProtocol::ChatCompletions, request.to_string().as_bytes()).unwrap().restore(&mut body);
+        before["messages"]
+            .as_array_mut()
+            .unwrap()
+            .push(request["messages"][1].clone());
+        Context::new(
+            &[&scope],
+            ModelProtocol::ChatCompletions,
+            before.to_string().as_bytes(),
+        )
+        .unwrap()
+        .remember(&canonical());
+        let mut body =
+            super::super::anthropic::request_body(ModelProtocol::ChatCompletions, &request)
+                .unwrap();
+        Context::new(
+            &[&scope],
+            ModelProtocol::ChatCompletions,
+            request.to_string().as_bytes(),
+        )
+        .unwrap()
+        .restore(&mut body);
         assert_eq!(body["messages"].as_array().unwrap().len(), 4);
         assert!(body["messages"][1].get("tool_calls").is_none());
         assert_eq!(body["messages"][2]["tool_calls"][0]["id"], "c1");

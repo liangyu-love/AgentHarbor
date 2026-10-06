@@ -79,6 +79,15 @@ OpenCode 的管理范围精确到供应商名称、SDK、端点、凭据及模�
 
 ## 验证
 
+模型聚合使用独立 `/aggregate/v1` 入口，复用已保存的中转卡片和精确模型 ID。
+Codex、Claude Code、Claude Desktop 与 OpenCode 消费同一个聚合目标，成员轮转
+不需要重新注入。其它 agent 可按需要导出 Responses、Messages 或 Chat 连接；
+OpenCode 的 Chat 聚合分组为 `agentharbor_aggregate_chat`，使用
+`@ai-sdk/openai-compatible`。原有 Responses/Messages 分组和单渠道恢复事务保持可用。
+入口协议由客户端接口决定，聚合成员可以有不同出口协议；搜索、签名和资源续接
+继续按实际可表达的能力筛选。完整验收范围见
+[聚合验收记录](D:/workspace/AiMaMi/docs/model-aggregation-acceptance-record.md)。
+
 `pnpm build`；`pnpm test:rust`；`pnpm test:frontend`（需要本地 Playwright）。
 
 测试使用临时客户端目录和本地模拟上游，覆盖配置保留、恢复、并发变更检测、协议匹配、从生成配置发送请求、SSE 用量记录，以及独立启停和重启后的路由恢复。不修改正式客户端配置，不调用付费上游。

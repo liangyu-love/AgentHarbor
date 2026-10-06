@@ -439,6 +439,281 @@ fn mixed_protocol_rotation_preserves_wire_models_public_projection_and_original_
 }
 
 #[test]
+fn aggregate_chat_ingress_rotates_all_egresses_with_json_and_sse() {
+    let _guard = global_router_test_lock();
+    let _stop = Stop;
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        for streaming in [false, true] {
+            let responses = mock(router::ModelProtocol::Responses, 200, streaming).await;
+            let messages = mock(router::ModelProtocol::AnthropicMessages, 200, streaming).await;
+            let chat = mock(router::ModelProtocol::ChatCompletions, 200, streaming).await;
+            let temp = tempfile::tempdir().unwrap();
+            let paths = CodexPaths::from_home(temp.path().into());
+            let store = fixture(&[
+                (&responses, "wire-responses", router::ModelProtocol::Responses),
+                (&messages, "wire-messages", router::ModelProtocol::AnthropicMessages),
+                (&chat, "wire-chat", router::ModelProtocol::ChatCompletions),
+            ]);
+            let (client, base) = start(&paths, &store).await;
+            for _ in 0..6 {
+                let response = client.post(format!("{base}/aggregate/v1/chat/completions"))
+                    .bearer_auth("local-fixture")
+                    .json(&json!({"model":"official-model", "stream":streaming,
+                        "messages":[{"role":"system","content":"Be brief"},{"role":"user","content":"hello"}],
+                        "max_completion_tokens":64, "stream_options":{"include_usage":true}}))
+                    .send().await.unwrap();
+                let status = response.status();
+                let bytes = response.bytes().await.unwrap();
+                assert_eq!(status, 200, "{}", String::from_utf8_lossy(&bytes));
+                if streaming {
+                    let text = String::from_utf8(bytes.to_vec()).unwrap();
+                    let values: Vec<Value> = text.lines().filter_map(|line| line.strip_prefix("data: "))
+                        .filter(|data| *data != "[DONE]")
+                        .map(|data| serde_json::from_str(data).expect("each Chat SSE data frame is JSON")).collect();
+                    assert!(text.contains("data: [DONE]"), "{text}");
+                    assert!(values.iter().any(|value| value["choices"][0]["delta"]["content"] == "hello"), "{text}");
+                    assert!(values.iter().filter(|value| value["object"] == "chat.completion.chunk")
+                        .all(|value| value["model"] == "official-model"), "{text}");
+                    assert!(values.iter().any(|value| value["choices"][0]["finish_reason"] == "stop"), "{text}");
+                    assert!(values.iter().any(|value| value["usage"]["prompt_tokens"] == 4 && value["usage"]["completion_tokens"] == 2), "{text}");
+                } else {
+                    let value: Value = serde_json::from_slice(&bytes).unwrap();
+                    assert_eq!(value["object"], "chat.completion");
+                    assert_eq!(value["model"], "official-model");
+                    assert_eq!(value["choices"][0]["message"]["content"], "hello");
+                    assert_eq!(value["choices"][0]["finish_reason"], "stop");
+                    assert_eq!(value["usage"]["prompt_tokens"], 4);
+                    assert_eq!(value["usage"]["completion_tokens"], 2);
+                }
+            }
+            for (upstream, suffix, wire) in [(&responses, "/v1/responses", "wire-responses"),
+                (&messages, "/v1/messages", "wire-messages"), (&chat, "/v1/chat/completions", "wire-chat")] {
+                assert_eq!(upstream.count.load(Ordering::SeqCst), 2);
+                for request in upstream.requests.lock().unwrap().iter() {
+                    assert_eq!(request["path"], suffix);
+                    assert_eq!(request["body"]["model"], wire);
+                    assert_eq!(request["body"]["stream"], streaming);
+                    assert_eq!(request["local"], false);
+                }
+            }
+            wait_for_released_lease().await;
+        }
+    });
+}
+
+fn chat_tool_result(protocol: router::ModelProtocol, streaming: bool) -> Response<ResponseBody> {
+    let usage = json!({"input_tokens":4,"output_tokens":2});
+    let result = match protocol {
+        router::ModelProtocol::Responses => {
+            json!({"id":"resp_chat_tools","object":"response","model":"wire-tool",
+            "status":"completed","output":[{"type":"function_call","id":"item-next","call_id":"call-next",
+                "name":"lookup","arguments":"{\"query\":\"next\"}"}],"usage":usage})
+        }
+        router::ModelProtocol::AnthropicMessages => {
+            json!({"id":"msg_chat_tools","type":"message","model":"wire-tool","role":"assistant",
+            "content":[{"type":"tool_use","id":"call-next","name":"lookup","input":{"query":"next"}}],
+            "stop_reason":"tool_use","usage":usage})
+        }
+        router::ModelProtocol::ChatCompletions => {
+            json!({"id":"chat_tools","object":"chat.completion","model":"wire-tool",
+            "choices":[{"index":0,"message":{"role":"assistant","content":null,
+                "tool_calls":[{"id":"call-next","type":"function","function":{"name":"lookup","arguments":"{\"query\":\"next\"}"}}]},
+                "finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":2}})
+        }
+    };
+    if !streaming {
+        return scripted_response(200, result.to_string(), "application/json");
+    }
+    let events = match protocol {
+        router::ModelProtocol::Responses => vec![
+            json!({"type":"response.created","response":{"id":"resp_chat_tools","model":"wire-tool","status":"in_progress","output":[]}}),
+            json!({"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"item-next","call_id":"call-next","name":"lookup","arguments":""}}),
+            json!({"type":"response.function_call_arguments.delta","item_id":"item-next","output_index":0,"delta":"{\"query\":\"next\"}"}),
+            json!({"type":"response.output_item.done","output_index":0,"item":result["output"][0]}),
+            json!({"type":"response.completed","response":result}),
+        ],
+        router::ModelProtocol::AnthropicMessages => vec![
+            json!({"type":"message_start","message":{"id":"msg_chat_tools","type":"message","role":"assistant","model":"wire-tool","content":[],"usage":{"input_tokens":4,"output_tokens":0}}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call-next","name":"lookup","input":{}}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"next\"}"}}),
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":2}}),
+            json!({"type":"message_stop"}),
+        ],
+        router::ModelProtocol::ChatCompletions => vec![
+            json!({"id":"chat_tools","object":"chat.completion.chunk","model":"wire-tool","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call-next","type":"function","function":{"name":"lookup","arguments":""}}]},"finish_reason":null}]}),
+            json!({"id":"chat_tools","object":"chat.completion.chunk","model":"wire-tool","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"query\":\"next\"}"}}]},"finish_reason":null}]}),
+            json!({"id":"chat_tools","object":"chat.completion.chunk","model":"wire-tool","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":2}}),
+        ],
+    };
+    let mut output: String = events
+        .iter()
+        .map(|event| format!("data: {event}\n\n"))
+        .collect();
+    if protocol == router::ModelProtocol::ChatCompletions {
+        output.push_str("data: [DONE]\n\n");
+    }
+    scripted_response(200, output, "text/event-stream")
+}
+
+#[test]
+fn aggregate_chat_tools_preserve_ids_arguments_choice_and_completed_history_across_egresses() {
+    let _guard = global_router_test_lock();
+    let _stop = Stop;
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        for protocol in [router::ModelProtocol::Responses, router::ModelProtocol::AnthropicMessages, router::ModelProtocol::ChatCompletions] {
+            for streaming in [false, true] {
+                let upstream = scripted_mock(move |_| chat_tool_result(protocol, streaming)).await;
+                let temp = tempfile::tempdir().unwrap();
+                let paths = CodexPaths::from_home(temp.path().into());
+                let store = fixture(&[(&upstream, "wire-tool", protocol)]);
+                let (client, base) = start(&paths, &store).await;
+                let response = client.post(format!("{base}/aggregate/v1/chat/completions"))
+                    .bearer_auth("local-fixture")
+                    .json(&json!({"model":"official-model","stream":streaming,"max_tokens":64,
+                        "messages":[{"role":"user","content":"lookup"},
+                            {"role":"assistant","content":null,"tool_calls":[{"id":"call-prior","type":"function","function":{"name":"lookup","arguments":"{\"query\":\"prior\"}"}}]},
+                            {"role":"tool","tool_call_id":"call-prior","content":"prior result"},
+                            {"role":"user","content":"next"}],
+                        "tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}}],
+                        "tool_choice":{"type":"function","function":{"name":"lookup"}},"parallel_tool_calls":false,
+                        "stream_options":{"include_usage":true}})).send().await.unwrap();
+                let status = response.status();
+                let text = response.text().await.unwrap();
+                assert_eq!(status, 200, "{protocol:?}: {text}");
+                if streaming {
+                    let values: Vec<Value> = text.lines().filter_map(|line| line.strip_prefix("data: "))
+                        .filter(|data| *data != "[DONE]").map(|data| serde_json::from_str(data).unwrap()).collect();
+                    assert!(text.contains("data: [DONE]"), "{text}");
+                    let calls: Vec<_> = values.iter().flat_map(|v| v["choices"][0]["delta"]["tool_calls"].as_array().into_iter().flatten()).collect();
+                    assert!(calls.iter().any(|call| call["id"] == "call-next" && call["function"]["name"] == "lookup"), "{text}");
+                    let arguments: String = calls.iter().filter_map(|call| call["function"]["arguments"].as_str()).collect();
+                    assert_eq!(arguments, "{\"query\":\"next\"}", "{text}");
+                    assert!(values.iter().any(|value| value["choices"][0]["finish_reason"] == "tool_calls"), "{text}");
+                    assert!(values.iter().filter(|value| value["object"] == "chat.completion.chunk").all(|value| value["model"] == "official-model"));
+                } else {
+                    let value: Value = serde_json::from_str(&text).unwrap();
+                    assert_eq!(value["model"], "official-model");
+                    assert_eq!(value["choices"][0]["finish_reason"], "tool_calls");
+                    assert_eq!(value["choices"][0]["message"]["tool_calls"][0]["id"], "call-next");
+                    assert_eq!(value["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"], "{\"query\":\"next\"}");
+                }
+                let captured = upstream.requests.lock().unwrap().last().unwrap().clone();
+                let body = &captured["body"];
+                assert_eq!(body["model"], "wire-tool");
+                match protocol {
+                    router::ModelProtocol::Responses => {
+                        let input = body["input"].as_array().unwrap();
+                        assert!(input.iter().any(|item| item["type"] == "function_call" && item["call_id"] == "call-prior"));
+                        assert!(input.iter().any(|item| item["type"] == "function_call_output" && item["call_id"] == "call-prior" && item["output"] == "prior result"));
+                        assert_eq!(body["tool_choice"]["name"], "lookup");
+                    }
+                    router::ModelProtocol::AnthropicMessages => {
+                        assert_eq!(body["tool_choice"]["type"], "tool");
+                        assert_eq!(body["tool_choice"]["name"], "lookup");
+                        let content: Vec<_> = body["messages"].as_array().unwrap().iter().flat_map(|message| message["content"].as_array().into_iter().flatten()).collect();
+                        assert!(content.iter().any(|item| item["type"] == "tool_use" && item["id"] == "call-prior"));
+                        assert!(content.iter().any(|item| item["type"] == "tool_result" && item["tool_use_id"] == "call-prior" && item["content"] == "prior result"));
+                    }
+                    router::ModelProtocol::ChatCompletions => {
+                        assert_eq!(body["tool_choice"]["function"]["name"], "lookup");
+                        assert!(body["messages"].as_array().unwrap().iter().any(|message| message["role"] == "tool" && message["tool_call_id"] == "call-prior"));
+                    }
+                }
+                wait_for_released_lease().await;
+            }
+        }
+    });
+}
+
+#[test]
+fn aggregate_chat_errors_and_hosted_tool_preflight_stay_at_protocol_boundaries() {
+    let _guard = global_router_test_lock();
+    let _stop = Stop;
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        for protocol in [router::ModelProtocol::Responses, router::ModelProtocol::AnthropicMessages, router::ModelProtocol::ChatCompletions] {
+            let upstream = mock(protocol, 400, false).await;
+            let temp = tempfile::tempdir().unwrap();
+            let paths = CodexPaths::from_home(temp.path().into());
+            let store = fixture(&[(&upstream, "wire-error", protocol)]);
+            let (client, base) = start(&paths, &store).await;
+            let response = client.post(format!("{base}/aggregate/v1/chat/completions")).bearer_auth("local-fixture")
+                .json(&json!({"model":"official-model","messages":[{"role":"user","content":"hello"}],"max_tokens":64}))
+                .send().await.unwrap();
+            assert_eq!(response.status(), 400);
+            let value: Value = response.json().await.unwrap();
+            assert_eq!(value["error"]["message"], "synthetic upstream rejection");
+            assert_eq!(upstream.count.load(Ordering::SeqCst), 1);
+            // A hosted tool is not assumed portable just because ordinary
+            // function calls work. Cross-protocol admission rejects it before
+            // touching an upstream; the native Chat request is preserved.
+            let unsupported = client.post(format!("{base}/aggregate/v1/chat/completions")).bearer_auth("local-fixture")
+                .json(&json!({"model":"official-model","messages":[{"role":"user","content":"search"}],
+                    "tools":[{"type":"vendor_hosted_search","name":"search"}]})).send().await.unwrap();
+            assert_eq!(unsupported.status(), 400);
+            assert_eq!(upstream.count.load(Ordering::SeqCst), if protocol == router::ModelProtocol::ChatCompletions { 2 } else { 1 });
+        }
+    });
+}
+
+#[test]
+fn aggregate_native_chat_keeps_unknown_fields_events_and_rejects_missing_terminal() {
+    let _guard = global_router_test_lock();
+    let _stop = Stop;
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let upstream = scripted_mock(|body| {
+            assert_eq!(body["vendor_control"]["mode"], "native");
+            if body["stream"] == true {
+                let known = json!({"id":"chat_native","object":"chat.completion.chunk","model":"wire-native",
+                    "choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}],"vendor":{"model":"keep-nested"}});
+                let future = "event: vendor.future\r\ndata: {\"type\":\"vendor.future\",\"model\":\"keep-unknown\"}\r\n\r\n";
+                let mut output = format!("{future}data: {known}\n\n");
+                if body["vendor_control"]["complete"] == true {
+                    let terminal = json!({"id":"chat_native","object":"chat.completion.chunk","model":"wire-native",
+                        "choices":[{"index":0,"delta":{},"finish_reason":"stop"}]});
+                    output.push_str(&format!("data: {terminal}\n\ndata: [DONE]\n\n"));
+                }
+                scripted_response(200, output, "text/event-stream")
+            } else {
+                scripted_response(200, json!({"id":"chat_native","object":"chat.completion","model":"wire-native",
+                    "choices":[{"index":0,"message":{"role":"assistant","content":"hello","vendor_message":{"raw":true}},"finish_reason":"stop"}],
+                    "vendor":{"model":"keep-nested","opaque":[1,2,3]},"usage":{"prompt_tokens":4,"completion_tokens":2}}).to_string(), "application/json")
+            }
+        }).await;
+        let temp = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(temp.path().into());
+        let store = fixture(&[(&upstream, "wire-native", router::ModelProtocol::ChatCompletions)]);
+        let (client, base) = start(&paths, &store).await;
+        for (streaming, complete) in [(false,true), (true,true), (true,false)] {
+            let response = client.post(format!("{base}/aggregate/v1/chat/completions")).bearer_auth("local-fixture")
+                .json(&json!({"model":"official-model","stream":streaming,"messages":[{"role":"user","content":"hello"}],
+                    "vendor_control":{"mode":"native","complete":complete}})).send().await.unwrap();
+            assert_eq!(response.status(), 200);
+            let text = response.text().await.unwrap();
+            if streaming {
+                assert!(text.contains("event: vendor.future") && text.contains("keep-unknown"), "{text}");
+                assert!(text.contains("keep-nested"));
+                assert!(text.contains("official-model"));
+                if complete { assert!(text.contains("data: [DONE]"), "{text}"); }
+                else {
+                    assert!(!text.contains("data: [DONE]"), "EOF cannot invent successful completion: {text}");
+                    let errors: Vec<Value> = text.lines().filter_map(|line| line.strip_prefix("data: "))
+                        .filter_map(|data| serde_json::from_str::<Value>(data).ok())
+                        .filter(|value| !value["error"].is_null()).collect();
+                    assert!(errors.iter().any(|error| error["error"]["message"] == "upstream_stream_truncated"), "{text}");
+                }
+            } else {
+                let value: Value = serde_json::from_str(&text).unwrap();
+                assert_eq!(value["model"], "official-model");
+                assert_eq!(value["vendor"], json!({"model":"keep-nested","opaque":[1,2,3]}));
+                assert_eq!(value["choices"][0]["message"]["vendor_message"], json!({"raw":true}));
+            }
+        }
+        wait_for_released_lease().await;
+    });
+}
+
+#[test]
 fn resource_operations_affinity_and_identity_revocation_do_not_reselect() {
     let _guard = global_router_test_lock();
     let _stop = Stop;

@@ -1,5 +1,8 @@
 //! Bounded, memory-only diagnostics. No bodies, headers, URLs or remote error text.
-use super::request_diagnostics::{CredentialSnapshot, ServedModelObservation};
+use super::{
+    protocol::canonical::TerminalObservation,
+    request_diagnostics::{CredentialSnapshot, ServedModelObservation},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::{
@@ -457,9 +460,10 @@ impl Drop for Inner {
 pub(crate) struct Observation {
     trace: Trace,
     sse: bool,
+    at_start: bool,
     pending: Vec<u8>,
     oversized: bool,
-    terminal: bool,
+    terminal: TerminalObservation,
     success: bool,
 }
 impl Observation {
@@ -468,9 +472,10 @@ impl Observation {
         Self {
             trace,
             sse,
+            at_start: true,
             pending: Vec::new(),
             oversized: false,
-            terminal: false,
+            terminal: TerminalObservation::default(),
             success: (200..300).contains(&status),
         }
     }
@@ -504,6 +509,7 @@ impl Observation {
         }
     }
     fn line(&mut self, line: &[u8]) {
+        let line = super::protocol::canonical::strip_stream_bom(line, &mut self.at_start);
         let Ok(text) = std::str::from_utf8(line) else {
             return;
         };
@@ -511,7 +517,7 @@ impl Observation {
             return;
         };
         if data.trim() == "[DONE]" {
-            self.terminal = true;
+            self.terminal.done();
             return;
         }
         if let Ok(value) = serde_json::from_str(data.trim()) {
@@ -520,17 +526,9 @@ impl Observation {
     }
     fn value(&mut self, v: &Value) {
         let kind = v["type"].as_str().unwrap_or_default();
-        if !v["error"].is_null()
-            || matches!(kind, "error" | "response.failed")
-            || v["status"] == "failed"
-        {
+        self.terminal.observe_auto(v, "", self.sse);
+        if self.terminal.failed() {
             self.trace.fail("response", "upstream_error");
-        }
-        if matches!(
-            kind,
-            "response.completed" | "response.incomplete" | "message_stop"
-        ) {
-            self.terminal = true;
         }
         let text = |path| {
             v.pointer(path)
@@ -579,7 +577,7 @@ impl Observation {
         }
         if !self.success {
             self.trace.fail("headers", "upstream_http_error");
-        } else if self.sse && !self.terminal {
+        } else if self.sse && !self.terminal.received() {
             self.trace.fail("stream", "incomplete_stream");
         } else {
             self.trace.finish();
@@ -589,7 +587,7 @@ impl Observation {
 impl Drop for Observation {
     fn drop(&mut self) {
         self.trace.attempt_elapsed();
-        if self.terminal {
+        if self.terminal.state().is_some_and(|state| state.delivered()) {
             self.trace.finish();
         }
     }
@@ -624,5 +622,25 @@ mod tests {
         let r = recent().into_iter().find(|r| r.id == trace.0.id).unwrap();
         assert!(r.first_token_ms.is_some());
         assert_eq!(r.error.as_deref(), Some("incomplete_stream"));
+    }
+
+    #[test]
+    fn valid_incomplete_and_missing_terminal_have_distinct_trace_results() {
+        for (kind, expected) in [
+            ("response.incomplete", None),
+            ("response.failed", Some("upstream_error")),
+            ("response.output_text.delta", Some("incomplete_stream")),
+        ] {
+            let trace = Trace::begin("canonical-terminal-test", None);
+            let mut observer = Observation::new(trace.clone(), true, 200);
+            let value = serde_json::json!({"type":kind,"response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}});
+            observer.push(format!("data: {value}\n\n").as_bytes());
+            observer.finish();
+            let result = recent()
+                .into_iter()
+                .find(|record| record.id == trace.0.id)
+                .unwrap();
+            assert_eq!(result.error.as_deref(), expected, "{kind}");
+        }
     }
 }

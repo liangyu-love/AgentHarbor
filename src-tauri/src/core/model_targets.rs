@@ -458,7 +458,20 @@ mod tests {
         let chat =
             resolve_client_target(&store, &target, ModelProtocol::ChatCompletions, &catalog())
                 .unwrap();
-        assert_eq!(chat.projection.unwrap().context_window, 128_000);
+        assert_eq!(chat.projection.as_ref().unwrap().context_window, 128_000);
+        // Chat ingress sees the same mixed pool, including a Responses-only
+        // member when the native Chat member is turned off.
+        let mut responses_only = store.clone();
+        responses_only.aggregates[0].members[0].enabled = false;
+        let chat = resolve_client_target(
+            &responses_only,
+            &target,
+            ModelProtocol::ChatCompletions,
+            &catalog(),
+        )
+        .unwrap();
+        assert!(chat.available);
+        assert_eq!(chat.projection.unwrap().context_window, 1_000_000);
     }
 
     #[test]

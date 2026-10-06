@@ -175,6 +175,82 @@ fn opencode_messages_aggregate_uses_its_ingress_sdk_and_respects_pool_limits() {
 }
 
 #[test]
+fn opencode_chat_aggregate_reapply_preserves_sdk_group_and_restore_withdraws_it() {
+    let (_temp, manager, mut store, mut request) = aggregate_fixture(TargetId::OpenCode);
+    request.options.aggregate_ingress_protocol = Some(ModelProtocol::ChatCompletions);
+    let original = "{\"model\":\"user/model\",\"provider\":{\"user\":{\"npm\":\"user-sdk\"}}}";
+    storage::write_atomic(&manager.paths.opencode, original.as_bytes()).unwrap();
+    // One pool still exposes every compatible egress through its Chat SDK.
+    for (id, protocol, context) in [
+        ("responses", ModelProtocol::Responses, 64_000),
+        ("messages", ModelProtocol::AnthropicMessages, 96_000),
+    ] {
+        let mut provider = store.providers[0].clone();
+        provider.id = id.into();
+        provider.protocol = protocol;
+        provider.models[0].protocol = Some(protocol);
+        provider.models[0].overrides.context_window = Some(context);
+        store.providers.push(provider);
+        store.aggregates[0]
+            .members
+            .push(aggregation::AggregateMember {
+                id: format!("member-{id}"),
+                provider_id: id.into(),
+                actual_model_id: "wire-model".into(),
+                ..Default::default()
+            });
+    }
+    apply(&manager, &store, &request);
+    let installed = read(&manager.paths.opencode);
+    let group = &installed["provider"]["agentharbor_aggregate_chat"];
+    assert_eq!(group["npm"], "@ai-sdk/openai-compatible");
+    assert_eq!(
+        group["options"]["baseURL"],
+        "http://127.0.0.1:43127/aggregate/v1"
+    );
+    assert_eq!(
+        group["models"]["official-model"]["limit"]["context"],
+        64_000
+    );
+    assert_eq!(
+        installed["model"],
+        "agentharbor_aggregate_chat/official-model"
+    );
+    assert_eq!(installed["provider"]["user"]["npm"], "user-sdk");
+    let saved = manager.stored_request(TargetId::OpenCode).unwrap().unwrap();
+    assert_eq!(saved.aggregate_protocol(), ModelProtocol::ChatCompletions);
+    let before = std::fs::read(&manager.paths.opencode).unwrap();
+    store.providers[0].api_key = "new-upstream-secret".into();
+    manager.reapply(&store, TargetId::OpenCode, false).unwrap();
+    assert_eq!(std::fs::read(&manager.paths.opencode).unwrap(), before);
+    request.options.aggregate_ingress_protocol = Some(ModelProtocol::AnthropicMessages);
+    apply(&manager, &store, &request);
+    let messages = read(&manager.paths.opencode);
+    assert!(messages["provider"]
+        .get("agentharbor_aggregate_chat")
+        .is_none());
+    assert_eq!(
+        messages["provider"]["agentharbor_aggregate_anthropic"]["npm"],
+        "@ai-sdk/anthropic"
+    );
+    request.options.aggregate_ingress_protocol = Some(ModelProtocol::ChatCompletions);
+    apply(&manager, &store, &request);
+    let chat_again = read(&manager.paths.opencode);
+    assert!(chat_again["provider"]
+        .get("agentharbor_aggregate_anthropic")
+        .is_none());
+    assert_eq!(
+        chat_again["provider"]["agentharbor_aggregate_chat"]["npm"],
+        "@ai-sdk/openai-compatible"
+    );
+    manager.restore(TargetId::OpenCode).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&manager.paths.opencode).unwrap(),
+        original
+    );
+}
+
+#[test]
 fn claude_aggregate_one_m_marker_uses_capacity_instead_of_the_egress_protocol() {
     for protocol in [
         ModelProtocol::Responses,
