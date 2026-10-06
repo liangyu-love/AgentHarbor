@@ -25,6 +25,8 @@ mod aggregate_output;
 #[cfg(test)]
 mod aggregate_tests;
 #[cfg(test)]
+mod aggregate_live_tests;
+#[cfg(test)]
 #[path = "router_proxy/claude_cli_tests.rs"]
 mod claude_cli_tests;
 #[cfg(test)]

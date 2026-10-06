@@ -111,9 +111,11 @@ pub(super) fn request_from_responses(
             ModelProtocol::ChatCompletions => {
                 out.insert("reasoning_effort".into(), effort.clone());
             }
-            ModelProtocol::AnthropicMessages if !continues_tool_turn(&out) => {
+            ModelProtocol::AnthropicMessages => {
                 if let Some(effort) = effort.as_str() {
-                    thinking = super::reasoning::anthropic(&mut out, &model, effort);
+                    if effort == "none" || !continues_tool_turn(&out) {
+                        thinking = super::reasoning::anthropic(&mut out, &model, effort);
+                    }
                 }
             }
             _ => {}
@@ -892,7 +894,7 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_none_does_not_enable_thinking() {
+    fn anthropic_none_explicitly_disables_thinking() {
         let body = request_from_responses(
             ModelProtocol::AnthropicMessages,
             &json!({
@@ -901,7 +903,7 @@ mod tests {
             }),
         )
         .unwrap();
-        assert!(body.get("thinking").is_none());
+        assert_eq!(body["thinking"], json!({"type":"disabled"}));
         assert!(body.get("output_config").is_none());
         assert_eq!(body["temperature"], 0.2);
     }

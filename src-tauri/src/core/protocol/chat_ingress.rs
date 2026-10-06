@@ -172,6 +172,12 @@ pub(super) fn request(target: ModelProtocol, value: &Value) -> Result<Translated
         chat::request_from_responses(target, &canonical)?
     };
     if target == ModelProtocol::AnthropicMessages {
+        // Ordinary Chat has no signed-thinking replay contract. Keep the new
+        // portable ingress in text/tool mode unless the caller opts in to a
+        // reasoning effort; omission can enable thinking on compatible hosts.
+        if object.get("reasoning_effort").is_none_or(Value::is_null) {
+            body["thinking"] = json!({"type":"disabled"});
+        }
         if let Some(stops) = stops(object)? {
             body["stop_sequences"] = json!(stops);
         }

@@ -86,6 +86,147 @@ fn chat_ingress_maps_history_tools_choices_and_limits_to_both_targets() {
 }
 
 #[test]
+fn chat_messages_defaults_disable_provider_thinking_without_changing_other_ingress() {
+    for stream in [false, true] {
+        for effort in [None, Some(Value::Null), Some(json!("none"))] {
+            for tool_turn in [false, true] {
+                let mut value = json!({"model":"deepseek-flash","stream":stream,"max_tokens":1024,
+                    "temperature":0.2,"messages":[{"role":"user","content":"only reply OK"}]});
+                if let Some(effort) = &effort {
+                    value["reasoning_effort"] = effort.clone();
+                }
+                if tool_turn {
+                    value["messages"].as_array_mut().unwrap().extend([
+                        json!({"role":"assistant","content":null,"tool_calls":[
+                            {"id":"lookup_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]}),
+                        json!({"role":"tool","tool_call_id":"lookup_1","content":"OK"}),
+                    ]);
+                }
+                let messages = request_body(pair(ModelProtocol::AnthropicMessages), &value)
+                    .unwrap()
+                    .body;
+                assert_eq!(messages["thinking"], json!({"type":"disabled"}));
+                assert_eq!(messages["stream"], stream);
+                assert_eq!(messages["max_tokens"], 1024);
+                assert_eq!(messages["temperature"], 0.2);
+                assert!(messages.get("reasoning_effort").is_none());
+                assert!(messages.get("output_config").is_none());
+                let responses = request_body(pair(ModelProtocol::Responses), &value)
+                    .unwrap()
+                    .body;
+                assert!(responses.get("thinking").is_none());
+                assert_eq!(
+                    responses["reasoning"]["effort"],
+                    effort.clone().unwrap_or(Value::Null)
+                );
+            }
+        }
+    }
+    let mut explicit = basic();
+    explicit["max_tokens"] = json!(8192);
+    explicit["reasoning_effort"] = json!("high");
+    assert_eq!(
+        request_body(pair(ModelProtocol::AnthropicMessages), &explicit)
+            .unwrap()
+            .body["thinking"]["type"],
+        "enabled"
+    );
+    explicit["reasoning_effort"] = json!("future-effort");
+    assert!(
+        request_body(pair(ModelProtocol::AnthropicMessages), &explicit)
+            .unwrap()
+            .body
+            .get("thinking")
+            .is_none()
+    );
+    for stream in [false, true] {
+        let mut responses = json!({"model":"deepseek-flash","input":"only reply OK",
+            "stream":stream,"max_output_tokens":1024});
+        let translation = Translation {
+            from: ModelProtocol::Responses,
+            to: ModelProtocol::AnthropicMessages,
+        };
+        assert!(request_body(translation, &responses)
+            .unwrap()
+            .body
+            .get("thinking")
+            .is_none());
+        responses["reasoning"] = json!({"effort":"none"});
+        assert_eq!(
+            request_body(translation, &responses).unwrap().body["thinking"],
+            json!({"type":"disabled"})
+        );
+    }
+}
+
+#[test]
+fn deepseek_messages_text_only_shape_completes_chat_json_and_fragmented_sse() {
+    let body = json!({"id":"msg_deepseek_fixture","type":"message","role":"assistant","model":"deepseek-flash",
+        "content":[{"type":"text","text":"OK"}],"stop_reason":"end_turn","stop_sequence":null,
+        "usage":{"input_tokens":43,"output_tokens":2,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}});
+    let response = response_body(pair(ModelProtocol::AnthropicMessages), &body).unwrap();
+    assert_eq!(response["choices"][0]["message"]["content"], "OK");
+    assert_eq!(response["choices"][0]["finish_reason"], "stop");
+    assert_eq!(response["usage"]["prompt_tokens"], 43);
+    assert_eq!(response["usage"]["completion_tokens"], 2);
+    let source = event(
+        "message_start",
+        json!({"message":{"id":"msg_deepseek_fixture","type":"message",
+        "role":"assistant","model":"deepseek-flash","content":[],"usage":{"input_tokens":43,"output_tokens":0}}}),
+    ) + &event(
+        "content_block_start",
+        json!({"index":0,"content_block":{"type":"text","text":""}}),
+    ) + &event(
+        "content_block_delta",
+        json!({"index":0,"delta":{"type":"text_delta","text":"OK"}}),
+    ) + &event("content_block_stop", json!({"index":0}))
+        + &event(
+            "message_delta",
+            json!({"delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}),
+        )
+        + &event("message_stop", json!({}));
+    for width in [1, 7, 8192] {
+        let mut translator = stream_translator_with_options(
+            pair(ModelProtocol::AnthropicMessages),
+            ResponseOptions {
+                chat_include_usage: true,
+                ..Default::default()
+            },
+        );
+        let frames = source
+            .as_bytes()
+            .chunks(width)
+            .flat_map(|chunk| translator.push(chunk))
+            .collect::<Vec<_>>();
+        assert_eq!(translator.failure(), None);
+        assert!(translator.completed_response().is_some());
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|frame| frame.as_str() == "data: [DONE]\n\n")
+                .count(),
+            1
+        );
+        let values = decoded(&frames);
+        assert!(values
+            .iter()
+            .any(|value| value["choices"][0]["delta"]["content"] == "OK"));
+        assert!(values
+            .iter()
+            .any(|value| value["choices"][0]["finish_reason"] == "stop"));
+        let usage = &values
+            .iter()
+            .find(|value| value["choices"].as_array().is_some_and(Vec::is_empty))
+            .unwrap()["usage"];
+        assert_eq!(usage["prompt_tokens"], 43);
+        assert_eq!(usage["completion_tokens"], 2);
+        assert!(!values.iter().any(|value| value["choices"][0]["delta"]
+            .get("reasoning_content")
+            .is_some()));
+    }
+}
+
+#[test]
 fn chat_ingress_maps_images_structured_output_and_target_specific_stop() {
     let mut value = basic();
     value["messages"][0]["content"] = json!([{ "type":"text","text":"describe" },

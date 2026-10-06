@@ -37,13 +37,20 @@ pub(super) fn messages_effort(value: &Value) -> Option<&'static str> {
 }
 
 pub(super) fn anthropic(out: &mut Map<String, Value>, model: &str, effort: &str) -> bool {
+    if effort == "none" {
+        // Omission leaves the provider's default intact. Messages-compatible
+        // providers may default to thinking, so preserve the caller's explicit
+        // opt-out on the wire while keeping sampling parameters enabled.
+        out.insert("thinking".into(), json!({"type":"disabled"}));
+        return false;
+    }
     let budget: u64 = match effort {
         "minimal" => 1024,
         "low" => 4096,
         "medium" => 10_000,
         "high" => 24_000,
         "xhigh" | "max" => 32_000,
-        // In particular, `none` must not turn thinking on.
+        // Unknown effort hints must not become arbitrary wire parameters.
         _ => return false,
     };
     if adaptive(model) {
