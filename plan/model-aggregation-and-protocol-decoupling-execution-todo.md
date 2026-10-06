@@ -559,10 +559,10 @@ P7 的源码、自审修正、分帧差分与性能度量见验收记录。P7.6 
 
 ### P8｜验收与交付
 
-- [x] P8.1 执行下表 mock/隔离测试和现有 Rust/前端/构建检查，补每项证据。P7 最终串行 Rust：`972 passed, 0 failed, 12 ignored`；Desktop integration：`11 passed, 11 ignored`；local：`20 passed`；性能普通测试 `6 passed, 1 ignored`，单独性能基准 `1 passed`；前端、生产构建和 `git diff --check` 通过。基础交付的定向结果另记，不混作本轮数量。
-- [ ] P8.2 使用真实已配置中转验证至少两成员、跨协议、四种注入、多轮/工具/流式/1M/搜索；通用导出至少一个真实消费者。
+- [x] P8.1 执行下表 mock/隔离测试和现有 Rust/前端/构建检查，补每项证据。P7 最终串行 Rust：`972 passed, 0 failed, 12 ignored`；Desktop integration：`11 passed, 11 ignored`；local：`20 passed`；性能普通测试 `6 passed, 1 ignored`，单独性能基准 `1 passed`；前端、生产构建和 `git diff --check` 通过。2026-10-06 Flash 实测修复后完整 Rust：`975 passed, 0 failed, 13 ignored`；Desktop `11 passed, 11 ignored`；local `20 passed`；命名 live 用例另行通过。基础交付的定向结果另记，不混作本轮数量。
+- [ ] P8.2 使用真实已配置中转验证至少两成员、跨协议、四种注入、多轮/工具/流式/1M/搜索；通用导出至少一个真实消费者。2026-10-06 已用 Command Chat + DeepSeek Messages 的 Flash 成员实测：三种入站 JSON/SSE 的 12 个轮转请求及 Messages 两组工具回填的 4 个请求全部通过；修复 Chat→Messages 默认思考及显式 none 映射。四种真机注入/SDK、搜索/1M、Responses 出口及外部 agent 导出消费仍待验，详见验收记录。
 - [ ] P8.3 验证单渠道/Native/官方模式和恢复基线不受聚合影响，实测暂停/退出/重启组合。
-- [x] P8.4 聚合使用、迁移与验收记录及测试证据已写；真实凭据、真机和外部消费者验证的项单列，不标为通过。
+- [x] P8.4 聚合使用、迁移与验收记录及测试证据已写，已补 Command/DeepSeek 两卡实测；未覆盖的真机和外部消费者验证项单列，不标为通过。
 - [x] P8.5 已完成基础交付与 P7 实现自审、回归修复、完整测试及提交；需要发布时由通过验收的 commit 打包。
 
 推荐提交顺序：行为保持的协议/target 接口 → 聚合配置/迁移/投影 → 调度/归属 → HTTP/计费 → 四种注入与标准导出 → UI/旧功能退役 → 基础交付验收。事件优化与 Chat 扩展各自追加提交/验收，不捆绑一次重写。旧功能仅在新链路已覆盖后删除，最终发行版本不同时提供新旧两套产品开关；基础交付不把 P7 未完成项标成通过。

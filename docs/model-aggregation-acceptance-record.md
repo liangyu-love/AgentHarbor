@@ -153,13 +153,68 @@ A44（Chat 新入口）与 A45（接口/事件差分）已有独立隔离回归�
 
 完整套件包含既有余额用例；P7 本轮未调整余额产品逻辑，也未重复查询真实余额。基础交付的 `b9adcfb` 只修复全量回归暴露的本地回环测试隔离与等待上限。
 
+## P8.2 追加实测：Command + DeepSeek Flash
+
+2026-10-06 按用户授权复用两张已保存卡片。用户确认 DeepSeek 官方的 `deepseek-flash` 对应本次测试的 DeepSeek 4.1 Flash；公开模型为 `deepseek-v4.1-flash`，成员 wire ID 保持精确，不使用 Command 的 `-fast` 变体。
+
+实测基线 `32e4191`；协议修复、隔离 live harness 和回归提交为 `70a8ca0`。
+
+| 成员 | 实际出站模型 | 已保存的有效出口 | 最终请求数 |
+| --- | --- | --- | --- |
+| Command Code | `deepseek/deepseek-v4.1-flash` | Chat Completions | 8 |
+| DeepSeek 官方 | `deepseek-flash` | Anthropic Messages | 8 |
+
+测试入口为 `router_proxy/aggregate_live_tests.rs::command_and_deepseek_flash_live_aggregation`，平时标记 `ignored`。它只读解密生产卡片，不走迁移或保存；在临时目录保存两成员和一个临时聚合，开启独立测试进程内的随机 localhost 监听，沿用已保存的 `10808` 代理。测试客户端绕过代理连接 localhost。测试结束销毁 runtime、监听、临时密钥和账本，生产卡片文件逐字节核对未变；未调用真实客户端的注入、停进程、保存或恢复入口，也未查询真实余额。
+
+### 最终真实请求结果
+
+| 入站 | JSON：Command / DeepSeek | SSE：Command / DeepSeek | 覆盖 |
+| --- | --- | --- | --- |
+| Responses | 通过 / 通过 | 通过 / 通过 | 混合两出口、公开 `response.model`、成功终态及实际成员用量 |
+| Messages | 通过 / 通过 | 通过 / 通过 | 混合两出口、公开 `message.model` / `message_start.message.model`、`end_turn` |
+| Chat Completions | 通过 / 通过 | 通过 / 通过 | 原生 Chat 和 Chat→Messages、公开 `model`、finish reason 与 `[DONE]` |
+| Messages 普通函数工具 | 两成员各通过两轮 | 本次未测工具流 | 首轮 `tool_use` 与参数、客户端回填 `tool_result`、同 session 保持原成员 |
+
+最终 **16/16 HTTP 200**，每请求恰好一个实际 attempt。前 12 个无 session 的新请求按 `Command → DeepSeek` 交替；后 4 个分属两组独立会话，结果回填使用 `aggregate_session_binding`，没有把工具历史交给另一成员。测试将重试上限设为 1，不能用备用成功掩盖某个成员失败。
+
+每条记录都核对实际 provider、member、wire model、配置/有效协议、上游自报 model、公开 model 和实际成员账本；不只检查回复文字。Messages 的 `max_tokens` 截断即使包含 `OK` 也不能被此验收判为完整通过，普通回归另锁定了这一判据。
+
+最终账本 **16 条、16 条成功、16 条上报 usage**：输入 1,234 tokens，输出 333 tokens（其中 reasoning 198），总计 1,567。该组模型在本机没有可用价格绑定，16 条费用保持 `unpriced / costUsd: null`；不能把 totals 的数值 0 当成免费或真实扣费。首次 token 样本：Command 1,598–2,168 ms；DeepSeek 454–762 ms，仅为这 6 条流式短请求的网络实测，不是性能 SLA 或长流/并发基准。
+
+### 实测发现并修复
+
+首轮发出 12 个短请求，Responses/Messages 的 8 个通过，Chat 的 4 个失败。随后用 3 个合成请求只记录上游错误字段及 block/delta 形态，确认：
+
+- 测试给原生 Chat 加了 `reasoning_effort: none`，Command 返回 400 并指出该字段；这是测试额外参数不兼容，最终普通 Chat 用例移除该提示，未更改保存的模型协议。
+- DeepSeek Messages 不传 `thinking` 时默认返回非空签名的 thinking block；流先发空签名占位，随后发真正的 signature delta。既有 Chat 对私有签名的拒绝生效，但 Chat→Messages 的普通请求准备没有阻止这种默认输出。
+- 修复显式 `none` 为 `thinking: {"type":"disabled"}`，包含工具续轮；新 Chat→Messages 在未指定/null effort 时也显式禁用思考。Responses 未指定 effort、原生 Messages、其它 effort 和未知值的已有行为保持。仍拒绝跨协议私有签名，不通过删除签名让测试变绿。
+
+定向协议回归 **23/23** 通过，覆盖请求参数、工具续轮、DeepSeek 文本 JSON/SSE、分帧、usage 与终态。最终 16 请求复验全部通过。首轮、形态诊断和最终复验合计 31 个合成短请求；没有发送用户历史、文件或搜索任务。
+
+修复后完整 `node scripts/tauri.mjs --test-rust -- --test-threads=1`：库测试 **975 passed / 13 ignored**、Desktop 工作流 **11 passed / 11 ignored**、本地工作流 **20 passed**，全部 0 failed；live 用例只在上面的命名运行中执行。`git diff --check` 通过。
+
+证据保存在本机忽略目录：
+
+- `.runtime-test/aggregation-command-deepseek-20261006-first.{log,json}`：首轮失败证据。
+- `.runtime-test/aggregation-command-deepseek-shapes-20261006.json`：脱敏上游形态，不含签名内容或正文。
+- `.runtime-test/aggregation-command-deepseek-20261006-final.{log,json}`：最终 16 条 attempt 与账本对账。
+- `.runtime-test/aggregation-live-rust-regression-20261006.log`：修复后完整 Rust 回归。
+
+重复实测需显式设置 `AGENTHARBOR_AGGREGATION_LIVE_STORE` 为已有加密卡片文件、`AGENTHARBOR_AGGREGATION_LIVE_REPORT` 为一个全新的脱敏报告路径，然后只运行命名用例：
+
+```powershell
+node scripts/tauri.mjs --test-rust command_and_deepseek_flash_live_aggregation -- --ignored --nocapture --test-threads=1
+```
+
+这次只覆盖两个已保存出口（Chat、Messages）。Responses 作为出口、真实四类客户端注入/SDK、托管 WebSearch、1M 长上下文、真实故障/冷却和长流并发仍未验证，不将 P8.2 整体打勾。
+
 ## 尚未完成或未运行
 
 ### P8：真实环境与交付
 
-- P8.2：未使用真实已配置中转凭据验证跨协议、双成员轮转、流式/工具/搜索/1M，也未用真实外部 agent 消费导出。
+- P8.2：已用 Command/DeepSeek 的真实凭据验证两成员、Chat/Messages 混合出口、三种入站 JSON/SSE 及 Messages 两轮函数工具；四类真实注入/SDK、WebSearch、1M、Responses 出口和外部 agent 导出消费仍未验证。
 - P8.3：未完成单渠道/Native/官方与聚合并行的真实暂停、退出、重启、恢复组合；未修改真实 Desktop、Codex、Claude Code 或 OpenCode 配置。
-- P8.4：本记录、计划和相关说明文档已补齐，测试证据已补录；真实凭据、真机和外部消费者项仍未验证。
+- P8.4：本记录、计划和相关说明文档已补齐，自动化及两卡真实测试证据已补录；未覆盖的真机和外部消费者项仍未验证。
 - P8.5：已完成完整工作区自审、`git diff --check`、费用边界回归修复和最终提交；本轮未执行发布包打包。
 
 真实凭据、付费请求、外部搜索服务和真机结果不能由 localhost mock 通过替代。基础实现未改变任何真实客户端文件或上游配置。
