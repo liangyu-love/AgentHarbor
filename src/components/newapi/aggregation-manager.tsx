@@ -39,9 +39,14 @@ export function AggregationManager({ providers }: { providers: NewApiProvider[] 
   const models = query.data?.models ?? [];
   const available = models.filter(model => model.available);
   const selectedExport = exportId ? available.find(model => model.id === exportId) : available[0];
-  const references = [...providers.flatMap(provider => provider.models.flatMap(model => model.catalogRef ? [model.catalogRef] : [])),
-    ...(capabilities.data?.models.flatMap(model => model.matched ? [model.matched] : []) ?? [])];
-  const suggestions = [...new Set(references.map(reference => reference.modelId))];
+  const referenceSources = [...providers.flatMap(provider => provider.models.flatMap(model => model.catalogRef
+    ? [{ providerId: provider.id, modelId: model.id, reference: model.catalogRef }] : [])),
+    ...(capabilities.data?.models.flatMap(model => model.matched
+      ? [{ providerId: model.providerId, modelId: model.upstreamModel, reference: model.matched }] : []) ?? [])];
+  const references = referenceSources.map(source => source.reference);
+  const memberTargets = new Set((draft?.members ?? []).map(member => JSON.stringify([member.providerId, member.actualModelId])));
+  const memberReferences = referenceSources.filter(source => memberTargets.has(JSON.stringify([source.providerId, source.modelId])));
+  const suggestions = [...new Set([...memberReferences.map(source => source.reference.modelId), ...references.map(reference => reference.modelId)])];
   const changed = async () => {
     await Promise.all([cache.invalidateQueries({ queryKey: aggregationQueryKey }),
       cache.invalidateQueries({ queryKey: queryKeys.providers }), cache.invalidateQueries({ queryKey: queryKeys.clientConfigs }),

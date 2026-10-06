@@ -157,6 +157,26 @@ fn aggregate_one_m_requires_a_qualified_large_subset_across_every_supported_egre
 }
 
 #[test]
+fn aggregate_candidate_keeps_unmatched_context_fallback_visible() {
+    let _env = env_lock();
+    let (base, _, _, mut store, mut request) = router_fixture("aggregateUnknownContext");
+    add_aggregate(&mut store, &mut request);
+    store.providers[0].models[0].overrides.context_window = None;
+    let catalog = models_dev::load(&base);
+    let candidates = routes::aggregate_candidates(&store, &catalog);
+    assert!(candidates[0].eligible);
+    assert_eq!(candidates[0].model.context_window, Some(128_000));
+    assert_eq!(candidates[0].model.context_source, "fallback");
+    assert!(!candidates[0].model.supports1m);
+
+    store.providers[0].models[0].overrides.context_window = Some(1_000_000);
+    let candidates = routes::aggregate_candidates(&store, &catalog);
+    assert_eq!(candidates[0].model.context_window, Some(1_000_000));
+    assert_eq!(candidates[0].model.context_source, "aggregate");
+    assert!(candidates[0].model.supports1m);
+}
+
+#[test]
 fn deleted_aggregate_blocks_reapply_but_keeps_the_restore_path_available() {
     let _env = env_lock();
     let (_, paths, manager, mut store, mut request) = router_fixture("aggregateDeletedRestore");

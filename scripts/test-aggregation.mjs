@@ -22,6 +22,21 @@ async function seed(page, reset, mode, options = {}) {
       { ...base, id: "relay-b", name: "Relay B", baseUrl: "https://relay-b.invalid/v1", enabled: true, hasApiKey: true,
         protocol: "anthropicMessages", model: secondWireModel, models: [model(secondWireModel, "anthropicMessages")] },
     ];
+    if (options.suggestions) {
+      const candidateModel = (id, catalogId) => ({ ...base.models[0], id, displayName: id, included: true,
+        catalogRef: catalogId ? { providerId: "deepseek", modelId: catalogId } : null });
+      review.providerFixtures = [
+        { ...base, id: "unrelated", name: "Unrelated", model: "shared-wire", models: [candidateModel("shared-wire", "unrelated-explicit")] },
+        { ...base, id: "selected", name: "Selected", model: "shared-wire", models: [candidateModel("shared-wire", "selected-explicit"), candidateModel("auto-only", null)] },
+      ];
+      review.capabilityVariants = [
+        { providerId: "unrelated", upstreamModel: "shared-wire", matched: { providerId: "deepseek", modelId: "unrelated-explicit" } },
+        { providerId: "unrelated", upstreamModel: "other-auto", matched: { providerId: "deepseek", modelId: "unrelated-matched" } },
+        { providerId: "selected", upstreamModel: "shared-wire", matched: { providerId: "deepseek", modelId: "selected-explicit" } },
+        { providerId: "selected", upstreamModel: "auto-only", matched: { providerId: "deepseek", modelId: "selected-matched" } },
+        { providerId: "selected", upstreamModel: "unmatched-wire", matched: null },
+      ];
+    }
     const aggregate = { id: "pool-main", publicModelId: publicModel, displayName: poolName, enabled: true,
       members: [
         { id: "member-fast", providerId: "relay-a", actualModelId: fastWireModel, enabled: true, priority: 0, weight: 3 },
@@ -54,6 +69,33 @@ export async function testAggregation({ page, reset, captureDir }) {
     await selector.click();
     await page.getByRole("option", { name, exact: true }).click();
   };
+
+  await seed(page, reset, "access", { empty: true, suggestions: true });
+  await manager().getByRole("button", { name: await tr("aggregation.add"), exact: true }).click();
+  const suggestionIds = () => manager().locator("#aggregate-official-models option").evaluateAll(options => options.map(option => option.value));
+  await page.waitForFunction(() => document.querySelectorAll("#aggregate-official-models option").length === 4);
+  const allSuggestions = ["unrelated-explicit", "selected-explicit", "unrelated-matched", "selected-matched"];
+  assert.deepEqual(await suggestionIds(), allSuggestions, "all cards supply unique explicit and automatic matches");
+  const suggestionAddMember = manager().getByRole("button", { name: await tr("aggregation.addMember"), exact: true });
+  await suggestionAddMember.click();
+  const suggestionMembers = manager().locator("[data-aggregate-member]");
+  await choose(suggestionMembers.nth(0).locator('[id^="member-provider-"]'), "Selected");
+  assert.deepEqual(await suggestionIds(), ["selected-explicit", "unrelated-explicit", "unrelated-matched", "selected-matched"],
+    "a same-named model on another card is unrelated to the selected member");
+  await suggestionAddMember.click();
+  await choose(suggestionMembers.nth(1).locator('[id^="member-provider-"]'), "Selected");
+  await choose(suggestionMembers.nth(1).locator('[id^="member-model-"]'), "auto-only");
+  assert.deepEqual(await suggestionIds(), ["selected-explicit", "selected-matched", "unrelated-explicit", "unrelated-matched"],
+    "member matches move first without filtering or duplicating other candidates");
+  await suggestionMembers.nth(0).getByRole("button", { name: await tr("aggregation.removeMember", { index: 1 }), exact: true }).click();
+  assert.deepEqual(await suggestionIds(), ["selected-matched", "unrelated-explicit", "selected-explicit", "unrelated-matched"]);
+  await manager().locator("#aggregate-public-id").fill("handwritten-public-model");
+  await manager().locator("form").getByRole("button", { name: await tr("common.save"), exact: true }).click();
+  await page.waitForFunction(() => window.review.aggregateSaves.length === 1);
+  assert.deepEqual(await page.evaluate(() => ({ publicModelId: window.review.aggregateSaves[0].publicModelId,
+    canonicalRef: window.review.aggregateSaves[0].canonicalRef, actualModelId: window.review.aggregateSaves[0].members[0].actualModelId })),
+  { publicModelId: "handwritten-public-model", canonicalRef: null, actualModelId: "auto-only" });
+  console.log("PASS public model suggestions prioritize exact member matches while retaining all cards, deduplication and handwritten identities");
 
   await seed(page, reset, "access", { empty: true });
   await manager().getByRole("button", { name: await tr("aggregation.add"), exact: true }).click();

@@ -216,8 +216,12 @@ fn conservative_projection(
 ) -> Option<model_policy::ClientProjection> {
     let mut result: model_policy::ClientProjection = (**members.first()?).clone();
     result.context_window = members.iter().map(|p| p.context_window).min()?;
-    result.context_source = "aggregate".into();
     result.context_is_fallback = members.iter().any(|p| p.context_is_fallback);
+    result.context_source = if result.context_is_fallback {
+        model_metadata::source::FALLBACK.into()
+    } else {
+        "aggregate".into()
+    };
     result.budget = members.iter().map(|p| p.budget).min()?;
     result.budget_source = if members
         .iter()
@@ -237,10 +241,17 @@ fn conservative_projection(
     } else {
         None
     };
-    result.output_source = if result.output_limit.is_some() {
-        "aggregate".into()
+    // Member projections carry numeric client defaults even when no capacity
+    // was declared. Aggregating them must preserve that fallback provenance.
+    result.output_source = if result.output_limit.is_none() {
+        model_metadata::source::UNKNOWN.into()
+    } else if members
+        .iter()
+        .any(|p| p.output_source == model_metadata::source::FALLBACK)
+    {
+        model_metadata::source::FALLBACK.into()
     } else {
-        "unknown".into()
+        "aggregate".into()
     };
     result.reasoning.retain(|option| {
         members.iter().all(|p| {

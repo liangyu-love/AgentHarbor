@@ -128,6 +128,79 @@ fn mixed_protocol_members_preserve_full_wire_identity_and_conservative_budget() 
 }
 
 #[test]
+fn custom_public_identity_inherits_real_member_overrides() {
+    let mut store = store();
+    store.aggregates[0].public_model_id = "my-custom-model".into();
+    store.aggregates[0].canonical_ref = None;
+    config::validate(&store).unwrap();
+    let view = project(&store, &store.aggregates[0], &catalog());
+    let projection = view.projection.unwrap();
+    assert_eq!(projection.context_window, 128_000);
+    assert_eq!(projection.context_source, "aggregate");
+    assert!(!projection.context_is_fallback);
+    assert_eq!(projection.budget, 100_000);
+    assert_eq!(projection.output_limit, Some(8192));
+    assert_eq!(projection.output_source, "aggregate");
+    assert_eq!(projection.compression.threshold, Some(90_000));
+    assert_eq!(
+        store.aggregates[0].members[0].actual_model_id,
+        "prefix/model-a"
+    );
+    assert_eq!(
+        store.aggregates[0].members[1].actual_model_id,
+        "platform::model-b"
+    );
+}
+
+#[test]
+fn unmatched_member_defaults_stay_identifiable_until_capacity_is_configured() {
+    let mut store = store();
+    store.providers[0].models[0].overrides = newapi::ModelOverrides::default();
+    let view = project(&store, &store.aggregates[0], &catalog());
+    assert!(view.available);
+    let projection = view.projection.unwrap();
+    assert_eq!(projection.context_window, 128_000);
+    assert!(projection.context_is_fallback);
+    assert_eq!(projection.context_source, "fallback");
+    assert_eq!(projection.budget_source, "fallback");
+    assert_eq!(projection.output_limit, Some(8192));
+    assert_eq!(projection.output_source, "fallback");
+    let serialized = serde_json::to_value(&projection).unwrap();
+    assert_eq!(serialized["contextIsFallback"], true);
+    assert_eq!(serialized["contextSource"], "fallback");
+    assert_eq!(serialized["outputSource"], "fallback");
+
+    store.providers[0].models[0].overrides.context_window = Some(256_000);
+    store.providers[0].models[0].overrides.input_limit = Some(200_000);
+    let projection = project(&store, &store.aggregates[0], &catalog())
+        .projection
+        .unwrap();
+    assert_eq!(projection.context_window, 256_000);
+    assert!(!projection.context_is_fallback);
+    assert_eq!(projection.context_source, "aggregate");
+    assert_eq!(projection.budget, 200_000);
+    assert_eq!(projection.output_source, "fallback");
+
+    store.providers[0].models[0].overrides.max_output_tokens = Some(16_384);
+    let projection = project(&store, &store.aggregates[0], &catalog())
+        .projection
+        .unwrap();
+    assert_eq!(projection.output_limit, Some(8192));
+    assert_eq!(projection.output_source, "aggregate");
+    assert_eq!(projection.compression.threshold, Some(180_000));
+
+    store.providers[0].models[0].overrides = newapi::ModelOverrides::default();
+    store.aggregates[0].members[0].enabled = false;
+    let projection = project(&store, &store.aggregates[0], &catalog())
+        .projection
+        .unwrap();
+    assert_eq!(projection.context_window, 1_000_000);
+    assert!(!projection.context_is_fallback);
+    assert_eq!(projection.context_source, "aggregate");
+    assert_eq!(projection.output_source, "aggregate");
+}
+
+#[test]
 fn disabled_missing_or_excluded_members_remain_visible() {
     let mut store = store();
     store.providers[1].models[0].included = false;

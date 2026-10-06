@@ -77,6 +77,11 @@ fn aggregate_candidate(
         .as_ref()
         .ok()
         .and_then(|view| view.projection.as_ref().map(|p| p.context_window));
+    let context_source = view
+        .as_ref()
+        .ok()
+        .and_then(|view| view.projection.as_ref().map(|p| p.context_source.clone()))
+        .unwrap_or_else(|| "unknown".into());
     let reason = match view {
         Ok(view) => view.reason,
         Err(error) => Some(error),
@@ -102,7 +107,7 @@ fn aggregate_candidate(
             included: aggregate.enabled,
             supports1m,
             context_window,
-            context_source: "aggregate".into(),
+            context_source,
             selectable: available,
             exclude_reason: reason,
         },
