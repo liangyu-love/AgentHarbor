@@ -575,7 +575,7 @@ try {
   console.log("PASS model protocols inherit independently, cross-protocol defaults work, and refresh preserves overrides");
   await page.locator("#reopen-saved").click();
   await page.getByRole("combobox", { name: labels.chatProtocol, exact: true }).click();
-  const inheritOption = page.getByRole("option").filter({ hasText: /^Default:|^跟随默认：/ });
+  const inheritOption = page.getByRole("option").filter({ hasText: /^Automatic:|^自动：/ });
   assert.ok((await inheritOption.textContent()).includes(labels.anthropic), "inherit option must show provider default, not model override");
   await inheritOption.click();
   await page.locator("#newapi-provider-protocol").click();

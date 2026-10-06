@@ -35,7 +35,17 @@ Claude Desktop 的 WebSearch 属于推理侧托管工具。路由现在为 Chat 
 | OpenAI Responses | 转换为原生 `web_search`，带域名白名单、近似位置、`max_tool_calls` 和来源字段；将响应和 SSE 转回 Messages 搜索块及引用链接。 |
 | Chat Completions | 本地执行搜索函数，调用单独配置的搜索服务，再由原 Chat 模型消费结果；模型不必来自 Command。普通 function/MCP 工具转换继续支持。 |
 
-这不会为搜索自动切换协议、供应商或模型。已配置为 Messages 的 Command/DeepSeek 接口仍走 Messages；已配置为 Chat 的接口仍走 Chat。Responses 是可选的出站协议，不是 Desktop 的新入站接口。
+这不会为搜索自动切换协议、供应商或模型。已配置为 Messages 的接口仍走 Messages；已配置为 Chat 的接口仍走 Chat。Responses 是可选的出站协议，不是 Desktop 的新入站接口。
+
+### Command Code 的模型协议选择
+
+2026-10-06 核对 [官方 Provider API 文档](https://commandcode.ai/docs/provider) 与公开 `GET https://api.commandcode.ai/provider/v1/models`：网关同时提供 Chat Completions、Responses、Messages，但每个模型支持的端点不同。Claude 模型仅支持 `/messages`；公开目录中的 `deepseek/deepseek-v4.1-flash` 支持 `/chat/completions` 和 `/responses`，不支持 `/messages`；`deepseek/deepseek-v4-flash-fast` 当日仅声明 `/chat/completions`。具体以刷新后的模型目录为准，不能由模型基础能力推断后缀版本也支持相同协议。
+
+Command 预设的 Chat 是默认值。中转编辑窗口的模型行可单独选择三种协议；模型显式选择优先于卡片默认，未单独选择的 Claude 模型优先使用目录声明协议，否则默认 Messages，其他模型继承卡片默认。模型列表解析同时接受 `supported_endpoint_types` 和 Command 的 `supported_endpoints`，供现有协议可用性校验消费；不会把目录刷新变成用户协议覆盖。
+
+本项目直接构建 HTTP URL，填写 `https://api.commandcode.ai/provider` 或 `https://api.commandcode.ai/provider/v1` 都会得到正确的 `/provider/v1/{messages|chat/completions|responses}`。外部 SDK 的 base URL 追加规则无需套用到这里。DeepSeek 官方自己的 Messages 兼容入口与 Command 所支持的端点范围分别由各服务决定，不能因为官方可用 Messages 就把 Command 的 DeepSeek 模型也改为 Messages。
+
+Responses 声明支持该模型，仅代表推理端点可用。Command 文档说明内置 `web_search` 会继续交给上游接受或拒绝，因此切换到 Responses 本身不能保证搜索可用；Chat 的独立搜索执行链路仍有必要。本次仅访问公开模型列表，未用真实密钥验证线上推理或托管搜索。
 
 搜索转换接受已知版本的直接调用。新版搜索的程序化调用、非空域名黑名单、`response_inclusion` 等无等价设置会明确拒绝，不静默删掉约束。Chat 的独立搜索服务不支持近似位置，收到 `user_location` 会明确报错。结果保留真实来源 URL，引用以链接显示；不伪造 Anthropic 的加密引用索引。完整 Responses 搜索输出在有界、按会话和渠道隔离的缓存中保留以供回放。缓存不可用时从已交付的搜索块重建查询及来源。
 
@@ -63,6 +73,8 @@ Chat 搜索采用非流式内部模型调用，收到最终回答后按 Messages
 三种路由流式路径在上游响应头已返回后，每 15 秒静默输出一条 SSE 保活注释；它不计入模型响应/用量，也不重置上游 900 秒读取超时。断流或超时仍输出明确错误并结束。
 
 ## 验证边界
+
+Command 端点声明修复通过 19 项模型接口测试、7 项模型协议测试、1 项 Desktop 三协议路由/工具/用量集成测试及完整前端回归。新增覆盖官方端点字段解析、旧字段优先级、异常字段容错、模型实际协议限制与两种 base URL 的路径拼接；未使用真实密钥调用线上推理端点。
 
 2026-10-06 验证：整库 Rust 通过 846 个 lib、11 个 Desktop 集成与 20 个本地工作流用例，22 个真机/辅助用例仍 ignored；补充搜索账户选择用例后，37 项搜索专项全部通过。完整前端回归与 TypeScript/Vite 生产构建通过。Chat 的自动化覆盖两个本地入口、独立凭据、真实格式的来源与摘要、连续对话、缓存失效、关闭搜索、次数/输出预算、域名约束、流式取消、上游错误和畸形消息。未修改真实 Desktop 配置，未使用真实推理密钥执行付费搜索；线上 Command REST 搜索及 Desktop 实际渲染仍需使用新版本复测。
 

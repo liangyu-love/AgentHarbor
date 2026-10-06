@@ -584,6 +584,7 @@ fn parse_models(value: &Value) -> Result<Vec<Model>, String> {
             endpoint_types: item
                 .get("supported_endpoint_types")
                 .and_then(Value::as_array)
+                .or_else(|| item.get("supported_endpoints").and_then(Value::as_array))
                 .map(|a| {
                     a.iter()
                         .filter_map(Value::as_str)
@@ -996,6 +997,89 @@ mod tests {
             .unwrap()
             .is_empty());
         assert!(disabled["default_reasoning_level"].is_null());
+    }
+
+    #[test]
+    fn command_provider_bases_preserve_all_protocol_endpoints() {
+        for base in [
+            "https://api.commandcode.ai/provider",
+            "https://api.commandcode.ai/provider/",
+            "https://api.commandcode.ai/provider/v1",
+            "https://api.commandcode.ai/provider/v1/",
+        ] {
+            for path in [
+                "v1/messages",
+                "v1/chat/completions",
+                "v1/responses",
+                "v1/models",
+            ] {
+                assert_eq!(
+                    provider_endpoint(base, path).unwrap().as_str(),
+                    format!("https://api.commandcode.ai/provider/{path}")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn command_supported_endpoints_restrict_model_protocols_without_setting_overrides() {
+        use super::super::router::{ModelProtocol, Provider};
+        let models = parse_models(&json!({"data":[
+            {"id":"claude-sonnet-4-6", "supported_endpoints":["/messages"]},
+            {"id":"deepseek/deepseek-v4.1-flash", "supported_endpoints":["/chat/completions", "/responses"]},
+            {"id":"deepseek/deepseek-v4-flash-fast", "supported_endpoints":["/chat/completions"]}
+        ]})).unwrap();
+        let provider = Provider {
+            protocol: ModelProtocol::ChatCompletions,
+            api_key: "fixture-key".into(),
+            enabled: true,
+            models,
+            ..Default::default()
+        };
+        assert!(provider.models.iter().all(|model| model.protocol.is_none()));
+        assert_eq!(
+            provider.protocol_for_model("claude-sonnet-4-6"),
+            ModelProtocol::AnthropicMessages
+        );
+        assert_eq!(
+            provider.protocol_for_model("deepseek/deepseek-v4.1-flash"),
+            ModelProtocol::ChatCompletions
+        );
+        for (id, allowed) in [
+            ("claude-sonnet-4-6", [false, false, true]),
+            ("deepseek/deepseek-v4.1-flash", [true, true, false]),
+            ("deepseek/deepseek-v4-flash-fast", [true, false, false]),
+        ] {
+            for (protocol, allowed) in [
+                ModelProtocol::ChatCompletions,
+                ModelProtocol::Responses,
+                ModelProtocol::AnthropicMessages,
+            ]
+            .into_iter()
+            .zip(allowed)
+            {
+                let mut selected = provider.clone();
+                selected.models.iter_mut().find(|model| model.id == id).unwrap().protocol = Some(protocol);
+                assert_eq!(selected.can_route_model(id), allowed, "{id}: {protocol:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn endpoint_declarations_keep_legacy_precedence_and_tolerate_malformed_aliases() {
+        let models = parse_models(&json!({"data":[
+            {"id":"legacy", "supported_endpoint_types":["openai-response"], "supported_endpoints":["/messages"]},
+            {"id":"empty", "supported_endpoint_types":[], "supported_endpoints":["/messages"]},
+            {"id":"fallback", "supported_endpoint_types":null, "supported_endpoints":["/messages", null, 5]},
+            {"id":"invalid", "supported_endpoints":"/messages"},
+            {"id":"unknown"}
+        ]})).unwrap();
+        let endpoints = |id| &models.iter().find(|model| model.id == id).unwrap().endpoint_types;
+        assert_eq!(endpoints("legacy"), &["openai-response"]);
+        assert!(endpoints("empty").is_empty());
+        assert_eq!(endpoints("fallback"), &["/messages"]);
+        assert!(endpoints("invalid").is_empty());
+        assert!(endpoints("unknown").is_empty());
     }
 
     #[test]
