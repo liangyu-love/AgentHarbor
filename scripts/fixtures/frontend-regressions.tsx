@@ -161,6 +161,9 @@ const aggregationState = (): AggregationState => ({
 });
 api.aggregation.state = async () => aggregationState();
 api.aggregation.save = async entry => {
+  if (controls.review.holdAggregateSave) {
+    await new Promise<void>(resolve => { controls.review.completeAggregateSave = resolve; });
+  }
   const saved = { ...structuredClone(entry), id: entry.id || "aggregate-" + ((controls.review.aggregateSaves ?? []).length + 1) };
   controls.review.aggregateSaves = [...(controls.review.aggregateSaves ?? []), saved];
   controls.review.aggregateModels = [...(controls.review.aggregateModels ?? []).filter((model: AggregateModel) => model.id !== saved.id), saved];
@@ -742,6 +745,7 @@ function mount(mode: FixtureMode) {
 }
 
 controls.review = { mount, t: (key: string, options?: Record<string, unknown>) => i18n.t(key, options),
+  setLanguage: (language: string) => i18n.changeLanguage(language),
   realBalanceQuery, clientDefaults, claudeOneMDefaults, mergeModelCatalog, errors: { errorKey, errorMessage, formatInvokeError }, getState: () => state, pixel, accessCalls: [], thumbnailCalls: [], originalCalls: [], thumbnailResolvers: [],
   modelResolutionFixture, modelResolutionRequests: [], modelResolutionResolvers: [], modelResolutionRejectors: [], holdModelResolutions: false, modelResolutionPatches: {},
   navigatedTo: null, proxySettingsOpened: false,

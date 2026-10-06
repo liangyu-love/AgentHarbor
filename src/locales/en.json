@@ -82,7 +82,14 @@
       "tooManyMembers": "Channel reference limit reached (4096).",
       "tooManyModels": "Aggregate limit reached (128).",
       "unavailable": "The aggregate has no available channels."
-    }
+    },
+    "identity": "Model identity",
+    "scheduling": "Scheduling",
+    "publicIdExample": "e.g. deepseek-v4.1-flash",
+    "displayNameExample": "e.g. DeepSeek pool",
+    "copyPublicId": "Copy public model ID",
+    "publicIdCopied": "Public model ID copied",
+    "copyAll": "Copy all"
   },
   "modelTargets": {
     "errors": {
@@ -283,7 +290,8 @@
     "autoSubagent": "Auto · follows the role tiers",
     "authField": "Authentication field",
     "removedFields": "Remove: {{fields}}",
-    "noNativeProviders": "No compatible native models. Switch to the local router."
+    "noNativeProviders": "No compatible native models. Switch to the local router.",
+    "configPath": "Path"
   },
   "claudeDesktop": {
     "title": "Claude Desktop",
@@ -1198,7 +1206,12 @@
     "routeSourceLabel": "Client source",
     "routeSourceAll": "All sources",
     "routeSourceOther": "Other / unrecorded",
-    "routeSourceUnknown": "Unrecorded"
+    "routeSourceUnknown": "Unrecorded",
+    "quickNavigation": "Jump to",
+    "directConnection": "Direct connection",
+    "gatewayConnection": "Local gateway",
+    "connectionDisabled": "Disconnected",
+    "gatewayAddress": "AgentHarbor gateway :{{port}}"
   },
   "avatar": {
     "title": "App avatar",

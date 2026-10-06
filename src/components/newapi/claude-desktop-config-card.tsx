@@ -1,7 +1,17 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Loader2, RefreshCw, Rocket, RotateCcw, Settings2, ShieldCheck, Unlink } from "lucide-react";
+import {
+  AlertCircle,
+  Loader2,
+  Monitor,
+  RefreshCw,
+  Rocket,
+  RotateCcw,
+  Settings2,
+  ShieldCheck,
+  Unlink,
+} from "lucide-react";
 import { api } from "@/lib/api";
 import { desktopErrorKey, invalidateClaudeDesktop } from "@/lib/claude-desktop";
 import { ClaudeDesktopDialog } from "./claude-desktop-config-dialog";
@@ -22,6 +32,7 @@ import { queryKeys } from "@/lib/query-keys";
 import type { ClaudeDesktopActionRequest, ClaudeDesktopStatus, DesktopAction } from "@/types/claude-desktop";
 import type { NewApiProvider } from "@/types/newapi";
 import { desktopProtocolLabel } from "./claude-desktop-route-mapping";
+import { cn } from "@/lib/utils";
 
 const STATUS_KEY = queryKeys.claudeDesktopStatus;
 const CANDIDATES_KEY = queryKeys.claudeDesktopCandidates;
@@ -86,7 +97,7 @@ const modeKey = (status: ClaudeDesktopStatus) => {
     default:
       return "claudeDesktop.modeUnknown";
   }
-}
+};
 
 export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvider[] }) {
   const { t } = useTranslation();
@@ -118,7 +129,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
     setDialog(true);
   };
 
-  const actionOf = (action: DesktopAction) => data?.actions.find(entry => entry.action === action);
+  const actionOf = (action: DesktopAction) => data?.actions.find((entry) => entry.action === action);
   // 没有已保存卡片时给出可解释的空状态，而不是一个点不动的按钮。
   const hasSavedCards = providers.length > 0;
   const blockedReason = (() => {
@@ -129,16 +140,19 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
     return !configure?.enabled && configure?.disabledReason ? t(configure.disabledReason) : null;
   })();
 
-  const savedModelChoices = data?.modelChoices?.length ? data.modelChoices : (data?.models ?? []).map(model => ({
-    modelId: model.modelId,
-    labelOverride: model.label || null,
-    oneMMode: model.oneM ? "auto" as const : "off" as const,
-  }));
+  const savedModelChoices = data?.modelChoices?.length
+    ? data.modelChoices
+    : (data?.models ?? []).map((model) => ({
+        modelId: model.modelId,
+        labelOverride: model.label || null,
+        oneMMode: model.oneM ? ("auto" as const) : ("off" as const),
+      }));
 
   const sessionRequest = (): ClaudeDesktopActionRequest | null => {
     if (!data || (data.mode !== "router" && !data.providerId)) return null;
     return {
-      ...(data.mode === "router" ? { routes: data.routeChoices ?? [] }
+      ...(data.mode === "router"
+        ? { routes: data.routeChoices ?? [] }
         : { providerId: data.providerId, models: savedModelChoices }),
       paths: data.paths
         ? { normalRoot: data.paths.normalRoot, thirdPartyRoot: data.paths.thirdPartyRoot }
@@ -175,7 +189,9 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
     setBusy(true);
     setError(null);
     try {
-      const payload = request ?? { paths: data?.paths ? { normalRoot: data.paths.normalRoot, thirdPartyRoot: data.paths.thirdPartyRoot } : {} };
+      const payload = request ?? {
+        paths: data?.paths ? { normalRoot: data.paths.normalRoot, thirdPartyRoot: data.paths.thirdPartyRoot } : {},
+      };
       // 管理操作同样先预览再提交，不另走无 revision 的捷径。
       const preview = await api.claudeDesktop.preview(action, payload);
       const applied = await api.claudeDesktop.commit(action, preview.revision, payload);
@@ -184,7 +200,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
         description: applied.requiresRestart
           ? t("claudeDesktop.card.restartHint")
           : applied.warnings.length
-            ? applied.warnings.map(key => t(key)).join(" ")
+            ? applied.warnings.map((key) => t(key)).join(" ")
             : undefined,
         variant: "success",
       });
@@ -198,6 +214,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
   };
 
   const confirm = pending ? confirmKey(pending) : null;
+
   const describeFlag = (flag: string) => {
     const [kind, ...rest] = flag.split(":");
     const detail = rest.join(":");
@@ -207,28 +224,56 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
   };
 
   return (
-    <section className="space-y-3" aria-labelledby="claude-desktop-title">
-      <div>
-        <h2 id="claude-desktop-title" className="text-lg font-semibold">
-          {t("claudeDesktop.title")}
-        </h2>
+    <section className="space-y-4" aria-labelledby="claude-desktop-title">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-purple-500/10 text-purple-600 dark:text-purple-400">
+            <Monitor className="h-4 w-4" />
+          </div>
+          <div>
+            <h2 id="claude-desktop-title" className="text-lg font-semibold tracking-tight text-foreground">
+              {t("claudeDesktop.title")}
+            </h2>
+          </div>
+        </div>
       </div>
 
       {(error || status.error) && (
-        <p role="alert" className="text-sm text-destructive">
-          {t(error ?? desktopErrorKey(status.error, "claudeDesktop.errors.storage"))}
-        </p>
+        <div
+          role="alert"
+          className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/5 p-3.5 text-sm text-destructive"
+        >
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          <span>{t(error ?? desktopErrorKey(status.error, "claudeDesktop.errors.storage"))}</span>
+        </div>
       )}
 
-      <div className="rounded-xl border bg-card/70 p-4">
-        {status.isPending && <p className="text-sm text-muted-foreground">{t("common.loading")}</p>}
+      <div className="group relative overflow-hidden rounded-2xl border border-border/80 bg-card/80 p-5 shadow-sm transition-all duration-300 hover:border-purple-500/40 hover:shadow-md">
+        {/* Subtle top indicator bar */}
+        <div className="absolute left-5 top-0 h-0.5 w-10 rounded-b-sm bg-gradient-to-r from-purple-500 to-indigo-500 transition-all duration-300 group-hover:w-16" />
+
+        {status.isPending && (
+          <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
+            <RefreshCw className="h-4 w-4 animate-spin text-primary" />
+            <span>{t("common.loading")}</span>
+          </div>
+        )}
+
         {data && (
-          <div className="space-y-3">
+          <div className="space-y-4">
+            {/* Top badges bar */}
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant={data.managementState === "managed" ? "secondary" : "outline"}>
+              <Badge
+                variant={data.managementState === "managed" ? "secondary" : "outline"}
+                className={cn(
+                  "gap-1 font-medium shadow-sm",
+                  data.managementState === "managed" && "bg-purple-500/10 text-purple-700 dark:text-purple-300 border-purple-500/30",
+                )}
+              >
+                {data.managementState === "managed" && <span className="h-1.5 w-1.5 rounded-full bg-purple-500 animate-pulse motion-reduce:animate-none" />}
                 {t(stateKey(data))}
               </Badge>
-              <Badge variant="outline" className="text-xs">
+              <Badge variant="outline" className="text-xs font-normal">
                 {t(modeKey(data))}
               </Badge>
               {data.mode === "router" && data.router?.listenerReady === false && (
@@ -237,46 +282,64 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
                 </Badge>
               )}
               {data.detection.version !== "unknown" && (
-                <span className="text-xs tabular-nums text-muted-foreground">
+                <span className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs tabular-nums text-muted-foreground">
                   v{data.detection.version}
                 </span>
               )}
               {data.restartRequired && (
-                <Badge variant="destructive" className="ml-auto text-xs">
+                <Badge variant="destructive" className="ml-auto text-xs animate-pulse motion-reduce:animate-none">
                   {t("claudeDesktop.card.requiresRestart")}
                 </Badge>
               )}
             </div>
 
-            {/* 供应商与模型是这张卡片的主信息。 */}
-            {data.mode !== "router" && <p data-desktop-provider className="break-words text-sm font-medium">
-              {data.isManaged
-                ? data.providerName ?? "—"
-                : t("claudeDesktop.card.hintUnmanaged")}
-            </p>}
+            {/* Main Provider / Route targets card */}
+            <div className="rounded-xl border border-border/50 bg-background/60 p-3.5 shadow-sm space-y-2">
+              {data.mode !== "router" && (
+                <p data-desktop-provider className="break-words text-sm font-semibold text-foreground">
+                  {data.isManaged ? data.providerName ?? "—" : t("claudeDesktop.card.hintUnmanaged")}
+                </p>
+              )}
 
-            {data.mode !== "router" && data.models.length > 0 && (
-              <p data-desktop-models className="break-words font-mono text-xs text-muted-foreground">
-                {data.models.map(model => model.modelId).join(" · ")}
-              </p>
-            )}
-            {data.mode === "router" && (data.routeViews ?? []).length > 0 && (
-              <ul data-desktop-route-targets className="space-y-1.5">
-                {(data.routeViews ?? []).map(route => (
-                  <li key={route.role} className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
-                    <span className="w-12 shrink-0 capitalize text-muted-foreground">{route.role}</span>
-                    <span className="min-w-0 break-all font-medium">{route.providerName} · {route.modelId}</span>
-                    <span className="text-[10px] text-muted-foreground">{desktopProtocolLabel(route.protocol)}</span>
-                    {!route.available && <span className="text-destructive">{t("claudeDesktop.routing.unavailable")}</span>}
-                  </li>
-                ))}
-              </ul>
-            )}
+              {data.mode !== "router" && data.models.length > 0 && (
+                <p data-desktop-models className="break-words font-mono text-xs text-muted-foreground">
+                  {data.models.map((model) => model.modelId).join(" · ")}
+                </p>
+              )}
+
+              {data.mode === "router" && (data.routeViews ?? []).length > 0 && (
+                <ul data-desktop-route-targets className="grid gap-2 sm:grid-cols-2">
+                  {(data.routeViews ?? []).map((route) => (
+                    <li
+                      key={route.role}
+                      className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-border/40 bg-card/60 px-3 py-2 text-xs"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="capitalize font-semibold text-foreground">{route.role}</span>
+                          <span className="text-[10px] text-muted-foreground font-mono">
+                            {desktopProtocolLabel(route.protocol)}
+                          </span>
+                        </div>
+                        <div className="truncate text-muted-foreground font-mono text-[11px]" title={`${route.providerName} · ${route.modelId}`}>
+                          {route.providerName} · {route.modelId}
+                        </div>
+                      </div>
+                      {!route.available && (
+                        <Badge variant="destructive" className="text-[10px] shrink-0">
+                          {t("claudeDesktop.routing.unavailable")}
+                        </Badge>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
 
             {/* 未完成事务优先于一切：它阻止其它写操作。 */}
             {data.pendingRecovery && (
-              <div className="space-y-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2">
-                <p role="alert" className="text-xs text-destructive">
+              <div className="space-y-2 rounded-xl border border-destructive/40 bg-destructive/5 p-3.5">
+                <p role="alert" className="text-xs text-destructive font-medium">
                   {t("claudeDesktop.card.recoveryHint")}
                 </p>
                 <Button
@@ -292,53 +355,73 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
             )}
 
             {data.providerMissing && (
-              <p role="alert" className="text-xs text-destructive">{t("claudeDesktop.card.providerMissing")}</p>
+              <p role="alert" className="text-xs text-destructive bg-destructive/5 p-2.5 rounded-lg border border-destructive/20">
+                {t("claudeDesktop.card.providerMissing")}
+              </p>
             )}
 
             {data.conflicts.length > 0 && (
-              <p role="alert" className="break-words text-xs text-destructive">
+              <p role="alert" className="break-words text-xs text-destructive bg-destructive/5 p-2.5 rounded-lg border border-destructive/20">
                 {t("claudeDesktop.card.conflicts")}: {data.conflicts.map(describeFlag).join(" · ")}
               </p>
             )}
 
             {data.staleReasons.length > 0 && (
-              <p role="status" className="break-words text-xs text-amber-600 dark:text-amber-500">
+              <p role="status" className="break-words text-xs text-amber-600 dark:text-amber-500 bg-amber-500/5 p-2.5 rounded-lg border border-amber-500/20">
                 {t("claudeDesktop.card.staleReasons")}: {data.staleReasons.map(describeFlag).join(" · ")}
               </p>
             )}
 
-            {(data.paths || data.lastAppliedAt !== null || data.backupCount > 0 || data.warnings.some(key => DETAIL_WARNINGS.has(key))) && (
-              <details className="text-xs text-muted-foreground">
-                <summary className="w-fit cursor-pointer rounded-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            {(data.paths ||
+              data.lastAppliedAt !== null ||
+              data.backupCount > 0 ||
+              data.warnings.some((key) => DETAIL_WARNINGS.has(key))) && (
+              <details className="text-xs text-muted-foreground group/details">
+                <summary className="w-fit cursor-pointer rounded-md px-2 py-1 transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                   {t("claudeDesktop.card.details")}
                 </summary>
-                <div className="mt-2 space-y-2">
+                <div className="mt-2 space-y-2 rounded-lg border border-border/40 bg-muted/20 p-3">
                   {data.paths && (
-                    <p data-desktop-config-path className="break-all font-mono">{data.paths.normalConfig}</p>
+                    <p data-desktop-config-path className="break-all font-mono text-[11px] text-foreground">
+                      {data.paths.normalConfig}
+                    </p>
                   )}
-                  {data.router && <p className="font-mono">127.0.0.1:{data.router.boundPort}</p>}
-                  <p>
+                  {data.router && (
+                    <p className="font-mono text-[11px] text-foreground">127.0.0.1:{data.router.boundPort}</p>
+                  )}
+                  <p className="text-[11px]">
                     {data.lastAppliedAt
                       ? `${t("claudeDesktop.card.lastApplied")}: ${new Date(data.lastAppliedAt * 1000).toLocaleString()}`
                       : t("claudeDesktop.card.neverApplied")}
                     {data.backupCount > 0 && ` · ${t("claudeDesktop.card.backupCount")}: ${data.backupCount}`}
                   </p>
-                  {data.warnings.filter(key => DETAIL_WARNINGS.has(key)).map(key => <p key={key}>{t(key)}</p>)}
+                  {data.warnings
+                    .filter((key) => DETAIL_WARNINGS.has(key))
+                    .map((key) => (
+                      <p key={key} className="text-amber-600 dark:text-amber-400">
+                        {t(key)}
+                      </p>
+                    ))}
                 </div>
               </details>
             )}
 
-            {data.warnings.filter(key => !DETAIL_WARNINGS.has(key)
-              && key !== "claudeDesktop.warnings.requiresRestart"
-              && key !== "claudeDesktop.warnings.pendingRecovery").map(key => (
-              <p
-                key={key}
-                role="status"
-                className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground"
-              >
-                {t(key)}
-              </p>
-            ))}
+            {data.warnings
+              .filter(
+                (key) =>
+                  !DETAIL_WARNINGS.has(key) &&
+                  key !== "claudeDesktop.warnings.requiresRestart" &&
+                  key !== "claudeDesktop.warnings.pendingRecovery",
+              )
+              .map((key) => (
+                <p
+                  key={key}
+                  role="status"
+                  className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground"
+                >
+                  {t(key)}
+                </p>
+              ))}
 
             {/* 空状态给出下一步，而不是一个点不动的按钮。 */}
             {!hasSavedCards && (
@@ -347,22 +430,31 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
               </p>
             )}
 
-            <div className="space-y-2">
-              <div className="flex flex-wrap gap-2">
+            <div className="space-y-2 pt-3 border-t border-border/50">
+              <div className="flex flex-wrap items-center gap-2">
                 <Button
                   size="sm"
                   variant={data.isManaged ? "outline" : "default"}
+                  className={cn(
+                    "h-8 gap-1.5 rounded-lg text-xs font-semibold shadow-sm",
+                    !data.isManaged && "bg-purple-600 text-white hover:bg-purple-700 dark:bg-purple-600",
+                  )}
                   disabled={busy || !hasSavedCards || (!actionOf("applyDirect")?.enabled && !actionOf("applyRouter")?.enabled)}
                   onClick={openDialog}
                 >
                   <Settings2 className="h-3.5 w-3.5" />
                   {t(data.isManaged ? "claudeDesktop.card.change" : "claudeDesktop.card.configure")}
                 </Button>
+
                 {/* 只有确认过启动方式、且配置确实待生效时才出现。 */}
                 {data.restartCapable && (data.restartRequired || data.appRunning) && (
                   <Button
                     size="sm"
                     variant={data.restartRequired ? "default" : "ghost"}
+                    className={cn(
+                      "h-8 gap-1.5 rounded-lg text-xs font-semibold shadow-sm",
+                      data.restartRequired && "bg-destructive text-destructive-foreground hover:bg-destructive/90",
+                    )}
                     disabled={busy || restarting}
                     title={t("claudeDesktop.card.restartHint")}
                     onClick={() => void restartApp()}
@@ -375,7 +467,8 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
                     {t(restarting ? "claudeDesktop.card.restarting" : "claudeDesktop.card.restart")}
                   </Button>
                 )}
-                {CONFIRMABLE.filter(action => action !== "recoverRollback").map(action => {
+
+                {CONFIRMABLE.filter((action) => action !== "recoverRollback").map((action) => {
                   const view = actionOf(action);
                   if (!view) return null;
                   const Icon =
@@ -391,6 +484,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
                       key={action}
                       size="sm"
                       variant="ghost"
+                      className="h-8 gap-1.5 rounded-lg text-xs text-muted-foreground hover:text-foreground"
                       disabled={busy || !view.enabled}
                       title={view.disabledReason ? t(view.disabledReason) : undefined}
                       onClick={() => setPending(action)}
@@ -401,13 +495,10 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
                   );
                 })}
               </div>
+
               {/* 被禁用的原因写在按钮下方：title 在触屏与键盘下都不可靠。 */}
-              {restartError && (
-                <p role="alert" className="text-[11px] text-destructive">{t(restartError)}</p>
-              )}
-              {blockedReason && (
-                <p role="status" className="text-[11px] text-muted-foreground">{blockedReason}</p>
-              )}
+              {restartError && <p role="alert" className="text-[11px] text-destructive">{t(restartError)}</p>}
+              {blockedReason && <p role="status" className="text-[11px] text-muted-foreground">{blockedReason}</p>}
             </div>
           </div>
         )}
@@ -423,13 +514,18 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
           initialModelChoices={savedModelChoices}
           initialMode={data?.mode === "router" ? "router" : "direct"}
           initialRouteChoices={data?.routeChoices ?? []}
-          availableActions={(data?.actions ?? []).filter(view => view.enabled).map(view => view.action)}
+          availableActions={(data?.actions ?? []).filter((view) => view.enabled).map((view) => view.action)}
           onClose={() => setDialog(false)}
           onApplied={refresh}
         />
       )}
 
-      <AlertDialog open={pending !== null} onOpenChange={open => { if (!open && !busy) setPending(null); }}>
+      <AlertDialog
+        open={pending !== null}
+        onOpenChange={(open) => {
+          if (!open && !busy) setPending(null);
+        }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{confirm ? t(`claudeDesktop.dialog.${confirm.title}`) : ""}</AlertDialogTitle>
@@ -442,7 +538,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
             <AlertDialogCancel disabled={busy}>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               disabled={busy}
-              onClick={event => {
+              onClick={(event) => {
                 event.preventDefault();
                 if (pending) void run(pending);
               }}

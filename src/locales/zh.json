@@ -82,7 +82,14 @@
       "tooManyMembers": "渠道引用数量已达上限（4096）。",
       "tooManyModels": "聚合数量已达上限（128）。",
       "unavailable": "聚合当前没有可用渠道。"
-    }
+    },
+    "identity": "模型标识",
+    "scheduling": "调度策略",
+    "publicIdExample": "例如 deepseek-v4.1-flash",
+    "displayNameExample": "例如 DeepSeek 聚合",
+    "copyPublicId": "复制公开模型 ID",
+    "publicIdCopied": "公开模型 ID 已复制",
+    "copyAll": "复制全部"
   },
   "modelTargets": {
     "errors": {
@@ -283,7 +290,8 @@
     "autoSubagent": "自动 · 跟随各角色 tier",
     "authField": "认证字段",
     "removedFields": "移除：{{fields}}",
-    "noNativeProviders": "没有兼容的原生模型，可切换本地路由。"
+    "noNativeProviders": "没有兼容的原生模型，可切换本地路由。",
+    "configPath": "路径"
   },
   "claudeDesktop": {
     "title": "Claude Desktop",
@@ -1198,7 +1206,12 @@
     "routeSourceLabel": "客户端来源",
     "routeSourceAll": "全部来源",
     "routeSourceOther": "其他 / 未记录",
-    "routeSourceUnknown": "未记录"
+    "routeSourceUnknown": "未记录",
+    "quickNavigation": "快捷定位",
+    "directConnection": "直连中转",
+    "gatewayConnection": "本地网关",
+    "connectionDisabled": "未连接",
+    "gatewayAddress": "AgentHarbor 路由网关 :{{port}}"
   },
   "avatar": {
     "title": "应用头像",

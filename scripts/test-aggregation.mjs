@@ -68,7 +68,99 @@ export async function testAggregation({ page, reset, captureDir }) {
   const choose = async (selector, name) => {
     await selector.click();
     await page.getByRole("option", { name, exact: true }).click();
+    await page.getByRole("option", { name, exact: true }).waitFor({ state: "hidden" });
   };
+
+  await seed(page, reset, "access");
+  const copyId = manager().getByRole("button", { name: await tr("aggregation.copyPublicId"), exact: true });
+  await page.evaluate(() => {
+    navigator.clipboard.writeText = async () => { throw new Error("Synthetic clipboard denied"); };
+  });
+  await copyId.click();
+  await manager().getByRole("alert").getByText("Synthetic clipboard denied", { exact: true }).waitFor();
+  assert.equal(await copyId.locator(".lucide-check").count(), 0, "a rejected clipboard write never reports success");
+  await page.evaluate(() => {
+    navigator.clipboard.writeText = async text => { window.review.copiedAggregate = text; };
+  });
+  await copyId.click();
+  await page.waitForFunction(() => window.review.copiedAggregate === "deepseek-v4.1-flash");
+  await copyId.locator(".lucide-check").waitFor();
+  await page.evaluate(() => { navigator.clipboard.writeText = async () => { throw new Error("Synthetic clipboard retry denied"); }; });
+  await copyId.click();
+  await manager().getByRole("alert").getByText("Synthetic clipboard retry denied", { exact: true }).waitFor();
+  assert.equal(await copyId.locator(".lucide-check").count(), 0, "a failed retry clears the previous copy-success indicator");
+  assert.equal(await manager().locator("details > ul > li").count(), 2, "each upstream is displayed once");
+  assert.equal(await manager().locator("details ul ul").count(), 0);
+  await manager().getByRole("button", { name: await tr("aggregation.previewConnection"), exact: true }).click();
+  await page.evaluate(() => { navigator.clipboard.writeText = async () => { throw new Error("Synthetic preview clipboard denied"); }; });
+  await manager().getByRole("button", { name: await tr("aggregation.copyAll"), exact: true }).click();
+  await manager().getByRole("alert").getByText("Synthetic preview clipboard denied", { exact: true }).waitFor();
+
+  await manager().getByRole("button", { name: await tr("common.edit"), exact: true }).click();
+  await page.evaluate(() => { window.review.holdAggregateSave = true; });
+  await manager().locator("form").getByRole("button", { name: await tr("common.save"), exact: true }).click();
+  await page.waitForFunction(() => typeof window.review.completeAggregateSave === "function");
+  assert.equal(await manager().locator("form").getByRole("checkbox", { name: await tr("aggregation.enabled"), exact: true }).isDisabled(), true,
+    "the aggregate enable toggle is locked while its saved draft is pending");
+  await page.evaluate(() => { window.review.holdAggregateSave = false; window.review.completeAggregateSave(); });
+  await manager().locator("form").waitFor({ state: "detached" });
+  console.log("PASS injection UI handles clipboard failures and pending saves without false success or duplicated channel lists");
+
+  const pipeline = page.locator('[aria-labelledby="newapi-routing-title"]');
+  await page.evaluate(async () => {
+    window.review.frontendClient.setQueryData(["newapi-state"], { ...window.review.getState(), activeProviderId: "relay-a" });
+    window.review.getState().activeProviderId = "relay-a";
+  });
+  await choose(pipeline.locator("#codex-access-mode"), await tr("newapi.accessNative"));
+  await pipeline.getByText("https://relay-a.invalid/v1", { exact: true }).waitFor();
+  assert.equal(await pipeline.getByText("chatgpt.com / api.openai.com", { exact: true }).count(), 0);
+  assert.equal(await pipeline.getByText("/codex/v1/responses", { exact: true }).count(), 0, "native access bypasses the local gateway");
+  await choose(pipeline.locator("#codex-access-mode"), await tr("newapi.accessRouter"));
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.getByRole("button", { name: await tr("newapi.providersSection"), exact: true }).click();
+  assert.equal(await page.evaluate(() => document.activeElement?.id), "newapi-providers-title", "quick navigation moves keyboard focus with the view");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+
+  // Long manual IDs, localized labels, theme and zoom-size layouts use only synthetic DTOs.
+  await page.evaluate(async () => {
+    window.review.aggregateModels[0].publicModelId = "manual/" + "very-long-model-id-".repeat(12);
+    window.review.aggregateModels[0].displayName = "Long display name ".repeat(12);
+    await window.review.frontendClient.invalidateQueries({ queryKey: ["model-aggregation"] });
+  });
+  for (const { width, height, theme, language } of [
+    { width: 1440, height: 900, theme: "light", language: "zh" },
+    { width: 960, height: 800, theme: "dark", language: "en" },
+    { width: 768, height: 900, theme: "light", language: "en" },
+    { width: 390, height: 844, theme: "dark", language: "zh" },
+  ]) {
+    await page.setViewportSize({ width, height });
+    await page.evaluate(async ({ theme, language }) => {
+      document.documentElement.classList.toggle("dark", theme === "dark");
+      await window.review.setLanguage(language);
+    }, { theme, language });
+    const overflow = await page.evaluate(() => [...document.querySelectorAll(
+      '[aria-labelledby="newapi-routing-title"], [aria-labelledby="client-configs-title"], [aria-labelledby="claude-desktop-title"], [aria-labelledby="aggregation-title"]'
+    )].filter(element => element.scrollWidth > element.clientWidth + 1).map(element => element.getAttribute("aria-labelledby")));
+    assert.deepEqual(overflow, [], `injection sections fit ${width}px ${language} ${theme}`);
+    if (captureDir) {
+      await page.locator("[data-page-scroll-container]").evaluate((element, height) => {
+        element.parentElement.style.height = height + "px";
+      }, height);
+      await page.locator("[data-page-scroll-container]").evaluate(element => { element.scrollTop = 0; });
+      await page.screenshot({ path: path.join(captureDir, `injection-top-${width}-${theme}.png`), animations: "disabled" });
+      await page.locator('[aria-labelledby="client-configs-title"]').evaluate(element => element.scrollIntoView({ block: "start" }));
+      await page.screenshot({ path: path.join(captureDir, `injection-clients-${width}-${theme}.png`), animations: "disabled" });
+      await manager().evaluate(element => element.scrollIntoView({ block: "start" }));
+      await page.screenshot({ path: path.join(captureDir, `injection-aggregate-${width}-${theme}.png`), animations: "disabled" });
+      await manager().getByRole("button", { name: await tr("common.edit"), exact: true }).click();
+      await manager().locator("form").evaluate(element => element.scrollIntoView({ block: "start" }));
+      await page.screenshot({ path: path.join(captureDir, `injection-editor-${width}-${theme}.png`), animations: "disabled" });
+      await manager().locator("form").getByRole("button", { name: await tr("common.cancel"), exact: true }).click();
+    }
+  }
+  await page.setViewportSize({ width: 1200, height: 700 });
+  await page.evaluate(async () => { document.documentElement.classList.remove("dark"); await window.review.setLanguage("zh"); });
+  console.log("PASS native topology, keyboard navigation, long model IDs and bilingual responsive theme layouts");
 
   await seed(page, reset, "access", { empty: true, suggestions: true });
   await manager().getByRole("button", { name: await tr("aggregation.add"), exact: true }).click();
@@ -246,6 +338,10 @@ export async function testAggregation({ page, reset, captureDir }) {
   const clientsCard = page.locator('section[aria-labelledby="client-configs-title"]');
   await clientsCard.getByRole("button", { name: await tr("clients.reapply"), exact: true }).waitFor();
   assert.equal(await clientsCard.getByRole("alert").count(), 0, "saved aggregate target is recognized as a configured client");
+  if (captureDir) {
+    await clientsCard.evaluate(element => element.scrollIntoView({ block: "start" }));
+    await page.screenshot({ path: path.join(captureDir, "injection-saved-client.png"), animations: "disabled" });
+  }
   await clientsCard.getByRole("button", { name: await tr("clients.change"), exact: true }).click();
   assert.equal(await dialog.getByRole("checkbox", { name: await tr("clients.includeModel", { model: POOL_NAME }), exact: true }).isChecked(), true);
   assert.equal(await dialog.getByRole("checkbox", { name: await tr("clients.oneMStartup"), exact: true }).isChecked(), true);
