@@ -968,6 +968,26 @@ mod tests {
         time::Duration,
     };
 
+    fn local_mock_network() -> ApiProxyConfigPayload {
+        // Local fixtures must not depend on the user's Windows system proxy.
+        ApiProxyConfigPayload { mode: super::super::models::ApiProxyMode::Direct, url: None }
+    }
+
+    fn accept_mock_connection(listener: &std::net::TcpListener) -> std::net::TcpStream {
+        listener.set_nonblocking(true).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => { stream.set_nonblocking(false).unwrap(); return stream; }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(std::time::Instant::now() < deadline, "missing request to local balance fixture");
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("local balance fixture accept failed: {error}"),
+            }
+        }
+    }
+
     fn mock_server(
         responses: Vec<(&'static str, &'static str)>,
     ) -> (String, Arc<Mutex<Vec<String>>>, std::thread::JoinHandle<()>) {
@@ -977,7 +997,7 @@ mod tests {
         let captured = Arc::clone(&requests);
         let handle = std::thread::spawn(move || {
             for (status, body) in responses {
-                let (mut stream, _) = listener.accept().unwrap();
+                let mut stream = accept_mock_connection(&listener);
                 stream
                     .set_read_timeout(Some(Duration::from_secs(3)))
                     .unwrap();
@@ -1008,7 +1028,7 @@ mod tests {
         let captured = Arc::clone(&requests);
         let handle = std::thread::spawn(move || {
             for _ in 0..responses.len() {
-                let (mut stream, _) = listener.accept().unwrap();
+                let mut stream = accept_mock_connection(&listener);
                 stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
                 let mut bytes = [0u8; 16 * 1024];
                 let count = stream.read(&mut bytes).unwrap();
@@ -1168,7 +1188,7 @@ mod tests {
                 access_token: "account-token-must-not-be-used".into(),
                 ..Default::default()
             },
-            &ApiProxyConfigPayload::default(),
+            &local_mock_network(),
         )
         .unwrap();
         server.join().unwrap();
@@ -1214,7 +1234,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            query(&missing_key, &ApiProxyConfigPayload::default()).unwrap_err(),
+            query(&missing_key, &local_mock_network()).unwrap_err(),
             "newapi.errors.apiKeyRequired"
         );
     }
@@ -1240,7 +1260,7 @@ mod tests {
                     api_key: "synthetic-model-key".into(),
                     ..Default::default()
                 },
-                &ApiProxyConfigPayload::default(),
+                &local_mock_network(),
             ).unwrap();
             server.join().unwrap();
             assert_eq!(requests.lock().unwrap().len(), 4);
@@ -1308,7 +1328,7 @@ mod tests {
         let (base_url, requests, server) = mock_server(vec![("401 Unauthorized", "{}")]);
         assert!(command_code_balance(
             &newapi::Connection { base_url, api_key: "synthetic-model-key".into(), ..Default::default() },
-            &ApiProxyConfigPayload::default(),
+            &local_mock_network(),
         ).is_err());
         server.join().unwrap();
         let requests = requests.lock().unwrap();
@@ -1366,7 +1386,7 @@ mod tests {
                 ..Default::default()
             };
             assert_eq!(
-                query(&connection, &ApiProxyConfigPayload::default()).unwrap_err(),
+                query(&connection, &local_mock_network()).unwrap_err(),
                 "newapi.errors.balanceUnsupported"
             );
         }
@@ -1395,7 +1415,7 @@ mod tests {
             api_key: "model-key".into(),
             ..Default::default()
         };
-        let (balance, source) = query(&connection, &ApiProxyConfigPayload::default()).unwrap();
+        let (balance, source) = query(&connection, &local_mock_network()).unwrap();
         server.join().unwrap();
         assert_eq!(source, "newapi");
         assert_eq!(balance.remaining, 1.5);
@@ -1428,7 +1448,7 @@ mod tests {
             api_key: "model-key-must-not-be-used".into(),
             ..Default::default()
         };
-        let (balance, source) = query(&connection, &ApiProxyConfigPayload::default()).unwrap();
+        let (balance, source) = query(&connection, &local_mock_network()).unwrap();
         server.join().unwrap();
         assert_eq!(source, "sub2api");
         assert_eq!(balance.remaining, 9.25);
@@ -1456,7 +1476,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            query(&connection, &ApiProxyConfigPayload::default()).unwrap_err(),
+            query(&connection, &local_mock_network()).unwrap_err(),
             "newapi.errors.balanceDetect"
         );
         server.join().unwrap();
@@ -1484,7 +1504,7 @@ mod tests {
         };
         let balance = official_balance(
             &connection,
-            &ApiProxyConfigPayload::default(),
+            &local_mock_network(),
             "deepseek",
             "/user/balance",
         )
