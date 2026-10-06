@@ -1,6 +1,6 @@
 # Claude Desktop 路由模式
 
-日期：2026-10-05。基础路由提交：`ea7cb17`，实施起点：`596c856`。Windows 安装包和自动化验证已提供；用户截图提供了 Chat 普通多轮的部分真机证据，其余真实 Desktop 路由验收见 [验收记录](claude-desktop-routing-acceptance-record.md)。本轮 Fast/1M 更新的 Rust、前端和构建均已通过，产物与隔离启动结果随交付目录保存。
+日期：2026-10-06。基础路由提交：`ea7cb17`，实施起点：`596c856`。聚合扩展与协议解耦属于本轮新增源码，验收状态见 [模型聚合验收记录](model-aggregation-acceptance-record.md)；基础路由的历史真机证据仍见 [验收记录](claude-desktop-routing-acceptance-record.md)。本页不把 mock 或生产构建结果写成真实 Desktop 已验收。
 
 ## 使用已有中转
 
@@ -24,13 +24,32 @@ Desktop 角色 alias
 
 `/claude-desktop/v1/models` 和 `/claude-desktop/v1/messages` 使用独立 Desktop token。普通路由 token、Desktop token 不能跨入口使用。Desktop profile 不保存上游推理 Key；新请求读取已有卡片的当前推理 Key 和 URL。修改卡片凭据后无需为路由重新写 Desktop 配置。
 
-首版 Sonnet / Opus / Haiku 使用固定安全 alias。空档、未知 alias、目标模型不可用会明确拒绝，不回落到另一档，也不触发现有 Codex 自动故障切换。Fable 仅在版本策略认可时提供，尚无真机验收证据。
+## 聚合目标
+
+路由配置可以选择单渠道 `Provider` 或显式 `Aggregate` target。聚合目标只保存
+`aggregateId`；成员由模型聚合页引用已有中转卡和精确模型 ID。Desktop 仍然从
+`/claude-desktop/v1/messages` 接收 Anthropic Messages 请求，网关再按成员的有效
+协议选择 Messages、Responses 或 Chat 出口。请求不会因为模型名前缀、`fast` 后缀或
+余额变化自动换成另一个成员。
+
+聚合响应里的协议 `model` 字段投影为聚合的 `publicModelId`，便于客户端和其它
+消费者稳定识别；普通单渠道 Desktop 响应继续使用角色 alias。请求诊断同时保留
+角色 alias、aggregate/member ID、实际 wire model、配置/有效协议和路由修订，方便
+核对真实出站。成员不可用或聚合被删除时，显式目标直接报错，不回落到其它聚合、活动
+卡片或官方账号。
+
+聚合 Claude Desktop 的 1M 选项按实际成员容量准入，Messages、Responses、Chat 三种
+出口都可参与筛选；只有 Messages 出口发送 Claude beta 标记，另外两种出口不编造
+1M 参数。Desktop profile 每个角色仍只写一行，1M 菜单项由 Desktop 的
+`supports1m` 契约生成。原有直连配置的协议边界和 1M 行为不因聚合改写。
+
+首版 Sonnet / Opus / Haiku 使用固定安全 alias。空档、未知 alias、目标模型不可用会明确拒绝，不回落到另一档，也不触发已退役的旧全局同模型故障切换。Fable 仅在版本策略认可时提供，尚无真机验收证据。
 
 勾选额外 1M 后，profile 仍是一条模型配置，但 Desktop 会生成“普通”和“1M context window”两项，并使用同一个展示名。这是 `supports1m: true` 的菜单契约，直连和路由相同。`prefer1m` 只改变默认选择，`[1m]` 配置简写也会归一化为该字段；当前核对的 Desktop 2.19675.0 没有“仅显示 1M 项”的配置字段。只需要一项时关闭额外 1M；这不改变上游模型能力，但不能据此保证 Desktop 普通项的本地上下文预算为 1M。
 
 关闭后，旧缓存 `[1m]` 后缀及 1M beta header 都不能绕过路由开关。用户截图已确认路由开启时会生成成对菜单项；实际百万 token 请求和客户端本地预算仍待真机核对。
 
-1M 判断复用模型能力解析结果，用户覆盖、卡片设置、上游声明及适用目录引用均保留来源；无据的默认上下文不能启用。已保存的 1M 选择失去能力后仍显示，需关闭该选项或重新选模型后再预览。Chat/Responses 转换只保留实际模型、消息与现有请求参数，不编造 1M 参数，也不把 Claude beta header 发给这两类上游。普通客户端路由原有的 1M 协议边界不随 Desktop 规则改变。
+1M 判断复用模型能力解析结果，用户覆盖、卡片设置、上游声明及适用目录引用均保留来源；无据的默认上下文不能启用。已保存的 1M 选择失去能力后仍显示，需关闭该选项或重新选模型后再预览。Chat/Responses 转换只保留实际模型、消息与现有请求参数，不编造 1M 参数，也不把 Claude beta header 发给这两类上游。各客户端直连/Native 注入仍遵守其原有模式约束。
 
 Fast 型号优先使用完整型号的目录记录或显式 `catalogRef`。完整匹配缺失时，末尾 `-fast`、`_fast`、`@fast`、`:fast` 可参考同版本基础型号的上下文上限；请求型号与展示名保持原样，不借用基础型号的价格、输入/输出上限或思考字段。详见 [模型能力解析说明](models-dev.md)。
 
@@ -50,6 +69,6 @@ Fast 型号优先使用完整型号的目录记录或显式 `catalogRef`。完�
 
 ## 验证范围
 
-上一轮已用隔离文件、本地 HTTP 服务和 Playwright 验证三协议非流/SSE、工具回传、多轮、鉴权隔离、模型映射、历史隔离、费用身份、退出协调和窄窗显示。本轮新增 Fast 上下文引用与三协议 1M 规则，最终自动化结果以验收记录为准。实现会话没有修改真实 Desktop 文件、停止真实客户端或发送真实计费请求。
+上一轮已用隔离文件、本地 HTTP 服务和 Playwright 验证三协议非流/SSE、工具回传、多轮、鉴权隔离、模型映射、历史隔离、费用身份、退出协调和窄窗显示。本轮新增聚合 targetRef、公开模型投影、Fast 上下文引用与三协议 1M 规则，最终自动化结果以验收记录为准。实现会话没有修改真实 Desktop 文件、停止真实客户端或发送真实计费请求。
 
 用户截图中，Desktop/Cowork 的 Command Code 目标完成普通至少两轮；请求诊断显示 `claude-sonnet-4-6` → `deepseek/deepseek-v4.1-flash`、`chatCompletions`、HTTP 200，上游回显与出站一致。完整版本/安装渠道和逐次抓包尚未补齐。角色菜单/profile、Messages/Responses 对话、逐段 SSE、工具、三协议 1M 和完整退出恢复仍需分别记录。Cowork 界面中的普通回答不代表其托管工具通过；macOS/Linux、Fable、Cowork 工具、托管工具和百万 token 压力测试未完成真机验收。

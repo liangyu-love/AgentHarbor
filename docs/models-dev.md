@@ -73,8 +73,8 @@ offer the extra 1M menu option. A context of at least 1,000,000 tokens must come
 from an evidenced source, such as a user override, provider setting, upstream
 declaration, applicable official snapshot or catalog reference. The shared
 fallback is insufficient. Messages, Chat Completions and Responses targets use
-the same capability check; the checkbox remains off by default. This Desktop
-rule does not widen the ordinary router's existing Claude 1M protocol boundary.
+the same capability check; the checkbox remains off by default. Native/direct
+client injection retains its own mode and protocol constraints.
 Chat/Responses conversions do not invent a 1M request parameter or forward
 Claude beta headers. Client rendering and actual upstream context acceptance
 still require live verification.
@@ -101,9 +101,36 @@ default of 90% of the effective prompt budget (`limit.input` when the catalog
 provides it, otherwise `limit.context`). Fixed token thresholds never move on a
 catalog refresh; percentages are recomputed.
 The effective budget never exceeds the final context override; raw input/context
-values remain visible separately. Router failover reads the proxy's existing
-same-model candidate predicate and limits only that relay entry's budget.
-Unknown candidate budgets are called out without disabling the candidate.
+values remain visible separately. Earlier router versions used implicit
+same-model candidates to limit that relay entry's budget. That path is retired:
+an ordinary provider/model no longer reads another card's budget or silently
+adds same-name candidates. An unknown budget remains explicit without
+disabling the configured model.
+
+## Model aggregation boundary
+
+Aggregation is an explicit target layer over saved provider/model entries. A
+member stores the exact upstream wire ID and references the provider that owns
+its endpoint, credentials, protocol, capability overrides and billing prices;
+the aggregate does not copy any of those values. Matching a prefix, suffix or
+`fast` variant can suggest a catalog reference, but it never changes the saved
+wire ID or silently adds a member. The runtime sends the exact member ID chosen
+by the scheduler.
+
+The aggregate projection is conservative: context, output and compression
+limits are derived from the members that the user actually selected. A normal
+aggregate does not advertise 1M merely because one member has it; a request
+that explicitly needs 1M is admitted only to members with evidenced context of
+at least 1,000,000 tokens. Claude Code and Claude Desktop aggregate routes use
+the same capacity check across Messages, Responses and Chat egresses. The
+Claude beta marker is emitted only on a Messages egress; Chat and Responses do
+not receive a fabricated 1M parameter.
+
+Prices remain provider/model scoped. Each aggregate attempt records the actual
+member and model price snapshot, while the public model ID is used only for
+the client-facing projection. Changing a catalog revision, balance, display
+name or weight does not rewrite a provider's ordinary model metadata or
+reprice historical ledger entries.
 
 The provider editor resolves selected models from its unsaved draft through
 `preview_newapi_model_resolutions`. Context/input/output placeholders and the
@@ -204,6 +231,14 @@ independently edit or clear context, input, output, reasoning and default effort
 
 Back up `<app data>/newapi-providers.dat` before a downgrade; user IDs,
 protocols, aliases and overrides are never cleared by the migration.
+
+Store schema v9 adds explicit aggregates and drops the retired
+`sameModelFailover` setting. The migration preserves existing providers,
+credentials, model IDs and client selections, and never invents aggregates
+from the old toggle. Before replacing a pre-v9 store it preserves the first
+protected original at `<app data>/newapi-providers.pre-v9.dat`. Normal provider
+models keep their own resolved budgets; only an explicitly configured aggregate
+derives limits from its member set.
 
 ## Attribution and license
 

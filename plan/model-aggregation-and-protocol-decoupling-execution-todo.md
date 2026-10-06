@@ -1,11 +1,11 @@
 # 模型聚合与协议解耦：实施 TODO
 
-日期：2026-10-06。状态：**设计与源码核对完成，功能尚未实施；下文实施项均待完成。**
+日期：2026-10-06。状态：**基础聚合 P0–P6 已实现并完成自动化验收；P7 协议性能优化、通用 Chat 入口和真实环境验收仍待完成。**
 
 项目基线：`main / 9e33d4e903e194bc42d2b56375ecfaa901bbccdb`。
 参考源码：AxonHub `5c78997798b40e44788c38bd6720c0b9c156f26b`；CLIProxyAPI `a2976eb8a303f11b4ea5177bce9f9ff752634dfc`。
 
-本计划接替旧“同模型渠道故障切换”的产品设计，新增独立聚合模块。保留现有供应商卡片、单渠道直连、注入保存卡与恢复事务。消费范围包括已有 Codex、Claude Code、Claude Desktop、OpenCode 注入，以及其它 agent 的标准连接导出。本文不代表聚合、迁移或协议优化已经交付，也不沿用旧计划的测试通过状态。
+本计划接替旧“同模型渠道故障切换”的产品设计，新增独立聚合模块。保留现有供应商卡片、单渠道直连、注入保存卡与恢复事务。消费范围包括已有 Codex、Claude Code、Claude Desktop、OpenCode 注入，以及其它 agent 的标准连接导出。实施记录见 [聚合验收记录](D:/workspace/AiMaMi/docs/model-aggregation-acceptance-record.md)。勾选项表示当前源码已实现，不等同真实中转、真机或发布包已经验收；本轮测试结果单独记录，不沿用旧计划的通过状态。
 
 ## 1. 目标与首版决策
 
@@ -31,21 +31,21 @@
 
 “官方模型”是公开身份与用户配置的映射关系，不能据此证明上游实际运行的权重版本。现有上游声明模型对账继续保留原始观察值。
 
-## 2. 当前实现与必须退役的耦合
+## 2. 实施前基线与本轮退役记录
 
-### 2.1 当前功能并非通用聚合
+### 2.1 旧功能的边界
 
 - 旧候选要求实际模型 ID 完全相同、协议相同；不能把前缀不同的模型、不同出口协议组成一个独立模型。
 - 旧重试要求稳定会话标识及安全的新请求，主要覆盖建立连接前失败和 HTTP 429；不是平时的渠道轮询。
-- Desktop 明确跳过旧全局 failover。只给 Desktop UI 加一个聚合选项，不能让请求自动进入新调度器。
+- Desktop 曾明确跳过旧全局 failover。本轮通过 typed target 和聚合 executor 接入调度器，普通单渠道路由仍保持显式目标。
 - `/codex/v1` 的裸模型 ID 走官方 OpenAI；`providerId::modelId` 才走指定中转。新聚合不能抢占原裸 ID。
-- 旧 `relay_model_projection` 会按隐式同名候选最小预算影响普通渠道目录、能力预览与压缩阈值，退役时需一并解除。
+- 旧 `relay_model_projection` 曾按隐式同名候选最小预算影响普通渠道目录、能力预览与压缩阈值。本轮已解除；聚合预算只由用户显式加入的成员投影产生。
 
 | 现有位置 | 实施影响 |
 |---|---|
-| [router.rs](D:/workspace/AiMaMi/src-tauri/src/core/router.rs) | Store v8、旧开关/View/初始化/设置命令、候选规则、目录与预算投影 |
-| [router_proxy.rs](D:/workspace/AiMaMi/src-tauri/src/core/router_proxy.rs) | 目的地解析、旧重试循环、`failover_seen`、绑定/续接判定、Desktop 分支 |
-| [failover.rs](D:/workspace/AiMaMi/src-tauri/src/core/router_proxy/failover.rs) | 提取会话保护；删除旧自动候选，不直接删掉全部文件逻辑 |
+| [router.rs](D:/workspace/AiMaMi/src-tauri/src/core/router.rs) | Store 已升级 v9；旧开关和自动候选移除，普通渠道投影与聚合目录分开 |
+| [router_proxy.rs](D:/workspace/AiMaMi/src-tauri/src/core/router_proxy.rs) | 普通路由不再隐式跨卡重试；新增聚合目的地与 Desktop 聚合分支 |
+| [session_affinity.rs](D:/workspace/AiMaMi/src-tauri/src/core/router_proxy/session_affinity.rs) | 从旧 `failover.rs` 保留指纹、决策锁和有界会话保护；自动同名候选已删除 |
 | [newapi.rs](D:/workspace/AiMaMi/src-tauri/src/commands/newapi.rs)、[lib.rs](D:/workspace/AiMaMi/src-tauri/src/lib.rs) | 旧 Tauri 命令及注册 |
 | [api.ts](D:/workspace/AiMaMi/src/lib/api.ts)、[newapi.ts](D:/workspace/AiMaMi/src/types/newapi.ts) | 旧 API、状态字段与新聚合 DTO |
 | [newapi-page.tsx](D:/workspace/AiMaMi/src/components/newapi/newapi-page.tsx)、[routing-diagnostics.tsx](D:/workspace/AiMaMi/src/components/newapi/routing-diagnostics.tsx) | 移除旧开关；保留请求诊断，新增聚合选择结果 |
@@ -86,7 +86,7 @@ OpenCode 是已经实现的注入器，不能作为尚未存在的新客户端�
 
 ### 4.1 模块边界
 
-建议按职责建立下列目录；名称可随实施微调，依赖方向保持一致。
+基础交付已按下列职责拆分。协议的 typed canonical 与公共事件流属于 P7，尚未建立 `inbound/`、`outbound/` 和 `canonical.rs` 的完整实现。
 
 ```text
 core/aggregation/
@@ -99,11 +99,16 @@ core/aggregation/
   execution.rs      attempt 编排、重试预算、提交边界
 core/model_targets.rs
                     Provider/Aggregate 引用与共享消费描述
+core/model_targets_export.rs
+                    版本化连接信息与 SDK 配置片段
+core/router_proxy/
+  aggregate.rs      聚合 HTTP 编排
+  aggregate_output.rs 公开身份与资源归属投影
+  forward.rs        普通/聚合共用请求准备、历史、传输与落账
 core/protocol/
   types.rs          协议身份与通用错误
-  inbound/          客户端请求解码、响应/错误编码
-  outbound/         上游请求编码、响应/事件解码
-  canonical.rs      逐步引入的消息、工具、usage、事件
+  adapters.rs       InboundAdapter/OutboundAdapter/WireAdapter
+  原有转换模块      保持现有 JSON 与 SSE 转换实现
 ```
 
 HTTP proxy 负责鉴权、方法/路径白名单、body 限制、传输与下游提交；聚合负责选成员和尝试编排；协议适配器负责表达转换。供应商的认证、endpoint 构造和已验证兼容修正与通用协议转换分开。历史、诊断、计费由请求/attempt 上下文统一驱动。
@@ -129,7 +134,7 @@ flowchart LR
 
 ### 4.2 聚合配置
 
-下列结构是目标契约，不是已存在的 Rust/TS 类型：
+下列结构对应已实现的 Rust/TS 配置契约：
 
 ```text
 AggregateModel {
@@ -241,14 +246,15 @@ URL 也按 consumerProfile 导出：Anthropic SDK 可能自动追加 `/v1/messag
 | `POST /aggregate/v1/responses` | Codex/Responses 入口，精确 public ID → aggregate → member |
 | `POST /aggregate/v1/messages` | Claude Code/Messages 入口，精确 public ID → aggregate → member |
 | `POST /aggregate/v1/chat/completions` | 独立扩展阶段新增；实现 Chat 解码与缺失转换方向后才能导出通用 Chat 模板 |
-| `GET /aggregate/v1/models` | 现有 Codex/OpenAI 目录投影，只公开聚合 public IDs |
+| `GET /aggregate/v1/models` | OpenAI 目录投影，只公开聚合 public IDs；显式 `?format=anthropic` 返回 Anthropic 目录投影 |
 | `/aggregate/v1/responses/{id}` 及 cancel/input_items | 原资源索引指向原成员；不根据默认模型重选 |
-| `/aggregate/v1/responses/compact` | 有已验证原生支持和归属才转发；跨协议不能伪造 compact |
+| `/aggregate/v1/responses/compact` | 仅原生 Responses 成员可接收；无 previous resource 的独立 compact 可选原生成员，带资源则保留原归属；跨协议不伪造 compact |
+| `/aggregate/v1/messages/count_tokens` | 仅原生 Messages 成员可接收；计数不建立推理会话绑定，无兼容成员时明确拒绝 |
 | `/claude-desktop/v1/messages`、`/models` | 保持 Desktop 专用鉴权与安全角色 alias，内部 target 可引用聚合 |
 
 沿用现有 endpoint 白名单，不代理供应商管理、充值、任意文件接口。未知 public ID、未配置 alias、无可用成员分别返回结构化错误；不落到 active provider 或官方账户。
 
-Codex 与 Claude Code 共用 `/aggregate` namespace，但不让 GET `/models` 猜返回协议。Claude Code 的 picker 从内部共享目录写入；Desktop 的 `/models` 继续 Anthropic alias schema。后续若需要通用 Anthropic SDK 模型发现，再显式增加目录投影入口。
+Codex 与 Claude Code 共用 `/aggregate` namespace，但不让 GET `/models` 猜返回协议。Claude Code 的 picker 从内部共享目录写入；Desktop 的 `/models` 继续 Anthropic alias schema。通用 Anthropic SDK 导出使用明确的 `?format=anthropic` 模型发现地址。
 
 基础交付保留现有转换范围：Responses/Messages 两种聚合入口、Responses/Chat/Messages 三种出口。已有普通单渠道 Chat 入口与 Chat→Chat 原生直通继续保留。通用 Chat 聚合入口与 **Chat→Responses/Messages** 是独立增量，按 P7 的扩展任务实现后发布，不算当前代码已经支持。
 
@@ -262,7 +268,7 @@ Codex 与 Claude Code 共用 `/aggregate` namespace，但不让 GET `/models` �
 
 OpenCode 使用 Responses 或 Messages 的固定入口即可消费混合池，无需先补两个新方向。只有 Chat 模板需要扩展完成；不能将“三出口”写成“已有任意双向互转”。
 
-聚合 Responses/Messages 响应中协议定义的 `model` 字段投影为公开逻辑 ID；观察真实上游 model 后再投影，不替换任意文本/工具结果中的字符串，不凭空添加上游没返回的字段。Desktop 继续既有响应身份行为；如真机要求回写角色 alias，只由 Desktop 最后一层处理。
+聚合 Responses/Messages 响应中协议定义的 `model` 字段投影为公开逻辑 ID；观察真实上游 model 后再投影，不替换任意文本/工具结果中的字符串，不凭空添加上游没返回的字段。Desktop 聚合响应同样使用 `publicModelId`；普通 Desktop 单渠道响应继续使用角色 alias。诊断保留请求 alias、实际上游 ID 与原始声明值。
 
 ### 5.2 Codex
 
@@ -279,7 +285,7 @@ OpenCode 使用 Responses 或 Messages 的固定入口即可消费混合池，�
 - `ANTHROPIC_BASE_URL` 使用本地 `/aggregate`；主模型与各角色可引用不同聚合 public ID。
 - startup、sonnet、opus、fable、haiku、subagent，以及 modelPicker/availableModels 均从同一目录解析，不能遗留实际成员 wire ID。
 - 保留 AUTH_TOKEN/API_KEY 二选一、云厂商 selector 冲突检查、预览/revision、保存、一键应用、reapply、restore/release。
-- Claude Code `[1m]` 首版保持普通客户端已有协议边界；若扩展至非 Messages 出口，单独增加能力准入、beta 清理与真机验收，不借本次重构隐式改变。
+- 聚合 Claude Code `[1m]` 与 Desktop 使用相同的真实容量准入，可选择 Messages/Responses/Chat 三出口中有据 context≥1M 且能表达请求的成员。marker 不发给上游，仅 Messages 出口添加对应 beta；Chat/Responses 不编造 1M 参数。直连客户端注入仍沿用原模式约束，百万 token 真机验收保留待办。
 
 ### 5.4 Claude Desktop
 
@@ -391,7 +397,7 @@ Context7 于 2026-10-06 核对的 [OpenCode 官方自定义 provider 文档](htt
 
 诊断至少贯通：client source、requested public/role alias、aggregate/member ID、resolved actual model、原始 served model、configured/effective protocol、route/catalog revision、选择/排除理由、亲和命中、冷却、retry reason、attempt ID。
 
-旧 `failover_reason` 迁为一般 `retry_reason` 时保留历史向后兼容读取。未真正出站的候选只列为跳过理由，不制造虚假 attempt；跳过摘要有数量与文本上限，不记录正文、完整 headers、URL 或上游原始错误全文。
+新诊断使用一般 `retry_reason`。请求诊断只存内存，无旧诊断文件需要迁移；历史 Store 的旧 failover 设置读入后弃用，不再序列化。未真正出站的候选只列为跳过理由，不制造虚假 attempt；跳过摘要有数量与文本上限，不记录正文、完整 headers、URL 或上游原始错误全文。
 
 首版边界：聚合配置 128/64/4096 引用上限；亲和和资源归属分别设置条目/字节上限与 idle TTL，可从现有 1024/24h 绑定标准起步。已有活跃绑定不因容量满随机驱逐；需要会话亲和或可能产生原生资源归属的新请求在转发前预留容量，容量不足则拒绝。只有明确不依赖后续归属的独立请求可以绕过绑定容量，不能因 create 尚无 previous_response_id 就让它绕过资源索引上限。
 
@@ -450,83 +456,83 @@ Context7 于 2026-10-06 核对的 [OpenCode 官方自定义 provider 文档](htt
 
 ## 9. 按依赖实施 TODO
 
-所有勾选框表示**尚待实施**。每阶段完成后补实际 commit、执行命令、结果与未覆盖项；不得只更新“完成”文字。
+`[x]` 表示源码已实现并有对应隔离回归入口；`[ ]` 表示待实施或交付验收尚未收尾。P0–P6 的源码/测试路径和执行证据见 [聚合验收记录](D:/workspace/AiMaMi/docs/model-aggregation-acceptance-record.md)。P8.1 的串行 Rust、Desktop/local/aggregate targeted、前端、构建和 `git diff --check` 已有结果；mock 覆盖不替代 P8.2/P8.3 的真实环境验证。
 
 ### P0｜冻结契约与回归基线
 
-- [ ] P0.1 固定 public/aggregate/member/actual 四种身份、唯一性、目录来源、显式映射与全局/真实目标并发默认上限。
-- [ ] P0.2 固定 `/aggregate` 基础两入口/三出口、Chat 增量边界、官方直通语义、四种已有注入与通用 export 契约。
-- [ ] P0.3 给现有原生/跨协议、搜索、工具历史、1M、恢复与费用 fixtures 建立可对比基线。
-- [ ] P0.4 记录旧 failover 开关/命令/预算/绑定/测试的完整引用清单，保留迁移前配置样本。
+- [x] P0.1 固定 public/aggregate/member/actual 四种身份、唯一性、目录来源、显式映射与全局/真实目标并发默认上限。
+- [x] P0.2 固定 `/aggregate` 基础两入口/三出口、Chat 增量边界、官方直通语义、四种已有注入与通用 export 契约。
+- [x] P0.3 给现有原生/跨协议、搜索、工具历史、1M、恢复与费用 fixtures 建立可对比基线。
+- [x] P0.4 记录旧 failover 开关/命令/预算/绑定/测试的完整引用清单，保留迁移前配置样本。
 
 完成条件：可以从“公开模型→成员→出口→客户端”追踪一条执行链；数据、迁移和错误契约无未决定分支。
 
 ### P1｜协议与目标接口抽取，保持行为
 
-- [ ] P1.1 协议类型移到 protocol 层，router 临时导出兼容；避免 aggregation 依赖 router 的协议实现细节。
-- [ ] P1.2 抽入/出口适配器与结构化错误，原转换函数作内部实现；保持现有支持矩阵。
-- [ ] P1.3 收拢请求/attempt 上下文，传输、历史、诊断、费用不再各自重算模型与协议。
-- [ ] P1.4 建立 typed `ModelTargetRef`、多模型 selection 与共享 resolver；先支持 Provider 路径，证明四种已有注入无行为变化。
-- [ ] P1.5 提取旧绑定的指纹/锁/有界清理保护，不带旧全局开关语义。
+- [x] P1.1 协议类型移到 protocol 层，router 临时导出兼容；避免 aggregation 依赖 router 的协议实现细节。
+- [x] P1.2 抽入/出口适配器与结构化错误，原转换函数作内部实现；保持现有支持矩阵。
+- [x] P1.3 收拢请求/attempt 上下文，传输、历史、诊断、费用不再各自重算模型与协议。
+- [x] P1.4 建立 typed `ModelTargetRef`、多模型 selection 与共享 resolver；先支持 Provider 路径，证明四种已有注入无行为变化。
+- [x] P1.5 提取旧绑定的指纹/锁/有界清理保护，不带旧全局开关语义。
 
 完成条件：现有单渠道、Native、Desktop 三协议 1M、搜索与恢复回归通过；尚不改变公开路由行为。
 
 ### P2｜聚合配置、迁移与共享目录
 
-- [ ] P2.1 新增聚合/member 类型与 serde/TS DTO，纳入现有 Store 原子保存；Store v8 迁移到下一 schema。
-- [ ] P2.2 准备 legacy failover 字段移除迁移与 fixtures；P2–P5 仍有旧执行链时保留其状态，随 P6 全面退役时启用丢弃/停止序列化，不根据旧开关自动创建池。
-- [ ] P2.3 校验 ID、重复成员、权重/优先级、数量上限与 Provider/model 引用；定义失效原因码。
-- [ ] P2.4 实现 provider/member/aggregate 删除、禁用和模型排除的引用投影；保留旧保存卡可读和恢复。
-- [ ] P2.5 实现容量、输出、工具/搜索/1M、压缩投影，与模型能力预览共享 resolver。
-- [ ] P2.6 发布不可变路由/catalog 快照；区分拓扑、连接身份和文件投影修订。
+- [x] P2.1 新增聚合/member 类型与 serde/TS DTO，纳入现有 Store 原子保存；Store v8 已迁移到 v9。
+- [x] P2.2 legacy failover 字段读入后丢弃并停止序列化；迁移保存首次受保护原文件，不根据旧开关自动创建池。
+- [x] P2.3 校验 ID、重复成员、权重/优先级、数量上限与 Provider/model 引用；定义失效原因码。
+- [x] P2.4 实现 provider/member/aggregate 删除、禁用和模型排除的引用投影；保留旧保存卡可读和恢复。
+- [x] P2.5 实现容量、输出、工具/搜索/1M、压缩投影，与模型能力预览共享 resolver。
+- [x] P2.6 发布不可变路由/catalog 快照；区分拓扑、连接身份和文件投影修订。
 
 完成条件：已有 provider 不需重新输入凭据；配置坏项不被静默删除；保存失败不发布半套新状态。
 
 ### P3｜独立调度与归属
 
-- [ ] P3.1 实现请求能力提取、已验证 compatibility plan 和候选预检，先资格过滤再轮询。
-- [ ] P3.2 实现优先级、稳定 ID round-robin、smooth weighted round-robin，暂时过滤不重置计数。
-- [ ] P3.3 实现原子选择/并发 lease、取消释放、Retry-After 冷却和有界状态清理。
-- [ ] P3.4 实现客户端/config/aggregate/role/session scope，健康绑定优先与无 session 新请求轮转。
-- [ ] P3.5 实现原生 response/resource 归属索引及本地历史隔离；重启/过期/身份改变明确报错。
-- [ ] P3.6 实现尝试去重、maxAttempts、总 deadline、错误分类与响应提交状态。
+- [x] P3.1 实现请求能力提取、已验证 compatibility plan 和候选预检，先资格过滤再轮询。
+- [x] P3.2 实现优先级、稳定 ID round-robin、smooth weighted round-robin，暂时过滤不重置计数。
+- [x] P3.3 实现原子选择/并发 lease、取消释放、Retry-After 冷却和有界状态清理。
+- [x] P3.4 实现客户端/config/aggregate/role/session scope，健康绑定优先与无 session 新请求轮转。
+- [x] P3.5 实现原生 response/resource 归属索引及本地历史隔离；重启/过期/身份改变明确报错。
+- [x] P3.6 实现尝试去重、maxAttempts、总 deadline、错误分类与响应提交状态。
 
 完成条件：调度器可用固定时钟与 fake members 单独验证，不依赖真实网络和任何注入器。
 
 ### P4｜聚合传输、诊断与费用
 
-- [ ] P4.1 新增 `/aggregate` 路径解析/认证/方法白名单和目录；unknown public ID 不走 fallback。
-- [ ] P4.2 聚合模型选到成员后逐 attempt 重新准备出口；不同协议成员可共池并返回同一入口格式。
-- [ ] P4.3 接入有限连接失败/429 备用；禁止输出后、续接、超时及副作用后的整请求重放。
-- [ ] P4.4 先观察上游身份，再做聚合逻辑 model 投影；保留真实 served model 诊断。
-- [ ] P4.5 按实际成员/模型快照落账，贯通 request/attempt ID；skip 不伪装出站。
-- [ ] P4.6 接入共享 runtime，纳入 OpenCode 与独立外部使用需求；关闭一个消费者不终止其它消费者，端口冲突保持恢复。
+- [x] P4.1 新增 `/aggregate` 路径解析/认证/方法白名单和目录；unknown public ID 不走 fallback。
+- [x] P4.2 聚合模型选到成员后逐 attempt 重新准备出口；不同协议成员可共池并返回同一入口格式。
+- [x] P4.3 接入有限连接失败/429 备用；禁止输出后、续接、超时及副作用后的整请求重放。
+- [x] P4.4 先观察上游身份，再做聚合逻辑 model 投影；保留真实 served model 诊断。
+- [x] P4.5 按实际成员/模型快照落账，贯通 request/attempt ID；skip 不伪装出站。
+- [x] P4.6 接入共享 runtime，纳入 OpenCode 与独立外部使用需求；关闭一个消费者不终止其它消费者，端口冲突保持恢复。
 
 完成条件：mock 端到端可证明公开 ID、实际上游 body、协议、尝试次数与价格来源一致。
 
 ### P5｜四种已有注入与通用导出
 
-- [ ] P5.1 Codex 新 provider key/catalog、选模型、登录/免登录认证、预览、一键应用、reapply、ownership 和恢复。
-- [ ] P5.2 Claude Code typed 配置迁移，主模型/角色/public ID/picker 与保存卡一键应用。
-- [ ] P5.3 Desktop targetRef 保存迁移、alias→聚合执行、专用 token 与四文件事务。
-- [ ] P5.4 各消费方从同一投影获取容量/压缩/1M；Desktop 保持三协议 1M 和单次点击复选框。
-- [ ] P5.5 测试 stale ticket、provider/key/role 变化、外部改动、失败回滚与首次还原点。
-- [ ] P5.6 处理部分角色未配置、目标不可用和删除引用；提供必要操作入口，不增加常驻说明墙。
-- [ ] P5.7 OpenCode 多目标选择/聚合入口组/limits/default model 迁移，保留原三 SDK、Native/Router、多 provider/子集。
-- [ ] P5.8 OpenCode 原 journal/JSONC/ownership/reapply/restore 回归，保留用户 headers/variants/custom models 和已有 provider。
-- [ ] P5.9 实现版本化 AgentConnectionExport，生成连接信息/Responses/Messages/OpenCode 模板；只导出已验收入口。
-- [ ] P5.10 实现外部 agent 的保持服务运行/就绪状态/token 重新导出；没有已知 adapter 不自动改其文件。
+- [x] P5.1 Codex 新 provider key/catalog、选模型、登录/免登录认证、预览、一键应用、reapply、ownership 和恢复。
+- [x] P5.2 Claude Code typed 配置迁移，主模型/角色/public ID/picker 与保存卡一键应用。
+- [x] P5.3 Desktop targetRef 保存迁移、alias→聚合执行、专用 token 与四文件事务。
+- [x] P5.4 各消费方从同一投影获取容量/压缩/1M；Desktop 保持三协议 1M 和单次点击复选框。
+- [x] P5.5 测试 stale ticket、provider/key/role 变化、外部改动、失败回滚与首次还原点。
+- [x] P5.6 处理部分角色未配置、目标不可用和删除引用；提供必要操作入口，不增加常驻说明墙。
+- [x] P5.7 OpenCode 多目标选择/聚合入口组/limits/default model 迁移，保留原三 SDK、Native/Router、多 provider/子集。
+- [x] P5.8 OpenCode 原 journal/JSONC/ownership/reapply/restore 回归，保留用户 headers/variants/custom models 和已有 provider。
+- [x] P5.9 实现版本化 AgentConnectionExport，生成连接信息/Responses/Messages/OpenCode 模板；只导出已验收入口。
+- [x] P5.10 实现外部 agent 的保持服务运行/就绪状态/token 重新导出；没有已知 adapter 不自动改其文件。
 
 完成条件：聚合保存一次，四种客户端均可预览/应用/reapply；通用产物能配置已支持标准协议的其它 agent。普通轮转不改客户端文件，不产生重复 profile 行；OpenCode 既有多模型选择未缩水。
 
 ### P6｜聚合 UI 与旧功能退役
 
-- [ ] P6.1 增加独立“模型聚合”管理入口：官方模型、成员、实际型号/协议、权重/优先级、状态。
-- [ ] P6.2 复用已有中转模型选择和模型匹配预览，关联建议经用户确认后存完整 wire ID。
-- [ ] P6.3 在注入选择器提供单渠道/聚合目标；目录状态与保存卡状态来自共享 DTO。
-- [ ] P6.4 移除 old failover toggle/API/Tauri 命令/View/i18n/fixture，启用 legacy 字段最终移除迁移；普通渠道预算不受其它卡片影响。
-- [ ] P6.5 替换旧候选、seen/开关续接逻辑；通用 affinity 和历史安全测试继续保留。
-- [ ] P6.6 更新旧功能文档、models-dev 预算描述与 Desktop 路由说明，注明本新计划接替的规则。
+- [x] P6.1 增加独立“模型聚合”管理入口：官方模型、成员、实际型号/协议、权重/优先级、状态。
+- [x] P6.2 复用已有中转模型选择和模型匹配预览，关联建议经用户确认后存完整 wire ID。
+- [x] P6.3 在注入选择器提供单渠道/聚合目标；目录状态与保存卡状态来自共享 DTO。
+- [x] P6.4 移除 old failover toggle/API/Tauri 命令/View/i18n/fixture，启用 legacy 字段最终移除迁移；普通渠道预算不受其它卡片影响。
+- [x] P6.5 替换旧候选、seen/开关续接逻辑；通用 affinity 和历史安全测试继续保留。
+- [x] P6.6 更新旧功能文档、models-dev 预算描述与 Desktop 路由说明，注明本新计划接替的规则。
 
 完成条件：正式入口只暴露显式聚合，不再存在两套跨渠道选路；仅兼容读取/历史解码保留 legacy 字段名。
 
@@ -545,11 +551,11 @@ Context7 于 2026-10-06 核对的 [OpenCode 官方自定义 provider 文档](htt
 
 ### P8｜验收与交付
 
-- [ ] P8.1 执行下表 mock/隔离测试和现有 Rust/前端/构建检查，补每项证据。
+- [x] P8.1 执行下表 mock/隔离测试和现有 Rust/前端/构建检查，补每项证据。串行 Rust：`927 passed, 0 failed, 11 ignored`；Desktop integration：`11 passed, 11 ignored`；local：`20 passed`；aggregate targeted：`16 passed`，另有普通 provider 辅助端点费用边界回归 `1 passed`；前端、生产构建和 `git diff --check` 通过。
 - [ ] P8.2 使用真实已配置中转验证至少两成员、跨协议、四种注入、多轮/工具/流式/1M/搜索；通用导出至少一个真实消费者。
 - [ ] P8.3 验证单渠道/Native/官方模式和恢复基线不受聚合影响，实测暂停/退出/重启组合。
-- [ ] P8.4 写聚合使用说明、迁移与验收记录；列出无凭据/无真机未测项，不能标为通过。
-- [ ] P8.5 自审本次实现和工作区，再按功能提交；需要发布时由通过验收的 commit 打包。
+- [x] P8.4 聚合使用、迁移与验收记录及测试证据已写；真实凭据、真机和外部消费者验证的项单列，不标为通过。
+- [x] P8.5 已完成实现自审、辅助端点费用边界修复、完整测试和干净提交；需要发布时由通过验收的 commit 打包。
 
 推荐提交顺序：行为保持的协议/target 接口 → 聚合配置/迁移/投影 → 调度/归属 → HTTP/计费 → 四种注入与标准导出 → UI/旧功能退役 → 基础交付验收。事件优化与 Chat 扩展各自追加提交/验收，不捆绑一次重写。旧功能仅在新链路已覆盖后删除，最终发行版本不同时提供新旧两套产品开关；基础交付不把 P7 未完成项标成通过。
 
@@ -617,7 +623,7 @@ pnpm build
 git diff --check
 ```
 
-新聚合后端与前端用例接入既有测试入口；针对状态机/迁移/多协议先运行相关用例，最终完整验收执行以上检查。当前 TODO 文档编写不代表这些功能测试已经运行。
+新聚合后端与前端用例已接入既有测试入口；针对状态机/迁移/多协议先运行相关用例，最终完整验收执行以上检查。完整前端和生产构建已通过，最终 Rust、提交及未覆盖项以 [聚合验收记录](D:/workspace/AiMaMi/docs/model-aggregation-acceptance-record.md) 为准。
 
 实现时同步以下文档，并保留历史事实：
 

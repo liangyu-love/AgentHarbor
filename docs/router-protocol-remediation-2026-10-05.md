@@ -16,6 +16,29 @@ Desktop Messages 请求
 
 没有更改已保存的模型协议，没有将 Desktop 改成 OpenAI 客户端。Responses 同时是项目内部既有的转换中间表示；它不要求 Chat 中转额外提供 `/responses`。
 
+## 2026-10-06 聚合与协议解耦增量
+
+本轮在上述历史修复之上增加了独立的模型聚合入口。入口仍由客户端路径
+决定：Responses、Messages 和 Desktop Messages 分别进入自己的协议边界；聚合
+调度只选择成员，不把模型名称当成协议。`ModelTargetRef`、共享 resolver 和
+`AgentConnectionExport` 让 Codex、Claude Code、Claude Desktop、OpenCode 及
+其它已支持的 agent 消费同一个公开目标描述，而不复制中转地址、密钥或模型能力。
+
+协议层新增 `WireAdapter` 的 Inbound/Outbound 边界，并让普通 provider 与聚合
+attempt 共用 `forward` 的请求准备、鉴权、history/tool、stream 和 usage 处理。
+同协议尽量保留原始 JSON/SSE；跨协议只在已验证的转换矩阵内编码，未知字段和事件
+不会被无提示删除。聚合响应在确认上游身份后只投影协议定义的 `model` 字段为
+`publicModelId`，诊断和账本仍保存真实 served model 与实际成员价格快照。
+
+当前基础交付支持 Responses/Messages 聚合入口和 Responses/Chat/Messages 三种
+成员出口，并明确处理资源归属、`count_tokens`、Responses `compact`、1M 容量准入、
+有限 429/连接前重试及有界诊断。通用 `/aggregate/v1/chat/completions` 入口、
+Chat→Responses/Messages 的公共 canonical 事件层、分帧性能基线和完整托管工具矩阵
+属于 P7，当前保持 pending；只支持 Chat 的外部 agent 不应被导出为可消费的混合池模板。
+
+本增量没有运行真实中转凭据、付费搜索或真实 Desktop/其它 agent 的全组合验收。
+mock/隔离测试只能证明本地契约，不能替代上游协议能力结论。
+
 ## 已修复与实现
 
 | 范围 | 修复及验收依据 |
