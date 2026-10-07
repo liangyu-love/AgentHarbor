@@ -235,6 +235,14 @@ pub struct ManagedData {
     pub applied_mode: AppliedMode,
 }
 
+/// 重启时只补回模式字段；保留原有文件的存在状态，不保存其它偏好或凭据。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestartMode {
+    pub value: Option<String>,
+    pub file_present: bool,
+}
+
 /// Desktop 内部状态。所有包含文件快照或凭据的记录都用 `secret_file` 写入。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -269,6 +277,10 @@ pub struct State {
     pub router: Option<super::gateway::RouterConfig>,
     pub last_applied_at: i64,
     pub restart_required: bool,
+    /// Only the two owned mode fields need reasserting after Desktop flushes
+    /// its in-memory preferences on quit. No credentials or restore baseline.
+    #[serde(default)]
+    pub restart_modes: std::collections::BTreeMap<String, RestartMode>,
     pub data: ManagedData,
     /// 释放管理后留下的非秘密 tombstone。
     #[serde(default)]
@@ -289,6 +301,7 @@ impl State {
         // 管理已结束：不再保留凭据指纹。
         self.credential_fingerprint = None;
         self.restart_required = false;
+        self.restart_modes.clear();
         self
     }
 
@@ -844,6 +857,40 @@ pub fn build_plan(
     Ok(plans)
 }
 
+/// 未接管时切回官方仅需两处模式字段。外部 profile/meta 不参与解析与写入。
+pub fn official_mode_plan(paths: &DesktopPaths) -> DesktopResult<Vec<FilePlan>> {
+    let mut plans = Vec::new();
+    for (file_role, path) in [
+        (role::NORMAL_CONFIG, &paths.normal_config),
+        (role::THIRD_PARTY_CONFIG, &paths.third_party_config),
+    ] {
+        let before = read_text_or(path)?;
+        let mut map = profile::parse_object(before.as_deref(), file_role)?;
+        let before_mode = profile::deployment_mode(&map).map(str::to_owned);
+        if before_mode.as_deref() == Some(profile::official_mode()) {
+            continue;
+        }
+        profile::patch_deployment_mode(&mut map, profile::official_mode());
+        plans.push(FilePlan {
+            role: file_role.to_owned(),
+            path: path.clone(),
+            after_text: Some(profile::to_text(&Value::Object(map), file_role)?),
+            after: ManagedValues::Fields {
+                values: single_field(
+                    profile::KEY_DEPLOYMENT_MODE,
+                    Value::String(profile::official_mode().into()),
+                ),
+            },
+            after_keys: vec![KeyValue {
+                path: profile::KEY_DEPLOYMENT_MODE.to_owned(),
+                before: before_mode,
+                after: Some(profile::official_mode().to_owned()),
+            }],
+        });
+    }
+    Ok(plans)
+}
+
 fn single_field(key: &str, value: Value) -> Map<String, Value> {
     let mut map = Map::new();
     map.insert(key.to_owned(), value);
@@ -920,6 +967,7 @@ pub fn next_state(
         router: None,
         last_applied_at: chrono::Utc::now().timestamp(),
         restart_required: true,
+        restart_modes: std::collections::BTreeMap::new(),
         data: ManagedData {
             files,
             applied_mode,
@@ -936,6 +984,89 @@ fn edition_path(edition: &Edition, paths: &DesktopPaths) -> Option<PathBuf> {
         role::META => paths.meta_path.clone(),
         _ => return None,
     })
+}
+
+/// Retain only the mode fields while a saved configuration awaits activation.
+/// Reapplying or ending management must not discard that pending intent.
+pub fn restart_modes(
+    state: &State,
+    previous: Option<&State>,
+    plans: &[FilePlan],
+) -> std::collections::BTreeMap<String, RestartMode> {
+    let mut modes = previous
+        .filter(|old| old.restart_required && old.paths_identity == state.paths_identity)
+        .map(|old| old.restart_modes.clone())
+        .unwrap_or_default();
+    for edition in &state.data.files {
+        if !matches!(edition.role.as_str(), role::NORMAL_CONFIG | role::THIRD_PARTY_CONFIG) { continue; }
+        if let ManagedValues::Fields { values } = &edition.installed {
+            let value = values.get(profile::KEY_DEPLOYMENT_MODE).and_then(Value::as_str).map(str::to_owned);
+            modes.insert(edition.role.clone(), RestartMode {
+                file_present: value.is_some() || edition.existed_before,
+                value,
+            });
+        }
+    }
+    for plan in plans {
+        if !matches!(plan.role.as_str(), role::NORMAL_CONFIG | role::THIRD_PARTY_CONFIG) { continue; }
+        if let ManagedValues::Fields { values } = &plan.after {
+            modes.insert(plan.role.clone(), RestartMode {
+                value: values.get(profile::KEY_DEPLOYMENT_MODE).and_then(Value::as_str).map(str::to_owned),
+                file_present: plan.after_text.is_some(),
+            });
+        }
+    }
+    modes
+}
+
+/// Called only after a verified shutdown. Merge mode fields into the latest
+/// preferences so Desktop's quit-time flush cannot undo the saved selection.
+pub fn restart_mode_plan(
+    paths: &DesktopPaths,
+    modes: &std::collections::BTreeMap<String, RestartMode>,
+    snapshots: &[FileSnapshot],
+) -> DesktopResult<Vec<FilePlan>> {
+    let mut plans = Vec::new();
+    for (file_role, path) in [
+        (role::THIRD_PARTY_CONFIG, &paths.third_party_config),
+        (role::NORMAL_CONFIG, &paths.normal_config),
+    ] {
+        let Some(target) = modes.get(file_role) else { continue; };
+        if target.value.as_deref().is_some_and(|value| {
+            value != profile::official_mode() && value != profile::third_party_mode()
+        }) {
+            return Err(conflict_error());
+        }
+        let before = snapshots.iter()
+            .find(|snapshot| snapshot.role == file_role)
+            .ok_or_else(conflict_error)?
+            .text.as_deref();
+        let mut object = profile::parse_object(before, file_role)?;
+        let desired = target.value.as_ref().map(|value| Value::String(value.clone()));
+        let delete_empty_file = before.is_some() && object.is_empty() && !target.file_present;
+        let create_empty_file = before.is_none() && target.file_present;
+        if object.get(profile::KEY_DEPLOYMENT_MODE) == desired.as_ref()
+            && !delete_empty_file && !create_empty_file {
+            continue;
+        }
+        match &target.value {
+            Some(value) => { profile::patch_deployment_mode(&mut object, value); }
+            None => { object.remove(profile::KEY_DEPLOYMENT_MODE); }
+        }
+        let values = object.get(profile::KEY_DEPLOYMENT_MODE)
+            .map(|value| single_field(profile::KEY_DEPLOYMENT_MODE, value.clone()))
+            .unwrap_or_default();
+        let after_text = if object.is_empty() && !target.file_present {
+            None
+        } else {
+            Some(profile::to_text(&Value::Object(object), file_role)?)
+        };
+        plans.push(FilePlan {
+            role: file_role.to_owned(), path: path.clone(), after_text,
+            after: ManagedValues::Fields { values }, after_keys: Vec::new(),
+        });
+    }
+    Ok(plans)
 }
 
 // ---------------------------------------------------------------------------

@@ -113,6 +113,8 @@ pub struct Manager {
     listener_lease: Option<types::ListenerLease>,
     #[cfg(test)]
     stop_check: Option<std::sync::Arc<dyn Fn(&DesktopPaths) -> DesktopResult<()> + Send + Sync>>,
+    #[cfg(test)]
+    commit_check: Option<std::sync::Arc<dyn Fn(&DesktopPaths) -> DesktopResult<()> + Send + Sync>>,
 }
 
 impl Manager {
@@ -124,6 +126,8 @@ impl Manager {
             listener_lease: None,
             #[cfg(test)]
             stop_check: None,
+            #[cfg(test)]
+            commit_check: None,
         }
     }
 
@@ -278,6 +282,12 @@ impl Manager {
         check.ensure_stopped()
     }
 
+    fn confirm_shutdown(&self, _paths: &DesktopPaths, check: &desktop_app::StopCheck) -> DesktopResult<()> {
+        #[cfg(test)]
+        if let Some(check) = &self.stop_check { return check(_paths); }
+        check.ensure_stopped_after_exit()
+    }
+
     pub fn candidates(
         &self,
         store: &Store,
@@ -389,6 +399,7 @@ impl Manager {
             action,
             DesktopAction::ApplyDirect
                 | DesktopAction::ApplyRouter
+                | DesktopAction::SwitchOfficial
                 | DesktopAction::RecoverRollback
         ) && active.is_none()
         {
@@ -406,8 +417,11 @@ impl Manager {
             return Err(transaction::conflict_error());
         }
         let paths = self.session_paths(active, &request.paths)?;
-        // 预览只读取配置。Desktop 可继续运行；退出门禁放在提交真正写入前。
+        // 预览与保存都允许 Desktop 继续运行，显式重启负责退出后的模式补写。
         let before = transaction::snapshot(&paths)?;
+        if action == DesktopAction::SwitchOfficial && active.is_none() {
+            return self.prepare_unmanaged_official(request, paths, before, previous);
+        }
         // 释放只保存原文与结束管理；外部文件即使不再是合法 JSON 也不需要解析。
         if action == DesktopAction::Release {
             let state = active.expect("managed action checked above");
@@ -746,6 +760,7 @@ impl Manager {
         next_state.model_choices = model_choices;
         next_state.profile_base_url = profile_base_url;
         next_state.router = router_config;
+        let restart_modes = transaction::restart_modes(&next_state, previous.as_ref(), &plans);
         if matches!(
             action,
             DesktopAction::RestorePrevious | DesktopAction::SwitchOfficial
@@ -758,6 +773,7 @@ impl Manager {
                 state.restart_required && state.paths_identity == paths.identity()
             });
         next_state.restart_required = requires_restart;
+        if requires_restart { next_state.restart_modes = restart_modes; }
         // 计划读取期间发生变化也必须重新预览；不能拿旧 before 配合新 after。
         let after_read = transaction::snapshot(&paths)?;
         if serde_json::to_value(&before).ok() != serde_json::to_value(&after_read).ok() {
@@ -802,6 +818,106 @@ impl Manager {
             requires_restart,
             request: request.clone(),
             listener_lease,
+        })
+    }
+
+    /// 官方模式不要求先接管中转。未接管时只改两处模式，不获得外部 profile/meta 的所有权。
+    fn prepare_unmanaged_official(
+        &self,
+        request: &ActionRequest,
+        paths: DesktopPaths,
+        before: Vec<transaction::FileSnapshot>,
+        previous: Option<State>,
+    ) -> DesktopResult<PreparedChange> {
+        if request.rotate_gateway_token {
+            return Err(changed_error());
+        }
+        let plans = transaction::official_mode_plan(&paths)?;
+        let generation = previous
+            .as_ref()
+            .map(|state| state.generation + 1)
+            .unwrap_or(1);
+        let transaction_id = uuid::Uuid::new_v4().to_string();
+        // 没有接管基线；仅保留事务/重启标记，恢复接管前配置仍应不可用。
+        let mut next_state = transaction::next_state(
+            &[],
+            &plans,
+            &paths,
+            generation,
+            &transaction_id,
+            "",
+            "",
+            None,
+            &[],
+            AppliedMode::Official,
+        )?
+        .into_tombstone(generation, &transaction_id);
+        let requires_restart = !plans.is_empty()
+            || previous.as_ref().is_some_and(|state| {
+                state.restart_required && state.paths_identity == paths.identity()
+            });
+        next_state.restart_required = requires_restart;
+        if requires_restart {
+            next_state.restart_modes = transaction::restart_modes(&next_state, previous.as_ref(), &plans);
+        }
+        // 外部 metadata 只供预览计数，不是此操作的写入目标；损坏也不阻止退出 3P。
+        let meta = before
+            .iter()
+            .find(|file| file.role == role::META)
+            .and_then(|file| profile::MetaDocument::parse(file.text.as_deref()).ok());
+        let external_profile_count = meta
+            .as_ref()
+            .and_then(|meta| meta.external_entry_count().ok())
+            .unwrap_or(0);
+        let managed_entry_present = meta
+            .as_ref()
+            .and_then(|meta| meta.own_entry_present().ok())
+            .unwrap_or(false);
+        let current_applied_id = meta
+            .as_ref()
+            .and_then(|meta| meta.applied_id_str().map(str::to_owned));
+        let mut warnings = vec!["claudeDesktop.warnings.keepsEnterprise".to_owned()];
+        if requires_restart {
+            warnings.push("claudeDesktop.warnings.requiresRestart".to_owned());
+        }
+        if external_profile_count > 0 {
+            warnings.push("claudeDesktop.warnings.externalProfiles".to_owned());
+        }
+        let after_read = transaction::snapshot(&paths)?;
+        if serde_json::to_value(&before).ok() != serde_json::to_value(&after_read).ok() {
+            return Err(changed_error());
+        }
+        let revision = revision_of(
+            &DesktopAction::SwitchOfficial,
+            request,
+            &paths,
+            &before,
+            &plans,
+            &[],
+            previous.as_ref(),
+            &next_state,
+        );
+        Ok(PreparedChange {
+            action: DesktopAction::SwitchOfficial,
+            paths,
+            plans,
+            before,
+            previous_state: previous,
+            next_state,
+            revision,
+            warnings,
+            conflicts: Vec::new(),
+            models: Vec::new(),
+            provider_id: None,
+            provider_name: None,
+            messages_url: None,
+            models_url: None,
+            external_profile_count,
+            managed_entry_present,
+            current_applied_id,
+            requires_restart,
+            request: request.clone(),
+            listener_lease: None,
         })
     }
 
@@ -967,19 +1083,29 @@ impl Manager {
             return self.release_locked(&prepared);
         }
 
-        let paths = &prepared.paths;
-        let process_check = desktop_app::StopCheck::new(paths);
-        // 消费票据并重读输入后才检查进程；拒绝时不能产生 pending、备份或外部写入。
-        if action.writes_files() {
-            self.ensure_stopped_with(paths, &process_check)?;
-        }
+        self.persist_change_locked(
+            &prepared.paths, action, &prepared.plans, &prepared.before,
+            prepared.previous_state.as_ref(), prepared.next_state.clone(), prepared.warnings.clone(),
+        )
+    }
+
+    // Caller holds both writer locks. Used by a previewed configuration save
+    // and by the narrow mode repair after a verified shutdown.
+    fn persist_change_locked(
+        &self,
+        paths: &DesktopPaths,
+        action: DesktopAction,
+        plans: &[transaction::FilePlan],
+        before: &[transaction::FileSnapshot],
+        previous: Option<&State>,
+        mut next_state: State,
+        mut warnings: Vec<String>,
+    ) -> DesktopResult<DesktopApplied> {
+        self.commit_checkpoint(paths)?;
         let transaction_id = uuid::Uuid::new_v4().to_string();
-        let generation = prepared
-            .previous_state
-            .as_ref()
+        let generation = previous
             .map(|state| state.generation + 1)
             .unwrap_or(1);
-        let mut next_state = prepared.next_state.clone();
         next_state.transaction_id = transaction_id.clone();
         next_state.generation = generation;
 
@@ -991,9 +1117,9 @@ impl Manager {
             action: action.as_str().to_owned(),
             created_at: chrono::Utc::now().timestamp(),
             paths_identity: paths.identity(),
-            files: prepared.plans.clone(),
-            before: prepared.before.clone(),
-            previous_state: prepared.previous_state.clone(),
+            files: plans.to_vec(),
+            before: before.to_vec(),
+            previous_state: previous.cloned(),
             next_state: next_state.clone(),
             backup_id: None,
         };
@@ -1005,8 +1131,8 @@ impl Manager {
         self.save_pending(Some(&pending))?;
 
         // 3) 逐文件写入，写前再次校验该文件未被外部改动。
-        for plan in &prepared.plans {
-            self.ensure_stopped_with(paths, &process_check)?;
+        for plan in plans {
+            self.commit_checkpoint(paths)?;
             if let Err(error) = verify_unchanged(&pending, plan) {
                 return self.fail_and_rollback(&pending, error);
             }
@@ -1016,20 +1142,19 @@ impl Manager {
         }
 
         // 4) 逐项读回确认。
-        for plan in &prepared.plans {
+        for plan in plans {
             if let Err(error) = verify_written(plan) {
                 return self.fail_and_rollback(&pending, error);
             }
         }
 
         // 5) 持久写入 nextState：这是提交点。
-        self.ensure_stopped_with(paths, &process_check)?;
+        self.commit_checkpoint(paths)?;
         if let Err(error) = self.save_state(&next_state) {
             return self.fail_and_rollback(&pending, error);
         }
 
         // 6) 删除 pending；清理失败时仍是已提交，但要提示阻止下一笔写入。
-        let mut warnings = prepared.warnings.clone();
         if self.save_pending(None).is_err() {
             warnings.push("claudeDesktop.warnings.pendingCleanup".to_owned());
         }
@@ -1041,14 +1166,13 @@ impl Manager {
         let _ = clear_secret_file(&self.data_dir().join("gateway-candidate.dat"));
 
         // 没有新写入也不能清除之前尚未完成的重启要求。
-        let wrote_files = !prepared.plans.is_empty();
+        let wrote_files = !plans.is_empty();
         if !wrote_files {
             warnings.push("claudeDesktop.warnings.noChanges".to_owned());
         }
         Ok(DesktopApplied {
             transaction_id,
-            changed_paths: prepared
-                .plans
+            changed_paths: plans
                 .iter()
                 .map(|plan| paths::display(&plan.path))
                 .collect(),
@@ -1062,6 +1186,12 @@ impl Manager {
             requires_restart: next_state.restart_required,
             warnings,
         })
+    }
+
+    fn commit_checkpoint(&self, _paths: &DesktopPaths) -> DesktopResult<()> {
+        #[cfg(test)]
+        if let Some(check) = &self.commit_check { return check(_paths); }
+        Ok(())
     }
 
     fn release_locked(&self, prepared: &PreparedChange) -> DesktopResult<DesktopApplied> {
@@ -1099,18 +1229,9 @@ impl Manager {
         pending: &Pending,
         error: Box<DesktopError>,
     ) -> DesktopResult<DesktopApplied> {
-        // Desktop 一旦在中途启动，退出时可能回写配置：留下 journal，待退出后恢复。
-        let paths = self.session_paths(Some(&pending.next_state), &PathsChoice::default())?;
-        if self.ensure_stopped(&paths).is_err() {
-            return Err(Box::new(
-                DesktopError::new(
-                    error_code::RECOVERY_REQUIRED,
-                    "claudeDesktop.errors.pendingRecovery",
-                )
-                .param(pending.transaction_id.clone())
-                .action("recoverRollback"),
-            ));
-        }
+        // Each rollback compares the current owned values with this transaction's
+        // before/after values. Running Desktop is allowed; a third value still
+        // leaves the journal for explicit recovery instead of overwriting it.
         match transaction::rollback(pending) {
             Ok(_) => {
                 // 全部恢复成功：还原 previousState，移除 pending，返回原失败。
@@ -1297,17 +1418,16 @@ impl Manager {
 
     /// 重启 Desktop 应用，使刚写入的配置立即生效。
     ///
-    /// 顺序是**先停、再启动**：Desktop 在退出时会回写自己的状态，先启动一个
-    /// 已经在运行的实例既不会重新读取配置，也会在它退出时覆盖刚写入的内容。
-    /// 调用方必须已经完成配置提交。
+    /// 先确认退出，再补回退出时回写的模式字段，最后启动。
+    /// 配置提交本身允许运行，不会自动关闭 Desktop。
     pub fn restart_app(&self, paths: &DesktopPaths) -> DesktopResult<String> {
-        self.restart_app_with(paths, desktop_app::restart)
+        self.restart_app_with(paths, |paths, after_stop| desktop_app::restart_after_stop(paths, after_stop))
     }
 
     fn restart_app_with(
         &self,
         paths: &DesktopPaths,
-        restart: impl FnOnce(&DesktopPaths) -> DesktopResult<String>,
+        restart: impl FnOnce(&DesktopPaths, &mut dyn FnMut() -> DesktopResult<()>) -> DesktopResult<String>,
     ) -> DesktopResult<String> {
         // 状态检查与停止/启动都在锁内，避免等锁期间启动的实例漏过停止阶段。
         // 与提交/恢复保持同一锁顺序；成功后更新 journal 也属于写操作。
@@ -1323,18 +1443,42 @@ impl Manager {
                 .action("recoverRollback"),
             ));
         }
-        let mut state = self.load_state()?;
+        let state = self.load_state()?;
         let current_paths = self.session_paths(state.as_ref(), &PathsChoice::default())?;
         if current_paths.identity() != paths.identity() {
             return Err(changed_error());
         }
-        let launch_method = restart(&current_paths)?;
+        let launch_method = restart(&current_paths, &mut || self.reassert_saved_modes_locked(&current_paths))?;
+        // The mode repair may have committed a new journal generation.
+        let mut state = self.load_state()?;
         // 仅在停止和启动都确认成功后清除当前会话标记，失败时保留原状态。
         if let Some(state) = state.as_mut().filter(|state| state.restart_required) {
             state.restart_required = false;
+            state.restart_modes.clear();
             self.save_state(state)?;
         }
         Ok(launch_method)
+    }
+
+    fn reassert_saved_modes_locked(&self, paths: &DesktopPaths) -> DesktopResult<()> {
+        let Some(state) = self.load_state()?.filter(|state| state.restart_required) else { return Ok(()); };
+        let stopped = desktop_app::StopCheck::new(paths);
+        self.confirm_shutdown(paths, &stopped)?;
+        // Derive targets for older State records that predate restart_modes.
+        let modes = transaction::restart_modes(&state, Some(&state), &[]);
+        let before = transaction::snapshot(paths)?;
+        let plans = transaction::restart_mode_plan(paths, &modes, &before)?;
+        // Quitting can rewrite preferences, but cannot authorize overwriting
+        // another tool's profile/selection. Those owned values must still match.
+        if transaction::drifted_roles(&state, paths)?.iter().any(|file_role| {
+            !matches!(file_role.as_str(), role::NORMAL_CONFIG | role::THIRD_PARTY_CONFIG)
+        }) { return Err(transaction::conflict_error()); }
+        if plans.is_empty() { return Ok(()); }
+        self.persist_change_locked(paths, DesktopAction::Reapply, &plans, &before, Some(&state), state.clone(), Vec::new())?;
+        // A failed journal cleanup must finish before launch clears the marker.
+        if self.load_pending()?.is_some() { self.recover_pending_locked()?; }
+        self.confirm_shutdown(paths, &stopped)?;
+        Ok(())
     }
 
     /// 当前 Desktop 应用状态，供命令层在重启前判断是否需要先停止。

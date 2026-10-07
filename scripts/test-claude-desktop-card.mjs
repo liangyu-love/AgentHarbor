@@ -22,7 +22,7 @@ const ZH = {
   modeDirect: "AgentHarbor 直连",
   requiresRestart: "需要重启",
   restart: "重启 Claude Desktop",
-  warningRequiresRestart: "请完全退出 Claude Desktop（包括托盘进程）后重新启动，设置才会生效。",
+  warningRequiresRestart: "重启 Claude Desktop 后生效。",
   change: "切换 / 更新",
   reapply: "重新应用",
   restorePrevious: "恢复接管前配置",
@@ -47,7 +47,7 @@ const ZH = {
   reapplyTitle: "重新应用配置？",
   reapplyDescription: "按已保存的模式与模型设置更新配置，接管前的还原点保持不变。",
   externalProfiles: "保留的外部配置",
-  previewRestart: "应用后请完全退出并重新启动 Claude Desktop。",
+  previewRestart: "应用后重启 Claude Desktop 生效。",
 };
 
 const NORMAL_ROOT = "C:/Users/synthetic/AppData/Roaming/Claude";
@@ -201,6 +201,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
       }
       if (command === "preview_claude_desktop_change") {
         review.desktopCalls.preview.push(clone(args));
+        if (args.action === "recoverRollback") throw "claudeDesktop.errors.pendingRecovery";
         if (review.desktopPreviewFailure) throw review.desktopPreviewFailure;
         const preview = clone(review.desktopPreview);
         preview.action = args.action;
@@ -239,6 +240,12 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
       if (command === "commit_claude_desktop_change") {
         review.desktopCalls.commit.push(clone(args));
         if (review.desktopCommitFailure) throw review.desktopCommitFailure;
+        if (args.action === "recoverRollback") {
+          Object.assign(review.desktopStatus, clone(review.desktopBeforePending));
+          review.desktopStatus.pendingRecovery = false;
+          review.desktopStatus.recoveryState = null;
+          return { ...clone(review.desktopApplied), managementState: review.desktopStatus.managementState };
+        }
         if (args.action === "applyRouter") {
           Object.assign(review.desktopStatus, { mode: "router", managementState: "managed", isManaged: true,
             staleReasons: [], conflicts: [], providerMissing: false, providerId: null, providerName: null,
@@ -249,7 +256,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
               return { ...choice, providerName: target?.name, label: choice.labelOverride ?? candidate?.label,
                 oneM: choice.oneMMode === "auto", protocol: candidate?.protocol, available: true, reason: null };
             }), router: { boundPort: 43127, routeRevision: 2, gatewayTokenVersion: 1, listenerReady: true }, restartRequired: true,
-            restartCapable: true, appRunning: false });
+            restartCapable: true });
           review.desktopStatus.actions.find(entry => entry.action === "release").enabled = false;
           review.desktopStatus.actions.find(entry => entry.action === "release").disabledReason = "claudeDesktop.actionReasons.routerReleaseBlocked";
         }
@@ -864,10 +871,67 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
     window.review.desktopStatus.appRunning = false;
     await window.review.providersClient.invalidateQueries({ queryKey: ["claude-desktop", "status"] });
   });
-  await actionButton(ZH.restart).waitFor({ state: "hidden" });
-  assert.equal(await actionButton(ZH.restart).count(), 0,
-    "releasing management without pending file changes cannot invent a restart requirement");
-  console.log("PASS an unmanaged restored configuration exposes its required restart and a clean release does not");
+  assert.equal(await actionButton(ZH.restart).isEnabled(), true,
+    "a confirmed launch method remains available when Desktop is closed and unmanaged");
+  assert.equal(await card().getByText(ZH.requiresRestart, { exact: true }).count(), 0,
+    "a launch action cannot invent a pending configuration change");
+  await page.evaluate(() => { window.review.desktopRestartFailure = "claudeDesktop.errors.launchTimeout"; });
+  await actionButton(ZH.restart).click();
+  await card().getByRole("alert").filter({ hasText: "启动 Claude Desktop 超时" }).waitFor();
+  assert.equal(await actionButton(ZH.restart).isEnabled(), true,
+    "a launch failure with no running process or pending change retains its retry button");
+  await page.evaluate(() => { window.review.desktopRestartFailure = null; });
+  await actionButton(ZH.restart).click();
+  await card().getByRole("alert").filter({ hasText: "启动 Claude Desktop 超时" }).waitFor({ state: "hidden" });
+  await page.waitForFunction(() => window.review.desktopStatus.appRunning);
+  console.log("PASS an unmanaged configuration can restart or launch Desktop without inventing pending changes");
+
+  // Official mode is independent of a configured relay and does not send relay credentials/model choices.
+  await page.evaluate(async () => {
+    const status = window.review.desktopStatus;
+    status.actions.find(entry => entry.action === "switchOfficial").enabled = true;
+    status.actions.find(entry => entry.action === "switchOfficial").disabledReason = null;
+    await window.review.providersClient.invalidateQueries({ queryKey: ["claude-desktop", "status"] });
+  });
+  await actionButton(ZH.switchOfficial).click();
+  await confirm.getByRole("button", { name: ZH.confirm, exact: true }).click();
+  await confirm.waitFor({ state: "hidden" });
+  assert.deepEqual(await page.evaluate(() => window.review.desktopCalls.preview.at(-1).request),
+    { paths: { normalRoot: NORMAL_ROOT, thirdPartyRoot: THIRD_PARTY_ROOT } },
+    "an unmanaged official-mode switch previews only its selected installation paths");
+  assert.deepEqual(await page.evaluate(() => window.review.desktopCalls.commit.at(-1).request),
+    { paths: { normalRoot: NORMAL_ROOT, thirdPartyRoot: THIRD_PARTY_ROOT } },
+    "an unmanaged official-mode switch must not depend on a provider or saved models");
+  console.log("PASS official mode can be selected before configuring a relay");
+
+  // Pending recovery consumes the existing journal after confirmation, never a new preview ticket.
+  const previewsBeforeRecovery = await page.evaluate(() => window.review.desktopCalls.preview.length);
+  await page.evaluate(async () => {
+    const review = window.review;
+    review.desktopBeforePending = JSON.parse(JSON.stringify(review.desktopStatus));
+    review.desktopStatus.pendingRecovery = true;
+    review.desktopStatus.managementState = "recoveryRequired";
+    review.desktopStatus.recoveryState = "pending";
+    for (const entry of review.desktopStatus.actions) {
+      entry.enabled = entry.action === "recoverRollback";
+      entry.disabledReason = entry.enabled ? null : "claudeDesktop.actionReasons.pendingRecovery";
+    }
+    await review.providersClient.invalidateQueries({ queryKey: ["claude-desktop", "status"] });
+  });
+  await actionButton("恢复未完成的事务").click();
+  assert.equal(await page.evaluate(() => window.review.desktopCalls.preview.length), previewsBeforeRecovery,
+    "opening recovery confirmation must not create a preview");
+  await confirm.getByRole("button", { name: ZH.confirm, exact: true }).click();
+  await confirm.waitFor({ state: "hidden" });
+  assert.equal(await page.evaluate(() => window.review.desktopCalls.preview.length), previewsBeforeRecovery,
+    "recovering a pending journal must not hit the blocked preview API");
+  assert.deepEqual(await page.evaluate(() => window.review.desktopCalls.commit.at(-1)), {
+    action: "recoverRollback", revision: "",
+    request: { paths: { normalRoot: NORMAL_ROOT, thirdPartyRoot: THIRD_PARTY_ROOT } },
+  }, "confirmed recovery uses the existing journal without provider/model requirements");
+  await actionButton("恢复未完成的事务").waitFor({ state: "hidden" });
+  assert.equal(await page.evaluate(() => window.review.desktopStatus.pendingRecovery), false);
+  console.log("PASS confirmed pending recovery calls commit directly without a blocked preview");
 
   // 13. Opus 4.7 appears as the new preview, independently of the old profile and the running app.
   await page.evaluate(() => {
@@ -922,15 +986,25 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
     }
     await page.setViewportSize({ width: 1200, height: 700 });
   }
-  await page.evaluate(() => { window.review.desktopCommitFailure = "claudeDesktop.errors.desktopRunning"; });
+  const restartsBeforeRunningApply = await page.evaluate(() => window.review.desktopCalls.restart);
+  await page.evaluate(() => { window.review.desktopCommitFailure = "claudeDesktop.errors.writerBusy"; });
   await dialog().getByRole("button", { name: ZH.apply, exact: true }).click();
-  await dialog().getByRole("alert").filter({ hasText: "请完全退出 Claude Desktop" }).waitFor();
+  await dialog().getByRole("alert").filter({ hasText: "另一个 AgentHarbor 实例" }).waitFor();
   assert.equal(await dialog().getByRole("button", { name: ZH.preview, exact: true }).isEnabled(), true,
     "a failed commit consumes its ticket and must return to preview");
   assert.equal(await modelCheckbox("claude-opus-4-7").getAttribute("aria-checked"), "true", "failure must retain the selected model");
   assert.equal(await opusOneM.getAttribute("aria-checked"), "true", "failure must retain the 1M intent");
-  await dialog().getByRole("button", { name: ZH.cancel, exact: true }).click();
-  console.log("PASS a running Desktop allows Opus 4.7 preview, 1M can be unchecked, and failed apply retains input with a fresh-preview action");
+  await page.evaluate(() => { window.review.desktopCommitFailure = null; });
+  await dialog().getByRole("button", { name: ZH.preview, exact: true }).click();
+  await opusAfter.waitFor();
+  await dialog().getByRole("button", { name: ZH.apply, exact: true }).click();
+  await dialog().waitFor({ state: "hidden" });
+  assert.equal(await page.evaluate(() => window.review.desktopStatus.appRunning), true,
+    "applying a configuration does not stop a running Desktop");
+  assert.equal(await page.evaluate(() => window.review.desktopCalls.restart), restartsBeforeRunningApply,
+    "saving configuration must not automatically restart Desktop");
+  await page.waitForFunction(() => window.review.lastToastDescription === "配置已保存，重启 Claude Desktop 后生效。");
+  console.log("PASS a running Desktop can preview and save while failed commits retain input and restart stays explicit");
 
   // 14. Saved selections that disappeared or became excluded remain visible and removable.
   await page.evaluate(async () => {

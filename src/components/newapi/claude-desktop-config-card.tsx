@@ -123,6 +123,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
   const [restarting, setRestarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [restartError, setRestartError] = useState<string | null>(null);
+  const operationBusy = busy || restarting;
 
   const data = status.data;
   const refresh = () => invalidateClaudeDesktop(queryClient);
@@ -166,6 +167,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
 
   /** 重启应用：后端会先完全退出再启动，使刚写入的配置立即生效。 */
   const restartApp = async () => {
+    if (operationBusy) return;
     setRestarting(true);
     setRestartError(null);
     try {
@@ -183,8 +185,11 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
   };
 
   const run = async (action: DesktopAction) => {
-    const request = sessionRequest();
-    if (action !== "recoverRollback" && !request) {
+    if (operationBusy) return;
+    const request = action === "reapply" ? sessionRequest() : {
+      paths: data?.paths ? { normalRoot: data.paths.normalRoot, thirdPartyRoot: data.paths.thirdPartyRoot } : {},
+    };
+    if (!request) {
       setError("claudeDesktop.errors.providerMissing");
       setPending(null);
       return;
@@ -192,16 +197,17 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
     setBusy(true);
     setError(null);
     try {
-      const payload = request ?? {
-        paths: data?.paths ? { normalRoot: data.paths.normalRoot, thirdPartyRoot: data.paths.thirdPartyRoot } : {},
-      };
-      // 管理操作同样先预览再提交，不另走无 revision 的捷径。
-      const preview = await api.claudeDesktop.preview(action, payload);
-      const applied = await api.claudeDesktop.commit(action, preview.revision, payload);
+      // 恢复直接核对已有 journal；pending 状态不能再创建配置预览。
+      let revision = "";
+      if (action !== "recoverRollback") {
+        const preview = await api.claudeDesktop.preview(action, request);
+        revision = preview.revision;
+      }
+      const applied = await api.claudeDesktop.commit(action, revision, request);
       toast({
         title: t(`claudeDesktop.actions.${action}`),
         description: applied.requiresRestart
-          ? t("claudeDesktop.card.restartHint")
+          ? t("claudeDesktop.dialog.appliedDescription")
           : applied.warnings.length
             ? applied.warnings.map((key) => t(key)).join(" ")
             : undefined,
@@ -349,7 +355,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
                 <Button
                   size="sm"
                   variant="destructive"
-                  disabled={busy || !actionOf("recoverRollback")?.enabled}
+                  disabled={operationBusy || !actionOf("recoverRollback")?.enabled}
                   onClick={() => setPending("recoverRollback")}
                 >
                   <RotateCcw className="h-3.5 w-3.5" />
@@ -443,15 +449,15 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
                     "h-8 gap-1.5 rounded-lg text-xs font-semibold shadow-sm",
                     !data.isManaged && "bg-primary text-primary-foreground hover:bg-primary/90",
                   )}
-                  disabled={busy || !hasSavedCards || (!actionOf("applyDirect")?.enabled && !actionOf("applyRouter")?.enabled)}
+                  disabled={operationBusy || !hasSavedCards || (!actionOf("applyDirect")?.enabled && !actionOf("applyRouter")?.enabled)}
                   onClick={openDialog}
                 >
                   <Settings2 className="h-3.5 w-3.5" />
                   {t(data.isManaged ? "claudeDesktop.card.change" : "claudeDesktop.card.configure")}
                 </Button>
 
-                {/* 只有确认过启动方式、且配置确实待生效时才出现。 */}
-                {data.restartCapable && (data.restartRequired || data.appRunning) && (
+                {/* 已确认启动方式后，关闭状态也可一键启动。 */}
+                {data.restartCapable && (
                   <Button
                     size="sm"
                     variant={data.restartRequired ? "default" : "ghost"}
@@ -459,7 +465,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
                       "h-8 gap-1.5 rounded-lg text-xs font-semibold shadow-sm",
                       data.restartRequired && "bg-destructive text-destructive-foreground hover:bg-destructive/90",
                     )}
-                    disabled={busy || restarting}
+                    disabled={operationBusy}
                     title={t("claudeDesktop.card.restartHint")}
                     onClick={() => void restartApp()}
                   >
@@ -489,7 +495,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
                       size="sm"
                       variant="ghost"
                       className="h-8 gap-1.5 rounded-lg text-xs text-muted-foreground hover:text-foreground"
-                      disabled={busy || !view.enabled}
+                      disabled={operationBusy || !view.enabled}
                       title={view.disabledReason ? t(view.disabledReason) : undefined}
                       onClick={() => setPending(action)}
                     >

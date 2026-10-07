@@ -654,7 +654,7 @@ fn router_each_external_write_and_state_commit_interruption_restores_the_old_gen
         Arc,
     };
     let _env = env_lock();
-    // The existing stop-check hook runs once before the journal, once before
+    // The write-check hook runs once before the journal, once before
     // each external write, and once immediately before the State commit.
     // This matrix covers interruptions, rather than claiming injected I/O errors.
     for failing_check in 2..=6 {
@@ -677,7 +677,7 @@ fn router_each_external_write_and_state_commit_interruption_restores_the_old_gen
         let preview = manager.issue_ticket(&prepared).unwrap();
         let count = Arc::new(AtomicUsize::new(0));
         let observed = count.clone();
-        manager.stop_check = Some(Arc::new(move |_| {
+        manager.commit_check = Some(Arc::new(move |_| {
             let check = observed.fetch_add(1, Ordering::SeqCst) + 1;
             if check == failing_check {
                 Err(Box::new(super::types::DesktopError::new(
@@ -708,7 +708,7 @@ fn router_each_external_write_and_state_commit_interruption_restores_the_old_gen
             super::gateway::committed_snapshot(&base).is_err(),
             "a mixed external file generation cannot serve either token"
         );
-        manager.stop_check = None;
+        manager.commit_check = None;
         manager.recover_pending().unwrap();
         assert!(manager.load_pending().unwrap().is_none());
         assert_eq!(
@@ -2537,6 +2537,7 @@ fn direct_state(transaction_id: &str, generation: u64) -> transaction::State {
         router: None,
         last_applied_at: 0,
         restart_required: true,
+        restart_modes: std::collections::BTreeMap::new(),
         data: transaction::ManagedData {
             files: vec![],
             applied_mode: transaction::AppliedMode::Direct,
@@ -2598,6 +2599,21 @@ fn recovery_confirming_a_committed_transaction_never_rolls_back() {
         .warnings
         .iter()
         .any(|key| key.ends_with("recoveredCommitted")));
+}
+
+#[test]
+fn confirmed_recovery_commits_the_existing_journal_without_a_new_preview_ticket() {
+    let (base, paths) = test_paths("recoveryCommitEntry");
+    let manager = super::Manager::new(&base).with_paths(paths.clone());
+    craft_pending(&manager, &paths, "tx-recovery-entry", 1, true, None,
+        direct_state("tx-recovery-entry", 1));
+    assert!(paths.profile_path.exists());
+    let applied = manager.commit(&crate::core::router::Store::default(),
+        DesktopAction::RecoverRollback, "", &empty_management_request()).unwrap();
+    assert!(!paths.profile_path.exists());
+    assert!(manager.load_pending().unwrap().is_none());
+    assert_eq!(applied.management_state, "unmanaged");
+    assert!(applied.warnings.iter().any(|key| key.ends_with("recoveredRolledBack")));
 }
 
 #[test]
@@ -3112,7 +3128,6 @@ fn backend_management_actions_require_a_live_journal_not_a_profile_shape() {
     for action in [
         DesktopAction::Reapply,
         DesktopAction::RestorePrevious,
-        DesktopAction::SwitchOfficial,
         DesktopAction::Release,
     ] {
         let error = manager
@@ -3209,7 +3224,7 @@ fn ended_restore_sessions_have_a_tombstone_and_no_remaining_management() {
         super::types::error_code::NOT_MANAGED
     );
     manager
-        .restart_app_with(&paths, |_| Ok("mock".into()))
+        .restart_app_with(&paths, |_, after_stop| { after_stop()?; Ok("mock".into()) })
         .unwrap();
     let started = manager.load_state().unwrap().unwrap();
     assert!(started.tombstone, "启动已恢复配置不能恢复管理所有权");
@@ -3221,7 +3236,7 @@ fn ended_restore_sessions_have_a_tombstone_and_no_remaining_management() {
 fn applying_identical_files_does_not_require_a_restart() {
     let (_, paths, manager, store, request) = managed_fixture("unchangedApplyRestart");
     manager
-        .restart_app_with(&paths, |_| Ok("mock".into()))
+        .restart_app_with(&paths, |_, after_stop| { after_stop()?; Ok("mock".into()) })
         .unwrap();
     let before = transaction::snapshot(&paths).unwrap();
     let prepared = manager
@@ -3267,6 +3282,10 @@ fn a_noop_reapply_keeps_a_pending_restart_until_launch_succeeds() {
         .unwrap();
     assert!(prepared.plans.is_empty());
     assert!(prepared.requires_restart);
+    for _ in 0..12 {
+        assert_eq!(manager.prepare(&store, DesktopAction::Reapply, &request).unwrap().revision, prepared.revision,
+            "persisted restart targets must not randomize preview revisions");
+    }
     let preview = manager.issue_ticket(&prepared).unwrap();
     assert!(preview.requires_restart);
     let applied = manager
@@ -3275,7 +3294,7 @@ fn a_noop_reapply_keeps_a_pending_restart_until_launch_succeeds() {
     assert!(applied.requires_restart);
     assert!(manager.status(&store).restart_required);
     manager
-        .restart_app_with(&paths, |_| Ok("mock".into()))
+        .restart_app_with(&paths, |_, after_stop| { after_stop()?; Ok("mock".into()) })
         .unwrap();
     assert!(!manager.status(&store).restart_required);
 }
@@ -3314,7 +3333,7 @@ fn a_new_installation_does_not_inherit_an_ended_sessions_restart_flag() {
 }
 
 #[test]
-fn preview_runs_while_desktop_is_running_but_commit_stops_before_journal_or_backup() {
+fn configuration_saves_while_desktop_is_running_and_requires_a_restart() {
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -3331,7 +3350,6 @@ fn preview_runs_while_desktop_is_running_but_commit_stops_before_journal_or_back
         )))
     }));
     let before = transaction::snapshot(&paths).unwrap();
-    let state_before = serde_json::to_value(manager.load_state().unwrap()).unwrap();
     let backup_count = std::fs::read_dir(transaction::backups_dir(&base))
         .unwrap()
         .count();
@@ -3342,33 +3360,25 @@ fn preview_runs_while_desktop_is_running_but_commit_stops_before_journal_or_back
     assert!(!prepared.plans.is_empty());
     let preview = manager.issue_ticket(&prepared).unwrap();
     assert_eq!(checks.load(Ordering::SeqCst), 0, "只读预览不得执行退出门禁");
-    let error = manager
+    let applied = manager
         .commit(&store, DesktopAction::Reapply, &preview.revision, &request)
-        .unwrap_err();
-    assert_eq!(error.message, "claudeDesktop.errors.desktopRunning");
-    assert_eq!(
-        checks.load(Ordering::SeqCst),
-        1,
-        "重读输入后、持久 journal 前拒绝写入"
-    );
+        .unwrap();
+    assert_eq!(checks.load(Ordering::SeqCst), 0, "保存配置不得停止 Desktop");
+    assert!(applied.requires_restart);
+    assert!(manager.load_state().unwrap().unwrap().restart_required);
     assert!(manager.load_pending().unwrap().is_none());
     assert_eq!(
         std::fs::read_dir(transaction::backups_dir(&base))
             .unwrap()
             .count(),
-        backup_count
+        backup_count + 1
     );
-    assert_eq!(
-        serde_json::to_value(manager.load_state().unwrap()).unwrap(),
-        state_before
-    );
-    for snapshot in before {
-        assert_eq!(read(&snapshot.path), snapshot.text);
-    }
+    assert_ne!(read(&paths.profile_path), before.iter().find(|file| file.role == role::PROFILE).unwrap().text);
+    assert!(read(&paths.profile_path).unwrap().contains("sk-ROTATED-FOR-PREVIEW"));
 }
 
 #[test]
-fn commit_keeps_stop_checks_before_each_write_and_the_state_commit() {
+fn commit_keeps_write_checkpoints_before_each_write_and_the_state_commit() {
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -3381,7 +3391,7 @@ fn commit_keeps_stop_checks_before_each_write_and_the_state_commit() {
     let backup_dir = transaction::backups_dir(&base);
     let backup_count = std::fs::read_dir(&backup_dir).unwrap().count();
     let identity = paths.identity();
-    manager.stop_check = Some(Arc::new(move |checked_paths| {
+    manager.commit_check = Some(Arc::new(move |checked_paths| {
         assert_eq!(checked_paths.identity(), identity);
         if counter.fetch_add(1, Ordering::SeqCst) == 0 {
             assert!(!pending_path.exists(), "首次门禁必须早于 journal");
@@ -3390,7 +3400,7 @@ fn commit_keeps_stop_checks_before_each_write_and_the_state_commit() {
                 backup_count
             );
         } else {
-            assert!(pending_path.exists(), "写入/提交阶段仍必须核对进程");
+            assert!(pending_path.exists(), "写入/提交阶段必须有 journal");
         }
         Ok(())
     }));
@@ -3434,10 +3444,12 @@ fn successful_restart_clears_only_the_current_session_restart_flag() {
     let mut expected = manager.load_state().unwrap().unwrap();
     assert!(expected.restart_required);
     expected.restart_required = false;
+    expected.restart_modes.clear();
     let before = transaction::snapshot(&paths).unwrap();
     let launch_method = manager
-        .restart_app_with(&paths, |selected| {
+        .restart_app_with(&paths, |selected, after_stop| {
             assert_eq!(selected.identity(), paths.identity());
+            after_stop()?;
             Ok("mockActivation".into())
         })
         .unwrap();
@@ -3457,7 +3469,7 @@ fn failed_restart_keeps_the_pending_restart_flag() {
     let (_, paths, manager, store, _) = managed_fixture("restartFailureFlag");
     let before = serde_json::to_value(manager.load_state().unwrap()).unwrap();
     let error = manager
-        .restart_app_with(&paths, |_| {
+        .restart_app_with(&paths, |_, _| {
             Err(Box::new(super::types::DesktopError::new(
                 super::types::error_code::PROCESS,
                 "claudeDesktop.errors.process",
@@ -3473,12 +3485,185 @@ fn failed_restart_keeps_the_pending_restart_flag() {
 }
 
 #[test]
+fn restart_repairs_quit_time_modes_and_keeps_new_preferences_and_the_restore_baseline() {
+    let (_, paths, manager, store, _) = managed_fixture("restartQuitFlush");
+    let before = manager.load_state().unwrap().unwrap();
+    let baseline = serde_json::to_value(&before.data).unwrap();
+    let profile_before = read(&paths.profile_path);
+    let meta_before = read(&paths.meta_path);
+    manager.restart_app_with(&paths, |_, after_stop| {
+        // Simulate Desktop flushing its old in-memory deployment mode on quit.
+        for path in [&paths.normal_config, &paths.third_party_config] {
+            write(path, r#"{"deploymentMode":"1p","windowBounds":{"width":1270},"mcpServers":{"example":{}}}"#);
+        }
+        after_stop()?;
+        for path in [&paths.normal_config, &paths.third_party_config] {
+            let config: Value = serde_json::from_str(&read(path).unwrap()).unwrap();
+            assert_eq!(config[profile::KEY_DEPLOYMENT_MODE], "3p");
+            assert_eq!(config["windowBounds"]["width"], 1270);
+            assert!(config["mcpServers"]["example"].is_object());
+        }
+        Ok("mock".into())
+    }).unwrap();
+    let state = manager.load_state().unwrap().unwrap();
+    assert_eq!(state.generation, before.generation + 1);
+    assert_eq!(serde_json::to_value(state.data).unwrap(), baseline);
+    assert!(!state.restart_required);
+    assert!(state.restart_modes.is_empty());
+    assert_eq!(read(&paths.profile_path), profile_before);
+    assert_eq!(read(&paths.meta_path), meta_before);
+    assert!(manager.load_pending().unwrap().is_none());
+    assert!(!manager.status(&store).restart_required);
+}
+
+#[test]
+fn restart_repairs_ended_sessions_without_restoring_ownership_or_credentials() {
+    for action in [DesktopAction::RestorePrevious, DesktopAction::SwitchOfficial] {
+        let (_, paths, manager, store, _) = managed_fixture(&format!("restartTombstone{}", action.as_str()));
+        let request = empty_management_request();
+        let preview = manager.issue_ticket(&manager.prepare(&store, action, &request).unwrap()).unwrap();
+        manager.commit(&store, action, &preview.revision, &request).unwrap();
+        let ended = manager.load_state().unwrap().unwrap();
+        assert!(ended.tombstone);
+        assert_eq!(ended.restart_modes.len(), 2);
+        assert!(ended.data.files.is_empty());
+        let profile_before = read(&paths.profile_path);
+        let meta_before = read(&paths.meta_path);
+        manager.restart_app_with(&paths, |_, after_stop| {
+            for path in [&paths.normal_config, &paths.third_party_config] {
+                write(path, r#"{"deploymentMode":"3p","locale":"zh-CN"}"#);
+            }
+            after_stop()?;
+            for path in [&paths.normal_config, &paths.third_party_config] {
+                let config: Value = serde_json::from_str(&read(path).unwrap()).unwrap();
+                assert_eq!(config["locale"], "zh-CN");
+                if action == DesktopAction::SwitchOfficial { assert_eq!(config[profile::KEY_DEPLOYMENT_MODE], "1p"); }
+                else { assert!(config.get(profile::KEY_DEPLOYMENT_MODE).is_none()); }
+            }
+            Ok("mock".into())
+        }).unwrap();
+        let state = manager.load_state().unwrap().unwrap();
+        assert!(state.tombstone);
+        assert!(state.data.files.is_empty());
+        assert!(state.router.is_none());
+        assert!(state.restart_modes.is_empty());
+        assert!(!state.restart_required);
+        assert_eq!(read(&paths.profile_path), profile_before);
+        assert_eq!(read(&paths.meta_path), meta_before);
+    }
+}
+
+#[test]
+fn legacy_state_and_failed_launch_keep_the_saved_mode_for_a_retry() {
+    let (_, paths, manager, store, _) = managed_fixture("restartLegacyRetry");
+    let mut legacy = serde_json::to_value(manager.load_state().unwrap().unwrap()).unwrap();
+    legacy.as_object_mut().unwrap().remove("restartModes");
+    manager.write_state_for_test(&serde_json::from_value(legacy).unwrap()).unwrap();
+    let error = manager.restart_app_with(&paths, |_, after_stop| {
+        write(&paths.normal_config, r#"{"deploymentMode":"1p"}"#);
+        after_stop()?;
+        Err(Box::new(super::types::DesktopError::new(super::types::error_code::PROCESS, "claudeDesktop.errors.launchTimeout")))
+    }).unwrap_err();
+    assert_eq!(error.message, "claudeDesktop.errors.launchTimeout");
+    assert!(manager.status(&store).restart_required);
+    assert_eq!(serde_json::from_str::<Value>(&read(&paths.normal_config).unwrap()).unwrap()[profile::KEY_DEPLOYMENT_MODE], "3p");
+    manager.restart_app_with(&paths, |_, after_stop| { after_stop()?; Ok("mock".into()) }).unwrap();
+    assert!(!manager.status(&store).restart_required);
+}
+
+#[test]
+fn restart_does_not_repair_modes_over_another_tools_profile_selection() {
+    let (_, paths, manager, _, _) = managed_fixture("restartExternalSelection");
+    let error = manager.restart_app_with(&paths, |_, after_stop| {
+        write(&paths.normal_config, r#"{"deploymentMode":"1p"}"#);
+        let mut meta: Value = serde_json::from_str(&read(&paths.meta_path).unwrap()).unwrap();
+        meta[profile::KEY_APPLIED_ID] = json!(CC_SWITCH_ID);
+        write(&paths.meta_path, &serde_json::to_string(&meta).unwrap());
+        after_stop()?;
+        panic!("外部选择改变时不得继续启动")
+    }).unwrap_err();
+    assert_eq!(error.code, super::types::error_code::CONFLICT);
+    assert_eq!(serde_json::from_str::<Value>(&read(&paths.normal_config).unwrap()).unwrap()[profile::KEY_DEPLOYMENT_MODE], "1p");
+    assert!(manager.load_state().unwrap().unwrap().restart_required);
+    assert!(manager.load_pending().unwrap().is_none());
+}
+
+#[test]
+fn restart_checks_external_selection_even_when_the_modes_need_no_repair() {
+    for file_role in [role::META, role::PROFILE] {
+        let (_, paths, manager, _, _) = managed_fixture(&format!("restartNoopConflict{file_role}"));
+        let before = transaction::snapshot(&paths).unwrap();
+        let error = manager.restart_app_with(&paths, |_, after_stop| {
+            if file_role == role::META {
+                let mut meta: Value = serde_json::from_str(&read(&paths.meta_path).unwrap()).unwrap();
+                meta[profile::KEY_APPLIED_ID] = json!(CC_SWITCH_ID);
+                write(&paths.meta_path, &serde_json::to_string(&meta).unwrap());
+            } else {
+                write(&paths.profile_path, r#"{"external":true}"#);
+            }
+            after_stop()?;
+            panic!("外部修改受管配置时不能声称保存的配置已激活")
+        }).unwrap_err();
+        assert_eq!(error.code, super::types::error_code::CONFLICT);
+        assert!(manager.load_state().unwrap().unwrap().restart_required);
+        assert!(manager.load_pending().unwrap().is_none());
+        for snapshot in before.into_iter().filter(|file| file.role != file_role) {
+            assert_eq!(read(&snapshot.path), snapshot.text);
+        }
+    }
+}
+
+#[test]
+fn restart_mode_removal_handles_malformed_fields_and_restores_file_existence() {
+    let (_, paths) = test_paths("restartModeRemoval");
+    let modes = std::collections::BTreeMap::from([
+        (role::NORMAL_CONFIG.to_owned(), transaction::RestartMode { value: None, file_present: false }),
+        (role::THIRD_PARTY_CONFIG.to_owned(), transaction::RestartMode { value: None, file_present: true }),
+    ]);
+    for contents in [r#"{"deploymentMode":false}"#, "{}"] {
+        write(&paths.normal_config, contents);
+        if paths.third_party_config.exists() { std::fs::remove_file(&paths.third_party_config).unwrap(); }
+        let snapshots = transaction::snapshot(&paths).unwrap();
+        let plans = transaction::restart_mode_plan(&paths, &modes, &snapshots).unwrap();
+        assert_eq!(plans.len(), 2);
+        apply_all(&plans);
+        assert!(!paths.normal_config.exists());
+        assert_eq!(serde_json::from_str::<Value>(&read(&paths.third_party_config).unwrap()).unwrap(), json!({}));
+    }
+}
+
+#[test]
+fn restart_mode_repair_rejects_changes_after_its_snapshot() {
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    let (_, paths, mut manager, _, _) = managed_fixture("restartRepairRace");
+    let config_path = paths.third_party_config.clone();
+    let checks = Arc::new(AtomicUsize::new(0));
+    manager.commit_check = Some(Arc::new(move |_| {
+        if checks.fetch_add(1, Ordering::SeqCst) == 1 {
+            write(&config_path, r#"{"deploymentMode":"externally-changed","newPreference":true}"#);
+        }
+        Ok(())
+    }));
+    let error = manager.restart_app_with(&paths, |_, after_stop| {
+        write(&paths.third_party_config, r#"{"deploymentMode":"1p"}"#);
+        after_stop()?;
+        panic!("配置竞态不得继续启动")
+    }).unwrap_err();
+    assert_eq!(error.code, super::types::error_code::RECOVERY_REQUIRED);
+    let now: Value = serde_json::from_str(&read(&paths.third_party_config).unwrap()).unwrap();
+    assert_eq!(now[profile::KEY_DEPLOYMENT_MODE], "externally-changed");
+    assert_eq!(now["newPreference"], true);
+    assert!(manager.load_state().unwrap().unwrap().restart_required);
+    assert!(manager.load_pending().unwrap().is_some());
+}
+
+#[test]
 fn restart_rechecks_pending_recovery_and_the_saved_session_before_process_control() {
     let (_, paths, manager, store, _) = managed_fixture("restartSessionGate");
     let (_, other_paths) = test_paths("otherRestartSession");
     let before = serde_json::to_value(manager.load_state().unwrap()).unwrap();
     let error = manager
-        .restart_app_with(&other_paths, |_| panic!("错安装不能控制进程"))
+        .restart_app_with(&other_paths, |_, _| panic!("错安装不能控制进程"))
         .unwrap_err();
     assert_eq!(error.code, super::types::error_code::CHANGED);
     let prepared = manager
@@ -3489,7 +3674,7 @@ fn restart_rechecks_pending_recovery_and_the_saved_session_before_process_contro
         .write_pending_for_test(&serde_json::to_vec(&pending).unwrap())
         .unwrap();
     let error = manager
-        .restart_app_with(&paths, |_| panic!("未完成事务不能启动 Desktop"))
+        .restart_app_with(&paths, |_, _| panic!("未完成事务不能启动 Desktop"))
         .unwrap_err();
     assert_eq!(error.code, super::types::error_code::RECOVERY_REQUIRED);
     assert!(manager.load_pending().unwrap().is_some());

@@ -1909,3 +1909,166 @@ fn apply_direct_request_defaults_are_stable() {
     assert!(!request.rebaseline);
     assert!(request.models[0].label_override.is_none());
 }
+
+fn official_request() -> ActionRequest {
+    ActionRequest {
+        provider_id: None,
+        models: vec![],
+        paths: PathsChoice::default(),
+        rebaseline: false,
+        routes: vec![],
+        rotate_gateway_token: false,
+    }
+}
+
+#[test]
+fn unmanaged_official_mode_preserves_external_profiles_without_taking_ownership() {
+    let fixture = fixture("unmanagedOfficial");
+    let store = Store::default();
+    let meta = format!(
+        "{{\n  \"entries\": [{{\"id\":\"{CC_SWITCH_ID}\",\"name\":\"CC Switch\",\"extra\":1}}],\n  \"appliedId\": \"{CC_SWITCH_ID}\", \"unrelated\": true\n}}"
+    );
+    let profile = "{ \"custom\": \"external-profile\" }\n";
+    let external_profile_path = fixture
+        .paths
+        .meta_path
+        .parent()
+        .unwrap()
+        .join(format!("{CC_SWITCH_ID}.json"));
+    fs::write(&fixture.paths.meta_path, &meta).unwrap();
+    fs::write(&fixture.paths.profile_path, profile).unwrap();
+    fs::write(&external_profile_path, profile).unwrap();
+    fs::write(
+        &fixture.paths.normal_config,
+        r#"{"deploymentMode":"3p","mcpServers":{"existing":{}}}"#,
+    )
+    .unwrap();
+    fs::write(
+        &fixture.paths.third_party_config,
+        r#"{"deploymentMode":"3p","preferences":{"theme":"dark"}}"#,
+    )
+    .unwrap();
+    let status = fixture.manager.status(&store);
+    assert!(!status.is_managed);
+    assert!(status
+        .actions
+        .iter()
+        .any(|action| action.action == DesktopAction::SwitchOfficial && action.enabled));
+    assert!(status
+        .actions
+        .iter()
+        .any(|action| action.action == DesktopAction::RestorePrevious && !action.enabled));
+
+    let request = official_request();
+    let prepared = fixture
+        .manager
+        .prepare(&store, DesktopAction::SwitchOfficial, &request)
+        .unwrap();
+    assert_eq!(prepared.plans.len(), 2);
+    assert_eq!(prepared.external_profile_count, 1);
+    assert!(prepared.next_state.tombstone);
+    assert!(
+        prepared.next_state.data.files.is_empty(),
+        "不得建立接管前配置的假恢复点"
+    );
+    let preview = fixture.manager.issue_ticket(&prepared).unwrap();
+    fixture
+        .manager
+        .commit(
+            &store,
+            DesktopAction::SwitchOfficial,
+            &preview.revision,
+            &request,
+        )
+        .unwrap();
+    let normal: serde_json::Value =
+        serde_json::from_str(&read(&fixture.paths.normal_config).unwrap()).unwrap();
+    let threep: serde_json::Value =
+        serde_json::from_str(&read(&fixture.paths.third_party_config).unwrap()).unwrap();
+    assert_eq!(normal["deploymentMode"], "1p");
+    assert_eq!(normal["mcpServers"], serde_json::json!({"existing":{}}));
+    assert_eq!(threep["deploymentMode"], "1p");
+    assert_eq!(threep["preferences"], serde_json::json!({"theme":"dark"}));
+    assert_eq!(read(&fixture.paths.meta_path).unwrap(), meta);
+    assert_eq!(read(&fixture.paths.profile_path).unwrap(), profile);
+    assert_eq!(read(&external_profile_path).unwrap(), profile);
+    let status = fixture.manager.status(&store);
+    assert_eq!(status.mode, "official");
+    assert!(!status.is_managed);
+    assert!(status.restart_required);
+    assert!(fixture
+        .manager
+        .prepare(&store, DesktopAction::RestorePrevious, &request)
+        .is_err());
+    let second = fixture
+        .manager
+        .prepare(&store, DesktopAction::SwitchOfficial, &request)
+        .unwrap();
+    assert!(second.plans.is_empty());
+    assert!(second.requires_restart, "重复切回官方不得丢失待重启标志");
+}
+
+#[test]
+fn unmanaged_official_mode_does_not_parse_or_replace_foreign_metadata() {
+    let fixture = fixture("unmanagedOfficialInvalidMetadata");
+    let store = Store::default();
+    let damaged = "{ unfinished external file\n";
+    fs::write(&fixture.paths.meta_path, damaged).unwrap();
+    fs::write(&fixture.paths.profile_path, damaged).unwrap();
+    let request = official_request();
+    let prepared = fixture
+        .manager
+        .prepare(&store, DesktopAction::SwitchOfficial, &request)
+        .unwrap();
+    let preview = fixture.manager.issue_ticket(&prepared).unwrap();
+    fixture
+        .manager
+        .commit(
+            &store,
+            DesktopAction::SwitchOfficial,
+            &preview.revision,
+            &request,
+        )
+        .unwrap();
+    assert_eq!(read(&fixture.paths.meta_path).unwrap(), damaged);
+    assert_eq!(read(&fixture.paths.profile_path).unwrap(), damaged);
+    assert_eq!(fixture.manager.status(&store).mode, "official");
+}
+
+#[test]
+fn unmanaged_official_mode_rejects_stale_preview_before_any_write() {
+    let fixture = fixture("unmanagedOfficialStalePreview");
+    let store = Store::default();
+    let request = official_request();
+    let prepared = fixture
+        .manager
+        .prepare(&store, DesktopAction::SwitchOfficial, &request)
+        .unwrap();
+    let preview = fixture.manager.issue_ticket(&prepared).unwrap();
+    fs::write(
+        &fixture.paths.meta_path,
+        r#"{"entries":[],"outsideUpdate":true}"#,
+    )
+    .unwrap();
+    let result = fixture.manager.commit(
+        &store,
+        DesktopAction::SwitchOfficial,
+        &preview.revision,
+        &request,
+    );
+    assert_eq!(result.unwrap_err().code, "changed");
+    assert!(!fixture.paths.normal_config.exists());
+    assert!(!fixture.paths.third_party_config.exists());
+    assert!(!fixture.paths.profile_path.exists());
+    assert!(!fixture
+        .codex
+        .app_data_dir
+        .join("claude-desktop/pending.dat")
+        .exists());
+    assert!(!fixture
+        .codex
+        .app_data_dir
+        .join("claude-desktop/backups")
+        .exists());
+    assert!(!fixture.manager.status(&store).is_managed);
+}

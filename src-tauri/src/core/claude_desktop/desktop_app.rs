@@ -120,6 +120,21 @@ impl StopCheck {
             process_image,
         ))
     }
+
+    /// A fresh scan immediately after shutdown can still observe a disappearing
+    /// Electron helper whose image is unreadable. Retry only inconclusive scans;
+    /// a confirmed running instance must block the repair without delay.
+    pub fn ensure_stopped_after_exit(&self) -> DesktopResult<()> {
+        if !self.allowed { return Ok(()); }
+        if let Some(error) = &self.discovery_error { return Err(error.clone()); }
+        stopped_after_exit(Duration::from_millis(600), Duration::from_millis(100), || {
+            checked_processes(
+                self.identity.as_ref(),
+                candidate_processes(self.identity.as_ref()),
+                process_image,
+            )
+        })
+    }
 }
 
 fn process_error(code: &str) -> Box<DesktopError> {
@@ -210,6 +225,18 @@ fn stopped_result(processes: DesktopResult<Vec<u32>>) -> DesktopResult<()> {
     ))
 }
 
+fn stopped_after_exit(timeout: Duration, poll_interval: Duration, mut list: impl FnMut() -> DesktopResult<Vec<u32>>) -> DesktopResult<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match list() {
+            Ok(processes) => return stopped_result(Ok(processes)),
+            Err(error) if Instant::now() >= deadline => return Err(error),
+            Err(_) => {}
+        }
+        std::thread::sleep(poll_interval.min(deadline.saturating_duration_since(Instant::now())));
+    }
+}
+
 fn checked_processes<T: Into<ProcessImage>>(
     identity: Option<&AppIdentity>,
     candidates: DesktopResult<Vec<u32>>,
@@ -264,6 +291,10 @@ fn stop_processes(timeout: Duration, mut list: impl FnMut() -> DesktopResult<Vec
 }
 
 fn stop_processes_with_grace(timeout: Duration, headless_grace: Duration, mut list: impl FnMut() -> DesktopResult<Vec<u32>>, mut send: impl FnMut(u32, bool) -> DesktopResult<bool>) -> DesktopResult<bool> {
+    stop_processes_with_timeouts(timeout, headless_grace, Duration::from_secs(5), &mut list, &mut send)
+}
+
+fn stop_processes_with_timeouts(timeout: Duration, headless_grace: Duration, force_timeout: Duration, mut list: impl FnMut() -> DesktopResult<Vec<u32>>, mut send: impl FnMut(u32, bool) -> DesktopResult<bool>) -> DesktopResult<bool> {
     let processes = list()?;
     if processes.is_empty() {
         return Ok(false);
@@ -290,25 +321,46 @@ fn stop_processes_with_grace(timeout: Duration, headless_grace: Duration, mut li
         }
         // A late Electron window gets a short chance to appear. Persistent
         // headless residuals do not need the full main-window shutdown budget.
-        if current.iter().all(|pid| headless.contains(pid)) && Instant::now() >= headless_deadline { break; }
+        if !current.is_empty() && current.iter().all(|pid| headless.contains(pid)) && Instant::now() >= headless_deadline { break; }
         if Instant::now() >= deadline { break; }
         std::thread::sleep(Duration::from_millis(200));
-        current = list()?;
-        if current.is_empty() { return Ok(true); }
+        match list() {
+            Ok(processes) if processes.is_empty() => return Ok(true),
+            Ok(processes) => current = processes,
+            Err(_) => {
+                // Electron helpers can disappear between enumeration and image
+                // inspection. An unreadable snapshot is not proof of shutdown,
+                // but also must not abort before a later scan can confirm it.
+                current.clear();
+            }
+        }
     }
     // 优雅退出没完成时强制结束，避免半退出状态下写文件被回写覆盖。
     // Re-enumerate by executable identity before forcing: PIDs can be reused.
-    for pid in &list().map_err(stop_verification_error)? {
-        if let Err(error) = send(*pid, true) {
-            log::warn!("Desktop stop signal failed: pid={pid}, force=true, code={}, reason={}, details={:?}", error.code, error.message, error.params);
-        }
-    }
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + force_timeout;
+    failures.clear();
+    let mut scan_error;
     loop {
-        if list().map_err(stop_verification_error)?.is_empty() { return Ok(true); }
+        match list() {
+            Ok(processes) if processes.is_empty() => return Ok(true),
+            Ok(processes) => {
+                scan_error = None;
+                for pid in processes {
+                    // Only a complete, identity-checked scan authorizes force.
+                    // signal rechecks the exact process handle to avoid PID reuse.
+                    if let Err(error) = send(pid, true) {
+                        if failures.insert(pid) {
+                            log::warn!("Desktop stop signal failed: pid={pid}, force=true, code={}, reason={}, details={:?}", error.code, error.message, error.params);
+                        }
+                    }
+                }
+            }
+            Err(error) => scan_error = Some(error),
+        }
         if Instant::now() >= deadline { break; }
         std::thread::sleep(Duration::from_millis(200));
     }
+    if let Some(error) = scan_error { return Err(stop_verification_error(error)); }
     Err(Box::new(
         DesktopError::new(
             error_code::PROCESS,
@@ -338,11 +390,16 @@ pub fn launch(paths: &DesktopPaths, timeout: Duration) -> DesktopResult<()> {
 }
 
 /// Resolve again after shutdown: an automatic Desktop update may change its executable.
-pub fn restart(paths: &DesktopPaths) -> DesktopResult<String> {
-    restart_with(|| resolve_identity(paths), stop_identity, launch_identity)
+pub fn restart_after_stop(paths: &DesktopPaths, after_stop: impl FnOnce() -> DesktopResult<()>) -> DesktopResult<String> {
+    restart_with_after_stop(|| resolve_identity(paths), stop_identity, after_stop, launch_identity)
 }
 
+#[cfg(test)]
 fn restart_with(mut resolve: impl FnMut() -> DesktopResult<Option<AppIdentity>>, mut stop: impl FnMut(&AppIdentity, Duration) -> DesktopResult<bool>, mut launch: impl FnMut(&AppIdentity, Duration) -> DesktopResult<()>) -> DesktopResult<String> {
+    restart_with_after_stop(&mut resolve, &mut stop, || Ok(()), &mut launch)
+}
+
+fn restart_with_after_stop(mut resolve: impl FnMut() -> DesktopResult<Option<AppIdentity>>, mut stop: impl FnMut(&AppIdentity, Duration) -> DesktopResult<bool>, after_stop: impl FnOnce() -> DesktopResult<()>, mut launch: impl FnMut(&AppIdentity, Duration) -> DesktopResult<()>) -> DesktopResult<String> {
     let identity = resolve()?.ok_or_else(|| {
         Box::new(
             DesktopError::new(
@@ -353,6 +410,7 @@ fn restart_with(mut resolve: impl FnMut() -> DesktopResult<Option<AppIdentity>>,
         )
     })?;
     stop(&identity, Duration::from_secs(20))?;
+    after_stop()?;
     let identity = resolve()?.ok_or_else(|| process_error(error_code::PROCESS))?;
     launch(&identity, Duration::from_secs(25))?;
     Ok(identity.method.as_str().to_owned())
@@ -832,6 +890,76 @@ mod tests {
     }
 
     #[test]
+    fn a_transient_shutdown_scan_failure_is_rechecked_before_aborting() {
+        let mut scans = 0;
+        let mut signals = Vec::new();
+        assert!(stop_processes(Duration::from_secs(1), || {
+            scans += 1;
+            match scans {
+                1 => Ok(vec![10]),
+                2 => Err(process_error(error_code::PROCESS)),
+                _ => Ok(vec![]),
+            }
+        }, |pid, force| { signals.push((pid, force)); Ok(true) }).unwrap());
+        assert_eq!(scans, 3);
+        assert_eq!(signals, [(10, false)], "an unreadable exit race must not trigger a force kill");
+    }
+
+    #[test]
+    fn an_after_exit_check_retries_only_inconclusive_scans() {
+        let mut scans = 0;
+        stopped_after_exit(Duration::from_millis(600), Duration::ZERO, || {
+            scans += 1;
+            if scans == 1 { Err(process_error(error_code::PROCESS)) } else { Ok(vec![]) }
+        }).unwrap();
+        assert_eq!(scans, 2);
+
+        let mut scans = 0;
+        let error = stopped_after_exit(Duration::from_secs(60), Duration::from_secs(60), || {
+            scans += 1;
+            Ok(vec![10])
+        }).unwrap_err();
+        assert_eq!(scans, 1, "a confirmed new instance must block immediately");
+        assert_eq!(error.message, "claudeDesktop.errors.desktopRunning");
+    }
+
+    #[test]
+    fn an_after_exit_check_has_a_bounded_unknown_wait_and_preserves_discovery_errors() {
+        let mut scans = 0;
+        let error = stopped_after_exit(Duration::from_millis(10), Duration::from_millis(1), || {
+            scans += 1;
+            Err(Box::new(DesktopError::new(error_code::PROCESS, "claudeDesktop.errors.process").param("unknown image")))
+        }).unwrap_err();
+        assert!(scans >= 2);
+        assert_eq!(error.params, ["unknown image"]);
+
+        let check = StopCheck { identity: None, discovery_error: Some(Box::new(
+            DesktopError::new(error_code::PROCESS, "claudeDesktop.errors.installationDiscoveryFailed")
+        )), allowed: true };
+        assert_eq!(check.ensure_stopped_after_exit().unwrap_err().message,
+            "claudeDesktop.errors.installationDiscoveryFailed");
+    }
+
+    #[test]
+    fn force_wait_rechecks_unknown_processes_then_only_signals_verified_pids() {
+        use std::cell::Cell;
+        let scans = Cell::new(0);
+        let live = Cell::new(true);
+        let mut signals = Vec::new();
+        assert!(stop_processes_with_timeouts(Duration::ZERO, Duration::ZERO, Duration::from_secs(1), || {
+            scans.set(scans.get() + 1);
+            if scans.get() == 2 { return Err(process_error(error_code::PROCESS)); }
+            Ok(if live.get() { vec![10] } else { vec![] })
+        }, |pid, force| {
+            signals.push((pid, force));
+            if force { live.set(false); }
+            Ok(force)
+        }).unwrap());
+        assert_eq!(scans.get(), 4);
+        assert_eq!(signals, [(10, false), (10, true)]);
+    }
+
+    #[test]
     fn posting_error_does_not_use_headless_shortcut_and_force_query_errors_have_guidance() {
         let attempts = std::cell::Cell::new(0);
         let live = std::cell::Cell::new(true);
@@ -844,7 +972,7 @@ mod tests {
             }).unwrap();
         assert_eq!(attempts.get(), 2);
         let mut scans = 0;
-        let result = stop_processes(Duration::ZERO, || {
+        let result = stop_processes_with_timeouts(Duration::ZERO, Duration::ZERO, Duration::ZERO, || {
             scans += 1;
             if scans == 1 { Ok(vec![10]) } else { Err(process_error(error_code::PROCESS)) }
         }, |_, _| Ok(false)).unwrap_err();
@@ -863,11 +991,12 @@ mod tests {
     #[test]
     fn failed_enumeration_blocks_forcing_and_a_discovery_error_blocks_writes() {
         let mut scans = 0;
-        let result = stop_processes(Duration::ZERO, || {
+        let result = stop_processes_with_timeouts(Duration::ZERO, Duration::ZERO, Duration::from_millis(400), || {
             scans += 1;
             if scans == 1 { Ok(vec![10]) } else { Err(process_error(error_code::PROCESS)) }
         }, |_, force| { assert!(!force); Ok(false) });
         assert!(result.is_err());
+        assert!(scans >= 3, "a persistent unknown state must be rechecked without authorizing force");
         let check = StopCheck { identity: None, discovery_error: Some(process_error(error_code::PROCESS)), allowed: true };
         assert!(check.ensure_stopped().is_err());
     }
@@ -884,6 +1013,23 @@ mod tests {
         }, |identity, _| { assert_eq!(identity.executable, old); Ok(true) }, |identity, _| { assert_eq!(identity.executable, new); Ok(()) });
         assert!(result.is_ok());
         assert_eq!(scans, 2);
+    }
+
+    #[test]
+    fn restart_repairs_after_stop_and_never_launches_after_a_failed_step() {
+        use std::cell::RefCell;
+        let path = std::env::temp_dir().join("restart-test/Claude.exe");
+        for failure in [None, Some("stop"), Some("repair")] {
+            let order = RefCell::new(Vec::new());
+            let result = restart_with_after_stop(
+                || Ok(Some(AppIdentity { method: LaunchMethod::Executable, target: path.clone(), executable: path.clone() })),
+                |_, _| { order.borrow_mut().push("stop"); if failure == Some("stop") { Err(process_error(error_code::PROCESS)) } else { Ok(true) } },
+                || { order.borrow_mut().push("repair"); if failure == Some("repair") { Err(process_error(error_code::STORAGE)) } else { Ok(()) } },
+                |_, _| { order.borrow_mut().push("launch"); Ok(()) },
+            );
+            assert_eq!(result.is_ok(), failure.is_none());
+            assert_eq!(order.into_inner(), match failure { Some("stop") => vec!["stop"], Some("repair") => vec!["stop", "repair"], _ => vec!["stop", "repair", "launch"] });
+        }
     }
 
     #[test]

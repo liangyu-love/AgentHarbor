@@ -283,6 +283,21 @@ mod tests {
     }
 
     #[test]
+    fn graceful_stop_waits_for_the_test_owned_window_process_to_exit() {
+        let (_temp, child, identity) = fixture(true);
+        let pid = child.0.id();
+        let started = Instant::now();
+        assert!(stop_processes(Duration::from_secs(2), || {
+            checked_processes(Some(&identity), Ok(vec![pid]), image)
+        }, |pid, force| {
+            assert!(!force, "the test window should complete its graceful exit");
+            signal(&identity, pid, force)
+        }).unwrap());
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(matches!(image(pid), ProcessImage::Exited));
+    }
+
+    #[test]
     fn headless_signal_reports_no_window_and_force_checks_executable_identity() {
         let (temp, mut child, identity) = fixture(false);
         assert!(!signal(&identity, child.0.id(), false).unwrap());

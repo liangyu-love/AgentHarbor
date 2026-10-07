@@ -421,7 +421,7 @@ fn action_views(
         ),
         view(
             DesktopAction::SwitchOfficial,
-            pending_block.or(not_managed).or(conflict_block),
+            pending_block.or(conflict_block),
         ),
         view(
             DesktopAction::Release,

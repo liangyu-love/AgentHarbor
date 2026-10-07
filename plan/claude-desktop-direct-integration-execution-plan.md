@@ -2,6 +2,8 @@
 
 日期：2026-10-04
 
+生命周期修订：2026-10-07。配置可在 Desktop 运行时保存，显式重启负责停止、模式补回与启动；未完成事务恢复仍保留停止保护。
+
 状态：**首期核心实现已落地，复审修复完成，完整发布验收仍未通过**；本文既是实施规格也是验收依据。
 
 当前实施状态（替代早期阶段性结论）：
@@ -11,7 +13,7 @@
 - 修复基线为六个实施提交的末端 `5030efd`。复审发现事务失败回滚、冲突门禁、进程身份与隔离来源等边界缺陷；已按优先级修复、补回归并完成修复自审。实际修复后测试结果见验收记录的“复审修复”节。
 - 上游连通性已按用户指定的测试中转核对通过：卡片 `kiro-fucheers`（`https://www.fucheers.top/`）配 `claude-haiku-4-5-20251001`，`/v1/models` 与 `/v1/messages` 在**裸 Bearer**（Desktop 的鉴权形态、不带 `x-api-key`）下均为 200，且上游自报模型与请求一致。
 - 已有 Windows + Desktop 2.19675.0 实施记录支持 L01/L02/L03/L05/L10 的核心链路，L09 由 loopback mock 验证限制路径；L07 仅文件层通过。复审修复不重新执行真实接管、真实进程控制或计费请求。
-- 预览与连通性检测可在 Desktop 运行时执行；应用、恢复等配置写入前必须完全退出 Desktop（含托盘）。提交会重读与比较，文件变化时重新预览。成功完成精确安装的停止/启动后清除待重启标记；隔离或覆盖路径不提供真实进程控制。
+- 预览、连通性检测和普通配置提交均可在 Desktop 运行时执行，不自动关闭应用。提交重读与比较，文件变化时重新预览。显式重启先确认精确安装停止，再通过持久 journal 窄范围补回已保存模式，保留退出时写回的新偏好，最后启动；完整成功才清除待重启标记。未完成事务 rollback 与路由退出恢复仍按原退出保护；隔离或覆盖路径不提供真实进程控制。此修订不增加真机验收结论。
 - 原记录 A01–A40 为 22 项通过、18 项部分通过。补充回归不自动将整张验收表改为通过；发布仍按第 9.3 节门槛逐项核验。
 - 尚缺 L04 的 Desktop 流式渲染观察、L06 真实恢复、L08“本地路由启动后退出”组合、L07 官方流程以及 macOS/Linux 真机验证；Cowork 首期不承诺。
 - 实施后代码审查：删除 6 处冗余/死代码，把只读状态投影与预览票据从 1396 行的 `mod.rs` 抽出为 `status.rs` / `tickets.rs`，能力探测从 `probe.rs` 抽出为 `capability.rs`；对外行为不变。
@@ -32,9 +34,9 @@
 1. 打开现有中转页面的 **Claude Desktop** 卡片。
 2. 选择一张已经保存的供应商卡片，无需重新输入地址、密钥或余额凭据。
 3. 从该卡片的兼容模型中选取要展示的模型，可调整展示名称；支持 1M 的新选择默认勾选 1M，用户可自行取消。已保存的选择保持原有意图。
-4. 查看配置文件的路径、操作和原值/新值，模型与地址包含在实际配置中；预览不要求退出 Desktop。应用前完全退出 Desktop（含托盘），文件已变化时重新预览。
-5. 启动 Claude Desktop，在真实应用内确认模型菜单和对话。
-6. 需要撤销时选择“恢复接管前配置”；确实需要官方模式时使用独立的“切换官方模式”。
+4. 查看配置文件的路径、操作和原值/新值，模型与地址包含在实际配置中；预览和保存都不要求退出 Desktop，文件已变化时重新预览。
+5. 保存后显式重启 Claude Desktop，再在真实应用内确认模型菜单和对话。重启按钮负责停止、两处模式补回与启动，不把保存动作变成自动停应用。
+6. 需要撤销时选择“恢复接管前配置”；需要官方模式时使用独立的“切换官方模式”，没有配置过中转也可使用。
 
 首期与后续范围：
 
@@ -66,7 +68,7 @@
 - profile 使用 `inferenceProvider: "gateway"`、`inferenceGatewayAuthScheme: "bearer"`、网关地址和推理凭据。
 - 可选 `inferenceModels` 控制菜单；不写该键时，由 Desktop 请求 `<base>/v1/models`。
 - 模型名受到 Desktop 内部校验器限制；一条非法模型可能导致整份 profile 拒收。
-- 配置需要完全退出并重启 Desktop 才读取。
+- 配置在重启 Desktop 后读取；CC Switch 写入配置后提示重启，不把退出应用作为普通保存的前置要求（`src/hooks/useProviderActions.ts` 的 Desktop 成功提示）。
 - CC Switch 的直连与路由共用 profile 外形，但直连保留模型原名，路由先将角色名映射到真实模型。
 
 这些是本地源码及其版本观察的证据，**不是公开、稳定的 Claude Desktop API 保证**。P0 与最终验收必须记录实际 Desktop 版本、安装渠道、平台和行为。
@@ -285,7 +287,7 @@ scripts/test-claude-desktop-config.mjs
 
 上面的模型仅为合法形态示例，不预置为用户可用模型。没有 label/1M 选项时使用字符串；有选项时使用对象。false 的 1M 默认省略，保持参考输出形态。
 
-初期省略 `coworkEgressAllowedHosts` 的最小候选通过了普通推理，但这不证明工具联网可用。2026-10-05 用户提供 `cowork-egress-blocked / Allowed: 127.0.0.1` 的实际失败证据；核对 Desktop 2.19675.0 的契约确认，省略时只允许推理主机。按本次故障修复请求，直连与路由统一写入 `coworkEgressAllowedHosts: ["*"]`，与 CC Switch 一致；通过原有配置预览、退出后提交和基线恢复生效，不直接改运行中的客户端文件。该修复开放工具公网访问，不等于新增 provider 原生 WebSearch，完整 Cowork 仍需真实验收。
+初期省略 `coworkEgressAllowedHosts` 的最小候选通过了普通推理，但这不证明工具联网可用。2026-10-05 用户提供 `cowork-egress-blocked / Allowed: 127.0.0.1` 的实际失败证据；核对 Desktop 2.19675.0 的契约确认，省略时只允许推理主机。按该次故障修复请求，直连与路由统一写入 `coworkEgressAllowedHosts: ["*"]`，与 CC Switch 一致；通过配置预览、提交和基线恢复管理。当前提交允许运行中保存，配置仍需重启后读取。该修复开放工具公网访问，不等于新增 provider 原生 WebSearch，完整 Cowork 仍需真实验收。
 
 `disableDeploymentModeChooser=true` 与参考一致，预览说明会隐藏应用内模式选择；项目必须提供恢复路径。Desktop 可读取的 profile 必须为普通 JSON，不能用 `secret_file` 把客户端文件加密。
 
@@ -342,7 +344,7 @@ Desktop 的外部 profile 需要保存可读取的推理凭据，这是直连格
 
 合作 writer 的 pending/state 用文件锁或项目已有单实例约束保护；不能只靠进程内锁允许两个 AgentHarbor 实例同时管理同一目录。检查现有单实例机制后选一个最小可靠方案，P2 必须覆盖两个独立 writer 的竞争场景。
 
-Desktop/CC Switch 不遵守本项目锁，必须在写前重读与比较，能检测已经发生的变更；重读与原子替换之间仍有外部写入窗口，现有文件工具不提供跨工具 CAS 保证。应用/恢复时要求完全退出 Desktop 并暂停其它配置管理器，不承诺任意并发外部写入都绝不覆盖。所有权回读和异常 journal 用于发现/恢复可辨识冲突，不能取代这项操作条件。
+Desktop/CC Switch 不遵守本项目锁，必须在写前重读与比较，能检测已经发生的变更；重读与原子替换之间仍有外部写入窗口，现有文件工具不提供跨工具 CAS 保证。普通保存不要求关闭 Desktop，但不能与其它配置管理器任意并发写入；Desktop 退出回写模式由显式重启的窄模式补回处理。所有权回读和异常 journal 用于发现/恢复可辨识冲突；未完成 rollback 与路由退出恢复仍要求确认 Desktop 已停止。
 
 ### 6.4 提交流程
 
@@ -362,7 +364,7 @@ commit：取得写锁；重读全部输入；不一致则 changed，要求重新
 
 应用顺序选择：自己的 profile → 注册/选中 meta → 3P config → normal config。准备 profile 后再切 normal mode，减少指向尚不存在 profile 的时间。恢复优先撤回自己的模式/指针，再清理已不再引用的自有 profile；确切顺序按操作生成，不让 meta 临时指向被删文件。
 
-这仍是四个单文件原子替换的协调事务，**不是四文件同时可见的系统事务**。预览保持只读且允许 Desktop 运行；应用前必须完全退出 Desktop。配置提交不自动终止进程，显式重启按钮只停止并启动已确认的安装。真实验收需要验证应用过程和重启时的行为。
+这仍是四个单文件原子替换的协调事务，**不是四文件同时可见的系统事务**。预览保持只读；普通配置提交允许 Desktop 运行，不自动终止进程。显式重启只操作已确认的安装：停止成功后重新读取最新文件，用同一备份与 journal 事务仅补回两处记录的 `deploymentMode`，保留其它字段与新偏好，然后启动。profile 或 metadata 的所有权漂移仍阻止模式补回。任何阶段失败都不清除待重启标记，只有启动确认成功后持久清除。真实验收需要继续验证运行中保存、退出回写和再次启动的组合。
 
 未完成 journal 不清理、损坏 journal 不当作“没有管理记录”。启动在提供写操作前扫描 Desktop pending，并按持久提交点判定：
 
@@ -370,7 +372,7 @@ commit：取得写锁；重读全部输入；不一致则 changed，要求重新
 - state 仍等于 previousState：事务未提交，按 before/after 与 owned patch 安全恢复；不能因为某文件已写完就视为整体完成。
 - state 已提交但外部文件又有受管漂移，或 state 不匹配前后任一版本：保留证据，报告 recovery conflict，不自动覆盖/回滚。
 
-在未提交恢复过程中只撤回能证明属于事务的值；清理确认失败或存在冲突时阻止新的应用覆盖证据。restore/release 等结束管理的操作同样写入带 transactionId/generation 的 tombstone，不能直接删除 state 丢失提交判据。
+在未提交恢复过程中只撤回能证明属于事务的值，仍按原停止保护执行 rollback；已提交事务的日志清理不改客户端文件。清理确认失败或存在冲突时阻止新的应用覆盖证据。restore/release 等结束管理的操作同样写入带 transactionId/generation 的 tombstone，不能直接删除 state 丢失提交判据。
 
 ### 6.5 漂移与安全恢复
 
@@ -394,13 +396,13 @@ commit：取得写锁；重读全部输入；不一致则 changed，要求重新
 | 普通重新应用 | 从最新 Provider 重新构造 profile；校验受管值未冲突 | 保留首次基线，更新最近安装值 |
 | 以现状重新接管 | 最新预览明确显示将覆盖受管冲突；不动外部无关字段 | 当前现状成为新基线，保留旧备份 |
 | 恢复接管前配置 | 撤回 own patches，恢复 prior pointer/profile；可能恢复另一 3P 工具 | 结束当前管理会话 |
-| 切换官方模式 | 两处模式明确为 1p；清除仍指向自身的 appliedId，撤回自身 entry/profile；保留外部条目且不选另一外部 profile | 首期限完整受管会话；结束管理，执行前保存可恢复备份 |
+| 切换官方模式 | 受管会话：两处模式为 1p，按所有权规则撤回自身指针/entry/profile；未受管：仅改两处模式为 1p，metadata/profile 全部保留 | 无需先配置中转；受管会话结束管理，未受管只记录事务/待重启状态，不生成虚假接管基线；执行前保存可恢复备份 |
 | 释放管理 | 不写任何 Desktop 文件 | 结束恢复责任，保留非秘密 ownership tombstone/旧备份供识别；下次不能默默删除遗留 profile |
 | 恢复未完成事务 | 安全还原 before，或展示受管冲突 | pending 成功恢复后才清除 |
 
 恢复前配置与切换官方模式不能共用模糊的“恢复官方”按钮。检测到 `enterpriseConfig` 中推理/部署相关字段时保留，并提示可能覆盖本次 profile；已明确冲突则阻止声称接入完成。切官方同样不自动删除企业键，不能保证企业环境下的官方登录行为，状态给出原因。
 
-`switchOfficial` 不使用普通 restore 的 appliedId undo：当前 pointer 仍为 AgentHarbor 时移除自身指针，不恢复 prior foreign pointer，不选择外部 entries；当前 pointer 已被外部切换则冲突，不能清掉那条外部指针。没有完整 journal 时首期不提供此管理动作，也不猜测哪些 profile 可以删除。自身 ID 在接管前已有内容时，只撤回可证明由本次管理安装的内容，原有 profile/entry 留存于备份并按所有权恢复规则保留，不凭同 ID 清除未知配置。
+受管 `switchOfficial` 不使用普通 restore 的 appliedId undo：当前 pointer 仍为 AgentHarbor 时移除自身指针，不恢复 prior foreign pointer，不选择外部 entries；当前 pointer 已被外部切换则冲突，不能清掉那条外部指针。没有接管基线时仍提供官方切换，但只把两处 `deploymentMode` 设为 `1p`，不写 metadata/profile，不猜测哪些 profile 可以删除；此路径不产生“恢复接管前配置”的资格。自身 ID 在接管前已有内容时，只撤回可证明由本次管理安装的内容，原有 profile/entry 留存于备份并按所有权恢复规则保留，不凭同 ID 清除未知配置。
 
 释放管理会使“恢复接管前配置”失去当前会话入口，预览说明该影响；已有 profile 仍包含凭据。再次应用需要新的明确接管预览，不按名字把遗留内容当垃圾清除。
 
@@ -433,7 +435,7 @@ commit_claude_desktop_change(action, revision)
 probe_claude_desktop_provider(providerId, modelIds, pathsChoice?)
 ```
 
-`action` 为独立 tagged enum：`applyDirect / reapply / restorePrevious / switchOfficial / release / recoverRollback`。重新接管通过 `applyDirect` 的显式 `rebaseline` 选项表达；所有会产生文件/管理记录变化的操作先预览再提交。UI API 可提供便捷方法，后端共用 prepare/transaction，不另走无 revision 的恢复捷径。
+`action` 为独立 tagged enum：`applyDirect / reapply / restorePrevious / switchOfficial / release / recoverRollback`。重新接管通过 `applyDirect` 的显式 `rebaseline` 选项表达；新的配置/管理操作先预览再提交。`recoverRollback` 是已有 journal 的恢复：用户确认后直接提交恢复动作，不创建新预览或票据，后端核对既有 before/after、路径与持久提交点。UI API 可提供便捷方法，其余操作仍共用 prepare/transaction 与一次性 revision。
 
 `applyDirect` 只接受供应商 ID、模型设置、后端给出的路径选择 ID、接管选项。首期不接受 `router` mode、不接收 base URL/API Key；为后续增加 mode 可以正常版本化扩展，无须现在发布未实现字段。
 
@@ -450,9 +452,9 @@ probe_claude_desktop_provider(providerId, modelIds, pathsChoice?)
 
 `DesktopStatus.managementState` 是卡片的主显示状态，优先级为 `recoveryRequired > conflict > orphaned > stale > managed/unmanaged`；不能作为全部事实的唯一来源。`isManaged`、`providerMissing`、`staleReasons[]`、`conflicts[]`、`recoveryState` 独立保留，所以密钥过期与文件冲突可以同时显示。`mode` 单独为 `unknown / official / foreignThirdParty / direct`；actions 从真实条件计算，不能只按主状态枚举猜操作资格。
 
-`restartRequired` 表示配置仍待重新加载；写文件后为 true，无改动应用不清除原有待启动标记。显式重启按钮成功完成选定安装的停止与启动后持久置 false，失败则保持原值。该标记不代表真实请求验证；外部手动启动目前不自动升级为已确认重载。首期不增加无法自动证明的 connected 字段。
+`restartRequired` 表示配置仍待重新加载；写文件后为 true，无改动应用不清除原有待启动标记。保存时记录两处期望模式；显式重启在选定安装停止后通过 journal 窄范围补回模式，完整确认启动成功后持久置 false，失败则保留标记。重启入口按已确认启动能力提供，不依赖是否已配置中转或当前正在运行。该标记不代表真实请求验证；外部手动启动目前不自动升级为已确认重载。首期不增加无法自动证明的 connected 字段。
 
-actions 给出每项是否可用及禁用原因，后端仍检查。Provider 不存在时允许 restorePrevious；pending 时只允许恢复/查看；官方/外部 profile 不能被误标成“AgentHarbor 已管理”。
+actions 给出每项是否可用及禁用原因，后端仍检查。Provider 不存在时允许 restorePrevious；switchOfficial 不要求 Provider 或受管会话；pending 时只允许恢复/查看且不能直接重启。官方/外部 profile 不能被误标成“AgentHarbor 已管理”。
 
 ### 7.3 UI 流程
 
@@ -465,7 +467,7 @@ actions 给出每项是否可用及禁用原因，后端仍检查。Provider 不
 - 有外部 3P 时明确显示接管前选择及恢复方向；用户的“应用”操作确认这份预览，不另加无依据的重复确认。
 - `changed` 返回保留表单、刷新预览，不能直接 retry 旧 ticket。
 - 任意表单输入变化或相关 Provider 刷新立即清除旧预览；用 request snapshot/递增序号忽略迟到的异步预览/检测结果。提交使用当前界面仍在展示、且对应当前表单的固化归一化 action + revision，不能用修改后的表单配旧 ticket，也不能在B表单提交存下的A请求。提交期间冻结相关输入；关闭对话框/更换供应商使未完成预览失效。
-- 应用前检查完整退出（包括托盘进程），应用成功后提供已确认安装的 Desktop 启动/重启入口，不调用 Codex restart。
+- 应用允许 Desktop 运行，成功后提示配置已保存、重启后生效；不自动停止。提供已确认安装的 Desktop 启动/重启入口，官方切换不依赖先配置中转，操作处理中禁用其它写操作，不调用 Codex restart。未完成 rollback 与路由退出恢复仍检查完整退出（包括托盘进程）。
 - 操作成功只刷新 Desktop 查询；供应商列表改变时刷新 Desktop 候选/状态。不要为直连刷新或启动路由进程。
 - 在 80%/100%/125%/150% 缩放与窄窗口检查四文件预览、长模型名/路径，保证不遮挡确认、恢复按钮。
 

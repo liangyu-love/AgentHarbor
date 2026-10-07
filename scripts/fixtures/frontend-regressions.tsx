@@ -41,6 +41,7 @@ const root = createRoot(document.getElementById("root")!);
 function ThreadToastProbe() {
   const { toasts } = useToast();
   controls.review.lastToast = toasts[0]?.title;
+  controls.review.lastToastDescription = toasts[0]?.description;
   return null;
 }
 function DesktopUpdaterFixture() {
@@ -746,7 +747,7 @@ function mount(mode: FixtureMode) {
   if (mode === "groups") controls.review.providersClient = queryClient;
   root.render(<QueryClientProvider client={queryClient}><TooltipProvider>
     <div style={{ position: "relative", height: 600 }}><PageStage state="active">
-      {(mode.startsWith("thread-details") || mode === "terminal-proxy" || mode === "skills") && <ThreadToastProbe />}
+      {(mode.startsWith("thread-details") || mode === "terminal-proxy" || mode === "skills" || mode === "groups") && <ThreadToastProbe />}
       {mode === "desktop-updater" ? <DesktopUpdaterFixture /> : mode === "desktop-exit" ? <ClaudeDesktopRouterExitDialog /> : mode.startsWith("recovery-") ? <RecoveryFixture thread={threads[0] as ThreadSummary} /> :
         mode === "skills" ? <SkillsPage /> : mode === "terminal-proxy" ? <div className="mx-auto max-w-xl rounded-xl bg-card shadow-sm"><TerminalProxySettings currentProxy={{ mode: "manual", url: "http://127.0.0.1:7890" }} /></div> :
         mode === "image" ? <ImageWorkbenchPage /> : mode === "mcp" ? <McpPage /> : mode === "accounts" || mode.startsWith("account-resets") ? <AccountsPage refreshInterval="5m" onManageProviders={noop} /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage" ? <TokenUsagePanel data={{ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } }} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode.startsWith("thread-details") || mode === "thread-tree" || mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :

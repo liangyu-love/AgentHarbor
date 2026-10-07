@@ -37,10 +37,6 @@ impl DesktopAction {
         }
     }
 
-    /// 该操作是否会改动 Desktop 外部文件。
-    pub fn writes_files(self) -> bool {
-        !matches!(self, Self::Release)
-    }
 }
 
 /// 候选路径选择：`None` 表示使用默认发现结果。
