@@ -230,3 +230,14 @@ node scripts/tauri.mjs --test-rust command_and_deepseek_flash_live_aggregation -
 - P8.5：已完成完整工作区自审、`git diff --check`、费用边界回归修复和最终提交；本轮未执行发布包打包。
 
 真实凭据、付费请求、外部搜索服务和真机结果不能由 localhost mock 通过替代。基础实现未改变任何真实客户端文件或上游配置。
+
+## 2026-10-07：账号和用量页记账复查
+
+聚合执行复用 `forward` 的用量观察器，在公开模型名投影之前读取实际出口的 usage，并持久化到应用数据目录的 `relay-usage.jsonl`。账号和用量页通过 `get_token_usage` 加载同一账本，展示中转趋势、按模型/供应商统计与请求明细。
+
+- 统计归属实际命中的供应商卡片及出站模型；客户端请求的公开模型或 Desktop 档位保存在请求身份字段，不能再次作为费用记录叠加。
+- JSON 与 SSE 完成后记录一次实际推理 attempt；计数、读取/取消/删除响应资源不会重复记录原响应的用量，派发前失败也不会产生推理账目。
+- 发生 429 后重试时，两次实际 attempt 各有独立记录。未上报 usage 的失败记录保留状态，不估算 token 或费用；成功成员使用其自己的价格快照。价格缺失显示未定价，不将其当作免费。
+- 中转用量不关联 Codex 官方账号的订阅额度。界面刷新后可见保存的统计；余额仍来自供应商余额查询，不由估算费用反推。
+
+扩充已有回归断言，直接核对账号页消费的账本 payload：Responses 入站轮转、Chat 入站的三种出口 JSON/SSE、Desktop Messages 的三种出口 JSON/SSE，均校验总请求数、输入/输出 token、按实际供应商/模型分组、attempt 唯一性及拒绝请求不增加记录。相关聚合 HTTP 回归 **20/20 通过**，包含重试价格快照与资源操作测试。证据：`.runtime-test/balance-aggregation-usage-rust.log`。未额外发起真实余额或付费模型请求。

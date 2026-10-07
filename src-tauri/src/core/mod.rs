@@ -6,6 +6,7 @@ pub mod aggregation;
 pub mod api_client;
 pub mod auth;
 pub mod auto_switch;
+pub mod balance_refresh;
 mod balance_script;
 pub mod capability_preview;
 pub mod claude_desktop;

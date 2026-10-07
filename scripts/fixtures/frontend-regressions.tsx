@@ -312,6 +312,20 @@ api.providers.setBalanceSharing = async (id, _expectedBaseUrl, shared) => {
   state = { ...state, providers: state.providers.map(provider => provider.id === id ? updated : provider) };
   return updated;
 };
+api.providers.setBalanceRefreshInterval = async (id, expectedBaseUrl, intervalMinutes) => {
+  controls.review.balanceIntervalSaves = [...(controls.review.balanceIntervalSaves ?? []), { id, expectedBaseUrl, intervalMinutes }];
+  if (controls.review.failBalanceIntervalSave) throw "newapi.errors.storage";
+  const current = state.providers.find(provider => provider.id === id)!;
+  const ownerId = current.balanceSharedFrom ?? id;
+  state = { ...state, providers: state.providers.map(provider => provider.id === ownerId || provider.balanceSharedFrom === ownerId
+    ? { ...provider, balanceRefreshIntervalMinutes: intervalMinutes } : provider) };
+  return state.providers.find(provider => provider.id === id)!;
+};
+api.providers.onBalanceUpdated = async callback => {
+  const listeners = controls.review.balanceUpdateListeners ??= new Set<() => void>();
+  listeners.add(callback);
+  return () => listeners.delete(callback);
+};
 api.routing.setAccessMode = async mode => {
   controls.review.accessCalls.push(mode);
   state = { ...state, router: { ...state.router, accessMode: mode } };
@@ -746,6 +760,11 @@ function mount(mode: FixtureMode) {
 
 controls.review = { mount, t: (key: string, options?: Record<string, unknown>) => i18n.t(key, options),
   setLanguage: (language: string) => i18n.changeLanguage(language),
+  emitBalanceUpdate: (id: string, remaining: number) => {
+    state = { ...state, providers: state.providers.map(provider => provider.id === id && provider.balance
+      ? { ...provider, balance: { ...provider.balance, remaining } } : provider) };
+    for (const callback of controls.review.balanceUpdateListeners ?? []) callback();
+  },
   realBalanceQuery, clientDefaults, claudeOneMDefaults, mergeModelCatalog, errors: { errorKey, errorMessage, formatInvokeError }, getState: () => state, pixel, accessCalls: [], thumbnailCalls: [], originalCalls: [], thumbnailResolvers: [],
   modelResolutionFixture, modelResolutionRequests: [], modelResolutionResolvers: [], modelResolutionRejectors: [], holdModelResolutions: false, modelResolutionPatches: {},
   navigatedTo: null, proxySettingsOpened: false,

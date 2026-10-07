@@ -380,6 +380,14 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   for (const badge of [ZH.stateManaged, ZH.modeDirect, "v1.2.3", ZH.requiresRestart]) {
     assert.ok(badgeTexts.includes(badge), "missing card badge " + badge + " in " + badgeTexts);
   }
+  assert.equal(await card().getByText(ZH.requiresRestart, { exact: true }).evaluate(element => getComputedStyle(element).animationName), "none",
+    "the restart-required badge is static");
+  await page.evaluate(() => document.documentElement.style.setProperty("--primary", "156 60% 40%"));
+  await page.waitForFunction(() => [...document.querySelectorAll('[aria-labelledby="claude-desktop-title"] div')]
+    .some(element => element.textContent.trim() === "已配置" && getComputedStyle(element).color === "rgb(41, 163, 114)"));
+  assert.equal(await card().getByText(ZH.stateManaged, { exact: true }).evaluate(element => getComputedStyle(element).color), "rgb(41, 163, 114)",
+    "the configured badge follows the current theme accent");
+  await page.evaluate(() => document.documentElement.style.removeProperty("--primary"));
   assert.equal(await card().getByText("配置详情", { exact: true }).count(), 1);
   assert.doesNotMatch(content.innerText, /本地恢复备份: 3/, "backup details should stay collapsed by default");
   assert.doesNotMatch(content.innerText, /未消费的预览|AGENT_HARBOR_CLIENT_HOME/, "technical state belongs in details");

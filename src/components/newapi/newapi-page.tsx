@@ -149,7 +149,7 @@ export function NewApiPage() {
             onClick={() => scrollToSection("claude-desktop-title")}
             className="flex items-center gap-1 rounded-lg border border-border/60 bg-muted/30 px-2.5 py-1 text-xs text-muted-foreground transition-all hover:border-primary/40 hover:bg-muted hover:text-foreground motion-safe:active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            <Monitor className="h-3 w-3 text-purple-500" />
+            <Monitor className="h-3 w-3 text-primary" />
             <span>Claude Desktop</span>
           </button>
           <button

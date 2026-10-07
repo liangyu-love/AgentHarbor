@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { useProviderBalanceUpdates } from "@/hooks/use-provider-balance-updates";
 import { toast } from "@/hooks/use-toast";
 import { queryKeys } from "@/lib/query-keys";
 import { invalidateClaudeDesktop } from "@/lib/claude-desktop";
@@ -26,6 +27,8 @@ export function useProviderState() {
   const [exportBusy, setExportBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [appliedNote, setAppliedNote] = useState<NewApiStateChange["applied"]>(null);
+
+  useProviderBalanceUpdates();
 
   const replaceState = (next: NewApiState) => queryClient.setQueryData(STATE_KEY, next);
   const applyChange = (change: NewApiStateChange) => {

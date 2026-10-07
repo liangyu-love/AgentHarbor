@@ -80,6 +80,12 @@ const providersApi = {
     invoke<NewApiProvider>("set_newapi_balance_script", { id, expectedBaseUrl, script }),
   setBalanceSharing: (id: string, expectedBaseUrl: string, shared: boolean) =>
     invoke<NewApiProvider>("set_newapi_balance_sharing", { id, expectedBaseUrl, shared }),
+  setBalanceRefreshInterval: (id: string, expectedBaseUrl: string, intervalMinutes: number) =>
+    invoke<NewApiProvider>("set_newapi_balance_refresh_interval", { id, expectedBaseUrl, intervalMinutes }),
+  onBalanceUpdated: async (callback: () => void): Promise<() => void> => {
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen("provider-balances-updated", callback);
+  },
   fetchModels: (providerId: string | null, baseUrl: string, apiKey: string, protocol: ModelProtocol) =>
     invoke<NewApiModel[]>("fetch_newapi_models", { providerId, baseUrl, apiKey, protocol }),
   previewModelResolutions: (draft: import("@/types/newapi").ProviderModelResolutionDraft) =>

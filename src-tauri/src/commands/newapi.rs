@@ -353,6 +353,49 @@ pub async fn set_newapi_balance_sharing(
 }
 
 #[tauri::command]
+pub async fn set_newapi_balance_refresh_interval(
+    repo: State<'_, Mutex<Repository>>,
+    id: String,
+    expected_base_url: String,
+    interval_minutes: u32,
+) -> Result<ProviderView, String> {
+    let paths = paths(&repo)?;
+    super::blocking(move || {
+        router::set_balance_refresh_interval(&paths, &id, &expected_base_url, interval_minutes)
+    })
+    .await
+}
+
+pub fn spawn_balance_refresh(app: tauri::AppHandle, paths: CodexPaths) {
+    use tauri::Emitter;
+    tauri::async_runtime::spawn(async move {
+        let mut schedule = crate::core::balance_refresh::Schedule::default();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            let query_paths = paths.clone();
+            let update_handle = app.clone();
+            let result = tauri::async_runtime::spawn_blocking(move || {
+                if let Ok(targets) = router::balance_refresh_targets(&query_paths) {
+                    let now = chrono::Utc::now().timestamp();
+                    let proxy = newapi::proxy_from_settings(&query_paths.settings_path);
+                    for id in schedule.due(&targets, now) {
+                        if matches!(router::query_scheduled_provider_balance(&query_paths, &id, &proxy), Ok(Some(_))) {
+                            let _ = update_handle.emit("provider-balances-updated", ());
+                        }
+                    }
+                }
+                schedule
+            })
+            .await;
+            let Ok(next_schedule) = result else {
+                break;
+            };
+            schedule = next_schedule;
+        }
+    });
+}
+
+#[tauri::command]
 pub async fn query_newapi_provider_balance(
     repo: State<'_, Mutex<Repository>>,
     id: String,

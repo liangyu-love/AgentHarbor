@@ -80,6 +80,7 @@ pub fn run() {
             {
                 let paths = repo_state.lock().map(|r| r.paths().clone());
                 if let Ok(paths) = paths {
+                    commands::newapi::spawn_balance_refresh(app.handle().clone(), paths.clone());
                     let reconciliation_paths = paths.clone();
                     tauri::async_runtime::spawn(async move {
                         {
@@ -222,6 +223,7 @@ pub fn run() {
             commands::newapi::test_newapi_provider,
             commands::newapi::fetch_newapi_models,
             commands::newapi::query_newapi_provider_balance,
+            commands::newapi::set_newapi_balance_refresh_interval,
             commands::newapi::set_newapi_balance_credentials,
             commands::newapi::set_newapi_balance_script,
             commands::newapi::set_newapi_balance_sharing,

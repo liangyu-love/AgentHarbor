@@ -102,6 +102,7 @@ export interface NewApiProvider {
   balanceSource: string | null;
   balanceScript?: string;
   balanceSharedFrom?: string | null;
+  balanceRefreshIntervalMinutes?: number;
   testStatus: "untested" | "ok" | "failed";
   testAt: number | null;
   createdAt: number;

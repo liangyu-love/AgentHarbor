@@ -227,7 +227,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
     <section className="space-y-4" aria-labelledby="claude-desktop-title">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-purple-500/10 text-purple-600 dark:text-purple-400">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
             <Monitor className="h-4 w-4" />
           </div>
           <div>
@@ -248,9 +248,9 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
         </div>
       )}
 
-      <div className="group relative overflow-hidden rounded-2xl border border-border/80 bg-card/80 p-5 shadow-sm transition-all duration-300 hover:border-purple-500/40 hover:shadow-md">
+      <div className="group relative overflow-hidden rounded-2xl border border-border/80 bg-card/80 p-5 shadow-sm transition-all duration-300 hover:border-primary/40 hover:shadow-md">
         {/* Subtle top indicator bar */}
-        <div className="absolute left-5 top-0 h-0.5 w-10 rounded-b-sm bg-gradient-to-r from-purple-500 to-indigo-500 transition-all duration-300 group-hover:w-16" />
+        <div className="absolute left-5 top-0 h-0.5 w-10 rounded-b-sm bg-primary transition-all duration-300 group-hover:w-16" />
 
         {status.isPending && (
           <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
@@ -267,10 +267,10 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
                 variant={data.managementState === "managed" ? "secondary" : "outline"}
                 className={cn(
                   "gap-1 font-medium shadow-sm",
-                  data.managementState === "managed" && "bg-purple-500/10 text-purple-700 dark:text-purple-300 border-purple-500/30",
+                  data.managementState === "managed" && "bg-primary/10 text-primary border-primary/30",
                 )}
               >
-                {data.managementState === "managed" && <span className="h-1.5 w-1.5 rounded-full bg-purple-500 animate-pulse motion-reduce:animate-none" />}
+                {data.managementState === "managed" && <span className="h-1.5 w-1.5 rounded-full bg-primary" />}
                 {t(stateKey(data))}
               </Badge>
               <Badge variant="outline" className="text-xs font-normal">
@@ -287,7 +287,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
                 </span>
               )}
               {data.restartRequired && (
-                <Badge variant="destructive" className="ml-auto text-xs animate-pulse motion-reduce:animate-none">
+                <Badge variant="destructive" className="ml-auto text-xs">
                   {t("claudeDesktop.card.requiresRestart")}
                 </Badge>
               )}
@@ -437,7 +437,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
                   variant={data.isManaged ? "outline" : "default"}
                   className={cn(
                     "h-8 gap-1.5 rounded-lg text-xs font-semibold shadow-sm",
-                    !data.isManaged && "bg-purple-600 text-white hover:bg-purple-700 dark:bg-purple-600",
+                    !data.isManaged && "bg-primary text-primary-foreground hover:bg-primary/90",
                   )}
                   disabled={busy || !hasSavedCards || (!actionOf("applyDirect")?.enabled && !actionOf("applyRouter")?.enabled)}
                   onClick={openDialog}

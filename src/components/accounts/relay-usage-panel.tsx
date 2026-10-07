@@ -8,6 +8,7 @@ import { UsageBreakdown } from "@/components/accounts/model-usage-breakdown";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
+import { useProviderBalanceUpdates } from "@/hooks/use-provider-balance-updates";
 import type { RelayUsagePayload, RelayUsageTotals } from "@/types";
 import type { NewApiState } from "@/types/newapi";
 import { formatCost, costLabel } from "@/lib/format-cost";
@@ -178,6 +179,7 @@ function RelayRequests({ relay }: { relay: RelayUsagePayload }) {
 }
 
 function ProviderQuota({ relay, onManageProviders }: { relay: RelayUsagePayload; onManageProviders?: () => void }) {
+  useProviderBalanceUpdates();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [refreshingId, setRefreshingId] = useState<string | null>(null);

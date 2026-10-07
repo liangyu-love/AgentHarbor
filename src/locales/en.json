@@ -864,7 +864,8 @@
       "modelRequired": "Choose a model to test.",
       "networkMode": "Invalid network mode. Choose the global proxy or direct.",
       "balanceScript": "Invalid script, extraction failure or execution timeout. Check request / extractor.",
-      "balanceScriptOrigin": "Query URL must have the same scheme, host and port as the provider."
+      "balanceScriptOrigin": "Query URL must have the same scheme, host and port as the provider.",
+      "balanceInterval": "Enter a whole number of minutes from 0 to 10080."
     },
     "balanceRemaining": "Remaining balance",
     "useDefault": "Blank = default",
@@ -1211,7 +1212,8 @@
     "directConnection": "Direct connection",
     "gatewayConnection": "Local gateway",
     "connectionDisabled": "Disconnected",
-    "gatewayAddress": "AgentHarbor gateway :{{port}}"
+    "gatewayAddress": "AgentHarbor gateway :{{port}}",
+    "balanceRefreshInterval": "Auto-query interval (minutes; 0 disables automatic queries)"
   },
   "avatar": {
     "title": "App avatar",

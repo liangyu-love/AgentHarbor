@@ -2,6 +2,15 @@ import assert from "node:assert/strict";
 import path from "node:path";
 
 export async function testProviderFeedback({ page, reset, captureDir }) {
+  await reset("usage");
+  await page.getByRole("tab", { name: "供应商与额度" }).click();
+  await page.getByText("12.5 USD").waitFor();
+  await page.evaluate(() => window.review.emitBalanceUpdate("group-a", 98));
+  await page.getByText("98 USD", { exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => window.review.balanceRequests.length), 0,
+    "usage-only view receives saved automatic-query results without issuing a query itself");
+  console.log("PASS account usage page receives background balance updates without mounting provider cards");
+
   await reset("groups");
   await page.getByRole("button", { name: "添加中转模型", exact: true }).click();
   const dialog = page.getByRole("dialog");
@@ -58,6 +67,52 @@ export async function testProviderFeedback({ page, reset, captureDir }) {
   assert.equal(await page.evaluate(() => window.review.balanceRequests[0]), "group-b");
   await page.evaluate(() => window.review.balanceResolvers[0]());
   console.log("PASS shared MiMo balance honors its owner script without silently changing the existing automatic-query behavior");
+
+  await loadProvider({ balanceRefreshIntervalMinutes: 0 });
+  await page.getByRole("button", { name: "查询余额 Quota fixture", exact: true }).click();
+  const interval = dialog.locator("#balance-refresh-interval");
+  const saveInterval = dialog.getByRole("button", { name: "保存", exact: true });
+  assert.equal(await interval.inputValue(), "0", "existing cards have periodic queries disabled by default");
+  await interval.fill("5");
+  await saveInterval.click();
+  await page.waitForFunction(() => window.review.getState().providers[0].balanceRefreshIntervalMinutes === 5);
+  assert.deepEqual(await page.evaluate(() => window.review.balanceIntervalSaves), [
+    { id: "group-a", expectedBaseUrl: "https://api.xiaomimimo.com/v1", intervalMinutes: 5 },
+  ]);
+  assert.deepEqual(await page.evaluate(() => window.review.balanceRequests), [], "saving an interval does not issue a manual balance request");
+  await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+  await page.getByRole("button", { name: "查询余额 Quota fixture", exact: true }).click();
+  assert.equal(await interval.inputValue(), "5");
+  await interval.fill("1.5");
+  assert.equal(await saveInterval.isDisabled(), true);
+  await dialog.getByRole("alert").getByText("请输入 0 到 10080 之间的整数分钟。", { exact: true }).waitFor();
+  await interval.fill("10");
+  await page.evaluate(() => { window.review.failBalanceIntervalSave = true; });
+  await saveInterval.click();
+  const storageError = await page.evaluate(() => window.review.t("newapi.errors.storage"));
+  await dialog.getByRole("alert").getByText(storageError, { exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => window.review.getState().providers[0].balanceRefreshIntervalMinutes), 5);
+  assert.equal(await interval.inputValue(), "10", "a failed save retains the draft and last saved schedule");
+  await page.evaluate(() => { window.review.failBalanceIntervalSave = false; });
+  await interval.fill("0");
+  await saveInterval.click();
+  await page.waitForFunction(() => window.review.getState().providers[0].balanceRefreshIntervalMinutes === 0);
+  await page.waitForFunction(() => window.review.balanceUpdateListeners?.size > 0);
+  await page.evaluate(() => window.review.emitBalanceUpdate("group-a", 99));
+  await dialog.locator("strong").filter({ hasText: /^99\s/ }).waitFor();
+  assert.deepEqual(await page.evaluate(() => window.review.balanceRequests), []);
+  if (captureDir) await page.screenshot({ path: path.join(captureDir, "balance-query-interval.png"), animations: "disabled" });
+  console.log("PASS balance intervals save/reopen/disable, reject fractions, preserve failed drafts, and receive background updates without manual queries");
+
+  await loadProvider({ balanceRefreshIntervalMinutes: 5 }, true);
+  await page.getByRole("button", { name: "下一个站点配置" }).click();
+  await page.getByRole("button", { name: "查询余额 Shared fixture", exact: true }).click();
+  assert.equal(await interval.inputValue(), "5");
+  await interval.fill("15");
+  await saveInterval.click();
+  await page.waitForFunction(() => window.review.getState().providers.every(provider => provider.balanceRefreshIntervalMinutes === 15));
+  assert.deepEqual(await page.evaluate(() => window.review.balanceRequests), []);
+  console.log("PASS shared cards keep one saved balance cadence for their balance owner");
 
   const entry = (remaining, total, label) => ({ remaining, total, used: total == null ? null : total - remaining, unit: "credits", valid: remaining > 0, label, resetsAt: "2030-01-01T00:00:00Z" });
   const commandBalance = { remaining: 62, used: 8, rawQuota: 62, unit: "credits", quotaPerUnit: null,

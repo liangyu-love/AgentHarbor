@@ -100,6 +100,8 @@ pub struct Provider {
     pub balance: Option<newapi::Balance>,
     pub balance_source: Option<String>,
     pub balance_script: String,
+    /// Zero disables periodic balance queries; shared cards use their owner's setting.
+    pub balance_refresh_interval_minutes: u32,
     /// Cards on the same site share the first card's balance until customized.
     pub balance_independent: bool,
     pub test_status: String,
@@ -196,6 +198,7 @@ pub struct ProviderView {
     pub balance_source: Option<String>,
     pub balance_script: String,
     pub balance_shared_from: Option<String>,
+    pub balance_refresh_interval_minutes: u32,
     pub test_status: String,
     pub test_at: Option<i64>,
     pub created_at: i64,
@@ -226,6 +229,7 @@ impl Provider {
             balance_source: self.balance_source.clone(),
             balance_script: self.balance_script.clone(),
             balance_shared_from: None,
+            balance_refresh_interval_minutes: self.balance_refresh_interval_minutes,
             test_status: self.test_status.clone(),
             test_at: self.test_at,
             created_at: self.created_at,
@@ -925,6 +929,7 @@ fn balance_view(store: &Store, provider: &Provider) -> ProviderView {
         view.balance_source = owner.balance_source.clone();
         view.balance_script = owner.balance_script.clone();
         view.balance_shared_from = Some(owner.id.clone());
+        view.balance_refresh_interval_minutes = owner.balance_refresh_interval_minutes;
     }
     view
 }
@@ -1638,6 +1643,7 @@ pub fn set_balance_credentials(
     if !provider.balance_independent && owner.id != provider.id {
         provider.balance_script = owner.balance_script;
         provider.access_token = owner.access_token;
+        provider.balance_refresh_interval_minutes = owner.balance_refresh_interval_minutes;
     }
     provider.balance_independent = true;
     provider.user_id = user_id;
@@ -1676,6 +1682,7 @@ pub fn set_balance_script(
     if !provider.balance_independent && owner.id != provider.id {
         provider.user_id = owner.user_id;
         provider.access_token = owner.access_token;
+        provider.balance_refresh_interval_minutes = owner.balance_refresh_interval_minutes;
     }
     provider.balance_independent = true;
     provider.balance_script = script.trim().to_owned();
@@ -1717,6 +1724,7 @@ pub fn set_balance_sharing(
         provider.balance_script = owner.balance_script;
         provider.balance = owner.balance;
         provider.balance_source = owner.balance_source;
+        provider.balance_refresh_interval_minutes = owner.balance_refresh_interval_minutes;
     } else if shared && owner.id != provider.id {
         provider.balance = None;
         provider.balance_source = None;
@@ -1730,11 +1738,90 @@ pub fn set_balance_sharing(
     ))
 }
 
+pub fn set_balance_refresh_interval(
+    paths: &CodexPaths,
+    id: &str,
+    expected_base_url: &str,
+    interval_minutes: u32,
+) -> Result<ProviderView, String> {
+    if interval_minutes > super::balance_refresh::MAX_INTERVAL_MINUTES {
+        return Err("newapi.errors.balanceInterval".into());
+    }
+    let _guard = store_write_guard()?;
+    let mut store = load_store_unlocked(paths)?;
+    let provider = store
+        .providers
+        .iter()
+        .find(|provider| provider.id == id)
+        .ok_or("newapi.errors.notFound")?;
+    if provider.base_url != expected_base_url {
+        return Err("newapi.errors.changed".into());
+    }
+    let owner_id = balance_owner(&store, provider).id.clone();
+    let owner = store
+        .providers
+        .iter_mut()
+        .find(|provider| provider.id == owner_id)
+        .unwrap();
+    owner.balance_refresh_interval_minutes = interval_minutes;
+    owner.updated_at = now();
+    save_store_unlocked(paths, &store)?;
+    Ok(balance_view(
+        &store,
+        store
+            .providers
+            .iter()
+            .find(|provider| provider.id == id)
+            .unwrap(),
+    ))
+}
+
+pub fn balance_refresh_targets(
+    paths: &CodexPaths,
+) -> Result<Vec<super::balance_refresh::Target>, String> {
+    let store = load_store(paths)?;
+    Ok(store
+        .providers
+        .iter()
+        .filter(|provider| {
+            provider.balance_refresh_interval_minutes > 0
+                && balance_owner(&store, provider).id == provider.id
+        })
+        .map(|provider| super::balance_refresh::Target {
+            id: provider.id.clone(),
+            interval_minutes: provider.balance_refresh_interval_minutes,
+            checked_at: provider
+                .balance
+                .as_ref()
+                .map(|balance| balance.checked_at)
+                .unwrap_or(provider.updated_at),
+        })
+        .collect())
+}
+
 pub fn query_provider_balance(
     paths: &CodexPaths,
     id: &str,
     proxy: &ApiProxyConfigPayload,
 ) -> Result<ProviderView, String> {
+    query_balance(paths, id, proxy, false)
+        .map(|view| view.expect("manual balance query always returns a provider"))
+}
+
+pub fn query_scheduled_provider_balance(
+    paths: &CodexPaths,
+    id: &str,
+    proxy: &ApiProxyConfigPayload,
+) -> Result<Option<ProviderView>, String> {
+    query_balance(paths, id, proxy, true)
+}
+
+fn query_balance(
+    paths: &CodexPaths,
+    id: &str,
+    proxy: &ApiProxyConfigPayload,
+    scheduled: bool,
+) -> Result<Option<ProviderView>, String> {
     let snapshot = {
         let _guard = store_write_guard()?;
         let store = load_store_unlocked(paths)?;
@@ -1743,7 +1830,13 @@ pub fn query_provider_balance(
             .iter()
             .find(|p| p.id == id)
             .ok_or("newapi.errors.notFound")?;
-        balance_owner(&store, requested).clone()
+        let owner = balance_owner(&store, requested);
+        // Recheck at execution time: another card may have been querying while
+        // the user disabled this owner's schedule or changed balance sharing.
+        if scheduled && (owner.balance_refresh_interval_minutes == 0 || owner.id != id) {
+            return Ok(None);
+        }
+        owner.clone()
     };
     let connection = newapi::Connection {
         base_url: snapshot.base_url.clone(),
@@ -1789,10 +1882,10 @@ pub fn query_provider_balance(
     provider.balance = Some(balance);
     provider.balance_source = Some(source.into());
     save_store_unlocked(paths, &store)?;
-    Ok(balance_view(
+    Ok(Some(balance_view(
         &store,
         store.providers.iter().find(|p| p.id == id).unwrap(),
-    ))
+    )))
 }
 
 pub fn set_smart_routing(paths: &CodexPaths, enabled: bool) -> Result<StateChange, String> {
@@ -5138,6 +5231,53 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         assert_eq!(own.balance_shared_from, None);
         assert_eq!(own.user_id, Some(7));
         assert_eq!(own.balance.unwrap().remaining, 12.5);
+    }
+
+    #[test]
+    fn balance_refresh_interval_defaults_persists_and_follows_shared_owner() {
+        let legacy: Provider = serde_json::from_value(serde_json::json!({"id":"legacy"})).unwrap();
+        assert_eq!(legacy.balance_refresh_interval_minutes, 0);
+        let (_dir, paths) = paths();
+        let first = save_provider(&paths, input("First", "https://relay.example.com")).unwrap();
+        let first_id = first.state.providers[0].id.clone();
+        let second = save_provider(&paths, input("Second", "https://relay.example.com")).unwrap();
+        let second_id = second.state.providers[1].id.clone();
+        let url = "https://relay.example.com/";
+        let before = load_store(&paths).unwrap();
+        let shared = set_balance_refresh_interval(&paths, &second_id, url, 5).unwrap();
+        assert_eq!(shared.balance_refresh_interval_minutes, 5);
+        assert_eq!(
+            shared.balance_shared_from.as_deref(),
+            Some(first_id.as_str())
+        );
+        let persisted = load_store(&paths).unwrap();
+        assert_eq!(persisted.providers[0].balance_refresh_interval_minutes, 5);
+        assert_eq!(persisted.providers[1].balance_refresh_interval_minutes, 0);
+        assert_eq!(persisted.providers[0].api_key, before.providers[0].api_key);
+        assert_eq!(
+            persisted.providers[0].access_token,
+            before.providers[0].access_token
+        );
+        let targets = balance_refresh_targets(&paths).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].id, first_id);
+        assert_eq!(
+            set_balance_refresh_interval(&paths, &second_id, "https://wrong.example/", 1)
+                .unwrap_err(),
+            "newapi.errors.changed"
+        );
+        assert_eq!(
+            set_balance_refresh_interval(&paths, &second_id, url, 10_081).unwrap_err(),
+            "newapi.errors.balanceInterval"
+        );
+        let own = set_balance_sharing(&paths, &second_id, url, false).unwrap();
+        assert_eq!(own.balance_refresh_interval_minutes, 5);
+        assert_eq!(balance_refresh_targets(&paths).unwrap().len(), 2);
+        set_balance_refresh_interval(&paths, &second_id, url, 0).unwrap();
+        assert_eq!(balance_refresh_targets(&paths).unwrap().len(), 1);
+        set_balance_refresh_interval(&paths, &first_id, url, 0).unwrap();
+        assert!(balance_refresh_targets(&paths).unwrap().is_empty());
+        assert!(query_scheduled_provider_balance(&paths, &first_id, &ApiProxyConfigPayload::default()).unwrap().is_none());
     }
 
     #[test]

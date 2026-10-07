@@ -864,7 +864,8 @@
       "modelRequired": "请选择要测试的模型。",
       "networkMode": "网络模式无效，请选择跟随全局代理或直连。",
       "balanceScript": "脚本无效、提取失败或执行超时，请检查 request / extractor。",
-      "balanceScriptOrigin": "查询地址必须与当前供应商同源（协议、域名和端口一致）。"
+      "balanceScriptOrigin": "查询地址必须与当前供应商同源（协议、域名和端口一致）。",
+      "balanceInterval": "请输入 0 到 10080 之间的整数分钟。"
     },
     "balanceRemaining": "剩余额度",
     "useDefault": "留空使用默认",
@@ -1211,7 +1212,8 @@
     "directConnection": "直连中转",
     "gatewayConnection": "本地网关",
     "connectionDisabled": "未连接",
-    "gatewayAddress": "AgentHarbor 路由网关 :{{port}}"
+    "gatewayAddress": "AgentHarbor 路由网关 :{{port}}",
+    "balanceRefreshInterval": "自动查询间隔（分钟，0 表示不自动查询）"
   },
   "avatar": {
     "title": "应用头像",

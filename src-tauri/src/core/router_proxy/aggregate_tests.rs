@@ -366,6 +366,36 @@ fn assert_one_m_wire(
     }
 }
 
+// This is the same payload consumed by the account page, loaded from the
+// persisted ledger after downstream JSON or SSE has been fully delivered.
+fn assert_aggregate_accounting(paths: &CodexPaths, store: &router::Store, per_provider: u64) {
+    let usage = relay_usage::load(&paths.app_data_dir).unwrap();
+    let count = store.providers.len() as u64 * per_provider;
+    assert_eq!(usage.all_time.request_count, count);
+    assert_eq!(usage.all_time.reported_count, count);
+    assert_eq!(usage.all_time.successful_count, count);
+    assert_eq!(usage.all_time.total_tokens, count * 6);
+    assert_eq!(usage.recent.len() as u64, count);
+    assert_eq!(usage.by_provider.len(), store.providers.len());
+    assert_eq!(usage.by_model.len(), store.providers.len());
+    let attempts: std::collections::HashSet<_> = usage.recent.iter()
+        .map(|record| record.attempt_id.as_str()).collect();
+    assert_eq!(attempts.len() as u64, count, "one record per actual inference attempt");
+    for provider in &store.providers {
+        let by_provider = usage.by_provider.iter().find(|row| row.provider_id == provider.id).unwrap();
+        assert_eq!(by_provider.provider_name, provider.name);
+        assert_eq!(by_provider.totals.request_count, per_provider);
+        assert_eq!(by_provider.totals.total_tokens, per_provider * 6);
+        let by_model = usage.by_model.iter().find(|row| row.provider_id == provider.id).unwrap();
+        assert_eq!(by_model.model, provider.model, "group by billed wire model, not public alias");
+        assert_eq!(by_model.totals.request_count, per_provider);
+        assert_eq!(by_model.totals.total_tokens, per_provider * 6);
+        assert!(usage.recent.iter().filter(|record| record.provider_id == provider.id)
+            .all(|record| record.model == provider.model && record.usage_reported
+                && record.tokens.input_tokens == 4 && record.tokens.output_tokens == 2));
+    }
+}
+
 #[test]
 fn mixed_protocol_rotation_preserves_wire_models_public_projection_and_original_observation() {
     let _guard = global_router_test_lock();
@@ -435,6 +465,7 @@ fn mixed_protocol_rotation_preserves_wire_models_public_projection_and_original_
             a.count.load(Ordering::SeqCst) + b.count.load(Ordering::SeqCst),
             4
         );
+        assert_aggregate_accounting(&paths, &store, 2);
     });
 }
 
@@ -497,6 +528,7 @@ fn aggregate_chat_ingress_rotates_all_egresses_with_json_and_sse() {
                 }
             }
             wait_for_released_lease().await;
+            assert_aggregate_accounting(&paths, &store, 2);
         }
     });
 }
@@ -1501,6 +1533,7 @@ fn desktop_aggregate_projects_public_identity_and_keeps_one_m_wire_contract_acro
                 no_longer_large.bytes().await.unwrap();
                 assert_eq!(upstream.count.load(Ordering::SeqCst), 2);
                 wait_for_released_lease().await;
+                assert_aggregate_accounting(&paths, &store, 2);
             }
         }
     });

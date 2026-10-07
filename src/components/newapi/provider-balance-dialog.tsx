@@ -22,6 +22,7 @@ export function ProviderBalanceDialog({ provider, store, onClose }: {
   const [token, setToken] = useState("");
   const [script, setScript] = useState(provider.balanceScript ?? "");
   const [custom, setCustom] = useState(!!provider.balanceScript);
+  const [intervalMinutes, setIntervalMinutes] = useState(String(provider.balanceRefreshIntervalMinutes ?? 0));
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const started = useRef(false);
@@ -51,11 +52,18 @@ export function ProviderBalanceDialog({ provider, store, onClose }: {
   })();
   const detailedBalance = commandCode || opencodeGo;
   const dirty = (custom ? script : "") !== (provider.balanceScript ?? "");
+  const intervalValue = Number(intervalMinutes);
+  const intervalValid = /^\d+$/.test(intervalMinutes) && Number.isInteger(intervalValue) && intervalValue >= 0 && intervalValue <= 10_080;
+  const intervalDirty = intervalValue !== (provider.balanceRefreshIntervalMinutes ?? 0);
   const entries: NonNullable<NewApiBalance["entries"]> = balance?.entries?.length ? balance.entries : balance ? [{
     remaining: balance.conversionAvailable ? balance.remaining : balance.rawQuota,
     used: balance.used, total: null, unit: balance.unit, valid: balance.remaining > 0,
   }] : [];
   const number = (value: number) => new Intl.NumberFormat(i18n.language, { maximumFractionDigits: 4 }).format(value);
+
+  useEffect(() => {
+    setIntervalMinutes(String(provider.balanceRefreshIntervalMinutes ?? 0));
+  }, [provider.balanceRefreshIntervalMinutes]);
 
   useEffect(() => {
     if (started.current) return;
@@ -223,6 +231,31 @@ export function ProviderBalanceDialog({ provider, store, onClose }: {
               </div>
             </div>
           )}
+        </div>
+
+        <div className="space-y-2 rounded-xl border border-border/60 bg-muted/15 p-3.5">
+          <Label htmlFor="balance-refresh-interval" className="text-xs font-medium">
+            {t("newapi.balanceRefreshInterval")}
+          </Label>
+          <div className="flex items-center gap-2">
+            <Input id="balance-refresh-interval" type="number" min={0} max={10_080} step={1}
+              value={intervalMinutes} disabled={busy} className="h-8 min-w-0 flex-1 text-xs"
+              aria-invalid={!intervalValid}
+              onChange={event => setIntervalMinutes(event.target.value)} />
+            <Button size="sm" disabled={busy || !intervalValid || !intervalDirty} onClick={async () => {
+              if (saveInFlight.current) return;
+              saveInFlight.current = true;
+              setSaving(true);
+              setSaveError(null);
+              try {
+                const next = await api.providers.setBalanceRefreshInterval(provider.id, initialUrl.current, intervalValue);
+                await store.state.refetch();
+                setIntervalMinutes(String(next.balanceRefreshIntervalMinutes ?? 0));
+              } catch (cause) { setSaveError(formatInvokeError(cause)); }
+              finally { saveInFlight.current = false; setSaving(false); }
+            }}>{t("common.save")}</Button>
+          </div>
+          {!intervalValid && <p role="alert" className="text-xs text-destructive">{t("newapi.errors.balanceInterval")}</p>}
         </div>
 
         {/* Custom Script Section */}
