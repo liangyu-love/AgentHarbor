@@ -209,7 +209,7 @@ export function useThreadList(source: ConversationSource = "codex", setSource: (
 
   const handleRefresh = async () => {
     await refreshAction.run(async () => {
-      await threadsQuery.refetch();
+      await Promise.all([threadsQuery.refetch(), isCodex && routeOverviewQuery.refetch()]);
     });
   };
 
@@ -222,7 +222,8 @@ export function useThreadList(source: ConversationSource = "codex", setSource: (
   const routeStates = routeOverviewQuery.data?.states ?? {};
   const routerActive = routeOverviewQuery.data?.routerActive ?? false;
   const unroutedIds = useMemo(() => [...new Set(threads
-    .filter(thread => thread.id && routeStates[thread.id] && routeStates[thread.id] !== "routed")
+    .filter(thread => thread.id && (thread.threadSource === "rollout" ||
+      (routeStates[thread.id] && routeStates[thread.id] !== "routed")))
     .map(thread => thread.id))], [threads, routeStates]);
 
   // Batch adoption into the Router: preview, confirm, then one backend call

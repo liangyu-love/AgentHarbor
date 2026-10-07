@@ -21,6 +21,9 @@ pub enum ThreadRouteState {
 pub struct ThreadRouteOverview {
     /// Whether config.toml is AgentHarbor's current Router setup.
     pub router_active: bool,
+    /// Catalog rows still bound to the Router provider, even after a mode
+    /// change has made that provider unusable.
+    pub router_provider_threads: usize,
     /// Thread ID to route state, for threads in the Codex SQLite catalog.
     pub states: BTreeMap<String, ThreadRouteState>,
 }
@@ -77,7 +80,12 @@ pub fn route_overview(paths: &CodexPaths) -> Result<ThreadRouteOverview, CoreErr
     let router_active = owned_router_port(paths).is_ok();
     let defined = defined_providers(&paths.config_path)?;
     let mut states = BTreeMap::new();
-    for (thread_id, provider) in database_providers(&paths.codex_state_db_path)? {
+    let providers = database_providers(&paths.codex_state_db_path)?;
+    let router_provider_threads = providers
+        .iter()
+        .filter(|(_, provider)| provider == router::CATALOG_PROVIDER_KEY)
+        .count();
+    for (thread_id, provider) in providers {
         let state = if provider == router::CATALOG_PROVIDER_KEY && router_active {
             ThreadRouteState::Routed
         } else if provider.eq_ignore_ascii_case("openai") || defined.contains(&provider) {
@@ -89,6 +97,7 @@ pub fn route_overview(paths: &CodexPaths) -> Result<ThreadRouteOverview, CoreErr
     }
     Ok(ThreadRouteOverview {
         router_active,
+        router_provider_threads,
         states,
     })
 }
@@ -162,14 +171,29 @@ pub fn apply_batch(
     let was_running = process::is_codex_app_running();
     process::stop_codex_for_thread_adoption()?;
     let outcome = apply_batch_stopped(paths, candidates, target, true);
-    let reopen_error = (was_running && outcome.as_ref().is_ok_and(|_| safe_to_reopen(paths)))
-        .then(|| process::launch_codex_app(&newapi::proxy_from_settings(&paths.settings_path)).err())
-        .flatten()
-        .map(|error| error.to_string());
-    outcome.map(|result| ThreadBatchResult {
-        reopen_error,
-        ..result
-    })
+    // A failed preflight after shutdown (for example, a CLI writer still
+    // running) must not leave a previously open desktop closed.
+    let reopen_error = if !was_running {
+        None
+    } else if safe_to_reopen(paths) {
+        process::launch_codex_app(&newapi::proxy_from_settings(&paths.settings_path))
+            .err()
+            .map(|error| error.to_string())
+    } else {
+        Some("Codex stayed closed because an unfinished thread-recovery journal needs repair".into())
+    };
+    match outcome {
+        Ok(result) => Ok(ThreadBatchResult {
+            reopen_error,
+            ..result
+        }),
+        Err(error) => match reopen_error {
+            Some(reopen) => Err(CoreError::OperationFailed(format!(
+                "{error}; CODEX_REOPEN_FAILED: {reopen}"
+            ))),
+            None => Err(error),
+        },
+    }
 }
 
 fn apply_batch_stopped(
@@ -187,22 +211,19 @@ fn apply_batch_stopped(
         failed: Vec::new(),
         reopen_error: None,
     };
-    for candidate in candidates {
+    for (index, candidate) in candidates.iter().enumerate() {
         // Shutdown may flush history, and an earlier failure may leave the
         // Router unavailable; re-check before every thread.
-        let applied = validate_batch_target(
-            paths,
-            &resolve_provider_target(&paths.config_path)?.configured,
-            target,
-        )
-        .and_then(|()| {
+        let applied = resolve_provider_target(&paths.config_path)
+            .and_then(|provider| validate_batch_target(paths, &provider.configured, target))
+            .and_then(|()| {
             apply_thread_recovery_locked(
                 paths,
                 &candidate.thread_id,
                 &candidate.revision,
                 check_writer_processes,
             )
-        });
+            });
         match applied {
             Ok(applied) if applied.changed => result.changed += 1,
             Ok(_) => result.unchanged += 1,
@@ -217,6 +238,14 @@ fn apply_batch_stopped(
                 // An unfinished journal blocks every later thread; stop here
                 // and leave it for the single-thread recovery flow.
                 if inspect_pending_journal_blocks(paths) {
+                    result.failed.extend(candidates[index + 1..].iter().map(|remaining| {
+                        ThreadBatchSkip {
+                            thread_id: remaining.thread_id.clone(),
+                            status: ThreadRecoveryStatus::JournalBlocked,
+                            reason: "An unfinished recovery journal blocked the remaining batch"
+                                .into(),
+                        }
+                    }));
                     break;
                 }
             }
@@ -349,6 +378,7 @@ mod tests {
 
         let overview = route_overview(&paths).unwrap();
         assert!(overview.router_active);
+        assert_eq!(overview.router_provider_threads, 0);
         assert_eq!(overview.states[THREAD_ID], ThreadRouteState::Direct);
         assert_eq!(overview.states[SECOND], ThreadRouteState::Broken);
         let ids = [THREAD_ID.to_owned(), SECOND.to_owned()];
@@ -385,6 +415,7 @@ mod tests {
         router::set_smart_routing(&paths, false).unwrap();
         let overview = route_overview(&paths).unwrap();
         assert!(!overview.router_active);
+        assert_eq!(overview.router_provider_threads, 2);
         assert_eq!(overview.states[THREAD_ID], ThreadRouteState::Broken);
         let routed = threads_with_provider(&paths, router::CATALOG_PROVIDER_KEY).unwrap();
         let preview = preview_batch(&paths, &routed, ThreadBatchTarget::Restore).unwrap();
@@ -477,5 +508,39 @@ mod tests {
         } else {
             assert_eq!(result.changed, 0);
         }
+    }
+
+    #[test]
+    fn batch_reports_each_candidate_when_config_becomes_unreadable() {
+        let (_temp, paths) = fixture("openai", router::CATALOG_PROVIDER_KEY);
+        add_thread(&paths, SECOND, router::CATALOG_PROVIDER_KEY);
+        let ids = [THREAD_ID.to_owned(), SECOND.to_owned()];
+        let ready = preview_batch(&paths, &ids, ThreadBatchTarget::Restore)
+            .unwrap()
+            .ready;
+        std::fs::write(&paths.config_path, "not valid = [").unwrap();
+
+        let result = apply_batch_stopped(&paths, &ready, ThreadBatchTarget::Restore, false).unwrap();
+        assert_eq!(result.changed, 0);
+        assert_eq!(result.failed.len(), 2);
+        assert_eq!(result.failed[0].thread_id, THREAD_ID);
+        assert_eq!(result.failed[1].thread_id, SECOND);
+    }
+
+    #[test]
+    fn journal_block_reports_unprocessed_candidates() {
+        let (_temp, paths) = fixture("openai", router::CATALOG_PROVIDER_KEY);
+        add_thread(&paths, SECOND, router::CATALOG_PROVIDER_KEY);
+        let ids = [THREAD_ID.to_owned(), SECOND.to_owned()];
+        let ready = preview_batch(&paths, &ids, ThreadBatchTarget::Restore)
+            .unwrap()
+            .ready;
+        std::fs::write(journal_path(&paths), "invalid journal").unwrap();
+
+        let result = apply_batch_stopped(&paths, &ready, ThreadBatchTarget::Restore, false).unwrap();
+        assert_eq!(result.changed, 0);
+        assert_eq!(result.failed.len(), 2);
+        assert_eq!(result.failed[1].thread_id, SECOND);
+        assert_eq!(result.failed[1].status, ThreadRecoveryStatus::JournalBlocked);
     }
 }

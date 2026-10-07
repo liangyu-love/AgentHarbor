@@ -284,6 +284,14 @@ pub fn apply_catalog_fetch(
     catalog: Result<Vec<u8>, String>,
     refresh: Option<CredentialRefresh>,
 ) -> bool {
+    // A fetch may finish after the account was deleted. Never recreate its
+    // catalog or apply a credential refresh to a removed account.
+    let Ok(registry) = repo.load_registry_or_empty() else {
+        return false;
+    };
+    if !registry.items.iter().any(|item| item.account_key == account_key) {
+        return false;
+    }
     if let Some(refresh) = &refresh {
         if let Err(error) = apply_credential_refresh(repo, account_key, refresh) {
             log::warn!("Credential refresh from model catalog fetch was not stored: {error}");
@@ -306,9 +314,7 @@ pub fn apply_catalog_fetch(
             false
         }
     };
-    let active = repo
-        .load_registry_or_empty()
-        .is_ok_and(|registry| registry.active_account_key.as_deref() == Some(account_key));
+    let active = registry.active_account_key.as_deref() == Some(account_key);
     if stored && active {
         refresh_routing_catalog(repo);
     }
@@ -341,6 +347,12 @@ pub fn delete(repo: &Repository, account_key: &str) -> Result<CodexAccountListPa
         .retain(|item| item.account_key != account_key);
     registry.updated_at = current_timestamp();
     repo.save_registry(&registry)?;
+    if let Err(error) = super::model_catalog::remove_account_catalog(
+        &repo.paths().app_data_dir,
+        account_key,
+    ) {
+        log::warn!("Deleted account's model catalog could not be removed: {error}");
+    }
     Ok(payload(registry))
 }
 
@@ -777,6 +789,30 @@ mod tests {
         assert_eq!(slugs(), ["free-model"]);
         switch(&repo, &plus).unwrap();
         assert_eq!(slugs(), ["plus-model"]);
+
+        // An in-flight fetch finishing after deletion must not resurrect the
+        // removed catalog. Re-registering the account requires a fresh fetch.
+        switch(&repo, &free).unwrap();
+        delete(&repo, &plus).unwrap();
+        let plus_catalog = repo
+            .paths()
+            .app_data_dir
+            .join(format!("model-capabilities-{plus}.json"));
+        assert!(!plus_catalog.exists());
+        assert!(!apply_catalog_fetch(
+            &repo,
+            &plus,
+            Ok(br#"{"models":[{"slug":"late-model"}]}"#.to_vec()),
+            None
+        ));
+        assert!(!plus_catalog.exists());
+        write_auth(&source, "plus");
+        register_login(&repo, &source).unwrap();
+        assert!(super::super::model_catalog::account_catalog_due(
+            &repo.paths().app_data_dir,
+            &plus,
+            std::time::Duration::from_secs(30 * 60),
+        ));
     }
 
     #[test]

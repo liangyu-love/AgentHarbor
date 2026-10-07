@@ -240,7 +240,12 @@ fn account_catalog_with_backup_mode(
     // Codex owns one global models_cache.json and stops refreshing it while a
     // model_catalog_json is injected. Use it only when Codex wrote it after this
     // login was observed; otherwise use this account's own fetched catalog.
-    let switched_at = observe_account(app_data, &account_key, write_backup);
+    let switched_at = observe_account(
+        app_data,
+        &account_key,
+        &codex_home.join("auth.json"),
+        write_backup,
+    );
     let global = load_with_backup_mode(&source, None, write_backup);
     let global = (!global.stale && modified_millis(&source) > switched_at).then_some(global);
     let stored_path = account_catalog_path(app_data, &account_key);
@@ -285,6 +290,14 @@ fn account_catalog_path(app_data: &Path, account_key: &str) -> PathBuf {
     app_data.join(format!("model-capabilities-{account_key}.json"))
 }
 
+pub(crate) fn remove_account_catalog(app_data: &Path, account_key: &str) -> std::io::Result<()> {
+    match std::fs::remove_file(account_catalog_path(app_data, account_key)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 fn now_millis() -> u128 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -315,13 +328,17 @@ fn write_marker(app_data: &Path, account_key: &str, switched_at: u128) -> Result
 }
 
 /// The time from which the global cache may belong to `account_key`. A login
-/// changed outside AgentHarbor is recorded when it is first observed. The first
-/// observation after upgrading trusts the existing cache, as before.
-fn observe_account(app_data: &Path, account_key: &str, persist: bool) -> u128 {
+/// changed outside AgentHarbor is recorded when it is first observed. Before
+/// a marker exists, the global cache must be newer than the current auth file.
+fn observe_account(app_data: &Path, account_key: &str, auth_path: &Path, persist: bool) -> u128 {
     match read_marker(app_data) {
         Some(marker) if marker.account_key == account_key => marker.switched_at,
         previous => {
-            let switched_at = if previous.is_some() { now_millis() } else { 0 };
+            let switched_at = if previous.is_some() {
+                now_millis()
+            } else {
+                modified_millis(auth_path)
+            };
             if persist {
                 let _ = write_marker(app_data, account_key, switched_at);
             }
@@ -368,6 +385,9 @@ fn write_account_catalog(
 
 /// Whether this account's own catalog is missing or older than `max_age`.
 pub(crate) fn account_catalog_due(app_data: &Path, account_key: &str, max_age: Duration) -> bool {
+    if max_age.is_zero() {
+        return true;
+    }
     let modified = modified_millis(&account_catalog_path(app_data, account_key));
     modified == 0 || now_millis().saturating_sub(modified) > max_age.as_millis()
 }
@@ -423,8 +443,9 @@ mod tests {
         };
         let pause = || std::thread::sleep(std::time::Duration::from_millis(20));
 
-        // The first observation after upgrading trusts the existing cache.
+        // The first observation after upgrading trusts a cache newer than auth.
         write_auth("plus");
+        pause();
         write_models("plus-only");
         assert_eq!(slugs(&account_catalog(&home, &app)), ["plus-only"]);
 
@@ -464,6 +485,7 @@ mod tests {
             &key("plus"),
             Duration::from_secs(60)
         ));
+        assert!(account_catalog_due(&app, &key("plus"), Duration::ZERO));
         assert!(account_catalog_due(&app, &key("new"), Duration::from_secs(60)));
 
         // A token refresh rewrites auth.json for the same login; Codex's newer
@@ -477,6 +499,30 @@ mod tests {
         // A login changed outside AgentHarbor is detected by its identity.
         write_auth("external");
         assert!(account_catalog(&home, &app).models.is_empty());
+    }
+
+    #[test]
+    fn first_observation_rejects_a_global_cache_older_than_current_auth() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let app = dir.path().join("app");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(
+            home.join("models_cache.json"),
+            br#"{"models":[{"slug":"previous-account-model"}]}"#,
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(
+            home.join("auth.json"),
+            br#"{"auth_mode":"chatgpt","tokens":{"account_id":"current"}}"#,
+        )
+        .unwrap();
+
+        let snapshot = account_catalog(&home, &app);
+        assert!(snapshot.models.is_empty());
+        assert!(snapshot.stale);
     }
 
     #[test]

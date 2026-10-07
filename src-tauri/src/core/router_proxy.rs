@@ -23,6 +23,7 @@ use std::time::Duration;
 mod aggregate;
 mod aggregate_output;
 mod aggregate_session;
+mod count_tokens;
 #[cfg(test)]
 mod aggregate_tests;
 #[cfg(test)]
@@ -404,6 +405,28 @@ fn json_response(status: StatusCode, message: &str) -> Response<ResponseBody> {
         .expect("static response parts")
 }
 
+fn desktop_count_tokens_response(body: &[u8]) -> Response<ResponseBody> {
+    let (status, value) = match count_tokens::estimate_input_tokens(body) {
+        Ok(input_tokens) => (StatusCode::OK, json!({"input_tokens": input_tokens})),
+        Err(message) => (
+            StatusCode::BAD_REQUEST,
+            json!({"type":"error","error":{"type":"invalid_request_error","message":message}}),
+        ),
+    };
+    Response::builder()
+        .status(status)
+        .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+        .body(full_body(value.to_string()))
+        .expect("static count-tokens response")
+}
+
+fn count_tokens_estimate_on_status(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED | StatusCode::TOO_MANY_REQUESTS
+    ) || status.is_server_error()
+}
+
 async fn forward(
     request: Request<Incoming>,
     context: Arc<ArcContext>,
@@ -418,7 +441,9 @@ type ForwardResult<T = Response<ResponseBody>> = Result<T, (StatusCode, &'static
 fn validate_desktop_endpoint(method: &hyper::Method, path: &str) -> ForwardResult<()> {
     let allowed = match path {
         "/claude-desktop/v1/models" => *method == hyper::Method::GET,
-        "/claude-desktop/v1/messages" => *method == hyper::Method::POST,
+        "/claude-desktop/v1/messages" | "/claude-desktop/v1/messages/count_tokens" => {
+            *method == hyper::Method::POST
+        }
         _ => {
             return Err((StatusCode::NOT_FOUND, "unsupported Desktop gateway endpoint",
             ))
@@ -596,7 +621,10 @@ fn request_protocol(segments: &[&str]) -> Option<router::ModelProtocol> {
         ["aggregate", "v1", "responses", ..] => Some(router::ModelProtocol::Responses),
         ["aggregate", "v1", "messages", ..] => Some(router::ModelProtocol::AnthropicMessages),
         ["aggregate", "v1", "chat", "completions"] => Some(router::ModelProtocol::ChatCompletions),
-        ["claude-desktop", "v1", "messages"] => Some(router::ModelProtocol::AnthropicMessages),
+        ["claude-desktop", "v1", "messages"]
+        | ["claude-desktop", "v1", "messages", "count_tokens"] => {
+            Some(router::ModelProtocol::AnthropicMessages)
+        }
         ["codex", "v1", ..] | ["v1", "responses", ..] | ["p", _, "v1", "responses", ..] => {
             Some(router::ModelProtocol::Responses)
         }
@@ -871,6 +899,9 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         None
     };
 
+    let desktop_count_body = (path == "/claude-desktop/v1/messages/count_tokens")
+        .then(|| body.clone().unwrap_or_default());
+
     let required_protocol = request_protocol(&segments);
     let (requested_model, one_m_context) = requested_model(body.as_deref(), required_protocol);
     // Claude Code normally strips the marker before sending the request and
@@ -890,10 +921,11 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
     if matches!(segments.as_slice(), ["codex", "v1", "models"]) && !has_body {
         return Ok(codex_catalog_response(&context, &store));
     }
-    let trace = route_trace::Trace::begin(
-        requested_model.as_deref().unwrap_or_default(),
-        body.as_deref(),
-    );
+    let trace = if desktop_count_body.is_some() {
+        route_trace::Trace::untracked()
+    } else {
+        route_trace::Trace::begin(requested_model.as_deref().unwrap_or_default(), body.as_deref())
+    };
     if segments.first() == Some(&"aggregate") {
         let ingress =
             required_protocol.ok_or((StatusCode::NOT_FOUND, "unsupported aggregate endpoint"))?;
@@ -974,6 +1006,12 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         } else { None };
         let one_m_context = desktop_route.as_ref().map(|route| route.view.one_m).unwrap_or(one_m_context);
         if let Some(route) = desktop_route.as_ref().filter(|route| route.aggregate_id.is_some()) {
+            if let Some(count_body) = desktop_count_body.as_deref() {
+                // An aggregate may select a different protocol/member for each
+                // inference request, so a count from an auxiliary member would
+                // not describe the route that handles the next turn.
+                return Ok(desktop_count_tokens_response(count_body));
+            }
             let snapshot = desktop.as_ref().expect("Desktop aggregate snapshot");
             return aggregate::execute(&context, &store,
                 desktop_catalog.as_deref().expect("Desktop catalog"), &method, &segments,
@@ -1008,6 +1046,18 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             requested_model.as_deref(),
             selected_binding,
         )? };
+        if let Some(count_body) = desktop_count_body.as_deref() {
+            let native_messages = matches!(
+                &destination,
+                Destination::Provider {
+                    upstream_protocol: router::ModelProtocol::AnthropicMessages,
+                    ..
+                }
+            );
+            if !native_messages {
+                return Ok(desktop_count_tokens_response(count_body));
+            }
+        }
         hosted_search::Plan::command_responses_search_to_chat(&mut destination, body.as_deref());
         let request_catalog = desktop_catalog.clone()
             .unwrap_or_else(|| super::models_dev::load(&context.app_data_dir));
@@ -1047,13 +1097,15 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                 context: &context, store: &store, catalog: &request_catalog,
                 destination: &destination, suffix: &suffix, query: query.as_deref(), headers: &headers,
                 body, ingress: required_protocol.unwrap_or(*upstream_protocol),
-                resource: response_resource, one_m: one_m_context, affinity_key: affinity_key.as_deref(),
+                resource: response_resource || desktop_count_body.is_some(), one_m: one_m_context, affinity_key: affinity_key.as_deref(),
                 client_scope: desktop_history_scope, identity: identity.unwrap_or_default(),
                 trace: trace.clone(), selection_reason, retry_reason: None, attempt_id,
             })?;
             // GET /models remains diagnostic-only and does not count as inference.
             if required_protocol.is_none() { prepared.usage = None; }
-            prepared.sent(&trace);
+            if desktop_count_body.is_none() {
+                prepared.sent(&trace);
+            }
             if inference_create && (fresh_turn || continuation) {
                 if let Some(key) = &affinity_key {
                     if !session_affinity::bind(key, &destination) {
@@ -1067,10 +1119,16 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                 return prepared.search(trace.clone(), None).await;
             }
             let mut outbound = prepared.client.request(method.clone(), &prepared.url).headers(prepared.headers.clone());
+            if desktop_count_body.is_some() {
+                outbound = outbound.timeout(Duration::from_secs(2));
+            }
             if let Some(sent) = &prepared.body { outbound = outbound.body(sent.clone()); }
             let response = match outbound.send().await {
                 Ok(response) => response,
                 Err(error) => {
+                    if let Some(count_body) = desktop_count_body.as_deref() {
+                        return Ok(desktop_count_tokens_response(count_body));
+                    }
                     if let Some(request) = prepared.usage {
                         request.failed(StatusCode::BAD_GATEWAY.as_u16(), "response_not_received");
                     }
@@ -1094,6 +1152,13 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                     return Err((StatusCode::BAD_GATEWAY, "cannot reach the provider"));
                 }
             };
+            if desktop_count_body.is_some()
+                && count_tokens_estimate_on_status(response.status())
+            {
+                return Ok(desktop_count_tokens_response(
+                    desktop_count_body.as_deref().expect("count-token body"),
+                ));
+            }
             trace.status(response.status().as_u16());
             drop(_decision);
             return prepared.response(response, trace.clone(), None).await;

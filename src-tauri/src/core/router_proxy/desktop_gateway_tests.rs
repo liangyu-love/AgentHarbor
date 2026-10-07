@@ -188,7 +188,8 @@ fn desktop_namespace_routes_three_protocols_tools_and_actual_model_accounting() 
                         let capture = capture.clone();
                         async move {
                             let path = request.uri().path().to_owned();
-                            let native = path == "/v1/messages";
+                            let native = path.starts_with("/v1/messages");
+                            let count_tokens = path == "/v1/messages/count_tokens";
                             let mode = request.headers().get("x-fixture-mode").and_then(|v|v.to_str().ok()).unwrap_or("normal").to_owned();
                             let expected = if native { request.headers().get("x-api-key") } else { request.headers().get(AUTHORIZATION) };
                             assert_eq!(expected.and_then(|v|v.to_str().ok()), Some(if native { "upstream-fixture" }
@@ -198,6 +199,14 @@ fn desktop_namespace_routes_three_protocols_tools_and_actual_model_accounting() 
                             let body: Value = serde_json::from_slice(&request.into_body().collect().await.unwrap().to_bytes()).unwrap();
                             assert_eq!(body["model"], "fixture-model", "Desktop menu alias must be resolved before translation");
                             assert!(!body.to_string().contains("claude-opus-4-7"));
+                            if count_tokens {
+                                capture.lock().unwrap().push(json!({"path":path,"body":body,"beta":beta}));
+                                return Ok::<_, std::convert::Infallible>(Response::builder()
+                                    .status(StatusCode::NOT_FOUND)
+                                    .header(CONTENT_TYPE, "application/json")
+                                    .body(full_body(r#"{"error":{"type":"not_found_error","message":"count endpoint unavailable"}}"#.into()))
+                                    .unwrap());
+                            }
                             let (kind, reply) = if native { native_reply(&body) }
                                 else { claude_continuation_tests::reply(&body, path == "/v1/chat/completions", &mode) };
                             capture.lock().unwrap().push(json!({"path":path,"body":body,"beta":beta}));
@@ -241,14 +250,40 @@ fn desktop_namespace_routes_three_protocols_tools_and_actual_model_accounting() 
             assert_eq!(client.get(format!("{base}{endpoint}")).bearer_auth("desktop-fixture").send().await.unwrap().status(),StatusCode::UNAUTHORIZED);
         }
         assert_eq!(client.get(format!("{base}/claude-desktop/v1/models")).header("x-api-key","desktop-fixture").send().await.unwrap().status(),StatusCode::UNAUTHORIZED);
-        for endpoint in ["/claude-desktop/v1/messages/count_tokens", "/claude-desktop//v1/models", "/claude-desktop/v1/responses"] {
+        for endpoint in ["/claude-desktop//v1/models", "/claude-desktop/v1/responses"] {
             assert_eq!(client.get(format!("{base}{endpoint}")).bearer_auth("desktop-fixture").send().await.unwrap().status(),StatusCode::NOT_FOUND);
         }
+        assert_eq!(client.get(format!("{base}/claude-desktop/v1/messages/count_tokens")).bearer_auth("desktop-fixture").send().await.unwrap().status(),StatusCode::METHOD_NOT_ALLOWED);
         assert_eq!(client.get(format!("{base}/claude-desktop/v1/messages")).bearer_auth("desktop-fixture").send().await.unwrap().status(),StatusCode::METHOD_NOT_ALLOWED);
         let models: Value = client.get(format!("{base}/claude-desktop/v1/models")).bearer_auth("desktop-fixture").send().await.unwrap().json().await.unwrap();
         assert_eq!(models["data"].as_array().unwrap().len(),3);
         assert!(!models.to_string().contains("fixture-model"));
         assert!(models["data"].as_array().unwrap().iter().all(|model| model["supports1m"] == true));
+        let latest_trace = route_trace::recent().first().map(|route| route.id.clone());
+        let count_url = format!("{base}/claude-desktop/v1/messages/count_tokens");
+        let chat_count = client.post(&count_url).bearer_auth("desktop-fixture").json(&json!({
+            "model":"claude-sonnet-4-6",
+            "system":"Count this system prompt",
+            "messages":[{"role":"user","content":"Count this message"}],
+            "tools":[{"name":"lookup","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}}]
+        })).send().await.unwrap();
+        assert_eq!(chat_count.status(), StatusCode::OK);
+        assert!(chat_count.json::<Value>().await.unwrap()["input_tokens"].as_u64().unwrap() > 0);
+        assert!(captured.lock().unwrap().is_empty(), "Chat Completions cannot serve a Messages token-count request");
+
+        // A native Messages provider gets an exact count attempt first; an
+        // unsupported endpoint falls back locally instead of provoking the
+        // client's billable max_tokens:1 completion fallback.
+        let native_count = client.post(&count_url).bearer_auth("desktop-fixture").json(&json!({
+            "model":"claude-haiku-4-5-20251001",
+            "messages":[{"role":"user","content":"Count this native request"}]
+        })).send().await.unwrap();
+        assert_eq!(native_count.status(), StatusCode::OK);
+        assert!(native_count.json::<Value>().await.unwrap()["input_tokens"].as_u64().unwrap() > 0);
+        assert_eq!(captured.lock().unwrap()[0]["path"], "/v1/messages/count_tokens");
+        assert_eq!(route_trace::recent().first().map(|route| route.id.clone()), latest_trace,
+            "count-token calls should not create request-level inference diagnostics");
+        assert_eq!(relay_usage::load(&paths.app_data_dir).unwrap().all_time.request_count, 0);
         let url = format!("{base}/claude-desktop/v1/messages");
         for route in &routes { for streaming in [false,true] { for one_m in [false,true] {
             // Exercise both Desktop spellings without ever changing the real upstream ID.

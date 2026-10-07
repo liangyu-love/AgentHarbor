@@ -154,6 +154,7 @@ export type ThreadRouteState = "routed" | "direct" | "broken";
 
 export interface ThreadRouteOverview {
   routerActive: boolean;
+  routerProviderThreads: number;
   states: Record<string, ThreadRouteState>;
 }
 

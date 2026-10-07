@@ -488,7 +488,7 @@ pub(super) async fn execute(
             headers,
             body: portable_body.clone(),
             ingress,
-            resource: resource_id.is_some(),
+            resource: resource_id.is_some() || count_tokens,
             one_m,
             affinity_key: session_key.as_deref(),
             client_scope,

@@ -79,7 +79,11 @@ export function CodexAccessCard({
   const restoreRoutedThreads = async () => {
     try {
       const preview = await api.conversations.previewBatch("restore", { fromProvider: ROUTER_PROVIDER });
-      if (preview.ready.length === 0) return;
+      if (preview.ready.length === 0) {
+        toast({ title: t("newapi.threadsRestoreFailed"),
+          description: t("threads.repairAllSkipped", { count: preview.skipped.length }), variant: "destructive" });
+        return;
+      }
       const result = await api.conversations.applyBatch("restore", preview.ready);
       void queryClient.invalidateQueries({ queryKey: ["threads"] });
       toast({
@@ -89,7 +93,7 @@ export function CodexAccessCard({
           skipped: result.unchanged + preview.skipped.length,
           failed: result.failed.length,
         }),
-        variant: result.failed.length === 0 ? "success" : "default",
+        variant: result.failed.length === 0 && preview.skipped.length === 0 ? "success" : "destructive",
       });
       if (result.reopenError) {
         toast({ title: t("threads.routerAdoptionOpenFailed"),
@@ -101,9 +105,14 @@ export function CodexAccessCard({
   };
 
   const toggleRouting = async (value: boolean) => {
-    if (value || nativeAccess) return setRouting(value, false);
-    const overview = await api.conversations.routeOverview().catch(() => null);
-    const routed = Object.values(overview?.states ?? {}).filter((state) => state === "routed").length;
+    if (value) return setRouting(value, false);
+    let routed: number;
+    try {
+      routed = (await api.conversations.routeOverview()).routerProviderThreads;
+    } catch (cause) {
+      toast({ title: t("newapi.threadsRestoreFailed"), description: formatInvokeError(cause), variant: "destructive" });
+      return;
+    }
     if (routed === 0) return setRouting(false, false);
     setConfirmRequest({
       title: t("newapi.disableRoutingTitle"),
@@ -112,6 +121,39 @@ export function CodexAccessCard({
       onConfirm: () => void setRouting(false, true),
     });
   };
+
+  const changeAccessMode = async (mode: CodexAccessMode) => {
+    if (mode === "native" && routingEnabled) {
+      let routed: number;
+      try {
+        routed = (await api.conversations.routeOverview()).routerProviderThreads;
+      } catch (cause) {
+        toast({ title: t("newapi.threadsRestoreFailed"), description: formatInvokeError(cause), variant: "destructive" });
+        return;
+      }
+      if (routed > 0) {
+        setConfirmRequest({
+          title: t("newapi.nativeRoutingTitle"),
+          description: t("newapi.nativeRoutingThreads", { count: routed }),
+          confirmLabel: t("newapi.nativeRoutingRestore"),
+          onConfirm: () => void applyAccessMode(mode, true),
+        });
+        return;
+      }
+    }
+    void applyAccessMode(mode, false);
+  };
+
+  const applyAccessMode = (mode: CodexAccessMode, restoreThreads: boolean) =>
+    run(
+      "access-mode",
+      async () => {
+        applyChange(await api.routing.setAccessMode(mode));
+        toast({ title: t("newapi.accessModeApplied"), variant: "success" });
+        if (restoreThreads) await restoreRoutedThreads();
+      },
+      t("newapi.routingFailed"),
+    );
 
   // Resolved target info for visualization
   const targetName = aggregateSelected
@@ -297,16 +339,7 @@ export function CodexAccessCard({
               <Select
                 value={accessMode}
                 disabled={mutationLocked}
-                onValueChange={(value) =>
-                  void run(
-                    "access-mode",
-                    async () => {
-                      applyChange(await api.routing.setAccessMode(value as CodexAccessMode));
-                      toast({ title: t("newapi.accessModeApplied"), variant: "success" });
-                    },
-                    t("newapi.routingFailed"),
-                  )
-                }
+                onValueChange={(value) => void changeAccessMode(value as CodexAccessMode)}
               >
                 <SelectTrigger id="codex-access-mode" className="bg-background/80">
                   <SelectValue />

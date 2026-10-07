@@ -250,6 +250,14 @@ impl Trace {
             started: Instant::now(),
         }))
     }
+    /// A request ID for auxiliary operations that must not consume one of the
+    /// bounded inference diagnostic rows.
+    pub fn untracked() -> Self {
+        Self(Arc::new(Inner {
+            id: uuid::Uuid::new_v4().to_string(),
+            started: Instant::now(),
+        }))
+    }
     fn update(&self, f: impl FnOnce(&mut Route)) {
         if let Some(route) = routes()
             .lock()

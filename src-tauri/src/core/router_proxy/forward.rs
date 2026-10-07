@@ -116,7 +116,12 @@ pub(super) fn prepare(input: Input<'_>) -> ForwardResult<Prepared> {
     } else {
         None
     };
-    let hosted = hosted_search::Plan::for_destination(destination, body.as_deref())?;
+    let count_tokens = suffix == "messages/count_tokens";
+    let hosted = if count_tokens {
+        None
+    } else {
+        hosted_search::Plan::for_destination(destination, body.as_deref())?
+    };
     let search_backend = hosted
         .as_ref()
         .map(|_| hosted_search::SearchBackend::select(context, store, destination))
@@ -132,7 +137,13 @@ pub(super) fn prepare(input: Input<'_>) -> ForwardResult<Prepared> {
         namespaces,
         response_options,
     } = if resource {
-        PreparedForward::native(body)
+        let native = if count_tokens {
+            body.map(|bytes| prepare_relay_body(&bytes, Some(&model), *upstream_protocol))
+                .transpose()?
+        } else {
+            body
+        };
+        PreparedForward::native(native)
     } else {
         upstream_body(destination, translation_body)?
     };

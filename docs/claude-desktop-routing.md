@@ -22,7 +22,17 @@ Desktop 角色 alias
   → Messages / Chat / Responses 上游
 ```
 
-`/claude-desktop/v1/models` 和 `/claude-desktop/v1/messages` 使用独立 Desktop token。普通路由 token、Desktop token 不能跨入口使用。Desktop profile 不保存上游推理 Key；新请求读取已有卡片的当前推理 Key 和 URL。修改卡片凭据后无需为路由重新写 Desktop 配置。
+`/claude-desktop/v1/models`、`/claude-desktop/v1/messages` 和
+`/claude-desktop/v1/messages/count_tokens` 使用独立 Desktop token。普通路由 token、Desktop
+token 不能跨入口使用。Desktop profile 不保存上游推理 Key；新请求读取已有卡片的当前推理
+Key 和 URL。修改卡片凭据后无需为路由重新写 Desktop 配置。
+
+Desktop 启动或切换模型时的 `count_tokens` 请求返回 Anthropic 格式的
+`{"input_tokens":整数}`。单渠道原生 Messages 出口先尝试上游计数；不支持该端点、限流或暂时不可达时
+改用本地估算。Chat、Responses 和聚合目标直接在本地估算；聚合的实际成员可能随推理请求变化，
+因此不会把辅助成员的计数误当成实际推理路由结果。计数不会发起推理请求。估算覆盖系统
+提示、消息、工具定义和多模态块，不能当作上游的精确计费 token 数。计数请求不写入推理用量或
+请求级路由诊断；正常对话的路由和计费不变。
 
 ## 聚合目标
 

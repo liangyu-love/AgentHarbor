@@ -1252,6 +1252,39 @@ fn aggregate_count_tokens_selects_only_native_messages_and_does_not_pin_inferenc
 }
 
 #[test]
+fn desktop_aggregate_counts_chat_locally_without_binding_or_billing() {
+    let _guard = global_router_test_lock();
+    let _stop = Stop;
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let chat = mock(router::ModelProtocol::ChatCompletions, 200, false).await;
+        let temp = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(temp.path().into());
+        let store = fixture(&[(&chat, "chat-wire", router::ModelProtocol::ChatCompletions)]);
+        let (client, base) = start(&paths, &store).await;
+        let alias = desktop_aggregate_state(&paths, running_port().unwrap(), &store.aggregates[0]);
+        let latest_trace = route_trace::recent().first().map(|route| route.id.clone());
+        let counted = client.post(format!("{base}/claude-desktop/v1/messages/count_tokens"))
+            .bearer_auth("desktop-fixture")
+            .json(&json!({"model":alias.clone(),"messages":[{"role":"user","content":"hello"}]}))
+            .send().await.unwrap();
+        assert_eq!(counted.status(), 200);
+        assert!(counted.json::<Value>().await.unwrap()["input_tokens"].as_u64().unwrap() > 0);
+        assert_eq!(chat.count.load(Ordering::SeqCst), 0);
+        assert_eq!(relay_usage::load(&paths.app_data_dir).unwrap().all_time.request_count, 0);
+        assert_eq!(route_trace::recent().first().map(|route| route.id.clone()), latest_trace);
+
+        let inference = client.post(format!("{base}/claude-desktop/v1/messages"))
+            .bearer_auth("desktop-fixture")
+            .json(&json!({"model":alias,"max_tokens":128,"messages":[{"role":"user","content":"hello"}]}))
+            .send().await.unwrap();
+        assert_eq!(inference.status(), 200);
+        inference.bytes().await.unwrap();
+        assert_eq!(chat.count.load(Ordering::SeqCst), 1);
+        wait_for_released_lease().await;
+    });
+}
+
+#[test]
 fn third_consecutive_429_switches_with_actual_member_price_snapshots() {
     let _guard = global_router_test_lock();
     let _stop = Stop;

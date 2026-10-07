@@ -1218,6 +1218,9 @@
     "disableRoutingTitle": "关闭 Codex 统一路由",
     "disableRoutingThreads": "有 {{count}} 个会话已接入统一路由。关闭后配置里不再有路由提供商，这些会话将无法继续。确认后会关闭路由，并把它们改回恢复后的提供商（每个会话单独备份，Codex 会正常关闭一次再重新打开）。取消则保持路由开启。",
     "disableRoutingRestore": "关闭路由并迁回会话",
+    "nativeRoutingTitle": "切换到原生接入",
+    "nativeRoutingThreads": "有 {{count}} 个会话已接入统一路由。切换到原生接入后，Codex 配置将移除该服务商。确认后会将这些会话迁移到当前服务商，并分别备份。",
+    "nativeRoutingRestore": "切换并迁回会话",
     "threadsRestored": "已将路由会话迁回 {{provider}}",
     "threadsRestoreFailed": "路由已关闭，但会话迁回失败；可在会话页逐个修复"
   },

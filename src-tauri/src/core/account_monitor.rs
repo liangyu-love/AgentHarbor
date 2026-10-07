@@ -306,6 +306,34 @@ fn credential_bytes(credential: &AccountCredential) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// Owns the isolated Codex home so cancelling a timed-out RPC also removes
+/// its copied auth.json. The child is configured with kill_on_drop.
+struct IsolatedHome(PathBuf);
+
+impl IsolatedHome {
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for IsolatedHome {
+    fn drop(&mut self) {
+        // On Windows, killing a child can briefly leave files open. Remove
+        // the copied credential first, then retry the directory cleanup.
+        for attempt in 0..10 {
+            let _ = std::fs::remove_file(self.0.join("auth.json"));
+            match std::fs::remove_dir_all(&self.0) {
+                Ok(()) => return,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+                Err(error) if attempt == 9 => {
+                    log::warn!("Isolated Codex home cleanup failed: {error}");
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(100)),
+            }
+        }
+    }
+}
+
 async fn fetch_usage_rpc(
     credential: &AccountCredential,
     proxy: &ApiProxyConfigPayload,
@@ -352,20 +380,20 @@ async fn isolated_rpc(
         Ok(bytes) => bytes,
         Err(error) => return (Err(error), None),
     };
-    let runtime_root = credential
+    let runtime_root = IsolatedHome(credential
         .snapshot_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join(".runtime")
-        .join(uuid::Uuid::new_v4().to_string());
-    let runtime_auth = runtime_root.join("auth.json");
+        .join(uuid::Uuid::new_v4().to_string()));
+    let runtime_auth = runtime_root.path().join("auth.json");
 
     let result = async {
-        std::fs::create_dir_all(&runtime_root).map_err(|error| error.to_string())?;
+        std::fs::create_dir_all(runtime_root.path()).map_err(|error| error.to_string())?;
         storage::write_atomic(&runtime_auth, &original).map_err(|error| error.to_string())?;
         let mut command = codex_command(&["-s", "read-only", "-a", "never", "app-server"])?;
         command
-            .env("CODEX_HOME", &runtime_root)
+            .env("CODEX_HOME", runtime_root.path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -405,7 +433,7 @@ async fn isolated_rpc(
         let _ = child.kill().await;
         let _ = child.wait().await;
         let response = response?;
-        let file = collect.and_then(|name| std::fs::read(runtime_root.join(name)).ok());
+        let file = collect.and_then(|name| std::fs::read(runtime_root.path().join(name)).ok());
         Ok((response, file))
     }
     .await;
@@ -418,7 +446,6 @@ async fn isolated_rpc(
             original,
             refreshed,
         });
-    let _ = std::fs::remove_dir_all(&runtime_root);
     (result, credential_refresh)
 }
 
@@ -580,6 +607,21 @@ pub async fn refresh_account(
 mod tests {
     use super::*;
     use crate::core::auth::load_auth_file;
+
+    #[tokio::test]
+    async fn cancelling_isolated_rpc_removes_copied_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join(".runtime").join("cancelled");
+        let result = tokio::time::timeout(Duration::from_millis(20), async {
+            let _home = IsolatedHome(root.clone());
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("auth.json"), b"synthetic-secret").unwrap();
+            std::future::pending::<()>().await;
+        })
+        .await;
+        assert!(result.is_err());
+        assert!(!root.exists(), "a cancelled RPC must not leave auth.json behind");
+    }
 
     #[test]
     fn npm_launcher_prefers_native_cli_in_new_and_old_layouts() {

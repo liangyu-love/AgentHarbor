@@ -1218,6 +1218,9 @@
     "disableRoutingTitle": "Turn off Codex Router access",
     "disableRoutingThreads": "{{count}} threads use the unified Router. Once it is removed from the config they cannot continue. Confirming turns routing off and moves them to the restored provider (each thread is backed up, and Codex is closed once and reopened). Cancel keeps routing on.",
     "disableRoutingRestore": "Turn off and move threads",
+    "nativeRoutingTitle": "Switch to native access",
+    "nativeRoutingThreads": "{{count}} threads use the unified Router. Switching to native access removes that provider from Codex config. Confirming moves the threads to the active provider, with a backup for each thread.",
+    "nativeRoutingRestore": "Switch and move threads",
     "threadsRestored": "Routed threads moved to {{provider}}",
     "threadsRestoreFailed": "Routing is off, but threads could not be moved; repair them on the Threads page"
   },

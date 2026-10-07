@@ -702,6 +702,7 @@ function mount(mode: FixtureMode) {
   controls.review.routedThreads = false;
   api.conversations.routeOverview = async () => ({
     routerActive: mode === "thread-actions" || controls.review.routedThreads,
+    routerProviderThreads: controls.review.routedThreads ? 1 : 0,
     states: mode === "thread-actions" ? { t0: "direct", t1: "routed" }
       : controls.review.routedThreads ? { t0: "routed" } : {},
   });
