@@ -990,7 +990,8 @@
       "effective_active": "可用供应商选择",
       "aggregate_session_binding": "聚合会话绑定",
       "aggregate_rotation": "聚合渠道轮转",
-      "aggregate_retry": "聚合备用尝试"
+      "aggregate_retry": "聚合备用尝试",
+      "hosted_tool_followup": "托管工具结果回填，同渠道续轮"
     },
     "traceCredentialStatus": {
       "recorded": "已记录凭据版本",

@@ -990,7 +990,8 @@
       "effective_active": "Available provider selection",
       "aggregate_session_binding": "Aggregate session binding",
       "aggregate_rotation": "Aggregate channel rotation",
-      "aggregate_retry": "Aggregate alternative attempt"
+      "aggregate_retry": "Aggregate alternative attempt",
+      "hosted_tool_followup": "Hosted tool result continuation on the same channel"
     },
     "traceCredentialStatus": {
       "recorded": "version recorded",

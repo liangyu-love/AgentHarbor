@@ -241,3 +241,13 @@ node scripts/tauri.mjs --test-rust command_and_deepseek_flash_live_aggregation -
 - 中转用量不关联 Codex 官方账号的订阅额度。界面刷新后可见保存的统计；余额仍来自供应商余额查询，不由估算费用反推。
 
 扩充已有回归断言，直接核对账号页消费的账本 payload：Responses 入站轮转、Chat 入站的三种出口 JSON/SSE、Desktop Messages 的三种出口 JSON/SSE，均校验总请求数、输入/输出 token、按实际供应商/模型分组、attempt 唯一性及拒绝请求不增加记录。相关聚合 HTTP 回归 **20/20 通过**，包含重试价格快照与资源操作测试。证据：`.runtime-test/balance-aggregation-usage-rust.log`。未额外发起真实余额或付费模型请求。
+
+### 请求级路由诊断
+
+聚合请求进入现有「请求级路由诊断」。一条客户端请求对应一个 `requestId`，每次实际模型出站使用独立 `attemptId`，并可与同一请求的用量记录对账。各 attempt 保留实际供应商 ID/名称、原样出站模型 ID、执行协议、HTTP 状态、耗时、上游自报模型及匹配结果，另记录聚合/成员 ID、路由 revision、配置/执行协议和轮转、会话绑定或重试原因。公开模型投影发生在原始响应观察之后，不把客户端看到的公开 ID 当成上游模型证明。
+
+复查修复了 WebSearch 托管工具模型续轮的诊断缺口：续轮保留同一聚合成员及协议快照，生成独立 attempt，并标为「托管工具结果回填，同渠道续轮」，不沿用轮转/重试标签。每轮响应状态重新初始化，按该轮结果填写。该修复仅影响诊断归属，不改变模型选择、搜索执行或用量计费。
+
+诊断只保留最近 **60 条请求的内存记录**，清除或退出后不保留；磁盘用量账本独立保留。诊断保存筛选后的参数，不保存完整对话、响应正文或密钥；上游自报模型代表其声明，不是底层权重身份的独立验证。协议预检或未知会话等出站前拒绝可显示 0 attempts，不能误认为已有渠道调用。
+
+代理模块回归 **89 passed / 6 ignored**，覆盖聚合轮转/重试、JSON/SSE、Desktop 和托管搜索续轮；新续轮断言核对聚合成员、协议适配、原始模型及账本 attempt 关联。界面回归验证两条独立请求各自展示自己的尝试，区分实际卡片、出站模型、HTTP 429、协议适配、备用渠道与同渠道续轮。生产前端构建通过。证据：`.runtime-test/aggregate-diagnostics-proxy-rust.log`、`.runtime-test/aggregate-diagnostics-frontend.log`、`.runtime-test/aggregate-diagnostics-build.log`。本轮未使用真实渠道凭据。

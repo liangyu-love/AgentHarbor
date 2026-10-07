@@ -268,4 +268,45 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   assert.equal(await desktopUsage.locator("tbody tr").count(), 1);
   assert.match(await desktopUsage.locator("tbody tr").innerText(), /未记录/);
   console.log("PASS Desktop diagnostics and usage filter client source while retaining alias, actual billing model and zero cost");
+
+  await reset("access");
+  await page.evaluate(() => {
+    const common = { sent: {}, failureStage: null, error: null, durationMs: 15,
+      catalogRevision: "fixture", matchKind: "normalized", pricingStatus: "unpriced", pricingSource: "",
+      aggregateId: "aggregate-fixture", routeRevision: "revision-fixture" };
+    const first = { ...common, attemptId: "deepseek-attempt-1", memberId: "member-a", providerId: "deepseek",
+      providerName: "DeepSeek 官方", upstreamModel: "deepseek-flash", matchedModel: "deepseek-flash",
+      protocol: "anthropicMessages", configuredProtocol: "anthropicMessages", effectiveProtocol: "anthropicMessages",
+      status: 429, selectionReason: "aggregate_rotation", retryReason: null };
+    const second = { ...common, attemptId: "command-attempt-2", memberId: "member-b", providerId: "command",
+      providerName: "Command Code", upstreamModel: "deepseek/deepseek-v4.1-flash", matchedModel: "deepseek-v4.1-flash",
+      protocol: "chatCompletions", configuredProtocol: "chatCompletions", effectiveProtocol: "chatCompletions",
+      status: 200, selectionReason: "aggregate_retry",
+      retryReason: "aggregate_rate_limited", modelObservation: { servedModel: "deepseek/deepseek-v4.1-flash", modelMatchStatus: "same" } };
+    const searched = { ...second, attemptId: "search-attempt-1", selectionReason: "aggregate_rotation",
+      retryReason: null, configuredProtocol: "responses", compatibilityPlan: "commandSearchViaChat" };
+    const request = { timestamp: 1790000000,
+      requestedModel: "deepseek-public", resolvedModel: second.upstreamModel, clientSource: "claudeDesktop",
+      requested: {}, done: true, stage: "complete", status: 200, error: null, durationMs: 50 };
+    window.review.routeDiagnostics = [
+      { ...request, id: "aggregate-retry-request", attempts: [first, second] },
+      { ...request, id: "aggregate-search-request", attempts: [searched, { ...searched,
+        attemptId: "followup-attempt-3", selectionReason: "hosted_tool_followup" }] },
+    ];
+    window.review.mount("access");
+  });
+  const aggregateRoutes = page.getByRole("region", { name: "请求级路由诊断" });
+  await aggregateRoutes.getByRole("button", { name: "请求级路由诊断", exact: true }).click();
+  await aggregateRoutes.locator("summary").nth(1).waitFor();
+  for (const summary of await aggregateRoutes.locator("summary").all()) await summary.click();
+  const diagnosticText = await aggregateRoutes.innerText();
+  for (const text of ["deepseek-public", "DeepSeek 官方", "Command Code", "deepseek/deepseek-v4.1-flash",
+    "HTTP 429", "聚合渠道轮转", "聚合备用尝试", "首渠道返回 HTTP 429", "托管工具结果回填，同渠道续轮",
+    "成员 ID: member-a", "成员 ID: member-b", "配置 / 执行协议: responses → chatCompletions",
+    "尝试 ID: deepseek", "尝试 ID: command-", "尝试 ID: followup"]) {
+    assert.ok(diagnosticText.includes(text), `missing aggregate diagnostic: ${text}`);
+  }
+  assert.equal(await aggregateRoutes.locator("summary").count(), 2,
+    "each inbound request groups its own retries or hosted continuations as physical attempts");
+  console.log("PASS aggregate diagnostics distinguish actual cards/models, retries, protocol adaptation and same-channel tool continuation");
 }

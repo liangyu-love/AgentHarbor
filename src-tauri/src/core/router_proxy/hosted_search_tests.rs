@@ -218,8 +218,6 @@ fn execution(
         trace,
         usage: Some(usage),
         attempt,
-        provider_id: "model-card".into(),
-        provider_name: "Fixture model".into(),
         model: "fixture-chat".into(),
         history,
         adapter: tool_schema::Adapter::default(),
@@ -282,7 +280,11 @@ fn hosted_chat_executes_search_with_separate_credentials_and_accounts_each_model
         }).await;
         let search = Mock::new(|_, _| Reply::ok(search_reply())).await;
         let temp = tempfile::tempdir().unwrap();
-        let visible = json_response(execution(&request(false), &model, &search, temp.path(), None)).await;
+        let run = execution(&request(false), &model, &search, temp.path(), None);
+        let trace = run.trace.clone();
+        trace.aggregate_attempt("aggregate-fixture", "member-fixture", "revision-fixture",
+            "responses", "chatCompletions", Some("commandSearchViaChat"));
+        let visible = json_response(run).await;
         assert_eq!(visible["stop_reason"], "end_turn");
         let content = visible["content"].as_array().unwrap();
         assert_eq!(content[0]["type"], "server_tool_use");
@@ -319,6 +321,23 @@ fn hosted_chat_executes_search_with_separate_credentials_and_accounts_each_model
         assert!(ledger.recent.iter().all(|record| record.cost_usd == Some(0.000011)));
         assert_eq!(visible["usage"]["input_tokens"], 6);
         assert_eq!(visible["usage"]["output_tokens"], 8);
+        let route = route_trace::recent().into_iter().find(|route| route.id == trace.request_id()).unwrap();
+        assert_eq!(route.attempts.len(), 2);
+        assert!(route.attempts.iter().all(|attempt| attempt.provider_id == "model-card"
+            && attempt.upstream_model == "fixture-chat"
+            && attempt.aggregate_id.as_deref() == Some("aggregate-fixture")
+            && attempt.member_id.as_deref() == Some("member-fixture")
+            && attempt.route_revision.as_deref() == Some("revision-fixture")
+            && attempt.configured_protocol.as_deref() == Some("responses")
+            && attempt.effective_protocol.as_deref() == Some("chatCompletions")
+            && attempt.compatibility_plan.as_deref() == Some("commandSearchViaChat")
+            && attempt.model_observation.served_model.as_deref() == Some("fixture-chat")));
+        assert_eq!(route.attempts[1].selection_reason, "hosted_tool_followup");
+        assert!(route.attempts[1].retry_reason.is_none());
+        for record in &ledger.recent {
+            assert!(route.attempts.iter().any(|attempt| attempt.attempt_id == record.attempt_id
+                && attempt.provider_id == record.provider_id && attempt.upstream_model == record.model));
+        }
     });
 }
 

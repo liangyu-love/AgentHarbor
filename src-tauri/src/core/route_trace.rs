@@ -325,6 +325,32 @@ impl Trace {
             }
         });
     }
+    /// A hosted-tool continuation reuses the selected physical target. Preserve
+    /// its aggregate/member and protocol snapshot, but start fresh response state.
+    pub fn tool_followup(&self, attempt_id: &str) {
+        self.update(|route| {
+            let Some(mut attempt) = route.attempts.last().cloned() else {
+                return;
+            };
+            attempt.attempt_id = attempt_id.into();
+            attempt.selection_reason = "hosted_tool_followup".into();
+            attempt.retry_reason = None;
+            attempt.sent = Value::Object(Map::new());
+            attempt.status = None;
+            attempt.failure_stage = None;
+            attempt.error = None;
+            attempt.duration_ms = 0;
+            attempt.credential = CredentialSnapshot::not_sent();
+            attempt.model_observation = ServedModelObservation {
+                model_match_status: "unknown".into(),
+                unknown_reason: Some("not_sent".into()),
+                ..Default::default()
+            };
+            attempt.started = Instant::now();
+            route.stage = "build".into();
+            route.attempts.push(attempt);
+        });
+    }
     pub fn aggregate_attempt(
         &self,
         aggregate_id: &str,

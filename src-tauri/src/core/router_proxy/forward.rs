@@ -268,8 +268,6 @@ impl Prepared {
             trace,
             usage: self.usage,
             attempt: self.metadata,
-            provider_id: self.provider_id,
-            provider_name: self.provider_name,
             model: self.model,
             history: self.history,
             adapter: self.tool_adapter,

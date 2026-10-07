@@ -198,6 +198,7 @@ api.aggregation.exportConnection = async request => {
     catalogRevision: "fixture-catalog-v1", tokenVersion: "fixture-token-v1" } } as ConnectionExportResult;
 };
 api.routing.diagnostics = async () => {
+  if (controls.review.routeDiagnostics) return controls.review.routeDiagnostics;
   const base = { id: "synthetic-route", timestamp: 1_790_740_800, requestedModel: "relay::claude-opus-5-5-kiro",
   requested: { "reasoning.effort": "high" }, stage: "complete", done: true, status: 200, failureStage: null, error: null, durationMs: 840, firstTokenMs: 230,
   attempts: [{ providerId: "relay", providerName: "Synthetic channel", upstreamModel: "claude-opus-5-5-kiro", matchedModel: "claude-opus-5-5", protocol: "anthropicMessages",

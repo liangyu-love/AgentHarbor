@@ -333,8 +333,6 @@ pub(super) struct Execution {
     pub trace: route_trace::Trace,
     pub usage: Option<relay_usage::RelayUsageRequest>,
     pub attempt: route_trace::AttemptMetadata,
-    pub provider_id: String,
-    pub provider_name: String,
     pub model: String,
     pub history: Option<protocol::message_history::Context>,
     pub adapter: tool_schema::Adapter,
@@ -495,13 +493,7 @@ impl Execution {
             let mut attempt = self.attempt.clone();
             if round > 0 {
                 attempt.attempt_id = uuid::Uuid::new_v4().to_string();
-                self.trace.attempt(
-                    &self.provider_id,
-                    &self.provider_name,
-                    &self.model,
-                    "chatCompletions",
-                    attempt.clone(),
-                );
+                self.trace.tool_followup(&attempt.attempt_id);
             }
             let key = if body.get("max_completion_tokens").is_some() {
                 "max_completion_tokens"
