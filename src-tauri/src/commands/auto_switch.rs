@@ -131,6 +131,13 @@ async fn run_once(app: &AppHandle, state: &mut LoopState) -> Result<(), String> 
         return switched.map(|_| ());
     }
     state.record_switch(now);
+    // Codex reads the injected catalog at startup; fetch the target's first.
+    crate::commands::accounts::refresh_model_catalogs(
+        &repo,
+        Some(&target),
+        crate::commands::accounts::CATALOG_REFRESH_INTERVAL,
+    )
+    .await;
     let _ = app.emit(ACCOUNTS_CHANGED_EVENT, ());
 
     // Codex only reads auth.json on start. Leave it closed if it was not running.

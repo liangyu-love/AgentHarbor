@@ -8,7 +8,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
-    time::{Instant, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
@@ -24,11 +24,24 @@ pub struct Snapshot {
     #[serde(default)]
     pub model_updated_at: HashMap<String, Option<i64>>,
 }
+/// An account catalog older than this is still used, but reported as stale.
+const ACCOUNT_CATALOG_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+/// Records which login the global `models_cache.json` may belong to.
+const ACCOUNT_MARKER_FILE: &str = "model-catalog-account.json";
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AccountMarker {
+    account_key: String,
+    /// Unix milliseconds. Codex caches written before this belong to an
+    /// earlier login and are never attributed to this account.
+    switched_at: u128,
+}
+
 #[derive(Clone)]
 struct Cached {
     stamp: Option<(u64, SystemTime, Option<SystemTime>)>,
     backup: Option<PathBuf>,
-    minimum_modified: Option<SystemTime>,
     checked: Instant,
     snapshot: Snapshot,
     /// A read-only preview must not prevent the next ordinary read from
@@ -39,7 +52,7 @@ fn cache() -> &'static Mutex<HashMap<PathBuf, Cached>> {
     static CACHE: OnceLock<Mutex<HashMap<PathBuf, Cached>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
-fn parse(bytes: &[u8]) -> Option<Vec<Value>> {
+pub(crate) fn parse(bytes: &[u8]) -> Option<Vec<Value>> {
     let value: Value = serde_json::from_slice(bytes).ok()?;
     let entries = value["models"].as_array()?;
     if entries.is_empty() || entries.len() > 10_000 {
@@ -79,15 +92,10 @@ fn parse(bytes: &[u8]) -> Option<Vec<Value>> {
     (!models.is_empty()).then_some(models)
 }
 pub(crate) fn load(source: &Path, backup: Option<&Path>) -> Snapshot {
-    load_with_backup_mode(source, backup, true, None)
+    load_with_backup_mode(source, backup, true)
 }
 
-fn load_with_backup_mode(
-    source: &Path,
-    backup: Option<&Path>,
-    write_backup: bool,
-    minimum_modified: Option<SystemTime>,
-) -> Snapshot {
+fn load_with_backup_mode(source: &Path, backup: Option<&Path>, write_backup: bool) -> Snapshot {
     let mut cache = cache().lock().unwrap_or_else(|e| e.into_inner());
     let stamp = std::fs::metadata(source)
         .ok()
@@ -95,16 +103,13 @@ fn load_with_backup_mode(
     if let Some(cached) = cache.get(source).filter(|c| {
         c.stamp == stamp
             && c.backup.as_deref() == backup
-            && c.minimum_modified == minimum_modified
             && (!write_backup || c.write_backup)
             && (!c.snapshot.stale || c.checked.elapsed().as_secs() < 30)
     }) {
         return cached.snapshot.clone();
     }
     let fresh = stamp
-        .filter(|(len, modified, _)| {
-            *len <= MAX_BYTES && minimum_modified.is_none_or(|minimum| *modified >= minimum)
-        })
+        .filter(|(len, _, _)| *len <= MAX_BYTES)
         .and_then(|_| bounded_read(source))
         .and_then(|b| parse(&b));
     let snapshot = if let Some(models) = fresh {
@@ -174,7 +179,6 @@ fn load_with_backup_mode(
         Cached {
             stamp,
             backup: backup.map(Path::to_path_buf),
-            minimum_modified,
             checked: Instant::now(),
             snapshot: snapshot.clone(),
             write_backup,
@@ -225,37 +229,147 @@ fn account_catalog_with_backup_mode(
     app_data: &Path,
     write_backup: bool,
 ) -> Snapshot {
-    // Codex owns one global models_cache.json, but it is fetched for one login.
-    // Switching auth.json must never publish the previous account's model list
-    // while Codex is still refreshing that cache. Keep last-good data per account.
+    let source = codex_home.join("models_cache.json");
+    let Some(account_key) = current_account_key(codex_home) else {
+        return load_with_backup_mode(
+            &source,
+            Some(&app_data.join("model-capabilities-last-good.json")),
+            write_backup,
+        );
+    };
+    // Codex owns one global models_cache.json and stops refreshing it while a
+    // model_catalog_json is injected. Use it only when Codex wrote it after this
+    // login was observed; otherwise use this account's own fetched catalog.
+    let switched_at = observe_account(app_data, &account_key, write_backup);
+    let global = load_with_backup_mode(&source, None, write_backup);
+    let global = (!global.stale && modified_millis(&source) > switched_at).then_some(global);
+    let stored_path = account_catalog_path(app_data, &account_key);
+    let stored = load_with_backup_mode(&stored_path, None, write_backup);
+    let stored = (!stored.stale).then_some(stored);
+    // Prefer whichever was written last; seconds are too coarse to compare.
+    let global = global.filter(|_| {
+        stored.is_none() || modified_millis(&source) > modified_millis(&stored_path)
+    });
+    match (global, stored) {
+        (Some(global), stored) => {
+            if write_backup && stored.is_none_or(|stored| stored.models != global.models) {
+                let _ = write_account_catalog(app_data, &account_key, &global.models);
+            }
+            global
+        }
+        (None, Some(mut stored)) => {
+            let age = stored
+                .updated_at
+                .and_then(|at| now_millis().checked_sub(at as u128 * 1000));
+            if age.is_none_or(|age| age > ACCOUNT_CATALOG_MAX_AGE.as_millis()) {
+                stored.stale = true;
+                stored.error = Some("account_catalog_outdated".into());
+            }
+            stored
+        }
+        (None, None) => Snapshot {
+            stale: true,
+            error: Some("catalog_unavailable_or_invalid".into()),
+            ..Default::default()
+        },
+    }
+}
+
+fn current_account_key(codex_home: &Path) -> Option<String> {
     let auth_path = codex_home.join("auth.json");
-    let account = super::auth::load_auth_file(&auth_path)
+    let auth = super::auth::load_auth_file(&auth_path).ok()?;
+    Some(super::auth::make_auth_snapshot(&auth, &auth_path).ok()?.account_key)
+}
+
+fn account_catalog_path(app_data: &Path, account_key: &str) -> PathBuf {
+    app_data.join(format!("model-capabilities-{account_key}.json"))
+}
+
+fn now_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis())
+}
+
+fn modified_millis(path: &Path) -> u128 {
+    std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
         .ok()
-        .and_then(|auth| super::auth::make_auth_snapshot(&auth, &auth_path).ok());
-    let minimum_modified = account
-        .as_ref()
-        .and_then(|_| std::fs::metadata(&auth_path).ok()?.modified().ok());
-    let backup = account.map_or_else(
-        || app_data.join("model-capabilities-last-good.json"),
-        |account| app_data.join(format!("model-capabilities-{}.json", account.account_key)),
-    );
-    load_with_backup_mode(
-        &codex_home.join("models_cache.json"),
-        Some(&backup),
-        write_backup,
-        minimum_modified,
+        .and_then(|modified| modified.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map_or(0, |duration| duration.as_millis())
+}
+
+fn read_marker(app_data: &Path) -> Option<AccountMarker> {
+    serde_json::from_slice(&bounded_read(&app_data.join(ACCOUNT_MARKER_FILE))?).ok()
+}
+
+fn write_marker(app_data: &Path, account_key: &str, switched_at: u128) -> Result<(), CoreError> {
+    let marker = AccountMarker {
+        account_key: account_key.to_owned(),
+        switched_at,
+    };
+    super::storage::write_atomic(
+        &app_data.join(ACCOUNT_MARKER_FILE),
+        &serde_json::to_vec(&marker)?,
     )
 }
 
-/// Save the outgoing account's valid catalog, then force Codex to fetch a new
-/// global cache after the credentials change. The per-account last-good file
-/// keeps its own picker usable while that refresh is in flight.
-pub(crate) fn prepare_account_switch(codex_home: &Path, app_data: &Path) -> Result<(), CoreError> {
+/// The time from which the global cache may belong to `account_key`. A login
+/// changed outside AgentHarbor is recorded when it is first observed. The first
+/// observation after upgrading trusts the existing cache, as before.
+fn observe_account(app_data: &Path, account_key: &str, persist: bool) -> u128 {
+    match read_marker(app_data) {
+        Some(marker) if marker.account_key == account_key => marker.switched_at,
+        previous => {
+            let switched_at = if previous.is_some() { now_millis() } else { 0 };
+            if persist {
+                let _ = write_marker(app_data, account_key, switched_at);
+            }
+            switched_at
+        }
+    }
+}
+
+/// Persist the outgoing account's catalog, then mark the global cache as
+/// belonging to an earlier login. The cache itself is left for Codex, which
+/// validates its own identity; it is not refreshed while a catalog is injected.
+pub(crate) fn record_account_switch(
+    codex_home: &Path,
+    app_data: &Path,
+    account_key: &str,
+) -> Result<(), CoreError> {
     let _ = account_catalog(codex_home, app_data);
-    let source = codex_home.join("models_cache.json");
-    super::storage::remove_file_durable(&source)?;
-    cache().lock().unwrap_or_else(|e| e.into_inner()).remove(&source);
-    Ok(())
+    write_marker(app_data, account_key, now_millis())
+}
+
+/// Store a catalog fetched with one account's own credentials. Invalid or
+/// empty data never replaces that account's last good catalog.
+pub(crate) fn store_account_catalog(
+    app_data: &Path,
+    account_key: &str,
+    bytes: &[u8],
+) -> Result<(), CoreError> {
+    let models = parse(bytes)
+        .ok_or_else(|| CoreError::InvalidData("Codex model catalog is invalid".into()))?;
+    write_account_catalog(app_data, account_key, &models)
+}
+
+fn write_account_catalog(
+    app_data: &Path,
+    account_key: &str,
+    models: &[Value],
+) -> Result<(), CoreError> {
+    let data = serde_json::json!({"accountKey": account_key, "models": models});
+    super::storage::write_atomic(
+        &account_catalog_path(app_data, account_key),
+        &serde_json::to_vec(&data)?,
+    )
+}
+
+/// Whether this account's own catalog is missing or older than `max_age`.
+pub(crate) fn account_catalog_due(app_data: &Path, account_key: &str, max_age: Duration) -> bool {
+    let modified = modified_millis(&account_catalog_path(app_data, account_key));
+    modified == 0 || now_millis().saturating_sub(modified) > max_age.as_millis()
 }
 
 fn bounded_read(path: &Path) -> Option<Vec<u8>> {
@@ -296,29 +410,71 @@ mod tests {
             )
             .unwrap();
         };
+        let key = |id: &str| {
+            use sha2::Digest;
+            format!("{:x}", sha2::Sha256::digest(id.as_bytes()))
+        };
+        let slugs = |snapshot: &Snapshot| -> Vec<String> {
+            snapshot
+                .models
+                .iter()
+                .map(|entry| entry["slug"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        let pause = || std::thread::sleep(std::time::Duration::from_millis(20));
+
+        // The first observation after upgrading trusts the existing cache.
         write_auth("plus");
         write_models("plus-only");
-        assert_eq!(account_catalog(&home, &app).models[0]["slug"], "plus-only");
+        assert_eq!(slugs(&account_catalog(&home, &app)), ["plus-only"]);
 
-        prepare_account_switch(&home, &app).unwrap();
+        // Switching keeps Codex's cache file but never attributes it to the
+        // new login. A login without its own catalog shows no official models.
+        record_account_switch(&home, &app, &key("free")).unwrap();
         write_auth("free");
-        assert!(!models.exists());
-        assert!(account_catalog(&home, &app).models.is_empty());
+        assert!(models.exists());
+        let free = account_catalog(&home, &app);
+        assert!(free.stale);
+        assert!(free.models.is_empty());
+        pause();
         write_models("free-only");
-        assert_eq!(account_catalog(&home, &app).models[0]["slug"], "free-only");
+        assert_eq!(slugs(&account_catalog(&home, &app)), ["free-only"]);
 
-        prepare_account_switch(&home, &app).unwrap();
+        // Back on Plus, the cache Free left behind stays hidden and Plus uses
+        // the catalog saved for it, as when Codex reads an injected catalog.
+        record_account_switch(&home, &app, &key("plus")).unwrap();
         write_auth("plus");
         let restored = account_catalog(&home, &app);
-        assert!(restored.stale);
-        assert_eq!(restored.models[0]["slug"], "plus-only");
-        assert!(!restored.models.iter().any(|entry| entry["slug"] == "free-only"));
+        assert!(!restored.stale);
+        assert_eq!(slugs(&restored), ["plus-only"]);
 
-        // A login changed outside AgentHarbor also invalidates the global
-        // cache until Codex refreshes it for that identity.
+        // A catalog fetched with this account's own credentials replaces it;
+        // invalid data never does.
+        pause();
+        store_account_catalog(
+            &app,
+            &key("plus"),
+            br#"{"models":[{"slug":"plus-fetched"}]}"#,
+        )
+        .unwrap();
+        assert!(store_account_catalog(&app, &key("plus"), br#"{"models":[]}"#).is_err());
+        assert_eq!(slugs(&account_catalog(&home, &app)), ["plus-fetched"]);
+        assert!(!account_catalog_due(
+            &app,
+            &key("plus"),
+            Duration::from_secs(60)
+        ));
+        assert!(account_catalog_due(&app, &key("new"), Duration::from_secs(60)));
+
+        // A token refresh rewrites auth.json for the same login; Codex's newer
+        // cache for that login is still accepted.
+        pause();
         write_models("plus-refreshed");
-        assert_eq!(account_catalog(&home, &app).models[0]["slug"], "plus-refreshed");
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        pause();
+        write_auth("plus");
+        assert_eq!(slugs(&account_catalog(&home, &app)), ["plus-refreshed"]);
+
+        // A login changed outside AgentHarbor is detected by its identity.
         write_auth("external");
         assert!(account_catalog(&home, &app).models.is_empty());
     }

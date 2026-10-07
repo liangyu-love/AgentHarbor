@@ -3585,6 +3585,66 @@ mod tests {
         );
     }
 
+    #[test]
+    fn injected_menu_lists_only_the_active_accounts_fetched_official_models() {
+        let (_dir, paths) = paths();
+        std::fs::create_dir_all(&paths.app_data_dir).unwrap();
+        let account_key = |id: &str| {
+            use sha2::Digest;
+            format!("{:x}", sha2::Sha256::digest(id.as_bytes()))
+        };
+        let login = |id: &str| {
+            std::fs::write(
+                &paths.auth_path,
+                serde_json::json!({"auth_mode":"chatgpt","tokens":{"account_id":id}}).to_string(),
+            )
+            .unwrap();
+        };
+        // A stale global cache from an earlier, uninjected Plus session.
+        std::fs::write(
+            paths.codex_home.join("models_cache.json"),
+            r#"{"models":[{"slug":"plus-cache-only"}]}"#,
+        )
+        .unwrap();
+        login("plus");
+        for (id, slug) in [("plus", "plus-model"), ("free", "free-model")] {
+            crate::core::model_catalog::store_account_catalog(
+                &paths.app_data_dir,
+                &account_key(id),
+                format!(r#"{{"models":[{{"slug":"{slug}"}}]}}"#).as_bytes(),
+            )
+            .unwrap();
+        }
+        let mut store = Store::default();
+        store.providers.push(Provider {
+            id: "relay".into(),
+            name: "Relay".into(),
+            enabled: true,
+            api_key: "synthetic".into(),
+            base_url: "https://relay.example".into(),
+            model: "gpt-relay".into(),
+            ..Default::default()
+        });
+        let slugs = |store: &Store| -> Vec<String> {
+            catalog_value(&paths.app_data_dir, &paths.codex_home, store)["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|entry| entry["slug"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        for (id, official) in [("free", "free-model"), ("plus", "plus-model")] {
+            crate::core::model_catalog::record_account_switch(
+                &paths.codex_home,
+                &paths.app_data_dir,
+                &account_key(id),
+            )
+            .unwrap();
+            login(id);
+            assert_eq!(slugs(&store), [official, "relay::gpt-relay"]);
+        }
+    }
+
     fn input(name: &str, base_url: &str) -> ProviderInput {
         ProviderInput {
             id: None,

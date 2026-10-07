@@ -310,6 +310,44 @@ async fn fetch_usage_rpc(
     credential: &AccountCredential,
     proxy: &ApiProxyConfigPayload,
 ) -> (Result<Value, String>, Option<CredentialRefresh>) {
+    let (result, refresh) =
+        isolated_rpc(credential, proxy, "account/rateLimits/read", None, None).await;
+    (result.map(|(value, _)| value), refresh)
+}
+
+/// Fetch the official model catalog with only this account's credentials.
+/// `model/list` makes Codex refresh its own cache in an isolated home without
+/// `model_catalog_json`; that cache keeps Codex's format and plan filtering.
+pub async fn fetch_model_catalog(
+    credential: &AccountCredential,
+    proxy: &ApiProxyConfigPayload,
+) -> (Result<Vec<u8>, String>, Option<CredentialRefresh>) {
+    let (result, refresh) = isolated_rpc(
+        credential,
+        proxy,
+        "model/list",
+        Some(json!({})),
+        Some("models_cache.json"),
+    )
+    .await;
+    let catalog = result.and_then(|(_, file)| {
+        file.ok_or_else(|| "Codex did not write a model catalog for this account".to_string())
+    });
+    (catalog, refresh)
+}
+
+/// Run one app-server request with a private CODEX_HOME holding only this
+/// account's auth.json. `collect` names a file Codex writes there to return.
+async fn isolated_rpc(
+    credential: &AccountCredential,
+    proxy: &ApiProxyConfigPayload,
+    method: &str,
+    params: Option<Value>,
+    collect: Option<&str>,
+) -> (
+    Result<(Value, Option<Vec<u8>>), String>,
+    Option<CredentialRefresh>,
+) {
     let original = match credential_bytes(credential) {
         Ok(bytes) => bytes,
         Err(error) => return (Err(error), None),
@@ -363,10 +401,12 @@ async fn fetch_usage_rpc(
             .await
             .map_err(|error| error.to_string())?;
         stdin.flush().await.map_err(|error| error.to_string())?;
-        let limits = rpc_request(&mut stdin, &mut reader, 2, "account/rateLimits/read", None).await;
+        let response = rpc_request(&mut stdin, &mut reader, 2, method, params).await;
         let _ = child.kill().await;
         let _ = child.wait().await;
-        limits
+        let response = response?;
+        let file = collect.and_then(|name| std::fs::read(runtime_root.join(name)).ok());
+        Ok((response, file))
     }
     .await;
 

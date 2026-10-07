@@ -251,20 +251,68 @@ pub fn switch(repo: &Repository, account_key: &str) -> Result<CodexAccountListPa
                 .is_some_and(|name| name.starts_with("auth-") && name.ends_with(".json"))
         });
     }
-    super::model_catalog::prepare_account_switch(
+    super::model_catalog::record_account_switch(
         &repo.paths().codex_home,
         &repo.paths().app_data_dir,
+        account_key,
     )?;
     storage::write_atomic(&repo.paths().auth_path, &target_bytes)?;
     let result = payload(repo.rebuild_registry_state()?);
-    if let Ok(store) = super::router::load_store(repo.paths()) {
-        if store.router.enabled && super::router::active_routing_config_is_ours(repo.paths()) {
-            if let Err(error) = super::router::ensure_routing_config(repo.paths(), &store) {
-                log::warn!("Codex catalog refresh after account switch failed: {error}");
+    refresh_routing_catalog(repo);
+    Ok(result)
+}
+
+/// Rewrite the injected model catalog for the active account. Codex reads it
+/// only at startup, so callers restart Codex afterwards when it was running.
+pub fn refresh_routing_catalog(repo: &Repository) {
+    let paths = repo.paths();
+    if let Ok(store) = super::router::load_store(paths) {
+        if store.router.enabled && super::router::active_routing_config_is_ours(paths) {
+            if let Err(error) = super::router::ensure_routing_config(paths, &store) {
+                log::warn!("Codex catalog refresh for the active account failed: {error}");
             }
         }
     }
-    Ok(result)
+}
+
+/// Store a catalog fetched with one account's own credentials, applying any
+/// token refresh made by the isolated app-server. A failed fetch keeps that
+/// account's last good catalog. Returns whether a new catalog was stored.
+pub fn apply_catalog_fetch(
+    repo: &Repository,
+    account_key: &str,
+    catalog: Result<Vec<u8>, String>,
+    refresh: Option<CredentialRefresh>,
+) -> bool {
+    if let Some(refresh) = &refresh {
+        if let Err(error) = apply_credential_refresh(repo, account_key, refresh) {
+            log::warn!("Credential refresh from model catalog fetch was not stored: {error}");
+        }
+    }
+    let stored = match catalog {
+        Ok(bytes) => match super::model_catalog::store_account_catalog(
+            &repo.paths().app_data_dir,
+            account_key,
+            &bytes,
+        ) {
+            Ok(()) => true,
+            Err(error) => {
+                log::warn!("Fetched Codex model catalog was rejected: {error}");
+                false
+            }
+        },
+        Err(error) => {
+            log::warn!("Codex model catalog fetch failed: {error}");
+            false
+        }
+    };
+    let active = repo
+        .load_registry_or_empty()
+        .is_ok_and(|registry| registry.active_account_key.as_deref() == Some(account_key));
+    if stored && active {
+        refresh_routing_catalog(repo);
+    }
+    stored
 }
 
 pub fn delete(repo: &Repository, account_key: &str) -> Result<CodexAccountListPayload, CoreError> {
@@ -681,6 +729,57 @@ mod tests {
     }
 
     #[test]
+    fn fetched_catalogs_are_per_account_and_failures_keep_the_last_good_one() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = Repository::from_paths(CodexPaths::from_home(temp.path().join("codex")));
+        let source = temp.path().join("source.json");
+        write_auth(&source, "plus");
+        let plus = register_login(&repo, &source).unwrap().active_account_key.unwrap();
+        write_auth(&source, "free");
+        register_login(&repo, &source).unwrap();
+        let free = list(&repo)
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|item| item.account_key != plus)
+            .unwrap()
+            .account_key;
+        let slugs = || {
+            super::super::model_catalog::account_catalog(
+                &repo.paths().codex_home,
+                &repo.paths().app_data_dir,
+            )
+            .models
+            .iter()
+            .map(|entry| entry["slug"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+        };
+
+        assert!(apply_catalog_fetch(
+            &repo,
+            &plus,
+            Ok(br#"{"models":[{"slug":"plus-model"}]}"#.to_vec()),
+            None
+        ));
+        assert!(apply_catalog_fetch(
+            &repo,
+            &free,
+            Ok(br#"{"models":[{"slug":"free-model"}]}"#.to_vec()),
+            None
+        ));
+        assert_eq!(slugs(), ["plus-model"]);
+        for failed in [Err("offline".to_owned()), Ok(br#"{"models":[]}"#.to_vec())] {
+            assert!(!apply_catalog_fetch(&repo, &plus, failed, None));
+        }
+        assert_eq!(slugs(), ["plus-model"]);
+
+        switch(&repo, &free).unwrap();
+        assert_eq!(slugs(), ["free-model"]);
+        switch(&repo, &plus).unwrap();
+        assert_eq!(slugs(), ["plus-model"]);
+    }
+
+    #[test]
     fn quota_refreshes_do_not_create_registry_backups() {
         let temp = tempfile::tempdir().unwrap();
         let repo = Repository::from_paths(CodexPaths::from_home(temp.path().join("codex")));
@@ -729,7 +828,8 @@ mod tests {
             .account_key
             .clone();
         let switched = switch(&repo, &second_key).unwrap();
-        assert!(!repo.paths().codex_home.join("models_cache.json").exists());
+        // Codex keeps its own cache; it is no longer attributed to the new login.
+        assert!(repo.paths().codex_home.join("models_cache.json").exists());
         assert!(super::super::model_catalog::account_catalog(
             &repo.paths().codex_home,
             &repo.paths().app_data_dir,
@@ -743,5 +843,48 @@ mod tests {
         assert!(delete(&repo, &second_key).is_err());
         let remaining = delete(&repo, &first_key).unwrap();
         assert_eq!(remaining.items.len(), 1);
+    }
+
+    /// Manual check against the real service with this machine's saved
+    /// accounts. Read-only: it lists models and stores each account's catalog.
+    /// Run: cargo test --lib live_fetch_saved_account_catalogs -- --ignored --nocapture
+    #[test]
+    #[ignore = "uses real saved Codex accounts and network"]
+    fn live_fetch_saved_account_catalogs() {
+        let repo = Repository::from_paths(CodexPaths::new());
+        let registry = repo.load_registry_or_empty().unwrap();
+        let (credentials, proxy) = credentials(&repo).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        for credential in credentials {
+            let plan = registry
+                .items
+                .iter()
+                .find(|item| item.account_key == credential.account_key)
+                .map_or_else(String::new, |item| item.plan.clone());
+            let (catalog, refresh) = runtime.block_on(
+                super::super::account_monitor::fetch_model_catalog(&credential, &proxy),
+            );
+            let outcome = catalog.as_ref().map(Vec::len).map_err(Clone::clone);
+            let stored = apply_catalog_fetch(&repo, &credential.account_key, catalog, refresh);
+            let file = repo
+                .paths()
+                .app_data_dir
+                .join(format!("model-capabilities-{}.json", credential.account_key));
+            let value: serde_json::Value = std::fs::read(file)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or_default();
+            let models: Vec<String> = value["models"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|model| model["visibility"] == "list")
+                .filter_map(|model| model["slug"].as_str().map(str::to_owned))
+                .collect();
+            println!(
+                "{plan:>5} {}… fetch={outcome:?} stored={stored} listed={models:?}",
+                &credential.account_key[..8]
+            );
+        }
     }
 }

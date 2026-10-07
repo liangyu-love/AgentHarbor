@@ -3,6 +3,7 @@ use crate::core::account_login::{self, LoginManager};
 use crate::core::accounts::{self, CodexAccountListPayload};
 use crate::core::repository::Repository;
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::State;
 
 fn lock_repo<'a>(
@@ -45,10 +46,70 @@ pub(crate) async fn refresh_all(
         .buffered(3)
         .collect()
         .await;
-    let repo = repo
-        .lock()
-        .map_err(|_| "Repository lock poisoned".to_string())?;
-    accounts::apply_usage_updates(&repo, updates).map_err(|error| error.to_string())
+    let payload = {
+        let repo = repo
+            .lock()
+            .map_err(|_| "Repository lock poisoned".to_string())?;
+        accounts::apply_usage_updates(&repo, updates).map_err(|error| error.to_string())?
+    };
+    refresh_model_catalogs(repo, None, CATALOG_REFRESH_INTERVAL).await;
+    Ok(payload)
+}
+
+/// Official catalogs change rarely; quota refreshes renew them at most this often.
+pub(crate) const CATALOG_REFRESH_INTERVAL: Duration = Duration::from_secs(30 * 60);
+/// Bound account switching and login when the catalog service is slow.
+const CATALOG_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Fetch official model catalogs with each account's own credentials. `only`
+/// limits this to one account; `max_age` skips catalogs fetched recently.
+/// Failures keep that account's last good catalog and never fail the caller.
+pub(crate) async fn refresh_model_catalogs(
+    repo: &Mutex<Repository>,
+    only: Option<&str>,
+    max_age: Duration,
+) {
+    let due = {
+        let Ok(repo) = repo.lock() else { return };
+        let Ok((credentials, proxy)) = accounts::credentials(&repo) else {
+            return;
+        };
+        let app_data = repo.paths().app_data_dir.clone();
+        let credentials: Vec<_> = credentials
+            .into_iter()
+            .filter(|credential| only.is_none_or(|key| key == credential.account_key))
+            .filter(|credential| {
+                crate::core::model_catalog::account_catalog_due(
+                    &app_data,
+                    &credential.account_key,
+                    max_age,
+                )
+            })
+            .collect();
+        (credentials, proxy)
+    };
+    let (credentials, proxy) = due;
+    use futures_util::StreamExt;
+    let fetched: Vec<_> = futures_util::stream::iter(credentials)
+        .map(|credential| {
+            let proxy = proxy.clone();
+            async move {
+                let (catalog, refresh) = tokio::time::timeout(
+                    CATALOG_FETCH_TIMEOUT,
+                    account_monitor::fetch_model_catalog(&credential, &proxy),
+                )
+                .await
+                .unwrap_or_else(|_| (Err("model catalog fetch timed out".into()), None));
+                (credential.account_key, catalog, refresh)
+            }
+        })
+        .buffered(2)
+        .collect()
+        .await;
+    let Ok(repo) = repo.lock() else { return };
+    for (account_key, catalog, refresh) in fetched {
+        accounts::apply_catalog_fetch(&repo, &account_key, catalog, refresh);
+    }
 }
 
 #[tauri::command]
@@ -66,10 +127,13 @@ pub async fn login_codex_account(
         )
     };
     let artifact = account_login::login(&paths, &proxy, attempt.cancellation()).await?;
-    attempt.commit(|| {
+    let payload = attempt.commit(|| {
         let repo = lock_repo(&repo)?;
         accounts::register_login(&repo, &artifact.auth_path).map_err(|error| error.to_string())
-    })
+    })?;
+    // Give a new login its own official catalog before it is first selected.
+    refresh_model_catalogs(&repo, None, CATALOG_REFRESH_INTERVAL).await;
+    Ok(payload)
 }
 
 #[tauri::command]
@@ -121,6 +185,11 @@ pub async fn switch_codex_account(
             return Err(error);
         }
     };
+    // Codex is stopped and reads the injected catalog only when it starts, so
+    // fetch the selected account's own models before the UI restarts it.
+    if let Some(key) = result.active_account_key.as_deref() {
+        refresh_model_catalogs(&repo, Some(key), Duration::ZERO).await;
+    }
     Ok(result)
 }
 
