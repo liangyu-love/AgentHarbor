@@ -22,7 +22,7 @@ import { McpPage } from "@/components/mcp/mcp-page";
 import { SkillsPage } from "@/components/skills/skills-page";
 import { ClientConfigs } from "@/components/newapi/client-configs";
 import { TerminalProxySettings } from "@/components/settings/terminal-proxy-settings";
-import type { NewApiProvider, NewApiState } from "@/types/newapi";
+import type { CodexSubagentSettings, NewApiProvider, NewApiState } from "@/types/newapi";
 import type { TokenUsagePayload } from "@/types";
 import type { ClientConfigRequest, ClientStatus } from "@/types/clients";
 import type { AggregateModel, AggregateView, AggregationState, ConnectionExportResult } from "@/types/aggregation";
@@ -353,6 +353,28 @@ api.routing.setAccountless = async accountless => {
   state = { ...state, router: { ...state.router, accountless } };
   return { state, applied: null };
 };
+let subagentSettings: CodexSubagentSettings | null = null;
+api.routing.subagents = async () => {
+  if (controls.review.failSubagentLoad) throw "newapi.errors.configRead";
+  const efforts = ["low", "medium", "high", "xhigh"];
+  const models = controls.review.subagentModels ?? (state.router.aggregateModelId
+    ? [{ id: "aggregate-luna", label: "Luna Pool", reasoningEfforts: efforts }]
+    : state.router.accessMode === "native"
+      ? [{ id: "responses-model", label: "responses-model", reasoningEfforts: efforts }]
+      : [{ id: "gpt-6-luna", label: "Official Luna", reasoningEfforts: efforts },
+        { id: "mixed::responses-model", label: "Relay / responses-model", reasoningEfforts: efforts }]);
+  return { settings: structuredClone(subagentSettings ?? controls.review.originalSubagents ?? { model: null, reasoningEffort: null }),
+    managed: subagentSettings !== null, applied: state.router.enabled && subagentSettings !== null,
+    models, inheritedReasoningEfforts: efforts };
+};
+api.routing.saveSubagents = async settings => {
+  controls.review.subagentSaves = [...(controls.review.subagentSaves ?? []), structuredClone(settings)];
+  if (controls.review.holdSubagentSave) await new Promise<void>(resolve => { controls.review.releaseSubagentSave = resolve; });
+  if (controls.review.failSubagentSave) throw "newapi.errors.configWrite";
+  subagentSettings = structuredClone(settings);
+  return { state: structuredClone(state), applied: state.router.enabled
+    ? { path: "C:/synthetic/config.toml", backupPath: null } : null };
+};
 api.targets.restart = async target => {
   controls.review.restartCalls.push(target);
 };
@@ -510,6 +532,7 @@ function recoveryPreview(mode: FixtureMode) {
     reason: "Local metadata cannot identify the ChatGPT account that owns the server thread" };
 }
 
+let mountSequence = 0;
 function mount(mode: FixtureMode) {
   localStorage.removeItem("threads_source");
   if (mode === "overview") { controls.review.claudeSkills = [{ id: "one" }, { id: "two" }, { id: "three" }]; controls.review.claudeSkillBackups = [{ id: "claude-b1" }, { id: "claude-b2" }]; }
@@ -787,9 +810,9 @@ function mount(mode: FixtureMode) {
   controls.review.frontendClient = queryClient;
   if (mode === "terminal-proxy") controls.review.terminalClient = queryClient;
   if (mode === "groups") controls.review.providersClient = queryClient;
-  root.render(<QueryClientProvider client={queryClient}><TooltipProvider>
+  root.render(<QueryClientProvider key={++mountSequence} client={queryClient}><TooltipProvider>
     <div style={{ position: "relative", height: 600 }}><PageStage state="active">
-      {(mode.startsWith("thread-details") || mode === "thread-tree" || mode === "thread-actions" || mode === "terminal-proxy" || mode === "skills" || mode === "groups") && <ThreadToastProbe />}
+      {(mode.startsWith("thread-details") || mode === "thread-tree" || mode === "thread-actions" || mode === "terminal-proxy" || mode === "skills" || mode === "groups" || mode === "access") && <ThreadToastProbe />}
       {mode === "desktop-updater" ? <DesktopUpdaterFixture /> : mode === "desktop-exit" ? <ClaudeDesktopRouterExitDialog /> : mode.startsWith("recovery-") ? <RecoveryFixture thread={threads[0] as ThreadSummary} /> :
         mode === "skills" ? <SkillsPage /> : mode === "terminal-proxy" ? <div className="mx-auto max-w-xl rounded-xl bg-card shadow-sm"><TerminalProxySettings currentProxy={{ mode: "manual", url: "http://127.0.0.1:7890" }} /></div> :
         mode === "image" ? <ImageWorkbenchPage /> : mode === "mcp" ? <McpPage /> : mode === "accounts" || mode.startsWith("account-resets") ? <AccountsPage refreshInterval="5m" onManageProviders={noop} /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage" ? <TokenUsagePanel data={{ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } }} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode.startsWith("thread-details") || mode === "thread-tree" || mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :

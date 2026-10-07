@@ -23,6 +23,8 @@ mod config_snapshot;
 mod model_protocol_tests;
 #[path = "codex_native.rs"]
 mod native_config;
+#[path = "codex_subagents.rs"]
+pub mod subagents;
 
 pub const DEFAULT_PORT: u16 = 43127;
 const PREVIOUS_DEFAULT_PORT: u16 = 25817;
@@ -156,6 +158,7 @@ pub struct Store {
     pub aggregates: Vec<super::aggregation::AggregateModel>,
     pub router: RouterSettings,
     pub codex_access_mode: CodexAccessMode,
+    pub codex_subagents: Option<subagents::Settings>,
     pub active_provider_id: Option<String>,
     /// Global compression policy. `inherit` is never meaningful here and is
     /// read as the 90% product default.
@@ -790,6 +793,7 @@ fn migrate_original_relay(paths: &CodexPaths) -> Result<Option<Store>, String> {
     Ok(Some(Store {
         version: STORE_VERSION,
         codex_access_mode: CodexAccessMode::Router,
+        codex_subagents: None,
         providers,
         aggregates: vec![],
         active_provider_id,
@@ -3053,6 +3057,7 @@ pub fn apply_routing_config(
     if store.codex_access_mode == CodexAccessMode::Native {
         return native_config::apply(paths, store);
     }
+    subagents::validate(paths, store)?;
     let applied = apply_local_router_config(paths, store)?;
     cleanup_native_credentials(paths);
     Ok(applied)
@@ -3098,7 +3103,10 @@ fn apply_local_router_config(
                 Some(snapshot) if snapshot.selected_provider_is_ours(&document) => snapshot,
                 // An explicit enable after cc-switch took over starts a new
                 // session, with cc-switch's live settings as its baseline.
-                Some(_) => config_snapshot::Snapshot::capture(paths, &document)?,
+                Some(snapshot) => {
+                    snapshot.restore_subagents(&mut document)?;
+                    config_snapshot::Snapshot::capture(paths, &document)?
+                }
                 None if model_provider_is_ours(&document) => {
                     config_snapshot::recover_legacy(paths, &document, store)?
                 }
@@ -3166,6 +3174,7 @@ fn apply_local_router_config(
                 entry["experimental_bearer_token"] = value(&store.router.bearer_token);
             }
             snapshot.apply_auth(&mut document, store.router.accountless)?;
+            snapshot.apply_subagents(&mut document, store.codex_subagents.as_ref())?;
             write_catalog(paths, store).map_err(CoreError::OperationFailed)?;
             snapshot.prepare(paths, original, &document, config_snapshot::Action::Apply)?;
             pending = Some(snapshot);
@@ -3233,7 +3242,10 @@ pub(crate) fn routing_config_matches(paths: &CodexPaths, store: &Store) -> Resul
         return Ok(false);
     }
     let (provider_key, expected_model, namespace) = codex_connection(store)?;
-    let (_, document) = open_config(paths)?;
+    let (original, document) = open_config(paths)?;
+    let ownership_matches = config_snapshot::load(paths, original.as_deref().unwrap_or(""))
+        .map_err(config_update_error)?
+        .is_some_and(|snapshot| snapshot.subagents_match(store.codex_subagents.as_ref()));
     let expected_base = format!("http://127.0.0.1:{}/{namespace}/v1", store.router.port);
     let expected_catalog = selected_catalog_path(paths, store).to_string_lossy().to_string();
     let expected_menu = if store.router.aggregate_model_id.is_some() {
@@ -3300,7 +3312,9 @@ pub(crate) fn routing_config_matches(paths: &CodexPaths, store: &Store) -> Resul
             .get("model_catalog_json")
             .and_then(toml_edit::Item::as_str)
             == Some(expected_catalog.as_str())
-        && catalog_current;
+        && catalog_current
+        && ownership_matches
+        && subagents::matches(&document, store);
     Ok(current)
 }
 
@@ -3787,6 +3801,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             version: 1,
             aggregates: vec![],
             codex_access_mode: CodexAccessMode::Router,
+            codex_subagents: None,
             providers: vec![provider],
             ..Default::default()
         };
@@ -4162,6 +4177,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             version: 1,
             aggregates: vec![],
             codex_access_mode: CodexAccessMode::Router,
+            codex_subagents: None,
             providers: vec![Provider {
                 id: "aimami_relay_fixture".into(),
                 name: "Previous relay".into(),
@@ -4200,6 +4216,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             version: 1,
             aggregates: vec![],
             codex_access_mode: CodexAccessMode::Router,
+            codex_subagents: None,
             providers: vec![Provider {
                 id: "existing-provider-id".into(),
                 name: "Previous harbor relay".into(),
@@ -4398,6 +4415,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             version: 1,
             aggregates: vec![],
             codex_access_mode: CodexAccessMode::Router,
+            codex_subagents: None,
             providers: vec![provider],
             router: RouterSettings {
                 enabled: true,
@@ -4455,6 +4473,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             version: 1,
             aggregates: vec![],
             codex_access_mode: CodexAccessMode::Router,
+            codex_subagents: None,
             providers: vec![Provider {
                 id: "legacy-chat".into(),
                 name: "Legacy Chat".into(),
@@ -4506,6 +4525,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             version: 1,
             aggregates: vec![],
             codex_access_mode: CodexAccessMode::Router,
+            codex_subagents: None,
             providers: vec![provider],
             router: RouterSettings {
                 enabled: true,

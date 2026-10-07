@@ -3593,6 +3593,7 @@ mod tests {
             let mut store = Store {
                 version: 3,
                 codex_access_mode: router::CodexAccessMode::Router,
+                codex_subagents: None,
                 providers: vec![provider, chat_provider, anthropic_provider],
                 aggregates: Vec::new(),
                 active_provider_id: Some("agentharbor_fixture".into()),

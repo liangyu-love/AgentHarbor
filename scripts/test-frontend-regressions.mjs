@@ -19,6 +19,7 @@ import { testRelayDeck } from "./test-relay-deck.mjs";
 import { testClaudeDesktopCard } from "./test-claude-desktop-card.mjs";
 import { testSkillsActivation } from "./test-skills-activation.mjs";
 import { testAggregation } from "./test-aggregation.mjs";
+import { testCodexSubagents } from "./test-codex-subagents.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -77,7 +78,9 @@ try {
     await page.evaluate(value => window.review.mount(value), mode);
   };
 
-  if (process.env.FRONTEND_QA_SCOPE === "aggregation") {
+  if (process.env.FRONTEND_QA_SCOPE === "codex-subagents") {
+    await testCodexSubagents({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "aggregation") {
     await testAggregation({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "skills") {
     await testSkillsActivation({ page, reset, captureDir });
@@ -1258,6 +1261,7 @@ try {
   await testClaudeSessions({ page, reset, captureDir });
   await testThreadUiFixes({ page, reset, captureDir });
   await testAggregation({ page, reset, captureDir });
+  await testCodexSubagents({ page, reset, captureDir });
   await testMagpieOptimizations({ page, reset, captureDir });
   await testProviderFeedback({ page, reset, captureDir });
   await testProviderModelResolutions({ page, reset, captureDir });

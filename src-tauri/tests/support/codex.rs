@@ -143,6 +143,19 @@ impl MockResponses {
         event: String,
         reject_relay_ids: bool,
     ) -> Self {
+        Self::with_handler(protocol, move |_| event.clone(), reject_relay_ids)
+    }
+
+    /// Script only local model replies; no returned tool may access a network.
+    pub(super) fn scripted(handler: impl Fn(&CapturedRequest) -> String + Send + 'static) -> Self {
+        Self::with_handler(ModelProtocol::Responses, handler, false)
+    }
+
+    fn with_handler(
+        protocol: ModelProtocol,
+        handler: impl Fn(&CapturedRequest) -> String + Send + 'static,
+        reject_relay_ids: bool,
+    ) -> Self {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         listener.set_nonblocking(true).unwrap();
@@ -213,11 +226,13 @@ impl MockResponses {
                                 })
                                 .and_then(|value| value["model"].as_str().map(str::to_owned))
                         });
-                    let _ = sender.send(CapturedRequest {
+                    let captured = CapturedRequest {
                         request_line: first_line,
                         headers,
                         body,
-                    });
+                    };
+                    let event = handler(&captured);
+                    let _ = sender.send(captured);
                     let response = if reject_relay_ids
                         && model.as_deref().is_some_and(|model| model.contains("::"))
                     {

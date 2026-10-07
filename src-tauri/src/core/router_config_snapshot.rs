@@ -113,6 +113,8 @@ struct Pending {
     before_hash: String,
     after_hash: String,
     applied: Fields,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    subagents: Option<super::subagents::Ownership>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -124,6 +126,10 @@ pub(super) struct Snapshot {
     original: String,
     applied: Option<Fields>,
     pending: Option<Pending>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    subagents: Option<super::subagents::Ownership>,
+    #[serde(skip)]
+    planned_subagents: Option<super::subagents::Ownership>,
     #[serde(skip)]
     auth_owned: bool,
 }
@@ -155,15 +161,24 @@ pub(super) fn load(paths: &CodexPaths, current: &str) -> Result<Option<Snapshot>
         return Err(snapshot_error());
     }
     parse_original(&snapshot)?;
+    if let Some(ownership) = &snapshot.subagents {
+        ownership.validate()?;
+    }
     if let Some(applied) = &snapshot.applied {
         validate_fields(applied)?;
     }
     if let Some(pending) = snapshot.pending.take() {
         validate_fields(&pending.applied)?;
+        if let Some(ownership) = &pending.subagents {
+            ownership.validate()?;
+        }
         let current_hash = hash(current);
         if current_hash == pending.after_hash {
             match pending.action {
-                Action::Apply => snapshot.applied = Some(pending.applied),
+                Action::Apply => {
+                    snapshot.applied = Some(pending.applied);
+                    snapshot.subagents = pending.subagents;
+                }
                 // A completed removal with a failed sidecar cleanup must not
                 // become the baseline of a later, unrelated router session.
                 Action::Remove => {
@@ -183,6 +198,21 @@ pub(super) fn load(paths: &CodexPaths, current: &str) -> Result<Option<Snapshot>
 }
 
 impl Snapshot {
+    pub(super) fn subagents_match(&self, settings: Option<&super::subagents::Settings>) -> bool {
+        match (&self.subagents, settings) {
+            (None, None) => true,
+            (Some(ownership), Some(settings)) => ownership.matches(settings),
+            _ => false,
+        }
+    }
+
+    pub(super) fn restore_subagents(&self, document: &mut DocumentMut) -> Result<(), CoreError> {
+        if let Some(ownership) = &self.subagents {
+            ownership.restore(document)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn selected_provider_is_ours(&self, document: &DocumentMut) -> bool {
         self.applied.as_ref().is_some_and(|applied| {
             document
@@ -210,6 +240,8 @@ impl Snapshot {
             original: original.to_string(),
             applied: None,
             pending: None,
+            subagents: None,
+            planned_subagents: None,
             auth_owned: false,
         })
     }
@@ -236,6 +268,22 @@ impl Snapshot {
         Ok(())
     }
 
+    pub(super) fn apply_subagents(
+        &mut self,
+        document: &mut DocumentMut,
+        settings: Option<&super::subagents::Settings>,
+    ) -> Result<(), CoreError> {
+        self.planned_subagents = if let Some(settings) = settings {
+            Some(super::subagents::Ownership::apply(self.subagents.as_ref(), document, settings)?)
+        } else {
+            if let Some(ownership) = &self.subagents {
+                ownership.restore(document)?;
+            }
+            None
+        };
+        Ok(())
+    }
+
     pub(super) fn restore(
         &self,
         paths: &CodexPaths,
@@ -244,6 +292,9 @@ impl Snapshot {
         let Some(applied) = &self.applied else {
             return Ok(());
         };
+        // Child defaults have independent field ownership. A later provider
+        // takeover must not leave our namespaced child model in its config.
+        self.restore_subagents(document)?;
         // A provider switch is an external takeover of the whole route. The
         // six root settings form one choice; restoring individual old values
         // here would mix our former model/catalog/auth with the new provider.
@@ -284,6 +335,7 @@ impl Snapshot {
             before_hash: hash(before),
             after_hash: hash(&after_text),
             applied,
+            subagents: self.planned_subagents.clone(),
         });
         // This durable intent precedes the repository's backup and atomic
         // replace, so a failed config write cannot lose the original values.
@@ -297,6 +349,7 @@ impl Snapshot {
         let result = match pending.action {
             Action::Apply => {
                 self.applied = Some(pending.applied);
+                self.subagents = pending.subagents;
                 serde_json::to_vec(&self)
                     .map_err(CoreError::from)
                     .and_then(|bytes| storage::write_atomic(&path(paths), &bytes))
@@ -688,6 +741,34 @@ mod tests {
         ] {
             assert!(restored.contains(comment), "lost {comment}");
         }
+    }
+
+    #[test]
+    fn old_sidecars_and_interrupted_subagent_writes_keep_the_original_baseline() {
+        let original = format!("{ORIGINAL}\n[agents]\nmax_threads = 3\ndefault_subagent_model = 'prior-child' # child baseline\n");
+        let (_directory, paths, mut store) = fixture(&original);
+        apply_routing_config(&paths, &store).unwrap();
+        // Existing v1 journals predate the optional child-default projection.
+        let mut legacy: serde_json::Value = serde_json::from_slice(&std::fs::read(path(&paths)).unwrap()).unwrap();
+        legacy.as_object_mut().unwrap().remove("subagents");
+        std::fs::write(path(&paths), legacy.to_string()).unwrap();
+        let before = std::fs::read_to_string(&paths.config_path).unwrap();
+        let settings = super::super::subagents::Settings { model: Some("fixture-relay::relay-model".into()), reasoning_effort: None };
+        let mut snapshot = load(&paths, &before).unwrap().unwrap();
+        let mut planned = config(&paths);
+        snapshot.apply_subagents(&mut planned, Some(&settings)).unwrap();
+        snapshot.prepare(&paths, &before, &planned, Action::Apply).unwrap();
+        // Interrupted before the config write leaves baseline and fields intact.
+        let failed = load(&paths, &before).unwrap().unwrap();
+        assert!(failed.subagents_match(None));
+        // Interrupted after atomic replacement settles ownership on next load.
+        write_config(&paths, &planned);
+        let settled = load(&paths, &planned.to_string()).unwrap().unwrap();
+        assert!(settled.subagents_match(Some(&settings)));
+        store.codex_subagents = Some(settings);
+        remove_routing_config(&paths, &store).unwrap();
+        assert_restored(&paths, &original);
+        assert!(std::fs::read_to_string(&paths.config_path).unwrap().contains("# child baseline"));
     }
 
     #[test]

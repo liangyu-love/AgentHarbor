@@ -214,3 +214,262 @@ fn real_codex_same_free_thread_switches_official_and_relays_repeatedly() {
     shutdown.send(true).unwrap();
     runtime.block_on(listener_task).unwrap();
 }
+
+fn spawn_stream(namespace: Option<&str>) -> String {
+    let mut item = json!({"id":"fc_child","type":"function_call","name":"spawn_agent",
+        "call_id":"call_child","arguments":json!({"message":"SYNTHETIC_CHILD_ONLY","fork_context":false}).to_string()});
+    if let Some(namespace) = namespace {
+        item["namespace"] = json!(namespace);
+    }
+    [
+        json!({"type":"response.created","response":{"id":"resp_spawn","status":"in_progress","output":[]}}),
+        json!({"type":"response.output_item.done","output_index":0,"item":item.clone()}),
+        json!({"type":"response.completed","response":{"id":"resp_spawn","status":"completed","output":[item],
+            "usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}),
+    ].into_iter().map(|event| format!("event: {}\ndata: {event}\n\n", event["type"].as_str().unwrap())).collect()
+}
+
+#[test]
+#[ignore = "requires AGENTHARBOR_TEST_CODEX_BIN pointing to an installed Codex CLI"]
+fn real_codex_spawns_saved_relay_child_without_changing_parent() {
+    for accountless in [true, false] {
+        assert_saved_child_route(accountless);
+    }
+}
+
+fn assert_saved_child_route(accountless: bool) {
+    use crate::core::router::subagents::{self, Settings};
+    let binary =
+        PathBuf::from(std::env::var_os("AGENTHARBOR_TEST_CODEX_BIN").expect("installed binary"));
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path().join("workspace");
+    fs::create_dir_all(&cwd).unwrap();
+    let paths = CodexPaths::from_home(temp.path().join("codex"));
+    paths.ensure_directories().unwrap();
+    let auth = (!accountless).then(|| synthetic_auth_for_plan("free"));
+    if let Some(auth) = &auth {
+        fs::write(&paths.auth_path, auth).unwrap();
+    }
+    fs::write(&paths.config_path, "check_for_update_on_startup = false\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[features]\napps = false\nplugins = false\nmulti_agent = true\nmulti_agent_v2 = false\n").unwrap();
+    let proxy = RejectingProxy::start();
+    let parent = MockResponses::scripted(|request| {
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        if body["input"].as_array().is_some_and(|input| {
+            input.iter().any(|item| {
+                item["type"] == "function_call_output" && item["call_id"] == "call_child"
+            })
+        }) {
+            return mock_stream(ModelProtocol::Responses);
+        }
+        let tools = body["tools"].as_array().expect("client tool list");
+        let namespace = tools
+            .iter()
+            .find(|tool| {
+                tool["type"] == "namespace"
+                    && tool["tools"].as_array().is_some_and(|children| {
+                        children.iter().any(|tool| tool["name"] == "spawn_agent")
+                    })
+            })
+            .and_then(|tool| tool["name"].as_str());
+        assert!(
+            namespace.is_some() || tools.iter().any(|tool| tool["name"] == "spawn_agent"),
+            "spawn tool absent"
+        );
+        spawn_stream(namespace)
+    });
+    let child = MockResponses::start();
+    let mut store = Store {
+        router: RouterSettings {
+            enabled: true,
+            accountless,
+            bearer_token: LOCAL_TOKEN.into(),
+            ..Default::default()
+        },
+        active_provider_id: Some("parent".into()),
+        providers: vec![
+            Provider {
+                id: "parent".into(),
+                name: "Parent".into(),
+                base_url: format!("http://127.0.0.1:{}", parent.port),
+                api_key: "synthetic-parent-key".into(),
+                model: "gpt-6-sol".into(),
+                enabled: true,
+                network_mode: "direct".into(),
+                ..Default::default()
+            },
+            Provider {
+                id: "child".into(),
+                name: "Child".into(),
+                base_url: format!("http://127.0.0.1:{}", child.port),
+                api_key: "synthetic-child-key".into(),
+                model: "gpt-6-luna".into(),
+                enabled: true,
+                network_mode: "direct".into(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let parent_model = if accountless {
+        "parent::gpt-6-sol"
+    } else {
+        "gpt-6-luna"
+    };
+    let mut official =
+        router::catalog_value(&paths.app_data_dir, &paths.codex_home, &store)["models"][0].clone();
+    official["slug"] = json!("gpt-6-luna");
+    official["display_name"] = json!("Synthetic Free Luna");
+    fs::write(
+        paths.codex_home.join("models_cache.json"),
+        json!({"models":[official]}).to_string(),
+    )
+    .unwrap();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let (shutdown, listener_task) = runtime.block_on(async {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        store.router.port = listener.local_addr().unwrap().port();
+        let proxy_url = proxy.url.clone();
+        let client = Client::builder()
+            .no_proxy()
+            .proxy(reqwest::Proxy::custom(move |url| {
+                (!matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]")))
+                    .then(|| proxy_url.clone())
+            }))
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
+        let context = Arc::new(ArcContext {
+            bound_port: store.router.port,
+            store_path: paths.app_data_dir.join("newapi-providers.dat"),
+            app_data_dir: paths.app_data_dir.clone(),
+            codex_home: paths.codex_home.clone(),
+            auth_path: paths.auth_path.clone(),
+            outbound: Arc::new(RwLock::new(client)),
+            outbound_direct: Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(10))
+                .build()
+                .unwrap(),
+            official_base: Some(format!("http://127.0.0.1:{}/v1/", parent.port)),
+        });
+        crate::core::secret_file::write(&context.store_path, &serde_json::to_vec(&store).unwrap())
+            .unwrap();
+        let (shutdown, receiver) = tokio::sync::watch::channel(false);
+        (
+            shutdown,
+            tokio::spawn(accept_loop(listener, receiver, context)),
+        )
+    });
+    router::apply_routing_config(&paths, &store).unwrap();
+    subagents::save(
+        &paths,
+        Some(Settings {
+            model: Some("child::gpt-6-luna".into()),
+            reasoning_effort: Some("xhigh".into()),
+        }),
+    )
+    .unwrap();
+    let before = fs::read_to_string(&paths.config_path)
+        .unwrap()
+        .parse::<toml::Value>()
+        .unwrap();
+    let child_thread = {
+        let mut server = AppServer::start(&binary, &paths, &cwd, &proxy);
+        let started = server.request(
+            2,
+            "thread/start",
+            json!({"cwd":cwd.to_string_lossy(),
+            "model":parent_model,"approvalPolicy":"never","sandbox":"read-only"}),
+        );
+        let thread_id = started["thread"]["id"].as_str().unwrap();
+        server
+            .turn(
+                thread_id,
+                parent_model,
+                "high",
+                "SYNTHETIC_PARENT_ONLY",
+                RPC_TIMEOUT,
+            )
+            .unwrap_or_else(|error| panic!("{error}; stderr: {}", server.stderr.lock().unwrap()));
+        let received = child
+            .requests
+            .recv_timeout(RPC_TIMEOUT)
+            .expect("child request");
+        let body: Value = serde_json::from_slice(&received.body).unwrap();
+        assert_eq!(body["model"], "gpt-6-luna");
+        assert_eq!(body["reasoning"]["effort"], "xhigh");
+        assert_eq!(
+            received.header("authorization"),
+            Some("Bearer synthetic-child-key")
+        );
+        assert!(received.header(router::LOCAL_AUTH_HEADER).is_none());
+        assert_eq!(received.header("x-openai-subagent"), Some("collab_spawn"));
+        assert!(body["input"].to_string().contains("SYNTHETIC_CHILD_ONLY"));
+        assert!(!body["input"].to_string().contains("SYNTHETIC_PARENT_ONLY"));
+        let parent_requests: Vec<_> = parent.requests.try_iter().collect();
+        assert!(
+            parent_requests.len() >= 2,
+            "parent spawn and continuation observed"
+        );
+        for captured in parent_requests {
+            let body: Value = serde_json::from_slice(&captured.body).unwrap();
+            assert_eq!(
+                body["model"],
+                if accountless {
+                    "gpt-6-sol"
+                } else {
+                    "gpt-6-luna"
+                }
+            );
+            assert_eq!(body["reasoning"]["effort"], "high");
+        }
+        // Persisted child thread records the target independently of defaults.
+        let threads = server.request(
+            3,
+            "thread/list",
+            json!({"limit":20,"sourceKinds":["subAgent"]}),
+        );
+        threads["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|thread| thread["id"] != thread_id)
+            .expect("child session persisted")["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    subagents::save(
+        &paths,
+        Some(Settings {
+            model: Some("parent::gpt-6-sol".into()),
+            reasoning_effort: Some("high".into()),
+        }),
+    )
+    .unwrap();
+    let after = fs::read_to_string(&paths.config_path)
+        .unwrap()
+        .parse::<toml::Value>()
+        .unwrap();
+    assert_eq!(after["model"], before["model"]);
+    assert_eq!(after["model_provider"], before["model_provider"]);
+    let mut server = AppServer::start(&binary, &paths, &cwd, &proxy);
+    let resumed = server.request(4, "thread/resume", json!({"threadId":child_thread}));
+    assert_eq!(resumed["model"], "child::gpt-6-luna", "{resumed}");
+    assert_eq!(resumed["reasoningEffort"], "xhigh", "{resumed}");
+    if let Some(auth) = auth {
+        assert_eq!(fs::read(&paths.auth_path).unwrap(), auth);
+    } else {
+        assert!(!paths.auth_path.exists());
+    }
+    // Signed-in Codex may attempt account/service discovery. RejectingProxy
+    // blocks those connections; every inference request above stays loopback.
+    shutdown.send(true).unwrap();
+    runtime.block_on(listener_task).unwrap();
+}

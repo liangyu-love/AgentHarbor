@@ -80,6 +80,19 @@ export interface NewApiModel {
 }
 export type ModelProtocol = "responses" | "chatCompletions" | "anthropicMessages";
 export type CodexAccessMode = "router" | "native";
+
+export interface CodexSubagentSettings {
+  model: string | null;
+  reasoningEffort: string | null;
+}
+
+export interface CodexSubagentView {
+  settings: CodexSubagentSettings;
+  managed: boolean;
+  applied: boolean;
+  models: { id: string; label: string; reasoningEfforts: string[] }[];
+  inheritedReasoningEfforts: string[];
+}
 export interface NewApiProvider {
   id: string;
   name: string;

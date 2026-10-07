@@ -378,6 +378,10 @@ fn catalog(paths: &CodexPaths, store: &Store, provider: &Provider) -> serde_json
     load_configuration_plan(paths, store, provider).catalog
 }
 
+pub(super) fn subagent_catalog(paths: &CodexPaths, store: &Store) -> Result<serde_json::Value, String> {
+    Ok(load_configuration_plan(paths, store, selected_provider(store)?).catalog)
+}
+
 /// Effective values the native config applies globally for this provider.
 /// An explicit context override is capped by the smallest selected model. The compaction
 /// threshold is the conservative minimum across this provider's selected
@@ -648,12 +652,11 @@ fn intact_unlocked(
     let document = original
         .parse::<DocumentMut>()
         .map_err(|_| "newapi.errors.configParse".to_owned())?;
-    if config_snapshot::load(paths, &original)
+    let Some(snapshot) = config_snapshot::load(paths, &original)
         .map_err(config_update_error)?
-        .is_none()
-    {
+    else {
         return Ok(false);
-    }
+    };
     let file = EnvFile::load(paths).map_err(config_update_error)?;
     let Some(entry) = document
         .get("model_providers")
@@ -704,10 +707,13 @@ fn intact_unlocked(
             .iter()
             .all(|key| entry.get(key).is_none())
         && supplemental_headers(&document, &expected_base).is_ok()
-        && catalog_matches)
+        && catalog_matches
+        && snapshot.subagents_match(store.codex_subagents.as_ref())
+        && super::subagents::matches(&document, store))
 }
 
 pub(super) fn apply(paths: &CodexPaths, store: &Store) -> Result<newapi::AppliedConfig, String> {
+    super::subagents::validate(paths, store)?;
     let _guard = config_snapshot::guard().map_err(config_update_error)?;
     let provider = selected_provider(store)?;
     let expected_base = endpoint(provider)?;
@@ -785,7 +791,10 @@ pub(super) fn apply(paths: &CodexPaths, store: &Store) -> Result<newapi::Applied
             let headers = supplemental_headers(&document, &expected_base)?;
             let mut snapshot = match config_snapshot::load(paths, original)? {
                 Some(snapshot) if snapshot.selected_provider_is_ours(&document) => snapshot,
-                Some(_) => config_snapshot::Snapshot::capture(paths, &document)?,
+                Some(snapshot) => {
+                    snapshot.restore_subagents(&mut document)?;
+                    config_snapshot::Snapshot::capture(paths, &document)?
+                }
                 None if model_provider_is_ours(&document) => {
                     config_snapshot::recover_legacy(paths, &document, store)?
                 }
@@ -839,6 +848,7 @@ pub(super) fn apply(paths: &CodexPaths, store: &Store) -> Result<newapi::Applied
                 entry[key] = value.clone();
             }
             snapshot.apply_auth(&mut document, true)?;
+            snapshot.apply_subagents(&mut document, store.codex_subagents.as_ref())?;
             snapshot.prepare(paths, original, &document, config_snapshot::Action::Apply)?;
             pending = Some(snapshot);
             Ok(document.to_string())

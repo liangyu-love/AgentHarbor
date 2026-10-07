@@ -17,6 +17,7 @@ import { protocolBadgeKey, softBadge } from "@/components/newapi/relay-groups";
 import type { ProviderState } from "@/components/newapi/use-provider-state";
 import type { CodexAccessMode, NewApiProvider } from "@/types/newapi";
 import { cn } from "@/lib/utils";
+import { CodexSubagentSettingsFields } from "./codex-subagent-settings";
 
 // Codex routing switch, access mode picker and accountless toggle.
 export function CodexAccessCard({
@@ -332,6 +333,8 @@ export function CodexAccessCard({
               />
             </div>
           )}
+
+          <CodexSubagentSettingsFields store={store} />
 
           {providers.length === 0 && onOpenRelays && (
             <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5 text-xs" onClick={onOpenRelays}>

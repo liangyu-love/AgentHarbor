@@ -208,6 +208,26 @@ pub async fn load_newapi_state(repo: State<'_, Mutex<Repository>>) -> Result<New
     ))
 }
 
+#[tauri::command]
+pub async fn load_codex_subagents(
+    repo: State<'_, Mutex<Repository>>,
+) -> Result<router::subagents::View, String> {
+    let paths = paths(&repo)?;
+    tauri::async_runtime::spawn_blocking(move || router::subagents::load(&paths))
+        .await
+        .map_err(|_| "newapi.errors.storage".to_owned())?
+}
+
+#[tauri::command]
+pub async fn save_codex_subagents(
+    repo: State<'_, Mutex<Repository>>,
+    settings: Option<router::subagents::Settings>,
+) -> Result<StateChange, String> {
+    let paths = paths(&repo)?;
+    let _guard = routing_runtime::mutation_guard().await;
+    super::blocking(move || router::subagents::save(&paths, settings)).await
+}
+
 /// Reveal one saved provider API key only after an explicit user action in the
 /// provider editor. The regular provider view deliberately keeps credentials
 /// out of the frontend state; this command is the opt-in path behind the eye

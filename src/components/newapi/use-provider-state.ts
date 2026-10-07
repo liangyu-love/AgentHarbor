@@ -45,6 +45,7 @@ export function useProviderState() {
     void invalidateClaudeDesktop(queryClient);
     void queryClient.invalidateQueries({ queryKey: aggregationQueryKey });
     void queryClient.invalidateQueries({ queryKey: queryKeys.clientConfigs });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.codexSubagents });
   };
 
   // Check if provider matches balance query context
