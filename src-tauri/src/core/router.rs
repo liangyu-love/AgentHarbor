@@ -2371,6 +2371,28 @@ pub(crate) fn write_catalog(paths: &CodexPaths, store: &Store) -> Result<PathBuf
     Ok(target)
 }
 
+/// Codex refreshes its account model cache after login. Keep the injected
+/// catalog file in sync without rewriting or reclaiming config.toml.
+pub(crate) fn refresh_catalog_if_changed(paths: &CodexPaths, store: &Store) -> Result<(), String> {
+    let expected = if store.router.aggregate_model_id.is_some() {
+        aggregate_catalog_value(&paths.app_data_dir, store)
+    } else {
+        catalog_value(&paths.app_data_dir, &paths.codex_home, store)
+    };
+    let path = selected_catalog_path(paths, store);
+    if std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .as_ref()
+        == Some(&expected)
+    {
+        return Ok(());
+    }
+    let bytes = serde_json::to_vec_pretty(&expected)
+        .map_err(|_| "newapi.errors.storage".to_owned())?;
+    storage::write_atomic(&path, &bytes).map_err(|_| "newapi.errors.storage".to_owned())
+}
+
 /// Pure catalog builder (no disk writes) so the local proxy can serve it per request.
 pub(crate) fn catalog_value(
     app_data_dir: &std::path::Path,
@@ -3541,6 +3563,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = CodexPaths::from_home(dir.path().to_owned());
         (dir, paths)
+    }
+
+    #[test]
+    fn account_model_refresh_updates_only_the_injected_catalog() {
+        let (_dir, paths) = paths();
+        std::fs::create_dir_all(&paths.app_data_dir).unwrap();
+        let cache = paths.codex_home.join("models_cache.json");
+        std::fs::write(&cache, r#"{"models":[{"slug":"first"}]}"#).unwrap();
+        let store = Store::default();
+        let catalog = write_catalog(&paths, &store).unwrap();
+        std::fs::write(&paths.config_path, "model_provider = 'external'\n").unwrap();
+        std::fs::write(&cache, r#"{"models":[{"slug":"second"}]}"#).unwrap();
+        refresh_catalog_if_changed(&paths, &store).unwrap();
+        let refreshed: Value = serde_json::from_slice(&std::fs::read(catalog).unwrap()).unwrap();
+        assert_eq!(refreshed["models"][0]["slug"], "second");
+        assert_eq!(refreshed["models"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(&paths.config_path).unwrap(),
+            "model_provider = 'external'\n"
+        );
     }
 
     fn input(name: &str, base_url: &str) -> ProviderInput {

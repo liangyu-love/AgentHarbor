@@ -78,12 +78,50 @@ pub async fn cancel_codex_account_login(manager: State<'_, LoginManager>, attemp
 }
 
 #[tauri::command]
-pub fn switch_codex_account(
+pub async fn switch_codex_account(
     repo: State<'_, Mutex<Repository>>,
     account_key: String,
 ) -> Result<CodexAccountListPayload, String> {
-    let repo = lock_repo(&repo)?;
-    accounts::switch(&repo, &account_key).map_err(|error| error.to_string())
+    // Codex can flush its in-memory account and model catalog as it exits.
+    // Stop that writer before replacing auth.json; the UI restarts it after
+    // this command returns, using the newly selected account.
+    let paths = { lock_repo(&repo)?.paths().clone() };
+    let was_running = crate::platform::process::is_codex_app_running();
+    if was_running {
+        #[cfg(target_os = "windows")]
+        crate::platform::process::snapshot_codex_path_before_stop();
+        tauri::async_runtime::spawn_blocking(|| {
+            crate::platform::process::stop_codex_app_gracefully(std::time::Duration::from_secs(8))
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+    }
+    let switched = (|| -> Result<CodexAccountListPayload, String> {
+        let repo = lock_repo(&repo)?;
+        accounts::switch(&repo, &account_key).map_err(|error| error.to_string())
+    })();
+    let result = match switched {
+        Ok(result) => result,
+        Err(error) => {
+            if was_running {
+                let reopened = tauri::async_runtime::spawn_blocking(move || {
+                    let registry = crate::core::targets::TargetRegistry::new(paths);
+                    registry
+                        .process(crate::core::targets::TargetId::Codex)
+                        .ok_or_else(|| "Codex process controller unavailable".to_owned())?
+                        .restart()
+                        .map_err(|error| error.to_string())
+                })
+                .await;
+                if let Err(launch) = reopened.unwrap_or_else(|error| Err(error.to_string())) {
+                    log::warn!("Codex reopen after failed account switch failed: {launch}");
+                }
+            }
+            return Err(error);
+        }
+    };
+    Ok(result)
 }
 
 #[tauri::command]

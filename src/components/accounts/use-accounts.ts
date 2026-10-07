@@ -105,14 +105,17 @@ export function useAccounts(refreshInterval: RefreshInterval) {
       const data = await api.accounts.switch(accountKey);
       try {
         await api.targets.restart("codex");
-      } catch {
-        // The auth switch is already complete; a later Codex launch will use it.
+        return { data, restartError: null };
+      } catch (error) {
+        // The auth switch is committed. Report the restart failure separately.
+        return { data, restartError: formatInvokeError(error) };
       }
-      return data;
     },
-    onSuccess: (data) => {
+    onSuccess: ({ data, restartError }) => {
       setData(data);
-      toast({ title: t("accounts.switchSuccess"), variant: "success" });
+      toast(restartError
+        ? { title: t("accounts.switchRestartFailed"), description: restartError, variant: "destructive" }
+        : { title: t("accounts.switchSuccess"), variant: "success" });
     },
     onError: (error) => {
       toast({ title: t("common.error"), description: formatInvokeError(error), variant: "destructive" });

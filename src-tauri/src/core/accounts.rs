@@ -251,8 +251,20 @@ pub fn switch(repo: &Repository, account_key: &str) -> Result<CodexAccountListPa
                 .is_some_and(|name| name.starts_with("auth-") && name.ends_with(".json"))
         });
     }
+    super::model_catalog::prepare_account_switch(
+        &repo.paths().codex_home,
+        &repo.paths().app_data_dir,
+    )?;
     storage::write_atomic(&repo.paths().auth_path, &target_bytes)?;
-    Ok(payload(repo.rebuild_registry_state()?))
+    let result = payload(repo.rebuild_registry_state()?);
+    if let Ok(store) = super::router::load_store(repo.paths()) {
+        if store.router.enabled && super::router::active_routing_config_is_ours(repo.paths()) {
+            if let Err(error) = super::router::ensure_routing_config(repo.paths(), &store) {
+                log::warn!("Codex catalog refresh after account switch failed: {error}");
+            }
+        }
+    }
+    Ok(result)
 }
 
 pub fn delete(repo: &Repository, account_key: &str) -> Result<CodexAccountListPayload, CoreError> {
@@ -703,6 +715,11 @@ mod tests {
 
         let initial = register_login(&repo, &first).unwrap();
         let first_key = initial.active_account_key.unwrap();
+        std::fs::write(
+            repo.paths().codex_home.join("models_cache.json"),
+            r#"{"models":[{"slug":"first-only"}]}"#,
+        )
+        .unwrap();
         let with_second = register_login(&repo, &second).unwrap();
         let second_key = with_second
             .items
@@ -712,6 +729,13 @@ mod tests {
             .account_key
             .clone();
         let switched = switch(&repo, &second_key).unwrap();
+        assert!(!repo.paths().codex_home.join("models_cache.json").exists());
+        assert!(super::super::model_catalog::account_catalog(
+            &repo.paths().codex_home,
+            &repo.paths().app_data_dir,
+        )
+        .models
+        .is_empty());
         assert_eq!(
             switched.active_account_key.as_deref(),
             Some(second_key.as_str())

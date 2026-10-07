@@ -1332,6 +1332,7 @@
     "loginSuccess": "Codex account added",
     "refreshSuccess": "Account limits updated",
     "switchSuccess": "Account switched and Codex restarted",
+    "switchRestartFailed": "Account switched, but Codex did not restart",
     "deleteSuccess": "Account removed",
     "showEmail": "Show email",
     "hideEmail": "Hide email",

@@ -315,6 +315,18 @@ async fn accept_loop(
                     let context = context.clone();
                     refreshing = Some(tokio::task::spawn_blocking(move || {
                         super::model_catalog::official(&context.codex_home, &context.app_data_dir);
+                        let paths = CodexPaths::from_roots(
+                            context.codex_home.clone(),
+                            context.app_data_dir.clone(),
+                        );
+                        if let Ok(store) = router::load_store(&paths) {
+                            if store.router.enabled && router::active_routing_config_is_ours(&paths) {
+                                if let Err(error) = router::refresh_catalog_if_changed(&paths, &store)
+                                {
+                                    log::warn!("Codex account model catalog refresh failed: {error}");
+                                }
+                            }
+                        }
                     }));
                 }
             }

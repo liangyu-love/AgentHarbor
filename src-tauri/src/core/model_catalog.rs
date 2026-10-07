@@ -1,5 +1,6 @@
 //! Shared official model metadata, separate from channel IDs and request bodies.
 //! Validate before publishing; a failed/partial refresh retains the last good copy.
+use super::models::CoreError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -27,6 +28,7 @@ pub struct Snapshot {
 struct Cached {
     stamp: Option<(u64, SystemTime, Option<SystemTime>)>,
     backup: Option<PathBuf>,
+    minimum_modified: Option<SystemTime>,
     checked: Instant,
     snapshot: Snapshot,
     /// A read-only preview must not prevent the next ordinary read from
@@ -77,10 +79,15 @@ fn parse(bytes: &[u8]) -> Option<Vec<Value>> {
     (!models.is_empty()).then_some(models)
 }
 pub(crate) fn load(source: &Path, backup: Option<&Path>) -> Snapshot {
-    load_with_backup_mode(source, backup, true)
+    load_with_backup_mode(source, backup, true, None)
 }
 
-fn load_with_backup_mode(source: &Path, backup: Option<&Path>, write_backup: bool) -> Snapshot {
+fn load_with_backup_mode(
+    source: &Path,
+    backup: Option<&Path>,
+    write_backup: bool,
+    minimum_modified: Option<SystemTime>,
+) -> Snapshot {
     let mut cache = cache().lock().unwrap_or_else(|e| e.into_inner());
     let stamp = std::fs::metadata(source)
         .ok()
@@ -88,13 +95,16 @@ fn load_with_backup_mode(source: &Path, backup: Option<&Path>, write_backup: boo
     if let Some(cached) = cache.get(source).filter(|c| {
         c.stamp == stamp
             && c.backup.as_deref() == backup
+            && c.minimum_modified == minimum_modified
             && (!write_backup || c.write_backup)
             && (!c.snapshot.stale || c.checked.elapsed().as_secs() < 30)
     }) {
         return cached.snapshot.clone();
     }
     let fresh = stamp
-        .filter(|(len, _, _)| *len <= MAX_BYTES)
+        .filter(|(len, modified, _)| {
+            *len <= MAX_BYTES && minimum_modified.is_none_or(|minimum| *modified >= minimum)
+        })
         .and_then(|_| bounded_read(source))
         .and_then(|b| parse(&b));
     let snapshot = if let Some(models) = fresh {
@@ -122,7 +132,7 @@ fn load_with_backup_mode(source: &Path, backup: Option<&Path>, write_backup: boo
     } else {
         let previous = cache
             .get(source)
-            .filter(|c| !c.snapshot.models.is_empty())
+            .filter(|c| c.backup.as_deref() == backup && !c.snapshot.models.is_empty())
             .map(|c| c.snapshot.clone())
             .or_else(|| {
                 let backup = backup?;
@@ -164,6 +174,7 @@ fn load_with_backup_mode(source: &Path, backup: Option<&Path>, write_backup: boo
         Cached {
             stamp,
             backup: backup.map(Path::to_path_buf),
+            minimum_modified,
             checked: Instant::now(),
             snapshot: snapshot.clone(),
             write_backup,
@@ -214,11 +225,37 @@ fn account_catalog_with_backup_mode(
     app_data: &Path,
     write_backup: bool,
 ) -> Snapshot {
+    // Codex owns one global models_cache.json, but it is fetched for one login.
+    // Switching auth.json must never publish the previous account's model list
+    // while Codex is still refreshing that cache. Keep last-good data per account.
+    let auth_path = codex_home.join("auth.json");
+    let account = super::auth::load_auth_file(&auth_path)
+        .ok()
+        .and_then(|auth| super::auth::make_auth_snapshot(&auth, &auth_path).ok());
+    let minimum_modified = account
+        .as_ref()
+        .and_then(|_| std::fs::metadata(&auth_path).ok()?.modified().ok());
+    let backup = account.map_or_else(
+        || app_data.join("model-capabilities-last-good.json"),
+        |account| app_data.join(format!("model-capabilities-{}.json", account.account_key)),
+    );
     load_with_backup_mode(
         &codex_home.join("models_cache.json"),
-        Some(&app_data.join("model-capabilities-last-good.json")),
+        Some(&backup),
         write_backup,
+        minimum_modified,
     )
+}
+
+/// Save the outgoing account's valid catalog, then force Codex to fetch a new
+/// global cache after the credentials change. The per-account last-good file
+/// keeps its own picker usable while that refresh is in flight.
+pub(crate) fn prepare_account_switch(codex_home: &Path, app_data: &Path) -> Result<(), CoreError> {
+    let _ = account_catalog(codex_home, app_data);
+    let source = codex_home.join("models_cache.json");
+    super::storage::remove_file_durable(&source)?;
+    cache().lock().unwrap_or_else(|e| e.into_inner()).remove(&source);
+    Ok(())
 }
 
 fn bounded_read(path: &Path) -> Option<Vec<u8>> {
@@ -234,6 +271,58 @@ fn bounded_read(path: &Path) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn account_switch_never_exposes_the_previous_accounts_model_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let app = dir.path().join("app");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&app).unwrap();
+        let auth = home.join("auth.json");
+        let models = home.join("models_cache.json");
+        let write_auth = |id: &str| {
+            super::super::storage::write_atomic(
+                &auth,
+                serde_json::json!({"auth_mode":"chatgpt","tokens":{"account_id":id}})
+                    .to_string()
+                    .as_bytes(),
+            )
+            .unwrap();
+        };
+        let write_models = |slug: &str| {
+            super::super::storage::write_atomic(
+                &models,
+                serde_json::json!({"models":[{"slug":slug}]}).to_string().as_bytes(),
+            )
+            .unwrap();
+        };
+        write_auth("plus");
+        write_models("plus-only");
+        assert_eq!(account_catalog(&home, &app).models[0]["slug"], "plus-only");
+
+        prepare_account_switch(&home, &app).unwrap();
+        write_auth("free");
+        assert!(!models.exists());
+        assert!(account_catalog(&home, &app).models.is_empty());
+        write_models("free-only");
+        assert_eq!(account_catalog(&home, &app).models[0]["slug"], "free-only");
+
+        prepare_account_switch(&home, &app).unwrap();
+        write_auth("plus");
+        let restored = account_catalog(&home, &app);
+        assert!(restored.stale);
+        assert_eq!(restored.models[0]["slug"], "plus-only");
+        assert!(!restored.models.iter().any(|entry| entry["slug"] == "free-only"));
+
+        // A login changed outside AgentHarbor also invalidates the global
+        // cache until Codex refreshes it for that identity.
+        write_models("plus-refreshed");
+        assert_eq!(account_catalog(&home, &app).models[0]["slug"], "plus-refreshed");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        write_auth("external");
+        assert!(account_catalog(&home, &app).models.is_empty());
+    }
+
     #[test]
     fn historical_metadata_cannot_expand_the_current_account_catalog() {
         let dir = tempfile::tempdir().unwrap();

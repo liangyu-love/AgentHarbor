@@ -1332,6 +1332,7 @@
     "loginSuccess": "Codex 账号已添加",
     "refreshSuccess": "账号额度已更新",
     "switchSuccess": "账号已切换并重启 Codex",
+    "switchRestartFailed": "账号已切换，但 Codex 重启失败",
     "deleteSuccess": "账号已移除",
     "showEmail": "显示邮箱",
     "hideEmail": "隐藏邮箱",

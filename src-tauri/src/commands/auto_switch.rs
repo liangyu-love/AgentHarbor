@@ -4,6 +4,7 @@ use crate::core::auth::current_timestamp;
 use crate::core::auto_switch::{self, Decision, LoopState};
 use crate::core::repository::Repository;
 use crate::core::targets::{TargetId, TargetRegistry};
+use crate::platform::paths::CodexPaths;
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
@@ -11,6 +12,15 @@ use tauri_plugin_notification::NotificationExt;
 
 /// The accounts page and settings listen for this to reload after a background switch.
 pub const ACCOUNTS_CHANGED_EVENT: &str = "codex-accounts-changed";
+
+fn reopen_codex(paths: &CodexPaths) -> Result<(), String> {
+    let registry = TargetRegistry::new(paths.clone());
+    registry
+        .process(TargetId::Codex)
+        .ok_or_else(|| "Unsupported target process controller".to_owned())?
+        .restart()
+        .map_err(|error| error.to_string())
+}
 
 fn interval_secs(interval: &str) -> u64 {
     let secs = match interval {
@@ -82,6 +92,21 @@ async fn run_once(app: &AppHandle, state: &mut LoopState) -> Result<(), String> 
 
     let paths = {
         let repo = repo.lock().map_err(|error| error.to_string())?;
+        repo.paths().clone()
+    };
+    let was_running = crate::platform::process::is_codex_app_running();
+    if was_running {
+        #[cfg(target_os = "windows")]
+        crate::platform::process::snapshot_codex_path_before_stop();
+        tauri::async_runtime::spawn_blocking(|| {
+            crate::platform::process::stop_codex_app_gracefully(Duration::from_secs(8))
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+    }
+    let switched = (|| -> Result<bool, String> {
+        let repo = repo.lock().map_err(|error| error.to_string())?;
         // Re-check under the lock: the user may have switched or disabled it meanwhile.
         if !repo.auto_switch_config().enabled
             || accounts::list(&repo)
@@ -89,26 +114,32 @@ async fn run_once(app: &AppHandle, state: &mut LoopState) -> Result<(), String> 
                 .active_account_key
                 != refreshed.active_account_key
         {
-            return Ok(());
+            Ok(false)
+        } else {
+            accounts::switch(&repo, &target)
+                .map(|_| true)
+                .map_err(|error| error.to_string())
         }
-        accounts::switch(&repo, &target).map_err(|error| error.to_string())?;
-        repo.paths().clone()
-    };
+    })();
+    if !matches!(&switched, Ok(true)) {
+        if was_running {
+            let reopened = tauri::async_runtime::spawn_blocking(move || reopen_codex(&paths)).await;
+            if let Err(error) = reopened.unwrap_or_else(|error| Err(error.to_string())) {
+                log::warn!("Codex reopen after skipped account switch failed: {error}");
+            }
+        }
+        return switched.map(|_| ());
+    }
     state.record_switch(now);
     let _ = app.emit(ACCOUNTS_CHANGED_EVENT, ());
 
     // Codex only reads auth.json on start. Leave it closed if it was not running.
     let restarted = tauri::async_runtime::spawn_blocking(move || {
-        if !crate::platform::process::is_codex_app_running() {
+        if !was_running {
             return Ok(false);
         }
-        let registry = TargetRegistry::new(paths);
-        registry
-            .process(TargetId::Codex)
-            .ok_or_else(|| "Unsupported target process controller".to_owned())?
-            .restart()
+        reopen_codex(&paths)
             .map(|()| true)
-            .map_err(|error| error.to_string())
     })
     .await
     .map_err(|error| error.to_string())?;

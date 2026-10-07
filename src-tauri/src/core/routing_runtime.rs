@@ -147,7 +147,6 @@ pub async fn reconcile(paths: &CodexPaths) -> Result<(), String> {
     if needs_server(
         &store,
         client_config::has_router_configs(&paths.app_data_dir)?,
-        router::active_routing_config_is_ours(paths),
         router_proxy::desktop_listener_required(),
     ) {
         ensure_available(paths).await
@@ -160,15 +159,15 @@ pub async fn reconcile(paths: &CodexPaths) -> Result<(), String> {
 fn needs_server(
     store: &router::Store,
     other_clients_active: bool,
-    codex_route_active: bool,
     desktop_required: bool,
 ) -> bool {
     desktop_required
         || store.router.aggregate_external_enabled
         || other_clients_active
-        || (store.router.enabled
-            && codex_route_active
-            && store.codex_access_mode == router::CodexAccessMode::Router)
+        // Existing Codex threads can still carry this listener even if another
+        // tool replaces the current config.toml provider. Keep it available
+        // until the user disables routing, without reclaiming that config.
+        || (store.router.enabled && store.codex_access_mode == router::CodexAccessMode::Router)
 }
 
 #[cfg(test)]
@@ -454,15 +453,49 @@ mod tests {
     #[test]
     fn native_codex_does_not_require_the_server_but_other_clients_do() {
         let mut store = router::Store::default();
-        assert!(!needs_server(&store, false, false, false));
+        assert!(!needs_server(&store, false, false));
         store.router.enabled = true;
-        assert!(!needs_server(&store, false, false, false));
-        assert!(needs_server(&store, false, true, false));
+        assert!(needs_server(&store, false, false));
         store.codex_access_mode = router::CodexAccessMode::Native;
-        assert!(!needs_server(&store, false, true, false));
-        assert!(needs_server(&store, true, false, false));
+        assert!(!needs_server(&store, false, false));
+        assert!(needs_server(&store, true, false));
         store.router.enabled = false;
-        assert!(needs_server(&store, true, false, false));
-        assert!(needs_server(&store, false, false, true));
+        assert!(needs_server(&store, true, false));
+        assert!(needs_server(&store, false, true));
+    }
+
+    #[test]
+    fn enabled_codex_route_keeps_listening_after_external_config_takeover() {
+        let _router = router_proxy::global_router_test_lock();
+        let _stop = Stop;
+        tauri::async_runtime::block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let paths = CodexPaths::from_home(temp.path().join("codex"));
+            let mut store = router::load_store(&paths).unwrap();
+            store.providers.push(router::Provider {
+                id: "fixture".into(),
+                name: "Fixture".into(),
+                enabled: true,
+                api_key: "synthetic".into(),
+                base_url: "https://fixture.example".into(),
+                model: "gpt-fixture".into(),
+                ..Default::default()
+            });
+            store.active_provider_id = Some("fixture".into());
+            store.router.enabled = true;
+            store.router.port = std::net::TcpListener::bind(("127.0.0.1", 0))
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port();
+            save_store(&paths, &store);
+            std::fs::write(&paths.config_path, "model_provider = 'external'\n").unwrap();
+            reconcile(&paths).await.unwrap();
+            assert_eq!(router_proxy::running_port(), Some(store.router.port));
+            assert_eq!(
+                std::fs::read_to_string(&paths.config_path).unwrap(),
+                "model_provider = 'external'\n"
+            );
+        });
     }
 }
