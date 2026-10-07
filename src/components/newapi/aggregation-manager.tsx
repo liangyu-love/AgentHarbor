@@ -213,7 +213,10 @@ export function AggregationManager({ providers }: { providers: NewApiProvider[] 
     });
 
   return (
-    <section className="space-y-5" aria-labelledby="aggregation-title">
+    <section
+      className="space-y-5 rounded-2xl border border-border bg-card p-4 shadow-sm sm:p-5"
+      aria-labelledby="aggregation-title"
+    >
       <FoldHeader
         open={fold.open}
         onToggle={fold.toggle}

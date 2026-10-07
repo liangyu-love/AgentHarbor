@@ -233,7 +233,10 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
   };
 
   return (
-    <section className="space-y-4" aria-labelledby="claude-desktop-title">
+    <section
+      className="space-y-4 rounded-2xl border border-border bg-card p-4 shadow-sm sm:p-5"
+      aria-labelledby="claude-desktop-title"
+    >
       <FoldHeader
         open={fold.open}
         onToggle={fold.toggle}
