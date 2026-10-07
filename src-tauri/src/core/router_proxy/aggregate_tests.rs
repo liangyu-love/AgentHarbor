@@ -986,7 +986,9 @@ fn aggregate_count_tokens_selects_only_native_messages_and_does_not_pin_inferenc
         let mut store = fixture(&[(&chat, "chat-wire", router::ModelProtocol::ChatCompletions),
             (&messages, "messages-wire", router::ModelProtocol::AnthropicMessages)]);
         let (client, base) = start(&paths, &store).await;
-        let body = json!({"model":"official-model","messages":[{"role":"user","content":"Count this"}],
+        let body = json!({"model":"official-model","messages":[{"role":"user","content":"Count this"},
+            {"role":"assistant","content":[{"type":"thinking","thinking":"old plan","signature":"unknown-signature"},{"type":"text","text":"answer"}]},
+            {"role":"user","content":"Count the complete history"}],
             "system":"native options","tools":[{"name":"lookup","input_schema":{"type":"object"}}]});
         let counted = client.post(format!("{base}/aggregate/v1/messages/count_tokens"))
             .bearer_auth("local-fixture").header("session_id", "count-before-create")
@@ -1575,5 +1577,286 @@ fn desktop_aggregate_projects_public_identity_and_keeps_one_m_wire_contract_acro
                 assert_aggregate_accounting(&paths, &store, 2);
             }
         }
+    });
+}
+
+#[test]
+fn desktop_headerless_signed_history_stays_on_its_member_and_new_conversations_rotate() {
+    let _guard = global_router_test_lock();
+    let _stop = Stop;
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let a = scripted_mock(|_| scripted_response(200, json!({
+            "id":"msg_a","type":"message","model":"wire-a","role":"assistant",
+            "content":[{"type":"thinking","thinking":"private a","signature":"signature-a"},
+                {"type":"text","text":"hello from a"}],
+            "stop_reason":"end_turn","usage":{"input_tokens":4,"output_tokens":2}
+        }).to_string(), "application/json")).await;
+        let b = scripted_mock(|_| scripted_response(200, json!({
+            "id":"msg_b","type":"message","model":"wire-b","role":"assistant",
+            "content":[{"type":"thinking","thinking":"private b","signature":"signature-b"},
+                {"type":"text","text":"hello from b"}],
+            "stop_reason":"end_turn","usage":{"input_tokens":4,"output_tokens":2}
+        }).to_string(), "application/json")).await;
+        let temp = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(temp.path().into());
+        let mut store = fixture(&[(&a, "wire-a", router::ModelProtocol::AnthropicMessages),
+            (&b, "wire-b", router::ModelProtocol::AnthropicMessages)]);
+        let (client, base) = start(&paths, &store).await;
+        let alias = desktop_aggregate_state(&paths, running_port().unwrap(), &store.aggregates[0]);
+        let send = |messages: Value| client.post(format!("{base}/claude-desktop/v1/messages"))
+            .bearer_auth("desktop-fixture").json(&json!({"model":alias,"max_tokens":128,"messages":messages})).send();
+        let first = json!({"role":"user","content":"hello"});
+        let response_a: Value = send(json!([first])).await.unwrap().json().await.unwrap();
+        let response_b: Value = send(json!([first])).await.unwrap().json().await.unwrap();
+        assert_eq!(response_a["content"][1]["text"], "hello from a");
+        assert_eq!(response_b["content"][1]["text"], "hello from b",
+            "identical first prompts in distinct conversations must still rotate");
+        let assistant_a = json!({"role":"assistant","content":response_a["content"]});
+        let assistant_b = json!({"role":"assistant","content":response_b["content"]});
+        for assistant in [&assistant_a, &assistant_b] {
+            let response = send(json!([{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]},
+                assistant,{"role":"user","content":"again"}])).await.unwrap();
+            let status = response.status();
+            let answer: Value = response.json().await.unwrap();
+            assert_eq!(status, 200, "{answer}");
+            assert_eq!(answer["content"], assistant["content"]);
+        }
+        assert_eq!(a.count.load(Ordering::SeqCst), 2);
+        assert_eq!(b.count.load(Ordering::SeqCst), 2);
+        let request = a.requests.lock().unwrap()[1]["body"].clone();
+        assert_eq!(request["messages"][1]["content"], response_a["content"],
+            "same-wire signed thinking must remain intact");
+        let foreign_client = client.post(format!("{base}/clients/claude-code/aggregate/v1/messages"))
+            .bearer_auth("local-fixture").json(&json!({"model":"official-model","max_tokens":128,
+                "messages":[first,assistant_a,{"role":"user","content":"same history, different client"}]}))
+            .send().await.unwrap();
+        assert_eq!(foreign_client.status(), 409, "Desktop ownership must not cross client/config scopes");
+        store.providers[0].api_key = "rotated-credential".into();
+        persist(&paths, &store);
+        let rejected = send(json!([first, assistant_a, {"role":"user","content":"changed credentials"}])).await.unwrap();
+        assert_eq!(rejected.status(), 409);
+        assert_eq!(a.count.load(Ordering::SeqCst), 2);
+        assert_eq!(b.count.load(Ordering::SeqCst), 2,
+            "an unavailable owner must never be replaced for signed history");
+        assert_aggregate_accounting(&paths, &store, 2);
+    });
+}
+
+fn private_tool_reply(protocol: router::ModelProtocol, streaming: bool) -> Response<ResponseBody> {
+    let result = match protocol {
+        router::ModelProtocol::AnthropicMessages => json!({
+            "id":"msg_private","type":"message","role":"assistant","model":"wire-tool",
+            "content":[{"type":"thinking","thinking":"private plan","signature":"original-signature"},
+                {"type":"tool_use","id":"call-next","name":"lookup","input":{"query":"next"}}],
+            "stop_reason":"tool_use","usage":{"input_tokens":4,"output_tokens":2}
+        }),
+        router::ModelProtocol::ChatCompletions => json!({
+            "id":"chat_private","object":"chat.completion","model":"wire-tool",
+            "choices":[{"index":0,"message":{"role":"assistant","content":null,"reasoning_content":"private plan",
+                "tool_calls":[{"id":"call-next","type":"function","function":{"name":"lookup","arguments":"{\"query\":\"next\"}"}}]},
+                "finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":2}
+        }),
+        router::ModelProtocol::Responses => json!({
+            "id":"resp_private","object":"response","model":"wire-tool","status":"completed",
+            "output":[{"type":"reasoning","id":"rs-exact","encrypted_content":"opaque-original","summary":[]},
+                {"type":"function_call","id":"fc-exact","call_id":"call-next","name":"lookup","arguments":"{\"query\":\"next\"}","status":"completed"}],
+            "usage":{"input_tokens":4,"output_tokens":2}
+        }),
+    };
+    if !streaming {
+        return scripted_response(200, result.to_string(), "application/json");
+    }
+    let events = match protocol {
+        router::ModelProtocol::Responses => vec![
+            json!({"type":"response.created","response":{"id":"resp_private","model":"wire-tool","status":"in_progress","output":[]}}),
+            json!({"type":"response.completed","response":result}),
+        ],
+        router::ModelProtocol::ChatCompletions => {
+            let mut delta = result["choices"][0]["message"].clone();
+            delta["tool_calls"][0]["index"] = json!(0);
+            vec![
+                json!({"id":"chat_private","object":"chat.completion.chunk","model":"wire-tool","choices":[{"index":0,"delta":delta,"finish_reason":null}]}),
+                json!({"id":"chat_private","object":"chat.completion.chunk","model":"wire-tool","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":result["usage"]}),
+            ]
+        }
+        router::ModelProtocol::AnthropicMessages => vec![
+            json!({"type":"message_start","message":{"id":"msg_private","type":"message","role":"assistant","model":"wire-tool","content":[],"usage":{"input_tokens":4,"output_tokens":0}}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"private "}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"plan"}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"original-"}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"signature"}}),
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"call-next","name":"lookup","input":{}}}),
+            json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"query\":"}}),
+            json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"next\"}"}}),
+            json!({"type":"content_block_stop","index":1}),
+            json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":2}}),
+            json!({"type":"message_stop"}),
+        ],
+    };
+    let mut output: String = events
+        .iter()
+        .map(|event| format!("data: {event}\n\n"))
+        .collect();
+    if protocol == router::ModelProtocol::ChatCompletions {
+        output.push_str("data: [DONE]\n\n");
+    }
+    // Split every SSE response into tiny frames, including within JSON strings.
+    let frames = output
+        .into_bytes()
+        .chunks(7)
+        .map(|chunk| {
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(Frame::data(Bytes::copy_from_slice(
+                chunk,
+            )))
+        })
+        .collect::<Vec<_>>();
+    Response::builder()
+        .status(200)
+        .header(CONTENT_TYPE, "text/event-stream")
+        .body(BodyExt::boxed(StreamBody::new(futures_util::stream::iter(
+            frames,
+        ))))
+        .unwrap()
+}
+
+#[test]
+fn desktop_headerless_tools_and_reasoning_history_stay_pinned_across_json_and_split_sse() {
+    let _guard = global_router_test_lock();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        for protocol in [router::ModelProtocol::AnthropicMessages, router::ModelProtocol::ChatCompletions, router::ModelProtocol::Responses] {
+            for streaming in [false, true] {
+                let _stop = Stop;
+                let a = scripted_mock(move |_| private_tool_reply(protocol, streaming)).await;
+                let b = mock(protocol, 200, false).await;
+                let temp = tempfile::tempdir().unwrap();
+                let paths = CodexPaths::from_home(temp.path().into());
+                let store = fixture(&[(&a, "wire-tool", protocol), (&b, "wire-other", protocol)]);
+                let (client, base) = start(&paths, &store).await;
+                let alias = desktop_aggregate_state(&paths, running_port().unwrap(), &store.aggregates[0]);
+                let tools = json!([{"name":"lookup","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}}]);
+                let first_user = json!({"role":"user","content":"lookup"});
+                let send = |messages: Value, stream: bool| client.post(format!("{base}/claude-desktop/v1/messages"))
+                    .bearer_auth("desktop-fixture").json(&json!({"model":alias,"max_tokens":128,"messages":messages,"tools":tools,"stream":stream})).send();
+                let first = send(json!([first_user]), streaming).await.unwrap();
+                let status = first.status();
+                let bytes = first.bytes().await.unwrap();
+                assert_eq!(status, 200, "{}", String::from_utf8_lossy(&bytes));
+                let assistant = if streaming {
+                    let mut reply = super::aggregate_session::Reply::default();
+                    for line in std::str::from_utf8(&bytes).unwrap().lines() {
+                        if let Some(value) = line.strip_prefix("data: ").and_then(|v| serde_json::from_str::<Value>(v).ok()) {
+                            assert_ne!(value["type"], "error", "{protocol:?} streaming={streaming}: {value}");
+                            reply.event(&value);
+                        }
+                    }
+                    reply.assistant().expect("complete streamed assistant")
+                } else {
+                    let response: Value = serde_json::from_slice(&bytes).unwrap();
+                    json!({"role":"assistant","content":response["content"]})
+                };
+                assert!(assistant["content"].as_array().unwrap().iter().any(|b| b["type"] == "tool_use" && b["id"] == "call-next"));
+                let next = send(json!([first_user,assistant,
+                    {"role":"user","content":[{"type":"tool_result","tool_use_id":"call-next","content":"result"}]}]), streaming).await.unwrap();
+                let status = next.status();
+                let bytes = next.bytes().await.unwrap();
+                assert_eq!(status, 200, "{protocol:?} stream={streaming}: {}", String::from_utf8_lossy(&bytes));
+                assert_eq!(a.count.load(Ordering::SeqCst), 2);
+                assert_eq!(b.count.load(Ordering::SeqCst), 0, "a tool continuation must not rotate");
+                let body = a.requests.lock().unwrap()[1]["body"].clone();
+                match protocol {
+                    router::ModelProtocol::AnthropicMessages => {
+                        assert_eq!(body["messages"][1]["content"][0]["signature"], "original-signature");
+                        assert_eq!(body["messages"][2]["content"][0]["tool_use_id"], "call-next");
+                    }
+                    router::ModelProtocol::ChatCompletions => {
+                        let assistant = body["messages"].as_array().unwrap().iter().find(|m| m["role"] == "assistant").unwrap();
+                        assert_eq!(assistant["reasoning_content"], "private plan", "the exact selected member's retained reasoning must be replayed");
+                    }
+                    router::ModelProtocol::Responses => {
+                        let input = body["input"].as_array().unwrap();
+                        assert!(input.iter().any(|v| v["id"] == "rs-exact" && v["encrypted_content"] == "opaque-original"));
+                        assert!(input.iter().any(|v| v["id"] == "fc-exact" && v["call_id"] == "call-next"));
+                        assert!(input.iter().any(|v| v["type"] == "function_call_output" && v["call_id"] == "call-next"));
+                    }
+                }
+                let traces = route_trace::recent();
+                assert!(traces.iter().filter(|trace| trace.client_source.as_deref() == Some("claudeDesktop"))
+                    .any(|trace| trace.attempts.iter().any(|attempt| attempt.selection_reason == "aggregate_session_binding"
+                        && attempt.member_id.as_deref() == Some("member0"))));
+                wait_for_released_lease().await;
+                let ledger = relay_usage::load(&paths.app_data_dir).unwrap();
+                assert_eq!(ledger.all_time.request_count, 2);
+                assert!(ledger.recent.iter().all(|record| record.provider_id == "p0"));
+            }
+        }
+    });
+}
+
+#[test]
+fn body_sessions_keep_same_prompts_separate_and_unknown_headerless_history_is_rejected() {
+    let _guard = global_router_test_lock();
+    let _stop = Stop;
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let a = mock(router::ModelProtocol::ChatCompletions, 200, false).await;
+        let b = mock(router::ModelProtocol::ChatCompletions, 200, false).await;
+        let temp = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(temp.path().into());
+        let store = fixture(&[(&a, "wire-a", router::ModelProtocol::ChatCompletions), (&b, "wire-b", router::ModelProtocol::ChatCompletions)]);
+        let (client, base) = start(&paths, &store).await;
+        let send = |session: Option<&str>, messages: Value| client.post(format!("{base}/clients/claude-code/aggregate/v1/messages"))
+            .bearer_auth("local-fixture").json(&json!({"model":"official-model","max_tokens":128,"messages":messages,
+                "metadata":{"user_id":session.map(|id| json!({"device_id":"shared","session_id":id}).to_string())}})).send();
+        for session in ["body-a", "body-b"] {
+            assert_eq!(send(Some(session), json!([{"role":"user","content":"hello"}])).await.unwrap().status(), 200);
+        }
+        for session in ["body-a", "body-b"] {
+            let response = send(Some(session), json!([{"role":"user","content":"hello"},
+                {"role":"assistant","content":[{"type":"thinking","thinking":"client plan","signature":"client-signature"},{"type":"text","text":"hello"}]},
+                {"role":"user","content":"again"}])).await.unwrap();
+            assert_eq!(response.status(), 200, "a pinned Messages adapter may reconstruct its original egress history");
+        }
+        assert_eq!(a.count.load(Ordering::SeqCst), 2);
+        assert_eq!(b.count.load(Ordering::SeqCst), 2);
+        let unknown = send(None, json!([{"role":"user","content":"unseen"},
+            {"role":"assistant","content":[{"type":"tool_use","id":"foreign-call","name":"lookup","input":{}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"foreign-call","content":"result"}]}])).await.unwrap();
+        assert_eq!(unknown.status(), 409, "unknown tool ownership must not silently rotate");
+        assert_eq!(a.count.load(Ordering::SeqCst) + b.count.load(Ordering::SeqCst), 4);
+    });
+}
+
+#[test]
+fn identical_headerless_delivered_histories_become_ambiguous_and_never_dispatch() {
+    let _guard = global_router_test_lock();
+    let _stop = Stop;
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let a = mock(router::ModelProtocol::AnthropicMessages, 200, false).await;
+        let b = mock(router::ModelProtocol::AnthropicMessages, 200, false).await;
+        let temp = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(temp.path().into());
+        let store = fixture(&[(&a, "wire-a", router::ModelProtocol::AnthropicMessages),
+            (&b, "wire-b", router::ModelProtocol::AnthropicMessages)]);
+        let (client, base) = start(&paths, &store).await;
+        for _ in 0..2 {
+            let response = client.post(format!("{base}/aggregate/v1/messages")).bearer_auth("local-fixture")
+                .json(&json!({"model":"official-model","max_tokens":128,"messages":[{"role":"user","content":"hello"}]}))
+                .send().await.unwrap();
+            assert_eq!(response.status(), 200);
+            response.bytes().await.unwrap();
+        }
+        let known: std::collections::HashSet<_> = route_trace::recent().into_iter().map(|trace| trace.id).collect();
+        let ambiguous = client.post(format!("{base}/aggregate/v1/messages")).bearer_auth("local-fixture")
+            .json(&json!({"model":"official-model","max_tokens":128,"messages":[{"role":"user","content":"hello"},
+                {"role":"assistant","content":"hello"},{"role":"user","content":"continue"}]})).send().await.unwrap();
+        assert_eq!(ambiguous.status(), 409);
+        assert!(ambiguous.text().await.unwrap().contains("ambiguous"));
+        assert_eq!(a.count.load(Ordering::SeqCst), 1);
+        assert_eq!(b.count.load(Ordering::SeqCst), 1);
+        let traces = route_trace::recent();
+        assert!(traces.iter().find(|trace| !known.contains(&trace.id)).unwrap().attempts.is_empty(),
+            "the rejection must occur before an inference/accounting attempt");
+        assert_eq!(relay_usage::load(&paths.app_data_dir).unwrap().all_time.request_count, 2);
     });
 }

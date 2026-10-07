@@ -22,6 +22,7 @@ use std::time::Duration;
 
 mod aggregate;
 mod aggregate_output;
+mod aggregate_session;
 #[cfg(test)]
 mod aggregate_tests;
 #[cfg(test)]

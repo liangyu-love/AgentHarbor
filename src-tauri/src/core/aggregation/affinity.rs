@@ -10,6 +10,7 @@ use std::{
 
 pub const MAX_BINDINGS: usize = 1024;
 pub const MAX_RESOURCES: usize = 1024;
+pub const MAX_TRANSCRIPTS: usize = 4096;
 const IDLE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_RESOURCE_ID: usize = 512;
 
@@ -39,12 +40,20 @@ struct Entry {
     last_used: Instant,
     conflicted: bool,
 }
+struct TranscriptEntry {
+    // None is a tombstone: indistinguishable replies from separate sessions
+    // must never select one session's private continuation state arbitrarily.
+    session_key: Option<String>,
+    last_used: Instant,
+}
 #[derive(Default)]
 struct State {
     bindings: HashMap<String, Entry>,
     resources: HashMap<(String, String), Entry>,
+    transcripts: HashMap<String, TranscriptEntry>,
     binding_reservations: usize,
     resource_reservations: usize,
+    transcript_reservations: usize,
 }
 
 #[derive(Clone, Default)]
@@ -56,8 +65,8 @@ pub fn shared() -> &'static Registry {
     REGISTRY.get_or_init(Registry::default)
 }
 
-/// Hash length-delimited observable identities. No prompt/model-name heuristics
-/// are used to invent a client role that the request does not carry.
+/// Hash length-delimited identities. Client/role isolation always comes from
+/// the authenticated endpoint; transcript fallbacks never invent a client role.
 pub fn scope(fields: &[&str]) -> String {
     let mut hash = Sha256::new();
     for field in fields {
@@ -86,12 +95,45 @@ pub async fn decision_lock(key: &str) -> tokio::sync::OwnedMutexGuard<()> {
 }
 
 impl Registry {
+    pub fn transcript(&self, key: &str) -> Result<String, OwnershipError> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        cleanup(&mut state);
+        let entry = state
+            .transcripts
+            .get_mut(key)
+            .ok_or(OwnershipError::Unknown)?;
+        entry.last_used = Instant::now();
+        entry.session_key.clone().ok_or(OwnershipError::Conflict)
+    }
+
+    /// Reserve before dispatch; never evict a live transcript and accidentally
+    /// allow the same history to be registered to a different member.
+    pub fn reserve_transcript(&self) -> Result<TranscriptReservation, OwnershipError> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        cleanup(&mut state);
+        if state.transcripts.len() + state.transcript_reservations >= MAX_TRANSCRIPTS {
+            return Err(OwnershipError::Capacity);
+        }
+        state.transcript_reservations += 1;
+        Ok(TranscriptReservation {
+            state: self.state.clone(),
+            reserved: true,
+        })
+    }
+
     pub fn binding(&self, key: &str) -> Option<Owner> {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         cleanup(&mut state);
         let entry = state.bindings.get_mut(key)?;
         entry.last_used = Instant::now();
         Some(entry.owner.clone())
+    }
+
+    /// Only a fresh, random headerless session whose reply was never indexed
+    /// may be abandoned. Existing/explicit sessions keep their ownership.
+    pub(crate) fn abandon_unpublished_binding(&self, key: &str) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.bindings.remove(key);
     }
 
     pub fn reserve_binding(&self, key: &str) -> Result<BindingReservation, OwnershipError> {
@@ -155,6 +197,40 @@ impl Registry {
             .bindings
             .retain(|_, entry| entry.owner.aggregate_id != id);
         cleanup(&mut state);
+    }
+}
+
+pub struct TranscriptReservation {
+    state: Arc<Mutex<State>>,
+    reserved: bool,
+}
+impl TranscriptReservation {
+    pub fn commit(mut self, key: String, session_key: &str) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.transcript_reservations = state.transcript_reservations.saturating_sub(1);
+        self.reserved = false;
+        if let Some(entry) = state.transcripts.get_mut(&key) {
+            if entry.session_key.as_deref() != Some(session_key) {
+                entry.session_key = None;
+            }
+            entry.last_used = Instant::now();
+        } else {
+            state.transcripts.insert(
+                key,
+                TranscriptEntry {
+                    session_key: Some(session_key.into()),
+                    last_used: Instant::now(),
+                },
+            );
+        }
+    }
+}
+impl Drop for TranscriptReservation {
+    fn drop(&mut self) {
+        if self.reserved {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            state.transcript_reservations = state.transcript_reservations.saturating_sub(1);
+        }
     }
 }
 
@@ -256,6 +332,9 @@ fn cleanup(state: &mut State) {
     state
         .resources
         .retain(|_, entry| entry.last_used.elapsed() < IDLE_TTL);
+    state
+        .transcripts
+        .retain(|_, entry| entry.last_used.elapsed() < IDLE_TTL);
 }
 
 #[cfg(test)]
@@ -341,5 +420,53 @@ mod tests {
             Err(OwnershipError::Capacity)
         ));
         assert!(registry.reserve_binding(&key).is_ok());
+    }
+
+    #[test]
+    fn transcript_capacity_conflicts_and_expiry_never_reassign_history() {
+        let registry = Registry::default();
+        let key = scope(&["delivered transcript"]);
+        let a = scope(&["session a"]);
+        let b = scope(&["session b"]);
+        registry
+            .reserve_transcript()
+            .unwrap()
+            .commit(key.clone(), &a);
+        assert_eq!(registry.transcript(&key), Ok(a.clone()));
+        registry
+            .reserve_transcript()
+            .unwrap()
+            .commit(key.clone(), &a);
+        assert_eq!(registry.transcript(&key), Ok(a));
+        registry
+            .reserve_transcript()
+            .unwrap()
+            .commit(key.clone(), &b);
+        assert_eq!(registry.transcript(&key), Err(OwnershipError::Conflict));
+        registry
+            .reserve_transcript()
+            .unwrap()
+            .commit(key.clone(), &b);
+        assert_eq!(registry.transcript(&key), Err(OwnershipError::Conflict));
+        let mut reservations: Vec<_> = (1..MAX_TRANSCRIPTS)
+            .map(|_| registry.reserve_transcript().unwrap())
+            .collect();
+        assert!(matches!(
+            registry.reserve_transcript(),
+            Err(OwnershipError::Capacity)
+        ));
+        reservations.pop();
+        assert!(registry.reserve_transcript().is_ok());
+        drop(reservations);
+        registry
+            .state
+            .lock()
+            .unwrap()
+            .transcripts
+            .get_mut(&key)
+            .unwrap()
+            .last_used = Instant::now() - IDLE_TTL - Duration::from_secs(1);
+        assert_eq!(registry.transcript(&key), Err(OwnershipError::Unknown));
+        assert_eq!(registry.state.lock().unwrap().transcript_reservations, 0);
     }
 }

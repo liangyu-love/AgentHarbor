@@ -18,12 +18,17 @@ pub(super) struct Projection {
     pub trace: route_trace::Trace,
     pub terminal: TerminalObservation,
     pub at_start: bool,
+    pub transcript: Option<aggregate_session::Tracker>,
 }
 
 impl Projection {
     fn value(&mut self, value: &mut Value) -> Result<bool, &'static str> {
         self.terminal.observe_body(self.protocol, value);
-        self.patch(value)
+        let patched = self.patch(value)?;
+        if let Some(transcript) = &mut self.transcript {
+            transcript.body(value, self.terminal.state().is_some_and(|state| state.delivered()));
+        }
+        Ok(patched)
     }
     fn patch(&mut self, value: &mut Value) -> Result<bool, &'static str> {
         let terminal = self.terminal.state().is_some_and(|state| state.delivered());
@@ -126,7 +131,11 @@ impl Projection {
             .unwrap_or("")
             .trim();
         self.terminal.observe(self.protocol, &value, name);
-        if !self.patch(&mut value)? {
+        let patched = self.patch(&mut value)?;
+        if let Some(transcript) = &mut self.transcript {
+            transcript.event(&value, self.terminal.state().is_some_and(|state| state.delivered()));
+        }
+        if !patched {
             return Ok(Bytes::copy_from_slice(raw));
         }
         let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
@@ -357,6 +366,7 @@ mod tests {
             trace: route_trace::Trace::begin("public", None),
             terminal: Default::default(),
             at_start: true,
+            transcript: None,
         }
     }
     #[test]

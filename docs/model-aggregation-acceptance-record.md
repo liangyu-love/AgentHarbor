@@ -251,3 +251,11 @@ node scripts/tauri.mjs --test-rust command_and_deepseek_flash_live_aggregation -
 诊断只保留最近 **60 条请求的内存记录**，清除或退出后不保留；磁盘用量账本独立保留。诊断保存筛选后的参数，不保存完整对话、响应正文或密钥；上游自报模型代表其声明，不是底层权重身份的独立验证。协议预检或未知会话等出站前拒绝可显示 0 attempts，不能误认为已有渠道调用。
 
 代理模块回归 **89 passed / 6 ignored**，覆盖聚合轮转/重试、JSON/SSE、Desktop 和托管搜索续轮；新续轮断言核对聚合成员、协议适配、原始模型及账本 attempt 关联。界面回归验证两条独立请求各自展示自己的尝试，区分实际卡片、出站模型、HTTP 429、协议适配、备用渠道与同渠道续轮。生产前端构建通过。证据：`.runtime-test/aggregate-diagnostics-proxy-rust.log`、`.runtime-test/aggregate-diagnostics-frontend.log`、`.runtime-test/aggregate-diagnostics-build.log`。本轮未使用真实渠道凭据。
+
+## 2026-10-07：Desktop 聚合会话亲和修复
+
+外部审查中“无会话身份的签名续轮 409”和“工具续轮裸轮转”已由生产路由的 localhost 用例确认并修复。详细复核、原报告中不成立的推断、状态边界与验收见 [会话亲和审查记录](aggregation-desktop-session-affinity-review-2026-10-07.md)。
+
+聚合支持 body 中的可靠 session、Claude Code 两版 metadata 和额外 Codex/OpenCode 头。无明确 ID 的 Messages 使用完整已交付历史摘要找回绑定；相同首句的新会话仍轮转，续轮保持原成员和有效协议。签名、工具回填和跨协议私有输出各走原有转换/缓存边界；不以移除 409 守卫代替归属检查。未知或歧义历史、失效成员、变更的连接仍拒绝派发。
+
+覆盖三种出口的 JSON/分帧 SSE 工具续轮、原生签名、Chat reasoning、Responses output IDs/encrypted content、独立会话轮转、body session、归属冲突、计数/取消/容量与账本/诊断。完整 Rust 回归 **1,039 库 + 14 Desktop 集成 + 20 工作流通过**，0 failed；证据 `.runtime-test/aggregation-session-fix-rust.log`。本轮未修改真实客户端配置，也未验证真实 Desktop 的请求头或真实渠道缓存命中率。

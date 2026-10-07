@@ -162,16 +162,26 @@ pub(super) async fn execute(
         .map_err(|_| (StatusCode::BAD_REQUEST, "invalid aggregate request"))?;
     // Token counting chooses a compatible endpoint without establishing a
     // conversation's inference member before the first actual create.
-    let session = (!count_tokens).then(|| session(headers)).flatten();
-    let session_key = session.map(|session| {
-        affinity::scope(&[
-            &resource_scope,
-            &aggregate.id,
-            &aggregate.public_model_id,
-            role,
-            session,
-        ])
-    });
+    let conversation_scope = affinity::scope(&[
+        &resource_scope, &aggregate.id, &aggregate.public_model_id, role,
+    ]);
+    let session = (!count_tokens).then(|| aggregate_session::explicit(headers, &value)).flatten();
+    let transcript_namespace = affinity::scope(&[&conversation_scope, "messages-transcript"]);
+    let fingerprint = (create && ingress == router::ModelProtocol::AnthropicMessages && session.is_none())
+        .then(|| aggregate_session::Fingerprint::request(&value)).flatten();
+    let session_key = if let Some(session) = &session {
+        Some(affinity::scope(&[&conversation_scope, "explicit", session]))
+    } else if let Some((_, previous)) = &fingerprint {
+        Some(if let Some(previous) = previous {
+            affinity::shared().transcript(&affinity::scope(&[&transcript_namespace, previous]))
+                .map_err(|_| (StatusCode::CONFLICT,
+                    "conversation member is unknown, expired or ambiguous; start a new conversation"))?
+        } else {
+            affinity::scope(&[&conversation_scope, "new-transcript", &uuid::Uuid::new_v4().to_string()])
+        })
+    } else {
+        None
+    };
     let decision = if let Some(key) = &session_key {
         Some(affinity::decision_lock(key).await)
     } else {
@@ -188,8 +198,9 @@ pub(super) async fn execute(
     if bound.is_none()
         && (resource_id.is_some()
             || previous.is_some()
-            || requirements.private_history
-            || (requirements.continuation && session_key.is_some()))
+            || (!count_tokens && (requirements.private_history
+                || (requirements.continuation
+                    && (session_key.is_some() || ingress == router::ModelProtocol::AnthropicMessages)))))
     {
         return Err((
             StatusCode::CONFLICT,
@@ -219,8 +230,17 @@ pub(super) async fn execute(
                 continue;
             }
         };
+        let bound_chat = bound.is_some_and(|owner| {
+            owner.member_id == member.id
+                && owner.connection_key == resolved.target_key
+                && owner.effective_protocol == router::ModelProtocol::ChatCompletions
+                && owner.configured_protocol == router::ModelProtocol::Responses
+        });
+        // A Command search turn can choose Chat for a configured Responses
+        // member. Keep that exact effective protocol for subsequent history,
+        // even when the next request no longer declares the search tool.
         let compatibility = ingress == router::ModelProtocol::AnthropicMessages
-            && requirements.search
+            && (requirements.search || bound_chat)
             && resolved.protocol == router::ModelProtocol::Responses
             && router::supports_command_search(&resolved.provider)
             && resolved.provider.supports_model_protocol(
@@ -322,7 +342,7 @@ pub(super) async fn execute(
             plans.iter().find(|plan| {
                 plan.agrees(
                     owner,
-                    resource_owner.is_some() || requirements.private_history,
+                    resource_owner.is_some() || requirements.continuation || requirements.private_history,
                 )
             })
         })
@@ -342,6 +362,17 @@ pub(super) async fn execute(
             )
         })?;
     let mut binding_reservation = binding_reservation;
+    let mut transcript = if let Some((prefix, previous)) = fingerprint {
+        Some(aggregate_session::Tracker::new(
+            transcript_namespace, prefix, session_key.clone().expect("transcript session"),
+            affinity::shared().reserve_transcript().map_err(|_| (
+                StatusCode::SERVICE_UNAVAILABLE, "conversation transcript capacity reached",
+            ))?,
+            previous.is_none(),
+        ))
+    } else {
+        None
+    };
     let resource_reservation = if create && ingress == router::ModelProtocol::Responses {
         Some(
             affinity::shared()
@@ -510,6 +541,7 @@ pub(super) async fn execute(
                     trace,
                     terminal: Default::default(),
                     at_start: true,
+                    transcript: transcript.take(),
                 },
                 *method == hyper::Method::HEAD,
             )
@@ -607,6 +639,7 @@ pub(super) async fn execute(
                 trace,
                 terminal: Default::default(),
                 at_start: true,
+                transcript: transcript.take(),
             },
             *method == hyper::Method::HEAD,
         )
@@ -625,24 +658,6 @@ impl<T> OptionalResult<T> for Option<Option<T>> {
             Some(None) => None,
         }
     }
-}
-fn session(headers: &HeaderMap) -> Option<&str> {
-    [
-        "session_id",
-        "x-session-id",
-        "x-codex-session-id",
-        "conversation_id",
-        "x-opencode-session",
-    ]
-    .iter()
-    .find_map(|header| {
-        headers
-            .get(*header)
-            .and_then(|value| value.to_str().ok())
-            .filter(|value| {
-                !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
-            })
-    })
 }
 fn selection_error(error: agg::runtime::SelectionError) -> (StatusCode, &'static str) {
     match error {

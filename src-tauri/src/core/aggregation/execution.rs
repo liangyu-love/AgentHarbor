@@ -126,7 +126,14 @@ impl Requirements {
         }) {
             return Err("output_limit_exceeded");
         }
-        if self.private_history && self.ingress != effective {
+        // Messages continuations stay pinned to the original connection and
+        // effective protocol. Their adapter/history cache already separates
+        // visible Anthropic blocks from exact retained upstream reasoning.
+        // Opaque Responses/Chat state cannot cross protocols.
+        if self.private_history
+            && self.ingress != effective
+            && self.ingress != ModelProtocol::AnthropicMessages
+        {
             return Err("private_history_protocol");
         }
         Ok(())
