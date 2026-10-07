@@ -174,6 +174,45 @@ async fn start(paths: &CodexPaths, store: &router::Store) -> (Client, String) {
     )
 }
 
+#[test]
+fn managed_client_paths_record_source_without_changing_route_or_legacy_urls() {
+    let _guard = global_router_test_lock();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let _stop = Stop;
+        let upstream = mock(router::ModelProtocol::AnthropicMessages, 200, false).await;
+        let temp = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(temp.path().into());
+        let store = fixture(&[(&upstream, "wire-model", router::ModelProtocol::AnthropicMessages)]);
+        let (client, base) = start(&paths, &store).await;
+        let cases = [
+            ("/clients/claude-code/p/p0/v1/messages", "wire-model", Some("claudeCode")),
+            ("/clients/opencode/p/p0/v1/messages", "wire-model", Some("opencode")),
+            ("/p/p0/v1/messages", "wire-model", None),
+            ("/clients/opencode/aggregate/v1/messages", "official-model", Some("opencode")),
+        ];
+        for (route, model, _) in cases {
+            let response = client.post(format!("{base}{route}"))
+                .bearer_auth("local-fixture")
+                .json(&json!({"model":model,"max_tokens":64,"messages":[{"role":"user","content":"hello"}]}))
+                .send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{route}");
+            let answer: Value = response.json().await.unwrap();
+            assert_eq!(answer["model"], if route.contains("/aggregate/") { "official-model" } else { "wire-model" });
+        }
+        let ledger = relay_usage::load(&paths.app_data_dir).unwrap();
+        assert_eq!(ledger.recent.len(), cases.len());
+        let traces = route_trace::recent();
+        for ((_, _, source), record) in cases.into_iter().zip(ledger.recent.iter().rev()) {
+            assert_eq!(record.identity.client_source.as_deref(), source);
+            let trace = traces.iter().find(|trace| trace.id == record.request_id).unwrap();
+            assert_eq!(trace.client_source.as_deref(), source);
+            assert_eq!(trace.attempts.len(), 1);
+            assert_eq!(trace.attempts[0].upstream_model, "wire-model");
+        }
+        assert_eq!(upstream.count.load(Ordering::SeqCst), cases.len());
+    });
+}
+
 async fn scripted_mock(
     respond: impl Fn(&Value) -> Response<ResponseBody> + Send + Sync + 'static,
 ) -> Mock {

@@ -85,7 +85,7 @@ fn assert_mixed_deepseek_opencode_endpoints(access_mode: ClientAccessMode) {
                         if access_mode == ClientAccessMode::Native {
                             (direct_base, "upstream-secret")
                         } else {
-                            ("http://127.0.0.1:43127/p/test-relay/v1", "local-secret")
+                            ("http://127.0.0.1:43127/clients/opencode/p/test-relay/v1", "local-secret")
                         };
                     assert_eq!(group["options"]["baseURL"], expected_base);
                     assert_eq!(group["options"]["apiKey"], expected_key);

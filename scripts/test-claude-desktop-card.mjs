@@ -166,6 +166,11 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   const scroll = () => dialog().locator("[data-claude-desktop-scroll]");
   const modelCheckbox = modelId => page.locator('[id="desktop-model-' + modelId + '"]');
   const actionButton = name => card().getByRole("button", { name, exact: true });
+  const actionAppearance = name => actionButton(name).evaluate(button => {
+    const style = getComputedStyle(button);
+    return { disabled: button.disabled, borderWidth: style.borderTopWidth,
+      background: style.backgroundColor, color: style.color, opacity: style.opacity };
+  });
   const focusedId = () => page.evaluate(() => document.activeElement?.id ?? "");
   // The dialog traps focus, so repeated Tab presses cycle through every control: stop when the
   // wanted id owns focus, fail the caller when it never does.
@@ -414,6 +419,19 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   }
   assert.deepEqual({ disabled: byText(ZH.switchOfficial).disabled, title: byText(ZH.switchOfficial).title },
     { disabled: true, title: ZH.conflictReason });
+  const disabledOfficialAppearance = {};
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate(dark => document.documentElement.classList.toggle("dark", dark), theme === "dark");
+    disabledOfficialAppearance[theme] = await actionAppearance(ZH.switchOfficial);
+    const enabledAction = await actionAppearance(ZH.reapply);
+    assert.equal(disabledOfficialAppearance[theme].disabled, true);
+    assert.equal(enabledAction.disabled, false);
+    assert.notEqual(enabledAction.borderWidth, disabledOfficialAppearance[theme].borderWidth,
+      theme + ": enabled actions need a visible border absent from disabled actions");
+    assert.notEqual(enabledAction.background, disabledOfficialAppearance[theme].background,
+      theme + ": enabled actions need a visible background absent from disabled actions");
+  }
+  await page.evaluate(() => document.documentElement.classList.remove("dark"));
 
   // 3. Widths and browser zoom: no sideways scrolling, every action still clickable.
   const matrix = [];
@@ -893,6 +911,25 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
     status.actions.find(entry => entry.action === "switchOfficial").disabledReason = null;
     await window.review.providersClient.invalidateQueries({ queryKey: ["claude-desktop", "status"] });
   });
+  await actionButton(ZH.switchOfficial).click({ trial: true });
+  await page.waitForFunction(name => {
+    const button = [...document.querySelectorAll('section[aria-labelledby="claude-desktop-title"] button')]
+      .find(entry => entry.textContent.trim() === name);
+    return button && !button.disabled && getComputedStyle(button).opacity === "1";
+  }, ZH.switchOfficial);
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate(dark => document.documentElement.classList.toggle("dark", dark), theme === "dark");
+    const active = await actionAppearance(ZH.switchOfficial);
+    assert.equal(active.disabled, false, theme + ": official switch must be natively enabled when allowed");
+    assert.equal(active.opacity, "1", theme + ": enabled official switch must have full opacity");
+    assert.notEqual(active.borderWidth, disabledOfficialAppearance[theme].borderWidth,
+      theme + ": enabled official switch must gain an outline");
+    assert.notEqual(active.background, disabledOfficialAppearance[theme].background,
+      theme + ": enabled official switch must gain a visible background");
+    assert.notEqual(active.color, disabledOfficialAppearance[theme].color,
+      theme + ": enabled official switch must have distinct text color");
+  }
+  await page.evaluate(() => document.documentElement.classList.remove("dark"));
   await actionButton(ZH.switchOfficial).click();
   await confirm.getByRole("button", { name: ZH.confirm, exact: true }).click();
   await confirm.waitFor({ state: "hidden" });
@@ -903,6 +940,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
     { paths: { normalRoot: NORMAL_ROOT, thirdPartyRoot: THIRD_PARTY_ROOT } },
     "an unmanaged official-mode switch must not depend on a provider or saved models");
   console.log("PASS official mode can be selected before configuring a relay");
+  console.log("PASS official switch has distinct enabled and disabled styling in light and dark themes");
 
   // Pending recovery consumes the existing journal after confirmation, never a new preview ticket.
   const previewsBeforeRecovery = await page.evaluate(() => window.review.desktopCalls.preview.length);

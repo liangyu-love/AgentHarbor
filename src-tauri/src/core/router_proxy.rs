@@ -651,8 +651,24 @@ fn provider_destination(
     })
 }
 
+// Managed client configurations use a source-scoped URL. The scope is only
+// diagnostic; the existing local router token still controls access. Legacy
+// /p and /aggregate URLs remain valid and retain an unknown/generic source.
+fn client_request_path(path: &str) -> (String, Option<&'static str>) {
+    for (prefix, source) in [
+        ("/clients/claude-code/", "claudeCode"),
+        ("/clients/opencode/", "opencode"),
+        ("/clients/codex/", "codex"),
+    ] {
+        if let Some(rest) = path.strip_prefix(prefix) {
+            return (format!("/{rest}"), Some(source));
+        }
+    }
+    (path.to_owned(), None)
+}
+
 async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> ForwardResult {
-    let path = request.uri().path().to_owned();
+    let (path, tagged_source) = client_request_path(request.uri().path());
     let query = request.uri().query().map(str::to_owned);
     if path == "/agentharbor/health" {
         return Ok(Response::builder()
@@ -661,6 +677,11 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             .expect("static body"));
     }
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let client_source = if segments.first() == Some(&"codex") {
+        Some("codex")
+    } else {
+        tagged_source
+    };
     // The suffix is appended to upstream base URLs, which normalize dot segments;
     // reject them so a request cannot climb out of the `/v1` prefix with real credentials.
     if segments
@@ -827,6 +848,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             requested_model.as_deref(),
             one_m_context,
             None,
+            client_source,
             trace.clone(),
         )
         .await;
@@ -839,6 +861,11 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         trace.identity(&request_diagnostics::RequestIdentity {
             client_source: Some("claudeDesktop".into()),
             route_revision: Some(snapshot.route_revision),
+            ..Default::default()
+        });
+    } else if let Some(source) = client_source {
+        trace.identity(&request_diagnostics::RequestIdentity {
+            client_source: Some(source.into()),
             ..Default::default()
         });
     }
@@ -891,14 +918,19 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                 Some(&route.choice.model_id), one_m_context,
                 Some(aggregate::DesktopTarget { aggregate_id: route.aggregate_id.clone().expect("aggregate route"),
                     alias: route.choice.role_alias.clone(), config_identity: snapshot.paths_identity.clone(),
-                    route_revision: snapshot.route_revision, one_m: one_m_context }), trace.clone()).await;
+                    route_revision: snapshot.route_revision, one_m: one_m_context }),
+                Some("claudeDesktop"), trace.clone()).await;
         }
         let identity = desktop_route.as_ref().map(|route| request_diagnostics::RequestIdentity {
             client_source: Some("claudeDesktop".into()),
             requested_model: desktop_alias.clone(),
             resolved_model: Some(route.choice.model_id.clone()),
             route_revision: desktop.as_ref().map(|s| s.route_revision),
-        });
+        }).or_else(|| client_source.map(|source| request_diagnostics::RequestIdentity {
+            client_source: Some(source.into()),
+            requested_model: requested_model.clone(),
+            ..Default::default()
+        }));
         if let Some(identity) = &identity { trace.identity(identity); }
         let (mut destination, selection_reason) = if let Some(route) = &desktop_route {
             let provider = route.provider.as_ref().expect("ordinary Desktop provider");
@@ -3596,6 +3628,15 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), 200);
             let _ = response.bytes().await.unwrap();
+            let codex_trace = route_trace::recent().into_iter().find(|route|
+                route.requested_model == "agentharbor_fixture::mock-model"
+                    && route.client_source.as_deref() == Some("codex")
+                    && route.status == Some(200)).expect("Codex request has a source-tagged trace");
+            let codex_usage = relay_usage::load(&paths.app_data_dir).unwrap();
+            assert!(codex_usage.recent.iter().any(|record|
+                record.request_id == codex_trace.id
+                    && record.identity.client_source.as_deref() == Some("codex")
+                    && record.model == "mock-model"));
 
             // Codex must receive Responses JSON even when the provider speaks
             // Chat Completions or Anthropic Messages.

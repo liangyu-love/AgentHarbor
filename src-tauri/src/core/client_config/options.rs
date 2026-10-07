@@ -169,10 +169,11 @@ pub(super) fn client_endpoint_for_protocol<'a>(
 ) -> Result<(String, &'a str), String> {
     if request.needs_router() {
         let version = if with_version { "/v1" } else { "" };
+        let source = router_source_prefix(request.target_id);
         Ok((
             format!(
-                "http://127.0.0.1:{}/p/{}{version}",
-                store.router.port, provider.id
+                "http://127.0.0.1:{}{source}/p/{}{version}",
+                store.router.port, provider.id,
             ),
             &store.router.bearer_token,
         ))
@@ -181,6 +182,14 @@ pub(super) fn client_endpoint_for_protocol<'a>(
             native_base(provider, with_version, protocol)?,
             &provider.api_key,
         ))
+    }
+}
+
+pub(super) fn router_source_prefix(target: TargetId) -> &'static str {
+    match target {
+        TargetId::ClaudeCode => "/clients/claude-code",
+        TargetId::OpenCode => "/clients/opencode",
+        TargetId::Codex => "/clients/codex",
     }
 }
 

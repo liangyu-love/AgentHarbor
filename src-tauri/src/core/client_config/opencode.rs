@@ -261,7 +261,7 @@ impl ClientAdapter for OpenCode {
                 ModelProtocol::ChatCompletions => "@ai-sdk/openai-compatible",
                 ModelProtocol::AnthropicMessages => "@ai-sdk/anthropic",
             };
-            let (base, credential) = aggregate_models::endpoint(store, true);
+            let (base, credential) = aggregate_models::endpoint(store, true, request.target_id);
             keys.push(json!(key));
             edits.extend([
                 edit(&["provider", key, "name"], json!("AgentHarbor Aggregation")),

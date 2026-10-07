@@ -117,10 +117,15 @@ pub(super) fn models(
     Ok(output)
 }
 
-pub(super) fn endpoint<'a>(store: &'a Store, with_version: bool) -> (String, &'a str) {
+pub(super) fn endpoint<'a>(
+    store: &'a Store,
+    with_version: bool,
+    target: TargetId,
+) -> (String, &'a str) {
+    let source = super::options::router_source_prefix(target);
     (
         format!(
-            "http://127.0.0.1:{}/aggregate{}",
+            "http://127.0.0.1:{}{source}/aggregate{}",
             store.router.port,
             if with_version { "/v1" } else { "" }
         ),

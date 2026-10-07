@@ -54,6 +54,7 @@ pub(super) async fn execute(
     requested: Option<&str>,
     one_m: bool,
     desktop: Option<DesktopTarget>,
+    tagged_source: Option<&str>,
     trace: route_trace::Trace,
 ) -> ForwardResult {
     let resource_id = match segments {
@@ -71,18 +72,17 @@ pub(super) async fn execute(
         suffix.as_str(),
         "responses" | "messages" | "chat/completions"
     );
-    let client = desktop
-        .as_ref()
-        .map(|_| "claudeDesktop")
-        .unwrap_or_else(|| {
-            headers
-                .get("x-agentharbor-client")
-                .and_then(|value| value.to_str().ok())
-                .filter(|value| {
-                    !value.is_empty() && value.len() <= 64 && !value.chars().any(char::is_control)
-                })
-                .unwrap_or("aggregate")
+    let header_source = headers
+        .get("x-agentharbor-client")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| {
+            !value.is_empty() && value.len() <= 64 && !value.chars().any(char::is_control)
         });
+    let client = if desktop.is_some() {
+        "claudeDesktop"
+    } else {
+        tagged_source.or(header_source).unwrap_or("aggregate")
+    };
     let config = desktop
         .as_ref()
         .map(|desktop| desktop.config_identity.as_str())

@@ -14,6 +14,7 @@ import type { NewApiState } from "@/types/newapi";
 import { formatCost, costLabel } from "@/lib/format-cost";
 import { queryKeys } from "@/lib/query-keys";
 import { formatInvokeError } from "@/lib/invoke-error";
+import { CLIENT_SOURCES, clientSourceLabelKey, matchesClientSource, type ClientSourceFilter } from "@/lib/client-source";
 
 type View = "trend" | "models" | "requests" | "providers";
 const CHART_WIDTH = 1000;
@@ -109,17 +110,15 @@ function RelayTrend({ relay }: { relay: RelayUsagePayload }) {
 
 function RelayRequests({ relay }: { relay: RelayUsagePayload }) {
   const { t } = useTranslation();
-  const [source, setSource] = useState("all");
-  const records = relay.recent.filter(record => source === "all" ||
-    (source === "claudeDesktop" ? record.clientSource === "claudeDesktop" : record.clientSource !== "claudeDesktop"));
+  const [source, setSource] = useState<ClientSourceFilter>("all");
+  const records = relay.recent.filter(record => matchesClientSource(record.clientSource, source));
   if (!relay.recent.length) return <p className="usage-empty-state">{t("accounts.relayEmpty")}</p>;
   return <div className="usage-request-scroll">
     <label className="flex items-center gap-2 px-2 pb-2 text-xs">
       {t("newapi.routeSourceLabel")}
-      <select aria-label={t("newapi.routeSourceLabel")} className="rounded-md border bg-background px-2 py-1" value={source} onChange={event => setSource(event.target.value)}>
+      <select aria-label={t("newapi.routeSourceLabel")} className="rounded-md border bg-background px-2 py-1" value={source} onChange={event => setSource(event.target.value as ClientSourceFilter)}>
         <option value="all">{t("newapi.routeSourceAll")}</option>
-        <option value="claudeDesktop">Claude Desktop</option>
-        <option value="other">{t("newapi.routeSourceOther")}</option>
+        {CLIENT_SOURCES.map(option => <option key={option.value} value={option.value}>{t(option.labelKey)}</option>)}
       </select>
     </label>
     <p className="px-2 pb-2 text-[11px] text-muted-foreground">{t("accounts.relayDetailRetention")}</p>
@@ -134,8 +133,10 @@ function RelayRequests({ relay }: { relay: RelayUsagePayload }) {
         <td className="font-medium" title={record.providerName}>{record.providerName}</td>
         <td className="font-mono" title={record.model}>
           {record.model || "—"}
-          {record.clientSource === "claudeDesktop" && <small className="block text-[10px] text-muted-foreground">
-            {record.requestedModel || "—"} → {record.resolvedModel || record.model}
+          {record.requestedModel &&
+            (record.requestedModel !== record.model || (record.resolvedModel && record.resolvedModel !== record.model)) &&
+            <small className="block text-[10px] text-muted-foreground">
+              {record.requestedModel} → {record.resolvedModel || record.model}
           </small>}
           <small className="block text-[10px] text-muted-foreground">
             {t("accounts.relayServedModel")}: {record.modelObservation?.servedModel ?? "—"}
@@ -170,7 +171,7 @@ function RelayRequests({ relay }: { relay: RelayUsagePayload }) {
         </td>
         <td className="font-mono"><strong>{record.durationMs} ms</strong><small>{t("accounts.firstTokenShort")} {record.firstTokenMs == null ? "—" : `${record.firstTokenMs} ms`}</small></td>
         <td><span className={cn("usage-request-status", record.success ? "is-good" : "is-error")}>{record.statusCode}</span></td>
-        <td><span className="usage-request-source">{record.clientSource === "claudeDesktop" ? "Claude Desktop" : t("newapi.routeSourceUnknown")}</span></td>
+        <td><span className="usage-request-source">{t(clientSourceLabelKey(record.clientSource))}</span></td>
         <td className="whitespace-nowrap">{new Date(record.timestamp * 1000).toLocaleString()}</td>
       </tr>)}</tbody>
     </table>

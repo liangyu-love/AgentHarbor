@@ -481,6 +481,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
                 {CONFIRMABLE.filter((action) => action !== "recoverRollback").map((action) => {
                   const view = actionOf(action);
                   if (!view) return null;
+                  const disabled = operationBusy || !view.enabled;
                   const Icon =
                     action === "reapply"
                       ? RefreshCw
@@ -493,9 +494,14 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
                     <Button
                       key={action}
                       size="sm"
-                      variant="ghost"
-                      className="h-8 gap-1.5 rounded-lg text-xs text-muted-foreground hover:text-foreground"
-                      disabled={operationBusy || !view.enabled}
+                      variant={disabled ? "ghost" : "outline"}
+                      className={cn(
+                        "h-8 gap-1.5 rounded-lg text-xs",
+                        disabled
+                          ? "text-muted-foreground"
+                          : "border-primary/30 bg-primary/5 text-primary shadow-sm hover:border-primary/60 hover:bg-primary/10 hover:text-primary",
+                      )}
+                      disabled={disabled}
                       title={view.disabledReason ? t(view.disabledReason) : undefined}
                       onClick={() => setPending(action)}
                     >

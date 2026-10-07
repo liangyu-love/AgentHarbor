@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { CLIENT_SOURCES, clientSourceLabelKey, matchesClientSource, type ClientSourceFilter } from "@/lib/client-source";
 import type { CompressionPolicy, NewApiProvider } from "@/types/newapi";
 
 function Parameters({
@@ -66,7 +67,7 @@ export function RoutingDiagnostics({
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  const [source, setSource] = useState("all");
+  const [source, setSource] = useState<ClientSourceFilter>("all");
   const [compressionValue, setCompressionValue] = useState("");
   const selectedSearchUnavailable = webSearchProviderId !== null &&
     !searchProviders.some(provider => provider.id === webSearchProviderId);
@@ -80,8 +81,7 @@ export function RoutingDiagnostics({
     compression.mode === "tokens" || compression.mode === "clientDefault"
       ? compression.mode
       : "percent";
-  const visibleRoutes = query.data?.filter(route => source === "all" ||
-    (source === "claudeDesktop" ? route.clientSource === "claudeDesktop" : route.clientSource !== "claudeDesktop"));
+  const visibleRoutes = query.data?.filter(route => matchesClientSource(route.clientSource, source));
   const currentValue =
     compression.mode === "tokens"
       ? String(compression.tokens)
@@ -195,12 +195,11 @@ export function RoutingDiagnostics({
             <p className="text-muted-foreground/90 leading-relaxed max-w-xl">
               {t("newapi.tracePrivacy")}
             </p>
-            <Select value={source} onValueChange={setSource}>
+            <Select value={source} onValueChange={value => setSource(value as ClientSourceFilter)}>
               <SelectTrigger className="h-8 w-40 text-xs" aria-label={t("newapi.routeSourceLabel")}><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">{t("newapi.routeSourceAll")}</SelectItem>
-                <SelectItem value="claudeDesktop">Claude Desktop</SelectItem>
-                <SelectItem value="other">{t("newapi.routeSourceOther")}</SelectItem>
+                {CLIENT_SOURCES.map(option => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
               </SelectContent>
             </Select>
             <Button
@@ -281,7 +280,7 @@ export function RoutingDiagnostics({
                         {route.requestedModel || "—"}
                         {route.resolvedModel && route.resolvedModel !== route.requestedModel && ` → ${route.resolvedModel}`}
                       </span>
-                      {route.clientSource === "claudeDesktop" && <Badge variant="outline">Claude Desktop</Badge>}
+                      <Badge variant="outline">{t(clientSourceLabelKey(route.clientSource))}</Badge>
 
                       <span className="rounded bg-muted px-1.5 py-0 font-mono text-[10px] text-muted-foreground">
                         HTTP {route.status ?? "—"}

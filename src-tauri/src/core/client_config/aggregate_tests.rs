@@ -62,7 +62,7 @@ fn claude_aggregate_saved_request_reapplies_public_identity_and_restores_origina
     assert_eq!(installed["model"], "official-model");
     assert_eq!(
         installed["env"]["ANTHROPIC_BASE_URL"],
-        "http://127.0.0.1:43127/aggregate"
+        "http://127.0.0.1:43127/clients/claude-code/aggregate"
     );
     assert_eq!(installed["env"]["ANTHROPIC_AUTH_TOKEN"], "local-secret");
     assert!(!installed.to_string().contains("upstream-secret"));
@@ -107,7 +107,7 @@ fn opencode_aggregate_and_exact_provider_subset_survive_reapply_and_restore() {
     );
     assert_eq!(
         installed["provider"]["agentharbor_aggregate_responses"]["options"]["baseURL"],
-        "http://127.0.0.1:43127/aggregate/v1"
+        "http://127.0.0.1:43127/clients/opencode/aggregate/v1"
     );
     assert_eq!(
         installed["provider"]["agentharbor_aggregate_responses"]["npm"],
@@ -206,7 +206,7 @@ fn opencode_chat_aggregate_reapply_preserves_sdk_group_and_restore_withdraws_it(
     assert_eq!(group["npm"], "@ai-sdk/openai-compatible");
     assert_eq!(
         group["options"]["baseURL"],
-        "http://127.0.0.1:43127/aggregate/v1"
+        "http://127.0.0.1:43127/clients/opencode/aggregate/v1"
     );
     assert_eq!(
         group["models"]["official-model"]["limit"]["context"],

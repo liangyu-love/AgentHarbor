@@ -60,7 +60,7 @@ impl ClientAdapter for ClaudeCode {
         let (base, credential) = if let Some(provider) = provider {
             client_endpoint(store, provider, request, false)?
         } else {
-            aggregate_models::endpoint(store, false)
+            aggregate_models::endpoint(store, false, request.target_id)
         };
         let label_for = |model: &str| -> String {
             aggregate_models

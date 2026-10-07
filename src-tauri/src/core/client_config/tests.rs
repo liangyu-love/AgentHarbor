@@ -95,7 +95,7 @@ fn claude_preserves_settings_and_restores_exact_original() {
     assert_eq!(installed["permissions"]["allow"][0], "Read");
     assert_eq!(
         installed["env"]["ANTHROPIC_BASE_URL"],
-        "http://127.0.0.1:43127/p/test-relay"
+        "http://127.0.0.1:43127/clients/claude-code/p/test-relay"
     );
     assert_eq!(installed["env"]["ANTHROPIC_AUTH_TOKEN"], "local-secret");
     assert!(!installed.to_string().contains("upstream-secret"));
@@ -580,7 +580,7 @@ fn opencode_groups_mixed_models_and_removes_obsolete_protocol_groups_on_reapply(
         assert!(group["models"].get(model).is_some());
         assert_eq!(
             group["options"]["baseURL"],
-            "http://127.0.0.1:43127/p/test-relay/v1"
+            "http://127.0.0.1:43127/clients/opencode/p/test-relay/v1"
         );
         assert_eq!(group["options"]["apiKey"], "local-secret");
     }

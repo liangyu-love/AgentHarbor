@@ -238,7 +238,7 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   assert.doesNotMatch(await desktopRoutes.innerText(), /desktop_role_mapping/,
     "Desktop mapping reasons must be localized in expanded request diagnostics");
   await desktopRoutes.getByRole("combobox", { name: "客户端来源" }).click();
-  await page.getByRole("option", { name: "其他 / 未记录", exact: true }).click();
+  await page.getByRole("option", { name: "未记录", exact: true }).click();
   await desktopRoutes.getByText("relay::claude-opus-5-5-kiro", { exact: true }).waitFor();
   assert.equal(await desktopRoutes.locator("summary").count(), 1);
   assert.match(await desktopRoutes.locator("summary").innerText(), /relay::claude-opus-5-5-kiro/);
@@ -263,11 +263,68 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   assert.match(await desktopUsage.locator("tbody tr").innerText(), /claude-sonnet-4-6 → deepseek-fixture/);
   assert.match(await desktopUsage.locator("tbody tr").innerText(), /Claude Desktop/);
   assert.match(await desktopUsage.locator("tbody tr").innerText(), /\$0/);
-  await desktopUsage.getByLabel("客户端来源", { exact: true }).selectOption("other");
-  await desktopUsage.getByText("未记录", { exact: true }).waitFor();
+  await desktopUsage.getByLabel("客户端来源", { exact: true }).selectOption("unknown");
+  await desktopUsage.locator("tbody tr .usage-request-source").filter({ hasText: /^未记录$/ }).waitFor();
   assert.equal(await desktopUsage.locator("tbody tr").count(), 1);
   assert.match(await desktopUsage.locator("tbody tr").innerText(), /未记录/);
   console.log("PASS Desktop diagnostics and usage filter client source while retaining alias, actual billing model and zero cost");
+
+  const sourceSamples = [
+    ["codex", "Codex"], ["claudeCode", "Claude Code"], ["opencode", "OpenCode"],
+    ["claudeDesktop", "Claude Desktop"], ["aggregate", "聚合网关"],
+  ];
+  await reset("access");
+  await page.evaluate(samples => {
+    const route = { timestamp: 1790000000, requested: {}, done: true, status: 200, durationMs: 10, attempts: [] };
+    window.review.routeDiagnostics = [
+      ...samples.map(([clientSource]) => ({ ...route, id: clientSource, clientSource, requestedModel: `source-${clientSource}` })),
+      { ...route, id: "future", clientSource: "future-client", requestedModel: "source-future" },
+      { ...route, id: "legacy", requestedModel: "source-legacy" },
+    ];
+    window.review.mount("access");
+  }, sourceSamples);
+  const sourceRoutes = page.getByRole("region", { name: "请求级路由诊断" });
+  await sourceRoutes.getByRole("button", { name: "请求级路由诊断", exact: true }).click();
+  await sourceRoutes.getByText("source-codex", { exact: true }).waitFor();
+  for (const [value, label] of sourceSamples) {
+    await sourceRoutes.getByRole("combobox", { name: "客户端来源" }).click();
+    await page.getByRole("option", { name: label, exact: true }).click();
+    await sourceRoutes.getByText(`source-${value}`, { exact: true }).waitFor();
+    assert.equal(await sourceRoutes.locator("summary").count(), 1);
+    assert.match(await sourceRoutes.locator("summary").innerText(), new RegExp(`source-${value}.*${label}`, "s"));
+  }
+  await sourceRoutes.getByRole("combobox", { name: "客户端来源" }).click();
+  await page.getByRole("option", { name: "未记录", exact: true }).click();
+  await sourceRoutes.getByText("source-future", { exact: true }).waitFor();
+  await sourceRoutes.getByText("source-legacy", { exact: true }).waitFor();
+  assert.equal(await sourceRoutes.locator("summary").count(), 2, "missing and unrecognized client sources must share the unknown filter");
+
+  await reset("usage");
+  await page.evaluate(samples => {
+    const base = { timestamp: 1790000000, date: "2026-10-05", providerId: "fixture", providerName: "Relay Fixture",
+      model: "deepseek-fixture", protocol: "chatCompletions", statusCode: 200, durationMs: 20, success: true,
+      usageReported: true, inputTokens: 3, outputTokens: 4, totalTokens: 7, reasoningTokens: 0,
+      cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, pricingStatus: "priced", pricingSource: "override", catalogRevision: "fixture" };
+    window.review.relayPatch = { recent: [
+      ...samples.map(([clientSource], index) => ({ ...base, timestamp: base.timestamp + index, clientSource,
+        requestedModel: `source-${clientSource}`, resolvedModel: base.model })),
+      { ...base, timestamp: base.timestamp + 5, clientSource: "future-client" },
+      { ...base, timestamp: base.timestamp + 6 },
+    ] };
+    window.review.mount("usage");
+  }, sourceSamples);
+  const sourceUsage = page.locator(".usage-relay-panel");
+  await sourceUsage.getByRole("tab", { name: "请求明细" }).click();
+  for (const [value, label] of sourceSamples) {
+    await sourceUsage.getByLabel("客户端来源", { exact: true }).selectOption(value);
+    await sourceUsage.locator("tbody tr").filter({ hasText: `source-${value}` }).waitFor();
+    assert.equal(await sourceUsage.locator("tbody tr").count(), 1);
+    assert.equal(await sourceUsage.locator("tbody tr .usage-request-source").innerText(), label);
+  }
+  await sourceUsage.getByLabel("客户端来源", { exact: true }).selectOption("unknown");
+  await sourceUsage.locator("tbody tr").nth(1).waitFor();
+  assert.equal(await sourceUsage.locator("tbody tr").count(), 2);
+  console.log("PASS request diagnostics and relay usage distinguish every client source and group missing or future values as unrecorded");
 
   await reset("access");
   await page.evaluate(() => {
