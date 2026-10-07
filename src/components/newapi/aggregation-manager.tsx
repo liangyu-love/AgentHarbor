@@ -27,6 +27,8 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { FoldBody, FoldHeader } from "@/components/ui/fold-header";
+import { useFold } from "@/hooks/use-fold";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ConfirmDialog, type ConfirmRequest } from "@/components/ui/confirm-dialog";
 import { aggregationQueryKey, type AggregateMember, type AggregateModel } from "@/types/aggregation";
@@ -74,6 +76,8 @@ export function AggregationManager({ providers }: { providers: NewApiProvider[] 
   const [consumerProfile, setConsumerProfile] = useState<"generic" | "anthropicSdk" | "opencode">("generic");
   const [configText, setConfigText] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const fold = useFold("aggregation");
+  const gatewayFold = useFold("aggregation-gateway");
 
   useEffect(() => {
     if (copiedId === null) return;
@@ -210,38 +214,39 @@ export function AggregationManager({ providers }: { providers: NewApiProvider[] 
 
   return (
     <section className="space-y-5" aria-labelledby="aggregation-title">
-      {/* Section Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5">
+      <FoldHeader
+        open={fold.open}
+        onToggle={fold.toggle}
+        titleId="aggregation-title"
+        contentId="aggregation-body"
+        title={t("aggregation.title")}
+        leading={
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
             <Network className="h-4 w-4" />
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h2 id="aggregation-title" className="text-lg font-semibold tracking-tight text-foreground">
-                {t("aggregation.title")}
-              </h2>
-              <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium tabular-nums text-muted-foreground">
-                {models.length}
-              </span>
-            </div>
-            <p className="text-xs text-muted-foreground">{t("aggregation.description")}</p>
-          </div>
-        </div>
+        }
+        meta={
+          <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium tabular-nums text-muted-foreground">
+            {models.length}
+          </span>
+        }
+        actions={
+          <Button
+            disabled={busy || draft !== null || models.length >= 128}
+            className="gap-1.5 shadow-sm transition-all motion-safe:active:scale-95"
+            onClick={() => {
+              if (!fold.open) fold.toggle();
+              setDraft(initialModel());
+              setError(null);
+            }}
+          >
+            <Plus className="h-4 w-4" />
+            {t("aggregation.add")}
+          </Button>
+        }
+      />
 
-        <Button
-          disabled={busy || draft !== null || models.length >= 128}
-          className="gap-1.5 shadow-sm transition-all motion-safe:active:scale-95"
-          onClick={() => {
-            setDraft(initialModel());
-            setError(null);
-          }}
-        >
-          <Plus className="h-4 w-4" />
-          {t("aggregation.add")}
-        </Button>
-      </div>
-
+      <FoldBody open={fold.open} id="aggregation-body" className="space-y-5">
       {(error || query.error) && (
         <div
           role="alert"
@@ -818,22 +823,37 @@ export function AggregationManager({ providers }: { providers: NewApiProvider[] 
         })}
       </div>
 
-      {/* Gateway Connection & Export Hub */}
+      {/* Aggregation gateway: external clients connect through here */}
       <div
-        className="rounded-2xl border border-border/80 bg-card/70 p-5 sm:p-6 shadow-sm space-y-4"
+        className="rounded-2xl border border-border/80 bg-card/70 p-4 shadow-sm sm:p-5"
+        role="group"
         aria-labelledby="aggregate-export-title"
       >
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b pb-4">
-          <div className="flex items-center gap-2">
-            <Share2 className="h-4 w-4 text-indigo-500" />
-            <h3 id="aggregate-export-title" className="font-semibold text-foreground tracking-tight">
-              {t("aggregation.connection")}
-            </h3>
-          </div>
-
-          <div className="flex min-w-0 flex-wrap items-center gap-3">
+        <FoldHeader
+          open={gatewayFold.open}
+          onToggle={gatewayFold.toggle}
+          titleId="aggregate-export-title"
+          contentId="aggregate-gateway-body"
+          title={t("aggregation.gateway")}
+          titleClassName="text-sm"
+          leading={<Share2 className="h-4 w-4 text-indigo-500" />}
+          meta={
+            <Badge
+              variant="outline"
+              className={cn(
+                "gap-1 text-xs",
+                query.data?.listenerReady
+                  ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-400"
+                  : "text-muted-foreground",
+              )}
+            >
+              {query.data?.listenerReady && <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />}
+              {t(query.data?.listenerReady ? "aggregation.listenerReady" : "aggregation.listenerStopped")}
+            </Badge>
+          }
+          actions={
             <div className="flex items-center gap-2">
-              <Label htmlFor="aggregate-external-enabled" className="text-xs font-medium cursor-pointer">
+              <Label htmlFor="aggregate-external-enabled" className="cursor-pointer text-xs font-medium">
                 {t("aggregation.keepService")}
               </Label>
               <Switch
@@ -848,21 +868,10 @@ export function AggregationManager({ providers }: { providers: NewApiProvider[] 
                 }
               />
             </div>
-            <Badge
-              variant="outline"
-              className={cn(
-                "gap-1 text-xs",
-                query.data?.listenerReady
-                  ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-400"
-                  : "text-muted-foreground",
-              )}
-            >
-              {query.data?.listenerReady && <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse motion-reduce:animate-none" />}
-              {t(query.data?.listenerReady ? "aggregation.listenerReady" : "aggregation.listenerStopped")}
-            </Badge>
-          </div>
-        </div>
+          }
+        />
 
+        <FoldBody open={gatewayFold.open} id="aggregate-gateway-body" className="mt-4 space-y-4">
         {/* Export Parameters Grid */}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <div className="space-y-1.5">
@@ -999,7 +1008,9 @@ export function AggregationManager({ providers }: { providers: NewApiProvider[] 
             </pre>
           </div>
         )}
+        </FoldBody>
       </div>
+      </FoldBody>
 
       <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
     </section>

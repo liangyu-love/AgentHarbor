@@ -19,6 +19,7 @@ import {
   ArrowRight,
   ShieldCheck,
   UsersRound,
+  RadioTower,
 } from "lucide-react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
@@ -132,12 +133,23 @@ export function CommandPalette({
       {
         id: "nav-newapi",
         title: t("newapi.title"),
-        subtitle: "中转模型配置与本地代理管理",
+        subtitle: t("nav.newapiHint"),
         icon: Wallet,
         category: "navigation",
         shortcut: "⌘2",
         onSelect: () => {
           onNavigate("newapi");
+          onOpenChange(false);
+        },
+      },
+      {
+        id: "nav-relays",
+        title: t("newapi.providersSection"),
+        subtitle: t("nav.relaysHint"),
+        icon: RadioTower,
+        category: "navigation",
+        onSelect: () => {
+          onNavigate("relays");
           onOpenChange(false);
         },
       },

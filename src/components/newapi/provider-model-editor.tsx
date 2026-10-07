@@ -116,7 +116,6 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
 
       {pending.length > 0 && <details open className="rounded-xl border border-border/60 bg-muted/15 p-3" data-pending-models>
         <summary className="cursor-pointer text-xs font-medium">{t("newapi.pendingModels", { count: pending.length })}</summary>
-        <p className="mt-1 text-[11px] text-muted-foreground">{t("newapi.pendingModelsHint")}</p>
         <div className="mt-2 flex flex-wrap gap-1.5">
           <Button type="button" size="sm" variant="ghost" disabled={disabled || matchingPending.length === 0} onClick={() => {
             const matchingIds = new Set(matchingPending.map(model => model.id));
@@ -235,7 +234,6 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
                           value={model.overrides?.defaultEffort ?? ""}
                           onChange={event => patch(model.id, { overrides: { ...model.overrides, defaultEffort: event.target.value.trim() || null } })} />
                       </label>
-                      <p className="sm:col-span-2">{t("newapi.modelFieldOverridesHint")}</p>
                     </div>
                   </details>
                 </div>
@@ -244,7 +242,6 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
           </div>
         </div>
       )}
-      <p className="text-xs leading-relaxed text-muted-foreground">{t("newapi.codexCatalogHint")}</p>
     </div>
   );
 }

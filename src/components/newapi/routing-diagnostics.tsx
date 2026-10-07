@@ -120,12 +120,6 @@ export function RoutingDiagnostics({
             <Route className="h-4 w-4" />
           </div>
           <span>{t("newapi.routeDiagnostics")}</span>
-          <ChevronDown
-            className={cn(
-              "h-4 w-4 text-muted-foreground transition-transform duration-200",
-              open && "rotate-180 text-foreground",
-            )}
-          />
         </Button>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -191,16 +185,6 @@ export function RoutingDiagnostics({
           </label>
 
         </div>
-      </div>
-
-      <p className="mt-1 text-xs text-muted-foreground/80 leading-relaxed px-2">
-        {t("newapi.compression.description")}
-      </p>
-
-      <div className="mt-2 rounded-xl border border-sky-500/20 bg-sky-500/[0.045] px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
-        <p className="font-semibold text-foreground">{t("newapi.traceSourceTitle")}</p>
-        <p className="mt-0.5">{t("newapi.traceSourceRouter")}</p>
-        <p>{t("newapi.traceSourceLocal")}</p>
       </div>
 
       {/* Expanded Content */}

@@ -239,7 +239,9 @@ group("independence: the card owns a labelled section and neither component uses
   const card = read(CARD);
   const labelled = card.match(/<section[^>]*aria-labelledby="([^"]+)"/);
   assert.ok(labelled, CARD + " has no <section aria-labelledby=...>");
-  assert.ok(card.includes('id="' + labelled[1] + '"'), CARD + " has no element with id=" + labelled[1]);
+  // The heading id is set directly or through FoldHeader's titleId prop.
+  assert.ok(card.includes('id="' + labelled[1] + '"') || card.includes('titleId="' + labelled[1] + '"'),
+    CARD + " has no element with id=" + labelled[1]);
   const problems = [];
   for (const file of [CARD, DIALOG]) {
     for (const [, specifier] of read(file).matchAll(/^\s*import[\s\S]*?from\s+"([^"]+)";/gm)) {

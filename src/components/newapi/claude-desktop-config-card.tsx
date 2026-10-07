@@ -18,6 +18,8 @@ import { ClaudeDesktopDialog } from "./claude-desktop-config-dialog";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { FoldBody, FoldHeader } from "@/components/ui/fold-header";
+import { useFold } from "@/hooks/use-fold";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -103,6 +105,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [dialog, setDialog] = useState(false);
+  const fold = useFold("claude-desktop");
   const status = useQuery({
     queryKey: STATUS_KEY,
     queryFn: api.claudeDesktop.status,
@@ -225,19 +228,20 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
 
   return (
     <section className="space-y-4" aria-labelledby="claude-desktop-title">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5">
+      <FoldHeader
+        open={fold.open}
+        onToggle={fold.toggle}
+        titleId="claude-desktop-title"
+        contentId="claude-desktop-body"
+        title={t("claudeDesktop.title")}
+        leading={
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
             <Monitor className="h-4 w-4" />
           </div>
-          <div>
-            <h2 id="claude-desktop-title" className="text-lg font-semibold tracking-tight text-foreground">
-              {t("claudeDesktop.title")}
-            </h2>
-          </div>
-        </div>
-      </div>
+        }
+      />
 
+      <FoldBody open={fold.open} id="claude-desktop-body" className="space-y-4">
       {(error || status.error) && (
         <div
           role="alert"
@@ -503,6 +507,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
           </div>
         )}
       </div>
+      </FoldBody>
 
       {dialog && (
         <ClaudeDesktopDialog

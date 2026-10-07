@@ -366,7 +366,7 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
             </div>
             <DialogHeader className="min-w-0 space-y-0.5 text-left">
               <DialogTitle className="text-base font-semibold">{t(provider ? "newapi.dialogTitleEdit" : "newapi.dialogTitleAdd")}</DialogTitle>
-              <DialogDescription className="text-xs text-muted-foreground">{t("newapi.dialogSubtitle")}</DialogDescription>
+              <DialogDescription className="sr-only">{t(provider ? "newapi.dialogTitleEdit" : "newapi.dialogTitleAdd")}</DialogDescription>
             </DialogHeader>
           </div>
           <span className="hidden sm:inline-flex items-center rounded-full bg-primary/10 px-2.5 py-0.5 text-[11px] font-medium text-primary ring-1 ring-inset ring-primary/20">
@@ -377,14 +377,9 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
         <form className="relative space-y-4 pt-1" onSubmit={e => { e.preventDefault(); void submit(); }}>
           {!provider && (
             <div className="rounded-xl border border-primary/15 bg-gradient-to-r from-primary/[0.04] via-primary/[0.01] to-transparent p-3 space-y-2">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="provider-preset" className="text-xs font-semibold text-foreground/90">
-                  {t("newapi.officialPreset")}
-                </Label>
-                <span className="text-[11px] text-muted-foreground">
-                  一键填入常用官方与专线配置
-                </span>
-              </div>
+              <Label htmlFor="provider-preset" className="text-xs font-semibold text-foreground/90">
+                {t("newapi.officialPreset")}
+              </Label>
               <select id="provider-preset" defaultValue="" disabled={saving} className="h-9 w-full rounded-lg border border-border/70 bg-background/90 px-3 text-xs font-medium shadow-xs transition-colors hover:border-primary/40 focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring" onChange={event => {
               const preset = PROVIDER_PRESETS.find(item => item.name === event.target.value);
               if (!preset) return;
@@ -432,7 +427,6 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
               {field("apiKey", "newapi.apiKey", {
                 password: true,
                 placeholder: provider?.hasApiKey ? t("newapi.keepSecret") : "sk-…",
-                hint: t("newapi.apiKeyHint"),
               })}
             </div>
 
@@ -458,9 +452,6 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
                   </SelectContent>
                 </Select>
               </div>
-              <p className="rounded-lg bg-primary/[0.05] px-2.5 py-2 text-[11px] leading-relaxed text-muted-foreground ring-1 ring-primary/15">
-                {t("newapi.protocolHint")}
-              </p>
             </div>
           </div>
 
@@ -542,7 +533,6 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
                       </>
                     )}
                   </div>
-                  <p className="text-[11px] leading-relaxed text-muted-foreground">{t("newapi.compression.providerHint")}</p>
                 </div>
                 <div className="space-y-1.5 sm:col-span-2">
                   <Label htmlFor="newapi-provider-catalog" className="text-[13px]">{t("newapi.catalogMapping.title")}</Label>
@@ -555,7 +545,6 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
                     placeholder={t("newapi.catalogMapping.placeholder")}
                     onChange={event => update("catalogProviders", event.target.value)}
                   />
-                  <p className="text-[11px] leading-relaxed text-muted-foreground">{t("newapi.catalogMapping.description")}</p>
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="newapi-provider-price-catalog" className="text-[13px]">{t("newapi.catalogMapping.priceTitle")}</Label>
@@ -568,17 +557,12 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
                     placeholder={t("newapi.catalogMapping.placeholder")}
                     onChange={event => update("priceCatalogProvider", event.target.value)}
                   />
-                  <p className="text-[11px] leading-relaxed text-muted-foreground">{t("newapi.catalogMapping.priceHint")}</p>
                 </div>
               </div>
             )}
           </div>
 
-          {/* Footer: Dialog Tips + Actions */}
-          <div className="flex flex-col-reverse sm:flex-row sm:items-center justify-between gap-3 border-t border-border/40 pt-3">
-            <p className="max-w-xs text-[11px] leading-relaxed text-muted-foreground/80">
-              {t("newapi.dialogTips")}
-            </p>
+          <div className="flex justify-end border-t border-border/40 pt-3">
             <DialogFooter className="gap-2 sm:space-x-0 shrink-0">
               <Button type="button" variant="ghost" size="sm" onClick={() => onOpenChange(false)} disabled={saving}>
                 {t("common.cancel")}

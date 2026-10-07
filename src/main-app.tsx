@@ -53,6 +53,7 @@ const McpPage = lazy(() =>
 const OverviewPage = lazy(() => import("@/components/overview/overview-page").then((module) => ({ default: module.OverviewPage })));
 const AccountsPage = lazy(() => import("@/components/accounts/accounts-page").then((module) => ({ default: module.AccountsPage })));
 const NewApiPage = lazy(() => import("@/components/newapi/newapi-page").then((module) => ({ default: module.NewApiPage })));
+const RelayModelsPage = lazy(() => import("@/components/newapi/relays-page").then((module) => ({ default: module.RelayModelsPage })));
 const ImageWorkbenchPage = lazy(() => import("@/components/image-workbench/image-workbench-page").then((module) => ({ default: module.ImageWorkbenchPage })));
 const ThreadsPage = lazy(() =>
   import("@/components/threads/threads-page").then((module) => ({ default: module.ThreadsPage })),
@@ -145,6 +146,7 @@ function MainApp() {
       void Promise.allSettled([
         import("@/components/mcp/mcp-page"),
         import("@/components/accounts/accounts-page"),
+        import("@/components/newapi/relays-page"),
         import("@/components/image-workbench/image-workbench-page"),
         import("@/components/skills/skills-page"),
         import("@/components/custom-instructions/custom-instructions-page"),
@@ -159,9 +161,11 @@ function MainApp() {
       case "overview":
         return <OverviewPage onNavigate={setRoute} onOpenProxySettings={openProxySettings} />;
       case "accounts":
-        return <AccountsPage refreshInterval={refreshInterval} onManageProviders={() => setRoute("newapi")} />;
+        return <AccountsPage refreshInterval={refreshInterval} onManageProviders={() => setRoute("relays")} />;
       case "newapi":
-        return <NewApiPage />;
+        return <NewApiPage onOpenRelays={() => setRoute("relays")} />;
+      case "relays":
+        return <RelayModelsPage />;
       case "imageWorkbench":
         return <ImageWorkbenchPage />;
       case "threads":
@@ -204,6 +208,7 @@ function MainApp() {
     "overview",
     "accounts",
     "newapi",
+    "relays",
     "imageWorkbench",
     "threads",
     "customInstructions",

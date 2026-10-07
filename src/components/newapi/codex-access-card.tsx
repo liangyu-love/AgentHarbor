@@ -1,23 +1,16 @@
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { aggregationQueryKey } from "@/types/aggregation";
-import {
-  ArrowRight,
-  CircleHelp,
-  Cpu,
-  Loader2,
-  Network,
-  RefreshCw,
-  Settings2,
-  Sparkles,
-} from "lucide-react";
+import { ArrowRight, Cpu, Loader2, Network, Plus, RefreshCw, Sparkles } from "lucide-react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { AuroraCard } from "@/components/ui/aurora-card";
+import { FoldBody, FoldHeader } from "@/components/ui/fold-header";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useFold } from "@/hooks/use-fold";
 import { toast } from "@/hooks/use-toast";
 import { providerModelProtocol } from "@/lib/provider-models";
 import { protocolBadgeKey, softBadge } from "@/components/newapi/relay-groups";
@@ -32,15 +25,18 @@ export function CodexAccessCard({
   selectedProvider,
   nativeCompatible,
   onRestart,
+  onOpenRelays,
 }: {
   store: ProviderState;
   providers: NewApiProvider[];
   selectedProvider: NewApiProvider | undefined;
   nativeCompatible: boolean;
   onRestart: () => void;
+  onOpenRelays?: () => void;
 }) {
   const { t } = useTranslation();
   const { busy, mutationLocked, run, applyChange, appliedNote } = store;
+  const fold = useFold("codex-access");
   const router = store.state.data?.router;
   const routingEnabled = !!router?.enabled;
   const accessMode = router?.accessMode ?? "router";
@@ -64,108 +60,126 @@ export function CodexAccessCard({
       ? t(protocolBadgeKey[providerModelProtocol(selectedProvider)])
       : "—";
 
+  const targetNodeClass =
+    "flex min-w-0 flex-1 items-center gap-2.5 rounded-lg border border-border/50 bg-background/70 p-2";
+  // Spans only: the node may be rendered inside a button.
+  const targetNode = (
+    <>
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-purple-500/15 text-purple-600 dark:text-purple-400">
+        <Cpu className="h-3.5 w-3.5" />
+      </span>
+      <span className="block min-w-0 flex-1">
+        <span className="block truncate font-medium text-foreground" title={targetName}>
+          {targetName}
+        </span>
+        <span className="block truncate font-mono text-[11px] text-muted-foreground" title={targetModel}>
+          {targetModel}
+        </span>
+        {nativeAccess && selectedProvider && (
+          <span className="block truncate font-mono text-[11px] text-muted-foreground" title={selectedProvider.baseUrl}>
+            {selectedProvider.baseUrl}
+          </span>
+        )}
+      </span>
+      <Badge variant="outline" className="ml-auto shrink-0 px-1.5 py-0 text-[10px] font-normal">
+        {targetProtocol}
+      </Badge>
+    </>
+  );
+
   return (
-    <AuroraCard
-      color="blue"
-      shine={routingEnabled}
-      className="overflow-hidden shadow-sm transition-all duration-300 hover:shadow-md"
-    >
-      <div aria-labelledby="newapi-routing-title" className="p-5 sm:p-6 space-y-5">
-        {/* Header row */}
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="flex items-start gap-3.5">
-            <div className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-primary/20 via-primary/10 to-primary/5 text-primary shadow-inner ring-1 ring-primary/25">
-              <Sparkles className="h-5 w-5 transition-transform duration-300 motion-safe:group-hover/aurora:scale-110" />
+    <AuroraCard color="blue" shine={routingEnabled} className="overflow-hidden shadow-sm">
+      <section aria-labelledby="newapi-routing-title" className="space-y-4 p-4 sm:p-5">
+        <FoldHeader
+          open={fold.open}
+          onToggle={fold.toggle}
+          titleId="newapi-routing-title"
+          contentId="newapi-routing-body"
+          title={t("newapi.codexAccess")}
+          leading={
+            <div className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/20">
+              <Sparkles className="h-4 w-4" />
               {routingEnabled && (
-                <span
-                  aria-hidden
-                  className="absolute -right-0.5 -top-0.5 flex h-3 w-3 items-center justify-center"
-                >
-                  <span className="absolute inline-flex h-full w-full animate-ping motion-reduce:animate-none rounded-full bg-emerald-400 opacity-60" />
-                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500 ring-2 ring-background" />
-                </span>
+                <span aria-hidden className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-background" />
               )}
             </div>
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-2.5">
-                <h2 id="newapi-routing-title" className="text-base font-semibold tracking-tight text-foreground">
-                  {t("newapi.codexAccess")}
-                </h2>
-                {routingEnabled && !configDrifted && (
-                  <Badge className={cn(softBadge("green"), "gap-1 shadow-sm font-medium")}>
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse motion-reduce:animate-none" />
-                    {t("newapi.enabledBadge")}
-                  </Badge>
-                )}
-                {configDrifted && (
-                  <Badge className={cn(softBadge("amber"), "gap-1 shadow-sm font-medium")}>
-                    <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-                    {t("newapi.driftedBadge")}
-                  </Badge>
-                )}
-                {!routingEnabled && (
-                  <Badge variant="outline" className="text-xs text-muted-foreground font-normal">
-                    {t("newapi.connectionDisabled")}
-                  </Badge>
-                )}
-              </div>
-              <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-                {t(nativeAccess ? "newapi.nativeAccessDesc" : "newapi.smartRoutingDesc")}
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3 self-end sm:self-auto shrink-0">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-9 gap-2 rounded-xl border-border/80 bg-background/80 px-3.5 text-xs font-semibold shadow-sm backdrop-blur-md transition-all hover:border-primary/40 hover:bg-background hover:shadow-sm motion-safe:active:scale-95"
-              disabled={!!busy}
-              onClick={onRestart}
-            >
-              {busy === "restart-codex" ? (
-                <Loader2 className="h-4 w-4 animate-spin text-primary" />
-              ) : (
-                <RefreshCw className="h-4 w-4 text-primary transition-transform group-hover:rotate-45" />
+          }
+          meta={
+            <>
+              {nativeAccess && (
+                <Badge variant="outline" className="text-xs font-normal">
+                  {t("newapi.nativeNoRouter")}
+                </Badge>
               )}
-              <span>{t(busy === "restart-codex" ? "newapi.restartingCodex" : "newapi.restartCodex")}</span>
-            </Button>
-            <Switch
-              aria-label={t("newapi.codexAccess")}
-              checked={routingEnabled}
-              disabled={
-                mutationLocked ||
-                (!routingEnabled &&
-                  (aggregateSelected
-                    ? !aggregateAvailable
-                    : providers.length === 0 || (nativeAccess && !nativeCompatible)))
-              }
-              onCheckedChange={(value) =>
-                void run(
-                  "routing",
-                  async () => {
-                    const change = await api.routing.setEnabled(value);
-                    applyChange(change);
-                    toast({
-                      title: t(value ? "newapi.routingApplied" : "newapi.routingRemoved"),
-                      description: change.applied?.backupPath ?? undefined,
-                      variant: "success",
-                    });
-                  },
-                  t("newapi.routingFailed"),
-                )
-              }
-            />
-          </div>
-        </div>
+              {configDrifted ? (
+              <Badge className={cn(softBadge("amber"), "gap-1 font-medium")}>
+                <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                {t("newapi.driftedBadge")}
+              </Badge>
+            ) : routingEnabled ? (
+              <Badge className={cn(softBadge("green"), "gap-1 font-medium")}>
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                {t("newapi.enabledBadge")}
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="text-xs font-normal text-muted-foreground">
+                {t("newapi.connectionDisabled")}
+              </Badge>
+            )}
+            </>
+          }
+          actions={
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 rounded-lg px-3 text-xs font-medium"
+                disabled={!!busy}
+                onClick={onRestart}
+              >
+                {busy === "restart-codex" ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-3.5 w-3.5" />
+                )}
+                <span>{t(busy === "restart-codex" ? "newapi.restartingCodex" : "newapi.restartCodex")}</span>
+              </Button>
+              <Switch
+                aria-label={t("newapi.codexAccess")}
+                checked={routingEnabled}
+                disabled={
+                  mutationLocked ||
+                  (!routingEnabled &&
+                    (aggregateSelected
+                      ? !aggregateAvailable
+                      : providers.length === 0 || (nativeAccess && !nativeCompatible)))
+                }
+                onCheckedChange={(value) =>
+                  void run(
+                    "routing",
+                    async () => {
+                      const change = await api.routing.setEnabled(value);
+                      applyChange(change);
+                      toast({
+                        title: t(value ? "newapi.routingApplied" : "newapi.routingRemoved"),
+                        description: change.applied?.backupPath ?? undefined,
+                        variant: "success",
+                      });
+                    },
+                    t("newapi.routingFailed"),
+                  )
+                }
+              />
+            </>
+          }
+        />
 
-        {/* Visual Pipeline Topology */}
-        <div className="rounded-xl border border-border/60 bg-gradient-to-r from-card/80 via-muted/20 to-card/80 p-3.5 backdrop-blur-sm">
-          <div className="flex flex-col xl:flex-row items-center justify-between gap-3 text-xs">
-            {/* Step 1: Codex Client */}
-            <div className="flex items-center gap-2.5 w-full xl:w-auto p-2 rounded-lg bg-background/70 border border-border/50 shadow-sm">
-              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-zinc-800 text-white dark:bg-zinc-200 dark:text-zinc-900 font-mono text-[10px] font-bold">
+        <FoldBody open={fold.open} id="newapi-routing-body" className="space-y-4">
+          {/* Pipeline: Codex -> gateway -> target */}
+          <div className="flex flex-col items-stretch gap-2 rounded-xl border border-border/60 bg-muted/20 p-2.5 text-xs xl:flex-row xl:items-center">
+            <div className="flex min-w-0 items-center gap-2.5 rounded-lg border border-border/50 bg-background/70 p-2 xl:w-auto">
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-zinc-800 font-mono text-[10px] font-bold text-white dark:bg-zinc-200 dark:text-zinc-900">
                 CLI
               </div>
               <div className="min-w-0">
@@ -174,67 +188,55 @@ export function CodexAccessCard({
               </div>
             </div>
 
-            {/* Arrow & Connection */}
-            <div className="hidden xl:flex flex-col items-center justify-center px-2">
-              <div className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground/80">
-                <span className={cn("h-1.5 w-1.5 rounded-full", routingEnabled ? "bg-emerald-500 animate-pulse motion-reduce:animate-none" : "bg-muted-foreground/40")} />
-                {t(routingEnabled ? (nativeAccess ? "newapi.directConnection" : "newapi.gatewayConnection") : "newapi.connectionDisabled")}
-              </div>
-              <ArrowRight className={cn("h-3.5 w-3.5", routingEnabled ? "text-primary" : "text-muted-foreground/40")} />
-            </div>
+            <ArrowRight
+              aria-hidden
+              className={cn("hidden h-3.5 w-3.5 shrink-0 xl:block", routingEnabled ? "text-primary" : "text-muted-foreground/40")}
+            />
 
-            {/* Step 2: Local gateway */}
-            {!nativeAccess && <div className="flex min-w-0 items-center gap-2.5 w-full xl:w-auto p-2 rounded-lg bg-background/70 border border-border/50 shadow-sm">
-              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary">
-                <Network className="h-3.5 w-3.5" />
-              </div>
-              <div className="min-w-0">
-                <div className="font-medium text-foreground">
-                  {t("newapi.gatewayAddress", { port: router?.port ?? 43127 })}
-                </div>
-                <div className="text-[11px] text-muted-foreground font-mono">
-                  /codex/v1/responses
-                </div>
-              </div>
-            </div>}
-
-            {/* Arrow */}
-            {!nativeAccess && <div className="hidden xl:flex flex-col items-center justify-center px-2">
-              <ArrowRight className={cn("h-3.5 w-3.5", routingEnabled ? "text-primary" : "text-muted-foreground/40")} />
-            </div>}
-
-            {/* Step 3: Target Model */}
-            <div className="flex min-w-0 items-center gap-2.5 w-full xl:w-auto p-2 rounded-lg bg-background/70 border border-border/50 shadow-sm">
-              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-purple-500/15 text-purple-600 dark:text-purple-400 text-[10px] font-bold">
-                <Cpu className="h-3.5 w-3.5" />
-              </div>
-              <div className="min-w-0 flex-1 xl:max-w-[200px]">
-                <div className="font-medium text-foreground truncate" title={targetName}>
-                  {targetName}
-                </div>
-                <div className="text-[11px] text-muted-foreground truncate font-mono" title={targetModel}>
-                  {targetModel}
-                </div>
-                {nativeAccess && selectedProvider && (
-                  <div className="truncate font-mono text-[11px] text-muted-foreground" title={selectedProvider.baseUrl}>
-                    {selectedProvider.baseUrl}
+            {!nativeAccess && (
+              <>
+                <div className="flex min-w-0 items-center gap-2.5 rounded-lg border border-border/50 bg-background/70 p-2">
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary">
+                    <Network className="h-3.5 w-3.5" />
                   </div>
-                )}
-              </div>
-              <Badge variant="outline" className="ml-auto text-[10px] px-1.5 py-0 shrink-0 font-normal">
-                {targetProtocol}
-              </Badge>
-            </div>
-          </div>
-        </div>
+                  <div className="min-w-0">
+                    <div className="font-medium text-foreground">
+                      {t("newapi.gatewayAddress", { port: router?.port ?? 43127 })}
+                    </div>
+                    <div className="font-mono text-[11px] text-muted-foreground">/codex/v1/responses</div>
+                  </div>
+                </div>
+                <ArrowRight
+                  aria-hidden
+                  className={cn("hidden h-3.5 w-3.5 shrink-0 xl:block", routingEnabled ? "text-primary" : "text-muted-foreground/40")}
+                />
+              </>
+            )}
 
-        {/* Configuration settings block */}
-        <div className="space-y-4 rounded-xl border border-border/60 bg-muted/20 p-4 backdrop-blur-sm">
-          <div className="space-y-2">
-            <Label htmlFor="codex-access-mode" className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              {t("newapi.accessMode")}
-            </Label>
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            {onOpenRelays ? (
+              <button
+                type="button"
+                data-relay-link
+                title={t("newapi.providersSection")}
+                onClick={onOpenRelays}
+                className={cn(
+                  targetNodeClass,
+                  "text-left transition-colors hover:border-primary/40 hover:bg-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                )}
+              >
+                {targetNode}
+              </button>
+            ) : (
+              <div className={targetNodeClass}>{targetNode}</div>
+            )}
+          </div>
+
+          {/* Settings */}
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="min-w-0 space-y-1.5">
+              <Label htmlFor="codex-access-mode" className="text-xs font-medium text-muted-foreground">
+                {t("newapi.accessMode")}
+              </Label>
               <Select
                 value={accessMode}
                 disabled={mutationLocked}
@@ -249,7 +251,7 @@ export function CodexAccessCard({
                   )
                 }
               >
-                <SelectTrigger id="codex-access-mode" className="w-full sm:max-w-xs bg-background/80 shadow-sm">
+                <SelectTrigger id="codex-access-mode" className="bg-background/80">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -260,96 +262,58 @@ export function CodexAccessCard({
                 </SelectContent>
               </Select>
               {!aggregateSelected && selectedProvider && (
-                <div className="min-w-0 text-xs text-muted-foreground truncate font-mono bg-background/50 px-2.5 py-1 rounded-md border border-border/40">
+                <p className="truncate font-mono text-[11px] text-muted-foreground">
                   {t("newapi.accessSelectedModel", {
                     provider: selectedProvider.name,
                     model: selectedProvider.model,
                     protocol: t(protocolBadgeKey[providerModelProtocol(selectedProvider)]),
                   })}
-                </div>
+                </p>
               )}
             </div>
-            {!nativeCompatible && (
-              <p className="text-xs text-amber-700 dark:text-amber-300">
-                {t(selectedProvider ? "newapi.nativeProtocolHint" : "newapi.nativeProviderHint")}
-              </p>
+
+            {!nativeAccess && (
+              <div className="min-w-0 space-y-1.5">
+                <Label htmlFor="codex-aggregate-model" className="text-xs font-medium text-muted-foreground">
+                  {t("aggregation.codexTarget")}
+                </Label>
+                <Select
+                  value={router?.aggregateModelId ?? "__single__"}
+                  disabled={mutationLocked || aggregates.isPending}
+                  onValueChange={(value) =>
+                    void run(
+                      "aggregate-target",
+                      async () => {
+                        applyChange(await api.aggregation.selectCodex(value === "__single__" ? null : value));
+                      },
+                      t("newapi.routingFailed"),
+                    )
+                  }
+                >
+                  <SelectTrigger id="codex-aggregate-model" className="bg-background/80">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__single__">{t("aggregation.singleChannel")}</SelectItem>
+                    {router?.aggregateModelId && !aggregate && (
+                      <SelectItem value={router.aggregateModelId} disabled>
+                        {t("aggregation.unavailable")}
+                      </SelectItem>
+                    )}
+                    {(aggregates.data?.models ?? []).map((model) => (
+                      <SelectItem key={model.id} value={model.id} disabled={!model.available}>
+                        {model.displayName} · {model.publicModelId}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             )}
-            {nativeAccess && <p className="text-xs leading-relaxed text-muted-foreground">{t("newapi.nativeAuthHint")}</p>}
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              {t(nativeAccess ? "newapi.nativeNetworkHint" : "newapi.routerNetworkHint")}
-            </p>
           </div>
 
           {!nativeAccess && (
-            <div className="pt-2 border-t border-border/40 space-y-1.5">
-              <Label htmlFor="codex-aggregate-model" className="text-xs font-medium text-foreground">
-                {t("aggregation.codexTarget")}
-              </Label>
-              <Select
-                value={router?.aggregateModelId ?? "__single__"}
-                disabled={mutationLocked || aggregates.isPending}
-                onValueChange={(value) =>
-                  void run(
-                    "aggregate-target",
-                    async () => {
-                      applyChange(await api.aggregation.selectCodex(value === "__single__" ? null : value));
-                    },
-                    t("newapi.routingFailed"),
-                  )
-                }
-              >
-                <SelectTrigger id="codex-aggregate-model" className="bg-background/80 shadow-sm">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__single__">{t("aggregation.singleChannel")}</SelectItem>
-                  {router?.aggregateModelId && !aggregate && (
-                    <SelectItem value={router.aggregateModelId} disabled>
-                      {t("aggregation.unavailable")}
-                    </SelectItem>
-                  )}
-                  {(aggregates.data?.models ?? []).map((model) => (
-                    <SelectItem key={model.id} value={model.id} disabled={!model.available}>
-                      {model.displayName} · {model.publicModelId}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
-
-          <p className="text-xs leading-relaxed text-muted-foreground">
-            {t(routingEnabled ? (nativeAccess ? "newapi.nativeOnHint" : "newapi.routingOnHint") : "newapi.routingOffHint")}
-          </p>
-
-          {configDrifted && (
-            <p
-              role="alert"
-              className="rounded-lg border border-amber-500/30 bg-amber-500/[0.07] px-3 py-2 text-[13px] leading-relaxed text-amber-700 dark:text-amber-300"
-            >
-              {t("newapi.configDriftedHint")}
-            </p>
-          )}
-
-          {appliedNote && (
-            <p className="break-all font-mono text-[11px] text-muted-foreground/80 bg-background/50 px-2 py-1 rounded border border-border/40">
-              {appliedNote.path}
-              {appliedNote.backupPath ? ` · ${t("newapi.backup")}: ${appliedNote.backupPath}` : ""}
-            </p>
-          )}
-
-          {!nativeAccess && (
-            <div className="flex items-center justify-between gap-4 rounded-xl bg-card/60 p-3.5 ring-1 ring-border/60 transition-colors hover:bg-card/90">
-              <div className="min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <Settings2 className="h-3.5 w-3.5 text-muted-foreground" />
-                  <span className="text-sm font-semibold">{t("newapi.accountless")}</span>
-                  <span title={t("newapi.accountlessTip")}>
-                    <CircleHelp className="h-4 w-4 text-muted-foreground hover:text-foreground cursor-help transition-colors" />
-                  </span>
-                </div>
-                <p className="mt-0.5 text-xs text-muted-foreground">{t("newapi.accountlessHint")}</p>
-              </div>
+            <div className="flex items-center justify-between gap-4 rounded-xl border border-border/60 bg-background/60 px-3.5 py-2.5">
+              <span className="text-sm font-medium">{t("newapi.accountless")}</span>
               <Switch
                 aria-label={t("newapi.accountless")}
                 checked={!!router?.accountless}
@@ -368,8 +332,38 @@ export function CodexAccessCard({
               />
             </div>
           )}
-        </div>
-      </div>
+
+          {providers.length === 0 && onOpenRelays && (
+            <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5 text-xs" onClick={onOpenRelays}>
+              <Plus className="h-3.5 w-3.5" />
+              {t("newapi.addProvider")}
+            </Button>
+          )}
+
+          {!nativeCompatible && (
+            <p className="text-xs text-amber-700 dark:text-amber-300">
+              {t(selectedProvider ? "newapi.nativeProtocolHint" : "newapi.nativeProviderHint")}
+            </p>
+          )}
+          {nativeAccess && <p className="text-xs text-muted-foreground">{t("newapi.nativeAuthHint")}</p>}
+
+          {configDrifted && (
+            <p
+              role="alert"
+              className="rounded-lg border border-amber-500/30 bg-amber-500/[0.07] px-3 py-2 text-[13px] leading-relaxed text-amber-700 dark:text-amber-300"
+            >
+              {t("newapi.configDriftedHint")}
+            </p>
+          )}
+
+          {appliedNote && (
+            <p className="break-all rounded border border-border/40 bg-background/50 px-2 py-1 font-mono text-[11px] text-muted-foreground/80">
+              {appliedNote.path}
+              {appliedNote.backupPath ? ` · ${t("newapi.backup")}: ${appliedNote.backupPath}` : ""}
+            </p>
+          )}
+        </FoldBody>
+      </section>
     </AuroraCard>
   );
 }

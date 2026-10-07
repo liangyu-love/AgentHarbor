@@ -26,14 +26,22 @@ export function useProviderState() {
   const exportInFlight = useRef(false);
   const [exportBusy, setExportBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [appliedNote, setAppliedNote] = useState<NewApiStateChange["applied"]>(null);
+  // Cache-backed so the injection and relay pages show the same latest backup path.
+  const appliedNote = useQuery<NewApiStateChange["applied"]>({
+    queryKey: queryKeys.providerApplied,
+    queryFn: () => null,
+    enabled: false,
+    initialData: null,
+    staleTime: Infinity,
+    gcTime: Infinity,
+  }).data;
 
   useProviderBalanceUpdates();
 
   const replaceState = (next: NewApiState) => queryClient.setQueryData(STATE_KEY, next);
   const applyChange = (change: NewApiStateChange) => {
     replaceState(change.state);
-    if (change.applied) setAppliedNote(change.applied);
+    if (change.applied) queryClient.setQueryData(queryKeys.providerApplied, change.applied);
     void invalidateClaudeDesktop(queryClient);
     void queryClient.invalidateQueries({ queryKey: aggregationQueryKey });
     void queryClient.invalidateQueries({ queryKey: queryKeys.clientConfigs });

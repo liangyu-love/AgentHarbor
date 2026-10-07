@@ -11,6 +11,7 @@ import { ImageWorkbenchPage } from "@/components/image-workbench/image-workbench
 import { ProviderDialog } from "@/components/newapi/provider-dialog";
 import { ProviderTestDialog } from "@/components/newapi/provider-test-dialog";
 import { NewApiPage } from "@/components/newapi/newapi-page";
+import { RelayModelsPage } from "@/components/newapi/relays-page";
 import { ClaudeDesktopRouterExitDialog } from "@/components/newapi/claude-desktop-router-exit-dialog";
 import { UpdateOverlay } from "@/components/update/update-overlay";
 import { useUpdateCheck } from "@/hooks/use-update-check";
@@ -445,7 +446,7 @@ api.providers.revealApiKey = id => {
 };
 api.providers.save = async input => {
   controls.review.saved = input;
-  return { state, applied: null };
+  return { state, applied: controls.review.savedApplied ?? null };
 };
 
 function ProviderFixture({ mixed = false }: { mixed?: boolean }) {
@@ -749,7 +750,7 @@ function mount(mode: FixtureMode) {
       {mode === "desktop-updater" ? <DesktopUpdaterFixture /> : mode === "desktop-exit" ? <ClaudeDesktopRouterExitDialog /> : mode.startsWith("recovery-") ? <RecoveryFixture thread={threads[0] as ThreadSummary} /> :
         mode === "skills" ? <SkillsPage /> : mode === "terminal-proxy" ? <div className="mx-auto max-w-xl rounded-xl bg-card shadow-sm"><TerminalProxySettings currentProxy={{ mode: "manual", url: "http://127.0.0.1:7890" }} /></div> :
         mode === "image" ? <ImageWorkbenchPage /> : mode === "mcp" ? <McpPage /> : mode === "accounts" || mode.startsWith("account-resets") ? <AccountsPage refreshInterval="5m" onManageProviders={noop} /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage" ? <TokenUsagePanel data={{ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } }} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode.startsWith("thread-details") || mode === "thread-tree" || mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :
-        mode === "access" || mode === "incompatible" || mode === "native-invalid" || mode === "groups" ? <NewApiPage /> :
+        mode === "access" || mode === "incompatible" || mode === "native-invalid" || mode === "groups" ? <><NewApiPage onOpenRelays={() => { controls.review.navigatedTo = "relays"; }} /><RelayModelsPage /></> :
         mode === "test" ? <ProviderTestDialog open provider={mixedProvider} onOpenChange={noop} onTested={noop} onFailed={noop} /> :
         mode.startsWith("clients") ? <ClientConfigs providers={controls.review.providerFixtures ? state.providers : openCode ? [mixedProvider, provider("alternate")] : [selectedProvider]} /> :
         <VirtualThreadList groups={groups} collapsedGroups={new Set()} selected={new Set()} viewMode={mode}

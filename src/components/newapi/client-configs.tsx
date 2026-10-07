@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
   AlertCircle,
+  ArrowRight,
   Code2,
   RefreshCw,
   RotateCcw,
@@ -16,6 +17,8 @@ import { ConfigDialog } from "./client-config-dialog";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { FoldBody, FoldHeader } from "@/components/ui/fold-header";
+import { useFold } from "@/hooks/use-fold";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -53,7 +56,7 @@ const summarizeExclusions = (
     .map((reason) => t(`clients.excluded.${reason}`, { count: counts[reason] }));
 };
 
-export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
+export function ClientConfigs({ providers, onOpenRelays }: { providers: NewApiProvider[]; onOpenRelays?: () => void }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const clients = useQuery({ queryKey: CLIENT_KEY, queryFn: api.targets.configs });
@@ -64,6 +67,7 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
   const [reapplying, setReapplying] = useState<{ client: ClientStatus; rebaseline: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const fold = useFold("client-configs");
 
   const refresh = async () => {
     await Promise.all([
@@ -132,20 +136,20 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
 
   return (
     <section className="space-y-4" aria-labelledby="client-configs-title">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5">
+      <FoldHeader
+        open={fold.open}
+        onToggle={fold.toggle}
+        titleId="client-configs-title"
+        contentId="client-configs-body"
+        title={t("clients.title")}
+        leading={
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
             <Terminal className="h-4 w-4" />
           </div>
-          <div>
-            <h2 id="client-configs-title" className="text-lg font-semibold tracking-tight text-foreground">
-              {t("clients.title")}
-            </h2>
-            <p className="text-xs text-muted-foreground">{t("clients.description")}</p>
-          </div>
-        </div>
-      </div>
+        }
+      />
 
+      <FoldBody open={fold.open} id="client-configs-body" className="space-y-4">
       {clients.isPending && (
         <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
           <RefreshCw className="h-4 w-4 animate-spin text-primary" />
@@ -202,10 +206,9 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
                 client.request?.providerIds.some((id) => !providers.some((p) => p.id === id && !exclusionOf(p, protocols))));
 
           const eligible = providers.filter((p) => !exclusionOf(p, protocols));
-          const reasons =
-            eligible.length === 0 && !aggregates.data?.models.some((model) => model.available)
-              ? summarizeExclusions(providers, protocols, t)
-              : [];
+          const noEligible =
+            eligible.length === 0 && !aggregates.data?.models.some((model) => model.available);
+          const reasons = noEligible ? summarizeExclusions(providers, protocols, t) : [];
 
           const isClaude = client.targetId === "claudeCode";
 
@@ -317,6 +320,18 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
                     {t("clients.noEligibleProviders")} {reasons.join(" · ")}
                   </p>
                 )}
+
+                {noEligible && onOpenRelays && (
+                  <button
+                    type="button"
+                    data-relay-link
+                    onClick={onOpenRelays}
+                    className="inline-flex items-center gap-1 rounded text-xs font-medium text-primary hover:text-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    {t("newapi.addProvider")}
+                    <ArrowRight className="h-3 w-3" aria-hidden />
+                  </button>
+                )}
               </div>
 
               {/* Actions row */}
@@ -391,6 +406,7 @@ export function ClientConfigs({ providers }: { providers: NewApiProvider[] }) {
           );
         })}
       </div>
+      </FoldBody>
 
       {selected && (
         <ConfigDialog

@@ -751,12 +751,6 @@ export function ModelCapabilities() {
             <Cpu className="h-4 w-4" />
           </div>
           <span>{t("newapi.modelCapabilities")}</span>
-          <ChevronDown
-            className={cn(
-              "h-4 w-4 text-muted-foreground transition-transform duration-200",
-              open && "rotate-180 text-foreground",
-            )}
-          />
         </Button>
 
         {open && query.data && (
@@ -768,10 +762,6 @@ export function ModelCapabilities() {
 
       {open && (
         <div className="mt-4 space-y-3.5 border-t border-border/50 pt-3">
-          <p className="text-xs text-muted-foreground/85 leading-relaxed px-1">
-            {t("newapi.capabilityRules")}
-          </p>
-
           {query.data && <CatalogNotice catalog={query.data.catalog} />}
 
           <div className="flex flex-wrap items-center gap-2">

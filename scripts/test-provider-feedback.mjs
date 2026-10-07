@@ -26,6 +26,25 @@ export async function testProviderFeedback({ page, reset, captureDir }) {
   }
   console.log("PASS MiMo API, Token Plan and Command Code presets fill their independent official endpoints without inventing credentials");
 
+  // Both pages mount here, each with its own useProviderState: a config write made from the
+  // relay page must reach the injection page's note, and the add dialog must describe adding.
+  await reset("groups");
+  await page.evaluate(() => {
+    window.review.savedApplied = { path: "C:/synthetic/codex/config.toml", backupPath: "C:/synthetic/codex/config.backup-2" };
+  });
+  await page.getByRole("button", { name: "添加中转模型", exact: true }).click();
+  const addDialog = page.getByRole("dialog");
+  assert.equal(await addDialog.getAttribute("aria-describedby") !== null, true);
+  assert.equal(await addDialog.locator("[id='" + await addDialog.getAttribute("aria-describedby") + "']").innerText(), "添加中转模型",
+    "the add dialog's screen-reader description says add, not edit");
+  await addDialog.locator("#newapi-provider-name").fill("Shared note relay");
+  await addDialog.locator("#newapi-provider-baseUrl").fill("https://shared-note.invalid/v1");
+  await addDialog.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByText("C:/synthetic/codex/config.backup-2", { exact: false }).waitFor();
+  assert.match(await page.locator('[aria-labelledby="newapi-routing-title"]').innerText(), /config\.backup-2/,
+    "the Codex card shows the backup path written from the relay page");
+  console.log("PASS a config write from the relay page updates the injection page note and the add dialog is described as add");
+
   const loadProvider = async (patch, shared = false) => {
     await reset("compact");
     await page.evaluate(({ patch, shared }) => {

@@ -116,10 +116,6 @@ export async function testAggregation({ page, reset, captureDir }) {
   assert.equal(await pipeline.getByText("chatgpt.com / api.openai.com", { exact: true }).count(), 0);
   assert.equal(await pipeline.getByText("/codex/v1/responses", { exact: true }).count(), 0, "native access bypasses the local gateway");
   await choose(pipeline.locator("#codex-access-mode"), await tr("newapi.accessRouter"));
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.getByRole("button", { name: await tr("newapi.providersSection"), exact: true }).click();
-  assert.equal(await page.evaluate(() => document.activeElement?.id), "newapi-providers-title", "quick navigation moves keyboard focus with the view");
-  await page.emulateMedia({ reducedMotion: "no-preference" });
 
   // Long manual IDs, localized labels, theme and zoom-size layouts use only synthetic DTOs.
   await page.evaluate(async () => {
@@ -160,7 +156,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   }
   await page.setViewportSize({ width: 1200, height: 700 });
   await page.evaluate(async () => { document.documentElement.classList.remove("dark"); await window.review.setLanguage("zh"); });
-  console.log("PASS native topology, keyboard navigation, long model IDs and bilingual responsive theme layouts");
+  console.log("PASS native topology, long model IDs and bilingual responsive theme layouts");
 
   await seed(page, reset, "access", { empty: true, suggestions: true });
   await manager().getByRole("button", { name: await tr("aggregation.add"), exact: true }).click();

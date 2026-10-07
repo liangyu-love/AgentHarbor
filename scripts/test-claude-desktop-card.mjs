@@ -358,7 +358,9 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
       pathStyle: styles("p.break-all.font-mono"),
       statuses: [...node.querySelectorAll('[role="status"]')].map(element => element.textContent.trim()),
       alerts: node.querySelectorAll('[role="alert"]').length,
-      buttons: [...node.querySelectorAll("button")].map(button => ({ text: button.innerText.trim(),
+      // The section title is a fold toggle (aria-expanded), not one of the card's actions.
+      foldToggles: [...node.querySelectorAll("button[aria-expanded]")].map(button => button.innerText.trim()),
+      buttons: [...node.querySelectorAll("button:not([aria-expanded])")].map(button => ({ text: button.innerText.trim(),
         disabled: button.disabled, title: button.getAttribute("title") })),
       overflow: node.scrollWidth - node.clientWidth,
     };
@@ -395,6 +397,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   assert.match(await card().innerText(), /本地恢复备份: 3/);
   assert.match(await card().innerText(), /未消费的预览|AGENT_HARBOR_CLIENT_HOME/);
   await card().locator("details > summary").click();
+  assert.deepEqual(content.foldToggles, [ZH.title], "the section title is the only fold toggle");
   assert.deepEqual(content.buttons.map(button => button.text),
     [ZH.change, ZH.reapply, ZH.restorePrevious, ZH.switchOfficial, ZH.release],
     "the card must expose its manage and confirmable action buttons");
@@ -452,7 +455,8 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
             width + "px @ " + zoom + "%: " + button.text + " is covered or clipped at its centre");
         }
       }
-      assert.deepEqual(metrics.buttons.filter(button => !button.disabled).map(button => button.text),
+      // The title (fold toggle) is hit-tested above but is not a manage action.
+      assert.deepEqual(metrics.buttons.filter(button => !button.disabled && button.text !== ZH.title).map(button => button.text),
         [ZH.change, ZH.reapply, ZH.restorePrevious, ZH.release],
         width + "px @ " + zoom + "%: the set of clickable manage actions changed");
       // Playwright's own actionability check (visible, stable, receives pointer events at the

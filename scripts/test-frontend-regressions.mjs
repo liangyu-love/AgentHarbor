@@ -606,6 +606,9 @@ try {
   await reset("access");
   await page.getByText(labels.modelCount, { exact: true }).waitFor();
   const codexAccessCard = page.locator('[aria-labelledby="newapi-routing-title"]');
+  await page.evaluate(() => { window.review.navigatedTo = null; });
+  await codexAccessCard.locator("[data-relay-link]").click();
+  assert.equal(await page.evaluate(() => window.review.navigatedTo), "relays", "the Codex target node links to the relay models page");
   const selectedResponsesModel = await page.evaluate(() => window.review.t("newapi.accessSelectedModel", {
     provider: window.review.getState().providers[0].name,
     model: "responses-model", protocol: window.review.t("newapi.protocolShortResponses"),
