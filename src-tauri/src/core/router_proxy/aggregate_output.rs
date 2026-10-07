@@ -23,12 +23,30 @@ pub(super) struct Projection {
 
 impl Projection {
     fn value(&mut self, value: &mut Value) -> Result<bool, &'static str> {
+        self.observe_health(value);
         self.terminal.observe_body(self.protocol, value);
         let patched = self.patch(value)?;
         if let Some(transcript) = &mut self.transcript {
             transcript.body(value, self.terminal.state().is_some_and(|state| state.delivered()));
         }
         Ok(patched)
+    }
+    fn observe_health(&self, value: &Value) {
+        if super::super::aggregation::health::channel_error(value) {
+            self.lease.fail(None);
+        } else if !value["error"].is_null()
+            || !value
+                .pointer("/response/error")
+                .unwrap_or(&Value::Null)
+                .is_null()
+            || matches!(
+                value["type"].as_str(),
+                Some("error" | "response.failed" | "response.cancelled")
+            )
+            || matches!(value["status"].as_str(), Some("failed" | "cancelled"))
+        {
+            self.lease.health().neutral();
+        }
     }
     fn patch(&mut self, value: &mut Value) -> Result<bool, &'static str> {
         let terminal = self.terminal.state().is_some_and(|state| state.delivered());
@@ -130,6 +148,7 @@ impl Projection {
             .find_map(|line| line.strip_prefix("event:"))
             .unwrap_or("")
             .trim();
+        self.observe_health(&value);
         self.terminal.observe(self.protocol, &value, name);
         let patched = self.patch(&mut value)?;
         if let Some(transcript) = &mut self.transcript {
@@ -183,9 +202,7 @@ pub(super) async fn project(
             StatusCode::NO_CONTENT | StatusCode::RESET_CONTENT
         )
     {
-        if successful {
-            projection.lease.succeed();
-        }
+        projection.lease.health().neutral();
         drop(projection);
         return Ok(Response::from_parts(parts, body));
     }
@@ -193,8 +210,10 @@ pub(super) async fn project(
         let mut projection = projection;
         let mut buffer = Vec::new();
         while let Some(frame) = body.frame().await {
-            let frame =
-                frame.map_err(|_| (StatusCode::BAD_GATEWAY, "cannot read aggregate response"))?;
+            let frame = frame.map_err(|_| {
+                projection.lease.fail(None);
+                (StatusCode::BAD_GATEWAY, "cannot read aggregate response")
+            })?;
             if let Ok(data) = frame.into_data() {
                 if buffer.len().saturating_add(data.len()) > MAX_JSON {
                     projection.trace.fail("projection", "response_limit");
@@ -214,11 +233,6 @@ pub(super) async fn project(
                 "response resource ownership is ambiguous",
             )
         })?;
-        if value["error"].is_null()
-            && !matches!(value["status"].as_str(), Some("failed" | "cancelled"))
-        {
-            projection.lease.succeed();
-        }
         let output = if patched {
             Bytes::from(value.to_string())
         } else {
@@ -291,9 +305,13 @@ pub(super) async fn project(
                         }
                     }
                     Some(Err(error)) => {
+                        if successful { projection.lease.fail(None); }
                         return Some((Err(error), (body, projection, Vec::new(), true)))
                     }
                     None => {
+                        if successful && sse && !projection.terminal.received() {
+                            projection.lease.fail(None);
+                        }
                         if pending.is_empty() {
                             return None;
                         }

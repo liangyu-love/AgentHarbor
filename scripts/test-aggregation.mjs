@@ -41,7 +41,7 @@ async function seed(page, reset, mode, options = {}) {
       members: [
         { id: "member-fast", providerId: "relay-a", actualModelId: fastWireModel, enabled: true, priority: 0, weight: 3 },
         { id: "member-native", providerId: "relay-b", actualModelId: secondWireModel, enabled: true, priority: 0, weight: 1 },
-      ], strategy: "weightedRoundRobin", affinity: "session", retryPolicy: { maxAttempts: 2 }, compression: { mode: "inherit" } };
+      ], strategy: "weightedRoundRobin", affinity: "session", retryPolicy: { maxAttempts: 2, failureThreshold: 3 }, compression: { mode: "inherit" } };
     review.aggregateModels = options.empty ? [] : [aggregate];
     review.aggregateSaves = [];
     review.aggregateExports = [];
@@ -198,6 +198,8 @@ export async function testAggregation({ page, reset, captureDir }) {
   await members.nth(0).locator('[id^="member-weight-"]').fill("3");
   await members.nth(1).locator('[id^="member-priority-"]').fill("1");
   await choose(manager().locator("#aggregate-strategy"), await tr("aggregation.weightedRoundRobin"));
+  assert.equal(await manager().locator("#aggregate-failure-threshold").innerText(), "3");
+  await choose(manager().locator("#aggregate-failure-threshold"), "4");
   await choose(manager().locator("#aggregate-attempts"), "1");
   await choose(manager().locator("#aggregate-compression"), await tr("newapi.compression.percent"));
   await manager().getByRole("spinbutton", { name: await tr("newapi.compression.modelLevel"), exact: true }).fill("85");
@@ -206,7 +208,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   const saved = await page.evaluate(() => window.review.aggregateSaves[0]);
   assert.equal(saved.publicModelId, PUBLIC_MODEL);
   assert.equal(saved.strategy, "weightedRoundRobin");
-  assert.deepEqual(saved.retryPolicy, { maxAttempts: 1 });
+  assert.deepEqual(saved.retryPolicy, { maxAttempts: 1, failureThreshold: 4 });
   assert.deepEqual(saved.compression, { mode: "percent", percent: 85 });
   assert.deepEqual(saved.members.map(({ providerId, actualModelId, priority, weight }) => ({ providerId, actualModelId, priority, weight })), [
     { providerId: "relay-a", actualModelId: FAST_WIRE_MODEL, priority: 0, weight: 3 },
@@ -217,6 +219,7 @@ export async function testAggregation({ page, reset, captureDir }) {
     "members save exact references and never copy card credentials");
   await manager().getByRole("button", { name: await tr("common.edit"), exact: true }).click();
   assert.equal(await manager().locator("#aggregate-public-id").isDisabled(), true, "public identity remains stable after creation");
+  assert.equal(await manager().locator("#aggregate-failure-threshold").innerText(), "4");
   assert.equal(await members.nth(0).locator('[id^="member-model-"]').innerText(), FAST_WIRE_MODEL);
   assert.equal(await manager().getByRole("spinbutton", { name: await tr("newapi.compression.modelLevel"), exact: true }).inputValue(), "85");
   await page.setViewportSize({ width: 390, height: 844 });

@@ -43,7 +43,7 @@ const initialModel = (): AggregateModel => ({
   members: [],
   strategy: "roundRobin",
   affinity: "session",
-  retryPolicy: { maxAttempts: 2 },
+  retryPolicy: { maxAttempts: 2, failureThreshold: 3 },
   compression: { mode: "inherit" },
 });
 
@@ -402,7 +402,7 @@ export function AggregationManager({ providers }: { providers: NewApiProvider[] 
                   </Label>
                   <Select
                     value={String(draft.retryPolicy.maxAttempts)}
-                    onValueChange={(value) => update({ retryPolicy: { maxAttempts: Number(value) } })}
+                    onValueChange={(value) => update({ retryPolicy: { ...draft.retryPolicy, maxAttempts: Number(value) } })}
                   >
                     <SelectTrigger id="aggregate-attempts" className="bg-background/80">
                       <SelectValue />
@@ -410,6 +410,25 @@ export function AggregationManager({ providers }: { providers: NewApiProvider[] 
                     <SelectContent>
                       <SelectItem value="1">1</SelectItem>
                       <SelectItem value="2">2</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="aggregate-failure-threshold" className="text-xs font-medium">
+                    {t("aggregation.failureThreshold")}
+                  </Label>
+                  <Select
+                    value={String(draft.retryPolicy.failureThreshold ?? 3)}
+                    onValueChange={(value) => update({ retryPolicy: { ...draft.retryPolicy, failureThreshold: Number(value) } })}
+                  >
+                    <SelectTrigger id="aggregate-failure-threshold" className="bg-background/80">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {[2, 3, 4, 5, 6, 7, 8, 9, 10].map((value) => (
+                        <SelectItem key={value} value={String(value)}>{value}</SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
@@ -791,7 +810,8 @@ export function AggregationManager({ providers }: { providers: NewApiProvider[] 
                   className="h-8 gap-1.5 rounded-lg text-xs"
                   disabled={busy || draft !== null}
                   onClick={() =>
-                    setDraft({ ...model, members: model.members.map((member) => ({ ...member })) })
+                    setDraft({ ...model, retryPolicy: { ...model.retryPolicy, failureThreshold: model.retryPolicy.failureThreshold ?? 3 },
+                      members: model.members.map((member) => ({ ...member })) })
                   }
                 >
                   <Edit2 className="h-3.5 w-3.5" />

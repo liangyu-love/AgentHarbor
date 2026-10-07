@@ -1020,7 +1020,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             }
             if prepared.hosted.is_some() {
                 drop(_decision);
-                return prepared.search(trace.clone()).await;
+                return prepared.search(trace.clone(), None).await;
             }
             let mut outbound = prepared.client.request(method.clone(), &prepared.url).headers(prepared.headers.clone());
             if let Some(sent) = &prepared.body { outbound = outbound.body(sent.clone()); }
@@ -1052,7 +1052,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             };
             trace.status(response.status().as_u16());
             drop(_decision);
-            return prepared.response(response, trace.clone()).await;
+            return prepared.response(response, trace.clone(), None).await;
         }
 
         // The official endpoint keeps Codex's local account credentials and
@@ -1091,7 +1091,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                 trace.clone(),
                 upstream_protocol,
                 upstream_model,
-                attempt_id, None, tool_adapter, Default::default(), Default::default()).await
+                attempt_id, None, tool_adapter, Default::default(), Default::default(), None).await
     }
     .await;
     if let Err((status, message)) = &result {
@@ -1659,6 +1659,7 @@ async fn relay_response(
     tool_adapter: tool_schema::Adapter,
     tool_namespaces: protocol::tool_namespaces::ToolNamespaces,
     response_options: protocol::ResponseOptions,
+    health: Option<super::aggregation::runtime::Health>,
 ) -> ForwardResult {
     let response_status = response.status();
     let is_event_stream = response
@@ -1706,6 +1707,7 @@ async fn relay_response(
             tool_adapter,
             tool_namespaces,
             response_options,
+            health,
         )?,
         Some(translation) if response_status.is_success() => {
             let mut diagnostic = ResponseObservation::new(
@@ -1716,7 +1718,7 @@ async fn relay_response(
                 &attempt_id,
                 response_status.as_u16(),
                 false,
-            );
+            ).with_health(health);
             let bytes = match response.bytes().await {
                 Ok(bytes) => bytes,
                 Err(_) => {
@@ -1730,6 +1732,7 @@ async fn relay_response(
                 diagnostic.translation_error("invalid_provider_response");
                 (StatusCode::BAD_GATEWAY, "invalid provider response")
             })?;
+            diagnostic.value(&value);
             tool_adapter.response(&mut value, upstream_protocol).map_err(|code| {
                 diagnostic.translation_error(code);
                 (StatusCode::BAD_GATEWAY, "invalid Gemini tool arguments")
@@ -1777,7 +1780,7 @@ async fn relay_response(
         None if response_status.is_success() && !tool_adapter.is_empty() && !is_event_stream => {
             let mut diagnostic = ResponseObservation::new(trace, relay_request, upstream_protocol,
                 &upstream_model, &attempt_id, response_status.as_u16(), false,
-            );
+            ).with_health(health);
             let bytes = response.bytes().await.map_err(|_| {
                 diagnostic.error();
                 (StatusCode::BAD_GATEWAY, "cannot read provider response")
@@ -1787,6 +1790,7 @@ async fn relay_response(
                 diagnostic.translation_error("invalid_provider_response");
                 (StatusCode::BAD_GATEWAY, "invalid provider response")
             })?;
+            diagnostic.value(&value);
             tool_adapter.response(&mut value, upstream_protocol).map_err(|code| {
                 diagnostic.translation_error(code);
                 (StatusCode::BAD_GATEWAY, "invalid Gemini tool arguments")
@@ -1795,7 +1799,7 @@ async fn relay_response(
             BodyExt::boxed(Full::new(Bytes::from(value.to_string())).map_err(|never| match never {}),
             )
         }
-        None if response_status.is_success() && !tool_adapter.is_empty() => adapted_native_stream(response, trace, relay_request, upstream_protocol, upstream_model, attempt_id, tool_adapter,
+        None if response_status.is_success() && !tool_adapter.is_empty() => adapted_native_stream(response, trace, relay_request, upstream_protocol, upstream_model, attempt_id, tool_adapter, health,
         ),
         None => {
             let stream = observed_stream(
@@ -1806,6 +1810,7 @@ async fn relay_response(
                 upstream_model,
                 attempt_id,
                 is_event_stream,
+                health,
             )
             .map(move |chunk| {
                 chunk
@@ -1838,6 +1843,7 @@ fn translated_stream(
     tool_adapter: tool_schema::Adapter,
     tool_namespaces: protocol::tool_namespaces::ToolNamespaces,
     response_options: protocol::ResponseOptions,
+    health: Option<super::aggregation::runtime::Health>,
 ) -> ForwardResult<ResponseBody> {
     let translator = WireAdapter::new(translation.from)
         .stream_decoder(upstream_protocol, response_options)
@@ -1854,7 +1860,7 @@ fn translated_stream(
         &attempt_id,
         response.status().as_u16(),
         true,
-    );
+    ).with_health(health);
     // One owner finalizes usage after translation. Dropping this stream also
     // drops the observer, marking an interrupted delivery without losing usage.
     let stream = futures_util::stream::unfold(
@@ -1937,6 +1943,7 @@ fn adapted_native_stream(
     model: String,
     attempt_id: String,
     adapter: tool_schema::Adapter,
+    health: Option<super::aggregation::runtime::Health>,
 ) -> ResponseBody {
     let observer = ResponseObservation::new(
         trace,
@@ -1946,7 +1953,7 @@ fn adapted_native_stream(
         &attempt_id,
         response.status().as_u16(),
         true,
-    );
+    ).with_health(health);
     let stream = futures_util::stream::unfold(
         (
             response.bytes_stream(),
@@ -2075,6 +2082,7 @@ fn observed_stream(
     upstream_model: String,
     attempt_id: String,
     sse: bool,
+    health: Option<super::aggregation::runtime::Health>,
 ) -> impl futures_util::Stream<Item = Result<Bytes, reqwest::Error>> + Send {
     let gate = (sse && response.status().is_success())
         .then(|| native_sse::TerminalGate::new(upstream_protocol));
@@ -2086,7 +2094,7 @@ fn observed_stream(
         &attempt_id,
         response.status().as_u16(),
         sse,
-    );
+    ).with_health(health);
     futures_util::stream::unfold(
         (response.bytes_stream(), observer, gate, false),
         move |(mut stream, mut observer, mut gate, done)| async move {
@@ -2190,6 +2198,7 @@ struct ResponseObservation {
     attempt_id: String,
     finalized: bool,
     delivered: bool,
+    health: Option<super::aggregation::runtime::Health>,
 }
 
 impl ResponseObservation {
@@ -2210,16 +2219,50 @@ impl ResponseObservation {
             attempt_id: attempt_id.into(),
             finalized: false,
             delivered: false,
+            health: None,
+        }
+    }
+    fn with_health(mut self, health: Option<super::aggregation::runtime::Health>) -> Self {
+        self.health = health;
+        self
+    }
+    fn value(&self, value: &Value) {
+        if let Some(health) = &self.health {
+            if super::aggregation::health::channel_error(value) {
+                health.fail(None);
+            } else if !value["error"].is_null()
+                || !value.pointer("/response/error").unwrap_or(&Value::Null).is_null()
+                || matches!(value["type"].as_str(), Some("error" | "response.failed" | "response.cancelled"))
+                || matches!(value["status"].as_str(), Some("failed" | "cancelled"))
+            {
+                health.neutral();
+            }
         }
     }
     fn push(&mut self, bytes: &[u8]) {
         self.diagnostic.push(bytes);
         self.served.push(bytes);
+        if let Some(health) = &self.health {
+            if !self.served.response_error().is_null() {
+                if super::aggregation::health::channel_error(
+                    &json!({"error":self.served.response_error()}),
+                ) {
+                    health.fail(None);
+                } else {
+                    // Preserve the raw upstream category before a translator
+                    // can wrap a parameter rejection in a generic API error.
+                    health.neutral();
+                }
+            }
+        }
         if let Some(usage) = self.usage.as_mut() {
             usage.observe(bytes);
         }
     }
     fn error(&mut self) {
+        if let Some(health) = &self.health {
+            health.fail(None);
+        }
         self.diagnostic.error();
         self.served.error();
         if let Some(usage) = self.usage.as_mut() {
@@ -2228,6 +2271,13 @@ impl ResponseObservation {
     }
     fn translation_error(&mut self, code: &'static str) {
         self.trace.fail("translation", code);
+        if let Some(health) = &self.health {
+            if matches!(code, "upstream_stream_timeout" | "upstream_stream_error" | "upstream_stream_truncated") {
+                health.fail(None);
+            } else {
+                health.neutral();
+            }
+        }
         if let Some(usage) = self.usage.as_mut() {
             usage.fail_delivery();
         }
@@ -2249,6 +2299,18 @@ impl ResponseObservation {
         }
         self.finalized = true;
         let observation = self.served.finish(eof);
+        if eof {
+            if let Some(health) = &self.health {
+                if (!self.served.response_error().is_null()
+                    && super::aggregation::health::channel_error(
+                        &json!({"error":self.served.response_error()}),
+                    ))
+                    || self.served.stream_truncated()
+                {
+                    health.fail(None);
+                }
+            }
+        }
         self.trace.observed(&self.attempt_id, observation.clone());
         if let Some(usage) = self.usage.as_mut() {
             usage.set_model_observation(observation);
@@ -2540,102 +2602,122 @@ mod tests {
                 router::ModelProtocol::AnthropicMessages,
             ] {
                 for path in 0..3 {
-                    let source = Client::builder()
-                        .no_proxy()
-                        .read_timeout(Duration::from_millis(50))
-                        .build()
-                        .unwrap()
-                        .get(format!("http://{address}"))
-                        .send()
-                        .await
-                        .unwrap();
-                    let trace = route_trace::Trace::begin("timeout-fixture", None);
-                    let bytes = match path {
-                        0 => {
-                            let stream = observed_stream(
-                                source,
-                                trace,
-                                None,
-                                protocol,
-                                "fixture".into(),
-                                "fixture-attempt".into(),
-                                true,
-                            )
-                            .map(|b| b.map(Frame::data));
-                            let frames: Vec<_> = tokio::time::timeout(
-                                Duration::from_secs(2),
-                                sse_keepalive(stream, Duration::from_millis(10)).collect(),
-                            )
+                    let runtime = crate::core::aggregation::runtime::Runtime::default();
+                    let candidate = crate::core::aggregation::selector::Candidate {
+                        member_id: "timeout".into(),
+                        provider_id: "fixture".into(),
+                        actual_model_id: "fixture".into(),
+                        target_key: "timeout-target".into(),
+                        priority: 0,
+                        weight: 1,
+                    };
+                    for failure_index in 1..=3 {
+                        let lease = runtime.reserve(&candidate).unwrap();
+                        let source = Client::builder()
+                            .no_proxy()
+                            .read_timeout(Duration::from_millis(50))
+                            .build()
+                            .unwrap()
+                            .get(format!("http://{address}"))
+                            .send()
                             .await
                             .unwrap();
-                            let bytes = frames
-                                .into_iter()
-                                .map(|f| f.unwrap().into_data().unwrap())
-                                .collect::<Vec<_>>()
-                                .concat();
-                            assert!(String::from_utf8_lossy(&bytes).contains(": keepalive"));
-                            bytes
-                        }
-                        1 => adapted_native_stream(
-                            source,
-                            trace,
-                            None,
-                            protocol,
-                            "fixture".into(),
-                            "fixture-attempt".into(),
-                            Default::default(),
-                        )
-                        .collect()
-                        .await
-                        .unwrap()
-                        .to_bytes()
-                        .to_vec(),
-                        _ => {
-                            let from = if protocol == router::ModelProtocol::AnthropicMessages {
-                                router::ModelProtocol::Responses
-                            } else {
-                                router::ModelProtocol::AnthropicMessages
-                            };
-                            translated_stream(
+                        let trace = route_trace::Trace::begin("timeout-fixture", None);
+                        let bytes = match path {
+                            0 => {
+                                let stream = observed_stream(
+                                    source,
+                                    trace,
+                                    None,
+                                    protocol,
+                                    "fixture".into(),
+                                    "fixture-attempt".into(),
+                                    true,
+                                    Some(lease.health()),
+                                )
+                                .map(|b| b.map(Frame::data));
+                                let frames: Vec<_> = tokio::time::timeout(
+                                    Duration::from_secs(2),
+                                    sse_keepalive(stream, Duration::from_millis(10)).collect(),
+                                )
+                                .await
+                                .unwrap();
+                                let bytes = frames
+                                    .into_iter()
+                                    .map(|f| f.unwrap().into_data().unwrap())
+                                    .collect::<Vec<_>>()
+                                    .concat();
+                                assert!(String::from_utf8_lossy(&bytes).contains(": keepalive"));
+                                bytes
+                            }
+                            1 => adapted_native_stream(
                                 source,
-                                protocol::Translation { from, to: protocol },
-                                None,
-                                Vec::new(),
                                 trace,
+                                None,
                                 protocol,
                                 "fixture".into(),
                                 "fixture-attempt".into(),
-                                None,
                                 Default::default(),
-                                Default::default(),
-                                Default::default(),
+                                Some(lease.health()),
                             )
-                            .unwrap()
                             .collect()
                             .await
                             .unwrap()
                             .to_bytes()
-                            .to_vec()
-                        }
-                    };
-                    let text = String::from_utf8(bytes).unwrap();
-                    let failure_event =
-                        if path == 2 && protocol == router::ModelProtocol::AnthropicMessages {
-                            "event: response.failed"
-                        } else if path != 2 && protocol == router::ModelProtocol::ChatCompletions {
-                            "\"error\""
-                        } else {
-                            "event: error"
+                            .to_vec(),
+                            _ => {
+                                let from = if protocol == router::ModelProtocol::AnthropicMessages {
+                                    router::ModelProtocol::Responses
+                                } else {
+                                    router::ModelProtocol::AnthropicMessages
+                                };
+                                translated_stream(
+                                    source,
+                                    protocol::Translation { from, to: protocol },
+                                    None,
+                                    Vec::new(),
+                                    trace,
+                                    protocol,
+                                    "fixture".into(),
+                                    "fixture-attempt".into(),
+                                    None,
+                                    Default::default(),
+                                    Default::default(),
+                                    Default::default(),
+                                    Some(lease.health()),
+                                )
+                                .unwrap()
+                                .collect()
+                                .await
+                                .unwrap()
+                                .to_bytes()
+                                .to_vec()
+                            }
                         };
-                    assert!(
-                        text.contains(failure_event) && text.contains("upstream_stream_timeout"),
-                        "protocol={protocol:?}, path={path}, body={text}"
-                    );
-                    assert!(
-                        !text.contains("message_stop")
-                            && !text.contains("[DONE]")
-                            && !text.contains("event: response.completed")
-                    );
+                        let text = String::from_utf8(bytes).unwrap();
+                        let failure_event =
+                            if path == 2 && protocol == router::ModelProtocol::AnthropicMessages {
+                                "event: response.failed"
+                            } else if path != 2 && protocol == router::ModelProtocol::ChatCompletions {
+                                "\"error\""
+                            } else {
+                                "event: error"
+                            };
+                        assert!(
+                            text.contains(failure_event) && text.contains("upstream_stream_timeout"),
+                            "protocol={protocol:?}, path={path}, body={text}"
+                        );
+                        assert!(
+                            !text.contains("message_stop")
+                                && !text.contains("[DONE]")
+                                && !text.contains("event: response.completed")
+                        );
+                        assert_eq!(
+                            runtime.should_switch(&candidate.target_key),
+                            failure_index == 3,
+                            "all forwarding paths count each actual timeout once"
+                        );
+                    }
                 }
             }
             server.abort();
@@ -2701,10 +2783,10 @@ mod tests {
                             .get(format!("http://{address}/{index}")).send().await.unwrap();
                         let trace = route_trace::Trace::begin("eof-fixture", None);
                         let bytes = if path == 0 {
-                            observed_stream(source, trace, None, protocol, "fixture".into(), "eof-attempt".into(), true)
+                            observed_stream(source, trace, None, protocol, "fixture".into(), "eof-attempt".into(), true, None)
                                 .collect::<Vec<_>>().await.into_iter().map(Result::unwrap).collect::<Vec<_>>().concat()
                         } else {
-                            adapted_native_stream(source, trace, None, protocol, "fixture".into(), "eof-attempt".into(), Default::default())
+                            adapted_native_stream(source, trace, None, protocol, "fixture".into(), "eof-attempt".into(), Default::default(), None)
                                 .collect().await.unwrap().to_bytes().to_vec()
                         };
                         let text = String::from_utf8(bytes).unwrap();

@@ -197,6 +197,7 @@ pub struct ServedModelObserver {
     terminal: TerminalObservation,
     oversized: bool,
     final_result: Option<ServedModelObservation>,
+    response_error: Value,
 }
 
 impl ServedModelObserver {
@@ -228,6 +229,7 @@ impl ServedModelObserver {
             terminal: TerminalObservation::default(),
             oversized: false,
             final_result: None,
+            response_error: Value::Null,
         }
     }
 
@@ -299,6 +301,23 @@ impl ServedModelObserver {
             return;
         };
         let kind = value.get("type").and_then(Value::as_str).unwrap_or(&name);
+        if let Some(error) = value
+            .get("error")
+            .filter(|error| !error.is_null())
+            .or_else(|| value.pointer("/response/error").filter(|error| !error.is_null()))
+            .or_else(|| (kind == "error").then_some(&value))
+        {
+            // Reuse the existing raw parse for channel-health classification.
+            // Retain only bounded scalar error identifiers, never the message.
+            self.response_error = serde_json::json!({});
+            for key in ["type", "code", "status"] {
+                if let Some(value) = error.get(key).filter(|value| {
+                    value.as_u64().is_some() || value.as_str().is_some_and(|text| text.len() <= 128)
+                }) {
+                    self.response_error[key] = value.clone();
+                }
+            }
+        }
         if self.sse {
             self.terminal.observe(self.protocol, &value, &name);
         } else {
@@ -364,6 +383,10 @@ impl ServedModelObserver {
 
     pub fn error(&mut self) {
         self.reason = Some("upstream_stream_error");
+    }
+
+    pub fn response_error(&self) -> &Value {
+        &self.response_error
     }
 
     /// Inspect after `finish(true)` so a final frame without trailing newlines
@@ -499,6 +522,24 @@ mod tests {
         let result = observer.finish(true);
         assert_eq!(result.unknown_reason, None);
         assert_eq!(result.model_match_status, "same");
+    }
+
+    #[test]
+    fn response_error_identifiers_are_retained_without_messages_or_unbounded_fields() {
+        let mut observer = ServedModelObserver::new(ModelProtocol::Responses, "wire", 200, true);
+        observer.push(b"event: error\ndata: {\"type\":\"error\",\"code\":\"server_error\",\"message\":\"private response text\",\"status\":503,\"provider_details\":{\"secret\":\"private\"}}\n\n");
+        assert_eq!(
+            observer.response_error(),
+            &serde_json::json!({"type":"error","code":"server_error","status":503})
+        );
+        observer.push(
+            format!(
+                "event: error\ndata: {{\"code\":\"{}\",\"message\":\"private\"}}\n\n",
+                "x".repeat(129)
+            )
+            .as_bytes(),
+        );
+        assert_eq!(observer.response_error(), &serde_json::json!({}));
     }
 
     #[test]

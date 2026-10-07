@@ -127,6 +127,7 @@ pub fn route_revision(store: &router::Store, aggregate: &AggregateModel) -> Stri
         aggregate.strategy,
         aggregate.affinity,
         aggregate.retry_policy.max_attempts,
+        aggregate.retry_policy.failure_threshold,
     );
     hash.update(serde_json::to_vec(&topology).unwrap_or_default());
     for member in &aggregate.members {

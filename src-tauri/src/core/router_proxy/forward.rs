@@ -237,6 +237,7 @@ impl Prepared {
         self,
         response: reqwest::Response,
         trace: route_trace::Trace,
+        health: Option<super::super::aggregation::runtime::Health>,
     ) -> ForwardResult {
         relay_response(
             response,
@@ -251,11 +252,16 @@ impl Prepared {
             self.tool_adapter,
             self.namespaces,
             self.response_options,
+            health,
         )
         .await
     }
 
-    pub async fn search(self, trace: route_trace::Trace) -> ForwardResult {
+    pub async fn search(
+        self,
+        trace: route_trace::Trace,
+        health: Option<super::super::aggregation::runtime::Health>,
+    ) -> ForwardResult {
         hosted_search::relay(hosted_search::Execution {
             plan: self.hosted.expect("hosted plan"),
             backend: self.search_backend.expect("validated search backend"),
@@ -272,6 +278,7 @@ impl Prepared {
             history: self.history,
             adapter: self.tool_adapter,
             credential: self.credential,
+            health,
         })
         .await
     }

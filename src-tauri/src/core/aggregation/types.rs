@@ -27,11 +27,15 @@ pub enum Affinity {
 #[serde(rename_all = "camelCase", default)]
 pub struct RetryPolicy {
     pub max_attempts: u8,
+    pub failure_threshold: u8,
 }
 
 impl Default for RetryPolicy {
     fn default() -> Self {
-        Self { max_attempts: 2 }
+        Self {
+            max_attempts: 2,
+            failure_threshold: 3,
+        }
     }
 }
 

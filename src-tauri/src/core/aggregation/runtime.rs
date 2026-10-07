@@ -7,7 +7,10 @@ use super::{
 use std::{
     collections::{HashMap, HashSet},
     fmt,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc, Mutex, OnceLock,
+    },
     time::{Duration, Instant},
 };
 
@@ -51,8 +54,10 @@ struct Rotation {
 
 struct TargetState {
     in_flight: usize,
-    probe_in_flight: bool,
+    probe_generation: Option<u64>,
     cooldown_until: Option<Instant>,
+    retry_until: Option<Instant>,
+    tripped: bool,
     failures: u8,
     failure_generation: u64,
     last_used: Instant,
@@ -62,8 +67,10 @@ impl TargetState {
     fn new(now: Instant) -> Self {
         Self {
             in_flight: 0,
-            probe_in_flight: false,
+            probe_generation: None,
             cooldown_until: None,
+            retry_until: None,
+            tripped: false,
             failures: 0,
             failure_generation: 0,
             last_used: now,
@@ -76,6 +83,13 @@ struct State {
     in_flight: usize,
     targets: HashMap<String, TargetState>,
     rotations: HashMap<(String, u16), Rotation>,
+    preferred: HashMap<String, Preferred>,
+}
+
+struct Preferred {
+    member_id: String,
+    target_key: String,
+    last_used: Instant,
 }
 
 #[derive(Clone, Default)]
@@ -96,14 +110,30 @@ pub struct Selection {
 pub struct Lease {
     state: Arc<Mutex<State>>,
     target_key: String,
-    probe: bool,
-    failure_generation: u64,
+    health: Health,
 }
 
-impl Lease {
-    /// Recovery is acknowledged only after a complete response, never merely
-    /// after 200 headers or a cancelled stream.
+/// An actual inference attempt reports exactly one outcome. Dropping a lease
+/// (client cancellation), preflight, counting and resource reads report none.
+#[derive(Clone)]
+pub struct Health {
+    state: Arc<Mutex<State>>,
+    target_key: String,
+    failure_generation: u64,
+    probe_generation: Option<u64>,
+    threshold: u8,
+    outcome: Arc<AtomicU8>,
+}
+
+impl Health {
     pub fn succeed(&self) {
+        if self
+            .outcome
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         if let Some(target) = state.targets.get_mut(&self.target_key) {
             if target.failure_generation != self.failure_generation {
@@ -111,8 +141,98 @@ impl Lease {
             }
             target.failures = 0;
             target.cooldown_until = None;
+            target.retry_until = None;
+            target.tripped = false;
+            if target.probe_generation == self.probe_generation {
+                target.probe_generation = None;
+            }
             target.last_used = Instant::now();
         }
+    }
+
+    /// Return true only when this real failure reaches the switch threshold.
+    /// Retry-After below the threshold pauses the preferred channel without
+    /// allowing an alternative to bypass that pause.
+    pub fn fail(&self, retry_after: Option<Duration>) -> bool {
+        if self
+            .outcome
+            .compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return false;
+        }
+        let now = Instant::now();
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(target) = state.targets.get_mut(&self.target_key) else {
+            return false;
+        };
+        // A known failed probe must stop blocking replacement selection even
+        // while its response body still owns the physical concurrency slot.
+        if self.probe_generation.is_some() && target.probe_generation == self.probe_generation {
+            target.probe_generation = None;
+        }
+        target.failures = target.failures.saturating_add(1);
+        target.failure_generation = target.failure_generation.wrapping_add(1);
+        target.last_used = now;
+        let reached = target.failures >= self.threshold;
+        if let Some(duration) = retry_after.filter(|d| !d.is_zero()) {
+            let until = now + duration.min(MAX_COOLDOWN);
+            target.retry_until = Some(target.retry_until.map_or(until, |old| old.max(until)));
+        }
+        if reached {
+            target.tripped = true;
+            let duration = retry_after
+                .filter(|d| !d.is_zero())
+                .unwrap_or_else(|| {
+                    Duration::from_secs(
+                        (5u64 << target.failures.saturating_sub(self.threshold).min(6)).min(300),
+                    )
+                })
+                .min(MAX_COOLDOWN);
+            let until = now + duration;
+            target.cooldown_until = Some(target.cooldown_until.map_or(until, |old| old.max(until)));
+        }
+        reached
+    }
+
+    pub fn neutral(&self) {
+        let _ = self
+            .outcome
+            .compare_exchange(0, 3, Ordering::AcqRel, Ordering::Acquire);
+    }
+
+    /// Hosted tools can execute several actual model requests on one lease.
+    /// Each round takes a fresh generation and reports its own outcome.
+    pub fn next_attempt(&self) -> Self {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        Self {
+            failure_generation: state
+                .targets
+                .get(&self.target_key)
+                .map_or(0, |t| t.failure_generation),
+            outcome: Arc::new(AtomicU8::new(0)),
+            ..self.clone()
+        }
+    }
+}
+
+impl Lease {
+    pub fn inference(&mut self, threshold: u8, enabled: bool) {
+        self.health.threshold = threshold.clamp(2, 10);
+        if !enabled {
+            self.health.neutral();
+        }
+    }
+    pub fn health(&self) -> Health {
+        self.health.clone()
+    }
+    /// Recovery is acknowledged only after a complete response, never merely
+    /// after 200 headers or a cancelled stream.
+    pub fn succeed(&self) {
+        self.health.succeed();
+    }
+    pub fn fail(&self, retry_after: Option<Duration>) -> bool {
+        self.health.fail(retry_after)
     }
 }
 
@@ -121,8 +241,10 @@ impl Drop for Lease {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(target) = state.targets.get_mut(&self.target_key) {
             target.in_flight = target.in_flight.saturating_sub(1);
-            if self.probe {
-                target.probe_in_flight = false;
+            if self.health.probe_generation.is_some()
+                && target.probe_generation == self.health.probe_generation
+            {
+                target.probe_generation = None;
             }
             target.last_used = Instant::now();
         }
@@ -147,6 +269,15 @@ impl Runtime {
         }
     }
 
+    pub fn should_switch(&self, key: &str) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .targets
+            .get(key)
+            .is_some_and(|target| target.tripped)
+    }
+
     pub fn select(
         &self,
         scope: &str,
@@ -164,6 +295,30 @@ impl Runtime {
         candidates: &[Candidate],
         excluded: &HashSet<String>,
         now: Instant,
+    ) -> Result<Selection, SelectionError> {
+        self.select_inner(scope, strategy, candidates, excluded, now, true)
+    }
+
+    /// Auxiliary operations do not change the inference channel preference.
+    pub fn select_auxiliary(&self, candidates: &[Candidate]) -> Result<Selection, SelectionError> {
+        self.select_inner(
+            "__auxiliary",
+            Strategy::RoundRobin,
+            candidates,
+            &HashSet::new(),
+            Instant::now(),
+            false,
+        )
+    }
+
+    fn select_inner(
+        &self,
+        scope: &str,
+        strategy: Strategy,
+        candidates: &[Candidate],
+        excluded: &HashSet<String>,
+        now: Instant,
+        remember: bool,
     ) -> Result<Selection, SelectionError> {
         if scope.is_empty()
             || scope.len() > 1024
@@ -193,16 +348,49 @@ impl Runtime {
                 .cmp(&b.priority)
                 .then_with(|| a.member_id.cmp(&b.member_id))
         });
+        let preferred = remember
+            .then(|| state.preferred.get(scope))
+            .flatten()
+            .and_then(|p| candidates.iter().find(|c| c.member_id == p.member_id));
         let mut seen = HashSet::new();
-        ordered.retain(|c| seen.insert(&c.target_key));
+        // Deduplicate physical connections without dropping a preferred alias
+        // in favour of an earlier member ID or a newly higher priority label.
+        ordered.retain(|c| {
+            preferred.is_none_or(|p| p.target_key != c.target_key || p.member_id == c.member_id)
+                && seen.insert(&c.target_key)
+        });
         if ordered.is_empty() {
             return Err(SelectionError::NoCandidates);
+        }
+        // Busy or rate-limited is not a reason to rotate a healthy preference.
+        if let Some(candidate) = preferred.filter(|c| !excluded.contains(&c.target_key)) {
+            if let Some(target) = state.targets.get(&candidate.target_key) {
+                if target.probe_generation.is_some() {
+                    return Err(SelectionError::ConcurrencyLimit);
+                }
+                if !target.tripped {
+                    if let Some(until) = target.retry_until.filter(|until| *until > now) {
+                        return Err(SelectionError::Cooling {
+                            retry_after_ms: until.duration_since(now).as_millis() as u64,
+                        });
+                    }
+                    if target.in_flight >= TARGET_CONCURRENT_LIMIT {
+                        return Err(SelectionError::ConcurrencyLimit);
+                    }
+                }
+            }
         }
         let mut earliest: Option<Duration> = None;
         let mut full = false;
         ordered.retain(|candidate| {
             if let Some(target) = state.targets.get(&candidate.target_key) {
-                if let Some(until) = target.cooldown_until.filter(|until| *until > now) {
+                if let Some(until) = target
+                    .cooldown_until
+                    .into_iter()
+                    .chain(target.retry_until)
+                    .filter(|until| *until > now)
+                    .max()
+                {
                     let remaining = until.duration_since(now);
                     earliest = Some(earliest.map_or(remaining, |old| old.min(remaining)));
                     return false;
@@ -211,7 +399,7 @@ impl Runtime {
                     full = true;
                     return false;
                 }
-                if target.failures > 0 && target.probe_in_flight {
+                if target.tripped && target.probe_generation.is_some() {
                     full = true;
                     return false;
                 }
@@ -229,7 +417,18 @@ impl Runtime {
                 SelectionError::NoCandidates
             });
         }
-        let priority = ordered[0].priority;
+        let stable = preferred.filter(|c| {
+            ordered.iter().any(|o| o.target_key == c.target_key)
+                && state.targets.get(&c.target_key).is_none_or(|t| !t.tripped)
+        });
+        // Once switched, do not reclaim an old higher-priority channel merely
+        // because its cooldown expired. Priority orders replacement choices.
+        if stable.is_none() && ordered.len() > 1 {
+            if let Some(old) = preferred {
+                ordered.retain(|c| c.target_key != old.target_key);
+            }
+        }
+        let priority = stable.map_or(ordered[0].priority, |c| c.priority);
         ordered.retain(|candidate| candidate.priority == priority);
         // A full bounded state table is an admission failure, not grounds for
         // evicting live cooldowns or silently forgetting a capacity reservation.
@@ -241,32 +440,71 @@ impl Runtime {
             return Err(SelectionError::StateCapacity);
         }
         let rotation_key = (scope.to_owned(), priority);
-        if !state.rotations.contains_key(&rotation_key) && state.rotations.len() >= MAX_ROTATIONS {
+        if remember
+            && stable.is_none()
+            && !state.rotations.contains_key(&rotation_key)
+            && state.rotations.len() >= MAX_ROTATIONS
+        {
             return Err(SelectionError::StateCapacity);
         }
-        let rotation = state.rotations.entry(rotation_key).or_default();
-        rotation.last_used = Some(now);
-        let selected = match strategy {
-            Strategy::RoundRobin => {
-                let index = ordered
-                    .iter()
-                    .position(|c| c.member_id > rotation.last_member)
-                    .unwrap_or(0);
-                ordered[index]
-            }
-            Strategy::WeightedRoundRobin => weighted(rotation, &ordered),
+        if remember
+            && !state.preferred.contains_key(scope)
+            && state.preferred.len() >= MAX_ROTATIONS
+        {
+            return Err(SelectionError::StateCapacity);
         }
-        .clone();
-        rotation.last_member = selected.member_id.clone();
+        let selected = if let Some(stable) = stable {
+            if let Some(rotation) = state.rotations.get_mut(&rotation_key) {
+                rotation.last_used = Some(now);
+            }
+            stable.clone()
+        } else if !remember {
+            ordered[0].clone()
+        } else {
+            let rotation = state.rotations.entry(rotation_key).or_default();
+            rotation.last_used = Some(now);
+            let selected = match strategy {
+                Strategy::RoundRobin => {
+                    let index = ordered
+                        .iter()
+                        .position(|c| c.member_id > rotation.last_member)
+                        .unwrap_or(0);
+                    ordered[index]
+                }
+                Strategy::WeightedRoundRobin => weighted(rotation, &ordered),
+            }
+            .clone();
+            rotation.last_member = selected.member_id.clone();
+            selected
+        };
+        // A capability-filtered operation may temporarily use another member,
+        // but must not replace a preferred member absent from this candidate set.
+        if remember && (preferred.is_some() || !state.preferred.contains_key(scope)) {
+            state.preferred.insert(
+                scope.into(),
+                Preferred {
+                    member_id: selected.member_id.clone(),
+                    target_key: selected.target_key.clone(),
+                    last_used: now,
+                },
+            );
+        } else if let Some(preferred) = state.preferred.get_mut(scope) {
+            preferred.last_used = now;
+        }
         let target = state
             .targets
             .entry(selected.target_key.clone())
             .or_insert_with(|| TargetState::new(now));
-        let probe = target.failures > 0;
+        let probe_generation = if target.tripped {
+            // Each recovery reservation has a unique generation. A cancelled
+            // or completed older lease cannot acknowledge/release a new probe.
+            target.failure_generation = target.failure_generation.wrapping_add(1);
+            target.probe_generation = Some(target.failure_generation);
+            target.probe_generation
+        } else {
+            None
+        };
         let failure_generation = target.failure_generation;
-        if probe {
-            target.probe_in_flight = true;
-        }
         target.in_flight += 1;
         target.last_used = now;
         state.in_flight += 1;
@@ -274,8 +512,14 @@ impl Runtime {
             lease: Lease {
                 state: self.state.clone(),
                 target_key: selected.target_key.clone(),
-                probe,
-                failure_generation,
+                health: Health {
+                    state: self.state.clone(),
+                    target_key: selected.target_key.clone(),
+                    failure_generation,
+                    probe_generation,
+                    threshold: 3,
+                    outcome: Arc::new(AtomicU8::new(0)),
+                },
             },
             candidate: selected,
         })
@@ -284,11 +528,13 @@ impl Runtime {
     /// Reserve a previously bound member without advancing the rotation. The
     /// caller must validate binding scope, capabilities and connection identity.
     pub fn reserve(&self, candidate: &Candidate) -> Result<Lease, SelectionError> {
-        self.select(
+        self.select_inner(
             "__bound_reservation",
             Strategy::RoundRobin,
             std::slice::from_ref(candidate),
             &HashSet::new(),
+            Instant::now(),
+            false,
         )
         .map(|selection| selection.lease)
     }
@@ -320,38 +566,7 @@ impl Runtime {
             target.cooldown_until = Some(until);
         }
         target.failures = target.failures.max(1);
-        target.failure_generation = target.failure_generation.wrapping_add(1);
-        target.last_used = now;
-        Ok(())
-    }
-
-    pub fn record_failure(
-        &self,
-        key: &str,
-        retry_after: Option<Duration>,
-    ) -> Result<(), SelectionError> {
-        let now = Instant::now();
-        if key.is_empty() || key.len() > 256 {
-            return Err(SelectionError::InvalidCandidates);
-        }
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        cleanup(&mut state, now);
-        if !state.targets.contains_key(key) && state.targets.len() >= MAX_RUNTIME_TARGETS {
-            return Err(SelectionError::StateCapacity);
-        }
-        let target = state
-            .targets
-            .entry(key.to_owned())
-            .or_insert_with(|| TargetState::new(now));
-        let duration = retry_after
-            .filter(|duration| !duration.is_zero())
-            .unwrap_or_else(|| Duration::from_secs((5u64 << target.failures.min(6)).min(300)))
-            .min(MAX_COOLDOWN);
-        let until = now + duration;
-        if target.cooldown_until.is_none_or(|old| old < until) {
-            target.cooldown_until = Some(until);
-        }
-        target.failures = target.failures.saturating_add(1);
+        target.tripped = true;
         target.failure_generation = target.failure_generation.wrapping_add(1);
         target.last_used = now;
         Ok(())
@@ -360,27 +575,37 @@ impl Runtime {
     /// Prune deleted targets and their historical cooldown state. Live leases
     /// always retain their counters until Drop, even after a configuration edit.
     pub fn retain_targets(&self, targets: &HashSet<String>) {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state
             .targets
             .retain(|key, state| state.in_flight > 0 || targets.contains(key));
+        state
+            .preferred
+            .retain(|_, p| targets.contains(&p.target_key));
     }
 
     pub fn forget_scope(&self, scope: &str) {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .rotations
-            .retain(|(key, _), _| key != scope);
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.rotations.retain(|(key, _), _| key != scope);
+        state.preferred.remove(scope);
     }
 
     pub fn retain_scopes(&self, scopes: &HashSet<String>) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.rotations.retain(|(key, _), _| scopes.contains(key));
+        state.preferred.retain(|key, _| scopes.contains(key));
+    }
+
+    pub fn retain_members(&self, members: &HashMap<String, HashSet<String>>) {
         self.state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .rotations
-            .retain(|(key, _), _| key == "__bound_reservation" || scopes.contains(key));
+            .preferred
+            .retain(|scope, p| {
+                members
+                    .get(scope)
+                    .is_some_and(|ids| ids.contains(&p.member_id))
+            });
     }
 }
 
@@ -395,6 +620,9 @@ fn cleanup(state: &mut State, now: Instant) {
             .last_used
             .is_some_and(|used| now.saturating_duration_since(used) < IDLE_TTL)
     });
+    state
+        .preferred
+        .retain(|_, p| now.saturating_duration_since(p.last_used) < IDLE_TTL);
 }
 
 fn weighted<'a>(rotation: &mut Rotation, candidates: &[&'a Candidate]) -> &'a Candidate {
@@ -457,7 +685,7 @@ mod tests {
     }
 
     #[test]
-    fn rotation_survives_filter_and_priority_recovery() {
+    fn preferred_channel_survives_old_priority_recovery() {
         let runtime = Runtime::default();
         let all = vec![
             candidate("a", 0, 1),
@@ -496,11 +724,11 @@ mod tests {
                 now + Duration::from_secs(11),
             )
             .unwrap();
-        assert_eq!(next.candidate.member_id, "a");
+        assert_eq!(next.candidate.member_id, "c");
     }
 
     #[test]
-    fn weighted_ratio_and_transient_exclusions_preserve_credits() {
+    fn weighted_selection_stays_on_the_hit_channel_and_switches_without_reclaiming() {
         let runtime = Runtime::default();
         let all = vec![candidate("a", 0, 3), candidate("b", 0, 1)];
         let mut count = [0, 0];
@@ -510,7 +738,11 @@ mod tests {
                 .unwrap();
             count[usize::from(selection.candidate.member_id == "b")] += 1;
         }
-        assert_eq!(count, [30, 10]);
+        assert_eq!(
+            count,
+            [40, 0],
+            "weights choose a channel, not a channel per request"
+        );
         for _ in 0..10 {
             let selection = runtime
                 .select(
@@ -525,6 +757,15 @@ mod tests {
         let state = runtime.state.lock().unwrap();
         let rotation = &state.rotations[&("model".into(), 0)];
         assert!(rotation.credits.contains_key("a"));
+        drop(state);
+        assert_eq!(
+            runtime
+                .select("model", Strategy::WeightedRoundRobin, &all, &HashSet::new())
+                .unwrap()
+                .candidate
+                .member_id,
+            "b"
+        );
     }
 
     #[test]
@@ -543,8 +784,8 @@ mod tests {
             .select(
                 "model",
                 Strategy::WeightedRoundRobin,
-                &all,
-                &HashSet::from(["physical-a".into()]),
+                &all[1..],
+                &HashSet::new(),
             )
             .unwrap();
         assert_eq!(second.candidate.member_id, "b");
@@ -622,7 +863,7 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_selection_keeps_round_robin_balanced() {
+    fn concurrent_selection_keeps_the_same_channel() {
         let runtime = Runtime::default();
         let candidates = Arc::new(vec![
             candidate("a", 0, 1),
@@ -653,8 +894,8 @@ mod tests {
                 *counts.entry(id).or_insert(0) += 1;
             }
         }
-        assert_eq!(counts.len(), 4);
-        assert!(counts.values().all(|count| *count == 200));
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts["a"], 800);
         assert_eq!(runtime.stats().in_flight, 0);
     }
 
@@ -706,16 +947,320 @@ mod tests {
         let runtime = Runtime::default();
         let candidate = candidate("a", 0, 1);
         let old = runtime.reserve(&candidate).unwrap();
-        runtime
-            .record_failure(&candidate.target_key, Some(Duration::from_secs(30)))
-            .unwrap();
+        let newer = runtime.reserve(&candidate).unwrap();
+        assert!(!newer.fail(Some(Duration::from_secs(30))));
         old.succeed();
         assert!(matches!(
             runtime.reserve(&candidate),
             Err(SelectionError::Cooling { .. })
         ));
         drop(old);
+        drop(newer);
         assert_eq!(runtime.stats().in_flight, 0);
+    }
+
+    #[test]
+    fn consecutive_failures_switch_only_at_threshold_and_success_resets() {
+        let runtime = Runtime::default();
+        let all = [candidate("a", 0, 1), candidate("b", 0, 1)];
+        let select = || {
+            runtime
+                .select("model", Strategy::RoundRobin, &all, &HashSet::new())
+                .unwrap()
+        };
+        for _ in 0..2 {
+            let selection = select();
+            assert_eq!(selection.candidate.member_id, "a");
+            assert!(!selection.lease.fail(None));
+            assert!(!selection.lease.fail(None), "an attempt cannot count twice");
+        }
+        let success = select();
+        success.lease.succeed();
+        success.lease.succeed();
+        drop(success);
+        for index in 1..=3 {
+            let selection = select();
+            assert_eq!(selection.candidate.member_id, "a");
+            assert_eq!(selection.lease.fail(None), index == 3);
+        }
+        for _ in 0..8 {
+            let selection = select();
+            assert_eq!(selection.candidate.member_id, "b");
+            selection.lease.succeed();
+        }
+        assert_eq!(
+            runtime.state.lock().unwrap().targets["physical-a"].failures,
+            3
+        );
+        assert_eq!(runtime.stats().in_flight, 0);
+    }
+
+    #[test]
+    fn busy_preferred_does_not_rotate_and_auxiliary_operations_do_not_touch_health() {
+        let runtime = Runtime::default();
+        let all = [candidate("a", 0, 1), candidate("b", 0, 1)];
+        let mut held = Vec::new();
+        for _ in 0..TARGET_CONCURRENT_LIMIT {
+            held.push(
+                runtime
+                    .select("model", Strategy::RoundRobin, &all, &HashSet::new())
+                    .unwrap(),
+            );
+        }
+        assert!(matches!(
+            runtime.select("model", Strategy::RoundRobin, &all, &HashSet::new()),
+            Err(SelectionError::ConcurrencyLimit)
+        ));
+        drop(held);
+        let failed = runtime
+            .select("model", Strategy::RoundRobin, &all, &HashSet::new())
+            .unwrap();
+        failed.lease.fail(None);
+        drop(failed);
+        let mut counting = runtime.select_auxiliary(&all[..1]).unwrap();
+        counting.lease.inference(3, false);
+        counting.lease.succeed();
+        drop(counting);
+        let mut auxiliary = runtime.select_auxiliary(&all[1..]).unwrap();
+        auxiliary.lease.inference(3, false);
+        assert!(!auxiliary.lease.fail(None));
+        auxiliary.lease.succeed();
+        drop(auxiliary);
+        let selection = runtime
+            .select("model", Strategy::RoundRobin, &all, &HashSet::new())
+            .unwrap();
+        assert_eq!(selection.candidate.member_id, "a");
+        drop(selection); // cancellation must not count
+        let state = runtime.state.lock().unwrap();
+        assert_eq!(state.targets["physical-a"].failures, 1);
+        assert_eq!(state.targets["physical-b"].failures, 0);
+    }
+
+    #[test]
+    fn retry_after_pauses_preferred_without_counting_local_rejections() {
+        let runtime = Runtime::default();
+        let all = [candidate("a", 0, 1), candidate("b", 0, 1)];
+        let selected = runtime
+            .select("model", Strategy::RoundRobin, &all, &HashSet::new())
+            .unwrap();
+        assert!(!selected.lease.fail(Some(Duration::from_secs(30))));
+        drop(selected);
+        for _ in 0..8 {
+            assert!(matches!(
+                runtime.select("model", Strategy::RoundRobin, &all, &HashSet::new()),
+                Err(SelectionError::Cooling { .. })
+            ));
+        }
+        let now = Instant::now() + Duration::from_secs(31);
+        let selected = runtime
+            .select_at("model", Strategy::RoundRobin, &all, &HashSet::new(), now)
+            .unwrap();
+        assert_eq!(selected.candidate.member_id, "a");
+        assert_eq!(
+            runtime.state.lock().unwrap().targets["physical-a"].failures,
+            1
+        );
+    }
+
+    #[test]
+    fn effective_protocol_changes_do_not_rotate_a_member_or_create_a_new_preference() {
+        let runtime = Runtime::default();
+        let all = [candidate("a", 0, 1), candidate("b", 0, 1)];
+        drop(
+            runtime
+                .select("model", Strategy::RoundRobin, &all, &HashSet::new())
+                .unwrap(),
+        );
+        let mut compatibility = all.clone();
+        compatibility[0].target_key = "physical-a-chat-search".into();
+        for _ in 0..4 {
+            assert_eq!(
+                runtime
+                    .select(
+                        "model",
+                        Strategy::RoundRobin,
+                        &compatibility,
+                        &HashSet::new()
+                    )
+                    .unwrap()
+                    .candidate
+                    .member_id,
+                "a"
+            );
+            assert_eq!(
+                runtime
+                    .select("model", Strategy::RoundRobin, &all, &HashSet::new())
+                    .unwrap()
+                    .candidate
+                    .member_id,
+                "a"
+            );
+        }
+        assert_eq!(runtime.state.lock().unwrap().preferred.len(), 1);
+    }
+
+    #[test]
+    fn lower_priority_hit_is_kept_until_failure_then_a_recovered_higher_group_is_selected() {
+        for strategy in [Strategy::RoundRobin, Strategy::WeightedRoundRobin] {
+            let runtime = Runtime::default();
+            let all = [
+                candidate("high", 0, 1),
+                candidate("low", 1, 1),
+                candidate("lower", 2, 1),
+            ];
+            let now = Instant::now();
+            for index in 1..=3 {
+                let selected = runtime
+                    .select_at("model", strategy, &all, &HashSet::new(), now)
+                    .unwrap();
+                assert_eq!(selected.candidate.member_id, "high");
+                assert_eq!(selected.lease.fail(None), index == 3);
+            }
+            let after = now + Duration::from_secs(1);
+            let low = runtime
+                .select_at("model", strategy, &all, &HashSet::new(), after)
+                .unwrap();
+            assert_eq!(low.candidate.member_id, "low");
+            low.lease.succeed();
+            drop(low);
+            let recovered = now + Duration::from_secs(10);
+            for _ in 0..10 {
+                let selected = runtime
+                    .select_at("model", strategy, &all, &HashSet::new(), recovered)
+                    .unwrap();
+                assert_eq!(
+                    selected.candidate.member_id, "low",
+                    "recovery cannot preempt the healthy hit"
+                );
+                selected.lease.succeed();
+            }
+            for index in 1..=3 {
+                let selected = runtime
+                    .select_at("model", strategy, &all, &HashSet::new(), recovered)
+                    .unwrap();
+                assert_eq!(selected.candidate.member_id, "low");
+                assert_eq!(selected.lease.fail(None), index == 3);
+            }
+            let high = runtime
+                .select_at("model", strategy, &all, &HashSet::new(), recovered)
+                .unwrap();
+            assert_eq!(
+                high.candidate.member_id, "high",
+                "replacement starts again at the highest available group"
+            );
+            assert!(
+                matches!(
+                    runtime.select_at("model", strategy, &all, &HashSet::new(), recovered),
+                    Err(SelectionError::ConcurrencyLimit)
+                ),
+                "a pending recovery probe must not rotate the preference"
+            );
+            high.lease.succeed();
+            drop(high);
+            assert_eq!(
+                runtime
+                    .select_at("model", strategy, &all, &HashSet::new(), recovered)
+                    .unwrap()
+                    .candidate
+                    .member_id,
+                "high"
+            );
+        }
+    }
+
+    #[test]
+    fn failed_recovery_probe_allows_replacement_before_its_response_is_dropped() {
+        for strategy in [Strategy::RoundRobin, Strategy::WeightedRoundRobin] {
+            let runtime = Runtime::default();
+            let all = [candidate("high", 0, 1), candidate("low", 1, 1)];
+            for _ in 0..3 {
+                runtime
+                    .select("model", strategy, &all, &HashSet::new())
+                    .unwrap()
+                    .lease
+                    .fail(None);
+            }
+            let recovered = Instant::now() + Duration::from_secs(10);
+            let failed_probe = runtime
+                .select_at("model", strategy, &all[..1], &HashSet::new(), recovered)
+                .unwrap();
+            assert!(failed_probe.lease.fail(None));
+            let replacement = runtime
+                .select_at("model", strategy, &all, &HashSet::new(), recovered)
+                .expect("an already failed probe cannot block a usable alternative");
+            assert_eq!(replacement.candidate.member_id, "low");
+            replacement.lease.succeed();
+            drop(replacement);
+
+            let later = Instant::now() + Duration::from_secs(20);
+            let next_probe = runtime
+                .select_at("other", strategy, &all[..1], &HashSet::new(), later)
+                .unwrap();
+            drop(failed_probe);
+            assert!(
+                matches!(
+                    runtime.select_at("other", strategy, &all[..1], &HashSet::new(), later),
+                    Err(SelectionError::ConcurrencyLimit)
+                ),
+                "dropping an older probe cannot release the newer probe's gate"
+            );
+            next_probe.lease.succeed();
+            drop(next_probe);
+            assert_eq!(runtime.stats().in_flight, 0);
+        }
+    }
+
+    #[test]
+    fn cancelling_a_probe_cannot_let_its_late_outcome_release_a_new_probe() {
+        let runtime = Runtime::default();
+        let all = [candidate("a", 0, 1), candidate("b", 1, 1)];
+        runtime
+            .cooldown(&all[0].target_key, Duration::ZERO)
+            .unwrap();
+        let old = runtime
+            .select("model", Strategy::RoundRobin, &all[..1], &HashSet::new())
+            .unwrap();
+        let late_health = old.lease.health();
+        drop(old);
+        let current = runtime
+            .select("model", Strategy::RoundRobin, &all[..1], &HashSet::new())
+            .unwrap();
+        late_health.succeed();
+        assert!(matches!(
+            runtime.select("model", Strategy::RoundRobin, &all[..1], &HashSet::new()),
+            Err(SelectionError::ConcurrencyLimit)
+        ));
+        current.lease.succeed();
+    }
+
+    #[test]
+    fn physical_alias_deduplication_keeps_the_preferred_member_and_its_priority() {
+        let runtime = Runtime::default();
+        let a = candidate("a", 0, 1);
+        let mut alias = candidate("alias", 1, 1);
+        alias.target_key = a.target_key.clone();
+        drop(
+            runtime
+                .select(
+                    "model",
+                    Strategy::RoundRobin,
+                    std::slice::from_ref(&alias),
+                    &HashSet::new(),
+                )
+                .unwrap(),
+        );
+        for _ in 0..5 {
+            let selected = runtime
+                .select(
+                    "model",
+                    Strategy::RoundRobin,
+                    &[a.clone(), alias.clone()],
+                    &HashSet::new(),
+                )
+                .unwrap();
+            assert_eq!(selected.candidate.member_id, "alias");
+            selected.lease.succeed();
+        }
     }
 
     #[test]

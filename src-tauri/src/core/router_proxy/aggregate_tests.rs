@@ -146,6 +146,15 @@ fn fixture(upstreams: &[(&Mock, &str, router::ModelProtocol)]) -> router::Store 
 fn persist(paths: &CodexPaths, store: &router::Store) {
     super::routing_safety_tests::persist(paths, store);
 }
+// Protocol differential cases explicitly choose their egress; coverage must
+// not depend on rotating a healthy channel on every inference request.
+fn select_test_member(paths: &CodexPaths, store: &router::Store, member: usize) {
+    let mut selected = store.clone();
+    for (index, candidate) in selected.aggregates[0].members.iter_mut().enumerate() {
+        candidate.enabled = index == member;
+    }
+    persist(paths, &selected);
+}
 struct Stop;
 impl Drop for Stop {
     fn drop(&mut self) {
@@ -301,6 +310,208 @@ fn scripted_response(
         .unwrap()
 }
 
+fn without_retry_after(mut response: Response<ResponseBody>) -> Response<ResponseBody> {
+    response.headers_mut().remove("retry-after");
+    response
+}
+
+#[test]
+fn same_priority_new_requests_and_new_sessions_keep_the_same_channel() {
+    let _guard = global_router_test_lock();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        for affinity in [aggregation::Affinity::Session, aggregation::Affinity::StatelessRotation] {
+            for streaming in [false, true] {
+                let _stop = Stop;
+                let a = mock(router::ModelProtocol::ChatCompletions, 200, streaming).await;
+                let b = mock(router::ModelProtocol::AnthropicMessages, 200, streaming).await;
+                let temp = tempfile::tempdir().unwrap();
+                let paths = CodexPaths::from_home(temp.path().into());
+                let mut store = fixture(&[(&a, "wire-a", router::ModelProtocol::ChatCompletions),
+                    (&b, "wire-b", router::ModelProtocol::AnthropicMessages)]);
+                store.aggregates[0].affinity = affinity;
+                let (client, base) = start(&paths, &store).await;
+                for index in 0..12 {
+                    let mut request = client.post(format!("{base}/aggregate/v1/messages")).bearer_auth("local-fixture");
+                    if index % 2 == 0 { request = request.header("session-id", format!("fresh-{index}")); }
+                    let response = request.json(&json!({"model":"official-model", "stream":streaming,
+                        "max_tokens":64,"messages":[{"role":"user","content":format!("request {index}")}]}))
+                        .send().await.unwrap();
+                    assert_eq!(response.status(), 200);
+                    response.bytes().await.unwrap();
+                    wait_for_released_lease().await;
+                }
+                assert_eq!(a.count.load(Ordering::SeqCst), 12);
+                assert_eq!(b.count.load(Ordering::SeqCst), 0);
+                assert_aggregate_accounting_counts(&paths, &store, &[12, 0]);
+                let traces: Vec<_> = route_trace::recent().into_iter().filter(|route|
+                    route.attempts.first().is_some_and(|attempt| attempt.aggregate_id.as_deref() == Some(&store.aggregates[0].id))).collect();
+                assert_eq!(traces.len(), 12);
+                assert!(traces.iter().all(|trace| trace.attempts.len() == 1 && trace.attempts[0].provider_id == "p0"));
+            }
+        }
+    });
+}
+
+#[test]
+fn actual_5xx_streak_resets_on_success_ignores_400_and_replaces_a_portable_session_by_priority() {
+    let _guard = global_router_test_lock();
+    let _stop = Stop;
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let sequence = Arc::new(AtomicUsize::new(0));
+        let a = scripted_mock(move |body| {
+            let status = [503, 503, 400, 200, 503, 503, 400, 503][sequence.fetch_add(1, Ordering::SeqCst)];
+            without_retry_after(scripted_response(status, if status == 200 {
+                json!({"id":"resp_reset","object":"response","status":"completed","model":body["model"],"output":[],
+                    "usage":{"input_tokens":4,"output_tokens":2}})
+            } else {
+                json!({"error":{"type":if status == 400 {"invalid_request_error"} else {"server_error"},
+                    "message":"synthetic model result"}})
+            }.to_string(), "application/json"))
+        }).await;
+        let b = mock(router::ModelProtocol::Responses, 200, false).await;
+        let c = mock(router::ModelProtocol::ChatCompletions, 200, false).await;
+        let temp = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(temp.path().into());
+        let mut store = fixture(&[(&a, "wire-a", router::ModelProtocol::Responses),
+            (&b, "wire-b", router::ModelProtocol::Responses), (&c, "wire-c", router::ModelProtocol::ChatCompletions)]);
+        store.aggregates[0].members[1].priority = 2;
+        store.aggregates[0].members[2].priority = 1;
+        let (client, base) = start(&paths, &store).await;
+        let send = || client.post(format!("{base}/aggregate/v1/responses")).bearer_auth("local-fixture")
+            .header("session-id", "same-portable-session").json(&json!({"model":"official-model","input":"hello"})).send();
+        for status in [503, 503, 400, 200, 503, 503, 400, 503] {
+            let response = send().await.unwrap();
+            assert_eq!(response.status(), status);
+            response.bytes().await.unwrap();
+            wait_for_released_lease().await;
+            assert_eq!(b.count.load(Ordering::SeqCst) + c.count.load(Ordering::SeqCst), 0,
+                "5xx/parameter errors must not replay an already-sent request");
+        }
+        for _ in 0..3 {
+            let response = send().await.unwrap();
+            assert_eq!(response.status(), 200);
+            assert_eq!(response.json::<Value>().await.unwrap()["model"], "official-model");
+            wait_for_released_lease().await;
+        }
+        assert_eq!(a.count.load(Ordering::SeqCst), 8);
+        assert_eq!(b.count.load(Ordering::SeqCst), 0);
+        assert_eq!(c.count.load(Ordering::SeqCst), 3, "replacement chooses the smallest available priority");
+        let traces: Vec<_> = route_trace::recent().into_iter().filter(|trace|
+            trace.attempts.first().is_some_and(|a| a.aggregate_id.as_deref() == Some(&store.aggregates[0].id))).collect();
+        assert_eq!(traces.len(), 11);
+        assert!(traces.iter().all(|trace| trace.attempts.len() == 1));
+        let ledger = relay_usage::load(&paths.app_data_dir).unwrap();
+        assert_eq!(ledger.all_time.request_count, 11);
+        assert_eq!(ledger.all_time.successful_count, 4);
+        assert!(ledger.recent.iter().all(|record|
+            traces.iter().any(|trace| trace.id == record.request_id && trace.attempts[0].attempt_id == record.attempt_id
+                && trace.attempts[0].upstream_model == record.model)));
+    });
+}
+
+#[test]
+fn failing_token_counts_do_not_reset_or_increment_inference_failures() {
+    let _guard = global_router_test_lock();
+    let _stop = Stop;
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let a = scripted_request_mock(|request| without_retry_after(scripted_response(
+            if request["path"] == "/v1/messages/count_tokens" {500} else {503},
+            r#"{"type":"error","error":{"type":"api_error","message":"synthetic channel failure"}}"#, "application/json"))).await;
+        let b = mock(router::ModelProtocol::AnthropicMessages, 200, false).await;
+        let temp = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(temp.path().into());
+        let store = fixture(&[(&a, "wire-a", router::ModelProtocol::AnthropicMessages),
+            (&b, "wire-b", router::ModelProtocol::AnthropicMessages)]);
+        let (client, base) = start(&paths, &store).await;
+        for round in 0..3 {
+            for _ in 0..3 {
+                let response = client.post(format!("{base}/aggregate/v1/messages/count_tokens"))
+                    .bearer_auth("local-fixture").json(&json!({"model":"official-model","messages":[]})).send().await.unwrap();
+                assert_eq!(response.status(), 500);
+                response.bytes().await.unwrap();
+                wait_for_released_lease().await;
+            }
+            let response = client.post(format!("{base}/aggregate/v1/messages")).bearer_auth("local-fixture")
+                .json(&json!({"model":"official-model","max_tokens":64,"messages":[{"role":"user","content":format!("failure {round}")}]}))
+                .send().await.unwrap();
+            assert_eq!(response.status(), 503);
+            response.bytes().await.unwrap();
+            wait_for_released_lease().await;
+            assert_eq!(b.count.load(Ordering::SeqCst), 0);
+        }
+        let response = client.post(format!("{base}/aggregate/v1/messages")).bearer_auth("local-fixture")
+            .json(&json!({"model":"official-model","max_tokens":64,"messages":[{"role":"user","content":"after threshold"}]}))
+            .send().await.unwrap();
+        assert_eq!(response.status(), 200);
+        response.bytes().await.unwrap();
+        wait_for_released_lease().await;
+        assert_eq!(a.count.load(Ordering::SeqCst), 12);
+        assert_eq!(b.count.load(Ordering::SeqCst), 1);
+        assert_eq!(relay_usage::load(&paths.app_data_dir).unwrap().all_time.request_count, 4);
+    });
+}
+
+#[test]
+fn streaming_channel_errors_and_eof_switch_only_later_requests_across_all_egresses() {
+    let _guard = global_router_test_lock();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        for protocol in [router::ModelProtocol::Responses, router::ModelProtocol::ChatCompletions, router::ModelProtocol::AnthropicMessages] {
+            for scenario in ["channel", "truncated", "parameter"] {
+                let _stop = Stop;
+                let a = scripted_mock(move |body| {
+                    let opening = match protocol {
+                        router::ModelProtocol::Responses => json!({"type":"response.created","response":{
+                            "id":"resp_fault","model":body["model"],"status":"in_progress","output":[]}}),
+                        router::ModelProtocol::ChatCompletions => json!({"id":"chat_fault","object":"chat.completion.chunk",
+                            "model":body["model"],"choices":[{"index":0,"delta":{"role":"assistant","content":"started"},"finish_reason":null}]}),
+                        router::ModelProtocol::AnthropicMessages => json!({"type":"message_start","message":{
+                            "type":"message","id":"msg_fault","role":"assistant","model":body["model"],"content":[]}}),
+                    };
+                    let terminal = if scenario == "truncated" { String::new() } else {
+                        let error = if protocol == router::ModelProtocol::Responses {
+                            json!({"type":"error","code":if scenario == "parameter" {"invalid_request_error"} else {"server_error"},
+                                "message":"synthetic failure"})
+                        } else {
+                            json!({"type":"error","error":{"type":if scenario == "parameter" {"invalid_request_error"} else {"api_error"},
+                                "message":"synthetic failure"}})
+                        };
+                        format!("event: error\ndata: {error}\n\n")
+                    };
+                    scripted_response(200, format!("data: {opening}\n\n{terminal}"), "text/event-stream")
+                }).await;
+                let b = mock(protocol, 200, true).await;
+                let temp = tempfile::tempdir().unwrap();
+                let paths = CodexPaths::from_home(temp.path().into());
+                let store = fixture(&[(&a, "wire-a", protocol), (&b, "wire-b", protocol)]);
+                let (client, base) = start(&paths, &store).await;
+                for index in 0..4 {
+                    let response = client.post(format!("{base}/aggregate/v1/messages")).bearer_auth("local-fixture")
+                        .json(&json!({"model":"official-model","stream":true,"max_tokens":64,
+                            "messages":[{"role":"user","content":format!("request {index}")}]})).send().await.unwrap();
+                    assert_eq!(response.status(), 200);
+                    let text = response.text().await.unwrap();
+                    if index < 3 || scenario == "parameter" {
+                        assert!(text.contains("error"), "{protocol:?}/{scenario}: {text}");
+                        assert_eq!(b.count.load(Ordering::SeqCst), 0, "a committed stream cannot be replayed");
+                    } else {
+                        assert!(text.contains("message_stop"), "{protocol:?}/{scenario}: {text}");
+                    }
+                    wait_for_released_lease().await;
+                }
+                assert_eq!(a.count.load(Ordering::SeqCst), if scenario == "parameter" {4} else {3},
+                    "parameter rejection must not become a channel fault after conversion");
+                assert_eq!(b.count.load(Ordering::SeqCst), usize::from(scenario != "parameter"));
+                let ledger = relay_usage::load(&paths.app_data_dir).unwrap();
+                assert_eq!(ledger.all_time.request_count, 4);
+                let traces: Vec<_> = route_trace::recent().into_iter().filter(|trace| trace.attempts.first()
+                    .is_some_and(|a| a.aggregate_id.as_deref() == Some(&store.aggregates[0].id))).collect();
+                assert_eq!(traces.len(), 4);
+                assert!(traces.iter().all(|trace| trace.attempts.len() == 1));
+            }
+        }
+    });
+}
+
 async fn wait_for_released_lease() {
     tokio::time::timeout(Duration::from_secs(3), async {
         while aggregation::runtime::shared().stats().in_flight != 0 {
@@ -408,19 +619,26 @@ fn assert_one_m_wire(
 // This is the same payload consumed by the account page, loaded from the
 // persisted ledger after downstream JSON or SSE has been fully delivered.
 fn assert_aggregate_accounting(paths: &CodexPaths, store: &router::Store, per_provider: u64) {
+    assert_aggregate_accounting_counts(paths, store, &vec![per_provider; store.providers.len()]);
+}
+fn assert_aggregate_accounting_counts(paths: &CodexPaths, store: &router::Store, counts: &[u64]) {
     let usage = relay_usage::load(&paths.app_data_dir).unwrap();
-    let count = store.providers.len() as u64 * per_provider;
+    let count: u64 = counts.iter().sum();
     assert_eq!(usage.all_time.request_count, count);
     assert_eq!(usage.all_time.reported_count, count);
     assert_eq!(usage.all_time.successful_count, count);
     assert_eq!(usage.all_time.total_tokens, count * 6);
     assert_eq!(usage.recent.len() as u64, count);
-    assert_eq!(usage.by_provider.len(), store.providers.len());
-    assert_eq!(usage.by_model.len(), store.providers.len());
+    assert_eq!(usage.by_provider.len(), counts.iter().filter(|count| **count > 0).count());
+    assert_eq!(usage.by_model.len(), counts.iter().filter(|count| **count > 0).count());
     let attempts: std::collections::HashSet<_> = usage.recent.iter()
         .map(|record| record.attempt_id.as_str()).collect();
     assert_eq!(attempts.len() as u64, count, "one record per actual inference attempt");
-    for provider in &store.providers {
+    for (provider, per_provider) in store.providers.iter().zip(counts.iter().copied()) {
+        if per_provider == 0 {
+            assert!(!usage.by_provider.iter().any(|row| row.provider_id == provider.id));
+            continue;
+        }
         let by_provider = usage.by_provider.iter().find(|row| row.provider_id == provider.id).unwrap();
         assert_eq!(by_provider.provider_name, provider.name);
         assert_eq!(by_provider.totals.request_count, per_provider);
@@ -436,7 +654,7 @@ fn assert_aggregate_accounting(paths: &CodexPaths, store: &router::Store, per_pr
 }
 
 #[test]
-fn mixed_protocol_rotation_preserves_wire_models_public_projection_and_original_observation() {
+fn mixed_protocol_selection_preserves_wire_models_public_projection_and_original_observation() {
     let _guard = global_router_test_lock();
     let _stop = Stop;
     tokio::runtime::Runtime::new().unwrap().block_on(async {
@@ -453,7 +671,8 @@ fn mixed_protocol_rotation_preserves_wire_models_public_projection_and_original_
             ),
         ]);
         let (client, base) = start(&paths, &store).await;
-        for _ in 0..4 {
+        for index in 0..4 {
+            select_test_member(&paths, &store, index / 2);
             let response = client
                 .post(format!("{base}/aggregate/v1/responses"))
                 .bearer_auth("local-fixture")
@@ -509,7 +728,7 @@ fn mixed_protocol_rotation_preserves_wire_models_public_projection_and_original_
 }
 
 #[test]
-fn aggregate_chat_ingress_rotates_all_egresses_with_json_and_sse() {
+fn aggregate_chat_ingress_covers_all_egresses_with_json_and_sse() {
     let _guard = global_router_test_lock();
     let _stop = Stop;
     tokio::runtime::Runtime::new().unwrap().block_on(async {
@@ -525,7 +744,8 @@ fn aggregate_chat_ingress_rotates_all_egresses_with_json_and_sse() {
                 (&chat, "wire-chat", router::ModelProtocol::ChatCompletions),
             ]);
             let (client, base) = start(&paths, &store).await;
-            for _ in 0..6 {
+            for index in 0..6 {
+                select_test_member(&paths, &store, index / 2);
                 let response = client.post(format!("{base}/aggregate/v1/chat/completions"))
                     .bearer_auth("local-fixture")
                     .json(&json!({"model":"official-model", "stream":streaming,
@@ -1032,11 +1252,16 @@ fn aggregate_count_tokens_selects_only_native_messages_and_does_not_pin_inferenc
 }
 
 #[test]
-fn stateless_429_retries_once_with_actual_member_price_snapshots() {
+fn third_consecutive_429_switches_with_actual_member_price_snapshots() {
     let _guard = global_router_test_lock();
     let _stop = Stop;
     tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let a = mock(router::ModelProtocol::Responses, 429, false).await;
+        let a = scripted_mock(|_| {
+            let mut response = scripted_response(429,
+                r#"{"error":{"message":"synthetic upstream rejection"}}"#, "application/json");
+            response.headers_mut().remove("retry-after");
+            response
+        }).await;
         let b = mock(router::ModelProtocol::ChatCompletions, 200, false).await;
         let temp = tempfile::tempdir().unwrap();
         let paths = CodexPaths::from_home(temp.path().into());
@@ -1054,6 +1279,14 @@ fn stateless_429_retries_once_with_actual_member_price_snapshots() {
             });
         }
         let (client, base) = start(&paths, &store).await;
+        for _ in 0..2 {
+            let failed = client.post(format!("{base}/aggregate/v1/responses")).bearer_auth("local-fixture")
+                .json(&json!({"model":"official-model","input":"hello"})).send().await.unwrap();
+            assert_eq!(failed.status(), 429);
+            failed.bytes().await.unwrap();
+            assert_eq!(b.count.load(Ordering::SeqCst), 0, "a single failure must not use a backup");
+            wait_for_released_lease().await;
+        }
         let response = client
             .post(format!("{base}/aggregate/v1/responses"))
             .bearer_auth("local-fixture")
@@ -1063,11 +1296,11 @@ fn stateless_429_retries_once_with_actual_member_price_snapshots() {
             .unwrap();
         assert_eq!(response.status(), 200);
         response.bytes().await.unwrap();
-        assert_eq!(a.count.load(Ordering::SeqCst), 1);
+        assert_eq!(a.count.load(Ordering::SeqCst), 3);
         assert_eq!(b.count.load(Ordering::SeqCst), 1);
         let route = route_trace::recent()
             .into_iter()
-            .find(|route| {
+            .find(|route| route.attempts.len() == 2 && {
                 route.attempts.first().is_some_and(|attempt| {
                     attempt.aggregate_id.as_deref() == Some(&store.aggregates[0].id)
                 })
@@ -1202,13 +1435,15 @@ fn revocation_between_429_and_retry_vetoes_frozen_credentials_before_dispatch() 
         let write_paths = paths.clone();
         let a = scripted_mock(move |_| {
             let mut current = changed.lock().unwrap().as_ref().unwrap().clone();
-            current.providers[1].api_key = "new-credential-must-not-be-used".into();
+            current.providers[1].api_key = format!("new-credential-{}", uuid::Uuid::new_v4());
             persist(&write_paths, &current);
-            scripted_response(
+            let mut response = scripted_response(
                 429,
                 r#"{"error":{"message":"retry is now revoked"}}"#,
                 "application/json",
-            )
+            );
+            response.headers_mut().remove("retry-after");
+            response
         })
         .await;
         let b = mock(router::ModelProtocol::Responses, 200, false).await;
@@ -1218,6 +1453,13 @@ fn revocation_between_429_and_retry_vetoes_frozen_credentials_before_dispatch() 
         ]);
         *revoked.lock().unwrap() = Some(store.clone());
         let (client, base) = start(&paths, &store).await;
+        for _ in 0..2 {
+            let failed = client.post(format!("{base}/aggregate/v1/responses")).bearer_auth("local-fixture")
+                .json(&json!({"model":"official-model","input":"hello"})).send().await.unwrap();
+            assert_eq!(failed.status(), 429);
+            failed.bytes().await.unwrap();
+            wait_for_released_lease().await;
+        }
         let response = client
             .post(format!("{base}/aggregate/v1/responses"))
             .bearer_auth("local-fixture")
@@ -1231,7 +1473,7 @@ fn revocation_between_429_and_retry_vetoes_frozen_credentials_before_dispatch() 
             .await
             .unwrap()
             .contains("changed before dispatch"));
-        assert_eq!(a.count.load(Ordering::SeqCst), 1);
+        assert_eq!(a.count.load(Ordering::SeqCst), 3);
         assert_eq!(b.count.load(Ordering::SeqCst), 0);
         wait_for_released_lease().await;
     });
@@ -1367,6 +1609,7 @@ fn duplicate_response_id_from_another_member_is_rejected_before_it_is_exposed() 
         let first = request().await.unwrap();
         assert_eq!(first.status(), 200);
         assert_eq!(first.json::<Value>().await.unwrap()["id"], "resp_collision");
+        select_test_member(&paths, &store, 1);
         let second = request().await.unwrap();
         assert_eq!(second.status(), 409);
         let rejected = second.text().await.unwrap();
@@ -1581,14 +1824,15 @@ fn desktop_aggregate_projects_public_identity_and_keeps_one_m_wire_contract_acro
 }
 
 #[test]
-fn desktop_headerless_signed_history_stays_on_its_member_and_new_conversations_rotate() {
+fn desktop_headerless_signed_history_and_new_conversations_stay_on_the_hit_member() {
     let _guard = global_router_test_lock();
     let _stop = Stop;
     tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let a = scripted_mock(|_| scripted_response(200, json!({
+        let sequence = Arc::new(AtomicUsize::new(0));
+        let a = scripted_mock(move |_| scripted_response(200, json!({
             "id":"msg_a","type":"message","model":"wire-a","role":"assistant",
             "content":[{"type":"thinking","thinking":"private a","signature":"signature-a"},
-                {"type":"text","text":"hello from a"}],
+                {"type":"text","text":format!("hello from a {}", sequence.fetch_add(1, Ordering::SeqCst))}],
             "stop_reason":"end_turn","usage":{"input_tokens":4,"output_tokens":2}
         }).to_string(), "application/json")).await;
         let b = scripted_mock(|_| scripted_response(200, json!({
@@ -1608,9 +1852,9 @@ fn desktop_headerless_signed_history_stays_on_its_member_and_new_conversations_r
         let first = json!({"role":"user","content":"hello"});
         let response_a: Value = send(json!([first])).await.unwrap().json().await.unwrap();
         let response_b: Value = send(json!([first])).await.unwrap().json().await.unwrap();
-        assert_eq!(response_a["content"][1]["text"], "hello from a");
-        assert_eq!(response_b["content"][1]["text"], "hello from b",
-            "identical first prompts in distinct conversations must still rotate");
+        assert_eq!(response_a["content"][1]["text"], "hello from a 0");
+        assert_eq!(response_b["content"][1]["text"], "hello from a 1",
+            "new conversations must reuse the preferred channel too");
         let assistant_a = json!({"role":"assistant","content":response_a["content"]});
         let assistant_b = json!({"role":"assistant","content":response_b["content"]});
         for assistant in [&assistant_a, &assistant_b] {
@@ -1619,11 +1863,11 @@ fn desktop_headerless_signed_history_stays_on_its_member_and_new_conversations_r
             let status = response.status();
             let answer: Value = response.json().await.unwrap();
             assert_eq!(status, 200, "{answer}");
-            assert_eq!(answer["content"], assistant["content"]);
+            assert_eq!(answer["content"][0]["signature"], "signature-a");
         }
-        assert_eq!(a.count.load(Ordering::SeqCst), 2);
-        assert_eq!(b.count.load(Ordering::SeqCst), 2);
-        let request = a.requests.lock().unwrap()[1]["body"].clone();
+        assert_eq!(a.count.load(Ordering::SeqCst), 4);
+        assert_eq!(b.count.load(Ordering::SeqCst), 0);
+        let request = a.requests.lock().unwrap()[2]["body"].clone();
         assert_eq!(request["messages"][1]["content"], response_a["content"],
             "same-wire signed thinking must remain intact");
         let foreign_client = client.post(format!("{base}/clients/claude-code/aggregate/v1/messages"))
@@ -1635,10 +1879,10 @@ fn desktop_headerless_signed_history_stays_on_its_member_and_new_conversations_r
         persist(&paths, &store);
         let rejected = send(json!([first, assistant_a, {"role":"user","content":"changed credentials"}])).await.unwrap();
         assert_eq!(rejected.status(), 409);
-        assert_eq!(a.count.load(Ordering::SeqCst), 2);
-        assert_eq!(b.count.load(Ordering::SeqCst), 2,
+        assert_eq!(a.count.load(Ordering::SeqCst), 4);
+        assert_eq!(b.count.load(Ordering::SeqCst), 0,
             "an unavailable owner must never be replaced for signed history");
-        assert_aggregate_accounting(&paths, &store, 2);
+        assert_aggregate_accounting_counts(&paths, &store, &[4, 0]);
     });
 }
 
@@ -1817,8 +2061,8 @@ fn body_sessions_keep_same_prompts_separate_and_unknown_headerless_history_is_re
                 {"role":"user","content":"again"}])).await.unwrap();
             assert_eq!(response.status(), 200, "a pinned Messages adapter may reconstruct its original egress history");
         }
-        assert_eq!(a.count.load(Ordering::SeqCst), 2);
-        assert_eq!(b.count.load(Ordering::SeqCst), 2);
+        assert_eq!(a.count.load(Ordering::SeqCst), 4);
+        assert_eq!(b.count.load(Ordering::SeqCst), 0);
         let unknown = send(None, json!([{"role":"user","content":"unseen"},
             {"role":"assistant","content":[{"type":"tool_use","id":"foreign-call","name":"lookup","input":{}}]},
             {"role":"user","content":[{"type":"tool_result","tool_use_id":"foreign-call","content":"result"}]}])).await.unwrap();
@@ -1852,8 +2096,8 @@ fn identical_headerless_delivered_histories_become_ambiguous_and_never_dispatch(
                 {"role":"assistant","content":"hello"},{"role":"user","content":"continue"}]})).send().await.unwrap();
         assert_eq!(ambiguous.status(), 409);
         assert!(ambiguous.text().await.unwrap().contains("ambiguous"));
-        assert_eq!(a.count.load(Ordering::SeqCst), 1);
-        assert_eq!(b.count.load(Ordering::SeqCst), 1);
+        assert_eq!(a.count.load(Ordering::SeqCst), 2);
+        assert_eq!(b.count.load(Ordering::SeqCst), 0);
         let traces = route_trace::recent();
         assert!(traces.iter().find(|trace| !known.contains(&trace.id)).unwrap().attempts.is_empty(),
             "the rejection must occur before an inference/accounting attempt");

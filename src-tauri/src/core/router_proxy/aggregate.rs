@@ -387,14 +387,19 @@ pub(super) async fn execute(
     } else {
         None
     };
+    // A session ID alone is not opaque state. Fresh, portable requests can
+    // replace a failed binding; signed/tool/resource continuations keep theirs.
+    let switching = !count_tokens && requirements.portable_fresh && pinned.is_some_and(|plan|
+        agg::runtime::shared().should_switch(&plan.effective_target_key));
+    let active_pin = pinned.filter(|_| !switching);
     let mut attempts = Attempts::new(
         aggregate.retry_policy.max_attempts,
         &requirements,
-        bound.is_some(),
+        bound.is_some() && !requirements.portable_fresh,
     );
     let candidates: Vec<_> = plans.iter().map(PlannedMember::candidate).collect();
     let mut excluded = HashSet::new();
-    let mut retry_reason = None;
+    let mut retry_reason = switching.then(|| "aggregate_failure_threshold".into());
     let mut reserved = None;
     let identity = request_diagnostics::RequestIdentity {
         client_source: Some(client.into()),
@@ -424,17 +429,19 @@ pub(super) async fn execute(
         })?;
         let selection = if let Some(selected) = reserved.take() {
             Ok(selected)
-        } else if let Some(plan) = pinned {
+        } else if let Some(plan) = active_pin {
             agg::runtime::shared()
                 .reserve(&plan.candidate())
                 .map(|lease| agg::runtime::Selection {
                     candidate: plan.candidate(),
                     lease,
                 })
+        } else if count_tokens {
+            agg::runtime::shared().select_auxiliary(&candidates)
         } else {
             agg::runtime::shared().select(&aggregate.id, aggregate.strategy, &candidates, &excluded)
         };
-        let selected = match selection {
+        let mut selected = match selection {
             Ok(selected) => selected,
             Err(agg::runtime::SelectionError::Cooling { retry_after_ms }) => {
                 trace.reject(429, "aggregate_members_cooling");
@@ -444,6 +451,7 @@ pub(super) async fn execute(
             }
             Err(error) => return Err(selection_error(error)),
         };
+        selected.lease.inference(aggregate.retry_policy.failure_threshold, create || compact);
         let plan = plans
             .iter()
             .find(|plan| plan.resolved.member.id == selected.candidate.member_id)
@@ -486,12 +494,12 @@ pub(super) async fn execute(
             client_scope,
             identity: attempt_identity,
             trace: trace.clone(),
-            selection_reason: if bound.is_some() {
-                "aggregate_session_binding".into()
-            } else if retry_reason.is_some() {
+            selection_reason: if retry_reason.is_some() {
                 "aggregate_retry".into()
+            } else if bound.is_some() {
+                "aggregate_session_binding".into()
             } else {
-                "aggregate_rotation".into()
+                "aggregate_preferred".into()
             },
             retry_reason: retry_reason.clone(),
             attempt_id: uuid::Uuid::new_v4().to_string(),
@@ -529,7 +537,11 @@ pub(super) async fn execute(
                 reservation.commit(owner.clone());
             }
             drop(decision);
-            let response = prepared.search(trace.clone()).await?;
+            let health = selected.lease.health();
+            // Each internal model round reports separately. The final visible
+            // search output must not clear a fault from a later model round.
+            health.neutral();
+            let response = prepared.search(trace.clone(), Some(health)).await?;
             return aggregate_output::project(
                 response,
                 aggregate_output::Projection {
@@ -572,10 +584,8 @@ pub(super) async fn execute(
                     },
                     started.elapsed().as_millis() as u64,
                 );
-                if connect {
-                    let _ = agg::runtime::shared().record_failure(&plan.effective_target_key, None);
-                }
-                if connect && attempts.may_retry(Failure::ConnectBeforeSend) {
+                let switch = selected.lease.fail(None);
+                if switch && connect && attempts.may_retry(Failure::ConnectBeforeSend) {
                     excluded.insert(plan.effective_target_key.clone());
                     retry_reason = Some("aggregate_connect_error".into());
                     if let Ok(next) = agg::runtime::shared().select(
@@ -594,10 +604,14 @@ pub(super) async fn execute(
             }
         };
         trace.status(upstream.status().as_u16());
+        let switch = if agg::health::http_failure(upstream.status().as_u16()) {
+            selected.lease.fail(retry_after(upstream.headers()))
+        } else {
+            if !upstream.status().is_success() { selected.lease.health().neutral(); }
+            false
+        };
         if upstream.status() == StatusCode::TOO_MANY_REQUESTS {
-            let _ = agg::runtime::shared()
-                .record_failure(&plan.effective_target_key, retry_after(upstream.headers()));
-            if attempts.may_retry(Failure::RateLimited) {
+            if switch && attempts.may_retry(Failure::RateLimited) {
                 excluded.insert(plan.effective_target_key.clone());
                 if let Ok(next) = agg::runtime::shared().select(
                     &aggregate.id,
@@ -627,7 +641,10 @@ pub(super) async fn execute(
             }
         }
         drop(decision);
-        let response = prepared.response(upstream, trace.clone()).await?;
+        let response = prepared.response(upstream, trace.clone(), Some(selected.lease.health())).await.map_err(|error| {
+            if error.1 == "cannot read provider response" { selected.lease.fail(None); }
+            error
+        })?;
         return aggregate_output::project(
             response,
             aggregate_output::Projection {
@@ -679,7 +696,7 @@ fn selection_error(error: agg::runtime::SelectionError) -> (StatusCode, &'static
         ),
     }
 }
-fn retry_after(headers: &HeaderMap) -> Option<Duration> {
+pub(super) fn retry_after(headers: &HeaderMap) -> Option<Duration> {
     let value = headers.get("retry-after")?.to_str().ok()?;
     if let Ok(seconds) = value.parse::<u64>() {
         return Some(Duration::from_secs(seconds.min(3600)));

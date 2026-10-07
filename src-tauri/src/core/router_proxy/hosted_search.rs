@@ -337,6 +337,7 @@ pub(super) struct Execution {
     pub history: Option<protocol::message_history::Context>,
     pub adapter: tool_schema::Adapter,
     pub credential: request_diagnostics::CredentialSnapshot,
+    pub health: Option<super::super::aggregation::runtime::Health>,
 }
 
 pub(super) async fn relay(execution: Execution) -> ForwardResult {
@@ -490,6 +491,7 @@ impl Execution {
         let mut used_ids = HashSet::new();
         let mut totals = json!({"input_tokens":0,"output_tokens":0,"total_tokens":0,"input_tokens_details":{"cached_tokens":0}});
         for round in 0..MAX_ROUNDS {
+            let health = self.health.as_ref().map(|health| health.next_attempt());
             let mut attempt = self.attempt.clone();
             if round > 0 {
                 attempt.attempt_id = uuid::Uuid::new_v4().to_string();
@@ -530,11 +532,17 @@ impl Execution {
             {
                 Ok(response) => response,
                 Err(_) => {
+                    if let Some(health) = &health { health.fail(None); }
                     self.trace.fail("connect", "transport_error");
                     return Err((StatusCode::BAD_GATEWAY, "cannot reach Chat model provider"));
                 }
             };
             let status = response.status();
+            if let Some(health) = &health {
+                if super::super::aggregation::health::http_failure(status.as_u16()) {
+                    health.fail(super::aggregate::retry_after(response.headers()));
+                } else if !status.is_success() { health.neutral(); }
+            }
             self.trace.status(status.as_u16());
             usage.observer = usage
                 .pending
@@ -549,6 +557,9 @@ impl Execution {
             let bytes = match limited(response).await {
                 Ok(bytes) => bytes,
                 Err(error) => {
+                    if error.1 == "cannot read WebSearch response" {
+                        if let Some(health) = &health { health.fail(None); }
+                    }
                     self.trace
                         .observed(&attempt.attempt_id, served.finish(false));
                     self.trace.fail("body", "stream_transport_error");
@@ -572,6 +583,11 @@ impl Execution {
             }
             let mut response: Value =
                 serde_json::from_slice(&bytes).map_err(|_| INVALID_RESPONSE)?;
+            if super::super::aggregation::health::channel_error(&response) {
+                if let Some(health) = &health { health.fail(None); }
+            } else if !response["error"].is_null() {
+                if let Some(health) = &health { health.neutral(); }
+            }
             let mut message = response
                 .pointer("/choices/0/message")
                 .filter(|message| message.is_object())
@@ -599,6 +615,7 @@ impl Execution {
                 return Err(INVALID_RESPONSE);
             }
             usage.complete = true;
+            if let Some(health) = &health { health.succeed(); }
             drop(usage);
             body["messages"]
                 .as_array_mut()

@@ -67,6 +67,9 @@ pub fn validate(store: &router::Store) -> Result<(), String> {
         if !(1..=2).contains(&model.retry_policy.max_attempts) {
             return Err("aggregation.errors.retryLimit".into());
         }
+        if !(2..=10).contains(&model.retry_policy.failure_threshold) {
+            return Err("aggregation.errors.failureThreshold".into());
+        }
         model
             .compression
             .validate()

@@ -4,12 +4,12 @@
     "add": "Create aggregate",
     "publicId": "Public model ID",
     "displayName": "Display name",
-    "strategy": "Rotation",
-    "roundRobin": "Round robin",
-    "weightedRoundRobin": "Weighted round robin",
+    "strategy": "Initial channel selection",
+    "roundRobin": "Sequential selection",
+    "weightedRoundRobin": "Weighted selection",
     "affinity": "Session policy",
     "session": "Keep session on one channel",
-    "statelessRotation": "Rotate independent requests",
+    "statelessRotation": "Pin stateful continuations only",
     "members": "Channel members",
     "addMember": "Add channel",
     "provider": "Provider",
@@ -47,6 +47,7 @@
     "followDefault": "Follow default model",
     "targetUnavailable": "A selected aggregate is unavailable. Check its channels or select another target.",
     "retryAttempts": "Maximum attempts",
+    "failureThreshold": "Consecutive failures before switching",
     "reasons": {
       "aggregate_disabled": "Aggregate disabled",
       "member_disabled": "Channel disabled",
@@ -75,6 +76,7 @@
       "providerMissing": "Referenced provider not found.",
       "publicIdentityImmutable": "A saved public model ID cannot be changed. Create a new aggregate.",
       "retryLimit": "Maximum attempts must be 1 or 2.",
+      "failureThreshold": "The consecutive failure threshold must be 2–10.",
       "routerOnly": "Aggregates require local routing.",
       "storage": "Cannot read or save aggregation. Check local directory permissions.",
       "tooManyMembers": "Channel reference limit reached (4096).",
@@ -989,6 +991,7 @@
       "effective_active": "Available provider selection",
       "aggregate_session_binding": "Aggregate session binding",
       "aggregate_rotation": "Aggregate channel rotation",
+      "aggregate_preferred": "Aggregate preferred channel",
       "aggregate_retry": "Aggregate alternative attempt",
       "hosted_tool_followup": "Hosted tool result continuation on the same channel"
     },
@@ -1012,6 +1015,7 @@
     "traceProtocolPlan": "Configured / effective protocol",
     "traceRetryReason": {
       "aggregate_rate_limited": "First channel returned HTTP 429",
+      "aggregate_failure_threshold": "Consecutive channel failure threshold reached",
       "aggregate_connect_error": "First channel connection failed"
     },
     "traceCompatibility": {

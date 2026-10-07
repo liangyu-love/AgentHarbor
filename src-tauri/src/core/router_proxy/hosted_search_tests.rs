@@ -222,6 +222,7 @@ fn execution(
         history,
         adapter: tool_schema::Adapter::default(),
         credential,
+        health: None,
     }
 }
 
@@ -401,6 +402,46 @@ fn hosted_chat_search_failure_is_a_tool_error_without_leaking_service_response()
         assert!(!visible.to_string().contains("private account response"));
         assert!(model.captured()[1]["body"]["messages"].to_string().contains("unavailable"));
         assert_eq!(relay_usage::load(temp.path()).unwrap().recent.len(), 2);
+    });
+}
+
+#[test]
+fn hosted_model_rounds_report_health_independently_and_search_errors_do_not_trip_the_channel() {
+    let _guard = global_router_test_lock();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let model = Mock::new(|round, body| match round {
+            2 => Reply::ok(chat_reply(json!({"role":"assistant","content":null,
+                "tool_calls":[search_call(body,"search-1","Rust")]}), "tool_calls")),
+            3 => Reply::ok(chat_reply(json!({"role":"assistant","content":"Search unavailable"}), "stop")),
+            _ => Reply { status:503, body:json!({"error":{"type":"server_error"}}), delay:Duration::ZERO },
+        }).await;
+        let search = Mock::new(|_, _| Reply { status:500, body:json!({"error":"search failure"}), delay:Duration::ZERO }).await;
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = crate::core::aggregation::runtime::Runtime::default();
+        let candidate = crate::core::aggregation::selector::Candidate {
+            member_id:"model".into(), provider_id:"model-card".into(), actual_model_id:"fixture-chat".into(),
+            target_key:"model-target".into(), priority:0, weight:1,
+        };
+        for index in 0..6 {
+            let lease = runtime.reserve(&candidate).unwrap();
+            let health = lease.health();
+            health.neutral(); // final search projection must not report another model outcome
+            let mut execution = execution(&request(false), &model, &search, temp.path(), None);
+            execution.health = Some(health);
+            let result = hosted_search::relay(execution).await;
+            if index == 2 {
+                let body = result.unwrap().into_body().collect().await.unwrap().to_bytes();
+                assert!(String::from_utf8_lossy(&body).contains("Search unavailable"));
+            } else {
+                assert_eq!(result.err().unwrap().0, 503);
+            }
+            assert_eq!(runtime.should_switch(&candidate.target_key), index == 5,
+                "two failed model requests, then successful model/search rounds, reset the streak");
+        }
+        assert_eq!(model.captured().len(), 7);
+        assert_eq!(search.captured().len(), 1);
+        assert_eq!(runtime.stats().in_flight, 0);
+        assert_eq!(relay_usage::load(temp.path()).unwrap().all_time.request_count, 7);
     });
 }
 

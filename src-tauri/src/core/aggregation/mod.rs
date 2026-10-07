@@ -3,6 +3,7 @@
 pub mod affinity;
 pub mod config;
 pub mod execution;
+pub mod health;
 pub mod projection;
 pub mod runtime;
 pub mod selector;
@@ -16,9 +17,10 @@ pub use types::*;
 /// leases keep their counters until the in-flight response ends.
 pub fn reconcile_runtime(store: &crate::core::router::Store) {
     use crate::core::{protocol::ModelProtocol, router};
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     let mut targets = HashSet::new();
     let mut scopes = HashSet::new();
+    let mut members: HashMap<String, HashSet<String>> = HashMap::new();
     for aggregate in store
         .aggregates
         .iter()
@@ -33,6 +35,7 @@ pub fn reconcile_runtime(store: &crate::core::router::Store) {
                 continue;
             };
             let protocol = provider.protocol_for_model(&member.actual_model_id);
+            members.entry(aggregate.id.clone()).or_default().insert(member.id.clone());
             targets.insert(target_key(provider, &member.actual_model_id, protocol));
             if protocol == ModelProtocol::Responses
                 && router::supports_command_search(provider)
@@ -51,6 +54,7 @@ pub fn reconcile_runtime(store: &crate::core::router::Store) {
     }
     runtime::shared().retain_targets(&targets);
     runtime::shared().retain_scopes(&scopes);
+    runtime::shared().retain_members(&members);
 }
 
 #[cfg(test)]

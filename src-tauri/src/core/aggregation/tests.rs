@@ -405,9 +405,23 @@ fn invalid_ranges_missing_refs_and_duplicate_members_fail_without_saving() {
         Some("aggregation.errors.retryLimit")
     );
     store.aggregates[0].retry_policy.max_attempts = 2;
+    store.aggregates[0].retry_policy.failure_threshold = 1;
+    assert_eq!(config::validate(&store).err().as_deref(), Some("aggregation.errors.failureThreshold"));
+    store.aggregates[0].retry_policy.failure_threshold = 11;
+    assert_eq!(config::validate(&store).err().as_deref(), Some("aggregation.errors.failureThreshold"));
+    store.aggregates[0].retry_policy.failure_threshold = 3;
     store.aggregates[0].compression = model_policy::CompressionPolicy::Tokens { tokens: 0 };
     assert_eq!(
         config::validate(&store).err().as_deref(),
         Some("aggregation.errors.invalidCompression")
     );
+}
+
+#[test]
+fn old_retry_policy_defaults_to_three_consecutive_failures() {
+    let policy: RetryPolicy = serde_json::from_value(serde_json::json!({"maxAttempts":1})).unwrap();
+    assert_eq!(policy.max_attempts, 1);
+    assert_eq!(policy.failure_threshold, 3);
+    let model: AggregateModel = serde_json::from_value(serde_json::json!({})).unwrap();
+    assert_eq!(model.retry_policy.failure_threshold, 3);
 }

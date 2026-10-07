@@ -460,7 +460,7 @@ fn command_and_deepseek_flash_live_aggregation() {
         public_model_id: PUBLIC_MODEL.into(),
         display_name: "DeepSeek 4.1 Flash acceptance".into(),
         members,
-        retry_policy: aggregation::RetryPolicy { max_attempts: 1 },
+        retry_policy: aggregation::RetryPolicy { max_attempts: 1, ..Default::default() },
         ..Default::default()
     };
     let mut store = router::Store {
@@ -503,22 +503,34 @@ fn command_and_deepseek_flash_live_aggregation() {
             .send().await.unwrap().json::<Value>().await.unwrap();
         let catalog_ok = catalog["data"].as_array().is_some_and(|items| items.len() == 1 && items[0]["id"] == PUBLIC_MODEL);
         let mut rows = Vec::new();
+        // Differential live coverage chooses the only eligible member in the
+        // isolated fixture. Production no longer rotates a healthy channel.
+        let choose_member = |chosen: usize| {
+            let mut selected = store.clone();
+            for (index, member) in selected.aggregates[0].members.iter_mut().enumerate() {
+                member.enabled = index == chosen;
+            }
+            secret_file::write(&paths.app_data_dir.join("newapi-providers.dat"),
+                &serde_json::to_vec(&selected).unwrap()).unwrap();
+            aggregation::reconcile_runtime(&selected);
+        };
         for protocol in [router::ModelProtocol::Responses, router::ModelProtocol::AnthropicMessages, router::ModelProtocol::ChatCompletions] {
             for stream in [false, true] {
-                let mut pair = Vec::new();
                 for index in 0..2 {
-                    let (row, _) = probe.request(&format!("{protocol:?}_{stream}_{index}"), protocol, &text_request(protocol, stream), None).await;
-                    pair.push(row["attempt"]["memberId"].clone());
+                    choose_member(index);
+                    let (mut row, _) = probe.request(&format!("{protocol:?}_{stream}_{index}"), protocol, &text_request(protocol, stream), None).await;
+                    let selected_egress = row["attempt"]["memberId"] == selected[index]["memberId"];
+                    row["explicitEgressSelection"] = json!(selected_egress);
+                    row["ok"] = json!(row["ok"] == true && selected_egress);
                     rows.push(row);
                 }
-                let rotates = !pair[0].is_null() && !pair[1].is_null() && pair[0] != pair[1];
-                for row in rows.iter_mut().rev().take(2) { row["rotates"] = json!(rotates); row["ok"] = json!(row["ok"] == true && rotates); }
             }
         }
         let mut affinity_ok = true;
         let mut tool_members = HashSet::new();
         if rows.iter().all(|row| row["ok"] == true) {
             for index in 0..2 {
+                choose_member(index);
                 let session = format!("live-{}-{index}", uuid::Uuid::new_v4());
                 let mut request = text_request(router::ModelProtocol::AnthropicMessages, false);
                 request["messages"] = json!([{"role":"user","content":"Call probe_echo exactly once with value OK. After its result, reply with the single word OK."}]);
@@ -553,17 +565,17 @@ fn command_and_deepseek_flash_live_aggregation() {
     let source_unchanged = std::fs::read(&source).is_ok_and(|bytes| bytes == before);
     let lease_released = aggregation::runtime::shared().stats().in_flight == 0;
     let totals = relay_usage::load(&paths.app_data_dir).unwrap().all_time;
-    let round_robin = rows.iter().take(12).all(|row| row["rotates"] == true);
+    let explicit_egress_selection = rows.iter().take(12).all(|row| row["explicitEgressSelection"] == true);
     let passed = source_unchanged
         && catalog_ok
         && lease_released
         && tool_affinity
-        && round_robin
+        && explicit_egress_selection
         && rows.len() == 16
         && rows.iter().all(|row| row["ok"] == true)
         && totals.request_count == 16;
     let report = json!({"date":chrono::Utc::now().to_rfc3339(),"publicModel":PUBLIC_MODEL,
-        "members":selected,"requests":rows,"catalogOk":catalog_ok,"roundRobin":round_robin,
+        "members":selected,"requests":rows,"catalogOk":catalog_ok,"explicitEgressSelection":explicit_egress_selection,
         "toolAffinity":tool_affinity,"sourceUnchanged":source_unchanged,"leasesReleased":lease_released,
         "ledgerTotals":totals,"passed":passed});
     serde_json::to_writer_pretty(report_file, &report).unwrap();

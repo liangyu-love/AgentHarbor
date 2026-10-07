@@ -8,7 +8,7 @@ export interface AggregateModel {
   id: string; publicModelId: string; displayName: string; enabled: boolean; members: AggregateMember[];
   canonicalRef?: ModelRef | null;
   strategy: "roundRobin" | "weightedRoundRobin"; affinity: "session" | "statelessRotation";
-  retryPolicy: { maxAttempts: number }; compression: CompressionPolicy;
+  retryPolicy: { maxAttempts: number; failureThreshold: number }; compression: CompressionPolicy;
 }
 export interface AggregateView extends AggregateModel {
   available: boolean; reason: string | null; projection: ClientProjection | null; routeRevision: string;
