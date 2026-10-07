@@ -68,6 +68,24 @@ fn codex_aggregate_selection_saves_then_applies_the_public_model_and_restores_us
 }
 
 #[test]
+fn explicit_aggregate_selection_still_changes_the_default_model() {
+    let (_directory, paths) = aggregate_fixture();
+    let mut store = load_store(&paths).unwrap();
+    let mut second = store.aggregates[0].clone();
+    second.id = "second-pool".into();
+    second.public_model_id = "second-official-model".into();
+    store.aggregates.push(second);
+    save_store_unlocked(&paths, &store).unwrap();
+    select_aggregate(&paths, Some("pool".into())).unwrap();
+    set_smart_routing(&paths, true).unwrap();
+    for (pool, model) in [("second-pool", "second-official-model"), ("pool", "official-model")] {
+        select_aggregate(&paths, Some(pool.into())).unwrap();
+        assert_eq!(config(&paths)["model"].as_str(), Some(model));
+        assert!(routing_config_matches(&paths, &load_store(&paths).unwrap()).unwrap());
+    }
+}
+
+#[test]
 fn codex_aggregate_never_changes_native_mode_or_a_foreign_config_without_authorization() {
     let (_directory, paths) = aggregate_fixture();
     set_access_mode(&paths, CodexAccessMode::Native).unwrap();

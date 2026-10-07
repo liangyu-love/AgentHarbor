@@ -2377,7 +2377,7 @@ pub(crate) fn catalog_value(
     let mut slugs = HashSet::new();
     // Codex refreshes this cache from the official service. It is the most accurate
     // local source for models available to the currently signed-in account.
-    for snapshot in [super::model_catalog::official(codex_home, app_data_dir)] {
+    for snapshot in [super::model_catalog::account_catalog(codex_home, app_data_dir)] {
         for entry in &snapshot.models {
             let Some(slug) = entry.get("slug").and_then(Value::as_str) else {
                 continue;
@@ -2388,9 +2388,8 @@ pub(crate) fn catalog_value(
             }
         }
     }
-    // Only unprefixed official entries can supply relay capabilities. Keep this
-    // boundary as relay entries are appended, with the fresh cache taking priority.
-    let official_models_len = models.len();
+    // Capability history can inform a relay without expanding account access.
+    let official_metadata = super::model_catalog::official(codex_home, app_data_dir);
     let models_dev = models_dev::load(app_data_dir);
     let global_compression = store.global_compression();
     // Any routable provider can back Codex: a non-Responses relay is reached
@@ -2422,7 +2421,7 @@ pub(crate) fn catalog_value(
             if !slugs.insert(slug.clone()) {
                 continue;
             }
-            let official = matched_official_model(&models[..official_models_len], &model_id)
+            let official = matched_official_model(&official_metadata.models, &model_id)
                 .filter(|_| official_endpoint_applies(provider));
             models.push(relay_menu_entry(
                 store,
@@ -2487,15 +2486,15 @@ pub(crate) fn catalog_entry_for_slug(
     store: &Store,
     slug: &str,
 ) -> Option<Value> {
-    let official_snapshot = super::model_catalog::official(codex_home, app_data_dir);
     let Some((provider_id, model_id)) = slug.split_once("::") else {
         // Official entries are borrowed read-only and keep their own shape.
-        return official_snapshot
+        return super::model_catalog::account_catalog(codex_home, app_data_dir)
             .models
             .iter()
             .find(|entry| entry.get("slug").and_then(Value::as_str) == Some(slug))
             .cloned();
     };
+    let official_snapshot = super::model_catalog::official(codex_home, app_data_dir);
     let provider = store
         .providers
         .iter()
@@ -3076,6 +3075,11 @@ fn apply_local_router_config(
     }
     let (provider_key, default_model, namespace) = codex_connection(store)?;
     let catalog = selected_catalog_path(paths, store);
+    let menu = if store.router.aggregate_model_id.is_some() {
+        aggregate_catalog_value(&paths.app_data_dir, store)
+    } else {
+        catalog_value(&paths.app_data_dir, &paths.codex_home, store)
+    };
     let mut pending = None;
     let result = CodexConfigRepository::new(paths)
         .update(|original| {
@@ -3103,11 +3107,23 @@ fn apply_local_router_config(
                     config_snapshot::Snapshot::capture(paths, &document)?
                 }
             };
+            // Refreshing a card/catalog must retain the conversation's valid
+            // selection. Changing connection modes or removing that model
+            // falls back to the newly configured default.
+            let selected = document.get("model")
+                .and_then(toml_edit::Item::as_str)
+                .filter(|selected| {
+                    store.router.aggregate_model_id.is_none()
+                        && document.get("model_provider").and_then(toml_edit::Item::as_str) == Some(provider_key)
+                        && menu_contains(&menu, selected)
+                })
+                .unwrap_or(&default_model)
+                .to_owned();
             remove_managed_provider_entries(&mut document);
             config_snapshot::set_value(
                 &mut document,
                 "model",
-                Some(default_model.clone().into()));
+                Some(selected.into()));
             config_snapshot::set_value(
                 &mut document,
                 "model_provider",
@@ -3220,16 +3236,28 @@ pub(crate) fn routing_config_matches(paths: &CodexPaths, store: &Store) -> Resul
     let (_, document) = open_config(paths)?;
     let expected_base = format!("http://127.0.0.1:{}/{namespace}/v1", store.router.port);
     let expected_catalog = selected_catalog_path(paths, store).to_string_lossy().to_string();
+    let expected_menu = if store.router.aggregate_model_id.is_some() {
+        aggregate_catalog_value(&paths.app_data_dir, store)
+    } else {
+        catalog_value(&paths.app_data_dir, &paths.codex_home, store)
+    };
+    // Codex can persist a model selected during a conversation. A valid menu
+    // choice (official or relay) does not invalidate its provider. Explicit
+    // aggregate selection retains its existing configured-default behavior.
+    let selected_model_valid = document
+        .get("model")
+        .and_then(toml_edit::Item::as_str)
+        .is_some_and(|selected| {
+            if store.router.aggregate_model_id.is_some() {
+                selected == expected_model
+            } else {
+                menu_contains(&expected_menu, selected)
+            }
+        });
     let catalog_current = std::fs::read(selected_catalog_path(paths, store))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .is_some_and(|catalog| {
-            catalog == if store.router.aggregate_model_id.is_some() {
-                    aggregate_catalog_value(&paths.app_data_dir, store)
-                } else {
-                    catalog_value(&paths.app_data_dir, &paths.codex_home, store)
-                }
-        });
+        .is_some_and(|catalog| catalog == expected_menu);
     let provider = document
         .get("model_providers")
         .and_then(toml_edit::Item::as_table_like)
@@ -3265,7 +3293,7 @@ pub(crate) fn routing_config_matches(paths: &CodexPaths, store: &Store) -> Resul
         .get("model_provider")
         .and_then(toml_edit::Item::as_str)
         == Some(provider_key)
-        && document.get("model").and_then(toml_edit::Item::as_str) == Some(expected_model.as_str())
+        && selected_model_valid
         && document.get("model_context_window").is_none()
         && document.get("model_auto_compact_token_limit").is_none()
         && document
@@ -3274,6 +3302,11 @@ pub(crate) fn routing_config_matches(paths: &CodexPaths, store: &Store) -> Resul
             == Some(expected_catalog.as_str())
         && catalog_current;
     Ok(current)
+}
+
+fn menu_contains(menu: &Value, slug: &str) -> bool {
+    menu["models"].as_array()
+        .is_some_and(|models| models.iter().any(|model| model["slug"] == slug))
 }
 
 pub fn remove_routing_config(
@@ -5027,22 +5060,28 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             ..Default::default()
         };
 
-        // The official entries pass through unchanged and keep taking priority
-        // over the previous router catalog.
+        // Official entries pass through unchanged. Historical metadata is not
+        // evidence that a model is still available to the current account.
         let catalog = catalog_value(
             &paths.app_data_dir,
             &paths.codex_home,
             &store_for("https://relay.example.com"),
         );
         let models = catalog["models"].as_array().unwrap();
-        assert_eq!(models.len(), 3 + ids.len());
+        assert_eq!(models.len(), 2 + ids.len());
         assert_eq!(&models[..2], official.as_array().unwrap());
-        assert_eq!(models[2], previous_only);
+        assert!(!models.iter().any(|model| model["slug"] == previous_only["slug"]));
+        assert!(catalog_entry_for_slug(
+            &paths.app_data_dir,
+            &paths.codex_home,
+            &store_for("https://relay.example.com"),
+            "previous-only",
+        )
+        .is_none());
 
-        // A third-party relay never inherits the signed-in account's limits or
-        // reasoning declaration just because the model name matches.
+        // Relay capabilities remain separate from the signed-in account.
         for (index, id) in ids.iter().enumerate() {
-            let relay = &models[3 + index];
+            let relay = &models[2 + index];
             assert_eq!(relay["slug"], format!("relay-one::{id}"));
             assert_eq!(relay["display_name"], format!("Relay/Alias {id}"));
             assert_ne!(
@@ -5077,7 +5116,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             &store_for("https://chatgpt.com/backend-api/codex"),
         );
         let models = catalog["models"].as_array().unwrap();
-        let account = &models[3];
+        let account = &models[2];
         assert_eq!(account["context_window"], 999_000);
         assert_eq!(account["default_reasoning_level"], "low");
         assert_eq!(
@@ -5436,6 +5475,47 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             restored["model_auto_compact_token_limit"].as_integer(),
             Some(60_000)
         );
+    }
+
+    #[test]
+    fn router_refresh_and_repair_keep_valid_model_switches() {
+        let (_dir, paths) = paths();
+        let saved = save_provider(&paths, input("Relay A", "https://relay-a.example.com")).unwrap();
+        let a = saved.state.providers[0].id.clone();
+        set_enabled(&paths, &a, true).unwrap();
+        let saved = save_provider(&paths, input("Relay B", "https://relay-b.example.com")).unwrap();
+        let b = saved.state.providers.iter().find(|provider| provider.id != a).unwrap().id.clone();
+        set_enabled(&paths, &b, true).unwrap();
+        set_smart_routing(&paths, true).unwrap();
+        let mut store = load_store(&paths).unwrap();
+        let mut official = catalog_value(&paths.app_data_dir, &paths.codex_home, &store)["models"][0].clone();
+        official["slug"] = serde_json::json!("fixture-official");
+        std::fs::write(paths.codex_home.join("models_cache.json"),
+            serde_json::json!({"models":[official]}).to_string()).unwrap();
+        apply_routing_config(&paths, &store).unwrap();
+        let model = store.providers.iter().find(|provider| provider.id == a).unwrap().model.clone();
+        for selected in ["fixture-official".to_owned(), format!("{a}::{model}"), format!("{b}::{model}"), "fixture-official".to_owned()] {
+            let (_, mut document) = open_config(&paths).unwrap();
+            document["model"] = toml_edit::value(&selected);
+            std::fs::write(&paths.config_path, document.to_string()).unwrap();
+            assert!(routing_config_matches(&paths, &store).unwrap());
+            assert!(ensure_routing_config(&paths, &store).unwrap().is_none());
+            // A real card/global policy update refreshes the whole catalog.
+            set_compression(&paths, model_policy::CompressionPolicy::percent(80)).unwrap();
+            store = load_store(&paths).unwrap();
+            assert_eq!(open_config(&paths).unwrap().1["model"].as_str(), Some(selected.as_str()));
+            // Also preserve the choice when a stale critical field needs repair.
+            let (_, mut document) = open_config(&paths).unwrap();
+            document["model_providers"][CATALOG_PROVIDER_KEY]["base_url"] = toml_edit::value("http://127.0.0.1:1");
+            std::fs::write(&paths.config_path, document.to_string()).unwrap();
+            assert!(ensure_routing_config(&paths, &store).unwrap().is_some());
+            assert_eq!(open_config(&paths).unwrap().1["model"].as_str(), Some(selected.as_str()));
+        }
+        let (_, mut document) = open_config(&paths).unwrap();
+        document["model"] = toml_edit::value("removed-provider::removed-model");
+        std::fs::write(&paths.config_path, document.to_string()).unwrap();
+        assert!(ensure_routing_config(&paths, &store).unwrap().is_some());
+        assert_eq!(open_config(&paths).unwrap().1["model"].as_str(), Some(codex_connection(&store).unwrap().1.as_str()));
     }
 
     #[test]

@@ -43,6 +43,9 @@ mod native_sse;
 #[cfg(test)]
 #[path = "router_proxy/routing_safety_tests.rs"]
 mod routing_safety_tests;
+#[cfg(test)]
+#[path = "router_proxy/codex_switch_tests.rs"]
+mod codex_switch_tests;
 mod session_affinity;
 mod session_compat;
 mod tool_schema;
@@ -251,6 +254,8 @@ pub async fn ensure_running(
             mode: super::models::ApiProxyMode::Direct,
             url: None,
         })?,
+        #[cfg(test)]
+        official_base: None,
     });
     let pins = listener_pins().lock().map_err(|_| "newapi.errors.storage")?;
     if pinned_port(&pins).is_some_and(|p| p != bound_port) {
@@ -275,6 +280,19 @@ struct ArcContext {
     outbound: Arc<RwLock<Client>>,
     /// 供应商网络模式为 direct 时使用的无代理客户端。
     outbound_direct: Client,
+    /// A private loopback fixture endpoint; absent from production builds.
+    #[cfg(test)]
+    official_base: Option<String>,
+}
+
+impl ArcContext {
+    fn official_base<'a>(&'a self, default: &'a str) -> &'a str {
+        #[cfg(test)]
+        if let Some(base) = &self.official_base {
+            return base;
+        }
+        default
+    }
 }
 
 async fn accept_loop(
@@ -1462,7 +1480,7 @@ fn official_target(
         } else {
             OPENAI_API_BASE
         };
-        return Ok((format!("{base}{suffix}{query}"), headers));
+        return Ok((format!("{}{suffix}{query}", context.official_base(base)), headers));
     }
     let auth = crate::core::auth::load_auth_file(&context.auth_path).ok();
     let access_token = auth
@@ -1485,7 +1503,7 @@ fn official_target(
                 headers.insert("chatgpt-account-id", value);
             }
         }
-        Ok((format!("{CHATGPT_CODEX_BASE}{suffix}{query}"), headers))
+        Ok((format!("{}{suffix}{query}", context.official_base(CHATGPT_CODEX_BASE)), headers))
     } else if let Some(key) = auth
         .and_then(|a| a.openai_api_key)
         .filter(|k| !k.trim().is_empty())
@@ -1495,7 +1513,7 @@ fn official_target(
             HeaderValue::from_str(&format!("Bearer {key}"))
                 .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid key"))?,
         );
-        Ok((format!("{OPENAI_API_BASE}{suffix}{query}"), headers))
+        Ok((format!("{}{suffix}{query}", context.official_base(OPENAI_API_BASE)), headers))
     } else {
         Err((
             StatusCode::UNAUTHORIZED,
@@ -2902,6 +2920,7 @@ mod tests {
             auth_path: fixture.path().join("auth.json"),
             outbound: Arc::new(RwLock::new(client.clone())),
             outbound_direct: client,
+            official_base: None,
         };
         let catalog = super::super::models_dev::load(fixture.path());
         for wire in [
@@ -3300,6 +3319,7 @@ mod tests {
                 {"slug":"model-a","supported_reasoning_levels":[{"effort":"none","description":"Off"}]},
                 {"slug":"model-b","supported_reasoning_levels":[{"effort":"high","description":"High"}]}
             ]}).to_string()).unwrap();
+            let (port_official, official_task) = echo_relay("official").await;
             let (port_a, relay_a) = echo_relay("relay-a").await;
             let (port_b, relay_b) = echo_relay("relay-b").await;
             let mut store = Store {
@@ -3332,7 +3352,8 @@ mod tests {
             let context = Arc::new(ArcContext {
                 bound_port: 0,
                 store_path, app_data_dir, codex_home:fixture.path().to_owned(), auth_path:auth_path.clone(),
-                outbound:Arc::new(RwLock::new(client.clone())), outbound_direct:client.clone()
+                outbound:Arc::new(RwLock::new(client.clone())), outbound_direct:client.clone(),
+                official_base:Some(format!("http://127.0.0.1:{port_official}/v1/"))
             });
             let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
             let port = listener.local_addr().unwrap().port();
@@ -3347,18 +3368,21 @@ mod tests {
                 {"type":"function_call_output","call_id":"call_fixture","output":"Retained tool result"},
                 {"role":"user","content":"Continue the same conversation"}
             ]);
-            // Switch A -> B -> A on one thread, including both native and legacy
-            // compaction URLs. The pinned provider remains A throughout.
+            // Switch official -> A -> B -> official -> A on one thread, including
+            // native and legacy compaction URLs.
+            // The pinned provider remains A throughout.
             for (prefix, endpoint, id, model, key, effort) in [
+                ("codex/v1", "responses", "official", "model-a", "fixture-current-official-token", "none"),
                 ("codex/v1", "responses", "relay-a", "model-a", "fixture-relay-a-key", "none"),
                 ("codex/v1", "responses", "relay-b", "model-b", "fixture-relay-b-key", "none"),
                 ("codex/v1", "responses/compact", "relay-b", "model-b", "fixture-relay-b-key", "high"),
                 ("v1", "responses/compact", "relay-b", "model-b", "fixture-relay-b-key", "none"),
                 ("p/relay-b/v1", "responses/compact", "relay-b", "model-b", "fixture-relay-b-key", "high"),
+                ("codex/v1", "responses", "official", "model-a", "fixture-current-official-token", "none"),
                 ("codex/v1", "responses", "relay-a", "model-a", "fixture-relay-a-key", "none"),
             ] {
                 let mut body = json!({
-                    "model":format!("{id}::{model}"), "input":history, "previous_response_id":"fixture-provider-response",
+                    "model":if id == "official" { model.to_owned() } else { format!("{id}::{model}") }, "input":history, "previous_response_id":"fixture-provider-response",
                     "reasoning":{"effort":effort,"summary":"auto"}, "store":false
                 });
                 let response = client.post(format!("http://127.0.0.1:{port}/{prefix}/{endpoint}?fixture=1"))
@@ -3376,7 +3400,12 @@ mod tests {
                 assert_eq!(observed["path"], format!("/v1/{endpoint}?fixture=1"));
                 assert_eq!(observed["headers"]["authorization"], format!("Bearer {key}"));
                 assert_eq!(observed["headers"]["x-codex-turn-metadata"], "fixture-same-conversation");
-                for header in ["chatgpt-account-id", "x-api-key", "cookie", "proxy-authorization", router::LOCAL_AUTH_HEADER] {
+                if id == "official" {
+                    assert_eq!(observed["headers"]["chatgpt-account-id"], "fixture-current-official-account");
+                } else {
+                    assert!(observed["headers"].get("chatgpt-account-id").is_none());
+                }
+                for header in ["x-api-key", "cookie", "proxy-authorization", router::LOCAL_AUTH_HEADER] {
                     assert!(observed["headers"].get(header).is_none(), "leaked {header}");
                 }
                 body["model"] = json!(model);
@@ -3390,6 +3419,7 @@ mod tests {
             router.await.unwrap();
             relay_a.abort();
             relay_b.abort();
+            official_task.abort();
         });
     }
 

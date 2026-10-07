@@ -175,6 +175,13 @@ pub(crate) fn official(codex_home: &Path, app_data: &Path) -> Snapshot {
     official_with_backup_mode(codex_home, app_data, true)
 }
 
+/// The current account's catalog is authoritative for official picker entries.
+/// Historical router catalogs provide capability metadata, not account access:
+/// merging them here would revive removed models or override `visibility`.
+pub(crate) fn account_catalog(codex_home: &Path, app_data: &Path) -> Snapshot {
+    account_catalog_with_backup_mode(codex_home, app_data, true)
+}
+
 /// Resolve the same official sources and stale fallback without creating or
 /// refreshing a last-good file while an unsaved provider draft is being edited.
 pub(crate) fn official_read_only(codex_home: &Path, app_data: &Path) -> Snapshot {
@@ -182,11 +189,7 @@ pub(crate) fn official_read_only(codex_home: &Path, app_data: &Path) -> Snapshot
 }
 
 fn official_with_backup_mode(codex_home: &Path, app_data: &Path, write_backup: bool) -> Snapshot {
-    let mut snapshot = load_with_backup_mode(
-        &codex_home.join("models_cache.json"),
-        Some(&app_data.join("model-capabilities-last-good.json")),
-        write_backup,
-    );
+    let mut snapshot = account_catalog_with_backup_mode(codex_home, app_data, write_backup);
     let previous = load(&app_data.join("previous-router-catalog.json"), None);
     let mut slugs: HashSet<String> = snapshot
         .models
@@ -206,6 +209,18 @@ fn official_with_backup_mode(codex_home: &Path, app_data: &Path, write_backup: b
     snapshot
 }
 
+fn account_catalog_with_backup_mode(
+    codex_home: &Path,
+    app_data: &Path,
+    write_backup: bool,
+) -> Snapshot {
+    load_with_backup_mode(
+        &codex_home.join("models_cache.json"),
+        Some(&app_data.join("model-capabilities-last-good.json")),
+        write_backup,
+    )
+}
+
 fn bounded_read(path: &Path) -> Option<Vec<u8>> {
     let mut bytes = Vec::new();
     std::fs::File::open(path)
@@ -219,6 +234,46 @@ fn bounded_read(path: &Path) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn historical_metadata_cannot_expand_the_current_account_catalog() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let app_data = dir.path().join("app");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&app_data).unwrap();
+        let current = serde_json::json!([
+            {"slug":"current-model","visibility":"list"},
+            {"slug":"hidden-model","visibility":"hide"},
+            {"slug":"relay::relay-model","visibility":"list"}
+        ]);
+        std::fs::write(
+            home.join("models_cache.json"),
+            serde_json::json!({"models":current}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            app_data.join("previous-router-catalog.json"),
+            serde_json::json!({"models":[
+                {"slug":"retired-model","visibility":"list"},
+                {"slug":"hidden-model","visibility":"list"}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        let menu = account_catalog(&home, &app_data);
+        assert_eq!(menu.models, current.as_array().unwrap()[..2]);
+        let metadata = official(&home, &app_data);
+        assert!(metadata.models.iter().any(|entry| entry["slug"] == "retired-model"));
+        assert_eq!(metadata.models[1]["visibility"], "hide");
+
+        // A bad refresh may keep this account's last good catalog, but never
+        // promote the unrelated historical metadata into available models.
+        std::fs::write(home.join("models_cache.json"), b"{broken").unwrap();
+        let stale = account_catalog(&home, &app_data);
+        assert!(stale.stale);
+        assert_eq!(stale.models, menu.models);
+    }
+
     #[test]
     fn read_only_official_preserves_fallback_and_defers_backup_writes() {
         let dir = tempfile::tempdir().unwrap();
