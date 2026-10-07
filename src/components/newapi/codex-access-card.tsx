@@ -43,6 +43,8 @@ export function CodexAccessCard({
   const accessMode = router?.accessMode ?? "router";
   const nativeAccess = accessMode === "native";
   const configDrifted = !!router?.configDrifted;
+  const listenerUnavailable = routingEnabled && !nativeAccess && !store.state.data?.proxyRunning;
+  const routingReady = routingEnabled && !configDrifted && !listenerUnavailable;
   const aggregates = useQuery({ queryKey: aggregationQueryKey, queryFn: api.aggregation.state });
   const aggregate = aggregates.data?.models.find((model) => model.id === router?.aggregateModelId);
   const aggregateSelected = router?.aggregateModelId != null;
@@ -89,7 +91,7 @@ export function CodexAccessCard({
   );
 
   return (
-    <AuroraCard color="blue" shine={routingEnabled} className="overflow-hidden shadow-sm">
+    <AuroraCard color="blue" shine={routingReady} className="overflow-hidden shadow-sm">
       <section aria-labelledby="newapi-routing-title" className="space-y-4 p-4 sm:p-5">
         <FoldHeader
           open={fold.open}
@@ -100,7 +102,7 @@ export function CodexAccessCard({
           leading={
             <div className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/20">
               <Sparkles className="h-4 w-4" />
-              {routingEnabled && (
+              {routingReady && (
                 <span aria-hidden className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-background" />
               )}
             </div>
@@ -116,6 +118,11 @@ export function CodexAccessCard({
               <Badge className={cn(softBadge("amber"), "gap-1 font-medium")}>
                 <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
                 {t("newapi.driftedBadge")}
+              </Badge>
+            ) : listenerUnavailable ? (
+              <Badge className={cn(softBadge("amber"), "gap-1 font-medium")}>
+                <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                {t("newapi.listenerUnavailableBadge")}
               </Badge>
             ) : routingEnabled ? (
               <Badge className={cn(softBadge("green"), "gap-1 font-medium")}>
@@ -191,7 +198,7 @@ export function CodexAccessCard({
 
             <ArrowRight
               aria-hidden
-              className={cn("hidden h-3.5 w-3.5 shrink-0 xl:block", routingEnabled ? "text-primary" : "text-muted-foreground/40")}
+              className={cn("hidden h-3.5 w-3.5 shrink-0 xl:block", routingReady ? "text-primary" : "text-muted-foreground/40")}
             />
 
             {!nativeAccess && (
@@ -209,7 +216,7 @@ export function CodexAccessCard({
                 </div>
                 <ArrowRight
                   aria-hidden
-                  className={cn("hidden h-3.5 w-3.5 shrink-0 xl:block", routingEnabled ? "text-primary" : "text-muted-foreground/40")}
+                  className={cn("hidden h-3.5 w-3.5 shrink-0 xl:block", routingReady ? "text-primary" : "text-muted-foreground/40")}
                 />
               </>
             )}

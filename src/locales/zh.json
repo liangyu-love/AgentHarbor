@@ -676,6 +676,7 @@
     "title": "中转注入",
     "providersSection": "中转模型",
     "enabledBadge": "启用",
+    "listenerUnavailableBadge": "本地监听未就绪",
     "routingApplied": "Codex 接入已写入配置",
     "routingRemoved": "已恢复 Codex 原有配置",
     "routingFailed": "Codex 接入设置失败",

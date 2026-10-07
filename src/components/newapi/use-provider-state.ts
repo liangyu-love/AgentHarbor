@@ -17,7 +17,13 @@ const STATE_KEY = queryKeys.providers;
 export function useProviderState() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const state = useQuery({ queryKey: STATE_KEY, queryFn: api.providers.loadState, refetchOnWindowFocus: false });
+  const state = useQuery({
+    queryKey: STATE_KEY,
+    queryFn: api.providers.loadState,
+    refetchOnWindowFocus: false,
+    refetchInterval: query => query.state.data?.router.enabled
+      && query.state.data.router.accessMode === "router" ? 15_000 : false,
+  });
   const [busy, setBusy] = useState<string | null>(null);
   const mutationInFlight = useRef(false);
   const balanceInFlight = useRef(new Set<string>());

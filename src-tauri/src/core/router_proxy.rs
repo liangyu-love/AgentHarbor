@@ -62,6 +62,7 @@ struct ProxyHandle {
     lease: ListenerLease,
     shutdown: tokio::sync::watch::Sender<bool>,
     outbound: Arc<RwLock<Client>>,
+    accept_task: tokio::task::JoinHandle<()>,
 }
 
 /// A lease identifies one successful bind in this backend process. A port alone
@@ -87,7 +88,11 @@ pub fn desktop_listener_required() -> bool {
     listener_pinned_port().is_some()
 }
 pub fn current_lease() -> Option<ListenerLease> {
-    handle_slot().lock().ok().and_then(|slot| slot.as_ref().map(|h| h.lease.clone()))
+    handle_slot().lock().ok().and_then(|slot| {
+        slot.as_ref()
+            .filter(|handle| !handle.accept_task.is_finished())
+            .map(|handle| handle.lease.clone())
+    })
 }
 pub fn validate_lease(lease: &ListenerLease) -> bool {
     current_lease().as_ref() == Some(lease)
@@ -137,7 +142,11 @@ fn start_lock() -> &'static tokio::sync::Mutex<()> {
 pub fn is_running() -> bool {
     handle_slot()
         .lock()
-        .map(|guard| guard.is_some())
+        .map(|guard| {
+            guard
+                .as_ref()
+                .is_some_and(|handle| !handle.accept_task.is_finished())
+        })
         .unwrap_or(false)
 }
 
@@ -145,7 +154,12 @@ pub fn running_port() -> Option<u16> {
     handle_slot()
         .lock()
         .ok()
-        .and_then(|guard| guard.as_ref().map(|handle| handle.port))
+        .and_then(|guard| {
+            guard
+                .as_ref()
+                .filter(|handle| !handle.accept_task.is_finished())
+                .map(|handle| handle.port)
+        })
 }
 
 pub fn stop() {
@@ -216,9 +230,9 @@ pub async fn ensure_running(
         if pinned_port(&pins).is_some_and(|p| p != port || port == 0) {
             return Err("claudeDesktop.errors.listenerPinned".into());
         }
-        let mut guard = handle_slot().lock().map_err(|_| "newapi.errors.storage")?;
+        let guard = handle_slot().lock().map_err(|_| "newapi.errors.storage")?;
         if let Some(handle) = guard.as_ref() {
-            if handle.port == port {
+            if handle.port == port && !handle.accept_task.is_finished() {
                 *handle
                     .outbound
                     .write()
@@ -226,10 +240,8 @@ pub async fn ensure_running(
                 return Ok(handle.port);
             }
         }
-        if let Some(handle) = guard.take() {
-            let _ = handle.shutdown.send(true);
-        }
     }
+    // Keep the old listener available if a requested new port cannot bind.
     let listener = bind_localhost(port).await?;
     let bound_port = listener
         .local_addr()
@@ -262,13 +274,18 @@ pub async fn ensure_running(
     if pinned_port(&pins).is_some_and(|p| p != bound_port) {
         return Err("claudeDesktop.errors.listenerPinned".into());
     }
-    *handle_slot().lock().map_err(|_| "newapi.errors.storage")? = Some(ProxyHandle {
+    let mut guard = handle_slot().lock().map_err(|_| "newapi.errors.storage")?;
+    if let Some(handle) = guard.take() {
+        let _ = handle.shutdown.send(true);
+    }
+    let accept_task = tokio::spawn(accept_loop(listener, shutdown_rx, context));
+    *guard = Some(ProxyHandle {
         port: bound_port,
         lease,
         shutdown: shutdown_tx,
         outbound,
+        accept_task,
     });
-    tokio::spawn(accept_loop(listener, shutdown_rx, context));
     Ok(bound_port)
 }
 
@@ -307,6 +324,7 @@ async fn accept_loop(
     let mut refresh = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
     refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut refreshing: Option<tokio::task::JoinHandle<()>> = None;
+    let mut accept_errors = 0u8;
     loop {
         tokio::select! {
             _ = shutdown.changed() => break,
@@ -331,7 +349,21 @@ async fn accept_loop(
                 }
             }
             accepted = listener.accept() => {
-                let Ok((stream, _)) = accepted else { continue };
+                let (stream, _) = match accepted {
+                    Ok(connection) => {
+                        accept_errors = 0;
+                        connection
+                    }
+                    Err(error) => {
+                        accept_errors = accept_errors.saturating_add(1);
+                        log::warn!("local router accept failed: {error}");
+                        if accept_errors >= 3 {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        continue;
+                    }
+                };
                 let context = context.clone();
                 tokio::spawn(async move {
                     let _ = http1::Builder::new()
@@ -2924,6 +2956,88 @@ mod tests {
             let rebound = bind_localhost(port).await.unwrap();
             assert_eq!(rebound.local_addr().unwrap().port(), port);
             release.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn failed_port_change_keeps_the_existing_listener() {
+        let _lock = global_router_test_lock();
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                stop_unchecked();
+            }
+        }
+        let _reset = Reset;
+        tauri::async_runtime::block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let paths = CodexPaths::from_home(temp.path().join("codex"));
+            let first = ensure_running(0, paths.clone(), ApiProxyConfigPayload::default())
+                .await
+                .unwrap();
+            let lease = current_lease().unwrap();
+            let occupied = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                .await
+                .unwrap();
+            let second = occupied.local_addr().unwrap().port();
+            assert_eq!(
+                ensure_running(second, paths, ApiProxyConfigPayload::default())
+                    .await
+                    .unwrap_err(),
+                "newapi.errors.portBusy"
+            );
+            assert_eq!(running_port(), Some(first));
+            assert_eq!(current_lease(), Some(lease));
+            tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, first))
+                .await
+                .unwrap();
+        });
+    }
+
+    #[test]
+    fn dead_accept_task_is_not_reported_online_and_can_rebind() {
+        let _lock = global_router_test_lock();
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                stop_unchecked();
+            }
+        }
+        let _reset = Reset;
+        tauri::async_runtime::block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let paths = CodexPaths::from_home(temp.path().join("codex"));
+            let port = ensure_running(0, paths.clone(), ApiProxyConfigPayload::default())
+                .await
+                .unwrap();
+            let first = current_lease().unwrap();
+            handle_slot()
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .accept_task
+                .abort();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while is_running() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(running_port(), None);
+            assert_eq!(current_lease(), None);
+            assert_eq!(
+                ensure_running(port, paths, ApiProxyConfigPayload::default())
+                    .await
+                    .unwrap(),
+                port
+            );
+            assert!(is_running());
+            assert_ne!(current_lease(), Some(first));
+            tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
+                .await
+                .unwrap();
         });
     }
 

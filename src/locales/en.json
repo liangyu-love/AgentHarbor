@@ -676,6 +676,7 @@
     "title": "Relay Inject",
     "providersSection": "Relay models",
     "enabledBadge": "On",
+    "listenerUnavailableBadge": "Local listener unavailable",
     "routingApplied": "Codex access written to configuration",
     "routingRemoved": "Previous Codex configuration restored",
     "routingFailed": "Failed to update Codex access",
