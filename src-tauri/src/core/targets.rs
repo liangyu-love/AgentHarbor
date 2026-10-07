@@ -12,8 +12,8 @@ pub enum TargetId {
     OpenCode,
 }
 
-/// Only Codex has conversations and a restartable desktop process; Claude Code
-/// and OpenCode are configuration-only targets, so these lookups return `None` for them.
+/// Paths for the Codex catalog-backed conversation store. Claude Code uses its
+/// separate JSONL reader; it does not have an archive directory or SQLite catalog.
 pub trait ConversationSource {
     fn sessions_dir(&self) -> &Path;
     fn archived_sessions_dir(&self) -> &Path;

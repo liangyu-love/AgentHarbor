@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { MessagesSquare, X } from "lucide-react";
 import { BentoCard } from "@/components/ui/bento-card";
@@ -18,10 +18,31 @@ import { ThreadDetailPanel } from "@/components/threads/thread-detail-panel";
 import { SelectionBar } from "@/components/threads/selection-bar";
 import { useThreadList } from "@/components/threads/use-thread-list";
 import { formatInvokeError } from "@/lib/invoke-error";
+import { storageKeys } from "@/lib/storage-keys";
+import type { ConversationSource } from "@/types/threads";
 
 export function ThreadsPage() {
+  const restoreSourceFocus = useRef(false);
+  const [source, setSource] = useState<ConversationSource>(() =>
+    localStorage.getItem(storageKeys.threadsSource) === "claudeCode" ? "claudeCode" : "codex");
+  const changeSource = (next: ConversationSource) => {
+    restoreSourceFocus.current = !!document.activeElement?.closest("[data-thread-source-controls]");
+    localStorage.setItem(storageKeys.threadsSource, next);
+    setSource(next);
+  };
+  useLayoutEffect(() => {
+    if (restoreSourceFocus.current) {
+      document.querySelector<HTMLElement>('[data-thread-source-controls] [role="radio"][aria-checked="true"]')?.focus({ preventScroll: true });
+      restoreSourceFocus.current = false;
+    }
+  }, [source]);
+  // Each client has its own selection, filters and dialogs; never reuse a write target.
+  return <ThreadsWorkspace key={source} source={source} onSourceChange={changeSource} />;
+}
+
+function ThreadsWorkspace({ source, onSourceChange }: { source: ConversationSource; onSourceChange: (source: ConversationSource) => void }) {
   const { t } = useTranslation();
-  const list = useThreadList();
+  const list = useThreadList(source, onSourceChange);
   const workspace = useRef<HTMLDivElement>(null);
   const listScrollTop = useRef(0);
   const openDetails = (key: string) => {
@@ -104,7 +125,7 @@ export function ThreadsPage() {
                       {hasFilters ? t("threads.noFilteredResults") : t("threads.emptyTitle")}
                     </p>
                     <p className="max-w-md text-xs text-muted-foreground">
-                      {hasFilters ? t("threads.noFilteredResultsDesc") : t("threads.emptyDesc")}
+                      {hasFilters ? t("threads.noFilteredResultsDesc") : t("threads.emptyDesc", { client: source === "codex" ? "Codex" : "Claude Code" })}
                     </p>
                     {hasFilters && (
                       <Button
@@ -129,9 +150,9 @@ export function ThreadsPage() {
                     onToggleCollapse={toggleGroupCollapse}
                     onExport={keys => void handleExport(keys)}
                     onOpenPath={path => void handleOpenPath(path)}
-                    onRecover={setRecoveryTarget}
+                    onRecover={list.isCodex ? setRecoveryTarget : undefined}
                     onDetails={thread => openDetails(thread.key)}
-                    onDelete={(thread) => void handleDelete([thread.key])}
+                    onDelete={list.isCodex ? (thread) => void handleDelete([thread.key]) : undefined}
                     onCopyPath={handleCopyPath}
                     copiedGroupPath={copiedGroupPath}
                     detailKey={list.detailTarget?.key}
@@ -142,18 +163,18 @@ export function ThreadsPage() {
                 )}
               </div>
             </div>
-            {list.detailTarget && <ThreadDetailPanel key={list.detailTarget.key} thread={list.detailTarget}
+            {list.detailTarget && <ThreadDetailPanel key={list.detailTarget.key} thread={list.detailTarget} source={source}
               onClose={closeDetails} onExport={() => void handleExport([list.detailTarget!.key])}
-              onDelete={() => void handleDelete([list.detailTarget!.key])} onOpenRaw={() => void handleOpenPath(list.detailTarget!.filePath)} />}
+              onDelete={list.isCodex ? () => void handleDelete([list.detailTarget!.key]) : undefined} onOpenRaw={() => void handleOpenPath(list.detailTarget!.filePath)} />}
           </div>
         </div>
-        <ThreadRecoveryDialog
+        {list.isCodex && <ThreadRecoveryDialog
           thread={recoveryTarget}
           onOpenChange={(open) => !open && setRecoveryTarget(null)}
           onRecovered={async () => {
             await threadsQuery.refetch();
           }}
-        />
+        />}
         <ConfirmDialog request={list.confirmRequest} onClose={() => list.setConfirmRequest(null)} />
       </div>
     </TooltipProvider>

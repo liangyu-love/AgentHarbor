@@ -21,8 +21,9 @@ export const queryKeys = {
   customInstructionTemplates: ["custom-instructions", "templates"],
   imageGallery: ["image-gallery"],
   codexThreads: ["threads", "codex"],
-  threadDetails: (key: string) => ["threads", "codex", "details", key],
-  threadMessages: (key: string, snapshot: number, offset: number) => ["threads", "codex", "messages", key, snapshot, offset],
+  conversations: (source: "codex" | "claudeCode") => ["threads", source],
+  threadDetails: (key: string, source: "codex" | "claudeCode" = "codex") => ["threads", source, "details", key],
+  threadMessages: (key: string, snapshot: number, offset: number, source: "codex" | "claudeCode" = "codex") => ["threads", source, "messages", key, snapshot, offset],
   systemInfo: ["system-info"],
   terminalProxy: ["terminal-proxy"],
 } as const;

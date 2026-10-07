@@ -33,6 +33,7 @@ import { cn } from "@/lib/utils";
 import type { ThreadSummary } from "@/types/threads";
 import { formatSize, formatTokenCount } from "./thread-utils";
 import { focusRing, onActivateKey } from "@/lib/a11y";
+import { ThreadResumeButton } from "./thread-resume-button";
 
 interface ThreadCardProps {
   thread: ThreadSummary;
@@ -41,8 +42,8 @@ interface ThreadCardProps {
   onToggleSelect: () => void;
   onExport: () => void;
   onOpenRaw: () => void;
-  onRecover: () => void;
-  onDelete: () => void;
+  onRecover?: () => void;
+  onDelete?: () => void;
   onDetails?: () => void;
   variant?: "grid" | "compact";
 }
@@ -67,12 +68,13 @@ export function ThreadCard({
   const outputTokens = thread.outputTokens ?? 0;
   const splitTotal = inputTokens + outputTokens;
   const inputRatio = splitTotal > 0 ? Math.round((inputTokens / splitTotal) * 100) : 50;
+  const isClaude = thread.threadSource === "claudeJsonl";
   const hasRollout = thread.rolloutStatus !== "missing";
-  const canPreviewRecovery = thread.id.length > 0;
-  const providerLabel = thread.modelProvider || t("threads.unknownProvider");
+  const canPreviewRecovery = !!onRecover && thread.id.length > 0;
+  const providerLabel = thread.modelProvider || (isClaude ? "" : t("threads.unknownProvider"));
   const modelLabel = thread.model || t("threads.unknownModel");
   const sourceLabel =
-    thread.threadSource === "sqlite"
+    thread.threadSource === "claudeJsonl" ? "Claude Code" : thread.threadSource === "sqlite"
       ? t("threads.threadSourceSqlite")
       : t("threads.threadSourceRollout");
 
@@ -148,7 +150,7 @@ export function ThreadCard({
                   {thread.title || t("threads.untitled")}
                 </button>
 
-                {thread.archived ? (
+                {!isClaude && (thread.archived ? (
                   <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
                     <Archive className="h-2.5 w-2.5" />
                     {t("threads.archivedBadge")}
@@ -158,7 +160,7 @@ export function ThreadCard({
                     <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
                     {t("threads.activeBadge")}
                   </span>
-                )}
+                ))}
 
                 {!hasRollout && (
                   <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-destructive/10 px-2 py-0.5 text-[10px] font-medium text-destructive">
@@ -175,7 +177,7 @@ export function ThreadCard({
                     model: modelLabel,
                   })}
                 >
-                  {providerLabel} · {modelLabel}
+                  {[providerLabel, modelLabel].filter(Boolean).join(" · ")}
                 </span>
 
                 <span
@@ -187,7 +189,7 @@ export function ThreadCard({
                   {sourceLabel}
                 </span>
 
-                {(thread.cliVersion || thread.source) && (
+                {(thread.cliVersion || (!isClaude && thread.source)) && (
                   <span data-thread-row-secondary className="hidden md:inline-flex items-center gap-1 rounded-md bg-muted/70 px-1.5 py-0.5 font-mono text-[9.5px] text-muted-foreground">
                     <Terminal className="h-2.5 w-2.5 opacity-70" />
                     {thread.cliVersion ? `v${thread.cliVersion}` : thread.source}
@@ -257,6 +259,7 @@ export function ThreadCard({
               <TooltipContent>{t("threads.copyId")}</TooltipContent>
             </Tooltip>
 
+            {thread.threadSource === "claudeJsonl" && <ThreadResumeButton id={thread.id} />}
             {canPreviewRecovery && (
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -266,7 +269,7 @@ export function ThreadCard({
                     className="h-7 w-7 rounded-lg text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-all"
                     onClick={(e) => {
                       e.stopPropagation();
-                      onRecover();
+                      onRecover?.();
                     }}
                     aria-label={t("threads.recoveryAction")}
                   >
@@ -333,7 +336,7 @@ export function ThreadCard({
               </TooltipContent>
             </Tooltip>
 
-            <Tooltip>
+            {onDelete && (<Tooltip>
               <TooltipTrigger asChild>
                 <Button
                   variant="ghost"
@@ -342,14 +345,14 @@ export function ThreadCard({
                   aria-label={t("threads.deleteThread")}
                   onClick={(e) => {
                     e.stopPropagation();
-                    onDelete();
+                    onDelete?.();
                   }}
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>{t("threads.deleteThread")}</TooltipContent>
-            </Tooltip>
+            </Tooltip>)}
           </div>
         </div>
       </TooltipProvider>
@@ -420,7 +423,7 @@ export function ThreadCard({
 
           {/* Badges bar */}
           <div className="flex flex-wrap items-center gap-1.5">
-            {thread.archived ? (
+            {!isClaude && (thread.archived ? (
               <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[9.5px] font-medium text-amber-600 dark:text-amber-400">
                 <Archive className="h-2.5 w-2.5" />
                 {t("threads.archivedBadge")}
@@ -430,7 +433,7 @@ export function ThreadCard({
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
                 {t("threads.activeBadge")}
               </span>
-            )}
+            ))}
 
             {!hasRollout && (
               <span className="inline-flex items-center gap-1 rounded-full bg-destructive/10 px-2 py-0.5 text-[9.5px] font-medium text-destructive">
@@ -447,7 +450,7 @@ export function ThreadCard({
               })}
             >
               <span className="max-w-[180px] sm:max-w-[220px] truncate">
-                {providerLabel} · {modelLabel}
+                {[providerLabel, modelLabel].filter(Boolean).join(" · ")}
               </span>
             </span>
 
@@ -459,7 +462,7 @@ export function ThreadCard({
               {sourceLabel}
             </span>
 
-            {(thread.cliVersion || thread.source) && (
+            {(thread.cliVersion || (!isClaude && thread.source)) && (
               <span className="inline-flex items-center gap-1 rounded-md bg-muted/70 px-1.5 py-0.5 font-mono text-[9.5px] text-muted-foreground">
                 <Terminal className="h-2.5 w-2.5 opacity-70" />
                 {thread.cliVersion ? `v${thread.cliVersion}` : thread.source}
@@ -564,6 +567,7 @@ export function ThreadCard({
               <TooltipContent>{t("threads.copyId")}</TooltipContent>
             </Tooltip>
 
+            {thread.threadSource === "claudeJsonl" && <ThreadResumeButton id={thread.id} />}
             {canPreviewRecovery && (
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -573,7 +577,7 @@ export function ThreadCard({
                     className="h-6 w-6 rounded-md text-muted-foreground hover:bg-primary/10 hover:text-primary active:scale-95 transition-all"
                     onClick={(e) => {
                       e.stopPropagation();
-                      onRecover();
+                      onRecover?.();
                     }}
                     aria-label={t("threads.recoveryAction")}
                   >
@@ -640,7 +644,7 @@ export function ThreadCard({
               </TooltipContent>
             </Tooltip>
 
-            <Tooltip>
+            {onDelete && (<Tooltip>
               <TooltipTrigger asChild>
                 <Button
                   variant="ghost"
@@ -649,14 +653,14 @@ export function ThreadCard({
                   aria-label={t("threads.deleteThread")}
                   onClick={(e) => {
                     e.stopPropagation();
-                    onDelete();
+                    onDelete?.();
                   }}
                 >
                   <Trash2 className="h-3 w-3" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>{t("threads.deleteThread")}</TooltipContent>
-            </Tooltip>
+            </Tooltip>)}
           </div>
         </div>
       </div>

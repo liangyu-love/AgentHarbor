@@ -17,6 +17,7 @@ import type {
   McpServerMutationPayload,
   McpServerRemovePayload,
   SkillListPayload,
+  SkillSource,
   InstalledSkillSummary,
   SkillBackupListPayload,
   SkillImportPayload,
@@ -315,28 +316,28 @@ export const api = {
   removeMcpServer: (name: string) =>
     invoke<CoreEnvelope<McpServerRemovePayload>>("remove_mcp_server", { name }),
 
-  loadInstalledSkills: () =>
-    invoke<CoreEnvelope<SkillListPayload>>("load_installed_skills"),
+  loadInstalledSkills: (source?: SkillSource) =>
+    invoke<CoreEnvelope<SkillListPayload>>("load_installed_skills", { source }),
 
-  setSkillEnabled: (id: string, enabled: boolean) =>
-    invoke<CoreEnvelope<InstalledSkillSummary>>("set_skill_enabled", { id, enabled }),
-  resolveSkillConflict: (id: string, keepEnabled: boolean) =>
-    invoke<CoreEnvelope<InstalledSkillSummary>>("resolve_skill_conflict", { id, keepEnabled }),
+  setSkillEnabled: (id: string, enabled: boolean, source?: SkillSource) =>
+    invoke<CoreEnvelope<InstalledSkillSummary>>("set_skill_enabled", { id, enabled, source }),
+  resolveSkillConflict: (id: string, keepEnabled: boolean, source?: SkillSource) =>
+    invoke<CoreEnvelope<InstalledSkillSummary>>("resolve_skill_conflict", { id, keepEnabled, source }),
 
-  loadSkillBackups: () =>
-    invoke<CoreEnvelope<SkillBackupListPayload>>("load_skill_backups"),
+  loadSkillBackups: (source?: SkillSource) =>
+    invoke<CoreEnvelope<SkillBackupListPayload>>("load_skill_backups", { source }),
 
-  importSkill: (path: string) =>
-    invoke<CoreEnvelope<SkillImportPayload>>("import_skill", { path }),
+  importSkill: (path: string, source?: SkillSource) =>
+    invoke<CoreEnvelope<SkillImportPayload>>("import_skill", { path, source }),
 
-  removeSkill: (id: string) =>
-    invoke<CoreEnvelope<SkillRemovePayload>>("remove_skill", { id }),
+  removeSkill: (id: string, source?: SkillSource) =>
+    invoke<CoreEnvelope<SkillRemovePayload>>("remove_skill", { id, source }),
 
-  restoreSkillBackup: (id: string) =>
-    invoke<CoreEnvelope<SkillRestorePayload>>("restore_skill_backup", { id }),
+  restoreSkillBackup: (id: string, source?: SkillSource) =>
+    invoke<CoreEnvelope<SkillRestorePayload>>("restore_skill_backup", { id, source }),
 
-  deleteSkillBackup: (id: string) =>
-    invoke<CoreEnvelope<SkillDeleteBackupPayload>>("delete_skill_backup", { id }),
+  deleteSkillBackup: (id: string, source?: SkillSource) =>
+    invoke<CoreEnvelope<SkillDeleteBackupPayload>>("delete_skill_backup", { id, source }),
 
   loadCustomInstructionState: () =>
     invoke<CoreEnvelope<CustomInstructionStatePayload>>("load_custom_instruction_state"),

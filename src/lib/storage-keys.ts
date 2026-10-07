@@ -9,6 +9,7 @@ export const storageKeys = {
   refreshInterval: "refresh_interval",
   sidebarCollapsed: "sidebar_collapsed",
   threadsViewMode: "threads_view_mode",
+  threadsSource: "threads_source",
   avatar: "agentharbor_avatar",
   wallpaperSettings: "agentharbor_wallpaper_settings_v1",
   imageWorkbenchConfig: "image-workbench-config",

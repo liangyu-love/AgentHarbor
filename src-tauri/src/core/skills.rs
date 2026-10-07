@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 mod activation;
-pub use activation::{load_skill_catalog, load_skill_catalog_report, resolve_skill_conflict, set_skill_enabled};
+mod source;
+pub use source::{SkillPaths, SkillSource};
+pub use activation::{load_skill_catalog, load_skill_catalog_report, load_skill_catalog_report_with_links, resolve_skill_conflict, set_skill_enabled};
 
 #[derive(Default)]
 pub struct ScanReport<T> {
@@ -34,13 +36,17 @@ pub fn load_installed_skills(skills_dir: &Path) -> Result<Vec<InstalledSkillSumm
 }
 
 pub fn scan_installed_skills(skills_dir: &Path) -> Result<ScanReport<InstalledSkillSummary>, CoreError> {
+    scan_installed_skills_with_links(skills_dir, false)
+}
+
+fn scan_installed_skills_with_links(skills_dir: &Path, include_links: bool) -> Result<ScanReport<InstalledSkillSummary>, CoreError> {
     let mut report = ScanReport { items: Vec::new(), warnings: Vec::new() };
     match std::fs::symlink_metadata(skills_dir) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(report),
         Err(error) => return Err(error.into()),
         Ok(_) => {}
     }
-    scan_skills_recursive(skills_dir, skills_dir, &mut report)?;
+    scan_skills_recursive(skills_dir, skills_dir, &mut report, include_links)?;
     report.items.sort_by(|a, b| {
         b.updated_at
             .unwrap_or(0)
@@ -50,7 +56,7 @@ pub fn scan_installed_skills(skills_dir: &Path) -> Result<ScanReport<InstalledSk
     Ok(report)
 }
 
-fn scan_skills_recursive(dir: &Path, root: &Path, report: &mut ScanReport<InstalledSkillSummary>) -> Result<(), CoreError> {
+fn scan_skills_recursive(dir: &Path, root: &Path, report: &mut ScanReport<InstalledSkillSummary>, include_links: bool) -> Result<(), CoreError> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if dir != root && error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -69,6 +75,20 @@ fn scan_skills_recursive(dir: &Path, root: &Path, report: &mut ScanReport<Instal
             Err(error) => return Err(error.into()),
         };
         if activation::is_link(&metadata) {
+            if include_links && !entry.file_name().to_string_lossy().starts_with('.') {
+                // CC Switch and other installers own these projections. Read a
+                // direct SKILL.md only; never walk a link or mutate its target.
+                match std::fs::read_to_string(path.join("SKILL.md")) {
+                    Ok(text) => {
+                        if let Some(mut summary) = skill_summary_from_text(&path.join("SKILL.md"), root, &text) {
+                            summary.read_only = true;
+                            report.items.push(summary);
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::InvalidData => report.warnings.push(scan_warning("invalidEncoding", &path)),
+                    Err(_) => report.warnings.push(scan_warning("invalidLinkedSkill", &path)),
+                }
+            }
             continue;
         }
         if path
@@ -85,7 +105,7 @@ fn scan_skills_recursive(dir: &Path, root: &Path, report: &mut ScanReport<Instal
                         report.items.push(summary);
                     }
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => scan_skills_recursive(&path, root, report)?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => scan_skills_recursive(&path, root, report, include_links)?,
                 Err(error) if error.kind() == std::io::ErrorKind::InvalidData => report.warnings.push(scan_warning("invalidEncoding", &path)),
                 Err(error) => return Err(error.into()),
             }
@@ -121,6 +141,7 @@ fn skill_summary_from_text(skill_file: &Path, root: &Path, text: &str) -> Option
         enabled: true,
         conflict: false,
         conflict_directory_path: None,
+        read_only: false,
         name,
         title,
         summary,
@@ -207,7 +228,7 @@ pub fn import_skill(
         .ok_or_else(|| CoreError::InvalidData("Invalid skill name".into()))?;
     if id.starts_with('.') {
         return Err(CoreError::InvalidData(
-            "Hidden skills cannot be discovered by Codex".into(),
+            "Hidden skills cannot be discovered by the client".into(),
         ));
     }
     let (root, target, enabled) = activation::target_for(skills_dir, app_data_dir, id)?;

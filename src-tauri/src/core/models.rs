@@ -301,6 +301,8 @@ pub struct InstalledSkillSummary {
     pub conflict: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conflict_directory_path: Option<String>,
+    #[serde(default)]
+    pub read_only: bool,
     pub name: String,
     pub title: Option<String>,
     pub summary: Option<String>,

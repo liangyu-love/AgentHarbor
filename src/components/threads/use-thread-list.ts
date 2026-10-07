@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
 import { useBusyAction } from "@/hooks/use-busy-action";
-import type { ThreadSummary } from "@/types/threads";
+import type { ConversationSource, ThreadSummary } from "@/types/threads";
 import {
   filterAndSortThreads,
   groupThreads,
@@ -21,13 +21,13 @@ import type { ConfirmRequest } from "@/components/ui/confirm-dialog";
 export type ExportFormat = "markdown" | "jsonl";
 export type ViewMode = "grid" | "compact";
 
-const THREADS_KEY = queryKeys.codexThreads;
 /** Window the list once dense rows would thrash layout/paint. */
 const VIRTUALIZE_THRESHOLD = 80;
 
 // Thread scan state, filters, selection and the batch actions behind the threads page.
-export function useThreadList() {
+export function useThreadList(source: ConversationSource = "codex", setSource: (source: ConversationSource) => void = () => {}) {
   const { t } = useTranslation();
+  const isCodex = source === "codex";
   const [status, setStatus] = useState<StatusFilter>("all");
   const [query, setQuery] = useState("");
   const [projectKey, setProjectKey] = useState<string | null>(null);
@@ -51,8 +51,8 @@ export function useThreadList() {
   const refreshAction = useBusyAction({ minVisibleMs: 800 });
 
   const threadsQuery = useQuery({
-    queryKey: THREADS_KEY,
-    queryFn: () => api.conversations.list("codex"),
+    queryKey: queryKeys.conversations(source),
+    queryFn: () => api.conversations.list(source),
     staleTime: 30_000,
     refetchInterval: query => query.state.data?.data.pendingDeletionKeys?.length
       || query.state.data?.data.pendingDeletionRecoveryNeeded ? 20_000 : false,
@@ -214,6 +214,7 @@ export function useThreadList() {
   };
 
   const handleRepairAll = async () => {
+    if (!isCodex) return;
     const candidates = [...new Map(
       threads.filter((thread) => thread.id).map((thread) => [thread.id, thread]),
     ).values()];
@@ -258,6 +259,7 @@ export function useThreadList() {
   };
 
   const handleDelete = async (keys: string[]) => {
+    if (!isCodex) return;
     const uniqueKeys = [...new Set(keys)].filter(key => !pendingDeletionKeys.has(key));
     if (uniqueKeys.length === 0 || deleteBusy) return;
     setConfirmRequest({
@@ -272,7 +274,7 @@ export function useThreadList() {
   const deleteThreads = async (uniqueKeys: string[]) => {
     setDeleteBusy(true);
     try {
-      const result = await api.conversations.delete("codex", uniqueKeys);
+      const result = await api.conversations.delete(source, uniqueKeys);
       setSelected((previous) => {
         const next = new Set(previous);
         for (const key of uniqueKeys) next.delete(key);
@@ -301,10 +303,10 @@ export function useThreadList() {
   };
 
   const cancelPendingDeletions = async () => {
-    if (cancelPendingBusy) return;
+    if (!isCodex || cancelPendingBusy) return;
     setCancelPendingBusy(true);
     try {
-      const result = await api.conversations.cancelPendingDeletions("codex");
+      const result = await api.conversations.cancelPendingDeletions(source);
       await threadsQuery.refetch();
       toast({ title: t("threads.deleteQueueCancelled", { count: result.data }), variant: "success" });
     } catch (cause) {
@@ -326,7 +328,7 @@ export function useThreadList() {
     const targetDir = await open({ directory: true, multiple: false });
     if (typeof targetDir !== "string") return;
     try {
-      const result = await api.conversations.export("codex", availableKeys, targetDir, format);
+      const result = await api.conversations.export(source, availableKeys, targetDir, format);
       const payload = result.data;
       if (payload.exported === 0) {
         throw new Error(t("threads.nothingExported"));
@@ -381,6 +383,7 @@ export function useThreadList() {
   };
 
   return {
+    source, setSource, isCodex, sourceBusy: bulkRepairing || deleteBusy || cancelPendingBusy,
     threadsQuery, threads, pendingDeletionKeys, scanWarnings, pendingDeletionRecoveryNeeded,
     filtered, groups, projects, matchingKeys, activeProject, focusedThread, selectProject, focusThread, scopedThreads, workspaceCount,
     selectedExportableCount, useVirtualList,

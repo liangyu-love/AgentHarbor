@@ -9,6 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { testAccountThreadNavigation } from "./test-account-thread-navigation.mjs";
 import { testThreadDetails } from "./test-thread-details.mjs";
+import { testClaudeSessions } from "./test-claude-sessions.mjs";
 import { testThreadUiFixes } from "./test-thread-ui-fixes.mjs";
 import { testMagpieOptimizations } from "./test-magpie-optimizations.mjs";
 import { testProviderFeedback } from "./test-provider-feedback.mjs";
@@ -98,6 +99,8 @@ try {
     await testAccountThreadNavigation({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "thread-details") {
     await testThreadDetails({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "claude-sessions") {
+    await testClaudeSessions({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "claude-desktop-card") {
     await testClaudeDesktopCard({ page, reset, captureDir });
   } else {
@@ -362,6 +365,9 @@ try {
 
   await reset("overview");
   await page.getByText("http://127.0.0.1:7890").waitFor();
+  await page.waitForFunction(() => document.querySelectorAll(".overview-capability-value strong")[2]?.textContent === "39");
+  assert.equal(await page.locator(".overview-capability-meta").nth(2).innerText(), await page.evaluate(() => window.review.t("workspace.skillsSummary", { count: 2 })));
+  assert.deepEqual(await page.evaluate(() => [...new Set(window.review.skillsReadCalls)].sort()), ["claudeCode", "codex"], "Overview includes both skill sources");
   const capabilityWidths = await page.locator(".overview-capability").evaluateAll(cards => cards.map(card => card.getBoundingClientRect().width));
   assert.equal(capabilityWidths.length, 4);
   assert.ok(Math.max(...capabilityWidths) - Math.min(...capabilityWidths) < 2, JSON.stringify(capabilityWidths));
@@ -1249,6 +1255,7 @@ try {
   console.log("PASS gallery scrolls into view, previews above the page, and ignores late image responses");
   await testAccountThreadNavigation({ page, reset, captureDir });
   await testThreadDetails({ page, reset, captureDir });
+  await testClaudeSessions({ page, reset, captureDir });
   await testThreadUiFixes({ page, reset, captureDir });
   await testAggregation({ page, reset, captureDir });
   await testMagpieOptimizations({ page, reset, captureDir });

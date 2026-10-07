@@ -1645,7 +1645,7 @@
     "createdTime": "创建时间：{{time}}",
     "tokenSplit": "输入 {{input}}% · 输出 {{output}}%",
     "emptyTitle": "暂无对话线程记录",
-    "emptyDesc": "当 Codex 产生会话记录（sessions 目录）后会自动收录于此；也可以调整筛选或搜索条件。",
+    "emptyDesc": "暂无 {{client}} 本地会话。",
     "noFilteredResults": "未找到匹配的会话",
     "noFilteredResultsDesc": "当前关键词或筛选条件下未匹配到任何对话，点击按钮清空搜索条件。",
     "clearSearch": "清空搜索",
@@ -1755,7 +1755,11 @@
         "inheritedSessions": "包含 {{count}} 段祖先会话元数据；此视图展示文件中保留的继承历史，并非仅本线程新增用量。"
       },
       "copyFailed": "复制失败"
-    }
+    },
+    "exportFormat": "导出格式",
+    "copyResumeCommand": "复制继续会话命令",
+    "resumeCommandCopied": "继续会话命令已复制",
+    "copyFailed": "复制失败"
   },
   "skills": {
     "enabled": "已启用",
@@ -1769,11 +1773,12 @@
     "warnings": {
       "invalidEncoding": "已跳过非 UTF-8 的 SKILL.md",
       "unreadableMetadata": "备份元数据无法读取，文件仍保留",
-      "corruptMetadata": "备份元数据损坏，文件仍保留"
+      "corruptMetadata": "备份元数据损坏，文件仍保留",
+      "invalidLinkedSkill": "外部管理的技能无法读取"
     },
     "toggle": "启用 {{name}}",
     "title": "Skills 管理",
-    "description": "管理本地 Codex 技能的启停、导入和备份。",
+    "description": "管理本地技能的启停、导入和备份。",
     "installed": "已安装",
     "backups": "备份",
     "import": "导入 Skill",
@@ -1796,7 +1801,10 @@
     "clearSearch": "清空搜索",
     "updatedAt": "更新时间",
     "noDescription": "未提供描述信息",
-    "openFolderFailed": "无法打开目录"
+    "openFolderFailed": "无法打开目录",
+    "source": "客户端",
+    "externallyManaged": "外部管理",
+    "emptyDescription": "可导入包含 SKILL.md 的技能目录。"
   },
   "customInstructions": {
     "description": "管理 Codex 的全局个性化指令，只作用于 ~/.codex/AGENTS.md，不影响项目级 AGENTS 规则。",

@@ -1,3 +1,5 @@
+export type ConversationSource = "codex" | "claudeCode";
+
 export interface ThreadSummary {
   key: string;
   id: string;
@@ -20,7 +22,7 @@ export interface ThreadSummary {
   inputTokens: number | null;
   cachedTokens: number | null;
   outputTokens: number | null;
-  threadSource: "sqlite" | "rollout";
+  threadSource: "sqlite" | "rollout" | "claudeJsonl";
   rolloutStatus: "available" | "missing";
 }
 

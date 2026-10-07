@@ -4,6 +4,7 @@ import { AnimatedSegmentedControl } from "@/components/ui/animated-segmented-con
 type SegmentedOption = {
   value: string;
   label: string;
+  disabled?: boolean;
 };
 
 export function SegmentedOptions({

@@ -38,9 +38,9 @@ export interface VirtualThreadListProps {
   onToggleCollapse: (groupKey: string) => void;
   onExport: (keys: string[]) => void;
   onOpenPath: (path: string) => void;
-  onRecover: (thread: ThreadSummary) => void;
+  onRecover?: (thread: ThreadSummary) => void;
   onDetails?: (thread: ThreadSummary) => void;
-  onDelete: (thread: ThreadSummary) => void;
+  onDelete?: (thread: ThreadSummary) => void;
   onCopyPath: (path: string, groupKey: string) => void;
   copiedGroupPath: string | null;
   t: (key: string, opts?: Record<string, unknown>) => string;
@@ -212,9 +212,9 @@ export function VirtualThreadList({
                         onToggleSelect={() => onToggleSelect(thread.key)}
                         onExport={() => onExport([thread.key])}
                         onOpenRaw={() => onOpenPath(thread.filePath)}
-                        onRecover={() => onRecover(thread)}
+                        onRecover={onRecover ? () => onRecover(thread) : undefined}
                         onDetails={() => onDetails?.(thread)}
-                        onDelete={() => onDelete(thread)}
+                        onDelete={onDelete ? () => onDelete(thread) : undefined}
                         variant="grid"
                       />
                     ))}
@@ -269,9 +269,9 @@ export function VirtualThreadList({
                   onToggleSelect={() => onToggleSelect(row.thread.key)}
                   onExport={() => onExport([row.thread.key])}
                   onOpenRaw={() => onOpenPath(row.thread.filePath)}
-                  onRecover={() => onRecover(row.thread)}
+                  onRecover={onRecover ? () => onRecover(row.thread) : undefined}
                   onDetails={() => onDetails?.(row.thread)}
-                  onDelete={() => onDelete(row.thread)}
+                  onDelete={onDelete ? () => onDelete(row.thread) : undefined}
                   variant="compact"
                 />
               </div>

@@ -23,7 +23,7 @@ export function ThreadMetrics({ list }: { list: ThreadList }) {
   const summaries = [
     {
       name: "threads", label: t("threads.statsThreads"), value: threads.length, Icon: MessagesSquare,
-      hint: t("threads.statsStatus", { active: threads.length - archivedCount, archived: archivedCount }),
+      hint: list.isCodex ? t("threads.statsStatus", { active: threads.length - archivedCount, archived: archivedCount }) : "Claude Code",
     },
     { name: "projects", label: t("threads.statsFolders"), value: workspaceCount, Icon: FolderTree },
     { name: "storage", label: t("threads.statsStorage"), value: formatSize(totalBytes), Icon: HardDrive },
@@ -49,10 +49,10 @@ export function ThreadMetrics({ list }: { list: ThreadList }) {
             className={cn(
               "thread-overview-card",
               name === "storage" && "thread-storage-summary",
-              name === "threads" && "cursor-pointer transition-colors hover:border-primary/40 " + focusRing,
+              list.isCodex && name === "threads" && "cursor-pointer transition-colors hover:border-primary/40 " + focusRing,
               name === "threads" && status === "active" && "border-primary/50",
             )}
-            {...(name === "threads" ? {
+            {...(list.isCodex && name === "threads" ? {
               "aria-pressed": status === "active",
               ...pressable(() => setStatus(status === "active" ? "all" : "active")),
             } : {})}

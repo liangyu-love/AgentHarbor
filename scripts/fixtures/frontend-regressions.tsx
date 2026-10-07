@@ -277,23 +277,34 @@ const accountList = { activeAccountKey: "acct-a", refreshedAt: 1_800_000_000, it
 api.accounts.refresh = async () => accountList as any;
 api.accounts.list = async () => accountList as any;
 api.usage.overview = async () => ({ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } });
-api.loadInstalledSkills = async () => ({ warnings: controls.review.skillWarnings ?? [], data: { total: controls.review.skillItems?.length ?? 36,
-  items: controls.review.skillItems ?? [], rootPath: "C:/synthetic/.codex/skills" } }) as any;
-api.setSkillEnabled = async (id, enabled) => {
-  controls.review.skillToggleCalls.push({ id, enabled });
+api.loadInstalledSkills = async (source = "codex") => {
+  (controls.review.skillsReadCalls ??= []).push(source);
+  const items = source === "claudeCode" ? controls.review.claudeSkills : controls.review.skillItems;
+  return { warnings: source === "codex" ? controls.review.skillWarnings ?? [] : [], data: { total: items?.length ?? (source === "codex" ? 36 : 0),
+    items: items ?? [], rootPath: `C:/synthetic/.${source === "claudeCode" ? "claude" : "codex"}/skills` } } as any;
+};
+api.setSkillEnabled = async (id, enabled, source = "codex") => {
+  controls.review.skillToggleCalls.push({ id, enabled, source });
   if (controls.review.skillToggleHold) await new Promise(resolve => { controls.review.skillToggleResolve = resolve; });
   if (controls.review.skillToggleFailure) throw new Error("Synthetic skill permission failure");
-  const skill = controls.review.skillItems.find((item: any) => item.id === id);
-  Object.assign(skill, { enabled, directoryPath: enabled ? "C:/synthetic/.codex/skills/sample" : "C:/synthetic/app/disabled-skills/sample" });
+  const skill = (source === "claudeCode" ? controls.review.claudeSkills : controls.review.skillItems).find((item: any) => item.id === id);
+  Object.assign(skill, { enabled, directoryPath: enabled ? `C:/synthetic/.${source === "claudeCode" ? "claude" : "codex"}/skills/sample` : `C:/synthetic/app/${source === "claudeCode" ? "skill-clients/claude-code/" : ""}disabled-skills/sample` });
   return { data: skill } as any;
 };
-api.resolveSkillConflict = async (id, keepEnabled) => {
-  const skill = controls.review.skillItems.find((item: any) => item.id === id);
+api.resolveSkillConflict = async (id, keepEnabled, source = "codex") => {
+  const skill = (source === "claudeCode" ? controls.review.claudeSkills : controls.review.skillItems).find((item: any) => item.id === id);
   Object.assign(skill, { enabled: keepEnabled, conflict: false });
-  controls.review.skillConflictChoice = { id, keepEnabled };
+  controls.review.skillConflictChoice = { id, keepEnabled, source };
   return { data: skill } as any;
 };
-api.loadSkillBackups = async () => ({ data: { total: 0, items: [] } }) as any;
+api.loadSkillBackups = async (source = "codex") => {
+  (controls.review.backupsReadCalls ??= []).push(source);
+  const items = source === "claudeCode" ? controls.review.claudeSkillBackups ?? [] : [];
+  return { data: { total: items.length, items, rootPath: source === "claudeCode" ? "C:/synthetic/app/skill-clients/claude-code/skill-backups" : "C:/synthetic/app/skill-backups" } } as any;
+};
+api.restoreSkillBackup = async (id, source = "codex") => { (controls.review.skillRestoreCalls ??= []).push({ id, source }); return { data: { restored: 1 } } as any; };
+api.deleteSkillBackup = async (id, source = "codex") => { (controls.review.skillBackupDeleteCalls ??= []).push({ id, source }); return { data: { deleted: 1 } } as any; };
+api.removeSkill = async (id, source = "codex") => { (controls.review.skillRemoveCalls ??= []).push({ id, source }); return { data: { removed: 1 } } as any; };
 api.loadCustomInstructionState = async () => ({ data: { current: { managedBlockPresent: false, lastTemplateTitle: null } } }) as any;
 api.getSystemInfo = async () => ({ os: "Windows", arch: "x64" }) as any;
 api.providers.queryBalance = id => new Promise((resolve, reject) => {
@@ -500,7 +511,18 @@ function recoveryPreview(mode: FixtureMode) {
 }
 
 function mount(mode: FixtureMode) {
+  localStorage.removeItem("threads_source");
+  if (mode === "overview") { controls.review.claudeSkills = [{ id: "one" }, { id: "two" }, { id: "three" }]; controls.review.claudeSkillBackups = [{ id: "claude-b1" }, { id: "claude-b2" }]; }
+  controls.review.conversationCalls = [];
+  controls.review.conversationListResolvers = [];
   if (mode === "skills") {
+    controls.review.claudeSkills = [
+      { id: "sample", name: "sample", title: "Claude Sample Skill", summary: "Claude user skill", relativePath: "sample",
+        directoryPath: "C:/synthetic/.claude/skills/sample", skillFilePath: "C:/synthetic/.claude/skills/sample/SKILL.md", enabled: true },
+      { id: "linked", name: "linked", title: "Linked Skill", summary: "cc-switch managed", relativePath: "linked",
+        directoryPath: "C:/synthetic/.claude/skills/linked", skillFilePath: "C:/synthetic/.claude/skills/linked/SKILL.md", enabled: true, readOnly: true }
+    ];
+    controls.review.claudeSkillBackups = [{ id: "claude-backup", name: "sample", title: "Claude Backup", relativePath: "sample", directoryPath: "C:/synthetic/app/skill-clients/claude-code/skill-backups/claude-backup", reason: "removed", createdAt: 0 }];
     controls.review.skillToggleCalls = [];
     controls.review.skillConflictChoice = null;
     controls.review.skillWarnings = [{ code: "skills.warnings.invalidEncoding", message: "C:/synthetic/.codex/skills/bad-encoding" }];
@@ -702,28 +724,48 @@ function mount(mode: FixtureMode) {
     };
     api.openPath = async path => { controls.review.openedPath = path; };
   }
-  api.conversations.list = async () => ({ schemaVersion: 1, success: true, code: "ok", message: "",
+  controls.review.claudeThreads = [{ ...threads[0], key: "claude:project/11111111-1111-4111-8111-111111111111.jsonl",
+    id: "11111111-1111-4111-8111-111111111111", title: "Claude review session", archived: false,
+    source: "claudeCode", threadSource: "claudeJsonl", modelProvider: "", model: "claude-sonnet-5-5",
+    filePath: "C:/synthetic/.claude/projects/project/11111111-1111-4111-8111-111111111111.jsonl" }];
+  api.conversations.export = async (target, keys, targetDir, format) => {
+    controls.review.conversationCalls.push({ operation: "export", target, keys, format });
+    return { schemaVersion: 1, success: true, code: "ok", message: "", warnings: [], data: { exported: keys.length, directory: targetDir, files: [] } };
+  };
+  api.conversations.list = async target => {
+    controls.review.conversationCalls.push({ operation: "list", target });
+    const items = target === "claudeCode" ? controls.review.claudeThreads : null;
+    if (controls.review.holdConversationLists?.includes(target)) await new Promise<void>(resolve => {
+      controls.review.conversationListResolvers.push({ target, resolve });
+    });
+    controls.review.conversationCalls.push({ operation: "listResolved", target });
+    if (items) return { schemaVersion: 1, success: true, code: "ok", message: "", warnings: [],
+      data: { total: items.length, lastScanAt: 0, pendingDeletionKeys: [], items } };
+    return ({ schemaVersion: 1, success: true, code: "ok", message: "",
     warnings: [{ code: "thread_scan_skipped", message: "Skipped synthetic-corrupt-session.jsonl: invalid UTF-8" }],
     data: { total: mode === "thread-actions" ? 2 : 1, lastScanAt: 0,
       pendingDeletionKeys: controls.review.pendingDeletionKeys ?? [],
       pendingDeletionRecoveryNeeded: controls.review.pendingDeletionRecoveryNeeded ?? false,
       items: mode === "thread-tree" ? controls.review.threadItems : mode === "thread-details-missing" ? [{ ...threads[0], rolloutStatus: "missing" as const }] : threads.slice(0, mode === "thread-actions" ? 2 : 1) } });
+  };
   controls.review.detailCalls = 0;
   controls.review.messageOffsets = [];
   controls.review.messageRequests = [];
   const diagnostics = { invalidLines: 1, oversizedLines: 0, encryptedRecords: 2, compactions: 1, counterResets: 0, lastUsageOnly: 0, undatedUsage: 0, inheritedSessions: 0 };
   const usage = { input: 33100000, cached: 29400000, output: 201900, reasoning: 68600, total: 33301900 };
-  api.conversations.details = async () => {
+  api.conversations.details = async (target, key) => {
+    controls.review.conversationCalls.push({ operation: "details", target, key });
     controls.review.detailCalls += 1;
     if (controls.review.detailError || mode === "thread-details-error") throw new Error("Synthetic rollout identity mismatch");
     return { schemaVersion: 1, success: true, code: "ok", message: "", warnings: [], data: {
       snapshotBytes: controls.review.snapshotBytes ?? 12345, snapshotId: controls.review.snapshotId ?? "fixture-1", usage: mode === "thread-details-unknown" ? null : usage,
-      byModel: [{ label: "aimami_relay_2d66f8bc24::gpt-6-astra", usage: { ...usage, total: 27401900 } }, { label: "gpt-6.1-sol", usage: { ...usage, total: 5900000 } }],
+      byModel: [{ label: target === "claudeCode" ? "claude-fixture-model" : "aimami_relay_2d66f8bc24::gpt-6-astra", usage: { ...usage, total: 27401900 } }, { label: "gpt-6.1-sol", usage: { ...usage, total: 5900000 } }],
       byDate: [{ label: "2026-09-29", usage: { ...usage, total: 14000000 } }, { label: "2026-09-30", usage: { ...usage, total: 19301900 } }],
       tools: [{ name: "exec_command", calls: 12 }, { name: "apply_patch", calls: 3 }], diagnostics,
     } };
   };
-  api.conversations.messages = async (_target, _key, _id, snapshot, offset, snapshotId) => {
+  api.conversations.messages = async (target, key, _id, snapshot, offset, snapshotId) => {
+    controls.review.conversationCalls.push({ operation: "messages", target, key });
     controls.review.messageOffsets.push(offset);
     controls.review.messageRequests.push({ snapshot, offset, snapshotId });
     if (controls.review.messageError || snapshotId !== (controls.review.snapshotId ?? "fixture-1"))
@@ -731,7 +773,7 @@ function mount(mode: FixtureMode) {
     return { schemaVersion: 1, success: true, code: "ok", message: "", warnings: [], data: { diagnostics,
       nextOffset: offset === 0 ? 50 : null,
       messages: controls.review.messageFixtures?.[offset] ?? (offset === 0 ? [
-        { role: "user", timestamp: "2026-09-30T08:00:00Z", text: "合成的用户问题", truncated: false },
+        { role: "user", timestamp: "2026-09-30T08:00:00Z", text: target === "claudeCode" ? "Claude fixture message" : "合成的用户问题", truncated: false },
         { role: "assistant", timestamp: "2026-09-30T08:00:01Z", text: "<script>never execute this</script>\n" + "可读长消息。".repeat(500), truncated: true },
         { role: "toolCall", timestamp: "2026-09-30T08:00:02Z", text: "exec_command\npwd", truncated: false },
         { role: "toolResult", timestamp: "2026-09-30T08:00:03Z", text: "C:/synthetic/workspace", truncated: false },
@@ -747,7 +789,7 @@ function mount(mode: FixtureMode) {
   if (mode === "groups") controls.review.providersClient = queryClient;
   root.render(<QueryClientProvider client={queryClient}><TooltipProvider>
     <div style={{ position: "relative", height: 600 }}><PageStage state="active">
-      {(mode.startsWith("thread-details") || mode === "terminal-proxy" || mode === "skills" || mode === "groups") && <ThreadToastProbe />}
+      {(mode.startsWith("thread-details") || mode === "thread-tree" || mode === "thread-actions" || mode === "terminal-proxy" || mode === "skills" || mode === "groups") && <ThreadToastProbe />}
       {mode === "desktop-updater" ? <DesktopUpdaterFixture /> : mode === "desktop-exit" ? <ClaudeDesktopRouterExitDialog /> : mode.startsWith("recovery-") ? <RecoveryFixture thread={threads[0] as ThreadSummary} /> :
         mode === "skills" ? <SkillsPage /> : mode === "terminal-proxy" ? <div className="mx-auto max-w-xl rounded-xl bg-card shadow-sm"><TerminalProxySettings currentProxy={{ mode: "manual", url: "http://127.0.0.1:7890" }} /></div> :
         mode === "image" ? <ImageWorkbenchPage /> : mode === "mcp" ? <McpPage /> : mode === "accounts" || mode.startsWith("account-resets") ? <AccountsPage refreshInterval="5m" onManageProviders={noop} /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage" ? <TokenUsagePanel data={{ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } }} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode.startsWith("thread-details") || mode === "thread-tree" || mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :

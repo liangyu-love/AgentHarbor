@@ -65,19 +65,21 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
   const snapshot = useQuery({ queryKey: queryKeys.runtimeStateDisplay, queryFn: () => api.loadSnapshot(true) });
   const newapi = useQuery({ queryKey: queryKeys.providers, queryFn: api.providers.loadState });
   const mcp = useQuery({ queryKey: queryKeys.mcpServers, queryFn: api.loadMcpServers });
-  const skills = useQuery({ queryKey: queryKeys.installedSkills, queryFn: api.loadInstalledSkills });
-  const skillBackups = useQuery({ queryKey: queryKeys.skillBackups, queryFn: api.loadSkillBackups });
+  const skills = useQuery({ queryKey: [...queryKeys.installedSkills, "codex"], queryFn: () => api.loadInstalledSkills("codex") });
+  const skillBackups = useQuery({ queryKey: [...queryKeys.skillBackups, "codex"], queryFn: () => api.loadSkillBackups("codex") });
+  const claudeSkills = useQuery({ queryKey: [...queryKeys.installedSkills, "claudeCode"], queryFn: () => api.loadInstalledSkills("claudeCode") });
+  const claudeBackups = useQuery({ queryKey: [...queryKeys.skillBackups, "claudeCode"], queryFn: () => api.loadSkillBackups("claudeCode") });
   const instructions = useQuery({ queryKey: queryKeys.customInstructionState, queryFn: api.loadCustomInstructionState });
   const systemInfo = useQuery({ queryKey: queryKeys.systemInfo, queryFn: api.getSystemInfo, staleTime: Infinity });
 
   const status = snapshot.data?.data.status;
-  const errors = [snapshot.error, newapi.error, mcp.error, skills.error, skillBackups.error, instructions.error].filter(Boolean);
-  const busy = [snapshot, newapi, mcp, skills, instructions].some((query) => query.isFetching);
+  const errors = [snapshot.error, newapi.error, mcp.error, skills.error, skillBackups.error, claudeSkills.error, claudeBackups.error, instructions.error].filter(Boolean);
+  const busy = [snapshot, newapi, mcp, skills, claudeSkills, instructions].some((query) => query.isFetching);
 
   const refresh = () => {
     void Promise.all([
       snapshot.refetch(), newapi.refetch(), mcp.refetch(), skills.refetch(),
-      skillBackups.refetch(), instructions.refetch(),
+      skillBackups.refetch(), claudeSkills.refetch(), claudeBackups.refetch(), instructions.refetch(),
     ]);
   };
 
@@ -126,8 +128,10 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
   const activeProvider = newapi.data?.providers.find((provider) => provider.id === newapi.data?.activeProviderId);
   const mcpServers = mcp.data?.data.items ?? [];
   const mcpEnabledCount = mcpServers.filter((server) => server.enabled).length;
-  const skillsCount = skills.data?.data.total ?? 0;
-  const backupsCount = skillBackups.data?.data.total ?? 0;
+  const skillsCount = (skills.data?.data.total ?? 0) + (claudeSkills.data?.data.total ?? 0);
+  const backupsCount = (skillBackups.data?.data.total ?? 0) + (claudeBackups.data?.data.total ?? 0);
+  const skillsAvailable = !!skills.data && !!claudeSkills.data && !skills.isError && !claudeSkills.isError;
+  const backupsAvailable = !!skillBackups.data && !!claudeBackups.data && !skillBackups.isError && !claudeBackups.isError;
   const instructionManaged = instructions.data?.data.current.managedBlockPresent ?? false;
   const lastTemplateTitle = instructions.data?.data.current.lastTemplateTitle;
 
@@ -194,8 +198,8 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
           </button>
           <button type="button" className="overview-capability" onClick={() => onNavigate("skills")}>
             <span className="overview-capability-heading"><Sparkles aria-hidden />{t("nav.skills")}<ArrowRight aria-hidden className="overview-capability-arrow" /></span>
-            <span className={cn("overview-capability-value", !skills.data && "is-empty")}><strong>{skills.isError || !skills.data ? "—" : skillsCount}</strong><small>{t("workspace.skillsUnit")}</small></span>
-            <span className="overview-capability-meta">{skillBackups.data ? t("workspace.skillsSummary", { count: backupsCount }) : t(skillBackups.isError ? "workspace.checkFailed" : "workspace.checking")}</span>
+            <span className={cn("overview-capability-value", !skillsAvailable && "is-empty")}><strong>{skillsAvailable ? skillsCount : "—"}</strong><small>{t("workspace.skillsUnit")}</small></span>
+            <span className="overview-capability-meta">{backupsAvailable ? t("workspace.skillsSummary", { count: backupsCount }) : t(skillBackups.isError || claudeBackups.isError ? "workspace.checkFailed" : "workspace.checking")}</span>
           </button>
           <button type="button" className="overview-capability" onClick={() => onNavigate("customInstructions")}>
             <span className="overview-capability-heading"><FileCode2 aria-hidden />{t("nav.customInstructions")}<ArrowRight aria-hidden className="overview-capability-arrow" /></span>

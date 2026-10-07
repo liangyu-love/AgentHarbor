@@ -39,6 +39,7 @@ import {
 } from "@/components/ui/tooltip";
 import { api } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
+import { ThreadResumeButton } from "./thread-resume-button";
 import { formatInvokeError } from "@/lib/invoke-error";
 import { formatDateTime } from "@/lib/format-time";
 import { cn } from "@/lib/utils";
@@ -687,15 +688,17 @@ function MessageItem({
 
 export function ThreadDetailPanel({
   thread,
+  source = "codex",
   onClose,
   onExport,
   onDelete,
   onOpenRaw,
 }: {
   thread: ThreadSummary;
+  source?: "codex" | "claudeCode";
   onClose: () => void;
   onExport: () => void;
-  onDelete: () => void;
+  onDelete?: () => void;
   onOpenRaw: () => void;
 }) {
   const { t } = useTranslation();
@@ -777,8 +780,8 @@ export function ThreadDetailPanel({
   }, [tab, offset]);
 
   const detailQuery = useQuery({
-    queryKey: queryKeys.threadDetails(thread.key),
-    queryFn: () => api.conversations.details("codex", thread.key, thread.id),
+    queryKey: queryKeys.threadDetails(thread.key, source),
+    queryFn: () => api.conversations.details(source, thread.key, thread.id),
     enabled: available,
     gcTime: 0,
     retry: false,
@@ -791,10 +794,11 @@ export function ThreadDetailPanel({
       thread.key,
       detail?.snapshotBytes ?? 0,
       offset,
+      source,
     ), detail?.snapshotId],
     queryFn: () =>
       api.conversations.messages(
-        "codex",
+        source,
         thread.key,
         thread.id,
         detail!.snapshotBytes,
@@ -930,7 +934,7 @@ export function ThreadDetailPanel({
             )}
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs">
-            {thread.archived ? (
+            {source === "codex" && (thread.archived ? (
               <Badge
                 variant="outline"
                 className="gap-1 border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400 text-[10px] px-1.5 py-0"
@@ -946,7 +950,7 @@ export function ThreadDetailPanel({
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
                 {t("threads.activeBadge")}
               </Badge>
-            )}
+            ))}
 
             <span className="rounded bg-muted px-1.5 py-0 font-mono text-[10px] text-muted-foreground">
               {t("threads.details.messages", {
@@ -1360,7 +1364,8 @@ export function ThreadDetailPanel({
               <TooltipContent>{t("threads.openRawFile")}</TooltipContent>
             </Tooltip>
 
-            <Tooltip>
+            {source === "claudeCode" && <ThreadResumeButton id={thread.id} className="h-8 w-8 rounded-xl" />}
+            {onDelete && (<Tooltip>
               <TooltipTrigger asChild>
                 <Button
                   variant="ghost"
@@ -1369,14 +1374,14 @@ export function ThreadDetailPanel({
                   aria-label={t("threads.deleteThread")}
                   onClick={() => {
                     closePanel();
-                    onDelete();
+                    onDelete?.();
                   }}
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>{t("threads.deleteThread")}</TooltipContent>
-            </Tooltip>
+            </Tooltip>)}
           </TooltipProvider>
         </footer>
     </aside>

@@ -1645,7 +1645,7 @@
     "createdTime": "Created: {{time}}",
     "tokenSplit": "Input {{input}}% · output {{output}}%",
     "emptyTitle": "No conversations recorded yet",
-    "emptyDesc": "Conversations appear here once Codex writes session logs; or adjust your filters and search.",
+    "emptyDesc": "No local {{client}} sessions yet.",
     "noFilteredResults": "No matching conversations found",
     "noFilteredResultsDesc": "No conversations match current keywords or filter criteria. Click button to clear search.",
     "clearSearch": "Clear search",
@@ -1755,7 +1755,11 @@
         "inheritedSessions": "Contains {{count}} ancestor session metadata records. This view includes inherited history retained in the file, not only new usage in this thread."
       },
       "copyFailed": "Copy failed"
-    }
+    },
+    "exportFormat": "Export format",
+    "copyResumeCommand": "Copy resume command",
+    "resumeCommandCopied": "Resume command copied",
+    "copyFailed": "Copy failed"
   },
   "skills": {
     "enabled": "Enabled",
@@ -1769,11 +1773,12 @@
     "warnings": {
       "invalidEncoding": "Skipped a non-UTF-8 SKILL.md",
       "unreadableMetadata": "Backup metadata cannot be read; files are retained",
-      "corruptMetadata": "Backup metadata is damaged; files are retained"
+      "corruptMetadata": "Backup metadata is damaged; files are retained",
+      "invalidLinkedSkill": "An externally managed skill cannot be read"
     },
     "toggle": "Enable {{name}}",
     "title": "Skills Management",
-    "description": "Enable, disable, import and back up local Codex skills.",
+    "description": "Enable, disable, import and back up local skills.",
     "installed": "Installed",
     "backups": "Backups",
     "import": "Import Skill",
@@ -1796,7 +1801,10 @@
     "clearSearch": "Clear Search",
     "updatedAt": "Updated",
     "noDescription": "No description provided",
-    "openFolderFailed": "Unable to open directory"
+    "openFolderFailed": "Unable to open directory",
+    "source": "Client",
+    "externallyManaged": "Externally managed",
+    "emptyDescription": "Import a skill directory containing SKILL.md."
   },
   "customInstructions": {
     "description": "Manage Codex global custom instructions through ~/.codex/AGENTS.md without touching project-level AGENTS rules.",

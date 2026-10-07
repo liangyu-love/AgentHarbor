@@ -4,14 +4,16 @@ import { RainbowButton } from "@/registry/magicui/rainbow-button";
 import { Button } from "@/components/ui/button";
 import { ButtonBusyContent } from "@/components/ui/button-busy-content";
 import { SegmentedOptions } from "@/components/ui/segmented-options";
-import type { ExportFormat } from "@/components/threads/use-thread-list";
+import type { ConversationSource } from "@/types/threads";
 import type { ThreadList } from "@/components/threads/use-thread-list";
 
 export function ThreadsHeader({ list }: { list: ThreadList }) {
   const { t } = useTranslation();
   const {
-    format,
-    setFormat,
+    source,
+    setSource,
+    sourceBusy,
+    isCodex,
     threads,
     bulkRepairing,
     handleRepairAll,
@@ -33,17 +35,17 @@ export function ThreadsHeader({ list }: { list: ThreadList }) {
       </div>
 
       <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-        {/* Format Selector */}
-        <SegmentedOptions
+        {/* Client source selector */}
+        <div data-thread-source-controls><SegmentedOptions
           items={[
-            { value: "markdown", label: t("threads.formatMarkdown") },
-            { value: "jsonl", label: t("threads.formatJsonl") },
+            { value: "codex", label: "Codex", disabled: sourceBusy },
+            { value: "claudeCode", label: "Claude Code", disabled: sourceBusy },
           ]}
-          value={format}
-          onChange={(value) => setFormat(value as ExportFormat)}
-        />
+          value={source}
+          onChange={(value) => setSource(value as ConversationSource)}
+        /></div>
 
-        <Button
+        {isCodex && <Button
           variant="outline"
           size="sm"
           className="h-9 gap-1.5 rounded-xl border-border/80 px-3.5 text-xs font-semibold shadow-xs hover:border-primary/40 hover:bg-muted/80 active:scale-95 transition-all"
@@ -56,7 +58,7 @@ export function ThreadsHeader({ list }: { list: ThreadList }) {
             <Sparkles className="h-3.5 w-3.5 text-amber-500" />
           )}
           <span>{bulkRepairing ? t("threads.repairingAll") : t("threads.repairAll")}</span>
-        </Button>
+        </Button>}
 
         {/* Refresh Button */}
         <RainbowButton

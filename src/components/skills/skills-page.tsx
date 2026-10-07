@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useLayoutEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
@@ -10,6 +10,8 @@ import { ButtonBusyContent } from "@/components/ui/button-busy-content";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { SegmentedOptions } from "@/components/ui/segmented-options";
+import { AnimatedSegmentedControl } from "@/components/ui/animated-segmented-control";
+import type { SkillSource } from "@/types";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -43,6 +45,27 @@ import { errorMessage, formatInvokeError } from "@/lib/invoke-error";
 type Tab = "installed" | "backups";
 
 export function SkillsPage() {
+  const [source, setSource] = useState<SkillSource>("codex");
+  const restoreSourceFocus = useRef(false);
+  const changeSource = (next: SkillSource) => {
+    restoreSourceFocus.current = !!document.activeElement?.closest("[data-skills-source-controls]");
+    setSource(next);
+  };
+  useLayoutEffect(() => {
+    if (restoreSourceFocus.current) {
+      document.querySelector<HTMLElement>('[data-skills-source-controls] [role="radio"][aria-checked="true"]')?.focus({ preventScroll: true });
+      restoreSourceFocus.current = false;
+    }
+  }, [source]);
+  // A source switch resets dialogs, filters, and mutation observers together.
+  // In-flight reads still populate only their source-specific query cache.
+  return <SkillsWorkspace key={source} source={source} onSourceChange={changeSource} />;
+}
+
+function SkillsWorkspace({ source, onSourceChange }: {
+  source: SkillSource;
+  onSourceChange: (source: SkillSource) => void;
+}) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<Tab>("installed");
@@ -54,14 +77,14 @@ export function SkillsPage() {
   const refreshAction = useBusyAction({ minVisibleMs: 800 });
 
   const skillsQuery = useQuery({
-    queryKey: queryKeys.installedSkills,
-    queryFn: () => api.loadInstalledSkills(),
+    queryKey: [...queryKeys.installedSkills, source],
+    queryFn: () => api.loadInstalledSkills(source),
     staleTime: 30_000,
   });
 
   const backupsQuery = useQuery({
-    queryKey: queryKeys.skillBackups,
-    queryFn: () => api.loadSkillBackups(),
+    queryKey: [...queryKeys.skillBackups, source],
+    queryFn: () => api.loadSkillBackups(source),
   });
 
   const refreshBusy = refreshAction.busy;
@@ -73,14 +96,14 @@ export function SkillsPage() {
   };
 
   const refreshSkills = () => Promise.all([
-    queryClient.invalidateQueries({ queryKey: queryKeys.installedSkills }),
-    queryClient.invalidateQueries({ queryKey: queryKeys.skillBackups }),
+    queryClient.invalidateQueries({ queryKey: [...queryKeys.installedSkills, source] }),
+    queryClient.invalidateQueries({ queryKey: [...queryKeys.skillBackups, source] }),
   ]);
   const importMutation = useMutation({
     mutationFn: async () => {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const path = await open({ directory: true });
-      if (typeof path === "string") return api.importSkill(path);
+      if (typeof path === "string") return api.importSkill(path, source);
       throw new Error("cancelled");
     },
     onSuccess: () => {
@@ -104,19 +127,19 @@ export function SkillsPage() {
     title: t("common.error"), description: formatInvokeError(err), variant: "destructive",
   });
   const toggleMutation = useMutation({
-    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => api.setSkillEnabled(id, enabled),
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => api.setSkillEnabled(id, enabled, source),
     onError: showMutationError,
     onSettled: refreshSkills,
   });
 
   const conflictMutation = useMutation({
-    mutationFn: ({ id, keepEnabled }: { id: string; keepEnabled: boolean }) => api.resolveSkillConflict(id, keepEnabled),
+    mutationFn: ({ id, keepEnabled }: { id: string; keepEnabled: boolean }) => api.resolveSkillConflict(id, keepEnabled, source),
     onError: showMutationError,
     onSettled: refreshSkills,
   });
 
   const removeMutation = useMutation({
-    mutationFn: (id: string) => api.removeSkill(id),
+    mutationFn: (id: string) => api.removeSkill(id, source),
     onSuccess: () => {
       setRemoving(null);
     },
@@ -125,7 +148,7 @@ export function SkillsPage() {
   });
 
   const restoreMutation = useMutation({
-    mutationFn: (id: string) => api.restoreSkillBackup(id),
+    mutationFn: (id: string) => api.restoreSkillBackup(id, source),
     onSuccess: () => {
       toast({
         title: t("common.success"),
@@ -137,7 +160,7 @@ export function SkillsPage() {
   });
 
   const deleteBackupMutation = useMutation({
-    mutationFn: (id: string) => api.deleteSkillBackup(id),
+    mutationFn: (id: string) => api.deleteSkillBackup(id, source),
     onSuccess: () => {
       setDeletingBackup(null);
     },
@@ -199,17 +222,36 @@ export function SkillsPage() {
   }, [backups, searchQuery]);
 
   const activeQuery = tab === "installed" ? skillsQuery : backupsQuery;
+  const sourceControl = <div key="source-controls" data-skills-source-controls className="flex flex-wrap items-center gap-3">
+    <span className="text-sm text-muted-foreground">{t("skills.source")}</span>
+    <AnimatedSegmentedControl
+      items={[{ value: "codex", label: "Codex", disabled: skillsBusy }, { value: "claudeCode", label: "Claude Code", disabled: skillsBusy }]}
+      value={source}
+      onValueChange={(value) => {
+        if (skillsBusy) return;
+        onSourceChange(value as SkillSource);
+      }}
+      className="rounded-full bg-muted p-0.5"
+      indicatorClassName="rounded-full bg-primary shadow-sm"
+      itemClassName="rounded-full px-4 py-1.5 text-sm font-medium"
+      activeItemClassName="text-primary-foreground"
+      inactiveItemClassName="text-muted-foreground hover:text-foreground"
+    />
+  </div>;
   if (activeQuery.error) {
     return (
-      <div role="alert" className="space-y-3 p-4">
-        <p>{t("baseline.readFailed")}</p>
-        <p className="text-sm text-muted-foreground">{formatInvokeError(activeQuery.error)}</p>
-        <Button onClick={() => void activeQuery.refetch()}>{t("common.refresh")}</Button>
+      <div className="space-y-3 p-4">
+        {sourceControl}
+        <div role="alert" className="space-y-3">
+          <p>{t("baseline.readFailed")}</p>
+          <p className="text-sm text-muted-foreground">{formatInvokeError(activeQuery.error)}</p>
+          <Button onClick={() => void activeQuery.refetch()}>{t("common.refresh")}</Button>
+        </div>
       </div>
     );
   }
   if (activeQuery.isPending) {
-    return <p role="status" className="p-4 text-muted-foreground">{t("baseline.loading")}</p>;
+    return <div className="space-y-4 p-4">{sourceControl}<p role="status" className="text-muted-foreground">{t("baseline.loading")}</p></div>;
   }
 
   const currentRootPath = tab === "installed" ? skillsRootPath : backupsRootPath;
@@ -249,6 +291,8 @@ export function SkillsPage() {
           </Button>
         </div>
       </div>
+
+      {sourceControl}
 
       {/* Stats & Quick directory access bar */}
       <div className="app-metric-grid grid grid-cols-1 gap-3 md:grid-cols-3">
@@ -373,7 +417,7 @@ export function SkillsPage() {
               </div>
               <p className="mt-3.5 text-base font-semibold text-foreground">{t("skills.empty")}</p>
               <p className="mt-1 text-xs text-muted-foreground max-w-sm">
-                直接导入包含 SKILL.md 的技能文件夹，让 Codex 拥有丰富的领域扩展能力。
+                {t("skills.emptyDescription")}
               </p>
               <RainbowButton
                 size="sm"
@@ -453,12 +497,12 @@ export function SkillsPage() {
 
                 {/* Card Footer: Open Folder & Remove Action */}
                 {skill.conflict && <div className="mt-3 flex flex-wrap gap-2">
-                  <Button size="sm" variant="outline" disabled={skillsBusy} onClick={() => setConflictChoice({ id: skill.id, keepEnabled: true })}>{t("skills.keepActive")}</Button>
-                  <Button size="sm" variant="outline" disabled={skillsBusy} onClick={() => setConflictChoice({ id: skill.id, keepEnabled: false })}>{t("skills.keepDisabled")}</Button>
+                  <Button size="sm" variant="outline" disabled={skillsBusy || skill.readOnly} onClick={() => setConflictChoice({ id: skill.id, keepEnabled: true })}>{t("skills.keepActive")}</Button>
+                  <Button size="sm" variant="outline" disabled={skillsBusy || skill.readOnly} onClick={() => setConflictChoice({ id: skill.id, keepEnabled: false })}>{t("skills.keepDisabled")}</Button>
                   {skill.conflictDirectoryPath && <Button size="sm" variant="ghost" title={skill.conflictDirectoryPath} onClick={() => handleOpenFolder(skill.conflictDirectoryPath!)}>{t(skill.enabled ? "skills.openDisabledFolder" : "skills.openActiveFolder")}</Button>}
                 </div>}
                 <div className="mt-4 pt-3 border-t border-border/50 flex flex-wrap gap-2 items-center justify-between">
-                  {skill.conflict ? <span className="text-xs text-muted-foreground">{t("skills.conflict")}</span> : <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  {skill.readOnly ? <span className="rounded bg-muted px-2 py-1 text-xs text-muted-foreground">{t("skills.externallyManaged")}</span> : skill.conflict ? <span className="text-xs text-muted-foreground">{t("skills.conflict")}</span> : <label className="flex items-center gap-2 text-xs text-muted-foreground">
                     <Switch checked={skill.enabled !== false}
                       disabled={skillsBusy || skill.conflict}
                       aria-label={t("skills.toggle", { name: skill.title || skill.name })}
@@ -480,7 +524,7 @@ export function SkillsPage() {
                     variant="ghost"
                     size="icon-sm"
                     onClick={() => setRemoving(skill.id)}
-                    disabled={skillsBusy || skill.conflict}
+                    disabled={skillsBusy || skill.conflict || skill.readOnly}
                     className="h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
                     title={t("skills.remove")}
                     aria-label={t("skills.remove")}

@@ -236,9 +236,9 @@ export function ThreadGroupSection({
               onToggleSelect={() => toggleSelect(thread.key)}
               onExport={() => void handleExport([thread.key])}
               onOpenRaw={() => void handleOpenPath(thread.filePath)}
-              onRecover={() => setRecoveryTarget(thread)}
+              onRecover={list.isCodex ? () => setRecoveryTarget(thread) : undefined}
               onDetails={() => onDetails(thread.key)}
-              onDelete={() => void handleDelete([thread.key])}
+              onDelete={list.isCodex ? () => void handleDelete([thread.key]) : undefined}
               variant={viewMode}
             />
           ))}

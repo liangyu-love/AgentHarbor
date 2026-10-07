@@ -149,11 +149,14 @@ export interface McpServerRemovePayload {
   sourcePath: string;
 }
 
+export type SkillSource = "codex" | "claudeCode";
+
 export interface InstalledSkillSummary {
   id: string;
   enabled: boolean;
   conflict?: boolean;
   conflictDirectoryPath?: string | null;
+  readOnly?: boolean;
   name: string;
   title: string | null;
   summary: string | null;

@@ -1,4 +1,4 @@
-//! Codex activation is derived from directory placement, never a UI-only flag.
+//! Client activation is derived from directory placement, never a UI-only flag.
 use super::*;
 use std::fs::{File, OpenOptions};
 
@@ -53,7 +53,11 @@ pub(super) fn catalog(
 }
 
 fn catalog_report(skills_dir: &Path, app_data_dir: &Path) -> Result<ScanReport<InstalledSkillSummary>, CoreError> {
-    let mut report = scan_installed_skills(skills_dir)?;
+    catalog_report_with_links(skills_dir, app_data_dir, false)
+}
+
+fn catalog_report_with_links(skills_dir: &Path, app_data_dir: &Path, include_links: bool) -> Result<ScanReport<InstalledSkillSummary>, CoreError> {
+    let mut report = scan_installed_skills_with_links(skills_dir, include_links)?;
     let inactive_report = scan_installed_skills(&disabled_root(app_data_dir))?;
     report.warnings.extend(inactive_report.warnings);
     let items = &mut report.items;
@@ -97,6 +101,11 @@ pub fn load_skill_catalog_report(skills_dir: &Path, app_data_dir: &Path) -> Resu
     catalog_report(skills_dir, app_data_dir)
 }
 
+pub fn load_skill_catalog_report_with_links(skills_dir: &Path, app_data_dir: &Path) -> Result<ScanReport<InstalledSkillSummary>, CoreError> {
+    let _guard = write_guard(app_data_dir)?;
+    catalog_report_with_links(skills_dir, app_data_dir, true)
+}
+
 /// Re-import and restore retain the current activation state.
 pub(super) fn target_for(
     skills_dir: &Path,
@@ -104,7 +113,7 @@ pub(super) fn target_for(
     id: &str,
 ) -> Result<(PathBuf, PathBuf, bool), CoreError> {
     if Path::new(id).components().any(|part| matches!(part, std::path::Component::Normal(name) if name.to_string_lossy().starts_with('.'))) {
-        return Err(CoreError::InvalidData("Hidden skills cannot be discovered by Codex".into()));
+        return Err(CoreError::InvalidData("Hidden skills cannot be discovered by the client".into()));
     }
     let disabled = disabled_root(app_data_dir);
     let active_path = checked_child(skills_dir, id)?;

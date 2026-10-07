@@ -10,7 +10,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { SortOption, StatusFilter } from "@/components/threads/thread-utils";
-import type { ThreadList } from "@/components/threads/use-thread-list";
+import type { ExportFormat, ThreadList } from "@/components/threads/use-thread-list";
 
 // Search, status tabs, sorting, view mode, fold and select-all controls.
 export function ThreadToolbar({ list }: { list: ThreadList }) {
@@ -46,7 +46,7 @@ export function ThreadToolbar({ list }: { list: ThreadList }) {
         </div>
 
         {/* Status Tabs */}
-        <SegmentedOptions
+        {list.isCodex && <SegmentedOptions
           items={[
             { value: "all", label: t("threads.filterAll", { count: threads.length }) },
             {
@@ -57,7 +57,7 @@ export function ThreadToolbar({ list }: { list: ThreadList }) {
           ]}
           value={status}
           onChange={(value) => setStatus(value as StatusFilter)}
-        />
+        />}
 
         {/* Sorting Dropdown */}
         <DropdownMenu>
@@ -83,7 +83,21 @@ export function ThreadToolbar({ list }: { list: ThreadList }) {
       </div>
 
       {/* Right: View mode & Folder Fold / Batch Select */}
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" size="sm" className="h-8.5 gap-1.5 text-xs" aria-label={t("threads.exportFormat")}>
+              {t("threads.exportFormat")}: {t(list.format === "markdown" ? "threads.formatMarkdown" : "threads.formatJsonl")}
+              <ChevronDown className="h-3 w-3" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            {(["markdown", "jsonl"] as ExportFormat[]).map(format => <DropdownMenuItem key={format} onClick={() => list.setFormat(format)}>
+              {t(format === "markdown" ? "threads.formatMarkdown" : "threads.formatJsonl")}
+              {list.format === format && <Check className="ml-auto h-3.5 w-3.5" />}
+            </DropdownMenuItem>)}
+          </DropdownMenuContent>
+        </DropdownMenu>
         {/* View Mode Switcher */}
         <div className="flex items-center rounded-lg border border-border/70 p-0.5 bg-muted/20">
           <Button

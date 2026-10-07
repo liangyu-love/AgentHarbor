@@ -10,6 +10,7 @@ pub mod balance_refresh;
 mod balance_script;
 pub mod capability_preview;
 pub mod claude_desktop;
+pub mod claude_sessions;
 pub mod client_config;
 pub mod codex_config;
 pub mod custom_instructions;
