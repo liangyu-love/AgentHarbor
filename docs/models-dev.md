@@ -141,6 +141,16 @@ values remain display-only: saving leaves manual overrides and explicit catalog
 references empty until the user edits them. Pending models are resolved when
 added, independently of the size of the fetched list.
 
+The context control also offers a `272K` shortcut for Codex workflows. It sets
+only the selected model's existing `overrides.contextWindow` to `272000`;
+input/output overrides, compression policy and other models are preserved.
+Saving is still explicit. `Auto` clears that override and resumes normal
+resolution, including a catalog-declared 1M/1.05M window. The existing prompt
+budget clamp and compression policy then recompute from the effective window.
+This is an optional smaller window, not a replacement for model capability:
+[the Sol API documentation](https://developers.openai.com/api/docs/models/gpt-6.1-sol)
+declares 1,050,000 tokens and different pricing above 272K input tokens.
+
 Native Codex applies a shared minimum threshold across the active provider's
 selected Responses models. The preview shows each model's suggestion, the
 planned shared threshold, the value read from config, the limiting models and

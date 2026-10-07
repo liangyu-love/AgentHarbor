@@ -39,6 +39,28 @@ export async function testProviderModelResolutions({ page, reset, captureDir }) 
 
   await reset("provider");
   await ready();
+  const preset = row("model-A").getByRole("button", { name: /272K/ });
+  assert.equal(await preset.getAttribute("aria-pressed"), "false");
+  await preset.click();
+  assert.equal(await context("model-A").inputValue(), "272000");
+  assert.equal(await preset.getAttribute("aria-pressed"), "true");
+  const presetSaved = await save();
+  assert.equal(presetSaved.models[0].overrides.contextWindow, 272000);
+  assert.equal(presetSaved.models[0].contextWindow, null);
+  assert.equal(presetSaved.models[0].overrides.inputLimit, undefined);
+  assert.deepEqual(presetSaved.models[0].compression, { mode: "inherit" });
+  await page.locator("#reopen-saved").click();
+  assert.equal(await context("model-A").inputValue(), "272000");
+  await row("model-A").getByRole("button", { name: /自动|Auto/i, exact: true }).click();
+  await ready();
+  assert.equal(await context("model-A").inputValue(), "");
+  assert.equal(digits(await context("model-A").getAttribute("placeholder")), "1000000");
+  const restored = await save();
+  assert.equal(restored.models[0].overrides.contextWindow, null);
+  console.log("PASS the Codex 272K shortcut uses the existing model override, survives reopening, and Auto restores the 1M catalog default");
+
+  await reset("provider");
+  await ready();
   await context("model-A").fill("64000");
   await page.waitForFunction(() => window.review.modelResolutionRequests.at(-1)?.models[0]?.overrides?.contextWindow === 64000);
   assert.equal(await context("model-A").inputValue(), "64000");

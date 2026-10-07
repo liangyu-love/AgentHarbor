@@ -471,6 +471,58 @@ mod tests {
     }
 
     #[test]
+    fn context_preset_reuses_overrides_and_restores_catalog_limits_in_both_codex_modes() {
+        let catalog = models_dev::Catalog::from_snapshot(
+            models_dev::Snapshot {
+                schema_version: models_dev::SCHEMA_VERSION,
+                revision: "fixture-1m".into(),
+                providers: vec![models_dev::Provider {
+                    id: "openai".into(),
+                    name: "OpenAI".into(),
+                    models: ["gpt-6-luna", "gpt-6.1-sol"].map(|id| models_dev::Model {
+                        id: id.into(),
+                        name: id.into(),
+                        limit: models_dev::Limit {
+                            context: Some(1_050_000),
+                            input: Some(1_050_000),
+                            output: Some(128_000),
+                        },
+                        ..Default::default()
+                    }).into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            models_dev::Origin::Embedded,
+        ).unwrap();
+        for mode in [router::CodexAccessMode::Router, router::CodexAccessMode::Native] {
+            let mut store = store(&model_policy::CompressionPolicy::percent(90));
+            store.codex_access_mode = mode;
+            let mut draft = draft();
+            let mut sibling = draft.models[0].clone();
+            sibling.id = "gpt-6.1-sol".into();
+            draft.models.push(sibling);
+            draft.models[0].overrides.max_output_tokens = Some(32_000);
+            let automatic = resolve_with_sources(&draft, &store, &[], &catalog);
+            assert_eq!(automatic.models[0].projection.context_window, 1_050_000);
+            draft.models[0].overrides.context_window = Some(272_000);
+            let preset = resolve_with_sources(&draft, &store, &[], &catalog);
+            assert_eq!(preset.models[0].context.value, Some(272_000));
+            assert_eq!(preset.models[0].context.source, model_metadata::source::MANUAL);
+            assert_eq!(preset.models[0].projection.budget, 272_000);
+            assert_eq!(preset.models[0].projection.compression.threshold, Some(244_800));
+            assert_eq!(preset.models[0].projection.output_limit, Some(32_000));
+            assert_eq!(preset.models[1].projection.context_window, 1_050_000);
+            draft.models[0].overrides.context_window = None;
+            let restored = resolve_with_sources(&draft, &store, &[], &catalog);
+            assert_eq!(restored.models[0].projection.context_window, 1_050_000);
+            assert_eq!(restored.models[0].projection.compression.threshold, Some(945_000));
+            assert_eq!(restored.models[0].projection.output_limit, Some(32_000));
+            assert_eq!(draft.models[0].context_window, None);
+        }
+    }
+
+    #[test]
     fn speed_variant_preview_uses_the_shared_context_reference_and_keeps_its_raw_id() {
         let mut draft = draft();
         draft.models[0].id = "openai/gpt-6-luna-fast".into();

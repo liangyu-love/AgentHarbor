@@ -764,6 +764,8 @@
     "menuDisplayName": "别名（编码器菜单显示）",
     "menuDisplayNameFor": "{{model}} 的菜单显示名",
     "contextWindowShort": "上下文窗口",
+    "codexContextPreset": "Codex 上下文覆盖 · 272,000",
+    "codexContextPresetAria": "将 {{model}} 的上下文设为 272K",
     "modelLimitsColumn": "上限 · 目录 · 压缩",
     "modelLimitsColumnHint": "上限留空即自动解析；目录填写 provider/model 精确匹配；压缩留空跟随上级策略。",
     "limitShort": "上限",

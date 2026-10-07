@@ -764,6 +764,8 @@
     "menuDisplayName": "Alias (shown in the Codex menu)",
     "menuDisplayNameFor": "Menu display name for {{model}}",
     "contextWindowShort": "Context window",
+    "codexContextPreset": "Codex context override · 272,000",
+    "codexContextPresetAria": "Set {{model}} context to 272K",
     "modelLimitsColumn": "Limits · catalog · compact",
     "modelLimitsColumnHint": "Leave the limit empty to resolve it automatically; set provider/model for an exact catalog match; leave compression empty to inherit.",
     "limitShort": "Limit",

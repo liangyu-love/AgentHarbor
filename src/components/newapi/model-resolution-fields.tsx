@@ -63,6 +63,14 @@ export function ModelResolutionFields({ model, resolution, loading, error, disab
         title={resolution?.context.value != null ? `${context} · ${t(`newapi.capabilitySource.${resolution.context.source}`)}` : context}
         aria-label={t("newapi.contextFor", { model: model.id })}
         onChange={event => onChange({ overrides: { ...model.overrides, contextWindow: event.target.value ? Number(event.target.value) : null } })} />
+      <button type="button" disabled={disabled}
+        aria-label={t("newapi.codexContextPresetAria", { model: model.id })}
+        title={t("newapi.codexContextPreset")}
+        aria-pressed={model.overrides?.contextWindow === 272_000}
+        onClick={() => onChange({ overrides: { ...model.overrides, contextWindow: 272_000 } })}
+        className="shrink-0 rounded px-1 text-[10px] font-medium text-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40">
+        272K
+      </button>
       {model.overrides?.contextWindow != null && <button type="button" disabled={disabled}
         onClick={() => onChange({ overrides: { ...model.overrides, contextWindow: null } })}
         className="shrink-0 rounded text-[10px] font-medium text-primary hover:text-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40">
