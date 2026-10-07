@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { AlertTriangle, Clock3 } from "lucide-react";
+import { AlertTriangle, Clock3, Route } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { ThreadList } from "@/components/threads/use-thread-list";
 
@@ -8,6 +8,7 @@ export function ThreadNotices({ list }: { list: ThreadList }) {
   const { t } = useTranslation();
   const {
     scanWarnings, pendingDeletionKeys, pendingDeletionRecoveryNeeded, cancelPendingBusy, cancelPendingDeletions, missingRolloutCount,
+    isCodex, routerActive, unroutedIds, bulkRepairing, handleRepairAll,
   } = list;
 
   return (
@@ -38,6 +39,19 @@ export function ThreadNotices({ list }: { list: ThreadList }) {
           </div>
           <Button type="button" size="sm" variant="outline" disabled={cancelPendingBusy} onClick={() => void cancelPendingDeletions()}>
             {t(pendingDeletionRecoveryNeeded ? "threads.clearDeletionQueue" : "threads.cancelPendingDeletion")}
+          </Button>
+        </div>
+      )}
+
+      {isCodex && routerActive && unroutedIds.length > 0 && (
+        <div role="status" className="flex flex-wrap items-center gap-3 rounded-xl border border-sky-500/30 bg-sky-500/5 px-3 py-2.5 text-sm">
+          <Route className="h-4 w-4 shrink-0 text-sky-700 dark:text-sky-400" aria-hidden="true" />
+          <div className="min-w-0 flex-1">
+            <p className="font-medium">{t("threads.unroutedSummary", { count: unroutedIds.length })}</p>
+            <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{t("threads.unroutedDetail")}</p>
+          </div>
+          <Button type="button" size="sm" variant="outline" disabled={bulkRepairing} onClick={() => void handleRepairAll()}>
+            {t("threads.repairAll")}
           </Button>
         </div>
       )}

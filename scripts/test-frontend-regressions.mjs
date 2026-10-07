@@ -676,6 +676,22 @@ try {
   await page.getByText("$9").waitFor();
   console.log("PASS balance refresh stays usable alongside routing and export controls");
 
+  // Routed threads exist: turning routing off asks first, and cancel keeps it on.
+  await page.evaluate(() => { window.review.batchCalls = []; window.review.routedThreads = true; });
+  await page.getByRole("switch", { name: labels.codexAccess, exact: true }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: labels.cancel, exact: true }).click();
+  assert.equal(await page.evaluate(() => window.review.getState().router.enabled), true);
+  assert.deepEqual(await page.evaluate(() => window.review.batchCalls), []);
+  await page.getByRole("switch", { name: labels.codexAccess, exact: true }).click();
+  await confirmAlert(labels.disableRoutingRestore);
+  await page.waitForFunction(() => window.review.batchCalls.length === 2);
+  assert.equal(await page.evaluate(() => window.review.getState().router.enabled), false);
+  assert.deepEqual(await page.evaluate(() => window.review.batchCalls.map(call => [call.operation, call.target, call.selection ?? null])), [
+    ["preview", "restore", { fromProvider: "agentharbor_relay" }],
+    ["apply", "restore", null],
+  ]);
+  console.log("PASS turning routing off confirms, keeps routing on when cancelled, and moves routed threads back");
+
   await reset("test");
   await page.getByRole("combobox").waitFor();
   await page.getByRole("button", { name: labels.refreshModels, exact: true }).click();
@@ -827,9 +843,16 @@ try {
   console.log("PASS a damaged pending-deletion queue exposes a working metadata-only recovery action");
 
   await reset("thread-actions");
-  await page.getByRole("button", { name: labels.repairAll, exact: true }).click();
-  await confirmAlert(labels.repairAll);
-  await page.waitForFunction(() => window.review.recoveryApplyCalls === 1);
+  // Only the direct thread is badged and offered; adoption is one backend batch.
+  assert.equal(await page.getByRole("button", { name: labels.routeDirect, exact: true }).count(), 1);
+  await page.getByRole("button", { name: labels.repairAll, exact: true }).first().click();
+  await confirmAlert(labels.repairAllApply);
+  await page.waitForFunction(() => window.review.batchCalls.length === 2);
+  assert.deepEqual(await page.evaluate(() => window.review.batchCalls), [
+    { operation: "preview", target: "router", selection: { threadIds: ["t0"] } },
+    { operation: "apply", target: "router", candidates: [{ threadId: "t0", revision: "batch-revision", fromProvider: "openai" }] },
+  ]);
+  assert.equal(await page.evaluate(() => window.review.recoveryApplyCalls), 0);
   await page.getByRole("checkbox", { name: "Review thread 0", exact: true }).click();
   await page.getByRole("button", { name: labels.deleteSelected, exact: true }).click();
   await confirmAlert(labels.delete);
@@ -839,7 +862,7 @@ try {
   await confirmAlert(labels.delete);
   await page.waitForFunction(() => window.review.deleteCalls.length === 2);
   assert.deepEqual(await page.evaluate(() => window.review.deleteCalls[1]), ["t1"]);
-  console.log("PASS thread page repairs all eligible threads and supports batch and single deletion");
+  console.log("PASS thread page adopts only unrouted threads in one batch and supports batch and single deletion");
 
   await reset("thread-actions");
   const threadCheckbox = page.getByRole("checkbox", { name: "Review thread 0", exact: true });

@@ -14,7 +14,8 @@ export function ThreadsHeader({ list }: { list: ThreadList }) {
     setSource,
     sourceBusy,
     isCodex,
-    threads,
+    routerActive,
+    unroutedIds,
     bulkRepairing,
     handleRepairAll,
     refreshAction,
@@ -50,7 +51,8 @@ export function ThreadsHeader({ list }: { list: ThreadList }) {
           size="sm"
           className="h-9 gap-1.5 rounded-xl border-border/80 px-3.5 text-xs font-semibold shadow-xs hover:border-primary/40 hover:bg-muted/80 active:scale-95 transition-all"
           onClick={() => void handleRepairAll()}
-          disabled={bulkRepairing || threads.length === 0}
+          disabled={bulkRepairing || !routerActive || unroutedIds.length === 0}
+          title={routerActive ? undefined : t("threads.repairAllNeedsRouter")}
         >
           {bulkRepairing ? (
             <RotateCw className="h-3.5 w-3.5 animate-spin text-primary" />

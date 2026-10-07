@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ThreadSummary } from "@/types/threads";
+import type { ThreadRouteState, ThreadSummary } from "@/types/threads";
 import type { FolderGroup } from "@/components/threads/thread-utils";
 import { ThreadCard } from "@/components/threads/thread-card";
 import { estimateThreadGridHeight, threadGridStyle } from "./thread-grid-layout";
@@ -43,6 +43,8 @@ export interface VirtualThreadListProps {
   onDelete?: (thread: ThreadSummary) => void;
   onCopyPath: (path: string, groupKey: string) => void;
   copiedGroupPath: string | null;
+  routeStates?: Record<string, ThreadRouteState>;
+  routerActive?: boolean;
   t: (key: string, opts?: Record<string, unknown>) => string;
 }
 
@@ -67,6 +69,8 @@ export function VirtualThreadList({
   onDelete,
   onCopyPath,
   copiedGroupPath,
+  routeStates,
+  routerActive,
   t,
 }: VirtualThreadListProps) {
   const anchorRef = useRef<HTMLDivElement>(null);
@@ -216,6 +220,8 @@ export function VirtualThreadList({
                         onDetails={() => onDetails?.(thread)}
                         onDelete={onDelete ? () => onDelete(thread) : undefined}
                         variant="grid"
+                        routeState={routeStates?.[thread.id]}
+                        routerActive={routerActive}
                       />
                     ))}
                   </div>
@@ -273,6 +279,8 @@ export function VirtualThreadList({
                   onDetails={() => onDetails?.(row.thread)}
                   onDelete={onDelete ? () => onDelete(row.thread) : undefined}
                   variant="compact"
+                  routeState={routeStates?.[row.thread.id]}
+                  routerActive={routerActive}
                 />
               </div>
             );

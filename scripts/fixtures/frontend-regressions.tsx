@@ -697,6 +697,23 @@ function mount(mode: FixtureMode) {
     });
     controls.review.threadItems = threads;
   }
+  // Router-adopted threads are the default; thread-actions has one direct thread.
+  controls.review.batchCalls = [];
+  controls.review.routedThreads = false;
+  api.conversations.routeOverview = async () => ({
+    routerActive: mode === "thread-actions" || controls.review.routedThreads,
+    states: mode === "thread-actions" ? { t0: "direct", t1: "routed" }
+      : controls.review.routedThreads ? { t0: "routed" } : {},
+  });
+  api.conversations.previewBatch = async (target, selection) => {
+    controls.review.batchCalls.push({ operation: "preview", target, selection });
+    return { targetProvider: "agentharbor_relay", providers: { openai: 1 }, skipped: [],
+      ready: [{ threadId: "t0", revision: "batch-revision", fromProvider: "openai" }] };
+  };
+  api.conversations.applyBatch = async (target, candidates) => {
+    controls.review.batchCalls.push({ operation: "apply", target, candidates });
+    return { changed: candidates.length, unchanged: 0, failed: [], reopenError: null };
+  };
   if (mode === "thread-actions" || mode === "thread-queue-recovery") {
     controls.review.recoveryApplyCalls = 0;
     controls.review.deleteCalls = [];
@@ -895,7 +912,9 @@ controls.review = { mount, t: (key: string, options?: Record<string, unknown>) =
     recoveryOfficialStatus: i18n.t("threads.recoveryStatus.officialAccountUnverified"),
     recoveryCoordinationTitle: i18n.t("threads.recoveryCoordinationTitle"),
     recoveryOpenDirectory: i18n.t("threads.recoveryOpenDirectory"),
-    repairAll: i18n.t("threads.repairAll"), deleteThread: i18n.t("threads.deleteThread"),
+    disableRoutingRestore: i18n.t("newapi.disableRoutingRestore"),
+    repairAll: i18n.t("threads.repairAll"), repairAllApply: i18n.t("threads.repairAllApply"),
+    routeDirect: i18n.t("threads.routeDirect"), deleteThread: i18n.t("threads.deleteThread"),
     deleteSelected: i18n.t("threads.deleteSelected", { count: 1 }),
     clearDeletionQueue: i18n.t("threads.clearDeletionQueue"),
     delete: i18n.t("common.delete"),

@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
 import { useBusyAction } from "@/hooks/use-busy-action";
-import type { ConversationSource, ThreadSummary } from "@/types/threads";
+import type { ConversationSource, ThreadBatchCandidate, ThreadSummary } from "@/types/threads";
 import {
   filterAndSortThreads,
   groupThreads,
@@ -213,46 +213,72 @@ export function useThreadList(source: ConversationSource = "codex", setSource: (
     });
   };
 
+  const routeOverviewQuery = useQuery({
+    queryKey: ["threads", "codex", "routes"],
+    queryFn: api.conversations.routeOverview,
+    enabled: isCodex,
+    staleTime: 30_000,
+  });
+  const routeStates = routeOverviewQuery.data?.states ?? {};
+  const routerActive = routeOverviewQuery.data?.routerActive ?? false;
+  const unroutedIds = useMemo(() => [...new Set(threads
+    .filter(thread => thread.id && routeStates[thread.id] && routeStates[thread.id] !== "routed")
+    .map(thread => thread.id))], [threads, routeStates]);
+
+  // Batch adoption into the Router: preview, confirm, then one backend call
+  // that stops Codex once. A single failure never stops the remaining threads.
   const handleRepairAll = async () => {
-    if (!isCodex) return;
-    const candidates = [...new Map(
-      threads.filter((thread) => thread.id).map((thread) => [thread.id, thread]),
-    ).values()];
-    if (candidates.length === 0 || bulkRepairing) return;
-    setConfirmRequest({
-      title: t("threads.repairAll"),
-      description: t("threads.repairAllConfirm", { count: candidates.length }),
-      confirmLabel: t("threads.repairAll"),
-      onConfirm: () => void repairAll(candidates),
-    });
+    if (!isCodex || bulkRepairing || unroutedIds.length === 0) return;
+    setBulkRepairing(true);
+    try {
+      const preview = await api.conversations.previewBatch("router", { threadIds: unroutedIds });
+      if (preview.ready.length === 0) {
+        toast({
+          title: t("threads.repairAllNothing"),
+          description: t("threads.repairAllSkipped", { count: preview.skipped.length }),
+        });
+        return;
+      }
+      const providers = Object.entries(preview.providers)
+        .map(([provider, count]) => `${provider || t("threads.unknownProvider")} × ${count}`)
+        .join(" · ");
+      setConfirmRequest({
+        title: t("threads.repairAll"),
+        description: t("threads.repairAllConfirm", {
+          count: preview.ready.length,
+          skipped: preview.skipped.length,
+          providers,
+        }),
+        confirmLabel: t("threads.repairAllApply"),
+        onConfirm: () => void applyBatch(preview.ready),
+      });
+    } catch (cause) {
+      toast({ title: t("threads.recoveryFailed"), description: formatInvokeError(cause), variant: "destructive" });
+    } finally {
+      setBulkRepairing(false);
+    }
   };
 
-  const repairAll = async (candidates: ThreadSummary[]) => {
+  const applyBatch = async (ready: ThreadBatchCandidate[]) => {
     setBulkRepairing(true);
-    let repaired = 0;
-    let skipped = 0;
-    let failed = 0;
     try {
-      for (const thread of candidates) {
-        try {
-          const preview = (await api.conversations.previewRecovery(thread.id)).data;
-          if (!preview.canApply) {
-            skipped += 1;
-            continue;
-          }
-          const result = (await api.conversations.applyRecovery(thread.id, preview.revision)).data;
-          if (result.changed) repaired += 1;
-          else skipped += 1;
-        } catch {
-          failed += 1;
-        }
-      }
-      await threadsQuery.refetch();
+      const result = await api.conversations.applyBatch("router", ready);
+      await Promise.all([threadsQuery.refetch(), routeOverviewQuery.refetch()]);
       toast({
         title: t("threads.repairAllDone"),
-        description: t("threads.repairAllResult", { repaired, skipped, failed }),
-        variant: failed === 0 ? "success" : "default",
+        description: t("threads.repairAllResult", {
+          repaired: result.changed,
+          skipped: result.unchanged,
+          failed: result.failed.length,
+        }),
+        variant: result.failed.length === 0 ? "success" : "default",
       });
+      if (result.reopenError) {
+        toast({ title: t("threads.routerAdoptionOpenFailed"),
+          description: t("threads.routerAdoptionOpenFailedDesc"), variant: "destructive" });
+      }
+    } catch (cause) {
+      toast({ title: t("threads.recoveryFailed"), description: formatInvokeError(cause), variant: "destructive" });
     } finally {
       setBulkRepairing(false);
     }
@@ -389,7 +415,7 @@ export function useThreadList(source: ConversationSource = "codex", setSource: (
     selectedExportableCount, useVirtualList,
     archivedCount, totalBytes, totalTokens,
     totalInputTokens, totalCachedTokens, totalOutputTokens, hasTokenBreakdown,
-    missingRolloutCount,
+    missingRolloutCount, routeStates, routerActive, unroutedIds, routeOverviewQuery,
     status, setStatus, query, setQuery, sortBy, setSortBy, sortLabels, viewMode, setViewMode, format, setFormat,
     selected, toggleSelect, selectFiltered, clearSelection, toggleGroupSelect,
     collapsedGroups, toggleGroupCollapse, expandAllGroups, collapseAllGroups,

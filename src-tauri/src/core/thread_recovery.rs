@@ -18,12 +18,18 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, SystemTime};
 
+mod batch;
 mod journal;
 mod policy;
 mod rollout;
 mod router_adoption;
 
+pub use batch::{
+    apply_batch, preview_batch, route_overview, threads_with_provider, ThreadBatchCandidate,
+    ThreadBatchPreview, ThreadBatchResult, ThreadBatchTarget, ThreadRouteOverview,
+};
 pub use router_adoption::adopt_thread_into_router;
+use router_adoption::{owned_router_port, router_not_ready};
 
 use journal::*;
 use policy::*;

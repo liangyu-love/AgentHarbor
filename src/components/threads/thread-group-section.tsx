@@ -240,6 +240,8 @@ export function ThreadGroupSection({
               onDetails={() => onDetails(thread.key)}
               onDelete={list.isCodex ? () => void handleDelete([thread.key]) : undefined}
               variant={viewMode}
+              routeState={list.isCodex ? list.routeStates[thread.id] : undefined}
+              routerActive={list.routerActive}
             />
           ))}
         </div>

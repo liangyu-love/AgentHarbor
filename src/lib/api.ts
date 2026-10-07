@@ -232,6 +232,25 @@ const conversationsApi = {
       "adopt_codex_thread_router",
       { threadId, expectedRevision },
     ),
+  routeOverview: () =>
+    invoke<import("@/types/threads").ThreadRouteOverview>("codex_thread_route_overview"),
+  previewBatch: (
+    target: import("@/types/threads").ThreadBatchTarget,
+    selection: { threadIds?: string[]; fromProvider?: string },
+  ) =>
+    invoke<import("@/types/threads").ThreadBatchPreview>("preview_codex_thread_batch", {
+      threadIds: selection.threadIds ?? [],
+      fromProvider: selection.fromProvider ?? null,
+      target,
+    }),
+  applyBatch: (
+    target: import("@/types/threads").ThreadBatchTarget,
+    candidates: import("@/types/threads").ThreadBatchCandidate[],
+  ) =>
+    invoke<import("@/types/threads").ThreadBatchResult>("apply_codex_thread_batch", {
+      candidates,
+      target,
+    }),
   };
 
 const usageApi = {

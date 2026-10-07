@@ -1214,7 +1214,12 @@
     "routeSourceUnknown": "Unrecorded",
     "connectionDisabled": "Disconnected",
     "gatewayAddress": "AgentHarbor gateway :{{port}}",
-    "balanceRefreshInterval": "Auto-query interval (minutes; 0 disables automatic queries)"
+    "balanceRefreshInterval": "Auto-query interval (minutes; 0 disables automatic queries)",
+    "disableRoutingTitle": "Turn off Codex Router access",
+    "disableRoutingThreads": "{{count}} threads use the unified Router. Once it is removed from the config they cannot continue. Confirming turns routing off and moves them to the restored provider (each thread is backed up, and Codex is closed once and reopened). Cancel keeps routing on.",
+    "disableRoutingRestore": "Turn off and move threads",
+    "threadsRestored": "Routed threads moved to {{provider}}",
+    "threadsRestoreFailed": "Routing is off, but threads could not be moved; repair them on the Threads page"
   },
   "avatar": {
     "title": "App avatar",
@@ -1520,11 +1525,11 @@
     "selectAll": "Select all",
     "clearSelection": "Clear selection",
     "exportSelected": "Export ({{count}})",
-    "repairAll": "Repair all",
+    "repairAll": "Adopt into Router",
     "repairingAll": "Repairing…",
-    "repairAllConfirm": "Check and repair all {{count}} threads?",
+    "repairAllConfirm": "Move {{count}} threads into the unified Router ({{providers}}); {{skipped}} that cannot be adopted are skipped. Each thread is backed up separately, and Codex is closed once and reopened afterwards. Finish running tasks first.",
     "repairAllDone": "Thread repair complete",
-    "repairAllResult": "Repaired {{repaired}}, skipped {{skipped}}, failed {{failed}}",
+    "repairAllResult": "Adopted {{repaired}}, unchanged {{skipped}}, failed {{failed}}",
     "deleteThread": "Delete thread",
     "deleteSelected": "Delete ({{count}})",
     "deleteConfirm": "Delete {{count}} thread(s)?",
@@ -1791,7 +1796,17 @@
     "exportFormat": "Export format",
     "copyResumeCommand": "Copy resume command",
     "resumeCommandCopied": "Resume command copied",
-    "copyFailed": "Copy failed"
+    "copyFailed": "Copy failed",
+    "repairAllApply": "Adopt and restart Codex",
+    "repairAllNothing": "No threads can be adopted",
+    "repairAllSkipped": "{{count}} threads need individual checks; open \"Check and repair\" on a thread to see why.",
+    "repairAllNeedsRouter": "Enable Codex Router access before adopting existing threads",
+    "unroutedSummary": "{{count}} threads are not on the unified Router",
+    "unroutedDetail": "They still use the provider they were created with, so relay models fail there. After adoption a thread can switch between official and relay models, keeping its ID and history.",
+    "routeDirect": "Not routed",
+    "routeDirectHint": "Only its original provider's models work; click to check and adopt it into the Router",
+    "routeBroken": "Provider missing",
+    "routeBrokenHint": "Its provider is no longer in the Codex config; repair it before continuing this thread"
   },
   "skills": {
     "enabled": "Enabled",

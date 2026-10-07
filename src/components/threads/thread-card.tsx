@@ -14,6 +14,7 @@ import {
   FolderOpen,
   HardDrive,
   RefreshCcw,
+  Route,
   Sparkles,
   Terminal,
   Trash2,
@@ -30,7 +31,7 @@ import {
 import { formatDateTime, formatRelative } from "@/lib/format-time";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
-import type { ThreadSummary } from "@/types/threads";
+import type { ThreadRouteState, ThreadSummary } from "@/types/threads";
 import { formatSize, formatTokenCount } from "./thread-utils";
 import { focusRing, onActivateKey } from "@/lib/a11y";
 import { ThreadResumeButton } from "./thread-resume-button";
@@ -46,6 +47,8 @@ interface ThreadCardProps {
   onDelete?: () => void;
   onDetails?: () => void;
   variant?: "grid" | "compact";
+  routeState?: ThreadRouteState;
+  routerActive?: boolean;
 }
 
 export function ThreadCard({
@@ -59,6 +62,8 @@ export function ThreadCard({
   onDelete,
   onDetails,
   variant = "grid",
+  routeState,
+  routerActive = false,
 }: ThreadCardProps) {
   const { t } = useTranslation();
   const [copiedId, setCopiedId] = useState(false);
@@ -77,6 +82,28 @@ export function ThreadCard({
     thread.threadSource === "claudeJsonl" ? "Claude Code" : thread.threadSource === "sqlite"
       ? t("threads.threadSourceSqlite")
       : t("threads.threadSourceRollout");
+  // Direct threads matter only while the Router is active; broken ones always.
+  const routeBadge = routeState === "broken" || (routeState === "direct" && routerActive) ? (
+    <button
+      type="button"
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors",
+        focusRing,
+        routeState === "broken"
+          ? "bg-destructive/10 text-destructive hover:bg-destructive/20"
+          : "bg-sky-500/10 text-sky-700 hover:bg-sky-500/20 dark:text-sky-400",
+      )}
+      title={t(routeState === "broken" ? "threads.routeBrokenHint" : "threads.routeDirectHint")}
+      onClick={(event) => {
+        event.stopPropagation();
+        onRecover?.();
+      }}
+      disabled={!onRecover}
+    >
+      <Route className="h-2.5 w-2.5" aria-hidden="true" />
+      {t(routeState === "broken" ? "threads.routeBroken" : "threads.routeDirect")}
+    </button>
+  ) : null;
 
   const handleCopyId = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -168,6 +195,8 @@ export function ThreadCard({
                     {t("threads.rolloutMissing")}
                   </span>
                 )}
+
+                {routeBadge}
 
                 <span
                   data-thread-row-secondary
@@ -441,6 +470,8 @@ export function ThreadCard({
                 {t("threads.rolloutMissing")}
               </span>
             )}
+
+            {routeBadge}
 
             <span
               className="inline-flex max-w-full items-center rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-[9.5px] font-medium text-primary"

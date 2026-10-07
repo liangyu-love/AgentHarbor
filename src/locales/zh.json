@@ -1214,7 +1214,12 @@
     "routeSourceUnknown": "未记录",
     "connectionDisabled": "未连接",
     "gatewayAddress": "AgentHarbor 路由网关 :{{port}}",
-    "balanceRefreshInterval": "自动查询间隔（分钟，0 表示不自动查询）"
+    "balanceRefreshInterval": "自动查询间隔（分钟，0 表示不自动查询）",
+    "disableRoutingTitle": "关闭 Codex 统一路由",
+    "disableRoutingThreads": "有 {{count}} 个会话已接入统一路由。关闭后配置里不再有路由提供商，这些会话将无法继续。确认后会关闭路由，并把它们改回恢复后的提供商（每个会话单独备份，Codex 会正常关闭一次再重新打开）。取消则保持路由开启。",
+    "disableRoutingRestore": "关闭路由并迁回会话",
+    "threadsRestored": "已将路由会话迁回 {{provider}}",
+    "threadsRestoreFailed": "路由已关闭，但会话迁回失败；可在会话页逐个修复"
   },
   "avatar": {
     "title": "应用头像",
@@ -1520,11 +1525,11 @@
     "selectAll": "全选当前",
     "clearSelection": "取消选择",
     "exportSelected": "导出所选 ({{count}})",
-    "repairAll": "修复全部",
+    "repairAll": "批量接入路由",
     "repairingAll": "修复中…",
-    "repairAllConfirm": "检查并修复全部 {{count}} 个会话？",
+    "repairAllConfirm": "将 {{count}} 个会话接入统一路由（{{providers}}），另有 {{skipped}} 个无法接入的会被跳过。每个会话单独备份；Codex 会正常关闭一次，完成后重新打开。请先结束正在运行的任务。",
     "repairAllDone": "会话修复完成",
-    "repairAllResult": "修复 {{repaired}}，跳过 {{skipped}}，失败 {{failed}}",
+    "repairAllResult": "接入 {{repaired}}，无需改动 {{skipped}}，失败 {{failed}}",
     "deleteThread": "删除会话",
     "deleteSelected": "删除所选 ({{count}})",
     "deleteConfirm": "删除 {{count}} 个会话？",
@@ -1791,7 +1796,17 @@
     "exportFormat": "导出格式",
     "copyResumeCommand": "复制继续会话命令",
     "resumeCommandCopied": "继续会话命令已复制",
-    "copyFailed": "复制失败"
+    "copyFailed": "复制失败",
+    "repairAllApply": "接入并重启 Codex",
+    "repairAllNothing": "没有可接入的会话",
+    "repairAllSkipped": "{{count}} 个会话需要单独检查，可点会话上的“检查并修复”查看原因。",
+    "repairAllNeedsRouter": "先开启 Codex 统一路由接入，再批量接入旧会话",
+    "unroutedSummary": "{{count}} 个会话未接入统一路由",
+    "unroutedDetail": "这些会话仍走创建时的提供商，在其中选中转模型会失败。接入后同一会话可在官方与中转模型之间切换，原会话 ID 和历史保留。",
+    "routeDirect": "未接入路由",
+    "routeDirectHint": "仅能使用原提供商的模型；点击检查并接入统一路由",
+    "routeBroken": "提供商失效",
+    "routeBrokenHint": "原提供商已不在 Codex 配置中，需要修复后才能继续此会话"
   },
   "skills": {
     "enabled": "已启用",

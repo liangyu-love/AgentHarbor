@@ -155,6 +155,8 @@ function ThreadsWorkspace({ source, onSourceChange }: { source: ConversationSour
                     onDelete={list.isCodex ? (thread) => void handleDelete([thread.key]) : undefined}
                     onCopyPath={handleCopyPath}
                     copiedGroupPath={copiedGroupPath}
+                    routeStates={list.isCodex ? list.routeStates : undefined}
+                    routerActive={list.routerActive}
                     detailKey={list.detailTarget?.key}
                     t={t}
                   />
@@ -172,7 +174,7 @@ function ThreadsWorkspace({ source, onSourceChange }: { source: ConversationSour
           thread={recoveryTarget}
           onOpenChange={(open) => !open && setRecoveryTarget(null)}
           onRecovered={async () => {
-            await threadsQuery.refetch();
+            await Promise.all([threadsQuery.refetch(), list.routeOverviewQuery.refetch()]);
           }}
         />}
         <ConfirmDialog request={list.confirmRequest} onClose={() => list.setConfirmRequest(null)} />

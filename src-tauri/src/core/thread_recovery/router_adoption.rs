@@ -9,6 +9,20 @@ pub(super) fn validate_router_target(
     paths: &CodexPaths,
     preview: &ThreadRecoveryPreview,
 ) -> Result<u16, CoreError> {
+    if preview.target_provider != router::CATALOG_PROVIDER_KEY {
+        return Err(router_not_ready());
+    }
+    owned_router_port(paths)
+}
+
+pub(super) fn router_not_ready() -> CoreError {
+    CoreError::OperationFailed(
+        "THREAD_ROUTER_NOT_READY: enable the unified Router and refresh its configuration before adopting a thread; external provider settings were not changed".into(),
+    )
+}
+
+/// The Router port when config.toml is AgentHarbor's current Router setup.
+pub(super) fn owned_router_port(paths: &CodexPaths) -> Result<u16, CoreError> {
     let store = router::read_store(&paths.app_data_dir.join("newapi-providers.dat"))
         .map_err(CoreError::OperationFailed)?;
     let document: toml::Value = std::fs::read_to_string(&paths.config_path)?.parse()?;
@@ -22,13 +36,10 @@ pub(super) fn validate_router_target(
             Some(catalog) => Some(catalog) == document.get("model_catalog_json"),
             None => true,
         };
-    if preview.target_provider != router::CATALOG_PROVIDER_KEY
-        || !profile_catalog_matches
+    if !profile_catalog_matches
         || !router::routing_config_matches(paths, &store).map_err(CoreError::OperationFailed)?
     {
-        return Err(CoreError::OperationFailed(
-            "THREAD_ROUTER_NOT_READY: enable the unified Router and refresh its configuration before adopting a thread; external provider settings were not changed".into(),
-        ));
+        return Err(router_not_ready());
     }
     Ok(store.router.port)
 }
