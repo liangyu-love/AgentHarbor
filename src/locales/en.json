@@ -1158,7 +1158,7 @@
     "priceCacheWrite": "Cache write",
     "priceManualNote": "Your rates only estimate cost; they are not an invoice. Enter at least the input or output rate.",
     "priceInvalid": "Enter valid non-negative rates and at least an input or output price.",
-    "priceClear": "Restore catalog price",
+    "priceClear": "Restore automatic price",
     "capabilityCompression": "Auto compact",
     "capabilityCompressionThreshold": "Threshold {{value}}",
     "capabilityCompressionAppliedNow": "Applied",
@@ -1227,14 +1227,14 @@
       "title": "Capability catalog mapping",
       "placeholder": "e.g. anthropic, openai, deepseek",
       "modelLevel": "Model catalog mapping",
-      "modelPlaceholder": "provider/model (optional)",
-      "priceTitle": "Price catalog binding (optional)"
+      "modelPlaceholder": "provider/model (optional)"
     },
     "capabilitySource": {
       "catalogSpeedReference": "Base-model catalog context",
       "catalog": "models.dev catalog",
       "catalogGeneric": "Generic model reference",
       "catalogAlias": "Catalog alias fallback",
+      "catalogReference": "Model catalog reference price",
       "local": "Bundled model rules",
       "providerSetting": "Provider setting",
       "manual": "Manual override",

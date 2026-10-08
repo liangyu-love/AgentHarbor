@@ -1158,7 +1158,7 @@
     "priceCacheWrite": "缓存写入",
     "priceManualNote": "你填写的价格只用于预估费用，不代表账单；填至少输入或输出单价即可。",
     "priceInvalid": "请输入有效的非负单价，并至少填写输入或输出价格。",
-    "priceClear": "恢复目录价格",
+    "priceClear": "恢复自动价格",
     "capabilityCompression": "自动压缩",
     "capabilityCompressionThreshold": "阈值 {{value}}",
     "capabilityCompressionAppliedNow": "已生效",
@@ -1227,14 +1227,14 @@
       "title": "能力目录映射",
       "placeholder": "例如 anthropic、openai、deepseek",
       "modelLevel": "模型目录映射",
-      "modelPlaceholder": "provider/model（可选）",
-      "priceTitle": "价格目录绑定（可选）"
+      "modelPlaceholder": "provider/model（可选）"
     },
     "capabilitySource": {
       "catalogSpeedReference": "基础型号目录上下文",
       "catalog": "models.dev 目录",
       "catalogGeneric": "通用模型参考",
       "catalogAlias": "目录别名回退",
+      "catalogReference": "模型目录参考价",
       "local": "内置模型规则",
       "providerSetting": "供应商设置",
       "manual": "手动覆盖",

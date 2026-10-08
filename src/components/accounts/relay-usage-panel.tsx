@@ -162,9 +162,10 @@ function RelayRequests({ relay }: { relay: RelayUsagePayload }) {
         <td className="font-mono font-semibold">{record.usageReported ? formatTokens(record.totalTokens) : "—"}</td>
         <td
           className="font-mono"
-          title={!record.usageReported ? t("accounts.usageNotReported") : record.pricingStatus === "partial"
-            ? t("accounts.costPartial")
-            : record.pricingSource || t("accounts.costUnavailable")}
+          title={!record.usageReported ? t("accounts.usageNotReported")
+            : (record.pricingStatus === "partial" ? `${t("accounts.costPartial")} · ` : "") + (record.pricingSource
+              ? t("newapi.capabilitySource." + record.pricingSource, { defaultValue: record.pricingSource })
+              : t("accounts.costUnavailable"))}
         >
           {!record.usageReported ? t("accounts.usageNotReported") : record.costUsd != null ? formatCost(record.costUsd * 1_000_000) : t("accounts.costUnpriced")}
           {record.pricingStatus === "partial" && <small className="ml-1 text-amber-600">*</small>}

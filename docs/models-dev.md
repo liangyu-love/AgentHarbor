@@ -56,14 +56,27 @@ reasoning support, reasoning levels or price. Versions, dates, `preview` and
 other product qualifiers remain part of the identity; an unavailable or
 conflicting base context stays unknown rather than selecting another version.
 
-Prices require an independent billing binding (`priceCatalogProvider` or a model
-`priceRef`) or an explicit user price. Capability mappings and capability
-references never establish billing prices. Without a billing binding, price
-remains unknown. A `priceRef` overrides the provider's billing scope; otherwise
-the full upstream model ID is tried first, followed by price-safe candidates in
-their original order, independently of the capability match. Prices are never averaged or
-borrowed across providers, and `:free`/`@fast`-style tags never borrow the base
-model's price.
+Prices resolve automatically; a separate price binding is no longer required.
+Per-model custom rates have first priority. Existing `priceRef` and
+`priceCatalogProvider` values are retained for compatibility, including when a
+provider is edited; the provider dialog no longer creates new price bindings.
+Otherwise, an exact endpoint-host match selects the actual channel's catalog.
+The full upstream model ID is tried first, then price-safe normalized IDs and
+publisher-declared canonical identities. If no channel rate is available, the
+selected capability records may provide a model reference estimate, labelled
+`catalogReference` in previews, diagnostics and usage records. This reference
+does not claim to be the relay's actual charge. Clearing a custom rate restores
+automatic resolution. Historical ledger costs and their request-time snapshots
+are never recalculated when this policy or the catalog changes.
+
+Prices are never averaged or selected by the cheapest provider. Conflicting
+channel rates stay unknown rather than falling through to a reference. A
+reference requires a price-safe model identity or a model mapping explicitly
+selected by the user. A selected mapping supplies that model's reference rate
+even for an opaque deployment ID; it never overrides an available channel rate.
+An automatic context-only Fast/preview fallback does not supply prices.
+`:free`/`@fast`-style tags never borrow the base model's price; an exact variant
+record can supply its own rate. A missing legacy `priceRef` stays unknown.
 The safety check covers the entire candidate reduction path, including combined
 prefixes and tags. Catalog agreement compares every stored price field and tier;
 a conflict stays unknown with an explanation.

@@ -2847,12 +2847,15 @@ pub(super) fn resolve_model_metadata(
     let saved = provider.models.iter().find(|model| model.id == model_id);
     let (catalog_scope, strict_catalog_scope) =
         effective_catalog_scope(provider, model_id, models_dev);
-    // Prices are scoped to the billing provider: an explicit price binding
-    // wins over the capability mapping, so borrowing a vendor's capability
-    // never implies borrowing its price.
+    // Price the actual channel first. Legacy bindings retain precedence;
+    // capability matching supplies a separately labelled reference fallback.
     let price_scope: Vec<String> = match provider.price_catalog_provider.as_deref() {
         Some(binding) if !binding.trim().is_empty() => vec![binding.trim().to_lowercase()],
-        _ => Vec::new(),
+        _ => reqwest::Url::parse(provider.base_url.trim())
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+            .map(|host| models_dev.providers_for_host(&host).to_vec())
+            .unwrap_or_default(),
     };
     let request = model_metadata::ResolutionRequest {
         raw_model_id: model_id,
@@ -4998,6 +5001,51 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         }
         let resolved = resolve_model_metadata(&provider, "deepseek-v4.2-flash", None, &catalog);
         assert!(resolved.matched.is_none(), "versions must never be guessed");
+    }
+
+    #[test]
+    fn automatic_channel_prices_use_endpoint_hosts_and_fallback_to_model_references() {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "providers": [
+                {"id": "deepseek", "api": "https://api.deepseek.test/v1", "models": [
+                    {"id": "deepseek-flash", "canonicalModelId": "deepseek/deepseek-v4.1-flash",
+                     "limit": {"context": 1000000}, "cost": {"input": 1, "output": 2}}
+                ]},
+                {"id": "relay", "api": "https://relay.test/provider/v1", "models": [
+                    {"id": "deepseek/deepseek-v4.1-flash", "limit": {"context": 99999},
+                     "cost": {"input": 5, "output": 6, "cacheRead": 0}}
+                ]}
+            ]
+        }))
+        .unwrap();
+        let catalog = models_dev::Catalog::parse(&bytes, models_dev::Origin::Runtime).unwrap();
+        let mut provider = Provider {
+            base_url: "https://relay.test/provider/v1".into(),
+            ..Default::default()
+        };
+        let id = "deepseek/deepseek-v4.1-flash";
+        let resolved = resolve_model_metadata(&provider, id, None, &catalog);
+        assert_eq!(resolved.context_window.value, Some(1000000));
+        assert_eq!(resolved.price.input, Some(5.0));
+        assert_eq!(resolved.price.cache_read, Some(0.0));
+        assert_eq!(resolved.price.source, model_metadata::source::CATALOG);
+        let channel_snapshot = pricing_for(&provider, id, &catalog);
+        assert_eq!(channel_snapshot.input, Some(5.0));
+        for host in ["https://unknown.test/v1", "https://relay.test.evil.test/v1"] {
+            provider.base_url = host.into();
+            let reference = resolve_model_metadata(&provider, id, None, &catalog).price;
+            assert_eq!(reference.input, Some(1.0), "{host}");
+            assert_eq!(reference.source, model_metadata::source::CATALOG_REFERENCE);
+        }
+        provider.base_url = "https://api.deepseek.test/v1".into();
+        let canonical = resolve_model_metadata(&provider, id, None, &catalog).price;
+        assert_eq!(canonical.input, Some(1.0));
+        assert_eq!(canonical.source_ref.unwrap().model_id, "deepseek-flash");
+        assert_ne!(canonical.source, model_metadata::source::CATALOG_REFERENCE);
+        provider.price_catalog_provider = Some("relay".into());
+        let legacy = resolve_model_metadata(&provider, id, None, &catalog).price;
+        assert_eq!(legacy.input, Some(5.0));
     }
 
     #[test]

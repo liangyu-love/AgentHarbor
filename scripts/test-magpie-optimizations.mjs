@@ -48,6 +48,8 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   assert.match(await routes.innerText(), /230 ms/);
   assert.match(await routes.innerText(), /尝试 ID: syntheti/);
   assert.match(await routes.innerText(), /fixture-vers/);
+  assert.match(await routes.innerText(), /模型目录参考价/);
+  assert.doesNotMatch(await routes.innerText(), /catalogReference/);
   assert.equal(await routes.getByRole("switch", { name: "同模型渠道故障切换" }).count(), 0,
     "ordinary provider requests no longer expose hidden cross-card failover");
   await page.locator('section[aria-labelledby="aggregation-title"]').waitFor();
@@ -62,6 +64,7 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   assert.match(await catalog.innerText(), /内置模型规则/);
   assert.match(await catalog.innerText(), /anthropic\/claude-opus-5-5/);
   assert.match(await catalog.innerText(), /reasoning_content/);
+  assert.match(await catalog.innerText(), /模型目录参考价/);
   // The applied state distinguishes what clients already use from a pending sync.
   assert.match(await catalog.innerText(), /已生效/);
   assert.match(await catalog.innerText(), /阈值 900,000/);
@@ -248,7 +251,7 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
     const base = { timestamp: 1790000000, date: "2026-10-05", providerId: "fixture", providerName: "Relay Fixture",
       model: "deepseek-fixture", protocol: "chatCompletions", statusCode: 200, durationMs: 20, success: true,
       usageReported: true, inputTokens: 3, outputTokens: 4, totalTokens: 7, reasoningTokens: 0,
-      cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, pricingStatus: "priced", pricingSource: "override", catalogRevision: "fixture" };
+      cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, pricingStatus: "priced", pricingSource: "catalogReference", catalogRevision: "fixture" };
     window.review.relayPatch = { recent: [base, { ...base, timestamp: 1790000001, clientSource: "claudeDesktop",
       requestedModel: "claude-sonnet-4-6", resolvedModel: "deepseek-fixture", routeRevision: 3 }] };
     window.review.mount("usage");
@@ -263,6 +266,8 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   assert.match(await desktopUsage.locator("tbody tr").innerText(), /claude-sonnet-4-6 → deepseek-fixture/);
   assert.match(await desktopUsage.locator("tbody tr").innerText(), /Claude Desktop/);
   assert.match(await desktopUsage.locator("tbody tr").innerText(), /\$0/);
+  assert.equal(await desktopUsage.locator('td[title="模型目录参考价"]').count(), 1,
+    "usage records retain and localize the reference-price source");
   await desktopUsage.getByLabel("客户端来源", { exact: true }).selectOption("unknown");
   await desktopUsage.locator("tbody tr .usage-request-source").filter({ hasText: /^未记录$/ }).waitFor();
   assert.equal(await desktopUsage.locator("tbody tr").count(), 1);
@@ -366,4 +371,37 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   assert.equal(await aggregateRoutes.locator("summary").count(), 2,
     "each inbound request groups its own retries or hosted continuations as physical attempts");
   console.log("PASS aggregate diagnostics distinguish actual cards/models, retries, protocol adaptation and same-channel tool continuation");
+
+  await reset("access");
+  await page.evaluate(() => {
+    window.review.capabilityVariants = [{ price: { currency: "USD", unit: "perMillionTokens",
+      input: 0, output: 0, cacheRead: null, cacheWrite: null, tiers: [], contextOver200k: null,
+      source: "manual", sourceRef: null, complete: true, note: null } }];
+    window.review.mount("access");
+  });
+  const manualPrices = page.getByRole("region", { name: "模型能力目录与匹配预览" });
+  await manualPrices.getByRole("button", { name: "模型能力目录与匹配预览", exact: true }).click();
+  await manualPrices.locator("summary").click();
+  await manualPrices.getByRole("button", { name: "编辑价格", exact: true }).click();
+  assert.equal(await manualPrices.getByLabel("输入", { exact: true }).inputValue(), "0");
+  assert.equal(await manualPrices.getByLabel("输出", { exact: true }).inputValue(), "0");
+  await manualPrices.getByRole("button", { name: "恢复自动价格", exact: true }).click();
+  await page.waitForFunction(() => window.review.priceSaves?.length === 1);
+  assert.deepEqual(await page.evaluate(() => window.review.priceSaves[0]), {
+    providerId: "relay", modelId: "claude-opus-5-5-kiro", price: null,
+  });
+
+  await reset("provider");
+  await page.evaluate(() => {
+    window.review.dialogProviderFixture = { ...window.review.getState().providers[0], priceCatalogProvider: "deepseek" };
+    window.review.mount("provider");
+  });
+  const providerDialog = page.getByRole("dialog");
+  await providerDialog.locator("#newapi-provider-name").fill("Renamed relay");
+  assert.equal(await providerDialog.locator("#newapi-provider-price-catalog").count(), 0);
+  await providerDialog.getByRole("button", { name: "保存", exact: true }).click();
+  await page.waitForFunction(() => window.review.saved?.name === "Renamed relay");
+  assert.equal(await page.evaluate(() => window.review.saved.priceCatalogProvider), "deepseek",
+    "unrelated edits preserve existing price bindings even though new bindings have no UI");
+  console.log("PASS custom zero prices restore automatically and provider edits preserve hidden legacy price bindings");
 }

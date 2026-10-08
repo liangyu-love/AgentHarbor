@@ -46,6 +46,8 @@ pub mod source {
     /// Unscoped models.dev reference where every filled field agrees.
     pub const CATALOG_GENERIC: &str = "catalogGeneric";
     pub const CATALOG_ALIAS: &str = "catalogAlias";
+    /// A model reference price when the actual channel has no catalog rate.
+    pub const CATALOG_REFERENCE: &str = "catalogReference";
     /// A speed variant may reference the base context, without claiming its
     /// output, reasoning, display identity or billing contract.
     pub const CATALOG_SPEED_REFERENCE: &str = "catalogSpeedReference";
@@ -244,8 +246,8 @@ pub struct ResolutionRequest<'a> {
     /// models.dev provider IDs this configured provider maps to. Empty means
     /// only generic reference matching is available.
     pub catalog_providers: &'a [String],
-    /// Independently bound billing providers. Capability mappings alone never
-    /// establish what a relay charges.
+    /// Actual endpoint catalogs, or a legacy explicit billing scope. An empty
+    /// scope can still use a separately labelled model reference estimate.
     pub price_providers: &'a [String],
     /// Explicit `{provider, model}` capability reference.
     pub explicit_ref: Option<&'a ModelRef>,
@@ -1178,9 +1180,7 @@ pub fn resolve_with_global_fallback(
     result.default_effort = (!default_effort.is_empty()).then_some(default_effort);
     result.default_effort_source = default_source.into();
 
-    // Price. Borrows a price only from price-safe candidates within the
-    // configured (billing) provider scope or from an explicit binding.
-    result.price = resolve_price(catalog, request, &candidates);
+    result.price = resolve_price(catalog, request, &candidates, &matches);
     result
 }
 
@@ -1211,6 +1211,7 @@ fn resolve_price(
     catalog: &Catalog,
     request: &ResolutionRequest<'_>,
     candidates: &[Candidate],
+    capability_matches: &[CatalogMatch<'_>],
 ) -> PriceInfo {
     // 1. Explicit user price override.
     if let Some(rates) = request.user.price {
@@ -1228,7 +1229,7 @@ fn resolve_price(
             };
         }
     }
-    // 2. Only an independent model price reference overrides the billing scope.
+    // 2. Retain legacy explicit price references without rewriting stored rates.
     if let Some(reference) = request.price_ref {
         return match catalog.exact_in(&reference.provider_id, &reference.model_id) {
             Some(entry) => price_from_catalog(
@@ -1241,18 +1242,11 @@ fn resolve_price(
         };
     }
     let scope = request.price_scope();
-    if scope.is_empty() {
-        // Without a provider scope a generic price would cross vendor
-        // boundaries; keep it unknown and say why.
-        return PriceInfo::unknown(Some(
-            "no billing catalog binding; capability mappings do not establish prices",
-        ));
-    }
     // A price found through a reduced candidate is an alias fallback; the full
     // identity keeps the plain catalog label.
     let alias_of = |value: &str| !value.eq_ignore_ascii_case(request.raw_model_id.trim());
-    // 3. Resolve the actual request identity first, then price-safe reductions
-    // in their original order. Capability selection cannot reorder billing.
+    // 3. Use the actual endpoint's catalog (or a legacy provider binding)
+    // before a publisher reference, preserving full variant pricing.
     for candidate in candidates.iter().filter(|candidate| candidate.price_safe) {
         if let Some(price) =
             scoped_price(catalog, scope, &candidate.value, alias_of(&candidate.value))
@@ -1260,18 +1254,60 @@ fn resolve_price(
             return price;
         }
     }
-    PriceInfo::unknown(Some("no price record for this provider and model"))
+    // 4. Reuse capability matches reached by a price-safe path, or the user's
+    // explicit model mapping, as labelled reference prices. Automatic Fast/
+    // preview context fallbacks are not pricing identities. Full cost
+    // agreement includes caches and tiers.
+    let safe_matches =
+        capability_matches
+            .iter()
+            .copied()
+            .filter(|entry| {
+                request.explicit_ref.is_some()
+                    || candidates
+                        .iter()
+                        .filter(|candidate| candidate.price_safe)
+                        .any(|candidate| {
+                            entry.model_id.eq_ignore_ascii_case(&candidate.value)
+                                || entry.model.canonical_model_id.as_deref().is_some_and(
+                                    |canonical| {
+                                        canonical.eq_ignore_ascii_case(&candidate.value)
+                                            || canonical.split_once('/').is_some_and(|(_, name)| {
+                                                name.eq_ignore_ascii_case(&candidate.value)
+                                            })
+                                    },
+                                )
+                        })
+            })
+            .collect::<Vec<_>>();
+    match price_for_matches(&safe_matches, false) {
+        Some(mut price) => {
+            if price.source != source::UNKNOWN {
+                price.source = source::CATALOG_REFERENCE.into();
+            }
+            price
+        }
+        None => PriceInfo::unknown(Some("no price record for this provider and model")),
+    }
 }
 
-/// Price for one model ID inside the billing scope; `None` when nothing is
-/// priced or when the scope disagrees, so a conflict is never papered over.
+/// Price for one actual identity inside the channel scope. A conflict is an
+/// explicit unknown result, so it cannot fall through to a reference price.
 fn scoped_price(
     catalog: &Catalog,
     scope: &[String],
     model_id: &str,
     alias: bool,
 ) -> Option<PriceInfo> {
-    let matches = catalog.scoped(scope, model_id);
+    let mut matches = catalog.scoped(scope, model_id);
+    if matches.is_empty() {
+        matches = catalog.canonical_scoped(scope, model_id);
+    }
+    let matches = matches.into_iter().map(to_match).collect::<Vec<_>>();
+    price_for_matches(&matches, alias)
+}
+
+fn price_for_matches(matches: &[CatalogMatch<'_>], alias: bool) -> Option<PriceInfo> {
     let mut priced = matches
         .iter()
         .filter_map(|entry| entry.model.cost.as_ref().map(|cost| (*entry, cost)));
@@ -1707,7 +1743,8 @@ mod tests {
         assert_eq!(resolved.output_limit.value, Some(393216));
         assert_eq!(resolved.reasoning.supports, Some(true));
         assert_eq!(resolved.context_window.source, source::CATALOG);
-        assert_eq!(resolved.price.source, source::UNKNOWN);
+        assert_eq!(resolved.price.source, source::CATALOG_REFERENCE);
+        assert_eq!(resolved.price.input, Some(1.0));
 
         request.explicit_ref = None;
         request.upstream = Some(UpstreamValues {
@@ -1733,6 +1770,11 @@ mod tests {
         );
         assert_eq!(resolved.reasoning.levels.source, source::UPSTREAM);
         assert_eq!(resolved.default_effort.as_deref(), Some("high"));
+        assert_eq!(
+            resolved.price.source,
+            source::UNKNOWN,
+            "automatic context-only reference never borrows the base price"
+        );
         request.user.context_window = Some(250000);
         assert_eq!(
             resolve(&catalog, &request).context_window.source,
@@ -1970,7 +2012,7 @@ mod tests {
         assert_eq!(generic.match_kind, MatchKind::Consensus);
         assert_eq!(generic.context_window.value, Some(200_000));
         assert_eq!(generic.context_window.source, source::CATALOG_GENERIC);
-        // Prices never cross the provider boundary.
+        // Conflicting reference prices remain unknown rather than being averaged.
         assert_eq!(generic.price.source, source::UNKNOWN);
         assert!(generic.price.input.is_none());
     }
@@ -2089,7 +2131,7 @@ mod tests {
     }
 
     #[test]
-    fn prices_stay_with_the_billing_provider_scope() {
+    fn channel_prices_precede_model_reference_prices() {
         let catalog = catalog();
         // Capability from anthropic, price bound to the relay: the borrowed
         // capability must not drag anthropic's price along.
@@ -2118,12 +2160,85 @@ mod tests {
         assert_eq!(resolved.price.input, Some(1.0));
         assert_eq!(resolved.price.source, source::CATALOG_ALIAS);
 
-        // A capability binding alone never establishes billing prices.
+        // Without a channel price, use a labelled model reference estimate.
         let mut request = input_for("claude-opus-4-5");
         request.catalog_providers = &capability;
         let resolved = resolve(&catalog, &request);
-        assert_eq!(resolved.price.input, None);
-        assert_eq!(resolved.price.source, source::UNKNOWN);
+        assert_eq!(resolved.price.input, Some(5.0));
+        assert_eq!(resolved.price.source, source::CATALOG_REFERENCE);
+        assert_eq!(resolved.price.source_ref.unwrap().provider_id, "anthropic");
+
+        // A user-selected model mapping also supplies its reference rate for
+        // opaque deployment IDs, without requiring another price binding.
+        let reference = ModelRef {
+            provider_id: "anthropic".into(),
+            model_id: "claude-opus-4-5".into(),
+        };
+        let mut request = input_for("my-private-deployment");
+        request.explicit_ref = Some(&reference);
+        let price = resolve(&catalog, &request).price;
+        assert_eq!(price.input, Some(5.0));
+        assert_eq!(price.source, source::CATALOG_REFERENCE);
+    }
+
+    #[test]
+    fn automatic_prices_follow_canonical_identity_without_borrowing_variant_rates() {
+        let catalog = Catalog::parse(json!({
+            "schemaVersion": 1,
+            "providers": [{"id": "deepseek", "models": [
+                {"id": "deepseek-flash", "canonicalModelId": "deepseek/deepseek-v4.1-flash",
+                 "limit": {"context": 1000000}, "cost": {"input": 1, "output": 2, "cacheRead": 0.1}},
+                {"id": "deepseek-v4.1-flash-fast", "limit": {"context": 1000000},
+                 "cost": {"input": 3, "output": 4}}
+            ]}]
+        }).to_string().as_bytes(), super::super::models_dev::Origin::Runtime).unwrap();
+        let scope = ["deepseek".to_owned()];
+        for raw in [
+            "deepseek-flash",
+            "deepseek-v4.1-flash",
+            "relay::deepseek/deepseek-v4.1-flash",
+        ] {
+            let mut request = input_for(raw);
+            request.catalog_providers = &scope;
+            let reference = resolve(&catalog, &request).price;
+            assert_eq!(reference.input, Some(1.0), "{raw}");
+            assert_eq!(reference.cache_read, Some(0.1), "{raw}");
+            assert_eq!(reference.source, source::CATALOG_REFERENCE);
+            request.price_providers = &scope;
+            let channel = resolve(&catalog, &request).price;
+            assert_eq!(channel.input, Some(1.0), "{raw}");
+            assert_ne!(channel.source, source::CATALOG_REFERENCE);
+        }
+        let mut request = input_for("deepseek-v4.1-flash-fast");
+        request.catalog_providers = &scope;
+        assert_eq!(resolve(&catalog, &request).price.input, Some(3.0));
+        assert_eq!(
+            resolve(&catalog, &request).price.source,
+            source::CATALOG_REFERENCE
+        );
+        for raw in [
+            "deepseek-v4.1-flash:free",
+            "deepseek-v4.1-flash@fast",
+            "deepseek-v4.1-flash-thinking",
+        ] {
+            let mut request = input_for(raw);
+            request.catalog_providers = &scope;
+            assert_eq!(
+                resolve(&catalog, &request).price.source,
+                source::UNKNOWN,
+                "{raw}"
+            );
+        }
+        request.user.price = Some(CostRatesInput {
+            input: Some(0.0),
+            output: Some(0.0),
+            ..Default::default()
+        });
+        let manual = resolve(&catalog, &request).price;
+        assert_eq!(manual.source, source::MANUAL);
+        assert_eq!(manual.input, Some(0.0));
+        request.user.price = None;
+        assert_eq!(resolve(&catalog, &request).price.input, Some(3.0));
     }
 
     #[test]
@@ -2139,6 +2254,9 @@ mod tests {
                 ]},
                 {"id": "relay-b", "name": "B", "models": [
                     {"id": "model-x", "name": "X", "limit": {"context": 1000, "output": 100}, "cost": {"input": 9.0, "output": 2.0}}
+                ]},
+                {"id": "maker", "name": "Maker", "models": [
+                    {"id": "model-x", "name": "X", "limit": {"context": 1000, "output": 100}, "cost": {"input": 0.25, "output": 0.5}}
                 ]}
             ]
         }))
@@ -2153,6 +2271,15 @@ mod tests {
         assert_eq!(resolved.context_window.value, Some(1000));
         assert_eq!(resolved.price.source, source::UNKNOWN);
         assert!(resolved.price.input.is_none());
+        let capability = ["maker".to_owned()];
+        request.catalog_providers = &capability;
+        assert_eq!(
+            resolve(&catalog, &request).price.source,
+            source::UNKNOWN,
+            "a channel price conflict cannot be hidden by an otherwise valid reference"
+        );
+        request.price_providers = &[];
+        assert_eq!(resolve(&catalog, &request).price.input, Some(0.25));
     }
 
     #[test]
@@ -2185,6 +2312,11 @@ mod tests {
         assert_eq!(resolved.price.output, Some(0.0));
         assert_ne!(resolved.price.source, source::UNKNOWN);
         assert!(resolved.price.complete);
+
+        request.price_providers = &[];
+        let reference = resolve(&catalog, &request).price;
+        assert_eq!(reference.input, Some(0.0));
+        assert_eq!(reference.source, source::CATALOG_REFERENCE);
 
         // A user override of zero behaves the same way.
         let mut request = input_for("free-model");

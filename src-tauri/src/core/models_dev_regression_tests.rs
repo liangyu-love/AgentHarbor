@@ -314,7 +314,7 @@ fn ordinary_budget_is_independent_and_explicit_aggregate_uses_its_members() {
 }
 
 #[test]
-fn prices_obey_independent_bindings_and_manual_overrides() {
+fn automatic_reference_prices_preserve_legacy_bindings_and_manual_overrides() {
     let cat = catalog(&snapshot(dev::DEFAULT_SOURCE_URL));
     let scope = vec!["openai".into()];
     let billing = vec!["billing".into()];
@@ -341,9 +341,10 @@ fn prices_obey_independent_bindings_and_manual_overrides() {
     req.user.price = None;
     req.price_ref = None;
     req.price_providers = &[];
-    assert_eq!(md::resolve(&cat, &req).price.source, "unknown");
+    assert_eq!(md::resolve(&cat, &req).price.source, "catalogReference");
+    assert_eq!(md::resolve(&cat, &req).price.input, Some(1.0));
     req.explicit_ref = None;
-    assert_eq!(md::resolve(&cat, &req).price.source, "unknown");
+    assert_eq!(md::resolve(&cat, &req).price.source, "catalogReference");
 }
 
 #[test]

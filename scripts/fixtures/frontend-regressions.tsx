@@ -212,7 +212,7 @@ api.routing.diagnostics = async () => {
   requested: { "reasoning.effort": "high" }, stage: "complete", done: true, status: 200, failureStage: null, error: null, durationMs: 840, firstTokenMs: 230,
   attempts: [{ providerId: "relay", providerName: "Synthetic channel", upstreamModel: "claude-opus-5-5-kiro", matchedModel: "claude-opus-5-5", protocol: "anthropicMessages",
     sent: { "thinking.type": "adaptive", "output_config.effort": "high", max_tokens: 8192 }, status: 200, failureStage: null, error: null, durationMs: 830,
-    catalogRevision: "abcdef1234567890", matchKind: "normalized", pricingStatus: "priced", pricingSource: "catalog",
+    catalogRevision: "abcdef1234567890", matchKind: "normalized", pricingStatus: "priced", pricingSource: "catalogReference",
     attemptId: "synthetic-attempt", selectionReason: "active_provider", retryReason: null,
     credential: { kind: "providerApiKey", status: "recorded", reason: null, versionFingerprint: "fixture-version", accountId: null, accountStatus: "not_recorded", label: null },
     modelObservation: { servedModel: "claude-opus-5-5-kiro", modelMatchStatus: "same", modelMatchBasis: "raw_exact", unknownReason: null, conflictingModel: null } }] };
@@ -246,7 +246,7 @@ api.routing.capabilities = async () => ({ stale: true, error: "catalog_unavailab
     output: { value: 128_000, source: "catalog", sourceRef: capabilityRef, updatedAt: "2025-11-24T00:00:00Z" },
     price: { currency: "USD", unit: "perMillionTokens", input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5, reasoning: null,
       inputAudio: null, outputAudio: null, contextOver200k: null, tiers: [],
-      source: "catalog", sourceRef: capabilityRef, updatedAt: "2025-11-24T00:00:00Z", complete: true, note: null },
+      source: "catalogReference", sourceRef: capabilityRef, updatedAt: "2025-11-24T00:00:00Z", complete: true, note: null },
     projection: { contextWindow: 1_000_000, contextSource: "local", contextIsFallback: false, budget: 1_000_000, budgetSource: "local",
       inputLimit: null, outputLimit: 128_000, outputSource: "catalog",
       reasoning: [{ effort: "low", description: "Low" }, { effort: "high", description: "High" }], reasoningSource: "catalog", defaultReasoning: "low",

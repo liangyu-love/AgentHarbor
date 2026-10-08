@@ -405,7 +405,7 @@ export function RoutingDiagnostics({
                                 : attempt.pricingStatus === "partial"
                                   ? t("newapi.costPartial")
                                   : t("newapi.traceUnpriced")}
-                              {attempt.pricingSource ? ` · ${attempt.pricingSource}` : ""}
+                              {attempt.pricingSource ? ` · ${t("newapi.capabilitySource." + attempt.pricingSource, { defaultValue: attempt.pricingSource })}` : ""}
                             </span>
                           </p>
 

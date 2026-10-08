@@ -29,6 +29,7 @@ interface ProviderDraft {
   compressionMode: "inherit" | "percent" | "tokens" | "clientDefault";
   compressionValue: string;
   catalogProviders: string;
+  // Preserve legacy bindings on unrelated edits; new prices are automatic.
   priceCatalogProvider: string;
 }
 const emptyDraft: ProviderDraft = {
@@ -544,18 +545,6 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
                     spellCheck={false}
                     placeholder={t("newapi.catalogMapping.placeholder")}
                     onChange={event => update("catalogProviders", event.target.value)}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="newapi-provider-price-catalog" className="text-[13px]">{t("newapi.catalogMapping.priceTitle")}</Label>
-                  <Input
-                    id="newapi-provider-price-catalog"
-                    value={draft.priceCatalogProvider}
-                    disabled={saving}
-                    autoComplete="off"
-                    spellCheck={false}
-                    placeholder={t("newapi.catalogMapping.placeholder")}
-                    onChange={event => update("priceCatalogProvider", event.target.value)}
                   />
                 </div>
               </div>
