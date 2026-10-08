@@ -406,7 +406,10 @@ fn desktop_namespace_routes_three_protocols_tools_and_actual_model_accounting() 
         }}
         for card in &mut store.providers { card.models[0].context_window = Some(1_000_000); }
         write_store(&paths,&store);
-        assert_eq!(captured.lock().unwrap().len(),31, "24 Desktop turns, 6 ordinary 1M calls and one native alias call; rejected requests must produce no upstream calls");
+        let requests = captured.lock().unwrap();
+        assert_eq!(requests.iter().filter(|request| request["path"] == "/v1/messages/count_tokens").count(), 1, "the native token-count request must reach the upstream exactly once");
+        assert_eq!(requests.iter().filter(|request| request["path"] != "/v1/messages/count_tokens").count(), 31, "24 Desktop turns, 6 ordinary 1M calls and one native alias call; rejected requests must produce no model calls");
+        drop(requests);
 
         // Identical histories and session IDs sharing one real target must not
         // cross role, committed revision, or ordinary router entry points.
