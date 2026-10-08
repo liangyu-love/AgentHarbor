@@ -31,6 +31,7 @@ interface ProviderDraft {
   catalogProviders: string;
   // Preserve legacy bindings on unrelated edits; new prices are automatic.
   priceCatalogProvider: string;
+  priceMultiplier: string;
 }
 const emptyDraft: ProviderDraft = {
   name: "",
@@ -43,6 +44,7 @@ const emptyDraft: ProviderDraft = {
   compressionValue: "",
   catalogProviders: "",
   priceCatalogProvider: "",
+  priceMultiplier: "1",
 };
 const fromProvider = (provider: NewApiProvider): ProviderDraft => {
   const compression = provider.compression ?? { mode: "inherit" as const };
@@ -62,12 +64,19 @@ const fromProvider = (provider: NewApiProvider): ProviderDraft => {
           : "",
     catalogProviders: (provider.catalogProviders ?? []).join(", "),
     priceCatalogProvider: provider.priceCatalogProvider ?? "",
+    priceMultiplier: String(provider.priceMultiplier ?? 1),
   };
 };
 function optionalNumber(text: string, errorKey: string) {
   if (!text.trim()) return null;
   const value = Number(text);
   if (!/^\d+$/.test(text) || !Number.isSafeInteger(value) || value <= 0) throw new Error(errorKey);
+  return value;
+}
+
+function priceMultiplier(text: string) {
+  const value = text.trim() ? Number(text) : 1;
+  if (!Number.isFinite(value) || value < 0 || value > 1000) throw new Error("newapi.errors.priceMultiplier");
   return value;
 }
 /** Provider-level compression policy; throws a locale key when the input is invalid. */
@@ -187,7 +196,7 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
     if (open) {
       setDraft(provider ? fromProvider(provider) : emptyDraft);
       setError(null);
-      setShowAdvanced(!!provider && (!!provider.userId || provider.hasAccessToken || !!provider.contextWindow || (provider.compression?.mode ?? "inherit") !== "inherit" || !!provider.catalogProviders?.length));
+      setShowAdvanced(!!provider && (!!provider.userId || provider.hasAccessToken || !!provider.contextWindow || (provider.compression?.mode ?? "inherit") !== "inherit" || !!provider.catalogProviders?.length || (provider.priceMultiplier ?? 1) !== 1));
       setModels(provider?.models.length ? provider.models : provider?.model ? [{
         id: provider.model,
         displayName: provider.model,
@@ -297,6 +306,7 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
           .map(value => value.trim().toLowerCase())
           .filter(Boolean),
         priceCatalogProvider: draft.priceCatalogProvider.trim().toLowerCase() || null,
+        priceMultiplier: priceMultiplier(draft.priceMultiplier),
       });
       onSaved(change);
       onOpenChange(false);
@@ -304,7 +314,7 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
     } catch (e) {
       const key = typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
       setError(key);
-      if (key === "newapi.errors.context") setShowAdvanced(true);
+      if (key === "newapi.errors.context" || key === "newapi.errors.priceMultiplier") setShowAdvanced(true);
     } finally {
       setSaving(false);
     }
@@ -312,6 +322,7 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
   const hasAdvancedConfigured =
     !!draft.contextWindow
     || draft.compressionMode !== "inherit"
+    || Number(draft.priceMultiplier || 1) !== 1
     || !!draft.catalogProviders.trim();
 
   const fetchModels = async () => {
@@ -546,6 +557,12 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
                     placeholder={t("newapi.catalogMapping.placeholder")}
                     onChange={event => update("catalogProviders", event.target.value)}
                   />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="newapi-provider-price-multiplier" className="text-[13px]">{t("newapi.priceMultiplier")}</Label>
+                  <Input id="newapi-provider-price-multiplier" type="number" min={0} max={1000} step="any"
+                    disabled={saving} value={draft.priceMultiplier} placeholder="1"
+                    onChange={event => update("priceMultiplier", event.target.value)} />
                 </div>
               </div>
             )}

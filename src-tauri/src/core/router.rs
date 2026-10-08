@@ -87,9 +87,11 @@ pub struct Provider {
     /// models.dev provider IDs this relay maps to for capability matching.
     #[serde(default)]
     pub catalog_providers: Vec<String>,
-    /// Independent billing catalog binding; capability mapping never prices a relay.
+    /// Legacy billing binding, kept for compatibility with saved prices.
     #[serde(default)]
     pub price_catalog_provider: Option<String>,
+    #[serde(default)]
+    pub price_multiplier: Option<f64>,
     /// Provider-level compression policy; `inherit` follows the global default.
     #[serde(default)]
     pub compression: model_policy::CompressionPolicy,
@@ -192,6 +194,7 @@ pub struct ProviderView {
     pub context_window: Option<u64>,
     pub catalog_providers: Vec<String>,
     pub price_catalog_provider: Option<String>,
+    pub price_multiplier: Option<f64>,
     pub compression: model_policy::CompressionPolicy,
     pub enabled: bool,
     pub network_mode: String,
@@ -223,6 +226,7 @@ impl Provider {
             context_window: self.context_window,
             catalog_providers: self.catalog_providers.clone(),
             price_catalog_provider: self.price_catalog_provider.clone(),
+            price_multiplier: self.price_multiplier,
             compression: self.compression.clone(),
             enabled: self.enabled,
             network_mode: self.network_mode().to_owned(),
@@ -429,6 +433,9 @@ pub struct ProviderInput {
     pub catalog_providers: Option<Vec<String>>,
     #[serde(default)]
     pub price_catalog_provider: Option<String>,
+    /// Omitted preserves a stored multiplier; 1 restores unchanged rates.
+    #[serde(default)]
+    pub price_multiplier: Option<f64>,
     /// Compression policy; omitted migrates the legacy fixed threshold.
     #[serde(default)]
     pub compression: Option<model_policy::CompressionPolicy>,
@@ -972,6 +979,12 @@ pub(crate) fn validate_native_selection(store: &Store) -> Result<(), String> {
 }
 
 fn validate_input(input: &mut ProviderInput) -> Result<(), String> {
+    if input
+        .price_multiplier
+        .is_some_and(|factor| !model_metadata::valid_price_multiplier(factor))
+    {
+        return Err("newapi.errors.priceMultiplier".into());
+    }
     input.name = input.name.trim().to_owned();
     if input.name.is_empty() || input.name.chars().count() > 80 {
         return Err("newapi.errors.name".into());
@@ -1212,6 +1225,9 @@ pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<Sta
                 provider.catalog_providers = providers;
             }
             provider.price_catalog_provider = input.price_catalog_provider.clone();
+            if let Some(factor) = input.price_multiplier {
+                provider.price_multiplier = (factor != 1.0).then_some(factor);
+            }
             provider.compression = match input.compression.clone() {
                 Some(policy) => {
                     // An explicit policy is authoritative; drop the legacy
@@ -1257,6 +1273,7 @@ pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<Sta
                 auto_compact_limit: input.auto_compact_limit,
                 catalog_providers: input.catalog_providers.clone().unwrap_or_default(),
                 price_catalog_provider: input.price_catalog_provider.clone(),
+                price_multiplier: input.price_multiplier.filter(|factor| *factor != 1.0),
                 compression: match input.compression.clone() {
                     Some(policy) => policy,
                     None => model_policy::migrate_legacy_limit(input.auto_compact_limit),
@@ -2869,12 +2886,14 @@ pub(super) fn resolve_model_metadata(
         official: official.and_then(official_values),
         upstream: saved.and_then(newapi::Model::upstream_values),
     };
-    model_metadata::resolve_with_global_fallback(
+    let mut resolved = model_metadata::resolve_with_global_fallback(
         models_dev,
         &request,
         !strict_catalog_scope,
         Some(OFFICIAL_CATALOGS),
-    )
+    );
+    resolved.price = resolved.price.with_multiplier(provider.price_multiplier);
+    resolved
 }
 
 /// 与 [`resolve_model_metadata`] 相同的有效能力解析，供 `core` 内的只读消费者
@@ -2980,6 +2999,7 @@ pub(crate) fn pricing_for(
         context_over_200k: price.context_over_200k,
         tiers: price.tiers,
         source: price.source,
+        multiplier: price.multiplier,
         revision: catalog.snapshot.revision.clone(),
         match_kind: metadata.match_kind.as_str().into(),
         complete,
@@ -3490,6 +3510,8 @@ fn remove_connection_config(
 
 #[derive(Deserialize)]
 struct ExportedProvider {
+    #[serde(default, alias = "priceMultiplier")]
+    price_multiplier: Option<f64>,
     name: String,
     #[serde(alias = "baseUrl")]
     base_url: String,
@@ -3530,6 +3552,13 @@ pub fn import_providers(paths: &CodexPaths, path: &Path) -> Result<ImportResult,
             skipped += 1;
             continue;
         };
+        if entry
+            .price_multiplier
+            .is_some_and(|factor| !model_metadata::valid_price_multiplier(factor))
+        {
+            skipped += 1;
+            continue;
+        }
         let Ok(base_url) = newapi::base_url(&entry.base_url) else {
             skipped += 1;
             continue;
@@ -3566,6 +3595,7 @@ pub fn import_providers(paths: &CodexPaths, path: &Path) -> Result<ImportResult,
             models,
             context_window: entry.context_window,
             auto_compact_limit: entry.auto_compact_limit,
+            price_multiplier: entry.price_multiplier.filter(|factor| *factor != 1.0),
             enabled: false,
             test_status: "untested".into(),
             created_at: timestamp,
@@ -3597,6 +3627,7 @@ pub fn export_providers(paths: &CodexPaths, path: &Path) -> Result<(), String> {
                 "models": p.models,
                 "contextWindow": p.context_window,
                 "autoCompactLimit": p.auto_compact_limit,
+                "priceMultiplier": p.price_multiplier,
             })
         })
         .collect();
@@ -3722,6 +3753,7 @@ mod tests {
             auto_compact_limit: None,
             catalog_providers: None,
             price_catalog_provider: None,
+            price_multiplier: None,
             compression: None,
             network_mode: "proxy".into(),
         }
@@ -3781,6 +3813,7 @@ mod tests {
         let (_dir, paths) = paths();
         let mut draft = input("Relay", "https://relay.example.com");
         draft.model = "gpt-5.2".into();
+        draft.price_multiplier = Some(2.0);
         draft.models = vec![newapi::Model {
             id: "gpt-5.2".into(),
             display_name: "GPT-5.2".into(),
@@ -3824,6 +3857,11 @@ mod tests {
         assert_eq!(after.0.price.source, "manual");
         assert_eq!(after.0.price.input, Some(1.5));
         assert_eq!(after.0.price.output, Some(7.5));
+        assert_eq!(after.0.price.cache_read, Some(0.15));
+        assert_eq!(
+            after.0.price.multiplier, None,
+            "custom prices are already final"
+        );
         assert_eq!(after.0.price.complete, true);
 
         // Clearing restores the catalog price.
@@ -4107,6 +4145,53 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         assert_eq!(store.providers[0].base_url, "https://old.example.com/");
         assert_eq!(store.providers[0].api_key, "sk-legacy");
         assert!(!store.providers[0].enabled);
+    }
+
+    #[test]
+    fn provider_price_multipliers_roundtrip_and_validate_without_touching_credentials() {
+        let (_dir, paths) = paths();
+        let mut draft = input("Relay", "https://relay.example.com");
+        draft.price_multiplier = Some(0.5);
+        let saved = save_provider(&paths, draft).unwrap();
+        let id = saved.state.providers[0].id.clone();
+        assert_eq!(saved.state.providers[0].price_multiplier, Some(0.5));
+        let edit = |factor| {
+            let mut draft = input("Relay", "https://relay.example.com");
+            draft.id = Some(id.clone());
+            draft.price_multiplier = factor;
+            draft.api_key.clear();
+            draft
+        };
+        save_provider(&paths, edit(None)).unwrap(); // Older callers omit the field.
+        let store = load_store(&paths).unwrap();
+        assert_eq!(store.providers[0].price_multiplier, Some(0.5));
+        assert_eq!(store.providers[0].api_key, "sk-a");
+        let exported = paths.app_data_dir.join("export.json");
+        export_providers(&paths, &exported).unwrap();
+        let (_other_dir, other_paths) = self::paths();
+        let imported = import_providers(&other_paths, &exported).unwrap();
+        assert_eq!(imported.imported, 1);
+        assert_eq!(imported.state.providers[0].price_multiplier, Some(0.5));
+        for factor in [0.0, 1.0, 1000.0] {
+            save_provider(&paths, edit(Some(factor))).unwrap();
+            assert_eq!(
+                load_store(&paths).unwrap().providers[0].price_multiplier,
+                (factor != 1.0).then_some(factor)
+            );
+        }
+        for factor in [-1.0, 1000.1, f64::INFINITY, f64::NAN] {
+            assert_eq!(
+                save_provider(&paths, edit(Some(factor))).err().as_deref(),
+                Some("newapi.errors.priceMultiplier")
+            );
+        }
+        let invalid = paths.app_data_dir.join("invalid.json");
+        std::fs::write(
+            &invalid,
+            r#"[{"name":"Bad","baseUrl":"https://bad.example.com","priceMultiplier":-1}]"#,
+        )
+        .unwrap();
+        assert_eq!(import_providers(&other_paths, &invalid).unwrap().skipped, 1);
     }
 
     #[test]
@@ -5046,6 +5131,45 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         provider.price_catalog_provider = Some("relay".into());
         let legacy = resolve_model_metadata(&provider, id, None, &catalog).price;
         assert_eq!(legacy.input, Some(5.0));
+
+        // Capture real request prices on either side of a multiplier edit.
+        let dir = tempfile::tempdir().unwrap();
+        for factor in [0.5, 2.0] {
+            provider.price_multiplier = Some(factor);
+            let snapshot = pricing_for(&provider, id, &catalog);
+            assert_eq!(snapshot.input, Some(5.0 * factor));
+            assert_eq!(snapshot.cache_read, Some(0.0));
+            assert_eq!(snapshot.multiplier, Some(factor));
+            let mut observer = relay_usage::RelayUsageRequest::new(
+                dir.path().into(),
+                "relay".into(),
+                "Relay".into(),
+                id.into(),
+                "chatCompletions".into(),
+                snapshot,
+            )
+            .observe(200, false);
+            observer.observe(br#"{"usage":{"prompt_tokens":1000000,"completion_tokens":0,"prompt_tokens_details":{"cached_tokens":0}}}"#);
+        }
+        let ledger = relay_usage::load(dir.path()).unwrap();
+        assert_eq!(ledger.all_time.cost_micros, 12_500_000);
+        assert!(ledger
+            .recent
+            .iter()
+            .any(|record| record.cost_usd == Some(2.5)
+                && record.pricing_snapshot.as_ref().unwrap().multiplier == Some(0.5)));
+        assert!(ledger
+            .recent
+            .iter()
+            .any(|record| record.cost_usd == Some(10.0)
+                && record.pricing_snapshot.as_ref().unwrap().multiplier == Some(2.0)));
+        provider.price_catalog_provider = None;
+        provider.base_url = "https://unknown.test/v1".into();
+        assert_eq!(
+            pricing_for(&provider, id, &catalog).input,
+            Some(2.0),
+            "model reference estimates use the same multiplier"
+        );
     }
 
     #[test]

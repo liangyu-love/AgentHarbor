@@ -880,7 +880,8 @@
       "networkMode": "网络模式无效，请选择跟随全局代理或直连。",
       "balanceScript": "脚本无效、提取失败或执行超时，请检查 request / extractor。",
       "balanceScriptOrigin": "查询地址必须与当前供应商同源（协议、域名和端口一致）。",
-      "balanceInterval": "请输入 0 到 10080 之间的整数分钟。"
+      "balanceInterval": "请输入 0 到 10080 之间的整数分钟。",
+      "priceMultiplier": "请输入 0 到 1000 的价格倍率，1 为原价。"
     },
     "balanceRemaining": "剩余额度",
     "useDefault": "留空使用默认",
@@ -1156,7 +1157,7 @@
     "priceOutput": "输出",
     "priceCacheRead": "缓存读取",
     "priceCacheWrite": "缓存写入",
-    "priceManualNote": "你填写的价格只用于预估费用，不代表账单；填至少输入或输出单价即可。",
+    "priceManualNote": "所填单价为最终预估价格，不叠加渠道倍率；至少填写输入或输出单价。",
     "priceInvalid": "请输入有效的非负单价，并至少填写输入或输出价格。",
     "priceClear": "恢复自动价格",
     "capabilityCompression": "自动压缩",
@@ -1264,7 +1265,9 @@
     "nativeRoutingThreads": "有 {{count}} 个会话已接入统一路由。切换到原生接入后，Codex 配置将移除该服务商。确认后会将这些会话迁移到当前服务商，并分别备份。",
     "nativeRoutingRestore": "切换并迁回会话",
     "threadsRestored": "已将路由会话迁回 {{provider}}",
-    "threadsRestoreFailed": "路由已关闭，但会话迁回失败；可在会话页逐个修复"
+    "threadsRestoreFailed": "路由已关闭，但会话迁回失败；可在会话页逐个修复",
+    "priceMultiplier": "价格倍率（1 为原价）",
+    "priceMultiplierApplied": "倍率 ×{{value}}"
   },
   "avatar": {
     "title": "应用头像",
@@ -1499,7 +1502,27 @@
     "sourceColumn": "来源",
     "modelColumn": "模型",
     "timeColumn": "时间",
-    "tokenColumn": "Token"
+    "tokenColumn": "Token",
+    "cacheView": "缓存",
+    "cacheHitRate": "缓存命中率",
+    "cacheReadWrite": "读取 {{read}} · 写入 {{write}}",
+    "cacheRateFormula": "缓存读取 ÷（未缓存输入 + 缓存读取 + 缓存写入）；按已上报输入 token 加权。",
+    "cacheRead": "缓存读取",
+    "cacheWrite": "缓存写入",
+    "cachePrompt": "已上报输入",
+    "cacheCoverage": "统计覆盖",
+    "cacheCoverageHint": "提供输入和缓存读取数据的请求 / 全部请求；缺少数据的请求不计入命中率。",
+    "cacheGrouping": "缓存统计分组",
+    "cacheCumulative": "累计缓存统计",
+    "cacheGroup": {
+      "providers": "按中转",
+      "models": "按模型"
+    },
+    "cachePeriod": {
+      "today": "今日命中率",
+      "lastSevenDays": "近七日命中率",
+      "allTime": "累计命中率"
+    }
   },
   "nav": {
     "overview": "仪表盘",

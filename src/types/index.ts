@@ -318,7 +318,15 @@ export interface CodexAccountListPayload {
   items: CodexAccountSummary[];
 }
 
+export interface CacheUsageTotals {
+  reportedCount: number;
+  promptTokens: number;
+  readTokens: number;
+  writeTokens: number;
+}
+
 export interface RelayUsageTotals {
+  cacheUsage?: CacheUsageTotals;
   requestCount: number;
   successfulCount: number;
   reportedCount: number;
@@ -353,6 +361,7 @@ export interface RelayUsageDay {
 }
 
 export interface RelayUsageRecord {
+  cacheReported?: boolean;
   clientSource?: string | null;
   requestedModel?: string | null;
   resolvedModel?: string | null;

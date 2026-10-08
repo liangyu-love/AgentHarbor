@@ -230,6 +230,7 @@ function PriceLine({
             <span>
               {t("newapi.capabilitySource." + price.source, { defaultValue: price.source })}
             </span>
+            {price.multiplier != null && <span>· {t("newapi.priceMultiplierApplied", { value: price.multiplier })}</span>}
           </div>
         </>
       )}

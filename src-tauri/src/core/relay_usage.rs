@@ -90,6 +90,7 @@ pub struct PricingSnapshot {
     pub tiers: Vec<super::models_dev::CostTier>,
     /// manual | catalog | catalogAlias | unknown | ...
     pub source: String,
+    pub multiplier: Option<f64>,
     pub revision: String,
     /// Resolver match kind for the request's model identity.
     pub match_kind: String,
@@ -284,6 +285,9 @@ pub struct RelayUsageRecord {
     pub usage_reported: bool,
     #[serde(default)]
     pub usage_complete: bool,
+    /// Explicit input and cache-read counters were present in upstream usage.
+    #[serde(default)]
+    pub cache_reported: bool,
     #[serde(flatten)]
     pub tokens: TokenCounts,
     /// Estimated cost in USD at the rates fixed when the request started.
@@ -305,6 +309,7 @@ pub struct RelayUsageRecord {
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct RelayUsageTotals {
+    pub cache_usage: super::usage_cache::CacheUsageTotals,
     pub request_count: u64,
     pub successful_count: u64,
     pub reported_count: u64,
@@ -328,6 +333,13 @@ pub struct RelayUsageTotals {
 
 impl RelayUsageTotals {
     fn add(&mut self, record: &RelayUsageRecord) {
+        if record.cache_reported && record.usage_reported {
+            self.cache_usage.add(
+                record.tokens.input_tokens,
+                record.tokens.cache_read_tokens,
+                record.tokens.cache_write_tokens,
+            );
+        }
         self.request_count = self.request_count.saturating_add(1);
         if record.success {
             self.successful_count = self.successful_count.saturating_add(1);
@@ -368,6 +380,7 @@ impl RelayUsageTotals {
     }
 
     fn merge(&mut self, other: &Self) {
+        self.cache_usage.merge(&other.cache_usage);
         self.request_count = self.request_count.saturating_add(other.request_count);
         self.successful_count = self.successful_count.saturating_add(other.successful_count);
         self.reported_count = self.reported_count.saturating_add(other.reported_count);
@@ -520,6 +533,7 @@ impl RelayUsageRequest {
             TokenCounts::default(),
             None,
             false,
+            false,
         );
     }
 
@@ -564,6 +578,7 @@ impl RelayUsageRequest {
         usage_complete: bool,
         mut tokens: TokenCounts,
         first_token_ms: Option<u64>,
+        cache_reported: bool,
         delivered: bool,
     ) {
         tokens.normalize_total();
@@ -594,7 +609,7 @@ impl RelayUsageRequest {
         });
         let record = RelayUsageRecord {
             identity: self.identity,
-            schema_version: 2,
+            schema_version: 3,
             request_id: self.request_id,
             attempt_id: self.attempt_id,
             credential: self.credential,
@@ -611,6 +626,7 @@ impl RelayUsageRequest {
             success: (200..300).contains(&status_code) && delivered,
             usage_reported,
             usage_complete,
+            cache_reported,
             tokens,
             cost_usd,
             pricing_status: pricing_status.into(),
@@ -730,6 +746,7 @@ impl Drop for RelayUsageObserver {
                 self.usage.fields.input && self.usage.fields.output && !self.capture_truncated,
                 self.usage.normalized(),
                 self.first_token_ms,
+                self.usage.fields.input && self.usage.fields.cache_read && !self.capture_truncated,
                 !self.delivery_failed,
             );
         }
@@ -793,6 +810,7 @@ fn counts_from_usage(value: &Value) -> Option<TokenCounts> {
 struct UsageFields {
     input: bool,
     output: bool,
+    cache_read: bool,
 }
 
 #[derive(Default)]
@@ -814,12 +832,8 @@ impl UsageAccumulator {
         self.fields.output |= ["output_tokens", "completion_tokens"]
             .iter()
             .any(|key| usage.get(*key).and_then(Value::as_u64).is_some());
-        self.cache_in_input |= [
-            "/input_tokens_details/cached_tokens",
-            "/prompt_tokens_details/cached_tokens",
-        ]
-        .iter()
-        .any(|path| usage.pointer(path).and_then(Value::as_u64).is_some());
+        self.fields.cache_read |= Usage::cache_read_reported(usage);
+        self.cache_in_input |= Usage::cache_is_in_input(usage);
         self.raw.merge_max(next);
         self.reported = true;
     }
@@ -1125,11 +1139,16 @@ mod tests {
         let mut value = serde_json::to_value(record_on("2026-10-02", "p", "m", 1)).unwrap();
         value.as_object_mut().unwrap().remove("credential");
         value.as_object_mut().unwrap().remove("modelObservation");
+        value.as_object_mut().unwrap().remove("cacheReported");
         let legacy: RelayUsageRecord = serde_json::from_value(value).unwrap();
         assert!(legacy.identity.client_source.is_none());
         assert!(legacy.identity.requested_model.is_none());
         assert!(legacy.identity.route_revision.is_none());
         assert_eq!(legacy.credential.status, "not_recorded");
+        assert!(
+            !legacy.cache_reported,
+            "legacy zero counters do not prove a cache miss"
+        );
         assert_eq!(legacy.model_observation.model_match_status, "unknown");
         assert_eq!(
             legacy.model_observation.unknown_reason.as_deref(),
@@ -1157,6 +1176,7 @@ mod tests {
             success: true,
             usage_reported: true,
             usage_complete: true,
+            cache_reported: false,
             tokens: TokenCounts {
                 input_tokens: tokens,
                 output_tokens: 0,
@@ -1340,6 +1360,10 @@ mod tests {
             if index != 2 {
                 record.cost_usd = Some((index + 1) as f64 / 1_000_000.0);
                 record.pricing_status = if index == 1 { "partial" } else { "priced" }.into();
+                record.cache_reported = true;
+                record.tokens.cache_read_tokens = 2;
+                record.tokens.cache_write_tokens = 1;
+                record.tokens.normalize_total();
             }
             append_record(dir.path(), &record).unwrap();
         }
@@ -1379,21 +1403,38 @@ mod tests {
             7
         );
         assert_eq!(after.all_time.request_count, 4);
+        assert_eq!(after.all_time.cache_usage, before.all_time.cache_usage);
+        assert_eq!(after.all_time.cache_usage.reported_count, 3);
+        assert_eq!(after.all_time.cache_usage.prompt_tokens, 32);
+        assert_eq!(after.all_time.cache_usage.read_tokens, 6);
+        assert_eq!(after.all_time.cache_usage.write_tokens, 3);
         assert_eq!(after.by_model.len(), 2);
-        assert!(after.by_model.iter().all(|entry| entry.model != "claude-opus-4-7"));
-        assert_eq!(after.recent[0].identity.client_source.as_deref(), Some("claudeDesktop"));
-        assert_eq!(after.today.total_tokens, 11);
+        assert!(after
+            .by_model
+            .iter()
+            .all(|entry| entry.model != "claude-opus-4-7"));
+        assert_eq!(
+            after.recent[0].identity.client_source.as_deref(),
+            Some("claudeDesktop")
+        );
+        assert_eq!(after.today.total_tokens, 14);
+        assert_eq!(after.today.cache_usage.prompt_tokens, 14);
         let p = after
             .by_provider
             .iter()
             .find(|entry| entry.provider_id == "p")
             .unwrap();
-        assert_eq!(p.totals.total_tokens, 23);
+        assert_eq!(p.totals.total_tokens, 32);
+        assert_eq!(p.totals.cache_usage, after.all_time.cache_usage);
 
         // Compacting again merges into the existing archive instead of duplicating it.
         compact_locked(dir.path()).unwrap();
-        assert_eq!(load(dir.path()).unwrap().all_time.total_tokens, 26);
+        assert_eq!(load(dir.path()).unwrap().all_time.total_tokens, 35);
         assert_eq!(load(dir.path()).unwrap().all_time.cost_micros, 7);
+        assert_eq!(
+            load(dir.path()).unwrap().all_time.cache_usage,
+            before.all_time.cache_usage
+        );
     }
 
     #[test]
@@ -1436,6 +1477,13 @@ mod tests {
                 20,
                 110,
             ),
+            (
+                "deepseekChat",
+                serde_json::json!({"prompt_tokens":100,"completion_tokens":0}),
+                serde_json::json!({"completion_tokens":10,"prompt_cache_hit_tokens":80,"prompt_cache_miss_tokens":20}),
+                20,
+                110,
+            ),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let price = PricingSnapshot {
@@ -1467,6 +1515,10 @@ mod tests {
             assert_eq!(record.tokens.input_tokens, input, "{protocol}");
             assert_eq!(record.tokens.cache_read_tokens, 80);
             assert_eq!(record.tokens.total_tokens, total);
+            assert!(record.cache_reported, "{protocol}");
+            assert_eq!(payload.all_time.cache_usage.reported_count, 1);
+            assert_eq!(payload.all_time.cache_usage.prompt_tokens, 100);
+            assert_eq!(payload.all_time.cache_usage.read_tokens, 80);
             assert!((record.cost_usd.unwrap() - 0.0003).abs() < 1e-12);
             assert_eq!(record.pricing_status, "priced");
         }
@@ -1493,6 +1545,123 @@ mod tests {
         assert_eq!(payload.last_seven_days.cost_micros, 4000000);
         assert_eq!(payload.last_seven_days_start, "2026-09-26");
         assert_eq!(payload.last_seven_days_end, "2026-10-02");
+    }
+
+    #[test]
+    fn cache_analytics_use_only_explicit_counters_and_weight_by_input_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        for (model, usage, known) in [
+            (
+                "responses-hit",
+                serde_json::json!({"input_tokens":100,"output_tokens":1000,"input_tokens_details":{"cached_tokens":80}}),
+                true,
+            ),
+            (
+                "chat-miss",
+                serde_json::json!({"prompt_tokens":900,"completion_tokens":1,"prompt_tokens_details":{"cached_tokens":0}}),
+                true,
+            ),
+            (
+                "messages-write",
+                serde_json::json!({"input_tokens":40,"output_tokens":9,"cache_read_input_tokens":10,"cache_creation_input_tokens":5}),
+                true,
+            ),
+            (
+                "deepseek-hit",
+                serde_json::json!({"prompt_tokens":100,"completion_tokens":10,"prompt_cache_hit_tokens":80,"prompt_tokens_details":{"cached_tokens":80}}),
+                true,
+            ),
+            (
+                "unknown",
+                serde_json::json!({"input_tokens":8000,"output_tokens":0}),
+                false,
+            ),
+            (
+                "invalid-cache",
+                serde_json::json!({"input_tokens":10,"output_tokens":0,"cache_read_input_tokens":"0"}),
+                false,
+            ),
+            (
+                "missing-input",
+                serde_json::json!({"output_tokens":1,"cache_read_input_tokens":20}),
+                false,
+            ),
+        ] {
+            let mut observer = RelayUsageRequest::new(
+                dir.path().into(),
+                "p".into(),
+                "P".into(),
+                model.into(),
+                "test".into(),
+                pricing(),
+            )
+            .observe(200, false);
+            observer.observe(serde_json::json!({"usage":usage}).to_string().as_bytes());
+            drop(observer);
+            let payload = load(dir.path()).unwrap();
+            let record = payload
+                .recent
+                .iter()
+                .find(|record| record.model == model)
+                .unwrap();
+            assert_eq!(record.cache_reported, known, "{model}");
+        }
+        let payload = load(dir.path()).unwrap();
+        let stats = payload.all_time.cache_usage;
+        assert_eq!(stats.reported_count, 4);
+        assert_eq!(
+            stats.prompt_tokens, 1155,
+            "output and unobserved input are excluded"
+        );
+        assert_eq!(stats.read_tokens, 170);
+        assert_eq!(stats.write_tokens, 5);
+        assert_eq!(payload.today.cache_usage, stats);
+        assert_eq!(payload.last_seven_days.cache_usage, stats);
+        assert_eq!(payload.by_provider[0].totals.cache_usage, stats);
+        let miss = payload
+            .by_model
+            .iter()
+            .find(|row| row.model == "chat-miss")
+            .unwrap()
+            .totals
+            .cache_usage;
+        assert_eq!(
+            (miss.reported_count, miss.read_tokens, miss.prompt_tokens),
+            (1, 0, 900)
+        );
+        let unknown = payload
+            .by_model
+            .iter()
+            .find(|row| row.model == "unknown")
+            .unwrap()
+            .totals
+            .cache_usage;
+        assert_eq!(unknown.reported_count, 0);
+    }
+
+    #[test]
+    fn truncated_capture_and_old_archives_do_not_claim_cache_reporting() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let mut observer = RelayUsageRequest::new(
+                dir.path().into(),
+                "p".into(),
+                "P".into(),
+                "m".into(),
+                "responses".into(),
+                pricing(),
+            )
+            .observe(200, true);
+            observer.observe(b"data: {\"usage\":{\"input_tokens\":100,\"input_tokens_details\":{\"cached_tokens\":80}}}\n\n");
+            observer.observe(&vec![b'x'; MAX_CAPTURE_BYTES + 1]);
+        }
+        let payload = load(dir.path()).unwrap();
+        assert!(!payload.recent[0].cache_reported);
+        assert_eq!(payload.all_time.cache_usage.reported_count, 0);
+        let legacy = serde_json::json!({"archive":[{"providerId":"old","providerName":"Old","model":"old-model",
+            "totals":{"requestCount":2,"inputTokens":1000,"cacheReadTokens":500}}]}).to_string();
+        let archive = parse_ledger(legacy.as_bytes());
+        assert_eq!(archive.archive[0].totals.cache_usage.reported_count, 0);
     }
 
     #[test]

@@ -281,6 +281,7 @@ fn topology_revision_ignores_balance_price_and_display_changes() {
     store.providers[0].updated_at = 55;
     store.providers[0].name = "Renamed provider".into();
     store.providers[0].price_catalog_provider = Some("different-price-catalog".into());
+    store.providers[0].price_multiplier = Some(0.5);
     store.aggregates[0].display_name = "Renamed aggregate".into();
     assert_eq!(
         revision,

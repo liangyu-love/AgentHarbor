@@ -880,7 +880,8 @@
       "networkMode": "Invalid network mode. Choose the global proxy or direct.",
       "balanceScript": "Invalid script, extraction failure or execution timeout. Check request / extractor.",
       "balanceScriptOrigin": "Query URL must have the same scheme, host and port as the provider.",
-      "balanceInterval": "Enter a whole number of minutes from 0 to 10080."
+      "balanceInterval": "Enter a whole number of minutes from 0 to 10080.",
+      "priceMultiplier": "Enter a price multiplier from 0 to 1000; 1 keeps the original rates."
     },
     "balanceRemaining": "Remaining balance",
     "useDefault": "Blank = default",
@@ -1156,7 +1157,7 @@
     "priceOutput": "Output",
     "priceCacheRead": "Cache read",
     "priceCacheWrite": "Cache write",
-    "priceManualNote": "Your rates only estimate cost; they are not an invoice. Enter at least the input or output rate.",
+    "priceManualNote": "Your rates are final cost estimates; the channel multiplier does not apply. Enter at least the input or output rate.",
     "priceInvalid": "Enter valid non-negative rates and at least an input or output price.",
     "priceClear": "Restore automatic price",
     "capabilityCompression": "Auto compact",
@@ -1264,7 +1265,9 @@
     "nativeRoutingThreads": "{{count}} threads use the unified Router. Switching to native access removes that provider from Codex config. Confirming moves the threads to the active provider, with a backup for each thread.",
     "nativeRoutingRestore": "Switch and move threads",
     "threadsRestored": "Routed threads moved to {{provider}}",
-    "threadsRestoreFailed": "Routing is off, but threads could not be moved; repair them on the Threads page"
+    "threadsRestoreFailed": "Routing is off, but threads could not be moved; repair them on the Threads page",
+    "priceMultiplier": "Price multiplier (1 = original)",
+    "priceMultiplierApplied": "Multiplier ×{{value}}"
   },
   "avatar": {
     "title": "App avatar",
@@ -1499,7 +1502,27 @@
     "sourceColumn": "Source",
     "modelColumn": "Model",
     "timeColumn": "Time",
-    "tokenColumn": "Tokens"
+    "tokenColumn": "Tokens",
+    "cacheView": "Cache",
+    "cacheHitRate": "Cache hit rate",
+    "cacheReadWrite": "Read {{read}} · write {{write}}",
+    "cacheRateFormula": "Cache reads / (uncached input + cache reads + cache writes), weighted by reported input tokens.",
+    "cacheRead": "Cache reads",
+    "cacheWrite": "Cache writes",
+    "cachePrompt": "Reported input",
+    "cacheCoverage": "Coverage",
+    "cacheCoverageHint": "Requests reporting both input and cache reads / all requests. Missing usage is excluded from the rate.",
+    "cacheGrouping": "Cache grouping",
+    "cacheCumulative": "All-time cache statistics",
+    "cacheGroup": {
+      "providers": "By relay",
+      "models": "By model"
+    },
+    "cachePeriod": {
+      "today": "Today’s hit rate",
+      "lastSevenDays": "Seven-day hit rate",
+      "allTime": "All-time hit rate"
+    }
   },
   "nav": {
     "overview": "Dashboard",

@@ -13,6 +13,7 @@ import { testThreadDetails } from "./test-thread-details.mjs";
 import { testClaudeSessions } from "./test-claude-sessions.mjs";
 import { testThreadUiFixes } from "./test-thread-ui-fixes.mjs";
 import { testMagpieOptimizations } from "./test-magpie-optimizations.mjs";
+import { testPriceCache } from "./test-price-cache.mjs";
 import { testProviderFeedback } from "./test-provider-feedback.mjs";
 import { testProviderModelResolutions } from "./test-provider-model-resolutions.mjs";
 import { testTerminalProxy } from "./test-terminal-proxy.mjs";
@@ -105,6 +106,8 @@ try {
     await testProviderFeedback({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "magpie-optimizations") {
     await testMagpieOptimizations({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "price-cache") {
+    await testPriceCache({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "ui-review-fixes") {
     await testThreadUiFixes({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "account-thread-navigation") {
@@ -1335,6 +1338,7 @@ try {
   await testAggregation({ page, reset, captureDir });
   await testCodexSubagents({ page, reset, captureDir });
   await testMagpieOptimizations({ page, reset, captureDir });
+  await testPriceCache({ page, reset, captureDir });
   await testCapabilityClear({ page, reset, captureDir });
   await testProviderFeedback({ page, reset, captureDir });
   await testProviderModelResolutions({ page, reset, captureDir });

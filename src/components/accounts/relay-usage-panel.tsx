@@ -2,7 +2,9 @@ import { useMemo, useState, type MouseEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
-import { ArrowRight, ChartNoAxesCombined, ListFilter, RefreshCw, Rows3, Wallet } from "lucide-react";
+import { ArrowRight, ChartNoAxesCombined, Database, ListFilter, RefreshCw, Rows3, Wallet } from "lucide-react";
+import { CacheUsagePanel } from "@/components/accounts/cache-usage-panel";
+import { cacheHitRate, formatCacheRate, requestCacheUsage } from "@/lib/cache-usage";
 
 import { UsageBreakdown } from "@/components/accounts/model-usage-breakdown";
 import { api } from "@/lib/api";
@@ -16,7 +18,7 @@ import { queryKeys } from "@/lib/query-keys";
 import { formatInvokeError } from "@/lib/invoke-error";
 import { CLIENT_SOURCES, clientSourceLabelKey, matchesClientSource, type ClientSourceFilter } from "@/lib/client-source";
 
-type View = "trend" | "models" | "requests" | "providers";
+type View = "trend" | "models" | "requests" | "providers" | "cache";
 const CHART_WIDTH = 1000;
 const CHART_BASE = 226;
 const CHART_LEFT = 62;
@@ -149,12 +151,15 @@ function RelayRequests({ relay }: { relay: RelayUsagePayload }) {
         </td>
         <td className="font-mono">
           {record.usageReported ? formatTokens(record.inputTokens) : "—"}
-          {record.cacheReadTokens + record.cacheWriteTokens > 0 && (
-            <small className="ml-1 text-muted-foreground" title={t("accounts.cacheDetail", {
+          <small className="block text-muted-foreground" title={t("accounts.cacheRateFormula")}>
+            {t("accounts.cacheHitRate")} {formatCacheRate(cacheHitRate(requestCacheUsage(record)))}
+          </small>
+          {(record.cacheReported || record.cacheReadTokens + record.cacheWriteTokens > 0) && (
+            <small className="block text-muted-foreground" title={t("accounts.cacheDetail", {
               read: formatTokens(record.cacheReadTokens),
               write: formatTokens(record.cacheWriteTokens),
             })}>
-              +{formatTokens(record.cacheReadTokens + record.cacheWriteTokens)}
+              {t("accounts.cacheReadWrite", { read: formatTokens(record.cacheReadTokens), write: formatTokens(record.cacheWriteTokens) })}
             </small>
           )}
         </td>
@@ -165,7 +170,8 @@ function RelayRequests({ relay }: { relay: RelayUsagePayload }) {
           title={!record.usageReported ? t("accounts.usageNotReported")
             : (record.pricingStatus === "partial" ? `${t("accounts.costPartial")} · ` : "") + (record.pricingSource
               ? t("newapi.capabilitySource." + record.pricingSource, { defaultValue: record.pricingSource })
-              : t("accounts.costUnavailable"))}
+              : t("accounts.costUnavailable")) + (record.pricingSnapshot?.multiplier != null
+                ? ` · ${t("newapi.priceMultiplierApplied", { value: record.pricingSnapshot.multiplier })}` : "")}
         >
           {!record.usageReported ? t("accounts.usageNotReported") : record.costUsd != null ? formatCost(record.costUsd * 1_000_000) : t("accounts.costUnpriced")}
           {record.pricingStatus === "partial" && <small className="ml-1 text-amber-600">*</small>}
@@ -235,6 +241,7 @@ export function RelayUsagePanel({ relay, onManageProviders }: { relay: RelayUsag
     { key: "models", label: t("accounts.modelView"), icon: ListFilter },
     { key: "requests", label: t("accounts.requestsView"), icon: Rows3 },
     { key: "providers", label: t("accounts.providersView"), icon: Wallet },
+    { key: "cache", label: t("accounts.cacheView"), icon: Database },
   ];
   return <section className="usage-relay-panel">
     <div className="usage-panel-heading usage-relay-header">
@@ -263,6 +270,7 @@ export function RelayUsagePanel({ relay, onManageProviders }: { relay: RelayUsag
       {view === "models" && <UsageBreakdown title={t("accounts.relayModels")} items={relayModels} emptyLabel={t("accounts.relayEmpty")} mergeDuplicateModels embedded />}
       {view === "requests" && <RelayRequests relay={relay} />}
       {view === "providers" && <ProviderQuota relay={relay} onManageProviders={onManageProviders} />}
+      {view === "cache" && <CacheUsagePanel relay={relay} />}
     </div>
   </section>;
 }

@@ -208,7 +208,7 @@ to be the only accepted cache format.
 
 ## Usage ledger
 
-New records use `schemaVersion: 1`, correlate `requestId` with route diagnostics,
+New records use `schemaVersion: 3`, correlate `requestId` with route diagnostics,
 and give every upstream attempt its own `attemptId`. They persist the request's
 pricing snapshot (including its reference and revision) and selected conditional
 rates. Missing usage has an unknown cost; explicit zero usage and zero rates
@@ -233,6 +233,52 @@ Resolved prices, pricing snapshots and applied rates retain `inputAudio`,
 Audio usage is not currently observed, so an audio price makes settlement
 incomplete rather than silently claiming full pricing. The original rates remain
 available to consumers; historical amounts are never recomputed.
+
+### Channel price multipliers
+
+The provider editor's advanced settings offer **价格倍率（1 为原价）**.
+`priceMultiplier` defaults to 1, accepts finite values from 0 through 1000, and
+scales automatic catalog/reference prices, including cache, reasoning, audio and
+context tiers. Thresholds and model capabilities do not change. Unknown prices
+remain unknown even with a zero multiplier. Per-model custom prices are final
+estimates and do not receive this additional multiplier.
+
+The capability preview shows the resulting rates and applied multiplier. Each
+request's `pricingSnapshot` fixes both; the request-cost tooltip shows its saved
+multiplier. Later catalog, custom-price or multiplier edits never reprice old
+records. Editing through an older caller that omits the field preserves its
+stored value; explicitly saving 1 restores base rates. Provider export/import
+includes the multiplier. Price-only changes do not invalidate aggregate topology
+or conversation affinity.
+
+### Cache analytics
+
+**账号与用量 → 中转用量 → 缓存** shows cache hit rates for today, the last seven
+local calendar days (including today), and all time. Its cumulative table groups by the actual
+outbound provider or provider/model, with cache reads, writes, observed prompt
+tokens and reporting coverage. **请求明细** shows each request's hit rate and
+read/write counts directly under its uncached input count.
+
+The rate is `read / (uncached input + read + write)`. Aggregate rates use summed
+tokens, not the mean of per-request percentages. Output tokens are excluded;
+cache writes count as input but not as hits. Explicit zero reads produce a 0%
+rate when input is nonzero. Missing counters or zero input produce `—`.
+
+`cacheReported` requires explicit numeric input and cache-read counters from the
+original upstream usage, without capture truncation. Recognized read fields are
+Anthropic's `cache_read_input_tokens`, OpenAI's `*_tokens_details.cached_tokens`
+and [DeepSeek's `prompt_cache_hit_tokens`](https://api-docs.deepseek.com/api/create-chat-completion).
+OpenAI/DeepSeek prompt totals include hits; Anthropic input totals exclude them.
+Equivalent aliases are merged by maximum, and cache subtraction occurs once
+after merging stream frames, including late usage-only frames.
+
+`cacheUsage` retains covered request count, prompt/read/write token totals across
+summaries, model/provider groups and repeated archive compaction. Unknown-cache
+requests still count toward all requests and existing usage/cost totals, but do
+not dilute cache hit rates. Records and archives written before cache coverage
+was recorded retain their original token/cost values and show unknown coverage.
+Aggregated requests use the actual member's usage, not the public model alias.
+Local official-account usage remains in its existing separate section.
 
 ## Migration
 

@@ -81,6 +81,7 @@ fn input(id: Option<String>, model: newapi::Model) -> router::ProviderInput {
         auto_compact_limit: None,
         catalog_providers: Some(vec![]),
         price_catalog_provider: None,
+        price_multiplier: None,
         compression: Some(policy::CompressionPolicy::Inherit),
         network_mode: "direct".into(),
     }
@@ -754,7 +755,7 @@ fn usage_unknown_partial_zero_failure_and_price_snapshots_stay_distinct() {
         Some(1.0)
     );
     assert!(records[4].applied_rates.is_some());
-    assert_eq!(records[4].schema_version, 2);
+    assert_eq!(records[4].schema_version, 3);
     assert_eq!(records[0].request_id, records[1].request_id);
     assert_ne!(records[0].attempt_id, records[1].attempt_id);
     assert_eq!(

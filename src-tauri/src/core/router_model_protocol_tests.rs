@@ -269,6 +269,7 @@ fn native_validation_and_save_reject_selected_non_responses_without_fallback_or_
         auto_compact_limit: None,
         catalog_providers: None,
         price_catalog_provider: None,
+        price_multiplier: None,
         compression: None,
         network_mode: "direct".into(),
     };

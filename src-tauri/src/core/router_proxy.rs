@@ -4369,6 +4369,7 @@ mod tests {
                     auto_compact_limit: provider.auto_compact_limit,
                     catalog_providers: None,
                     price_catalog_provider: None,
+                    price_multiplier: None,
                     compression: None,
                     network_mode: provider.network_mode,
                 },

@@ -50,9 +50,9 @@ async fn mock(protocol: router::ModelProtocol, status: u16, streaming: bool) -> 
                             else { match protocol {
                                 router::ModelProtocol::Responses => json!({"id":id,"object":"response","status":"completed","model":model,
                                     "output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}],
-                                    "usage":{"input_tokens":4,"output_tokens":2},"vendor":{"model":"must-stay"}}),
-                                router::ModelProtocol::ChatCompletions => json!({"id":id,"object":"chat.completion","model":model,"choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":2}}),
-                                router::ModelProtocol::AnthropicMessages => json!({"id":id,"type":"message","model":model,"role":"assistant","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":4,"output_tokens":2}}),
+                                    "usage":{"input_tokens":4,"output_tokens":2,"input_tokens_details":{"cached_tokens":0}},"vendor":{"model":"must-stay"}}),
+                                router::ModelProtocol::ChatCompletions => json!({"id":id,"object":"chat.completion","model":model,"choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":0}}}),
+                                router::ModelProtocol::AnthropicMessages => json!({"id":id,"type":"message","model":model,"role":"assistant","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":4,"output_tokens":2,"cache_read_input_tokens":0}}),
                             } };
                         let output = if streaming && status == 200 {
                             match protocol {
@@ -63,10 +63,10 @@ async fn mock(protocol: router::ModelProtocol, status: u16, streaming: bool) -> 
                                 }
                                 router::ModelProtocol::ChatCompletions => format!("data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
                                     json!({"id":id,"object":"chat.completion.chunk","model":model,"choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}]}),
-                                    json!({"id":id,"object":"chat.completion.chunk","model":model,"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":2}})),
+                                    json!({"id":id,"object":"chat.completion.chunk","model":model,"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":0}}})),
                                 router::ModelProtocol::AnthropicMessages => {
                                     let events = [
-                                        json!({"type":"message_start","message":{"id":id,"type":"message","role":"assistant","model":model,"content":[],"usage":{"input_tokens":4,"output_tokens":0}}}),
+                                        json!({"type":"message_start","message":{"id":id,"type":"message","role":"assistant","model":model,"content":[],"usage":{"input_tokens":4,"output_tokens":0,"cache_read_input_tokens":0}}}),
                                         json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
                                         json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}),
                                         json!({"type":"content_block_stop","index":0}),
@@ -724,6 +724,12 @@ fn mixed_protocol_selection_preserves_wire_models_public_projection_and_original
             4
         );
         assert_aggregate_accounting(&paths, &store, 2);
+        let ledger = relay_usage::load(&paths.app_data_dir).unwrap();
+        assert_eq!(ledger.all_time.cache_usage.reported_count, 4);
+        assert_eq!(ledger.all_time.cache_usage.prompt_tokens, 16);
+        assert_eq!(ledger.all_time.cache_usage.read_tokens, 0);
+        assert!(ledger.by_provider.iter().all(|row| row.totals.cache_usage.reported_count == 2
+            && row.totals.cache_usage.prompt_tokens == 8));
     });
 }
 

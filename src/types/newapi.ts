@@ -107,6 +107,7 @@ export interface NewApiProvider {
   contextWindow: number | null;
   catalogProviders: string[];
   priceCatalogProvider: string | null;
+  priceMultiplier?: number | null;
   compression: CompressionPolicy;
   enabled: boolean;
   networkMode: "proxy" | "direct";
@@ -281,6 +282,7 @@ export interface CostTier extends CostRates {
   tier: { type: string; size: number | null };
 }
 export interface PricingSnapshot extends CostRates {
+  multiplier?: number | null;
   contextOver200k: CostRates | null;
   tiers: CostTier[];
   currency: string;
@@ -291,6 +293,7 @@ export interface PricingSnapshot extends CostRates {
   sourceRef: ModelRef | null;
 }
 export interface PriceInfo extends CostRates {
+  multiplier?: number | null;
   currency: string;
   unit: string;
   contextOver200k: CostRates | null;
@@ -447,6 +450,7 @@ export interface NewApiProviderInput {
   autoCompactLimit?: number | null;
   catalogProviders?: string[];
   priceCatalogProvider?: string | null;
+  priceMultiplier?: number | null;
   compression?: CompressionPolicy;
   networkMode?: "proxy" | "direct";
 }

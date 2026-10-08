@@ -399,6 +399,7 @@ impl Usage {
         let input = number("input_tokens").max(number("prompt_tokens"));
         let output = number("output_tokens").max(number("completion_tokens"));
         let cache_read = number("cache_read_input_tokens")
+            .max(number("prompt_cache_hit_tokens"))
             .max(
                 value
                     .pointer("/input_tokens_details/cached_tokens")
@@ -437,7 +438,8 @@ impl Usage {
             "cache_creation_input_tokens",
         ]
         .iter()
-        .any(|key| value.get(*key).and_then(Value::as_u64).is_some());
+        .any(|key| value.get(*key).and_then(Value::as_u64).is_some())
+            || Self::cache_read_reported(value);
         if !reported {
             None
         } else {
@@ -454,15 +456,7 @@ impl Usage {
 
     pub fn from_wire(value: &Value) -> Option<Self> {
         let mut usage = Self::raw_from_wire(value)?;
-        if value
-            .pointer("/input_tokens_details/cached_tokens")
-            .and_then(Value::as_u64)
-            .is_some()
-            || value
-                .pointer("/prompt_tokens_details/cached_tokens")
-                .and_then(Value::as_u64)
-                .is_some()
-        {
+        if Self::cache_is_in_input(value) {
             usage.input_tokens = usage.input_tokens.saturating_sub(usage.cache_read_tokens);
         }
         usage.total_tokens = usage.total_tokens.max(
@@ -473,6 +467,28 @@ impl Usage {
                 .saturating_add(usage.output_tokens),
         );
         Some(usage)
+    }
+
+    /// Explicit zero is a measured cache miss, while an absent field is unknown.
+    pub fn cache_read_reported(value: &Value) -> bool {
+        value
+            .get("cache_read_input_tokens")
+            .and_then(Value::as_u64)
+            .is_some()
+            || Self::cache_is_in_input(value)
+    }
+
+    /// OpenAI totals and DeepSeek's prompt_tokens include cache hits; Anthropic
+    /// input_tokens excludes them. DeepSeek may send both aliases for the same
+    /// counter (https://api-docs.deepseek.com/api/create-chat-completion).
+    pub fn cache_is_in_input(value: &Value) -> bool {
+        [
+            "/input_tokens_details/cached_tokens",
+            "/prompt_tokens_details/cached_tokens",
+            "/prompt_cache_hit_tokens",
+        ]
+        .iter()
+        .any(|path| value.pointer(path).and_then(Value::as_u64).is_some())
     }
 }
 
@@ -804,6 +820,29 @@ mod tests {
         assert_eq!(usage.cache_read_tokens, 3);
         assert_eq!(usage.output_tokens, 4);
         assert_eq!(usage.total_tokens, 14);
+    }
+
+    #[test]
+    fn deepseek_cache_aliases_and_nested_details_describe_one_counter() {
+        for details in [json!({}), json!({"cached_tokens":80})] {
+            let usage = Usage::from_wire(&json!({"prompt_tokens":100, "completion_tokens":10,
+                "prompt_cache_hit_tokens":80, "prompt_cache_miss_tokens":20, "prompt_tokens_details":details})).unwrap();
+            assert_eq!(usage.input_tokens, 20);
+            assert_eq!(usage.cache_read_tokens, 80);
+            assert_eq!(usage.total_tokens, 110);
+        }
+        assert_eq!(
+            Usage::raw_from_wire(&json!({"prompt_cache_hit_tokens":0}))
+                .unwrap()
+                .cache_read_tokens,
+            0
+        );
+        assert!(Usage::cache_read_reported(
+            &json!({"prompt_cache_hit_tokens":0})
+        ));
+        assert!(!Usage::cache_read_reported(
+            &json!({"prompt_cache_hit_tokens":null})
+        ));
     }
 
     #[test]

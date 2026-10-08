@@ -182,9 +182,52 @@ pub struct PriceInfo {
     /// represent (tiered / >200k contexts).
     pub complete: bool,
     pub note: Option<String>,
+    /// Channel multiplier applied to automatic rates; manual rates are final.
+    pub multiplier: Option<f64>,
 }
 
 impl PriceInfo {
+    pub fn with_multiplier(mut self, multiplier: Option<f64>) -> Self {
+        if self.source == source::MANUAL {
+            return self;
+        }
+        let factor = multiplier
+            .filter(|factor| valid_price_multiplier(*factor))
+            .unwrap_or(1.0);
+        self.multiplier = (factor != 1.0).then_some(factor);
+        for rate in [
+            &mut self.input,
+            &mut self.output,
+            &mut self.cache_read,
+            &mut self.cache_write,
+            &mut self.reasoning,
+            &mut self.input_audio,
+            &mut self.output_audio,
+        ] {
+            *rate = rate.map(|value| value * factor);
+        }
+        let scale = |rates: &mut super::models_dev::CostRates| {
+            for rate in [
+                &mut rates.input,
+                &mut rates.output,
+                &mut rates.cache_read,
+                &mut rates.cache_write,
+                &mut rates.reasoning,
+                &mut rates.input_audio,
+                &mut rates.output_audio,
+            ] {
+                *rate = rate.map(|value| value * factor);
+            }
+        };
+        if let Some(rates) = self.context_over_200k.as_mut() {
+            scale(rates);
+        }
+        for tier in &mut self.tiers {
+            scale(&mut tier.rates);
+        }
+        self
+    }
+
     fn unknown(note: Option<&str>) -> Self {
         Self {
             currency: "USD".into(),
@@ -195,6 +238,10 @@ impl PriceInfo {
             ..Default::default()
         }
     }
+}
+
+pub fn valid_price_multiplier(factor: f64) -> bool {
+    factor.is_finite() && (0.0..=1000.0).contains(&factor)
 }
 
 #[derive(Clone, Default)]
@@ -1362,6 +1409,7 @@ fn price_from_catalog(
         },
         source_ref,
         updated_at,
+        multiplier: None,
         complete: !conditional && !audio && cost.input.is_some() && cost.output.is_some(),
         note: if audio {
             Some("audio token rates are preserved; audio usage is not observed, so estimates are partial".to_owned())
@@ -2362,6 +2410,62 @@ mod tests {
         assert_eq!(resolved.price.input, Some(2.4));
         assert!(!resolved.price.complete);
         assert_eq!(resolved.price.tiers.len(), 1);
+    }
+
+    #[test]
+    fn price_multiplier_scales_conditional_cache_and_audio_rates_but_keeps_unknowns() {
+        use super::super::models_dev::{CostRates, CostTier, TierCondition};
+        let price = PriceInfo {
+            input: Some(2.0),
+            output: Some(4.0),
+            cache_read: Some(0.0),
+            cache_write: Some(3.0),
+            reasoning: Some(6.0),
+            input_audio: Some(8.0),
+            output_audio: Some(10.0),
+            context_over_200k: Some(CostRates {
+                input: Some(12.0),
+                output: Some(14.0),
+                ..Default::default()
+            }),
+            tiers: vec![CostTier {
+                rates: CostRates {
+                    input: Some(16.0),
+                    cache_write: Some(18.0),
+                    ..Default::default()
+                },
+                tier: TierCondition {
+                    condition_type: "context".into(),
+                    size: Some(400000),
+                },
+            }],
+            source: source::CATALOG.into(),
+            ..Default::default()
+        }
+        .with_multiplier(Some(0.5));
+        assert_eq!(
+            (
+                price.input,
+                price.output,
+                price.cache_read,
+                price.cache_write
+            ),
+            (Some(1.0), Some(2.0), Some(0.0), Some(1.5))
+        );
+        assert_eq!(
+            (price.reasoning, price.input_audio, price.output_audio),
+            (Some(3.0), Some(4.0), Some(5.0))
+        );
+        assert_eq!(price.context_over_200k.as_ref().unwrap().input, Some(6.0));
+        assert_eq!(price.context_over_200k.as_ref().unwrap().output, Some(7.0));
+        assert_eq!(price.tiers[0].rates.cache_write, Some(9.0));
+        assert_eq!(price.tiers[0].tier.size, Some(400000));
+        assert_eq!(price.tiers[0].rates.output, None);
+        let zero = price.with_multiplier(Some(0.0));
+        assert_eq!(zero.input, Some(0.0));
+        let unknown = PriceInfo::unknown(None).with_multiplier(Some(0.0));
+        assert_eq!(unknown.input, None);
+        assert_eq!(unknown.source, source::UNKNOWN);
     }
     #[test]
     fn product_max_and_ultra_are_not_effort_aliases() {
