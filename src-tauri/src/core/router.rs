@@ -2477,9 +2477,10 @@ pub(crate) fn catalog_value(
 ) -> Value {
     let mut models: Vec<Value> = Vec::new();
     let mut slugs = HashSet::new();
-    // Codex refreshes this cache from the official service. It is the most accurate
-    // local source for models available to the currently signed-in account.
-    for snapshot in [super::model_catalog::account_catalog(codex_home, app_data_dir)] {
+    // Retained login credentials/catalogs do not grant official model access
+    // while the user explicitly selects accountless routing.
+    if !store.router.accountless {
+        let snapshot = super::model_catalog::account_catalog(codex_home, app_data_dir);
         for entry in &snapshot.models {
             let Some(slug) = entry.get("slug").and_then(Value::as_str) else {
                 continue;
@@ -2589,6 +2590,9 @@ pub(crate) fn catalog_entry_for_slug(
     slug: &str,
 ) -> Option<Value> {
     let Some((provider_id, model_id)) = slug.split_once("::") else {
+        if store.router.accountless {
+            return None;
+        }
         // Official entries are borrowed read-only and keep their own shape.
         return super::model_catalog::account_catalog(codex_home, app_data_dir)
             .models
@@ -3662,6 +3666,10 @@ mod tests {
     fn account_model_refresh_updates_only_the_injected_catalog() {
         let (_dir, paths) = paths();
         std::fs::create_dir_all(&paths.app_data_dir).unwrap();
+        std::fs::write(&paths.auth_path, br#"{"tokens":{"account_id":"current-account"}}"#).unwrap();
+        // This is a signed-in Codex refresh; a cache without account identity
+        // is now capability metadata only.
+        std::thread::sleep(std::time::Duration::from_millis(20));
         let cache = paths.codex_home.join("models_cache.json");
         std::fs::write(&cache, r#"{"models":[{"slug":"first"}]}"#).unwrap();
         let store = Store::default();
@@ -5378,6 +5386,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         ]);
         let cache_bytes = serde_json::to_vec(&serde_json::json!({"models": official})).unwrap();
         std::fs::write(paths.codex_home.join("models_cache.json"), &cache_bytes).unwrap();
+        super::super::model_catalog::seed_test_account_catalog(&paths.codex_home, &paths.app_data_dir, &cache_bytes);
         let previous_only =
             serde_json::json!({"slug": "previous-only", "display_name": "Previous"});
         std::fs::write(
@@ -5843,6 +5852,8 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         let mut store = load_store(&paths).unwrap();
         let mut official = catalog_value(&paths.app_data_dir, &paths.codex_home, &store)["models"][0].clone();
         official["slug"] = serde_json::json!("fixture-official");
+        super::super::model_catalog::seed_test_account_catalog(&paths.codex_home, &paths.app_data_dir,
+            serde_json::json!({"models":[official]}).to_string().as_bytes());
         std::fs::write(paths.codex_home.join("models_cache.json"),
             serde_json::json!({"models":[official]}).to_string()).unwrap();
         apply_routing_config(&paths, &store).unwrap();

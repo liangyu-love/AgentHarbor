@@ -1348,6 +1348,12 @@ fn resolve_destination_explain(
                 },
             ),
             // Official model slugs (and anything unprefixed) go to OpenAI with local credentials.
+            _ if store.router.accountless => {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    "official models are disabled in accountless mode; select a relay or aggregate model",
+                ));
+            }
             _ => (Destination::Official, "official"),
         },
         // Legacy direct routes.
@@ -3546,6 +3552,41 @@ mod tests {
         }
     }
 
+    #[test]
+    fn accountless_rejects_official_create_compact_and_resource_routes() {
+        let mut store = Store::default();
+        store.router.accountless = true;
+        for path in [
+            "codex/v1/responses",
+            "codex/v1/responses/compact",
+            "codex/v1/responses/old-response",
+            "codex/v1/responses/old-response/cancel",
+            "codex/v1/responses/old-response/input_items",
+        ] {
+            let segments: Vec<_> = path.split('/').collect();
+            for model in [None, Some("official-plus-model")] {
+                let error =
+                    resolve_destination(&store, &segments, request_protocol(&segments), model, None)
+                        .err()
+                        .expect("official route must be rejected");
+                assert_eq!(error.0, StatusCode::FORBIDDEN, "{path}, {model:?}");
+                assert!(error.1.contains("accountless"));
+            }
+        }
+        store.router.accountless = false;
+        assert!(matches!(
+            resolve_destination(
+                &store,
+                &["codex", "v1", "responses"],
+                Some(router::ModelProtocol::Responses),
+                Some("official-plus-model"),
+                None
+            )
+            .unwrap(),
+            Destination::Official
+        ));
+    }
+
     async fn echo_relay(label: &'static str) -> (u16, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .await
@@ -3632,7 +3673,7 @@ mod tests {
             let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
             let port = listener.local_addr().unwrap().port();
             let (shutdown, receiver) = tokio::sync::watch::channel(false);
-            let router = tokio::spawn(accept_loop(listener, receiver, context));
+            let router = tokio::spawn(accept_loop(listener, receiver, context.clone()));
             let history = json!([
                 {"role":"user","content":"Original question"},
                 {"type":"message","role":"assistant","content":[{"type":"output_text","text":"Original answer"}]},
@@ -3688,6 +3729,48 @@ mod tests {
                 }
                 assert_eq!(observed["body"], body, "history and continuation id must survive model switches");
             }
+            // Retained file credentials and live client credentials must both
+            // stay unused when this same router is switched to accountless.
+            store.router.accountless = true;
+            crate::core::secret_file::write(&context.store_path, &serde_json::to_vec(&store).unwrap()).unwrap();
+            let menu: Value = client.get(format!("http://127.0.0.1:{port}/codex/v1/models"))
+                .header(router::LOCAL_AUTH_HEADER, "fixture-local-secret")
+                .send().await.unwrap().json().await.unwrap();
+            let slugs: Vec<_> = menu["data"].as_array().unwrap().iter().map(|entry| entry["id"].as_str().unwrap()).collect();
+            assert_eq!(slugs, ["relay-a::model-a", "relay-b::model-b"]);
+            for (method, suffix) in [
+                (hyper::Method::POST, "responses"),
+                (hyper::Method::POST, "responses/compact"),
+                (hyper::Method::GET, "responses/old-official-response"),
+                (hyper::Method::POST, "responses/old-official-response/cancel"),
+                (hyper::Method::GET, "responses/old-official-response/input_items"),
+            ] {
+                let response = client.request(method, format!("http://127.0.0.1:{port}/codex/v1/{suffix}"))
+                    .header(router::LOCAL_AUTH_HEADER, "fixture-local-secret")
+                    .bearer_auth("fixture-current-official-token")
+                    .header("chatgpt-account-id", "fixture-current-official-account")
+                    .json(&json!({"model":"model-a","input":"Retained official selection"}))
+                    .send().await.unwrap();
+                assert_eq!(response.status(), StatusCode::FORBIDDEN, "{suffix}");
+                assert!(response.text().await.unwrap().contains("accountless mode"));
+            }
+            let response: Value = client.post(format!("http://127.0.0.1:{port}/codex/v1/responses"))
+                .bearer_auth("fixture-local-secret")
+                .json(&json!({"model":"relay-b::model-b","input":"Accountless relay request"}))
+                .send().await.unwrap().json().await.unwrap();
+            assert_eq!(response["relay"], "relay-b");
+            assert_eq!(response["headers"]["authorization"], "Bearer fixture-relay-b-key");
+            assert!(response["headers"].get("chatgpt-account-id").is_none());
+            store.router.accountless = false;
+            crate::core::secret_file::write(&context.store_path, &serde_json::to_vec(&store).unwrap()).unwrap();
+            let response: Value = client.post(format!("http://127.0.0.1:{port}/codex/v1/responses"))
+                .header(router::LOCAL_AUTH_HEADER, "fixture-local-secret")
+                .bearer_auth("fixture-current-official-token")
+                .header("chatgpt-account-id", "fixture-current-official-account")
+                .json(&json!({"model":"model-a","input":"Official access restored"}))
+                .send().await.unwrap().json().await.unwrap();
+            assert_eq!(response["relay"], "official");
+            assert_eq!(response["headers"]["authorization"], "Bearer fixture-current-official-token");
             assert_eq!(std::fs::read(&auth_path).unwrap(), auth);
             shutdown.send(true).unwrap();
             router.await.unwrap();
@@ -3803,6 +3886,10 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let paths = CodexPaths::from_home(dir.path().to_owned());
             std::fs::create_dir_all(&paths.app_data_dir).unwrap();
+            crate::core::model_catalog::seed_test_account_catalog(&paths.codex_home, &paths.app_data_dir,
+                &serde_json::to_vec(&json!({"models":[{
+                    "slug":"gpt-official-fixture", "display_name":"Official Fixture", "context_window":272000
+                }]})).unwrap());
             std::fs::write(
                 paths.codex_home.join("models_cache.json"),
                 serde_json::to_vec(&json!({"models": [{

@@ -1138,6 +1138,7 @@ mod tests {
             "supported_reasoning_levels":[{"effort":"high","description":"Model high"},{"effort":"max","description":"Model max"}],
             "default_reasoning_level":"high"
         }]});
+        super::super::super::model_catalog::seed_test_account_catalog(&paths.codex_home, &paths.app_data_dir, official.to_string().as_bytes());
         std::fs::write(
             paths.codex_home.join("models_cache.json"),
             official.to_string(),
@@ -1238,6 +1239,7 @@ mod tests {
             "slug":"gpt-6-astra", "supported_reasoning_levels":[{"effort":"high","description":"Official high"}],
             "default_reasoning_level":"high"
         }]});
+        super::super::super::model_catalog::seed_test_account_catalog(&paths.codex_home, &paths.app_data_dir, official.to_string().as_bytes());
         std::fs::write(
             paths.codex_home.join("models_cache.json"),
             official.to_string(),

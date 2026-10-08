@@ -9,6 +9,65 @@ use fixtures::*;
 
 #[test]
 #[ignore = "requires AGENTHARBOR_TEST_CODEX_BIN pointing to an installed Codex CLI"]
+fn real_codex_accountless_catalog_hides_retained_account_models() {
+    let binary = PathBuf::from(std::env::var_os("AGENTHARBOR_TEST_CODEX_BIN").expect("installed binary"));
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path().join("workspace");
+    fs::create_dir_all(&cwd).unwrap();
+    let paths = CodexPaths::from_home(temp.path().join("codex"));
+    paths.ensure_directories().unwrap();
+    let auth = synthetic_auth_for_plan("free");
+    fs::write(&paths.auth_path, &auth).unwrap();
+    fs::write(&paths.config_path, "cli_auth_credentials_store = 'file'\ncheck_for_update_on_startup = false\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[features]\napps = false\nplugins = false\n").unwrap();
+    let proxy = RejectingProxy::start();
+    // Reserve a private port; the model/list RPC should use the static catalog
+    // without making an inference request or reaching another local service.
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let mut store = Store {
+        router: RouterSettings {
+            enabled: true,
+            port: listener.local_addr().unwrap().port(),
+            bearer_token: LOCAL_TOKEN.into(),
+            ..Default::default()
+        },
+        active_provider_id: Some("relay".into()),
+        providers: vec![Provider {
+            id: "relay".into(),
+            name: "Synthetic relay".into(),
+            base_url: "https://relay.example.invalid".into(),
+            api_key: "synthetic-relay-key".into(),
+            model: "gpt-6.1-sol".into(),
+            enabled: true,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut official = router::catalog_value(&paths.app_data_dir, &paths.codex_home, &store)["models"][0].clone();
+    official["slug"] = json!("gpt-6-luna");
+    official["display_name"] = json!("Synthetic official model");
+    let catalog = json!({"models":[official]}).to_string();
+    fs::write(paths.codex_home.join("models_cache.json"), &catalog).unwrap();
+    let key = crate::core::auth::make_auth_snapshot(
+        &crate::core::auth::load_auth_file(&paths.auth_path).unwrap(), &paths.auth_path,
+    ).unwrap().account_key;
+    crate::core::model_catalog::store_account_catalog(&paths.app_data_dir, &key, catalog.as_bytes()).unwrap();
+    for accountless in [false, true, false] {
+        store.router.accountless = accountless;
+        router::apply_routing_config(&paths, &store).unwrap();
+        let mut server = AppServer::start(&binary, &paths, &cwd, &proxy);
+        let menu = server.request(2, "model/list", json!({}));
+        let ids: Vec<_> = menu["data"].as_array().unwrap().iter().map(|model| model["id"].as_str().unwrap()).collect();
+        assert!(ids.contains(&"relay::gpt-6.1-sol"), "{menu}");
+        assert_eq!(ids.contains(&"gpt-6-luna"), !accountless, "{menu}");
+        if accountless {
+            assert_eq!(ids, ["relay::gpt-6.1-sol"], "no official fallback models in accountless mode");
+        }
+        assert_eq!(fs::read(&paths.auth_path).unwrap(), auth);
+    }
+}
+
+#[test]
+#[ignore = "requires AGENTHARBOR_TEST_CODEX_BIN pointing to an installed Codex CLI"]
 fn real_codex_same_free_thread_switches_official_and_relays_repeatedly() {
     let binary =
         PathBuf::from(std::env::var_os("AGENTHARBOR_TEST_CODEX_BIN").expect("installed binary"));

@@ -21,6 +21,134 @@ fn accountless_can_be_selected_before_injection_without_changing_client_files() 
     assert_eq!(config(&paths)["preferred_auth_method"].as_str(), Some("chatgpt"));
 }
 
+#[test]
+fn accountless_toggle_replaces_official_selection_and_keeps_account_catalogs() {
+    let (_directory, paths) = fixture();
+    let auth = br#"{"auth_mode":"chatgpt","tokens":{"account_id":"fixture-plus","access_token":"synthetic-preserved-token"}}"#;
+    fs::write(&paths.auth_path, auth).unwrap();
+    let key = super::super::auth::make_auth_snapshot(
+        &super::super::auth::load_auth_file(&paths.auth_path).unwrap(),
+        &paths.auth_path,
+    )
+    .unwrap()
+    .account_key;
+    let store = load_store(&paths).unwrap();
+    let mut official =
+        catalog_value(&paths.app_data_dir, &paths.codex_home, &store)["models"][0].clone();
+    official["slug"] = serde_json::json!("official-plus-model");
+    let catalog = serde_json::json!({"models":[official]}).to_string();
+    fs::write(paths.codex_home.join("models_cache.json"), &catalog).unwrap();
+    super::super::model_catalog::store_account_catalog(
+        &paths.app_data_dir,
+        &key,
+        catalog.as_bytes(),
+    )
+    .unwrap();
+    let saved_path = paths
+        .app_data_dir
+        .join(format!("model-capabilities-{key}.json"));
+    let saved_catalog = fs::read(&saved_path).unwrap();
+    set_smart_routing(&paths, true).unwrap();
+
+    for _ in 0..2 {
+        let mut selected: toml_edit::DocumentMut = fs::read_to_string(&paths.config_path)
+            .unwrap()
+            .parse()
+            .unwrap();
+        selected["model"] = toml_edit::value("official-plus-model");
+        fs::write(&paths.config_path, selected.to_string()).unwrap();
+        let enabled = set_accountless(&paths, true).unwrap();
+        assert!(enabled.applied.is_some());
+        assert_eq!(
+            config(&paths)["model"].as_str(),
+            Some("access-mode-fixture::fixture-model")
+        );
+        let store = load_store(&paths).unwrap();
+        let menu = catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
+        assert_eq!(menu["models"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            menu["models"][0]["slug"],
+            "access-mode-fixture::fixture-model"
+        );
+        assert!(catalog_entry_for_slug(
+            &paths.app_data_dir,
+            &paths.codex_home,
+            &store,
+            "official-plus-model"
+        )
+        .is_none());
+        assert!(catalog_entry_for_slug(
+            &paths.app_data_dir,
+            &paths.codex_home,
+            &store,
+            "access-mode-fixture::fixture-model"
+        )
+        .is_some());
+        let injected: serde_json::Value =
+            serde_json::from_slice(&fs::read(selected_catalog_path(&paths, &store)).unwrap())
+                .unwrap();
+        assert_eq!(injected, menu);
+        assert!(super::subagents::load(&paths)
+            .unwrap()
+            .models
+            .iter()
+            .all(|model| model.id.contains("::")));
+        assert_eq!(fs::read(&paths.auth_path).unwrap(), auth);
+        assert_eq!(fs::read(&saved_path).unwrap(), saved_catalog);
+        assert_eq!(
+            fs::read_to_string(paths.codex_home.join("models_cache.json")).unwrap(),
+            catalog
+        );
+
+        set_accountless(&paths, false).unwrap();
+        let store = load_store(&paths).unwrap();
+        assert!(catalog_entry_for_slug(
+            &paths.app_data_dir,
+            &paths.codex_home,
+            &store,
+            "official-plus-model"
+        )
+        .is_some());
+        assert_eq!(
+            catalog_value(&paths.app_data_dir, &paths.codex_home, &store)["models"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            config(&paths)["model"].as_str(),
+            Some("access-mode-fixture::fixture-model")
+        );
+    }
+    super::subagents::save(
+        &paths,
+        Some(super::subagents::Settings {
+            model: Some("official-plus-model".into()),
+            reasoning_effort: None,
+        }),
+    )
+    .unwrap();
+    let before = file_state(&paths);
+    assert_eq!(
+        set_accountless(&paths, true)
+            .err()
+            .expect("fixed official child is incompatible"),
+        "newapi.errors.subagentModel"
+    );
+    assert_eq!(
+        file_state(&paths),
+        before,
+        "rejected mode switch must preserve the saved configuration"
+    );
+    super::subagents::save(&paths, Some(super::subagents::Settings::default())).unwrap();
+    set_accountless(&paths, true).unwrap();
+    assert_eq!(
+        config(&paths)["model"].as_str(),
+        Some("access-mode-fixture::fixture-model")
+    );
+}
+
 const ORIGINAL_CONFIG: &str = r#"# Existing user configuration
 model = 'original-model'
 model_provider = 'user-provider'

@@ -204,7 +204,16 @@ pub(crate) fn official_read_only(codex_home: &Path, app_data: &Path) -> Snapshot
 }
 
 fn official_with_backup_mode(codex_home: &Path, app_data: &Path, write_backup: bool) -> Snapshot {
-    let mut snapshot = account_catalog_with_backup_mode(codex_home, app_data, write_backup);
+    let mut snapshot = match current_account_key(codex_home) {
+        Some(account_key) => load_account_catalog(codex_home, app_data, &account_key, write_backup),
+        // Unscoped history is capability metadata only. It must never be
+        // interpreted as an authenticated account's available model list.
+        None => load_with_backup_mode(
+            &codex_home.join("models_cache.json"),
+            Some(&app_data.join("model-capabilities-last-good.json")),
+            write_backup,
+        ),
+    };
     let previous = load(&app_data.join("previous-router-catalog.json"), None);
     let mut slugs: HashSet<String> = snapshot
         .models
@@ -229,26 +238,35 @@ fn account_catalog_with_backup_mode(
     app_data: &Path,
     write_backup: bool,
 ) -> Snapshot {
-    let source = codex_home.join("models_cache.json");
     let Some(account_key) = current_account_key(codex_home) else {
-        return load_with_backup_mode(
-            &source,
-            Some(&app_data.join("model-capabilities-last-good.json")),
-            write_backup,
-        );
+        return Snapshot {
+            stale: true,
+            error: Some("account_catalog_identity_unavailable".into()),
+            ..Default::default()
+        };
     };
+    load_account_catalog(codex_home, app_data, &account_key, write_backup)
+}
+
+fn load_account_catalog(
+    codex_home: &Path,
+    app_data: &Path,
+    account_key: &str,
+    write_backup: bool,
+) -> Snapshot {
+    let source = codex_home.join("models_cache.json");
     // Codex owns one global models_cache.json and stops refreshing it while a
     // model_catalog_json is injected. Use it only when Codex wrote it after this
     // login was observed; otherwise use this account's own fetched catalog.
     let switched_at = observe_account(
         app_data,
-        &account_key,
+        account_key,
         &codex_home.join("auth.json"),
         write_backup,
     );
     let global = load_with_backup_mode(&source, None, write_backup);
     let global = (!global.stale && modified_millis(&source) > switched_at).then_some(global);
-    let stored_path = account_catalog_path(app_data, &account_key);
+    let stored_path = account_catalog_path(app_data, account_key);
     let stored = load_with_backup_mode(&stored_path, None, write_backup);
     let stored = (!stored.stale).then_some(stored);
     // Prefer whichever was written last; seconds are too coarse to compare.
@@ -258,7 +276,7 @@ fn account_catalog_with_backup_mode(
     match (global, stored) {
         (Some(global), stored) => {
             if write_backup && stored.is_none_or(|stored| stored.models != global.models) {
-                let _ = write_account_catalog(app_data, &account_key, &global.models);
+                let _ = write_account_catalog(app_data, account_key, &global.models);
             }
             global
         }
@@ -402,9 +420,67 @@ fn bounded_read(path: &Path) -> Option<Vec<u8>> {
     (bytes.len() as u64 <= MAX_BYTES).then_some(bytes)
 }
 
+/// Official-menu fixtures need a known login, not just an unscoped cache.
+#[cfg(test)]
+pub(crate) fn seed_test_account_catalog(codex_home: &Path, app_data: &Path, bytes: &[u8]) {
+    std::fs::create_dir_all(codex_home).unwrap();
+    std::fs::create_dir_all(app_data).unwrap();
+    std::fs::write(
+        codex_home.join("auth.json"),
+        br#"{"tokens":{"account_id":"synthetic-catalog-account"}}"#,
+    )
+    .unwrap();
+    let key = current_account_key(codex_home).unwrap();
+    store_account_catalog(app_data, &key, bytes).unwrap();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn accountless_catalog_does_not_revive_global_or_last_good_account_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let app = dir.path().join("app");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&app).unwrap();
+        let auth_path = home.join("auth.json");
+        let auth = br#"{"auth_mode":"chatgpt","tokens":{"account_id":"plus"}}"#;
+        std::fs::write(&auth_path, auth).unwrap();
+        let key = current_account_key(&home).unwrap();
+        let bytes = br#"{"models":[{"slug":"plus-only","context_window":400000}]}"#;
+        std::fs::write(home.join("models_cache.json"), bytes).unwrap();
+        store_account_catalog(&app, &key, bytes).unwrap();
+        assert_eq!(account_catalog(&home, &app).models[0]["slug"], "plus-only");
+        let stored = std::fs::read(account_catalog_path(&app, &key)).unwrap();
+
+        for invalid_auth in [None, Some(b"{}".as_slice()), Some(b"{broken".as_slice())] {
+            if let Some(bytes) = invalid_auth {
+                std::fs::write(&auth_path, bytes).unwrap();
+            } else {
+                std::fs::remove_file(&auth_path).unwrap();
+            }
+            // Historical capabilities may still inform relay models, but
+            // must not grant access in the official picker after logout.
+            assert_eq!(official(&home, &app).models[0]["context_window"], 400_000);
+            let menu = account_catalog(&home, &app);
+            assert!(
+                menu.models.is_empty(),
+                "unscoped cache must not revive official models"
+            );
+            assert!(menu.stale);
+            assert_eq!(
+                std::fs::read(account_catalog_path(&app, &key)).unwrap(),
+                stored
+            );
+        }
+        std::fs::remove_file(home.join("models_cache.json")).unwrap();
+        assert_eq!(official(&home, &app).models[0]["slug"], "plus-only");
+        assert!(account_catalog(&home, &app).models.is_empty());
+        std::fs::write(&auth_path, auth).unwrap();
+        assert_eq!(account_catalog(&home, &app).models[0]["slug"], "plus-only");
+    }
+
     #[test]
     fn account_switch_never_exposes_the_previous_accounts_model_list() {
         let dir = tempfile::tempdir().unwrap();
@@ -537,6 +613,19 @@ mod tests {
             {"slug":"hidden-model","visibility":"hide"},
             {"slug":"relay::relay-model","visibility":"list"}
         ]);
+        let auth_path = home.join("auth.json");
+        std::fs::write(
+            &auth_path,
+            br#"{"tokens":{"account_id":"current-account"}}"#,
+        )
+        .unwrap();
+        let key = current_account_key(&home).unwrap();
+        store_account_catalog(
+            &app_data,
+            &key,
+            serde_json::json!({"models":current}).to_string().as_bytes(),
+        )
+        .unwrap();
         std::fs::write(
             home.join("models_cache.json"),
             serde_json::json!({"models":current}).to_string(),
@@ -554,14 +643,17 @@ mod tests {
         let menu = account_catalog(&home, &app_data);
         assert_eq!(menu.models, current.as_array().unwrap()[..2]);
         let metadata = official(&home, &app_data);
-        assert!(metadata.models.iter().any(|entry| entry["slug"] == "retired-model"));
+        assert!(metadata
+            .models
+            .iter()
+            .any(|entry| entry["slug"] == "retired-model"));
         assert_eq!(metadata.models[1]["visibility"], "hide");
 
         // A bad refresh may keep this account's last good catalog, but never
         // promote the unrelated historical metadata into available models.
         std::fs::write(home.join("models_cache.json"), b"{broken").unwrap();
         let stale = account_catalog(&home, &app_data);
-        assert!(stale.stale);
+        assert!(!stale.stale, "this account's stored catalog is still valid");
         assert_eq!(stale.models, menu.models);
     }
 
