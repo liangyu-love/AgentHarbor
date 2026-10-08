@@ -18,7 +18,7 @@ export function McpHeader({ mcp }: { mcp: McpServers }) {
         <p className="mt-1 text-sm text-muted-foreground">{t("mcp.description")}</p>
       </div>
       <div className="flex items-center gap-2">
-        <RainbowButton size="sm" className="h-9 rounded-lg font-medium" onClick={() => setEditing("new")}>
+        <RainbowButton size="sm" className="h-9 rounded-lg font-medium" disabled={mcp.mutationBusy} onClick={() => setEditing("new")}>
           <Plus className="h-4 w-4" />
           {t("mcp.addServer")}
         </RainbowButton>

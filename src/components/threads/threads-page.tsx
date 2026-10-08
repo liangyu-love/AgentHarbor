@@ -152,7 +152,7 @@ function ThreadsWorkspace({ source, onSourceChange }: { source: ConversationSour
                     onOpenPath={path => void handleOpenPath(path)}
                     onRecover={list.isCodex ? setRecoveryTarget : undefined}
                     onDetails={thread => openDetails(thread.key)}
-                    onDelete={list.isCodex ? (thread) => void handleDelete([thread.key]) : undefined}
+                    onDelete={(thread) => void handleDelete([thread.key])}
                     onCopyPath={handleCopyPath}
                     copiedGroupPath={copiedGroupPath}
                     routeStates={list.isCodex ? list.routeStates : undefined}
@@ -167,7 +167,7 @@ function ThreadsWorkspace({ source, onSourceChange }: { source: ConversationSour
             </div>
             {list.detailTarget && <ThreadDetailPanel key={list.detailTarget.key} thread={list.detailTarget} source={source}
               onClose={closeDetails} onExport={() => void handleExport([list.detailTarget!.key])}
-              onDelete={list.isCodex ? () => void handleDelete([list.detailTarget!.key]) : undefined} onOpenRaw={() => void handleOpenPath(list.detailTarget!.filePath)} />}
+              onDelete={() => void handleDelete([list.detailTarget!.key])} onOpenRaw={() => void handleOpenPath(list.detailTarget!.filePath)} />}
           </div>
         </div>
         {list.isCodex && <ThreadRecoveryDialog

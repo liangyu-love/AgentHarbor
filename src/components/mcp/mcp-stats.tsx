@@ -39,7 +39,7 @@ export function McpStats({ mcp }: { mcp: McpServers }) {
                 {enabledCount}
               </span>
               <span className="text-xs text-muted-foreground font-mono">
-                / {servers.length} 运行中
+                / {servers.length}
               </span>
             </div>
           </div>

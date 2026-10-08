@@ -1,5 +1,4 @@
-//! Read-only Claude Code project transcripts. These are not Codex rollouts:
-//! there is no catalog database, recovery rewrite, or delete queue.
+//! Claude Code project transcripts, independent from the Codex catalog.
 use super::{
     client_config::ClientPaths,
     models::{CoreError, CoreWarning},
@@ -29,6 +28,9 @@ const MAX_WARNINGS: usize = 100;
 const MAX_TEXT_CHARS: usize = 20_000;
 const PAGE_SIZE: usize = 50;
 const CACHE_LIMIT: usize = 4096;
+
+mod deletion;
+pub use deletion::delete_threads;
 
 pub fn projects_root() -> PathBuf {
     ClientPaths::discover()

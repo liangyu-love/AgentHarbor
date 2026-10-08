@@ -10,9 +10,9 @@ mod options;
 mod owned;
 mod takeover;
 mod version;
+pub use claude_official::ClaudeOfficialPreview;
 use options::{client_endpoint, validate_model};
 pub use options::{ClaudeAuthField, ClaudeModels, ClaudeOneM, ClientAccessMode, ClientOptions};
-pub use claude_official::ClaudeOfficialPreview;
 #[cfg(test)]
 mod tests;
 
@@ -37,20 +37,33 @@ static OPENCODE: opencode::OpenCode = opencode::OpenCode;
 #[derive(Clone)]
 pub struct ClientPaths {
     pub claude: PathBuf,
+    pub claude_user: PathBuf,
     pub opencode: PathBuf,
 }
 
 impl ClientPaths {
+    pub fn claude_root(&self) -> &Path {
+        self.claude.parent().expect("Claude settings has a parent")
+    }
+
+    /// Claude uses ~/.claude.json by default; an overridden config directory
+    /// stores the user configuration inside that directory as .claude.json.
+    pub fn claude_user_config(&self) -> PathBuf {
+        self.claude_user.clone()
+    }
+
     pub fn discover() -> Self {
         if let Some(home) = env_path("AGENT_HARBOR_CLIENT_HOME") {
             return Self::from_home(&home);
         }
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let config = env_path("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config"));
+        let default_claude_root = home.join(".claude");
+        let claude_root =
+            env_path("CLAUDE_CONFIG_DIR").unwrap_or_else(|| default_claude_root.clone());
         Self {
-            claude: env_path("CLAUDE_CONFIG_DIR")
-                .unwrap_or_else(|| home.join(".claude"))
-                .join("settings.json"),
+            claude_user: claude_user_path(&home, &claude_root),
+            claude: claude_root.join("settings.json"),
             opencode: env_path("OPENCODE_CONFIG")
                 .unwrap_or_else(|| opencode_path(&config.join("opencode"))),
         }
@@ -59,8 +72,17 @@ impl ClientPaths {
     pub fn from_home(home: &Path) -> Self {
         Self {
             claude: home.join(".claude/settings.json"),
+            claude_user: home.join(".claude.json"),
             opencode: opencode_path(&home.join(".config/opencode")),
         }
+    }
+}
+
+fn claude_user_path(home: &Path, root: &Path) -> PathBuf {
+    if root == home.join(".claude") {
+        home.join(".claude.json")
+    } else {
+        root.join(".claude.json")
     }
 }
 

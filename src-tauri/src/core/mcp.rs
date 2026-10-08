@@ -3,6 +3,63 @@ use crate::core::models::*;
 use crate::platform::paths::CodexPaths;
 use std::collections::HashMap;
 
+mod claude;
+
+pub enum McpConfig<'a> {
+    Codex(&'a CodexPaths),
+    Claude(std::path::PathBuf),
+}
+
+impl<'a> McpConfig<'a> {
+    pub fn for_target(
+        paths: &'a CodexPaths,
+        target: super::targets::TargetId,
+    ) -> Result<Self, CoreError> {
+        match target {
+            super::targets::TargetId::Codex => Ok(Self::Codex(paths)),
+            super::targets::TargetId::ClaudeCode => Ok(Self::Claude(
+                super::client_config::ClientPaths::discover().claude_user_config(),
+            )),
+            _ => Err(CoreError::InvalidData("Unsupported MCP target".into())),
+        }
+    }
+
+    pub fn source_path(&self) -> String {
+        match self {
+            Self::Codex(paths) => paths.config_path.display().to_string(),
+            Self::Claude(path) => path.display().to_string(),
+        }
+    }
+
+    pub fn load(&self) -> Result<Vec<McpServerSummary>, CoreError> {
+        match self {
+            Self::Codex(paths) => load_mcp_servers(paths),
+            Self::Claude(path) => claude::load(path),
+        }
+    }
+
+    pub fn upsert(&self, server: &McpServerSummary) -> Result<McpServerSummary, CoreError> {
+        match self {
+            Self::Codex(paths) => upsert_mcp_server(paths, server),
+            Self::Claude(path) => claude::upsert(path, server),
+        }
+    }
+
+    pub fn set_enabled(&self, name: &str, enabled: bool) -> Result<McpServerSummary, CoreError> {
+        match self {
+            Self::Codex(paths) => set_mcp_server_enabled(paths, name, enabled),
+            Self::Claude(path) => claude::set_enabled(path, name, enabled),
+        }
+    }
+
+    pub fn remove(&self, name: &str) -> Result<(), CoreError> {
+        match self {
+            Self::Codex(paths) => remove_mcp_server(paths, name),
+            Self::Claude(path) => claude::remove(path, name),
+        }
+    }
+}
+
 const MANAGED_BLOCK_BEGIN_PREFIX: &str = "# --- AgentHarbor Managed";
 const MANAGED_BLOCK_END_SUFFIX: &str = "# --- End AgentHarbor Managed";
 

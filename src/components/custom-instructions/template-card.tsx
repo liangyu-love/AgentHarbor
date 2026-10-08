@@ -3,20 +3,23 @@ import { Button } from "@/components/ui/button";
 import type { CustomInstructionTemplate } from "@/lib/custom-instruction-templates";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
-import { Sparkles, Eye, ArrowRight, Check } from "lucide-react";
+import { Eye, ArrowRight, Check, Trash2 } from "lucide-react";
 
 interface TemplateCardProps {
   template: CustomInstructionTemplate;
   isSelected: boolean;
   onSelect: () => void;
   onPreview: () => void;
+  disabled?: boolean;
+  onDelete?: () => void;
 }
 
-export function TemplateCard({ template, isSelected, onSelect, onPreview }: TemplateCardProps) {
+export function TemplateCard({ template, isSelected, onSelect, onPreview, disabled, onDelete }: TemplateCardProps) {
   const { t } = useTranslation();
 
   return (
     <div
+      data-instruction-template={template.code}
       className={cn(
         "rounded-xl border p-4 flex flex-col justify-between transition-all duration-200",
         isSelected
@@ -27,10 +30,7 @@ export function TemplateCard({ template, isSelected, onSelect, onPreview }: Temp
       <div>
         <div className="flex items-start justify-between gap-2.5">
           <div className="flex items-center gap-2 min-w-0">
-            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-              <Sparkles className="h-3.5 w-3.5" />
-            </span>
-            <h3 className="text-sm font-bold tracking-tight text-foreground truncate" title={template.title}>
+            <h3 className="text-sm font-semibold text-foreground" title={template.title}>
               {template.title}
             </h3>
           </div>
@@ -55,7 +55,7 @@ export function TemplateCard({ template, isSelected, onSelect, onPreview }: Temp
       </div>
 
       <div className="mt-4 pt-2.5 border-t border-border/50 flex items-center justify-between gap-2">
-        <Button variant="outline" size="sm" className="h-7 text-xs px-2.5 gap-1" onClick={onPreview}>
+        <Button variant="outline" size="sm" disabled={disabled} className="h-8 text-xs px-2.5 gap-1" onClick={onPreview}>
           <Eye className="h-3.5 w-3.5 text-muted-foreground" />
           {t("customInstructions.previewAction")}
         </Button>
@@ -64,6 +64,7 @@ export function TemplateCard({ template, isSelected, onSelect, onPreview }: Temp
           size="sm"
           className="h-7 text-xs px-2.5 gap-1"
           onClick={onSelect}
+          disabled={disabled}
         >
           {isSelected ? (
             <>
@@ -77,6 +78,7 @@ export function TemplateCard({ template, isSelected, onSelect, onPreview }: Temp
             </>
           )}
         </Button>
+        {onDelete && <Button variant="ghost" size="icon" disabled={disabled} className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive" aria-label={t("customInstructions.deletePreset", { name: template.title })} onClick={onDelete}><Trash2 className="h-4 w-4" /></Button>}
       </div>
     </div>
   );

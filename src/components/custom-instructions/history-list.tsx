@@ -9,9 +9,10 @@ interface HistoryListProps {
   items: CustomInstructionHistoryEntry[];
   rollbackingId?: string | null;
   onRollback: (historyId: string) => void;
+  disabled?: boolean;
 }
 
-export function HistoryList({ items, rollbackingId, onRollback }: HistoryListProps) {
+export function HistoryList({ items, rollbackingId, onRollback, disabled }: HistoryListProps) {
   const { t } = useTranslation();
   const actionDot: Record<string, string> = {
     apply: "bg-emerald-500 shadow-[0_0_0_2px_rgba(16,185,129,0.2)]",
@@ -54,15 +55,13 @@ export function HistoryList({ items, rollbackingId, onRollback }: HistoryListPro
               </div>
               <div className="text-xs text-muted-foreground">
                 <span title={formatDateTime(item.createdAt)}>{formatRelative(item.createdAt)}</span>
-                <span className="mx-1.5">·</span>
-                <span>{item.source}</span>
               </div>
             </div>
             <Button
               variant="outline"
               size="sm"
               onClick={() => onRollback(item.id)}
-              disabled={rollbackingId === item.id}
+              disabled={disabled || rollbackingId === item.id}
             >
               {rollbackingId === item.id
                 ? t("customInstructions.rollingBack")

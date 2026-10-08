@@ -286,7 +286,6 @@ export function useThreadList(source: ConversationSource = "codex", setSource: (
   };
 
   const handleDelete = async (keys: string[]) => {
-    if (!isCodex) return;
     const uniqueKeys = [...new Set(keys)].filter(key => !pendingDeletionKeys.has(key));
     if (uniqueKeys.length === 0 || deleteBusy) return;
     setConfirmRequest({

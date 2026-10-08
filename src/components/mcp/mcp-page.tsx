@@ -1,3 +1,6 @@
+import { useEffect, useState } from "react";
+import { SegmentedOptions } from "@/components/ui/segmented-options";
+import { storageKeys } from "@/lib/storage-keys";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -33,8 +36,15 @@ import { McpToolbar } from "@/components/mcp/mcp-toolbar";
 import { useMcpServers } from "@/components/mcp/use-mcp-servers";
 
 export function McpPage() {
+  const [source, setSource] = useState<"codex" | "claudeCode">(() => localStorage.getItem(storageKeys.mcpSource) === "claudeCode" ? "claudeCode" : "codex");
+  const [busy, setBusy] = useState(false);
+  return <div className="space-y-4"><SegmentedOptions value={source} onChange={value => { localStorage.setItem(storageKeys.mcpSource, value); setSource(value as typeof source); }} items={[{ value: "codex", label: "Codex", disabled: busy }, { value: "claudeCode", label: "Claude Code", disabled: busy }]} /><McpWorkspace key={source} source={source} onBusy={setBusy} /></div>;
+}
+
+function McpWorkspace({ source, onBusy }: { source: "codex" | "claudeCode"; onBusy: (busy: boolean) => void }) {
   const { t } = useTranslation();
-  const mcp = useMcpServers();
+  const mcp = useMcpServers(source);
+  useEffect(() => { onBusy(mcp.toggleMutation.isPending || mcp.removeMutation.isPending || mcp.editing !== null || mcp.removing !== null); return () => onBusy(false); }, [mcp.toggleMutation.isPending, mcp.removeMutation.isPending, mcp.editing, mcp.removing, onBusy]);
   const {
     refetch, error, isPending, servers, filteredServers, pagedServers, totalPages, paginationRange,
     currentPage, setCurrentPage, setSearchQuery, setTransportFilter, editing, setEditing, removing, setRemoving, removeMutation,
@@ -63,7 +73,7 @@ export function McpPage() {
               </div>
               <p className="mt-3.5 text-base font-semibold text-foreground">{t("mcp.empty")}</p>
               <p className="mt-1 text-xs text-muted-foreground max-w-sm">
-                直接添加本地进程或远程 MCP 端点，Codex 即可在对话中随时调用工具能力。
+                {t("mcp.emptyHint", { client: source === "codex" ? "Codex" : "Claude Code" })}
               </p>
               <RainbowButton size="sm" className="mt-4 rounded-lg" onClick={() => setEditing("new")}>
                 <Plus className="h-3.5 w-3.5" />
@@ -134,17 +144,18 @@ export function McpPage() {
         )}
 
         {/* Remove confirm dialog */}
-        <AlertDialog open={removing !== null} onOpenChange={(v) => !v && setRemoving(null)}>
+        <AlertDialog open={removing !== null} onOpenChange={(v) => { if (!v && !removeMutation.isPending) setRemoving(null); }}>
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>{t("mcp.delete")}</AlertDialogTitle>
               <AlertDialogDescription>{t("mcp.confirmDelete")}</AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
-              <AlertDialogCancel>{t("mcp.cancel")}</AlertDialogCancel>
+              <AlertDialogCancel disabled={removeMutation.isPending}>{t("mcp.cancel")}</AlertDialogCancel>
               <AlertDialogAction
                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                onClick={() => removing && removeMutation.mutate(removing)}
+                disabled={removeMutation.isPending}
+                onClick={event => { event.preventDefault(); if (removing && !removeMutation.isPending) removeMutation.mutate(removing); }}
               >
                 {t("mcp.delete")}
               </AlertDialogAction>
@@ -154,6 +165,7 @@ export function McpPage() {
 
         <McpEditorDialog
           key={editing === "new" ? "__new__" : editing?.name ?? "__closed__"}
+          source={source}
           open={editing !== null}
           server={editing === "new" ? undefined : editing ?? undefined}
           existingNames={servers.map((s) => s.name)}

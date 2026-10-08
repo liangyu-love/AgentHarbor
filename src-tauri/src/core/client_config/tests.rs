@@ -6,6 +6,23 @@ mod native_tests;
 #[path = "ownership_tests.rs"]
 mod ownership_tests;
 
+#[test]
+fn claude_user_json_follows_the_actual_config_root_not_its_directory_name() {
+    let home = Path::new("home");
+    assert_eq!(
+        claude_user_path(home, &home.join(".claude")),
+        home.join(".claude.json")
+    );
+    assert_eq!(
+        claude_user_path(home, Path::new("custom")),
+        Path::new("custom/.claude.json")
+    );
+    assert_eq!(
+        claude_user_path(home, Path::new("custom/.claude")),
+        Path::new("custom/.claude/.claude.json")
+    );
+}
+
 fn disabled_one_m() -> ClaudeOneM {
     ClaudeOneM {
         startup: false,

@@ -64,12 +64,12 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
 
   const snapshot = useQuery({ queryKey: queryKeys.runtimeStateDisplay, queryFn: () => api.loadSnapshot(true) });
   const newapi = useQuery({ queryKey: queryKeys.providers, queryFn: api.providers.loadState });
-  const mcp = useQuery({ queryKey: queryKeys.mcpServers, queryFn: api.loadMcpServers });
+  const mcp = useQuery({ queryKey: [...queryKeys.mcpServers, "codex"], queryFn: () => api.loadMcpServers("codex") });
   const skills = useQuery({ queryKey: [...queryKeys.installedSkills, "codex"], queryFn: () => api.loadInstalledSkills("codex") });
   const skillBackups = useQuery({ queryKey: [...queryKeys.skillBackups, "codex"], queryFn: () => api.loadSkillBackups("codex") });
   const claudeSkills = useQuery({ queryKey: [...queryKeys.installedSkills, "claudeCode"], queryFn: () => api.loadInstalledSkills("claudeCode") });
   const claudeBackups = useQuery({ queryKey: [...queryKeys.skillBackups, "claudeCode"], queryFn: () => api.loadSkillBackups("claudeCode") });
-  const instructions = useQuery({ queryKey: queryKeys.customInstructionState, queryFn: api.loadCustomInstructionState });
+  const instructions = useQuery({ queryKey: [...queryKeys.customInstructionState, "codex"], queryFn: () => api.loadCustomInstructionState("codex") });
   const systemInfo = useQuery({ queryKey: queryKeys.systemInfo, queryFn: api.getSystemInfo, staleTime: Infinity });
 
   const status = snapshot.data?.data.status;

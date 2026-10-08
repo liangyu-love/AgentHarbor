@@ -238,7 +238,7 @@ export function ThreadGroupSection({
               onOpenRaw={() => void handleOpenPath(thread.filePath)}
               onRecover={list.isCodex ? () => setRecoveryTarget(thread) : undefined}
               onDetails={() => onDetails(thread.key)}
-              onDelete={list.isCodex ? () => void handleDelete([thread.key]) : undefined}
+              onDelete={() => void handleDelete([thread.key])}
               variant={viewMode}
               routeState={list.isCodex ? list.routeStates[thread.id] : undefined}
               routerActive={list.routerActive}

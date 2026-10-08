@@ -1,3 +1,4 @@
+import { CustomInstructionsPage } from "@/components/custom-instructions/custom-instructions-page";
 // Synthetic browser fixture: every application API used here is mocked.
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -19,6 +20,7 @@ import { OverviewPage } from "@/components/overview/overview-page";
 import { AccountsPage } from "@/components/accounts/accounts-page";
 import { TokenUsagePanel } from "@/components/accounts/token-usage-panel";
 import { McpPage } from "@/components/mcp/mcp-page";
+import { CommandPalette } from "@/components/command-palette/command-palette";
 import { SkillsPage } from "@/components/skills/skills-page";
 import { ClientConfigs } from "@/components/newapi/client-configs";
 import { TerminalProxySettings } from "@/components/settings/terminal-proxy-settings";
@@ -56,6 +58,11 @@ function DesktopUpdaterFixture() {
   </>;
 }
 const noop = () => {};
+function McpClientFixture() {
+  const [open, setOpen] = useState(false);
+  return <><McpPage /><button onClick={() => setOpen(true)}>测试命令面板</button>
+    <CommandPalette open={open} onOpenChange={setOpen} onNavigate={route => { controls.review.navigatedTo = route; }} onThemeToggle={noop} isDarkMode={false} /></>;
+}
 const model = (id: string) => ({ id, displayName: id, contextWindow: null, maxOutputTokens: null,
   endpointTypes: ["responses"], included: true, metadataSource: "upstream" as const,
   overrides: {}, catalogRef: null, priceRef: null, compression: { mode: "inherit" as const } });
@@ -539,7 +546,7 @@ function ProviderFixture({ mixed = false }: { mixed?: boolean }) {
       onOpenChange={open => setDialog(current => ({ ...current, open }))} onSaved={noop} /></>;
 }
 
-type FixtureMode = "skills" | "desktop-updater" | "desktop-exit" | "terminal-proxy" | "thread-details" | "thread-details-missing" | "thread-details-unknown" | "thread-details-error" | "compact" | "grid" | "image" | "mcp" | "accounts" | "account-resets" | "account-resets-unavailable" | "thread-tree" | "groups" | "overview" | "usage" | "provider" | "warnings" | "thread-actions" | "thread-queue-recovery" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-conflict" | "clients-opencode" | "clients-opencode-stale" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official" | "recovery-long" | "recovery-router";
+type FixtureMode = "instructions" | "mcp-clients" | "skills" | "desktop-updater" | "desktop-exit" | "terminal-proxy" | "thread-details" | "thread-details-missing" | "thread-details-unknown" | "thread-details-error" | "compact" | "grid" | "image" | "mcp" | "accounts" | "account-resets" | "account-resets-unavailable" | "thread-tree" | "groups" | "overview" | "usage" | "provider" | "warnings" | "thread-actions" | "thread-queue-recovery" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-conflict" | "clients-opencode" | "clients-opencode-stale" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official" | "recovery-long" | "recovery-router";
 
 function RecoveryFixture({ thread }: { thread: ThreadSummary }) {
   const [open, setOpen] = useState(true);
@@ -582,6 +589,26 @@ function recoveryPreview(mode: FixtureMode) {
 
 let mountSequence = 0;
 function mount(mode: FixtureMode) {
+  localStorage.removeItem("agentharbor.mcp-source");
+  localStorage.removeItem("agentharbor.instruction-source");
+  if (mode === "instructions") {
+    for (const source of ["codex", "claudeCode"]) { localStorage.removeItem(`agentharbor.instruction-draft.${source}`); localStorage.removeItem(`agentharbor.instruction-presets.v1.${source}`); }
+    controls.review.instructionCalls = [];
+    controls.review.instructionStates = Object.fromEntries(["codex", "claudeCode"].map(source => [source, { current: { globalPath: source === "codex" ? "C:/synthetic/.codex/AGENTS.md" : "C:/synthetic/.claude/CLAUDE.md", fileExists: true, managedBlockPresent: true, protectionState: "ready", issueMessage: null, managedContent: `${source} rules`, lastAppliedAt: null, lastTemplateCode: null, lastTemplateTitle: null }, history: [] }]));
+    api.loadCustomInstructionState = async (source = "codex") => { controls.review.instructionCalls.push({ operation: "load", source }); if (controls.review.instructionLoadFailure === source) throw new Error("Synthetic read failure"); return { data: controls.review.instructionStates[source] } as any; };
+    api.previewCustomInstructionApply = async (content, source = "codex") => { controls.review.instructionCalls.push({ operation: "preview", source, content }); const current = controls.review.instructionStates[source].current; return { data: { globalPath: current.globalPath, currentManagedContent: current.managedContent, nextManagedContent: content, resultingContent: `User rules\n${content}\n`, protectionState: "ready" } } as any; };
+    api.applyCustomInstruction = async (params, source = "codex") => { controls.review.instructionCalls.push({ operation: "apply", target: source, ...params }); if (controls.review.instructionApplyHold) await new Promise(resolve => { controls.review.instructionApplyResolve = resolve; }); const state = controls.review.instructionStates[source]; state.history.unshift({ id: `entry-${state.history.length}`, action: "apply", source: "manual", createdAt: 1700000000 }); state.current.managedContent = params.content; return { data: structuredClone(state) } as any; };
+    api.clearCustomInstructionBlock = async (source = "codex") => { controls.review.instructionCalls.push({ operation: "clear", source }); const state = controls.review.instructionStates[source]; state.current.managedContent = ""; state.current.managedBlockPresent = false; return { data: structuredClone(state) } as any; };
+    api.rollbackCustomInstruction = async (id, source = "codex") => { controls.review.instructionCalls.push({ operation: "rollback", source, id }); return { data: structuredClone(controls.review.instructionStates[source]) } as any; };
+  }
+  if (mode === "mcp-clients") {
+    controls.review.mcpCalls = [];
+    controls.review.mcpStore = { codex: structuredClone(mcpServers), claudeCode: [{ ...structuredClone(mcpServers[1]), name: "claude-docs", sourcePath: "C:/synthetic/.claude.json" }] };
+    api.loadMcpServers = async (source = "codex") => { controls.review.mcpCalls.push({ operation: "load", source }); return { data: { items: structuredClone(controls.review.mcpStore[source]), total: controls.review.mcpStore[source].length, sourcePath: source === "codex" ? "C:/synthetic/.codex/config.toml" : "C:/synthetic/.claude.json" } } as any; };
+    api.setMcpServerEnabled = async (name, enabled, source = "codex") => { controls.review.mcpCalls.push({ operation: "toggle", name, enabled, source }); if (controls.review.mcpHold) await new Promise(resolve => { controls.review.mcpResolve = resolve; }); const server = controls.review.mcpStore[source].find((item: any) => item.name === name); server.enabled = enabled; return { data: { server } } as any; };
+    api.upsertMcpServer = async (server, source = "codex") => { controls.review.mcpCalls.push({ operation: "save", server, source }); const list = controls.review.mcpStore[source]; const index = list.findIndex((item: any) => item.name === server.name); if (index >= 0) list[index] = server; else list.push(server); return { data: { server } } as any; };
+    api.removeMcpServer = async (name, source = "codex") => { controls.review.mcpCalls.push({ operation: "remove", name, source }); controls.review.mcpStore[source] = controls.review.mcpStore[source].filter((item: any) => item.name !== name); return { data: {} } as any; };
+  }
   localStorage.removeItem("threads_source");
   if (mode === "overview") { controls.review.claudeSkills = [{ id: "one" }, { id: "two" }, { id: "three" }]; controls.review.claudeSkillBackups = [{ id: "claude-b1" }, { id: "claude-b2" }]; }
   controls.review.conversationCalls = [];
@@ -845,6 +872,7 @@ function mount(mode: FixtureMode) {
     id: "11111111-1111-4111-8111-111111111111", title: "Claude review session", archived: false,
     source: "claudeCode", threadSource: "claudeJsonl", modelProvider: "", model: "claude-sonnet-5-5",
     filePath: "C:/synthetic/.claude/projects/project/11111111-1111-4111-8111-111111111111.jsonl" }];
+  if (mode === "thread-tree") api.conversations.delete = async (target, keys) => { controls.review.conversationCalls.push({ operation: "delete", target, keys }); if (target === "claudeCode") controls.review.claudeThreads = controls.review.claudeThreads.filter((item: any) => !keys.includes(item.key)); return { data: { deleted: keys.length, queued: 0, catalogRowsDeleted: 0, rolloutFilesDeleted: keys.length, backupPath: "synthetic-backup" } } as any; };
   api.conversations.export = async (target, keys, targetDir, format) => {
     controls.review.conversationCalls.push({ operation: "export", target, keys, format });
     return { schemaVersion: 1, success: true, code: "ok", message: "", warnings: [], data: { exported: keys.length, directory: targetDir, files: [] } };
@@ -909,7 +937,7 @@ function mount(mode: FixtureMode) {
       {(mode.startsWith("thread-details") || mode === "thread-tree" || mode === "thread-actions" || mode === "terminal-proxy" || mode === "skills" || mode === "groups" || mode === "access") && <ThreadToastProbe />}
       {mode === "desktop-updater" ? <DesktopUpdaterFixture /> : mode === "desktop-exit" ? <ClaudeDesktopRouterExitDialog /> : mode.startsWith("recovery-") ? <RecoveryFixture thread={threads[0] as ThreadSummary} /> :
         mode === "skills" ? <SkillsPage /> : mode === "terminal-proxy" ? <div className="mx-auto max-w-xl rounded-xl bg-card shadow-sm"><TerminalProxySettings currentProxy={{ mode: "manual", url: "http://127.0.0.1:7890" }} /></div> :
-        mode === "image" ? <ImageWorkbenchPage /> : mode === "mcp" ? <McpPage /> : mode === "accounts" || mode.startsWith("account-resets") ? <AccountsPage refreshInterval="5m" onManageProviders={noop} /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage" ? <TokenUsagePanel data={{ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } }} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode.startsWith("thread-details") || mode === "thread-tree" || mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :
+        mode === "image" ? <ImageWorkbenchPage /> : mode === "instructions" ? <CustomInstructionsPage /> : mode === "mcp-clients" ? <McpClientFixture /> : mode === "mcp" ? <McpPage /> : mode === "accounts" || mode.startsWith("account-resets") ? <AccountsPage refreshInterval="5m" onManageProviders={noop} /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage" ? <TokenUsagePanel data={{ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } }} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode.startsWith("thread-details") || mode === "thread-tree" || mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :
         mode === "access" || mode === "incompatible" || mode === "native-invalid" || mode === "groups" ? <><NewApiPage onOpenRelays={() => { controls.review.navigatedTo = "relays"; }} /><RelayModelsPage /></> :
         mode === "test" ? <ProviderTestDialog open provider={mixedProvider} onOpenChange={noop} onTested={noop} onFailed={noop} /> :
         mode.startsWith("clients") ? <ClientConfigs providers={controls.review.providerFixtures ? state.providers : openCode ? [mixedProvider, provider("alternate")] : [selectedProvider]} /> :

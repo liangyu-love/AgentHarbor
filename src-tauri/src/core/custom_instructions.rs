@@ -8,6 +8,41 @@ use crate::platform::paths::CodexPaths;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub struct InstructionPaths {
+    pub global_agents_path: std::path::PathBuf,
+    pub custom_instruction_history_dir: std::path::PathBuf,
+}
+
+impl InstructionPaths {
+    pub fn for_target(
+        paths: &CodexPaths,
+        clients: &super::client_config::ClientPaths,
+        target: super::targets::TargetId,
+    ) -> Result<Self, CoreError> {
+        use super::targets::TargetId;
+        match target {
+            TargetId::Codex => Ok(Self {
+                global_agents_path: paths.global_agents_path.clone(),
+                custom_instruction_history_dir: paths.custom_instruction_history_dir.clone(),
+            }),
+            TargetId::ClaudeCode => Ok(Self {
+                global_agents_path: clients.claude_root().join("CLAUDE.md"),
+                custom_instruction_history_dir: paths
+                    .app_data_dir
+                    .join("custom-instructions/claude-code/history"),
+            }),
+            _ => Err(CoreError::InvalidData(
+                "Unsupported instruction target".into(),
+            )),
+        }
+    }
+
+    fn ensure_directories(&self) -> Result<(), CoreError> {
+        std::fs::create_dir_all(&self.custom_instruction_history_dir)?;
+        Ok(())
+    }
+}
+
 const MANAGED_START_MARKER: &str = "<!-- AGENT_HARBOR_CUSTOM_INSTRUCTIONS_START -->";
 const MANAGED_END_MARKER: &str = "<!-- AGENT_HARBOR_CUSTOM_INSTRUCTIONS_END -->";
 const HISTORY_LIMIT: usize = 10;
@@ -49,7 +84,7 @@ impl CustomInstructionHistorySnapshot {
     }
 }
 
-pub fn load_state(paths: &CodexPaths) -> Result<CustomInstructionStatePayload, CoreError> {
+pub fn load_state(paths: &InstructionPaths) -> Result<CustomInstructionStatePayload, CoreError> {
     paths.ensure_directories()?;
     let parsed = parse_global_file(paths)?;
     let history = load_history(paths)?;
@@ -72,7 +107,7 @@ pub fn load_state(paths: &CodexPaths) -> Result<CustomInstructionStatePayload, C
 }
 
 pub fn preview_apply(
-    paths: &CodexPaths,
+    paths: &InstructionPaths,
     content: &str,
 ) -> Result<CustomInstructionPreviewPayload, CoreError> {
     paths.ensure_directories()?;
@@ -81,7 +116,7 @@ pub fn preview_apply(
 
     if parsed.protection_state == CustomInstructionProtectionState::Protected {
         return Err(CoreError::InvalidData(parsed.issue_message.unwrap_or_else(
-            || "Global AGENTS file is in protected mode".to_string(),
+            || "Global instruction file is in protected mode".to_string(),
         )));
     }
 
@@ -98,7 +133,7 @@ pub fn preview_apply(
 }
 
 pub fn apply_managed_content(
-    paths: &CodexPaths,
+    paths: &InstructionPaths,
     content: &str,
     template_code: Option<String>,
     template_title: Option<String>,
@@ -110,7 +145,7 @@ pub fn apply_managed_content(
 
     if parsed.protection_state == CustomInstructionProtectionState::Protected {
         return Err(CoreError::InvalidData(parsed.issue_message.unwrap_or_else(
-            || "Global AGENTS file is in protected mode".to_string(),
+            || "Global instruction file is in protected mode".to_string(),
         )));
     }
 
@@ -125,19 +160,21 @@ pub fn apply_managed_content(
         source.unwrap_or_else(|| "one_click".to_string()),
         template_code,
         template_title,
-        parsed.raw_content,
+        parsed.raw_content.clone(),
     )?;
-    super::storage::write_atomic(&paths.global_agents_path, next_content.as_bytes())?;
+    write_checked(paths, &parsed.raw_content, &next_content)?;
     load_state(paths)
 }
 
-pub fn clear_managed_block(paths: &CodexPaths) -> Result<CustomInstructionStatePayload, CoreError> {
+pub fn clear_managed_block(
+    paths: &InstructionPaths,
+) -> Result<CustomInstructionStatePayload, CoreError> {
     paths.ensure_directories()?;
     let parsed = parse_global_file(paths)?;
 
     if parsed.protection_state == CustomInstructionProtectionState::Protected {
         return Err(CoreError::InvalidData(parsed.issue_message.unwrap_or_else(
-            || "Global AGENTS file is in protected mode".to_string(),
+            || "Global instruction file is in protected mode".to_string(),
         )));
     }
 
@@ -156,20 +193,14 @@ pub fn clear_managed_block(paths: &CodexPaths) -> Result<CustomInstructionStateP
         "clear".to_string(),
         None,
         None,
-        parsed.raw_content,
+        parsed.raw_content.clone(),
     )?;
-    if cleared.is_empty() {
-        if paths.global_agents_path.exists() {
-            std::fs::remove_file(&paths.global_agents_path)?;
-        }
-    } else {
-        super::storage::write_atomic(&paths.global_agents_path, cleared.as_bytes())?;
-    }
+    write_checked(paths, &parsed.raw_content, &cleared)?;
     load_state(paths)
 }
 
 pub fn rollback_history(
-    paths: &CodexPaths,
+    paths: &InstructionPaths,
     history_id: &str,
 ) -> Result<CustomInstructionStatePayload, CoreError> {
     paths.ensure_directories()?;
@@ -200,21 +231,15 @@ pub fn rollback_history(
         "rollback".to_string(),
         snapshot.template_code.clone(),
         snapshot.template_title.clone(),
-        parsed.raw_content,
+        parsed.raw_content.clone(),
     )?;
 
-    if restored.is_empty() {
-        if paths.global_agents_path.exists() {
-            std::fs::remove_file(&paths.global_agents_path)?;
-        }
-    } else {
-        super::storage::write_atomic(&paths.global_agents_path, restored.as_bytes())?;
-    }
+    write_checked(paths, &parsed.raw_content, &restored)?;
 
     load_state(paths)
 }
 
-fn parse_global_file(paths: &CodexPaths) -> Result<ParsedManagedBlock, CoreError> {
+fn parse_global_file(paths: &InstructionPaths) -> Result<ParsedManagedBlock, CoreError> {
     let file_exists = paths.global_agents_path.exists();
     let raw_content = if file_exists {
         std::fs::read_to_string(&paths.global_agents_path)?
@@ -223,6 +248,24 @@ fn parse_global_file(paths: &CodexPaths) -> Result<ParsedManagedBlock, CoreError
     };
 
     parse_content(file_exists, raw_content)
+}
+
+fn write_checked(paths: &InstructionPaths, before: &str, next: &str) -> Result<(), CoreError> {
+    if parse_global_file(paths)?.raw_content != before {
+        return Err(CoreError::OperationFailed(
+            "customInstructions.fileChanged".into(),
+        ));
+    }
+    if next.is_empty() {
+        match std::fs::remove_file(&paths.global_agents_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    } else {
+        super::storage::write_atomic(&paths.global_agents_path, next.as_bytes())?;
+    }
+    Ok(())
 }
 
 fn parse_content(file_exists: bool, raw_content: String) -> Result<ParsedManagedBlock, CoreError> {
@@ -253,7 +296,7 @@ fn parse_content(file_exists: bool, raw_content: String) -> Result<ParsedManaged
             file_exists,
             protection_state: CustomInstructionProtectionState::Protected,
             issue_message: Some(
-                "检测到重复或不完整的 AgentHarbor 自定义指令标记，请先手动修复全局 AGENTS 文件。"
+                "检测到重复或不完整的 AgentHarbor 自定义指令标记，请先手动修复全局指令文件。"
                     .to_string(),
             ),
             managed_block_present: false,
@@ -271,7 +314,7 @@ fn parse_content(file_exists: bool, raw_content: String) -> Result<ParsedManaged
             file_exists,
             protection_state: CustomInstructionProtectionState::Protected,
             issue_message: Some(
-                "AgentHarbor 自定义指令标记顺序异常，请先手动修复全局 AGENTS 文件。".to_string(),
+                "AgentHarbor 自定义指令标记顺序异常，请先手动修复全局指令文件。".to_string(),
             ),
             managed_block_present: false,
             managed_content: String::new(),
@@ -389,7 +432,7 @@ fn validate_managed_content(content: &str) -> Result<(), CoreError> {
 }
 
 fn save_history_snapshot(
-    paths: &CodexPaths,
+    paths: &InstructionPaths,
     action: CustomInstructionHistoryAction,
     source: String,
     template_code: Option<String>,
@@ -416,7 +459,7 @@ fn save_history_snapshot(
     Ok(())
 }
 
-fn trim_history(paths: &CodexPaths) -> Result<(), CoreError> {
+fn trim_history(paths: &InstructionPaths) -> Result<(), CoreError> {
     let mut items = load_history(paths)?;
     if items.len() <= HISTORY_LIMIT {
         return Ok(());
@@ -433,7 +476,9 @@ fn trim_history(paths: &CodexPaths) -> Result<(), CoreError> {
     Ok(())
 }
 
-fn load_history(paths: &CodexPaths) -> Result<Vec<CustomInstructionHistorySnapshot>, CoreError> {
+fn load_history(
+    paths: &InstructionPaths,
+) -> Result<Vec<CustomInstructionHistorySnapshot>, CoreError> {
     if !paths.custom_instruction_history_dir.exists() {
         return Ok(vec![]);
     }
@@ -461,7 +506,7 @@ fn load_history(paths: &CodexPaths) -> Result<Vec<CustomInstructionHistorySnapsh
 }
 
 fn find_history_snapshot(
-    paths: &CodexPaths,
+    paths: &InstructionPaths,
     history_id: &str,
 ) -> Result<Option<CustomInstructionHistorySnapshot>, CoreError> {
     if !valid_history_id(history_id) {
@@ -495,6 +540,65 @@ fn valid_history_id(id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clients_keep_files_and_history_separate_and_rollback_preserves_user_text() {
+        let temp = tempfile::tempdir().unwrap();
+        let codex = CodexPaths::from_home(temp.path().join(".codex"));
+        let clients = crate::core::client_config::ClientPaths::from_home(temp.path());
+        let a =
+            InstructionPaths::for_target(&codex, &clients, crate::core::targets::TargetId::Codex)
+                .unwrap();
+        let b = InstructionPaths::for_target(
+            &codex,
+            &clients,
+            crate::core::targets::TargetId::ClaudeCode,
+        )
+        .unwrap();
+        std::fs::create_dir_all(clients.claude_root()).unwrap();
+        std::fs::write(&b.global_agents_path, "User Claude rules\n").unwrap();
+        assert_eq!(b.global_agents_path, temp.path().join(".claude/CLAUDE.md"));
+        assert_eq!(
+            a.custom_instruction_history_dir,
+            codex.custom_instruction_history_dir
+        );
+        assert!(!a.global_agents_path.exists());
+        let state = apply_managed_content(&b, "Claude instructions", None, None, None).unwrap();
+        apply_managed_content(&a, "Codex instructions", None, None, None).unwrap();
+        let raw = std::fs::read_to_string(&b.global_agents_path).unwrap();
+        std::fs::write(&b.global_agents_path, format!("{raw}\nLater user rules\n")).unwrap();
+        rollback_history(&b, &state.history[0].id).unwrap();
+        let raw = std::fs::read_to_string(&b.global_agents_path).unwrap();
+        assert!(raw.contains("User Claude rules"));
+        assert!(raw.contains("Later user rules"));
+        assert!(!raw.contains("Claude instructions"));
+        assert_eq!(
+            load_state(&a).unwrap().current.managed_content,
+            "Codex instructions"
+        );
+        assert!(rollback_history(&a, &state.history[0].id).is_err());
+        assert!(InstructionPaths::for_target(
+            &codex,
+            &clients,
+            crate::core::targets::TargetId::OpenCode
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn checked_write_rejects_external_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = InstructionPaths {
+            global_agents_path: temp.path().join("CLAUDE.md"),
+            custom_instruction_history_dir: temp.path().join("history"),
+        };
+        std::fs::write(&paths.global_agents_path, "External rules").unwrap();
+        assert!(write_checked(&paths, "Old rules", "New rules").is_err());
+        assert_eq!(
+            std::fs::read_to_string(&paths.global_agents_path).unwrap(),
+            "External rules"
+        );
+    }
 
     #[test]
     fn crlf_files_keep_crlf_and_managed_content_has_no_carriage_returns() {

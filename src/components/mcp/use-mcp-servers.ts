@@ -13,7 +13,7 @@ const PAGE_SIZE = 12;
 export type McpFilter = "all" | "enabled" | "disabled" | "stdio" | "http";
 
 // MCP server list with its toggle/remove mutations, search, filter and pagination.
-export function useMcpServers() {
+export function useMcpServers(source: "codex" | "claudeCode") {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<McpServerSummary | "new" | null>(null);
@@ -26,8 +26,8 @@ export function useMcpServers() {
   const refreshAction = useBusyAction({ minVisibleMs: 800 });
 
   const { data, refetch, error, isPending } = useQuery({
-    queryKey: queryKeys.mcpServers,
-    queryFn: () => api.loadMcpServers(),
+    queryKey: [...queryKeys.mcpServers, source],
+    queryFn: () => api.loadMcpServers(source),
     staleTime: Infinity,
   });
 
@@ -41,19 +41,22 @@ export function useMcpServers() {
 
   const toggleMutation = useMutation({
     mutationFn: ({ name, enabled }: { name: string; enabled: boolean }) =>
-      api.setMcpServerEnabled(name, enabled),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.mcpServers }),
+      api.setMcpServerEnabled(name, enabled, source),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: [...queryKeys.mcpServers, source] }),
+    onError: (error) => toast({ title: t("common.error"), description: formatInvokeError(error), variant: "destructive" }),
   });
 
   const removeMutation = useMutation({
-    mutationFn: (name: string) => api.removeMcpServer(name),
+    mutationFn: (name: string) => api.removeMcpServer(name, source),
     onSuccess: () => {
       setRemoving(null);
-      queryClient.invalidateQueries({ queryKey: queryKeys.mcpServers });
+      queryClient.invalidateQueries({ queryKey: [...queryKeys.mcpServers, source] });
     },
+    onError: (error) => toast({ title: t("common.error"), description: formatInvokeError(error), variant: "destructive" }),
   });
 
   const servers = data?.data.items ?? [];
+  const mutationBusy = toggleMutation.isPending || removeMutation.isPending;
   const enabledCount = servers.filter((s) => s.enabled).length;
   const disabledCount = servers.length - enabledCount;
   const stdioCount = servers.filter((s) => s.transport === "stdio").length;
@@ -140,11 +143,11 @@ export function useMcpServers() {
   }, [totalPages, safePage]);
 
   return {
-    data, refetch, error, isPending, servers, sourcePath,
+    source, data, refetch, error, isPending, servers, sourcePath,
     enabledCount, disabledCount, stdioCount, remoteCount,
     editing, setEditing, removing, setRemoving, currentPage, setCurrentPage,
     searchQuery, setSearchQuery, transportFilter, setTransportFilter, copiedCommand,
-    refreshBusy, handleRefresh, toggleMutation, removeMutation,
+    refreshBusy, handleRefresh, toggleMutation, removeMutation, mutationBusy,
     copyPath, handleOpenConfigFolder, handleCopyCommand,
     filteredServers, totalPages, pagedServers, paginationRange,
   };

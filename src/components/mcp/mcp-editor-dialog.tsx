@@ -12,16 +12,20 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import type { McpServerSummary, McpTransport } from "@/types";
+import { toast } from "@/hooks/use-toast";
+import { formatInvokeError } from "@/lib/invoke-error";
 import { queryKeys } from "@/lib/query-keys";
 import { InputField, TextareaField } from "@/components/mcp/mcp-form-fields";
 
 export function McpEditorDialog({
   open,
+  source,
   server,
   existingNames,
   onClose,
 }: {
   open: boolean;
+  source: "codex" | "claudeCode";
   server?: McpServerSummary;
   existingNames: string[];
   onClose: () => void;
@@ -77,16 +81,17 @@ export function McpEditorDialog({
         url: transport !== "stdio" ? url : null,
         headers,
         environment,
-      });
+      }, source);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.mcpServers });
+      queryClient.invalidateQueries({ queryKey: [...queryKeys.mcpServers, source] });
       onClose();
     },
+    onError: error => toast({ title: t("common.error"), description: formatInvokeError(error), variant: "destructive" }),
   });
 
   return (
-    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+    <Dialog open={open} onOpenChange={(v) => !v && !upsertMutation.isPending && onClose()}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader className="border-b border-border/40 pb-3">
           <div className="flex items-center gap-3">
@@ -100,7 +105,7 @@ export function McpEditorDialog({
           </div>
         </DialogHeader>
 
-        <div className="grid gap-4 sm:grid-cols-2 pt-1">
+        <fieldset disabled={upsertMutation.isPending} className="grid gap-4 sm:grid-cols-2 pt-1">
           {/* Left Column: Basic Service Configuration */}
           <div className="space-y-3.5">
             <InputField label={t("mcp.name")} value={name} onChange={setName} disabled={!!server} placeholder="e.g. filesystem" />
@@ -136,16 +141,16 @@ export function McpEditorDialog({
             )}
             <TextareaField label={t("mcp.env")} value={envText} onChange={setEnvText} placeholder="API_KEY=your_key" mono />
           </div>
-        </div>
+        </fieldset>
 
         <DialogFooter className="border-t border-border/40 pt-3">
-          <Button variant="outline" size="sm" onClick={onClose}>
+          <Button variant="outline" size="sm" disabled={upsertMutation.isPending} onClick={onClose}>
             {t("mcp.cancel")}
           </Button>
           {duplicateName && (
             <p role="alert" className="mr-auto self-center text-xs text-destructive">{t("mcp.duplicateName")}</p>
           )}
-          <Button size="sm" onClick={() => upsertMutation.mutate()} disabled={!trimmedName || duplicateName || upsertMutation.isPending}>
+          <Button size="sm" onClick={() => upsertMutation.mutate()} disabled={!trimmedName || duplicateName || upsertMutation.isPending || transport === "unknown" || !(transport === "stdio" ? command.trim() : url.trim())}>
             {t("mcp.save")}
           </Button>
         </DialogFooter>

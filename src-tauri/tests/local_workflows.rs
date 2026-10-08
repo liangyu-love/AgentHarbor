@@ -459,10 +459,11 @@ fn invalid_backup_path_cannot_delete_outside_the_backup_directory() {
 fn instruction_rollback_keeps_later_user_edits() {
     let temp = tempfile::tempdir().unwrap();
     let paths = CodexPaths::from_home(temp.path().join("codex"));
+    let instructions = custom_instructions::InstructionPaths::for_target(&paths, &agentharbor_lib::core::client_config::ClientPaths::from_home(temp.path()), agentharbor_lib::core::targets::TargetId::Codex).unwrap();
     paths.ensure_directories().unwrap();
     fs::write(&paths.global_agents_path, "User rules\n").unwrap();
     let state = custom_instructions::apply_managed_content(
-        &paths,
+        &instructions,
         "Managed first",
         Some("test".into()),
         None,
@@ -476,9 +477,9 @@ fn instruction_rollback_keeps_later_user_edits() {
         format!("{text}\nLater user rules\n"),
     )
     .unwrap();
-    let preview = custom_instructions::preview_apply(&paths, "Managed second").unwrap();
+    let preview = custom_instructions::preview_apply(&instructions, "Managed second").unwrap();
     assert!(preview.resulting_content.contains("Later user rules"));
-    custom_instructions::rollback_history(&paths, &before_first_apply).unwrap();
+    custom_instructions::rollback_history(&instructions, &before_first_apply).unwrap();
     let restored = fs::read_to_string(&paths.global_agents_path).unwrap();
     assert!(restored.contains("User rules"));
     assert!(restored.contains("Later user rules"));
@@ -490,12 +491,13 @@ fn instruction_rollback_keeps_later_user_edits() {
 fn broken_instruction_markers_refuse_writes_and_rollback() {
     let temp = tempfile::tempdir().unwrap();
     let paths = CodexPaths::from_home(temp.path().join("codex"));
+    let instructions = custom_instructions::InstructionPaths::for_target(&paths, &agentharbor_lib::core::client_config::ClientPaths::from_home(temp.path()), agentharbor_lib::core::targets::TargetId::Codex).unwrap();
     let state =
-        custom_instructions::apply_managed_content(&paths, "Managed", None, None, None).unwrap();
+        custom_instructions::apply_managed_content(&instructions, "Managed", None, None, None).unwrap();
     let broken = "User rules\n<!-- AGENT_HARBOR_CUSTOM_INSTRUCTIONS_START -->\nbroken";
     fs::write(&paths.global_agents_path, broken).unwrap();
-    assert!(custom_instructions::preview_apply(&paths, "new").is_err());
-    assert!(custom_instructions::rollback_history(&paths, &state.history[0].id).is_err());
+    assert!(custom_instructions::preview_apply(&instructions, "new").is_err());
+    assert!(custom_instructions::rollback_history(&instructions, &state.history[0].id).is_err());
     assert_eq!(
         fs::read_to_string(&paths.global_agents_path).unwrap(),
         broken
@@ -506,10 +508,11 @@ fn broken_instruction_markers_refuse_writes_and_rollback() {
 fn instruction_history_rejects_paths_outside_its_directory() {
     let temp = tempfile::tempdir().unwrap();
     let paths = CodexPaths::from_home(temp.path().join("codex"));
+    let instructions = custom_instructions::InstructionPaths::for_target(&paths, &agentharbor_lib::core::client_config::ClientPaths::from_home(temp.path()), agentharbor_lib::core::targets::TargetId::Codex).unwrap();
     paths.ensure_directories().unwrap();
     fs::write(&paths.global_agents_path, "Keep user rules").unwrap();
-    assert!(custom_instructions::rollback_history(&paths, "../outside").is_err());
-    assert!(custom_instructions::rollback_history(&paths, r"..\outside").is_err());
+    assert!(custom_instructions::rollback_history(&instructions, "../outside").is_err());
+    assert!(custom_instructions::rollback_history(&instructions, r"..\outside").is_err());
     assert_eq!(
         fs::read_to_string(&paths.global_agents_path).unwrap(),
         "Keep user rules"

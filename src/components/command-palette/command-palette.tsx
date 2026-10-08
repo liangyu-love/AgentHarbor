@@ -28,6 +28,7 @@ import { toast } from "@/hooks/use-toast";
 import type { Route } from "@/types/navigation";
 import type { CoreEnvelope, CoreSnapshotPayload, McpServerListPayload, SkillListPayload } from "@/types";
 import { queryKeys } from "@/lib/query-keys";
+import { storageKeys } from "@/lib/storage-keys";
 import { formatInvokeError } from "@/lib/invoke-error";
 
 interface CommandPaletteProps {
@@ -77,7 +78,8 @@ export function CommandPalette({
   const sessionsPath = snapshotData?.data.status.paths.sessionsPath ?? "";
 
   // Load MCP servers
-  const mcpData = queryClient.getQueryData<CoreEnvelope<McpServerListPayload>>(queryKeys.mcpServers);
+  const mcpSource = localStorage.getItem(storageKeys.mcpSource) === "claudeCode" ? "claudeCode" : "codex";
+  const mcpData = queryClient.getQueryData<CoreEnvelope<McpServerListPayload>>([...queryKeys.mcpServers, mcpSource]);
   const mcpServers = mcpData?.data.items ?? [];
 
   // Load Skills
@@ -286,9 +288,9 @@ export function CommandPalette({
     // 动态添加 MCP 服务项
     mcpServers.forEach((server) => {
       items.push({
-        id: `mcp-${server.name}`,
+        id: `mcp-${mcpSource}-${server.name}`,
         title: `MCP: ${server.name}`,
-        subtitle: `${server.transport.toUpperCase()} · ${server.enabled ? "运行中" : "已停用"} · ${server.command || server.url}`,
+        subtitle: `${mcpSource === "codex" ? "Codex" : "Claude Code"} · ${server.transport.toUpperCase()} · ${t(server.enabled ? "mcp.enabled" : "mcp.disabled")} · ${server.command || server.url}`,
         icon: Terminal,
         category: "mcp",
         onSelect: () => {
@@ -314,7 +316,7 @@ export function CommandPalette({
     });
 
     return items;
-  }, [t, onNavigate, onOpenChange, isDarkMode, onThemeToggle, codexHome, sessionsPath, mcpServers, skillsList]);
+  }, [t, onNavigate, onOpenChange, isDarkMode, onThemeToggle, codexHome, sessionsPath, mcpSource, mcpServers, skillsList]);
 
   // Filter items by query
   const filteredItems = useMemo(() => {

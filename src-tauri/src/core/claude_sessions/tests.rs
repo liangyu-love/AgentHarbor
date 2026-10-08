@@ -4,6 +4,92 @@ use serde_json::json;
 const ID: &str = "11111111-1111-4111-8111-111111111111";
 const OTHER: &str = "22222222-2222-4222-8222-222222222222";
 
+#[test]
+fn deletion_removes_main_and_sidecars_and_keeps_recoverable_backup() {
+    let (_temp, root, path, key) = fixture(&[record("user", "delete me", 1)]);
+    let neighbor = path.parent().unwrap().join(format!("{OTHER}.jsonl"));
+    write_records(
+        &neighbor,
+        &[
+            serde_json::json!({"type":"user", "sessionId":OTHER, "message":{"role":"user","content":"keep"}}),
+        ],
+    );
+    let sidecar = path.with_extension("");
+    fs::create_dir_all(sidecar.join("subagents")).unwrap();
+    fs::write(sidecar.join("subagents/agent.jsonl"), "sidecar").unwrap();
+    let result = delete_threads(&root, &[key.clone(), key]).unwrap();
+    assert_eq!(result.deleted, 1);
+    assert!(!path.exists());
+    assert!(!sidecar.exists());
+    assert!(neighbor.exists());
+    let backup = PathBuf::from(result.backup_path);
+    assert!(backup.join(path.strip_prefix(&root).unwrap()).exists());
+    assert!(backup
+        .join(sidecar.strip_prefix(&root).unwrap())
+        .join("subagents/agent.jsonl")
+        .exists());
+    let scan = scan_threads(&root).unwrap();
+    assert_eq!(scan.items.len(), 1);
+    assert_eq!(scan.items[0].id, OTHER);
+}
+
+#[test]
+fn deletion_validates_whole_batch_before_any_move() {
+    let (_temp, root, path, key) = fixture(&[record("user", "keep", 1)]);
+    assert!(delete_threads(&root, &[key.clone(), "claude:../outside.jsonl".into()]).is_err());
+    assert!(path.exists());
+    assert!(delete_threads(
+        &root,
+        &[key, format!("claude:D--workspace-project/{OTHER}.jsonl")]
+    )
+    .is_err());
+    assert!(path.exists());
+    assert!(delete_threads(&root, &[]).is_err());
+}
+
+#[test]
+fn deletion_backup_retention_keeps_ten_completed_batches() {
+    let (_temp, root, path, key) = fixture(&[record("user", "first", 1)]);
+    let mut last = String::new();
+    for index in 0..11 {
+        write_records(&path, &[record("user", "delete", index)]);
+        last = delete_threads(&root, &[key.clone()]).unwrap().backup_path;
+    }
+    assert!(Path::new(&last).join("completed").exists());
+    assert_eq!(
+        fs::read_dir(root.join(".agentharbor-deleted"))
+            .unwrap()
+            .count(),
+        10
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn deletion_restores_earlier_moves_when_a_later_transcript_is_locked() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let (_temp, root, path, key) = fixture(&[record("user", "keep", 1)]);
+    let original = fs::read(&path).unwrap();
+    let neighbor = path.parent().unwrap().join(format!("{OTHER}.jsonl"));
+    fs::write(&neighbor, "locked").unwrap();
+    let _locked = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&neighbor)
+        .unwrap();
+    let neighbor_key = format!("claude:D--workspace-project/{OTHER}.jsonl");
+    assert!(delete_threads(&root, &[key, neighbor_key]).is_err());
+    assert_eq!(fs::read(&path).unwrap(), original);
+    assert!(neighbor.exists());
+    let backups: Vec<_> = fs::read_dir(root.join(".agentharbor-deleted"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(backups.len(), 1);
+    assert!(!backups[0].join("completed").exists());
+    assert!(!backups[0].join(path.strip_prefix(&root).unwrap()).exists());
+}
+
 fn record(role: &str, text: &str, index: usize) -> Value {
     json!({"type":role,"sessionId":ID,"uuid":format!("record-{index}"),"cwd":"D:\\workspace\\project",
         "timestamp":"2026-10-07T08:30:00Z","version":"2.1.3","message":{"role":role,"content":text}})

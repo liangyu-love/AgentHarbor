@@ -38,7 +38,7 @@ export function SelectionBar({ list }: { list: ThreadList }) {
               <Square className="h-3 w-3" />
               {t("threads.clearSelection")}
             </Button>
-            {list.isCodex && <Button
+            <Button
               variant="outline"
               size="sm"
               className="h-7.5 gap-1 px-2.5 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
@@ -51,7 +51,7 @@ export function SelectionBar({ list }: { list: ThreadList }) {
                 <Trash2 className="h-3.5 w-3.5" />
               )}
               {t("threads.deleteSelected", { count: selected.size })}
-            </Button>}
+            </Button>
             <RainbowButton
               className="h-7.5 rounded-[8px] px-3 text-xs font-medium"
               onClick={() => void handleExport([...selected])}

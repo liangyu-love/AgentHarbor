@@ -36,7 +36,7 @@ function DotBadge({ dotClass, textClass, children }: { dotClass: string; textCla
 
 export function McpServerCard({ server, mcp }: { server: McpServerSummary; mcp: McpServers }) {
   const { t } = useTranslation();
-  const { copiedCommand, toggleMutation, handleCopyCommand, setEditing, setRemoving } = mcp;
+  const { copiedCommand, toggleMutation, handleCopyCommand, setEditing, setRemoving, mutationBusy } = mcp;
   const isStdio = server.transport === "stdio";
   const cmdString = isStdio
     ? [server.command, ...(server.args || [])].filter(Boolean).join(" ")
@@ -105,6 +105,7 @@ export function McpServerCard({ server, mcp }: { server: McpServerSummary; mcp: 
           {/* Always visible Switch */}
           <Switch
             checked={server.enabled}
+            disabled={mutationBusy}
             onCheckedChange={(v) => toggleMutation.mutate({ name: server.name, enabled: v })}
             aria-label={`${server.name} status`}
           />
@@ -195,6 +196,7 @@ export function McpServerCard({ server, mcp }: { server: McpServerSummary; mcp: 
             variant="ghost"
             size="icon-sm"
             onClick={() => setEditing(server)}
+            disabled={mutationBusy}
             className="h-7 w-7 text-muted-foreground hover:text-foreground"
             title={t("mcp.edit")}
           >
@@ -204,6 +206,7 @@ export function McpServerCard({ server, mcp }: { server: McpServerSummary; mcp: 
             variant="ghost"
             size="icon-sm"
             onClick={() => setRemoving(server.name)}
+            disabled={mutationBusy}
             className="h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
             title={t("mcp.delete")}
           >

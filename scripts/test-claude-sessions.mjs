@@ -56,7 +56,7 @@ export async function testClaudeSessions({ page, reset, captureDir }) {
   assert.equal(await page.getByText("已选 1 个", { exact: true }).count(), 0);
   assert.equal(await page.getByPlaceholder("搜索标题、工程、会话 ID、提供商或模型…").inputValue(), "");
   assert.equal(await page.getByRole("button", { name: await label("threads.repairAll"), exact: true }).count(), 0);
-  assert.equal(await page.getByRole("button", { name: await label("threads.deleteThread"), exact: true }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: await label("threads.deleteThread"), exact: true }).count(), 1);
   assert.equal(await page.getByRole("button", { name: await label("threads.recoveryAction"), exact: true }).count(), 0);
   assert.equal(await page.getByRole("radio", { name: /^已归档/ }).count(), 0);
   assert.equal(await page.locator('[data-metric="threads"]').evaluate(element => Boolean(element.closest('[role="button"]'))), false,
@@ -71,7 +71,7 @@ export async function testClaudeSessions({ page, reset, captureDir }) {
   await panel().getByText("Claude fixture message", { exact: true }).waitFor();
   assert.equal(await panel().getByText("合成的用户问题", { exact: true }).count(), 0);
   assert.equal((await calls("messages")).at(-1).target, "claudeCode");
-  assert.equal(await panel().getByRole("button", { name: await label("threads.deleteThread"), exact: true }).count(), 0);
+  assert.equal(await panel().getByRole("button", { name: await label("threads.deleteThread"), exact: true }).count(), 1);
   await panel().getByRole("button", { name: await label("threads.copyResumeCommand"), exact: true }).click();
   assert.deepEqual(await page.evaluate(() => window.review.copiedText), [`claude --resume ${claudeThread.id}`]);
   await panel().getByRole("button", { name: "关闭", exact: true }).click();
@@ -84,7 +84,7 @@ export async function testClaudeSessions({ page, reset, captureDir }) {
       await page.getByRole("menuitem", { name: await label("threads.formatJsonl"), exact: true }).click();
     }
     await claudeSelect.click();
-    assert.equal(await page.getByRole("button", { name: /^删除所选/ }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: /^删除所选/ }).count(), 1);
     await page.getByRole("button", { name: /^导出所选/ }).click();
     await page.waitForFunction(count => window.review.conversationCalls.filter(call => call.operation === "export").length === count,
       format === "markdown" ? 1 : 2);
@@ -152,6 +152,20 @@ export async function testClaudeSessions({ page, reset, captureDir }) {
   assert.equal((await calls("export")).at(-1).target, "claudeCode",
     "An old Claude export cannot silently change its target to the new Codex client");
   assert.equal(await source("Codex").getAttribute("aria-checked"), "true");
-  // Restore the default for the remaining legacy frontend tests.
+  await reset("thread-tree");
+  await source("Claude Code").click();
+  const deleting = await page.evaluate(() => ({ ...window.review.claudeThreads[0] }));
+  await page.getByRole("checkbox", { name: deleting.title, exact: true }).click();
+  await page.getByRole("button", { name: /^删除所选/ }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: await label("common.cancel"), exact: true }).click();
+  assert.equal((await calls("delete")).length, 0, "Cancel never deletes a session");
+  await page.getByRole("button", { name: /^删除所选/ }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: await label("common.delete"), exact: true }).click();
+  await page.waitForFunction(() => window.review.conversationCalls.some(call => call.operation === "delete"));
+  assert.equal((await calls("delete")).at(-1).target, "claudeCode");
+  assert.deepEqual((await calls("delete")).at(-1).keys, [deleting.key]);
+  await page.getByRole("checkbox", { name: deleting.title, exact: true }).waitFor({ state: "hidden" });
+  await source("Codex").click();
+  await codexTitle.waitFor();
   console.log("PASS Claude/Codex scoped lists, detail/message caches, reset, resume, exports, late results and responsive UI");
 }

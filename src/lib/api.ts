@@ -328,17 +328,17 @@ export const api = {
   diagnose: () =>
     invoke<CoreEnvelope<DiagnosePayload>>("diagnose"),
 
-  loadMcpServers: () =>
-    invoke<CoreEnvelope<McpServerListPayload>>("load_mcp_servers"),
+  loadMcpServers: (targetId: "codex" | "claudeCode" = "codex") =>
+    invoke<CoreEnvelope<McpServerListPayload>>("load_mcp_servers", { targetId }),
 
-  upsertMcpServer: (server: Omit<McpServerSummary, "sourcePath">) =>
-    invoke<CoreEnvelope<McpServerMutationPayload>>("upsert_mcp_server", { ...server }),
+  upsertMcpServer: (server: Omit<McpServerSummary, "sourcePath">, targetId: "codex" | "claudeCode" = "codex") =>
+    invoke<CoreEnvelope<McpServerMutationPayload>>("upsert_mcp_server", { ...server, targetId }),
 
-  setMcpServerEnabled: (name: string, enabled: boolean) =>
-    invoke<CoreEnvelope<McpServerMutationPayload>>("set_mcp_server_enabled", { name, enabled }),
+  setMcpServerEnabled: (name: string, enabled: boolean, targetId: "codex" | "claudeCode" = "codex") =>
+    invoke<CoreEnvelope<McpServerMutationPayload>>("set_mcp_server_enabled", { name, enabled, targetId }),
 
-  removeMcpServer: (name: string) =>
-    invoke<CoreEnvelope<McpServerRemovePayload>>("remove_mcp_server", { name }),
+  removeMcpServer: (name: string, targetId: "codex" | "claudeCode" = "codex") =>
+    invoke<CoreEnvelope<McpServerRemovePayload>>("remove_mcp_server", { name, targetId }),
 
   loadInstalledSkills: (source?: SkillSource) =>
     invoke<CoreEnvelope<SkillListPayload>>("load_installed_skills", { source }),
@@ -363,22 +363,22 @@ export const api = {
   deleteSkillBackup: (id: string, source?: SkillSource) =>
     invoke<CoreEnvelope<SkillDeleteBackupPayload>>("delete_skill_backup", { id, source }),
 
-  loadCustomInstructionState: () =>
-    invoke<CoreEnvelope<CustomInstructionStatePayload>>("load_custom_instruction_state"),
+  loadCustomInstructionState: (targetId: "codex" | "claudeCode" = "codex") =>
+    invoke<CoreEnvelope<CustomInstructionStatePayload>>("load_custom_instruction_state", { targetId }),
 
-  previewCustomInstructionApply: (content: string) =>
+  previewCustomInstructionApply: (content: string, targetId: "codex" | "claudeCode" = "codex") =>
     invoke<CoreEnvelope<CustomInstructionPreviewPayload>>("preview_custom_instruction_apply", {
-      content,
+      content, targetId,
     }),
 
-  applyCustomInstruction: (params: { content: string; templateCode?: string; templateTitle?: string; source?: string }) =>
-    invoke<CoreEnvelope<CustomInstructionStatePayload>>("apply_custom_instruction", { ...params }),
+  applyCustomInstruction: (params: { content: string; templateCode?: string; templateTitle?: string; source?: string; expectedContent?: string }, targetId: "codex" | "claudeCode" = "codex") =>
+    invoke<CoreEnvelope<CustomInstructionStatePayload>>("apply_custom_instruction", { ...params, targetId }),
 
-  clearCustomInstructionBlock: () =>
-    invoke<CoreEnvelope<CustomInstructionStatePayload>>("clear_custom_instruction_block"),
+  clearCustomInstructionBlock: (targetId: "codex" | "claudeCode" = "codex") =>
+    invoke<CoreEnvelope<CustomInstructionStatePayload>>("clear_custom_instruction_block", { targetId }),
 
-  rollbackCustomInstruction: (historyId: string) =>
-    invoke<CoreEnvelope<CustomInstructionStatePayload>>("rollback_custom_instruction", { historyId }),
+  rollbackCustomInstruction: (historyId: string, targetId: "codex" | "claudeCode" = "codex") =>
+    invoke<CoreEnvelope<CustomInstructionStatePayload>>("rollback_custom_instruction", { historyId, targetId }),
 
   isUpdaterConfigured: () => invoke<boolean>("is_updater_configured"),
 

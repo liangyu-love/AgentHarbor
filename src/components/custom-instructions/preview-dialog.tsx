@@ -30,11 +30,11 @@ export function PreviewDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl">
+      <DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{t("customInstructions.previewTitle")}</DialogTitle>
           <DialogDescription>
-            {t("customInstructions.previewDescription")}
+            {preview?.globalPath}
           </DialogDescription>
         </DialogHeader>
 
@@ -58,9 +58,10 @@ export function PreviewDialog({
             </div>
           </div>
         )}
+        {preview && <details className="min-w-0"><summary className="cursor-pointer text-sm font-medium">{t("customInstructions.resultingFile")}</summary><Textarea value={preview.resultingContent} readOnly aria-label={t("customInstructions.resultingFile")} className="mt-2 min-h-[240px] font-mono text-xs" /></details>}
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" disabled={applying} onClick={() => onOpenChange(false)}>
             {t("common.cancel")}
           </Button>
           <Button onClick={onApply} disabled={!preview || applying}>

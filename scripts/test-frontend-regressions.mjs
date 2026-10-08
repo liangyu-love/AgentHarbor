@@ -1,3 +1,4 @@
+import { testClaudeSupport } from "./test-claude-support.mjs";
 import { testOAuthLogin } from "./test-oauth-login.mjs";
 // Run after npm run build. No real Tauri backend, profiles, or external network.
 // Optional: --playwright-module=/path/to/playwright-core or PLAYWRIGHT_MODULE_PATH.
@@ -80,7 +81,9 @@ try {
     await page.evaluate(value => window.review.mount(value), mode);
   };
 
-  if (process.env.FRONTEND_QA_SCOPE === "claude-cli-official") {
+  if (process.env.FRONTEND_QA_SCOPE === "claude-support") {
+    await testClaudeSupport({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "claude-cli-official") {
     await testClaudeCliOfficial({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "capability-clear") {
     await testCapabilityClear({ page, reset, captureDir });
@@ -1327,6 +1330,7 @@ try {
   await testAccountThreadNavigation({ page, reset, captureDir });
   await testThreadDetails({ page, reset, captureDir });
   await testClaudeSessions({ page, reset, captureDir });
+  await testClaudeSupport({ page, reset, captureDir });
   await testThreadUiFixes({ page, reset, captureDir });
   await testAggregation({ page, reset, captureDir });
   await testCodexSubagents({ page, reset, captureDir });

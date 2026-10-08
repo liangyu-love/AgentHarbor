@@ -227,6 +227,16 @@ pub async fn delete_conversations(
     target_id: TargetId,
     keys: Vec<String>,
 ) -> Result<CoreEnvelope<ThreadDeleteResult>, String> {
+    if target_id == TargetId::ClaudeCode {
+        let root = claude_sessions::projects_root();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            claude_sessions::delete_threads(&root, &keys)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+        return Ok(CoreEnvelope::ok(result));
+    }
     if target_id != TargetId::Codex {
         return Err("This conversation source is read-only; deletion is unsupported".into());
     }
