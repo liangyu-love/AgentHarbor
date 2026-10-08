@@ -281,6 +281,9 @@ export async function testAggregation({ page, reset, captureDir }) {
   const codex = page.locator('[aria-labelledby="newapi-routing-title"]');
   await choose(codex.locator("#codex-aggregate-model"), POOL_NAME + " · " + PUBLIC_MODEL);
   await page.waitForFunction(() => window.review.getState().router.aggregateModelId !== null);
+  const aggregateMarker = codex.locator('[data-codex-target="aggregate"]');
+  assert.equal(await aggregateMarker.innerText(), await tr("aggregation.target"));
+  assert.equal(await codex.locator("[data-relay-link]").count(), 0);
   assert.deepEqual(await page.evaluate(() => window.review.aggregateCodexSelections), [saved.id]);
   await codex.locator("#codex-access-mode").click();
   assert.equal(await page.getByRole("option", { name: await tr("newapi.accessNative"), exact: true }).getAttribute("aria-disabled"), "true");
@@ -289,8 +292,9 @@ export async function testAggregation({ page, reset, captureDir }) {
   await page.waitForFunction(() => window.review.getState().router.enabled);
   await choose(codex.locator("#codex-aggregate-model"), await tr("aggregation.singleChannel"));
   await page.waitForFunction(() => window.review.getState().router.aggregateModelId === null);
+  assert.equal(await codex.locator('[data-codex-target="relay"]').innerText(), await tr("newapi.providersSection"));
   assert.deepEqual(await page.evaluate(() => window.review.aggregateCodexSelections), [saved.id, null]);
-  console.log("PASS Codex explicitly selects the aggregation catalog and returns to its single channel independently");
+  console.log("PASS Codex selects the aggregation catalog and returns to relay models with distinct abstract targets");
 
   await seed(page, reset, "access", { codexTarget: "deleted-pool" });
   await codex.locator("#codex-aggregate-model").waitFor();

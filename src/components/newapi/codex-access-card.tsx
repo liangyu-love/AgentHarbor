@@ -56,12 +56,6 @@ export function CodexAccessCard({
   const aggregate = aggregates.data?.models.find((model) => model.id === router?.aggregateModelId);
   const aggregateSelected = router?.aggregateModelId != null;
   const aggregateAvailable = !!aggregate?.available;
-  // In router mode the Codex catalog includes models from every enabled card
-  // with credentials. The pinned provider only supplies the default model.
-  const catalogProviders = providers.filter((provider) =>
-    provider.enabled && provider.hasApiKey && (
-      provider.models.some((model) => model.included) || provider.model.trim().length > 0
-    ));
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
 
   const setRouting = (value: boolean, restoreThreads: boolean) =>
@@ -161,45 +155,30 @@ export function CodexAccessCard({
       t("newapi.routingFailed"),
     );
 
-  // Router mode exposes all relay cards in Codex's model picker; only native
-  // mode and an aggregate target have a single destination in this diagram.
-  const targetName = aggregateSelected
-    ? aggregate?.displayName ?? t("aggregation.unavailable")
-    : nativeAccess
-      ? selectedProvider?.name ?? t("clients.notConfigured")
-      : catalogProviders.length
-        ? t("newapi.routerRelayCount", { count: catalogProviders.length })
-        : t("clients.notConfigured");
-  const targetModel = aggregateSelected
-    ? aggregate?.publicModelId ?? "—"
-    : selectedProvider?.model ?? "—";
-  const targetProtocol = aggregateSelected
-    ? t("aggregation.target")
-    : nativeAccess
-      ? (selectedProvider ? t(protocolBadgeKey[providerModelProtocol(selectedProvider)]) : "—")
-      : t("newapi.routerModelRouting");
+  // The router target represents a catalog. A conversation's selected model
+  // can change independently of the app's pinned default provider.
+  const targetName = nativeAccess
+    ? selectedProvider?.name ?? t("clients.notConfigured")
+    : t(aggregateSelected ? "aggregation.target" : "newapi.providersSection");
+  const targetModel = selectedProvider?.model ?? "—";
+  const targetProtocol = selectedProvider
+    ? t(protocolBadgeKey[providerModelProtocol(selectedProvider)])
+    : "—";
+  const TargetIcon = !nativeAccess && aggregateSelected ? Network : Cpu;
 
   const targetNodeClass =
     "flex min-w-0 flex-1 items-center gap-2.5 rounded-lg border border-border/50 bg-background/70 p-2";
   // Spans only: the node may be rendered inside a button.
   const targetNode = (
     <>
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-purple-500/15 text-purple-600 dark:text-purple-400">
-        <Cpu className="h-3.5 w-3.5" />
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+        <TargetIcon className="h-3.5 w-3.5" />
       </span>
       <span className="block min-w-0 flex-1">
         <span className="block truncate font-medium text-foreground" title={targetName}>
           {targetName}
         </span>
-        {!nativeAccess && !aggregateSelected ? (
-          <span data-router-relays className="mt-1 block max-h-32 space-y-1 overflow-y-auto pr-1">
-            {catalogProviders.map((provider) => (
-              <span key={provider.id} data-router-relay className="block truncate rounded bg-muted/60 px-2 py-0.5 font-mono text-[11px] text-muted-foreground" title={provider.name}>
-                {provider.name}
-              </span>
-            ))}
-          </span>
-        ) : (
+        {nativeAccess && (
           <span className="block truncate font-mono text-[11px] text-muted-foreground" title={targetModel}>
             {targetModel}
           </span>
@@ -210,9 +189,11 @@ export function CodexAccessCard({
           </span>
         )}
       </span>
-      <Badge variant="outline" className="ml-auto shrink-0 px-1.5 py-0 text-[10px] font-normal">
-        {targetProtocol}
-      </Badge>
+      {nativeAccess && (
+        <Badge variant="outline" className="ml-auto shrink-0 px-1.5 py-0 text-[10px] font-normal">
+          {targetProtocol}
+        </Badge>
+      )}
     </>
   );
 
@@ -333,10 +314,11 @@ export function CodexAccessCard({
               </>
             )}
 
-            {onOpenRelays ? (
+            {onOpenRelays && (nativeAccess || !aggregateSelected) ? (
               <button
                 type="button"
                 data-relay-link
+                data-codex-target={nativeAccess ? "native" : aggregateSelected ? "aggregate" : "relay"}
                 title={t("newapi.providersSection")}
                 onClick={onOpenRelays}
                 className={cn(
@@ -347,7 +329,7 @@ export function CodexAccessCard({
                 {targetNode}
               </button>
             ) : (
-              <div className={targetNodeClass}>{targetNode}</div>
+              <div data-codex-target={nativeAccess ? "native" : aggregateSelected ? "aggregate" : "relay"} className={targetNodeClass}>{targetNode}</div>
             )}
           </div>
 
@@ -372,7 +354,7 @@ export function CodexAccessCard({
                   </SelectItem>
                 </SelectContent>
               </Select>
-              {!aggregateSelected && selectedProvider && (
+              {nativeAccess && selectedProvider && (
                 <p className="truncate font-mono text-[11px] text-muted-foreground">
                   {t("newapi.accessSelectedModel", {
                     provider: selectedProvider.name,

@@ -254,6 +254,8 @@ export type ClearCapabilityField =
   | "providerContextWindow" | "providerCatalogProviders"
   | "providerPriceCatalogProvider" | "providerCompression";
 export interface ClearCapabilityPreview {
+  field: ClearCapabilityField;
+  hasOverride: boolean;
   configRevision: string;
   catalogRevision: string;
   officialRevision: string;

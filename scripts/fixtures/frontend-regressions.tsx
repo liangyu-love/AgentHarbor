@@ -254,6 +254,54 @@ api.routing.setModelPrice = async (providerId, modelId, price) => {
   controls.review.priceSaves = [...(controls.review.priceSaves ?? []), { providerId, modelId, price }];
   return { state, applied: null } as any;
 };
+api.routing.previewCapabilityClear = async (providerId, modelId, field) => {
+  (controls.review.clearPreviewCalls ??= []).push({ providerId, modelId, field });
+  const base = (await api.routing.capabilities()).models[0];
+  const before = structuredClone(base);
+  const after = structuredClone(base);
+  if (field === "contextWindow" || field === "providerContextWindow") {
+    before.context = { ...before.context, value: 300000, source: "manual" };
+    before.output = { ...before.output, value: 200000 };
+    before.projection = { ...before.projection, contextWindow: 300000, budget: 300000, outputLimit: 200000 };
+    after.context = { ...after.context, value: 100000, source: "catalog" };
+    after.output = { ...after.output, value: 200000 };
+    after.projection = { ...after.projection, contextWindow: 100000, budget: 100000, outputLimit: 100000,
+      compression: { ...after.projection.compression, threshold: 90000 } };
+  } else if (field === "price") {
+    before.price.cacheRead = 0.4;
+    after.price.cacheRead = 0.2;
+  } else if (field === "providerCompression") {
+    before.compressionScope = after.compressionScope = "nativeShared";
+    before.compressionSharedThreshold = 90000;
+    after.compressionSharedThreshold = 80000;
+    before.compressionSharedPlan = { threshold: 90000, limitingModels: ["small"], blockingModels: [], state: "computed" };
+    after.compressionSharedPlan = { threshold: 80000, limitingModels: ["small"], blockingModels: [], state: "computed" };
+    after.compressionLimitingModels = ["small"];
+  }
+  const hasOverride = !controls.review.clearNoOverride;
+  const result = {
+    field, hasOverride, configRevision: "config-clear-1", catalogRevision: "catalog-clear-1", officialRevision: "official-clear-1",
+    before, after: hasOverride ? after : before, scopeCount: field.startsWith("provider") || controls.review.clearSharedEffect ? 3 : 1,
+    affectedModels: hasOverride ? (field.startsWith("provider") || controls.review.clearSharedEffect ? [
+      { modelId, displayName: before.displayName },
+      { modelId: "small", displayName: before.displayName },
+      { modelId: "model-with-a-very-long-name-to-verify-wrapping-and-identity", displayName: "Long model" },
+    ] : [{ modelId, displayName: before.displayName }]) : [],
+  };
+  if (controls.review.clearPreviewHold) await new Promise<void>(resolve => { (controls.review.clearPreviewResolvers ??= []).push(resolve); });
+  if (controls.review.clearPreviewFailure) throw "newapi.errors.storage";
+  return result;
+};
+api.routing.applyCapabilityClear = async preview => {
+  (controls.review.clearApplyCalls ??= []).push(structuredClone(preview));
+  if (controls.review.clearApplyHold) await new Promise<void>(resolve => { controls.review.clearApplyResolve = resolve; });
+  if (controls.review.clearApplyFailure) throw "newapi.errors.storage";
+  if (controls.review.clearApplyStale) {
+    controls.review.clearApplyStale = false;
+    return { applied: null, refreshedPreview: { ...preview, configRevision: "config-clear-2" } };
+  }
+  return { applied: { state, applied: null }, refreshedPreview: null };
+};
 api.routing.setWebSearchProvider = async providerId => { state = { ...state, router: { ...state.router, webSearchProviderId: providerId } }; return { state, applied: null }; };
 api.loadSnapshot = async () => ({ data: { status: {
   paths: { codexHome: "C:/synthetic/codex", authExists: true, registryExists: true, sessionsExists: true },

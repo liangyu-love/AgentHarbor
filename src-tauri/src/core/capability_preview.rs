@@ -159,6 +159,8 @@ pub struct CatalogView {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClearPreview {
+    pub field: router::ClearCapabilityField,
+    pub has_override: bool,
     pub config_revision: String,
     pub catalog_revision: String,
     pub official_revision: String,
@@ -188,6 +190,8 @@ pub fn preview_clear(
     let catalog = models_dev::load(&paths.app_data_dir);
     let mut after_store = store.clone();
     router::clear_capability_on_store(&mut after_store, provider_id, model_id, field)?;
+    let config_revision = router::config_revision(store)?;
+    let has_override = router::config_revision(&after_store)? != config_revision;
     let before_view = preview_with_sources(paths, store, &official, &catalog);
     let after_view = preview_with_sources(paths, &after_store, &official, &catalog);
     let after_by_model: HashMap<&str, &Preview> = after_view
@@ -227,7 +231,9 @@ pub fn preview_clear(
     let official_bytes =
         serde_json::to_vec(&official.models).map_err(|_| "newapi.errors.storage")?;
     Ok(ClearPreview {
-        config_revision: router::config_revision(store)?,
+        field,
+        has_override,
+        config_revision,
         catalog_revision: catalog.snapshot.revision.clone(),
         official_revision: super::request_diagnostics::state_revision(&official_bytes),
         before,
@@ -528,6 +534,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(dry_run.before.context.value, Some(300_000));
+        assert!(dry_run.has_override);
+        assert_eq!(
+            serde_json::to_value(dry_run.field).unwrap(),
+            "contextWindow"
+        );
         assert_eq!(dry_run.before.context.source, "manual");
         assert_eq!(dry_run.after.context.value, Some(200_000));
         assert_eq!(dry_run.after.context.source, "providerSetting");
@@ -591,6 +602,74 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["model-one", "model-two"]
         );
+    }
+
+    #[test]
+    fn clearing_an_absent_setting_does_not_rewrite_configuration() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().to_path_buf());
+        paths.ensure_directories().unwrap();
+        let mut entry = provider("relay", "fixture-model");
+        entry.updated_at = 17;
+        let store = router::Store {
+            providers: vec![entry],
+            ..Default::default()
+        };
+        let storage = paths.app_data_dir.join("newapi-providers.dat");
+        super::super::secret_file::write(&storage, &serde_json::to_vec(&store).unwrap()).unwrap();
+        let loaded = router::load_store(&paths).unwrap();
+        let bytes = std::fs::read(&storage).unwrap();
+        let dry_run = preview_clear(
+            &paths,
+            &loaded,
+            "relay",
+            "fixture-model",
+            router::ClearCapabilityField::ContextWindow,
+        )
+        .unwrap();
+        assert!(!dry_run.has_override);
+        assert!(dry_run.affected_models.is_empty());
+        let result = router::clear_capability_if_current(
+            &paths,
+            "relay",
+            "fixture-model",
+            dry_run.field,
+            &dry_run.config_revision,
+            &dry_run.catalog_revision,
+            &dry_run.official_revision,
+        )
+        .unwrap();
+        assert!(result.applied.is_none());
+        assert_eq!(std::fs::read(&storage).unwrap(), bytes);
+        assert_eq!(
+            router::load_store(&paths).unwrap().providers[0].updated_at,
+            17
+        );
+    }
+
+    #[test]
+    fn a_shadowed_setting_can_be_cleared_without_effective_value_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().to_path_buf());
+        let mut entry = provider("relay", "fixture-model");
+        entry.context_window = Some(200_000);
+        entry.models[0].overrides.context_window = Some(300_000);
+        let store = router::Store {
+            providers: vec![entry],
+            ..Default::default()
+        };
+        let dry_run = preview_clear(
+            &paths,
+            &store,
+            "relay",
+            "fixture-model",
+            router::ClearCapabilityField::ProviderContextWindow,
+        )
+        .unwrap();
+        assert!(dry_run.has_override);
+        assert!(dry_run.affected_models.is_empty());
+        assert_eq!(dry_run.before.context.value, Some(300_000));
+        assert_eq!(dry_run.after.context.value, Some(300_000));
     }
 
     fn provider(id: &str, model: &str) -> router::Provider {

@@ -20,6 +20,7 @@ import { testClaudeDesktopCard } from "./test-claude-desktop-card.mjs";
 import { testSkillsActivation } from "./test-skills-activation.mjs";
 import { testAggregation } from "./test-aggregation.mjs";
 import { testCodexSubagents } from "./test-codex-subagents.mjs";
+import { testCapabilityClear } from "./test-capability-clear.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -78,7 +79,9 @@ try {
     await page.evaluate(value => window.review.mount(value), mode);
   };
 
-  if (process.env.FRONTEND_QA_SCOPE === "codex-subagents") {
+  if (process.env.FRONTEND_QA_SCOPE === "capability-clear") {
+    await testCapabilityClear({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "codex-subagents") {
     await testCodexSubagents({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "aggregation") {
     await testAggregation({ page, reset, captureDir });
@@ -622,7 +625,11 @@ try {
     provider: window.review.getState().providers[0].name,
     model: "responses-model", protocol: window.review.t("newapi.protocolShortResponses"),
   }));
-  assert.equal(await codexAccessCard.getByText(selectedResponsesModel, { exact: true }).count(), 1);
+  const relayTarget = codexAccessCard.locator('[data-codex-target="relay"]');
+  const relayTargetLabel = await page.evaluate(() => window.review.t("newapi.providersSection"));
+  assert.equal(await relayTarget.innerText(), relayTargetLabel);
+  assert.equal(await codexAccessCard.getByText(selectedResponsesModel, { exact: true }).count(), 0,
+    "router mode represents the model catalog rather than its pinned default");
   assert.equal(await page.getByRole("switch", { name: labels.accountless, exact: true }).count(), 1);
   assert.equal(await page.getByRole("switch", { name: labels.accountless, exact: true }).isEnabled(), true);
   await page.getByRole("switch", { name: labels.accountless, exact: true }).click();
@@ -634,6 +641,10 @@ try {
   assert.equal(await page.getByRole("option", { name: labels.accessNative, exact: true }).isEnabled(), true);
   await page.getByRole("option", { name: labels.accessNative, exact: true }).click();
   await page.getByText(labels.nativeNoRouter, { exact: true }).waitFor();
+  assert.equal(await codexAccessCard.getByText(selectedResponsesModel, { exact: true }).count(), 1);
+  const nativeTarget = codexAccessCard.locator('[data-codex-target="native"]');
+  assert.match(await nativeTarget.innerText(), /Provider mixed/);
+  assert.match(await nativeTarget.innerText(), /responses-model/);
   assert.equal(await page.getByRole("switch", { name: labels.accountless, exact: true }).count(), 0);
   assert.equal(await page.getByText(labels.nativeAuthHint, { exact: true }).count(), 1);
   await page.getByRole("button", { name: labels.restartCodex, exact: true }).click();
@@ -652,9 +663,11 @@ try {
   await page.getByRole("switch", { name: labels.accountless, exact: true }).waitFor();
 
   await reset("incompatible");
-  const routerRelays = page.locator('[aria-labelledby="newapi-routing-title"] [data-router-relay]');
-  await routerRelays.first().waitFor();
-  assert.deepEqual(await routerRelays.allTextContents(), ["Provider mixed", "Provider alternate"]);
+  await relayTarget.waitFor();
+  assert.equal(await relayTarget.innerText(), relayTargetLabel,
+    "multiple enabled relays retain one abstract model-catalog target");
+  assert.equal(await codexAccessCard.locator('[data-router-relay]').count(), 0);
+  assert.doesNotMatch(await relayTarget.innerText(), /Provider mixed|Provider alternate|chat-model/);
   assert.equal(await page.getByText(labels.nativeProtocolHint, { exact: true }).count(), 0);
   await page.locator("#codex-access-mode").click();
   assert.equal(await page.getByRole("option", { name: labels.accessNative, exact: true }).getAttribute("aria-disabled"), "true");
@@ -665,6 +678,31 @@ try {
   assert.equal(await page.getByRole("switch", { name: labels.codexAccess, exact: true }).isDisabled(), true);
   assert.equal(await page.getByRole("switch", { name: labels.accountless, exact: true }).count(), 0);
   console.log("PASS Codex access mode is independent of protocol/network and rejects incompatible native selection");
+
+  await reset("access");
+  await page.evaluate(() => {
+    window.review.aggregateModels = [{ id: "codex-target-pool", publicModelId: "public-model",
+      displayName: "Codex target pool", enabled: true,
+      members: [{ id: "target-member", providerId: "mixed", actualModelId: "responses-model",
+        enabled: true, priority: 0, weight: 1 }],
+      strategy: "roundRobin", affinity: "session", retryPolicy: { maxAttempts: 2, failureThreshold: 3 },
+      compression: { mode: "inherit" } }];
+    window.review.routerPatch = { aggregateModelId: "codex-target-pool" };
+    window.review.mount("access");
+  });
+  const aggregateTarget = codexAccessCard.locator('[data-codex-target="aggregate"]');
+  await aggregateTarget.waitFor();
+  assert.equal(await aggregateTarget.innerText(), await page.evaluate(() => window.review.t("aggregation.target")));
+  assert.equal(await codexAccessCard.locator("[data-relay-link]").count(), 0,
+    "the aggregation marker must not navigate to an unrelated relay page");
+  assert.doesNotMatch(await aggregateTarget.innerText(), /Codex target pool|public-model|Provider mixed/);
+  assert.equal(await codexAccessCard.getByText(selectedResponsesModel, { exact: true }).count(), 0);
+  await codexAccessCard.locator("#codex-aggregate-model").click();
+  const ordinaryRelayOption = await page.evaluate(() => window.review.t("aggregation.singleChannel"));
+  await page.getByRole("option", { name: ordinaryRelayOption, exact: true }).click();
+  await relayTarget.waitFor();
+  assert.equal(await relayTarget.innerText(), relayTargetLabel);
+  console.log("PASS Codex routing uses distinct abstract relay-model and aggregation targets while native access keeps its destination");
 
   await reset("access");
   await page.getByRole("button", { name: "刷新余额", exact: true }).click();
@@ -1289,6 +1327,7 @@ try {
   await testAggregation({ page, reset, captureDir });
   await testCodexSubagents({ page, reset, captureDir });
   await testMagpieOptimizations({ page, reset, captureDir });
+  await testCapabilityClear({ page, reset, captureDir });
   await testProviderFeedback({ page, reset, captureDir });
   await testProviderModelResolutions({ page, reset, captureDir });
   await testTerminalProxy({ page, reset, captureDir });

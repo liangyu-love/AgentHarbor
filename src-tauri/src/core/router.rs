@@ -1379,6 +1379,12 @@ pub fn clear_capability_if_current(
     }
     let previous = store.clone();
     clear_capability_on_store(&mut store, provider_id, model_id, field)?;
+    if config_revision(&store)? == expected_config {
+        return Ok(StateChange {
+            state: state_from_store_at(&store, super::router_proxy::is_running(), Some(paths)),
+            applied: None,
+        });
+    }
     if let Some(provider) = store.providers.iter_mut().find(|p| p.id == provider_id) {
         provider.updated_at = now();
     }

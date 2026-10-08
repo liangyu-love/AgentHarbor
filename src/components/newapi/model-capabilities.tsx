@@ -20,11 +20,10 @@ import { formatInvokeError } from "@/lib/invoke-error";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { CapabilityClearControls } from "./capability-clear-controls";
 import { cn } from "@/lib/utils";
 import type {
   ClientProjection,
-  ClearCapabilityField,
-  ClearCapabilityPreview,
   CostRates,
   CompressionPlan,
   MatchKind,
@@ -380,38 +379,9 @@ function PriceEditor({
 function CapabilityCard({ model, onSaved }: { model: ModelCapability; onSaved: () => void }) {
   const { t } = useTranslation();
   const [priceEditing, setPriceEditing] = useState(false);
-  const [clearField, setClearField] = useState<ClearCapabilityField>("contextWindow");
-  const [clearPreview, setClearPreview] = useState<ClearCapabilityPreview | null>(null);
-  const [clearBusy, setClearBusy] = useState(false);
-  const [clearMessage, setClearMessage] = useState<string | null>(null);
   const projection: ClientProjection = model.projection;
   const levels = model.reasoning.value ?? [];
   const conflicts = model.conflicts;
-  const previewClear = async () => {
-    setClearBusy(true);
-    setClearMessage(null);
-    setClearPreview(null);
-    try {
-      setClearPreview(await api.routing.previewCapabilityClear(model.providerId, model.upstreamModel, clearField));
-    } catch (error) { setClearMessage(formatInvokeError(error)); }
-    finally { setClearBusy(false); }
-  };
-  const applyClear = async () => {
-    if (!clearPreview) return;
-    setClearBusy(true);
-    try {
-      const result = await api.routing.applyCapabilityClear(model.providerId, model.upstreamModel, clearField, clearPreview);
-      if (result.refreshedPreview) {
-        setClearPreview(result.refreshedPreview);
-        setClearMessage(t("newapi.capabilityClearStale"));
-      } else {
-        setClearPreview(null);
-        setClearMessage(t("newapi.capabilityClearApplied"));
-        onSaved();
-      }
-    } catch (error) { setClearMessage(formatInvokeError(error)); }
-    finally { setClearBusy(false); }
-  };
   return (
     <details className="group rounded-xl border border-border/70 bg-card p-3.5 shadow-2xs transition-all hover:border-primary/40 text-sm">
       <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-lg py-0.5">
@@ -602,67 +572,7 @@ function CapabilityCard({ model, onSaved }: { model: ModelCapability; onSaved: (
           </ul>
         </div>}
 
-        <div className="rounded-xl border border-border/40 bg-muted/10 p-2.5">
-          <h4 className="text-xs font-semibold text-muted-foreground">{t("newapi.capabilityClearTitle")}</h4>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <select className="h-8 rounded-lg border border-border bg-background px-2 text-xs" value={clearField}
-              onChange={event => { setClearField(event.target.value as ClearCapabilityField); setClearPreview(null); setClearMessage(null); }}
-              aria-label={t("newapi.capabilityClearFieldLabel")}>
-              {(["contextWindow", "inputLimit", "outputLimit", "reasoning", "defaultEffort", "price", "catalogRef", "priceRef", "compression",
-                "providerContextWindow", "providerCatalogProviders", "providerPriceCatalogProvider", "providerCompression"] as ClearCapabilityField[])
-                .map(field => <option key={field} value={field}>{t("newapi.capabilityClearField." + field)}</option>)}
-            </select>
-            <Button size="sm" variant="outline" className="h-8 text-xs" disabled={clearBusy} onClick={() => void previewClear()}>
-              {t("newapi.capabilityClearPreview")}
-            </Button>
-            {clearPreview && <Button size="sm" className="h-8 text-xs" disabled={clearBusy} onClick={() => void applyClear()}>
-              {t("newapi.capabilityClearApply")}
-            </Button>}
-          </div>
-          {clearField.startsWith("provider") && <p className="mt-2 text-[11px] text-muted-foreground">
-            {t("newapi.capabilityClearProviderScope")}
-          </p>}
-          {clearMessage && <p className="mt-2 text-xs text-amber-600 dark:text-amber-400" role="status">{clearMessage}</p>}
-          {clearPreview && <div className="mt-2 overflow-x-auto text-[10px]">
-            <p className="mb-1 text-muted-foreground">{t("newapi.capabilityClearRevision", { revision: clearPreview.catalogRevision.slice(0, 8) })}</p>
-            <p className="mb-1 font-medium text-foreground">{t("newapi.capabilityClearCurrentModel", { model: model.upstreamModel })}</p>
-            <table className="w-full border-collapse text-left">
-              <thead><tr><th className="border-b p-1">{t("newapi.capabilityClearValue")}</th><th className="border-b p-1">{t("newapi.capabilityClearBefore")}</th><th className="border-b p-1">{t("newapi.capabilityClearAfter")}</th></tr></thead>
-              <tbody>{([
-                ["contextWindow", clearPreview.before.context, clearPreview.after.context],
-                ["inputLimit", clearPreview.before.inputLimit, clearPreview.after.inputLimit],
-                ["outputLimit", clearPreview.before.output, clearPreview.after.output],
-                ["reasoning", clearPreview.before.reasoning, clearPreview.after.reasoning],
-              ] as const).map(([name, before, after]) => <tr key={name}><td className="border-b p-1">{t("newapi.capabilityField." + name, { defaultValue: name })}</td>
-                <td className="border-b p-1 font-mono">{JSON.stringify(before.value) ?? "—"} · {t("newapi.capabilitySource." + before.source, { defaultValue: before.source })}</td>
-                <td className="border-b p-1 font-mono">{JSON.stringify(after.value) ?? "—"} · {t("newapi.capabilitySource." + after.source, { defaultValue: after.source })}</td></tr>)}
-                <tr><td className="border-b p-1">{t("newapi.capabilityCompression")}</td>
-                  <td className="border-b p-1 font-mono">{number(clearPreview.before.projection.compression.threshold)} · {number(clearPreview.before.compressionAppliedThreshold)}</td>
-                  <td className="border-b p-1 font-mono">{number(clearPreview.after.projection.compression.threshold)} · {number(clearPreview.after.compressionAppliedThreshold)}</td></tr>
-                <tr><td className="border-b p-1">{t("newapi.capabilityDefaultEffort")}</td>
-                  <td className="border-b p-1 font-mono">{clearPreview.before.defaultReasoning ?? "—"} · {t("newapi.capabilitySource." + clearPreview.before.defaultReasoningSource, { defaultValue: clearPreview.before.defaultReasoningSource })}</td>
-                  <td className="border-b p-1 font-mono">{clearPreview.after.defaultReasoning ?? "—"} · {t("newapi.capabilitySource." + clearPreview.after.defaultReasoningSource, { defaultValue: clearPreview.after.defaultReasoningSource })}</td></tr>
-                <tr><td className="border-b p-1">{t("newapi.capabilityMatch")}</td>
-                  <td className="border-b p-1 font-mono">{clearPreview.before.matched ? `${clearPreview.before.matched.providerId}/${clearPreview.before.matched.modelId}` : "—"} · {t("newapi.matchKind." + clearPreview.before.matchKind, { defaultValue: clearPreview.before.matchKind })}</td>
-                  <td className="border-b p-1 font-mono">{clearPreview.after.matched ? `${clearPreview.after.matched.providerId}/${clearPreview.after.matched.modelId}` : "—"} · {t("newapi.matchKind." + clearPreview.after.matchKind, { defaultValue: clearPreview.after.matchKind })}</td></tr>
-                <tr><td className="border-b p-1">{t("newapi.capabilityPrice")}</td>
-                  <td className="border-b p-1 font-mono">{priceNumber(clearPreview.before.price.input)} / {priceNumber(clearPreview.before.price.output)} · {t("newapi.capabilitySource." + clearPreview.before.price.source, { defaultValue: clearPreview.before.price.source })}{clearPreview.before.price.sourceRef && ` · ${clearPreview.before.price.sourceRef.providerId}/${clearPreview.before.price.sourceRef.modelId}`}</td>
-                  <td className="border-b p-1 font-mono">{priceNumber(clearPreview.after.price.input)} / {priceNumber(clearPreview.after.price.output)} · {t("newapi.capabilitySource." + clearPreview.after.price.source, { defaultValue: clearPreview.after.price.source })}{clearPreview.after.price.sourceRef && ` · ${clearPreview.after.price.sourceRef.providerId}/${clearPreview.after.price.sourceRef.modelId}`}</td></tr>
-                <tr><td className="border-b p-1">{t("newapi.capabilityConflicts")}</td>
-                  <td className="border-b p-1 font-mono">{clearPreview.before.conflicts.map(conflict => `${conflict.field}: ${conflict.candidates.map(candidate => candidate.value).join("/")}`).join("; ") || "—"}</td>
-                  <td className="border-b p-1 font-mono">{clearPreview.after.conflicts.map(conflict => `${conflict.field}: ${conflict.candidates.map(candidate => candidate.value).join("/")}`).join("; ") || "—"}</td></tr>
-              </tbody>
-            </table>
-            <p className="mt-2 text-muted-foreground">
-              {t("newapi.capabilityClearAffected", { changed: clearPreview.affectedModels.length, total: clearPreview.scopeCount })}
-            </p>
-            {clearPreview.affectedModels.length > 0 && <div className="mt-1 max-h-20 overflow-y-auto rounded-lg border border-border/50 bg-background/50 p-1.5 font-mono">
-              {clearPreview.affectedModels.map(affected => <div key={affected.modelId} className="truncate" title={affected.modelId}>
-                {affected.displayName || affected.modelId}
-              </div>)}
-            </div>}
-          </div>}
-        </div>
+        <CapabilityClearControls model={model} onSaved={onSaved} />
       </div>
     </details>
   );
