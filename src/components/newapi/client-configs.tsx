@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
@@ -8,6 +8,7 @@ import {
   RefreshCw,
   RotateCcw,
   Settings2,
+  Shield,
   Terminal,
   Unlink,
 } from "lucide-react";
@@ -29,7 +30,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import type { ClientStatus } from "@/types/clients";
+import type { ClaudeOfficialPreview, ClientStatus } from "@/types/clients";
 import type { ModelProtocol, NewApiProvider } from "@/types/newapi";
 import { queryKeys } from "@/lib/query-keys";
 import { aggregationQueryKey, type ModelTargetRef } from "@/types/aggregation";
@@ -67,13 +68,85 @@ export function ClientConfigs({ providers, onOpenRelays }: { providers: NewApiPr
   const [reapplying, setReapplying] = useState<{ client: ClientStatus; rebaseline: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [officialOpen, setOfficialOpen] = useState(false);
+  const [officialPreview, setOfficialPreview] = useState<ClaudeOfficialPreview | null>(null);
+  const [officialPending, setOfficialPending] = useState(false);
+  const officialOperation = useRef<"preview" | "apply" | null>(null);
+  const officialSequence = useRef(0);
+  const actionsLocked = busy || officialPending;
   const fold = useFold("client-configs");
+
+  useEffect(() => () => { officialSequence.current += 1; }, []);
 
   const refresh = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: CLIENT_KEY }),
       queryClient.invalidateQueries({ queryKey: queryKeys.providers }),
     ]);
+  };
+
+  const closeOfficial = () => {
+    if (officialOperation.current === "apply") return;
+    officialSequence.current += 1;
+    officialOperation.current = null;
+    setOfficialPending(false);
+    setOfficialOpen(false);
+    setOfficialPreview(null);
+    setError(null);
+  };
+
+  const previewOfficial = async () => {
+    if (busy || officialOperation.current) return;
+    const sequence = ++officialSequence.current;
+    officialOperation.current = "preview";
+    setOfficialOpen(true);
+    setOfficialPending(true);
+    setOfficialPreview(null);
+    setError(null);
+    try {
+      const preview = await api.targets.previewClaudeOfficial();
+      if (sequence === officialSequence.current) setOfficialPreview(preview);
+    } catch (cause) {
+      if (sequence === officialSequence.current) setError(clientErrorKey(cause));
+    } finally {
+      if (sequence === officialSequence.current) {
+        officialOperation.current = null;
+        setOfficialPending(false);
+      }
+    }
+  };
+
+  const switchOfficial = async () => {
+    if (!officialPreview?.hasChanges || busy || officialOperation.current) return;
+    const sequence = officialSequence.current;
+    officialOperation.current = "apply";
+    setBusy(true);
+    setError(null);
+    try {
+      const applied = await api.targets.switchClaudeOfficial(officialPreview.revision);
+      // The write remains successful even if the UI was closed or reloading
+      // the status fails. Invalidate shared state after every successful write.
+      let refreshFailed = false;
+      try { await refresh(); } catch { refreshFailed = true; }
+      if (sequence !== officialSequence.current) return;
+      toast({
+        title: t("clients.officialRestored"),
+        description: [...(applied.warnings ?? []).map((key) => t(key)), ...(refreshFailed ? [t("clients.officialRefreshFailed")] : [])].join(" ") || t("clients.restartHint"),
+        variant: applied.warnings?.length || refreshFailed ? "destructive" : "success",
+      });
+      setOfficialOpen(false);
+      setOfficialPreview(null);
+    } catch (cause) {
+      if (sequence !== officialSequence.current) return;
+      setError(clientErrorKey(cause));
+      // Every failed write needs a fresh preview, especially a stale revision.
+      setOfficialPreview(null);
+    } finally {
+      if (sequence === officialSequence.current) {
+        officialOperation.current = null;
+        setBusy(false);
+      }
+    }
   };
 
   const restore = async () => {
@@ -346,19 +419,32 @@ export function ClientConfigs({ providers, onOpenRelays }: { providers: NewApiPr
                     "h-8 gap-1.5 rounded-lg text-xs font-semibold shadow-sm transition-all",
                     !client.configured && "bg-primary text-primary-foreground hover:bg-primary/90",
                   )}
-                  disabled={busy || !!client.error}
+                  disabled={actionsLocked || !!client.error}
                   onClick={() => setSelected(client)}
                 >
                   <Settings2 className="h-3.5 w-3.5" />
                   {t(client.configured ? "clients.change" : "clients.configure")}
                 </Button>
 
+                {isClaude && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 gap-1.5 rounded-lg text-xs"
+                    disabled={actionsLocked}
+                    onClick={() => void previewOfficial()}
+                  >
+                    <Shield className="h-3.5 w-3.5" />
+                    {t("clients.switchOfficial")}
+                  </Button>
+                )}
+
                 {client.configured && (
                   <Button
                     size="sm"
                     variant="ghost"
                     className="h-8 gap-1.5 rounded-lg text-xs text-muted-foreground hover:text-foreground"
-                    disabled={busy || !!client.error}
+                    disabled={actionsLocked || !!client.error}
                     onClick={() => setRestoring(client)}
                   >
                     <RotateCcw className="h-3.5 w-3.5" />
@@ -371,7 +457,7 @@ export function ClientConfigs({ providers, onOpenRelays }: { providers: NewApiPr
                     size="sm"
                     variant="ghost"
                     className="h-8 gap-1.5 rounded-lg text-xs text-muted-foreground hover:text-foreground"
-                    disabled={busy}
+                    disabled={actionsLocked}
                     onClick={() => setReapplying({ client, rebaseline: false })}
                   >
                     <RefreshCw className="h-3.5 w-3.5" />
@@ -384,7 +470,7 @@ export function ClientConfigs({ providers, onOpenRelays }: { providers: NewApiPr
                     size="sm"
                     variant="ghost"
                     className="h-8 gap-1.5 rounded-lg text-xs text-amber-600 hover:text-amber-700 dark:text-amber-400"
-                    disabled={busy}
+                    disabled={actionsLocked}
                     onClick={() => setReapplying({ client, rebaseline: true })}
                   >
                     <RefreshCw className="h-3.5 w-3.5" />
@@ -397,7 +483,7 @@ export function ClientConfigs({ providers, onOpenRelays }: { providers: NewApiPr
                     size="sm"
                     variant="ghost"
                     className="h-8 gap-1.5 rounded-lg text-xs text-destructive hover:bg-destructive/10"
-                    disabled={busy}
+                    disabled={actionsLocked}
                     onClick={() => setReleasing(client)}
                   >
                     <Unlink className="h-3.5 w-3.5" />
@@ -419,6 +505,58 @@ export function ClientConfigs({ providers, onOpenRelays }: { providers: NewApiPr
           onApplied={refresh}
         />
       )}
+
+      <AlertDialog open={officialOpen} onOpenChange={(open) => { if (!open) closeOfficial(); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("clients.switchOfficialTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("clients.switchOfficialDescription")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          {officialPending && (
+            <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
+              <RefreshCw className="h-4 w-4 animate-spin" />
+              {t("common.loading")}
+            </p>
+          )}
+          {officialPreview && (
+            <div className="space-y-3">
+              <p className="break-all rounded-lg bg-muted/40 px-3 py-2 font-mono text-xs text-muted-foreground">
+                {officialPreview.path}
+              </p>
+              {officialPreview.removedFields.length > 0 && (
+                <div className="space-y-1.5">
+                  <p className="text-sm font-medium">{t("clients.officialRemovedFields")}</p>
+                  <ul className="max-h-48 space-y-1 overflow-y-auto rounded-lg border border-border p-3 font-mono text-xs">
+                    {officialPreview.removedFields.map((field) => <li key={field} className="break-all">{field}</li>)}
+                  </ul>
+                </div>
+              )}
+              {!officialPreview.hasChanges && (
+                <p role="status" className="text-sm text-muted-foreground">{t("clients.officialNoChanges")}</p>
+              )}
+              {officialPreview.warnings.length > 0 && (
+                <ul className="space-y-1 text-xs text-amber-700 dark:text-amber-300">
+                  {officialPreview.warnings.map((warning) => <li key={warning} role="status">{t(warning)}</li>)}
+                </ul>
+              )}
+            </div>
+          )}
+          {error && <p role="alert" className="text-sm text-destructive">{t(error)}</p>}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={busy}>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={busy || officialPending || !!officialPreview && !officialPreview.hasChanges}
+              onClick={(event) => {
+                event.preventDefault();
+                if (officialPreview) void switchOfficial();
+                else void previewOfficial();
+              }}
+            >
+              {t(officialPreview || officialPending ? "clients.switchOfficial" : "clients.preview")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Restore confirmation */}
       <AlertDialog

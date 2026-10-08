@@ -127,7 +127,7 @@ fn default_managed_path() -> Option<PathBuf> {
     None
 }
 
-fn managed_settings_path() -> Option<PathBuf> {
+pub(super) fn managed_settings_path() -> Option<PathBuf> {
     MANAGED_PATH
         .lock()
         .ok()

@@ -1,6 +1,7 @@
 use crate::core::{
     client_config::{
-        ClientPaths, ClientStatus, ConfigApplied, ConfigManager, ConfigPreview, ConfigRequest,
+        ClaudeOfficialPreview, ClientPaths, ClientStatus, ConfigApplied, ConfigManager,
+        ConfigPreview, ConfigRequest,
     },
     repository::Repository,
     router, routing_runtime,
@@ -92,6 +93,25 @@ pub async fn restore_client_config(
     let paths = paths(&repo)?;
     let _guard = routing_runtime::mutation_guard().await;
     let result = manager(&paths).restore_confirmed(target_id, replace_conflicts.unwrap_or(false));
+    attach_reconcile_warning(result, routing_runtime::reconcile(&paths).await)
+}
+
+#[tauri::command]
+pub fn preview_claude_code_official_config(
+    repo: State<'_, Mutex<Repository>>,
+) -> Result<ClaudeOfficialPreview, String> {
+    manager(&paths(&repo)?).preview_claude_official()
+}
+
+/// Withdraw third-party CLI settings without replacing the saved official login.
+#[tauri::command]
+pub async fn switch_claude_code_official_config(
+    repo: State<'_, Mutex<Repository>>,
+    revision: String,
+) -> Result<ConfigApplied, String> {
+    let paths = paths(&repo)?;
+    let _guard = routing_runtime::mutation_guard().await;
+    let result = manager(&paths).switch_claude_official(&revision);
     attach_reconcile_warning(result, routing_runtime::reconcile(&paths).await)
 }
 

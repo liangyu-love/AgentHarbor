@@ -32,7 +32,7 @@ import type {
 import { claudeDesktopApi } from "@/lib/claude-desktop";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
 import { errorMessage } from "@/lib/invoke-error";
-import type { TargetId, ClientStatus, ClientConfigRequest, ClientConfigPreview, ClientConfigApplied } from "@/types/clients";
+import type { TargetId, ClientStatus, ClientConfigRequest, ClientConfigPreview, ClientConfigApplied, ClaudeOfficialPreview } from "@/types/clients";
 import type { CodexAccessMode, ModelProtocol, NewApiState, NewApiStateChange, NewApiImportResult, NewApiProvider, NewApiProviderInput, NewApiModel } from "@/types/newapi";
 
 export interface ImageGenerationRequest {
@@ -191,6 +191,8 @@ const targetsApi = {
   previewConfig: (request: ClientConfigRequest, replaceConflicts = false) => invoke<ClientConfigPreview>("preview_client_config", { request, replaceConflicts }),
   applyConfig: (request: ClientConfigRequest, revision: string, replaceConflicts = false) => invoke<ClientConfigApplied>("apply_client_config", { request, revision, replaceConflicts }),
   restoreConfig: (targetId: TargetId, replaceConflicts = false) => invoke<ClientConfigApplied>("restore_client_config", { targetId, replaceConflicts }),
+  previewClaudeOfficial: () => invoke<ClaudeOfficialPreview>("preview_claude_code_official_config"),
+  switchClaudeOfficial: (revision: string) => invoke<ClientConfigApplied>("switch_claude_code_official_config", { revision }),
   releaseConfig: (targetId: TargetId) => invoke<void>("release_client_config", { targetId }),
   reapplyConfig: (targetId: TargetId, rebaseline: boolean) =>
     invoke<ClientConfigApplied>("reapply_client_config", { targetId, rebaseline }),

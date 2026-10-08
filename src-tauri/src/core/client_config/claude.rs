@@ -410,7 +410,7 @@ fn version_order(a: &str, b: &str) -> std::cmp::Ordering {
 
 /// Mirrors Claude Code's own env-flag parsing: only 1/true/yes/on (case
 /// insensitive, trimmed) enable a selector, so "0" and friends are falsy.
-fn cloud_selector_truthy(value: &Value) -> bool {
+pub(super) fn cloud_selector_truthy(value: &Value) -> bool {
     match value {
         Value::Bool(enabled) => *enabled,
         Value::String(flag) => matches!(

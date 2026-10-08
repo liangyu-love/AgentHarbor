@@ -65,3 +65,10 @@ export interface ClientConfigApplied {
   backupPath: string;
   warnings?: string[];
 }
+export interface ClaudeOfficialPreview {
+  path: string;
+  revision: string;
+  removedFields: string[];
+  warnings: string[];
+  hasChanges: boolean;
+}

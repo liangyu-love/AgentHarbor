@@ -728,6 +728,34 @@ function mount(mode: FixtureMode) {
     return { path: "C:/synthetic/config.json", backupPath: "C:/synthetic/config.backup" };
   };
   api.targets.releaseConfig = async () => { controls.review.releasedClientCount += 1; };
+  controls.review.officialPreviewCalls = [];
+  controls.review.officialSwitchCalls = [];
+  controls.review.officialPreviewResolvers = [];
+  api.targets.previewClaudeOfficial = async () => {
+    const revision = `official-${controls.review.officialPreviewCalls.length + 1}`;
+    controls.review.officialPreviewCalls.push(revision);
+    const preview = {
+      path: "C:/synthetic/.claude/settings.json", revision,
+      removedFields: controls.review.officialNoChanges || controls.review.officialSessionOnly ? [] : ["env.ANTHROPIC_BASE_URL", "env.ANTHROPIC_AUTH_TOKEN", "model"],
+      warnings: controls.review.officialWarnings ?? [],
+      hasChanges: !controls.review.officialNoChanges,
+    };
+    if (controls.review.officialPreviewHold) await new Promise<void>(resolve => controls.review.officialPreviewResolvers.push(resolve));
+    if (controls.review.officialPreviewFailure) throw "clients.errors.read";
+    return preview;
+  };
+  api.targets.switchClaudeOfficial = async revision => {
+    controls.review.officialSwitchCalls.push(revision);
+    if (controls.review.officialApplyHold) await new Promise<void>(resolve => { controls.review.officialApplyResolve = resolve; });
+    if (controls.review.officialApplyFailure) throw "clients.errors.storage";
+    if (controls.review.officialStale) {
+      controls.review.officialStale = false;
+      throw "clients.errors.changed";
+    }
+    const claude = clientStatuses.find(client => client.targetId === "claudeCode");
+    if (claude) Object.assign(claude, { configured: false, conflict: false, conflictFields: [], providerId: null, model: null, request: null });
+    return { path: "C:/synthetic/.claude/settings.json", backupPath: "C:/synthetic/config.backup", warnings: controls.review.officialWarnings ?? [] };
+  };
   const threads = Array.from({ length: 100 }, (_, i) => ({ key: "t" + i, id: "t" + i,
     cwd: "C:/synthetic", folderName: "synthetic", title: "Review thread " + i,
     createdAt: 0, updatedAt: 0, userMessages: 1, agentMessages: 1, fileSize: 100,

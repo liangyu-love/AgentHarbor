@@ -21,6 +21,7 @@ import { testSkillsActivation } from "./test-skills-activation.mjs";
 import { testAggregation } from "./test-aggregation.mjs";
 import { testCodexSubagents } from "./test-codex-subagents.mjs";
 import { testCapabilityClear } from "./test-capability-clear.mjs";
+import { testClaudeCliOfficial } from "./test-claude-cli-official.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -79,7 +80,9 @@ try {
     await page.evaluate(value => window.review.mount(value), mode);
   };
 
-  if (process.env.FRONTEND_QA_SCOPE === "capability-clear") {
+  if (process.env.FRONTEND_QA_SCOPE === "claude-cli-official") {
+    await testClaudeCliOfficial({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "capability-clear") {
     await testCapabilityClear({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "codex-subagents") {
     await testCodexSubagents({ page, reset, captureDir });
@@ -960,6 +963,7 @@ try {
     assert.equal(await page.getByRole("button", { name: labels.changeClient, exact: true }).isEnabled(), true);
   }
   console.log("PASS restore, rebaseline and reapply all leave client configuration directly usable without releasing management");
+  await testClaudeCliOfficial({ page, reset, captureDir });
 
   await reset("clients");
   await page.getByRole("button", { name: labels.configure, exact: true }).click();

@@ -4,6 +4,7 @@
 //! the caller, so model inputs match the Codex adapters without owning accounts.
 mod aggregate_models;
 mod claude;
+mod claude_official;
 mod opencode;
 mod options;
 mod owned;
@@ -11,6 +12,7 @@ mod takeover;
 mod version;
 use options::{client_endpoint, validate_model};
 pub use options::{ClaudeAuthField, ClaudeModels, ClaudeOneM, ClientAccessMode, ClientOptions};
+pub use claude_official::ClaudeOfficialPreview;
 #[cfg(test)]
 mod tests;
 
