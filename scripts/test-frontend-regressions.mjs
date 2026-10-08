@@ -652,7 +652,10 @@ try {
   await page.getByRole("switch", { name: labels.accountless, exact: true }).waitFor();
 
   await reset("incompatible");
-  await page.getByText(labels.nativeProtocolHint, { exact: true }).waitFor();
+  const routerRelays = page.locator('[aria-labelledby="newapi-routing-title"] [data-router-relay]');
+  await routerRelays.first().waitFor();
+  assert.deepEqual(await routerRelays.allTextContents(), ["Provider mixed", "Provider alternate"]);
+  assert.equal(await page.getByText(labels.nativeProtocolHint, { exact: true }).count(), 0);
   await page.locator("#codex-access-mode").click();
   assert.equal(await page.getByRole("option", { name: labels.accessNative, exact: true }).getAttribute("aria-disabled"), "true");
   assert.deepEqual(await page.evaluate(() => window.review.accessCalls), []);

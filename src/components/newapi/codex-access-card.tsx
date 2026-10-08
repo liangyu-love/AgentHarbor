@@ -56,6 +56,12 @@ export function CodexAccessCard({
   const aggregate = aggregates.data?.models.find((model) => model.id === router?.aggregateModelId);
   const aggregateSelected = router?.aggregateModelId != null;
   const aggregateAvailable = !!aggregate?.available;
+  // In router mode the Codex catalog includes models from every enabled card
+  // with credentials. The pinned provider only supplies the default model.
+  const catalogProviders = providers.filter((provider) =>
+    provider.enabled && provider.hasApiKey && (
+      provider.models.some((model) => model.included) || provider.model.trim().length > 0
+    ));
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
 
   const setRouting = (value: boolean, restoreThreads: boolean) =>
@@ -155,18 +161,23 @@ export function CodexAccessCard({
       t("newapi.routingFailed"),
     );
 
-  // Resolved target info for visualization
+  // Router mode exposes all relay cards in Codex's model picker; only native
+  // mode and an aggregate target have a single destination in this diagram.
   const targetName = aggregateSelected
     ? aggregate?.displayName ?? t("aggregation.unavailable")
-    : selectedProvider?.name ?? t("clients.notConfigured");
+    : nativeAccess
+      ? selectedProvider?.name ?? t("clients.notConfigured")
+      : catalogProviders.length
+        ? t("newapi.routerRelayCount", { count: catalogProviders.length })
+        : t("clients.notConfigured");
   const targetModel = aggregateSelected
     ? aggregate?.publicModelId ?? "—"
     : selectedProvider?.model ?? "—";
   const targetProtocol = aggregateSelected
     ? t("aggregation.target")
-    : selectedProvider
-      ? t(protocolBadgeKey[providerModelProtocol(selectedProvider)])
-      : "—";
+    : nativeAccess
+      ? (selectedProvider ? t(protocolBadgeKey[providerModelProtocol(selectedProvider)]) : "—")
+      : t("newapi.routerModelRouting");
 
   const targetNodeClass =
     "flex min-w-0 flex-1 items-center gap-2.5 rounded-lg border border-border/50 bg-background/70 p-2";
@@ -180,9 +191,19 @@ export function CodexAccessCard({
         <span className="block truncate font-medium text-foreground" title={targetName}>
           {targetName}
         </span>
-        <span className="block truncate font-mono text-[11px] text-muted-foreground" title={targetModel}>
-          {targetModel}
-        </span>
+        {!nativeAccess && !aggregateSelected ? (
+          <span data-router-relays className="mt-1 block max-h-32 space-y-1 overflow-y-auto pr-1">
+            {catalogProviders.map((provider) => (
+              <span key={provider.id} data-router-relay className="block truncate rounded bg-muted/60 px-2 py-0.5 font-mono text-[11px] text-muted-foreground" title={provider.name}>
+                {provider.name}
+              </span>
+            ))}
+          </span>
+        ) : (
+          <span className="block truncate font-mono text-[11px] text-muted-foreground" title={targetModel}>
+            {targetModel}
+          </span>
+        )}
         {nativeAccess && selectedProvider && (
           <span className="block truncate font-mono text-[11px] text-muted-foreground" title={selectedProvider.baseUrl}>
             {selectedProvider.baseUrl}
@@ -432,7 +453,7 @@ export function CodexAccessCard({
             </Button>
           )}
 
-          {!nativeCompatible && (
+          {nativeAccess && !nativeCompatible && (
             <p className="text-xs text-amber-700 dark:text-amber-300">
               {t(selectedProvider ? "newapi.nativeProtocolHint" : "newapi.nativeProviderHint")}
             </p>

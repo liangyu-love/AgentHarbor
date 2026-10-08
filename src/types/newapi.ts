@@ -259,6 +259,8 @@ export interface ClearCapabilityPreview {
   officialRevision: string;
   before: ModelCapability;
   after: ModelCapability;
+  scopeCount: number;
+  affectedModels: { modelId: string; displayName: string }[];
 }
 export interface ClearCapabilityApplyResult {
   applied: NewApiStateChange | null;

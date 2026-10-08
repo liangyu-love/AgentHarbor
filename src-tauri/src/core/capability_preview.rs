@@ -7,6 +7,7 @@ use super::model_metadata::{
 use super::{model_catalog, model_defaults, model_policy, models_dev, newapi, router};
 use crate::platform::paths::CodexPaths;
 use serde::Serialize;
+use std::collections::HashMap;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -163,6 +164,17 @@ pub struct ClearPreview {
     pub official_revision: String,
     pub before: Preview,
     pub after: Preview,
+    /// A provider-level setting can change more than the model whose card
+    /// opened the preview. Report the complete scope and changed model IDs.
+    pub scope_count: usize,
+    pub affected_models: Vec<ClearAffectedModel>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearAffectedModel {
+    pub model_id: String,
+    pub display_name: String,
 }
 
 pub fn preview_clear(
@@ -176,19 +188,42 @@ pub fn preview_clear(
     let catalog = models_dev::load(&paths.app_data_dir);
     let mut after_store = store.clone();
     router::clear_capability_on_store(&mut after_store, provider_id, model_id, field)?;
+    let before_view = preview_with_sources(paths, store, &official, &catalog);
+    let after_view = preview_with_sources(paths, &after_store, &official, &catalog);
+    let after_by_model: HashMap<&str, &Preview> = after_view
+        .models
+        .iter()
+        .filter(|model| model.provider_id == provider_id)
+        .map(|model| (model.upstream_model.as_str(), model))
+        .collect();
+    let mut scope_count = 0;
+    let mut affected_models = Vec::new();
+    for model in before_view
+        .models
+        .iter()
+        .filter(|model| model.provider_id == provider_id)
+    {
+        scope_count += 1;
+        let Some(after) = after_by_model.get(model.upstream_model.as_str()) else {
+            return Err("newapi.errors.notFound".into());
+        };
+        let before_value = serde_json::to_value(model).map_err(|_| "newapi.errors.storage")?;
+        let after_value = serde_json::to_value(after).map_err(|_| "newapi.errors.storage")?;
+        if before_value != after_value {
+            affected_models.push(ClearAffectedModel {
+                model_id: model.upstream_model.clone(),
+                display_name: model.display_name.clone(),
+            });
+        }
+    }
     let find = |view: CatalogView| {
         view.models
             .into_iter()
             .find(|model| model.provider_id == provider_id && model.upstream_model == model_id)
             .ok_or_else(|| "newapi.errors.notFound".to_owned())
     };
-    let before = find(preview_with_sources(paths, store, &official, &catalog))?;
-    let after = find(preview_with_sources(
-        paths,
-        &after_store,
-        &official,
-        &catalog,
-    ))?;
+    let before = find(before_view)?;
+    let after = find(after_view)?;
     let official_bytes =
         serde_json::to_vec(&official.models).map_err(|_| "newapi.errors.storage")?;
     Ok(ClearPreview {
@@ -197,6 +232,8 @@ pub fn preview_clear(
         official_revision: super::request_diagnostics::state_revision(&official_bytes),
         before,
         after,
+        scope_count,
+        affected_models,
     })
 }
 
@@ -494,6 +531,8 @@ mod tests {
         assert_eq!(dry_run.before.context.source, "manual");
         assert_eq!(dry_run.after.context.value, Some(200_000));
         assert_eq!(dry_run.after.context.source, "providerSetting");
+        assert_eq!(dry_run.scope_count, 1);
+        assert_eq!(dry_run.affected_models[0].model_id, "fixture-model");
         router::clear_capability_if_current(
             &paths,
             "relay",
@@ -516,6 +555,42 @@ mod tests {
             &dry_run.official_revision
         )
         .is_err());
+    }
+
+    #[test]
+    fn provider_level_clear_reports_every_affected_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().to_path_buf());
+        let mut entry = provider("relay", "model-one");
+        entry.context_window = Some(200_000);
+        entry.models.push(newapi::Model {
+            id: "model-two".into(),
+            display_name: "Second model".into(),
+            ..Default::default()
+        });
+        let store = router::Store {
+            providers: vec![entry],
+            ..Default::default()
+        };
+        let dry_run = preview_clear(
+            &paths,
+            &store,
+            "relay",
+            "model-one",
+            router::ClearCapabilityField::ProviderContextWindow,
+        )
+        .unwrap();
+        assert_eq!(dry_run.before.context.value, Some(200_000));
+        assert_ne!(dry_run.after.context.value, Some(200_000));
+        assert_eq!(dry_run.scope_count, 2);
+        assert_eq!(
+            dry_run
+                .affected_models
+                .iter()
+                .map(|model| model.model_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["model-one", "model-two"]
+        );
     }
 
     fn provider(id: &str, model: &str) -> router::Provider {
