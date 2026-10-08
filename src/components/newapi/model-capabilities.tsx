@@ -116,6 +116,9 @@ function CompressionLine({ plan, applied, model }: { plan: CompressionPlan; appl
         )}
       </h4>
       <p className="mt-1 font-mono text-xs font-semibold text-foreground">{state}</p>
+      {plan.threshold !== null && plan.threshold > model.codexTotalCompactThreshold && <p className="mt-1 text-xs text-muted-foreground">
+        {t("newapi.capabilityClearCodexCompression")}: {number(model.codexTotalCompactThreshold)}
+      </p>}
       {model.compressionScope === "nativeShared" && (
         <p className="mt-1 text-[10px] text-muted-foreground">
           {t("newapi.capabilityCompressionShared", {

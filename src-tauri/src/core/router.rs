@@ -1288,7 +1288,7 @@ pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<Sta
 
 /// A single explicit value to clear. This is shared by the read-only preview
 /// and the guarded mutation, so they cannot disagree about what was removed.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ClearCapabilityField {
     ContextWindow,
@@ -1304,6 +1304,58 @@ pub enum ClearCapabilityField {
     ProviderCatalogProviders,
     ProviderPriceCatalogProvider,
     ProviderCompression,
+}
+
+/// Stored settings, including provider fallbacks currently shadowed by a model.
+/// Resolved provenance alone cannot tell which values are removable.
+pub(crate) fn manual_capability_fields(
+    provider: &Provider,
+    model_id: &str,
+) -> Vec<ClearCapabilityField> {
+    use ClearCapabilityField::*;
+    let mut fields = Vec::new();
+    if let Some(model) = provider.models.iter().find(|model| model.id == model_id) {
+        let overrides = &model.overrides;
+        for (field, present) in [
+            (ContextWindow, overrides.context_window.is_some()),
+            (InputLimit, overrides.input_limit.is_some()),
+            (OutputLimit, overrides.max_output_tokens.is_some()),
+            (Reasoning, overrides.reasoning.is_some()),
+            (DefaultEffort, overrides.default_effort.is_some()),
+            (Price, overrides.price.is_some()),
+            (CatalogRef, model.catalog_ref.is_some()),
+            (PriceRef, model.price_ref.is_some()),
+            (
+                Compression,
+                model.compression != model_policy::CompressionPolicy::Inherit,
+            ),
+        ] {
+            if present {
+                fields.push(field);
+            }
+        }
+    }
+    for (field, present) in [
+        (ProviderContextWindow, provider.context_window.is_some()),
+        (
+            ProviderCatalogProviders,
+            !provider.catalog_providers.is_empty(),
+        ),
+        (
+            ProviderPriceCatalogProvider,
+            provider.price_catalog_provider.is_some(),
+        ),
+        (
+            ProviderCompression,
+            provider.compression != model_policy::CompressionPolicy::Inherit
+                || provider.auto_compact_limit.is_some(),
+        ),
+    ] {
+        if present {
+            fields.push(field);
+        }
+    }
+    fields
 }
 
 pub(crate) fn clear_capability_on_store(
@@ -1324,7 +1376,8 @@ pub(crate) fn clear_capability_on_store(
             provider.price_catalog_provider = None
         }
         ClearCapabilityField::ProviderCompression => {
-            provider.compression = model_policy::CompressionPolicy::Inherit
+            provider.compression = model_policy::CompressionPolicy::Inherit;
+            provider.auto_compact_limit = None;
         }
         _ => {
             let model = provider

@@ -35,7 +35,11 @@ export function CapabilityClearControls({ model, onSaved }: { model: ModelCapabi
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const fieldId = useId();
-  const [field, setField] = useState<ClearCapabilityField>("contextWindow");
+  const fields = model.manualOverrides;
+  const availableModelFields = modelFields.filter(value => fields.includes(value));
+  const availableProviderFields = providerFields.filter(value => fields.includes(value));
+  const [selectedField, setField] = useState<ClearCapabilityField>(fields[0] ?? "contextWindow");
+  const field = fields.includes(selectedField) ? selectedField : fields[0] ?? "contextWindow";
   const [selection, setSelection] = useState<Selection | null>(null);
   const [busy, setBusy] = useState<"preview" | "apply" | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -73,7 +77,7 @@ export function CapabilityClearControls({ model, onSaved }: { model: ModelCapabi
   };
 
   const preview = async () => {
-    if (inFlight.current) return;
+    if (inFlight.current || !fields.includes(field)) return;
     inFlight.current = true;
     pending.current = "preview";
     const request = ++operation.current;
@@ -164,6 +168,8 @@ export function CapabilityClearControls({ model, onSaved }: { model: ModelCapabi
       return { lines: [number(plan.threshold)], source: `${mode} · ${t("newapi.capabilityClearCompressionSource." + plan.source, { defaultValue: source(plan.source) })}` };
     };
     add("compression", t("newapi.capabilityClearPlannedCompression"), value => value.projection.compression, compression);
+    add("codexCompression", t("newapi.capabilityClearCodexCompression"), value => value.codexTotalCompactThreshold,
+      value => ({ lines: [number(value.codexTotalCompactThreshold)] }));
     if (active.before.compressionScope === "nativeShared" || active.after.compressionScope === "nativeShared") {
       add("sharedCompression", t("newapi.capabilityClearSharedCompression"), value => [value.compressionSharedThreshold, value.compressionSharedPlan], value => ({
         lines: [number(value.compressionSharedThreshold)],
@@ -188,27 +194,35 @@ export function CapabilityClearControls({ model, onSaved }: { model: ModelCapabi
       lines: value.conflicts.length ? value.conflicts.map(conflict => `${t("newapi.capabilityField." + conflict.field, { defaultValue: conflict.field })}: ${conflict.candidates.map(candidate => candidate.value).join(" / ")}`) : ["—"],
     }));
   }
-  const shownRows = showAll ? rows : rows.filter(row => row.changed);
+  const contextOrCompression = ["contextWindow", "inputLimit", "compression", "providerContextWindow", "providerCompression"].includes(field);
+  const shownRows = showAll ? rows : rows.filter(row => row.changed || (contextOrCompression && ["compression", "codexCompression"].includes(row.id)));
+  const resultChanged = rows.some(row => row.changed);
+
+  if (!fields.length && !notice && busy !== "apply") return null;
 
   return <section data-capability-clear className="space-y-3 border-t border-border/60 pt-3" aria-label={t("newapi.capabilityClearTitle")} aria-busy={busy !== null}>
     <div className="flex flex-wrap items-center justify-between gap-2">
       <h4 className="flex items-center gap-2 text-sm font-semibold"><RotateCcw aria-hidden className="h-4 w-4 text-muted-foreground" />{t("newapi.capabilityClearTitle")}</h4>
-      <Badge variant="outline" className="text-xs font-normal">{t(providerScope ? "newapi.capabilityClearProviderGroup" : "newapi.capabilityClearModelGroup")}</Badge>
+      {fields.length > 0 && <Badge variant="outline" className="text-xs font-normal">{t(providerScope ? "newapi.capabilityClearProviderGroup" : "newapi.capabilityClearModelGroup")}</Badge>}
     </div>
-    <div className="flex flex-wrap items-end gap-2">
-      <div className="min-w-0 flex-1 space-y-1.5">
-        <label htmlFor={fieldId} className="text-xs text-muted-foreground">{t("newapi.capabilityClearFieldLabel")}</label>
-        <select id={fieldId} value={field} disabled={busy === "apply"} onChange={event => changeField(event.target.value as ClearCapabilityField)}
-          className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
-          <optgroup label={t("newapi.capabilityClearModelGroup")}>{modelFields.map(value => <option key={value} value={value}>{t("newapi.capabilityClearField." + value)}</option>)}</optgroup>
-          <optgroup label={t("newapi.capabilityClearProviderGroup")}>{providerFields.map(value => <option key={value} value={value}>{t("newapi.capabilityClearField." + value)}</option>)}</optgroup>
-        </select>
+    {!fields.length && busy === "apply" && <p role="status" className="text-sm text-muted-foreground">{t("newapi.capabilityClearApplying")}</p>}
+    {fields.length > 0 && <>
+      <p className="text-xs text-muted-foreground">{t("newapi.capabilityClearHint")}</p>
+      <div className="flex flex-wrap items-end gap-2">
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <label htmlFor={fieldId} className="text-xs text-muted-foreground">{t("newapi.capabilityClearFieldLabel")}</label>
+          <select id={fieldId} value={field} disabled={busy === "apply"} onChange={event => changeField(event.target.value as ClearCapabilityField)}
+            className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
+            {availableModelFields.length > 0 && <optgroup label={t("newapi.capabilityClearModelGroup")}>{availableModelFields.map(value => <option key={value} value={value}>{t("newapi.capabilityClearField." + value)}</option>)}</optgroup>}
+            {availableProviderFields.length > 0 && <optgroup label={t("newapi.capabilityClearProviderGroup")}>{availableProviderFields.map(value => <option key={value} value={value}>{t("newapi.capabilityClearField." + value)}</option>)}</optgroup>}
+          </select>
+        </div>
+        <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void preview()} className="h-9 gap-1.5">
+          {busy === "preview" && <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />}
+          {t(busy === "preview" ? "newapi.capabilityClearPreviewing" : "newapi.capabilityClearPreview")}
+        </Button>
       </div>
-      <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void preview()} className="h-9 gap-1.5">
-        {busy === "preview" && <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />}
-        {t(busy === "preview" ? "newapi.capabilityClearPreviewing" : "newapi.capabilityClearPreview")}
-      </Button>
-    </div>
+    </>}
     {notice && <p role={notice.tone === "error" ? "alert" : "status"} className={cn("text-sm break-words",
       notice.tone === "error" ? "text-destructive" : notice.tone === "warning" ? "text-amber-700 dark:text-amber-300" : "text-foreground")}>
       {notice.text}
@@ -219,7 +233,7 @@ export function CapabilityClearControls({ model, onSaved }: { model: ModelCapabi
         <span className="text-muted-foreground">{t("newapi.capabilityClearAffected", { changed: active.affectedModels.length, total: active.scopeCount })}</span>
       </div>
       {!active.hasOverride && <p role="status" className="text-sm text-muted-foreground">{t("newapi.capabilityClearNoOverride")}</p>}
-      {active.hasOverride && shownRows.length === 0 && <p className="text-sm text-muted-foreground">{t("newapi.capabilityClearUnchanged")}</p>}
+      {active.hasOverride && !resultChanged && <p className="text-sm text-muted-foreground">{t("newapi.capabilityClearUnchanged")}</p>}
       <div className="flex items-center justify-between gap-2">
         <span className="min-w-0 break-words text-xs text-muted-foreground">{t("newapi.capabilityClearCurrentModel", { model: model.displayName || model.upstreamModel })}</span>
         <Button size="sm" variant="ghost" aria-pressed={showAll} onClick={() => setShowAll(!showAll)} className="h-8 shrink-0 px-2 text-xs">

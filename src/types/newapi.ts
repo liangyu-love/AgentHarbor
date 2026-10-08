@@ -350,6 +350,10 @@ export interface ProviderModelResolutions {
   models: ProviderModelResolution[];
 }
 export interface ModelCapability {
+  /** Stored manual model/provider fields that can be restored to automatic resolution. */
+  manualOverrides: ClearCapabilityField[];
+  /** Planned Codex threshold in the default total-context compaction mode. */
+  codexTotalCompactThreshold: number;
   providerId: string;
   providerName: string;
   displayName: string;

@@ -1,6 +1,7 @@
 //! Capability preview: serializes the exact resolver output and client
 //! projection that injection uses, so the panel can never disagree with the
-//! generated configuration. No value is recomputed here.
+//! generated configuration. Codex's total-mode clamp is shown separately from
+//! the written threshold; generic compression policies remain unchanged.
 use super::model_metadata::{
     Field, FieldConflict, MatchKind, MatchStep, PriceInfo, ReasoningOptionInfo,
 };
@@ -8,6 +9,11 @@ use super::{model_catalog, model_defaults, model_policy, models_dev, newapi, rou
 use crate::platform::paths::CodexPaths;
 use serde::Serialize;
 use std::collections::HashMap;
+
+fn codex_total_compact_threshold(context: u64, configured: Option<u64>) -> u64 {
+    let ceiling = ((u128::from(context) * 9) / 10) as u64;
+    configured.map_or(ceiling, |value| value.min(ceiling))
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -110,6 +116,8 @@ pub struct Preview {
     pub provider_name: String,
     pub display_name: String,
     pub upstream_model: String,
+    /// Actual stored manual values, rather than inferred resolved provenance.
+    pub manual_overrides: Vec<router::ClearCapabilityField>,
     /// Human-readable identity the resolver settled on (or the normalized
     /// fallback when nothing matched).
     pub matched_model: String,
@@ -129,6 +137,8 @@ pub struct Preview {
     pub price: PriceInfo,
     /// Effective values the client projection uses, including compression.
     pub projection: model_policy::ClientProjection,
+    /// Planned threshold under Codex's default total-context compaction mode.
+    pub codex_total_compact_threshold: u64,
     /// Whether the threshold in the projection is the one currently applied to
     /// a client. `Some(false)` means it still needs a config sync.
     pub compression_applied: Option<bool>,
@@ -211,8 +221,17 @@ pub fn preview_clear(
         let Some(after) = after_by_model.get(model.upstream_model.as_str()) else {
             return Err("newapi.errors.notFound".into());
         };
-        let before_value = serde_json::to_value(model).map_err(|_| "newapi.errors.storage")?;
-        let after_value = serde_json::to_value(after).map_err(|_| "newapi.errors.storage")?;
+        let mut before_value = serde_json::to_value(model).map_err(|_| "newapi.errors.storage")?;
+        let mut after_value = serde_json::to_value(after).map_err(|_| "newapi.errors.storage")?;
+        // Removing a shadowed setting changes the inventory but not the result.
+        before_value
+            .as_object_mut()
+            .unwrap()
+            .remove("manualOverrides");
+        after_value
+            .as_object_mut()
+            .unwrap()
+            .remove("manualOverrides");
         if before_value != after_value {
             affected_models.push(ClearAffectedModel {
                 model_id: model.upstream_model.clone(),
@@ -321,6 +340,7 @@ pub(crate) fn preview_with_sources(
                 provider_name: provider.name.clone(),
                 display_name: metadata.display_name.clone(),
                 upstream_model: id.to_owned(),
+                manual_overrides: router::manual_capability_fields(provider, id),
                 matched_model,
                 match_kind: metadata.match_kind,
                 matched: metadata.matched.clone(),
@@ -336,6 +356,19 @@ pub(crate) fn preview_with_sources(
                 input_limit: metadata.input_limit.clone(),
                 output: metadata.output_limit.clone(),
                 price: metadata.price.clone(),
+                codex_total_compact_threshold: codex_total_compact_threshold(
+                    native_scope
+                        .and_then(|state| state.context)
+                        .map_or(projection.context_window, |context| {
+                            context.min(projection.context_window)
+                        }),
+                    if native_mode {
+                        native_scope
+                            .map_or(projection.compression.threshold, |state| state.threshold)
+                    } else {
+                        projection.compression.threshold
+                    },
+                ),
                 projection,
                 compression_applied,
                 compression_applied_source: applied_source,
@@ -670,6 +703,178 @@ mod tests {
         assert!(dry_run.affected_models.is_empty());
         assert_eq!(dry_run.before.context.value, Some(300_000));
         assert_eq!(dry_run.after.context.value, Some(300_000));
+        assert!(dry_run
+            .before
+            .manual_overrides
+            .contains(&router::ClearCapabilityField::ProviderContextWindow));
+        assert!(!dry_run
+            .after
+            .manual_overrides
+            .contains(&router::ClearCapabilityField::ProviderContextWindow));
+    }
+
+    #[test]
+    fn manual_inventory_tracks_stored_values_even_when_shadowed_or_empty() {
+        use router::ClearCapabilityField::*;
+        let mut entry = provider("relay", "fixture-model");
+        assert!(router::manual_capability_fields(&entry, "fixture-model").is_empty());
+        entry.models[0].overrides.context_window = Some(272_000);
+        entry.models[0].overrides.reasoning = Some(Vec::new());
+        entry.context_window = Some(200_000);
+        entry.catalog_providers = vec!["fixture".into()];
+        entry.auto_compact_limit = Some(100_000);
+        assert_eq!(
+            router::manual_capability_fields(&entry, "fixture-model"),
+            vec![
+                ContextWindow,
+                Reasoning,
+                ProviderContextWindow,
+                ProviderCatalogProviders,
+                ProviderCompression,
+            ]
+        );
+        assert_eq!(
+            router::manual_capability_fields(&entry, "default-not-in-list"),
+            vec![
+                ProviderContextWindow,
+                ProviderCatalogProviders,
+                ProviderCompression,
+            ]
+        );
+        let mut store = router::Store {
+            providers: vec![entry],
+            ..Default::default()
+        };
+        for field in router::manual_capability_fields(&store.providers[0], "fixture-model") {
+            let before = router::config_revision(&store).unwrap();
+            router::clear_capability_on_store(&mut store, "relay", "fixture-model", field).unwrap();
+            assert_ne!(router::config_revision(&store).unwrap(), before);
+            assert!(
+                !router::manual_capability_fields(&store.providers[0], "fixture-model")
+                    .contains(&field)
+            );
+        }
+        assert_eq!(
+            store.providers[0].auto_compact_limit, None,
+            "legacy threshold cannot resurrect on reload"
+        );
+    }
+
+    #[test]
+    fn restoring_context_recomputes_percent_compaction_but_preserves_fixed_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().to_path_buf());
+        paths.ensure_directories().unwrap();
+        std::fs::write(
+            paths.app_data_dir.join(models_dev::CACHE_FILE),
+            serde_json::json!({
+                "schemaVersion": models_dev::SCHEMA_VERSION,
+                "sourceUrl": "https://models.dev/api.json", "fetchedAt": 1, "revision": "fixture",
+                "providers": [{"id": "fixture", "name": "Fixture", "models": [{
+                    "id": "fixture-model", "name": "Fixture model", "limit": {"context": 1050000}
+                }]}]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut entry = provider("relay", "fixture-model");
+        entry.catalog_providers = vec!["fixture".into()];
+        entry.models[0].overrides.context_window = Some(272_000);
+        let mut store = router::Store {
+            providers: vec![entry],
+            ..Default::default()
+        };
+        let run = |store: &router::Store| {
+            preview_clear(
+                &paths,
+                store,
+                "relay",
+                "fixture-model",
+                router::ClearCapabilityField::ContextWindow,
+            )
+            .unwrap()
+        };
+        let result = run(&store);
+        assert_eq!(result.before.context.value, Some(272_000));
+        assert_eq!(result.after.context.value, Some(1_050_000));
+        assert_eq!(result.after.context.source, "catalog");
+        assert_eq!(
+            result.before.projection.compression.threshold,
+            Some(244_800)
+        );
+        assert_eq!(result.after.projection.compression.threshold, Some(945_000));
+        assert_eq!(result.before.codex_total_compact_threshold, 244_800);
+        assert_eq!(result.after.codex_total_compact_threshold, 945_000);
+        store.providers[0].models[0].compression =
+            model_policy::CompressionPolicy::Tokens { tokens: 200_000 };
+        let result = run(&store);
+        assert_eq!(
+            result.before.projection.compression.threshold,
+            Some(200_000)
+        );
+        assert_eq!(result.after.projection.compression.threshold, Some(200_000));
+        assert!(result
+            .after
+            .manual_overrides
+            .contains(&router::ClearCapabilityField::Compression));
+        assert!(!result
+            .after
+            .manual_overrides
+            .contains(&router::ClearCapabilityField::ContextWindow));
+    }
+
+    #[test]
+    fn codex_total_mode_clamps_high_thresholds_without_changing_written_policy() {
+        assert_eq!(codex_total_compact_threshold(272_000, None), 244_800);
+        assert_eq!(
+            codex_total_compact_threshold(272_000, Some(250_000)),
+            244_800
+        );
+        assert_eq!(
+            codex_total_compact_threshold(272_000, Some(200_000)),
+            200_000
+        );
+        assert_eq!(
+            codex_total_compact_threshold(1_050_000, Some(997_500)),
+            945_000
+        );
+        assert_eq!(codex_total_compact_threshold(101, None), 90);
+        assert_eq!(
+            codex_total_compact_threshold(u64::MAX, None),
+            ((u128::from(u64::MAX) * 9) / 10) as u64
+        );
+    }
+
+    #[test]
+    fn native_total_mode_respects_shared_context_as_well_as_shared_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().to_path_buf());
+        let mut entry = provider("relay", "fixture-large");
+        entry.base_url = "https://fixture.invalid/v1".into();
+        entry.context_window = Some(200_000);
+        entry.compression = model_policy::CompressionPolicy::Percent { percent: 99 };
+        entry.models[0].overrides.context_window = Some(300_000);
+        entry.models.push(newapi::Model {
+            id: "fixture-small".into(),
+            overrides: newapi::ModelOverrides {
+                context_window: Some(100_000),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let store = router::Store {
+            providers: vec![entry],
+            active_provider_id: Some("relay".into()),
+            codex_access_mode: router::CodexAccessMode::Native,
+            ..Default::default()
+        };
+        let view = preview(&paths, &store);
+        assert_eq!(view.models.len(), 2);
+        for model in view.models {
+            assert_eq!(model.compression_scope, "nativeShared");
+            assert_eq!(model.compression_shared_threshold, Some(99_000));
+            assert_eq!(model.codex_total_compact_threshold, 90_000);
+        }
     }
 
     fn provider(id: &str, model: &str) -> router::Provider {

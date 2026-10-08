@@ -226,6 +226,9 @@ api.routing.capabilities = async () => ({ stale: true, error: "catalog_unavailab
     stale: true, origin: "runtime", revision: "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", providers: 225, models: 8339, error: null },
   models: [{
     providerId: "relay", providerName: "Synthetic channel", displayName: "My custom alias",
+    manualOverrides: (["contextWindow", "price", "compression", "providerContextWindow", "providerCompression"] as const)
+      .filter(field => !(controls.review.clearedFields ?? []).includes(field)),
+    codexTotalCompactThreshold: 900_000,
     upstreamModel: "claude-opus-5-5-kiro", matchedModel: "anthropic/claude-opus-5-5",
     matchKind: "normalized", matched: capabilityRef,
     steps: [{ modelId: "claude-opus-5-5", step: "knownChannelSuffix", matched: [capabilityRef], note: "matched 1 scoped catalog entry" }],
@@ -274,11 +277,16 @@ api.routing.previewCapabilityClear = async (providerId, modelId, field) => {
     after.output = { ...after.output, value: 200000 };
     after.projection = { ...after.projection, contextWindow: 100000, budget: 100000, outputLimit: 100000,
       compression: { ...after.projection.compression, threshold: 90000 } };
+    before.projection.compression.threshold = 270000;
+    before.codexTotalCompactThreshold = 270000;
+    after.codexTotalCompactThreshold = 90000;
   } else if (field === "price") {
     before.price.cacheRead = 0.4;
     after.price.cacheRead = 0.2;
   } else if (field === "providerCompression") {
     before.compressionScope = after.compressionScope = "nativeShared";
+    before.codexTotalCompactThreshold = 90000;
+    after.codexTotalCompactThreshold = 80000;
     before.compressionSharedThreshold = 90000;
     after.compressionSharedThreshold = 80000;
     before.compressionSharedPlan = { threshold: 90000, limitingModels: ["small"], blockingModels: [], state: "computed" };
@@ -286,6 +294,7 @@ api.routing.previewCapabilityClear = async (providerId, modelId, field) => {
     after.compressionLimitingModels = ["small"];
   }
   const hasOverride = !controls.review.clearNoOverride;
+  after.manualOverrides = after.manualOverrides.filter(value => value !== field);
   const result = {
     field, hasOverride, configRevision: "config-clear-1", catalogRevision: "catalog-clear-1", officialRevision: "official-clear-1",
     before, after: hasOverride ? after : before, scopeCount: field.startsWith("provider") || controls.review.clearSharedEffect ? 3 : 1,
@@ -307,6 +316,7 @@ api.routing.applyCapabilityClear = async preview => {
     controls.review.clearApplyStale = false;
     return { applied: null, refreshedPreview: { ...preview, configRevision: "config-clear-2" } };
   }
+  (controls.review.clearedFields ??= []).push(preview.field);
   return { applied: { state, applied: null }, refreshedPreview: null };
 };
 api.routing.setWebSearchProvider = async providerId => { state = { ...state, router: { ...state.router, webSearchProviderId: providerId } }; return { state, applied: null }; };

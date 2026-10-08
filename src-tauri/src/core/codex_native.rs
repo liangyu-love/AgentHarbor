@@ -399,6 +399,7 @@ pub(super) fn native_limits(
 pub(crate) struct NativeCompressionState {
     pub provider_id: String,
     pub models: Vec<String>,
+    pub context: Option<u64>,
     pub threshold: Option<u64>,
     pub applied_threshold: Option<u64>,
     pub limiting_models: Vec<String>,
@@ -464,6 +465,7 @@ pub(super) fn compression_state(
     Some(NativeCompressionState {
         provider_id: provider.id.clone(),
         models: plan.models,
+        context: plan.context,
         threshold: plan.compression.threshold,
         limiting_models: plan.compression.limiting_models.clone(),
         applied_threshold,
