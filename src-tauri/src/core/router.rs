@@ -23,6 +23,9 @@ mod config_snapshot;
 mod model_protocol_tests;
 #[path = "codex_native.rs"]
 mod native_config;
+#[path = "router_transition.rs"]
+mod transition;
+pub use transition::{change_codex_connection, CodexConnectionChange, CodexConnectionTarget};
 #[path = "codex_subagents.rs"]
 pub mod subagents;
 
@@ -1970,6 +1973,10 @@ fn query_balance(
 
 pub fn set_smart_routing(paths: &CodexPaths, enabled: bool) -> Result<StateChange, String> {
     let _guard = store_write_guard()?;
+    set_smart_routing_unlocked(paths, enabled)
+}
+
+fn set_smart_routing_unlocked(paths: &CodexPaths, enabled: bool) -> Result<StateChange, String> {
     let mut store = load_store_unlocked(paths)?;
     let previous = store.clone();
     let previously_owned = active_routing_config_is_ours(paths);
@@ -2163,11 +2170,30 @@ pub fn set_model_price_override(
 /// A clean app exit ends this session's route. A previous run's saved toggle
 /// alone does not confer ownership of Codex's current config.
 pub fn stop_smart_routing_on_exit(paths: &CodexPaths) -> Result<(), String> {
+    stop_smart_routing_on_exit_with_writer_check(paths, || {
+        crate::platform::process::ensure_no_codex_writer_processes().map_err(|e| e.to_string())
+    })
+}
+
+fn stop_smart_routing_on_exit_with_writer_check(
+    paths: &CodexPaths,
+    check_writers: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let _threads = super::thread_recovery::thread_mutation_guard().map_err(|e| e.to_string())?;
     let _guard = store_write_guard()?;
     let mut store = load_store_unlocked(paths)?;
     if !store.router.enabled && !config_snapshot::path(paths).is_file() {
         return Ok(());
     }
+    // Normal exit already migrated sessions in preflight. An abrupt shutdown
+    // must retain their provider and recovery generation for the next start.
+    if !super::thread_recovery::connection_threads(paths).map_err(|e| e.to_string())?.is_empty() {
+        return Err("newapi.errors.routedThreadsRemain".into());
+    }
+    super::thread_recovery::ensure_transition_ready(paths).map_err(|e| e.to_string())?;
+    // A live writer may still flush its first, unindexed session. Fallback
+    // never stops it; normal preflight owns stopping and session migration.
+    check_writers()?;
     remove_routing_config(paths, &store)?;
     store.router.enabled = false;
     save_store_unlocked(paths, &store)
@@ -2175,6 +2201,10 @@ pub fn stop_smart_routing_on_exit(paths: &CodexPaths) -> Result<(), String> {
 
 pub fn set_access_mode(paths: &CodexPaths, mode: CodexAccessMode) -> Result<StateChange, String> {
     let _guard = store_write_guard()?;
+    set_access_mode_unlocked(paths, mode)
+}
+
+fn set_access_mode_unlocked(paths: &CodexPaths, mode: CodexAccessMode) -> Result<StateChange, String> {
     let mut store = load_store_unlocked(paths)?;
     if store.codex_access_mode == mode {
         return Ok(StateChange {
@@ -2339,7 +2369,7 @@ fn model_provider_is_ours(document: &toml_edit::DocumentMut) -> bool {
         .is_some_and(managed_provider_key)
 }
 
-fn managed_provider_key(key: &str) -> bool {
+pub(crate) fn managed_provider_key(key: &str) -> bool {
     key == DIRECT_PROVIDER_KEY
         || key == NATIVE_PROVIDER_KEY
         || key == CATALOG_PROVIDER_KEY
@@ -2348,6 +2378,25 @@ fn managed_provider_key(key: &str) -> bool {
         || key == PREVIOUS_DIRECT_PROVIDER_KEY
         || key == PREVIOUS_CATALOG_PROVIDER_KEY
         || key.starts_with(PREVIOUS_PROVIDER_PREFIX)
+}
+
+pub(crate) fn is_gateway_provider_key(key: &str) -> bool {
+    managed_provider_key(key) && key != NATIVE_PROVIDER_KEY
+}
+
+fn remove_unreferenced_provider_entries(
+    paths: &CodexPaths,
+    document: &mut toml_edit::DocumentMut,
+) -> Result<(), CoreError> {
+    // A partially completed Native transition still has usable sessions bound
+    // to its prepared provider. A routine Router refresh must not orphan them.
+    let native_in_use = !super::thread_recovery::threads_with_provider(paths, NATIVE_PROVIDER_KEY)?.is_empty();
+    let native = native_in_use.then(|| document.get("model_providers")?.get(NATIVE_PROVIDER_KEY).cloned()).flatten();
+    remove_managed_provider_entries(document);
+    if let Some(entry) = native {
+        document["model_providers"][NATIVE_PROVIDER_KEY] = entry;
+    }
+    Ok(())
 }
 
 /// Whether Codex's config still carries the router injection we last applied.
@@ -3235,7 +3284,7 @@ fn apply_local_router_config(
                 })
                 .unwrap_or(&default_model)
                 .to_owned();
-            remove_managed_provider_entries(&mut document);
+            remove_unreferenced_provider_entries(paths, &mut document)?;
             config_snapshot::set_value(
                 &mut document,
                 "model",

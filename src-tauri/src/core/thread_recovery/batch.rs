@@ -83,11 +83,13 @@ pub fn route_overview(paths: &CodexPaths) -> Result<ThreadRouteOverview, CoreErr
     let providers = database_providers(&paths.codex_state_db_path)?;
     let router_provider_threads = providers
         .iter()
-        .filter(|(_, provider)| provider == router::CATALOG_PROVIDER_KEY)
+        .filter(|(_, provider)| router::managed_provider_key(provider))
         .count();
     for (thread_id, provider) in providers {
-        let state = if provider == router::CATALOG_PROVIDER_KEY && router_active {
+        let state = if router::is_gateway_provider_key(&provider) && router_active {
             ThreadRouteState::Routed
+        } else if router::is_gateway_provider_key(&provider) {
+            ThreadRouteState::Broken
         } else if provider.eq_ignore_ascii_case("openai") || defined.contains(&provider) {
             ThreadRouteState::Direct
         } else {
@@ -292,7 +294,7 @@ fn validate_batch_target(
     }
 }
 
-fn defined_providers(config_path: &Path) -> Result<HashSet<String>, CoreError> {
+pub(super) fn defined_providers(config_path: &Path) -> Result<HashSet<String>, CoreError> {
     let text = match std::fs::read_to_string(config_path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashSet::new()),
@@ -312,14 +314,26 @@ fn defined_providers(config_path: &Path) -> Result<HashSet<String>, CoreError> {
         .unwrap_or_default())
 }
 
-fn database_providers(database_path: &Path) -> Result<Vec<(String, String)>, CoreError> {
-    if !database_path.is_file() {
-        return Ok(Vec::new());
+pub(super) fn database_providers(database_path: &Path) -> Result<Vec<(String, String)>, CoreError> {
+    match std::fs::metadata(database_path) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => {
+            return Err(CoreError::InvalidData(
+                "Codex thread catalog is not a regular file".into(),
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
     }
     let connection = open_database(database_path, true)?;
     let columns = crate::core::threads::table_columns(&connection, "threads")?;
-    if !columns.contains("id") || !columns.contains("model_provider") {
+    if columns.is_empty() {
         return Ok(Vec::new());
+    }
+    if !columns.contains("id") || !columns.contains("model_provider") {
+        return Err(CoreError::InvalidData(
+            "Codex thread catalog has an unsupported provider schema".into(),
+        ));
     }
     let mut statement = connection
         .prepare("SELECT id, COALESCE(model_provider, '') FROM threads")

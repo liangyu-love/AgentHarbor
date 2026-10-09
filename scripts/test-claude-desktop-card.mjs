@@ -1297,7 +1297,12 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
       }
       if (command === "resolve_claude_desktop_exit") {
         review.desktopExitCalls.push(args.decision);
-        if (review.desktopExitFailure) throw review.desktopExitFailure;
+        if (review.desktopExitFailure) {
+          if (review.desktopExitFailure.startsWith("CODEX_ROUTING_RESTORE_FAILED:")) {
+            review.emitDesktopExit({ ...review.desktopExitRequest, error: review.desktopExitFailure });
+          }
+          throw review.desktopExitFailure;
+        }
         review.desktopExitRequest = null;
         return;
       }
@@ -1319,11 +1324,36 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   await page.evaluate(() => { window.review.desktopExitFailure = "claudeDesktop.errors.processStopTimeout"; });
   await exit.getByRole("button", { name: "停止 Desktop 并恢复重启", exact: true }).click();
   await exit.getByRole("alert").filter({ hasText: "无法结束 Claude Desktop" }).waitFor();
+  assert.equal(await exit.getByRole("button", { name: "仍然退出", exact: true }).count(), 0);
   assert.equal(await exit.getByRole("button", { name: "停止 Desktop 并恢复重启", exact: true }).isEnabled(), true);
   await page.evaluate(() => { window.review.desktopExitFailure = null; });
   await exit.getByRole("button", { name: "停止 Desktop 并恢复重启", exact: true }).click();
   await exit.waitFor({ state: "hidden" });
   assert.deepEqual(await page.evaluate(() => window.review.desktopExitCalls), ["background", "stopAndExit", "stopAndExit"]);
+  await page.evaluate(() => {
+    window.review.emitDesktopExit({ intent: "restart" });
+    window.review.desktopExitFailure = "CODEX_ROUTING_RESTORE_FAILED: synthetic blocked thread";
+  });
+  await exit.getByRole("button", { name: "停止 Desktop 并恢复重启", exact: true }).click();
+  await exit.getByRole("button", { name: "仍然重启", exact: true }).waitFor();
+  await exit.getByRole("heading", { name: "部分会话未能迁回", exact: true }).waitFor();
+  assert.equal(await exit.getByRole("button", { name: "重试", exact: true }).isEnabled(), true);
+  assert.equal(await exit.getByRole("button", { name: "停止 Desktop 并恢复重启", exact: true }).count(), 0);
+  await exit.getByRole("alert").filter({ hasText: "synthetic blocked thread" }).waitFor();
+  await page.evaluate(() => { window.review.desktopExitFailure = null; });
+  await exit.getByRole("button", { name: "保持后台运行", exact: true }).click();
+  await exit.waitFor({ state: "hidden" });
+  assert.equal(await page.evaluate(() => window.review.desktopExitCalls.at(-1)), "background");
+  await page.evaluate(() => window.review.emitDesktopExit({ intent: "quit", error: "CODEX_ROUTING_RESTORE_FAILED: synthetic blocked thread" }));
+  await exit.getByRole("heading", { name: "部分会话未能迁回", exact: true }).waitFor();
+  await exit.getByRole("button", { name: "仍然退出", exact: true }).click();
+  await exit.waitFor({ state: "hidden" });
+  assert.equal(await page.evaluate(() => window.review.desktopExitCalls.at(-1)), "forceStopAndExit");
+  await page.evaluate(() => window.review.emitDesktopExit({ intent: "restart", error: "CODEX_ROUTING_RESTORE_FAILED: synthetic blocked thread" }));
+  await exit.getByRole("button", { name: "重试", exact: true }).click();
+  await exit.waitFor({ state: "hidden" });
+  assert.equal(await page.evaluate(() => window.review.desktopExitCalls.at(-1)), "stopAndExit");
+  console.log("PASS Codex migration exit failures retain the request and offer background cancellation or explicit forced exit");
   await page.evaluate(() => window.review.mount("mcp"));
   await page.waitForFunction(() => window.review.desktopExitUnlisten === 1);
   await page.evaluate(() => {
@@ -1353,6 +1383,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
     const callbacks = new Map();
     const events = new Map();
     review.updaterCalls = { checks: 0, installs: 0, restarts: 0, decisions: [] };
+    review.updaterExitCancelled = [];
     review.desktopExitRequest = null;
     window.__TAURI_INTERNALS__.transformCallback = callback => { const id = ++nextId; callbacks.set(id, callback); return id; };
     window.__TAURI_INTERNALS__.unregisterCallback = id => callbacks.delete(id);
@@ -1377,15 +1408,19 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
       }
       if (command === "graceful_restart_for_update") {
         review.updaterCalls.restarts++;
-        review.desktopExitRequest = { intent: "restart" };
+        review.desktopExitRequest = { intent: "restart", error: review.updaterCalls.restarts === 1
+          ? "CODEX_ROUTING_RESTORE_FAILED: synthetic blocked thread" : null };
         emit("claude-desktop-exit-required", review.desktopExitRequest);
         return;
       }
       if (command === "resolve_claude_desktop_exit") {
         review.updaterCalls.decisions.push(args.decision);
-        const intent = review.desktopExitRequest.intent;
+        const request = review.desktopExitRequest;
         review.desktopExitRequest = null;
-        if (args.decision === "background") emit("claude-desktop-exit-cancelled", { intent, error: null });
+        if (args.decision === "background") {
+          review.updaterExitCancelled.push(request);
+          emit("claude-desktop-exit-cancelled", request);
+        }
         return;
       }
       if (command === "plugin:resources|close") return;
@@ -1395,12 +1430,15 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   });
   await page.getByRole("button", { name: "立即更新并重启", exact: true }).waitFor();
   await page.getByRole("button", { name: "立即更新并重启", exact: true }).click();
-  await exit.getByRole("heading", { name: "重启前恢复 Claude Desktop？", exact: true }).waitFor();
+  await exit.getByRole("heading", { name: "部分会话未能迁回", exact: true }).waitFor();
+  await exit.getByRole("button", { name: "仍然重启", exact: true }).waitFor();
   await exit.getByRole("button", { name: "保持后台运行", exact: true }).click();
   await exit.waitFor({ state: "hidden" });
   await page.waitForFunction(() => document.querySelector("[data-updater-status]")?.textContent === "idle");
   assert.equal(await page.getByText("更新已安装", { exact: true }).count(), 0,
     "keeping the gateway in the background dismisses the completed update overlay");
+  assert.deepEqual(await page.evaluate(() => window.review.updaterExitCancelled),
+    [{ intent: "restart", error: "CODEX_ROUTING_RESTORE_FAILED: synthetic blocked thread" }]);
   await page.getByRole("button", { name: "检查测试更新", exact: true }).click();
   await page.getByRole("heading", { name: "更新已安装", exact: true }).waitFor();
   await page.getByRole("button", { name: "稍后重启", exact: true }).click();

@@ -52,6 +52,7 @@ export function useProviderState() {
     void queryClient.invalidateQueries({ queryKey: aggregationQueryKey });
     void queryClient.invalidateQueries({ queryKey: queryKeys.clientConfigs });
     void queryClient.invalidateQueries({ queryKey: queryKeys.codexSubagents });
+    void queryClient.invalidateQueries({ queryKey: ["threads", "codex", "routes"] });
   };
 
   // Check if provider matches balance query context

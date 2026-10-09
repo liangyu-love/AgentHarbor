@@ -297,7 +297,7 @@ fn loading_a_saved_toggle_and_exiting_without_injection_leave_codex_files_untouc
     assert!(state.router.config_drifted);
     assert_eq!(file_state(&paths), before);
 
-    stop_smart_routing_on_exit(&paths).unwrap();
+    stop_smart_routing_on_exit_with_writer_check(&paths, || Ok(())).unwrap();
     let after = file_state(&paths);
     assert_eq!(after[1..], before[1..]);
     assert!(!load_store(&paths).unwrap().router.enabled);
@@ -321,7 +321,7 @@ fn editing_a_provider_after_cc_switch_takes_over_does_not_reinject() {
     assert!(result.applied.is_none());
     assert_eq!(fs::read(&paths.config_path).unwrap(), before);
 
-    stop_smart_routing_on_exit(&paths).unwrap();
+    stop_smart_routing_on_exit_with_writer_check(&paths, || Ok(())).unwrap();
     let cleaned = config(&paths);
     assert_eq!(cleaned["model_provider"].as_str(), Some("cc-switch"));
     assert_eq!(

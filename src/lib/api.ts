@@ -129,8 +129,8 @@ const routingApi = {
     modelId: string,
     price: import("@/types/newapi").ModelPriceOverrides | null,
   ) => invoke<NewApiStateChange>("set_newapi_model_price", { providerId, modelId, price }),
-  setEnabled: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_smart_routing", { enabled }),
-  setAccessMode: (mode: CodexAccessMode) => invoke<NewApiStateChange>("set_newapi_access_mode", { mode }),
+  setEnabled: (enabled: boolean, force = false) => invoke<NewApiStateChange>("set_newapi_smart_routing", { enabled, force }),
+  setAccessMode: (mode: CodexAccessMode, force = false) => invoke<NewApiStateChange>("set_newapi_access_mode", { mode, force }),
   subagents: () => invoke<import("@/types/newapi").CodexSubagentView>("load_codex_subagents"),
   saveSubagents: (settings: import("@/types/newapi").CodexSubagentSettings | null) =>
     invoke<NewApiStateChange>("save_codex_subagents", { settings }),

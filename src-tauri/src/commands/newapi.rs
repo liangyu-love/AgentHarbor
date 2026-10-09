@@ -433,7 +433,8 @@ pub async fn query_newapi_provider_balance(
 pub async fn set_newapi_smart_routing(
     repo: State<'_, Mutex<Repository>>,
     enabled: bool,
-) -> Result<StateChange, String> {
+    force: Option<bool>,
+) -> Result<router::CodexConnectionChange, String> {
     let paths = paths(&repo)?;
     let _guard = routing_runtime::mutation_guard().await;
     let previous = router::load_store(&paths)?;
@@ -441,7 +442,23 @@ pub async fn set_newapi_smart_routing(
     if enabled && previous.codex_access_mode == CodexAccessMode::Router {
         routing_runtime::ensure_available(&paths).await?;
     }
-    let mut change = match router::set_smart_routing(&paths, enabled) {
+    let result = if enabled {
+        router::set_smart_routing(&paths, true).map(|change| router::CodexConnectionChange {
+            change,
+            thread_migration: None,
+        })
+    } else {
+        let close_paths = paths.clone();
+        super::blocking(move || {
+            router::change_codex_connection(
+                &close_paths,
+                router::CodexConnectionTarget::Disabled,
+                force.unwrap_or(false),
+            )
+        })
+        .await
+    };
+    let mut change = match result {
         Ok(change) => change,
         Err(error) => {
             let _ = routing_runtime::reconcile(&paths).await;
@@ -449,14 +466,14 @@ pub async fn set_newapi_smart_routing(
         }
     };
     if let Err(error) = routing_runtime::reconcile(&paths).await {
-        if enabled && change.state.router.access_mode == CodexAccessMode::Router {
+        if enabled && change.change.state.router.access_mode == CodexAccessMode::Router {
             let _ = router::set_smart_routing(&paths, previous.router.enabled && previously_owned);
             let _ = routing_runtime::reconcile(&paths).await;
             return Err(error);
         }
         eprintln!("[AgentHarbor] local router for other clients is unavailable: {error}");
     }
-    change.state.proxy_running = router_proxy::is_running();
+    change.change.state.proxy_running = router_proxy::is_running();
     Ok(change)
 }
 
@@ -464,7 +481,8 @@ pub async fn set_newapi_smart_routing(
 pub async fn set_newapi_access_mode(
     repo: State<'_, Mutex<Repository>>,
     mode: CodexAccessMode,
-) -> Result<StateChange, String> {
+    force: Option<bool>,
+) -> Result<router::CodexConnectionChange, String> {
     let paths = paths(&repo)?;
     let _guard = routing_runtime::mutation_guard().await;
     let previous = router::load_store(&paths)?;
@@ -474,7 +492,23 @@ pub async fn set_newapi_access_mode(
     {
         routing_runtime::ensure_available(&paths).await?;
     }
-    let mut change = match router::set_access_mode(&paths, mode) {
+    let result = if mode == CodexAccessMode::Native && previous.router.enabled {
+        let close_paths = paths.clone();
+        super::blocking(move || {
+            router::change_codex_connection(
+                &close_paths,
+                router::CodexConnectionTarget::Native,
+                force.unwrap_or(false),
+            )
+        })
+        .await
+    } else {
+        router::set_access_mode(&paths, mode).map(|change| router::CodexConnectionChange {
+            change,
+            thread_migration: None,
+        })
+    };
+    let mut change = match result {
         Ok(change) => change,
         Err(error) => {
             let _ = routing_runtime::reconcile(&paths).await;
@@ -482,14 +516,14 @@ pub async fn set_newapi_access_mode(
         }
     };
     if let Err(error) = routing_runtime::reconcile(&paths).await {
-        if change.state.router.enabled && mode == CodexAccessMode::Router {
+        if change.change.state.router.enabled && mode == CodexAccessMode::Router {
             let _ = router::set_access_mode(&paths, previous.codex_access_mode);
             let _ = routing_runtime::reconcile(&paths).await;
             return Err(error);
         }
         eprintln!("[AgentHarbor] local router for other clients is unavailable: {error}");
     }
-    change.state.proxy_running = router_proxy::is_running();
+    change.change.state.proxy_running = router_proxy::is_running();
     Ok(change)
 }
 

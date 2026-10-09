@@ -17,6 +17,10 @@ use std::{
 
 const NAMES: [&str; 4] = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"];
 const LOOPBACK: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
+const MAX_BYPASS_BYTES: usize = 4_096;
+// Older journals can exceed the input limit by the three appended loopback
+// entries and their commas. Keep those readable so their leases can be restored.
+const MAX_STORED_BYPASS_BYTES: usize = MAX_BYPASS_BYTES + 24;
 // Twelve bounded raw values (four originals plus two owned generations) can
 // expand to over 1 MiB when JSON encodes bytes as decimal array entries.
 const MAX_JOURNAL_BYTES: u64 = 4 * 1_048_576;
@@ -90,7 +94,11 @@ pub fn normalize_url(text: &str) -> Result<String, String> {
 }
 
 fn normalize_bypass(text: &str) -> Result<String, String> {
-    if text.len() > 4_096
+    normalize_bypass_with_limit(text, MAX_BYPASS_BYTES)
+}
+
+fn normalize_bypass_with_limit(text: &str, limit: usize) -> Result<String, String> {
+    if text.len() > limit
         || text
             .chars()
             .any(|ch| ch.is_control() && !ch.is_whitespace())
@@ -110,7 +118,11 @@ fn normalize_bypass(text: &str) -> Result<String, String> {
             values.push(value.to_owned());
         }
     }
-    Ok(values.join(","))
+    let normalized = values.join(",");
+    if normalized.len() > limit {
+        return Err("settings.terminalProxy.errors.bypass".into());
+    }
+    Ok(normalized)
 }
 
 fn load(path: &Path) -> Result<Settings, String> {
@@ -128,7 +140,7 @@ fn load(path: &Path) -> Result<Settings, String> {
         .url
         .as_deref()
         .is_some_and(|url| normalize_url(url).is_err())
-        || normalize_bypass(&settings.no_proxy).is_err()
+        || normalize_bypass_with_limit(&settings.no_proxy, MAX_STORED_BYPASS_BYTES).is_err()
         || settings.lease.as_ref().is_some_and(|lease| {
             lease.entries.len() != NAMES.len()
                 || NAMES.iter().any(|name| {
@@ -184,11 +196,14 @@ fn status(settings: &Settings, env: &mut impl Environment) -> Result<TerminalPro
         enabled: settings.lease.is_some(),
         applied: settings.lease.is_some() && !pending && conflicts.is_empty(),
         url: settings.url.clone(),
-        no_proxy: normalize_bypass(if settings.no_proxy.is_empty() {
-            &inherited
-        } else {
-            &settings.no_proxy
-        })?,
+        no_proxy: normalize_bypass_with_limit(
+            if settings.no_proxy.is_empty() {
+                &inherited
+            } else {
+                &settings.no_proxy
+            },
+            MAX_STORED_BYPASS_BYTES,
+        )?,
         recovery_required: pending,
         conflicts,
         preserved_variables: Vec::new(),

@@ -430,6 +430,7 @@ export interface NewApiAppliedConfig {
 export interface NewApiStateChange {
   state: NewApiState;
   applied: NewApiAppliedConfig | null;
+  threadMigration?: import("./threads").ThreadBatchResult | null;
 }
 export interface NewApiImportResult extends NewApiStateChange {
   imported: number;

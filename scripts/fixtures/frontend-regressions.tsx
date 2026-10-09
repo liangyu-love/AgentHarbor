@@ -405,14 +405,24 @@ api.providers.onBalanceUpdated = async callback => {
   listeners.add(callback);
   return () => listeners.delete(callback);
 };
-api.routing.setAccessMode = async mode => {
+api.routing.setAccessMode = async (mode, force = false) => {
   controls.review.accessCalls.push(mode);
+  controls.review.routingCalls.push({ operation: "accessMode", mode, force });
+  if (mode === "native" && state.router.enabled && !force && controls.review.routingMutationFailure) throw controls.review.routingMutationFailure;
   state = { ...state, router: { ...state.router, accessMode: mode } };
-  return { state, applied: null };
+  const threadMigration = mode === "native" && !force && controls.review.routedThreads
+    ? controls.review.routingMigrationResult ?? { changed: 1, unchanged: 0, failed: [], reopenError: null } : null;
+  if (threadMigration) controls.review.routedThreads = false;
+  return { state, applied: null, threadMigration };
 };
-api.routing.setEnabled = async enabled => {
+api.routing.setEnabled = async (enabled, force = false) => {
+  controls.review.routingCalls.push({ operation: "enabled", enabled, force });
+  if (!enabled && !force && controls.review.routingMutationFailure) throw controls.review.routingMutationFailure;
   state = { ...state, router: { ...state.router, enabled } };
-  return { state, applied: null };
+  const threadMigration = !enabled && !force && controls.review.routedThreads
+    ? controls.review.routingMigrationResult ?? { changed: 1, unchanged: 0, failed: [], reopenError: null } : null;
+  if (threadMigration) controls.review.routedThreads = false;
+  return { state, applied: null, threadMigration };
 };
 api.routing.setAccountless = async accountless => {
   state = { ...state, router: { ...state.router, accountless } };
@@ -556,7 +566,16 @@ function ProviderFixture({ mixed = false }: { mixed?: boolean }) {
       onOpenChange={open => setDialog(current => ({ ...current, open }))} onSaved={noop} /></>;
 }
 
-type FixtureMode = "instructions" | "mcp-clients" | "skills" | "desktop-updater" | "desktop-exit" | "terminal-proxy" | "thread-details" | "thread-details-missing" | "thread-details-unknown" | "thread-details-error" | "compact" | "grid" | "image" | "mcp" | "accounts" | "account-resets" | "account-resets-unavailable" | "thread-tree" | "groups" | "overview" | "usage" | "provider" | "warnings" | "thread-actions" | "thread-queue-recovery" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-conflict" | "clients-opencode" | "clients-opencode-stale" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official" | "recovery-long" | "recovery-router";
+type FixtureMode = "instructions" | "mcp-clients" | "skills" | "desktop-updater" | "desktop-exit" | "terminal-proxy" | "routing-cache" | "thread-details" | "thread-details-missing" | "thread-details-unknown" | "thread-details-error" | "compact" | "grid" | "image" | "mcp" | "accounts" | "account-resets" | "account-resets-unavailable" | "thread-tree" | "groups" | "overview" | "usage" | "provider" | "warnings" | "thread-actions" | "thread-queue-recovery" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-conflict" | "clients-opencode" | "clients-opencode-stale" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official" | "recovery-long" | "recovery-router";
+
+function RoutingCacheFixture() {
+  const [page, setPage] = useState("threads");
+  return <>
+    <button onClick={() => setPage("connections")}>Review connections</button>
+    <button onClick={() => setPage("threads")}>Review threads</button>
+    {page === "threads" ? <ThreadsPage /> : <NewApiPage />}
+  </>;
+}
 
 function RecoveryFixture({ thread }: { thread: ThreadSummary }) {
   const [open, setOpen] = useState(true);
@@ -599,6 +618,7 @@ function recoveryPreview(mode: FixtureMode) {
 
 let mountSequence = 0;
 function mount(mode: FixtureMode) {
+  controls.review.routingCalls = [];
   localStorage.removeItem("agentharbor.mcp-source");
   localStorage.removeItem("agentharbor.instruction-source");
   if (mode === "instructions") {
@@ -645,13 +665,16 @@ function mount(mode: FixtureMode) {
     controls.review.terminalSetCalls = [];
     controls.review.terminalTestCalls = [];
     controls.review.terminalTestResolvers = [];
+    controls.review.terminalLoadResolvers = [];
     controls.review.terminalOpenCalls = 0;
     controls.review.terminalStatus = { supported: true, enabled: false, applied: false,
       url: null, noProxy: "localhost,127.0.0.1,::1", recoveryRequired: false, conflicts: [],
       preservedVariables: [], notificationSent: true, ...controls.review.terminalStatusPatch };
     api.terminalProxy.load = async () => {
       if (controls.review.terminalLoadFailure) throw "settings.terminalProxy.errors.environment";
-      return controls.review.terminalStatus;
+      const snapshot = structuredClone(controls.review.terminalStatus);
+      if (controls.review.terminalLoadHold) return new Promise(resolve => controls.review.terminalLoadResolvers.push(() => resolve(snapshot)));
+      return snapshot;
     };
     api.terminalProxy.set = async (enabled, url, noProxy) => {
       controls.review.terminalSetCalls.push({ enabled, url, noProxy });
@@ -813,12 +836,17 @@ function mount(mode: FixtureMode) {
   // Router-adopted threads are the default; thread-actions has one direct thread.
   controls.review.batchCalls = [];
   controls.review.routedThreads = false;
-  api.conversations.routeOverview = async () => ({
-    routerActive: mode === "thread-actions" || controls.review.routedThreads,
-    routerProviderThreads: controls.review.routedThreads ? 1 : 0,
-    states: mode === "thread-actions" ? { t0: "direct", t1: "routed" }
-      : controls.review.routedThreads ? { t0: "routed" } : {},
-  });
+  api.conversations.routeOverview = async () => {
+    if (controls.review.routeOverviewFailure) throw controls.review.routeOverviewFailure;
+    return {
+      routerActive: mode === "routing-cache" ? state.router.enabled && state.router.accessMode === "router"
+        : mode === "thread-actions" || controls.review.routedThreads,
+      routerProviderThreads: controls.review.routedThreads ? 1 : 0,
+      states: mode === "routing-cache" ? { t0: "direct" }
+        : mode === "thread-actions" ? { t0: "direct", t1: "routed" }
+        : controls.review.routedThreads ? { t0: "routed" } : {},
+    };
+  };
   api.conversations.previewBatch = async (target, selection) => {
     controls.review.batchCalls.push({ operation: "preview", target, selection });
     return { targetProvider: "agentharbor_relay", providers: { openai: 1 }, skipped: [],
@@ -945,7 +973,7 @@ function mount(mode: FixtureMode) {
   root.render(<QueryClientProvider key={++mountSequence} client={queryClient}><TooltipProvider>
     <div style={{ position: "relative", height: 600 }}><PageStage state="active">
       {(mode.startsWith("thread-details") || mode === "thread-tree" || mode === "thread-actions" || mode === "terminal-proxy" || mode === "skills" || mode === "groups" || mode === "access") && <ThreadToastProbe />}
-      {mode === "desktop-updater" ? <DesktopUpdaterFixture /> : mode === "desktop-exit" ? <ClaudeDesktopRouterExitDialog /> : mode.startsWith("recovery-") ? <RecoveryFixture thread={threads[0] as ThreadSummary} /> :
+      {mode === "routing-cache" ? <RoutingCacheFixture /> : mode === "desktop-updater" ? <DesktopUpdaterFixture /> : mode === "desktop-exit" ? <ClaudeDesktopRouterExitDialog /> : mode.startsWith("recovery-") ? <RecoveryFixture thread={threads[0] as ThreadSummary} /> :
         mode === "skills" ? <SkillsPage /> : mode === "terminal-proxy" ? <div className="mx-auto max-w-xl rounded-xl bg-card shadow-sm"><TerminalProxySettings currentProxy={{ mode: "manual", url: "http://127.0.0.1:7890" }} /></div> :
         mode === "image" ? <ImageWorkbenchPage /> : mode === "instructions" ? <CustomInstructionsPage /> : mode === "mcp-clients" ? <McpClientFixture /> : mode === "mcp" ? <McpPage /> : mode === "accounts" || mode.startsWith("account-resets") ? <AccountsPage refreshInterval="5m" onManageProviders={noop} /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage" ? <TokenUsagePanel data={{ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } }} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode.startsWith("thread-details") || mode === "thread-tree" || mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :
         mode === "access" || mode === "incompatible" || mode === "native-invalid" || mode === "groups" ? <><NewApiPage onOpenRelays={() => { controls.review.navigatedTo = "relays"; }} /><RelayModelsPage /></> :

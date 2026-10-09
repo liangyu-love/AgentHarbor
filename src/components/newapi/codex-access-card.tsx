@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ConfirmDialog, type ConfirmRequest } from "@/components/ui/confirm-dialog";
-import { formatInvokeError } from "@/lib/invoke-error";
+import { errorMessage, formatInvokeError } from "@/lib/invoke-error";
 import { aggregationQueryKey } from "@/types/aggregation";
 import { ArrowRight, Cpu, Loader2, Network, Plus, RefreshCw, Sparkles } from "lucide-react";
 import { api } from "@/lib/api";
@@ -18,12 +18,9 @@ import { toast } from "@/hooks/use-toast";
 import { providerModelProtocol } from "@/lib/provider-models";
 import { protocolBadgeKey, softBadge } from "@/components/newapi/relay-groups";
 import type { ProviderState } from "@/components/newapi/use-provider-state";
-import type { CodexAccessMode, NewApiProvider } from "@/types/newapi";
+import type { CodexAccessMode, NewApiProvider, NewApiStateChange } from "@/types/newapi";
 import { cn } from "@/lib/utils";
 import { CodexSubagentSettingsFields } from "./codex-subagent-settings";
-
-/** Codex provider ID used by threads adopted into the unified Router. */
-const ROUTER_PROVIDER = "agentharbor_relay";
 
 // Codex routing switch, access mode picker and accountless toggle.
 export function CodexAccessCard({
@@ -58,67 +55,63 @@ export function CodexAccessCard({
   const aggregateAvailable = !!aggregate?.available;
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
 
-  const setRouting = (value: boolean, restoreThreads: boolean) =>
+  const offerForce = (cause: unknown, onConfirm: () => void, native = false) => {
+    void queryClient.invalidateQueries({ queryKey: ["threads"] });
+    if (!errorMessage(cause).startsWith("CODEX_ROUTING_RESTORE_FAILED:")) return;
+    setConfirmRequest({
+      title: t("newapi.routingRestoreBlockedTitle"),
+      description: `${t("newapi.routingRestoreBlockedDesc")}\n${formatInvokeError(cause)}`,
+      confirmLabel: t(native ? "newapi.forceNativeRouting" : "newapi.forceDisableRouting"),
+      onConfirm,
+    });
+  };
+
+  const migrationCompleted = (change: NewApiStateChange) => {
+    if (!change.threadMigration) return;
+    void queryClient.invalidateQueries({ queryKey: ["threads"] });
+    if (change.threadMigration.reopenError) {
+      toast({ title: t("threads.routerAdoptionOpenFailed"),
+        description: t("threads.routerAdoptionOpenFailedDesc"), variant: "destructive" });
+    }
+  };
+
+  const setRouting = (value: boolean, force = false) =>
     run(
       "routing",
       async () => {
-        const change = await api.routing.setEnabled(value);
+        let change: NewApiStateChange;
+        try {
+          change = await api.routing.setEnabled(value, force);
+        } catch (cause) {
+          if (!value && !force) offerForce(cause, () => void setRouting(false, true));
+          throw cause;
+        }
         applyChange(change);
         toast({
           title: t(value ? "newapi.routingApplied" : "newapi.routingRemoved"),
           description: change.applied?.backupPath ?? undefined,
           variant: "success",
         });
-        if (restoreThreads) await restoreRoutedThreads();
+        migrationCompleted(change);
       },
       t("newapi.routingFailed"),
     );
 
-  // Routed threads keep the Router provider ID, which is removed from
-  // config.toml with the Router. Move them to the provider now active again.
-  const restoreRoutedThreads = async () => {
-    try {
-      const preview = await api.conversations.previewBatch("restore", { fromProvider: ROUTER_PROVIDER });
-      if (preview.ready.length === 0) {
-        toast({ title: t("newapi.threadsRestoreFailed"),
-          description: t("threads.repairAllSkipped", { count: preview.skipped.length }), variant: "destructive" });
-        return;
-      }
-      const result = await api.conversations.applyBatch("restore", preview.ready);
-      void queryClient.invalidateQueries({ queryKey: ["threads"] });
-      toast({
-        title: t("newapi.threadsRestored", { provider: preview.targetProvider }),
-        description: t("threads.repairAllResult", {
-          repaired: result.changed,
-          skipped: result.unchanged + preview.skipped.length,
-          failed: result.failed.length,
-        }),
-        variant: result.failed.length === 0 && preview.skipped.length === 0 ? "success" : "destructive",
-      });
-      if (result.reopenError) {
-        toast({ title: t("threads.routerAdoptionOpenFailed"),
-          description: t("threads.routerAdoptionOpenFailedDesc"), variant: "destructive" });
-      }
-    } catch (cause) {
-      toast({ title: t("newapi.threadsRestoreFailed"), description: formatInvokeError(cause), variant: "destructive" });
-    }
-  };
-
   const toggleRouting = async (value: boolean) => {
-    if (value) return setRouting(value, false);
+    if (value) return setRouting(value);
     let routed: number;
     try {
       routed = (await api.conversations.routeOverview()).routerProviderThreads;
-    } catch (cause) {
-      toast({ title: t("newapi.threadsRestoreFailed"), description: formatInvokeError(cause), variant: "destructive" });
-      return;
+    } catch {
+      // The overview supplies a confirmation count; the backend owns recovery.
+      return setRouting(false);
     }
-    if (routed === 0) return setRouting(false, false);
+    if (routed === 0) return setRouting(false);
     setConfirmRequest({
       title: t("newapi.disableRoutingTitle"),
       description: t("newapi.disableRoutingThreads", { count: routed }),
       confirmLabel: t("newapi.disableRoutingRestore"),
-      onConfirm: () => void setRouting(false, true),
+      onConfirm: () => void setRouting(false),
     });
   };
 
@@ -127,30 +120,36 @@ export function CodexAccessCard({
       let routed: number;
       try {
         routed = (await api.conversations.routeOverview()).routerProviderThreads;
-      } catch (cause) {
-        toast({ title: t("newapi.threadsRestoreFailed"), description: formatInvokeError(cause), variant: "destructive" });
-        return;
+      } catch {
+        return applyAccessMode(mode);
       }
       if (routed > 0) {
         setConfirmRequest({
           title: t("newapi.nativeRoutingTitle"),
           description: t("newapi.nativeRoutingThreads", { count: routed }),
           confirmLabel: t("newapi.nativeRoutingRestore"),
-          onConfirm: () => void applyAccessMode(mode, true),
+          onConfirm: () => void applyAccessMode(mode),
         });
         return;
       }
     }
-    void applyAccessMode(mode, false);
+    void applyAccessMode(mode);
   };
 
-  const applyAccessMode = (mode: CodexAccessMode, restoreThreads: boolean) =>
+  const applyAccessMode = (mode: CodexAccessMode, force = false) =>
     run(
       "access-mode",
       async () => {
-        applyChange(await api.routing.setAccessMode(mode));
+        let change: NewApiStateChange;
+        try {
+          change = await api.routing.setAccessMode(mode, force);
+        } catch (cause) {
+          if (mode === "native" && !force) offerForce(cause, () => void applyAccessMode(mode, true), true);
+          throw cause;
+        }
+        applyChange(change);
         toast({ title: t("newapi.accessModeApplied"), variant: "success" });
-        if (restoreThreads) await restoreRoutedThreads();
+        migrationCompleted(change);
       },
       t("newapi.routingFailed"),
     );

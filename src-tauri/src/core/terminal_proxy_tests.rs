@@ -242,3 +242,129 @@ fn proxy_validation_rejects_socks_credentials_paths_and_control_characters() {
         "http://127.0.0.1:7890/"
     );
 }
+
+fn domain_bypass(count: usize) -> String {
+    (0..count)
+        .map(|index| format!("h{index:04}.example.test"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+#[test]
+fn bypass_limit_includes_loopback_addresses_before_any_mutation() {
+    let bypass = domain_bypass(215);
+    assert_eq!(bypass.len(), 4_084);
+    assert_eq!(format!("{bypass},{}", LOOPBACK.join(",")).len(), 4_108);
+    for already_enabled in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = MemoryEnvironment::default();
+        env.values.insert(
+            "HTTP_PROXY".into(),
+            EnvironmentValue::string("http://original.test"),
+        );
+        if already_enabled {
+            set_with_environment(&path(&dir), &mut env, true, "http://127.0.0.1:7890", "").unwrap();
+        }
+        let before = env.values.clone();
+        let journal_before = std::fs::read(path(&dir)).ok();
+        let notifications_before = env.notified.get();
+        assert_eq!(
+            set_with_environment(
+                &path(&dir),
+                &mut env,
+                true,
+                "http://127.0.0.1:8888",
+                &bypass,
+            )
+            .err()
+            .unwrap(),
+            "settings.terminalProxy.errors.bypass"
+        );
+        assert_eq!(env.values, before);
+        assert_eq!(std::fs::read(path(&dir)).ok(), journal_before);
+        assert_eq!(env.notified.get(), notifications_before);
+    }
+}
+
+#[test]
+fn maximum_normalized_bypass_remains_readable_on_activation_and_update() {
+    let bypass = format!("prefix7{}", domain_bypass(214));
+    let normalized = normalize_bypass(&bypass).unwrap();
+    assert_eq!(normalized.len(), MAX_BYPASS_BYTES);
+    assert_eq!(normalize_bypass(&normalized).unwrap(), normalized);
+    let dir = tempfile::tempdir().unwrap();
+    let mut env = MemoryEnvironment::default();
+    env.values.insert(
+        "NO_PROXY".into(),
+        EnvironmentValue::string("original.internal"),
+    );
+    let original = env.values.clone();
+    for (url, input) in [
+        ("http://127.0.0.1:7890", bypass.as_str()),
+        ("http://127.0.0.1:8888", normalized.as_str()),
+    ] {
+        let result = set_with_environment(&path(&dir), &mut env, true, url, input).unwrap();
+        assert!(result.applied);
+        assert_eq!(result.no_proxy, normalized);
+        let saved = load(&path(&dir)).unwrap();
+        assert_eq!(saved.no_proxy, normalized);
+        assert!(status(&saved, &mut env).unwrap().applied);
+    }
+    set_with_environment(&path(&dir), &mut env, false, "", "").unwrap();
+    assert_eq!(env.values, original);
+}
+
+#[test]
+fn legacy_oversized_bypass_journals_restore_all_phases_and_preserve_external_edits() {
+    for prefix in ["", "abcdefghijkl"] {
+        let legacy = format!("{prefix}{},{}", domain_bypass(215), LOOPBACK.join(","));
+        assert!(legacy.len() > MAX_BYPASS_BYTES);
+        assert!(legacy.len() <= MAX_STORED_BYPASS_BYTES);
+        for phase in [Phase::Active, Phase::Applying, Phase::Restoring] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut env = MemoryEnvironment::default();
+            let mut original_proxy = EnvironmentValue::string("http://%OLD_PROXY%:8080");
+            original_proxy.kind = 2;
+            env.values.insert("HTTP_PROXY".into(), original_proxy);
+            env.values.insert(
+                "NO_PROXY".into(),
+                EnvironmentValue::string("original.internal"),
+            );
+            let mut expected = env.values.clone();
+            set_with_environment(&path(&dir), &mut env, true, "http://127.0.0.1:7890", "").unwrap();
+            let mut saved = load(&path(&dir)).unwrap();
+            saved.no_proxy = legacy.clone();
+            let lease = saved.lease.as_mut().unwrap();
+            lease.phase = phase.clone();
+            let entry = lease
+                .entries
+                .iter_mut()
+                .find(|entry| entry.name == "NO_PROXY")
+                .unwrap();
+            entry.owned = vec![EnvironmentValue::string(&legacy)];
+            env.values.insert("NO_PROXY".into(), entry.owned[0].clone());
+            if phase == Phase::Applying {
+                env.values.remove("ALL_PROXY");
+            } else if phase == Phase::Restoring {
+                env.values
+                    .insert("HTTP_PROXY".into(), expected["HTTP_PROXY"].clone());
+            }
+            persist(&path(&dir), &saved).unwrap();
+            let saved = load(&path(&dir)).unwrap();
+            let result = status(&saved, &mut env).unwrap();
+            assert!(result.enabled);
+            assert_eq!(result.applied, phase == Phase::Active);
+            assert_eq!(result.recovery_required, phase != Phase::Active);
+            assert_eq!(result.no_proxy, legacy);
+            let external = EnvironmentValue::string("http://external.test:8888");
+            env.values.insert("HTTPS_PROXY".into(), external.clone());
+            expected.insert("HTTPS_PROXY".into(), external);
+            let restored =
+                set_with_environment(&path(&dir), &mut env, false, "broken", "\0").unwrap();
+            assert!(!restored.enabled);
+            assert_eq!(restored.preserved_variables, vec!["HTTPS_PROXY"]);
+            assert_eq!(env.values, expected);
+            assert!(load(&path(&dir)).unwrap().lease.is_none());
+        }
+    }
+}

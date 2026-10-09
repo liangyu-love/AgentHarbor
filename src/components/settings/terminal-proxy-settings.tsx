@@ -54,7 +54,9 @@ export function TerminalProxySettings({ currentProxy }: { currentProxy?: ApiProx
   };
   const save = useMutation({
     mutationFn: (enabled: boolean) => api.terminalProxy.set(enabled, url, noProxy),
-    onSuccess: result => {
+    onSuccess: async result => {
+      // A read started before this write can still return the previous lease.
+      await queryClient.cancelQueries({ queryKey: queryKeys.terminalProxy });
       queryClient.setQueryData(queryKeys.terminalProxy, result);
       clearProbe();
       setOpen(false);

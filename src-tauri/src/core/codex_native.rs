@@ -378,7 +378,10 @@ fn catalog(paths: &CodexPaths, store: &Store, provider: &Provider) -> serde_json
     load_configuration_plan(paths, store, provider).catalog
 }
 
-pub(super) fn subagent_catalog(paths: &CodexPaths, store: &Store) -> Result<serde_json::Value, String> {
+pub(super) fn subagent_catalog(
+    paths: &CodexPaths,
+    store: &Store,
+) -> Result<serde_json::Value, String> {
     Ok(load_configuration_plan(paths, store, selected_provider(store)?).catalog)
 }
 
@@ -654,8 +657,7 @@ fn intact_unlocked(
     let document = original
         .parse::<DocumentMut>()
         .map_err(|_| "newapi.errors.configParse".to_owned())?;
-    let Some(snapshot) = config_snapshot::load(paths, &original)
-        .map_err(config_update_error)?
+    let Some(snapshot) = config_snapshot::load(paths, &original).map_err(config_update_error)?
     else {
         return Ok(false);
     };
@@ -715,6 +717,23 @@ fn intact_unlocked(
 }
 
 pub(super) fn apply(paths: &CodexPaths, store: &Store) -> Result<newapi::AppliedConfig, String> {
+    apply_with_selection(paths, store, true)
+}
+
+/// Keep the current Router selected while making its migration destination usable.
+/// The caller must stop Codex writers and serialize the complete access transition.
+pub(super) fn prepare_provider(
+    paths: &CodexPaths,
+    store: &Store,
+) -> Result<newapi::AppliedConfig, String> {
+    apply_with_selection(paths, store, false)
+}
+
+fn apply_with_selection(
+    paths: &CodexPaths,
+    store: &Store,
+    select: bool,
+) -> Result<newapi::AppliedConfig, String> {
     super::subagents::validate(paths, store)?;
     let _guard = config_snapshot::guard().map_err(config_update_error)?;
     let provider = selected_provider(store)?;
@@ -728,7 +747,7 @@ pub(super) fn apply(paths: &CodexPaths, store: &Store) -> Result<newapi::Applied
         auto_compact_limit: limit_threshold,
         ..Default::default()
     })?;
-    if intact_unlocked(paths, store, &plan)? {
+    if select && intact_unlocked(paths, store, &plan)? {
         if cleanup_unlocked(paths, None).is_err() {
             log::warn!("Native credential cleanup will retry on next use");
         }
@@ -744,13 +763,9 @@ pub(super) fn apply(paths: &CodexPaths, store: &Store) -> Result<newapi::Applied
     let file = EnvFile::load(paths).map_err(config_update_error)?;
     let id = Uuid::new_v4();
     let document = config(paths).map_err(config_update_error)?;
-    let reusable = (document.get("model_provider").and_then(Item::as_str) == Some(PROVIDER_KEY))
-        .then(|| {
-            document
-                .get("model_providers")
-                .and_then(|entries| entries.get(PROVIDER_KEY))
-        })
-        .flatten()
+    let reusable = document
+        .get("model_providers")
+        .and_then(|entries| entries.get(PROVIDER_KEY))
         .filter(|entry| {
             entry.get("base_url").and_then(Item::as_str) == Some(expected_base.as_str())
         })
@@ -764,8 +779,15 @@ pub(super) fn apply(paths: &CodexPaths, store: &Store) -> Result<newapi::Applied
     let name = reusable
         .map(|credential| credential.name.clone())
         .unwrap_or_else(|| variable_name(id));
-    let catalog_path = catalog_path(paths, id);
-    if (reusable.is_none() && std::env::var_os(&name).is_some()) || catalog_path.exists() {
+    let catalog_id = if select {
+        id
+    } else {
+        reusable.map_or(id, |entry| entry.id)
+    };
+    let catalog_path = catalog_path(paths, catalog_id);
+    if (reusable.is_none() && std::env::var_os(&name).is_some())
+        || ((select || reusable.is_none()) && catalog_path.exists())
+    {
         return Err(CREDENTIAL_ERROR.into());
     }
     if reusable.is_none() {
@@ -793,6 +815,11 @@ pub(super) fn apply(paths: &CodexPaths, store: &Store) -> Result<newapi::Applied
             let headers = supplemental_headers(&document, &expected_base)?;
             let mut snapshot = match config_snapshot::load(paths, original)? {
                 Some(snapshot) if snapshot.selected_provider_is_ours(&document) => snapshot,
+                Some(_) if !select => {
+                    return Err(CoreError::OperationFailed(
+                        "newapi.errors.routerSnapshot".into(),
+                    ));
+                }
                 Some(snapshot) => {
                     snapshot.restore_subagents(&mut document)?;
                     config_snapshot::Snapshot::capture(paths, &document)?
@@ -801,31 +828,38 @@ pub(super) fn apply(paths: &CodexPaths, store: &Store) -> Result<newapi::Applied
                     config_snapshot::recover_legacy(paths, &document, store)?
                 }
                 None => {
+                    if !select {
+                        return Err(CoreError::OperationFailed(
+                            "newapi.errors.routerSnapshot".into(),
+                        ));
+                    }
                     reject_foreign_managed_provider_entries(&document)?;
                     config_snapshot::Snapshot::capture(paths, &document)?
                 }
             };
-            remove_managed_provider_entries(&mut document);
-            for (field, value) in [
-                ("model", provider.model.clone()),
-                ("model_provider", PROVIDER_KEY.into()),
-                (
-                    "model_catalog_json",
-                    catalog_path.to_string_lossy().into_owned(),
-                ),
-            ] {
-                config_snapshot::set_value(&mut document, field, Some(value.into()));
+            if select {
+                remove_managed_provider_entries(&mut document);
+                for (field, value) in [
+                    ("model", provider.model.clone()),
+                    ("model_provider", PROVIDER_KEY.into()),
+                    (
+                        "model_catalog_json",
+                        catalog_path.to_string_lossy().into_owned(),
+                    ),
+                ] {
+                    config_snapshot::set_value(&mut document, field, Some(value.into()));
+                }
+                config_snapshot::set_value(
+                    &mut document,
+                    "model_context_window",
+                    limit_context.map(|value| (value as i64).into()),
+                );
+                config_snapshot::set_value(
+                    &mut document,
+                    "model_auto_compact_token_limit",
+                    limit_threshold.map(|value| (value as i64).into()),
+                );
             }
-            config_snapshot::set_value(
-                &mut document,
-                "model_context_window",
-                limit_context.map(|value| (value as i64).into()),
-            );
-            config_snapshot::set_value(
-                &mut document,
-                "model_auto_compact_token_limit",
-                limit_threshold.map(|value| (value as i64).into()),
-            );
             if document.get("model_providers").is_none() {
                 let mut table = toml_edit::Table::new();
                 table.set_implicit(true);
@@ -849,10 +883,19 @@ pub(super) fn apply(paths: &CodexPaths, store: &Store) -> Result<newapi::Applied
             for (key, value) in &headers {
                 entry[key] = value.clone();
             }
-            snapshot.apply_auth(&mut document, true)?;
-            snapshot.apply_subagents(&mut document, store.codex_subagents.as_ref())?;
-            snapshot.prepare(paths, original, &document, config_snapshot::Action::Apply)?;
-            pending = Some(snapshot);
+            if select {
+                snapshot.apply_auth(&mut document, true)?;
+                snapshot.apply_subagents(&mut document, store.codex_subagents.as_ref())?;
+                snapshot.prepare(paths, original, &document, config_snapshot::Action::Apply)?;
+                pending = Some(snapshot);
+            } else {
+                // Provider definitions do not alter root/subagent ownership. Settle
+                // an already-committed snapshot before changing the config hash.
+                storage::write_atomic(
+                    &config_snapshot::path(paths),
+                    &serde_json::to_vec(&snapshot)?,
+                )?;
+            }
             Ok(document.to_string())
         })
     })();
@@ -870,7 +913,7 @@ pub(super) fn apply(paths: &CodexPaths, store: &Store) -> Result<newapi::Applied
     }
     // Configuration has committed. Cleanup cannot turn success into an error
     // and leave the persisted access mode disagreeing with the live config.
-    if cleanup_unlocked(paths, None).is_err() {
+    if select && cleanup_unlocked(paths, None).is_err() {
         log::warn!("Native credential cleanup will retry on next use");
     }
     Ok(applied_config(result))
@@ -956,6 +999,10 @@ pub(super) fn installed_catalog_model(paths: &CodexPaths, document: &DocumentMut
         })
         .unwrap_or(false)
 }
+
+#[cfg(test)]
+#[path = "codex_native_prepare_tests.rs"]
+mod prepare_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1138,7 +1185,11 @@ mod tests {
             "supported_reasoning_levels":[{"effort":"high","description":"Model high"},{"effort":"max","description":"Model max"}],
             "default_reasoning_level":"high"
         }]});
-        super::super::super::model_catalog::seed_test_account_catalog(&paths.codex_home, &paths.app_data_dir, official.to_string().as_bytes());
+        super::super::super::model_catalog::seed_test_account_catalog(
+            &paths.codex_home,
+            &paths.app_data_dir,
+            official.to_string().as_bytes(),
+        );
         std::fs::write(
             paths.codex_home.join("models_cache.json"),
             official.to_string(),
@@ -1239,7 +1290,11 @@ mod tests {
             "slug":"gpt-6-astra", "supported_reasoning_levels":[{"effort":"high","description":"Official high"}],
             "default_reasoning_level":"high"
         }]});
-        super::super::super::model_catalog::seed_test_account_catalog(&paths.codex_home, &paths.app_data_dir, official.to_string().as_bytes());
+        super::super::super::model_catalog::seed_test_account_catalog(
+            &paths.codex_home,
+            &paths.app_data_dir,
+            official.to_string().as_bytes(),
+        );
         std::fs::write(
             paths.codex_home.join("models_cache.json"),
             official.to_string(),

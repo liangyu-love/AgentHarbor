@@ -17,6 +17,8 @@ import { testPriceCache } from "./test-price-cache.mjs";
 import { testProviderFeedback } from "./test-provider-feedback.mjs";
 import { testProviderModelResolutions } from "./test-provider-model-resolutions.mjs";
 import { testTerminalProxy } from "./test-terminal-proxy.mjs";
+import { testRoutingCache } from "./test-routing-cache.mjs";
+import { testCodexRoutingTransitions } from "./test-codex-routing-transitions.mjs";
 import { testRelayDeck } from "./test-relay-deck.mjs";
 import { testClaudeDesktopCard } from "./test-claude-desktop-card.mjs";
 import { testSkillsActivation } from "./test-skills-activation.mjs";
@@ -96,6 +98,10 @@ try {
     await testSkillsActivation({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "terminal-proxy") {
     await testTerminalProxy({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "routing-cache") {
+    await testRoutingCache({ page, reset });
+  } else if (process.env.FRONTEND_QA_SCOPE === "codex-routing-transitions") {
+    await testCodexRoutingTransitions({ page, reset });
   } else if (process.env.FRONTEND_QA_SCOPE === "relay-deck") {
     await testRelayDeck({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "oauth-login") {
@@ -727,20 +733,18 @@ try {
   console.log("PASS balance refresh stays usable alongside routing and export controls");
 
   // Routed threads exist: turning routing off asks first, and cancel keeps it on.
-  await page.evaluate(() => { window.review.batchCalls = []; window.review.routedThreads = true; });
+  await page.evaluate(() => { window.review.batchCalls = []; window.review.routingCalls = []; window.review.routedThreads = true; });
   await page.getByRole("switch", { name: labels.codexAccess, exact: true }).click();
   await page.getByRole("alertdialog").getByRole("button", { name: labels.cancel, exact: true }).click();
   assert.equal(await page.evaluate(() => window.review.getState().router.enabled), true);
   assert.deepEqual(await page.evaluate(() => window.review.batchCalls), []);
   await page.getByRole("switch", { name: labels.codexAccess, exact: true }).click();
   await confirmAlert(labels.disableRoutingRestore);
-  await page.waitForFunction(() => window.review.batchCalls.length === 2);
+  await page.waitForFunction(() => window.review.routingCalls.length === 1);
   assert.equal(await page.evaluate(() => window.review.getState().router.enabled), false);
-  assert.deepEqual(await page.evaluate(() => window.review.batchCalls.map(call => [call.operation, call.target, call.selection ?? null])), [
-    ["preview", "restore", { fromProvider: "agentharbor_relay" }],
-    ["apply", "restore", null],
-  ]);
-  console.log("PASS turning routing off confirms, keeps routing on when cancelled, and moves routed threads back");
+  assert.deepEqual(await page.evaluate(() => window.review.routingCalls), [{ operation: "enabled", enabled: false, force: false }]);
+  assert.deepEqual(await page.evaluate(() => window.review.batchCalls), []);
+  console.log("PASS turning routing off confirms, keeps routing on when cancelled, and delegates migration to one backend command");
 
   await reset("test");
   await page.getByRole("combobox").waitFor();
@@ -1343,6 +1347,8 @@ try {
   await testProviderFeedback({ page, reset, captureDir });
   await testProviderModelResolutions({ page, reset, captureDir });
   await testTerminalProxy({ page, reset, captureDir });
+  await testRoutingCache({ page, reset });
+  await testCodexRoutingTransitions({ page, reset });
   await testRelayDeck({ page, reset, captureDir });
   await testClaudeDesktopCard({ page, reset, captureDir });
   await testSkillsActivation({ page, reset, captureDir });

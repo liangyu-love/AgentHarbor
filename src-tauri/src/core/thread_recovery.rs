@@ -23,12 +23,14 @@ mod journal;
 mod policy;
 mod rollout;
 mod router_adoption;
+mod transition;
 
 pub use batch::{
     apply_batch, preview_batch, route_overview, threads_with_provider, ThreadBatchCandidate,
     ThreadBatchPreview, ThreadBatchResult, ThreadBatchTarget, ThreadRouteOverview,
 };
 pub use router_adoption::adopt_thread_into_router;
+pub(crate) use transition::{connection_threads, ensure_transition_ready, restore_connection_threads};
 use router_adoption::{owned_router_port, router_not_ready};
 
 use journal::*;
@@ -480,6 +482,15 @@ fn apply_thread_recovery_locked(
                 .into(),
         ));
     }
+    apply_recovery_plan_locked(paths, thread_id, check_writer_processes, plan)
+}
+
+fn apply_recovery_plan_locked(
+    paths: &CodexPaths,
+    thread_id: &str,
+    check_writer_processes: bool,
+    plan: RecoveryPlan,
+) -> Result<ThreadRecoveryResult, CoreError> {
     if let Some(journal) = plan.pending_journal.as_ref() {
         if journal.thread_id != thread_id {
             return Err(CoreError::OperationFailed(format!(
@@ -778,8 +789,17 @@ fn build_recovery_plan_with_lookup(
     thread_id: &str,
     rollout_lookup: RolloutLookup,
 ) -> Result<RecoveryPlan, CoreError> {
-    validate_thread_id(thread_id)?;
     let target = resolve_provider_target(&paths.config_path)?;
+    build_recovery_plan_for_target(paths, thread_id, rollout_lookup, target)
+}
+
+fn build_recovery_plan_for_target(
+    paths: &CodexPaths,
+    thread_id: &str,
+    rollout_lookup: RolloutLookup,
+    target: ProviderTarget,
+) -> Result<RecoveryPlan, CoreError> {
+    validate_thread_id(thread_id)?;
     let (pending_journal, coordination) = match inspect_pending_journal(paths) {
         PendingJournalInspection::None => (None, None),
         PendingJournalInspection::Ready(journal) => (Some(journal), None),
@@ -1053,6 +1073,10 @@ fn resolve_provider_target(config_path: &Path) -> Result<ProviderTarget, CoreErr
         }
         Err(error) => return Err(error.into()),
     };
+    resolve_provider_text(&text, generation)
+}
+
+fn resolve_provider_text(text: &str, generation: String) -> Result<ProviderTarget, CoreError> {
     let document: toml::Value = text.parse()?;
     let profile_provider = document
         .get("profile")

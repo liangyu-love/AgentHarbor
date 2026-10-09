@@ -91,6 +91,38 @@ export async function testTerminalProxy({ page, reset, captureDir }) {
   assert.equal(await page.evaluate(() => window.review.terminalSetCalls.length), 1);
   console.log("PASS saving locks the dialog and draft until completion without duplicate writes");
 
+  for (const operation of ["enable", "edit", "restore"]) {
+    await mount(operation === "enable" ? {} : { terminalStatusPatch: active });
+    const nextUrl = "http://127.0.0.1:7891";
+    if (operation !== "restore") {
+      await open();
+      await url().fill(nextUrl);
+    }
+    await page.evaluate(() => {
+      window.review.terminalLoadHold = true;
+      void window.review.terminalClient.refetchQueries({ queryKey: ["terminal-proxy"] });
+    });
+    await page.waitForFunction(() => window.review.terminalLoadResolvers.length === 1);
+    if (operation === "restore") await page.getByRole("button", { name: "关闭并恢复", exact: true }).click();
+    else await save().click();
+    await page.waitForFunction(enabled => window.review.terminalClient.getQueryData(["terminal-proxy"]).enabled === enabled,
+      operation !== "restore");
+    if (operation === "edit") await page.locator("[data-terminal-proxy]").getByText(nextUrl, { exact: true }).waitFor();
+    await page.evaluate(async () => {
+      window.review.terminalLoadHold = false;
+      window.review.terminalLoadResolvers[0]();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    assert.deepEqual(await page.evaluate(() => {
+      const cached = window.review.terminalClient.getQueryData(["terminal-proxy"]);
+      return { enabled: cached.enabled, url: cached.url };
+    }), { enabled: operation !== "restore", url: operation === "restore" ? active.url : nextUrl });
+    await state(operation === "restore" ? "disabled" : "enabled").waitFor();
+    if (operation === "restore") assert.equal(await page.getByRole("button", { name: "打开 PowerShell", exact: true }).count(), 0);
+    else assert.equal(await page.getByRole("button", { name: "打开 PowerShell", exact: true }).isEnabled(), true);
+  }
+  console.log("PASS late status reads cannot overwrite enabling, URL edits or restoration after a successful save");
+
   await mount({ terminalSaveFailure: "settings.terminalProxy.errors.environment" });
   await open();
   await url().fill("http://127.0.0.1:7890");
