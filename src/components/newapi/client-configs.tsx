@@ -4,7 +4,6 @@ import { useTranslation } from "react-i18next";
 import {
   AlertCircle,
   ArrowRight,
-  Code2,
   RefreshCw,
   RotateCcw,
   Settings2,
@@ -20,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { FoldBody, FoldHeader } from "@/components/ui/fold-header";
 import { useFold } from "@/hooks/use-fold";
+import { ClientGlyph } from "./configuration-shortcuts";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -179,7 +179,7 @@ export function ClientConfigs({ providers, onOpenRelays }: { providers: NewApiPr
         title: t(reapplying.rebaseline ? "clients.reappliedRebaseline" : "clients.reapplied"),
         description: applied.warnings?.length
           ? applied.warnings.map((key) => t(key)).join(" ")
-          : t("clients.restartHint"),
+          : t(reapplying.client.targetId === "pi" ? "clients.piReload" : "clients.restartHint"),
         variant: applied.warnings?.length ? "destructive" : "success",
       });
       setReapplying(null);
@@ -291,6 +291,8 @@ export function ClientConfigs({ providers, onOpenRelays }: { providers: NewApiPr
           return (
             <div
               key={client.targetId}
+              id={`client-config-${client.targetId}`}
+              tabIndex={-1}
               className={cn(
                 "group relative flex flex-col justify-between overflow-hidden rounded-2xl border bg-card/80 p-5 shadow-sm transition-all duration-300 hover:border-primary/40 hover:shadow-md",
                 client.conflict && "border-amber-500/40 bg-amber-500/[0.02]",
@@ -319,7 +321,7 @@ export function ClientConfigs({ providers, onOpenRelays }: { providers: NewApiPr
                           : "bg-sky-500/10 text-sky-600 ring-sky-500/20 dark:text-sky-400",
                       )}
                     >
-                      {isClaude ? <Terminal className="h-4 w-4" /> : <Code2 className="h-4 w-4" />}
+                      <ClientGlyph client={client.targetId} className="h-5 w-5" />
                     </div>
                     <div>
                       <div className="flex items-center gap-2">
@@ -414,6 +416,7 @@ export function ClientConfigs({ providers, onOpenRelays }: { providers: NewApiPr
               <div className="mt-5 flex flex-wrap items-center gap-2 pt-3 border-t border-border/50">
                 <Button
                   size="sm"
+                  data-config-action
                   variant={client.configured ? "outline" : "default"}
                   className={cn(
                     "h-8 gap-1.5 rounded-lg text-xs font-semibold shadow-sm transition-all",

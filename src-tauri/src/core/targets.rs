@@ -10,6 +10,7 @@ pub enum TargetId {
     #[serde(rename = "claudeCode")]
     ClaudeCode,
     OpenCode,
+    Pi,
 }
 
 /// Paths for the Codex catalog-backed conversation store. Claude Code uses its

@@ -483,9 +483,10 @@ api.providers.saveBalanceScript = async (id, expectedBaseUrl, script) => {
 api.image.keyStatus = async site => Boolean(controls.review.imageKeys?.[site.trim()]);
 api.image.keySites = async () => Object.keys(controls.review.imageKeys ?? {});
 api.image.saveKey = async (site, key) => {
-  if (controls.review.imageKeySaveHold) await new Promise(resolve => (controls.review.imageKeySaveResolvers ??= []).push(resolve));
+  if (controls.review.imageKeySaveHold) await new Promise(resolve => (controls.review.imageKeySaveResolvers ??= []).push(Object.assign(resolve, { site })));
   (controls.review.imageKeys ??= {})[site.trim()] = key;
   controls.review.imageKeySaveResolved = (controls.review.imageKeySaveResolved ?? 0) + 1;
+  (controls.review.imageKeySaveResolvedSites ??= []).push(site);
 };
 api.image.deleteKey = async site => { delete (controls.review.imageKeys ??= {})[site.trim()]; };
 api.image.generate = (request, jobId) => new Promise((resolve, reject) => {

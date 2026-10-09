@@ -5,6 +5,8 @@ mod aggregate_tests;
 mod native_tests;
 #[path = "ownership_tests.rs"]
 mod ownership_tests;
+#[path = "pi_tests.rs"]
+mod pi_tests;
 
 #[test]
 fn claude_user_json_follows_the_actual_config_root_not_its_directory_name() {

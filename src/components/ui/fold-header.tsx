@@ -39,7 +39,7 @@ export function FoldHeader({
         if (!(event.target as HTMLElement).closest(OWN_CLICK)) onToggle();
       }}
     >
-      <div className="flex min-w-0 flex-1 items-center gap-2.5">
+      <div className="flex min-w-0 flex-1 basis-48 items-center gap-2.5">
         {leading}
         <h2
           id={titleId}

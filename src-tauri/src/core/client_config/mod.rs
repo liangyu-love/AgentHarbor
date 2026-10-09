@@ -6,6 +6,7 @@ mod aggregate_models;
 mod claude;
 mod claude_official;
 mod opencode;
+mod pi;
 mod options;
 mod owned;
 mod takeover;
@@ -33,12 +34,14 @@ use std::{
 static WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static CLAUDE: claude::ClaudeCode = claude::ClaudeCode;
 static OPENCODE: opencode::OpenCode = opencode::OpenCode;
+static PI: pi::Pi = pi::Pi;
 
 #[derive(Clone)]
 pub struct ClientPaths {
     pub claude: PathBuf,
     pub claude_user: PathBuf,
     pub opencode: PathBuf,
+    pub pi: PathBuf,
 }
 
 impl ClientPaths {
@@ -66,6 +69,7 @@ impl ClientPaths {
             claude: claude_root.join("settings.json"),
             opencode: env_path("OPENCODE_CONFIG")
                 .unwrap_or_else(|| opencode_path(&config.join("opencode"))),
+            pi: pi::models_path(&home, std::env::var_os("PI_CODING_AGENT_DIR")),
         }
     }
 
@@ -74,6 +78,7 @@ impl ClientPaths {
             claude: home.join(".claude/settings.json"),
             claude_user: home.join(".claude.json"),
             opencode: opencode_path(&home.join(".config/opencode")),
+            pi: home.join(".pi/agent/models.json"),
         }
     }
 }
@@ -109,6 +114,9 @@ pub(super) struct EditContext<'a> {
     pub legacy_picker_cleanup: bool,
     /// Non-blocking notices the adapter wants surfaced on the preview.
     pub warnings: &'a mut Vec<String>,
+    /// Provider nodes already owned by this session; new external nodes must
+    /// never be silently taken over by an additive adapter.
+    pub managed_provider_keys: Vec<String>,
 }
 
 trait ClientAdapter: Sync {
@@ -137,6 +145,7 @@ fn adapter(id: TargetId) -> Result<&'static dyn ClientAdapter, String> {
     match id {
         TargetId::ClaudeCode => Ok(&CLAUDE),
         TargetId::OpenCode => Ok(&OPENCODE),
+        TargetId::Pi => Ok(&PI),
         TargetId::Codex => Err("clients.errors.unsupported".into()),
     }
 }
@@ -263,7 +272,7 @@ impl ConfigManager {
     }
 
     pub fn list(&self) -> Vec<ClientStatus> {
-        [TargetId::ClaudeCode, TargetId::OpenCode]
+        [TargetId::ClaudeCode, TargetId::OpenCode, TargetId::Pi]
             .into_iter()
             .map(|id| {
                 let adapter = adapter(id).expect("registered adapter");
@@ -314,6 +323,7 @@ impl ConfigManager {
         self.data_dir.join(match id {
             TargetId::ClaudeCode => "claude-code.dat",
             TargetId::OpenCode => "opencode.dat",
+            TargetId::Pi => "pi.dat",
             TargetId::Codex => "codex.dat",
         })
     }
@@ -528,7 +538,7 @@ impl ConfigManager {
     /// configurations are persistent and remain in place across app restarts.
     /// Attempt each client independently so one conflict cannot strand another.
     pub fn restore_router_configs_on_exit(&self) -> Vec<(TargetId, String)> {
-        [TargetId::ClaudeCode, TargetId::OpenCode]
+        [TargetId::ClaudeCode, TargetId::OpenCode, TargetId::Pi]
             .into_iter()
             .filter_map(|id| match self.session(id) {
                 Ok(Some(session)) if session.request.needs_router() => {
@@ -715,6 +725,12 @@ impl ConfigManager {
                 // this app's rows: no journal and no ownership record.
                 legacy_picker_cleanup: previous.is_none() && !owned_recorded,
                 warnings: &mut warnings,
+                managed_provider_keys: previous.as_ref().map(|session| {
+                    session.changes.iter().filter_map(|change| {
+                        (change.path.first().is_some_and(|key| key == "providers"))
+                            .then(|| change.path.get(1).cloned()).flatten()
+                    }).collect()
+                }).unwrap_or_default(),
             };
             adapter.edits(
                 &document,
@@ -861,7 +877,7 @@ struct Plan {
 
 pub fn has_router_configs(data_dir: &Path) -> Result<bool, String> {
     let manager = ConfigManager::new(data_dir, ClientPaths::from_home(Path::new(".")));
-    for id in [TargetId::ClaudeCode, TargetId::OpenCode] {
+    for id in [TargetId::ClaudeCode, TargetId::OpenCode, TargetId::Pi] {
         match manager.session(id) {
             Ok(Some(session)) if session.request.needs_router() => return Ok(true),
             Ok(_) => {}
@@ -897,7 +913,10 @@ fn parse(text: Option<&str>, id: TargetId) -> Result<Value, String> {
         return Ok(json!({}));
     };
     let text = text.trim_start_matches('\u{feff}');
-    let value: Value = if id == TargetId::OpenCode {
+    if id == TargetId::Pi && text.len() > 1024 * 1024 {
+        return Err("clients.errors.invalidConfig".into());
+    }
+    let value: Value = if matches!(id, TargetId::OpenCode | TargetId::Pi) {
         json5::from_str(text).map_err(|_| "clients.errors.invalidConfig")?
     } else if id == TargetId::ClaudeCode {
         // Claude's settings.json is JSON, but other tools may have written

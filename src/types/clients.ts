@@ -1,7 +1,7 @@
 import type { ModelProtocol } from "./newapi";
 import type { ModelSelection } from "./aggregation";
 
-export type TargetId = "codex" | "claudeCode" | "opencode";
+export type TargetId = "codex" | "claudeCode" | "opencode" | "pi";
 export interface ClientStatus {
   targetId: TargetId;
   name: string;

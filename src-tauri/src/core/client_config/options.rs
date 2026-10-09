@@ -190,6 +190,7 @@ pub(super) fn router_source_prefix(target: TargetId) -> &'static str {
         TargetId::ClaudeCode => "/clients/claude-code",
         TargetId::OpenCode => "/clients/opencode",
         TargetId::Codex => "/clients/codex",
+        TargetId::Pi => "/clients/pi",
     }
 }
 

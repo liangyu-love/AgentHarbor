@@ -27,7 +27,7 @@ pub(super) fn canonical_request(
         {
             return Err("clients.errors.protocol".into());
         }
-        if request.target_id == TargetId::OpenCode {
+        if matches!(request.target_id, TargetId::OpenCode | TargetId::Pi) {
             result.options.provider_ids.clear();
             result.options.provider_model_ids.clear();
             for target in &selection.available_targets {

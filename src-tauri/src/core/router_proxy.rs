@@ -749,6 +749,7 @@ fn client_request_path(path: &str) -> (String, Option<&'static str>) {
     for (prefix, source) in [
         ("/clients/claude-code/", "claudeCode"),
         ("/clients/opencode/", "opencode"),
+        ("/clients/pi/", "pi"),
         ("/clients/codex/", "codex"),
     ] {
         if let Some(rest) = path.strip_prefix(prefix) {
@@ -4337,9 +4338,29 @@ mod tests {
             let usage = crate::core::relay_usage::load(&paths.app_data_dir).unwrap();
             assert_eq!(usage.all_time.request_count,20);
             assert_eq!(usage.all_time.total_tokens,500);
+            config_request.target_id = TargetId::Pi;
+            let preview = manager.preview(&store, &config_request).unwrap();
+            manager.apply(&store, &config_request, &preview.revision).unwrap();
             manager.restore(TargetId::OpenCode).unwrap();
             routing_runtime::reconcile(&paths).await.unwrap();
+            assert!(is_running(), "Pi independently keeps its local router alive");
+            let response = client.post(format!("{base}/clients/pi/p/chat_fixture/v1/chat/completions"))
+                .bearer_auth("router-test-token")
+                .json(&json!({"model":"chat-model","messages":[{"role":"user","content":"Pi source test"}]}))
+                .send().await.unwrap();
+            assert_eq!(response.status(), 200);
+            response.bytes().await.unwrap();
+            let pi_trace = route_trace::recent().into_iter().find(|route| {
+                route.client_source.as_deref() == Some("pi") && route.status == Some(200)
+            }).expect("Pi request has an independent source-tagged trace");
+            assert!(relay_usage::load(&paths.app_data_dir).unwrap().recent.iter().any(|record| {
+                record.request_id == pi_trace.id && record.identity.client_source.as_deref() == Some("pi")
+                    && record.model == "chat-model"
+            }));
+            manager.restore(TargetId::Pi).unwrap();
+            routing_runtime::reconcile(&paths).await.unwrap();
             assert!(!is_running(), "the router stops only when all clients release it");
+            config_request.target_id = TargetId::OpenCode;
             config_request.options.access_mode = crate::core::client_config::ClientAccessMode::Native;
             let preview = manager.preview(&store, &config_request).unwrap();
             manager.apply(&store, &config_request, &preview.revision).unwrap();

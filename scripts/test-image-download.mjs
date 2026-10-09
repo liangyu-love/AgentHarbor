@@ -4,7 +4,10 @@ export async function testImageDownload({ page, reset }) {
   await reset("image");
   const prompt = page.locator('textarea[placeholder^="描述画面主体"]');
   await prompt.waitFor();
-  await page.waitForFunction(() => document.querySelector('[role="combobox"][aria-label="图像供应商"]')?.textContent.includes("Provider image"));
+  // Previous tests may have saved a manual endpoint. Choose the provider as a
+  // user would instead of depending on the persisted default selection.
+  await page.getByRole("combobox", { name: "图像供应商" }).click();
+  await page.getByRole("option", { name: "Provider image", exact: true }).click();
   await prompt.fill("JPEG result");
   await page.locator("[data-image-generate]").click();
   await page.waitForFunction(() => window.review.imageResolvers.length === 1);

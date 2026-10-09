@@ -119,7 +119,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
     : !!provider && (isClaude ? configuredModels : modelIdsForProvider(provider)).includes(request.model);
   const staleClaudeModelSelection = isClaude && !!provider
     && (request.claudeModelIds ?? []).some(id => !models.includes(id));
-  const staleOpenCodeModelSelection = client.targetId === "opencode" && selected.some(entry =>
+  const staleOpenCodeModelSelection = !isClaude && selected.some(entry =>
     (request.providerModelIds?.[entry.id] ?? []).some(id => !clientModels(entry, protocols).includes(id)));
   const selectedProtocol = provider ? providerModelProtocol(provider, request.model) : null;
   const aggregateOneM = (id: string) => selectedAggregates.find(model => model.publicModelId === id)?.memberStates.some(member =>
@@ -341,7 +341,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
     if (busy) return;
     if (aggregateUnavailable || aggregateMode && request.accessMode !== "router") { setError("clients.errors.provider"); return; }
     if ((isClaude && configuredModels.length === 0)
-      || (client.targetId === "opencode" && selected.some(entry => modelIdsForProvider(entry).length === 0))) {
+      || (!isClaude && selected.some(entry => modelIdsForProvider(entry).length === 0))) {
       setError("clients.errors.modelSelection"); return;
     }
     if (staleOpenCodeModelSelection) {
@@ -382,7 +382,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
           title: t("clients.applied"),
           description: applied.warnings?.length
             ? applied.warnings.map(key => t(key)).join(" ")
-            : t("clients.restartHint"),
+            : t(client.targetId === "pi" ? "clients.piReload" : "clients.restartHint"),
           variant: applied.warnings?.length ? "destructive" : "success",
         });
         onClose();
@@ -457,7 +457,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
                 <span className="block break-all text-xs text-muted-foreground">{entry.publicModelId}</span></span>
             </label>)}</div>
             {aggregateUnavailable && <p role="alert" className="text-xs text-destructive">{t("aggregation.targetUnavailable")}</p>}
-            {client.targetId === "opencode" && aggregateIds.length > 0 && <div className="space-y-1.5"><Label htmlFor="client-aggregate-protocol">{t("aggregation.ingress")}</Label>
+            {!isClaude && aggregateIds.length > 0 && <div className="space-y-1.5"><Label htmlFor="client-aggregate-protocol">{t("aggregation.ingress")}</Label>
               <Select value={request.aggregateIngressProtocol ?? "responses"} onValueChange={value => update({ aggregateIngressProtocol: value as ClientConfigRequest["aggregateIngressProtocol"] })}>
                 <SelectTrigger id="client-aggregate-protocol"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="responses">Responses</SelectItem>
                   <SelectItem value="chatCompletions">Chat</SelectItem>
@@ -485,7 +485,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
             </div>
             {compatible.length === 0 && <p className="text-xs text-muted-foreground">{t(isClaude && request.accessMode === "native" ? "clients.noNativeProviders" : "clients.noProviders")}</p>}
           </div>
-          {client.targetId === "opencode" && selected.length > 0 && <section className="space-y-2" aria-label={t("clients.modelSubset")}>
+          {!isClaude && selected.length > 0 && <section className="space-y-2" aria-label={t("clients.modelSubset")}>
             <p className="text-sm font-medium">{t("clients.modelSubset")}</p>
             <div className="space-y-2">{selected.map(entry => {
               const allModels = clientModels(entry, protocols);
@@ -534,7 +534,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
                 onChange={event => update({ claudeOneM: { ...oneM, [role]: event.target.checked } })} />1M</label>
             </div>;
           })}</div>}
-          {client.targetId === "opencode" && staleOpenCodeModelSelection &&
+          {!isClaude && staleOpenCodeModelSelection &&
             <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
               {t("clients.staleOpenCodeModels")}
             </p>}
@@ -545,7 +545,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
             </p>;
           })()}
           <div className="space-y-1.5">
-            <div className="flex items-center justify-between gap-2"><Label htmlFor="client-model">{t(isClaude ? "clients.startupModel" : "clients.model")}</Label>
+            <div className="flex items-center justify-between gap-2"><Label htmlFor="client-model">{t(isClaude ? "clients.startupModel" : client.targetId === "pi" ? "clients.piModel" : "clients.model")}</Label>
               {selectedProtocol && <Badge variant="outline" className="text-[10px]">{t("newapi.protocol" + (selectedProtocol === "responses" ? "Responses" : selectedProtocol === "chatCompletions" ? "ChatCompletions" : "AnthropicMessages"))}</Badge>}
             </div>
             <Select disabled={busy || selected.length + selectedAggregates.length === 0} value={modelCompatible ? JSON.stringify([aggregateMode && defaultTarget?.kind === "aggregate" ? "aggregate:" + defaultTarget.aggregateId : request.providerId, request.model]) : ""}

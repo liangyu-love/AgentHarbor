@@ -22,6 +22,7 @@ import { ModelCapabilities } from "@/components/newapi/model-capabilities";
 import { useProviderState } from "@/components/newapi/use-provider-state";
 import { providerModelProtocol } from "@/lib/provider-models";
 import { formatInvokeError } from "@/lib/invoke-error";
+import { ConfigurationShortcuts } from "./configuration-shortcuts";
 
 // Injection page: how Codex, Claude Code, Claude Desktop and the aggregation
 // gateway reach the relays. The relays themselves live on their own page.
@@ -42,6 +43,7 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
 
   return (
     <div className="space-y-5">
+      <ConfigurationShortcuts />
       {(error || state.error) && (
         <div
           role="alert"

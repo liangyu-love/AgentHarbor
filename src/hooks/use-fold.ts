@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { storageKeys } from "@/lib/storage-keys";
 
 type FoldMap = Record<string, "open" | "closed">;
@@ -19,8 +19,7 @@ export function useFold(id: string, defaultOpen = true) {
     return saved === undefined ? defaultOpen : saved === "open";
   });
 
-  const toggle = useCallback(() => {
-    const next = !open;
+  const change = useCallback((next: boolean) => {
     setOpen(next);
     try {
       localStorage.setItem(
@@ -30,7 +29,17 @@ export function useFold(id: string, defaultOpen = true) {
     } catch {
       // Storage unavailable: the fold only lasts for this session.
     }
-  }, [id, open]);
+  }, [id]);
+
+  useEffect(() => {
+    const expand = (event: Event) => {
+      if ((event as CustomEvent<string>).detail === id) change(true);
+    };
+    window.addEventListener("agentharbor:expand-section", expand);
+    return () => window.removeEventListener("agentharbor:expand-section", expand);
+  }, [id, change]);
+
+  const toggle = useCallback(() => change(!open), [change, open]);
 
   return { open, toggle };
 }

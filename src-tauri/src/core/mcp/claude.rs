@@ -291,6 +291,7 @@ mod tests {
             claude: Path::new("custom/settings.json").into(),
             claude_user: Path::new("custom/.claude.json").into(),
             opencode: Path::new("unused").into(),
+            pi: Path::new("unused-pi").into(),
         };
         assert_eq!(
             custom.claude_user_config(),
@@ -300,6 +301,7 @@ mod tests {
             claude: Path::new("custom/.claude/settings.json").into(),
             claude_user: Path::new("custom/.claude/.claude.json").into(),
             opencode: Path::new("unused").into(),
+            pi: Path::new("unused-pi").into(),
         };
         assert_eq!(
             named_default.claude_user_config(),

@@ -135,6 +135,7 @@ pub(super) fn path(data_dir: &Path, id: TargetId) -> PathBuf {
     data_dir.join(match id {
         TargetId::ClaudeCode => "claude-code.owned.dat",
         TargetId::OpenCode => "opencode.owned.dat",
+        TargetId::Pi => "pi.owned.dat",
         TargetId::Codex => "codex.owned.dat",
     })
 }

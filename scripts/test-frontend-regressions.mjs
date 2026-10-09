@@ -1,4 +1,5 @@
 import { testClaudeSupport } from "./test-claude-support.mjs";
+import { testPiIntegration } from "./test-pi-integration.mjs";
 import { testImageDownload } from "./test-image-download.mjs";
 import { testOAuthLogin } from "./test-oauth-login.mjs";
 // Run after npm run build. No real Tauri backend, profiles, or external network.
@@ -42,7 +43,7 @@ if (!playwright?.chromium) {
 const esbuild = require(require.resolve("esbuild", { paths: [require.resolve("vite")] }));
 const fixture = await readFile(path.join(root, "scripts/fixtures/frontend-regressions.tsx"), "utf8");
 const bundle = await esbuild.build({ stdin: { contents: fixture, loader: "tsx", resolveDir: root },
-  bundle: true, write: false, format: "iife", platform: "browser", alias: { "@": path.join(root, "src") },
+  bundle: true, write: false, format: "iife", platform: "browser", loader: { ".svg": "dataurl" }, alias: { "@": path.join(root, "src") },
   define: { "process.env.NODE_ENV": '"production"' } });
 const assets = path.join(root, "dist/assets");
 let cssFiles;
@@ -85,7 +86,9 @@ try {
     await page.evaluate(value => window.review.mount(value), mode);
   };
 
-  if (process.env.FRONTEND_QA_SCOPE === "claude-support") {
+  if (process.env.FRONTEND_QA_SCOPE === "pi-integration") {
+    await testPiIntegration({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "claude-support") {
     await testClaudeSupport({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "image-download") {
     await testImageDownload({ page, reset });
@@ -225,8 +228,10 @@ try {
   await page.locator('[data-generation-job-status="completed"]').waitFor();
   assert.equal(await page.locator('input[type="password"]').inputValue(), "sk-shared-fixture");
   assert.equal(await page.getByRole("button", { name: "忘记此站点的密钥" }).count(), 0);
-  await page.evaluate(() => window.review.imageKeySaveResolvers.forEach(resolve => resolve()));
-  await page.waitForFunction(() => window.review.imageKeySaveResolved > 0);
+  // Resolve only the old site's saves. A blur may independently save site B;
+  // that success is allowed to clear its own key and is a different scenario.
+  await page.evaluate(() => window.review.imageKeySaveResolvers.filter(resolve => resolve.site === "https://site-a.invalid").forEach(resolve => resolve()));
+  await page.waitForFunction(() => window.review.imageKeySaveResolvedSites?.includes("https://site-a.invalid"));
   assert.equal(await page.locator('input[type="password"]').inputValue(), "sk-shared-fixture");
   assert.equal(await page.getByRole("button", { name: "忘记此站点的密钥" }).count(), 0);
   console.log("PASS late generation and key saves cannot change credentials for a different manual site");
@@ -1363,6 +1368,7 @@ try {
   await testThreadDetails({ page, reset, captureDir });
   await testClaudeSessions({ page, reset, captureDir });
   await testClaudeSupport({ page, reset, captureDir });
+  await testPiIntegration({ page, reset, captureDir });
   await testThreadUiFixes({ page, reset, captureDir });
   await testAggregation({ page, reset, captureDir });
   await testCodexSubagents({ page, reset, captureDir });
