@@ -17,8 +17,10 @@ export async function testClaudeSupport({ page, reset, captureDir }) {
 
   await reset("instructions");
   const editor = () => page.locator("textarea[id^=instruction-editor-]");
+  const currentFile = () => page.locator("[data-instruction-current]");
   await editor().waitFor();
   assert.equal(await editor().inputValue(), "codex rules");
+  assert.match(await currentFile().textContent(), /User rules[\s\S]*codex rules/);
   await radio("Claude Code").click();
   await page
     .getByText("C:/synthetic/.claude/CLAUDE.md", { exact: true })
@@ -35,6 +37,8 @@ export async function testClaudeSupport({ page, reset, captureDir }) {
   await editor().waitFor();
   assert.match(await editor().inputValue(), /阅读项目指令/);
   await editor().fill("My Claude instructions");
+  assert.match(await currentFile().textContent(), /claudeCode rules/);
+  assert.doesNotMatch(await currentFile().textContent(), /My Claude instructions/);
   await page
     .getByRole("textbox", {
       name: await label("customInstructions.presetName"),
@@ -73,6 +77,7 @@ export async function testClaudeSupport({ page, reset, captureDir }) {
     window.review.instructionApplyResolve();
   });
   await dialog.waitFor({ state: "hidden" });
+  assert.match(await currentFile().textContent(), /User rules[\s\S]*My Claude instructions/);
   const applied = await page.evaluate(() =>
     window.review.instructionCalls.find((call) => call.operation === "apply"),
   );
@@ -92,6 +97,7 @@ export async function testClaudeSupport({ page, reset, captureDir }) {
   await radio("Codex").click();
   await radio("Claude Code").click();
   assert.equal(await editor().inputValue(), "Preserved scratch draft");
+  assert.doesNotMatch(await currentFile().textContent(), /Preserved scratch draft/);
   await (await button("customInstructions.chooseTemplate")).click();
   await (await button("customInstructions.categories.saved")).click();
   await page
@@ -108,6 +114,17 @@ export async function testClaudeSupport({ page, reset, captureDir }) {
     })
     .click();
   await page.getByRole("alertdialog").waitFor({ state: "hidden" });
+  assert.equal(await currentFile().textContent(), "User rules\n");
+  await page.evaluate(() => {
+    const current = window.review.instructionStates.claudeCode.current;
+    current.fileContent = '<script>external rules</script>\n' + 'long-rule-'.repeat(80);
+    current.protectionState = "protected";
+    current.issueMessage = "Incomplete managed markers";
+  });
+  await (await button("common.refresh")).click();
+  await page.waitForFunction(() => document.querySelector("[data-instruction-current]")?.textContent.includes("external rules"));
+  assert.equal(await currentFile().locator("script").count(), 0);
+  assert.equal(await editor().isDisabled(), true);
   assert.equal(
     (
       await page.evaluate(() =>

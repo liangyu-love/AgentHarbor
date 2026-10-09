@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
@@ -34,6 +34,9 @@ export function useImageConnection(pageActive: boolean, setError: (error: string
     () => Boolean(savedConfig.baseUrl || savedConfig.legacyApiKey),
   );
   const [baseUrl, setBaseUrl] = useState(savedConfig.baseUrl);
+  const currentSite = useRef(baseUrl.trim());
+  currentSite.current = baseUrl.trim();
+  const keyStatusRequest = useRef(0);
   const [apiKey, setApiKey] = useState(savedConfig.legacyApiKey ?? "");
   const [keyStored, setKeyStored] = useState(false);
   const [keySites, setKeySites] = useState<string[]>([]);
@@ -48,6 +51,19 @@ export function useImageConnection(pageActive: boolean, setError: (error: string
     "gpt-image-2.5",
     ...availableModels.map(item => item.id),
   ]));
+
+  const refreshKeyStatus = useCallback(async (site: string, usedKey?: string) => {
+    if (site.trim() !== currentSite.current) return;
+    const revision = ++keyStatusRequest.current;
+    try {
+      const stored = await api.image.keyStatus(site.trim());
+      if (revision !== keyStatusRequest.current || site.trim() !== currentSite.current) return;
+      setKeyStored(stored);
+      if (stored && usedKey) setApiKey(current => current.trim() === usedKey.trim() ? "" : current);
+    } catch {
+      if (revision === keyStatusRequest.current && site.trim() === currentSite.current) setKeyStored(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (!savedConfig.legacyApiKey) return;
@@ -71,25 +87,20 @@ export function useImageConnection(pageActive: boolean, setError: (error: string
     }
     void api.image.saveKey(savedConfig.baseUrl, savedConfig.legacyApiKey)
       .then(() => {
-        setKeyStored(true);
-        setApiKey(current => current === savedConfig.legacyApiKey ? "" : current);
+        void refreshKeyStatus(savedConfig.baseUrl, savedConfig.legacyApiKey);
       })
       .catch(() => setError("image.errors.storage"))
       .finally(scrubPlaintextKey);
   }, [savedConfig]);
 
   useEffect(() => {
+    ++keyStatusRequest.current;
     if (!baseUrl.trim()) { setKeyStored(false); return; }
     if (!pageActive) return;
-    let active = true;
     setKeyStored(false);
-    const timeout = window.setTimeout(() => void api.image.keyStatus(baseUrl.trim()).then(stored => {
-      if (active) setKeyStored(stored);
-    }).catch(() => {
-      if (active) setKeyStored(false);
-    }), 350);
-    return () => { active = false; window.clearTimeout(timeout); };
-  }, [baseUrl, pageActive]);
+    const timeout = window.setTimeout(() => void refreshKeyStatus(baseUrl), 350);
+    return () => { ++keyStatusRequest.current; window.clearTimeout(timeout); };
+  }, [baseUrl, pageActive, refreshKeyStatus]);
 
   useEffect(() => {
     if (providerId || legacyKeyMigrationPending) return;
@@ -110,11 +121,11 @@ export function useImageConnection(pageActive: boolean, setError: (error: string
 
   const saveKey = () => {
     const pending = apiKey.trim();
-    if (!baseUrl.trim() || !pending) return;
-    void api.image.saveKey(baseUrl, pending).then(() => {
+    const site = baseUrl.trim();
+    if (!site || !pending) return;
+    void api.image.saveKey(site, pending).then(() => {
       setLegacyKeyMigrationPending(false);
-      setKeyStored(true);
-      setApiKey(current => current === pending ? "" : current);
+      void refreshKeyStatus(site, pending);
       refreshKeySites();
     }).catch(() => setError("image.errors.storage"));
   };
@@ -123,15 +134,17 @@ export function useImageConnection(pageActive: boolean, setError: (error: string
     const site = baseUrl.trim();
     if (!site) return;
     void api.image.deleteKey(site).then(() => {
-      setKeyStored(false);
+      if (site === currentSite.current) {
+        ++keyStatusRequest.current;
+        setKeyStored(false);
+      }
       refreshKeySites();
     }).catch(() => setError("image.errors.storage"));
   };
 
   /** A manual key used by a successful generation is now stored by the backend. */
-  const markKeyUsed = (usedKey: string) => {
-    setKeyStored(true);
-    setApiKey(current => current === usedKey ? "" : current);
+  const markKeyUsed = (site: string, usedKey: string) => {
+    void refreshKeyStatus(site, usedKey);
     refreshKeySites();
   };
 

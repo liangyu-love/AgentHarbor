@@ -305,6 +305,24 @@ function InstructionsWorkspace({
               {current?.issueMessage}
             </div>
           )}
+          <BentoCard>
+            <h2 id={`instruction-current-${source}`} className="mb-3 font-semibold">
+              {t("customInstructions.currentTitle")}
+            </h2>
+            {current?.fileContent ? (
+              <pre
+                aria-labelledby={`instruction-current-${source}`}
+                data-instruction-current
+                className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded-xl bg-muted/40 p-4 font-mono text-sm [overflow-wrap:anywhere]"
+              >
+                {current.fileContent}
+              </pre>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                {t("customInstructions.emptyFile")}
+              </p>
+            )}
+          </BentoCard>
           {tab === "templates" ? (
             <BentoCard>
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3">

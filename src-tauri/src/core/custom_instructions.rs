@@ -98,6 +98,7 @@ pub fn load_state(paths: &InstructionPaths) -> Result<CustomInstructionStatePayl
             protection_state: parsed.protection_state,
             issue_message: parsed.issue_message,
             managed_content: parsed.managed_content,
+            file_content: parsed.raw_content,
             last_applied_at: latest.as_ref().map(|item| item.created_at),
             last_template_code: latest.as_ref().and_then(|item| item.template_code.clone()),
             last_template_title: latest.as_ref().and_then(|item| item.template_title.clone()),
@@ -542,6 +543,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn current_file_content_is_readable_without_a_managed_block_or_with_broken_markers() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = InstructionPaths {
+            global_agents_path: temp.path().join("AGENTS.md"),
+            custom_instruction_history_dir: temp.path().join("history"),
+        };
+        let missing = load_state(&paths).unwrap().current;
+        assert!(!missing.file_exists);
+        assert_eq!(missing.file_content, "");
+        let user_rules = "User rules\r\n<script>literal instruction</script>\r\n";
+        std::fs::write(&paths.global_agents_path, user_rules).unwrap();
+        let current = load_state(&paths).unwrap().current;
+        assert!(!current.managed_block_present);
+        assert_eq!(current.file_content, user_rules);
+        let broken = format!("{user_rules}{MANAGED_START_MARKER}\r\nInterrupted edit");
+        std::fs::write(&paths.global_agents_path, &broken).unwrap();
+        let current = load_state(&paths).unwrap().current;
+        assert_eq!(
+            current.protection_state,
+            CustomInstructionProtectionState::Protected
+        );
+        assert_eq!(current.file_content, broken);
+    }
+
+    #[test]
     fn clients_keep_files_and_history_separate_and_rollback_preserves_user_text() {
         let temp = tempfile::tempdir().unwrap();
         let codex = CodexPaths::from_home(temp.path().join(".codex"));
@@ -564,6 +590,11 @@ mod tests {
         );
         assert!(!a.global_agents_path.exists());
         let state = apply_managed_content(&b, "Claude instructions", None, None, None).unwrap();
+        assert_eq!(
+            state.current.file_content,
+            std::fs::read_to_string(&b.global_agents_path).unwrap()
+        );
+        assert!(state.current.file_content.contains("User Claude rules"));
         apply_managed_content(&a, "Codex instructions", None, None, None).unwrap();
         let raw = std::fs::read_to_string(&b.global_agents_path).unwrap();
         std::fs::write(&b.global_agents_path, format!("{raw}\nLater user rules\n")).unwrap();
@@ -572,6 +603,7 @@ mod tests {
         assert!(raw.contains("User Claude rules"));
         assert!(raw.contains("Later user rules"));
         assert!(!raw.contains("Claude instructions"));
+        assert_eq!(load_state(&b).unwrap().current.file_content, raw);
         assert_eq!(
             load_state(&a).unwrap().current.managed_content,
             "Codex instructions"

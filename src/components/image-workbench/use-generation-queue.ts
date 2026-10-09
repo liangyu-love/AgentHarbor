@@ -10,7 +10,7 @@ const MAX_ACTIVE_GENERATIONS = 2;
 
 export function useGenerationQueue({ persistToGallery, onManualKeyUsed }: {
   persistToGallery: (images: string[]) => Promise<boolean>;
-  onManualKeyUsed: (apiKey: string) => void;
+  onManualKeyUsed: (baseUrl: string, apiKey: string) => void;
 }) {
   const queryClient = useQueryClient();
   const [generationJobs, setGenerationJobs] = useState<GenerationJob[]>([]);
@@ -64,7 +64,7 @@ export function useGenerationQueue({ persistToGallery, onManualKeyUsed }: {
           : item));
         // A gallery failure stays visible on this canvas and can be retried.
         void saveJobToGallery(id, generated.images);
-        if (!request.providerId && request.apiKey.trim()) onManualKeyUsed(request.apiKey);
+        if (!request.providerId && request.apiKey.trim()) onManualKeyUsed(request.baseUrl, request.apiKey);
       } catch (cause) {
         const key = errorKey(cause, ["image"], "image.errors.network");
         setGenerationJobs(current => current.map(item => item.id === id

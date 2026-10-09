@@ -90,6 +90,7 @@ export interface CustomInstructionCurrentState {
   protectionState: CustomInstructionProtectionState;
   issueMessage: string | null;
   managedContent: string;
+  fileContent: string;
   lastAppliedAt: number | null;
   lastTemplateCode: string | null;
   lastTemplateTitle: string | null;

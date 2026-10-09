@@ -122,18 +122,22 @@ export function useImageGallery(pageActive: boolean) {
   };
 
   const saveImageAs = async (src: string, index: number) => {
+    const mime = src.slice(5, src.indexOf(";")).toLowerCase();
+    const extension = mime === "image/jpeg" || mime === "image/jpg" ? "jpg"
+      : mime === "image/webp" ? "webp" : mime === "image/gif" ? "gif" : "png";
+    const filename = `agentharbor-ink-art-${Date.now()}-${index + 1}.${extension}`;
     if (!isTauriRuntime()) {
       const link = document.createElement("a");
       link.href = src;
-      link.download = `agentharbor-ink-art-${Date.now()}-${index + 1}.png`;
+      link.download = filename;
       link.click();
       return;
     }
     try {
       const { save } = await import("@tauri-apps/plugin-dialog");
       const path = await save({
-        defaultPath: `agentharbor-ink-art-${Date.now()}-${index + 1}.png`,
-        filters: [{ name: "PNG", extensions: ["png"] }],
+        defaultPath: filename,
+        filters: [{ name: extension.toUpperCase(), extensions: [extension] }],
       });
       if (typeof path !== "string") return;
       await api.image.saveFile(path, src);

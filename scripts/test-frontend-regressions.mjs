@@ -1,4 +1,5 @@
 import { testClaudeSupport } from "./test-claude-support.mjs";
+import { testImageDownload } from "./test-image-download.mjs";
 import { testOAuthLogin } from "./test-oauth-login.mjs";
 // Run after npm run build. No real Tauri backend, profiles, or external network.
 // Optional: --playwright-module=/path/to/playwright-core or PLAYWRIGHT_MODULE_PATH.
@@ -86,6 +87,8 @@ try {
 
   if (process.env.FRONTEND_QA_SCOPE === "claude-support") {
     await testClaudeSupport({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "image-download") {
+    await testImageDownload({ page, reset });
   } else if (process.env.FRONTEND_QA_SCOPE === "claude-cli-official") {
     await testClaudeCliOfficial({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "capability-clear") {
@@ -208,6 +211,27 @@ try {
   console.log("PASS explicit manual image provider selection remains selected and preserves its address");
 
   await reset("image");
+  await selectImageProvider("独立配置 / 手动填写连接凭据");
+  await page.evaluate(() => { window.review.imageKeySaveHold = true; });
+  await page.locator('input[placeholder="https://example.com"]').fill("https://site-a.invalid");
+  await page.locator('input[type="password"]').fill("sk-shared-fixture");
+  await page.locator('textarea[placeholder^="描述画面主体"]').fill("Manual site A");
+  await page.locator('[data-image-generate]').click();
+  await page.waitForFunction(() => window.review.imageRequests.length === 1);
+  assert.equal(await page.evaluate(() => window.review.imageRequests[0].apiKey), "sk-shared-fixture");
+  await page.locator('input[placeholder="https://example.com"]').fill("https://site-b.invalid");
+  await page.locator('input[type="password"]').fill("sk-shared-fixture");
+  await page.evaluate(() => window.review.imageResolvers[0]());
+  await page.locator('[data-generation-job-status="completed"]').waitFor();
+  assert.equal(await page.locator('input[type="password"]').inputValue(), "sk-shared-fixture");
+  assert.equal(await page.getByRole("button", { name: "忘记此站点的密钥" }).count(), 0);
+  await page.evaluate(() => window.review.imageKeySaveResolvers.forEach(resolve => resolve()));
+  await page.waitForFunction(() => window.review.imageKeySaveResolved > 0);
+  assert.equal(await page.locator('input[type="password"]').inputValue(), "sk-shared-fixture");
+  assert.equal(await page.getByRole("button", { name: "忘记此站点的密钥" }).count(), 0);
+  console.log("PASS late generation and key saves cannot change credentials for a different manual site");
+
+  await reset("image");
   const imagePrompt = page.locator('textarea[placeholder^="描述画面主体"]');
   const imageSubmit = page.locator('[data-image-generate]');
   await providerSelect.click();
@@ -289,6 +313,7 @@ try {
     await page.screenshot({ path: path.join(captureDir, "image-pair.png") });
   }
   console.log("PASS one image canvas fills the result panel and displays two images side by side");
+  await testImageDownload({ page, reset });
 
   await reset("groups");
   await page.getByRole("heading", { name: "relay.invalid" }).waitFor();

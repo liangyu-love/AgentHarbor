@@ -26,6 +26,7 @@ const MAX_THUMBNAIL_PIXELS: u64 = 16 * 1024 * 1024;
 const MAX_THUMBNAIL_DECODE_BYTES: u64 = 128 * 1024 * 1024;
 static THUMBNAIL_JOBS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 static IMAGE_GENERATION_JOBS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+static IMAGE_KEYS_LOCK: Mutex<()> = Mutex::new(());
 
 fn network_error(error: reqwest::Error) -> String {
     if error.is_timeout() {
@@ -100,6 +101,7 @@ fn read_key(paths: &CodexPaths, base_url: &str) -> Result<Option<String>, String
 fn write_key(paths: &CodexPaths, base_url: &str, api_key: &str) -> Result<(), String> {
     let base_url = normalized_site(base_url)?;
     newapi::auth_header(api_key).map_err(|_| "image.errors.apiKey")?;
+    let _guard = IMAGE_KEYS_LOCK.lock().map_err(|_| "image.errors.storage")?;
     let mut keys = read_keys(paths)?;
     keys.sites.retain(|site| site.base_url != base_url);
     keys.sites.insert(
@@ -115,6 +117,7 @@ fn write_key(paths: &CodexPaths, base_url: &str, api_key: &str) -> Result<(), St
 
 fn delete_key(paths: &CodexPaths, base_url: &str) -> Result<(), String> {
     let base_url = normalized_site(base_url)?;
+    let _guard = IMAGE_KEYS_LOCK.lock().map_err(|_| "image.errors.storage")?;
     let mut keys = read_keys(paths)?;
     let before = keys.sites.len();
     keys.sites.retain(|site| site.base_url != base_url);
@@ -203,28 +206,33 @@ fn paths(repo: &State<'_, Mutex<Repository>>) -> Result<CodexPaths, String> {
 }
 
 fn decode_image_data(value: &str) -> Result<(Vec<u8>, String, String), String> {
-    let (mime, encoded) = if let Some((header, data)) = value.split_once(",") {
-        let mime = header
-            .strip_prefix("data:")
-            .and_then(|header| header.split(';').next())
-            .unwrap_or("image/png");
-        (mime.to_owned(), data)
+    let encoded = if let Some((header, data)) = value.split_once(",") {
+        if !header.starts_with("data:image/") || !header.ends_with(";base64") {
+            return Err("image.errors.input".into());
+        }
+        data
     } else {
-        ("image/png".into(), value)
+        value
     };
+    if encoded.len() > MAX_IMAGE_BYTES.div_ceil(3) * 4 {
+        return Err("image.errors.inputTooLarge".into());
+    }
     let bytes = STANDARD
         .decode(encoded.trim())
         .map_err(|_| "image.errors.input".to_owned())?;
-    if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
+    if bytes.len() > MAX_IMAGE_BYTES {
         return Err("image.errors.inputTooLarge".into());
     }
-    let extension = match mime.as_str() {
-        "image/jpeg" | "image/jpg" => "jpg",
-        "image/webp" => "webp",
-        "image/gif" => "gif",
-        _ => "png",
-    };
-    Ok((bytes, mime, extension.into()))
+    let (format, _) = decode_bounded_image(&bytes).map_err(|error| {
+        if error == "image.errors.responseTooLarge" {
+            "image.errors.inputTooLarge"
+        } else {
+            "image.errors.input"
+        }
+        .to_owned()
+    })?;
+    let (mime, extension) = image_format_names(format);
+    Ok((bytes, mime.into(), extension.into()))
 }
 
 fn read_limited(reader: impl Read, limit: usize) -> Result<Vec<u8>, String> {
@@ -357,10 +365,17 @@ async fn download_client(
 
 async fn image_to_data_url(value: &Value, proxy: &ApiProxyConfigPayload) -> Result<String, String> {
     if let Some(encoded) = value.get("b64_json").and_then(Value::as_str) {
-        if encoded.len() > MAX_IMAGE_BYTES * 4 / 3 + 8 {
+        if encoded.len() > MAX_IMAGE_BYTES.div_ceil(3) * 4 {
             return Err("image.errors.responseTooLarge".into());
         }
-        return Ok(format!("data:image/png;base64,{encoded}"));
+        let encoded = encoded.to_owned();
+        return super::blocking(move || {
+            let bytes = STANDARD
+                .decode(encoded.trim())
+                .map_err(|_| "image.errors.response")?;
+            validated_image_url(bytes)
+        })
+        .await;
     }
     let url = value
         .get("url")
@@ -380,17 +395,25 @@ async fn image_to_data_url(value: &Value, proxy: &ApiProxyConfigPayload) -> Resu
     if !response.status().is_success() {
         return Err("image.errors.network".into());
     }
-    let mime = response
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .filter(|value| value.starts_with("image/"))
-        .unwrap_or("image/png")
-        .split(';')
-        .next()
-        .unwrap_or("image/png")
-        .to_owned();
     let bytes = read_limited_response(response, MAX_IMAGE_BYTES).await?;
+    super::blocking(move || validated_image_url(bytes)).await
+}
+
+fn image_format_names(format: image::ImageFormat) -> (&'static str, &'static str) {
+    match format {
+        image::ImageFormat::Jpeg => ("image/jpeg", "jpg"),
+        image::ImageFormat::WebP => ("image/webp", "webp"),
+        image::ImageFormat::Gif => ("image/gif", "gif"),
+        _ => ("image/png", "png"),
+    }
+}
+
+fn validated_image_url(bytes: Vec<u8>) -> Result<String, String> {
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Err("image.errors.responseTooLarge".into());
+    }
+    let (format, _) = decode_bounded_image(&bytes)?;
+    let (mime, _) = image_format_names(format);
     Ok(format!("data:{mime};base64,{}", STANDARD.encode(bytes)))
 }
 
@@ -460,7 +483,9 @@ async fn generate(
     )?;
     let auth = newapi::auth_header(&connection.api_key)?;
     let response = if let Some(image_data) = request.image_data.as_deref() {
-        let (bytes, mime, extension) = decode_image_data(image_data)?;
+        let image_data = image_data.to_owned();
+        let (bytes, mime, extension) =
+            super::blocking(move || decode_image_data(&image_data)).await?;
         let mut form = multipart::Form::new()
             .text("model", request.model.clone())
             .text("prompt", request.prompt.clone())
@@ -645,31 +670,20 @@ fn decode_data_url(value: &str) -> Result<(Vec<u8>, String), String> {
     let (meta, data) = value
         .split_once(',')
         .ok_or_else(|| "image.errors.response".to_owned())?;
-    if !meta.starts_with("data:") || !meta.contains(";base64") {
+    if !meta.starts_with("data:image/") || !meta.ends_with(";base64") {
         return Err("image.errors.response".into());
     }
-    let mime = meta
-        .trim_start_matches("data:")
-        .split(';')
-        .next()
-        .unwrap_or("image/png")
-        .to_ascii_lowercase();
-    if !mime.starts_with("image/") {
-        return Err("image.errors.response".into());
+    if data.len() > MAX_IMAGE_BYTES.div_ceil(3) * 4 {
+        return Err("image.errors.responseTooLarge".into());
     }
-    let extension = match mime.as_str() {
-        "image/jpeg" | "image/jpg" => "jpg",
-        "image/webp" => "webp",
-        "image/gif" => "gif",
-        _ => "png",
-    };
     let bytes = STANDARD
         .decode(data.trim())
         .map_err(|_| "image.errors.response".to_owned())?;
-    if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
+    if bytes.len() > MAX_IMAGE_BYTES {
         return Err("image.errors.responseTooLarge".into());
     }
-    Ok((bytes, extension.to_owned()))
+    let (format, _) = decode_bounded_image(&bytes)?;
+    Ok((bytes, image_format_names(format).1.to_owned()))
 }
 
 /// Resolve a user-chosen save path and reject empty / relative / extension-less targets.
@@ -722,8 +736,6 @@ pub struct SavedImagesPayload {
 pub async fn save_image_file(path: String, data_url: String) -> Result<(), String> {
     super::blocking(move || {
         let (bytes, _) = decode_data_url(&data_url)?;
-        // The path comes over IPC, so only ever write real image bytes to it.
-        image::guess_format(&bytes).map_err(|_| "image.errors.save".to_owned())?;
         let target = resolve_save_path(&path)?;
         if let Some(parent) = target.parent() {
             if !parent.as_os_str().is_empty() {
@@ -743,16 +755,20 @@ pub async fn save_images_to_gallery(
 ) -> Result<SavedImagesPayload, String> {
     let paths = paths(&repo)?;
     super::blocking(move || {
-        if data_urls.is_empty() {
+        if data_urls.is_empty() || data_urls.len() > 4 {
             return Err("image.errors.save".into());
         }
+        // Validate the entire batch before creating any gallery file.
+        let images = data_urls
+            .iter()
+            .map(|data_url| decode_data_url(data_url))
+            .collect::<Result<Vec<_>, _>>()?;
         let directory = gallery_dir(&paths);
         std::fs::create_dir_all(&directory).map_err(|_| "image.errors.save".to_owned())?;
         let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S%.3f");
         let nonce = uuid::Uuid::new_v4().simple().to_string()[..8].to_owned();
         let mut files = Vec::with_capacity(data_urls.len());
-        for (index, data_url) in data_urls.iter().enumerate() {
-            let (bytes, extension) = decode_data_url(data_url)?;
+        for (index, (bytes, extension)) in images.iter().enumerate() {
             let file_name = format!("{}-{}-{:02}.{}", stamp, nonce, index + 1, extension);
             let target = directory.join(&file_name);
             std::fs::write(&target, bytes).map_err(|_| "image.errors.save".to_owned())?;
@@ -915,9 +931,8 @@ fn thumbnail_error(error: image::ImageError) -> String {
     .into()
 }
 
-fn gallery_thumbnail(paths: &CodexPaths, target: &std::path::Path) -> Result<String, String> {
-    let (_, bytes) = read_gallery_image(paths, target)?;
-    let format = image::guess_format(&bytes).map_err(thumbnail_error)?;
+fn decode_bounded_image(bytes: &[u8]) -> Result<(image::ImageFormat, image::DynamicImage), String> {
+    let format = image::guess_format(bytes).map_err(thumbnail_error)?;
     if !matches!(
         format,
         image::ImageFormat::Png
@@ -931,17 +946,24 @@ fn gallery_thumbnail(paths: &CodexPaths, target: &std::path::Path) -> Result<Str
     limits.max_image_width = Some(MAX_THUMBNAIL_DIMENSION);
     limits.max_image_height = Some(MAX_THUMBNAIL_DIMENSION);
     limits.max_alloc = Some(MAX_THUMBNAIL_DECODE_BYTES);
-    let mut header = image::ImageReader::with_format(Cursor::new(&bytes), format);
+    let mut header = image::ImageReader::with_format(Cursor::new(bytes), format);
     header.limits(limits.clone());
     let (width, height) = header.into_dimensions().map_err(thumbnail_error)?;
     if width == 0 || height == 0 || u64::from(width) * u64::from(height) > MAX_THUMBNAIL_PIXELS {
         return Err("image.errors.responseTooLarge".into());
     }
-    let mut reader = image::ImageReader::with_format(Cursor::new(&bytes), format);
+    let mut reader = image::ImageReader::with_format(Cursor::new(bytes), format);
     reader.limits(limits);
     // ImageReader::decode reserves the output buffer against max_alloc; decoder
     // internal allocations are additionally limited on a best-effort basis.
     let decoded = reader.decode().map_err(thumbnail_error)?;
+    Ok((format, decoded))
+}
+
+fn gallery_thumbnail(paths: &CodexPaths, target: &std::path::Path) -> Result<String, String> {
+    let (_, bytes) = read_gallery_image(paths, target)?;
+    let (_, decoded) = decode_bounded_image(&bytes)?;
+    let (width, height) = (decoded.width(), decoded.height());
     let thumbnail = if width > THUMBNAIL_EDGE || height > THUMBNAIL_EDGE {
         decoded.thumbnail(THUMBNAIL_EDGE, THUMBNAIL_EDGE)
     } else {
@@ -1121,7 +1143,7 @@ mod tests {
     }
 
     fn local_image_server(
-        responses: Vec<String>,
+        responses: Vec<Vec<u8>>,
     ) -> (String, std::thread::JoinHandle<Vec<String>>) {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -1164,27 +1186,29 @@ mod tests {
                 let mut body = vec![0; size];
                 stream.read_exact(&mut body).unwrap();
                 requests.push(headers);
-                stream.write_all(response.as_bytes()).unwrap();
+                stream.write_all(&response).unwrap();
             }
             requests
         });
         (url, worker)
     }
 
-    fn image_response(body: &str) -> String {
-        format!("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+    fn image_response(body: impl AsRef<[u8]>) -> Vec<u8> {
+        let body = body.as_ref();
+        let mut response = format!("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes();
+        response.extend_from_slice(body);
+        response
     }
 
     #[test]
     fn generation_downloads_through_the_effective_proxy_without_provider_auth() {
-        let generated =
-            serde_json::json!({"data":[{"url":"http://8.8.8.8/generated.png"}]}).to_string();
-        let (proxy_url, server) = local_image_server(vec![
-            image_response(&generated),
-            image_response("image-fixture"),
-        ]);
         let dir = tempfile::tempdir().unwrap();
         let paths = CodexPaths::from_home(dir.path().join("codex"));
+        let image = std::fs::read(image_fixture(&paths, 2, 2, image::ImageFormat::Png)).unwrap();
+        let generated =
+            serde_json::json!({"data":[{"url":"http://8.8.8.8/generated.png"}]}).to_string();
+        let (proxy_url, server) =
+            local_image_server(vec![image_response(&generated), image_response(&image)]);
         std::fs::create_dir_all(&paths.app_data_dir).unwrap();
         std::fs::write(
             &paths.settings_path,
@@ -1208,10 +1232,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             result.images,
-            vec![format!(
-                "data:image/png;base64,{}",
-                STANDARD.encode(b"image-fixture")
-            )]
+            vec![format!("data:image/png;base64,{}", STANDARD.encode(image))]
         );
         let requests = server.join().unwrap();
         assert!(
@@ -1226,8 +1247,114 @@ mod tests {
     }
 
     #[test]
+    fn generated_images_validate_bytes_and_use_the_actual_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().join("codex"));
+        let proxy = ApiProxyConfigPayload {
+            mode: ApiProxyMode::Direct,
+            url: None,
+        };
+        for format in [
+            image::ImageFormat::Png,
+            image::ImageFormat::Jpeg,
+            image::ImageFormat::WebP,
+            image::ImageFormat::Gif,
+        ] {
+            let bytes = std::fs::read(image_fixture(&paths, 2, 2, format)).unwrap();
+            let encoded = STANDARD.encode(&bytes);
+            let result = tauri::async_runtime::block_on(image_to_data_url(
+                &serde_json::json!({"b64_json": encoded}),
+                &proxy,
+            ))
+            .unwrap();
+            assert_eq!(
+                result,
+                format!("data:{};base64,{encoded}", image_format_names(format).0)
+            );
+            // An incorrect declared MIME must not change the multipart format.
+            let (input, mime, extension) =
+                decode_image_data(&format!("data:image/png;base64,{encoded}")).unwrap();
+            assert_eq!(input, bytes);
+            assert_eq!(
+                (mime.as_str(), extension.as_str()),
+                image_format_names(format)
+            );
+        }
+        for encoded in [
+            String::new(),
+            "not base64!".into(),
+            STANDARD.encode(b"<html>not an image</html>"),
+        ] {
+            assert_eq!(
+                tauri::async_runtime::block_on(image_to_data_url(
+                    &serde_json::json!({"b64_json":encoded}),
+                    &proxy
+                ))
+                .unwrap_err(),
+                "image.errors.response"
+            );
+        }
+        let png = std::fs::read(image_fixture(&paths, 2, 2, image::ImageFormat::Png)).unwrap();
+        assert!(validated_image_url(png[..24].to_vec()).is_err());
+        assert_eq!(
+            decode_image_data("data:text/html;base64,aGVsbG8=").unwrap_err(),
+            "image.errors.input"
+        );
+        assert_eq!(
+            decode_image_data("data:image/png,raw").unwrap_err(),
+            "image.errors.input"
+        );
+    }
+
+    #[test]
+    fn generated_download_rejects_empty_or_fake_images_even_with_an_image_header() {
+        let (proxy_url, server) = local_image_server(vec![
+            image_response(""),
+            image_response("<html>upstream error</html>"),
+        ]);
+        let proxy = ApiProxyConfigPayload {
+            mode: ApiProxyMode::Manual,
+            url: Some(proxy_url),
+        };
+        for _ in 0..2 {
+            assert_eq!(
+                tauri::async_runtime::block_on(image_to_data_url(
+                    &serde_json::json!({"url":"http://8.8.8.8/image.png"}),
+                    &proxy
+                ))
+                .unwrap_err(),
+                "image.errors.response"
+            );
+        }
+        assert_eq!(server.join().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn concurrent_key_updates_preserve_all_sites() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().join("codex"));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        std::thread::scope(|scope| {
+            for index in 0..8 {
+                let barrier = barrier.clone();
+                let paths = &paths;
+                scope.spawn(move || {
+                    barrier.wait();
+                    write_key(
+                        paths,
+                        &format!("https://s{index}.example.org"),
+                        "sk-fixture",
+                    )
+                    .unwrap();
+                });
+            }
+        });
+        assert_eq!(read_keys(&paths).unwrap().sites.len(), 8);
+    }
+
+    #[test]
     fn image_download_redirects_are_not_followed() {
-        let (proxy_url, server) = local_image_server(vec!["HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1/private.png\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into()]);
+        let (proxy_url, server) = local_image_server(vec![b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1/private.png\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()]);
         let config = ApiProxyConfigPayload {
             mode: ApiProxyMode::Manual,
             url: Some(proxy_url),
@@ -1308,8 +1435,16 @@ mod tests {
 
     #[test]
     fn decode_data_url_requires_base64_and_image_mime() {
-        let ok = decode_data_url("data:image/png;base64,aGVsbG8=").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().join("codex"));
+        let png = std::fs::read(image_fixture(&paths, 2, 2, image::ImageFormat::Png)).unwrap();
+        let ok =
+            decode_data_url(&format!("data:image/png;base64,{}", STANDARD.encode(png))).unwrap();
         assert_eq!(ok.1, "png");
+        assert_eq!(
+            decode_data_url("data:image/png;base64,aGVsbG8=").unwrap_err(),
+            "image.errors.response"
+        );
         assert_eq!(
             decode_data_url("data:text/plain;base64,aGVsbG8=").unwrap_err(),
             "image.errors.response"

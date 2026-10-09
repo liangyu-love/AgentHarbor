@@ -480,9 +480,16 @@ api.providers.saveBalanceScript = async (id, expectedBaseUrl, script) => {
   state = { ...state, providers: state.providers.map(item => item.id === id ? next : item) };
   return next;
 };
-api.image.keyStatus = async () => false;
-api.image.keySites = async () => [];
+api.image.keyStatus = async site => Boolean(controls.review.imageKeys?.[site.trim()]);
+api.image.keySites = async () => Object.keys(controls.review.imageKeys ?? {});
+api.image.saveKey = async (site, key) => {
+  if (controls.review.imageKeySaveHold) await new Promise(resolve => (controls.review.imageKeySaveResolvers ??= []).push(resolve));
+  (controls.review.imageKeys ??= {})[site.trim()] = key;
+  controls.review.imageKeySaveResolved = (controls.review.imageKeySaveResolved ?? 0) + 1;
+};
+api.image.deleteKey = async site => { delete (controls.review.imageKeys ??= {})[site.trim()]; };
 api.image.generate = (request, jobId) => new Promise((resolve, reject) => {
+  if (!request.providerId && request.apiKey.trim()) (controls.review.imageKeys ??= {})[request.baseUrl.trim()] = request.apiKey;
   controls.review.imageRequests.push(request);
   controls.review.imageResolvers.push((images = [pixel]) => resolve({ images, model: request.model, revisedPrompts: [] }));
   if (jobId) controls.review.imageCancels[jobId] = () => reject("image.errors.cancelled");
@@ -497,6 +504,7 @@ api.image.saveToGallery = async () => {
   if (controls.review.failGallerySave) throw new Error("image.errors.save");
   return { directory: "C:/synthetic", files: ["C:/synthetic/generated.png"] };
 };
+api.image.saveFile = async (path, dataUrl) => { (controls.review.imageFileSaves ??= []).push({ path, dataUrl }); };
 api.image.listGallery = async () => ({ directory: "C:/synthetic", items: galleryItems });
 api.openPath = async path => {
   controls.review.openedPath = path;
@@ -624,11 +632,12 @@ function mount(mode: FixtureMode) {
   if (mode === "instructions") {
     for (const source of ["codex", "claudeCode"]) { localStorage.removeItem(`agentharbor.instruction-draft.${source}`); localStorage.removeItem(`agentharbor.instruction-presets.v1.${source}`); }
     controls.review.instructionCalls = [];
-    controls.review.instructionStates = Object.fromEntries(["codex", "claudeCode"].map(source => [source, { current: { globalPath: source === "codex" ? "C:/synthetic/.codex/AGENTS.md" : "C:/synthetic/.claude/CLAUDE.md", fileExists: true, managedBlockPresent: true, protectionState: "ready", issueMessage: null, managedContent: `${source} rules`, lastAppliedAt: null, lastTemplateCode: null, lastTemplateTitle: null }, history: [] }]));
+    const instructionFile = (content: string) => `User rules\n<!-- AGENT_HARBOR_CUSTOM_INSTRUCTIONS_START -->\n${content}\n<!-- AGENT_HARBOR_CUSTOM_INSTRUCTIONS_END -->\n`;
+    controls.review.instructionStates = Object.fromEntries(["codex", "claudeCode"].map(source => [source, { current: { globalPath: source === "codex" ? "C:/synthetic/.codex/AGENTS.md" : "C:/synthetic/.claude/CLAUDE.md", fileExists: true, managedBlockPresent: true, protectionState: "ready", issueMessage: null, managedContent: `${source} rules`, fileContent: instructionFile(`${source} rules`), lastAppliedAt: null, lastTemplateCode: null, lastTemplateTitle: null }, history: [] }]));
     api.loadCustomInstructionState = async (source = "codex") => { controls.review.instructionCalls.push({ operation: "load", source }); if (controls.review.instructionLoadFailure === source) throw new Error("Synthetic read failure"); return { data: controls.review.instructionStates[source] } as any; };
     api.previewCustomInstructionApply = async (content, source = "codex") => { controls.review.instructionCalls.push({ operation: "preview", source, content }); const current = controls.review.instructionStates[source].current; return { data: { globalPath: current.globalPath, currentManagedContent: current.managedContent, nextManagedContent: content, resultingContent: `User rules\n${content}\n`, protectionState: "ready" } } as any; };
-    api.applyCustomInstruction = async (params, source = "codex") => { controls.review.instructionCalls.push({ operation: "apply", target: source, ...params }); if (controls.review.instructionApplyHold) await new Promise(resolve => { controls.review.instructionApplyResolve = resolve; }); const state = controls.review.instructionStates[source]; state.history.unshift({ id: `entry-${state.history.length}`, action: "apply", source: "manual", createdAt: 1700000000 }); state.current.managedContent = params.content; return { data: structuredClone(state) } as any; };
-    api.clearCustomInstructionBlock = async (source = "codex") => { controls.review.instructionCalls.push({ operation: "clear", source }); const state = controls.review.instructionStates[source]; state.current.managedContent = ""; state.current.managedBlockPresent = false; return { data: structuredClone(state) } as any; };
+    api.applyCustomInstruction = async (params, source = "codex") => { controls.review.instructionCalls.push({ operation: "apply", target: source, ...params }); if (controls.review.instructionApplyHold) await new Promise(resolve => { controls.review.instructionApplyResolve = resolve; }); const state = controls.review.instructionStates[source]; state.history.unshift({ id: `entry-${state.history.length}`, action: "apply", source: "manual", createdAt: 1700000000 }); state.current.managedContent = params.content; state.current.fileContent = instructionFile(params.content); return { data: structuredClone(state) } as any; };
+    api.clearCustomInstructionBlock = async (source = "codex") => { controls.review.instructionCalls.push({ operation: "clear", source }); const state = controls.review.instructionStates[source]; state.current.managedContent = ""; state.current.fileContent = "User rules\n"; state.current.managedBlockPresent = false; return { data: structuredClone(state) } as any; };
     api.rollbackCustomInstruction = async (id, source = "codex") => { controls.review.instructionCalls.push({ operation: "rollback", source, id }); return { data: structuredClone(controls.review.instructionStates[source]) } as any; };
   }
   if (mode === "mcp-clients") {

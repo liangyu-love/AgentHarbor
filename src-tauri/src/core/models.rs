@@ -210,6 +210,8 @@ pub struct CustomInstructionCurrentState {
     pub protection_state: CustomInstructionProtectionState,
     pub issue_message: Option<String>,
     pub managed_content: String,
+    #[serde(default)]
+    pub file_content: String,
     pub last_applied_at: Option<i64>,
     pub last_template_code: Option<String>,
     pub last_template_title: Option<String>,
