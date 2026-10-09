@@ -1,11 +1,20 @@
-//! Coordinate session migration before releasing the selected Codex provider.
+//! Apply a Codex connection change to config.toml.
+//!
+//! Account-mode routing only changes the endpoint of Codex's built-in `openai`
+//! provider, so threads keep their provider and nothing is migrated. Codex
+//! reads config.toml at startup: a running Codex keeps its old connection
+//! until the user restarts it, and the router stays available meanwhile.
 use super::*;
 use crate::{core::thread_recovery, platform::process};
+use rusqlite::{Connection, OpenFlags};
+use std::sync::atomic::{AtomicBool, Ordering};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CodexConnectionTarget {
+    Enabled,
     Disabled,
     Native,
+    Router,
 }
 
 #[derive(Serialize)]
@@ -13,28 +22,44 @@ pub enum CodexConnectionTarget {
 pub struct CodexConnectionChange {
     #[serde(flatten)]
     pub change: StateChange,
-    pub thread_migration: Option<thread_recovery::ThreadBatchResult>,
+    /// Codex is running with the previous connection until it is restarted.
+    pub restart_required: bool,
+}
+
+static RESTART_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// A running Codex still uses a connection written before its last start.
+pub fn codex_restart_pending() -> bool {
+    if !RESTART_PENDING.load(Ordering::Relaxed) {
+        return false;
+    }
+    if process::is_codex_app_running() {
+        return true;
+    }
+    RESTART_PENDING.store(false, Ordering::Relaxed);
+    false
+}
+
+pub(super) fn clear_restart_pending() {
+    RESTART_PENDING.store(false, Ordering::Relaxed);
 }
 
 pub(super) trait CodexProcess {
     fn running(&self) -> bool;
     fn stop(&mut self) -> Result<(), String>;
-    fn ensure_stopped(&self) -> Result<(), String>;
     fn reopen(&mut self, paths: &CodexPaths) -> Result<(), String>;
-    fn check_writers(&self) -> bool {
-        true
-    }
 }
+
 struct SystemCodex;
 impl CodexProcess for SystemCodex {
     fn running(&self) -> bool {
         process::is_codex_app_running()
     }
     fn stop(&mut self) -> Result<(), String> {
-        process::stop_codex_for_thread_adoption().map_err(|e| e.to_string())
-    }
-    fn ensure_stopped(&self) -> Result<(), String> {
-        process::ensure_no_codex_writer_processes().map_err(|e| e.to_string())
+        #[cfg(target_os = "windows")]
+        process::snapshot_codex_path_before_stop();
+        process::stop_codex_app_gracefully(std::time::Duration::from_secs(8))
+            .map_err(|e| e.to_string())
     }
     fn reopen(&mut self, paths: &CodexPaths) -> Result<(), String> {
         process::launch_codex_app(&newapi::proxy_from_settings(&paths.settings_path))
@@ -42,147 +67,142 @@ impl CodexProcess for SystemCodex {
     }
 }
 
+/// Write the connection only; the user decides when to restart Codex.
 pub fn change_codex_connection(
     paths: &CodexPaths,
     target: CodexConnectionTarget,
-    force: bool,
 ) -> Result<CodexConnectionChange, String> {
-    change_with_process(paths, target, force, &mut SystemCodex)
+    let change = change_with_process(paths, target, &mut SystemCodex, false)?;
+    if change.restart_required {
+        RESTART_PENDING.store(true, Ordering::Relaxed);
+    }
+    Ok(change)
 }
 
-fn blocked(error: impl std::fmt::Display) -> String {
-    format!("CODEX_ROUTING_RESTORE_FAILED: {error}")
+/// Exit cleanup: the router is going away, so a running Codex is restarted
+/// once to reach its own provider directly. Failures never block exiting.
+pub fn release_codex_connection_on_exit(paths: &CodexPaths) -> Result<(), String> {
+    let change = change_with_process(
+        paths,
+        CodexConnectionTarget::Disabled,
+        &mut SystemCodex,
+        true,
+    );
+    clear_restart_pending();
+    change.map(|_| ())
 }
 
 pub(super) fn change_with_process(
     paths: &CodexPaths,
     target: CodexConnectionTarget,
-    force: bool,
     process: &mut impl CodexProcess,
+    restart: bool,
 ) -> Result<CodexConnectionChange, String> {
-    // Match the adoption/recovery lock order: thread -> store -> config.
-    let _threads = thread_recovery::thread_mutation_guard().map_err(blocked)?;
-    let _store = store_write_guard()?;
-    let store = load_store_unlocked(paths)?;
-    let commit = || match target {
-        CodexConnectionTarget::Disabled => set_smart_routing_unlocked(paths, false),
-        CodexConnectionTarget::Native => set_access_mode_unlocked(paths, CodexAccessMode::Native),
-    };
-    if force
-        || matches!(target, CodexConnectionTarget::Native)
-            && store.codex_access_mode == CodexAccessMode::Native
-    {
-        return commit().map(|change| CodexConnectionChange {
-            change,
-            thread_migration: None,
-        });
-    }
-    let ids = thread_recovery::connection_threads(paths).map_err(blocked)?;
-    // Even an unindexed pending insertion depends on the current config hash.
-    if store.router.enabled || config_snapshot::path(paths).is_file() || !ids.is_empty() {
-        thread_recovery::ensure_transition_ready(paths).map_err(blocked)?;
-    }
-    // A running desktop may flush its first session only during shutdown.
-    // Empty SQLite is a fast path only when we own no live connection.
-    if ids.is_empty() && !store.router.enabled && !config_snapshot::path(paths).is_file() {
-        return commit().map(|change| CodexConnectionChange {
-            change,
-            thread_migration: None,
-        });
-    }
-    let was_running = process.running();
-    let outcome = (|| {
-        process.stop().map_err(blocked)?;
-        process.ensure_stopped().map_err(blocked)?;
-        let final_config = match target {
-            CodexConnectionTarget::Disabled => projected_removal(paths, &store)?,
-            CodexConnectionTarget::Native => {
-                let mut native = store.clone();
-                if native.router.aggregate_model_id.is_some() {
-                    return Err("aggregation.errors.routerOnly".into());
-                }
-                native.active_provider_id =
-                    effective_active_for(&native, ModelProtocol::Responses).map(|p| p.id.clone());
-                native.codex_access_mode = CodexAccessMode::Native;
-                validate_native_selection(&native)?;
-                native_config::prepare_provider(paths, &native).map_err(blocked)?;
-                let (_, mut document) = open_config(paths)?;
-                document["model_provider"] = toml_edit::value(NATIVE_PROVIDER_KEY);
-                // A selected profile can override root provider settings.
-                if let Some(profile) = document
-                    .get("profile")
-                    .and_then(toml_edit::Item::as_str)
-                    .map(str::to_owned)
-                {
-                    if document
-                        .get("profiles")
-                        .and_then(|p| p.get(&profile))
-                        .and_then(|p| p.get("model_provider"))
-                        .is_some()
-                    {
-                        return Err(blocked("The selected Codex profile overrides the provider"));
-                    }
-                }
-                document.to_string()
+    let stopped = restart
+        && process.running()
+        && match process.stop() {
+            Ok(()) => true,
+            Err(error) => {
+                log::warn!("Codex could not stop before the connection change: {error}");
+                false
             }
         };
-        // Re-enumerate after graceful shutdown flushes the desktop's catalog.
-        let ids = thread_recovery::connection_threads(paths).map_err(blocked)?;
-        let migration = thread_recovery::restore_connection_threads(
-            paths,
-            &ids,
-            &final_config,
-            process.check_writers(),
-        )
-        .map_err(blocked)?;
-        process.ensure_stopped().map_err(blocked)?;
-        let change = commit()?;
-        Ok::<_, String>(CodexConnectionChange {
-            change,
-            thread_migration: Some(migration),
-        })
-    })();
-    let reopen_error = if was_running
-        && !process.running()
-        && thread_recovery::ensure_transition_ready(paths).is_ok()
-    {
-        process.reopen(paths).err()
-    } else {
-        None
-    };
-    match outcome {
-        Ok(mut change) => {
-            if let Some(migration) = &mut change.thread_migration {
-                migration.reopen_error = reopen_error;
+    let change = {
+        // Same lock order as single-thread recovery: thread -> store -> config.
+        let _threads = thread_recovery::thread_mutation_guard().map_err(|e| e.to_string())?;
+        let _store = store_write_guard()?;
+        let change = match target {
+            CodexConnectionTarget::Enabled => set_smart_routing_unlocked(paths, true),
+            CodexConnectionTarget::Disabled => set_smart_routing_unlocked(paths, false),
+            CodexConnectionTarget::Native => {
+                set_access_mode_unlocked(paths, CodexAccessMode::Native)
             }
-            Ok(change)
+            CodexConnectionTarget::Router => {
+                set_access_mode_unlocked(paths, CodexAccessMode::Router)
+            }
+        };
+        // A live Codex may still rewrite its catalog rows; normalize them
+        // when it next stops (restart, startup or exit).
+        if change.is_ok() && !process.running() {
+            if let Err(error) = normalize_threads(paths) {
+                log::warn!("Codex thread catalog normalization skipped: {error}");
+            }
         }
-        Err(error) => Err(match reopen_error {
-            Some(reopen) => format!("{error}; CODEX_REOPEN_FAILED: {reopen}"),
-            None => error,
-        }),
+        change
+    };
+    if stopped {
+        if let Err(error) = process.reopen(paths) {
+            log::warn!("Codex could not reopen after the connection change: {error}");
+        }
     }
+    Ok(CodexConnectionChange {
+        change: change?,
+        restart_required: !stopped && process.running(),
+    })
 }
 
-fn projected_removal(paths: &CodexPaths, store: &Store) -> Result<String, String> {
-    let (original, mut document) = open_config(paths)?;
-    let snapshot = match config_snapshot::load(paths, original.as_deref().unwrap_or(""))
-        .map_err(config_update_error)?
-    {
-        Some(snapshot) => Some(snapshot),
-        None if model_provider_is_ours(&document) => Some(
-            config_snapshot::recover_legacy(paths, &document, store)
-                .map_err(config_update_error)?,
-        ),
-        None => None,
-    };
-    if let Some(snapshot) = snapshot {
-        remove_managed_provider_entries(&mut document);
-        snapshot
-            .restore(paths, &mut document)
-            .map_err(config_update_error)?;
+/// Codex resumes a thread with the provider and model recorded in its catalog
+/// row. Earlier builds moved threads onto router providers, and a relay model
+/// only works while routing is on. Reset just those values so every thread
+/// stays visible and usable; conversation files are never rewritten.
+pub(crate) fn normalize_threads(paths: &CodexPaths) -> Result<usize, String> {
+    let store = load_store_unlocked(paths)?;
+    let routed = store.router.enabled && store.codex_access_mode == CodexAccessMode::Router;
+    // Accountless routing still uses a dedicated provider for its threads.
+    let keep_gateway = routed && store.router.accountless;
+    if !paths.codex_state_db_path.is_file() {
+        return Ok(0);
     }
-    Ok(document.to_string())
+    let connection = Connection::open_with_flags(
+        &paths.codex_state_db_path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| e.to_string())?;
+    connection
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| e.to_string())?;
+    let columns: Vec<String> = connection
+        .prepare("SELECT name FROM pragma_table_info('threads')")
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<_, _>>()
+        })
+        .map_err(|e| e.to_string())?;
+    if !columns.iter().any(|column| column == "model_provider") {
+        return Ok(0);
+    }
+    let mut changed = 0;
+    if !keep_gateway {
+        let providers: Vec<String> = connection
+            .prepare("SELECT DISTINCT model_provider FROM threads WHERE model_provider IS NOT NULL")
+            .and_then(|mut statement| {
+                statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<Result<_, _>>()
+            })
+            .map_err(|e| e.to_string())?;
+        for provider in providers
+            .iter()
+            .filter(|provider| is_gateway_provider_key(provider))
+        {
+            changed += connection
+                .execute(
+                    "UPDATE threads SET model_provider = 'openai' WHERE model_provider = ?1",
+                    [provider],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    if !routed && columns.iter().any(|column| column == "model") {
+        changed += connection
+            .execute(
+                "UPDATE threads SET model = NULL WHERE model_provider = 'openai' AND model LIKE '%::%'",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(changed)
 }
 
 #[cfg(test)]

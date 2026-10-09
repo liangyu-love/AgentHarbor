@@ -55,7 +55,6 @@ export async function testClaudeSessions({ page, reset, captureDir }) {
   assert.equal(await panel().count(), 0, "A Codex panel cannot survive switching to Claude");
   assert.equal(await page.getByText("已选 1 个", { exact: true }).count(), 0);
   assert.equal(await page.getByPlaceholder("搜索标题、工程、会话 ID、提供商或模型…").inputValue(), "");
-  assert.equal(await page.getByRole("button", { name: await label("threads.repairAll"), exact: true }).count(), 0);
   assert.equal(await page.getByRole("button", { name: await label("threads.deleteThread"), exact: true }).count(), 1);
   assert.equal(await page.getByRole("button", { name: await label("threads.recoveryAction"), exact: true }).count(), 0);
   assert.equal(await page.getByRole("radio", { name: /^已归档/ }).count(), 0);
@@ -114,7 +113,6 @@ export async function testClaudeSessions({ page, reset, captureDir }) {
   await source("Codex").click();
   await codexTitle.waitFor();
   assert.equal(await source("Codex").getAttribute("aria-checked"), "true");
-  assert.equal(await page.getByRole("button", { name: await label("threads.repairAll"), exact: true }).isVisible(), true);
   await capture("codex-sessions-desktop-light.png");
 
   // A delayed old-source response must never replace the active client's list.

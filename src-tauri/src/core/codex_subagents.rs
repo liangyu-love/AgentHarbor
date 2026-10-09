@@ -129,7 +129,7 @@ pub fn load(paths: &CodexPaths) -> Result<View, String> {
             .unwrap_or_else(|| actual.clone()),
         managed: store.codex_subagents.is_some(),
         applied: store.router.enabled
-            && model_provider_is_ours(&document)
+            && super::route_is_ours(&document)
             && store.codex_subagents.as_ref() == Some(&actual),
         models,
         inherited_reasoning_efforts,

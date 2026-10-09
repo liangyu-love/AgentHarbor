@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
 import { useBusyAction } from "@/hooks/use-busy-action";
-import type { ConversationSource, ThreadBatchCandidate, ThreadSummary } from "@/types/threads";
+import type { ConversationSource, ThreadSummary } from "@/types/threads";
 import {
   filterAndSortThreads,
   groupThreads,
@@ -43,7 +43,6 @@ export function useThreadList(source: ConversationSource = "codex", setSource: (
   const [copiedGroupPath, setCopiedGroupPath] = useState<string | null>(null);
   const [recoveryTarget, setRecoveryTarget] = useState<ThreadSummary | null>(null);
   const [detailKey, setDetailKey] = useState<string | null>(null);
-  const [bulkRepairing, setBulkRepairing] = useState(false);
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [cancelPendingBusy, setCancelPendingBusy] = useState(false);
@@ -209,80 +208,8 @@ export function useThreadList(source: ConversationSource = "codex", setSource: (
 
   const handleRefresh = async () => {
     await refreshAction.run(async () => {
-      await Promise.all([threadsQuery.refetch(), isCodex && routeOverviewQuery.refetch()]);
+      await threadsQuery.refetch();
     });
-  };
-
-  const routeOverviewQuery = useQuery({
-    queryKey: ["threads", "codex", "routes"],
-    queryFn: api.conversations.routeOverview,
-    enabled: isCodex,
-    staleTime: 30_000,
-  });
-  const routeStates = routeOverviewQuery.data?.states ?? {};
-  const routerActive = routeOverviewQuery.data?.routerActive ?? false;
-  const unroutedIds = useMemo(() => [...new Set(threads
-    .filter(thread => thread.id && (thread.threadSource === "rollout" ||
-      (routeStates[thread.id] && routeStates[thread.id] !== "routed")))
-    .map(thread => thread.id))], [threads, routeStates]);
-
-  // Batch adoption into the Router: preview, confirm, then one backend call
-  // that stops Codex once. A single failure never stops the remaining threads.
-  const handleRepairAll = async () => {
-    if (!isCodex || bulkRepairing || unroutedIds.length === 0) return;
-    setBulkRepairing(true);
-    try {
-      const preview = await api.conversations.previewBatch("router", { threadIds: unroutedIds });
-      if (preview.ready.length === 0) {
-        toast({
-          title: t("threads.repairAllNothing"),
-          description: t("threads.repairAllSkipped", { count: preview.skipped.length }),
-        });
-        return;
-      }
-      const providers = Object.entries(preview.providers)
-        .map(([provider, count]) => `${provider || t("threads.unknownProvider")} × ${count}`)
-        .join(" · ");
-      setConfirmRequest({
-        title: t("threads.repairAll"),
-        description: t("threads.repairAllConfirm", {
-          count: preview.ready.length,
-          skipped: preview.skipped.length,
-          providers,
-        }),
-        confirmLabel: t("threads.repairAllApply"),
-        onConfirm: () => void applyBatch(preview.ready),
-      });
-    } catch (cause) {
-      toast({ title: t("threads.recoveryFailed"), description: formatInvokeError(cause), variant: "destructive" });
-    } finally {
-      setBulkRepairing(false);
-    }
-  };
-
-  const applyBatch = async (ready: ThreadBatchCandidate[]) => {
-    setBulkRepairing(true);
-    try {
-      const result = await api.conversations.applyBatch("router", ready);
-      await Promise.all([threadsQuery.refetch(), routeOverviewQuery.refetch()]);
-      toast({
-        title: t("threads.repairAllDone"),
-        description: t("threads.repairAllResult", {
-          repaired: result.changed,
-          skipped: result.unchanged,
-          failed: result.failed.length,
-        }),
-        variant: result.failed.length === 0 ? "success" : "default",
-      });
-      if (result.reopenError) {
-        toast({ title: t("threads.routerAdoptionOpenFailed"),
-          description: t("threads.routerAdoptionOpenFailedDesc"), variant: "destructive" });
-      }
-    } catch (cause) {
-      toast({ title: t("threads.recoveryFailed"), description: formatInvokeError(cause), variant: "destructive" });
-    } finally {
-      setBulkRepairing(false);
-    }
   };
 
   const handleDelete = async (keys: string[]) => {
@@ -409,18 +336,18 @@ export function useThreadList(source: ConversationSource = "codex", setSource: (
   };
 
   return {
-    source, setSource, isCodex, sourceBusy: bulkRepairing || deleteBusy || cancelPendingBusy,
+    source, setSource, isCodex, sourceBusy: deleteBusy || cancelPendingBusy,
     threadsQuery, threads, pendingDeletionKeys, scanWarnings, pendingDeletionRecoveryNeeded,
     filtered, groups, projects, matchingKeys, activeProject, focusedThread, selectProject, focusThread, scopedThreads, workspaceCount,
     selectedExportableCount, useVirtualList,
     archivedCount, totalBytes, totalTokens,
     totalInputTokens, totalCachedTokens, totalOutputTokens, hasTokenBreakdown,
-    missingRolloutCount, routeStates, routerActive, unroutedIds, routeOverviewQuery,
+    missingRolloutCount,
     status, setStatus, query, setQuery, sortBy, setSortBy, sortLabels, viewMode, setViewMode, format, setFormat,
     selected, toggleSelect, selectFiltered, clearSelection, toggleGroupSelect,
     collapsedGroups, toggleGroupCollapse, expandAllGroups, collapseAllGroups,
-    copiedGroupPath, recoveryTarget, setRecoveryTarget, detailTarget, setDetailKey, confirmRequest, setConfirmRequest, bulkRepairing, deleteBusy, cancelPendingBusy, refreshAction,
-    handleRefresh, handleRepairAll, handleDelete, cancelPendingDeletions, handleExport, handleOpenPath, handleCopyPath,
+    copiedGroupPath, recoveryTarget, setRecoveryTarget, detailTarget, setDetailKey, confirmRequest, setConfirmRequest, deleteBusy, cancelPendingBusy, refreshAction,
+    handleRefresh, handleDelete, cancelPendingDeletions, handleExport, handleOpenPath, handleCopyPath,
   };
 }
 

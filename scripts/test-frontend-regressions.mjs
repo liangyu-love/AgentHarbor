@@ -19,7 +19,6 @@ import { testPriceCache } from "./test-price-cache.mjs";
 import { testProviderFeedback } from "./test-provider-feedback.mjs";
 import { testProviderModelResolutions } from "./test-provider-model-resolutions.mjs";
 import { testTerminalProxy } from "./test-terminal-proxy.mjs";
-import { testRoutingCache } from "./test-routing-cache.mjs";
 import { testCodexRoutingTransitions } from "./test-codex-routing-transitions.mjs";
 import { testRelayDeck } from "./test-relay-deck.mjs";
 import { testClaudeDesktopCard } from "./test-claude-desktop-card.mjs";
@@ -104,8 +103,6 @@ try {
     await testSkillsActivation({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "terminal-proxy") {
     await testTerminalProxy({ page, reset, captureDir });
-  } else if (process.env.FRONTEND_QA_SCOPE === "routing-cache") {
-    await testRoutingCache({ page, reset });
   } else if (process.env.FRONTEND_QA_SCOPE === "codex-routing-transitions") {
     await testCodexRoutingTransitions({ page, reset });
   } else if (process.env.FRONTEND_QA_SCOPE === "relay-deck") {
@@ -762,19 +759,14 @@ try {
   await page.getByText("$9").waitFor();
   console.log("PASS balance refresh stays usable alongside routing and export controls");
 
-  // Routed threads exist: turning routing off asks first, and cancel keeps it on.
-  await page.evaluate(() => { window.review.batchCalls = []; window.review.routingCalls = []; window.review.routedThreads = true; });
+  // Threads keep their provider: turning routing off is one call, no dialog.
+  await page.evaluate(() => { window.review.routingCalls = []; });
   await page.getByRole("switch", { name: labels.codexAccess, exact: true }).click();
-  await page.getByRole("alertdialog").getByRole("button", { name: labels.cancel, exact: true }).click();
-  assert.equal(await page.evaluate(() => window.review.getState().router.enabled), true);
-  assert.deepEqual(await page.evaluate(() => window.review.batchCalls), []);
-  await page.getByRole("switch", { name: labels.codexAccess, exact: true }).click();
-  await confirmAlert(labels.disableRoutingRestore);
   await page.waitForFunction(() => window.review.routingCalls.length === 1);
+  assert.equal(await page.getByRole("alertdialog").count(), 0);
   assert.equal(await page.evaluate(() => window.review.getState().router.enabled), false);
-  assert.deepEqual(await page.evaluate(() => window.review.routingCalls), [{ operation: "enabled", enabled: false, force: false }]);
-  assert.deepEqual(await page.evaluate(() => window.review.batchCalls), []);
-  console.log("PASS turning routing off confirms, keeps routing on when cancelled, and delegates migration to one backend command");
+  assert.deepEqual(await page.evaluate(() => window.review.routingCalls), [{ operation: "enabled", enabled: false }]);
+  console.log("PASS turning routing off is a single backend call without thread migration prompts");
 
   await reset("test");
   await page.getByRole("combobox").waitFor();
@@ -927,15 +919,6 @@ try {
   console.log("PASS a damaged pending-deletion queue exposes a working metadata-only recovery action");
 
   await reset("thread-actions");
-  // Only the direct thread is badged and offered; adoption is one backend batch.
-  assert.equal(await page.getByRole("button", { name: labels.routeDirect, exact: true }).count(), 1);
-  await page.getByRole("button", { name: labels.repairAll, exact: true }).first().click();
-  await confirmAlert(labels.repairAllApply);
-  await page.waitForFunction(() => window.review.batchCalls.length === 2);
-  assert.deepEqual(await page.evaluate(() => window.review.batchCalls), [
-    { operation: "preview", target: "router", selection: { threadIds: ["t0"] } },
-    { operation: "apply", target: "router", candidates: [{ threadId: "t0", revision: "batch-revision", fromProvider: "openai" }] },
-  ]);
   assert.equal(await page.evaluate(() => window.review.recoveryApplyCalls), 0);
   await page.getByRole("checkbox", { name: "Review thread 0", exact: true }).click();
   await page.getByRole("button", { name: labels.deleteSelected, exact: true }).click();
@@ -946,7 +929,7 @@ try {
   await confirmAlert(labels.delete);
   await page.waitForFunction(() => window.review.deleteCalls.length === 2);
   assert.deepEqual(await page.evaluate(() => window.review.deleteCalls[1]), ["t1"]);
-  console.log("PASS thread page adopts only unrouted threads in one batch and supports batch and single deletion");
+  console.log("PASS thread page supports batch and single deletion");
 
   await reset("thread-actions");
   const threadCheckbox = page.getByRole("checkbox", { name: "Review thread 0", exact: true });
@@ -1378,7 +1361,6 @@ try {
   await testProviderFeedback({ page, reset, captureDir });
   await testProviderModelResolutions({ page, reset, captureDir });
   await testTerminalProxy({ page, reset, captureDir });
-  await testRoutingCache({ page, reset });
   await testCodexRoutingTransitions({ page, reset });
   await testRelayDeck({ page, reset, captureDir });
   await testClaudeDesktopCard({ page, reset, captureDir });

@@ -138,6 +138,8 @@ export interface NewApiRouterView {
   // Another tool may rewrite Codex's config.toml and silently replace the router
   // injection; this reports that the file no longer points at us.
   configDrifted: boolean;
+  /** A running Codex still uses a connection written before its last start. */
+  restartPending?: boolean;
 }
 
 export interface RouteAttempt {
@@ -430,7 +432,8 @@ export interface NewApiAppliedConfig {
 export interface NewApiStateChange {
   state: NewApiState;
   applied: NewApiAppliedConfig | null;
-  threadMigration?: import("./threads").ThreadBatchResult | null;
+  /** Codex is running with its previous connection until the user restarts it. */
+  restartRequired?: boolean;
 }
 export interface NewApiImportResult extends NewApiStateChange {
   imported: number;

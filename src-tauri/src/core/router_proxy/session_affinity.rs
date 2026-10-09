@@ -271,7 +271,8 @@ mod tests {
                 mode: super::super::super::models::ApiProxyMode::Direct, url: None,
             }).await.unwrap();
             let client = Client::builder().no_proxy().build().unwrap();
-            let url = format!("http://127.0.0.1:{port}/codex/v1/responses");
+            // Codex resends full history and needs no binding; other clients do.
+            let url = format!("http://127.0.0.1:{port}/p/a/v1/responses");
             let response = client.post(&url).bearer_auth("local").header("session_id", "new")
                 .json(&json!({"model":"a::gpt-6-astra", "input":"hello"})).send().await.unwrap();
             let new_status = response.status();

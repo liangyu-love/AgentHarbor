@@ -93,7 +93,8 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
     // surface rather than the first frame of the transition.
     await page.waitForFunction(() => [...document.querySelectorAll(
       'section[aria-label="请求级路由诊断"], section[aria-label="模型能力目录与匹配预览"]',
-    )].every(element => /, 0\.82\)$/.test(getComputedStyle(element).backgroundColor)));
+    )].flatMap(element => [element, ...element.querySelectorAll("details")])
+      .every(element => /, 0\.82\)$/.test(getComputedStyle(element).backgroundColor)));
     for (const panel of [routes, catalog]) {
       const surfaces = await panel.evaluate(element => [element, ...element.querySelectorAll("details")]
         .map(surface => getComputedStyle(surface).backgroundColor));

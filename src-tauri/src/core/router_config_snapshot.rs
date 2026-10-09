@@ -1,4 +1,4 @@
-//! Reversible ownership of the router's six nonsecret root settings.
+//! Reversible ownership of the router's nonsecret root settings.
 //! The complete config (including provider credentials) stays in the existing
 //! config repository's backups, never in this sidecar.
 
@@ -19,13 +19,15 @@ use std::{
 };
 use toml_edit::{DocumentMut, Item, Value};
 
-const KEYS: [&str; 6] = [
+const KEYS: [&str; 7] = [
     "model",
     "model_provider",
     "model_catalog_json",
     "model_context_window",
     "model_auto_compact_token_limit",
     "preferred_auth_method",
+    // Account-mode routing points Codex's built-in provider at the router.
+    "openai_base_url",
 ];
 const VERSION: u32 = 1;
 static WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -215,6 +217,14 @@ impl Snapshot {
 
     pub(super) fn selected_provider_is_ours(&self, document: &DocumentMut) -> bool {
         self.applied.as_ref().is_some_and(|applied| {
+            // Built-in provider routing owns the base URL, not a provider key.
+            if let Some(Some(Scalar::Text(url))) = applied.get("openai_base_url") {
+                return document.get("openai_base_url").and_then(Item::as_str) == Some(url)
+                    && document
+                        .get("model_provider")
+                        .and_then(Item::as_str)
+                        .is_none_or(|provider| provider == "openai");
+            }
             document
                 .get("model_provider")
                 .and_then(Item::as_str)
@@ -296,7 +306,7 @@ impl Snapshot {
         // takeover must not leave our namespaced child model in its config.
         self.restore_subagents(document)?;
         // A provider switch is an external takeover of the whole route. The
-        // six root settings form one choice; restoring individual old values
+        // root settings form one choice; restoring individual old values
         // here would mix our former model/catalog/auth with the new provider.
         if !self.selected_provider_is_ours(document) {
             return Ok(());
@@ -311,6 +321,12 @@ impl Snapshot {
                 restore_field(document, &original, key);
             }
         }
+        Ok(())
+    }
+
+    /// Put one root setting back to its value before routing was applied.
+    pub(super) fn restore_key(&self, document: &mut DocumentMut, key: &str) -> Result<(), CoreError> {
+        restore_field(document, &parse_original(self)?, key);
         Ok(())
     }
 
@@ -417,7 +433,7 @@ fn is_installed_router_alias(paths: &CodexPaths, document: &DocumentMut) -> bool
     if super::native_config::installed_catalog_model(paths, document) {
         return true;
     }
-    if !model_provider_is_ours(document)
+    if !super::route_is_ours(document)
         || document.get("model_catalog_json").and_then(Item::as_str)
             != Some(catalog_path(paths).to_string_lossy().as_ref())
     {
@@ -651,11 +667,28 @@ mod tests {
 
     const ORIGINAL: &str = "# user config\nmodel = 'original-model' # chosen model\nmodel_provider = 'custom'\nmodel_catalog_json = 'custom-models.json'\n# context note\nmodel_context_window = 90000 # original context\nmodel_auto_compact_token_limit = 80000\npreferred_auth_method = 'chatgpt' # login preference\ntheme = 'dark'\n[model_providers.custom]\nname = 'Custom'\nbase_url = 'https://fixture.invalid'\nexperimental_bearer_token = 'fixture-original-secret'\n[mcp_servers.tools]\ncommand = 'node' # MCP comment\n";
 
-    /// Builds before the sidecar existed wrote bare `<uuid>.toml` backups. Simulate
-    /// such an install by applying with this build, then giving the new backup the
-    /// legacy name and dropping the sidecar.
+    /// Builds before the sidecar existed wrote bare `<uuid>.toml` backups and
+    /// selected a dedicated loopback provider. Simulate such an install by
+    /// applying with this build, rewriting the route to that form, then giving
+    /// the new backup the legacy name and dropping the sidecar.
     fn apply_as_legacy_install(paths: &CodexPaths, store: &Store) -> PathBuf {
         let applied = apply_routing_config(paths, store).unwrap();
+        if !store.router.accountless {
+            let mut legacy = config(paths);
+            legacy.remove("openai_base_url");
+            set_value(&mut legacy, "model_provider", Some(CATALOG_PROVIDER_KEY.into()));
+            let mut provider = toml_edit::Table::new();
+            provider["name"] = toml_edit::value("AgentHarbor");
+            provider["base_url"] =
+                toml_edit::value(format!("http://127.0.0.1:{}/codex/v1", store.router.port));
+            provider["wire_api"] = toml_edit::value("responses");
+            provider["requires_openai_auth"] = toml_edit::value(true);
+            let mut headers = toml_edit::InlineTable::new();
+            headers.insert(LOCAL_AUTH_HEADER, store.router.bearer_token.clone().into());
+            provider["http_headers"] = toml_edit::value(headers);
+            legacy["model_providers"][CATALOG_PROVIDER_KEY] = Item::Table(provider);
+            write_config(paths, &legacy);
+        }
         let backup = applied.backup_path.map(PathBuf::from).unwrap();
         let legacy = backup.with_file_name(format!("{}.toml", uuid::Uuid::new_v4()));
         std::fs::rename(&backup, &legacy).unwrap();
@@ -907,7 +940,10 @@ mod tests {
         write_config(&paths, &takeover);
         remove_routing_config(&paths, &store).unwrap();
         let cleaned = config(&paths);
-        assert_eq!(fields(&cleaned).unwrap(), fields(&takeover).unwrap());
+        // The takeover keeps its own choices; only our dangling endpoint goes.
+        let mut expected = takeover.clone();
+        expected.remove("openai_base_url");
+        assert_eq!(fields(&cleaned).unwrap(), fields(&expected).unwrap());
         assert_eq!(
             cleaned["model_providers"]["cc-switch"]["base_url"].as_str(),
             Some("https://cc-new.invalid")

@@ -433,81 +433,49 @@ pub async fn query_newapi_provider_balance(
 pub async fn set_newapi_smart_routing(
     repo: State<'_, Mutex<Repository>>,
     enabled: bool,
-    force: Option<bool>,
 ) -> Result<router::CodexConnectionChange, String> {
-    let paths = paths(&repo)?;
-    let _guard = routing_runtime::mutation_guard().await;
-    let previous = router::load_store(&paths)?;
-    let previously_owned = router::active_routing_config_is_ours(&paths);
-    if enabled && previous.codex_access_mode == CodexAccessMode::Router {
-        routing_runtime::ensure_available(&paths).await?;
-    }
-    let result = if enabled {
-        router::set_smart_routing(&paths, true).map(|change| router::CodexConnectionChange {
-            change,
-            thread_migration: None,
-        })
+    let target = if enabled {
+        router::CodexConnectionTarget::Enabled
     } else {
-        let close_paths = paths.clone();
-        super::blocking(move || {
-            router::change_codex_connection(
-                &close_paths,
-                router::CodexConnectionTarget::Disabled,
-                force.unwrap_or(false),
-            )
-        })
-        .await
+        router::CodexConnectionTarget::Disabled
     };
-    let mut change = match result {
-        Ok(change) => change,
-        Err(error) => {
-            let _ = routing_runtime::reconcile(&paths).await;
-            return Err(error);
-        }
-    };
-    if let Err(error) = routing_runtime::reconcile(&paths).await {
-        if enabled && change.change.state.router.access_mode == CodexAccessMode::Router {
-            let _ = router::set_smart_routing(&paths, previous.router.enabled && previously_owned);
-            let _ = routing_runtime::reconcile(&paths).await;
-            return Err(error);
-        }
-        eprintln!("[AgentHarbor] local router for other clients is unavailable: {error}");
-    }
-    change.change.state.proxy_running = router_proxy::is_running();
-    Ok(change)
+    change_codex_connection(&repo, target).await
 }
 
 #[tauri::command]
 pub async fn set_newapi_access_mode(
     repo: State<'_, Mutex<Repository>>,
     mode: CodexAccessMode,
-    force: Option<bool>,
 ) -> Result<router::CodexConnectionChange, String> {
-    let paths = paths(&repo)?;
+    let target = match mode {
+        CodexAccessMode::Native => router::CodexConnectionTarget::Native,
+        CodexAccessMode::Router => router::CodexConnectionTarget::Router,
+    };
+    change_codex_connection(&repo, target).await
+}
+
+/// Write the connection while Codex is stopped and restart it once. Threads
+/// keep their provider, so this never migrates or blocks on conversations.
+async fn change_codex_connection(
+    repo: &State<'_, Mutex<Repository>>,
+    target: router::CodexConnectionTarget,
+) -> Result<router::CodexConnectionChange, String> {
+    let paths = paths(repo)?;
     let _guard = routing_runtime::mutation_guard().await;
     let previous = router::load_store(&paths)?;
-    if previous.router.enabled
-        && mode == CodexAccessMode::Router
-        && router::active_routing_config_is_ours(&paths)
-    {
+    let previously_owned = router::active_routing_config_is_ours(&paths);
+    let needs_router = match target {
+        router::CodexConnectionTarget::Enabled => previous.codex_access_mode == CodexAccessMode::Router,
+        router::CodexConnectionTarget::Router => previous.router.enabled,
+        _ => false,
+    };
+    // The listener must exist before Codex is pointed at it.
+    if needs_router {
         routing_runtime::ensure_available(&paths).await?;
     }
-    let result = if mode == CodexAccessMode::Native && previous.router.enabled {
-        let close_paths = paths.clone();
-        super::blocking(move || {
-            router::change_codex_connection(
-                &close_paths,
-                router::CodexConnectionTarget::Native,
-                force.unwrap_or(false),
-            )
-        })
-        .await
-    } else {
-        router::set_access_mode(&paths, mode).map(|change| router::CodexConnectionChange {
-            change,
-            thread_migration: None,
-        })
-    };
+    let change_paths = paths.clone();
+    let result =
+        super::blocking(move || router::change_codex_connection(&change_paths, target)).await;
     let mut change = match result {
         Ok(change) => change,
         Err(error) => {
@@ -516,8 +484,17 @@ pub async fn set_newapi_access_mode(
         }
     };
     if let Err(error) = routing_runtime::reconcile(&paths).await {
-        if change.change.state.router.enabled && mode == CodexAccessMode::Router {
-            let _ = router::set_access_mode(&paths, previous.codex_access_mode);
+        let routed = change.change.state.router.enabled
+            && change.change.state.router.access_mode == CodexAccessMode::Router;
+        if routed && needs_router {
+            match target {
+                router::CodexConnectionTarget::Router => {
+                    let _ = router::set_access_mode(&paths, previous.codex_access_mode);
+                }
+                _ => {
+                    let _ = router::set_smart_routing(&paths, previous.router.enabled && previously_owned);
+                }
+            }
             let _ = routing_runtime::reconcile(&paths).await;
             return Err(error);
         }

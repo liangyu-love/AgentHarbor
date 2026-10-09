@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { X } from "lucide-react";
+import { Layers3, Plug, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
 import {
@@ -22,7 +22,29 @@ import { ModelCapabilities } from "@/components/newapi/model-capabilities";
 import { useProviderState } from "@/components/newapi/use-provider-state";
 import { providerModelProtocol } from "@/lib/provider-models";
 import { formatInvokeError } from "@/lib/invoke-error";
-import { ConfigurationShortcuts } from "./configuration-shortcuts";
+import { RoutingTopology } from "./routing-topology";
+
+function SectionGroup({ icon, title, description, delay, children }: {
+  icon: ReactNode;
+  title: string;
+  description: string;
+  delay: number;
+  children: ReactNode;
+}) {
+  return (
+    <div className="route-rise space-y-4" style={{ animationDelay: `${delay}ms` } as CSSProperties}>
+      <div className="flex items-center gap-3 px-1">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">{icon}</span>
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold tracking-tight text-foreground">{title}</h2>
+          <p className="text-xs text-muted-foreground">{description}</p>
+        </div>
+        <span aria-hidden className="route-group-rule ml-2 h-px flex-1" />
+      </div>
+      {children}
+    </div>
+  );
+}
 
 // Injection page: how Codex, Claude Code, Claude Desktop and the aggregation
 // gateway reach the relays. The relays themselves live on their own page.
@@ -31,6 +53,7 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
   const store = useProviderState();
   const { state, run, error, setError, applyChange } = store;
   const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
+  const [restartPromptOpen, setRestartPromptOpen] = useState(false);
 
   const providers = state.data?.providers ?? [];
   const router = state.data?.router;
@@ -41,9 +64,24 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
     : providers.find((provider) => provider.enabled && provider.hasApiKey && provider.model);
   const nativeCompatible = !!selectedProvider && providerModelProtocol(selectedProvider) === "responses";
 
+  const restartCodex = () => {
+    setRestartConfirmOpen(false);
+    setRestartPromptOpen(false);
+    void run(
+      "restart-codex",
+      async () => {
+        await api.targets.restart("codex");
+        toast({ title: t("newapi.restartCodexSuccess"), variant: "success" });
+        void state.refetch();
+      },
+      t("newapi.restartCodexFailed"),
+    );
+  };
+
   return (
-    <div className="space-y-5">
-      <ConfigurationShortcuts />
+    <div className="space-y-7">
+      <RoutingTopology store={store} onOpenRelays={onOpenRelays} onRestart={() => setRestartConfirmOpen(true)} />
+
       {(error || state.error) && (
         <div
           role="alert"
@@ -64,44 +102,47 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
         </div>
       )}
 
-      <CodexAccessCard
-        store={store}
-        providers={providers}
-        selectedProvider={selectedProvider}
-        nativeCompatible={nativeCompatible}
-        onRestart={() => setRestartConfirmOpen(true)}
-        onOpenRelays={onOpenRelays}
-      />
+      <SectionGroup icon={<Plug className="h-3.5 w-3.5" />} title={t("newapi.groups.clients")}
+        description={t("newapi.groups.clientsDesc")} delay={80}>
+        <CodexAccessCard
+          store={store}
+          providers={providers}
+          selectedProvider={selectedProvider}
+          nativeCompatible={nativeCompatible}
+          onRestart={() => setRestartConfirmOpen(true)}
+          onRestartRequired={() => setRestartPromptOpen(true)}
+          onOpenRelays={onOpenRelays}
+        />
+        <ClientConfigs providers={providers} onOpenRelays={onOpenRelays} />
+        <ClaudeDesktopConfigCard providers={providers} />
+      </SectionGroup>
 
-      <ClientConfigs providers={providers} onOpenRelays={onOpenRelays} />
-
-      <ClaudeDesktopConfigCard providers={providers} />
-
-      <AggregationManager providers={providers} />
-
-      <RoutingDiagnostics
-        disabled={nativeAccess || !state.isSuccess || store.mutationLocked}
-        webSearchProviderId={router?.webSearchProviderId ?? null}
-        searchProviders={providers.filter((provider) => provider.webSearchCapable)}
-        searchDisabled={!state.isSuccess || store.mutationLocked}
-        onWebSearchProvider={(providerId) => {
-          void run(
-            "web-search-provider",
-            async () => applyChange(await api.routing.setWebSearchProvider(providerId)),
-            t("newapi.webSearchSaveFailed"),
-          );
-        }}
-        compression={state.data?.compression ?? { mode: "percent", percent: 90 }}
-        onCompression={(policy) => {
-          void run(
-            "compression",
-            async () => applyChange(await api.routing.setCompression(policy)),
-            t("newapi.compression.saveFailed"),
-          );
-        }}
-      />
-
-      <ModelCapabilities />
+      <SectionGroup icon={<Layers3 className="h-3.5 w-3.5" />} title={t("newapi.groups.routing")}
+        description={t("newapi.groups.routingDesc")} delay={160}>
+        <AggregationManager providers={providers} />
+        <RoutingDiagnostics
+          disabled={nativeAccess || !state.isSuccess || store.mutationLocked}
+          webSearchProviderId={router?.webSearchProviderId ?? null}
+          searchProviders={providers.filter((provider) => provider.webSearchCapable)}
+          searchDisabled={!state.isSuccess || store.mutationLocked}
+          onWebSearchProvider={(providerId) => {
+            void run(
+              "web-search-provider",
+              async () => applyChange(await api.routing.setWebSearchProvider(providerId)),
+              t("newapi.webSearchSaveFailed"),
+            );
+          }}
+          compression={state.data?.compression ?? { mode: "percent", percent: 90 }}
+          onCompression={(policy) => {
+            void run(
+              "compression",
+              async () => applyChange(await api.routing.setCompression(policy)),
+              t("newapi.compression.saveFailed"),
+            );
+          }}
+        />
+        <ModelCapabilities />
+      </SectionGroup>
 
       <AlertDialog open={restartConfirmOpen} onOpenChange={setRestartConfirmOpen}>
         <AlertDialogContent className="max-w-sm">
@@ -111,22 +152,23 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive text-white hover:bg-destructive/90"
-              onClick={() => {
-                setRestartConfirmOpen(false);
-                void run(
-                  "restart-codex",
-                  async () => {
-                    await api.targets.restart("codex");
-                    toast({ title: t("newapi.restartCodexSuccess"), variant: "success" });
-                  },
-                  t("newapi.restartCodexFailed"),
-                );
-              }}
-            >
+            <AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" onClick={restartCodex}>
               {t("newapi.restartCodex")}
             </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* After a connection change while Codex is running. */}
+      <AlertDialog open={restartPromptOpen} onOpenChange={setRestartPromptOpen}>
+        <AlertDialogContent className="max-w-sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("newapi.restartPromptTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("newapi.restartPromptDesc")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("newapi.restartLater")}</AlertDialogCancel>
+            <AlertDialogAction onClick={restartCodex}>{t("newapi.restartNow")}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

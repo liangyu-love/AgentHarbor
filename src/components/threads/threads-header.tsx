@@ -1,7 +1,6 @@
 import { useTranslation } from "react-i18next";
-import { MessagesSquare, RotateCw, Sparkles } from "lucide-react";
+import { MessagesSquare, RotateCw } from "lucide-react";
 import { RainbowButton } from "@/registry/magicui/rainbow-button";
-import { Button } from "@/components/ui/button";
 import { ButtonBusyContent } from "@/components/ui/button-busy-content";
 import { SegmentedOptions } from "@/components/ui/segmented-options";
 import type { ConversationSource } from "@/types/threads";
@@ -13,11 +12,6 @@ export function ThreadsHeader({ list }: { list: ThreadList }) {
     source,
     setSource,
     sourceBusy,
-    isCodex,
-    routerActive,
-    unroutedIds,
-    bulkRepairing,
-    handleRepairAll,
     refreshAction,
     handleRefresh,
   } = list;
@@ -45,22 +39,6 @@ export function ThreadsHeader({ list }: { list: ThreadList }) {
           value={source}
           onChange={(value) => setSource(value as ConversationSource)}
         /></div>
-
-        {isCodex && <Button
-          variant="outline"
-          size="sm"
-          className="h-9 gap-1.5 rounded-xl border-border/80 px-3.5 text-xs font-semibold shadow-xs hover:border-primary/40 hover:bg-muted/80 active:scale-95 transition-all"
-          onClick={() => void handleRepairAll()}
-          disabled={bulkRepairing || !routerActive || unroutedIds.length === 0}
-          title={routerActive ? undefined : t("threads.repairAllNeedsRouter")}
-        >
-          {bulkRepairing ? (
-            <RotateCw className="h-3.5 w-3.5 animate-spin text-primary" />
-          ) : (
-            <Sparkles className="h-3.5 w-3.5 text-amber-500" />
-          )}
-          <span>{bulkRepairing ? t("threads.repairingAll") : t("threads.repairAll")}</span>
-        </Button>}
 
         {/* Refresh Button */}
         <RainbowButton

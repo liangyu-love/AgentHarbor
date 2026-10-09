@@ -89,28 +89,6 @@ fn real_codex_preserves_chatgpt_account_across_router_modes() {
     }
     assert_eq!(fs::read(&paths.auth_path).unwrap(), auth);
 
-    // Reproduce the original regression with the same synthetic login file.
-    let mut legacy = fs::read_to_string(&paths.config_path)
-        .unwrap()
-        .parse::<toml_edit::DocumentMut>()
-        .unwrap();
-    let injected = &mut legacy["model_providers"][router::CATALOG_PROVIDER_KEY];
-    injected["requires_openai_auth"] = toml_edit::value(false);
-    injected["experimental_bearer_token"] = toml_edit::value(LOCAL_TOKEN);
-    injected.as_table_mut().unwrap().remove("http_headers");
-    fs::write(&paths.config_path, legacy.to_string()).unwrap();
-    {
-        let mut server = AppServer::start(&binary, &paths, &cwd, &proxy);
-        let result = server.request(2, "account/read", json!({"refreshToken": false}));
-        assert!(
-            result["account"].is_null(),
-            "legacy regression not reproduced: {result}"
-        );
-        assert_eq!(result["requiresOpenaiAuth"], false, "{result}");
-        eprintln!("legacy routing: account=null reproduced without removing credentials");
-    }
-    assert_eq!(fs::read(&paths.auth_path).unwrap(), auth);
-
     store.router.accountless = true;
     router::apply_routing_config(&paths, &store).unwrap();
     {
@@ -197,9 +175,12 @@ fn real_codex_sends_separate_router_auth_and_router_strips_it_upstream() {
                 )
             })
     };
-    assert_eq!(
-        captured.header("x-agentharbor-token"),
-        Some(store.router.bearer_token.as_str())
+    // The built-in provider cannot add headers; the local token is in the URL.
+    assert!(captured.header("x-agentharbor-token").is_none());
+    assert!(
+        captured.request_line.contains(&format!("/openai/{}/v1/responses", store.router.bearer_token)),
+        "{}",
+        captured.request_line
     );
     let bearer = format!(
         "Bearer {}",
@@ -227,7 +208,10 @@ fn real_codex_sends_separate_router_auth_and_router_strips_it_upstream() {
         .timeout(RPC_TIMEOUT)
         .build()
         .unwrap();
-    let mut request = client.post(format!("http://127.0.0.1:{router_port}/codex/v1/responses"));
+    let mut request = client.post(format!(
+        "http://127.0.0.1:{router_port}/openai/{}/v1/responses",
+        store.router.bearer_token
+    ));
     for (name, value) in &captured.headers {
         if !matches!(
             name.as_str(),
@@ -249,7 +233,7 @@ fn real_codex_sends_separate_router_auth_and_router_strips_it_upstream() {
     let body: Value = serde_json::from_slice(&upstream.body).unwrap();
     assert_eq!(body["model"], "gpt-6-astra");
     assert_eq!(fs::read(&paths.auth_path).unwrap(), auth);
-    eprintln!("real CLI sends separate local/OpenAI auth; actual router strips both and substitutes the provider key");
+    eprintln!("real CLI sends the local token in its URL and OpenAI auth in headers; the actual router decodes the body, strips both and substitutes the provider key");
 }
 
 fn complete_fixture_turn(server: &mut AppServer, cwd: &Path) -> Result<(), Value> {
@@ -868,7 +852,7 @@ fn real_codex_reasoning_menu_uses_model_identity_across_channels() {
 
 #[test]
 #[ignore = "requires AGENTHARBOR_TEST_CODEX_BIN pointing to an installed Codex CLI"]
-fn real_codex_adopts_same_thread_and_switches_relays_without_changing_provider() {
+fn real_codex_switches_an_existing_official_thread_to_relays_without_adoption() {
     fn turn(server: &mut AppServer, thread_id: &str, model: &str, text: &str) {
         server
             .turn(thread_id, model, "high", text, RPC_TIMEOUT)
@@ -984,47 +968,24 @@ fn real_codex_adopts_same_thread_and_switches_relays_without_changing_provider()
         &fs::read(config["model_catalog_json"].as_str().unwrap()).unwrap(),
     ).unwrap();
 
-    // Simulate only the two provider writes of guarded recovery in this temp
-    // fixture. Production backup/rollback is exercised by thread_recovery's
-    // unit tests; never bypass real process guards to run an integration test.
+    // The thread was created on the official endpoint and keeps its provider.
+    // Routing only moved the built-in provider's endpoint, so no adoption runs.
     let connection = rusqlite::Connection::open(&paths.codex_state_db_path).unwrap();
-    let rollout: String = connection
+    let provider: String = connection
         .query_row(
-            "SELECT rollout_path FROM threads WHERE id=?1",
+            "SELECT model_provider FROM threads WHERE id=?1",
             [&thread_id],
             |row| row.get(0),
         )
         .unwrap();
-    let history = fs::read_to_string(&rollout).unwrap();
-    let mut rewritten = String::new();
-    for line in history.split_inclusive('\n') {
-        let mut value: Value = serde_json::from_str(line).unwrap();
-        if value["type"] == "session_meta" {
-            value["payload"]["model_provider"] = json!(router::CATALOG_PROVIDER_KEY);
-            rewritten.push_str(&value.to_string());
-            rewritten.push('\n');
-        } else {
-            rewritten.push_str(line);
-        }
-    }
-    fs::write(&rollout, &rewritten).unwrap();
-    assert_eq!(
-        connection
-            .execute(
-                "UPDATE threads SET model_provider=?1 WHERE id=?2",
-                [router::CATALOG_PROVIDER_KEY, thread_id.as_str()]
-            )
-            .unwrap(),
-        1
-    );
+    assert_eq!(provider, "openai");
     drop(connection);
-    assert!(rewritten.contains("SYNTHETIC_ORIGINAL_CONTEXT"));
 
     {
         let mut server = AppServer::start(&binary, &paths, &cwd, &proxy);
         let resumed = server.request(2, "thread/resume", json!({"threadId":thread_id}));
         assert_eq!(resumed["thread"]["id"], thread_id);
-        assert_eq!(resumed["modelProvider"], router::CATALOG_PROVIDER_KEY);
+        assert_eq!(resumed["modelProvider"], "openai");
         let menu = server.request(3, "model/list", json!({}));
         assert!(
             menu["data"]
@@ -1091,11 +1052,11 @@ fn real_codex_adopts_same_thread_and_switches_relays_without_changing_provider()
     let mut server = AppServer::start(&binary, &paths, &cwd, &proxy);
     let resumed = server.request(2, "thread/resume", json!({"threadId":thread_id}));
     assert_eq!(resumed["thread"]["id"], thread_id);
-    assert_eq!(resumed["modelProvider"], router::CATALOG_PROVIDER_KEY);
+    assert_eq!(resumed["modelProvider"], "openai");
     assert_eq!(fs::read(&paths.auth_path).unwrap(), auth);
     assert!(
         direct.requests.try_recv().is_err(),
-        "adopted turns must not reach the old endpoint"
+        "routed turns must not reach the old endpoint"
     );
 }
 

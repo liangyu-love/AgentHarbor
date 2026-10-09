@@ -49,6 +49,8 @@ hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
 http-body-util = "0.1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 base64 = "0.22"
+# Codex compresses Responses bodies with zstd for its built-in OpenAI provider.
+zstd = { version = "0.13", default-features = false }
 sha2 = "0.10"
 subtle = "2.6"
 chrono = { version = "0.4", features = ["serde"] }

@@ -214,7 +214,7 @@ export function AggregationManager({ providers }: { providers: NewApiProvider[] 
 
   return (
     <section
-      className="space-y-5 rounded-2xl border border-border bg-card p-4 shadow-sm sm:p-5"
+      className="space-y-5 rounded-3xl border border-border bg-card p-4 shadow-sm transition-shadow duration-300 hover:shadow-md sm:p-5"
       aria-labelledby="aggregation-title"
     >
       <FoldHeader
@@ -223,9 +223,10 @@ export function AggregationManager({ providers }: { providers: NewApiProvider[] 
         titleId="aggregation-title"
         contentId="aggregation-body"
         title={t("aggregation.title")}
+        titleClassName="text-[17px]"
         leading={
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
-            <Network className="h-4 w-4" />
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-background ring-1 ring-border text-indigo-600 dark:text-indigo-400">
+            <Network className="h-[18px] w-[18px]" />
           </div>
         }
         meta={

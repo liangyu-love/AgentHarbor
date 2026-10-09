@@ -25,7 +25,10 @@ mod model_protocol_tests;
 mod native_config;
 #[path = "router_transition.rs"]
 mod transition;
-pub use transition::{change_codex_connection, CodexConnectionChange, CodexConnectionTarget};
+pub use transition::{
+    change_codex_connection, codex_restart_pending, release_codex_connection_on_exit,
+    CodexConnectionChange, CodexConnectionTarget,
+};
 #[path = "codex_subagents.rs"]
 pub mod subagents;
 
@@ -387,6 +390,8 @@ pub struct RouterView {
     /// routing "enabled" here while Codex keeps using its old provider. The UI
     /// reports this instead of letting the toggle look effective.
     pub config_drifted: bool,
+    /// Codex is running with a connection written before its last start.
+    pub restart_pending: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -911,6 +916,7 @@ pub(crate) fn state_from_store_at(
                         !native_config::intact(paths, store).unwrap_or(false)
                     }
                 }),
+            restart_pending: paths.is_some() && codex_restart_pending(),
         },
         proxy_running,
         active_provider_id: (match store.codex_access_mode {
@@ -1163,7 +1169,7 @@ fn apply_routing_if_enabled(
         return Ok(None);
     }
     let (_, document) = open_config(paths)?;
-    if !model_provider_is_ours(&document) {
+    if !route_is_ours(&document) {
         return Ok(None);
     }
     Ok(Some(apply_routing_config(paths, store)?))
@@ -1173,7 +1179,7 @@ pub(crate) fn active_routing_config_is_ours(paths: &CodexPaths) -> bool {
     if !config_snapshot::path(paths).is_file() {
         return false;
     }
-    open_config(paths).is_ok_and(|(_, document)| model_provider_is_ours(&document))
+    open_config(paths).is_ok_and(|(_, document)| route_is_ours(&document))
 }
 
 pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<StateChange, String> {
@@ -2169,34 +2175,43 @@ pub fn set_model_price_override(
 
 /// A clean app exit ends this session's route. A previous run's saved toggle
 /// alone does not confer ownership of Codex's current config.
+/// Exit and port-conflict cleanup: the router is going away, so Codex must
+/// stop pointing at it. Threads keep their provider; nothing blocks exit.
 pub fn stop_smart_routing_on_exit(paths: &CodexPaths) -> Result<(), String> {
-    stop_smart_routing_on_exit_with_writer_check(paths, || {
-        crate::platform::process::ensure_no_codex_writer_processes().map_err(|e| e.to_string())
-    })
-}
-
-fn stop_smart_routing_on_exit_with_writer_check(
-    paths: &CodexPaths,
-    check_writers: impl FnOnce() -> Result<(), String>,
-) -> Result<(), String> {
     let _threads = super::thread_recovery::thread_mutation_guard().map_err(|e| e.to_string())?;
     let _guard = store_write_guard()?;
     let mut store = load_store_unlocked(paths)?;
     if !store.router.enabled && !config_snapshot::path(paths).is_file() {
         return Ok(());
     }
-    // Normal exit already migrated sessions in preflight. An abrupt shutdown
-    // must retain their provider and recovery generation for the next start.
-    if !super::thread_recovery::connection_threads(paths).map_err(|e| e.to_string())?.is_empty() {
-        return Err("newapi.errors.routedThreadsRemain".into());
-    }
-    super::thread_recovery::ensure_transition_ready(paths).map_err(|e| e.to_string())?;
-    // A live writer may still flush its first, unindexed session. Fallback
-    // never stops it; normal preflight owns stopping and session migration.
-    check_writers()?;
     remove_routing_config(paths, &store)?;
     store.router.enabled = false;
-    save_store_unlocked(paths, &store)
+    save_store_unlocked(paths, &store)?;
+    // A running Codex may still write its catalog rows; normalize next time.
+    if !crate::platform::process::is_codex_app_running() {
+        if let Err(error) = transition::normalize_threads(paths) {
+            log::warn!("Codex thread catalog normalization skipped: {error}");
+        }
+    }
+    Ok(())
+}
+
+/// Best effort whenever Codex is stopped (startup, restart): rows left on an
+/// earlier build's router provider become visible and usable again.
+pub fn normalize_threads_when_stopped(paths: &CodexPaths) {
+    if crate::platform::process::is_codex_app_running() {
+        return;
+    }
+    let (Ok(_threads), Ok(_store)) = (
+        super::thread_recovery::thread_mutation_guard(),
+        store_write_guard(),
+    ) else {
+        return;
+    };
+    transition::clear_restart_pending();
+    if let Err(error) = transition::normalize_threads(paths) {
+        log::warn!("Codex thread catalog normalization skipped: {error}");
+    }
 }
 
 pub fn set_access_mode(paths: &CodexPaths, mode: CodexAccessMode) -> Result<StateChange, String> {
@@ -2369,6 +2384,39 @@ fn model_provider_is_ours(document: &toml_edit::DocumentMut) -> bool {
         .is_some_and(managed_provider_key)
 }
 
+/// Account-mode routing: Codex's built-in `openai` provider points at the
+/// router, so threads keep their provider while routing is toggled.
+pub(crate) fn builtin_router_base(store: &Store) -> String {
+    format!(
+        "http://127.0.0.1:{}/openai/{}/v1",
+        store.router.port, store.router.bearer_token
+    )
+}
+
+/// The base URL points at this app's router, whichever provider is selected.
+fn router_base_is_ours(document: &toml_edit::DocumentMut) -> bool {
+    document
+        .get("openai_base_url")
+        .and_then(toml_edit::Item::as_str)
+        .and_then(|url| url.strip_prefix("http://127.0.0.1:"))
+        .and_then(|rest| rest.split_once("/openai/"))
+        .is_some_and(|(port, _)| port.parse::<u16>().is_ok_and(|port| port != 0))
+}
+
+fn builtin_provider_selected(document: &toml_edit::DocumentMut) -> bool {
+    document
+        .get("model_provider")
+        .and_then(toml_edit::Item::as_str)
+        .is_none_or(|provider| provider == "openai")
+}
+
+/// Whether config.toml currently routes Codex through this app. Another
+/// tool selecting its own provider takes over, even if our URL remains.
+pub(crate) fn route_is_ours(document: &toml_edit::DocumentMut) -> bool {
+    model_provider_is_ours(document)
+        || router_base_is_ours(document) && builtin_provider_selected(document)
+}
+
 pub(crate) fn managed_provider_key(key: &str) -> bool {
     key == DIRECT_PROVIDER_KEY
         || key == NATIVE_PROVIDER_KEY
@@ -2416,20 +2464,21 @@ pub(crate) fn routing_config_intact(paths: &CodexPaths) -> bool {
         .get("model_provider")
         .and_then(toml_edit::Item::as_str)
         .unwrap_or_default();
-    let expected_catalog = if key == AGGREGATE_PROVIDER_KEY {
-        aggregate_catalog_path(paths)
+    let builtin = router_base_is_ours(&document) && builtin_provider_selected(&document);
+    let expected_catalogs = if builtin {
+        vec![catalog_path(paths), aggregate_catalog_path(paths)]
+    } else if key == AGGREGATE_PROVIDER_KEY {
+        vec![aggregate_catalog_path(paths)]
     } else {
-        catalog_path(paths)
+        vec![catalog_path(paths)]
     };
-    document
-        .get("model_providers")
-        .and_then(toml_edit::Item::as_table_like)
-        .and_then(|providers| providers.get(key))
-        .is_some()
-        && document
-            .get("model_provider")
-            .and_then(toml_edit::Item::as_str)
-            .is_some_and(|key| matches!(key, CATALOG_PROVIDER_KEY | AGGREGATE_PROVIDER_KEY))
+    (builtin
+        || document
+            .get("model_providers")
+            .and_then(toml_edit::Item::as_table_like)
+            .and_then(|providers| providers.get(key))
+            .is_some()
+            && matches!(key, CATALOG_PROVIDER_KEY | AGGREGATE_PROVIDER_KEY))
         && document
             .get("model_catalog_json")
             .and_then(toml_edit::Item::as_str)
@@ -2440,13 +2489,14 @@ pub(crate) fn routing_config_intact(paths: &CodexPaths) -> bool {
                 } else {
                     paths.codex_home.join(referenced)
                 };
-                let expected = expected_catalog.clone();
-                referenced == expected
-                    || referenced
-                        .canonicalize()
-                        .ok()
-                        .zip(expected.canonicalize().ok())
-                        .is_some_and(|(a, b)| a == b)
+                expected_catalogs.iter().any(|expected| {
+                    referenced == *expected
+                        || referenced
+                            .canonicalize()
+                            .ok()
+                            .zip(expected.canonicalize().ok())
+                            .is_some_and(|(a, b)| a == b)
+                })
             })
 }
 
@@ -3269,17 +3319,20 @@ fn apply_local_router_config(
                 }
                 None => {
                     reject_foreign_managed_provider_entries(&document)?;
+                    // A lost sidecar must not record our own URL as the baseline.
+                    if router_base_is_ours(&document) {
+                        document.remove("openai_base_url");
+                    }
                     config_snapshot::Snapshot::capture(paths, &document)?
                 }
             };
             // Refreshing a card/catalog must retain the conversation's valid
-            // selection. Changing connection modes or removing that model
-            // falls back to the newly configured default.
+            // selection. Removing that model falls back to the configured default.
             let selected = document.get("model")
                 .and_then(toml_edit::Item::as_str)
                 .filter(|selected| {
                     store.router.aggregate_model_id.is_none()
-                        && document.get("model_provider").and_then(toml_edit::Item::as_str) == Some(provider_key)
+                        && route_is_ours(&document)
                         && menu_contains(&menu, selected)
                 })
                 .unwrap_or(&default_model)
@@ -3291,10 +3344,6 @@ fn apply_local_router_config(
                 Some(selected.into()));
             config_snapshot::set_value(
                 &mut document,
-                "model_provider",
-                Some(provider_key.into()));
-            config_snapshot::set_value(
-                &mut document,
                 "model_catalog_json",
                 Some(catalog.to_string_lossy().to_string().into()),
             );
@@ -3303,6 +3352,35 @@ fn apply_local_router_config(
             for key in ["model_context_window", "model_auto_compact_token_limit"] {
                 config_snapshot::set_value(&mut document, key, None);
             }
+            if !store.router.accountless {
+                // Every thread keeps Codex's built-in `openai` provider; only its
+                // endpoint changes. Toggling routing never migrates threads.
+                if !builtin_provider_selected(&document) {
+                    // Prefer the user's own value when it already was built-in.
+                    snapshot.restore_key(&mut document, "model_provider")?;
+                }
+                if !builtin_provider_selected(&document) {
+                    config_snapshot::set_value(&mut document, "model_provider", Some("openai".into()));
+                }
+                config_snapshot::set_value(
+                    &mut document,
+                    "openai_base_url",
+                    Some(builtin_router_base(store).into()),
+                );
+                snapshot.apply_auth(&mut document, false)?;
+                snapshot.apply_subagents(&mut document, store.codex_subagents.as_ref())?;
+                write_catalog(paths, store).map_err(CoreError::OperationFailed)?;
+                snapshot.prepare(paths, original, &document, config_snapshot::Action::Apply)?;
+                pending = Some(snapshot);
+                return Ok(document.to_string());
+            }
+            // Without a ChatGPT login the built-in provider is unavailable, so
+            // accountless mode keeps a dedicated provider.
+            config_snapshot::set_value(&mut document, "openai_base_url", None);
+            config_snapshot::set_value(
+                &mut document,
+                "model_provider",
+                Some(provider_key.into()));
             if document.get("model_providers").is_none() {
                 let mut providers = toml_edit::Table::new();
                 providers.set_implicit(true);
@@ -3427,12 +3505,28 @@ pub(crate) fn routing_config_matches(paths: &CodexPaths, store: &Store) -> Resul
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .is_some_and(|catalog| catalog == expected_menu);
+    let shared = selected_model_valid
+        && document.get("model_context_window").is_none()
+        && document.get("model_auto_compact_token_limit").is_none()
+        && document
+            .get("model_catalog_json")
+            .and_then(toml_edit::Item::as_str)
+            == Some(expected_catalog.as_str())
+        && catalog_current
+        && ownership_matches
+        && subagents::matches(&document, store);
+    if !store.router.accountless {
+        return Ok(shared
+            && document.get("openai_base_url").and_then(toml_edit::Item::as_str)
+                == Some(builtin_router_base(store).as_str())
+            && builtin_provider_selected(&document));
+    }
     let provider = document
         .get("model_providers")
         .and_then(toml_edit::Item::as_table_like)
         .and_then(|providers| providers.get(provider_key))
         .and_then(toml_edit::Item::as_table_like);
-    let current = provider.is_some_and(|provider| {
+    let current = shared && !router_base_is_ours(&document) && provider.is_some_and(|provider| {
         provider.get("base_url").and_then(toml_edit::Item::as_str) == Some(expected_base.as_str())
             && provider.get("wire_api").and_then(toml_edit::Item::as_str) == Some("responses")
             && provider
@@ -3461,17 +3555,7 @@ pub(crate) fn routing_config_matches(paths: &CodexPaths, store: &Store) -> Resul
     }) && document
         .get("model_provider")
         .and_then(toml_edit::Item::as_str)
-        == Some(provider_key)
-        && selected_model_valid
-        && document.get("model_context_window").is_none()
-        && document.get("model_auto_compact_token_limit").is_none()
-        && document
-            .get("model_catalog_json")
-            .and_then(toml_edit::Item::as_str)
-            == Some(expected_catalog.as_str())
-        && catalog_current
-        && ownership_matches
-        && subagents::matches(&document, store);
+        == Some(provider_key);
     Ok(current)
 }
 
@@ -3504,7 +3588,7 @@ fn remove_connection_config(
             Ok(config) => config,
             Err(_) => return Ok(None),
         };
-        if !model_provider_is_ours(&document) {
+        if !route_is_ours(&document) {
             return Ok(None);
         }
     }
@@ -3538,10 +3622,30 @@ fn remove_connection_config(
                 None => None,
             };
             let Some(mut snapshot) = snapshot else {
-                return Ok(original.to_owned());
+                // Without ownership records, release only our own endpoint and
+                // the relay-only selections that cannot work without it.
+                if !router_base_is_ours(&document) {
+                    return Ok(original.to_owned());
+                }
+                document.remove("openai_base_url");
+                if document.get("model").and_then(toml_edit::Item::as_str)
+                    .is_some_and(|model| model.contains("::")) {
+                    document.remove("model");
+                }
+                let ours = [catalog_path(paths), aggregate_catalog_path(paths)];
+                if document.get("model_catalog_json").and_then(toml_edit::Item::as_str)
+                    .is_some_and(|path| ours.iter().any(|own| own.to_string_lossy() == path)) {
+                    document.remove("model_catalog_json");
+                }
+                return Ok(document.to_string());
             };
             remove_managed_provider_entries(&mut document);
             snapshot.restore(paths, &mut document)?;
+            // After a takeover our endpoint may remain; it would send official
+            // threads to a router that is going away.
+            if router_base_is_ours(&document) {
+                snapshot.restore_key(&mut document, "openai_base_url")?;
+            }
             keep_catalog = document
                 .get("model_catalog_json")
                 .and_then(toml_edit::Item::as_str)
@@ -4634,10 +4738,9 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             .parse()
             .unwrap();
         assert_eq!(config["theme"].as_str(), Some("dark"));
-        assert_eq!(
-            config["model_providers"][CATALOG_PROVIDER_KEY]["wire_api"].as_str(),
-            Some("responses")
-        );
+        assert!(config["openai_base_url"]
+            .as_str()
+            .is_some_and(|url| url.ends_with("/openai/agentharbor_test_token/v1")));
         assert_eq!(
             config["mcp_servers"]["context7"]["command"].as_str(),
             Some("npx")
@@ -4673,7 +4776,10 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         assert!(store.router.bearer_token.starts_with("agentharbor_"));
         assert!(store.router.bearer_token.len() > 24);
         assert!(text.contains(&store.router.bearer_token));
-        assert!(text.contains("http://127.0.0.1:43127/codex/v1"));
+        assert!(text.contains(&format!(
+            "http://127.0.0.1:43127/openai/{}/v1",
+            store.router.bearer_token
+        )));
         assert!(text.contains("::model-a"));
         assert!(text.contains("model_catalog_json"));
         let change = set_smart_routing(&paths, false).unwrap();
@@ -5810,15 +5916,13 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             .unwrap();
         assert_eq!(relay["context_window"], 272_000);
         assert_eq!(relay["auto_compact_token_limit"], 250_000);
+        // The built-in provider keeps Codex's ChatGPT sign-in; only its endpoint
+        // moves to the router, whose token is part of that URL.
+        assert!(config.get("model_provider").is_none());
+        assert!(config.get("model_providers").is_none());
         assert_eq!(
-            config["model_providers"][CATALOG_PROVIDER_KEY]["requires_openai_auth"].as_bool(),
-            Some(true)
-        );
-        let provider = &config["model_providers"][CATALOG_PROVIDER_KEY];
-        assert!(provider.get("experimental_bearer_token").is_none());
-        assert_eq!(
-            provider["http_headers"][LOCAL_AUTH_HEADER].as_str(),
-            Some(store.router.bearer_token.as_str())
+            config["openai_base_url"].as_str(),
+            Some(builtin_router_base(&store).as_str())
         );
     }
 
@@ -5919,7 +6023,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             assert_eq!(open_config(&paths).unwrap().1["model"].as_str(), Some(selected.as_str()));
             // Also preserve the choice when a stale critical field needs repair.
             let (_, mut document) = open_config(&paths).unwrap();
-            document["model_providers"][CATALOG_PROVIDER_KEY]["base_url"] = toml_edit::value("http://127.0.0.1:1");
+            document["openai_base_url"] = toml_edit::value("http://127.0.0.1:1/openai/stale/v1");
             std::fs::write(&paths.config_path, document.to_string()).unwrap();
             assert!(ensure_routing_config(&paths, &store).unwrap().is_some());
             assert_eq!(open_config(&paths).unwrap().1["model"].as_str(), Some(selected.as_str()));
@@ -5932,7 +6036,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
     }
 
     #[test]
-    fn routing_auth_migrates_legacy_config_and_switches_modes_without_touching_credentials() {
+    fn routing_auth_switches_modes_without_touching_credentials() {
         let (_dir, paths) = paths();
         let state = save_provider(&paths, input("Relay", "https://relay.example.com")).unwrap();
         set_enabled(&paths, &state.state.providers[0].id, true).unwrap();
@@ -5941,16 +6045,6 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         let auth_bytes = br#"{"tokens":{"access_token":"fixture-preserve-token"}}"#;
         std::fs::write(&paths.auth_path, auth_bytes).unwrap();
         apply_routing_config(&paths, &store).unwrap();
-        let mut legacy = std::fs::read_to_string(&paths.config_path)
-            .unwrap()
-            .parse::<toml_edit::DocumentMut>()
-            .unwrap();
-        let provider = &mut legacy["model_providers"][CATALOG_PROVIDER_KEY];
-        provider["requires_openai_auth"] = toml_edit::value(false);
-        provider["experimental_bearer_token"] = toml_edit::value(&store.router.bearer_token);
-        provider.as_table_mut().unwrap().remove("http_headers");
-        std::fs::write(&paths.config_path, legacy.to_string()).unwrap();
-        assert!(ensure_routing_config(&paths, &store).unwrap().is_some());
         assert!(
             ensure_routing_config(&paths, &store).unwrap().is_none(),
             "repair must be idempotent"
@@ -5968,18 +6062,21 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             accountless["preferred_auth_method"].as_str(),
             Some("apikey")
         );
+        assert!(accountless.get("openai_base_url").is_none());
 
         store.router.accountless = false;
         assert!(ensure_routing_config(&paths, &store).unwrap().is_some());
         assert!(ensure_routing_config(&paths, &store).unwrap().is_none());
         let (_, signed_in) = open_config(&paths).unwrap();
-        assert_eq!(
-            signed_in["model_providers"][CATALOG_PROVIDER_KEY]["requires_openai_auth"].as_bool(),
-            Some(true)
-        );
-        assert!(signed_in["model_providers"][CATALOG_PROVIDER_KEY]
-            .get("experimental_bearer_token")
+        assert!(signed_in
+            .get("model_providers")
+            .and_then(|providers| providers.get(CATALOG_PROVIDER_KEY))
             .is_none());
+        assert!(signed_in.get("model_provider").is_none());
+        assert_eq!(
+            signed_in["openai_base_url"].as_str(),
+            Some(builtin_router_base(&store).as_str())
+        );
         assert!(signed_in.get("preferred_auth_method").is_none());
         assert_eq!(std::fs::read(&paths.auth_path).unwrap(), auth_bytes);
     }

@@ -38,15 +38,17 @@ fn codex_aggregate_selection_saves_then_applies_the_public_model_and_restores_us
     set_smart_routing(&paths, true).unwrap();
     let installed = config(&paths);
     assert_eq!(installed["model"].as_str(), Some("official-model"));
-    assert_eq!(
-        installed["model_provider"].as_str(),
-        Some(AGGREGATE_PROVIDER_KEY)
-    );
-    assert_eq!(
-        installed["model_providers"][AGGREGATE_PROVIDER_KEY]["base_url"].as_str(),
-        Some("http://127.0.0.1:43127/aggregate/v1")
-    );
+    // The selected aggregate is reached through the built-in provider by its
+    // public model ID; no dedicated provider is written.
     let store = load_store(&paths).unwrap();
+    assert_eq!(
+        installed["openai_base_url"].as_str(),
+        Some(builtin_router_base(&store).as_str())
+    );
+    assert!(installed
+        .get("model_providers")
+        .and_then(|providers| providers.get(AGGREGATE_PROVIDER_KEY))
+        .is_none());
     let catalog: serde_json::Value =
         serde_json::from_slice(&fs::read(selected_catalog_path(&paths, &store)).unwrap()).unwrap();
     assert_eq!(catalog["models"][0]["slug"], "official-model");

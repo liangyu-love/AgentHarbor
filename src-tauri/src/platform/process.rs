@@ -358,6 +358,14 @@ fn is_codex_writer_command(command: &str) -> bool {
 #[cfg(target_os = "windows")]
 fn is_windows_codex_writer_name(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
+    // The sandbox broker outlives the desktop and never owns its session or
+    // configuration files. Keep actual CLI/app-server writers in the check.
+    if matches!(
+        name.as_str(),
+        "codex-windows-sandbox-service.exe" | "codex-windows-sandbox.exe"
+    ) {
+        return false;
+    }
     matches!(
         name.as_str(),
         "codex.exe"
@@ -632,6 +640,7 @@ pub fn restart_codex_app(
     paths: &crate::platform::paths::CodexPaths,
 ) -> Result<(), CoreError> {
     stop_codex_app_gracefully(Duration::from_secs(8))?;
+    crate::core::router::normalize_threads_when_stopped(paths);
     crate::core::codex_config::prepare_network_config(paths, proxy)?;
     launch_codex_app(proxy)
 }
@@ -764,6 +773,7 @@ pub fn restart_codex_app(
 ) -> Result<(), CoreError> {
     snapshot_running_codex_path();
     stop_codex_app_gracefully(Duration::from_secs(8))?;
+    crate::core::router::normalize_threads_when_stopped(paths);
     crate::core::codex_config::prepare_network_config(paths, proxy)?;
     launch_windows_codex_app(proxy)
 }
@@ -1217,6 +1227,7 @@ pub fn restart_codex_app(
     paths: &crate::platform::paths::CodexPaths,
 ) -> Result<(), CoreError> {
     stop_codex_app_gracefully(Duration::from_secs(8))?;
+    crate::core::router::normalize_threads_when_stopped(paths);
     crate::core::codex_config::prepare_network_config(paths, proxy)?;
     launch_codex_app(proxy)
 }

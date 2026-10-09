@@ -209,7 +209,7 @@ export function ClientConfigs({ providers, onOpenRelays }: { providers: NewApiPr
 
   return (
     <section
-      className="space-y-4 rounded-2xl border border-border bg-card p-4 shadow-sm sm:p-5"
+      className="space-y-4 rounded-3xl border border-border bg-card p-4 shadow-sm transition-shadow duration-300 hover:shadow-md sm:p-5"
       aria-labelledby="client-configs-title"
     >
       <FoldHeader
@@ -218,9 +218,10 @@ export function ClientConfigs({ providers, onOpenRelays }: { providers: NewApiPr
         titleId="client-configs-title"
         contentId="client-configs-body"
         title={t("clients.title")}
+        titleClassName="text-[17px]"
         leading={
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
-            <Terminal className="h-4 w-4" />
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-background ring-1 ring-border text-foreground">
+            <Terminal className="h-[18px] w-[18px]" />
           </div>
         }
       />

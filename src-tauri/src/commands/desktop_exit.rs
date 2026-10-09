@@ -77,7 +77,7 @@ pub fn request_exit(app: &AppHandle, intent: ExitIntent) {
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let _ = attempt_exit(&app, intent, false, false).await;
+        let _ = attempt_exit(&app, intent, false).await;
     });
 }
 
@@ -92,7 +92,6 @@ async fn attempt_exit(
     app: &AppHandle,
     intent: ExitIntent,
     stop_running: bool,
-    force_codex: bool,
 ) -> Result<(), String> {
     let _guard = routing_runtime::mutation_guard().await;
     let paths = app
@@ -111,12 +110,12 @@ async fn attempt_exit(
                     stop_running,
                 )
                 .map_err(desktop_exit::encode)?;
-                if restored {
-                    router::change_codex_connection(
-                        &restore_paths,
-                        router::CodexConnectionTarget::Disabled,
-                        force_codex,
-                    )?;
+                // Codex is restarted without the router; this never waits on
+                // conversations, and a Codex that cannot restart keeps exit open.
+                if restored && store.router.enabled {
+                    if let Err(error) = router::release_codex_connection_on_exit(&restore_paths) {
+                        log::warn!("Codex routing cleanup before exit failed: {error}");
+                    }
                 }
                 Ok(restored)
             })
@@ -190,7 +189,6 @@ pub fn get_claude_desktop_exit_request(
 pub enum ExitDecision {
     Background,
     StopAndExit,
-    ForceStopAndExit,
 }
 
 #[tauri::command]
@@ -226,16 +224,7 @@ pub async fn resolve_claude_desktop_exit(
         }
         match decision {
             ExitDecision::Background => unreachable!(),
-            ExitDecision::StopAndExit | ExitDecision::ForceStopAndExit => {
-                if matches!(decision, ExitDecision::ForceStopAndExit)
-                    && !state
-                        .pending
-                        .as_ref()
-                        .and_then(|request| request.error.as_deref())
-                        .is_some_and(|error| error.starts_with("CODEX_ROUTING_RESTORE_FAILED:"))
-                {
-                    return Err("claudeDesktop.errors.previewExpired".into());
-                }
+            ExitDecision::StopAndExit => {
                 let intent = state
                     .pending
                     .as_ref()
@@ -246,13 +235,7 @@ pub async fn resolve_claude_desktop_exit(
             }
         }
     };
-    attempt_exit(
-        &app,
-        intent,
-        true,
-        matches!(decision, ExitDecision::ForceStopAndExit),
-    )
-    .await
+    attempt_exit(&app, intent, true).await
 }
 
 #[cfg(test)]

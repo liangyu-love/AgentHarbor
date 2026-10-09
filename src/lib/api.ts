@@ -129,8 +129,8 @@ const routingApi = {
     modelId: string,
     price: import("@/types/newapi").ModelPriceOverrides | null,
   ) => invoke<NewApiStateChange>("set_newapi_model_price", { providerId, modelId, price }),
-  setEnabled: (enabled: boolean, force = false) => invoke<NewApiStateChange>("set_newapi_smart_routing", { enabled, force }),
-  setAccessMode: (mode: CodexAccessMode, force = false) => invoke<NewApiStateChange>("set_newapi_access_mode", { mode, force }),
+  setEnabled: (enabled: boolean) => invoke<NewApiStateChange>("set_newapi_smart_routing", { enabled }),
+  setAccessMode: (mode: CodexAccessMode) => invoke<NewApiStateChange>("set_newapi_access_mode", { mode }),
   subagents: () => invoke<import("@/types/newapi").CodexSubagentView>("load_codex_subagents"),
   saveSubagents: (settings: import("@/types/newapi").CodexSubagentSettings | null) =>
     invoke<NewApiStateChange>("save_codex_subagents", { settings }),
@@ -234,25 +234,6 @@ const conversationsApi = {
       "adopt_codex_thread_router",
       { threadId, expectedRevision },
     ),
-  routeOverview: () =>
-    invoke<import("@/types/threads").ThreadRouteOverview>("codex_thread_route_overview"),
-  previewBatch: (
-    target: import("@/types/threads").ThreadBatchTarget,
-    selection: { threadIds?: string[]; fromProvider?: string },
-  ) =>
-    invoke<import("@/types/threads").ThreadBatchPreview>("preview_codex_thread_batch", {
-      threadIds: selection.threadIds ?? [],
-      fromProvider: selection.fromProvider ?? null,
-      target,
-    }),
-  applyBatch: (
-    target: import("@/types/threads").ThreadBatchTarget,
-    candidates: import("@/types/threads").ThreadBatchCandidate[],
-  ) =>
-    invoke<import("@/types/threads").ThreadBatchResult>("apply_codex_thread_batch", {
-      candidates,
-      target,
-    }),
   };
 
 const usageApi = {

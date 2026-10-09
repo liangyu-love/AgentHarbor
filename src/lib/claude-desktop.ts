@@ -94,7 +94,7 @@ export const claudeDesktopApi = {
   /** 先完全退出 Claude Desktop 再启动，让刚写入的配置立即生效。 */
   restart: () => invokeDesktop<ClaudeDesktopRestartResult>("restart_claude_desktop"),
   exitRequest: () => invokeDesktop<ClaudeDesktopExitRequest | null>("get_claude_desktop_exit_request"),
-  resolveExit: (decision: "background" | "stopAndExit" | "forceStopAndExit") =>
+  resolveExit: (decision: "background" | "stopAndExit") =>
     invokeDesktop<void>("resolve_claude_desktop_exit", { decision }),
 };
 

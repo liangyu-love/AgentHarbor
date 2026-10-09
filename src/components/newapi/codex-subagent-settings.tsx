@@ -47,9 +47,9 @@ export function CodexSubagentSettingsFields({ store }: { store: ProviderState })
     toast({ title: t(next ? "newapi.subagentSaved" : "newapi.subagentRestored"),
       description: change.applied ? t("newapi.subagentRestart") : undefined, variant: "success" });
   }, t("newapi.subagentSaveFailed"));
-  return <section aria-labelledby="codex-subagents-title" className="space-y-3 border-t border-border/60 pt-4">
+  return <section aria-labelledby="codex-subagents-title" className="space-y-3 rounded-2xl border border-border/60 bg-background/55 p-4">
     <div className="flex flex-wrap items-baseline justify-between gap-2">
-      <h3 id="codex-subagents-title" className="text-sm font-medium">{t("newapi.subagentDefaults")}</h3>
+      <h3 id="codex-subagents-title" className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">{t("newapi.subagentDefaults")}</h3>
       {view.managed && <span className="text-xs text-muted-foreground">
         {t(view.applied ? "newapi.subagentApplied" : "newapi.subagentPending")}
       </span>}
@@ -59,7 +59,7 @@ export function CodexSubagentSettingsFields({ store }: { store: ProviderState })
         <Label htmlFor="codex-subagent-model" className="text-xs text-muted-foreground">{t("newapi.subagentModel")}</Label>
         <Select value={settings.model ?? "__inherit__"} disabled={mutationLocked} onValueChange={updateModel}>
           <SelectTrigger id="codex-subagent-model" title={selected?.label ?? settings.model ?? t("newapi.subagentInheritModel")}
-            className="min-w-0 gap-2 bg-background/80 [&>span]:min-w-0 [&>span]:flex-1 [&>span]:truncate [&>span]:text-left [&>svg]:shrink-0">
+            className="min-w-0 gap-2 bg-card [&>span]:min-w-0 [&>span]:flex-1 [&>span]:truncate [&>span]:text-left [&>svg]:shrink-0">
             <SelectValue />
           </SelectTrigger>
           <SelectContent className="max-w-[calc(100vw-2rem)]">
@@ -77,7 +77,7 @@ export function CodexSubagentSettingsFields({ store }: { store: ProviderState })
         <Label htmlFor="codex-subagent-effort" className="text-xs text-muted-foreground">{t("newapi.subagentEffort")}</Label>
         <Select value={settings.reasoningEffort ?? "__inherit__"} disabled={mutationLocked}
           onValueChange={value => setDraft({ ...settings, reasoningEffort: value === "__inherit__" ? null : value })}>
-          <SelectTrigger id="codex-subagent-effort" className="bg-background/80"><SelectValue /></SelectTrigger>
+          <SelectTrigger id="codex-subagent-effort" className="bg-card"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="__inherit__">{t("newapi.subagentAutoEffort")}</SelectItem>
             {effortUnavailable && <SelectItem value={settings.reasoningEffort!} disabled>{settings.reasoningEffort}</SelectItem>}

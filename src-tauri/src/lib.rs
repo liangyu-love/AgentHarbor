@@ -296,9 +296,6 @@ pub fn run() {
             commands::thread_recovery::preview_codex_thread_recovery,
             commands::thread_recovery::apply_codex_thread_recovery,
             commands::thread_recovery::adopt_codex_thread_router,
-            commands::thread_recovery::codex_thread_route_overview,
-            commands::thread_recovery::preview_codex_thread_batch,
-            commands::thread_recovery::apply_codex_thread_batch,
         ])
         .build(context)
         .expect("error while building AgentHarbor");

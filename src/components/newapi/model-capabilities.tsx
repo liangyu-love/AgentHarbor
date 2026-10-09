@@ -664,7 +664,7 @@ export function ModelCapabilities() {
 
   return (
     <section
-      className="rounded-2xl border border-border/70 bg-card p-4.5 backdrop-blur-md shadow-xs transition-all"
+      className="rounded-3xl border border-border bg-card p-4 shadow-sm transition-shadow duration-300 hover:shadow-md sm:p-5"
       aria-label={t("newapi.modelCapabilities")}
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -674,7 +674,7 @@ export function ModelCapabilities() {
           onClick={() => setOpen(!open)}
           className="flex items-center gap-2 px-2 text-sm font-bold tracking-tight text-foreground hover:bg-muted/80 rounded-xl"
         >
-          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary/10 text-primary">
+          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-primary/10 text-primary">
             <Cpu className="h-4 w-4" />
           </div>
           <span>{t("newapi.modelCapabilities")}</span>

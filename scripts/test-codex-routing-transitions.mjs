@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 
+// Threads keep Codex's built-in provider, so connection changes are a single
+// backend call that only writes config. A running Codex is restarted by the
+// user, either from the prompt or later from the pending indicator.
 export async function testCodexRoutingTransitions({ page, reset }) {
   const mount = async (options = {}) => {
     await reset("compact");
     await page.evaluate(value => {
       Object.assign(window.review, { routerPatch: { enabled: true, accessMode: "router" }, ...value });
       window.review.mount("access");
-      window.review.routedThreads = true;
     }, options);
     await page.waitForFunction(() => window.review.getState().router.enabled);
   };
@@ -14,89 +16,66 @@ export async function testCodexRoutingTransitions({ page, reset }) {
   const labels = await page.evaluate(() => ({
     access: window.review.t("newapi.codexAccess"),
     native: window.review.t("newapi.accessNative"),
-    cancel: window.review.t("common.cancel"),
-    restore: window.review.t("newapi.disableRoutingRestore"),
-    nativeRestore: window.review.t("newapi.nativeRoutingRestore"),
-    force: window.review.t("newapi.forceDisableRouting"),
-    nativeForce: window.review.t("newapi.forceNativeRouting"),
-    blocked: window.review.t("newapi.routingRestoreBlockedTitle"),
-    reopenFailed: window.review.t("threads.routerAdoptionOpenFailed"),
+    restartHint: window.review.t("newapi.codexRestartHint"),
+    promptTitle: window.review.t("newapi.restartPromptTitle"),
+    now: window.review.t("newapi.restartNow"),
+    later: window.review.t("newapi.restartLater"),
+    pending: window.review.t("newapi.topology.restartPending"),
+    pendingHint: window.review.t("newapi.restartPendingHint"),
   }));
-  const alert = () => page.getByRole("alertdialog");
   const begin = async native => {
     if (native) {
       await page.locator("#codex-access-mode").click();
       await page.getByRole("option", { name: labels.native, exact: true }).click();
     } else await page.getByRole("switch", { name: labels.access, exact: true }).click();
-    await alert().getByRole("button", { name: native ? labels.nativeRestore : labels.restore, exact: true }).click();
   };
-  const expected = (native, force = false) => native
-    ? { operation: "accessMode", mode: "native", force }
-    : { operation: "enabled", enabled: false, force };
+  const expected = native => native
+    ? { operation: "accessMode", mode: "native" }
+    : { operation: "enabled", enabled: false };
   const completed = native => page.waitForFunction(value => value
     ? window.review.getState().router.accessMode === "native"
     : !window.review.getState().router.enabled, native);
+  const prompt = () => page.getByRole("alertdialog").filter({ hasText: labels.promptTitle });
 
   for (const native of [false, true]) {
     await mount();
     await begin(native);
     await completed(native);
+    await page.waitForFunction(value => window.review.lastToastDescription === value, labels.restartHint);
+    assert.equal(await page.getByRole("alertdialog").count(), 0);
     assert.deepEqual(await page.evaluate(() => window.review.routingCalls), [expected(native)]);
-    assert.deepEqual(await page.evaluate(() => window.review.batchCalls), []);
+    assert.deepEqual(await page.evaluate(() => window.review.restartCalls ?? []), []);
   }
-  console.log("PASS disabling routing and selecting native access delegate thread migration to one backend command");
+  console.log("PASS with Codex stopped, disabling routing or selecting native access only writes the configuration");
 
   for (const native of [false, true]) {
-    await mount({ routingMutationFailure: "CODEX_ROUTING_RESTORE_FAILED: synthetic thread is locked" });
+    await mount({ codexRunning: true });
+    await page.evaluate(() => { window.review.restartCalls = []; });
     await begin(native);
-    await alert().getByRole("heading", { name: labels.blocked, exact: true }).waitFor();
-    assert.deepEqual(await page.evaluate(() => ({ enabled: window.review.getState().router.enabled,
-      mode: window.review.getState().router.accessMode })), { enabled: true, mode: "router" });
-    await alert().getByRole("button", { name: labels.cancel, exact: true }).click();
-    await alert().waitFor({ state: "detached" });
-    assert.deepEqual(await page.evaluate(() => window.review.routingCalls), [expected(native)]);
-    assert.equal(await page.getByRole("switch", { name: labels.access, exact: true }).isChecked(), true);
-    await begin(native);
-    await alert().getByRole("heading", { name: labels.blocked, exact: true }).waitFor();
-    await alert().getByRole("button", { name: native ? labels.nativeForce : labels.force, exact: true }).click();
-    await completed(native);
-    assert.deepEqual(await page.evaluate(() => window.review.routingCalls), [expected(native), expected(native), expected(native, true)]);
-    assert.deepEqual(await page.evaluate(() => window.review.batchCalls), []);
+    await prompt().waitFor();
+    assert.deepEqual(await page.evaluate(() => window.review.restartCalls), [], "the change never restarts Codex by itself");
+    await prompt().getByRole("button", { name: labels.later, exact: true }).click();
+    await prompt().waitFor({ state: "detached" });
+    // The pending state stays visible with a quick restart.
+    await page.getByText(labels.pendingHint, { exact: true }).waitFor();
+    await page.getByRole("button", { name: labels.pending }).click();
+    await page.getByRole("alertdialog").getByRole("button").last().click();
+    await page.waitForFunction(() => window.review.restartCalls.length === 1);
+    assert.deepEqual(await page.evaluate(() => window.review.restartCalls), ["codex"]);
   }
-  console.log("PASS failed migration keeps routing, cancelling the force choice preserves it and confirming retries with force=true");
+  console.log("PASS a running Codex gets a restart prompt; choosing later keeps a pending indicator with quick restart");
 
-  for (const native of [false, true]) {
-    await mount({ routeOverviewFailure: "synthetic unreadable thread index",
-      routingMutationFailure: "CODEX_ROUTING_RESTORE_FAILED: synthetic unreadable thread index" });
-    if (native) {
-      await page.locator("#codex-access-mode").click();
-      await page.getByRole("option", { name: labels.native, exact: true }).click();
-    } else await page.getByRole("switch", { name: labels.access, exact: true }).click();
-    await alert().getByRole("heading", { name: labels.blocked, exact: true }).waitFor();
-    assert.deepEqual(await page.evaluate(() => ({ enabled: window.review.getState().router.enabled,
-      mode: window.review.getState().router.accessMode })), { enabled: true, mode: "router" });
-    assert.deepEqual(await page.evaluate(() => window.review.routingCalls), [expected(native)]);
-    await alert().getByRole("button", { name: native ? labels.nativeForce : labels.force, exact: true }).click();
-    await completed(native);
-    assert.deepEqual(await page.evaluate(() => window.review.routingCalls), [expected(native), expected(native, true)]);
-    assert.equal(await page.evaluate(() => window.review.routedThreads), true,
-      "forcing a connection change must leave the unmigrated thread records for recovery");
-  }
-  console.log("PASS unreadable thread overviews defer to the backend, retain routing on failure and allow explicit forced disable or native access");
+  await mount({ codexRunning: true });
+  await page.evaluate(() => { window.review.restartCalls = []; });
+  await begin(false);
+  await prompt().getByRole("button", { name: labels.now, exact: true }).click();
+  await page.waitForFunction(() => window.review.restartCalls.length === 1);
+  console.log("PASS the restart prompt can restart Codex immediately");
 
   await mount({ routingMutationFailure: "newapi.errors.storage" });
   await begin(false);
-  await alert().waitFor({ state: "detached" });
   await page.waitForFunction(() => window.review.routingCalls.length === 1);
-  assert.equal(await alert().count(), 0);
+  assert.equal(await page.getByRole("alertdialog").count(), 0);
   assert.equal(await page.getByRole("switch", { name: labels.access, exact: true }).isChecked(), true);
-  console.log("PASS unrelated configuration failures do not offer forced route removal");
-
-  for (const native of [false, true]) {
-    await mount({ routingMigrationResult: { changed: 1, unchanged: 0, failed: [], reopenError: "synthetic launch failure" } });
-    await begin(native);
-    await completed(native);
-    await page.waitForFunction(title => window.review.lastToast === title, labels.reopenFailed);
-  }
-  console.log("PASS migrated threads retain a visible warning when Codex cannot be reopened");
+  console.log("PASS configuration failures leave routing unchanged without restart prompts");
 }

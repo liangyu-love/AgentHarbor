@@ -151,7 +151,7 @@ impl MockResponses {
         Self::with_handler(ModelProtocol::Responses, handler, false)
     }
 
-    fn with_handler(
+    pub(super) fn with_handler(
         protocol: ModelProtocol,
         handler: impl Fn(&CapturedRequest) -> String + Send + 'static,
         reject_relay_ids: bool,

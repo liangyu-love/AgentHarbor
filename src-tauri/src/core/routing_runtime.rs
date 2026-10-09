@@ -130,6 +130,7 @@ async fn reconcile_on_startup_at(
     if result.as_ref().err().map(String::as_str) == Some("newapi.errors.portBusy") {
         release_router_clients_at(paths, clients);
     }
+    router::normalize_threads_when_stopped(paths);
     result
 }
 
@@ -168,6 +169,8 @@ fn needs_server(
         // tool replaces the current config.toml provider. Keep it available
         // until the user disables routing, without reclaiming that config.
         || (store.router.enabled && store.codex_access_mode == router::CodexAccessMode::Router)
+        // A running Codex keeps its previous connection until it restarts.
+        || router::codex_restart_pending()
 }
 
 #[cfg(test)]

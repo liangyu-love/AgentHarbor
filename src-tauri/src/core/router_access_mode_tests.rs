@@ -297,7 +297,7 @@ fn loading_a_saved_toggle_and_exiting_without_injection_leave_codex_files_untouc
     assert!(state.router.config_drifted);
     assert_eq!(file_state(&paths), before);
 
-    stop_smart_routing_on_exit_with_writer_check(&paths, || Ok(())).unwrap();
+    stop_smart_routing_on_exit(&paths).unwrap();
     let after = file_state(&paths);
     assert_eq!(after[1..], before[1..]);
     assert!(!load_store(&paths).unwrap().router.enabled);
@@ -321,7 +321,7 @@ fn editing_a_provider_after_cc_switch_takes_over_does_not_reinject() {
     assert!(result.applied.is_none());
     assert_eq!(fs::read(&paths.config_path).unwrap(), before);
 
-    stop_smart_routing_on_exit_with_writer_check(&paths, || Ok(())).unwrap();
+    stop_smart_routing_on_exit(&paths).unwrap();
     let cleaned = config(&paths);
     assert_eq!(cleaned["model_provider"].as_str(), Some("cc-switch"));
     assert_eq!(
@@ -353,14 +353,25 @@ fn foreign_entry_in_our_reserved_namespace_blocks_destructive_enable() {
     }
 }
 
+/// Account-mode routing keeps Codex's built-in provider and moves its endpoint.
+fn assert_builtin_route(paths: &CodexPaths) {
+    let installed = config(paths);
+    assert!(installed
+        .get("model_provider")
+        .and_then(toml::Value::as_str)
+        .is_none_or(|provider| provider == "openai"));
+    let store = load_store(paths).unwrap();
+    assert_eq!(
+        installed["openai_base_url"].as_str(),
+        Some(builtin_router_base(&store).as_str())
+    );
+}
+
 #[test]
 fn router_native_router_then_disable_restores_six_fields_and_user_files() {
     let (_directory, paths) = fixture();
     set_smart_routing(&paths, true).unwrap();
-    assert_eq!(
-        config(&paths)["model_provider"].as_str(),
-        Some(CATALOG_PROVIDER_KEY)
-    );
+    assert_builtin_route(&paths);
     assert_user_files_preserved(&paths);
     let native = set_access_mode(&paths, CodexAccessMode::Native).unwrap();
     assert!(native.applied.is_some());
@@ -380,10 +391,7 @@ fn router_native_router_then_disable_restores_six_fields_and_user_files() {
     assert_eq!(fs::read(&paths.auth_path).unwrap(), ORIGINAL_AUTH);
     let routed = set_access_mode(&paths, CodexAccessMode::Router).unwrap();
     assert!(routed.applied.is_some());
-    assert_eq!(
-        config(&paths)["model_provider"].as_str(),
-        Some(CATALOG_PROVIDER_KEY)
-    );
+    assert_builtin_route(&paths);
     assert_user_files_preserved(&paths);
     let disabled = set_smart_routing(&paths, false).unwrap();
     assert!(!disabled.state.router.enabled);

@@ -1,35 +1,18 @@
 use super::*;
 use rusqlite::Connection;
-use sha2::Digest;
-use std::cell::Cell;
 
-const FIRST: &str = "01999999-1111-7222-8333-444444444444";
-const SECOND: &str = "02999999-1111-7222-8333-444444444444";
-const THIRD: &str = "03999999-1111-7222-8333-444444444444";
-const ORIGINAL: &str = "model_provider = 'openai'\nmodel = 'official-fixture'\ntheme = 'light'\n";
+const OFFICIAL: &str = "01999999-1111-7222-8333-444444444444";
+const LEGACY: &str = "02999999-1111-7222-8333-444444444444";
+const FOREIGN: &str = "03999999-1111-7222-8333-444444444444";
+const ORIGINAL: &str = "model = 'official-fixture'\ntheme = 'light'\n";
 
+#[derive(Default)]
 struct FakeCodex {
     running: bool,
     stop_error: Option<String>,
     reopen_error: Option<String>,
     stops: usize,
-    ensures: Cell<usize>,
     reopens: usize,
-    on_stop: Option<Box<dyn FnOnce()>>,
-}
-
-impl Default for FakeCodex {
-    fn default() -> Self {
-        Self {
-            running: true,
-            stop_error: None,
-            reopen_error: None,
-            stops: 0,
-            ensures: Cell::new(0),
-            reopens: 0,
-            on_stop: None,
-        }
-    }
 }
 
 impl CodexProcess for FakeCodex {
@@ -41,19 +24,8 @@ impl CodexProcess for FakeCodex {
         if let Some(error) = &self.stop_error {
             return Err(error.clone());
         }
-        if let Some(flush) = self.on_stop.take() {
-            flush();
-        }
         self.running = false;
         Ok(())
-    }
-    fn ensure_stopped(&self) -> Result<(), String> {
-        self.ensures.set(self.ensures.get() + 1);
-        if self.running {
-            Err("synthetic writer is still running".into())
-        } else {
-            Ok(())
-        }
     }
     fn reopen(&mut self, _paths: &CodexPaths) -> Result<(), String> {
         self.reopens += 1;
@@ -63,23 +35,38 @@ impl CodexProcess for FakeCodex {
         self.running = true;
         Ok(())
     }
-    fn check_writers(&self) -> bool {
-        false
+}
+
+fn running() -> FakeCodex {
+    FakeCodex {
+        running: true,
+        ..Default::default()
     }
 }
 
-fn fixture() -> (tempfile::TempDir, CodexPaths) {
+fn fixture(accountless: bool) -> (tempfile::TempDir, CodexPaths) {
     let directory = tempfile::tempdir().unwrap();
     let paths = CodexPaths::from_home(directory.path().join("codex"));
     paths.ensure_directories().unwrap();
-    std::fs::create_dir_all(&paths.sessions_dir).unwrap();
     std::fs::write(&paths.config_path, ORIGINAL).unwrap();
-    Connection::open(&paths.codex_state_db_path)
-        .unwrap()
+    let connection = Connection::open(&paths.codex_state_db_path).unwrap();
+    connection
         .execute_batch(
-            "CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT, rollout_path TEXT);",
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT, model TEXT);",
         )
         .unwrap();
+    for (id, provider, model) in [
+        (OFFICIAL, "openai", "transition-fixture::response-model"),
+        (LEGACY, CATALOG_PROVIDER_KEY, "official-fixture"),
+        (FOREIGN, "custom", "custom::model"),
+    ] {
+        connection
+            .execute(
+                "INSERT INTO threads VALUES (?1, ?2, ?3)",
+                (id, provider, model),
+            )
+            .unwrap();
+    }
     let store = Store {
         providers: vec![Provider {
             id: "transition-fixture".into(),
@@ -99,40 +86,25 @@ fn fixture() -> (tempfile::TempDir, CodexPaths) {
         }],
         active_provider_id: Some("transition-fixture".into()),
         router: RouterSettings {
-            enabled: true,
-            accountless: true,
+            accountless,
+            port: 18_765,
             bearer_token: "synthetic-transition-token".into(),
             ..Default::default()
         },
         ..Default::default()
     };
     let _guard = store_write_guard().unwrap();
-    apply_routing_config(&paths, &store).unwrap();
     save_store_unlocked(&paths, &store).unwrap();
     (directory, paths)
 }
 
-fn add_thread(paths: &CodexPaths, id: &str, provider: &str) {
-    let rollout = paths.sessions_dir.join(format!("rollout-{id}.jsonl"));
-    let meta = serde_json::json!({"timestamp":"2026-10-08T00:00:00Z","type":"session_meta",
-        "payload":{"id":id,"model_provider":provider,"cwd":"C:/synthetic"}});
-    std::fs::write(&rollout, format!("{meta}\n")).unwrap();
-    Connection::open(&paths.codex_state_db_path)
-        .unwrap()
-        .execute(
-            "INSERT INTO threads (id, model_provider, rollout_path) VALUES (?1, ?2, ?3)",
-            (id, provider, rollout.display().to_string()),
-        )
-        .unwrap();
-}
-
-fn provider_of(paths: &CodexPaths, id: &str) -> String {
+fn row(paths: &CodexPaths, id: &str) -> (String, Option<String>) {
     Connection::open(&paths.codex_state_db_path)
         .unwrap()
         .query_row(
-            "SELECT model_provider FROM threads WHERE id = ?1",
+            "SELECT model_provider, model FROM threads WHERE id = ?1",
             [id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap()
 }
@@ -144,336 +116,165 @@ fn document(paths: &CodexPaths) -> toml_edit::DocumentMut {
         .unwrap()
 }
 
-fn retained(paths: &CodexPaths, config: &[u8], snapshot: &[u8]) {
-    assert_eq!(std::fs::read(&paths.config_path).unwrap(), config);
-    assert_eq!(
-        std::fs::read(config_snapshot::path(paths)).unwrap(),
-        snapshot
-    );
-    assert!(load_store(paths).unwrap().router.enabled);
+fn original(paths: &CodexPaths) -> String {
+    std::fs::read_to_string(&paths.config_path).unwrap()
 }
 
-fn prepared_insertion_journal(paths: &CodexPaths) -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({
-        "version": 2,
-        "threadId": FIRST,
-        "backupPath": paths.app_data_dir.join("thread-recovery-backups/pending.json").display().to_string(),
-        "configGeneration": format!("{:x}", sha2::Sha256::digest(std::fs::read(&paths.config_path).unwrap())),
-        "stage": "prepared",
-        "mutation": {
-            "type": "insertRow",
-            "schema_signature": "synthetic-schema",
-            "columns": [],
-            "row_fingerprint": "synthetic-row"
-        }
-    })).unwrap()
+fn change(paths: &CodexPaths, target: CodexConnectionTarget) -> CodexConnectionChange {
+    change_with_process(paths, target, &mut FakeCodex::default(), false).unwrap()
 }
 
 #[test]
-#[cfg(target_os = "windows")]
-fn disable_restores_catalog_and_rollout_before_removing_the_provider() {
-    let (_directory, paths) = fixture();
-    add_thread(&paths, FIRST, CATALOG_PROVIDER_KEY);
-    let mut process = FakeCodex::default();
-    let result =
-        change_with_process(&paths, CodexConnectionTarget::Disabled, false, &mut process).unwrap();
-    assert!(!result.change.state.router.enabled);
-    assert_eq!(result.thread_migration.unwrap().changed, 1);
-    assert_eq!(provider_of(&paths, FIRST), "openai");
-    let rollout: Value = serde_json::from_str(
-        std::fs::read_to_string(paths.sessions_dir.join(format!("rollout-{FIRST}.jsonl")))
-            .unwrap()
-            .trim(),
-    )
-    .unwrap();
-    assert_eq!(rollout["payload"]["model_provider"], "openai");
-    assert_eq!(document(&paths)["model_provider"].as_str(), Some("openai"));
-    assert!(document(&paths)
-        .get("model_providers")
-        .and_then(|p| p.get(CATALOG_PROVIDER_KEY))
-        .is_none());
-    assert!(!config_snapshot::path(&paths).exists());
-    assert!(
-        std::fs::read_dir(paths.app_data_dir.join("thread-recovery-backups"))
-            .unwrap()
-            .count()
-            >= 1
-    );
-    assert_eq!(
-        (process.stops, process.ensures.get(), process.reopens),
-        (1, 2, 1)
-    );
-}
-
-#[test]
-fn failed_stop_keeps_the_store_and_owned_configuration() {
-    let (_directory, paths) = fixture();
-    add_thread(&paths, FIRST, CATALOG_PROVIDER_KEY);
-    let config = std::fs::read(&paths.config_path).unwrap();
-    let snapshot = std::fs::read(config_snapshot::path(&paths)).unwrap();
-    let mut process = FakeCodex {
-        stop_error: Some("synthetic stop failure".into()),
-        ..Default::default()
-    };
-    let error = change_with_process(&paths, CodexConnectionTarget::Disabled, false, &mut process)
-        .err()
-        .unwrap();
-    assert!(
-        error.starts_with("CODEX_ROUTING_RESTORE_FAILED:"),
-        "{error}"
-    );
-    retained(&paths, &config, &snapshot);
-    assert_eq!(provider_of(&paths, FIRST), CATALOG_PROVIDER_KEY);
-    assert_eq!(
-        (process.stops, process.ensures.get(), process.reopens),
-        (1, 0, 0)
-    );
-}
-
-#[test]
-fn one_bad_rollout_blocks_the_entire_preflight_without_partial_migration() {
-    let (_directory, paths) = fixture();
-    add_thread(&paths, FIRST, CATALOG_PROVIDER_KEY);
-    add_thread(&paths, SECOND, CATALOG_PROVIDER_KEY);
-    std::fs::write(
-        paths.sessions_dir.join(format!("rollout-{SECOND}.jsonl")),
-        "{truncated",
-    )
-    .unwrap();
-    let config = std::fs::read(&paths.config_path).unwrap();
-    let snapshot = std::fs::read(config_snapshot::path(&paths)).unwrap();
-    let mut process = FakeCodex::default();
-    assert!(
-        change_with_process(&paths, CodexConnectionTarget::Disabled, false, &mut process).is_err()
-    );
-    retained(&paths, &config, &snapshot);
-    assert_eq!(provider_of(&paths, FIRST), CATALOG_PROVIDER_KEY);
-    assert_eq!(provider_of(&paths, SECOND), CATALOG_PROVIDER_KEY);
-    assert_eq!(process.reopens, 1);
-    assert!(!paths.app_data_dir.join("thread-recovery-backups").exists());
-}
-
-#[test]
-fn pending_recovery_keeps_its_configuration_generation_and_skips_process_stop() {
-    let (_directory, paths) = fixture();
-    add_thread(&paths, FIRST, CATALOG_PROVIDER_KEY);
-    let journal = paths.app_data_dir.join("thread-recovery-journal.json");
-    let config = std::fs::read(&paths.config_path).unwrap();
-    let snapshot = std::fs::read(config_snapshot::path(&paths)).unwrap();
-    let mut process = FakeCodex::default();
-    for pending in [
-        b"unfinished synthetic journal".to_vec(),
-        prepared_insertion_journal(&paths),
-    ] {
-        std::fs::write(&journal, &pending).unwrap();
-        assert!(
-            change_with_process(&paths, CodexConnectionTarget::Disabled, false, &mut process)
-                .is_err()
-        );
-        retained(&paths, &config, &snapshot);
-        assert_eq!(std::fs::read(&journal).unwrap(), pending);
-    }
-    assert_eq!(process.stops, 0);
-}
-
-#[test]
-fn explicit_force_closes_without_migrating_or_deleting_session_recovery_data() {
-    let (_directory, paths) = fixture();
-    add_thread(&paths, FIRST, CATALOG_PROVIDER_KEY);
-    let journal = paths.app_data_dir.join("thread-recovery-journal.json");
-    std::fs::write(&journal, "unfinished synthetic journal").unwrap();
-    let mut process = FakeCodex::default();
-    let result =
-        change_with_process(&paths, CodexConnectionTarget::Disabled, true, &mut process).unwrap();
-    assert!(!result.change.state.router.enabled);
-    assert!(result.thread_migration.is_none());
-    assert_eq!(provider_of(&paths, FIRST), CATALOG_PROVIDER_KEY);
-    assert!(paths
-        .sessions_dir
-        .join(format!("rollout-{FIRST}.jsonl"))
-        .is_file());
-    assert_eq!(
-        std::fs::read_to_string(journal).unwrap(),
-        "unfinished synthetic journal"
-    );
-    assert_eq!(document(&paths)["model_provider"].as_str(), Some("openai"));
-    assert_eq!((process.stops, process.reopens), (0, 0));
-}
-
-#[test]
-#[cfg(target_os = "windows")]
-fn closing_includes_native_aggregate_and_legacy_provider_threads() {
-    let (_directory, paths) = fixture();
-    for (id, provider) in [
-        (FIRST, NATIVE_PROVIDER_KEY),
-        (SECOND, AGGREGATE_PROVIDER_KEY),
-        (THIRD, PREVIOUS_CATALOG_PROVIDER_KEY),
-    ] {
-        add_thread(&paths, id, provider);
-    }
-    let mut process = FakeCodex::default();
-    let result =
-        change_with_process(&paths, CodexConnectionTarget::Disabled, false, &mut process).unwrap();
-    assert_eq!(result.thread_migration.unwrap().changed, 3);
-    for id in [FIRST, SECOND, THIRD] {
-        assert_eq!(provider_of(&paths, id), "openai");
-    }
-}
-
-#[test]
-#[cfg(target_os = "windows")]
-fn native_switch_migrates_router_and_aggregate_rows_to_the_prepared_provider() {
-    let (_directory, paths) = fixture();
-    add_thread(&paths, FIRST, CATALOG_PROVIDER_KEY);
-    add_thread(&paths, SECOND, AGGREGATE_PROVIDER_KEY);
-    let mut process = FakeCodex::default();
-    let result =
-        change_with_process(&paths, CodexConnectionTarget::Native, false, &mut process).unwrap();
-    assert_eq!(result.thread_migration.unwrap().changed, 2);
-    assert_eq!(
-        result.change.state.router.access_mode,
-        CodexAccessMode::Native
-    );
-    for id in [FIRST, SECOND] {
-        assert_eq!(provider_of(&paths, id), NATIVE_PROVIDER_KEY);
-    }
+fn enabling_points_the_builtin_provider_at_the_router_and_keeps_threads() {
+    let (_directory, paths) = fixture(false);
+    let change = change(&paths, CodexConnectionTarget::Enabled);
+    assert!(!change.restart_required);
     let config = document(&paths);
-    assert_eq!(config["model_provider"].as_str(), Some(NATIVE_PROVIDER_KEY));
-    assert!(config["model_providers"].get(NATIVE_PROVIDER_KEY).is_some());
-    assert!(config["model_providers"]
-        .get(CATALOG_PROVIDER_KEY)
-        .is_none());
-}
-
-#[test]
-#[cfg(target_os = "windows")]
-fn successful_migration_returns_reopen_failure_without_undoing_the_close() {
-    let (_directory, paths) = fixture();
-    add_thread(&paths, FIRST, CATALOG_PROVIDER_KEY);
-    let mut process = FakeCodex {
-        reopen_error: Some("synthetic launch failure".into()),
-        ..Default::default()
-    };
-    let result =
-        change_with_process(&paths, CodexConnectionTarget::Disabled, false, &mut process).unwrap();
-    let migration = result.thread_migration.unwrap();
-    assert_eq!(migration.changed, 1);
     assert_eq!(
-        migration.reopen_error.as_deref(),
-        Some("synthetic launch failure")
+        config["openai_base_url"].as_str(),
+        Some("http://127.0.0.1:18765/openai/synthetic-transition-token/v1")
     );
-    assert!(!result.change.state.router.enabled);
-    assert_eq!(provider_of(&paths, FIRST), "openai");
-    assert_eq!(process.reopens, 1);
+    assert!(
+        config.get("model_provider").is_none(),
+        "threads keep the built-in provider"
+    );
+    assert!(config
+        .get("model_providers")
+        .and_then(|providers| providers.get(CATALOG_PROVIDER_KEY))
+        .is_none());
+    assert_eq!(
+        config["model_catalog_json"].as_str(),
+        Some(catalog_path(&paths).to_string_lossy().as_ref())
+    );
+    assert!(routing_config_matches(&paths, &load_store(&paths).unwrap()).unwrap());
+    assert!(routing_config_intact(&paths));
+    // A relay model on an official thread is valid while routing is on; a row
+    // left on an old router provider returns to the built-in provider.
+    assert_eq!(
+        row(&paths, OFFICIAL),
+        (
+            "openai".into(),
+            Some("transition-fixture::response-model".into())
+        )
+    );
+    assert_eq!(row(&paths, LEGACY).0, "openai");
+    assert_eq!(
+        row(&paths, FOREIGN),
+        ("custom".into(), Some("custom::model".into()))
+    );
 }
 
 #[test]
-#[cfg(target_os = "windows")]
-fn first_thread_flushed_during_stop_is_migrated_before_closing() {
-    let (_directory, paths) = fixture();
-    let codex_home = paths.codex_home.clone();
-    let mut process = FakeCodex {
-        on_stop: Some(Box::new(move || {
-            let paths = CodexPaths::from_home(codex_home);
-            assert_eq!(
-                document(&paths)["model_provider"].as_str(),
-                Some(CATALOG_PROVIDER_KEY)
-            );
-            add_thread(&paths, FIRST, CATALOG_PROVIDER_KEY);
-        })),
-        ..Default::default()
-    };
-    let result =
-        change_with_process(&paths, CodexConnectionTarget::Disabled, false, &mut process).unwrap();
-    assert_eq!(result.thread_migration.unwrap().changed, 1);
-    assert_eq!(provider_of(&paths, FIRST), "openai");
+fn a_running_codex_is_left_alone_until_the_user_restarts_it() {
+    let (_directory, paths) = fixture(false);
+    let mut codex = running();
+    let change =
+        change_with_process(&paths, CodexConnectionTarget::Enabled, &mut codex, false).unwrap();
+    assert!(change.restart_required);
+    assert_eq!((codex.stops, codex.reopens), (0, 0));
+    assert!(document(&paths).get("openai_base_url").is_some());
+    // A live Codex may rewrite its catalog rows; they are normalized when it
+    // next stops.
+    assert_eq!(row(&paths, LEGACY).0, CATALOG_PROVIDER_KEY);
+    normalize_threads(&paths).unwrap();
+    assert_eq!(row(&paths, LEGACY).0, "openai");
+}
+
+#[test]
+fn disabling_restores_the_original_config_and_relay_selections() {
+    let (_directory, paths) = fixture(false);
+    change(&paths, CodexConnectionTarget::Enabled);
+    let change = change(&paths, CodexConnectionTarget::Disabled);
+    assert!(!change.change.state.router.enabled);
+    assert_eq!(original(&paths), ORIGINAL);
+    assert!(!config_snapshot::path(&paths).exists());
+    // The relay model cannot work without the router; Codex falls back to the
+    // configured default. Other tools' threads are left alone.
+    assert_eq!(row(&paths, OFFICIAL), ("openai".into(), None));
+    assert_eq!(
+        row(&paths, FOREIGN),
+        ("custom".into(), Some("custom::model".into()))
+    );
+}
+
+#[test]
+fn exit_restarts_a_running_codex_once_and_never_fails_on_it() {
+    for (stop_error, reopen_error) in [
+        (None, None),
+        (Some("synthetic quit timeout"), None),
+        (None, Some("synthetic launch failure")),
+    ] {
+        let (_directory, paths) = fixture(false);
+        change(&paths, CodexConnectionTarget::Enabled);
+        let mut codex = FakeCodex {
+            running: true,
+            stop_error: stop_error.map(Into::into),
+            reopen_error: reopen_error.map(Into::into),
+            ..Default::default()
+        };
+        let change =
+            change_with_process(&paths, CodexConnectionTarget::Disabled, &mut codex, true).unwrap();
+        assert_eq!(original(&paths), ORIGINAL);
+        assert_eq!(codex.stops, 1);
+        assert_eq!(codex.reopens, usize::from(stop_error.is_none()));
+        assert_eq!(change.restart_required, stop_error.is_some());
+        // Rows are normalized only while Codex is actually stopped.
+        let expected = stop_error.map(|_| "transition-fixture::response-model".to_owned());
+        assert_eq!(row(&paths, OFFICIAL).1, expected);
+    }
+}
+
+#[test]
+fn accountless_routing_keeps_its_dedicated_provider_threads() {
+    let (_directory, paths) = fixture(true);
+    change(&paths, CodexConnectionTarget::Enabled);
+    let config = document(&paths);
+    assert_eq!(
+        config["model_provider"].as_str(),
+        Some(CATALOG_PROVIDER_KEY)
+    );
+    assert!(config.get("openai_base_url").is_none());
+    assert_eq!(row(&paths, LEGACY).0, CATALOG_PROVIDER_KEY);
+    change(&paths, CodexConnectionTarget::Disabled);
+    assert_eq!(original(&paths), ORIGINAL);
+    assert_eq!(row(&paths, LEGACY).0, "openai");
+}
+
+#[test]
+fn exit_cleanup_releases_the_router_without_waiting_on_threads() {
+    let (_directory, paths) = fixture(false);
+    change(&paths, CodexConnectionTarget::Enabled);
+    stop_smart_routing_on_exit(&paths).unwrap();
+    assert_eq!(original(&paths), ORIGINAL);
     assert!(!load_store(&paths).unwrap().router.enabled);
 }
 
 #[test]
-fn abrupt_exit_preserves_even_an_unindexed_pending_recovery() {
-    let (_directory, paths) = fixture();
-    let journal = paths.app_data_dir.join("thread-recovery-journal.json");
-    std::fs::write(&journal, prepared_insertion_journal(&paths)).unwrap();
-    let config = std::fs::read(&paths.config_path).unwrap();
-    let snapshot = std::fs::read(config_snapshot::path(&paths)).unwrap();
-    assert!(stop_smart_routing_on_exit(&paths).is_err());
-    retained(&paths, &config, &snapshot);
-    assert!(journal.is_file());
+fn a_missing_sidecar_still_releases_only_our_endpoint() {
+    let (_directory, paths) = fixture(false);
+    change(&paths, CodexConnectionTarget::Enabled);
+    std::fs::remove_file(config_snapshot::path(&paths)).unwrap();
+    let mut config = document(&paths);
+    config["model"] = toml_edit::value("transition-fixture::response-model");
+    std::fs::write(&paths.config_path, config.to_string()).unwrap();
+    stop_smart_routing_on_exit(&paths).unwrap();
+    let config = document(&paths);
+    assert!(config.get("openai_base_url").is_none());
+    assert!(config.get("model").is_none());
+    assert!(config.get("model_catalog_json").is_none());
+    assert_eq!(config["theme"].as_str(), Some("light"));
 }
 
 #[test]
-fn abrupt_exit_cannot_remove_an_empty_catalogs_provider_while_a_writer_is_live() {
-    let (_directory, paths) = fixture();
-    let config = std::fs::read(&paths.config_path).unwrap();
-    let snapshot = std::fs::read(config_snapshot::path(&paths)).unwrap();
-    assert!(stop_smart_routing_on_exit_with_writer_check(&paths, || {
-        Err("synthetic writer is still running".into())
-    })
-    .is_err());
-    retained(&paths, &config, &snapshot);
-}
-
-#[test]
-fn router_refresh_keeps_the_staged_native_provider_after_failed_migration() {
-    let (_directory, paths) = fixture();
-    add_thread(&paths, FIRST, NATIVE_PROVIDER_KEY);
-    add_thread(&paths, SECOND, CATALOG_PROVIDER_KEY);
-    std::fs::write(
-        paths.sessions_dir.join(format!("rollout-{SECOND}.jsonl")),
-        "{truncated",
-    )
-    .unwrap();
-    let mut process = FakeCodex::default();
-    assert!(
-        change_with_process(&paths, CodexConnectionTarget::Native, false, &mut process).is_err()
-    );
-    assert_eq!(
-        document(&paths)["model_provider"].as_str(),
-        Some(CATALOG_PROVIDER_KEY)
-    );
-    assert!(document(&paths)["model_providers"]
-        .get(NATIVE_PROVIDER_KEY)
-        .is_some());
-    let store = load_store(&paths).unwrap();
-    apply_routing_config(&paths, &store).unwrap();
-    assert!(document(&paths)["model_providers"]
-        .get(NATIVE_PROVIDER_KEY)
-        .is_some());
-    assert_eq!(provider_of(&paths, FIRST), NATIVE_PROVIDER_KEY);
-}
-
-#[test]
-fn unavailable_database_or_unknown_schema_keeps_routing_until_force_is_explicit() {
-    for directory_instead_of_database in [true, false] {
-        let (_directory, paths) = fixture();
-        if directory_instead_of_database {
-            std::fs::remove_file(&paths.codex_state_db_path).unwrap();
-            std::fs::create_dir(&paths.codex_state_db_path).unwrap();
-        } else {
-            Connection::open(&paths.codex_state_db_path)
-                .unwrap()
-                .execute_batch("DROP TABLE threads; CREATE TABLE threads (id TEXT PRIMARY KEY);")
-                .unwrap();
-        }
-        let config = std::fs::read(&paths.config_path).unwrap();
-        let snapshot = std::fs::read(config_snapshot::path(&paths)).unwrap();
-        let mut process = FakeCodex::default();
-        let error =
-            change_with_process(&paths, CodexConnectionTarget::Disabled, false, &mut process)
-                .err()
-                .unwrap();
-        assert!(
-            error.starts_with("CODEX_ROUTING_RESTORE_FAILED:"),
-            "{error}"
-        );
-        retained(&paths, &config, &snapshot);
-        assert_eq!(process.stops, 0);
-        let result =
-            change_with_process(&paths, CodexConnectionTarget::Disabled, true, &mut process)
-                .unwrap();
-        assert!(!result.change.state.router.enabled);
-        assert!(result.thread_migration.is_none());
-        assert_eq!(document(&paths)["model_provider"].as_str(), Some("openai"));
-    }
+fn switching_to_native_removes_the_builtin_endpoint() {
+    let (_directory, paths) = fixture(false);
+    change(&paths, CodexConnectionTarget::Enabled);
+    change(&paths, CodexConnectionTarget::Native);
+    let config = document(&paths);
+    assert!(config.get("openai_base_url").is_none());
+    assert_eq!(config["model_provider"].as_str(), Some(NATIVE_PROVIDER_KEY));
+    change(&paths, CodexConnectionTarget::Router);
+    assert!(document(&paths).get("openai_base_url").is_some());
+    change(&paths, CodexConnectionTarget::Disabled);
+    assert_eq!(original(&paths), ORIGINAL);
 }

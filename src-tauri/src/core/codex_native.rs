@@ -661,6 +661,10 @@ fn intact_unlocked(
     else {
         return Ok(false);
     };
+    // Native mode must not leave official threads pointed at the router.
+    if super::router_base_is_ours(&document) {
+        return Ok(false);
+    }
     let file = EnvFile::load(paths).map_err(config_update_error)?;
     let Some(entry) = document
         .get("model_providers")
@@ -717,23 +721,6 @@ fn intact_unlocked(
 }
 
 pub(super) fn apply(paths: &CodexPaths, store: &Store) -> Result<newapi::AppliedConfig, String> {
-    apply_with_selection(paths, store, true)
-}
-
-/// Keep the current Router selected while making its migration destination usable.
-/// The caller must stop Codex writers and serialize the complete access transition.
-pub(super) fn prepare_provider(
-    paths: &CodexPaths,
-    store: &Store,
-) -> Result<newapi::AppliedConfig, String> {
-    apply_with_selection(paths, store, false)
-}
-
-fn apply_with_selection(
-    paths: &CodexPaths,
-    store: &Store,
-    select: bool,
-) -> Result<newapi::AppliedConfig, String> {
     super::subagents::validate(paths, store)?;
     let _guard = config_snapshot::guard().map_err(config_update_error)?;
     let provider = selected_provider(store)?;
@@ -747,7 +734,7 @@ fn apply_with_selection(
         auto_compact_limit: limit_threshold,
         ..Default::default()
     })?;
-    if select && intact_unlocked(paths, store, &plan)? {
+    if intact_unlocked(paths, store, &plan)? {
         if cleanup_unlocked(paths, None).is_err() {
             log::warn!("Native credential cleanup will retry on next use");
         }
@@ -779,15 +766,8 @@ fn apply_with_selection(
     let name = reusable
         .map(|credential| credential.name.clone())
         .unwrap_or_else(|| variable_name(id));
-    let catalog_id = if select {
-        id
-    } else {
-        reusable.map_or(id, |entry| entry.id)
-    };
-    let catalog_path = catalog_path(paths, catalog_id);
-    if (reusable.is_none() && std::env::var_os(&name).is_some())
-        || ((select || reusable.is_none()) && catalog_path.exists())
-    {
+    let catalog_path = catalog_path(paths, id);
+    if (reusable.is_none() && std::env::var_os(&name).is_some()) || catalog_path.exists() {
         return Err(CREDENTIAL_ERROR.into());
     }
     if reusable.is_none() {
@@ -815,11 +795,6 @@ fn apply_with_selection(
             let headers = supplemental_headers(&document, &expected_base)?;
             let mut snapshot = match config_snapshot::load(paths, original)? {
                 Some(snapshot) if snapshot.selected_provider_is_ours(&document) => snapshot,
-                Some(_) if !select => {
-                    return Err(CoreError::OperationFailed(
-                        "newapi.errors.routerSnapshot".into(),
-                    ));
-                }
                 Some(snapshot) => {
                     snapshot.restore_subagents(&mut document)?;
                     config_snapshot::Snapshot::capture(paths, &document)?
@@ -828,38 +803,33 @@ fn apply_with_selection(
                     config_snapshot::recover_legacy(paths, &document, store)?
                 }
                 None => {
-                    if !select {
-                        return Err(CoreError::OperationFailed(
-                            "newapi.errors.routerSnapshot".into(),
-                        ));
-                    }
                     reject_foreign_managed_provider_entries(&document)?;
                     config_snapshot::Snapshot::capture(paths, &document)?
                 }
             };
-            if select {
-                remove_managed_provider_entries(&mut document);
-                for (field, value) in [
-                    ("model", provider.model.clone()),
-                    ("model_provider", PROVIDER_KEY.into()),
-                    (
-                        "model_catalog_json",
-                        catalog_path.to_string_lossy().into_owned(),
-                    ),
-                ] {
-                    config_snapshot::set_value(&mut document, field, Some(value.into()));
-                }
-                config_snapshot::set_value(
-                    &mut document,
-                    "model_context_window",
-                    limit_context.map(|value| (value as i64).into()),
-                );
-                config_snapshot::set_value(
-                    &mut document,
-                    "model_auto_compact_token_limit",
-                    limit_threshold.map(|value| (value as i64).into()),
-                );
+            remove_managed_provider_entries(&mut document);
+            // Official threads must not keep calling a stopped router.
+            config_snapshot::set_value(&mut document, "openai_base_url", None);
+            for (field, value) in [
+                ("model", provider.model.clone()),
+                ("model_provider", PROVIDER_KEY.into()),
+                (
+                    "model_catalog_json",
+                    catalog_path.to_string_lossy().into_owned(),
+                ),
+            ] {
+                config_snapshot::set_value(&mut document, field, Some(value.into()));
             }
+            config_snapshot::set_value(
+                &mut document,
+                "model_context_window",
+                limit_context.map(|value| (value as i64).into()),
+            );
+            config_snapshot::set_value(
+                &mut document,
+                "model_auto_compact_token_limit",
+                limit_threshold.map(|value| (value as i64).into()),
+            );
             if document.get("model_providers").is_none() {
                 let mut table = toml_edit::Table::new();
                 table.set_implicit(true);
@@ -883,19 +853,10 @@ fn apply_with_selection(
             for (key, value) in &headers {
                 entry[key] = value.clone();
             }
-            if select {
-                snapshot.apply_auth(&mut document, true)?;
-                snapshot.apply_subagents(&mut document, store.codex_subagents.as_ref())?;
-                snapshot.prepare(paths, original, &document, config_snapshot::Action::Apply)?;
-                pending = Some(snapshot);
-            } else {
-                // Provider definitions do not alter root/subagent ownership. Settle
-                // an already-committed snapshot before changing the config hash.
-                storage::write_atomic(
-                    &config_snapshot::path(paths),
-                    &serde_json::to_vec(&snapshot)?,
-                )?;
-            }
+            snapshot.apply_auth(&mut document, true)?;
+            snapshot.apply_subagents(&mut document, store.codex_subagents.as_ref())?;
+            snapshot.prepare(paths, original, &document, config_snapshot::Action::Apply)?;
+            pending = Some(snapshot);
             Ok(document.to_string())
         })
     })();
@@ -913,7 +874,7 @@ fn apply_with_selection(
     }
     // Configuration has committed. Cleanup cannot turn success into an error
     // and leave the persisted access mode disagreeing with the live config.
-    if select && cleanup_unlocked(paths, None).is_err() {
+    if cleanup_unlocked(paths, None).is_err() {
         log::warn!("Native credential cleanup will retry on next use");
     }
     Ok(applied_config(result))
@@ -1000,9 +961,6 @@ pub(super) fn installed_catalog_model(paths: &CodexPaths, document: &DocumentMut
         .unwrap_or(false)
 }
 
-#[cfg(test)]
-#[path = "codex_native_prepare_tests.rs"]
-mod prepare_tests;
 
 #[cfg(test)]
 mod tests {

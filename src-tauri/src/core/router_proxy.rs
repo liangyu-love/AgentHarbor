@@ -23,6 +23,7 @@ use std::time::Duration;
 mod aggregate;
 mod aggregate_output;
 mod aggregate_session;
+mod codex_compat;
 mod count_tokens;
 #[cfg(test)]
 mod aggregate_tests;
@@ -48,6 +49,9 @@ mod routing_safety_tests;
 #[cfg(test)]
 #[path = "router_proxy/codex_switch_tests.rs"]
 mod codex_switch_tests;
+#[cfg(test)]
+#[path = "router_proxy/codex_compaction_tests.rs"]
+mod codex_compaction_tests;
 mod session_affinity;
 mod session_compat;
 mod tool_schema;
@@ -759,8 +763,22 @@ fn client_request_path(path: &str) -> (String, Option<&'static str>) {
     (path.to_owned(), None)
 }
 
-async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> ForwardResult {
-    let (path, tagged_source) = client_request_path(request.uri().path());
+async fn handle(mut request: Request<Incoming>, context: Arc<ArcContext>) -> ForwardResult {
+    // Codex's built-in provider (`openai_base_url`) cannot add our header, so
+    // its URL carries the local token. It is checked below like the header.
+    let builtin = codex_compat::builtin_entry(request.uri().path())
+        .map(|(path, token)| (path, token.to_owned()));
+    let (path, tagged_source) = match &builtin {
+        Some((path, token)) => {
+            let token = HeaderValue::from_str(token)
+                .map_err(|_| (StatusCode::UNAUTHORIZED, "invalid local router token"))?;
+            request
+                .headers_mut()
+                .insert(HeaderName::from_static(router::LOCAL_AUTH_HEADER), token);
+            (path.clone(), Some("codex"))
+        }
+        None => client_request_path(request.uri().path()),
+    };
     let query = request.uri().query().map(str::to_owned);
     if path == "/agentharbor/health" {
         return Ok(Response::builder()
@@ -817,6 +835,10 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
     })?;
     if desktop.is_none() && !authorized(request.headers(), &store.router.bearer_token) {
         return Err((StatusCode::UNAUTHORIZED, "invalid local router token"));
+    }
+    // Responses-over-WebSocket is first-party only; 426 makes Codex use HTTP.
+    if builtin.is_some() && codex_compat::websocket_upgrade(request.headers()) {
+        return Err((StatusCode::UPGRADE_REQUIRED, "use HTTP Responses streaming"));
     }
 
     if desktop.is_none() {
@@ -886,7 +908,7 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
     {
         return Err((StatusCode::PAYLOAD_TOO_LARGE, "request body too large"));
     }
-    let headers = forwardable_headers(request.headers());
+    let mut headers = forwardable_headers(request.headers());
     let one_m_beta = headers
         .get_all("anthropic-beta")
         .iter()
@@ -894,11 +916,13 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         .flat_map(|value| value.split(','))
         .any(|value| value.trim() == CLAUDE_ONE_M_BETA);
     let body: Option<Bytes> = if has_body {
-        Some(read_limited_body(request.into_body()).await?)
+        let body = read_limited_body(request.into_body()).await?;
+        Some(codex_compat::decode_body(&mut headers, body)?)
     } else {
         read_limited_body(request.into_body()).await?;
         None
     };
+    let headers = headers;
 
     let desktop_count_body = (path == "/claude-desktop/v1/messages/count_tokens")
         .then(|| body.clone().unwrap_or_default());
@@ -918,6 +942,9 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
                 | ["p", _, "v1", "responses", "compact"]
                 | ["v1", "responses", "compact"]
         );
+    // Remote compaction (V2) is an ordinary create carrying a trigger item.
+    let codex_create = client_source == Some("codex") && inference_create && !response_resource;
+    let remote_compaction = codex_create && codex_compat::compaction_trigger(body.as_ref());
     // Codex model catalog for the model picker (`model_catalog_json` mirror).
     if matches!(segments.as_slice(), ["codex", "v1", "models"]) && !has_body {
         return Ok(codex_catalog_response(&context, &store));
@@ -927,10 +954,33 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
     } else {
         route_trace::Trace::begin(requested_model.as_deref().unwrap_or_default(), body.as_deref())
     };
+    // Codex's built-in provider reaches the selected aggregate by its public ID.
+    let codex_aggregate = codex_create
+        && requested_model.as_deref().is_some_and(|model| {
+            store.aggregates.iter().any(|aggregate| {
+                aggregate.enabled
+                    && store.router.aggregate_model_id.as_deref() == Some(aggregate.id.as_str())
+                    && aggregate.public_model_id == model
+            })
+        });
+    let segments: Vec<&str> = if codex_aggregate {
+        ["aggregate", "v1"].into_iter().chain(segments[2..].iter().copied()).collect()
+    } else {
+        segments
+    };
     if segments.first() == Some(&"aggregate") {
         let ingress =
             required_protocol.ok_or((StatusCode::NOT_FOUND, "unsupported aggregate endpoint"))?;
         let catalog = super::models_dev::load(&context.app_data_dir);
+        let body = if codex_create {
+            let converted = codex_compat::convert_official_compactions(
+                &context, codex_auth.clone(), &headers, body.as_ref(),
+            ).await;
+            let body = if remote_compaction { codex_compat::summarization_request(body)? } else { body };
+            codex_compat::prepare_relay(body, &converted)?
+        } else {
+            body
+        };
         let result = aggregate::execute(
             &context,
             &store,
@@ -948,6 +998,12 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             trace.clone(),
         )
         .await;
+        let result = match result {
+            Ok(response) if codex_create && remote_compaction => {
+                codex_compat::compaction_response(response).await
+            }
+            other => other,
+        };
         if let Err((status, message)) = &result {
             trace.reject(status.as_u16(), message);
         }
@@ -967,10 +1023,10 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
     }
     let result = async {
         // Identify ordinary provider routes for connection identity protection.
+        // Codex always resends its complete history over HTTP, so each request
+        // may pick a new destination by model; it needs no session binding.
         let provider_route = match segments.as_slice() {
-            ["codex", "v1", ..] => requested_model
-                .as_deref()
-                .is_some_and(|m| m.contains("::")),
+            ["codex", "v1", ..] => false,
             ["p", _, "v1", ..] | ["v1", ..] => true,
             _ => false,
         };
@@ -1067,6 +1123,26 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             validate_one_m_capacity(&context, &store, &destination, &request_catalog)?;
         }
         trace.stage("build");
+        // One Codex thread mixes official and relay turns. Give each destination
+        // only the history it can read; relays get compaction emulated.
+        let emulate_compaction =
+            remote_compaction && matches!(destination, Destination::Provider { .. });
+        let body = if !codex_create {
+            body
+        } else if matches!(destination, Destination::Official) {
+            codex_compat::remember_official_model(&headers, requested_model.as_deref());
+            codex_compat::prepare_official(body)?
+        } else {
+            let converted = codex_compat::convert_official_compactions(
+                &context, codex_auth.clone(), &headers, body.as_ref(),
+            ).await;
+            let body = if emulate_compaction {
+                codex_compat::summarization_request(body)?
+            } else {
+                body
+            };
+            codex_compat::prepare_relay(body, &converted)?
+        };
         let body = if required_protocol == Some(router::ModelProtocol::Responses) && !response_resource {
             session_compat::prepare_reasoning(body, || {
                 requested_model.as_deref().and_then(|slug| {
@@ -1094,6 +1170,9 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             // Resource operations read the established channel but do not carry
             // a create request; preserve their body, including an empty cancel.
             // upstream_suffix already rejects translated Responses resources.
+            // Codex's sticky-routing token belongs to the official backend.
+            let mut headers = headers.clone();
+            headers.remove("x-codex-turn-state");
             let mut prepared = forward::prepare(forward::Input {
                 context: &context, store: &store, catalog: &request_catalog,
                 destination: &destination, suffix: &suffix, query: query.as_deref(), headers: &headers,
@@ -1162,7 +1241,12 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             }
             trace.status(response.status().as_u16());
             drop(_decision);
-            return prepared.response(response, trace.clone(), None).await;
+            let response = prepared.response(response, trace.clone(), None).await?;
+            return if emulate_compaction {
+                codex_compat::compaction_response(response).await
+            } else {
+                Ok(response)
+            };
         }
 
         // The official endpoint keeps Codex's local account credentials and
@@ -1186,15 +1270,29 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
             attempt_headers.get("chatgpt-account-id").and_then(|value| value.to_str().ok()),
         );
         trace.sent(sent.as_deref(), credential);
-        let mut outbound = client_for(&context, &destination)?.request(method, url).headers(attempt_headers);
-        if let Some(sent) = sent { outbound = outbound.body(sent); }
-        let response = outbound.send().await.map_err(|error| {
-            let reason = if error.is_timeout() { "timeout" } else { "transport_error" };
-            trace.failed_attempt("connect", reason,
-                        started.elapsed().as_millis() as u64);
-            trace.fail("connect", reason);
-            (StatusCode::BAD_GATEWAY, "cannot reach the provider")
-        })?;
+        let client = client_for(&context, &destination)?;
+        let official = OfficialAttempt {
+            client: &client, method: &method, url: &url, headers: &attempt_headers,
+            trace: &trace, started,
+        };
+        let mut response = official.send(sent.clone()).await?;
+        // Reasoning encrypted for another account or service cannot be replayed
+        // (e.g. after an account switch). Retry once without it.
+        if codex_create && response.status() == StatusCode::BAD_REQUEST {
+            let status = response.status();
+            let response_headers = response.headers().clone();
+            let error = response.bytes().await.unwrap_or_default();
+            let retry = sent.as_ref().and_then(codex_compat::without_reasoning)
+                .filter(|_| codex_compat::rejected_reasoning(status, &error));
+            response = match retry {
+                Some(retry) => official.send(Some(retry)).await?,
+                None => {
+                    let mut rebuilt = hyper::Response::builder().status(status);
+                    for (name, value) in &response_headers { rebuilt = rebuilt.header(name, value); }
+                    reqwest::Response::from(rebuilt.body(error).expect("response parts"))
+                }
+            };
+        }
         trace.status(response.status().as_u16());
         drop(_decision);
         relay_response(response, None, None, Vec::new(),
@@ -1208,6 +1306,30 @@ async fn handle(request: Request<Incoming>, context: Arc<ArcContext>) -> Forward
         trace.reject(status.as_u16(), message);
     }
     result
+}
+
+struct OfficialAttempt<'a> {
+    client: &'a Client,
+    method: &'a hyper::Method,
+    url: &'a str,
+    headers: &'a HeaderMap,
+    trace: &'a route_trace::Trace,
+    started: std::time::Instant,
+}
+
+impl OfficialAttempt<'_> {
+    async fn send(&self, body: Option<Bytes>) -> ForwardResult<reqwest::Response> {
+        let mut outbound = self.client.request(self.method.clone(), self.url).headers(self.headers.clone());
+        if let Some(body) = body {
+            outbound = outbound.body(body);
+        }
+        outbound.send().await.map_err(|error| {
+            let reason = if error.is_timeout() { "timeout" } else { "transport_error" };
+            self.trace.failed_attempt("connect", reason, self.started.elapsed().as_millis() as u64);
+            self.trace.fail("connect", reason);
+            (StatusCode::BAD_GATEWAY, "cannot reach the provider")
+        })
+    }
 }
 
 /// Inbound headers minus hop-by-hop, framing, and every local or client credential;
@@ -3728,7 +3850,16 @@ mod tests {
                 if model == "model-b" && effort == "none" {
                     body["reasoning"].as_object_mut().unwrap().remove("effort");
                 }
-                assert_eq!(observed["body"], body, "history and continuation id must survive model switches");
+                // A relay gets every visible item; official-only encrypted state
+                // is dropped or replaced by a readable notice.
+                if prefix == "codex/v1" && endpoint == "responses" && id != "official" {
+                    let mut portable = history.as_array().unwrap().clone();
+                    portable.retain(|item| item["type"] != "reasoning");
+                    portable[2] = json!({"type":"message","role":"user","content":[
+                        {"type":"input_text","text":codex_compat::UNREADABLE_COMPACTION}]});
+                    body["input"] = Value::Array(portable);
+                }
+                assert_eq!(observed["body"], body, "visible history and continuation id must survive model switches");
             }
             // Retained file credentials and live client credentials must both
             // stay unused when this same router is switched to accountless.

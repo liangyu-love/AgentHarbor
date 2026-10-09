@@ -1363,3 +1363,64 @@ body {
   .thread-detail-project { display: flex; }
 }
 @media (prefers-reduced-motion: reduce) { .usage-area-enter { animation: none; } .usage-chart-crosshair, .usage-chart-active-point, .usage-donut-segment, .usage-model-row, .usage-model-chip, .usage-source-card, .usage-today-card, .usage-view-tabs button { transition: none; } }
+
+/* ---------- Routing console (relay injection page) ---------- */
+.route-surface {
+  background-image:
+    radial-gradient(60% 80% at 12% -10%, hsl(var(--primary) / 0.14), transparent 60%),
+    radial-gradient(50% 70% at 92% 110%, hsl(262 83% 66% / 0.12), transparent 62%),
+    radial-gradient(hsl(var(--foreground) / 0.07) 1px, transparent 1px);
+  background-size: auto, auto, 18px 18px;
+}
+.dark .route-surface {
+  background-image:
+    radial-gradient(60% 80% at 12% -10%, hsl(var(--primary) / 0.22), transparent 60%),
+    radial-gradient(50% 70% at 92% 110%, hsl(262 83% 66% / 0.2), transparent 62%),
+    radial-gradient(hsl(var(--foreground) / 0.06) 1px, transparent 1px);
+}
+.route-flow { stroke-dasharray: 5 11; animation: route-flow 1.1s linear infinite; }
+.route-flow-slow { stroke-dasharray: 2 9; animation: route-flow 2.4s linear infinite; }
+.route-draw { stroke-dasharray: 1; stroke-dashoffset: 1; animation: route-draw 0.9s cubic-bezier(.65, 0, .35, 1) forwards; }
+@keyframes route-flow { to { stroke-dashoffset: -16; } }
+@keyframes route-draw { to { stroke-dashoffset: 0; } }
+
+.route-hub-ring {
+  background: conic-gradient(from 0deg, hsl(var(--primary) / 0), hsl(var(--primary)), hsl(262 83% 66%), hsl(190 95% 55%), hsl(var(--primary) / 0));
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
+  animation: route-spin 6s linear infinite;
+}
+.route-hub-halo { animation: route-halo 2.8s cubic-bezier(.2, .6, .3, 1) infinite; }
+.route-hub-halo + .route-hub-halo { animation-delay: 1.4s; }
+.route-hub-ignite { animation: route-ignite 0.9s cubic-bezier(.2, .8, .2, 1); }
+@keyframes route-spin { to { transform: rotate(360deg); } }
+@keyframes route-halo {
+  from { transform: scale(0.92); opacity: 0.55; }
+  to { transform: scale(1.55); opacity: 0; }
+}
+@keyframes route-ignite {
+  0% { transform: scale(0.9); filter: brightness(1); }
+  45% { transform: scale(1.06); filter: brightness(1.35); }
+  100% { transform: scale(1); filter: brightness(1); }
+}
+.route-pending-dot { animation: route-pending 1.6s ease-in-out infinite; }
+@keyframes route-pending { 50% { transform: scale(1.6); opacity: 0.35; } }
+
+.route-rise { animation: route-rise 0.55s cubic-bezier(.2, .8, .2, 1) both; }
+@keyframes route-rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+.route-group-rule { background: linear-gradient(90deg, hsl(var(--border)), transparent); }
+
+@media (prefers-reduced-motion: reduce) {
+  .route-flow, .route-flow-slow, .route-hub-ring, .route-hub-halo, .route-hub-ignite,
+  .route-pending-dot, .route-rise { animation: none; }
+  .route-draw { animation: none; stroke-dashoffset: 0; }
+  .route-hub-halo { opacity: 0; }
+}
+/* Narrow topology: icon above name, status dot in the corner. */
+[data-topology-layout="vertical"] .route-node { flex-direction: column; justify-content: center; gap: 0.3rem; padding: 0.55rem 0.35rem; text-align: center; }
+[data-topology-layout="vertical"] .route-node-text { flex: none; width: 100%; }
+[data-topology-layout="vertical"] .route-node-text > span:first-child { font-size: 11px; }
+[data-topology-layout="vertical"] .route-node-dot { position: absolute; top: 0.4rem; right: 0.4rem; }

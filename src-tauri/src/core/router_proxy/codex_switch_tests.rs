@@ -268,7 +268,8 @@ fn real_codex_same_free_thread_switches_official_and_relays_repeatedly() {
     let mut server = AppServer::start(&binary, &paths, &cwd, &proxy);
     let resumed = server.request(2, "thread/resume", json!({"threadId":thread_id}));
     assert_eq!(resumed["thread"]["id"], thread_id);
-    assert_eq!(resumed["modelProvider"], router::CATALOG_PROVIDER_KEY);
+    // Routing only moves the built-in provider's endpoint; the thread keeps it.
+    assert_eq!(resumed["modelProvider"], "openai");
     assert_eq!(fs::read(&paths.auth_path).unwrap(), auth);
     shutdown.send(true).unwrap();
     runtime.block_on(listener_task).unwrap();
@@ -517,7 +518,8 @@ fn assert_saved_child_route(accountless: bool) {
         .parse::<toml::Value>()
         .unwrap();
     assert_eq!(after["model"], before["model"]);
-    assert_eq!(after["model_provider"], before["model_provider"]);
+    // Account mode keeps the built-in provider, so the key may be absent.
+    assert_eq!(after.get("model_provider"), before.get("model_provider"));
     let mut server = AppServer::start(&binary, &paths, &cwd, &proxy);
     let resumed = server.request(4, "thread/resume", json!({"threadId":child_thread}));
     assert_eq!(resumed["model"], "child::gpt-6-luna", "{resumed}");

@@ -1,5 +1,7 @@
 # Codex 关闭接入与终端代理修复验收
 
+> 2026-10-09 更新：Codex 部分的“关闭时迁回会话”已被 [内置 provider 方案](codex-routing-openai-base-url-2026-10-09.md) 取代；终端代理部分仍然有效。
+
 ## 范围
 
 修复关闭 Codex 路由、切换直连、退出 AgentHarbor 时的会话迁回顺序，以及终端代理保存后状态被旧查询覆盖、过长 NO_PROXY 导致取消失败的问题。

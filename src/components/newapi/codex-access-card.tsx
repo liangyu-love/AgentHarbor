@@ -1,15 +1,12 @@
-import { useState } from "react";
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ConfirmDialog, type ConfirmRequest } from "@/components/ui/confirm-dialog";
-import { errorMessage, formatInvokeError } from "@/lib/invoke-error";
 import { aggregationQueryKey } from "@/types/aggregation";
-import { ArrowRight, Cpu, Loader2, Network, Plus, RefreshCw, Sparkles } from "lucide-react";
+import { ArrowDown, ArrowRight, Cpu, Loader2, Network, Plus, RefreshCw, UserX, Waypoints } from "lucide-react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import { AuroraCard } from "@/components/ui/aurora-card";
 import { FoldBody, FoldHeader } from "@/components/ui/fold-header";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -20,7 +17,17 @@ import { protocolBadgeKey, softBadge } from "@/components/newapi/relay-groups";
 import type { ProviderState } from "@/components/newapi/use-provider-state";
 import type { CodexAccessMode, NewApiProvider, NewApiStateChange } from "@/types/newapi";
 import { cn } from "@/lib/utils";
+import { ClientGlyph } from "./configuration-shortcuts";
 import { CodexSubagentSettingsFields } from "./codex-subagent-settings";
+
+function Panel({ title, children, className }: { title: string; children: ReactNode; className?: string }) {
+  return (
+    <div className={cn("min-w-0 rounded-2xl border border-border/60 bg-background/55 p-4", className)}>
+      <h3 className="mb-3 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">{title}</h3>
+      {children}
+    </div>
+  );
+}
 
 // Codex routing switch, access mode picker and accountless toggle.
 export function CodexAccessCard({
@@ -29,6 +36,7 @@ export function CodexAccessCard({
   selectedProvider,
   nativeCompatible,
   onRestart,
+  onRestartRequired,
   onOpenRelays,
 }: {
   store: ProviderState;
@@ -36,6 +44,8 @@ export function CodexAccessCard({
   selectedProvider: NewApiProvider | undefined;
   nativeCompatible: boolean;
   onRestart: () => void;
+  /** Codex is running with its previous connection; offer a restart. */
+  onRestartRequired: () => void;
   onOpenRelays?: () => void;
 }) {
   const { t } = useTranslation();
@@ -47,109 +57,42 @@ export function CodexAccessCard({
   const accessMode = router?.accessMode ?? "router";
   const nativeAccess = accessMode === "native";
   const configDrifted = !!router?.configDrifted;
+  const restartPending = !!router?.restartPending;
   const listenerUnavailable = routingEnabled && !nativeAccess && !store.state.data?.proxyRunning;
   const routingReady = routingEnabled && !configDrifted && !listenerUnavailable;
   const aggregates = useQuery({ queryKey: aggregationQueryKey, queryFn: api.aggregation.state });
   const aggregate = aggregates.data?.models.find((model) => model.id === router?.aggregateModelId);
   const aggregateSelected = router?.aggregateModelId != null;
   const aggregateAvailable = !!aggregate?.available;
-  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
 
-  const offerForce = (cause: unknown, onConfirm: () => void, native = false) => {
+  // Threads keep their provider, so a connection change only rewrites
+  // config.toml. A running Codex picks it up when the user restarts it.
+  const connectionChanged = (change: NewApiStateChange, title: string) => {
+    applyChange(change);
     void queryClient.invalidateQueries({ queryKey: ["threads"] });
-    if (!errorMessage(cause).startsWith("CODEX_ROUTING_RESTORE_FAILED:")) return;
-    setConfirmRequest({
-      title: t("newapi.routingRestoreBlockedTitle"),
-      description: `${t("newapi.routingRestoreBlockedDesc")}\n${formatInvokeError(cause)}`,
-      confirmLabel: t(native ? "newapi.forceNativeRouting" : "newapi.forceDisableRouting"),
-      onConfirm,
-    });
-  };
-
-  const migrationCompleted = (change: NewApiStateChange) => {
-    if (!change.threadMigration) return;
-    void queryClient.invalidateQueries({ queryKey: ["threads"] });
-    if (change.threadMigration.reopenError) {
-      toast({ title: t("threads.routerAdoptionOpenFailed"),
-        description: t("threads.routerAdoptionOpenFailedDesc"), variant: "destructive" });
+    if (change.restartRequired) {
+      onRestartRequired();
+      return;
     }
+    toast({ title, description: t("newapi.codexRestartHint"), variant: "success" });
   };
 
-  const setRouting = (value: boolean, force = false) =>
+  const toggleRouting = (value: boolean) =>
     run(
       "routing",
       async () => {
-        let change: NewApiStateChange;
-        try {
-          change = await api.routing.setEnabled(value, force);
-        } catch (cause) {
-          if (!value && !force) offerForce(cause, () => void setRouting(false, true));
-          throw cause;
-        }
-        applyChange(change);
-        toast({
-          title: t(value ? "newapi.routingApplied" : "newapi.routingRemoved"),
-          description: change.applied?.backupPath ?? undefined,
-          variant: "success",
-        });
-        migrationCompleted(change);
+        const change = await api.routing.setEnabled(value);
+        connectionChanged(change, t(value ? "newapi.routingApplied" : "newapi.routingRemoved"));
       },
       t("newapi.routingFailed"),
     );
 
-  const toggleRouting = async (value: boolean) => {
-    if (value) return setRouting(value);
-    let routed: number;
-    try {
-      routed = (await api.conversations.routeOverview()).routerProviderThreads;
-    } catch {
-      // The overview supplies a confirmation count; the backend owns recovery.
-      return setRouting(false);
-    }
-    if (routed === 0) return setRouting(false);
-    setConfirmRequest({
-      title: t("newapi.disableRoutingTitle"),
-      description: t("newapi.disableRoutingThreads", { count: routed }),
-      confirmLabel: t("newapi.disableRoutingRestore"),
-      onConfirm: () => void setRouting(false),
-    });
-  };
-
-  const changeAccessMode = async (mode: CodexAccessMode) => {
-    if (mode === "native" && routingEnabled) {
-      let routed: number;
-      try {
-        routed = (await api.conversations.routeOverview()).routerProviderThreads;
-      } catch {
-        return applyAccessMode(mode);
-      }
-      if (routed > 0) {
-        setConfirmRequest({
-          title: t("newapi.nativeRoutingTitle"),
-          description: t("newapi.nativeRoutingThreads", { count: routed }),
-          confirmLabel: t("newapi.nativeRoutingRestore"),
-          onConfirm: () => void applyAccessMode(mode),
-        });
-        return;
-      }
-    }
-    void applyAccessMode(mode);
-  };
-
-  const applyAccessMode = (mode: CodexAccessMode, force = false) =>
+  const changeAccessMode = (mode: CodexAccessMode) =>
     run(
       "access-mode",
       async () => {
-        let change: NewApiStateChange;
-        try {
-          change = await api.routing.setAccessMode(mode, force);
-        } catch (cause) {
-          if (mode === "native" && !force) offerForce(cause, () => void applyAccessMode(mode, true), true);
-          throw cause;
-        }
-        applyChange(change);
-        toast({ title: t("newapi.accessModeApplied"), variant: "success" });
-        migrationCompleted(change);
+        const change = await api.routing.setAccessMode(mode);
+        connectionChanged(change, t("newapi.accessModeApplied"));
       },
       t("newapi.routingFailed"),
     );
@@ -165,13 +108,19 @@ export function CodexAccessCard({
     : "—";
   const TargetIcon = !nativeAccess && aggregateSelected ? Network : Cpu;
 
-  const targetNodeClass =
-    "flex min-w-0 flex-1 items-center gap-2.5 rounded-lg border border-border/50 bg-background/70 p-2";
+  const step = "flex min-w-0 items-center gap-3 rounded-xl border bg-card/90 p-2.5";
+  const stepIcon = (lit: boolean) => cn("flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ring-1 transition-colors",
+    lit ? "bg-primary/10 text-primary ring-primary/25" : "bg-muted text-muted-foreground ring-border/70");
+  const connector = (
+    <div aria-hidden className="flex justify-center py-1">
+      <ArrowDown className={cn("h-3.5 w-3.5 transition-colors", routingReady ? "text-primary" : "text-muted-foreground/40")} />
+    </div>
+  );
   // Spans only: the node may be rendered inside a button.
   const targetNode = (
     <>
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-        <TargetIcon className="h-3.5 w-3.5" />
+      <span className={stepIcon(routingReady)}>
+        <TargetIcon className="h-4 w-4" />
       </span>
       <span className="block min-w-0 flex-1">
         <span className="block truncate font-medium text-foreground" title={targetName}>
@@ -196,8 +145,33 @@ export function CodexAccessCard({
     </>
   );
 
+  const status = configDrifted ? (
+    <Badge className={cn(softBadge("amber"), "gap-1 font-medium")}>
+      <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+      {t("newapi.driftedBadge")}
+    </Badge>
+  ) : listenerUnavailable ? (
+    <Badge className={cn(softBadge("amber"), "gap-1 font-medium")}>
+      <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+      {t("newapi.listenerUnavailableBadge")}
+    </Badge>
+  ) : routingEnabled ? (
+    <Badge className={cn(softBadge("green"), "gap-1 font-medium")}>
+      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+      {t("newapi.enabledBadge")}
+    </Badge>
+  ) : (
+    <Badge variant="outline" className="text-xs font-normal text-muted-foreground">
+      {t("newapi.connectionDisabled")}
+    </Badge>
+  );
+
   return (
-    <AuroraCard color="blue" shine={routingReady} className="overflow-hidden shadow-sm">
+    <div className={cn("relative rounded-3xl border bg-card shadow-sm transition-[border-color,box-shadow] duration-300 motion-reduce:transition-none",
+      routingReady ? "border-primary/40 shadow-[0_18px_50px_-30px_hsl(var(--primary)/0.65)]" : "border-border")}>
+      {routingReady && (
+        <span aria-hidden className="pointer-events-none absolute inset-x-10 -top-px h-px bg-gradient-to-r from-transparent via-primary to-transparent" />
+      )}
       <section aria-labelledby="newapi-routing-title" className="space-y-4 p-4 sm:p-5">
         <FoldHeader
           open={fold.open}
@@ -205,11 +179,12 @@ export function CodexAccessCard({
           titleId="newapi-routing-title"
           contentId="newapi-routing-body"
           title={t("newapi.codexAccess")}
+          titleClassName="text-[17px]"
           leading={
-            <div className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/20">
-              <Sparkles className="h-4 w-4" />
+            <div className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-background ring-1 ring-border">
+              <ClientGlyph client="codex" className="h-5 w-5" />
               {routingReady && (
-                <span aria-hidden className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-background" />
+                <span aria-hidden className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-card" />
               )}
             </div>
           }
@@ -220,26 +195,7 @@ export function CodexAccessCard({
                   {t("newapi.nativeNoRouter")}
                 </Badge>
               )}
-              {configDrifted ? (
-              <Badge className={cn(softBadge("amber"), "gap-1 font-medium")}>
-                <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-                {t("newapi.driftedBadge")}
-              </Badge>
-            ) : listenerUnavailable ? (
-              <Badge className={cn(softBadge("amber"), "gap-1 font-medium")}>
-                <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-                {t("newapi.listenerUnavailableBadge")}
-              </Badge>
-            ) : routingEnabled ? (
-              <Badge className={cn(softBadge("green"), "gap-1 font-medium")}>
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                {t("newapi.enabledBadge")}
-              </Badge>
-            ) : (
-              <Badge variant="outline" className="text-xs font-normal text-muted-foreground">
-                {t("newapi.connectionDisabled")}
-              </Badge>
-            )}
+              {status}
             </>
           }
           actions={
@@ -248,7 +204,8 @@ export function CodexAccessCard({
                 type="button"
                 variant="outline"
                 size="sm"
-                className="h-8 gap-1.5 rounded-lg px-3 text-xs font-medium"
+                className={cn("h-8 gap-1.5 rounded-xl px-3 text-xs font-medium",
+                  restartPending && "border-amber-500/50 text-amber-700 hover:bg-amber-500/10 dark:text-amber-300")}
                 disabled={!!busy}
                 onClick={onRestart}
               >
@@ -275,190 +232,202 @@ export function CodexAccessCard({
           }
         />
 
-        <FoldBody open={fold.open} id="newapi-routing-body" className="space-y-4">
-          {/* Pipeline: Codex -> gateway -> target */}
-          <div className="flex flex-col items-stretch gap-2 rounded-xl border border-border/60 bg-muted/20 p-2.5 text-xs xl:flex-row xl:items-center">
-            <div className="flex min-w-0 items-center gap-2.5 rounded-lg border border-border/50 bg-background/70 p-2 xl:w-auto">
-              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-zinc-800 font-mono text-[10px] font-bold text-white dark:bg-zinc-200 dark:text-zinc-900">
-                CLI
-              </div>
-              <div className="min-w-0">
-                <div className="font-medium text-foreground">OpenAI Codex</div>
-                <div className="text-[11px] text-muted-foreground">~/.codex/config.toml</div>
-              </div>
-            </div>
-
-            <ArrowRight
-              aria-hidden
-              className={cn("hidden h-3.5 w-3.5 shrink-0 xl:block", routingReady ? "text-primary" : "text-muted-foreground/40")}
-            />
-
-            {!nativeAccess && (
-              <>
-                <div className="flex min-w-0 items-center gap-2.5 rounded-lg border border-border/50 bg-background/70 p-2">
-                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary">
-                    <Network className="h-3.5 w-3.5" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="font-medium text-foreground">
-                      {t("newapi.gatewayAddress", { port: router?.port ?? 43127 })}
-                    </div>
-                    <div className="font-mono text-[11px] text-muted-foreground">/codex/v1/responses</div>
-                  </div>
-                </div>
-                <ArrowRight
-                  aria-hidden
-                  className={cn("hidden h-3.5 w-3.5 shrink-0 xl:block", routingReady ? "text-primary" : "text-muted-foreground/40")}
-                />
-              </>
-            )}
-
-            {onOpenRelays && (nativeAccess || !aggregateSelected) ? (
-              <button
-                type="button"
-                data-relay-link
-                data-codex-target={nativeAccess ? "native" : aggregateSelected ? "aggregate" : "relay"}
-                title={t("newapi.providersSection")}
-                onClick={onOpenRelays}
-                className={cn(
-                  targetNodeClass,
-                  "text-left transition-colors hover:border-primary/40 hover:bg-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                )}
-              >
-                {targetNode}
-              </button>
-            ) : (
-              <div data-codex-target={nativeAccess ? "native" : aggregateSelected ? "aggregate" : "relay"} className={targetNodeClass}>{targetNode}</div>
-            )}
+        {restartPending && (
+          <div role="status" className="flex flex-wrap items-center gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/[0.07] px-3.5 py-2.5 text-[13px]">
+            <span aria-hidden className="route-pending-dot h-2 w-2 shrink-0 rounded-full bg-amber-500" />
+            <span className="min-w-0 flex-1 text-amber-800 dark:text-amber-200">{t("newapi.restartPendingHint")}</span>
+            <Button type="button" size="sm" variant="outline" className="h-7 rounded-lg border-amber-500/40 px-2.5 text-xs"
+              disabled={!!busy} onClick={onRestart}>
+              {t("newapi.restartNow")}
+            </Button>
           </div>
+        )}
 
-          {/* Settings */}
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="min-w-0 space-y-1.5">
-              <Label htmlFor="codex-access-mode" className="text-xs font-medium text-muted-foreground">
-                {t("newapi.accessMode")}
-              </Label>
-              <Select
-                value={accessMode}
-                disabled={mutationLocked}
-                onValueChange={(value) => void changeAccessMode(value as CodexAccessMode)}
-              >
-                <SelectTrigger id="codex-access-mode" className="bg-background/80">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="router">{t("newapi.accessRouter")}</SelectItem>
-                  <SelectItem value="native" disabled={!nativeCompatible || !!router?.aggregateModelId}>
-                    {t("newapi.accessNative")}
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-              {nativeAccess && selectedProvider && (
-                <p className="truncate font-mono text-[11px] text-muted-foreground">
-                  {t("newapi.accessSelectedModel", {
-                    provider: selectedProvider.name,
-                    model: selectedProvider.model,
-                    protocol: t(protocolBadgeKey[providerModelProtocol(selectedProvider)]),
-                  })}
+        <FoldBody open={fold.open} id="newapi-routing-body" className="space-y-4">
+          <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
+            <Panel title={t("newapi.connectionPanel")}>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+                <div className="min-w-0 space-y-1.5">
+                  <Label htmlFor="codex-access-mode" className="text-xs font-medium text-muted-foreground">
+                    {t("newapi.accessMode")}
+                  </Label>
+                  <Select
+                    value={accessMode}
+                    disabled={mutationLocked}
+                    onValueChange={(value) => void changeAccessMode(value as CodexAccessMode)}
+                  >
+                    <SelectTrigger id="codex-access-mode" className="bg-card">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="router">{t("newapi.accessRouter")}</SelectItem>
+                      <SelectItem value="native" disabled={!nativeCompatible || !!router?.aggregateModelId}>
+                        {t("newapi.accessNative")}
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {nativeAccess && selectedProvider && (
+                    <p className="truncate font-mono text-[11px] text-muted-foreground">
+                      {t("newapi.accessSelectedModel", {
+                        provider: selectedProvider.name,
+                        model: selectedProvider.model,
+                        protocol: t(protocolBadgeKey[providerModelProtocol(selectedProvider)]),
+                      })}
+                    </p>
+                  )}
+                </div>
+
+                {!nativeAccess && (
+                  <div className="min-w-0 space-y-1.5">
+                    <Label htmlFor="codex-aggregate-model" className="text-xs font-medium text-muted-foreground">
+                      {t("aggregation.codexTarget")}
+                    </Label>
+                    <Select
+                      value={router?.aggregateModelId ?? "__single__"}
+                      disabled={mutationLocked || aggregates.isPending}
+                      onValueChange={(value) =>
+                        void run(
+                          "aggregate-target",
+                          async () => {
+                            applyChange(await api.aggregation.selectCodex(value === "__single__" ? null : value));
+                          },
+                          t("newapi.routingFailed"),
+                        )
+                      }
+                    >
+                      <SelectTrigger id="codex-aggregate-model" className="bg-card">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__single__">{t("aggregation.singleChannel")}</SelectItem>
+                        {router?.aggregateModelId && !aggregate && (
+                          <SelectItem value={router.aggregateModelId} disabled>
+                            {t("aggregation.unavailable")}
+                          </SelectItem>
+                        )}
+                        {(aggregates.data?.models ?? []).map((model) => (
+                          <SelectItem key={model.id} value={model.id} disabled={!model.available}>
+                            {model.displayName} · {model.publicModelId}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+              </div>
+
+              {!nativeAccess && (
+                <div className="mt-3 flex items-center justify-between gap-4 rounded-xl border border-border/60 bg-card px-3.5 py-2.5">
+                  <span className="flex min-w-0 items-center gap-2.5">
+                    <UserX aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0">
+                      <span className="block text-sm font-medium">{t("newapi.accountless")}</span>
+                      <span className="block text-[11px] text-muted-foreground">{t("newapi.accountlessHint")}</span>
+                    </span>
+                  </span>
+                  <Switch
+                    aria-label={t("newapi.accountless")}
+                    checked={!!router?.accountless}
+                    disabled={mutationLocked}
+                    onCheckedChange={(value) =>
+                      void run(
+                        "accountless",
+                        async () => {
+                          const change = await api.routing.setAccountless(value);
+                          applyChange(change);
+                          toast({ title: t("newapi.accountlessApplied"), variant: "success" });
+                        },
+                        t("newapi.routingFailed"),
+                      )
+                    }
+                  />
+                </div>
+              )}
+
+              {nativeAccess && !nativeCompatible && (
+                <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">
+                  {t(selectedProvider ? "newapi.nativeProtocolHint" : "newapi.nativeProviderHint")}
                 </p>
               )}
-            </div>
+              {nativeAccess && <p className="mt-3 text-xs text-muted-foreground">{t("newapi.nativeAuthHint")}</p>}
+              {providers.length === 0 && onOpenRelays && (
+                <Button type="button" variant="outline" size="sm" className="mt-3 h-8 gap-1.5 text-xs" onClick={onOpenRelays}>
+                  <Plus className="h-3.5 w-3.5" />
+                  {t("newapi.addProvider")}
+                </Button>
+              )}
+            </Panel>
 
-            {!nativeAccess && (
-              <div className="min-w-0 space-y-1.5">
-                <Label htmlFor="codex-aggregate-model" className="text-xs font-medium text-muted-foreground">
-                  {t("aggregation.codexTarget")}
-                </Label>
-                <Select
-                  value={router?.aggregateModelId ?? "__single__"}
-                  disabled={mutationLocked || aggregates.isPending}
-                  onValueChange={(value) =>
-                    void run(
-                      "aggregate-target",
-                      async () => {
-                        applyChange(await api.aggregation.selectCodex(value === "__single__" ? null : value));
-                      },
-                      t("newapi.routingFailed"),
-                    )
-                  }
-                >
-                  <SelectTrigger id="codex-aggregate-model" className="bg-background/80">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__single__">{t("aggregation.singleChannel")}</SelectItem>
-                    {router?.aggregateModelId && !aggregate && (
-                      <SelectItem value={router.aggregateModelId} disabled>
-                        {t("aggregation.unavailable")}
-                      </SelectItem>
-                    )}
-                    {(aggregates.data?.models ?? []).map((model) => (
-                      <SelectItem key={model.id} value={model.id} disabled={!model.available}>
-                        {model.displayName} · {model.publicModelId}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+            {/* Pipeline: Codex -> gateway -> target */}
+            <Panel title={t("newapi.pipelinePanel")} className="text-xs">
+              <div className={cn(step, "border-border/60")}>
+                <span className={stepIcon(true)}>
+                  <ClientGlyph client="codex" className="h-4 w-4" />
+                </span>
+                <span className="min-w-0">
+                  <span className="block font-medium text-foreground">OpenAI Codex</span>
+                  <span className="block truncate font-mono text-[11px] text-muted-foreground">~/.codex/config.toml</span>
+                </span>
               </div>
-            )}
+              {!nativeAccess && (
+                <>
+                  {connector}
+                  <div className={cn(step, routingReady ? "border-primary/35" : "border-border/60")}>
+                    <span className={stepIcon(routingReady)}>
+                      <Waypoints className="h-4 w-4" />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block font-medium text-foreground">
+                        {t("newapi.gatewayAddress", { port: router?.port ?? 43127 })}
+                      </span>
+                      <span className="block truncate font-mono text-[11px] text-muted-foreground">openai_base_url</span>
+                    </span>
+                  </div>
+                </>
+              )}
+              {connector}
+              {onOpenRelays && (nativeAccess || !aggregateSelected) ? (
+                <button
+                  type="button"
+                  data-relay-link
+                  data-codex-target={nativeAccess ? "native" : aggregateSelected ? "aggregate" : "relay"}
+                  title={t("newapi.providersSection")}
+                  onClick={onOpenRelays}
+                  className={cn(step, "group w-full border-border/60 text-left transition-colors hover:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring")}
+                >
+                  {targetNode}
+                </button>
+              ) : (
+                <div data-codex-target={nativeAccess ? "native" : aggregateSelected ? "aggregate" : "relay"} className={cn(step, "border-border/60")}>
+                  {targetNode}
+                </div>
+              )}
+              <p className="mt-3 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground">
+                <ArrowRight aria-hidden className="mt-0.5 h-3 w-3 shrink-0" />
+                {t(nativeAccess ? "newapi.pipelineNativeHint" : "newapi.pipelineRouterHint")}
+              </p>
+            </Panel>
           </div>
 
-          {!nativeAccess && (
-            <div className="flex items-center justify-between gap-4 rounded-xl border border-border/60 bg-background/60 px-3.5 py-2.5">
-              <span className="text-sm font-medium">{t("newapi.accountless")}</span>
-              <Switch
-                aria-label={t("newapi.accountless")}
-                checked={!!router?.accountless}
-                disabled={mutationLocked}
-                onCheckedChange={(value) =>
-                  void run(
-                    "accountless",
-                    async () => {
-                      const change = await api.routing.setAccountless(value);
-                      applyChange(change);
-                      toast({ title: t("newapi.accountlessApplied"), variant: "success" });
-                    },
-                    t("newapi.routingFailed"),
-                  )
-                }
-              />
-            </div>
-          )}
-
           <CodexSubagentSettingsFields store={store} />
-
-          {providers.length === 0 && onOpenRelays && (
-            <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5 text-xs" onClick={onOpenRelays}>
-              <Plus className="h-3.5 w-3.5" />
-              {t("newapi.addProvider")}
-            </Button>
-          )}
-
-          {nativeAccess && !nativeCompatible && (
-            <p className="text-xs text-amber-700 dark:text-amber-300">
-              {t(selectedProvider ? "newapi.nativeProtocolHint" : "newapi.nativeProviderHint")}
-            </p>
-          )}
-          {nativeAccess && <p className="text-xs text-muted-foreground">{t("newapi.nativeAuthHint")}</p>}
 
           {configDrifted && (
             <p
               role="alert"
-              className="rounded-lg border border-amber-500/30 bg-amber-500/[0.07] px-3 py-2 text-[13px] leading-relaxed text-amber-700 dark:text-amber-300"
+              className="rounded-xl border border-amber-500/30 bg-amber-500/[0.07] px-3 py-2 text-[13px] leading-relaxed text-amber-700 dark:text-amber-300"
             >
               {t("newapi.configDriftedHint")}
             </p>
           )}
 
           {appliedNote && (
-            <p className="break-all rounded border border-border/40 bg-background/50 px-2 py-1 font-mono text-[11px] text-muted-foreground/80">
+            <p className="break-all rounded-lg border border-border/40 bg-background/50 px-2 py-1 font-mono text-[11px] text-muted-foreground/80">
               {appliedNote.path}
               {appliedNote.backupPath ? ` · ${t("newapi.backup")}: ${appliedNote.backupPath}` : ""}
             </p>
           )}
         </FoldBody>
       </section>
-      <ConfirmDialog request={confirmRequest} onClose={() => setConfirmRequest(null)} />
-    </AuroraCard>
+    </div>
   );
 }

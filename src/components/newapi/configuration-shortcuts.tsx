@@ -1,16 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
 import { Monitor, Network, Terminal } from "lucide-react";
 import { cn } from "@/lib/utils";
 import claudeMark from "@/assets/client-marks/claude.svg";
 import codexMark from "@/assets/client-marks/openai.svg";
 import openCodeMark from "@/assets/client-marks/opencode.svg";
 
-type Client = "codex" | "claudeCode" | "claudeDesktop" | "opencode" | "pi" | "aggregation";
+export type ShortcutTarget = "codex" | "claudeCode" | "claudeDesktop" | "opencode" | "pi" | "aggregation";
 
 // Provider marks are shared with the client cards; Claude's small badge
 // distinguishes desktop from CLI without adding a second text row.
-export function ClientGlyph({ client, className }: { client: Client; className?: string }) {
+export function ClientGlyph({ client, className }: { client: ShortcutTarget; className?: string }) {
   if (client === "aggregation") return <Network className={className} aria-hidden />;
   if (client === "pi") return <svg viewBox="0 0 800 800" className={className} fill="currentColor" aria-hidden>
     <path fillRule="evenodd" d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65Z" />
@@ -27,22 +26,23 @@ export function ClientGlyph({ client, className }: { client: Client; className?:
   </span>;
 }
 
-const entries: { client: Client; label: string; fold: string; target: string }[] = [
-  { client: "codex", label: "newapi.routeSourceCodex", fold: "codex-access", target: "newapi-routing-title" },
-  { client: "claudeCode", label: "newapi.routeSourceClaudeCode", fold: "client-configs", target: "client-config-claudeCode" },
-  { client: "claudeDesktop", label: "newapi.routeSourceClaudeDesktop", fold: "claude-desktop", target: "claude-desktop-title" },
-  { client: "opencode", label: "newapi.routeSourceOpenCode", fold: "client-configs", target: "client-config-opencode" },
-  { client: "pi", label: "newapi.routeSourcePi", fold: "client-configs", target: "client-config-pi" },
-  { client: "aggregation", label: "aggregation.title", fold: "aggregation", target: "aggregation-title" },
-];
+export const shortcutEntries: Record<ShortcutTarget, { label: string; fold: string; target: string }> = {
+  codex: { label: "newapi.routeSourceCodex", fold: "codex-access", target: "newapi-routing-title" },
+  claudeCode: { label: "newapi.routeSourceClaudeCode", fold: "client-configs", target: "client-config-claudeCode" },
+  claudeDesktop: { label: "newapi.routeSourceClaudeDesktop", fold: "claude-desktop", target: "claude-desktop-title" },
+  opencode: { label: "newapi.routeSourceOpenCode", fold: "client-configs", target: "client-config-opencode" },
+  pi: { label: "newapi.routeSourcePi", fold: "client-configs", target: "client-config-pi" },
+  aggregation: { label: "aggregation.title", fold: "aggregation", target: "aggregation-title" },
+};
 
-export function ConfigurationShortcuts() {
-  const { t } = useTranslation();
-  const [active, setActive] = useState<Client | null>(null);
+/** Expand a folded section, then focus and scroll to its first control. */
+export function useSectionJump() {
+  const [active, setActive] = useState<ShortcutTarget | null>(null);
   const frame = useRef(0);
   useEffect(() => () => cancelAnimationFrame(frame.current), []);
-  const jump = (entry: typeof entries[number]) => {
-    setActive(entry.client);
+  const jump = (client: ShortcutTarget) => {
+    const entry = shortcutEntries[client];
+    setActive(client);
     cancelAnimationFrame(frame.current);
     window.dispatchEvent(new CustomEvent("agentharbor:expand-section", { detail: entry.fold }));
     // Wait for the folded content to mount. A second click cancels a pending
@@ -60,14 +60,5 @@ export function ConfigurationShortcuts() {
     };
     frame.current = requestAnimationFrame(locate);
   };
-  return <nav aria-label={t("newapi.configShortcuts")} className="flex justify-start">
-    <div className="inline-flex max-w-full items-center gap-1 overflow-x-auto rounded-xl bg-muted/70 p-1">
-      {entries.map(entry => <button key={entry.client} type="button" aria-label={t(entry.label)} title={t(entry.label)}
-        aria-current={active === entry.client ? "location" : undefined} onClick={() => jump(entry)}
-        className={cn("flex h-11 w-12 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-background/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-          active === entry.client && "bg-background text-foreground shadow-sm")}>
-        <ClientGlyph client={entry.client} className="h-6 w-6" />
-      </button>)}
-    </div>
-  </nav>;
+  return { active, jump };
 }

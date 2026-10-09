@@ -79,7 +79,7 @@ export async function testPiIntegration({ page, reset, captureDir }) {
 
   await seed({ allClients: true, folded: true });
   const nav = page.getByRole("navigation", { name: await tr("newapi.configShortcuts") });
-  assert.equal(await nav.getByRole("button").count(), 6);
+  assert.equal(await nav.locator("button[data-route-shortcut]").count(), 6);
   for (const mark of await nav.locator("img").all()) {
     assert.equal(await mark.evaluate(image => image.complete && image.naturalWidth > 0), true, "brand marks are actual loaded images");
   }

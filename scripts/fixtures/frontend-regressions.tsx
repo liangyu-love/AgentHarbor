@@ -405,24 +405,25 @@ api.providers.onBalanceUpdated = async callback => {
   listeners.add(callback);
   return () => listeners.delete(callback);
 };
-api.routing.setAccessMode = async (mode, force = false) => {
-  controls.review.accessCalls.push(mode);
-  controls.review.routingCalls.push({ operation: "accessMode", mode, force });
-  if (mode === "native" && state.router.enabled && !force && controls.review.routingMutationFailure) throw controls.review.routingMutationFailure;
-  state = { ...state, router: { ...state.router, accessMode: mode } };
-  const threadMigration = mode === "native" && !force && controls.review.routedThreads
-    ? controls.review.routingMigrationResult ?? { changed: 1, unchanged: 0, failed: [], reopenError: null } : null;
-  if (threadMigration) controls.review.routedThreads = false;
-  return { state, applied: null, threadMigration };
+// Connection changes never migrate threads; a running Codex keeps its old
+// connection until the user restarts it.
+const connectionChange = () => {
+  const restartRequired = !!controls.review.codexRunning;
+  if (restartRequired) state = { ...state, router: { ...state.router, restartPending: true } };
+  return { state, applied: null, restartRequired };
 };
-api.routing.setEnabled = async (enabled, force = false) => {
-  controls.review.routingCalls.push({ operation: "enabled", enabled, force });
-  if (!enabled && !force && controls.review.routingMutationFailure) throw controls.review.routingMutationFailure;
+api.routing.setAccessMode = async mode => {
+  controls.review.accessCalls.push(mode);
+  controls.review.routingCalls.push({ operation: "accessMode", mode });
+  if (controls.review.routingMutationFailure) throw controls.review.routingMutationFailure;
+  state = { ...state, router: { ...state.router, accessMode: mode } };
+  return connectionChange();
+};
+api.routing.setEnabled = async enabled => {
+  controls.review.routingCalls.push({ operation: "enabled", enabled });
+  if (controls.review.routingMutationFailure) throw controls.review.routingMutationFailure;
   state = { ...state, router: { ...state.router, enabled } };
-  const threadMigration = !enabled && !force && controls.review.routedThreads
-    ? controls.review.routingMigrationResult ?? { changed: 1, unchanged: 0, failed: [], reopenError: null } : null;
-  if (threadMigration) controls.review.routedThreads = false;
-  return { state, applied: null, threadMigration };
+  return connectionChange();
 };
 api.routing.setAccountless = async accountless => {
   state = { ...state, router: { ...state.router, accountless } };
@@ -452,6 +453,7 @@ api.routing.saveSubagents = async settings => {
 };
 api.targets.restart = async target => {
   controls.review.restartCalls.push(target);
+  state = { ...state, router: { ...state.router, restartPending: false } };
 };
 api.targets.configs = async () => [];
 api.targets.previewConfig = async request => {
@@ -748,6 +750,7 @@ function mount(mode: FixtureMode) {
   state = { providers: mode === "image" ? [imageProvider] : mode === "groups" ? groupedProviders : mode === "overview" ? [...groupedProviders, provider("extra-1"), provider("extra-2")] : mode === "usage" ? [{ ...groupedProviders[0], balance: { remaining: 12.5, used: 7.5, unit: "USD", rawQuota: 12.5, quotaPerUnit: null, requestCount: 5, checkedAt: Math.floor(Date.now() / 1000), conversionAvailable: true } }] : [selectedProvider], router: { enabled: false, accessMode: mode === "native-invalid" ? "native" : "router", accountless: false, port: 43127, configDrifted: false }, proxyRunning: false, activeProviderId: mode === "image" || mode === "groups" || mode === "overview" || mode === "usage" ? null : selectedProvider.id };
   if (controls.review.providerFixtures) state.providers = controls.review.providerFixtures;
   if (controls.review.routerPatch) state.router = { ...state.router, ...controls.review.routerPatch };
+  if (controls.review.statePatch) state = { ...state, ...controls.review.statePatch };
   if (mode === "incompatible") state.providers.push(provider("alternate"));
   const savedClient: ClientConfigRequest | null = mode === "clients-opencode-stale" ? {
     targetId: "opencode", providerId: "mixed", model: "responses-model", contextWindow: 128000,
@@ -843,29 +846,6 @@ function mount(mode: FixtureMode) {
     });
     controls.review.threadItems = threads;
   }
-  // Router-adopted threads are the default; thread-actions has one direct thread.
-  controls.review.batchCalls = [];
-  controls.review.routedThreads = false;
-  api.conversations.routeOverview = async () => {
-    if (controls.review.routeOverviewFailure) throw controls.review.routeOverviewFailure;
-    return {
-      routerActive: mode === "routing-cache" ? state.router.enabled && state.router.accessMode === "router"
-        : mode === "thread-actions" || controls.review.routedThreads,
-      routerProviderThreads: controls.review.routedThreads ? 1 : 0,
-      states: mode === "routing-cache" ? { t0: "direct" }
-        : mode === "thread-actions" ? { t0: "direct", t1: "routed" }
-        : controls.review.routedThreads ? { t0: "routed" } : {},
-    };
-  };
-  api.conversations.previewBatch = async (target, selection) => {
-    controls.review.batchCalls.push({ operation: "preview", target, selection });
-    return { targetProvider: "agentharbor_relay", providers: { openai: 1 }, skipped: [],
-      ready: [{ threadId: "t0", revision: "batch-revision", fromProvider: "openai" }] };
-  };
-  api.conversations.applyBatch = async (target, candidates) => {
-    controls.review.batchCalls.push({ operation: "apply", target, candidates });
-    return { changed: candidates.length, unchanged: 0, failed: [], reopenError: null };
-  };
   if (mode === "thread-actions" || mode === "thread-queue-recovery") {
     controls.review.recoveryApplyCalls = 0;
     controls.review.deleteCalls = [];
@@ -1065,9 +1045,7 @@ controls.review = { mount, t: (key: string, options?: Record<string, unknown>) =
     recoveryOfficialStatus: i18n.t("threads.recoveryStatus.officialAccountUnverified"),
     recoveryCoordinationTitle: i18n.t("threads.recoveryCoordinationTitle"),
     recoveryOpenDirectory: i18n.t("threads.recoveryOpenDirectory"),
-    disableRoutingRestore: i18n.t("newapi.disableRoutingRestore"),
-    repairAll: i18n.t("threads.repairAll"), repairAllApply: i18n.t("threads.repairAllApply"),
-    routeDirect: i18n.t("threads.routeDirect"), deleteThread: i18n.t("threads.deleteThread"),
+    deleteThread: i18n.t("threads.deleteThread"),
     deleteSelected: i18n.t("threads.deleteSelected", { count: 1 }),
     clearDeletionQueue: i18n.t("threads.clearDeletionQueue"),
     delete: i18n.t("common.delete"),

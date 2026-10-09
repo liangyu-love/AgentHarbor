@@ -167,7 +167,13 @@ mod tests {
         )
         .unwrap();
         router::set_enabled(&paths, &saved.state.providers[0].id, true).unwrap();
+        // Account-mode routing keeps the built-in provider: nothing to adopt.
         router::set_smart_routing(&paths, true).unwrap();
+        let preview = preview_thread_recovery(&paths, super::super::tests::THREAD_ID).unwrap();
+        assert_eq!(preview.target_provider, "openai");
+        assert!(validate_router_target(&paths, &preview).is_err());
+        // Accountless routing still uses a dedicated provider for its threads.
+        router::set_accountless(&paths, true).unwrap();
         let store = router::load_store(&paths).unwrap();
         router::apply_routing_config(&paths, &store).unwrap();
         let config = std::fs::read_to_string(&paths.config_path).unwrap();
