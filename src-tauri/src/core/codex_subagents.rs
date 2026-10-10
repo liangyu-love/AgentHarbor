@@ -51,7 +51,7 @@ fn catalog(paths: &CodexPaths, store: &Store) -> Result<Value, String> {
         };
     }
     Ok(if store.router.aggregate_model_id.is_some() {
-        aggregate_catalog_value(&paths.app_data_dir, store)
+        aggregate_catalog_value(&paths.app_data_dir, &paths.codex_home, store)
     } else {
         catalog_value(&paths.app_data_dir, &paths.codex_home, store)
     })

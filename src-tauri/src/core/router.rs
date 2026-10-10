@@ -2514,16 +2514,24 @@ fn selected_catalog_path(paths: &CodexPaths, store: &Store) -> PathBuf {
         catalog_path(paths)
     }
 }
-pub(crate) fn aggregate_catalog_value(app_data_dir: &std::path::Path, store: &Store) -> Value {
+pub(crate) fn aggregate_catalog_value(
+    app_data_dir: &std::path::Path,
+    codex_home: &std::path::Path,
+    store: &Store,
+) -> Value {
     let catalog = models_dev::load(app_data_dir);
+    let official = super::model_catalog::official(codex_home, app_data_dir);
     let models: Vec<_> = store
         .aggregates
         .iter()
         .filter_map(|aggregate| {
             let view = super::aggregation::project(store, aggregate, &catalog);
-            view.projection
-                .filter(|_| view.available)
-                .map(|projection| aggregate_catalog_entry(aggregate, &projection))
+            view.projection.filter(|_| view.available).map(|projection| {
+                let mut entry = aggregate_catalog_entry(aggregate, &projection);
+                let model = matched_official_model(&official.models, &aggregate.public_model_id);
+                adopt_codex_behavior(&mut entry, model);
+                entry
+            })
         })
         .collect();
     serde_json::json!({"models":models})
@@ -2534,7 +2542,7 @@ pub(crate) fn aggregate_catalog_value(app_data_dir: &std::path::Path, store: &St
 /// the original app's catalog when it is present.
 pub(crate) fn write_catalog(paths: &CodexPaths, store: &Store) -> Result<PathBuf, String> {
     let document = if store.router.aggregate_model_id.is_some() {
-        aggregate_catalog_value(&paths.app_data_dir, store)
+        aggregate_catalog_value(&paths.app_data_dir, &paths.codex_home, store)
     } else {
         catalog_value(&paths.app_data_dir, &paths.codex_home, store)
     };
@@ -2550,7 +2558,7 @@ pub(crate) fn write_catalog(paths: &CodexPaths, store: &Store) -> Result<PathBuf
 /// catalog file in sync without rewriting or reclaiming config.toml.
 pub(crate) fn refresh_catalog_if_changed(paths: &CodexPaths, store: &Store) -> Result<(), String> {
     let expected = if store.router.aggregate_model_id.is_some() {
-        aggregate_catalog_value(&paths.app_data_dir, store)
+        aggregate_catalog_value(&paths.app_data_dir, &paths.codex_home, store)
     } else {
         catalog_value(&paths.app_data_dir, &paths.codex_home, store)
     };
@@ -2623,13 +2631,11 @@ pub(crate) fn catalog_value(
             if !slugs.insert(slug.clone()) {
                 continue;
             }
-            let official = matched_official_model(&official_metadata.models, &model_id)
-                .filter(|_| official_endpoint_applies(provider));
             models.push(relay_menu_entry(
                 store,
                 provider,
                 &model_id,
-                official,
+                matched_official_model(&official_metadata.models, &model_id),
                 &models_dev,
                 &global_compression,
             ));
@@ -2640,7 +2646,9 @@ pub(crate) fn catalog_value(
 
 /// One relay menu entry for `provider` + `model_id`. Shared by the full catalog
 /// builder and the single-entry lookup, so the menu and the request
-/// compatibility path can never disagree about a model.
+/// compatibility path can never disagree about a model. `official` is the
+/// same model's official entry: its limits apply only to the official endpoint,
+/// its client behaviour to every endpoint.
 fn relay_menu_entry(
     store: &Store,
     provider: &Provider,
@@ -2653,7 +2661,7 @@ fn relay_menu_entry(
         store,
         provider,
         model_id,
-        official,
+        official.filter(|_| official_endpoint_applies(provider)),
         models_dev,
         global_compression,
     );
@@ -2676,6 +2684,7 @@ fn relay_menu_entry(
     if let Some(threshold) = projection.compression.threshold {
         entry["auto_compact_token_limit"] = serde_json::json!(threshold);
     }
+    adopt_codex_behavior(&mut entry, official);
     entry
 }
 
@@ -2715,14 +2724,12 @@ pub(crate) fn catalog_entry_for_slug(
     if !listed {
         return None;
     }
-    let official = matched_official_model(&official_snapshot.models, model_id)
-        .filter(|_| official_endpoint_applies(provider));
     let models_dev = models_dev::load(app_data_dir);
     Some(relay_menu_entry(
         store,
         provider,
         model_id,
-        official,
+        matched_official_model(&official_snapshot.models, model_id),
         &models_dev,
         &store.global_compression(),
     ))
@@ -3211,6 +3218,54 @@ pub(crate) fn aggregate_catalog_entry(
     entry
 }
 
+/// Codex client behaviour borrowed from the official entry of the same model.
+///
+/// `ultra` is a client alias, never a wire value: Codex resolves it to
+/// `multi_agent_reasoning_effort`, else `max`, else the highest declared level,
+/// and only multi-agent V2 turns it into proactive delegation. Codex also pins a
+/// thread's multi-agent version on its first turn, so an entry without one locks
+/// the whole thread to the feature default. These keys change what the client
+/// does, never what an upstream must accept, so unlike account limits they apply
+/// to any endpoint serving the same model.
+pub(super) fn adopt_codex_behavior(entry: &mut Value, official: Option<&Value>) {
+    let Some(official) = official else { return };
+    let Some(version) = official.get("multi_agent_version").and_then(Value::as_str) else {
+        return;
+    };
+    entry["multi_agent_version"] = Value::from(version);
+    let declared = |effort: &str| {
+        entry["supported_reasoning_levels"]
+            .as_array()
+            .is_some_and(|levels| levels.iter().any(|level| level["effort"] == effort))
+    };
+    let preferred = official
+        .get("multi_agent_reasoning_effort")
+        .and_then(Value::as_str)
+        .filter(|effort| *effort != "ultra" && declared(effort))
+        .map(str::to_owned);
+    // Without declared reasoning there is nothing for Ultra to resolve to.
+    let has_levels = entry["supported_reasoning_levels"]
+        .as_array()
+        .is_some_and(|levels| !levels.is_empty());
+    let ultra = (version == "v2" && has_levels && !declared("ultra"))
+        .then(|| {
+            official["supported_reasoning_levels"]
+                .as_array()?
+                .iter()
+                .find(|level| level["effort"] == "ultra")
+                .cloned()
+        })
+        .flatten();
+    if let Some(level) = ultra {
+        if let Some(levels) = entry["supported_reasoning_levels"].as_array_mut() {
+            levels.push(level);
+        }
+    }
+    if let Some(effort) = preferred {
+        entry["multi_agent_reasoning_effort"] = Value::from(effort);
+    }
+}
+
 fn relay_catalog_entry(
     slug: String,
     display_name: String,
@@ -3288,7 +3343,7 @@ fn apply_local_router_config(
     let (provider_key, default_model, namespace) = codex_connection(store)?;
     let catalog = selected_catalog_path(paths, store);
     let menu = if store.router.aggregate_model_id.is_some() {
-        aggregate_catalog_value(&paths.app_data_dir, store)
+        aggregate_catalog_value(&paths.app_data_dir, &paths.codex_home, store)
     } else {
         catalog_value(&paths.app_data_dir, &paths.codex_home, store)
     };
@@ -3484,7 +3539,7 @@ pub(crate) fn routing_config_matches(paths: &CodexPaths, store: &Store) -> Resul
     let expected_base = format!("http://127.0.0.1:{}/{namespace}/v1", store.router.port);
     let expected_catalog = selected_catalog_path(paths, store).to_string_lossy().to_string();
     let expected_menu = if store.router.aggregate_model_id.is_some() {
-        aggregate_catalog_value(&paths.app_data_dir, store)
+        aggregate_catalog_value(&paths.app_data_dir, &paths.codex_home, store)
     } else {
         catalog_value(&paths.app_data_dir, &paths.codex_home, store)
     };
@@ -5510,6 +5565,158 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             .unwrap()
             .is_empty());
         assert!(plain["default_reasoning_level"].is_null());
+    }
+
+    #[test]
+    fn relay_entries_adopt_codex_multi_agent_behavior_but_not_limits() {
+        let level = |effort: &str| serde_json::json!({"effort": effort, "description": effort});
+        let official = serde_json::json!({
+            "slug": "gpt-6.1-sol",
+            "context_window": 999_000,
+            "multi_agent_version": "v2",
+            "multi_agent_reasoning_effort": "xhigh",
+            "supported_reasoning_levels": [level("high"), level("xhigh"), level("max"),
+                {"effort": "ultra", "description": "Official ultra"}],
+        });
+        let entry = |levels: Vec<Value>| {
+            relay_catalog_entry(
+                "relay::gpt-6.1-sol".into(),
+                "Relay".into(),
+                String::new(),
+                128_000,
+                None,
+                levels,
+                None,
+            )
+        };
+        let efforts = |entry: &Value| {
+            entry["supported_reasoning_levels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|level| level["effort"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+
+        // The same model gains its multi-agent version, preferred effort and Ultra.
+        let mut full = entry(vec![level("high"), level("xhigh"), level("max")]);
+        adopt_codex_behavior(&mut full, Some(&official));
+        assert_eq!(full["multi_agent_version"], "v2");
+        assert_eq!(full["multi_agent_reasoning_effort"], "xhigh");
+        assert_eq!(efforts(&full), ["high", "xhigh", "max", "ultra"]);
+        assert_eq!(full["supported_reasoning_levels"][3]["description"], "Official ultra");
+        assert_eq!(full["context_window"], 128_000);
+        // The catalog is rebuilt on every read; adopting twice is stable.
+        let once = full.clone();
+        adopt_codex_behavior(&mut full, Some(&official));
+        assert_eq!(full, once);
+
+        // A preferred effort the relay lacks is dropped; Codex then picks max.
+        let mut partial = entry(vec![level("high"), level("max")]);
+        adopt_codex_behavior(&mut partial, Some(&official));
+        assert!(partial.get("multi_agent_reasoning_effort").is_none());
+        assert_eq!(efforts(&partial), ["high", "max", "ultra"]);
+
+        // Without declared reasoning Ultra has nothing to resolve to.
+        let mut silent = entry(Vec::new());
+        adopt_codex_behavior(&mut silent, Some(&official));
+        assert_eq!(silent["multi_agent_version"], "v2");
+        assert!(efforts(&silent).is_empty());
+
+        // V1 keeps its version without Ultra; no declaration changes nothing.
+        let mut v1_official = official.clone();
+        v1_official["multi_agent_version"] = "v1".into();
+        let mut v1 = entry(vec![level("high")]);
+        adopt_codex_behavior(&mut v1, Some(&v1_official));
+        assert_eq!(v1["multi_agent_version"], "v1");
+        assert_eq!(efforts(&v1), ["high"]);
+        for official in [None, Some(serde_json::json!({"slug": "gpt-5.5"}))] {
+            let mut plain = entry(vec![level("high")]);
+            let before = plain.clone();
+            adopt_codex_behavior(&mut plain, official.as_ref());
+            assert_eq!(plain, before);
+        }
+    }
+
+    #[test]
+    fn relay_menu_borrows_codex_ultra_behavior_from_the_same_official_model() {
+        let (_dir, paths) = paths();
+        std::fs::create_dir_all(&paths.app_data_dir).unwrap();
+        let cache = serde_json::to_vec(&serde_json::json!({"models": [{
+            "slug": "account-model-a",
+            "context_window": 999_000,
+            "multi_agent_version": "v2",
+            "multi_agent_reasoning_effort": "xhigh",
+            "supported_reasoning_levels": (["high", "xhigh", "ultra"]
+                .map(|effort| serde_json::json!({"effort": effort, "description": effort}))),
+        }]}))
+        .unwrap();
+        std::fs::write(paths.codex_home.join("models_cache.json"), &cache).unwrap();
+        super::super::model_catalog::seed_test_account_catalog(
+            &paths.codex_home,
+            &paths.app_data_dir,
+            &cache,
+        );
+        let store = Store {
+            providers: vec![Provider {
+                id: "relay-one".into(),
+                name: "Relay".into(),
+                base_url: "https://relay.example.com".into(),
+                api_key: "sk-test".into(),
+                model: "account-model-a".into(),
+                enabled: true,
+                models: vec![newapi::Model {
+                    id: "account-model-a".into(),
+                    included: true,
+                    overrides: newapi::ModelOverrides {
+                        reasoning: Some(
+                            ["high", "xhigh"]
+                                .map(|effort| newapi::ReasoningLevel {
+                                    effort: effort.into(),
+                                    description: effort.into(),
+                                })
+                                .into(),
+                        ),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let catalog = catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
+        let relay = catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["slug"] == "relay-one::account-model-a")
+            .unwrap();
+        // A third-party endpoint never inherits account limits, but a thread
+        // that starts on it gets the same multi-agent version and Ultra.
+        assert_ne!(relay["context_window"], 999_000);
+        assert_eq!(relay["multi_agent_version"], "v2");
+        assert_eq!(relay["multi_agent_reasoning_effort"], "xhigh");
+        assert_eq!(
+            relay["supported_reasoning_levels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|level| level["effort"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["high", "xhigh", "ultra"]
+        );
+        // The request path sees the same entry as the menu.
+        assert_eq!(
+            catalog_entry_for_slug(
+                &paths.app_data_dir,
+                &paths.codex_home,
+                &store,
+                "relay-one::account-model-a",
+            )
+            .as_ref(),
+            Some(relay)
+        );
     }
 
     #[test]

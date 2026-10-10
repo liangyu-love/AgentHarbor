@@ -82,6 +82,10 @@ pub(super) fn prepare_message_translation(
 /// list. Unknown/empty capabilities are not evidence to change the request.
 /// Keep summaries and every other reasoning/history field intact.
 ///
+/// `ultra` is Codex's client alias, never a wire value, even when a catalog
+/// lists it for the picker. It resolves the way Codex resolves it: the model's
+/// `multi_agent_reasoning_effort`, else `max`, else the highest other level.
+///
 /// `entry` resolves only the requested slug, so this never builds the whole
 /// menu on the request path.
 pub(super) fn prepare_reasoning(
@@ -99,7 +103,13 @@ pub(super) fn prepare_reasoning(
     if value.get("model").and_then(Value::as_str).is_none() {
         return Ok(body);
     }
-    let levels = entry()
+    let entry = entry();
+    let preferred = entry
+        .as_ref()
+        .and_then(|entry| entry.get("multi_agent_reasoning_effort"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let levels = entry
         .and_then(|entry| entry.get("supported_reasoning_levels").cloned())
         .and_then(|levels| levels.as_array().cloned());
     let Some(levels) = levels.filter(|levels| {
@@ -113,16 +123,35 @@ pub(super) fn prepare_reasoning(
     }) else {
         return Ok(body);
     };
-    if levels
-        .iter()
-        .any(|level| level["effort"].as_str() == Some(effort))
-    {
+    let declared = |candidate: &str| levels.iter().any(|level| level["effort"] == candidate);
+    let replacement = if effort == "ultra" {
+        preferred
+            .filter(|preferred| preferred != "ultra" && declared(preferred.as_str()))
+            .or_else(|| declared("max").then(|| "max".to_owned()))
+            .or_else(|| {
+                levels
+                    .iter()
+                    .rev()
+                    .filter_map(|level| level["effort"].as_str())
+                    .find(|level| *level != "ultra")
+                    .map(str::to_owned)
+            })
+    } else if declared(effort) {
         return Ok(body);
-    }
+    } else {
+        None
+    };
     let reasoning = value["reasoning"]
         .as_object_mut()
         .expect("string effort in object");
-    reasoning.remove("effort");
+    match replacement {
+        Some(effort) => {
+            reasoning.insert("effort".into(), Value::from(effort));
+        }
+        None => {
+            reasoning.remove("effort");
+        }
+    }
     if reasoning.is_empty() {
         value
             .as_object_mut()
@@ -318,6 +347,36 @@ mod tests {
             serde_json::from_slice::<Value>(&body).unwrap(),
             json!({"model":"relay::model"})
         );
+    }
+
+    #[test]
+    fn ultra_resolves_like_codex_and_never_reaches_the_wire() {
+        let ultra = json!({"model":"relay::model","reasoning":{"effort":"ultra","summary":"auto"}});
+        let level = |effort: &str| json!({"effort": effort});
+        for (entry, expected) in [
+            (
+                json!({"supported_reasoning_levels": [level("high"), level("xhigh"), level("max"), level("ultra")],
+                    "multi_agent_reasoning_effort": "xhigh"}),
+                Some("xhigh"),
+            ),
+            (
+                json!({"supported_reasoning_levels": [level("high"), level("max"), level("ultra")],
+                    "multi_agent_reasoning_effort": "xhigh"}),
+                Some("max"),
+            ),
+            (
+                json!({"supported_reasoning_levels": [level("low"), level("xhigh"), level("ultra")]}),
+                Some("xhigh"),
+            ),
+            (json!({"supported_reasoning_levels": [level("ultra")]}), None),
+        ] {
+            let body = prepare_reasoning(Some(Bytes::from(ultra.to_string())), || Some(entry))
+                .unwrap()
+                .unwrap();
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["reasoning"]["summary"], "auto");
+            assert_eq!(body["reasoning"]["effort"].as_str(), expected);
+        }
     }
 
     #[test]

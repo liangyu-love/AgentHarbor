@@ -275,6 +275,152 @@ fn real_codex_same_free_thread_switches_official_and_relays_repeatedly() {
     runtime.block_on(listener_task).unwrap();
 }
 
+#[test]
+#[ignore = "requires AGENTHARBOR_TEST_CODEX_BIN pointing to an installed Codex CLI"]
+fn real_codex_relay_thread_keeps_ultra_and_multi_agent_v2() {
+    let binary =
+        PathBuf::from(std::env::var_os("AGENTHARBOR_TEST_CODEX_BIN").expect("installed binary"));
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path().join("workspace");
+    fs::create_dir_all(&cwd).unwrap();
+    let paths = CodexPaths::from_home(temp.path().join("codex"));
+    paths.ensure_directories().unwrap();
+    fs::write(&paths.auth_path, synthetic_auth_for_plan("free")).unwrap();
+    fs::write(&paths.config_path, "cli_auth_credentials_store = 'file'
+check_for_update_on_startup = false
+[analytics]
+enabled = false
+[feedback]
+enabled = false
+[features]
+apps = false
+plugins = false
+").unwrap();
+    let proxy = RejectingProxy::start();
+    let official = MockResponses::official_account();
+    let relay = MockResponses::start();
+    let mut store = Store {
+        router: RouterSettings {
+            enabled: true,
+            bearer_token: LOCAL_TOKEN.into(),
+            ..Default::default()
+        },
+        active_provider_id: Some("relay-a".into()),
+        providers: vec![Provider {
+            id: "relay-a".into(),
+            name: "Relay A".into(),
+            base_url: format!("http://127.0.0.1:{}", relay.port),
+            api_key: "synthetic-relay-0".into(),
+            model: "gpt-6.1-sol".into(),
+            enabled: true,
+            network_mode: "direct".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    // The official entry of the same model declares Ultra and multi-agent V2.
+    let mut entry =
+        router::catalog_value(&paths.app_data_dir, &paths.codex_home, &store)["models"][0].clone();
+    entry["slug"] = json!("gpt-6.1-sol");
+    entry["display_name"] = json!("Synthetic official Sol");
+    entry["supported_reasoning_levels"] = json!(["low", "medium", "high", "xhigh", "max", "ultra"]
+        .map(|effort| json!({"effort":effort,"description":effort})));
+    entry["multi_agent_version"] = json!("v2");
+    entry["multi_agent_reasoning_effort"] = json!("xhigh");
+    fs::write(
+        paths.codex_home.join("models_cache.json"),
+        json!({"models":[entry]}).to_string(),
+    )
+    .unwrap();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let (shutdown, listener_task) = runtime.block_on(async {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        store.router.port = listener.local_addr().unwrap().port();
+        let proxy_url = proxy.url.clone();
+        let client = Client::builder()
+            .no_proxy()
+            .proxy(reqwest::Proxy::custom(move |url| {
+                (!matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]")))
+                    .then(|| proxy_url.clone())
+            }))
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
+        let direct = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
+        let context = Arc::new(ArcContext {
+            bound_port: store.router.port,
+            store_path: paths.app_data_dir.join("newapi-providers.dat"),
+            app_data_dir: paths.app_data_dir.clone(),
+            codex_home: paths.codex_home.clone(),
+            auth_path: paths.auth_path.clone(),
+            outbound: Arc::new(RwLock::new(client)),
+            outbound_direct: direct,
+            official_base: Some(format!("http://127.0.0.1:{}/v1/", official.port)),
+        });
+        crate::core::secret_file::write(&context.store_path, &serde_json::to_vec(&store).unwrap())
+            .unwrap();
+        let (shutdown, receiver) = tokio::sync::watch::channel(false);
+        (
+            shutdown,
+            tokio::spawn(accept_loop(listener, receiver, context)),
+        )
+    });
+    router::apply_routing_config(&paths, &store).unwrap();
+    {
+        let mut server = AppServer::start(&binary, &paths, &cwd, &proxy);
+        let menu = server.request(2, "model/list", json!({}));
+        let model = menu["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["id"] == "relay-a::gpt-6.1-sol")
+            .unwrap_or_else(|| panic!("{menu}"));
+        assert!(
+            model["supportedReasoningEfforts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|level| level["reasoningEffort"] == "ultra"),
+            "{model}"
+        );
+        // The thread starts on the relay, so its first turn pins the version.
+        let started = server.request(
+            3,
+            "thread/start",
+            json!({
+                "cwd":cwd.to_string_lossy(), "model":"relay-a::gpt-6.1-sol",
+                "approvalPolicy":"never", "sandbox":"read-only"
+            }),
+        );
+        let id = started["thread"]["id"].as_str().unwrap().to_owned();
+        server
+            .turn(&id, "relay-a::gpt-6.1-sol", "ultra", "SYNTHETIC_ULTRA", RPC_TIMEOUT)
+            .unwrap_or_else(|error| {
+                panic!("{error}; stderr: {}", server.stderr.lock().unwrap())
+            });
+        let captured = relay.requests.recv_timeout(RPC_TIMEOUT).unwrap();
+        let body: Value = serde_json::from_slice(&captured.body).unwrap();
+        assert_eq!(body["model"], "gpt-6.1-sol");
+        // Ultra never reaches the wire: Codex sends the declared multi-agent effort.
+        assert_eq!(body["reasoning"]["effort"], "xhigh");
+        let tools = body["tools"].to_string();
+        assert!(!tools.contains("multi_agent_v1"), "pinned to V1: {tools}");
+        assert!(tools.contains("spawn_agent"), "{tools}");
+    }
+    shutdown.send(true).unwrap();
+    runtime.block_on(listener_task).unwrap();
+}
+
 fn spawn_stream(namespace: Option<&str>) -> String {
     let mut item = json!({"id":"fc_child","type":"function_call","name":"spawn_agent",
         "call_id":"call_child","arguments":json!({"message":"SYNTHETIC_CHILD_ONLY","fork_context":false}).to_string()});

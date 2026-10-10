@@ -426,3 +426,58 @@ fn old_retry_policy_defaults_to_three_consecutive_failures() {
     let model: AggregateModel = serde_json::from_value(serde_json::json!({})).unwrap();
     assert_eq!(model.retry_policy.failure_threshold, 3);
 }
+
+#[test]
+fn aggregate_entry_borrows_codex_ultra_from_its_public_official_model() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CodexPaths::from_home(temp.path().join("codex"));
+    std::fs::create_dir_all(&paths.codex_home).unwrap();
+    std::fs::create_dir_all(&paths.app_data_dir).unwrap();
+    let cache = serde_json::to_vec(&serde_json::json!({"models": [{
+        "slug": "official-model",
+        "multi_agent_version": "v2",
+        "multi_agent_reasoning_effort": "xhigh",
+        "supported_reasoning_levels": [
+            {"effort": "xhigh", "description": "Official xhigh"},
+            {"effort": "ultra", "description": "Official ultra"}
+        ]
+    }]}))
+    .unwrap();
+    std::fs::write(paths.codex_home.join("models_cache.json"), cache).unwrap();
+    let mut store = store();
+    for provider in &mut store.providers {
+        provider.models[0].overrides.reasoning = Some(
+            ["high", "xhigh"]
+                .map(|effort| newapi::ReasoningLevel {
+                    effort: effort.into(),
+                    description: effort.into(),
+                })
+                .into(),
+        );
+    }
+    let value = router::aggregate_catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
+    let entry = &value["models"][0];
+    assert_eq!(entry["slug"], "official-model");
+    assert_eq!(entry["multi_agent_version"], "v2");
+    assert_eq!(entry["multi_agent_reasoning_effort"], "xhigh");
+    assert_eq!(
+        entry["supported_reasoning_levels"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["effort"],
+        "ultra"
+    );
+
+    // A custom public name is not the official model and gains nothing.
+    store.aggregates[0].public_model_id = "my-custom-model".into();
+    store.aggregates[0].canonical_ref = None;
+    let value = router::aggregate_catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
+    let entry = &value["models"][0];
+    assert!(entry.get("multi_agent_version").is_none());
+    assert!(!entry["supported_reasoning_levels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|level| level["effort"] == "ultra"));
+}

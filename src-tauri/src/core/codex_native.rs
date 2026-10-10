@@ -344,7 +344,7 @@ fn configuration_plan(
         .zip(resolved)
         .map(|(id, (metadata, projection))| {
             let alias = metadata.display_name.trim();
-            super::relay_catalog_entry(
+            let mut entry = super::relay_catalog_entry(
                 id.clone(),
                 super::menu_display_name(&provider.name, alias, &id),
                 format!("{} → {id}", provider.name),
@@ -352,7 +352,12 @@ fn configuration_plan(
                 projection.output_limit,
                 projection.reasoning,
                 projection.default_reasoning,
-            )
+            );
+            super::adopt_codex_behavior(
+                &mut entry,
+                super::matched_official_model(official_models, id),
+            );
+            entry
         })
         .collect();
     NativeConfigurationPlan {
@@ -1301,6 +1306,40 @@ mod tests {
                 "Official model stays untouched"
             );
         }
+    }
+
+    #[test]
+    fn native_catalog_keeps_codex_ultra_for_the_same_official_model() {
+        let (_directory, paths, mut store) = fixture();
+        store.providers[0].model = "gpt-6-astra".into();
+        store.providers[0].models = vec![model("gpt-6-astra", ModelProtocol::Responses, 240_000)];
+        let cache = serde_json::to_vec(&serde_json::json!({"models": [{
+            "slug": "gpt-6-astra",
+            "context_window": 999_000,
+            "multi_agent_version": "v2",
+            "multi_agent_reasoning_effort": "xhigh",
+            "supported_reasoning_levels": [
+                {"effort": "low", "description": "Cached low"},
+                {"effort": "ultra", "description": "Cached ultra"}
+            ]
+        }]}))
+        .unwrap();
+        std::fs::write(paths.codex_home.join("models_cache.json"), &cache).unwrap();
+        let value = catalog(&paths, &store, &store.providers[0]);
+        let entry = &value["models"][0];
+        // Limits and levels stay the relay's own; only client behaviour follows.
+        assert_eq!(entry["context_window"], 240_000);
+        assert_eq!(entry["multi_agent_version"], "v2");
+        assert_eq!(entry["multi_agent_reasoning_effort"], "xhigh");
+        assert_eq!(
+            entry["supported_reasoning_levels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|level| level["effort"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["low", "medium", "high", "xhigh", "max", "ultra"]
+        );
     }
 
     #[test]
