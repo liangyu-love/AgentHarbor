@@ -1,5 +1,4 @@
 import { cn } from "@/lib/utils";
-import type { GlowColor } from "@/components/ui/glow-card";
 import { errorKey } from "@/lib/invoke-error";
 import type { ModelProtocol, NewApiProvider } from "@/types/newapi";
 
@@ -9,11 +8,11 @@ export const protocolBadgeKey: Record<ModelProtocol, string> = {
   anthropicMessages: "newapi.protocolShortAnthropic",
 };
 
-const cardColors: GlowColor[] = ["gold", "blue", "purple", "green", "red", "amber"];
-export const providerColor = (id: string): GlowColor => {
+/** A stable hue per relay site, used for its monogram and accent line. */
+export const relayHue = (key: string) => {
   let hash = 0;
-  for (const ch of id) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
-  return cardColors[hash % cardColors.length];
+  for (const ch of key) hash = (hash * 33 + ch.charCodeAt(0)) >>> 0;
+  return hash % 360;
 };
 
 export const providerErrorKey = (e: unknown) => errorKey(e, ["newapi", "aggregation", "modelTargets"], "newapi.errors.unexpected");
@@ -64,17 +63,8 @@ export const hostOf = (provider: NewApiProvider) => {
   try { return new URL(provider.baseUrl).host; } catch { return provider.baseUrl; }
 };
 
-export const iconButton =
-  "inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40 disabled:pointer-events-none";
 export const cardButton =
   "flex h-7 w-7 items-center justify-center rounded-md bg-black/[0.05] text-foreground/70 transition-colors hover:bg-black/[0.09] hover:text-foreground disabled:opacity-40 disabled:pointer-events-none dark:bg-white/[0.07] dark:hover:bg-white/[0.12]";
-export const chipClass = (selected: boolean) =>
-  cn(
-    "flex shrink-0 items-center gap-1.5 rounded-lg border bg-card px-3 py-1.5 text-[13px] font-medium shadow-sm transition-all",
-    selected
-      ? "border-primary/50 bg-primary/[0.06] text-primary ring-1 ring-primary/15"
-      : "text-foreground/80 hover:-translate-y-px hover:bg-muted/60",
-  );
 export const softBadge = (tone: "green" | "amber" | "red" | "gray") => {
   const tones = {
     green: "border-transparent bg-emerald-500/15 text-emerald-700 hover:bg-emerald-500/15 dark:text-emerald-400",

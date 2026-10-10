@@ -570,6 +570,10 @@ pub struct ThreadListPayload {
     pub pending_deletion_keys: Vec<String>,
     #[serde(default)]
     pub pending_deletion_recovery_needed: bool,
+    /// The provider Codex lists and resumes threads under; threads stored
+    /// under another provider are hidden in Codex until repaired.
+    #[serde(default)]
+    pub configured_provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

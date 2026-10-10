@@ -9,9 +9,7 @@ import { ThreadRecoveryDialog } from "@/components/threads/thread-recovery-dialo
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { VirtualThreadList } from "@/components/threads/virtual-thread-list";
 import { ThreadGroupSection } from "@/components/threads/thread-group-section";
-import { ThreadMetrics } from "@/components/threads/thread-metrics";
 import { ThreadNotices } from "@/components/threads/thread-notices";
-import { ThreadToolbar } from "@/components/threads/thread-toolbar";
 import { ThreadsHeader } from "@/components/threads/threads-header";
 import { ThreadProjectTree } from "@/components/threads/thread-project-tree";
 import { ThreadDetailPanel } from "@/components/threads/thread-detail-panel";
@@ -61,23 +59,13 @@ function ThreadsWorkspace({ source, onSourceChange }: { source: ConversationSour
     toggleGroupSelect, toggleGroupCollapse, handleExport, handleOpenPath, setRecoveryTarget, handleDelete,
     handleCopyPath, copiedGroupPath, handleRefresh, recoveryTarget,
   } = list;
-  const hasFilters = !!query.trim() || list.status !== "all" || !!list.activeProject;
+  const hasFilters = !!query.trim() || list.status !== "all" || !!list.activeProject || list.onlyMisplaced;
 
   return (
     <TooltipProvider delayDuration={200}>
-      <div className="space-y-2.5">
-        {/* Page Header */}
+      <div className="space-y-3">
         <ThreadsHeader list={list} />
-
         <ThreadNotices list={list} />
-
-        {/* 4-Metric Mission Control HUD */}
-        <ThreadMetrics list={list} />
-
-        {/* Power Toolbar */}
-        <ThreadToolbar list={list} />
-
-        {/* Dynamic Sticky Batch Selection Bar */}
         <SelectionBar list={list} />
 
         <div className="thread-workspace-container">
@@ -85,7 +73,7 @@ function ThreadsWorkspace({ source, onSourceChange }: { source: ConversationSour
             <div className={list.projects.length ? "thread-browser grid min-w-0 items-start gap-3 xl:grid-cols-[220px_minmax(0,1fr)]" : "thread-browser min-w-0"}>
               {list.projects.length > 0 && <ThreadProjectTree list={list} />}
               <div className="min-w-0 space-y-3" data-thread-results>
-                {list.activeProject && <div className="flex min-w-0 items-center gap-2 text-xs">
+                {list.activeProject && <div className="flex min-w-0 items-center gap-2 rounded-xl border border-border/70 bg-card/80 px-3 py-1.5 text-xs">
                   <span className="min-w-0 flex-1 truncate text-muted-foreground" title={list.activeProject.cwd}>
                     {list.activeProject.folderName}{list.focusedThread ? ` / ${list.focusedThread.title || t("threads.untitled")}` : ""}
                   </span>
@@ -108,7 +96,7 @@ function ThreadsWorkspace({ source, onSourceChange }: { source: ConversationSour
                     ))}
                   </div>
                 ) : threadsQuery.isError ? (
-                  <BentoCard className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+                  <BentoCard className="route-surface flex flex-col items-center justify-center gap-3 rounded-3xl py-16 text-center">
                     <MessagesSquare className="h-10 w-10 text-destructive/70" />
                     <p className="text-sm font-semibold">{t("threads.loadFailed")}</p>
                     <p className="max-w-md text-xs text-muted-foreground font-mono">
@@ -119,8 +107,10 @@ function ThreadsWorkspace({ source, onSourceChange }: { source: ConversationSour
                     </Button>
                   </BentoCard>
                 ) : groups.length === 0 ? (
-                  <BentoCard className="flex flex-col items-center justify-center gap-3 py-16 text-center">
-                    <MessagesSquare className="h-10 w-10 text-muted-foreground/40" />
+                  <BentoCard className="route-surface flex flex-col items-center justify-center gap-3 rounded-3xl py-16 text-center">
+                    <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 ring-1 ring-primary/20">
+                      <MessagesSquare className="h-6 w-6 text-primary" />
+                    </span>
                     <p className="text-sm font-semibold">
                       {hasFilters ? t("threads.noFilteredResults") : t("threads.emptyTitle")}
                     </p>
@@ -132,7 +122,7 @@ function ThreadsWorkspace({ source, onSourceChange }: { source: ConversationSour
                         variant="outline"
                         size="sm"
                         className="mt-1 h-8 gap-1.5 text-xs"
-                        onClick={() => { setQuery(""); list.setStatus("all"); list.selectProject(null); }}
+                        onClick={() => { setQuery(""); list.setStatus("all"); list.selectProject(null); list.setOnlyMisplaced(false); }}
                       >
                         <X className="h-3.5 w-3.5" />
                         {t("threads.clearFilters")}
@@ -151,6 +141,8 @@ function ThreadsWorkspace({ source, onSourceChange }: { source: ConversationSour
                     onExport={keys => void handleExport(keys)}
                     onOpenPath={path => void handleOpenPath(path)}
                     onRecover={list.isCodex ? setRecoveryTarget : undefined}
+                    recoverable={list.canRecover}
+                    misplaced={list.isMisplaced}
                     onDetails={thread => openDetails(thread.key)}
                     onDelete={(thread) => void handleDelete([thread.key])}
                     onCopyPath={handleCopyPath}

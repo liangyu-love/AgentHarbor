@@ -30,6 +30,7 @@ export function useThreadList(source: ConversationSource = "codex", setSource: (
   const isCodex = source === "codex";
   const [status, setStatus] = useState<StatusFilter>("all");
   const [query, setQuery] = useState("");
+  const [onlyMisplaced, setOnlyMisplaced] = useState(false);
   const [projectKey, setProjectKey] = useState<string | null>(null);
   const [focusedThreadKey, setFocusedThreadKey] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<SortOption>("updatedAt");
@@ -58,6 +59,13 @@ export function useThreadList(source: ConversationSource = "codex", setSource: (
   });
 
   const threads = useMemo(() => threadsQuery.data?.data.items ?? [], [threadsQuery.data]);
+  // Codex lists and resumes only threads stored under its configured provider.
+  // Repair applies to the others; without a known provider every thread may need it.
+  const configuredProvider = isCodex ? threadsQuery.data?.data.configuredProvider ?? null : null;
+  const isMisplaced = (thread: ThreadSummary) =>
+    !!configuredProvider && !!thread.modelProvider && thread.modelProvider !== configuredProvider;
+  const canRecover = (thread: ThreadSummary) => isCodex && (!configuredProvider || isMisplaced(thread));
+  const misplacedCount = configuredProvider ? threads.filter(isMisplaced).length : 0;
   const detailTarget = threads.find(thread => thread.key === detailKey) ?? null;
   useEffect(() => { if (detailKey && !detailTarget) setDetailKey(null); }, [detailKey, detailTarget]);
   const pendingDeletionKeys = new Set(threadsQuery.data?.data.pendingDeletionKeys ?? []);
@@ -75,10 +83,12 @@ export function useThreadList(source: ConversationSource = "codex", setSource: (
   );
 
   // Filter and Sort
-  const matching = useMemo(
-    () => filterAndSortThreads(threads, status, query, sortBy),
-    [threads, status, query, sortBy],
-  );
+  const matching = useMemo(() => {
+    const sorted = filterAndSortThreads(threads, status, query, sortBy);
+    return onlyMisplaced && misplacedCount > 0 ? sorted.filter(isMisplaced) : sorted;
+    // isMisplaced only reads configuredProvider.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threads, status, query, sortBy, onlyMisplaced, misplacedCount, configuredProvider]);
   const projects = useMemo(() => groupThreads(threads, t("threads.unknownFolder"), t("threads.directChats")), [threads, t]);
   const matchingKeys = useMemo(() => new Set(matching.map(thread => thread.key)), [matching]);
   const activeProject = projects.find(project => project.key === projectKey) ?? null;
@@ -342,7 +352,7 @@ export function useThreadList(source: ConversationSource = "codex", setSource: (
     selectedExportableCount, useVirtualList,
     archivedCount, totalBytes, totalTokens,
     totalInputTokens, totalCachedTokens, totalOutputTokens, hasTokenBreakdown,
-    missingRolloutCount,
+    missingRolloutCount, configuredProvider, isMisplaced, canRecover, misplacedCount, onlyMisplaced, setOnlyMisplaced,
     status, setStatus, query, setQuery, sortBy, setSortBy, sortLabels, viewMode, setViewMode, format, setFormat,
     selected, toggleSelect, selectFiltered, clearSelection, toggleGroupSelect,
     collapsedGroups, toggleGroupCollapse, expandAllGroups, collapseAllGroups,

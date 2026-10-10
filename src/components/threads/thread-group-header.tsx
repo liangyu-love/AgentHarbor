@@ -51,7 +51,7 @@ export function ThreadGroupHeader({
   return (
     <div
       className={cn(
-        "flex items-center justify-between gap-2.5 rounded-xl border bg-card/85 backdrop-blur-md transition-all duration-200 shadow-2xs hover:border-primary/50",
+        "flex items-center justify-between gap-2.5 rounded-2xl border bg-card/85 backdrop-blur-md transition-[border-color,box-shadow] duration-200 hover:border-primary/40",
         compact ? "h-[44px] px-3" : "p-2 px-3",
         allSelected ? "border-primary/70 ring-1 ring-primary/30 bg-primary/[0.03]" : "border-border/70",
       )}
@@ -71,12 +71,12 @@ export function ThreadGroupHeader({
             )}
           />
         </button>
-        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-primary/20 to-primary/5 text-primary ring-1 ring-primary/15">
           <Folder className="h-3.5 w-3.5" />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <h2 className="truncate text-xs font-bold tracking-tight text-foreground">
+            <h2 className="truncate font-display text-[13px] font-semibold tracking-tight text-foreground">
               {group.folderName}
             </h2>
             <span className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">

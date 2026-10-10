@@ -212,7 +212,7 @@ export function CapabilityClearControls({ model, onSaved }: { model: ModelCapabi
         <div className="min-w-0 flex-1 space-y-1.5">
           <label htmlFor={fieldId} className="text-xs text-muted-foreground">{t("newapi.capabilityClearFieldLabel")}</label>
           <select id={fieldId} value={field} disabled={busy === "apply"} onChange={event => changeField(event.target.value as ClearCapabilityField)}
-            className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
+            className="native-select h-9 w-full rounded-xl border border-input bg-background px-2.5 text-sm text-foreground disabled:opacity-50">
             {availableModelFields.length > 0 && <optgroup label={t("newapi.capabilityClearModelGroup")}>{availableModelFields.map(value => <option key={value} value={value}>{t("newapi.capabilityClearField." + value)}</option>)}</optgroup>}
             {availableProviderFields.length > 0 && <optgroup label={t("newapi.capabilityClearProviderGroup")}>{availableProviderFields.map(value => <option key={value} value={value}>{t("newapi.capabilityClearField." + value)}</option>)}</optgroup>}
           </select>

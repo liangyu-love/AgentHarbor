@@ -115,11 +115,12 @@ pub async fn list_conversations(
                 items: scan.items,
                 pending_deletion_keys: vec![],
                 pending_deletion_recovery_needed: false,
+                configured_provider: None,
             },
             scan.warnings,
         ));
     }
-    let (sessions_dir, archived_sessions_dir, state_database_path, thread_cache_path) = {
+    let (sessions_dir, archived_sessions_dir, state_database_path, thread_cache_path, config_path) = {
         let repo = repo.lock().map_err(|e| e.to_string())?;
         let source = repo
             .target_registry()
@@ -132,9 +133,10 @@ pub async fn list_conversations(
             repo.paths()
                 .app_data_dir
                 .join("thread-summary-cache.sqlite3"),
+            repo.paths().config_path.clone(),
         )
     };
-    let (scan, pending) = tauri::async_runtime::spawn_blocking(move || {
+    let (scan, pending, configured_provider) = tauri::async_runtime::spawn_blocking(move || {
         let pending = thread_delete::process_pending_deletes(
             &state_database_path,
             &sessions_dir,
@@ -146,7 +148,8 @@ pub async fn list_conversations(
             &archived_sessions_dir,
             &thread_cache_path,
         )?;
-        Ok::<_, CoreError>((scan, pending))
+        let configured = crate::core::thread_recovery::configured_provider(&config_path);
+        Ok::<_, CoreError>((scan, pending, configured))
     })
     .await
     .map_err(|error| error.to_string())?
@@ -163,6 +166,7 @@ pub async fn list_conversations(
             items: scan.items,
             pending_deletion_keys: pending.keys,
             pending_deletion_recovery_needed: pending.recovery_required,
+            configured_provider,
         },
         warnings,
     ))

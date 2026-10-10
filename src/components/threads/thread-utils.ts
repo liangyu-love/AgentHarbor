@@ -40,6 +40,7 @@ export function filterAndSortThreads(
     if (!keyword) return true;
     return (
       (thread.title || "").toLowerCase().includes(keyword) ||
+      (thread.preview || "").toLowerCase().includes(keyword) ||
       (thread.cwd || "").toLowerCase().includes(keyword) ||
       (thread.folderName || "").toLowerCase().includes(keyword) ||
       (thread.id || "").toLowerCase().includes(keyword) ||

@@ -5,7 +5,10 @@ export interface ThreadSummary {
   id: string;
   cwd: string;
   folderName: string;
+  /** Conversation name when the client keeps one, else an excerpt of the first prompt. */
   title: string;
+  /** The first prompt on one line, for search. */
+  preview?: string;
   createdAt: number;
   updatedAt: number;
   userMessages: number;
@@ -32,6 +35,8 @@ export interface ThreadListPayload {
   items: ThreadSummary[];
   pendingDeletionKeys: string[];
   pendingDeletionRecoveryNeeded?: boolean;
+  /** Provider Codex currently lists threads under; null when unknown. */
+  configuredProvider?: string | null;
 }
 
 export interface ThreadUsage {

@@ -44,7 +44,7 @@ export function RelayModelsPage() {
       {(error || state.error) && (
         <div
           role="alert"
-          className="flex items-start justify-between gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
+          className="flex items-start justify-between gap-3 rounded-2xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
         >
           <span>{error ? t(error) : formatInvokeError(state.error)}</span>
           <button

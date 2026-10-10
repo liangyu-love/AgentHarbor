@@ -19,7 +19,8 @@ export async function testProviderFeedback({ page, reset, captureDir }) {
     ["MiMo Token Plan", "https://token-plan-cn.xiaomimimo.com/v1"],
     ["Command Code", "https://api.commandcode.ai/provider/v1"],
   ]) {
-    await dialog.locator("#provider-preset").selectOption(name);
+    await dialog.locator(`[data-preset="${name}"]`).click();
+    assert.equal(await dialog.locator(`[data-preset="${name}"]`).getAttribute("aria-pressed"), "true");
     assert.equal(await dialog.locator("#newapi-provider-baseUrl").inputValue(), baseUrl);
     assert.equal(await dialog.locator("#newapi-provider-name").inputValue(), name);
     assert.equal(await dialog.locator("#newapi-provider-apiKey").inputValue(), "");

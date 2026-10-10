@@ -891,9 +891,9 @@ export function ThreadDetailPanel({
         ref={panel}
         data-thread-detail-panel
         aria-label={t("threads.details.tabs")}
-        className="thread-detail-panel flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border border-border/70 bg-card shadow-xs"
+        className="thread-detail-panel flex min-h-0 min-w-0 flex-col overflow-hidden rounded-3xl border border-border/70 bg-card shadow-sm"
       >
-        <header className="max-h-[50%] shrink-0 space-y-2 overflow-y-auto border-b border-border/60 bg-muted/20 px-4 py-3">
+        <header className="max-h-[50%] shrink-0 space-y-2.5 overflow-y-auto border-b border-border/60 bg-gradient-to-b from-primary/[0.06] to-transparent px-4 py-3.5">
           <div className="flex min-w-0 items-center justify-between gap-2">
             <span className="thread-detail-project flex min-w-0 items-center gap-2 text-xs text-muted-foreground" title={thread.cwd}>
               <Folder className="h-3.5 w-3.5 shrink-0" />
@@ -933,6 +933,13 @@ export function ThreadDetailPanel({
               </button>
             )}
           </div>
+          {thread.preview && thread.preview !== thread.title && (
+            <p data-thread-first-prompt title={thread.preview}
+              className="line-clamp-3 rounded-xl border-l-2 border-primary/40 bg-background/70 px-2.5 py-1.5 text-xs leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">
+              <span className="mr-1.5 font-medium text-foreground/75">{t("threads.details.firstPrompt")}</span>
+              {thread.preview}
+            </p>
+          )}
           <div className="flex flex-wrap items-center gap-2 text-xs">
             {source === "codex" && (thread.archived ? (
               <Badge

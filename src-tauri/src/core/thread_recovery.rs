@@ -1046,6 +1046,15 @@ fn build_recovery_plan_for_target(
     })
 }
 
+/// The provider the current Codex configuration lists threads under, when
+/// that configuration is valid.
+pub fn configured_provider(config_path: &Path) -> Option<String> {
+    resolve_provider_target(config_path)
+        .ok()
+        .filter(|target| target.valid)
+        .map(|target| target.configured)
+}
+
 fn resolve_provider_target(config_path: &Path) -> Result<ProviderTarget, CoreError> {
     let (text, generation) = match std::fs::read(config_path) {
         Ok(bytes) => {

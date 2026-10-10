@@ -218,7 +218,7 @@ export function ClientConfigs({ providers, onOpenRelays }: { providers: NewApiPr
         titleId="client-configs-title"
         contentId="client-configs-body"
         title={t("clients.title")}
-        titleClassName="text-[17px]"
+        titleClassName="font-display text-[17px] tracking-tight"
         leading={
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-background ring-1 ring-border text-foreground">
             <Terminal className="h-[18px] w-[18px]" />

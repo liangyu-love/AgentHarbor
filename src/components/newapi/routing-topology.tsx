@@ -3,21 +3,16 @@ import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowUpRight, RadioTower, RefreshCw, Waypoints } from "lucide-react";
 import { api } from "@/lib/api";
-import { queryKeys } from "@/lib/query-keys";
 import { cn } from "@/lib/utils";
 import { aggregationQueryKey } from "@/types/aggregation";
 import type { ProviderState } from "./use-provider-state";
-import { ClientGlyph, shortcutEntries, useSectionJump, type ShortcutTarget } from "./configuration-shortcuts";
+import { ClientGlyph, shortcutEntries, useSectionJump } from "./configuration-shortcuts";
+import { CLIENTS, DESTINATIONS, useRoutingLinks, type Client, type Destination, type Link } from "./use-routing-links";
 
-/** How a client currently reaches the relays. */
-type Link = "routed" | "direct" | "idle";
-type Client = Exclude<ShortcutTarget, "aggregation">;
-type Destination = "official" | "relays" | "aggregation";
 type Point = { x: number; y: number };
 type Box = { left: number; right: number; top: number; bottom: number; cx: number; cy: number };
 type Route = { id: string; d: string; link: Exclude<Link, "idle"> | "idle"; length: number };
 
-const CLIENTS: Client[] = ["codex", "claudeCode", "claudeDesktop", "opencode", "pi"];
 const VERTICAL_BELOW = 720;
 
 function curve(a: Point, b: Point, vertical: boolean) {
@@ -81,9 +76,6 @@ export function RoutingTopology({
   const { active, jump } = useSectionJump();
   const reduced = usePrefersReducedMotion();
   const gradient = useId().replace(/:/g, "");
-  const clients = useQuery({ queryKey: queryKeys.clientConfigs, queryFn: api.targets.configs });
-  const desktop = useQuery({ queryKey: queryKeys.claudeDesktopStatus, queryFn: api.claudeDesktop.status,
-    refetchOnWindowFocus: false });
   const aggregates = useQuery({ queryKey: aggregationQueryKey, queryFn: api.aggregation.state });
 
   const data = store.state.data;
@@ -92,28 +84,22 @@ export function RoutingTopology({
   const enabledRelays = providers.filter((provider) => provider.enabled);
   const enabledAggregates = (aggregates.data?.models ?? []).filter((model) => model.enabled);
 
-  const links = useMemo(() => {
-    const result = {} as Record<Client, Link>;
-    result.codex = !router?.enabled ? "idle"
-      : router.accessMode === "native" ? "direct"
-      : router.configDrifted ? "idle" : "routed";
-    for (const target of ["claudeCode", "opencode", "pi"] as const) {
-      const status = clients.data?.find((client) => client.targetId === target);
-      result[target] = !status?.configured ? "idle"
-        : status.request?.accessMode === "router" ? "routed" : "direct";
-    }
-    const desktopStatus = desktop.data;
-    result.claudeDesktop = !desktopStatus?.isManaged ? "idle"
-      : desktopStatus.mode === "router" ? "routed" : desktopStatus.mode === "direct" ? "direct" : "idle";
-    return result;
-  }, [router, clients.data, desktop.data]);
+  const { links, uses } = useRoutingLinks(router);
 
   const routedClients = CLIENTS.filter((client) => links[client] === "routed");
   const hubActive = !!data?.proxyRunning && routedClients.length > 0;
+  const reaches = (client: Client, destination: Destination) => links[client] === "routed" && uses[client].includes(destination);
+  // A destination lights up only when a routed client actually sends to it.
   const destinationActive: Record<Destination, boolean> = {
-    official: hubActive && links.codex === "routed" && !router?.accountless,
-    relays: enabledRelays.length > 0 && (hubActive || CLIENTS.some((client) => links[client] === "direct")),
-    aggregation: hubActive && enabledAggregates.length > 0,
+    official: hubActive && CLIENTS.some((client) => reaches(client, "official")),
+    relays: enabledRelays.length > 0 && (hubActive && CLIENTS.some((client) => reaches(client, "relays"))
+      || CLIENTS.some((client) => links[client] === "direct")),
+    aggregation: hubActive && enabledAggregates.length > 0 && CLIENTS.some((client) => reaches(client, "aggregation")),
+  };
+  const hubFeeds: Record<Destination, boolean> = {
+    official: destinationActive.official,
+    relays: hubActive && enabledRelays.length > 0 && CLIENTS.some((client) => reaches(client, "relays")),
+    aggregation: destinationActive.aggregation,
   };
 
   // Light the hub up again whenever routing turns on.
@@ -172,22 +158,33 @@ export function RoutingTopology({
         result.push({ id: `${client}-hub`, d, link: link === "routed" ? "routed" : "idle", length: approximateLength(d) });
       }
     });
-    (["official", "relays", "aggregation"] as Destination[]).forEach((destination, index) => {
+    DESTINATIONS.forEach((destination, index) => {
       const box = boxes[destination];
       if (!box) return;
       const spread = (index - 1) * 8;
       const source = vertical ? { x: hub.cx + spread, y: hub.bottom } : { x: hub.right - 2, y: hub.cy + spread };
       const d = curve(source, into(box), vertical);
-      result.push({ id: `hub-${destination}`, d, link: hubActive && destinationActive[destination] ? "routed" : "idle",
+      result.push({ id: `hub-${destination}`, d, link: hubFeeds[destination] ? "routed" : "idle",
         length: approximateLength(d) });
     });
     return result;
-    // destinationActive is derived from the same inputs listed here.
+    // hubFeeds is derived from the same inputs listed here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layout, links, hubActive, destinationActive.official, destinationActive.relays, destinationActive.aggregation]);
+  }, [layout, links, hubFeeds.official, hubFeeds.relays, hubFeeds.aggregation]);
 
-  // Hovering or focusing a node highlights only its own connections.
+  // Hovering or focusing a node highlights only the paths through it.
   const [hovered, setHovered] = useState<string | null>(null);
+  const related = (routeId: string) => {
+    if (!hovered) return true;
+    const [from, to] = routeId.split("-") as [string, string];
+    if (hovered === "hub") return from === "hub" || to === "hub";
+    if ((CLIENTS as string[]).includes(hovered)) {
+      const client = hovered as Client;
+      return from === client || (from === "hub" && reaches(client, to as Destination));
+    }
+    const destination = hovered as Destination;
+    return to === destination || (to === "hub" && reaches(from as Client, destination));
+  };
   const highlight = (key: string) => ({
     onMouseEnter: () => setHovered(key),
     onMouseLeave: () => setHovered(null),
@@ -210,10 +207,12 @@ export function RoutingTopology({
         <ClientGlyph client={client} className="h-[18px] w-[18px]" />
       </span>
       <span className="route-node-text min-w-0 flex-1">
-        <span className="block truncate text-[13px] font-medium text-foreground">{t(`newapi.topology.client.${client}`)}</span>
+        <span className="block truncate font-display text-[13.5px] font-semibold tracking-tight text-foreground">{t(`newapi.topology.client.${client}`)}</span>
         <span className={cn("block truncate text-[11px]", vertical && "hidden",
           link === "routed" ? "text-primary" : link === "direct" ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground")}>
-          {linkLabel(link)}
+          {link === "routed"
+            ? t("newapi.topology.routedTo", { targets: uses[client].map((destination) => t(`newapi.topology.dest.${destination}`)).join(" + ") })
+            : linkLabel(link)}
         </span>
       </span>
       <span aria-hidden className={cn("route-node-dot h-2 w-2 shrink-0 rounded-full transition-colors", linkTone[link])} />
@@ -232,9 +231,10 @@ export function RoutingTopology({
   return (
     <section aria-labelledby="routing-topology-title"
       className="route-surface route-rise relative overflow-hidden rounded-3xl border border-border/80 bg-card shadow-sm">
-      <div className="flex flex-wrap items-start justify-between gap-3 px-5 pt-5 sm:px-6">
+      <span aria-hidden className="poster-watermark right-[-0.03em] top-[-0.16em] text-[clamp(5rem,13vw,10rem)]">ROUTING</span>
+      <div className="relative flex flex-wrap items-start justify-between gap-3 px-5 pt-5 sm:px-6">
         <div className="min-w-0">
-          <h2 id="routing-topology-title" className="text-lg font-semibold tracking-tight text-foreground">
+          <h2 id="routing-topology-title" className="poster-title text-2xl">
             {t("newapi.topology.title")}
           </h2>
           <p className="mt-0.5 text-[13px] text-muted-foreground">{t("newapi.topology.subtitle")}</p>
@@ -277,7 +277,7 @@ export function RoutingTopology({
               return (
                 <g key={route.id} data-route={route.id} data-route-state={route.link}
                   className="transition-opacity duration-300"
-                  opacity={hovered && !route.id.split("-").includes(hovered) && !(hovered === "hub" && route.id.includes("hub")) ? 0.18 : 1}>
+                  opacity={related(route.id) ? 1 : 0.18}>
                   <path d={route.d} fill="none" className="stroke-border" strokeWidth={1.25}
                     strokeDasharray={live ? undefined : "3 6"} opacity={live ? 0.35 : 0.9} />
                   {live && <>
@@ -319,7 +319,7 @@ export function RoutingTopology({
               <div key={ignition} className={cn("relative flex h-[7.25rem] w-[7.25rem] flex-col items-center justify-center rounded-full border bg-card/95 text-center shadow-lg backdrop-blur",
                 hubActive ? "route-hub-ignite border-primary/30 shadow-primary/20" : "border-border/80")}>
                 <Waypoints aria-hidden className={cn("h-7 w-7 transition-colors", hubActive ? "text-primary" : "text-muted-foreground")} />
-                <span className="mt-1 text-xs font-semibold text-foreground">AgentHarbor</span>
+                <span className="mt-1 font-display text-[13px] font-bold tracking-tight text-foreground">AgentHarbor</span>
                 <span className="font-mono text-[10px] text-muted-foreground">:{router?.port ?? 43127}</span>
               </div>
             </div>

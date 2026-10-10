@@ -20,7 +20,13 @@ pub struct ThreadSummary {
     pub id: String,
     pub cwd: String,
     pub folder_name: String,
+    /// The conversation's name when the client keeps one, else a readable
+    /// excerpt of its first prompt.
     pub title: String,
+    /// The first prompt as the user wrote it (attachments and injected context
+    /// removed), for search. Required, so summaries cached before it existed
+    /// are parsed again.
+    pub preview: String,
     pub created_at: i64,
     pub updated_at: i64,
     pub user_messages: usize,
@@ -109,6 +115,7 @@ struct CatalogThread {
     model_provider: String,
     model: String,
     cwd: String,
+    name: String,
     title: String,
     first_user_message: String,
     tokens_used: i64,
@@ -440,7 +447,13 @@ fn scan_threads_from_catalog_inner(
     cache_path: Option<&Path>,
 ) -> Result<ThreadScanResult, CoreError> {
     match read_catalog_threads(state_database_path) {
-        Ok(catalog) => merge_catalog_with_rollouts(catalog, sessions_dir, archived_dir, cache_path),
+        Ok(catalog) => merge_catalog_with_rollouts(
+            catalog,
+            state_database_path.with_file_name("session_index.jsonl"),
+            sessions_dir,
+            archived_dir,
+            cache_path,
+        ),
         Err(error) => {
             let mut fallback =
                 scan_threads_with_warnings_inner(sessions_dir, archived_dir, cache_path)?;
@@ -531,7 +544,7 @@ fn read_catalog_threads(state_database_path: &Path) -> Result<CatalogRead, CoreE
         format!(" WHERE \"id\" NOT IN ({child_query})")
     };
     let sql = format!(
-        "SELECT {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {} FROM \"threads\"{}",
+        "SELECT {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {} FROM \"threads\"{}",
         optional_text(&columns, "id"),
         optional_text(&columns, "rollout_path"),
         optional_integer(&columns, "created_at"),
@@ -547,6 +560,7 @@ fn read_catalog_threads(state_database_path: &Path) -> Result<CatalogRead, CoreE
         optional_integer(&columns, "tokens_used"),
         optional_integer(&columns, "archived"),
         optional_text(&columns, "cli_version"),
+        optional_text(&columns, "name"),
         child_filter,
     );
     let mut statement = connection
@@ -570,6 +584,7 @@ fn read_catalog_threads(state_database_path: &Path) -> Result<CatalogRead, CoreE
                 tokens_used: row.get(12)?,
                 archived: row.get::<_, i64>(13)? != 0,
                 cli_version: row.get(14)?,
+                name: row.get(15)?,
             })
         })
         .map_err(|error| CoreError::OperationFailed(error.to_string()))?;
@@ -623,6 +638,7 @@ fn folder_name(cwd: &str) -> String {
 
 fn merge_catalog_with_rollouts(
     catalog: CatalogRead,
+    session_index_path: PathBuf,
     sessions_dir: &Path,
     archived_dir: &Path,
     cache_path: Option<&Path>,
@@ -685,6 +701,7 @@ fn merge_catalog_with_rollouts(
             cwd: String::new(),
             folder_name: String::new(),
             title: String::new(),
+            preview: String::new(),
             created_at: 0,
             updated_at: 0,
             user_messages: 0,
@@ -708,14 +725,21 @@ fn merge_catalog_with_rollouts(
             summary.cwd = row.cwd;
             summary.folder_name = folder_name(&summary.cwd);
         }
-        let title = if row.title.is_empty() {
-            row.first_user_message
-        } else {
-            row.title
-        };
-        if !title.is_empty() {
-            summary.title = title;
+        // Codex keeps the first prompt in `title`/`first_user_message`; the
+        // conversation's generated or renamed name lives in `name`.
+        let prompt = readable_prompt(
+            if row.first_user_message.is_empty() { &row.title } else { &row.first_user_message },
+            PREVIEW_CHARS,
+        );
+        if !prompt.is_empty() {
+            summary.preview = prompt;
         }
+        let name = row.name.trim();
+        summary.title = if name.is_empty() {
+            summary.preview.clone()
+        } else {
+            name.chars().take(TITLE_CHARS).collect()
+        };
         let created_at = catalog_timestamp(row.created_at, row.created_at_ms);
         let updated_at = catalog_timestamp(row.updated_at, row.updated_at_ms);
         if created_at > 0 {
@@ -749,6 +773,15 @@ fn merge_catalog_with_rollouts(
     for summary in rollout_items {
         if !catalog_ids.contains(&summary.id) && !catalog.child_thread_ids.contains(&summary.id) {
             items.push(summary);
+        }
+    }
+    // Older catalogs have no `name` column; Codex also records names here.
+    let names = session_names(&session_index_path);
+    for summary in &mut items {
+        if let Some(name) = names.get(&summary.id) {
+            if summary.title.is_empty() || summary.title == summary.preview {
+                summary.title = name.clone();
+            }
         }
     }
     items.sort_by(|a, b| {
@@ -1033,10 +1066,74 @@ fn set_title_once(title: &mut Option<String>, text: &str) {
     if title.is_some() {
         return;
     }
-    let first_line = text.lines().next().unwrap_or("").trim();
-    if !first_line.is_empty() {
-        *title = Some(first_line.chars().take(80).collect());
+    let prompt = readable_prompt(text, PREVIEW_CHARS);
+    if !prompt.is_empty() {
+        *title = Some(prompt);
     }
+}
+
+const TITLE_CHARS: usize = 120;
+const PREVIEW_CHARS: usize = 160;
+
+/// The user's own words from a prompt on one line. Codex lists attachments
+/// before the request and injects context as user messages; neither names
+/// the conversation.
+pub(crate) fn readable_prompt(text: &str, limit: usize) -> String {
+    let text = text.trim_start();
+    const INJECTED: [&str; 5] = [
+        "<environment_context>",
+        "<user_instructions>",
+        "<INSTRUCTIONS>",
+        "# AGENTS.md instructions",
+        "<turn_aborted>",
+    ];
+    if INJECTED.iter().any(|prefix| text.starts_with(prefix)) {
+        return String::new();
+    }
+    let request = if text.starts_with("# Files mentioned by the user")
+        || text.starts_with("# Files pasted by the user")
+    {
+        text.find("\n## My request")
+            .and_then(|index| text[index + 1..].split_once('\n'))
+            .map_or("", |(_, request)| request)
+    } else {
+        text
+    };
+    let mut line = String::new();
+    for word in request.split_whitespace() {
+        if line.chars().count() >= limit {
+            break;
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    line.chars().take(limit).collect()
+}
+
+/// Latest `thread_name` per thread from Codex's `session_index.jsonl`.
+fn session_names(path: &Path) -> HashMap<String, String> {
+    let mut names = HashMap::new();
+    let Ok(file) = File::open(path) else {
+        return names;
+    };
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        let (Some(id), Some(name)) = (
+            value.get("id").and_then(serde_json::Value::as_str),
+            value.get("thread_name").and_then(serde_json::Value::as_str),
+        ) else {
+            continue;
+        };
+        let name = name.trim();
+        if !name.is_empty() {
+            names.insert(id.to_owned(), name.chars().take(TITLE_CHARS).collect());
+        }
+    }
+    names
 }
 
 fn record_message(
@@ -1266,6 +1363,7 @@ fn parse_thread(
             id: session_id,
             cwd,
             folder_name,
+            preview: title.clone().unwrap_or_default(),
             title: title.unwrap_or_default(),
             created_at: created / 1000,
             updated_at: updated_at.unwrap_or(created) / 1000,
@@ -1891,6 +1989,57 @@ mod tests {
     }
 
     #[test]
+    fn readable_prompt_keeps_only_the_users_request() {
+        let attached = "# Files mentioned by the user:\n\n## shot.png: C:/tmp/shot.png\n\n## My request for Codex:\nFix   the\nrouter";
+        assert_eq!(readable_prompt(attached, 160), "Fix the router");
+        assert_eq!(readable_prompt("# Files pasted by the user:\n\n## \"log\"", 160), "");
+        assert_eq!(readable_prompt("<environment_context>\n<cwd>C:/</cwd>", 160), "");
+        assert_eq!(readable_prompt("# Heading\n\nbody", 160), "# Heading body");
+        assert_eq!(readable_prompt("abcdef ghij", 4), "abcd");
+    }
+
+    #[test]
+    fn conversation_names_replace_first_prompts_as_titles() {
+        let root = tempdir().unwrap();
+        let sessions = root.path().join("sessions");
+        let archived = root.path().join("archived_sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        for id in ["named", "indexed", "plain"] {
+            fs::write(
+                sessions.join(format!("rollout-{id}.jsonl")),
+                rollout(id, "C:/work", &format!("long first prompt of {id}")),
+            )
+            .unwrap();
+        }
+        let database = root.path().join("state_5.sqlite");
+        let connection = Connection::open(&database).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, title TEXT, first_user_message TEXT, name TEXT);
+                 INSERT INTO threads VALUES ('named', '', 'long first prompt of named', 'long first prompt of named', 'Fix routing');
+                 INSERT INTO threads VALUES ('indexed', '', '# Files mentioned by the user:\n\n## a.png: C:/a.png\n\n## My request:\nshort ask', '', NULL);
+                 INSERT INTO threads VALUES ('plain', '', 'long first prompt of plain', '', '');",
+            )
+            .unwrap();
+        drop(connection);
+        fs::write(
+            root.path().join("session_index.jsonl"),
+            "{\"id\":\"indexed\",\"thread_name\":\"Old name\"}\n{\"id\":\"indexed\",\"thread_name\":\"Indexed name\"}\n{\"id\":\"named\",\"thread_name\":\"Ignored\"}\n",
+        )
+        .unwrap();
+
+        let items = scan_threads_from_catalog_with_warnings(&database, &sessions, &archived)
+            .unwrap()
+            .items;
+        let item = |id: &str| items.iter().find(|item| item.id == id).unwrap();
+        assert_eq!(item("named").title, "Fix routing");
+        assert_eq!(item("named").preview, "long first prompt of named");
+        assert_eq!(item("indexed").title, "Indexed name");
+        assert_eq!(item("indexed").preview, "short ask");
+        assert_eq!(item("plain").title, "long first prompt of plain");
+    }
+
+    #[test]
     fn catalog_is_authoritative_schema_adaptive_and_filters_child_threads() {
         let root = tempdir().unwrap();
         let sessions = root.path().join("sessions");
@@ -2087,7 +2236,7 @@ mod tests {
 
         let items = scan_threads(&sessions, &archived).unwrap();
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].title, "Hello   world");
+        assert_eq!(items[0].title, "Hello world");
         assert_eq!(items[0].user_messages, 3);
         assert_eq!(items[0].agent_messages, 2);
         assert_eq!(items[0].model_provider, "custom");

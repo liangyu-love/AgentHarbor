@@ -223,7 +223,7 @@ export function AggregationManager({ providers }: { providers: NewApiProvider[] 
         titleId="aggregation-title"
         contentId="aggregation-body"
         title={t("aggregation.title")}
-        titleClassName="text-[17px]"
+        titleClassName="font-display text-[17px] tracking-tight"
         leading={
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-background ring-1 ring-border text-indigo-600 dark:text-indigo-400">
             <Network className="h-[18px] w-[18px]" />

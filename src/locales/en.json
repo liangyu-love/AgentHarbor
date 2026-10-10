@@ -147,7 +147,23 @@
     "sessionsPresent": "Session history found",
     "sessionsMissing": "No session history",
     "instructionsPresent": "Global instructions applied",
-    "instructionsMissing": "Default rules"
+    "instructionsMissing": "Default rules",
+    "heroLead": "Connections, conversations and accounts for Codex, Claude Code, OpenCode and Pi. Open the routing map to manage injection.",
+    "orbitLabel": "Routing map: see and manage how each client connects to AgentHarbor",
+    "routedClients": "{{count}} clients routed",
+    "enabledRelays": "{{count}} relays enabled",
+    "pulse": "Live overview",
+    "tokensToday": "Tokens today",
+    "tokensWeek": "This week {{value}} · {{turns}} turns today",
+    "activeAccount": "Active account",
+    "quotaUsed": "{{value}}% of the 5-hour window used",
+    "quotaUnknown": "Quota not checked yet",
+    "noAccount": "No account signed in",
+    "relaysTile": "Relay models",
+    "threadsToday": "{{count}} conversations active today",
+    "recentThreads": "Recent conversations",
+    "viewAll": "All conversations",
+    "noThreads": "No conversations yet"
   },
   "clients": {
     "title": "Client configuration",
@@ -1294,7 +1310,13 @@
       "relays": "Relays · {{count}}",
       "noRelays": "No relays yet",
       "aggregates": "Aggregates · {{count}}",
-      "noAggregates": "No aggregates yet"
+      "noAggregates": "No aggregates yet",
+      "routedTo": "Routed → {{targets}}",
+      "dest": {
+        "official": "Official",
+        "relays": "Relays",
+        "aggregation": "Aggregates"
+      }
     },
     "groups": {
       "clients": "Client connections",
@@ -1311,7 +1333,48 @@
     "restartPromptTitle": "Restart Codex to apply",
     "restartPromptDesc": "The configuration is saved. Codex is running and keeps its previous connection until it restarts; restarting interrupts running tasks.",
     "restartNow": "Restart Codex now",
-    "restartLater": "Later"
+    "restartLater": "Later",
+    "relayInjected": "In Codex",
+    "relayCodexDirect": "Codex direct",
+    "relayDisabled": "Disabled",
+    "relayEnable": "Enable",
+    "relayLibraryDesc": "Every upstream relay. Enabled relays are injected into Codex's menu and can serve other clients and aggregates",
+    "relayStatSites": "Sites",
+    "relayStatSitesUnit": "",
+    "relayStatConfigs": "{{count}} configurations",
+    "relayStatEnabled": "Enabled",
+    "relayStatEnabledOf": "of {{total}} configurations",
+    "relayStatCodex": "Injected into Codex",
+    "relayCodexOff": "Codex routing is off",
+    "relayCodexAggregate": "Codex uses an aggregate model",
+    "relayCodexInjected": "In Codex's model menu",
+    "relayStatHealth": "Connectivity",
+    "relayUsedBy": "Used by:",
+    "relaySearch": "Search sites, configurations or models",
+    "relaySearchClear": "Clear search",
+    "relaySites": "Filter by site",
+    "relayNoMatch": "No relays match.",
+    "dialogEyebrowAdd": "New relay",
+    "dialogEyebrowEdit": "Edit relay",
+    "dialogHostPending": "Shown once the address is filled in",
+    "factManual": "manual",
+    "protocolHint": {
+      "responses": "OpenAI Responses, native to Codex, no translation",
+      "chatCompletions": "OpenAI-compatible Chat Completions, the usual relay default",
+      "anthropicMessages": "Anthropic Messages, for Claude and compatible endpoints"
+    },
+    "presetGallery": {
+      "title": "Quick start",
+      "subtitle": "Pick an official channel to fill in the address and protocol",
+      "search": "Search channels",
+      "categories": "Channel categories",
+      "all": "All",
+      "coding": "Coding / direct",
+      "aggregator": "Aggregators",
+      "official": "Official",
+      "customDesc": "Enter the address, key and protocol yourself",
+      "empty": "No matching channels"
+    }
   },
   "avatar": {
     "title": "App avatar",
@@ -1899,12 +1962,21 @@
         "undatedUsage": "{{count}} usage records without valid dates excluded from the chart.",
         "inheritedSessions": "Contains {{count}} ancestor session metadata records. This view includes inherited history retained in the file, not only new usage in this thread."
       },
-      "copyFailed": "Copy failed"
+      "copyFailed": "Copy failed",
+      "firstPrompt": "First prompt"
     },
     "exportFormat": "Export format",
     "copyResumeCommand": "Copy resume command",
     "resumeCommandCopied": "Resume command copied",
-    "copyFailed": "Copy failed"
+    "copyFailed": "Copy failed",
+    "heroSubtitle": "Search every Codex and Claude Code conversation by name, browse by project, open details and export",
+    "misplacedBadge": "Other provider",
+    "misplacedHint": "Stored under {{provider}}; hidden from Codex's current list",
+    "misplacedFilter": "Needs repair {{count}}",
+    "misplacedNotice": "{{count}} conversations are stored under another provider and are hidden in Codex ({{provider}})",
+    "misplacedNoticeDetail": "Toggling routing never changes conversations; these usually come from tools that switched providers. Use a conversation's repair button to move it back.",
+    "misplacedShowOnly": "Show only these",
+    "misplacedShowAll": "Show all"
   },
   "skills": {
     "enabled": "Enabled",

@@ -11,15 +11,18 @@ export type ShortcutTarget = "codex" | "claudeCode" | "claudeDesktop" | "opencod
 // distinguishes desktop from CLI without adding a second text row.
 export function ClientGlyph({ client, className }: { client: ShortcutTarget; className?: string }) {
   if (client === "aggregation") return <Network className={className} aria-hidden />;
-  if (client === "pi") return <svg viewBox="0 0 800 800" className={className} fill="currentColor" aria-hidden>
-    <path fillRule="evenodd" d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65Z" />
-    <path d="M517.36 400H634.72V634.72H517.36Z" />
+  // pi.dev's mark follows the foreground colour like the official favicon.
+  if (client === "pi") return <svg viewBox="0 0 560 560" className={className} fill="currentColor" aria-hidden>
+    <path d="M420 280H280V140H0V0H420V280Z" />
+    <path d="M560 560H420V280H560V560Z" />
+    <path d="M140 560H0V140H140V280H280V420H140V560Z" />
   </svg>;
   const claude = client === "claudeCode" || client === "claudeDesktop";
   const mark = claude ? claudeMark : client === "opencode" ? openCodeMark : codexMark;
   const Badge = client === "claudeDesktop" ? Monitor : Terminal;
   return <span className={cn("relative inline-flex shrink-0", className)} aria-hidden>
-    <img src={mark} alt="" className={cn("h-full w-full object-contain", !claude && "dark:invert")} />
+    <img src={mark} alt="" className={cn("h-full w-full object-contain",
+      client === "opencode" ? "rounded-[22%]" : !claude && "dark:invert")} />
     {claude && <span className="absolute -bottom-0.5 -right-1 flex h-3 w-3 items-center justify-center rounded-sm bg-background ring-1 ring-border">
       <Badge className="h-2.5 w-2.5" strokeWidth={2} />
     </span>}

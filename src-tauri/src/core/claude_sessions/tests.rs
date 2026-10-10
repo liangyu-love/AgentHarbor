@@ -149,6 +149,25 @@ fn catalog_discovers_only_main_sessions_and_degrades_bad_files() {
 }
 
 #[test]
+fn generated_titles_name_sessions_until_the_user_renames_them() {
+    let titled = |extra: Vec<Value>| {
+        let mut records = vec![
+            json!({"type":"summary","summary":"Compaction summary","leafUuid":"leaf"}),
+            record("user", "a long first prompt", 1),
+        ];
+        records.extend(extra);
+        let (_directory, root, _path, _key) = fixture(&records);
+        let summary = scan_threads(&root).unwrap().items.remove(0);
+        (summary.title, summary.preview)
+    };
+    assert_eq!(titled(vec![]), ("Compaction summary".into(), "a long first prompt".into()));
+    let generated = json!({"type":"ai-title","aiTitle":"Generated title","sessionId":ID});
+    assert_eq!(titled(vec![generated.clone()]).0, "Generated title");
+    let renamed = json!({"type":"custom-title","customTitle":"Renamed","sessionId":ID});
+    assert_eq!(titled(vec![renamed, generated]).0, "Renamed");
+}
+
+#[test]
 fn custom_title_and_streamed_assistant_usage_are_not_double_counted() {
     let usage = json!({"input_tokens":10,"cache_read_input_tokens":50,"cache_creation_input_tokens":20,"output_tokens":3});
     let first = json!({"sessionId":ID,"uuid":"assistant-chunk-1","timestamp":"2026-10-07T08:31:00Z","message":{

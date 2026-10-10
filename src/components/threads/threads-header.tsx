@@ -1,58 +1,50 @@
 import { useTranslation } from "react-i18next";
 import { MessagesSquare, RotateCw } from "lucide-react";
-import { RainbowButton } from "@/registry/magicui/rainbow-button";
+import { Button } from "@/components/ui/button";
 import { ButtonBusyContent } from "@/components/ui/button-busy-content";
 import { SegmentedOptions } from "@/components/ui/segmented-options";
+import { ThreadToolbar } from "@/components/threads/thread-toolbar";
+import { ThreadMetrics } from "@/components/threads/thread-metrics";
 import type { ConversationSource } from "@/types/threads";
 import type { ThreadList } from "@/components/threads/use-thread-list";
 
+// The page's search console: which client, what to find, and what is in scope.
 export function ThreadsHeader({ list }: { list: ThreadList }) {
   const { t } = useTranslation();
-  const {
-    source,
-    setSource,
-    sourceBusy,
-    refreshAction,
-    handleRefresh,
-  } = list;
+  const { source, setSource, sourceBusy, refreshAction, handleRefresh } = list;
 
   return (
-    <div className="flex flex-col gap-2.5 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-      <div className="flex items-center gap-2.5">
-        <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-primary/20 via-primary/10 to-transparent text-primary shadow-xs ring-1 ring-primary/25">
-          <MessagesSquare className="h-4.5 w-4.5" />
+    <section className="route-surface route-rise relative overflow-hidden rounded-3xl border border-border/80 bg-card shadow-sm">
+      <span aria-hidden className="poster-watermark right-[-0.03em] top-[-0.16em] text-[clamp(5rem,13vw,10rem)]">THREADS</span>
+      <div className="relative flex flex-col gap-3 px-5 pt-5 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:px-6">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary ring-1 ring-primary/20">
+            <MessagesSquare className="h-5 w-5" />
+          </span>
+          <div className="min-w-0">
+            <h1 className="poster-title text-2xl">{t("threads.title")}</h1>
+            <p className="text-[13px] text-muted-foreground">{t("threads.heroSubtitle")}</p>
+          </div>
         </div>
-        <div>
-          <h1 className="text-xl font-extrabold tracking-tight text-foreground">
-            {t("threads.title")}
-          </h1>
+        <div className="flex flex-wrap items-center gap-2">
+          <div data-thread-source-controls>
+            <SegmentedOptions
+              items={[
+                { value: "codex", label: "Codex", disabled: sourceBusy },
+                { value: "claudeCode", label: "Claude Code", disabled: sourceBusy },
+              ]}
+              value={source}
+              onChange={(value) => setSource(value as ConversationSource)}
+            />
+          </div>
+          <Button variant="outline" className="h-9 rounded-xl bg-background/80 px-3.5 text-xs font-semibold"
+            onClick={() => void handleRefresh()} disabled={refreshAction.busy}>
+            <ButtonBusyContent busy={refreshAction.busy} idleIcon={<RotateCw className="h-3.5 w-3.5" />} idleLabel={t("threads.refresh")} />
+          </Button>
         </div>
       </div>
-
-      <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-        {/* Client source selector */}
-        <div data-thread-source-controls><SegmentedOptions
-          items={[
-            { value: "codex", label: "Codex", disabled: sourceBusy },
-            { value: "claudeCode", label: "Claude Code", disabled: sourceBusy },
-          ]}
-          value={source}
-          onChange={(value) => setSource(value as ConversationSource)}
-        /></div>
-
-        {/* Refresh Button */}
-        <RainbowButton
-          className="h-9 rounded-xl px-4 text-xs font-semibold shadow-xs transition-transform active:scale-95"
-          onClick={() => void handleRefresh()}
-          disabled={refreshAction.busy}
-        >
-          <ButtonBusyContent
-            busy={refreshAction.busy}
-            idleIcon={<RotateCw className="h-3.5 w-3.5" />}
-            idleLabel={t("threads.refresh")}
-          />
-        </RainbowButton>
-      </div>
-    </div>
+      <ThreadToolbar list={list} />
+      <ThreadMetrics list={list} />
+    </section>
   );
 }

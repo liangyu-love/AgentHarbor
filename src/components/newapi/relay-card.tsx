@@ -1,32 +1,42 @@
+import type { CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
-import { Wallet, ChevronLeft, ChevronRight, Layers, List, Loader2, Network, PlugZap, RadioTower, RefreshCw, SquarePen, Trash2 } from "lucide-react";
+import {
+  ChevronLeft, ChevronRight, Layers, Loader2, Network, PlugZap, RadioTower, RefreshCw, SquarePen, Tag, Trash2, Wallet,
+} from "lucide-react";
 import { balanceSourceName, isMimoBalanceSite } from "@/lib/provider-balance";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import { AuroraCard } from "@/components/ui/aurora-card";
 import { toast } from "@/hooks/use-toast";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { includedModels, providerModelProtocol } from "@/lib/provider-models";
-import {
-  cardButton, deepSeekPeakNow, hostOf, iconButton, protocolBadgeKey, providerColor, softBadge, type RelayGroup,
-} from "@/components/newapi/relay-groups";
+import { cardButton, deepSeekPeakNow, hostOf, protocolBadgeKey, relayHue, type RelayGroup } from "@/components/newapi/relay-groups";
 import { StatusDot } from "@/components/newapi/status-dot";
 import { RelayDeck } from "@/components/newapi/relay-deck";
 import { useRelayDeck } from "@/components/newapi/use-relay-deck";
+import { ClientGlyph } from "@/components/newapi/configuration-shortcuts";
 import type { ProviderState } from "@/components/newapi/use-provider-state";
 import type { RelayView } from "@/components/newapi/use-relay-view";
+import type { RelayConsumers } from "@/components/newapi/use-relay-consumers";
 import type { NewApiProvider } from "@/types/newapi";
 
-// One relay: the current member's card face, stacked peek layers for the other
-// members, and the expanded member list.
-export function RelayCard({ group, store, view, onEdit, onTest, onRemove, onBalance }: {
+const pill = "inline-flex h-5 shrink-0 items-center gap-1 rounded-full px-2 text-[10.5px] font-medium";
+const testTone = {
+  ok: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400",
+  failed: "bg-red-500/10 text-red-600 dark:text-red-400",
+  untested: "bg-muted text-muted-foreground",
+} as const;
+const testLabel = { ok: "newapi.badgeOk", failed: "newapi.badgeFailed", untested: "newapi.badgeUntested" } as const;
+
+// One relay site: the displayed member's face, a stack of peeking layers for
+// the other members, and the expanded member list.
+export function RelayCard({ group, store, view, consumers, onEdit, onTest, onRemove, onBalance }: {
   group: RelayGroup;
   store: ProviderState;
   view: RelayView;
+  consumers: RelayConsumers;
   onEdit: (provider: NewApiProvider) => void;
   onTest: (provider: NewApiProvider) => void;
   onRemove: (provider: NewApiProvider) => void;
@@ -35,8 +45,6 @@ export function RelayCard({ group, store, view, onEdit, onTest, onRemove, onBala
   const { t, i18n } = useTranslation();
   const { mutationLocked, run, applyChange, balanceBusy, refreshBalance } = store;
   const { filter, groupLabel, renameGroup, memberSelection, memberDirection, expandedGroups, selectMember, setExpanded, toggleExpanded, finishFlip } = view;
-  const routingEnabled = !!store.state.data?.router?.enabled;
-  const activeId = store.state.data?.activeProviderId ?? null;
 
   const formatMoney = (value: number) => new Intl.NumberFormat(i18n.language, { maximumFractionDigits: 2 }).format(value);
   const balanceValue = (provider: NewApiProvider) => {
@@ -64,23 +72,27 @@ export function RelayCard({ group, store, view, onEdit, onTest, onRemove, onBala
     }
     return balanceSourceName(provider.balanceSource) || t("newapi.balanceUndetected");
   };
+  const toggleEnabled = (item: NewApiProvider, value: boolean) =>
+    void run(`enable:${item.id}`, async () => applyChange(await api.providers.setEnabled(item.id, value)), t("newapi.enableFailed"));
 
-  const activeMemberId = memberSelection[group.key] ?? (group.providers.find(item => item.id === activeId)?.id ?? group.providers[0].id);
+  // Prefer a member Codex currently uses, so the face shows the live one first.
+  const preferred = group.providers.find(item => consumers.get(item.id)?.codex) ?? group.providers[0];
+  const activeMemberId = memberSelection[group.key] ?? preferred.id;
   const provider = group.providers.find(item => item.id === activeMemberId) ?? group.providers[0];
+  const use = consumers.get(provider.id);
   const balanceOwner = provider.balanceSharedFrom
     ? store.state.data?.providers.find(item => item.id === provider.balanceSharedFrom) : provider;
   const balanceReady = !!balanceOwner && (!isMimoBalanceSite(balanceOwner.baseUrl) || !!balanceOwner.balanceScript) && (balanceOwner.hasApiKey || balanceOwner.hasAccessToken || !!balanceOwner.balanceScript);
-  const isGroupActive = group.providers.some(item => item.id === activeId) && routingEnabled;
-  const isCurrentActive = provider.id === activeId && routingEnabled;
-  const selected = filter === group.key;
+  const live = !!use?.codex;
+  const filtered = filter === group.key;
   const dsPeak = hostOf(provider) === "api.deepseek.com" ? deepSeekPeakNow() : null;
   const value = balanceValue(provider);
-  const valuePositive = !!provider.balance && provider.balance.remaining > 0;
   const hasMultiple = group.providers.length > 1;
   const isExpanded = !!expandedGroups[group.key];
-  const cardColor = isGroupActive ? "gold" : providerColor(group.key);
   const memberIndex = group.providers.findIndex(item => item.id === provider.id);
   const stacked = hasMultiple && !isExpanded;
+  const label = groupLabel(group, provider);
+  const others = (use?.consumers ?? []).filter(consumer => consumer !== "codex");
   const { turn, exitDirection } = useRelayDeck({
     activeId: provider.id, memberIds: group.providers.map(item => item.id), stacked,
     onSelect: (id, direction) => selectMember(group, id, direction),
@@ -91,9 +103,9 @@ export function RelayCard({ group, store, view, onEdit, onTest, onRemove, onBala
   };
 
   return (
-    <RelayDeck count={group.providers.length} stacked={stacked}
+    <RelayDeck count={group.providers.length} stacked={stacked} hue={relayHue(group.key)}
       label={`${groupLabel(group)} · ${t("newapi.nextGroupMember")}`} onNext={switchMember}>
-      <AuroraCard
+      <article
         onAnimationEnd={event => {
           // A queued exit animationend may arrive after the timer selected the
           // next member. Only the current entrance can finish its flip intent.
@@ -101,287 +113,196 @@ export function RelayCard({ group, store, view, onEdit, onTest, onRemove, onBala
             && event.animationName === `relay-card-flip-${memberDirection[group.key]}`) finishFlip(group);
         }}
         data-relay-card-face
+        data-spotlight
         data-provider-id={provider.id}
+        data-codex={use?.codex ?? undefined}
         data-deck-exiting={exitDirection || undefined}
-        color={cardColor}
-        shine={isGroupActive || selected}
+        style={{ "--relay-hue": relayHue(group.key) } as CSSProperties}
         className={cn(
-          "relay-deck-face flex flex-col",
-          selected && "rounded-2xl ring-2 ring-primary/40",
+          "relay-face relative flex flex-col overflow-hidden rounded-[20px] border bg-card shadow-sm transition-[border-color,box-shadow] duration-300 hover:shadow-lg motion-reduce:transition-none",
+          live ? "relay-face-live border-primary/35" : "border-border",
+          !provider.enabled && "relay-face-off",
+          filtered && "ring-2 ring-primary/35",
           stacked && exitDirection && `relay-card-exit-${exitDirection}`,
           stacked && !exitDirection && memberDirection[group.key] &&
             (memberDirection[group.key] === "prev" ? "relay-card-swap-prev" : "relay-card-swap-next"),
         )}
       >
-        <div className="flex flex-col justify-between p-3.5 sm:p-4">
-          <div className="flex flex-col">
-            {/* Header: Title + Domain + Badges + Switch */}
-            <div className="relay-card-header flex items-center justify-between gap-2" data-has-members={hasMultiple || undefined}>
-              <div className="relay-card-heading flex min-w-0 flex-1 items-center gap-1.5">
-                <StatusDot provider={provider} />
-                <h3 className="truncate text-[15px] font-semibold tracking-tight" title={groupLabel(group, provider)}>
-                  {groupLabel(group, provider)}
-                </h3>
+        <span aria-hidden className="relay-face-strip" />
+        <div className="flex flex-col gap-3 p-4">
+          {/* Identity: monogram, site and member, power switch */}
+          <div className="relay-card-header flex items-start gap-3" data-has-members={hasMultiple || undefined}>
+            <span aria-hidden className="relay-monogram">{label.replace(/^www\./, "").charAt(0).toUpperCase()}</span>
+            <div className="relay-card-heading min-w-0 flex-1">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <h3 className="truncate font-display text-[16px] font-semibold leading-6 tracking-tight" title={label}>{label}</h3>
                 {hasMultiple && (
-                  <button
-                    type="button"
-                    className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary hover:bg-primary/20"
-                    onClick={() => toggleExpanded(group)}
+                  <button type="button" onClick={() => toggleExpanded(group)}
+                    className="inline-flex h-5 shrink-0 items-center gap-1 rounded-full bg-primary/10 px-1.5 text-[10px] font-semibold text-primary transition-colors hover:bg-primary/20"
                     title={isExpanded ? t("newapi.collapseStack") : t("newapi.expandAll")}
-                    aria-label={isExpanded ? t("newapi.collapseStack") : t("newapi.expandAll")}
-                    aria-expanded={isExpanded}
-                  >
-                    <Layers className="h-2.5 w-2.5" />
-                    {group.providers.length}
+                    aria-label={isExpanded ? t("newapi.collapseStack") : t("newapi.expandAll")} aria-expanded={isExpanded}>
+                    <Layers className="h-2.5 w-2.5" />{group.providers.length}
                   </button>
                 )}
               </div>
-              <div className="relay-card-controls flex shrink-0 items-center gap-1.5">
-                {hasMultiple && (
-                  <div className="relay-member-nav" role="group" data-relay-no-turn aria-label={t("newapi.groupMembers")}>
-                    <button type="button" aria-disabled={!!exitDirection} onClick={() => switchMember(-1)} aria-label={t("newapi.previousGroupMember")} title={t("newapi.previousGroupMember")}>
-                      <ChevronLeft className="h-3.5 w-3.5" />
-                    </button>
-                    <span className="relay-member-name" title={provider.name} aria-live="polite">
-                      {provider.name} <small>{memberIndex + 1}/{group.providers.length}</small>
-                    </span>
-                    <button type="button" aria-disabled={!!exitDirection} onClick={() => switchMember(1)} aria-label={t("newapi.nextGroupMember")} title={t("newapi.nextGroupMember")}>
-                      <ChevronRight className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                )}
-                <Switch
-                  checked={provider.enabled}
-                  className={isCurrentActive ? "data-[state=checked]:bg-amber-500" : undefined}
-                  disabled={mutationLocked}
-                  onCheckedChange={value =>
-                    void run(`enable:${provider.id}`, async () => {
-                      const change = await api.providers.setEnabled(provider.id, value);
-                      applyChange(change);
-                    }, t("newapi.enableFailed"))
-                  }
-                />
-              </div>
-            </div>
-
-            {/* Dual Info Cards: Balance (Left) & Model/Status (Right) */}
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              {/* Left: Balance Box */}
-              <div className={cn(
-                "flex flex-col justify-between rounded-xl p-2.5 ring-1 transition-colors min-w-0 min-h-[92px]",
-                isCurrentActive
-                  ? "bg-amber-500/[0.08] ring-amber-500/30"
-                  : "bg-black/[0.025] ring-border/50 dark:bg-white/[0.03]",
-              )}>
-                <div className="flex items-center justify-between gap-1">
-                  <span className="text-[11px] font-medium text-muted-foreground truncate">{balanceLabel(provider)}</span>
-                  <button
-                    type="button"
-                    className={iconButton}
-                    title={t("newapi.refreshBalance")}
-                    aria-label={t("newapi.refreshBalance")}
-                    disabled={balanceBusy.has(provider.id) || !balanceReady}
-                    onClick={() => void refreshBalance(provider.id)}
-                  >
-                    {balanceBusy.has(provider.id) ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+              {hasMultiple ? (
+                <div className="relay-member-nav" role="group" data-relay-no-turn aria-label={t("newapi.groupMembers")}>
+                  <button type="button" aria-disabled={!!exitDirection} onClick={() => switchMember(-1)} aria-label={t("newapi.previousGroupMember")} title={t("newapi.previousGroupMember")}>
+                    <ChevronLeft className="h-3.5 w-3.5" />
                   </button>
-                </div>
-                <div className="my-auto py-0.5">
-                  <span className={cn(
-                    "truncate text-base font-semibold tabular-nums tracking-tight block",
-                    isCurrentActive && valuePositive && "text-emerald-600 dark:text-emerald-400",
-                    cardColor === "gold" && "dark:text-[#fef08a]"
-                  )}>
-                    {value ?? "— —"}
+                  <span className="relay-member-name" title={provider.name} aria-live="polite">
+                    {provider.name} <small>{memberIndex + 1}/{group.providers.length}</small>
+                  </span>
+                  <button type="button" aria-disabled={!!exitDirection} onClick={() => switchMember(1)} aria-label={t("newapi.nextGroupMember")} title={t("newapi.nextGroupMember")}>
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  </button>
+                  <span aria-hidden className="relay-member-dots">
+                    {group.providers.slice(0, 6).map((item, index) => (
+                      <i key={item.id} data-current={index === memberIndex || undefined} />
+                    ))}
                   </span>
                 </div>
-                <p className="truncate text-[10px] text-muted-foreground/80" title={provider.balance ? `${balanceCaption(provider)} · ${new Date(provider.balance.checkedAt * 1000).toLocaleString()}` : balanceCaption(provider)}>
-                  {store.balanceErrors[provider.id] ? t("newapi.balanceFailed") : balanceCaption(provider)}
+              ) : (
+                <p className="flex h-6 min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                  <StatusDot provider={provider} />
+                  <span className="truncate" title={provider.name}>{provider.name}</span>
                 </p>
-              </div>
-
-              {/* Right: Model & Connection Box */}
-              <div className={cn(
-                "flex flex-col justify-between rounded-xl p-2.5 ring-1 transition-colors min-w-0 min-h-[92px]",
-                isCurrentActive
-                  ? "bg-amber-500/[0.08] ring-amber-500/30"
-                  : "bg-black/[0.025] ring-border/50 dark:bg-white/[0.03]",
-              )}>
-                <div className="flex items-center justify-between gap-1">
-                  <span className="text-[11px] font-medium text-muted-foreground truncate">
-                    {t("newapi.model")}
-                  </span>
-                  <div className="flex items-center gap-1 shrink-0">
-                    {provider.testStatus === "untested" && <Badge className={softBadge("gray")}>{t("newapi.badgeUntested")}</Badge>}
-                    {provider.testStatus === "ok" && <Badge className={softBadge("green")}>{t("newapi.badgeOk")}</Badge>}
-                    {provider.testStatus === "failed" && <Badge className={softBadge("red")}>{t("newapi.badgeFailed")}</Badge>}
-                    {dsPeak !== null && (
-                      <Badge className={softBadge(dsPeak ? "amber" : "green")} title={t("newapi.deepSeekPeakTip")}>
-                        {t(dsPeak ? "newapi.peakNow" : "newapi.offPeakNow")}
-                      </Badge>
-                    )}
-                  </div>
-                </div>
-                <div className="my-auto flex min-w-0 items-center gap-1.5 py-0.5">
-                  <List className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  <span className="truncate font-mono text-xs font-medium" title={provider.model || t("newapi.noModel")}>
-                    {provider.model || t("newapi.noModel")}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between gap-1 text-[10px] text-muted-foreground">
-                  <span className="truncate">
-                    {t("newapi.modelCount", { count: includedModels(provider.models).length })}
-                  </span>
-                  <span className="shrink-0 rounded bg-muted px-1 py-0.2 font-mono text-[9px] text-muted-foreground">
-                    {t(protocolBadgeKey[providerModelProtocol(provider)])}
-                  </span>
-                </div>
-              </div>
+              )}
             </div>
+            <Switch checked={provider.enabled} disabled={mutationLocked} aria-label={`${t("newapi.relayEnable")} ${provider.name}`}
+              className="mt-0.5" onCheckedChange={value => toggleEnabled(provider, value)} />
+          </div>
 
-            {/* Expanded Mode: Cascaded clean cards for all providers in this relay */}
-            {hasMultiple && isExpanded && (
-              <div className="mt-3 space-y-2 rounded-xl bg-black/[0.025] p-2.5 ring-1 ring-border/50 dark:bg-white/[0.03]">
-                <div className="flex items-center justify-between gap-2 px-1 text-[11px] font-medium text-muted-foreground">
-                  <div className="flex items-center gap-1.5">
-                    <Layers className="h-3.5 w-3.5 text-primary" />
-                    <span>{t("newapi.groupMembers")} ({group.providers.length})</span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      className="rounded px-1.5 py-0.5 text-xs text-primary hover:bg-primary/10"
-                      onClick={() => renameGroup(group)}
-                    >
-                      {t("newapi.renameGroup")}
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted"
-                      onClick={() => setExpanded(group, false)}
-                    >
-                      {t("newapi.collapseStack")}
-                    </button>
-                  </div>
-                </div>
-                <div className="space-y-1.5">
-                  {group.providers.map(item => (
-                    <div
-                      key={item.id}
-                      className={cn(
-                        "flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-card/80 p-2 text-xs transition-colors hover:bg-muted/50",
-                        item.id === provider.id && "ring-1 ring-primary/40",
-                      )}
-                    >
-                      <div className="flex min-w-0 flex-1 items-center gap-2">
-                        <StatusDot provider={item} />
-                        <button
-                          type="button"
-                          className="max-w-[120px] truncate rounded font-semibold text-foreground hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
-                          title={item.name}
-                          onClick={() => {
-                            if (item.id !== provider.id) selectMember(group, item.id, group.providers.indexOf(item) < memberIndex ? "prev" : "next");
-                            setExpanded(group, false);
-                          }}
-                        >{item.name}</button>
-                        <span className="font-mono text-[11px] text-muted-foreground truncate max-w-[110px]" title={item.model}>{item.model || t("newapi.noModel")}</span>
-                        {item.id === activeId && routingEnabled && (
-                          <span className="inline-flex items-center gap-0.5 rounded bg-amber-500/10 px-1 py-0.2 text-[10px] font-medium text-amber-600 dark:text-amber-400">
-                            <PlugZap className="h-2.5 w-2.5" />
-                            {t("newapi.isCurrentRoute")}
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex shrink-0 items-center gap-1.5">
-                        <button type="button" className={cardButton} aria-label={`${t("newapi.queryBalance")} ${item.name}`} onClick={() => onBalance(item)}><Wallet className="h-3 w-3" /></button>
-                        <Switch
-                          checked={item.enabled}
-                          disabled={mutationLocked}
-                          onCheckedChange={value =>
-                            void run(`enable:${item.id}`, async () => applyChange(await api.providers.setEnabled(item.id, value)), t("newapi.enableFailed"))
-                          }
-                        />
-                        <button
-                          type="button"
-                          className={cardButton}
-                          title={t("newapi.test")}
-                          aria-label={t("newapi.test")}
-                          disabled={!item.hasApiKey}
-                          onClick={() => onTest(item)}
-                        >
-                          <RadioTower className="h-3 w-3" />
-                        </button>
-                        <button
-                          type="button"
-                          className={cardButton}
-                          title={t("newapi.edit")}
-                          aria-label={t("newapi.edit")}
-                          onClick={() => onEdit(item)}
-                        >
-                          <SquarePen className="h-3 w-3" />
-                        </button>
-                        <button
-                          type="button"
-                          className={cn(cardButton, "hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400")}
-                          title={t("newapi.remove")}
-                          aria-label={t("newapi.remove")}
-                          onClick={() => onRemove(item)}
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
+          {/* Who uses this relay right now */}
+          <div className="relay-chips flex h-5 min-w-0 items-center gap-1.5 overflow-hidden">
+            {use?.codex === "injected" && (
+              <span className={cn(pill, "bg-primary/10 text-primary")} data-relay-injected>
+                <span aria-hidden className="relay-live-dot" />{t("newapi.relayInjected")}
+              </span>
+            )}
+            {use?.codex === "direct" && (
+              <span className={cn(pill, "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400")} data-relay-direct>
+                <PlugZap className="h-3 w-3" />{t("newapi.relayCodexDirect")}
+              </span>
+            )}
+            {!provider.enabled && <span className={cn(pill, "bg-muted text-muted-foreground")}>{t("newapi.relayDisabled")}</span>}
+            {others.length > 0 && (
+              <span className="flex shrink-0 items-center -space-x-1" title={others.map(consumer => t(`newapi.topology.client.${consumer}`)).join(" · ")}>
+                {others.map(consumer => (
+                  <span key={consumer} className="flex h-5 w-5 items-center justify-center rounded-full bg-background ring-1 ring-border">
+                    <ClientGlyph client={consumer} className="h-3 w-3" />
+                  </span>
+                ))}
+              </span>
+            )}
+            <span className={cn(pill, testTone[provider.testStatus])}>{t(testLabel[provider.testStatus])}</span>
+            {dsPeak !== null && (
+              <span className={cn(pill, dsPeak ? "bg-amber-500/15 text-amber-700 dark:text-amber-400" : testTone.ok)} title={t("newapi.deepSeekPeakTip")}>
+                {t(dsPeak ? "newapi.peakNow" : "newapi.offPeakNow")}
+              </span>
             )}
           </div>
 
-          {/* Footer: Status / Hint & Action Buttons */}
-          <div className="mt-3 flex items-center justify-between gap-2 border-t border-border/40 pt-2.5">
-            <div className="flex min-w-0 items-center gap-1.5">
-              {isCurrentActive ? (
-                <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-300">
-                  <PlugZap className="h-3 w-3" />
-                  {t("newapi.isCurrentRoute")}
-                </span>
-              ) : (
-                <span className="truncate font-mono text-[11px] text-muted-foreground/80">
-                  http://{hostOf(provider)}
-                </span>
-              )}
+          {/* Balance and model */}
+          <div className="relay-metrics grid grid-cols-2 overflow-hidden rounded-2xl bg-muted/45 ring-1 ring-inset ring-border/60">
+            <div className="flex min-w-0 flex-col gap-1 p-3">
+              <div className="flex items-center justify-between gap-1">
+                <span className="truncate text-[11px] font-medium text-muted-foreground">{balanceLabel(provider)}</span>
+                <button type="button" className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-background hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+                  title={t("newapi.refreshBalance")} aria-label={t("newapi.refreshBalance")}
+                  disabled={balanceBusy.has(provider.id) || !balanceReady} onClick={() => void refreshBalance(provider.id)}>
+                  {balanceBusy.has(provider.id) ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                </button>
+              </div>
+              <span className={cn("poster-number block truncate text-[1.4rem] font-bold leading-7 tracking-tight",
+                !value && "text-muted-foreground/60")}>{value ?? "— —"}</span>
+              <span className="truncate text-[10.5px] text-muted-foreground/85"
+                title={provider.balance ? `${balanceCaption(provider)} · ${new Date(provider.balance.checkedAt * 1000).toLocaleString()}` : balanceCaption(provider)}>
+                {store.balanceErrors[provider.id] ? t("newapi.balanceFailed") : balanceCaption(provider)}
+              </span>
             </div>
+            <div className="flex min-w-0 flex-col gap-1 border-l border-border/60 p-3">
+              <span className="flex h-6 items-center text-[11px] font-medium text-muted-foreground">{t("newapi.model")}</span>
+              <span className="block truncate font-mono text-[13px] font-medium leading-7" title={provider.model || t("newapi.noModel")}>
+                {provider.model || t("newapi.noModel")}
+              </span>
+              <span className="flex min-w-0 items-center gap-1.5 text-[10.5px] text-muted-foreground">
+                <span className="truncate">{t("newapi.modelCount", { count: includedModels(provider.models).length })}</span>
+                <span className="shrink-0 rounded bg-background px-1 font-mono text-[9.5px] ring-1 ring-border/70">
+                  {t(protocolBadgeKey[providerModelProtocol(provider)])}
+                </span>
+              </span>
+            </div>
+          </div>
+
+          {/* Expanded mode: every member of this site, directly selectable */}
+          {hasMultiple && isExpanded && (
+            <div className="space-y-1.5 rounded-2xl bg-muted/35 p-2 ring-1 ring-inset ring-border/60">
+              <div className="flex items-center justify-between gap-2 px-1 text-[11px] font-medium text-muted-foreground">
+                <span className="flex items-center gap-1.5"><Layers className="h-3.5 w-3.5 text-primary" />{t("newapi.groupMembers")} ({group.providers.length})</span>
+                <span className="flex items-center gap-1">
+                  <button type="button" className="rounded px-1.5 py-0.5 text-xs text-primary hover:bg-primary/10" onClick={() => renameGroup(group)}>{t("newapi.renameGroup")}</button>
+                  <button type="button" className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted" onClick={() => setExpanded(group, false)}>{t("newapi.collapseStack")}</button>
+                </span>
+              </div>
+              {group.providers.map(item => (
+                <div key={item.id} className={cn("flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-card/90 p-2 text-xs transition-colors hover:bg-muted/50",
+                  item.id === provider.id && "ring-1 ring-primary/40")}>
+                  <div className="flex min-w-0 flex-1 items-center gap-2">
+                    <StatusDot provider={item} />
+                    <button type="button" title={item.name}
+                      className="max-w-[120px] truncate rounded font-semibold text-foreground hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
+                      onClick={() => {
+                        if (item.id !== provider.id) selectMember(group, item.id, group.providers.indexOf(item) < memberIndex ? "prev" : "next");
+                        setExpanded(group, false);
+                      }}>{item.name}</button>
+                    <span className="max-w-[110px] truncate font-mono text-[11px] text-muted-foreground" title={item.model}>{item.model || t("newapi.noModel")}</span>
+                    {consumers.get(item.id)?.codex === "injected" && <span aria-hidden className="relay-live-dot" title={t("newapi.relayInjected")} />}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <button type="button" className={cardButton} aria-label={`${t("newapi.queryBalance")} ${item.name}`} onClick={() => onBalance(item)}><Wallet className="h-3 w-3" /></button>
+                    <Switch checked={item.enabled} disabled={mutationLocked} aria-label={`${t("newapi.relayEnable")} ${item.name}`} onCheckedChange={value => toggleEnabled(item, value)} />
+                    <button type="button" className={cardButton} title={t("newapi.test")} aria-label={t("newapi.test")} disabled={!item.hasApiKey} onClick={() => onTest(item)}>
+                      <RadioTower className="h-3 w-3" />
+                    </button>
+                    <button type="button" className={cardButton} title={t("newapi.edit")} aria-label={t("newapi.edit")} onClick={() => onEdit(item)}>
+                      <SquarePen className="h-3 w-3" />
+                    </button>
+                    <button type="button" className={cn(cardButton, "hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400")} title={t("newapi.remove")} aria-label={t("newapi.remove")} onClick={() => onRemove(item)}>
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Endpoint and actions */}
+          <div className="relay-card-footer flex items-center justify-between gap-2">
+            <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground/80" title={provider.baseUrl}>{hostOf(provider)}</span>
             <div className="flex shrink-0 items-center gap-1">
-              <button type="button" className={cn(cardButton, "w-auto gap-1.5 whitespace-nowrap px-2")} onClick={() => onBalance(provider)} aria-label={`${t("newapi.queryBalance")} ${provider.name}`} title={t("newapi.queryBalance")}>
+              <button type="button" className={cn(cardButton, "w-auto gap-1.5 whitespace-nowrap px-2")} onClick={() => onBalance(provider)}
+                aria-label={`${t("newapi.queryBalance")} ${provider.name}`} title={t("newapi.queryBalance")}>
                 <Wallet className="h-3.5 w-3.5" /><span className="relay-card-balance-label text-[11px]">{t("newapi.queryBalance")}</span>
               </button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <button
-                    type="button"
-                    className={cardButton}
-                    title={t("newapi.networkMode")}
-                    aria-label={t("newapi.networkMode")}
-                    disabled={mutationLocked}
-                  >
+                  <button type="button" className={cardButton} title={t("newapi.networkMode")} aria-label={t("newapi.networkMode")} disabled={mutationLocked}>
                     <Network className={cn("h-3.5 w-3.5", provider.networkMode === "direct" ? "text-emerald-600 dark:text-emerald-400" : "text-blue-600 dark:text-blue-400")} />
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-52">
-                  <DropdownMenuRadioGroup
-                    value={provider.networkMode}
-                    onValueChange={mode => {
-                      if (mode !== "proxy" && mode !== "direct") return;
-                      void run(`network:${provider.id}`, async () => {
-                        applyChange(await api.providers.setNetwork(provider.id, mode));
-                        toast({
-                          title: t("newapi.networkUpdated"),
-                          description: t(mode === "direct" ? "newapi.networkDirectHint" : "newapi.networkProxyHint"),
-                          variant: "success",
-                        });
-                      }, t("newapi.networkFailed"));
-                    }}
-                  >
+                  <DropdownMenuRadioGroup value={provider.networkMode} onValueChange={mode => {
+                    if (mode !== "proxy" && mode !== "direct") return;
+                    void run(`network:${provider.id}`, async () => {
+                      applyChange(await api.providers.setNetwork(provider.id, mode));
+                      toast({
+                        title: t("newapi.networkUpdated"),
+                        description: t(mode === "direct" ? "newapi.networkDirectHint" : "newapi.networkProxyHint"),
+                        variant: "success",
+                      });
+                    }, t("newapi.networkFailed"));
+                  }}>
                     <DropdownMenuRadioItem value="proxy">
                       <PlugZap className="mr-2 h-4 w-4" />
                       <span>
@@ -399,49 +320,23 @@ export function RelayCard({ group, store, view, onEdit, onTest, onRemove, onBala
                   </DropdownMenuRadioGroup>
                 </DropdownMenuContent>
               </DropdownMenu>
-              <button
-                type="button"
-                className={cardButton}
-                title={t("newapi.renameGroup")}
-                aria-label={t("newapi.renameGroup")}
-                onClick={() => renameGroup(group)}
-              >
-                <SquarePen className="h-3.5 w-3.5" />
+              <button type="button" className={cardButton} title={t("newapi.renameGroup")} aria-label={t("newapi.renameGroup")} onClick={() => renameGroup(group)}>
+                <Tag className="h-3.5 w-3.5" />
               </button>
-              <button
-                type="button"
-                className={cardButton}
-                title={t("newapi.test")}
-                aria-label={t("newapi.test")}
-                disabled={!provider.hasApiKey}
-                onClick={() => onTest(provider)}
-              >
+              <button type="button" className={cardButton} title={t("newapi.test")} aria-label={t("newapi.test")} disabled={!provider.hasApiKey} onClick={() => onTest(provider)}>
                 <RadioTower className="h-3.5 w-3.5" />
               </button>
-              <button
-                type="button"
-                className={cardButton}
-                title={t("newapi.edit")}
-                aria-label={t("newapi.edit")}
-                disabled={mutationLocked}
-                onClick={() => onEdit(provider)}
-              >
+              <button type="button" className={cardButton} title={t("newapi.edit")} aria-label={t("newapi.edit")} disabled={mutationLocked} onClick={() => onEdit(provider)}>
                 <SquarePen className="h-3.5 w-3.5" />
               </button>
-              <button
-                type="button"
-                className={cn(cardButton, "hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400")}
-                title={t("newapi.remove")}
-                aria-label={t("newapi.remove")}
-                disabled={mutationLocked}
-                onClick={() => onRemove(provider)}
-              >
+              <button type="button" className={cn(cardButton, "hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400")}
+                title={t("newapi.remove")} aria-label={t("newapi.remove")} disabled={mutationLocked} onClick={() => onRemove(provider)}>
                 <Trash2 className="h-3.5 w-3.5" />
               </button>
             </div>
           </div>
         </div>
-      </AuroraCard>
+      </article>
     </RelayDeck>
   );
 }

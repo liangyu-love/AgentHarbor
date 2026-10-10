@@ -8,6 +8,7 @@ export function ThreadNotices({ list }: { list: ThreadList }) {
   const { t } = useTranslation();
   const {
     scanWarnings, pendingDeletionKeys, pendingDeletionRecoveryNeeded, cancelPendingBusy, cancelPendingDeletions, missingRolloutCount,
+    misplacedCount, configuredProvider, onlyMisplaced, setOnlyMisplaced,
   } = list;
 
   return (
@@ -38,6 +39,19 @@ export function ThreadNotices({ list }: { list: ThreadList }) {
           </div>
           <Button type="button" size="sm" variant="outline" disabled={cancelPendingBusy} onClick={() => void cancelPendingDeletions()}>
             {t(pendingDeletionRecoveryNeeded ? "threads.clearDeletionQueue" : "threads.cancelPendingDeletion")}
+          </Button>
+        </div>
+      )}
+
+      {misplacedCount > 0 && (
+        <div role="status" data-thread-misplaced-notice className="flex flex-wrap items-center gap-3 rounded-2xl border border-orange-500/30 bg-orange-500/5 px-3 py-2.5 text-sm">
+          <AlertTriangle className="h-4 w-4 shrink-0 text-orange-500" aria-hidden="true" />
+          <div className="min-w-0 flex-1">
+            <p className="font-medium">{t("threads.misplacedNotice", { count: misplacedCount, provider: configuredProvider })}</p>
+            <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{t("threads.misplacedNoticeDetail")}</p>
+          </div>
+          <Button type="button" size="sm" variant="outline" onClick={() => setOnlyMisplaced(!onlyMisplaced)}>
+            {t(onlyMisplaced ? "threads.misplacedShowAll" : "threads.misplacedShowOnly")}
           </Button>
         </div>
       )}

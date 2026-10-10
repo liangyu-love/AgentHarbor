@@ -919,6 +919,7 @@ function mount(mode: FixtureMode) {
     data: { total: mode === "thread-actions" ? 2 : 1, lastScanAt: 0,
       pendingDeletionKeys: controls.review.pendingDeletionKeys ?? [],
       pendingDeletionRecoveryNeeded: controls.review.pendingDeletionRecoveryNeeded ?? false,
+      configuredProvider: controls.review.configuredProvider ?? null,
       items: mode === "thread-tree" ? controls.review.threadItems : mode === "thread-details-missing" ? [{ ...threads[0], rolloutStatus: "missing" as const }] : threads.slice(0, mode === "thread-actions" ? 2 : 1) } });
   };
   controls.review.detailCalls = 0;

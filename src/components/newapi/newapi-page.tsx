@@ -24,7 +24,10 @@ import { providerModelProtocol } from "@/lib/provider-models";
 import { formatInvokeError } from "@/lib/invoke-error";
 import { RoutingTopology } from "./routing-topology";
 
-function SectionGroup({ icon, title, description, delay, children }: {
+// Poster-style section opener: an outlined index, an English kicker and the title.
+function SectionGroup({ index, kicker, icon, title, description, delay, children }: {
+  index: string;
+  kicker: string;
   icon: ReactNode;
   title: string;
   description: string;
@@ -33,13 +36,14 @@ function SectionGroup({ icon, title, description, delay, children }: {
 }) {
   return (
     <div className="route-rise space-y-4" style={{ animationDelay: `${delay}ms` } as CSSProperties}>
-      <div className="flex items-center gap-3 px-1">
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">{icon}</span>
-        <div className="min-w-0">
-          <h2 className="text-sm font-semibold tracking-tight text-foreground">{title}</h2>
+      <div className="flex items-end gap-3.5 px-1">
+        <span aria-hidden className="poster-index">{index}</span>
+        <div className="min-w-0 pb-0.5">
+          <p className="poster-kicker flex items-center gap-1.5 text-[10px] text-primary"><span aria-hidden>{icon}</span>{kicker}</p>
+          <h2 className="font-display text-lg font-semibold tracking-tight text-foreground">{title}</h2>
           <p className="text-xs text-muted-foreground">{description}</p>
         </div>
-        <span aria-hidden className="route-group-rule ml-2 h-px flex-1" />
+        <span aria-hidden className="route-group-rule mb-2 ml-2 h-px flex-1" />
       </div>
       {children}
     </div>
@@ -102,7 +106,7 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
         </div>
       )}
 
-      <SectionGroup icon={<Plug className="h-3.5 w-3.5" />} title={t("newapi.groups.clients")}
+      <SectionGroup index="01" kicker="Clients" icon={<Plug className="h-3 w-3" />} title={t("newapi.groups.clients")}
         description={t("newapi.groups.clientsDesc")} delay={80}>
         <CodexAccessCard
           store={store}
@@ -117,7 +121,7 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
         <ClaudeDesktopConfigCard providers={providers} />
       </SectionGroup>
 
-      <SectionGroup icon={<Layers3 className="h-3.5 w-3.5" />} title={t("newapi.groups.routing")}
+      <SectionGroup index="02" kicker="Routing" icon={<Layers3 className="h-3 w-3" />} title={t("newapi.groups.routing")}
         description={t("newapi.groups.routingDesc")} delay={160}>
         <AggregationManager providers={providers} />
         <RoutingDiagnostics

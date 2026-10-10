@@ -187,7 +187,7 @@ export function ProviderTestDialog({ open, provider, onOpenChange, onTested, onF
             value={selectedModel}
             disabled={testing || loadingModels || !models.length}
             onChange={event => { setSelectedModel(event.target.value); setEvents([]); setError(null); }}
-            className="h-10 w-full rounded-lg border border-border/70 bg-background/90 px-3 font-mono text-xs shadow-xs transition-colors hover:border-primary/40 focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring"
+            className="native-select h-10 w-full rounded-xl border border-border/70 bg-background/90 px-3 font-mono text-xs shadow-xs"
           >
             {!models.length && <option value="">{t(loadingModels ? "newapi.loadingModels" : "newapi.noModelsForTest")}</option>}
             {models.map(model => (

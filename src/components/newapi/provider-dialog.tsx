@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, Eye, EyeOff, Loader2, Plug } from "lucide-react";
+import { Check, ChevronDown, Eye, EyeOff, Loader2, Plug } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,7 @@ import { mergeModelCatalog } from "@/lib/provider-models";
 import type { CompressionPolicy, ModelProtocol, NewApiProvider, NewApiStateChange, NewApiModel } from "@/types/newapi";
 import { ProviderModelEditor } from "@/components/newapi/provider-model-editor";
 import { useModelResolutions } from "@/components/newapi/use-model-resolutions";
-import { PROVIDER_PRESETS } from "@/lib/provider-presets";
+import { ProviderPresetGallery } from "@/components/newapi/provider-preset-gallery";
 
 // A relay usually speaks OpenAI-compatible Chat Completions unless it says
 // otherwise, and the Codex-specific Responses protocol is the less common case.
@@ -158,9 +158,51 @@ function SecretInput({ id, value, placeholder, disabled, hasStoredSecret, onReve
 
 function SectionLabel({ children }: { children: string }) {
   return (
-    <div className="flex items-center gap-2.5 pt-1">
-      <span className="text-[11px] font-semibold uppercase tracking-wider text-primary/80">{children}</span>
+    <div className="flex items-center gap-2.5">
+      <span className="font-display text-sm font-semibold tracking-tight text-foreground">{children}</span>
       <span aria-hidden className="h-px flex-1 bg-gradient-to-r from-border/80 to-transparent" />
+    </div>
+  );
+}
+
+const PROTOCOLS: ModelProtocol[] = ["responses", "chatCompletions", "anthropicMessages"];
+const protocolCode: Record<ModelProtocol, string> = { responses: "RSP", chatCompletions: "CHT", anthropicMessages: "ANT" };
+
+/** The relay's default protocol as three described choices, arrow-key navigable. */
+function ProtocolPicker({ value, disabled, onChange }: {
+  value: ModelProtocol;
+  disabled?: boolean;
+  onChange: (protocol: ModelProtocol) => void;
+}) {
+  const { t } = useTranslation();
+  const buttons = useRef<(HTMLButtonElement | null)[]>([]);
+  const move = (index: number) => {
+    const next = (index + PROTOCOLS.length) % PROTOCOLS.length;
+    onChange(PROTOCOLS[next]);
+    buttons.current[next]?.focus();
+  };
+  return (
+    <div role="radiogroup" id="newapi-provider-protocol" aria-label={t("newapi.defaultProtocol")} className="grid gap-2">
+      {PROTOCOLS.map((option, index) => {
+        const checked = value === option;
+        return (
+          <button key={option} ref={node => { buttons.current[index] = node; }} type="button" role="radio"
+            aria-checked={checked} aria-label={t(protocolLabelKey[option])} tabIndex={checked ? 0 : -1} disabled={disabled}
+            onClick={() => onChange(option)}
+            onKeyDown={event => {
+              if (event.key === "ArrowDown" || event.key === "ArrowRight") { event.preventDefault(); move(index + 1); }
+              if (event.key === "ArrowUp" || event.key === "ArrowLeft") { event.preventDefault(); move(index - 1); }
+            }}
+            className={cn("protocol-card", checked && "protocol-card-on")}>
+            <span aria-hidden className="protocol-code">{protocolCode[option]}</span>
+            <span className="min-w-0 flex-1 text-left">
+              <span className="block truncate text-[13px] font-semibold">{t(protocolLabelKey[option])}</span>
+              <span className="block text-[11px] leading-snug text-muted-foreground">{t(`newapi.protocolHint.${option}`)}</span>
+            </span>
+            <span aria-hidden className="protocol-check">{checked && <Check className="h-3 w-3" strokeWidth={3} />}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -178,6 +220,7 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [preset, setPreset] = useState<string | null>(null);
   const [models, setModels] = useState<NewApiModel[]>([]);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -195,6 +238,7 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
   useEffect(() => {
     if (open) {
       setDraft(provider ? fromProvider(provider) : emptyDraft);
+      setPreset(null);
       setError(null);
       setShowAdvanced(!!provider && (!!provider.userId || provider.hasAccessToken || !!provider.contextWindow || (provider.compression?.mode ?? "inherit") !== "inherit" || !!provider.catalogProviders?.length || (provider.priceMultiplier ?? 1) !== 1));
       setModels(provider?.models.length ? provider.models : provider?.model ? [{
@@ -367,107 +411,68 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
       if (isCurrent()) setFetchingModels(false);
     }
   };
+  const host = (() => { try { return new URL(draft.baseUrl).host; } catch { return ""; } })();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-4xl">
-        <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 -m-6 mb-0 h-28 bg-gradient-to-b from-primary/[0.07] via-primary/[0.02] to-transparent" />
-        <div className="relative flex items-center justify-between gap-3 border-b border-border/40 pb-3">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-primary/20 to-primary/5 ring-1 ring-inset ring-primary/15">
-              <Plug className="h-5 w-5 text-primary" />
+      <DialogContent className="flex max-h-[min(92vh,940px)] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl">
+        <div className="route-surface relative shrink-0 overflow-hidden border-b border-border/60 px-6 pb-5 pt-6">
+          <span aria-hidden className="poster-watermark bottom-[-0.3em] right-16 text-[clamp(4rem,9vw,6.5rem)]">RELAY</span>
+          <div className="relative flex flex-wrap items-end justify-between gap-3 pr-8">
+            <div className="flex min-w-0 items-center gap-3.5">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-primary to-[hsl(262_83%_66%)] text-primary-foreground shadow-lg shadow-primary/25">
+                <Plug className="h-5 w-5" />
+              </div>
+              <DialogHeader className="min-w-0 space-y-0.5 text-left">
+                <span className="font-display text-[11px] font-semibold uppercase tracking-[0.22em] text-primary">
+                  {t(provider ? "newapi.dialogEyebrowEdit" : "newapi.dialogEyebrowAdd")}
+                </span>
+                <DialogTitle className="poster-title text-2xl">{t(provider ? "newapi.dialogTitleEdit" : "newapi.dialogTitleAdd")}</DialogTitle>
+                <DialogDescription className="sr-only">{t(provider ? "newapi.dialogTitleEdit" : "newapi.dialogTitleAdd")}</DialogDescription>
+                <p className="truncate font-mono text-xs text-muted-foreground">{host || t("newapi.dialogHostPending")}</p>
+              </DialogHeader>
             </div>
-            <DialogHeader className="min-w-0 space-y-0.5 text-left">
-              <DialogTitle className="text-base font-semibold">{t(provider ? "newapi.dialogTitleEdit" : "newapi.dialogTitleAdd")}</DialogTitle>
-              <DialogDescription className="sr-only">{t(provider ? "newapi.dialogTitleEdit" : "newapi.dialogTitleAdd")}</DialogDescription>
-            </DialogHeader>
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-background/80 px-3 py-1 text-xs font-medium text-primary ring-1 ring-inset ring-primary/25 backdrop-blur">
+              <span aria-hidden className="relay-live-dot" />
+              {t(protocolLabelKey[draft.protocol])}
+            </span>
           </div>
-          <span className="hidden sm:inline-flex items-center rounded-full bg-primary/10 px-2.5 py-0.5 text-[11px] font-medium text-primary ring-1 ring-inset ring-primary/20">
-            {t(protocolLabelKey[draft.protocol])}
-          </span>
         </div>
 
-        <form className="relative space-y-4 pt-1" onSubmit={e => { e.preventDefault(); void submit(); }}>
-          {!provider && (
-            <div className="rounded-xl border border-primary/15 bg-gradient-to-r from-primary/[0.04] via-primary/[0.01] to-transparent p-3 space-y-2">
-              <Label htmlFor="provider-preset" className="text-xs font-semibold text-foreground/90">
-                {t("newapi.officialPreset")}
-              </Label>
-              <select id="provider-preset" defaultValue="" disabled={saving} className="h-9 w-full rounded-lg border border-border/70 bg-background/90 px-3 text-xs font-medium shadow-xs transition-colors hover:border-primary/40 focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring" onChange={event => {
-              const preset = PROVIDER_PRESETS.find(item => item.name === event.target.value);
-              if (!preset) return;
-              setDraft({ ...emptyDraft, name: preset.name, baseUrl: preset.baseUrl, protocol: preset.protocol, model: preset.models?.[0]?.id ?? "" });
-              setModels(preset.models ?? []); setFetchError(null);
-            }}>
-              <option value="">{t("newapi.customProvider")} (手动填写)</option>
-              <optgroup label="代码与直连专线 (Coding / Direct)">
-                {PROVIDER_PRESETS.filter(p => p.category === "coding" || p.category === "direct").map(preset => (
-                  <option key={preset.name} value={preset.name}>
-                    {preset.name} — {preset.baseUrl}
-                  </option>
-                ))}
-              </optgroup>
-              <optgroup label="模型聚合平台 (Aggregators)">
-                {PROVIDER_PRESETS.filter(p => p.category === "aggregator").map(preset => (
-                  <option key={preset.name} value={preset.name}>
-                    {preset.name} — {preset.baseUrl}
-                  </option>
-                ))}
-              </optgroup>
-              <optgroup label="官方原厂标准协议 (Official)">
-                {PROVIDER_PRESETS.filter(p => p.category === "official").map(preset => (
-                  <option key={preset.name} value={preset.name}>
-                    {preset.name} — {preset.baseUrl}
-                  </option>
-                ))}
-              </optgroup>
-</select>
-            </div>
-          )}
-          {error && (
-            <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-2.5 text-[13px] text-destructive">
-              {t(error)}
-            </div>
-          )}
-
-          {/* 2-Column Main Section */}
-          <div className="grid gap-4 sm:grid-cols-2">
-            {/* Left Column: Basic Connection */}
-            <div className="space-y-3">
-              <SectionLabel>{t("newapi.sectionConnection")}</SectionLabel>
-              {field("name", "newapi.name", { placeholder: t("newapi.namePlaceholder") })}
-              {field("baseUrl", "newapi.url", { placeholder: "https://example.com" })}
-              {field("apiKey", "newapi.apiKey", {
-                password: true,
-                placeholder: provider?.hasApiKey ? t("newapi.keepSecret") : "sk-…",
-              })}
-            </div>
-
-            {/* Right Column: API Compatibility */}
-            <div className="space-y-3">
-              <SectionLabel>{t("newapi.defaultProtocol")}</SectionLabel>
-              <div className="space-y-1.5">
-                <Label htmlFor="newapi-provider-protocol" className="text-[13px]">{t("newapi.defaultProtocol")}</Label>
-                <Select value={draft.protocol} onValueChange={value => {
-                  const protocol = value as ModelProtocol;
-                  setDraft(current => ({
-                    ...current,
-                    protocol,
-                  }));
-                }} disabled={saving}>
-                  <SelectTrigger id="newapi-provider-protocol">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="responses">{t("newapi.protocolResponses")}</SelectItem>
-                    <SelectItem value="chatCompletions">{t("newapi.protocolChatCompletions")}</SelectItem>
-                    <SelectItem value="anthropicMessages">{t("newapi.protocolAnthropicMessages")}</SelectItem>
-                  </SelectContent>
-                </Select>
+        <form className="flex min-h-0 flex-1 flex-col" onSubmit={e => { e.preventDefault(); void submit(); }}>
+          <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-6 py-5">
+            {!provider && (
+              <ProviderPresetGallery selected={preset} disabled={saving}
+                onCustom={() => { setPreset(null); setDraft(emptyDraft); setModels([]); setFetchError(null); }}
+                onPick={item => {
+                  setPreset(item.name);
+                  setDraft({ ...emptyDraft, name: item.name, baseUrl: item.baseUrl, protocol: item.protocol, model: item.models?.[0]?.id ?? "" });
+                  setModels(item.models ?? []);
+                  setFetchError(null);
+                }} />
+            )}
+            {error && (
+              <div role="alert" className="rounded-xl border border-destructive/30 bg-destructive/5 p-2.5 text-[13px] text-destructive">
+                {t(error)}
               </div>
-            </div>
-          </div>
+            )}
 
-          <div className="border-t border-border/50 pt-4">
+            <div className="grid gap-5 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
+              <section className="space-y-3 rounded-2xl border border-border/70 bg-muted/20 p-4">
+                <SectionLabel>{t("newapi.sectionConnection")}</SectionLabel>
+                {field("name", "newapi.name", { placeholder: t("newapi.namePlaceholder") })}
+                {field("baseUrl", "newapi.url", { placeholder: "https://example.com" })}
+                {field("apiKey", "newapi.apiKey", {
+                  password: true,
+                  placeholder: provider?.hasApiKey ? t("newapi.keepSecret") : "sk-…",
+                })}
+              </section>
+              <section className="space-y-3 rounded-2xl border border-border/70 bg-muted/20 p-4">
+                <SectionLabel>{t("newapi.defaultProtocol")}</SectionLabel>
+                <ProtocolPicker value={draft.protocol} disabled={saving}
+                  onChange={protocol => setDraft(current => ({ ...current, protocol }))} />
+              </section>
+            </div>
+
             <ProviderModelEditor
               key={`${open}:${provider?.id ?? "new"}`}
               models={models}
@@ -482,103 +487,101 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
               onModelsChange={setModels}
               onDefaultModelChange={model => update("model", model)}
             />
-          </div>
 
-          {/* Advanced model settings */}
-          <div className="space-y-2.5 pt-1 border-t border-border/50">
-            <button
-              type="button"
-              onClick={() => setShowAdvanced(v => !v)}
-              aria-expanded={showAdvanced}
-              className="flex w-full items-center justify-between py-1 text-left text-muted-foreground transition-colors hover:text-foreground"
-            >
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] font-semibold uppercase tracking-wider text-primary/80">
-                  {t("newapi.sectionAdvanced")}
-                </span>
-                {!showAdvanced && hasAdvancedConfigured && (
-                  <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">
-                    {t("newapi.optionalConfigured")}
+            {/* Advanced model settings */}
+            <div className="space-y-2.5 rounded-2xl border border-border/70 p-3">
+              <button
+                type="button"
+                onClick={() => setShowAdvanced(v => !v)}
+                aria-expanded={showAdvanced}
+                className="flex w-full items-center justify-between px-1 py-0.5 text-left text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="font-display text-sm font-semibold tracking-tight text-foreground">
+                    {t("newapi.sectionAdvanced")}
                   </span>
-                )}
-              </div>
-              <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform", showAdvanced && "rotate-180")} />
-            </button>
+                  {!showAdvanced && hasAdvancedConfigured && (
+                    <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">
+                      {t("newapi.optionalConfigured")}
+                    </span>
+                  )}
+                </div>
+                <ChevronDown className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200", showAdvanced && "rotate-180")} />
+              </button>
 
-            {showAdvanced && (
-              <div className="grid gap-3 sm:grid-cols-2 rounded-xl bg-black/[0.02] p-3 ring-1 ring-border/50 dark:bg-white/[0.02]">
-                {field("contextWindow", "newapi.contextWindow", { numeric: true, placeholder: t("newapi.useDefault") })}
-                <div className="space-y-1.5">
-                  <Label htmlFor="newapi-provider-compression" className="text-[13px]">{t("newapi.compression.providerLevel")}</Label>
-                  <div className="flex gap-2">
-                    <Select
-                      value={draft.compressionMode}
+              {showAdvanced && (
+                <div className="grid gap-3 rounded-xl bg-muted/25 p-3 sm:grid-cols-2">
+                  {field("contextWindow", "newapi.contextWindow", { numeric: true, placeholder: t("newapi.useDefault") })}
+                  <div className="space-y-1.5">
+                    <Label htmlFor="newapi-provider-compression" className="text-[13px]">{t("newapi.compression.providerLevel")}</Label>
+                    <div className="flex gap-2">
+                      <Select
+                        value={draft.compressionMode}
+                        disabled={saving}
+                        onValueChange={value => setDraft(current => ({ ...current, compressionMode: value as ProviderDraft["compressionMode"] }))}
+                      >
+                        <SelectTrigger id="newapi-provider-compression" className="min-w-0 flex-1">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="inherit">{t("newapi.compression.inherit")}</SelectItem>
+                          <SelectItem value="percent">{t("newapi.compression.percent")}</SelectItem>
+                          <SelectItem value="tokens">{t("newapi.compression.tokens")}</SelectItem>
+                          <SelectItem value="clientDefault">{t("newapi.compression.clientDefault")}</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      {(draft.compressionMode === "percent" || draft.compressionMode === "tokens") && (
+                        <>
+                          <Input
+                            className="w-24"
+                            inputMode="numeric"
+                            autoComplete="off"
+                            spellCheck={false}
+                            disabled={saving}
+                            value={draft.compressionValue}
+                            placeholder={draft.compressionMode === "percent" ? "90" : "180000"}
+                            aria-label={t("newapi.compression.providerLevel")}
+                            onChange={event => update("compressionValue", event.target.value)}
+                          />
+                          <span className="self-center shrink-0 text-[10px] text-muted-foreground">
+                            {t(draft.compressionMode === "percent" ? "newapi.percentUnit" : "newapi.tokenUnit")}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <div className="space-y-1.5 sm:col-span-2">
+                    <Label htmlFor="newapi-provider-catalog" className="text-[13px]">{t("newapi.catalogMapping.title")}</Label>
+                    <Input
+                      id="newapi-provider-catalog"
+                      value={draft.catalogProviders}
                       disabled={saving}
-                      onValueChange={value => setDraft(current => ({ ...current, compressionMode: value as ProviderDraft["compressionMode"] }))}
-                    >
-                      <SelectTrigger id="newapi-provider-compression" className="min-w-0 flex-1">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="inherit">{t("newapi.compression.inherit")}</SelectItem>
-                        <SelectItem value="percent">{t("newapi.compression.percent")}</SelectItem>
-                        <SelectItem value="tokens">{t("newapi.compression.tokens")}</SelectItem>
-                        <SelectItem value="clientDefault">{t("newapi.compression.clientDefault")}</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    {(draft.compressionMode === "percent" || draft.compressionMode === "tokens") && (
-                      <>
-                        <Input
-                          className="w-24"
-                          inputMode="numeric"
-                          autoComplete="off"
-                          spellCheck={false}
-                          disabled={saving}
-                          value={draft.compressionValue}
-                          placeholder={draft.compressionMode === "percent" ? "90" : "180000"}
-                          aria-label={t("newapi.compression.providerLevel")}
-                          onChange={event => update("compressionValue", event.target.value)}
-                        />
-                        <span className="shrink-0 text-[10px] text-muted-foreground">
-                          {t(draft.compressionMode === "percent" ? "newapi.percentUnit" : "newapi.tokenUnit")}
-                        </span>
-                      </>
-                    )}
+                      autoComplete="off"
+                      spellCheck={false}
+                      placeholder={t("newapi.catalogMapping.placeholder")}
+                      onChange={event => update("catalogProviders", event.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="newapi-provider-price-multiplier" className="text-[13px]">{t("newapi.priceMultiplier")}</Label>
+                    <Input id="newapi-provider-price-multiplier" type="number" min={0} max={1000} step="any"
+                      disabled={saving} value={draft.priceMultiplier} placeholder="1"
+                      onChange={event => update("priceMultiplier", event.target.value)} />
                   </div>
                 </div>
-                <div className="space-y-1.5 sm:col-span-2">
-                  <Label htmlFor="newapi-provider-catalog" className="text-[13px]">{t("newapi.catalogMapping.title")}</Label>
-                  <Input
-                    id="newapi-provider-catalog"
-                    value={draft.catalogProviders}
-                    disabled={saving}
-                    autoComplete="off"
-                    spellCheck={false}
-                    placeholder={t("newapi.catalogMapping.placeholder")}
-                    onChange={event => update("catalogProviders", event.target.value)}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="newapi-provider-price-multiplier" className="text-[13px]">{t("newapi.priceMultiplier")}</Label>
-                  <Input id="newapi-provider-price-multiplier" type="number" min={0} max={1000} step="any"
-                    disabled={saving} value={draft.priceMultiplier} placeholder="1"
-                    onChange={event => update("priceMultiplier", event.target.value)} />
-                </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
 
-          <div className="flex justify-end border-t border-border/40 pt-3">
-            <DialogFooter className="gap-2 sm:space-x-0 shrink-0">
-              <Button type="button" variant="ghost" size="sm" onClick={() => onOpenChange(false)} disabled={saving}>
-                {t("common.cancel")}
-              </Button>
-              <Button type="submit" size="sm" disabled={saving || !draft.name.trim() || !draft.baseUrl.trim() || (!!draft.model && !models.some(model => model.id === draft.model && model.included))}>
-                {saving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
-                {t("newapi.save")}
-              </Button>
-            </DialogFooter>
-          </div>
+          <DialogFooter className="shrink-0 gap-2 border-t border-border/60 bg-card/95 px-6 py-3 backdrop-blur sm:space-x-0">
+            <Button type="button" variant="ghost" onClick={() => onOpenChange(false)} disabled={saving}>
+              {t("common.cancel")}
+            </Button>
+            <Button type="submit" className="min-w-24 rounded-xl" disabled={saving || !draft.name.trim() || !draft.baseUrl.trim() || (!!draft.model && !models.some(model => model.id === draft.model && model.included))}>
+              {saving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+              {t("newapi.save")}
+            </Button>
+          </DialogFooter>
         </form>
       </DialogContent>
     </Dialog>

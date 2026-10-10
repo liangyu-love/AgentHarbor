@@ -8,6 +8,7 @@ import type { NewApiProvider } from "@/types/newapi";
 // survives filtering them out and back in.
 export function useRelayView(providers: NewApiProvider[], loaded: boolean) {
   const [filter, setFilter] = useState<string>("all");
+  const [search, setSearch] = useState("");
   const [groupAliases, setGroupAliases] = useState<Record<string, string>>(() => {
     try {
       const saved = localStorage.getItem(storageKeys.relayGroupAliases);
@@ -36,7 +37,10 @@ export function useRelayView(providers: NewApiProvider[], loaded: boolean) {
       setFilter("all");
     }
   }, [filter, groups, loaded]);
-  const shown = filter === "all" ? groups : groups.filter(group => group.key === filter);
+  const needle = search.trim().toLowerCase();
+  const shown = groups.filter(group => (filter === "all" || group.key === filter)
+    && (!needle || [groupAliases[group.key] ?? "", group.url, ...group.providers.flatMap(provider => [provider.name, provider.model])]
+      .some(text => text.toLowerCase().includes(needle))));
 
   const groupLabel = (group: RelayGroup, provider = group.providers[0]) => groupAliases[group.key] ?? hostOf(provider);
   const renameGroup = (group: RelayGroup) => {
@@ -72,7 +76,7 @@ export function useRelayView(providers: NewApiProvider[], loaded: boolean) {
   };
 
   return {
-    filter, setFilter, groups, shown, groupLabel,
+    filter, setFilter, search, setSearch, groups, shown, groupLabel,
     aliasGroup, setAliasGroup, aliasDraft, setAliasDraft, renameGroup, saveGroupAlias,
     memberSelection: groupMemberSelect, memberDirection: groupMemberDirection, expandedGroups,
     selectMember, setExpanded, toggleExpanded, finishFlip,

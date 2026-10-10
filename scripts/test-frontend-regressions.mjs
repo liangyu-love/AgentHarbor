@@ -21,6 +21,7 @@ import { testProviderModelResolutions } from "./test-provider-model-resolutions.
 import { testTerminalProxy } from "./test-terminal-proxy.mjs";
 import { testCodexRoutingTransitions } from "./test-codex-routing-transitions.mjs";
 import { testRelayDeck } from "./test-relay-deck.mjs";
+import { testUiRefresh } from "./test-ui-refresh.mjs";
 import { testClaudeDesktopCard } from "./test-claude-desktop-card.mjs";
 import { testSkillsActivation } from "./test-skills-activation.mjs";
 import { testAggregation } from "./test-aggregation.mjs";
@@ -107,6 +108,8 @@ try {
     await testCodexRoutingTransitions({ page, reset });
   } else if (process.env.FRONTEND_QA_SCOPE === "relay-deck") {
     await testRelayDeck({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "ui-refresh") {
+    await testUiRefresh({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "oauth-login") {
     await testOAuthLogin({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "provider-model-preview") {
@@ -323,9 +326,9 @@ try {
   await page.locator(".relay-member-name", { hasText: "Relay Beta" }).waitFor();
   await page.getByText("beta-model", { exact: true }).waitFor();
   assert.equal(await page.locator("[data-relay-card-face]").first().evaluate(element => getComputedStyle(element).animationName), "relay-card-flip-next");
-  const cardHeightsBefore = await page.locator(".group.relative.flex.min-w-0.flex-col").evaluateAll(cards => cards.map(card => card.getBoundingClientRect().height));
+  const cardHeightsBefore = await page.locator("[data-relay-deck]").evaluateAll(cards => cards.map(card => card.getBoundingClientRect().height));
   await page.getByRole("button", { name: "展开同中转配置" }).click();
-  const cardHeightsAfter = await page.locator(".group.relative.flex.min-w-0.flex-col").evaluateAll(cards => cards.map(card => card.getBoundingClientRect().height));
+  const cardHeightsAfter = await page.locator("[data-relay-deck]").evaluateAll(cards => cards.map(card => card.getBoundingClientRect().height));
   assert.equal(cardHeightsBefore.length, 2);
   assert.ok(cardHeightsAfter[0] > cardHeightsBefore[0] + 40, JSON.stringify({ cardHeightsBefore, cardHeightsAfter }));
   assert.ok(Math.abs(cardHeightsAfter[1] - cardHeightsBefore[1]) < 2, JSON.stringify({ cardHeightsBefore, cardHeightsAfter }));
@@ -612,8 +615,8 @@ try {
   assert.equal(await page.getByRole("button", { name: labels.defaultChat, exact: true }).isEnabled(), true);
   await chatProtocol.click();
   await page.getByRole("option", { name: labels.responses, exact: true }).click();
-  await page.locator("#newapi-provider-protocol").click();
-  await page.getByRole("option", { name: labels.anthropic, exact: true }).click();
+  // The provider default is a radio group of described protocol cards.
+  await page.locator("#newapi-provider-protocol").getByRole("radio", { name: labels.anthropic, exact: true }).click();
   assert.equal(await page.getByRole("button", { name: labels.defaultResponses, exact: true }).getAttribute("aria-pressed"), "true");
   assert.equal(await chatProtocol.textContent(), labels.responses);
   assert.ok((await page.getByRole("combobox", { name: labels.inheritedProtocol, exact: true }).textContent()).includes(labels.anthropic));
@@ -635,8 +638,7 @@ try {
   const inheritOption = page.getByRole("option").filter({ hasText: /^Automatic:|^自动：/ });
   assert.ok((await inheritOption.textContent()).includes(labels.anthropic), "inherit option must show provider default, not model override");
   await inheritOption.click();
-  await page.locator("#newapi-provider-protocol").click();
-  await page.getByRole("option", { name: labels.responses, exact: true }).click();
+  await page.locator("#newapi-provider-protocol").getByRole("radio", { name: labels.responses, exact: true }).click();
   assert.ok((await page.getByRole("combobox", { name: labels.chatProtocol, exact: true }).textContent()).includes(labels.responses));
   await page.locator('button[type="submit"]').click();
   await page.waitForFunction(() => window.review.saved.models.find(model => model.id === "chat-model").protocol === null);
@@ -1363,6 +1365,7 @@ try {
   await testTerminalProxy({ page, reset, captureDir });
   await testCodexRoutingTransitions({ page, reset });
   await testRelayDeck({ page, reset, captureDir });
+  await testUiRefresh({ page, reset, captureDir });
   await testClaudeDesktopCard({ page, reset, captureDir });
   await testSkillsActivation({ page, reset, captureDir });
   await reset("warnings");

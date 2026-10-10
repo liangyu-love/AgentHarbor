@@ -3,6 +3,7 @@ use super::{
     client_config::ClientPaths,
     models::{CoreError, CoreWarning},
     threads::{
+        self,
         details::{
             Diagnostics, Message, MessagePage, ThreadDetails, ToolCount, Usage, UsageBucket,
         },
@@ -656,6 +657,8 @@ struct SummaryBuilder {
     cwd: String,
     title: String,
     custom_title: String,
+    ai_title: String,
+    summary: String,
     cli_version: String,
     model: String,
     created: Option<i64>,
@@ -678,14 +681,33 @@ impl SummaryBuilder {
         if let Some(version) = value.get("version").and_then(Value::as_str) {
             self.cli_version = short(version, 128);
         }
-        if value.get("type").and_then(Value::as_str) == Some("custom-title") {
-            if let Some(title) = value
-                .get("customTitle")
+        // A user rename wins over Claude Code's generated title, which wins
+        // over a compaction summary; the latest record of each kind applies.
+        let named = |field: &str| {
+            value
+                .get(field)
                 .and_then(Value::as_str)
-                .filter(|title| !title.trim().is_empty())
-            {
-                self.custom_title = short(title.trim(), 120);
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+                .map(|title| short(title, 120))
+        };
+        match value.get("type").and_then(Value::as_str) {
+            Some("custom-title") => {
+                if let Some(title) = named("customTitle") {
+                    self.custom_title = title;
+                }
             }
+            Some("ai-title") => {
+                if let Some(title) = named("aiTitle") {
+                    self.ai_title = title;
+                }
+            }
+            Some("summary") => {
+                if let Some(title) = named("summary") {
+                    self.summary = title;
+                }
+            }
+            _ => {}
         }
         self.usage.observe(value)?;
         if value.get("isMeta").and_then(Value::as_bool) == Some(true) {
@@ -716,7 +738,7 @@ impl SummaryBuilder {
                     && !text.contains("<local-command-caveat>")
                     && !text.trim().starts_with("<command-name>")
                 {
-                    self.title = short(text.trim(), 120);
+                    self.title = threads::readable_prompt(&text, 160);
                 }
             }
         } else if role == "assistant" {
@@ -752,10 +774,15 @@ impl SummaryBuilder {
             .unwrap_or(0);
         let usage = self.usage.total();
         let count = |value: u64| value.min(i64::MAX as u64) as i64;
+        let preview = self.title;
         let title = if !self.custom_title.is_empty() {
             self.custom_title
-        } else if !self.title.is_empty() {
-            self.title
+        } else if !self.ai_title.is_empty() {
+            self.ai_title
+        } else if !self.summary.is_empty() {
+            self.summary
+        } else if !preview.is_empty() {
+            preview.clone()
         } else if !folder.is_empty() {
             folder.clone()
         } else {
@@ -767,6 +794,7 @@ impl SummaryBuilder {
             cwd: self.cwd,
             folder_name: folder,
             title,
+            preview,
             created_at: self.created.unwrap_or(timestamp),
             updated_at: self.updated.unwrap_or(timestamp),
             user_messages: self.users,

@@ -39,6 +39,9 @@ export interface VirtualThreadListProps {
   onExport: (keys: string[]) => void;
   onOpenPath: (path: string) => void;
   onRecover?: (thread: ThreadSummary) => void;
+  /** Whether a thread may be repaired; all may when omitted. */
+  recoverable?: (thread: ThreadSummary) => boolean;
+  misplaced?: (thread: ThreadSummary) => boolean;
   onDetails?: (thread: ThreadSummary) => void;
   onDelete?: (thread: ThreadSummary) => void;
   onCopyPath: (path: string, groupKey: string) => void;
@@ -63,6 +66,8 @@ export function VirtualThreadList({
   onExport,
   onOpenPath,
   onRecover,
+  recoverable = () => true,
+  misplaced = () => false,
   onDetails,
   onDelete,
   onCopyPath,
@@ -212,7 +217,8 @@ export function VirtualThreadList({
                         onToggleSelect={() => onToggleSelect(thread.key)}
                         onExport={() => onExport([thread.key])}
                         onOpenRaw={() => onOpenPath(thread.filePath)}
-                        onRecover={onRecover ? () => onRecover(thread) : undefined}
+                        misplaced={misplaced(thread)}
+                        onRecover={onRecover && recoverable(thread) ? () => onRecover(thread) : undefined}
                         onDetails={() => onDetails?.(thread)}
                         onDelete={onDelete ? () => onDelete(thread) : undefined}
                         variant="grid"
@@ -269,7 +275,8 @@ export function VirtualThreadList({
                   onToggleSelect={() => onToggleSelect(row.thread.key)}
                   onExport={() => onExport([row.thread.key])}
                   onOpenRaw={() => onOpenPath(row.thread.filePath)}
-                  onRecover={onRecover ? () => onRecover(row.thread) : undefined}
+                  misplaced={misplaced(row.thread)}
+                  onRecover={onRecover && recoverable(row.thread) ? () => onRecover(row.thread) : undefined}
                   onDetails={() => onDetails?.(row.thread)}
                   onDelete={onDelete ? () => onDelete(row.thread) : undefined}
                   variant="compact"

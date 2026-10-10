@@ -24,12 +24,16 @@ export async function testRelayDeck({ page, reset, captureDir }) {
   assert.equal(await deck().locator(".relay-deck-layer").count(), 2);
   assert.equal(await page.locator("[data-relay-deck]").last().locator(".relay-deck-layer").count(), 0);
   assert.equal(await deck().locator("[data-relay-card-face]").count(), 1);
-  const angles = await deck().locator(".relay-deck-layer").evaluateAll(nodes => nodes.map(node => {
-    const matrix = new DOMMatrix(getComputedStyle(node).transform);
-    return Math.atan2(matrix.b, matrix.a) * 180 / Math.PI;
+  // Layers peek above the face inside space every deck reserves, so a stacked
+  // site and a single relay keep the same footprint.
+  const footprint = await page.locator("[data-relay-deck]").evaluateAll(decks => decks.map(deck => {
+    const face = deck.querySelector("[data-relay-card-face]").getBoundingClientRect();
+    return { deck: deck.getBoundingClientRect().height, face: face.height, faceTop: face.top,
+      layerTops: [...deck.querySelectorAll(".relay-deck-layer")].map(layer => layer.getBoundingClientRect().top) };
   }));
-  assert.ok(Math.abs(angles[0] + 3.4) < 0.01 && Math.abs(angles[1] + 1.7) < 0.01, angles.join(","));
-  console.log("PASS normalized same URLs share a fanned deck; single relay stays independent");
+  assert.ok(Math.abs(footprint[0].deck - footprint[1].deck) < 1 && Math.abs(footprint[0].face - footprint[1].face) < 1, JSON.stringify(footprint));
+  assert.ok(footprint[0].layerTops.every(top => top < footprint[0].faceTop) && footprint[0].layerTops[0] < footprint[0].layerTops[1], JSON.stringify(footprint));
+  console.log("PASS normalized same URLs share a deck as tall as a single relay; single relay stays independent");
 
   await deck().getByRole("button", { name: "下一个站点配置", exact: true }).click();
   await member("group-b");
@@ -162,27 +166,30 @@ export async function testRelayDeck({ page, reset, captureDir }) {
     window.review.mount("groups");
   });
   await member("stack-0");
-  assert.equal(await deck().locator(".relay-deck-layer").count(), 4);
+  assert.equal(await deck().locator(".relay-deck-layer").count(), 3);
   assert.equal(await page.locator("[data-relay-deck]").count(), 3);
-  console.log("PASS many-member decks cap visible layers at five and different URL paths remain separate");
+  console.log("PASS many-member decks cap visible layers at three and different URL paths remain separate");
 
   await deck().evaluate(node => { node.style.width = "310px"; });
   const footerBounds = await face().evaluate(node => {
     const card = node.getBoundingClientRect();
+    const deck = node.closest("[data-relay-deck]").getBoundingClientRect();
     const footer = node.querySelector(".relay-card-balance-label").closest("button").parentElement;
-    return { width: card.width, right: card.right, left: card.left,
+    return { width: card.width, deck: deck.width, right: card.right, left: card.left,
       buttons: [...footer.querySelectorAll("button")].map(button => {
         const bounds = button.getBoundingClientRect();
         return { left: bounds.left, right: bounds.right };
       }) };
   });
-  assert.ok(footerBounds.width >= 260 && footerBounds.width <= 280, JSON.stringify(footerBounds));
+  assert.ok(Math.abs(footerBounds.width - footerBounds.deck) < 1, JSON.stringify(footerBounds));
   assert.ok(footerBounds.buttons.every(bounds => bounds.left >= footerBounds.left && bounds.right <= footerBounds.right), JSON.stringify(footerBounds));
-  const titleWidth = await face().getByRole("heading", { name: "relay.invalid", exact: true }).evaluate(node => node.getBoundingClientRect().width);
-  assert.ok(titleWidth >= 80, `Relay title lost its readable width: ${titleWidth}`);
+  // The site name stays whole on a narrow face, whatever the display font's metrics.
+  const title = await face().getByRole("heading", { name: "relay.invalid", exact: true }).evaluate(node => ({
+    width: node.getBoundingClientRect().width, clipped: node.scrollWidth > node.clientWidth + 1 }));
+  assert.ok(!title.clipped && title.width >= 60, `Relay title lost its readable width: ${JSON.stringify(title)}`);
   if (captureDir) await deck().screenshot({ path: path.join(captureDir, "relay-deck-compact-actions.png"), animations: "disabled" });
   await deck().evaluate(node => { node.style.removeProperty("width"); });
-  console.log("PASS narrow 260–280px card faces retain every footer operation without clipping");
+  console.log("PASS a narrow 310px card face keeps the full deck width and every footer operation without clipping");
 
   if (captureDir) {
     for (const theme of ["light", "dark"]) {

@@ -118,7 +118,7 @@ function RelayRequests({ relay }: { relay: RelayUsagePayload }) {
   return <div className="usage-request-scroll">
     <label className="flex items-center gap-2 px-2 pb-2 text-xs">
       {t("newapi.routeSourceLabel")}
-      <select aria-label={t("newapi.routeSourceLabel")} className="rounded-md border bg-background px-2 py-1" value={source} onChange={event => setSource(event.target.value as ClientSourceFilter)}>
+      <select aria-label={t("newapi.routeSourceLabel")} className="native-select h-8 rounded-xl border border-input bg-background px-2.5 text-xs" value={source} onChange={event => setSource(event.target.value as ClientSourceFilter)}>
         <option value="all">{t("newapi.routeSourceAll")}</option>
         {CLIENT_SOURCES.map(option => <option key={option.value} value={option.value}>{t(option.labelKey)}</option>)}
       </select>

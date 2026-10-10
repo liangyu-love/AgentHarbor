@@ -37,7 +37,7 @@ export async function testThreadUiFixes({ page, reset, captureDir }) {
   assert.equal(await last.getByText("Review thread 99", { exact: true }).isVisible(), true);
   assert.equal(await page.evaluate(() => window.scrollY), 0, "Grid scrolling stays inside PageStage");
 
-  // Real long titles wrap above the estimate; the next project must still follow them.
+  // Long titles clamp to two lines; whatever the real card height, the next project must still follow it.
   await reset("thread-tree");
   await page.getByRole("navigation", { name: "项目线程树", exact: true }).waitFor();
   await page.evaluate(() => {
@@ -58,7 +58,7 @@ export async function testThreadUiFixes({ page, reset, captureDir }) {
       lastBottom: grid.lastElementChild.getBoundingClientRect().bottom,
       nextTop: element.nextElementSibling.getBoundingClientRect().top };
   });
-  assert.ok(wrapping.height > 174, "Fixture exercises variable-height cards");
+  assert.ok(wrapping.height >= 160, `Long titles keep a readable card: ${wrapping.height}`);
   assert.ok(wrapping.nextTop >= wrapping.lastBottom, "Wrapped cards cannot overlap the next project");
   console.log("PASS thread grids follow real column boundaries and wrapped heights without project overlap; nested scrolling reaches the last card");
 

@@ -12,7 +12,7 @@ interface Props {
   onChange: (change: Partial<NewApiModel>) => void;
 }
 
-function compactTokens(value: number): string {
+export function compactTokens(value: number): string {
   const divisor = value >= 1_000_000 ? 1_000_000 : value >= 1_000 ? 1_000 : 1;
   return `${Number((value / divisor).toFixed(3))}${divisor === 1_000_000 ? "M" : divisor === 1_000 ? "K" : ""}`;
 }
@@ -94,7 +94,7 @@ export function ModelResolutionFields({ model, resolution, loading, error, disab
       <span className="w-8 shrink-0 text-[10px] text-muted-foreground" title={t("newapi.compression.modelLevel")}>{t("newapi.compressionShort")}</span>
       <select disabled={disabled} aria-label={t("newapi.compression.modelLevel")}
         title={plan?.threshold != null ? `${effectiveCompression} (${plan.threshold.toLocaleString(i18n.language)})` : effectiveCompression}
-        className="h-7 min-w-0 flex-1 rounded-md border border-input bg-background px-1.5 text-[11px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+        className="native-select h-7 min-w-0 flex-1 rounded-lg border border-input bg-background px-2 text-[11px] disabled:opacity-50"
         value={model.compression?.mode ?? "inherit"}
         onChange={event => {
           const mode = event.target.value as CompressionPolicy["mode"];

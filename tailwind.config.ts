@@ -105,6 +105,14 @@ const config: Config = {
   			'gradient-radial': 'radial-gradient(ellipse at 30% 40%, var(--tw-gradient-from) 0%, var(--tw-gradient-via) 35%, var(--tw-gradient-to) 70%)'
   		},
   		fontFamily: {
+  			// Poster headlines and large numerals; CJK falls back to the system face.
+  			display: [
+  				'"Bricolage Grotesque"',
+  				'Bahnschrift',
+  				'"Segoe UI Variable Display"',
+  				'system-ui',
+  				'sans-serif'
+  			],
   			sans: [
   				'system-ui',
   				'-apple-system',
