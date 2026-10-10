@@ -224,7 +224,7 @@ export function SettingsPage({
 
   return (
     <div className="space-y-6">
-      <PageHero kicker="Settings" watermark="SETTINGS" icon={<SettingsIcon />} title={t("nav.settings")} description={t("settings.heroDesc")} />
+      <PageHero kicker="Settings" icon={<SettingsIcon />} title={t("nav.settings")} description={t("settings.heroDesc")} />
       <div className="grid gap-5 lg:grid-cols-2 items-start">
         {/* Left Column: Appearance */}
         <Section title={t("settings.appearance")}>

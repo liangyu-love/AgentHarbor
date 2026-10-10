@@ -89,8 +89,8 @@ export async function testAggregation({ page, reset, captureDir }) {
   await copyId.click();
   await manager().getByRole("alert").getByText("Synthetic clipboard retry denied", { exact: true }).waitFor();
   assert.equal(await copyId.locator(".lucide-check").count(), 0, "a failed retry clears the previous copy-success indicator");
-  assert.equal(await manager().locator("details > ul > li").count(), 2, "each upstream is displayed once");
-  assert.equal(await manager().locator("details ul ul").count(), 0);
+  assert.equal(await manager().locator("[data-route-member]").count(), 2, "each upstream is displayed once");
+  assert.equal(await manager().locator("[data-route-member] [data-route-member]").count(), 0);
   await manager().getByRole("button", { name: await tr("aggregation.previewConnection"), exact: true }).click();
   await page.evaluate(() => { navigator.clipboard.writeText = async () => { throw new Error("Synthetic preview clipboard denied"); }; });
   await manager().getByRole("button", { name: await tr("aggregation.copyAll"), exact: true }).click();
@@ -100,7 +100,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   await page.evaluate(() => { window.review.holdAggregateSave = true; });
   await manager().locator("form").getByRole("button", { name: await tr("common.save"), exact: true }).click();
   await page.waitForFunction(() => typeof window.review.completeAggregateSave === "function");
-  assert.equal(await manager().locator("form").getByRole("checkbox", { name: await tr("aggregation.enabled"), exact: true }).isDisabled(), true,
+  assert.equal(await manager().locator("form").getByRole("switch", { name: await tr("aggregation.enabled"), exact: true }).isDisabled(), true,
     "the aggregate enable toggle is locked while its saved draft is pending");
   await page.evaluate(() => { window.review.holdAggregateSave = false; window.review.completeAggregateSave(); });
   await manager().locator("form").waitFor({ state: "detached" });
@@ -135,8 +135,8 @@ export async function testAggregation({ page, reset, captureDir }) {
       await window.review.setLanguage(language);
     }, { theme, language });
     const overflow = await page.evaluate(() => [...document.querySelectorAll(
-      '[aria-labelledby="newapi-routing-title"], [aria-labelledby="client-configs-title"], [aria-labelledby="claude-desktop-title"], [aria-labelledby="aggregation-title"]'
-    )].filter(element => element.scrollWidth > element.clientWidth + 1).map(element => element.getAttribute("aria-labelledby")));
+      '[aria-labelledby="newapi-routing-title"], [data-client-console], [aria-labelledby="claude-desktop-title"], [aria-labelledby="aggregation-title"]'
+    )].filter(element => element.scrollWidth > element.clientWidth + 1).map(element => element.getAttribute("aria-labelledby") ?? "console"));
     assert.deepEqual(overflow, [], `injection sections fit ${width}px ${language} ${theme}`);
     if (captureDir) {
       await page.locator("[data-page-scroll-container]").evaluate((element, height) => {
@@ -144,7 +144,7 @@ export async function testAggregation({ page, reset, captureDir }) {
       }, height);
       await page.locator("[data-page-scroll-container]").evaluate(element => { element.scrollTop = 0; });
       await page.screenshot({ path: path.join(captureDir, `injection-top-${width}-${theme}.png`), animations: "disabled" });
-      await page.locator('[aria-labelledby="client-configs-title"]').evaluate(element => element.scrollIntoView({ block: "start" }));
+      await page.locator("[data-client-console]").evaluate(element => element.scrollIntoView({ block: "start" }));
       await page.screenshot({ path: path.join(captureDir, `injection-clients-${width}-${theme}.png`), animations: "disabled" });
       await manager().evaluate(element => element.scrollIntoView({ block: "start" }));
       await page.screenshot({ path: path.join(captureDir, `injection-aggregate-${width}-${theme}.png`), animations: "disabled" });
@@ -195,12 +195,20 @@ export async function testAggregation({ page, reset, captureDir }) {
   const members = manager().locator("[data-aggregate-member]");
   await choose(members.nth(1).locator('[id^="member-provider-"]'), "Relay B");
   await choose(members.nth(1).locator('[id^="member-model-"]'), SECOND_WIRE_MODEL);
+  assert.equal(await members.locator('[id^="member-weight-"]').count(), 0, "weights only matter, and show, for weighted rotation");
+  await manager().locator("#aggregate-strategy").getByRole("radio", { name: await tr("aggregation.weightedRoundRobin") }).click();
   await members.nth(0).locator('[id^="member-weight-"]').fill("3");
-  await members.nth(1).locator('[id^="member-priority-"]').fill("1");
-  await choose(manager().locator("#aggregate-strategy"), await tr("aggregation.weightedRoundRobin"));
+  assert.equal(await members.nth(1).getByRole("button", { name: await tr("aggregation.moveUp", { index: 2 }), exact: true }).isDisabled(), true,
+    "the primary tier has nothing above it");
+  await members.nth(1).getByRole("button", { name: await tr("aggregation.moveDown", { index: 2 }), exact: true }).click();
+  await manager().locator('[data-tier-lane="1"] [data-aggregate-member]').waitFor();
+  assert.equal(await members.nth(1).getByRole("button", { name: await tr("aggregation.moveDown", { index: 2 }), exact: true }).isDisabled(), true,
+    "a member alone in the last tier cannot start another");
+  await choose(manager().locator("#aggregate-first-token"), await tr("aggregation.seconds", { seconds: 30 }));
   assert.equal(await manager().locator("#aggregate-failure-threshold").innerText(), "3");
   await choose(manager().locator("#aggregate-failure-threshold"), "4");
   await choose(manager().locator("#aggregate-attempts"), "1");
+  await manager().getByText(await tr("aggregation.firstTokenNeedsRetry"), { exact: true }).waitFor();
   await choose(manager().locator("#aggregate-compression"), await tr("newapi.compression.percent"));
   await manager().getByRole("spinbutton", { name: await tr("newapi.compression.modelLevel"), exact: true }).fill("85");
   await manager().locator("form").getByRole("button", { name: await tr("common.save"), exact: true }).click();
@@ -209,6 +217,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   assert.equal(saved.publicModelId, PUBLIC_MODEL);
   assert.equal(saved.strategy, "weightedRoundRobin");
   assert.deepEqual(saved.retryPolicy, { maxAttempts: 1, failureThreshold: 4 });
+  assert.equal(saved.firstTokenTimeoutSecs, 30);
   assert.deepEqual(saved.compression, { mode: "percent", percent: 85 });
   assert.deepEqual(saved.members.map(({ providerId, actualModelId, priority, weight }) => ({ providerId, actualModelId, priority, weight })), [
     { providerId: "relay-a", actualModelId: FAST_WIRE_MODEL, priority: 0, weight: 3 },
@@ -338,7 +347,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   assert.equal(restored.claudeOneM.startup, true);
   await dialog.getByRole("button", { name: await tr("clients.apply"), exact: true }).click();
   await dialog.waitFor({ state: "detached" });
-  const clientsCard = page.locator('section[aria-labelledby="client-configs-title"]');
+  const clientsCard = page.locator('section[id^="client-config-"]');
   await clientsCard.getByRole("button", { name: await tr("clients.reapply"), exact: true }).waitFor();
   assert.equal(await clientsCard.getByRole("alert").count(), 0, "saved aggregate target is recognized as a configured client");
   if (captureDir) {
@@ -429,6 +438,7 @@ export async function testAggregation({ page, reset, captureDir }) {
     review.mount("access");
   }, PUBLIC_MODEL);
   const desktop = page.locator('section[aria-labelledby="claude-desktop-title"]');
+  await page.locator('[data-client-tab="claudeDesktop"]').click();
   await desktop.getByRole("button", { name: await tr("claudeDesktop.card.configure"), exact: true }).click();
   await dialog.getByRole("button", { name: await tr("claudeDesktop.routing.modeRouter"), exact: true }).click();
   await choose(dialog.locator("#desktop-route-opus-provider"), await tr("aggregation.target") + " · " + POOL_NAME);

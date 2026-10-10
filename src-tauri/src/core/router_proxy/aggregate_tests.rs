@@ -2143,3 +2143,69 @@ fn identical_headerless_delivered_histories_become_ambiguous_and_never_dispatch(
         assert_eq!(relay_usage::load(&paths.app_data_dir).unwrap().all_time.request_count, 2);
     });
 }
+
+// Opens a Responses stream and then says nothing more.
+fn silent_stream() -> Response<ResponseBody> {
+    let created = json!({"type":"response.created","response":{"id":"resp_silent","object":"response",
+        "status":"in_progress","model":"wire-silent","output":[]}});
+    let opening = futures_util::stream::iter([Ok::<_, Box<dyn std::error::Error + Send + Sync>>(
+        Frame::data(Bytes::from(format!("event: response.created\ndata: {created}\n\n"))),
+    )]);
+    Response::builder()
+        .status(200)
+        .header(CONTENT_TYPE, "text/event-stream")
+        .body(BodyExt::boxed(StreamBody::new(opening.chain(futures_util::stream::pending()))))
+        .unwrap()
+}
+
+#[test]
+fn a_silent_stream_moves_to_the_next_member_before_anything_is_relayed() {
+    let _guard = global_router_test_lock();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        for max_attempts in [2, 1] {
+            let _stop = Stop;
+            let silent = scripted_mock(|_| silent_stream()).await;
+            let fast = mock(router::ModelProtocol::Responses, 200, true).await;
+            let temp = tempfile::tempdir().unwrap();
+            let paths = CodexPaths::from_home(temp.path().into());
+            let mut store = fixture(&[(&silent, "wire-silent", router::ModelProtocol::Responses),
+                (&fast, "wire-fast", router::ModelProtocol::Responses)]);
+            store.aggregates[0].first_token_timeout_secs = 5;
+            store.aggregates[0].retry_policy.max_attempts = max_attempts;
+            store.aggregates[0].members[1].priority = 1;
+            let (client, base) = start(&paths, &store).await;
+            let started = std::time::Instant::now();
+            let response = client.post(format!("{base}/aggregate/v1/responses")).bearer_auth("local-fixture")
+                .json(&json!({"model":"official-model","stream":true,"input":"hello",
+                    "tools":[{"type":"function","name":"read_file","parameters":{"type":"object","properties":{}}}]}))
+                .send().await.unwrap();
+            assert_eq!(response.status(), 200);
+            if max_attempts == 1 {
+                // With no attempt left to move to, the reply is relayed at once
+                // and waited for like any other.
+                assert!(started.elapsed() < Duration::from_secs(4));
+                drop(response);
+                wait_for_released_lease().await;
+                assert_eq!((silent.count.load(Ordering::SeqCst), fast.count.load(Ordering::SeqCst)), (1, 0));
+                continue;
+            }
+            let text = response.text().await.unwrap();
+            assert!(started.elapsed() >= Duration::from_secs(5));
+            assert!(text.contains("hello"), "the next member's reply is relayed: {text}");
+            assert!(!text.contains("resp_silent"), "nothing of the silent reply reached the client");
+            assert_eq!((silent.count.load(Ordering::SeqCst), fast.count.load(Ordering::SeqCst)), (1, 1));
+            assert_eq!(fast.requests.lock().unwrap()[0]["body"]["tools"][0]["name"], "read_file",
+                "the request moves whole, tools included");
+            wait_for_released_lease().await;
+            let route = route_trace::recent().into_iter().find(|route| route.attempts.first()
+                .is_some_and(|attempt| attempt.aggregate_id.as_deref() == Some(&store.aggregates[0].id))).unwrap();
+            assert_eq!(route.attempts.len(), 2);
+            assert_eq!(route.attempts[0].failure_stage.as_deref(), Some("first_token"));
+            assert_eq!(route.attempts[1].retry_reason.as_deref(), Some("aggregate_first_token_timeout"));
+            let live = aggregation::live_from_store(&store);
+            assert_eq!(live[0].preferred_member_id.as_deref(), Some("member1"),
+                "later requests stay with the member that answered");
+            assert_eq!(live[0].members[0].failures, 1, "the silent member counts one failure");
+        }
+    });
+}

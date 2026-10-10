@@ -61,6 +61,12 @@ pub fn load_route_diagnostics() -> Vec<crate::core::route_trace::Route> {
     crate::core::route_trace::recent()
 }
 
+/// Forgets finished route diagnostics; requests still in flight remain.
+#[tauri::command]
+pub fn clear_route_diagnostics() -> usize {
+    crate::core::route_trace::clear()
+}
+
 #[tauri::command]
 pub async fn load_model_capabilities(
     repo: State<'_, Mutex<Repository>>,

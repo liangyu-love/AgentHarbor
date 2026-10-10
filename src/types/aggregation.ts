@@ -9,6 +9,8 @@ export interface AggregateModel {
   canonicalRef?: ModelRef | null;
   strategy: "roundRobin" | "weightedRoundRobin"; affinity: "session" | "statelessRotation";
   retryPolicy: { maxAttempts: number; failureThreshold: number }; compression: CompressionPolicy;
+  /** Seconds a streamed reply may stay silent before another member is asked; 0 waits. */
+  firstTokenTimeoutSecs?: number;
 }
 export interface AggregateView extends AggregateModel {
   available: boolean; reason: string | null; projection: ClientProjection | null; routeRevision: string;
@@ -25,3 +27,7 @@ export interface AgentConnectionExport {
 }
 export interface ConnectionExportResult { connection: AgentConnectionExport; configText: string }
 export const aggregationQueryKey = ["model-aggregation"] as const;
+/** One member's routing state right now; display only. */
+export interface MemberLive { memberId: string; inFlight: number; failures: number; coolingMs: number | null; tripped: boolean }
+export interface AggregateLive { aggregateId: string; preferredMemberId: string | null; preferredIdleSecs: number | null; members: MemberLive[] }
+export const aggregationLiveQueryKey = ["model-aggregation-live"] as const;

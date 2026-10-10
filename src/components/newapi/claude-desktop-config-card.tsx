@@ -4,7 +4,6 @@ import { useTranslation } from "react-i18next";
 import {
   AlertCircle,
   Loader2,
-  Monitor,
   RefreshCw,
   Rocket,
   RotateCcw,
@@ -15,11 +14,11 @@ import {
 import { api } from "@/lib/api";
 import { desktopErrorKey, invalidateClaudeDesktop } from "@/lib/claude-desktop";
 import { ClaudeDesktopDialog } from "./claude-desktop-config-dialog";
+import { ConsoleHeader } from "./client-console";
+import { ClientGlyph } from "./configuration-shortcuts";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { FoldBody, FoldHeader } from "@/components/ui/fold-header";
-import { useFold } from "@/hooks/use-fold";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -105,7 +104,6 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [dialog, setDialog] = useState(false);
-  const fold = useFold("claude-desktop");
   const status = useQuery({
     queryKey: STATUS_KEY,
     queryFn: api.claudeDesktop.status,
@@ -234,24 +232,20 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
 
   return (
     <section
-      className="harbor-card space-y-4"
+      className="space-y-5"
       aria-labelledby="claude-desktop-title"
     >
-      <FoldHeader
-        open={fold.open}
-        onToggle={fold.toggle}
+      <ConsoleHeader
         titleId="claude-desktop-title"
-        contentId="claude-desktop-body"
         title={t("claudeDesktop.title")}
-        titleClassName="font-display text-[17px] tracking-tight"
         leading={
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-background ring-1 ring-border text-foreground">
-            <Monitor className="h-[18px] w-[18px]" />
+            <ClientGlyph client="claudeDesktop" className="h-5 w-5" />
           </div>
         }
       />
 
-      <FoldBody open={fold.open} id="claude-desktop-body" className="space-y-4">
+      <div id="claude-desktop-body" className="space-y-4">
       {(error || status.error) && (
         <div
           role="alert"
@@ -523,7 +517,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
           </div>
         )}
       </div>
-      </FoldBody>
+      </div>
 
       {dialog && (
         <ClaudeDesktopDialog

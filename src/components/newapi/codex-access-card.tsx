@@ -7,10 +7,8 @@ import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import { FoldBody, FoldHeader } from "@/components/ui/fold-header";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useFold } from "@/hooks/use-fold";
 import { toast } from "@/hooks/use-toast";
 import { providerModelProtocol } from "@/lib/provider-models";
 import { protocolBadgeKey, softBadge } from "@/components/newapi/relay-groups";
@@ -19,6 +17,7 @@ import type { CodexAccessMode, NewApiProvider, NewApiStateChange } from "@/types
 import { cn } from "@/lib/utils";
 import { ClientGlyph } from "./configuration-shortcuts";
 import { CodexSubagentSettingsFields } from "./codex-subagent-settings";
+import { ConsoleHeader } from "./client-console";
 
 function Panel({ title, children, className }: { title: string; children: ReactNode; className?: string }) {
   return (
@@ -51,7 +50,6 @@ export function CodexAccessCard({
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { busy, mutationLocked, run, applyChange, appliedNote } = store;
-  const fold = useFold("codex-access");
   const router = store.state.data?.router;
   const routingEnabled = !!router?.enabled;
   const accessMode = router?.accessMode ?? "router";
@@ -167,15 +165,11 @@ export function CodexAccessCard({
   );
 
   return (
-    <div className={cn("harbor-card relative !p-0", routingReady && "harbor-card-live")}>
-      <section aria-labelledby="newapi-routing-title" className="space-y-4 p-4 sm:p-5">
-        <FoldHeader
-          open={fold.open}
-          onToggle={fold.toggle}
+    <div className="relative">
+      <section aria-labelledby="newapi-routing-title" className="space-y-5">
+        <ConsoleHeader
           titleId="newapi-routing-title"
-          contentId="newapi-routing-body"
           title={t("newapi.codexAccess")}
-          titleClassName="font-display text-[17px] tracking-tight"
           leading={
             <div className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-background ring-1 ring-border">
               <ClientGlyph client="codex" className="h-5 w-5" />
@@ -239,7 +233,7 @@ export function CodexAccessCard({
           </div>
         )}
 
-        <FoldBody open={fold.open} id="newapi-routing-body" className="space-y-4">
+        <div id="newapi-routing-body" className="space-y-4">
           <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
             <Panel title={t("newapi.connectionPanel")}>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
@@ -422,7 +416,7 @@ export function CodexAccessCard({
               {appliedNote.backupPath ? ` · ${t("newapi.backup")}: ${appliedNote.backupPath}` : ""}
             </p>
           )}
-        </FoldBody>
+        </div>
       </section>
     </div>
   );

@@ -7,7 +7,7 @@ import type { ImageGallery } from "./use-image-gallery";
 export function WorkbenchHeader({ gallery }: { gallery: ImageGallery }) {
   const { t } = useTranslation();
   return (
-  <PageHero kicker="Ink Studio" watermark="墨" icon={<Brush />} title="墨韵丹青" titleClassName="font-serif tracking-wider"
+  <PageHero kicker="Ink Studio" icon={<Brush />} title="墨韵丹青" titleClassName="font-serif tracking-wider"
     className="ink-paper-bg" description={<span className="font-serif">GPT Image 2 / 2.5 · {t("image.promptSentToProvider")}</span>}
     actions={<>
         <Button

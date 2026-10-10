@@ -81,7 +81,8 @@
       "storage": "读取或保存聚合失败，请检查本地目录权限。",
       "tooManyMembers": "渠道引用数量已达上限（4096）。",
       "tooManyModels": "聚合数量已达上限（128）。",
-      "unavailable": "聚合当前没有可用渠道。"
+      "unavailable": "聚合当前没有可用渠道。",
+      "firstTokenTimeout": "首字超时需为 0（关闭）或 5–300 秒。"
     },
     "identity": "模型标识",
     "scheduling": "调度策略",
@@ -90,7 +91,51 @@
     "copyPublicId": "复制公开模型 ID",
     "publicIdCopied": "公开模型 ID 已复制",
     "copyAll": "复制全部",
-    "gateway": "聚合网关"
+    "gateway": "聚合网关",
+    "editTitle": "编辑聚合",
+    "tierPrimary": "主力",
+    "tierBackup": "备用 {{index}}",
+    "tierPrimaryHint": "优先使用，层内按策略轮换",
+    "tierBackupHint": "上面各层都不可用时才启用",
+    "tiersHint": "拖动渠道或用箭头在层之间移动；同一层的渠道按策略轮换。",
+    "dropNewTier": "拖到这里，新建一个备用层",
+    "moveUp": "将第 {{index}} 个渠道上移一层",
+    "moveDown": "将第 {{index}} 个渠道下移一层",
+    "moveUpHint": "上移一层",
+    "moveDownHint": "下移一层（最后一层时新建备用层）",
+    "memberEnabledFor": "启用第 {{index}} 个渠道",
+    "weightHint": "加权轮换时按权重比例分配请求",
+    "roundRobinHint": "同层渠道依次接手",
+    "weightedRoundRobinHint": "按权重比例分配",
+    "sessionHint": "会话固定在命中的渠道，保留缓存",
+    "statelessRotationHint": "无状态请求可随时换渠道",
+    "failover": "故障切换",
+    "firstToken": "首字超时",
+    "firstTokenOff": "关闭（一直等待）",
+    "seconds": "{{seconds}} 秒",
+    "firstTokenHint": "流式回复超过时限仍没有任何内容（文字、推理或工具调用）时，趁客户端还没收到任何东西改由下一个渠道回答；已绑定渠道的会话为保留缓存与加密推理，不会中途更换。",
+    "firstTokenNeedsRetry": "首字超时要换渠道，需要把重试次数设为 2。",
+    "firstTokenShort": "首字 {{seconds}}s",
+    "contextShort": "上下文 {{tokens}}",
+    "live": {
+      "hit": "命中",
+      "standby": "待命",
+      "cooling": "冷却 {{seconds}}s",
+      "probe": "待探测",
+      "off": "已停用",
+      "down": "不可用",
+      "routing": "实时 · {{count}} 个在用"
+    },
+    "suggest": {
+      "title": "发现 {{count}} 个可聚合模型",
+      "hint": "它们在多个中转上都有，点一下即可生成聚合草稿。",
+      "relays": "{{count}} 个中转",
+      "create": "用 {{count}} 个中转创建 {{model}} 聚合",
+      "more": "还有 {{count}} 个",
+      "less": "收起"
+    },
+    "tierBackupOnly": "备用",
+    "compression": "自动压缩阈值（模型级）"
   },
   "modelTargets": {
     "errors": {
@@ -329,7 +374,14 @@
     "authField": "认证字段",
     "removedFields": "移除：{{fields}}",
     "noNativeProviders": "没有兼容的原生模型，可切换本地路由。",
-    "configPath": "路径"
+    "configPath": "路径",
+    "notDetected": "还没有读取到这个客户端的配置状态。",
+    "fact": {
+      "access": "接入方式",
+      "source": "来源",
+      "model": "默认模型"
+    },
+    "factModels": "{{count}} 个模型"
   },
   "claudeDesktop": {
     "title": "Claude Desktop",
@@ -1018,7 +1070,8 @@
       "conflicting_declarations": "模型声明互相冲突",
       "model_id_truncated": "模型 ID 过长或含控制字符",
       "request_model_truncated": "出站模型 ID 过长",
-      "request_model_missing": "出站请求缺少模型 ID"
+      "request_model_missing": "出站请求缺少模型 ID",
+      "first_token_timeout": "首字超时，已改由下一个渠道回答"
     },
     "traceSelectionReason": {
       "desktop_role_mapping": "Claude Desktop 角色映射",
@@ -1056,7 +1109,8 @@
     "traceRetryReason": {
       "aggregate_rate_limited": "首渠道返回 HTTP 429",
       "aggregate_failure_threshold": "连续渠道故障达到阈值",
-      "aggregate_connect_error": "首渠道连接建立失败"
+      "aggregate_connect_error": "首渠道连接建立失败",
+      "aggregate_first_token_timeout": "首渠道未在时限内开始回复"
     },
     "traceCompatibility": {
       "commandSearchViaChat": "Command 搜索适配"
@@ -1384,7 +1438,24 @@
       "official": "官方原厂",
       "customDesc": "手动填写地址、密钥与协议",
       "empty": "没有匹配的渠道"
-    }
+    },
+    "console": {
+      "kicker": "Clients"
+    },
+    "traceLive": "实时 · {{count}} 条",
+    "traceStatRequests": "请求",
+    "traceStatFailed": "失败",
+    "traceStatAverage": "平均耗时",
+    "traceStatFirstToken": "首字中位数",
+    "traceFailedOnly": "仅看失败",
+    "traceClear": "清空记录",
+    "traceCleared": "已清空 {{count}} 条路由记录",
+    "traceRetention": "记录只在内存里，重启应用或清空后即消失；清空不会移除仍在进行的请求。",
+    "traceNoFailures": "当前筛选下没有失败的请求。",
+    "traceAttemptCount": "{{count}} 次尝试",
+    "capabilityFilter": "按匹配情况筛选",
+    "capabilityQuickContext": "上下文 {{value}}",
+    "capabilityQuickOutput": "输出 {{value}}"
   },
   "avatar": {
     "title": "应用头像",

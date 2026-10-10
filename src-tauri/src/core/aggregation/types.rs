@@ -6,6 +6,10 @@ pub const MAX_MEMBERS: usize = 64;
 pub const MAX_MEMBER_REFERENCES: usize = 4096;
 pub const MAX_PRIORITY: u16 = 1000;
 pub const MAX_WEIGHT: u16 = 1000;
+/// The longest a streamed reply may take to show content before another member
+/// is asked instead (`AggregateModel::first_token_timeout_secs`).
+pub const MAX_FIRST_TOKEN_SECS: u16 = 300;
+pub const MIN_FIRST_TOKEN_SECS: u16 = 5;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -76,6 +80,10 @@ pub struct AggregateModel {
     pub affinity: Affinity,
     pub retry_policy: RetryPolicy,
     pub compression: model_policy::CompressionPolicy,
+    /// Seconds a streamed reply may take to its first content (text, reasoning
+    /// or a tool call) before a request that may still move is sent to another
+    /// member instead; 0 waits as long as it takes.
+    pub first_token_timeout_secs: u16,
 }
 
 impl Default for AggregateModel {
@@ -91,6 +99,7 @@ impl Default for AggregateModel {
             affinity: Affinity::default(),
             retry_policy: RetryPolicy::default(),
             compression: model_policy::CompressionPolicy::Inherit,
+            first_token_timeout_secs: 0,
         }
     }
 }
@@ -116,6 +125,32 @@ pub struct AggregateView {
     pub projection: Option<model_policy::ClientProjection>,
     pub member_states: Vec<MemberView>,
     pub route_revision: String,
+}
+
+/// One member's routing state right now, as the gateway sees it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberLive {
+    pub member_id: String,
+    pub in_flight: usize,
+    /// Consecutive failures since its last complete reply.
+    pub failures: u8,
+    /// Milliseconds until it may be chosen again, while it is cooling down.
+    pub cooling_ms: Option<u64>,
+    /// Failed past the threshold; its next request is a recovery probe.
+    pub tripped: bool,
+}
+
+/// Which member an aggregate's requests currently stick to, and its members'
+/// health. Display only: reading it never changes a choice.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateLive {
+    pub aggregate_id: String,
+    pub preferred_member_id: Option<String>,
+    /// Seconds since the preferred member was last chosen.
+    pub preferred_idle_secs: Option<u64>,
+    pub members: Vec<MemberLive>,
 }
 
 #[derive(Clone, Serialize)]

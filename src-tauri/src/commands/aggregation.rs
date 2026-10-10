@@ -22,6 +22,15 @@ pub async fn load_aggregation_state(
     let paths = paths(&repo)?;
     super::blocking(move || aggregation::state(&paths)).await
 }
+/// Which member each aggregate sticks to and its members' cooldowns, polled by
+/// the injection page while it is visible.
+#[tauri::command]
+pub async fn load_aggregation_live(
+    repo: State<'_, Mutex<Repository>>,
+) -> Result<Vec<aggregation::AggregateLive>, String> {
+    let paths = paths(&repo)?;
+    super::blocking(move || aggregation::live(&paths)).await
+}
 #[tauri::command]
 pub async fn save_aggregate_model(
     repo: State<'_, Mutex<Repository>>,

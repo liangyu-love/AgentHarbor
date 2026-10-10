@@ -14,6 +14,13 @@ export type Destination = "official" | "relays" | "aggregation";
 export const CLIENTS: Client[] = ["codex", "claudeCode", "claudeDesktop", "opencode", "pi"];
 export const DESTINATIONS: Destination[] = ["official", "relays", "aggregation"];
 
+/** The status dot of a connection, shared by the topology and the client console. */
+export const linkTone: Record<Link, string> = {
+  routed: "bg-primary shadow-[0_0_0_3px_hsl(var(--primary)/0.18)]",
+  direct: "bg-emerald-500 shadow-[0_0_0_3px_rgb(16_185_129/0.18)]",
+  idle: "bg-muted-foreground/30",
+};
+
 /** Where a routed client's model targets point; legacy configs only name relays. */
 function targetDestinations(targets: (ModelTargetRef | null | undefined)[]): Destination[] {
   const kinds = new Set(targets.filter((target): target is ModelTargetRef => !!target).map((target) => target.kind));

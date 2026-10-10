@@ -14,7 +14,6 @@ import type { CompressionPolicy, ModelProtocol, NewApiProvider, NewApiStateChang
 import { ProviderModelEditor } from "@/components/newapi/provider-model-editor";
 import { useModelResolutions } from "@/components/newapi/use-model-resolutions";
 import { ProviderPresetGallery } from "@/components/newapi/provider-preset-gallery";
-import { PosterWatermark } from "@/components/ui/poster-watermark";
 
 // A relay usually speaks OpenAI-compatible Chat Completions unless it says
 // otherwise, and the Codex-specific Responses protocol is the less common case.
@@ -417,7 +416,6 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[min(92vh,940px)] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl">
         <div className="route-surface relative shrink-0 overflow-hidden border-b border-border/60 px-6 pb-5 pt-6">
-          <PosterWatermark text="RELAY" className="bottom-[-0.14em] right-14 text-[clamp(3rem,6vw,4.5rem)]" />
           <div className="relative flex flex-wrap items-end justify-between gap-3 pr-8">
             <div className="flex min-w-0 items-center gap-3.5">
               <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-foreground text-background">

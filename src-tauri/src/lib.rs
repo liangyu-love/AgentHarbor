@@ -177,6 +177,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::aggregation::load_aggregation_state,
+            commands::aggregation::load_aggregation_live,
             commands::aggregation::save_aggregate_model,
             commands::aggregation::delete_aggregate_model,
             commands::aggregation::set_aggregation_external_enabled,
@@ -211,6 +212,7 @@ pub fn run() {
             commands::newapi::save_codex_subagents,
             commands::newapi::reveal_newapi_provider_api_key,
             commands::newapi::load_route_diagnostics,
+            commands::newapi::clear_route_diagnostics,
             commands::newapi::load_model_capabilities,
             commands::newapi::preview_newapi_model_resolutions,
             commands::newapi::preview_newapi_capability_clear,

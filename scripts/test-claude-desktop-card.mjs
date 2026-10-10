@@ -2,7 +2,8 @@
 //
 // The card is rendered by the shared frontend-regressions fixture
 // (scripts/fixtures/frontend-regressions.tsx, mount("groups") -> <NewApiPage />), so it is
-// measured inside the real page composition, directly after <ClientConfigs/>. That fixture
+// measured inside the real page composition, as the Claude Desktop panel of the injection
+// console (the suite opens the console on that client). That fixture
 // stubs every api.* module the page touches except api.claudeDesktop, which still goes to the
 // real Tauri IPC. This suite therefore installs a local fake IPC dispatcher on
 // window.__TAURI_INTERNALS__.invoke - the same seam the main regression body and
@@ -17,7 +18,6 @@ import path from "node:path";
 // other suites). Keeping them literal means a renamed or dropped locale key fails here.
 const ZH = {
   title: "Claude Desktop",
-  clientsTitle: "客户端配置",
   stateManaged: "已配置",
   modeDirect: "AgentHarbor 直连",
   requiresRestart: "需要重启",
@@ -302,7 +302,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   // card again - its first query then runs against the fake IPC.
   await reset("groups");
   await install();
-  await page.evaluate(() => { window.review.mount("mcp"); });
+  await page.evaluate(() => { window.review.injectClient = "claudeDesktop"; window.review.mount("mcp"); });
   await page.evaluate(() => { window.review.mount("groups"); });
   await page.locator("#claude-desktop-title").waitFor();
   await page.waitForFunction(() => !document.querySelector('section[aria-labelledby="claude-desktop-title"] [role="alert"]'),
@@ -313,33 +313,32 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   assert.deepEqual(await page.evaluate(() => window.review.desktopCalls.other), [],
     "the card must only use its five IPC commands");
 
-  // 1. Own labelled section, sibling of the untouched client-configs section.
+  // 1. Own labelled section: the Desktop panel of the console, beside the CLI client panels.
   const structure = await page.evaluate(() => {
-    const clients = document.querySelector('section[aria-labelledby="client-configs-title"]');
     const desktop = document.querySelector('section[aria-labelledby="claude-desktop-title"]');
+    const panel = desktop?.closest('[role="tabpanel"]');
+    const clients = [...document.querySelectorAll('section[id^="client-config-"]')];
     const heading = document.getElementById("claude-desktop-title");
     return {
       desktopSections: document.querySelectorAll('section[aria-labelledby="claude-desktop-title"]').length,
-      clientsPresent: Boolean(clients),
-      clientsHeading: document.getElementById("client-configs-title")?.textContent?.trim() ?? null,
-      desktopFollowsClients: Boolean(clients && desktop) &&
-        (clients.compareDocumentPosition(desktop) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
-      nested: Boolean(clients && desktop) && (clients.contains(desktop) || desktop.contains(clients)),
+      panelId: panel?.id ?? null,
+      panelShown: Boolean(panel) && !panel.hidden,
+      tabSelected: document.getElementById(panel?.getAttribute("aria-labelledby") ?? "")?.getAttribute("aria-selected") ?? null,
+      clientPanels: clients.map(section => section.closest('[role="tabpanel"]')?.id ?? null),
+      nested: clients.some(section => section.contains(desktop) || desktop?.contains(section)),
+      clientsAlerts: clients.reduce((count, section) => count + section.querySelectorAll('[role="alert"]').length, 0),
       headingTag: heading?.tagName ?? null,
       headingText: heading?.textContent?.trim() ?? null,
-      // The fixture only seeds client statuses for its "clients*" mounts, which do not render
-      // <NewApiPage />; this mount still proves the sibling section mounts its own content.
-      clientsGrid: Boolean(clients?.querySelector("div.grid")),
-      clientsAlerts: clients ? clients.querySelectorAll('[role="alert"]').length : -1,
     };
   });
   assert.equal(structure.desktopSections, 1, "the card must be exactly one section");
-  assert.equal(structure.clientsPresent, true, "the sibling client-configs section must still render");
-  assert.equal(structure.clientsHeading, ZH.clientsTitle);
-  assert.equal(structure.clientsGrid, true, "the client-configs card must still render its own content");
-  assert.equal(structure.clientsAlerts, 0, "the client-configs card must stay error-free next to the Desktop card");
-  assert.equal(structure.desktopFollowsClients, true, "the card must stay after the client-configs section");
-  assert.equal(structure.nested, false, "the card must not be nested inside the client-configs section");
+  assert.equal(structure.panelId, "client-panel-claudeDesktop", "the card is the console's Claude Desktop panel");
+  assert.equal(structure.panelShown, true);
+  assert.equal(structure.tabSelected, "true", "the panel is labelled by its selected tab");
+  assert.deepEqual(structure.clientPanels, ["client-panel-claudeCode", "client-panel-opencode", "client-panel-pi"],
+    "each CLI client has its own panel next to the Desktop one");
+  assert.equal(structure.clientsAlerts, 0, "the CLI client panels stay error-free next to the Desktop card");
+  assert.equal(structure.nested, false, "the card must not be nested inside a CLI client panel");
   assert.equal(structure.headingTag, "H2", "aria-labelledby must resolve to the section heading");
   assert.equal(structure.headingText, ZH.title);
   // A <section> with an accessible name is a region landmark: this uses Playwright's
@@ -347,7 +346,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   const region = page.getByRole("region", { name: ZH.title, exact: true });
   assert.equal(await region.count(), 1, "the card must expose its title as the region accessible name");
   assert.equal(await region.getAttribute("aria-labelledby"), "claude-desktop-title");
-  console.log("PASS Claude Desktop card renders as its own labelled section after the untouched client-configs section");
+  console.log("PASS Claude Desktop card renders as its own labelled section in the console beside the CLI client panels");
 
   // 2. Card content: badges, long path, long model id, warnings, action buttons.
   const content = await card().evaluate(node => {
@@ -370,7 +369,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
       pathStyle: styles("p.break-all.font-mono"),
       statuses: [...node.querySelectorAll('[role="status"]')].map(element => element.textContent.trim()),
       alerts: node.querySelectorAll('[role="alert"]').length,
-      // The section title is a fold toggle (aria-expanded), not one of the card's actions.
+      // The console selects the client, so the section title no longer folds it.
       foldToggles: [...node.querySelectorAll("button[aria-expanded]")].map(button => button.innerText.trim()),
       buttons: [...node.querySelectorAll("button:not([aria-expanded])")].map(button => ({ text: button.innerText.trim(),
         disabled: button.disabled, title: button.getAttribute("title") })),
@@ -409,7 +408,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   assert.match(await card().innerText(), /本地恢复备份: 3/);
   assert.match(await card().innerText(), /未消费的预览|AGENT_HARBOR_CLIENT_HOME/);
   await card().locator("details > summary").click();
-  assert.deepEqual(content.foldToggles, [ZH.title], "the section title is the only fold toggle");
+  assert.deepEqual(content.foldToggles, [], "the console panel has no fold toggle");
   assert.deepEqual(content.buttons.map(button => button.text),
     [ZH.change, ZH.reapply, ZH.restorePrevious, ZH.switchOfficial, ZH.release],
     "the card must expose its manage and confirmable action buttons");
@@ -1425,7 +1424,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   // apply must commit exactly the validated snapshot, without storing a key.
   await reset("groups");
   await install();
-  await page.evaluate(() => window.review.mount("mcp"));
+  await page.evaluate(() => { window.review.injectClient = "claudeDesktop"; window.review.mount("mcp"); });
   await page.evaluate(() => window.review.mount("groups"));
   await actionButton(ZH.change).waitFor();
   await actionButton(ZH.change).click();

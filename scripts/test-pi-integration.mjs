@@ -26,6 +26,7 @@ export async function testPiIntegration({ page, reset, captureDir }) {
       review.mount("access");
     }, { allClients, folded, aggregate });
     await page.getByRole("navigation", { name: await tr("newapi.configShortcuts") }).waitFor();
+    if (!allClients) await page.locator('[data-client-tab="pi"]').click();
   };
   const openPi = async () => {
     await card().locator("button[data-config-action]").click();
@@ -93,12 +94,14 @@ export async function testPiIntegration({ page, reset, captureDir }) {
     }, target);
     assert.equal(await nav.getByRole("button", { name: await tr(label), exact: true }).getAttribute("aria-current"), "location");
   }
-  assert.equal(await page.locator("#client-configs-title button").getAttribute("aria-expanded"), "true");
+  assert.equal(await page.locator('[data-client-tab="aggregation"]').count(), 0);
+  assert.equal(await page.locator('[data-client-tab="claudeDesktop"]').getAttribute("aria-selected"), "true",
+    "each shortcut shows its client's panel in the console");
   await nav.getByRole("button", { name: "Pi", exact: true }).focus();
   await page.keyboard.press("Enter");
   await card().locator("button[data-config-action]").waitFor();
   await page.waitForFunction(() => document.activeElement?.closest("#client-config-pi") != null);
-  console.log("PASS icon shortcuts expand saved folds, cancel previous jumps and focus the corresponding configuration");
+  console.log("PASS icon shortcuts expand saved folds, switch the console, cancel previous jumps and focus the corresponding configuration");
 
   await page.setViewportSize({ width: 390, height: 844 });
   await nav.scrollIntoViewIfNeeded();

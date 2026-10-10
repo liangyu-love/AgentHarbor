@@ -117,6 +117,7 @@ const routingApi = {
       catalogRevision: preview.catalogRevision, officialRevision: preview.officialRevision,
     }),
   diagnostics: () => invoke<import("@/types/newapi").RouteDiagnostic[]>("load_route_diagnostics"),
+  clearDiagnostics: () => invoke<number>("clear_route_diagnostics"),
   catalogStatus: () => invoke<import("@/types/newapi").ModelsDevCatalogStatus>("load_models_dev_status"),
   refreshCatalog: () =>
     invoke<import("@/types/newapi").ModelsDevCatalogStatus>("refresh_models_dev_catalog"),
@@ -139,6 +140,7 @@ const routingApi = {
 
 const aggregationApi = {
   state: () => invoke<import("@/types/aggregation").AggregationState>("load_aggregation_state"),
+  live: () => invoke<import("@/types/aggregation").AggregateLive[]>("load_aggregation_live"),
   save: (model: import("@/types/aggregation").AggregateModel) => invoke<import("@/types/aggregation").AggregationState>("save_aggregate_model", { model }),
   delete: (id: string) => invoke<import("@/types/aggregation").AggregationState>("delete_aggregate_model", { id }),
   setExternalEnabled: (enabled: boolean) => invoke<import("@/types/aggregation").AggregationState>("set_aggregation_external_enabled", { enabled }),

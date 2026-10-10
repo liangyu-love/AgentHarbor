@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
@@ -6,6 +6,7 @@ import {
   Brain,
   ChevronDown,
   Cpu,
+  Database,
   DollarSign,
   Gauge,
   Layers,
@@ -21,6 +22,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { CapabilityClearControls } from "./capability-clear-controls";
+import { compactTokens } from "./model-resolution-fields";
+import { relayHue } from "./relay-groups";
 import { cn } from "@/lib/utils";
 import type {
   ClientProjection,
@@ -98,8 +101,8 @@ function CompressionLine({ plan, applied, model }: { plan: CompressionPlan; appl
         ? t("newapi.capabilityCompressionPendingSync")
         : t("newapi.capabilityCompressionSyncUnknown");
   return (
-    <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
-      <h4 className="flex items-center gap-1.5 font-bold text-foreground text-xs">
+    <div className="cap-panel">
+      <h4 className="cap-label">
         <Gauge className="h-3.5 w-3.5 text-primary" />
         <span>{t("newapi.capabilityCompression")}</span>
         {plan.threshold !== null && model.compressionScope === "routerModel" && (
@@ -115,7 +118,7 @@ function CompressionLine({ plan, applied, model }: { plan: CompressionPlan; appl
           </span>
         )}
       </h4>
-      <p className="mt-1 font-mono text-xs font-semibold text-foreground">{state}</p>
+      <p className="cap-value">{state}</p>
       {plan.threshold !== null && plan.threshold > model.codexTotalCompactThreshold && <p className="mt-1 text-xs text-muted-foreground">
         {t("newapi.capabilityClearCodexCompression")}: {number(model.codexTotalCompactThreshold)}
       </p>}
@@ -175,8 +178,8 @@ function PriceLine({
   // A real zero rate is a price, not "unknown"; only missing rates are unknown.
   const empty = price.input == null && price.output == null && price.inputAudio == null && price.outputAudio == null;
   return (
-    <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
-      <h4 className="flex items-center justify-between gap-1.5 font-bold text-foreground text-xs">
+    <div className="cap-panel">
+      <h4 className="cap-label justify-between">
         <span className="flex items-center gap-1.5">
           <DollarSign className="h-3.5 w-3.5 text-primary" />
           <span>{t("newapi.capabilityPrice")}</span>
@@ -197,7 +200,7 @@ function PriceLine({
         </p>
       ) : (
         <>
-          <p className="mt-1 font-mono text-xs font-bold text-foreground">
+          <p className="cap-value">
             {priceNumber(price.input)} / {priceNumber(price.output)}
             <span className="ml-1 text-[10px] font-normal text-muted-foreground">
               {t("newapi.capabilityPricePerMillion")}
@@ -387,40 +390,47 @@ function CapabilityCard({ model, onSaved }: { model: ModelCapability; onSaved: (
   const levels = model.reasoning.value ?? [];
   const conflicts = model.conflicts;
   return (
-    <details className="group rounded-xl border border-border/70 bg-card p-3.5 shadow-2xs transition-all hover:border-primary/40 text-sm">
-      <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-lg py-0.5">
-        <div className="flex flex-wrap items-center gap-1.5 font-medium">
-          <Badge variant="outline" className="text-[10px] font-semibold">
-            {model.providerName}
-          </Badge>
-          <span className="text-foreground">{model.displayName}</span>
-          <span className="text-muted-foreground/60">→</span>
-          <span className="font-mono font-bold text-primary break-all">{model.matchedModel}</span>
-          <Badge
-            variant="outline"
-            className={cn("text-[10px] font-semibold", matchKindTone[model.matchKind])}
-          >
-            {t("newapi.matchKind." + model.matchKind, { defaultValue: model.matchKind })}
-          </Badge>
-          {conflicts.length > 0 && (
-            <Badge variant="outline" className="border-amber-500/50 text-[10px] font-semibold text-amber-600 dark:text-amber-400">
-              <AlertTriangle className="mr-1 h-3 w-3" />
-              {conflicts.length}
-            </Badge>
+    <details className="cap-row group bg-card" data-capability-row={model.providerId + "::" + model.upstreamModel}>
+      <summary className="cap-summary">
+        <span aria-hidden className="agg-chip-mark" style={{ "--relay-hue": relayHue(model.providerId) } as CSSProperties}>
+          {model.providerName.slice(0, 1).toUpperCase()}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+            <span className="truncate text-[13px] font-semibold text-foreground">{model.displayName}</span>
+            <span className="text-muted-foreground/60">→</span>
+            <span className="min-w-0 break-all font-mono text-[12px] font-semibold text-primary">{model.matchedModel}</span>
+          </span>
+          <span className="block truncate text-[11px] text-muted-foreground">{model.providerName}</span>
+        </span>
+        <span className="cap-quick" aria-hidden>
+          <span>{t("newapi.capabilityQuickContext", { value: model.context.value == null ? "—" : compactTokens(model.context.value) })}</span>
+          <span>{t("newapi.capabilityQuickOutput", { value: model.output.value == null ? "—" : compactTokens(model.output.value) })}</span>
+          {(model.price.input != null || model.price.output != null) && (
+            <span>${priceNumber(model.price.input)} / ${priceNumber(model.price.output)}</span>
           )}
-        </div>
-        <ChevronDown className="h-3.5 w-3.5 text-muted-foreground transition-transform duration-200 group-open:rotate-180" />
+        </span>
+        <Badge variant="outline" className={cn("text-[10px] font-semibold", matchKindTone[model.matchKind])}>
+          {t("newapi.matchKind." + model.matchKind, { defaultValue: model.matchKind })}
+        </Badge>
+        {conflicts.length > 0 && (
+          <Badge variant="outline" className="border-amber-500/50 text-[10px] font-semibold text-amber-600 dark:text-amber-400">
+            <AlertTriangle className="mr-1 h-3 w-3" />
+            {conflicts.length}
+          </Badge>
+        )}
+        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200 group-open:rotate-180" />
       </summary>
 
-      <div className="mt-3.5 space-y-3 border-t border-border/40 pt-3">
-        <p className="break-words font-mono text-[11px] text-muted-foreground bg-muted/30 p-2 rounded-lg">
+      <div className="cap-body">
+        <p className="break-words font-mono text-[11px] text-muted-foreground">
           {t("newapi.upstreamModel")}:{" "}
           <span className="font-semibold text-foreground">{model.upstreamModel}</span>
         </p>
 
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
-            <h4 className="flex items-center gap-1.5 font-bold text-foreground text-xs">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="cap-panel">
+            <h4 className="cap-label">
               <Brain className="h-3.5 w-3.5 text-primary" />
               <span>{t("newapi.capabilityReasoning")}</span>
             </h4>
@@ -452,12 +462,12 @@ function CapabilityCard({ model, onSaved }: { model: ModelCapability; onSaved: (
             <Origin field={model.reasoning} />
           </div>
 
-          <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
-            <h4 className="flex items-center gap-1.5 font-bold text-foreground text-xs">
+          <div className="cap-panel">
+            <h4 className="cap-label">
               <Layers className="h-3.5 w-3.5 text-primary" />
               <span>{t("newapi.capabilityContext")}</span>
             </h4>
-            <p className="mt-1 font-mono text-xs font-bold text-foreground">
+            <p className="cap-value">
               {number(model.context.value)}{" "}
               <span className="text-[10px] font-normal text-muted-foreground">
                 {t("newapi.tokenUnit")}
@@ -471,12 +481,12 @@ function CapabilityCard({ model, onSaved }: { model: ModelCapability; onSaved: (
             <Origin field={model.context} />
           </div>
 
-          <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
-            <h4 className="flex items-center gap-1.5 font-bold text-foreground text-xs">
+          <div className="cap-panel">
+            <h4 className="cap-label">
               <Sparkles className="h-3.5 w-3.5 text-primary" />
               <span>{t("newapi.capabilityOutput")}</span>
             </h4>
-            <p className="mt-1 font-mono text-xs font-bold text-foreground">
+            <p className="cap-value">
               {number(model.output.value)}{" "}
               <span className="text-[10px] font-normal text-muted-foreground">
                 {t("newapi.tokenUnit")}
@@ -504,8 +514,8 @@ function CapabilityCard({ model, onSaved }: { model: ModelCapability; onSaved: (
 
         <div className="grid gap-3 lg:grid-cols-3">
           <CompressionLine plan={projection.compression} applied={model.compressionApplied} model={model} />
-          <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
-            <h4 className="font-bold text-foreground text-xs">{t("newapi.capabilityMatch")}</h4>
+          <div className="cap-panel">
+            <h4 className="cap-label">{t("newapi.capabilityMatch")}</h4>
             <p className="mt-1 font-mono text-[11px] text-foreground">
               {t("newapi.capabilityMatchedRef")}:{" "}
               {model.matched ? `${model.matched.providerId}/${model.matched.modelId}` : "—"}
@@ -516,10 +526,8 @@ function CapabilityCard({ model, onSaved }: { model: ModelCapability; onSaved: (
               </p>
             )}
           </div>
-          <div className="rounded-xl border border-border/50 bg-muted/15 p-2.5">
-            <h4 className="font-bold text-foreground text-xs">
-              {t("newapi.capabilityConflicts")}
-            </h4>
+          <div className="cap-panel">
+            <h4 className="cap-label">{t("newapi.capabilityConflicts")}</h4>
             {conflicts.length === 0 ? (
               <p className="mt-1 text-[11px] text-muted-foreground">
                 {t("newapi.capabilityNoConflicts")}
@@ -545,10 +553,8 @@ function CapabilityCard({ model, onSaved }: { model: ModelCapability; onSaved: (
           </div>
         </div>
 
-        <div className="rounded-xl border border-border/40 bg-muted/10 p-2.5">
-          <h4 className="text-xs font-semibold text-muted-foreground">
-            {t("newapi.capabilityMatchSteps")}
-          </h4>
+        <div className="cap-panel cap-panel-quiet">
+          <h4 className="cap-label">{t("newapi.capabilityMatchSteps")}</h4>
           <ul className="mt-2 space-y-1">
             {model.steps.map((step) => (
               <li key={step.step + step.modelId} className="font-mono text-[10px] text-muted-foreground">
@@ -558,8 +564,8 @@ function CapabilityCard({ model, onSaved }: { model: ModelCapability; onSaved: (
           </ul>
         </div>
 
-        {model.catalogHints.length > 0 && <div className="rounded-xl border border-border/40 bg-muted/10 p-2.5">
-          <h4 className="text-xs font-semibold text-muted-foreground">{t("newapi.capabilityCatalogIdentity")}</h4>
+        {model.catalogHints.length > 0 && <div className="cap-panel cap-panel-quiet">
+          <h4 className="cap-label">{t("newapi.capabilityCatalogIdentity")}</h4>
           <ul className="mt-2 space-y-2">
             {model.catalogHints.map(hint => <li key={`${hint.source.providerId}/${hint.source.modelId}`} className="font-mono text-[10px] text-muted-foreground">
               <span className="font-semibold text-foreground">{hint.source.providerId}/{hint.source.modelId}</span>
@@ -582,32 +588,36 @@ function CapabilityCard({ model, onSaved }: { model: ModelCapability; onSaved: (
   );
 }
 
-function CatalogNotice({ catalog }: { catalog: ModelsDevCatalogStatus }) {
+function CatalogNotice({ catalog, children }: { catalog: ModelsDevCatalogStatus; children?: ReactNode }) {
   const { t } = useTranslation();
   const origin = t(`newapi.catalogOrigin${catalog.origin === "runtime" ? "Runtime" : "Embedded"}`);
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/60 bg-muted/20 px-3 py-2 text-[11px] text-muted-foreground">
-      <span>
-        {t("newapi.catalogInfo", {
-          origin,
-          providers: catalog.providers,
-          models: catalog.models,
-          revision: catalog.revision.slice(0, 8),
-        })}
-      </span>
-      <span>·</span>
-      <span>
-        {catalog.fetchedAt
-          ? t("newapi.catalogFetchedAt", {
-              time: new Date(catalog.fetchedAt * 1000).toLocaleString(),
-            })
-          : t("newapi.catalogNever")}
-      </span>
-      {catalog.error && (
-        <span className="text-amber-600 dark:text-amber-400">
-          {t("newapi.catalogError", { error: catalog.error })}
+    <div className="cap-catalog">
+      <Database aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1">
+        <span>
+          {t("newapi.catalogInfo", {
+            origin,
+            providers: catalog.providers,
+            models: catalog.models,
+            revision: catalog.revision.slice(0, 8),
+          })}
         </span>
-      )}
+        {" · "}
+        <span>
+          {catalog.fetchedAt
+            ? t("newapi.catalogFetchedAt", {
+                time: new Date(catalog.fetchedAt * 1000).toLocaleString(),
+              })
+            : t("newapi.catalogNever")}
+        </span>
+        {catalog.error && (
+          <span className="block text-amber-600 dark:text-amber-400">
+            {t("newapi.catalogError", { error: catalog.error })}
+          </span>
+        )}
+      </span>
+      {children}
     </div>
   );
 }
@@ -646,6 +656,12 @@ export function ModelCapabilities() {
     [allModels, filter, search],
   );
 
+  const counts = {
+    all: allModels.length,
+    unmatched: allModels.filter((model) => model.matchKind === "unmatched").length,
+    conflicts: allModels.filter((model) => model.conflicts.length > 0).length,
+  };
+
   const refresh = async () => {
     setRefreshing(true);
     setRefreshError(null);
@@ -668,17 +684,13 @@ export function ModelCapabilities() {
       aria-label={t("newapi.modelCapabilities")}
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <Button
-          variant="ghost"
-          aria-expanded={open}
-          onClick={() => setOpen(!open)}
-          className="flex items-center gap-2 px-2 text-sm font-bold tracking-tight text-foreground hover:bg-muted/80 rounded-xl"
-        >
-          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-primary/10 text-primary">
-            <Cpu className="h-4 w-4" />
-          </div>
-          <span>{t("newapi.modelCapabilities")}</span>
-        </Button>
+        <button type="button" aria-expanded={open} onClick={() => setOpen(!open)} className="diag-toggle">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-background text-foreground ring-1 ring-border">
+            <Cpu className="h-[18px] w-[18px]" />
+          </span>
+          <span className="font-display text-[17px] font-semibold tracking-tight">{t("newapi.modelCapabilities")}</span>
+          <ChevronDown aria-hidden className={cn("h-4 w-4 text-muted-foreground transition-transform duration-200", open && "rotate-180")} />
+        </button>
 
         {open && query.data && (
           <span className="rounded-full bg-muted/80 px-2.5 py-0.5 font-mono text-[11px] font-semibold text-muted-foreground">
@@ -688,18 +700,31 @@ export function ModelCapabilities() {
       </div>
 
       {open && (
-        <div className="mt-4 space-y-3.5 border-t border-border/50 pt-3">
-          {query.data && <CatalogNotice catalog={query.data.catalog} />}
+        <div className="mt-5 space-y-4 border-t border-border/60 pt-4">
+          {query.data && (
+            <CatalogNotice catalog={query.data.catalog}>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={refreshing || query.isFetching}
+                onClick={() => void refresh()}
+                className="h-8 gap-1.5 rounded-xl px-3 text-xs font-semibold"
+              >
+                <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin text-primary")} />
+                <span>{t(refreshing ? "newapi.catalogRefreshing" : "newapi.catalogRefresh")}</span>
+              </Button>
+            </CatalogNotice>
+          )}
 
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative min-w-[12rem] flex-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+              <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 aria-label={t("newapi.capabilitySearch")}
                 placeholder={t("newapi.capabilitySearch")}
-                className="pl-8 pr-8 h-9 text-xs rounded-xl"
+                className="h-9 rounded-xl bg-card pl-8 pr-8 text-xs"
               />
               {search && (
                 <button
@@ -712,13 +737,14 @@ export function ModelCapabilities() {
               )}
             </div>
 
-            <div className="flex items-center gap-1 rounded-xl border border-border/60 p-0.5">
+            <div className="agg-segmented !grid-cols-3 !p-1" role="group" aria-label={t("newapi.capabilityFilter")}>
               {(["all", "unmatched", "conflicts"] as const).map((value) => (
-                <Button
+                <button
                   key={value}
-                  variant={filter === value ? "secondary" : "ghost"}
+                  type="button"
+                  aria-pressed={filter === value}
                   onClick={() => setFilter(value)}
-                  className="h-8 rounded-lg px-2.5 text-[11px] font-semibold"
+                  className="cap-filter"
                 >
                   {t(
                     value === "all"
@@ -727,21 +753,10 @@ export function ModelCapabilities() {
                         ? "newapi.capabilityFilterUnmatched"
                         : "newapi.capabilityFilterConflicts",
                   )}
-                </Button>
+                  <span aria-hidden className="cap-filter-count">{counts[value]}</span>
+                </button>
               ))}
             </div>
-
-            <Button
-              variant="outline"
-              disabled={refreshing || query.isFetching}
-              onClick={() => void refresh()}
-              className="h-9 gap-1.5 rounded-xl px-3 text-xs font-semibold shadow-xs"
-            >
-              <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin text-primary")} />
-              <span>
-                {t(refreshing ? "newapi.catalogRefreshing" : "newapi.catalogRefresh")}
-              </span>
-            </Button>
           </div>
 
           {refreshError && (
@@ -772,7 +787,7 @@ export function ModelCapabilities() {
             </div>
           )}
 
-          <div className="max-h-[30rem] space-y-2.5 overflow-y-auto pr-0.5">
+          <div className="cap-list">
             {models.map((model) => (
               <CapabilityCard
                 key={model.providerId + "::" + model.upstreamModel}

@@ -48,13 +48,17 @@ export function useSectionJump() {
     setActive(client);
     cancelAnimationFrame(frame.current);
     window.dispatchEvent(new CustomEvent("agentharbor:expand-section", { detail: entry.fold }));
+    if (client !== "aggregation") window.dispatchEvent(new CustomEvent("agentharbor:select-client", { detail: client }));
     // Wait for the folded content to mount. A second click cancels a pending
     // jump so delayed work cannot steal focus from the latest selection.
     let attempts = 0;
     const locate = () => {
+      // The console shows the client on its next render; wait for its panel.
       const section = document.getElementById(entry.target);
-      if (!section && attempts++ < 8) { frame.current = requestAnimationFrame(locate); return; }
-      const target = section ?? document.getElementById("client-configs-title");
+      const shown = !!section && !section.closest("[hidden]");
+      if (!shown && attempts++ < 8) { frame.current = requestAnimationFrame(locate); return; }
+      // A client the console has no configuration for still gets its tab.
+      const target = shown ? section : client === "aggregation" ? null : document.getElementById(`client-tab-${client}`);
       if (!target) return;
       const focus = target.querySelector<HTMLButtonElement>(entry.target.startsWith("client-config-")
         ? "button[data-config-action]:not(:disabled)" : "button:not(:disabled)") ?? target;

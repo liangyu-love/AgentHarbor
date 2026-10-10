@@ -3,6 +3,7 @@
 pub mod affinity;
 pub mod config;
 pub mod execution;
+pub mod first_token;
 pub mod health;
 pub mod projection;
 pub mod runtime;
@@ -55,6 +56,41 @@ pub fn reconcile_runtime(store: &crate::core::router::Store) {
     runtime::shared().retain_targets(&targets);
     runtime::shared().retain_scopes(&scopes);
     runtime::shared().retain_members(&members);
+}
+
+/// Each aggregate's live routing state, for display. Members whose relay can
+/// no longer route their model are left out, as the runtime has none for them.
+pub fn live_from_store(store: &crate::core::router::Store) -> Vec<AggregateLive> {
+    store
+        .aggregates
+        .iter()
+        .map(|aggregate| {
+            let members: Vec<_> = aggregate
+                .members
+                .iter()
+                .filter_map(|member| {
+                    let provider = store.providers.iter().find(|provider| {
+                        provider.id == member.provider_id
+                            && provider.can_route_model(&member.actual_model_id)
+                    })?;
+                    let protocol = provider.protocol_for_model(&member.actual_model_id);
+                    Some((member.id.clone(), target_key(provider, &member.actual_model_id, protocol)))
+                })
+                .collect();
+            let (preferred_member_id, preferred_idle_secs, members) =
+                runtime::shared().snapshot(&aggregate.id, &members);
+            AggregateLive {
+                aggregate_id: aggregate.id.clone(),
+                preferred_member_id,
+                preferred_idle_secs,
+                members,
+            }
+        })
+        .collect()
+}
+
+pub fn live(paths: &crate::platform::paths::CodexPaths) -> Result<Vec<AggregateLive>, String> {
+    Ok(live_from_store(&crate::core::router::load_store(paths)?))
 }
 
 #[cfg(test)]

@@ -23,10 +23,10 @@ import { useProviderState } from "@/components/newapi/use-provider-state";
 import { providerModelProtocol } from "@/lib/provider-models";
 import { formatInvokeError } from "@/lib/invoke-error";
 import { RoutingTopology } from "./routing-topology";
+import { ClientConsole } from "./client-console";
 
-// Poster-style section opener: an outlined index, an English kicker and the title.
-function SectionGroup({ index, kicker, icon, title, description, delay, children }: {
-  index: string;
+// Section opener: an English kicker, the title and a hairline to the edge.
+function SectionGroup({ kicker, icon, title, description, delay, children }: {
   kicker: string;
   icon: ReactNode;
   title: string;
@@ -37,7 +37,6 @@ function SectionGroup({ index, kicker, icon, title, description, delay, children
   return (
     <div className="route-rise space-y-4" style={{ animationDelay: `${delay}ms` } as CSSProperties}>
       <div className="flex items-end gap-3.5 px-1">
-        <span aria-hidden className="poster-index">{index}</span>
         <div className="min-w-0 pb-0.5">
           <p className="poster-kicker flex items-center gap-1.5 text-[10px] text-primary"><span aria-hidden>{icon}</span>{kicker}</p>
           <h2 className="font-display text-lg font-semibold tracking-tight text-foreground">{title}</h2>
@@ -106,32 +105,31 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
         </div>
       )}
 
-      <SectionGroup index="01" kicker="Clients" icon={<Plug className="h-3 w-3" />} title={t("newapi.groups.clients")}
+      <SectionGroup kicker="Clients" icon={<Plug className="h-3 w-3" />} title={t("newapi.groups.clients")}
         description={t("newapi.groups.clientsDesc")} delay={80}>
-        {/* The two desktop apps share a row; the CLI clients follow. DOM order
-            stays Codex, CLI clients, Desktop for keyboard and assistive tech. */}
-        <div className="inject-grid">
-          <div className="inject-codex min-w-0">
-            <CodexAccessCard
-              store={store}
-              providers={providers}
-              selectedProvider={selectedProvider}
-              nativeCompatible={nativeCompatible}
-              onRestart={() => setRestartConfirmOpen(true)}
-              onRestartRequired={() => setRestartPromptOpen(true)}
-              onOpenRelays={onOpenRelays}
-            />
-          </div>
-          <div className="inject-clis min-w-0">
-            <ClientConfigs providers={providers} onOpenRelays={onOpenRelays} />
-          </div>
-          <div className="inject-desktop min-w-0">
-            <ClaudeDesktopConfigCard providers={providers} />
-          </div>
-        </div>
+        <ClientConsole
+          router={router}
+          panels={{
+            codex: (
+              <CodexAccessCard
+                store={store}
+                providers={providers}
+                selectedProvider={selectedProvider}
+                nativeCompatible={nativeCompatible}
+                onRestart={() => setRestartConfirmOpen(true)}
+                onRestartRequired={() => setRestartPromptOpen(true)}
+                onOpenRelays={onOpenRelays}
+              />
+            ),
+            claudeCode: <ClientConfigs target="claudeCode" providers={providers} onOpenRelays={onOpenRelays} />,
+            claudeDesktop: <ClaudeDesktopConfigCard providers={providers} />,
+            opencode: <ClientConfigs target="opencode" providers={providers} onOpenRelays={onOpenRelays} />,
+            pi: <ClientConfigs target="pi" providers={providers} onOpenRelays={onOpenRelays} />,
+          }}
+        />
       </SectionGroup>
 
-      <SectionGroup index="02" kicker="Routing" icon={<Layers3 className="h-3 w-3" />} title={t("newapi.groups.routing")}
+      <SectionGroup kicker="Routing" icon={<Layers3 className="h-3 w-3" />} title={t("newapi.groups.routing")}
         description={t("newapi.groups.routingDesc")} delay={160}>
         <AggregationManager providers={providers} />
         <RoutingDiagnostics

@@ -13,7 +13,7 @@ export function McpHeader({ mcp }: { mcp: McpServers }) {
   } = mcp;
 
   return (
-    <PageHero kicker="MCP Servers" watermark="MCP" icon={<Server />} title={t("mcp.title")} description={t("mcp.description")} actions={<>
+    <PageHero kicker="MCP Servers" icon={<Server />} title={t("mcp.title")} description={t("mcp.description")} actions={<>
         <RainbowButton size="sm" className="h-9 rounded-lg font-medium" disabled={mcp.mutationBusy} onClick={() => setEditing("new")}>
           <Plus className="h-4 w-4" />
           {t("mcp.addServer")}

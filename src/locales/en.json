@@ -81,7 +81,8 @@
       "storage": "Cannot read or save aggregation. Check local directory permissions.",
       "tooManyMembers": "Channel reference limit reached (4096).",
       "tooManyModels": "Aggregate limit reached (128).",
-      "unavailable": "The aggregate has no available channels."
+      "unavailable": "The aggregate has no available channels.",
+      "firstTokenTimeout": "First token timeout must be 0 (off) or 5–300 seconds."
     },
     "identity": "Model identity",
     "scheduling": "Scheduling",
@@ -90,7 +91,51 @@
     "copyPublicId": "Copy public model ID",
     "publicIdCopied": "Public model ID copied",
     "copyAll": "Copy all",
-    "gateway": "Aggregation gateway"
+    "gateway": "Aggregation gateway",
+    "editTitle": "Edit aggregate",
+    "tierPrimary": "Primary",
+    "tierBackup": "Backup {{index}}",
+    "tierPrimaryHint": "Used first; its channels rotate by strategy",
+    "tierBackupHint": "Used only when every tier above is unavailable",
+    "tiersHint": "Drag a channel, or use the arrows, to move it between tiers. Channels in one tier rotate by strategy.",
+    "dropNewTier": "Drop here to start a new backup tier",
+    "moveUp": "Move channel {{index}} up a tier",
+    "moveDown": "Move channel {{index}} down a tier",
+    "moveUpHint": "Up a tier",
+    "moveDownHint": "Down a tier (from the last tier, starts a new one)",
+    "memberEnabledFor": "Enable channel {{index}}",
+    "weightHint": "Weighted rotation shares requests in proportion to weight",
+    "roundRobinHint": "Channels in a tier take turns",
+    "weightedRoundRobinHint": "In proportion to their weights",
+    "sessionHint": "A conversation keeps the channel that answered, and its cache",
+    "statelessRotationHint": "Stateless requests may move at any time",
+    "failover": "Failover",
+    "firstToken": "First token timeout",
+    "firstTokenOff": "Off (wait)",
+    "seconds": "{{seconds}} s",
+    "firstTokenHint": "When a streamed reply shows no content (text, reasoning or a tool call) in time, the next channel answers instead, before the client has received anything. Conversations bound to a channel keep it, for their cache and encrypted reasoning.",
+    "firstTokenNeedsRetry": "To move to another channel, first-token failover needs 2 attempts.",
+    "firstTokenShort": "First token {{seconds}}s",
+    "contextShort": "Context {{tokens}}",
+    "live": {
+      "hit": "Serving",
+      "standby": "Standby",
+      "cooling": "Cooling {{seconds}}s",
+      "probe": "Probing",
+      "off": "Off",
+      "down": "Unavailable",
+      "routing": "Live · {{count}} in use"
+    },
+    "suggest": {
+      "title": "{{count}} models can be pooled",
+      "hint": "Several relays serve each of them; click one to draft an aggregate.",
+      "relays": "{{count}} relays",
+      "create": "Create a {{model}} aggregate from {{count}} relays",
+      "more": "{{count}} more",
+      "less": "Show less"
+    },
+    "tierBackupOnly": "Backup",
+    "compression": "Auto compaction (model level)"
   },
   "modelTargets": {
     "errors": {
@@ -329,7 +374,14 @@
     "authField": "Authentication field",
     "removedFields": "Remove: {{fields}}",
     "noNativeProviders": "No compatible native models. Switch to the local router.",
-    "configPath": "Path"
+    "configPath": "Path",
+    "notDetected": "This client's configuration status is not available yet.",
+    "fact": {
+      "access": "Access",
+      "source": "Source",
+      "model": "Default model"
+    },
+    "factModels": "{{count}} models"
   },
   "claudeDesktop": {
     "title": "Claude Desktop",
@@ -1018,7 +1070,8 @@
       "conflicting_declarations": "Conflicting model declarations",
       "model_id_truncated": "Model ID too long or contains controls",
       "request_model_truncated": "Sent model ID too long",
-      "request_model_missing": "Sent model ID missing"
+      "request_model_missing": "Sent model ID missing",
+      "first_token_timeout": "First token timed out; the next channel answered"
     },
     "traceSelectionReason": {
       "desktop_role_mapping": "Claude Desktop role mapping",
@@ -1056,7 +1109,8 @@
     "traceRetryReason": {
       "aggregate_rate_limited": "First channel returned HTTP 429",
       "aggregate_failure_threshold": "Consecutive channel failure threshold reached",
-      "aggregate_connect_error": "First channel connection failed"
+      "aggregate_connect_error": "First channel connection failed",
+      "aggregate_first_token_timeout": "First channel did not start replying in time"
     },
     "traceCompatibility": {
       "commandSearchViaChat": "Command search adaptation"
@@ -1384,7 +1438,24 @@
       "official": "Official",
       "customDesc": "Enter the address, key and protocol yourself",
       "empty": "No matching channels"
-    }
+    },
+    "console": {
+      "kicker": "Clients"
+    },
+    "traceLive": "Live · {{count}}",
+    "traceStatRequests": "Requests",
+    "traceStatFailed": "Failed",
+    "traceStatAverage": "Average",
+    "traceStatFirstToken": "Median first token",
+    "traceFailedOnly": "Failures only",
+    "traceClear": "Clear records",
+    "traceCleared": "Cleared {{count}} route records",
+    "traceRetention": "Records live in memory only and are gone after a restart or clearing; clearing keeps requests still running.",
+    "traceNoFailures": "No failed requests match these filters.",
+    "traceAttemptCount": "{{count}} attempts",
+    "capabilityFilter": "Filter by match",
+    "capabilityQuickContext": "Context {{value}}",
+    "capabilityQuickOutput": "Output {{value}}"
   },
   "avatar": {
     "title": "App avatar",

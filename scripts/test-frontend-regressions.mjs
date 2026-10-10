@@ -22,6 +22,7 @@ import { testTerminalProxy } from "./test-terminal-proxy.mjs";
 import { testCodexRoutingTransitions } from "./test-codex-routing-transitions.mjs";
 import { testRelayDeck } from "./test-relay-deck.mjs";
 import { testUiRefresh } from "./test-ui-refresh.mjs";
+import { testAggregationBoard } from "./test-aggregation-board.mjs";
 import { testClaudeDesktopCard } from "./test-claude-desktop-card.mjs";
 import { testSkillsActivation } from "./test-skills-activation.mjs";
 import { testAggregation } from "./test-aggregation.mjs";
@@ -111,6 +112,8 @@ try {
     await testRelayDeck({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "ui-refresh") {
     await testUiRefresh({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "aggregation-board") {
+    await testAggregationBoard({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "oauth-login") {
     await testOAuthLogin({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "provider-model-preview") {
@@ -1367,6 +1370,7 @@ try {
   await testCodexRoutingTransitions({ page, reset });
   await testRelayDeck({ page, reset, captureDir });
   await testUiRefresh({ page, reset, captureDir });
+  await testAggregationBoard({ page, reset, captureDir });
   await testClaudeDesktopCard({ page, reset, captureDir });
   await testSkillsActivation({ page, reset, captureDir });
   await reset("warnings");

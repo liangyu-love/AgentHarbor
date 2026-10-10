@@ -2,7 +2,7 @@
 //! atomically; leases follow an attempt through the complete response stream.
 use super::{
     selector::Candidate,
-    types::{Strategy, MAX_MEMBERS, MAX_PRIORITY, MAX_WEIGHT},
+    types::{MemberLive, Strategy, MAX_MEMBERS, MAX_PRIORITY, MAX_WEIGHT},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -297,6 +297,57 @@ impl Runtime {
         now: Instant,
     ) -> Result<Selection, SelectionError> {
         self.select_inner(scope, strategy, candidates, excluded, now, true)
+    }
+
+    /// Whether a selection excluding `excluded` would find a member now, without
+    /// reserving one or moving the preference.
+    pub fn has_alternative(&self, candidates: &[Candidate], excluded: &HashSet<String>) -> bool {
+        let now = Instant::now();
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.in_flight < GLOBAL_CONCURRENT_LIMIT
+            && candidates.iter().any(|candidate| {
+                !excluded.contains(&candidate.target_key)
+                    && state.targets.get(&candidate.target_key).is_none_or(|target| {
+                        target.cooldown_until.into_iter().chain(target.retry_until).all(|until| until <= now)
+                            && target.in_flight < TARGET_CONCURRENT_LIMIT
+                            && !(target.tripped && target.probe_generation.is_some())
+                    })
+            })
+    }
+
+    /// The member a scope's requests stick to (and how long since it was
+    /// chosen), with each `(member_id, target_key)`'s health. Read only.
+    pub fn snapshot(
+        &self,
+        scope: &str,
+        members: &[(String, String)],
+    ) -> (Option<String>, Option<u64>, Vec<MemberLive>) {
+        let now = Instant::now();
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let preferred = state.preferred.get(scope).filter(|p| {
+            members.iter().any(|(id, key)| *id == p.member_id && *key == p.target_key)
+        });
+        let live = members
+            .iter()
+            .map(|(member_id, key)| {
+                let target = state.targets.get(key);
+                MemberLive {
+                    member_id: member_id.clone(),
+                    in_flight: target.map_or(0, |t| t.in_flight),
+                    failures: target.map_or(0, |t| t.failures),
+                    cooling_ms: target
+                        .and_then(|t| t.cooldown_until.into_iter().chain(t.retry_until).max())
+                        .filter(|until| *until > now)
+                        .map(|until| until.duration_since(now).as_millis().min(u64::MAX as u128) as u64),
+                    tripped: target.is_some_and(|t| t.tripped),
+                }
+            })
+            .collect();
+        (
+            preferred.map(|p| p.member_id.clone()),
+            preferred.map(|p| now.saturating_duration_since(p.last_used).as_secs()),
+            live,
+        )
     }
 
     /// Auxiliary operations do not change the inference channel preference.
@@ -682,6 +733,38 @@ mod tests {
             priority,
             weight,
         }
+    }
+
+    #[test]
+    fn snapshot_and_alternatives_read_without_changing_the_choice() {
+        let runtime = Runtime::default();
+        let all = vec![candidate("a", 0, 1), candidate("b", 1, 1)];
+        let members: Vec<_> = all.iter().map(|c| (c.member_id.clone(), c.target_key.clone())).collect();
+        let (preferred, idle, live) = runtime.snapshot("model", &members);
+        assert_eq!((preferred, idle), (None, None));
+        assert!(live.iter().all(|m| m.failures == 0 && m.cooling_ms.is_none() && !m.tripped));
+
+        let mut first = runtime.select("model", Strategy::RoundRobin, &all, &HashSet::new()).unwrap();
+        first.lease.inference(2, true);
+        let (preferred, _, live) = runtime.snapshot("model", &members);
+        assert_eq!(preferred.as_deref(), Some("a"));
+        assert_eq!(live[0].in_flight, 1);
+        let only_a = HashSet::from(["physical-b".to_string()]);
+        assert!(runtime.has_alternative(&all, &only_a), "a is busy but not full");
+        let excluded = HashSet::from(["physical-a".to_string()]);
+        assert!(runtime.has_alternative(&all, &excluded));
+        assert!(!runtime.has_alternative(&all[..1], &excluded), "nothing is left once a is excluded");
+
+        assert!(!first.lease.fail(None));
+        assert!(first.lease.health().next_attempt().fail(None), "the second failure reaches the threshold");
+        drop(first);
+        let (preferred, _, live) = runtime.snapshot("model", &members);
+        assert_eq!(preferred.as_deref(), Some("a"), "reading never moves the preference");
+        assert_eq!((live[0].failures, live[0].tripped, live[0].in_flight), (2, true, 0));
+        assert!(live[0].cooling_ms.is_some_and(|ms| ms > 0 && ms <= 5_000));
+        assert!(!runtime.has_alternative(&all[..1], &HashSet::new()), "a cooling member is no alternative");
+        assert!(runtime.has_alternative(&all, &HashSet::new()));
+        assert_eq!(runtime.snapshot("other", &members).0, None);
     }
 
     #[test]

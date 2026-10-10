@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import { aggregationQueryKey } from "@/types/aggregation";
 import type { ProviderState } from "./use-provider-state";
 import { ClientGlyph, shortcutEntries, useSectionJump } from "./configuration-shortcuts";
-import { CLIENTS, DESTINATIONS, useRoutingLinks, type Client, type Destination, type Link } from "./use-routing-links";
+import { CLIENTS, DESTINATIONS, linkTone, useRoutingLinks, type Client, type Destination, type Link } from "./use-routing-links";
 import { PosterWatermark } from "@/components/ui/poster-watermark";
 
 type Point = { x: number; y: number };
@@ -55,12 +55,6 @@ function usePrefersReducedMotion() {
   }, []);
   return reduced;
 }
-
-const linkTone: Record<Link, string> = {
-  routed: "bg-primary shadow-[0_0_0_3px_hsl(var(--primary)/0.18)]",
-  direct: "bg-emerald-500 shadow-[0_0_0_3px_rgb(16_185_129/0.18)]",
-  idle: "bg-muted-foreground/30",
-};
 
 // The hero of the injection page: which client reaches which destination,
 // and how. Every client node is also a shortcut to its configuration.

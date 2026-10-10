@@ -259,7 +259,7 @@ function SkillsWorkspace({ source, onSourceChange }: {
 
   return (
     <div className="space-y-6">
-      <PageHero kicker="Skills" watermark="SKILLS" icon={<Sparkles />} title={t("skills.title")} description={t("skills.description")} actions={<>
+      <PageHero kicker="Skills" icon={<Sparkles />} title={t("skills.title")} description={t("skills.description")} actions={<>
           <RainbowButton
             size="sm"
             className="h-9 rounded-lg font-medium"

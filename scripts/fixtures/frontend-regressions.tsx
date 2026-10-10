@@ -172,6 +172,7 @@ const aggregationState = (): AggregationState => ({
   listenerReady: !!controls.review.aggregateExternalEnabled || !!state.router.enabled,
 });
 api.aggregation.state = async () => aggregationState();
+api.aggregation.live = async () => structuredClone(controls.review.aggregateLive ?? []);
 api.aggregation.save = async entry => {
   if (controls.review.holdAggregateSave) {
     await new Promise<void>(resolve => { controls.review.completeAggregateSave = resolve; });
@@ -222,6 +223,13 @@ api.routing.diagnostics = async () => {
   return controls.review.desktopDiagnostics ? [base, { ...base, id: "desktop-route", clientSource: "claudeDesktop",
     requestedModel: "claude-sonnet-4-6", resolvedModel: "deepseek-fixture", routeRevision: 3,
     attempts: base.attempts.map(attempt => ({ ...attempt, selectionReason: "desktop_role_mapping" })) }] : [base];
+};
+// Clearing forgets finished routes and keeps running ones, as route_trace::clear does.
+api.routing.clearDiagnostics = async () => {
+  const current = await api.routing.diagnostics();
+  controls.review.routeDiagnostics = current.filter(route => !route.done);
+  controls.review.diagnosticsClears = (controls.review.diagnosticsClears ?? 0) + 1;
+  return current.length - controls.review.routeDiagnostics.length;
 };
 const capabilityRef = { providerId: "anthropic", modelId: "claude-opus-5-5" };
 api.routing.capabilities = async () => ({ stale: true, error: "catalog_unavailable_or_invalid", updatedAt: 1_790_740_800,
@@ -635,6 +643,9 @@ function mount(mode: FixtureMode) {
   controls.review.routingCalls = [];
   localStorage.removeItem("agentharbor.mcp-source");
   localStorage.removeItem("agentharbor.instruction-source");
+  // The injection console opens on Codex unless a suite asks for another client.
+  if (controls.review.injectClient) localStorage.setItem("agentharbor.inject-client.v1", controls.review.injectClient);
+  else localStorage.removeItem("agentharbor.inject-client.v1");
   if (mode === "instructions") {
     for (const source of ["codex", "claudeCode"]) { localStorage.removeItem(`agentharbor.instruction-draft.${source}`); localStorage.removeItem(`agentharbor.instruction-presets.v1.${source}`); }
     controls.review.instructionCalls = [];
@@ -972,7 +983,7 @@ function mount(mode: FixtureMode) {
         mode === "image" ? <ImageWorkbenchPage /> : mode === "instructions" ? <CustomInstructionsPage /> : mode === "mcp-clients" ? <McpClientFixture /> : mode === "mcp" ? <McpPage /> : mode === "accounts" || mode.startsWith("account-resets") ? <AccountsPage refreshInterval="5m" onManageProviders={noop} /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage" ? <TokenUsagePanel data={{ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } }} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode.startsWith("thread-details") || mode === "thread-tree" || mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :
         mode === "access" || mode === "incompatible" || mode === "native-invalid" || mode === "groups" ? <><NewApiPage onOpenRelays={() => { controls.review.navigatedTo = "relays"; }} /><RelayModelsPage /></> :
         mode === "test" ? <ProviderTestDialog open provider={mixedProvider} onOpenChange={noop} onTested={noop} onFailed={noop} /> :
-        mode.startsWith("clients") ? <ClientConfigs providers={controls.review.providerFixtures ? state.providers : openCode ? [mixedProvider, provider("alternate")] : [selectedProvider]} /> :
+        mode.startsWith("clients") ? <div className="space-y-8">{(["claudeCode", "opencode", "pi"] as const).filter(target => clientStatuses.some(status => status.targetId === target) || (!clientStatuses.length && target === (openCode ? "opencode" : "claudeCode"))).map(target => <ClientConfigs key={target} target={target} providers={controls.review.providerFixtures ? state.providers : openCode ? [mixedProvider, provider("alternate")] : [selectedProvider]} />)}</div> :
         <VirtualThreadList groups={groups} collapsedGroups={new Set()} selected={new Set()} viewMode={mode}
           onToggleSelect={noop} onToggleGroup={noop} onToggleCollapse={noop} onExport={noop}
           onOpenPath={noop} onRecover={noop} onDelete={noop} onCopyPath={noop} copiedGroupPath={null} t={key => key} />}

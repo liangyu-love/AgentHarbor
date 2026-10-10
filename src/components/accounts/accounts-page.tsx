@@ -41,7 +41,7 @@ export function AccountsPage({ refreshInterval, onManageProviders }: { refreshIn
 
   return (
     <div className="mx-auto max-w-7xl space-y-5 pb-8">
-        <PageHero kicker="Accounts" watermark="ACCOUNTS" icon={<UsersRound />} titleAs="h2" title={t("accounts.title")}
+        <PageHero kicker="Accounts" icon={<UsersRound />} titleAs="h2" title={t("accounts.title")}
           description={t("accounts.heroDesc")}
           badge={<Badge variant="outline" className="border-primary/25 bg-primary/5 text-[10px] text-primary">{t("accounts.official")}</Badge>}
           actions={<>

@@ -70,6 +70,11 @@ pub fn validate(store: &router::Store) -> Result<(), String> {
         if !(2..=10).contains(&model.retry_policy.failure_threshold) {
             return Err("aggregation.errors.failureThreshold".into());
         }
+        if model.first_token_timeout_secs != 0
+            && !(MIN_FIRST_TOKEN_SECS..=MAX_FIRST_TOKEN_SECS).contains(&model.first_token_timeout_secs)
+        {
+            return Err("aggregation.errors.firstTokenTimeout".into());
+        }
         model
             .compression
             .validate()

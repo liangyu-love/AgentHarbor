@@ -241,7 +241,7 @@ function InstructionsWorkspace({
 
   return (
     <div className="space-y-5" data-instruction-workspace={source}>
-      <PageHero kicker="Instructions" watermark="AGENTS" icon={<FileCode2 />} title={t("customInstructions.title")}
+      <PageHero kicker="Instructions" icon={<FileCode2 />} title={t("customInstructions.title")}
         description={t("customInstructions.description")} actions={<>
           <SegmentedOptions
             value={tab}

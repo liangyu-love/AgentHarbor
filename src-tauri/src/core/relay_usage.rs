@@ -775,7 +775,7 @@ fn contains_output_delta(value: &Value) -> bool {
         .is_some_and(|text| !text.is_empty())
 }
 
-fn event_boundary(bytes: &[u8]) -> Option<(usize, usize)> {
+pub(crate) fn event_boundary(bytes: &[u8]) -> Option<(usize, usize)> {
     let lf = bytes
         .windows(2)
         .position(|part| part == b"\n\n")

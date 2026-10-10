@@ -7,7 +7,6 @@ import { ThreadToolbar } from "@/components/threads/thread-toolbar";
 import { ThreadMetrics } from "@/components/threads/thread-metrics";
 import type { ConversationSource } from "@/types/threads";
 import type { ThreadList } from "@/components/threads/use-thread-list";
-import { PosterWatermark } from "@/components/ui/poster-watermark";
 
 // The page's search console: which client, what to find, and what is in scope.
 export function ThreadsHeader({ list }: { list: ThreadList }) {
@@ -16,7 +15,6 @@ export function ThreadsHeader({ list }: { list: ThreadList }) {
 
   return (
     <section className="route-surface route-rise relative overflow-hidden rounded-3xl border border-border/80 bg-card shadow-sm">
-      <PosterWatermark text="THREADS" className="right-6 top-4 text-[clamp(3rem,7vw,5.5rem)]" />
       <div className="relative flex flex-col gap-3 px-5 pt-5 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:px-6">
         <div className="flex min-w-0 items-center gap-3">
           <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary ring-1 ring-primary/20">

@@ -109,6 +109,16 @@ pub fn recent() -> Vec<Route> {
         .cloned()
         .collect()
 }
+/// Forgets every finished request. Requests still in flight stay, so their
+/// rows keep updating instead of vanishing mid-stream. Returns how many went.
+pub fn clear() -> usize {
+    forget_finished(&mut routes().lock().unwrap_or_else(|e| e.into_inner()))
+}
+fn forget_finished(routes: &mut VecDeque<Route>) -> usize {
+    let before = routes.len();
+    routes.retain(|route| !route.done);
+    before - routes.len()
+}
 fn label(value: &str) -> String {
     value
         .chars()
@@ -637,6 +647,19 @@ mod tests {
             parameters(Some(body.to_string().as_bytes())),
             serde_json::json!({"reasoning.effort":"high","thinking.type":"enabled","thinking.budget_tokens":4096})
         );
+    }
+    #[test]
+    fn clearing_forgets_finished_requests_but_keeps_running_ones() {
+        let row = |id: &str, done: bool| Route {
+            id: id.into(), timestamp: 0, requested_model: "m".into(), client_source: None,
+            resolved_model: None, route_revision: None, requested: Value::Null, attempts: vec![],
+            skipped_members: vec![], stage: "route".into(), done, status: None,
+            failure_stage: None, error: None, duration_ms: 0, first_token_ms: None,
+        };
+        let mut routes = VecDeque::from([row("a", true), row("b", false), row("c", true)]);
+        assert_eq!(forget_finished(&mut routes), 2);
+        assert_eq!(routes.iter().map(|route| route.id.as_str()).collect::<Vec<_>>(), ["b"]);
+        assert_eq!(forget_finished(&mut routes), 0);
     }
     #[test]
     fn ttft_ignores_role_frames_and_detects_reasoning() {

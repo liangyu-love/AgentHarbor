@@ -568,7 +568,7 @@ pub(super) async fn execute(
         if let Some(body) = &prepared.body {
             outbound = outbound.body(body.clone());
         }
-        let upstream = match outbound.send().await {
+        let mut upstream = match outbound.send().await {
             Ok(response) => response,
             Err(error) => {
                 let connect = error.is_connect() && !error.is_timeout();
@@ -631,6 +631,53 @@ pub(super) async fn execute(
                     reserved = Some(next);
                     drop(selected);
                     continue;
+                }
+            }
+        }
+        // A streamed reply that shows nothing in time is given up for another
+        // member while none of it has reached the client. The last member a
+        // request may use is always waited for.
+        let first_token = Duration::from_secs(aggregate.first_token_timeout_secs.into());
+        if upstream.status().is_success()
+            && create
+            && requirements.stream
+            && !first_token.is_zero()
+            && attempts.may_abandon_slow()
+            && agg::runtime::shared().has_alternative(&candidates, &{
+                let mut others = excluded.clone();
+                others.insert(plan.effective_target_key.clone());
+                others
+            })
+        {
+            match agg::first_token::await_content(upstream, first_token.min(attempts.remaining())).await {
+                agg::first_token::Outcome::Ready(response) => upstream = response,
+                agg::first_token::Outcome::Slow => {
+                    if let Some(usage) = prepared.usage {
+                        usage.failed(504, "first_token_timeout");
+                    }
+                    trace.failed_attempt(
+                        "first_token",
+                        "first_token_timeout",
+                        started.elapsed().as_millis() as u64,
+                    );
+                    let _ = selected.lease.fail(None);
+                    excluded.insert(plan.effective_target_key.clone());
+                    retry_reason = Some("aggregate_first_token_timeout".into());
+                    if let Ok(next) = agg::runtime::shared().select(
+                        &aggregate.id,
+                        aggregate.strategy,
+                        &candidates,
+                        &excluded,
+                    ) {
+                        reserved = Some(next);
+                        drop(selected);
+                        continue;
+                    }
+                    trace.fail("first_token", "first_token_timeout");
+                    return Err((
+                        StatusCode::GATEWAY_TIMEOUT,
+                        "aggregate members did not start replying in time",
+                    ));
                 }
             }
         }

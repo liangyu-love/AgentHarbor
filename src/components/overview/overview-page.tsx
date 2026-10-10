@@ -18,7 +18,6 @@ import { formatRelative } from "@/lib/format-time";
 import { ClientGlyph } from "@/components/newapi/configuration-shortcuts";
 import { CLIENTS, useRoutingLinks, type Client, type Link } from "@/components/newapi/use-routing-links";
 import { formatTokenCount } from "@/components/threads/thread-utils";
-import { PosterWatermark } from "@/components/ui/poster-watermark";
 
 function HealthItem({ name, detail, healthy }: { name: string; detail: string; healthy?: boolean }) {
   return (
@@ -294,7 +293,6 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
   return (
     <div className="overview-shell">
       <section className="dash-hero route-surface" aria-labelledby="overview-title">
-        <PosterWatermark text="HARBOR" className="bottom-[-0.1em] left-5 text-[clamp(4.5rem,11vw,9rem)]" />
         <div className="dash-hero-copy relative z-[1]">
           <div className="overview-eyebrow"><span aria-hidden />{t("workspace.eyebrow")}</div>
           <h1 id="overview-title" className="poster-title">{greeting}</h1>

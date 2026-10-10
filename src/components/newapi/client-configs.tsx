@@ -8,7 +8,6 @@ import {
   RotateCcw,
   Settings2,
   Shield,
-  Terminal,
   Unlink,
 } from "lucide-react";
 import { api } from "@/lib/api";
@@ -17,9 +16,8 @@ import { ConfigDialog } from "./client-config-dialog";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { FoldBody, FoldHeader } from "@/components/ui/fold-header";
-import { useFold } from "@/hooks/use-fold";
 import { ClientGlyph } from "./configuration-shortcuts";
+import { ConsoleHeader } from "./client-console";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -57,7 +55,12 @@ const summarizeExclusions = (
     .map((reason) => t(`clients.excluded.${reason}`, { count: counts[reason] }));
 };
 
-export function ClientConfigs({ providers, onOpenRelays }: { providers: NewApiProvider[]; onOpenRelays?: () => void }) {
+// One configurable CLI client's panel in the injection console.
+export function ClientConfigs({ providers, onOpenRelays, target }: {
+  providers: NewApiProvider[];
+  onOpenRelays?: () => void;
+  target: "claudeCode" | "opencode" | "pi";
+}) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const clients = useQuery({ queryKey: CLIENT_KEY, queryFn: api.targets.configs });
@@ -74,7 +77,6 @@ export function ClientConfigs({ providers, onOpenRelays }: { providers: NewApiPr
   const officialOperation = useRef<"preview" | "apply" | null>(null);
   const officialSequence = useRef(0);
   const actionsLocked = busy || officialPending;
-  const fold = useFold("client-configs");
 
   useEffect(() => () => { officialSequence.current += 1; }, []);
 
@@ -207,26 +209,165 @@ export function ClientConfigs({ providers, onOpenRelays }: { providers: NewApiPr
     }
   };
 
+  const client = clients.data?.find((entry) => entry.targetId === target);
+  const mode = client?.request?.accessMode ?? (client?.configured ? "router" : "native");
+  const protocols = client ? clientProtocols(client, mode) : [];
+  const modelIds = target === "claudeCode" ? client?.request?.claudeModelIds : null;
+  const selection = client?.request?.modelSelection;
+  const aggregateId = selection?.defaultTarget?.kind === "aggregate" ? selection.defaultTarget.aggregateId : null;
+  const aggregate = aggregates.data?.models.find((model) => model.id === aggregateId);
+  const provider = providers.find((p) => p.id === client?.providerId);
+  const sourceName = aggregateId ? aggregate?.displayName ?? t("aggregation.unavailable") : provider?.name ?? client?.providerId;
+  const modelName = aggregateId
+    ? aggregate?.displayName ?? client?.model
+    : provider?.models.find((model) => model.id === client?.model)?.displayName || client?.model;
+
+  const targetUnavailable = (ref: ModelTargetRef) => {
+    if (ref.kind === "aggregate")
+      return !aggregates.data?.models.some((model) => model.id === ref.aggregateId && model.available);
+    const source = providers.find((item) => item.id === ref.providerId);
+    return !source || !!exclusionOf(source, protocols) || !clientModels(source, protocols).includes(ref.modelId);
+  };
+
+  const unavailable =
+    !!client?.configured &&
+    (selection
+      ? !selection.defaultTarget || targetUnavailable(selection.defaultTarget) || selection.availableTargets.some(targetUnavailable)
+      : !provider ||
+        !!exclusionOf(provider, protocols) ||
+        !clientModels(provider, protocols).includes(client.model ?? "") ||
+        !!client.request?.providerIds.some((id) => !providers.some((p) => p.id === id && !exclusionOf(p, protocols))));
+
+  const eligible = providers.filter((p) => !exclusionOf(p, protocols));
+  const noEligible = !!client && eligible.length === 0 && !aggregates.data?.models.some((model) => model.available);
+  const reasons = noEligible ? summarizeExclusions(providers, protocols, t) : [];
+  // What a configured client uses, as three facts instead of one long sentence.
+  const facts: { key: string; value: string; mono?: boolean }[] = client?.configured
+    ? [
+        { key: "access", value: t(mode === "native" ? "clients.accessNative" : "clients.accessRouter") },
+        { key: "source", value: sourceName ?? "—" },
+        modelIds?.length
+          ? { key: "model", value: t("clients.factModels", { count: new Set(modelIds).size }) }
+          : { key: "model", value: modelName ?? "—", mono: true },
+      ]
+    : [];
+
   return (
     <section
-      className="space-y-4"
-      aria-labelledby="client-configs-title"
+      id={`client-config-${target}`}
+      tabIndex={-1}
+      className="space-y-5 focus:outline-none"
+      aria-labelledby={`client-config-${target}-title`}
     >
-      <FoldHeader
-        open={fold.open}
-        onToggle={fold.toggle}
-        titleId="client-configs-title"
-        contentId="client-configs-body"
-        title={t("clients.title")}
-        titleClassName="font-display text-[17px] tracking-tight"
+      <ConsoleHeader
+        titleId={`client-config-${target}-title`}
+        title={client?.name ?? t(`newapi.topology.client.${target}`)}
         leading={
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-background ring-1 ring-border text-foreground">
-            <Terminal className="h-[18px] w-[18px]" />
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-background text-foreground ring-1 ring-border">
+            <ClientGlyph client={target} className="h-5 w-5" />
           </div>
         }
+        meta={client && (
+          <>
+            {target === "claudeCode" && (
+              <span className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] tabular-nums text-muted-foreground">
+                {client.clientVersion ? `v${client.clientVersion}` : t("clients.versionShort")}
+              </span>
+            )}
+            <Badge
+              variant="outline"
+              className={cn(
+                "gap-1 text-xs font-medium",
+                client.conflict
+                  ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                  : client.configured
+                    ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                    : "text-muted-foreground",
+              )}
+            >
+              {client.configured && !client.conflict && <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse motion-reduce:animate-none" />}
+              {client.conflict && <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />}
+              {t(client.conflict ? "clients.conflict" : client.configured ? "clients.configured" : "clients.notConfigured")}
+            </Badge>
+          </>
+        )}
+        actions={client && (
+          <>
+            {client.conflict && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-8 gap-1.5 rounded-lg text-xs text-amber-600 hover:text-amber-700 dark:text-amber-400"
+                disabled={actionsLocked}
+                onClick={() => setReapplying({ client, rebaseline: true })}
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                {t("clients.rebaseline")}
+              </Button>
+            )}
+            {(client.conflict || (client.error && client.error !== "clients.errors.invalidConfig")) && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-8 gap-1.5 rounded-lg text-xs text-destructive hover:bg-destructive/10"
+                disabled={actionsLocked}
+                onClick={() => setReleasing(client)}
+              >
+                <Unlink className="h-3.5 w-3.5" />
+                {t("clients.release")}
+              </Button>
+            )}
+            {client.configured && !client.conflict && !client.error && !unavailable && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-8 gap-1.5 rounded-lg text-xs text-muted-foreground hover:text-foreground"
+                disabled={actionsLocked}
+                onClick={() => setReapplying({ client, rebaseline: false })}
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                {t("clients.reapply")}
+              </Button>
+            )}
+            {client.configured && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-8 gap-1.5 rounded-lg text-xs text-muted-foreground hover:text-foreground"
+                disabled={actionsLocked || !!client.error}
+                onClick={() => setRestoring(client)}
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                {t("clients.restore")}
+              </Button>
+            )}
+            {target === "claudeCode" && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 gap-1.5 rounded-lg text-xs"
+                disabled={actionsLocked}
+                onClick={() => void previewOfficial()}
+              >
+                <Shield className="h-3.5 w-3.5" />
+                {t("clients.switchOfficial")}
+              </Button>
+            )}
+            <Button
+              size="sm"
+              data-config-action
+              variant={client.configured ? "outline" : "default"}
+              className="h-8 gap-1.5 rounded-lg text-xs font-semibold shadow-sm"
+              disabled={actionsLocked || !!client.error}
+              onClick={() => setSelected(client)}
+            >
+              <Settings2 className="h-3.5 w-3.5" />
+              {t(client.configured ? "clients.change" : "clients.configure")}
+            </Button>
+          </>
+        )}
       />
 
-      <FoldBody open={fold.open} id="client-configs-body" className="space-y-4">
       {clients.isPending && (
         <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
           <RefreshCw className="h-4 w-4 animate-spin text-primary" />
@@ -244,248 +385,71 @@ export function ClientConfigs({ providers, onOpenRelays }: { providers: NewApiPr
         </div>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {clients.data?.map((client) => {
-          const provider = providers.find((p) => p.id === client.providerId);
-          const mode = client.request?.accessMode ?? (client.configured ? "router" : "native");
-          const protocols = clientProtocols(client, mode);
-          const modelIds = client.targetId === "claudeCode" ? client.request?.claudeModelIds : null;
-          const selection = client.request?.modelSelection;
-          const aggregateId = selection?.defaultTarget?.kind === "aggregate" ? selection.defaultTarget.aggregateId : null;
-          const aggregate = aggregates.data?.models.find((model) => model.id === aggregateId);
-          const sourceName = aggregateId ? aggregate?.displayName ?? t("aggregation.unavailable") : provider?.name ?? client.providerId;
-          const modelName = aggregateId
-            ? aggregate?.displayName ?? client.model
-            : provider?.models.find((model) => model.id === client.model)?.displayName || client.model;
-          const configuredSummary =
-            client.targetId === "claudeCode"
-              ? t(modelIds?.length ? "clients.configuredModelsSummary" : "clients.configuredDefaultSummary", {
-                  provider: sourceName,
-                  count: modelIds ? new Set(modelIds).size : 0,
-                  model: modelName,
-                })
-              : `${sourceName} / ${client.model}`;
+      {!client && clients.isSuccess && (
+        <p role="status" className="harbor-well p-4 text-sm text-muted-foreground">{t("clients.notDetected")}</p>
+      )}
 
-          const targetUnavailable = (target: ModelTargetRef) => {
-            if (target.kind === "aggregate")
-              return !aggregates.data?.models.some((model) => model.id === target.aggregateId && model.available);
-            const source = providers.find((item) => item.id === target.providerId);
-            return !source || !!exclusionOf(source, protocols) || !clientModels(source, protocols).includes(target.modelId);
-          };
+      {client && (
+        <>
+          {facts.length > 0 ? (
+            <dl className="grid gap-3 sm:grid-cols-3" data-client-facts>
+              {facts.map((fact) => (
+                <div key={fact.key} className="harbor-well min-w-0 px-4 py-3">
+                  <dt className="poster-kicker text-[10px] text-muted-foreground">{t(`clients.fact.${fact.key}`)}</dt>
+                  <dd className={cn("mt-1 truncate text-[15px] font-semibold text-foreground", fact.mono && "font-mono text-[13px]")} title={fact.value}>
+                    {fact.value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          ) : (
+            <p className="harbor-well p-4 text-sm leading-relaxed text-muted-foreground">{t(`clients.${client.targetId}Hint`)}</p>
+          )}
 
-          const unavailable =
-            client.configured &&
-            (selection
-              ? !selection.defaultTarget || targetUnavailable(selection.defaultTarget) || selection.availableTargets.some(targetUnavailable)
-              : !provider ||
-                !!exclusionOf(provider, protocols) ||
-                !clientModels(provider, protocols).includes(client.model ?? "") ||
-                client.request?.providerIds.some((id) => !providers.some((p) => p.id === id && !exclusionOf(p, protocols))));
+          <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+            <span className="poster-kicker shrink-0 text-[10px]">{t("clients.configPath")}</span>
+            <span className="min-w-0 truncate font-mono" title={client.path}>{client.path}</span>
+          </div>
 
-          const eligible = providers.filter((p) => !exclusionOf(p, protocols));
-          const noEligible =
-            eligible.length === 0 && !aggregates.data?.models.some((model) => model.available);
-          const reasons = noEligible ? summarizeExclusions(providers, protocols, t) : [];
-
-          const isClaude = client.targetId === "claudeCode";
-
-          return (
+          {(client.conflict || client.error || unavailable) && (
             <div
-              key={client.targetId}
-              id={`client-config-${client.targetId}`}
-              tabIndex={-1}
-              className={cn(
-                "harbor-card group relative flex flex-col justify-between overflow-hidden transition-[box-shadow] duration-200",
-                client.conflict && "border-amber-500/40 bg-amber-500/[0.02]",
-                client.configured && !client.conflict && "border-border/80",
-              )}
+              role="alert"
+              className="space-y-1 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive"
             >
-
-              <div className="space-y-3.5">
-                {/* Header */}
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2.5">
-                    <div
-                      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-background text-foreground ring-1 ring-border"
-                    >
-                      <ClientGlyph client={client.targetId} className="h-5 w-5" />
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h3 className="font-display text-[16px] font-semibold tracking-tight text-foreground">{client.name}</h3>
-                        {client.targetId === "claudeCode" && (
-                          <span className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] tabular-nums text-muted-foreground">
-                            {client.clientVersion ? `v${client.clientVersion}` : t("clients.versionShort")}
-                          </span>
-                        )}
-                      </div>
-                      {client.configured && (
-                        <div className="text-[11px] font-medium text-muted-foreground">
-                          {t(mode === "native" ? "clients.accessNative" : "clients.accessRouter")}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <Badge
-                    variant="outline"
-                    className={cn(
-                      "gap-1 font-medium text-xs shadow-sm",
-                      client.conflict
-                        ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300"
-                        : client.configured
-                          ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-                          : "text-muted-foreground",
-                    )}
-                  >
-                    {client.configured && !client.conflict && <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse motion-reduce:animate-none" />}
-                    {client.conflict && <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />}
-                    {t(client.conflict ? "clients.conflict" : client.configured ? "clients.configured" : "clients.notConfigured")}
-                  </Badge>
-                </div>
-
-                {/* Path indicator */}
-                <div className="flex items-center gap-1.5 rounded-lg border border-border/50 bg-muted/30 px-2.5 py-1.5 font-mono text-xs text-muted-foreground">
-                  <span className="shrink-0 text-[10px] font-sans font-semibold uppercase tracking-wider text-muted-foreground/70">
-                    {t("clients.configPath")}
-                  </span>
-                  <span className="truncate" title={client.path}>{client.path}</span>
-                </div>
-
-                {/* Main description or configured status */}
-                <div className="harbor-well p-3">
-                  <p className="break-words text-sm font-medium leading-relaxed text-foreground">
-                    {client.configured ? configuredSummary : t(`clients.${client.targetId}Hint`)}
-                  </p>
-                </div>
-
-                {/* Conflict or Error alert */}
-                {(client.conflict || client.error || unavailable) && (
-                  <div
-                    role="alert"
-                    className="space-y-1 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive"
-                  >
-                    <p className="font-medium">
-                      {t(client.error ?? (client.conflict ? "clients.errors.conflict" : aggregateId ? "aggregation.targetUnavailable" : "clients.errors.provider"))}
-                    </p>
-                    {client.conflict && !!client.conflictFields?.length && (
-                      <p role="status" className="text-[11px] text-muted-foreground">
-                        {t("clients.conflictScope", {
-                          fields: conflictScopes(client.conflictFields)
-                            .map((scope) => t("clients.conflictScopes." + scope))
-                            .join(" · "),
-                        })}
-                      </p>
-                    )}
-                  </div>
-                )}
-
-                {reasons.length > 0 && (
-                  <p className="text-xs text-muted-foreground bg-muted/30 p-2 rounded-lg">
-                    {t("clients.noEligibleProviders")} {reasons.join(" · ")}
-                  </p>
-                )}
-
-                {noEligible && onOpenRelays && (
-                  <button
-                    type="button"
-                    data-relay-link
-                    onClick={onOpenRelays}
-                    className="inline-flex items-center gap-1 rounded text-xs font-medium text-primary hover:text-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    {t("newapi.addProvider")}
-                    <ArrowRight className="h-3 w-3" aria-hidden />
-                  </button>
-                )}
-              </div>
-
-              {/* Actions row */}
-              <div className="mt-5 flex flex-wrap items-center gap-2 pt-3 border-t border-border/50">
-                <Button
-                  size="sm"
-                  data-config-action
-                  variant={client.configured ? "outline" : "default"}
-                  className={cn(
-                    "h-8 gap-1.5 rounded-lg text-xs font-semibold shadow-sm transition-all",
-                    !client.configured && "bg-primary text-primary-foreground hover:bg-primary/90",
-                  )}
-                  disabled={actionsLocked || !!client.error}
-                  onClick={() => setSelected(client)}
-                >
-                  <Settings2 className="h-3.5 w-3.5" />
-                  {t(client.configured ? "clients.change" : "clients.configure")}
-                </Button>
-
-                {isClaude && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-8 gap-1.5 rounded-lg text-xs"
-                    disabled={actionsLocked}
-                    onClick={() => void previewOfficial()}
-                  >
-                    <Shield className="h-3.5 w-3.5" />
-                    {t("clients.switchOfficial")}
-                  </Button>
-                )}
-
-                {client.configured && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-8 gap-1.5 rounded-lg text-xs text-muted-foreground hover:text-foreground"
-                    disabled={actionsLocked || !!client.error}
-                    onClick={() => setRestoring(client)}
-                  >
-                    <RotateCcw className="h-3.5 w-3.5" />
-                    {t("clients.restore")}
-                  </Button>
-                )}
-
-                {client.configured && !client.conflict && !client.error && !unavailable && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-8 gap-1.5 rounded-lg text-xs text-muted-foreground hover:text-foreground"
-                    disabled={actionsLocked}
-                    onClick={() => setReapplying({ client, rebaseline: false })}
-                  >
-                    <RefreshCw className="h-3.5 w-3.5" />
-                    {t("clients.reapply")}
-                  </Button>
-                )}
-
-                {client.conflict && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-8 gap-1.5 rounded-lg text-xs text-amber-600 hover:text-amber-700 dark:text-amber-400"
-                    disabled={actionsLocked}
-                    onClick={() => setReapplying({ client, rebaseline: true })}
-                  >
-                    <RefreshCw className="h-3.5 w-3.5" />
-                    {t("clients.rebaseline")}
-                  </Button>
-                )}
-
-                {(client.conflict || (client.error && client.error !== "clients.errors.invalidConfig")) && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-8 gap-1.5 rounded-lg text-xs text-destructive hover:bg-destructive/10"
-                    disabled={actionsLocked}
-                    onClick={() => setReleasing(client)}
-                  >
-                    <Unlink className="h-3.5 w-3.5" />
-                    {t("clients.release")}
-                  </Button>
-                )}
-              </div>
+              <p className="font-medium">
+                {t(client.error ?? (client.conflict ? "clients.errors.conflict" : aggregateId ? "aggregation.targetUnavailable" : "clients.errors.provider"))}
+              </p>
+              {client.conflict && !!client.conflictFields?.length && (
+                <p role="status" className="text-[11px] text-muted-foreground">
+                  {t("clients.conflictScope", {
+                    fields: conflictScopes(client.conflictFields)
+                      .map((scope) => t("clients.conflictScopes." + scope))
+                      .join(" · "),
+                  })}
+                </p>
+              )}
             </div>
-          );
-        })}
-      </div>
-      </FoldBody>
+          )}
+
+          {reasons.length > 0 && (
+            <p className="rounded-lg bg-muted/30 p-2 text-xs text-muted-foreground">
+              {t("clients.noEligibleProviders")} {reasons.join(" · ")}
+            </p>
+          )}
+
+          {noEligible && onOpenRelays && (
+            <button
+              type="button"
+              data-relay-link
+              onClick={onOpenRelays}
+              className="inline-flex items-center gap-1 rounded text-xs font-medium text-primary hover:text-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {t("newapi.addProvider")}
+              <ArrowRight className="h-3 w-3" aria-hidden />
+            </button>
+          )}
+        </>
+      )}
 
       {selected && (
         <ConfigDialog

@@ -184,7 +184,7 @@ export function MaintenancePage() {
 
   return (
     <div className="space-y-6">
-      <PageHero kicker="Maintenance" watermark="TOOLS" icon={<Wrench />} title={t("nav.maintenance")} description={t("maintenance.description")} />
+      <PageHero kicker="Maintenance" icon={<Wrench />} title={t("nav.maintenance")} description={t("maintenance.description")} />
 
       <div className="grid gap-4 sm:grid-cols-2">
         {actions.map(({ key, icon: Icon, iconTile, label, description, actionLabel, loadingLabel, onAction, variant }) => {

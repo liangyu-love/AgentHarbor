@@ -1,14 +1,12 @@
 import type { ElementType, ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import { PosterWatermark } from "@/components/ui/poster-watermark";
 
 // The opening of a page, in the poster language shared by every page: an
-// English kicker, a display title, an outlined watermark word and the page's
-// primary actions. Optional children render as a strip under a hairline.
-export function PageHero({ kicker, watermark, icon, title, titleAs: Title = "h1", titleId, titleClassName, badge,
+// English kicker, a display title and the page's primary actions. Optional
+// children render as a strip under a hairline.
+export function PageHero({ kicker, icon, title, titleAs: Title = "h1", titleId, titleClassName, badge,
   description, actions, children, className }: {
   kicker: string;
-  watermark?: string;
   icon?: ReactNode;
   title: ReactNode;
   titleAs?: ElementType;
@@ -22,7 +20,6 @@ export function PageHero({ kicker, watermark, icon, title, titleAs: Title = "h1"
 }) {
   return (
     <section className={cn("route-surface route-rise relative overflow-hidden rounded-3xl border border-border/80 bg-card shadow-sm", className)}>
-      {watermark && <PosterWatermark text={watermark} className="bottom-[-0.16em] left-[44%] text-[clamp(3rem,6.5vw,5.25rem)]" />}
       <div className="relative flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6">
         <div className="flex min-w-0 items-center gap-3.5">
           {icon && (

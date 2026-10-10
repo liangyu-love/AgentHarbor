@@ -20,6 +20,11 @@ pub struct Requirements {
     pub private_history: bool,
     pub continuation: bool,
     pub portable_fresh: bool,
+    /// The client asked for a streamed reply.
+    pub stream: bool,
+    /// It continues a stored response or conversation (previous_response_id,
+    /// conversation or background).
+    pub resource: bool,
 }
 impl Requirements {
     pub fn parse(ingress: ModelProtocol, value: &Value, one_m: bool) -> Result<Self, &'static str> {
@@ -94,6 +99,8 @@ impl Requirements {
                 .max(),
             continuation: history || resource,
             portable_fresh: !history && !resource && !private_history && !has_tools,
+            stream: value["stream"] == true,
+            resource,
         })
     }
 
@@ -194,6 +201,7 @@ pub struct Attempts {
     max: u8,
     used: u8,
     safe: bool,
+    portable: bool,
     committed: bool,
 }
 impl Attempts {
@@ -203,6 +211,7 @@ impl Attempts {
             max: max.clamp(1, 2),
             used: 0,
             safe: requirements.portable_fresh && !bound,
+            portable: !requirements.private_history && !requirements.resource && !bound,
             committed: false,
         }
     }
@@ -228,6 +237,15 @@ impl Attempts {
             && self.used < self.max
             && !self.remaining().is_zero()
             && matches!(failure, Failure::ConnectBeforeSend | Failure::RateLimited)
+    }
+    /// A streamed reply that has shown nothing within the first-token limit
+    /// may be given up for another member while none of it has reached the
+    /// client. Unlike a replay after an error, tools and plain history may
+    /// move: the request is re-sent whole and nothing of the first reply was
+    /// relayed. Private reasoning, stored responses and a conversation bound
+    /// to its member stay where they are.
+    pub fn may_abandon_slow(&self) -> bool {
+        self.portable && !self.committed && self.used < self.max && !self.remaining().is_zero()
     }
 }
 
@@ -301,6 +319,39 @@ mod tests {
         .unwrap();
         assert!(private.private_history);
         assert!(!private.portable_fresh);
+    }
+
+    #[test]
+    fn slow_replies_move_only_while_nothing_binds_them() {
+        let tools = Requirements::parse(ModelProtocol::Responses,
+            &json!({"stream":true,"tools":[{"type":"function","name":"shell"}],
+                "input":[{"role":"user","content":"hi"},{"type":"function_call_output","call_id":"c","output":"ok"}]}), false).unwrap();
+        assert!(tools.stream);
+        let mut attempts = Attempts::new(2, &tools, false);
+        attempts.begin().unwrap();
+        assert!(!attempts.may_retry(Failure::RateLimited), "errors still replay only fresh requests");
+        assert!(attempts.may_abandon_slow(), "a silent reply may move with its tools and history");
+        attempts.begin().unwrap();
+        assert!(!attempts.may_abandon_slow(), "the last attempt is always waited for");
+
+        let mut bound = Attempts::new(2, &tools, true);
+        bound.begin().unwrap();
+        assert!(!bound.may_abandon_slow(), "a bound conversation keeps its member");
+        let private = Requirements::parse(ModelProtocol::Responses,
+            &json!({"stream":true,"input":[{"type":"reasoning","encrypted_content":"opaque"}]}), false).unwrap();
+        let mut attempts = Attempts::new(2, &private, false);
+        attempts.begin().unwrap();
+        assert!(!attempts.may_abandon_slow());
+        let stored = Requirements::parse(ModelProtocol::Responses,
+            &json!({"stream":true,"previous_response_id":"resp_1","input":"next"}), false).unwrap();
+        assert!(stored.resource);
+        let mut attempts = Attempts::new(2, &stored, false);
+        attempts.begin().unwrap();
+        assert!(!attempts.may_abandon_slow());
+        let mut committed = Attempts::new(2, &tools, false);
+        committed.begin().unwrap();
+        committed.commit();
+        assert!(!committed.may_abandon_slow());
     }
 
     #[test]

@@ -4,8 +4,8 @@ import path from "node:path";
 // Synthetic client statuses and IPC stubs only; no credentials or CLI files.
 export async function testClaudeCliOfficial({ page, reset, captureDir }) {
   const tr = (key) => page.evaluate((value) => window.review.t(value), key);
-  const clients = () => page.locator('[aria-labelledby="client-configs-title"]');
-  const card = (name) => clients().locator(".group").filter({ has: page.getByRole("heading", { name, exact: true }) });
+  const clients = () => page.locator('section[id^="client-config-"]');
+  const card = (name) => clients().filter({ has: page.getByRole("heading", { name, exact: true }) });
   const dialog = () => page.getByRole("alertdialog");
   const seed = async (options = {}) => {
     await reset("compact");
