@@ -22,7 +22,7 @@ import { CodexSubagentSettingsFields } from "./codex-subagent-settings";
 
 function Panel({ title, children, className }: { title: string; children: ReactNode; className?: string }) {
   return (
-    <div className={cn("min-w-0 rounded-2xl border border-border/60 bg-background/55 p-4", className)}>
+    <div className={cn("harbor-well min-w-0 p-4", className)}>
       <h3 className="mb-3 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">{title}</h3>
       {children}
     </div>
@@ -167,11 +167,7 @@ export function CodexAccessCard({
   );
 
   return (
-    <div className={cn("relative rounded-3xl border bg-card shadow-sm transition-[border-color,box-shadow] duration-300 motion-reduce:transition-none",
-      routingReady ? "border-primary/40 shadow-[0_18px_50px_-30px_hsl(var(--primary)/0.65)]" : "border-border")}>
-      {routingReady && (
-        <span aria-hidden className="pointer-events-none absolute inset-x-10 -top-px h-px bg-gradient-to-r from-transparent via-primary to-transparent" />
-      )}
+    <div className={cn("harbor-card relative !p-0", routingReady && "harbor-card-live")}>
       <section aria-labelledby="newapi-routing-title" className="space-y-4 p-4 sm:p-5">
         <FoldHeader
           open={fold.open}

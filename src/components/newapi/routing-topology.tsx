@@ -8,6 +8,7 @@ import { aggregationQueryKey } from "@/types/aggregation";
 import type { ProviderState } from "./use-provider-state";
 import { ClientGlyph, shortcutEntries, useSectionJump } from "./configuration-shortcuts";
 import { CLIENTS, DESTINATIONS, useRoutingLinks, type Client, type Destination, type Link } from "./use-routing-links";
+import { PosterWatermark } from "@/components/ui/poster-watermark";
 
 type Point = { x: number; y: number };
 type Box = { left: number; right: number; top: number; bottom: number; cx: number; cy: number };
@@ -231,7 +232,7 @@ export function RoutingTopology({
   return (
     <section aria-labelledby="routing-topology-title"
       className="route-surface route-rise relative overflow-hidden rounded-3xl border border-border/80 bg-card shadow-sm">
-      <span aria-hidden className="poster-watermark right-[-0.03em] top-[-0.16em] text-[clamp(5rem,13vw,10rem)]">ROUTING</span>
+      <PosterWatermark text="ROUTING" className="inset-x-0 bottom-[-0.12em] text-center text-[clamp(3.5rem,8vw,6.5rem)]" />
       <div className="relative flex flex-wrap items-start justify-between gap-3 px-5 pt-5 sm:px-6">
         <div className="min-w-0">
           <h2 id="routing-topology-title" className="poster-title text-2xl">
@@ -258,8 +259,7 @@ export function RoutingTopology({
               <linearGradient id={`${gradient}-routed`} gradientUnits="userSpaceOnUse"
                 x1="0" y1="0" x2={vertical ? 0 : layout?.width ?? 1} y2={vertical ? layout?.height ?? 1 : 0}>
                 <stop offset="0%" stopColor="hsl(var(--primary))" />
-                <stop offset="55%" stopColor="hsl(262 83% 66%)" />
-                <stop offset="100%" stopColor="hsl(190 95% 50%)" />
+                <stop offset="100%" stopColor="hsl(var(--primary) / 0.55)" />
               </linearGradient>
               <linearGradient id={`${gradient}-direct`} gradientUnits="userSpaceOnUse"
                 x1="0" y1="0" x2={vertical ? 0 : layout?.width ?? 1} y2={vertical ? layout?.height ?? 1 : 0}>

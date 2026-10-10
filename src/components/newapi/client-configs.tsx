@@ -209,7 +209,7 @@ export function ClientConfigs({ providers, onOpenRelays }: { providers: NewApiPr
 
   return (
     <section
-      className="space-y-4 rounded-3xl border border-border bg-card p-4 shadow-sm transition-shadow duration-300 hover:shadow-md sm:p-5"
+      className="space-y-4"
       aria-labelledby="client-configs-title"
     >
       <FoldHeader
@@ -244,7 +244,7 @@ export function ClientConfigs({ providers, onOpenRelays }: { providers: NewApiPr
         </div>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {clients.data?.map((client) => {
           const provider = providers.find((p) => p.id === client.providerId);
           const mode = client.request?.accessMode ?? (client.configured ? "router" : "native");
@@ -295,38 +295,24 @@ export function ClientConfigs({ providers, onOpenRelays }: { providers: NewApiPr
               id={`client-config-${client.targetId}`}
               tabIndex={-1}
               className={cn(
-                "group relative flex flex-col justify-between overflow-hidden rounded-2xl border bg-card/80 p-5 shadow-sm transition-all duration-300 hover:border-primary/40 hover:shadow-md",
+                "harbor-card group relative flex flex-col justify-between overflow-hidden transition-[box-shadow] duration-200",
                 client.conflict && "border-amber-500/40 bg-amber-500/[0.02]",
                 client.configured && !client.conflict && "border-border/80",
               )}
             >
-              {/* Subtle top indicator bar */}
-              <div
-                className={cn(
-                  "absolute left-5 top-0 h-0.5 w-10 rounded-b-sm transition-all duration-300 group-hover:w-16",
-                  isClaude
-                    ? "bg-gradient-to-r from-amber-500 to-orange-500"
-                    : "bg-gradient-to-r from-cyan-500 to-blue-500",
-                )}
-              />
 
               <div className="space-y-3.5">
                 {/* Header */}
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2.5">
                     <div
-                      className={cn(
-                        "flex h-9 w-9 shrink-0 items-center justify-center rounded-xl shadow-inner ring-1",
-                        isClaude
-                          ? "bg-amber-500/10 text-amber-600 ring-amber-500/20 dark:text-amber-400"
-                          : "bg-sky-500/10 text-sky-600 ring-sky-500/20 dark:text-sky-400",
-                      )}
+                      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-background text-foreground ring-1 ring-border"
                     >
                       <ClientGlyph client={client.targetId} className="h-5 w-5" />
                     </div>
                     <div>
                       <div className="flex items-center gap-2">
-                        <h3 className="font-semibold text-foreground tracking-tight">{client.name}</h3>
+                        <h3 className="font-display text-[16px] font-semibold tracking-tight text-foreground">{client.name}</h3>
                         {client.targetId === "claudeCode" && (
                           <span className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] tabular-nums text-muted-foreground">
                             {client.clientVersion ? `v${client.clientVersion}` : t("clients.versionShort")}
@@ -367,7 +353,7 @@ export function ClientConfigs({ providers, onOpenRelays }: { providers: NewApiPr
                 </div>
 
                 {/* Main description or configured status */}
-                <div className="rounded-xl border border-border/40 bg-background/60 p-3 shadow-sm">
+                <div className="harbor-well p-3">
                   <p className="break-words text-sm font-medium leading-relaxed text-foreground">
                     {client.configured ? configuredSummary : t(`clients.${client.targetId}Hint`)}
                   </p>

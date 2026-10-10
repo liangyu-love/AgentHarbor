@@ -18,6 +18,7 @@ import { formatRelative } from "@/lib/format-time";
 import { ClientGlyph } from "@/components/newapi/configuration-shortcuts";
 import { CLIENTS, useRoutingLinks, type Client, type Link } from "@/components/newapi/use-routing-links";
 import { formatTokenCount } from "@/components/threads/thread-utils";
+import { PosterWatermark } from "@/components/ui/poster-watermark";
 
 function HealthItem({ name, detail, healthy }: { name: string; detail: string; healthy?: boolean }) {
   return (
@@ -45,7 +46,8 @@ function OrbitHub({ links, running, onOpen }: { links: Record<Client, Link>; run
   const { t } = useTranslation();
   const id = useId().replace(/:/g, "");
   const reduced = typeof window !== "undefined" && (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false);
-  const live = running && CLIENTS.some((client) => links[client] === "routed");
+  const routed = CLIENTS.filter((client) => links[client] === "routed").length;
+  const live = running && routed > 0;
   return (
     <button type="button" onClick={onOpen} data-dash-orbit data-live={live || undefined}
       aria-label={t("workspace.orbitLabel")} title={t("workspace.manageConnection")}
@@ -55,8 +57,7 @@ function OrbitHub({ links, running, onOpen }: { links: Record<Client, Link>; run
           {/* User space: an object bounding box is empty for vertical lines. */}
           <linearGradient id={`${id}-line`} gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="320" y2="320">
             <stop offset="0%" stopColor="hsl(var(--primary))" />
-            <stop offset="60%" stopColor="hsl(262 83% 66%)" />
-            <stop offset="100%" stopColor="hsl(190 95% 50%)" />
+            <stop offset="100%" stopColor="hsl(var(--primary) / 0.55)" />
           </linearGradient>
           <radialGradient id={`${id}-glow`}>
             <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity="0.35" />
@@ -91,20 +92,27 @@ function OrbitHub({ links, running, onOpen }: { links: Record<Client, Link>; run
       <span className={cn("absolute left-1/2 top-1/2 flex h-[92px] w-[92px] -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center rounded-full border bg-card/95 shadow-lg backdrop-blur",
         live ? "border-primary/40 shadow-primary/25" : "border-border")}>
         {live && <span aria-hidden className="route-hub-ring absolute -inset-1.5 rounded-full" />}
-        <Waypoints className={cn("relative h-6 w-6", live ? "text-primary" : "text-muted-foreground")} />
-        <span className="relative mt-1 text-[11px] font-semibold">{t(live ? "newapi.topology.hubRouting" : running ? "newapi.topology.hubListening" : "newapi.topology.hubStopped")}</span>
+        <Waypoints className={cn("relative h-4 w-4", live ? "text-primary" : "text-muted-foreground")} />
+        <span className="poster-number relative mt-0.5 text-[26px] font-bold leading-none">
+          {routed}<small className="text-[13px] font-semibold text-muted-foreground">/{CLIENTS.length}</small>
+        </span>
+        <span className="relative mt-1 text-[10.5px] font-semibold text-muted-foreground">{t(live ? "newapi.topology.hubRouting" : running ? "newapi.topology.hubListening" : "newapi.topology.hubStopped")}</span>
       </span>
       {CLIENTS.map((client, index) => {
         const point = orbitPoint(index);
         const link = links[client];
         return (
           <span key={client} title={`${t(`newapi.topology.client.${client}`)} · ${t(`newapi.topology.link.${link}`)}`}
-            className={cn("absolute flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-2xl border bg-card shadow-sm transition-transform duration-300 group-hover:scale-105",
-              link === "routed" ? "border-primary/45 shadow-primary/20" : link === "direct" ? "border-emerald-500/45" : "border-border opacity-70")}
-            style={{ left: `${point.x / 3.2}%`, top: `${point.y / 3.2}%` }}>
-            <ClientGlyph client={client} className="h-5 w-5" />
-            <span aria-hidden className={cn("absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-card",
-              link === "routed" ? "bg-primary" : link === "direct" ? "bg-emerald-500" : "bg-muted-foreground/40")} />
+            className="absolute flex flex-col items-center gap-1"
+            style={{ left: `${point.x / 3.2}%`, top: `${point.y / 3.2}%`, transform: "translate(-50%, -22px)" }}>
+            <span className={cn("relative flex h-11 w-11 items-center justify-center rounded-2xl border bg-card shadow-sm transition-transform duration-300 group-hover:scale-105",
+              link === "routed" ? "border-primary/50" : link === "direct" ? "border-emerald-500/50" : "border-border opacity-75")}>
+              <ClientGlyph client={client} className="h-5 w-5" />
+              <span aria-hidden className={cn("absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-card",
+                link === "routed" ? "bg-primary" : link === "direct" ? "bg-emerald-500" : "bg-muted-foreground/40")} />
+            </span>
+            <span className={cn("whitespace-nowrap rounded-full bg-card/90 px-1.5 font-display text-[10px] font-semibold leading-4",
+              link === "idle" ? "text-muted-foreground" : "text-foreground")}>{t(`newapi.topology.client.${client}`)}</span>
           </span>
         );
       })}
@@ -170,7 +178,7 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
   onOpenProxySettings: () => void;
 }) {
   const { t, i18n } = useTranslation();
-  const [copiedHome, setCopiedHome] = useState(false);
+  const [copiedPath, setCopiedPath] = useState<string | null>(null);
 
   const snapshot = useQuery({ queryKey: queryKeys.runtimeStateDisplay, queryFn: () => api.loadSnapshot(true) });
   const newapi = useQuery({ queryKey: queryKeys.providers, queryFn: api.providers.loadState });
@@ -185,6 +193,8 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
   const accounts = useQuery({ queryKey: queryKeys.codexAccounts, queryFn: api.accounts.list, staleTime: 60_000, refetchOnWindowFocus: false });
   const usage = useQuery({ queryKey: queryKeys.tokenUsage, queryFn: api.usage.overview, staleTime: 5 * 60_000, refetchOnWindowFocus: false, retry: false });
   const threads = useQuery({ queryKey: queryKeys.conversations("codex"), queryFn: () => api.conversations.list("codex"), staleTime: 30_000 });
+  const clientConfigs = useQuery({ queryKey: queryKeys.clientConfigs, queryFn: api.targets.configs });
+  const desktop = useQuery({ queryKey: queryKeys.claudeDesktopStatus, queryFn: api.claudeDesktop.status, refetchOnWindowFocus: false });
   const { links } = useRoutingLinks(newapi.data?.router);
 
   const status = snapshot.data?.data.status;
@@ -198,12 +208,12 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
     ]);
   };
 
-  const handleCopyCodexHome = async () => {
-    if (!status?.paths.codexHome) return;
+  const handleCopyPath = async (path: string, key: string) => {
+    if (!path) return;
     try {
-      await navigator.clipboard.writeText(status.paths.codexHome);
-      setCopiedHome(true);
-      window.setTimeout(() => setCopiedHome(false), 2000);
+      await navigator.clipboard.writeText(path);
+      setCopiedPath(key);
+      window.setTimeout(() => setCopiedPath((current) => current === key ? null : current), 2000);
       toast({ title: t("workspace.pathCopied") });
     } catch (error) {
       toast({ title: t("common.error"), description: formatInvokeError(error), variant: "destructive" });
@@ -251,6 +261,25 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
   const backupsAvailable = !!skillBackups.data && !!claudeBackups.data && !skillBackups.isError && !claudeBackups.isError;
   const instructionManaged = instructions.data?.data.current.managedBlockPresent ?? false;
   const lastTemplateTitle = instructions.data?.data.current.lastTemplateTitle;
+  // Every client's data on this machine, in one list.
+  const configDir = (target: string) => {
+    const file = clientConfigs.data?.find((client) => client.targetId === target)?.path ?? "";
+    return file.replace(/[\\/][^\\/]*$/, "");
+  };
+  const dataLocations: { key: string; name: string; mark: ReactNode; path: string; ok: boolean; detail: string }[] = [
+    { key: "codex", name: "Codex", mark: <ClientGlyph client="codex" className="h-4 w-4" />, path: status?.paths.codexHome ?? "",
+      ok: !!status?.paths.sessionsExists, detail: t("workspace.dataCodex", { count: threads.data?.data.items.length ?? 0 }) },
+    { key: "claudeCode", name: "Claude Code", mark: <ClientGlyph client="claudeCode" className="h-4 w-4" />, path: status?.paths.claudeHome ?? "",
+      ok: !!status?.paths.claudeProjectsExists, detail: t(status?.paths.claudeProjectsExists ? "workspace.dataClaudeSessions" : "workspace.dataNoSessions") },
+    { key: "claudeDesktop", name: "Claude Desktop", mark: <ClientGlyph client="claudeDesktop" className="h-4 w-4" />,
+      path: desktop.data?.paths?.normalRoot ?? "", ok: !!desktop.data?.paths, detail: t(desktop.data?.isManaged ? "workspace.dataManaged" : "workspace.dataUnmanaged") },
+    { key: "opencode", name: "OpenCode", mark: <ClientGlyph client="opencode" className="h-4 w-4" />, path: configDir("opencode"),
+      ok: !!clientConfigs.data?.find((client) => client.targetId === "opencode")?.configured, detail: t("workspace.dataConfigFile") },
+    { key: "pi", name: "Pi", mark: <ClientGlyph client="pi" className="h-4 w-4" />, path: configDir("pi"),
+      ok: !!clientConfigs.data?.find((client) => client.targetId === "pi")?.configured, detail: t("workspace.dataConfigFile") },
+    { key: "agentharbor", name: "AgentHarbor", mark: <Waypoints className="h-4 w-4 text-primary" />, path: status?.paths.appDataDir ?? "",
+      ok: !!status?.paths.appDataDir, detail: t("workspace.dataHarbor") },
+  ];
 
   const local = usage.data?.local;
   const daily = (local?.daily ?? []).slice(-14).map((day) => day.totals.totalTokens);
@@ -265,7 +294,7 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
   return (
     <div className="overview-shell">
       <section className="dash-hero route-surface" aria-labelledby="overview-title">
-        <span aria-hidden className="poster-watermark -bottom-[0.14em] left-[-0.02em] text-[clamp(6rem,17vw,14rem)]">HARBOR</span>
+        <PosterWatermark text="HARBOR" className="bottom-[-0.1em] left-5 text-[clamp(4.5rem,11vw,9rem)]" />
         <div className="dash-hero-copy relative z-[1]">
           <div className="overview-eyebrow"><span aria-hidden />{t("workspace.eyebrow")}</div>
           <h1 id="overview-title" className="poster-title">{greeting}</h1>
@@ -424,7 +453,8 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
 
       <section className="overview-system" aria-labelledby="overview-system-title">
         <div className="overview-system-header" id="overview-system-title">
-          <div className="overview-system-title"><ShieldCheck aria-hidden /><h2>{t("baseline.localData")}</h2></div>
+          <div className="overview-system-title"><ShieldCheck aria-hidden /><h2>{t("baseline.localData")}</h2>
+            <span aria-hidden className="poster-kicker text-[9.5px] text-muted-foreground">Data map</span></div>
           <div className="overview-system-tools">
             {systemInfo.data && <span className="overview-system-platform"><Cpu aria-hidden />{systemInfo.data.os} ({systemInfo.data.arch})</span>}
             <Button variant="outline" size="sm" onClick={() => void handleRestartCodex()} className="overview-restart">
@@ -432,14 +462,34 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
             </Button>
           </div>
         </div>
-        <div className="overview-path">
-          <FolderOpen aria-hidden />
-          <span title={status?.paths.codexHome}>{status?.paths.codexHome ?? t("workspace.checkingPath")}</span>
-          <Button variant="ghost" size="icon-sm" onClick={() => void handleCopyCodexHome()} disabled={!status?.paths.codexHome} title={t("workspace.copyPath")} aria-label={t("workspace.copyPath")}>
-            {copiedHome ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => void handleOpenFolder(status?.paths.codexHome ?? "")} disabled={!status?.paths.codexHome}>{t("baseline.openFolder")}</Button>
-        </div>
+        <ul className="data-map" aria-label={t("workspace.dataLocations")}>
+          {dataLocations.map((location) => (
+            <li key={location.key} className="data-row" data-location={location.key}>
+              <span className="data-row-mark">{location.mark}</span>
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-2 text-[13px] font-semibold">
+                  {location.name}
+                  <span aria-hidden className={cn("h-1.5 w-1.5 rounded-full", location.path ? location.ok ? "bg-emerald-500" : "bg-amber-500" : "bg-muted-foreground/40")} />
+                  <span className="truncate text-[11px] font-normal text-muted-foreground">{location.detail}</span>
+                </span>
+                <span className="block truncate font-mono text-[11px] text-muted-foreground" title={location.path || undefined}>
+                  {location.path || t("workspace.notDetected")}
+                </span>
+              </span>
+              <span className="flex shrink-0 items-center gap-1">
+                <Button variant="ghost" size="icon-sm" onClick={() => void handleCopyPath(location.path, location.key)} disabled={!location.path}
+                  title={t("workspace.copyPath")} aria-label={`${t("workspace.copyPath")} · ${location.name}`}>
+                  {copiedPath === location.key ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                </Button>
+                <Button variant="ghost" size="icon-sm" onClick={() => void handleOpenFolder(location.path)} disabled={!location.path}
+                  title={t("baseline.openFolder")} aria-label={`${t("baseline.openFolder")} · ${location.name}`}>
+                  <FolderOpen className="h-4 w-4" />
+                </Button>
+              </span>
+            </li>
+          ))}
+        </ul>
+        <p className="mt-4 text-[11px] font-semibold text-muted-foreground">{t("workspace.codexFiles")}</p>
         <div className="overview-health-grid">
           <HealthItem name="auth.json" healthy={status?.paths.authExists} detail={t(!status ? "workspace.checking" : status.paths.authExists ? "workspace.authPresent" : "workspace.authMissing")} />
           <HealthItem name="registry.json" healthy={status?.paths.registryExists} detail={t(!status ? "workspace.checking" : status.paths.registryExists ? "workspace.registryPresent" : "workspace.registryMissing")} />

@@ -24,7 +24,9 @@ import {
   Loader2,
   CheckCircle2,
   AlertCircle,
+  Wrench,
 } from "lucide-react";
+import { PageHero } from "@/components/layout/page-hero";
 import { formatInvokeError } from "@/lib/invoke-error";
 
 const MIN_FEEDBACK_MS = 800;
@@ -182,7 +184,7 @@ export function MaintenancePage() {
 
   return (
     <div className="space-y-6">
-      <p className="text-sm text-muted-foreground">{t("maintenance.description")}</p>
+      <PageHero kicker="Maintenance" watermark="TOOLS" icon={<Wrench />} title={t("nav.maintenance")} description={t("maintenance.description")} />
 
       <div className="grid gap-4 sm:grid-cols-2">
         {actions.map(({ key, icon: Icon, iconTile, label, description, actionLabel, loadingLabel, onAction, variant }) => {

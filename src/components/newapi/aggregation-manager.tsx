@@ -214,7 +214,7 @@ export function AggregationManager({ providers }: { providers: NewApiProvider[] 
 
   return (
     <section
-      className="space-y-5 rounded-3xl border border-border bg-card p-4 shadow-sm transition-shadow duration-300 hover:shadow-md sm:p-5"
+      className="harbor-card space-y-5"
       aria-labelledby="aggregation-title"
     >
       <FoldHeader
@@ -225,7 +225,7 @@ export function AggregationManager({ providers }: { providers: NewApiProvider[] 
         title={t("aggregation.title")}
         titleClassName="font-display text-[17px] tracking-tight"
         leading={
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-background ring-1 ring-border text-indigo-600 dark:text-indigo-400">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-background ring-1 ring-border text-primary">
             <Network className="h-[18px] w-[18px]" />
           </div>
         }
@@ -271,18 +271,15 @@ export function AggregationManager({ providers }: { providers: NewApiProvider[] 
       {/* Draft Creation / Edit Studio Panel */}
       {draft && (
         <form
-          className="relative overflow-hidden rounded-2xl border border-indigo-500/30 bg-card p-5 sm:p-6 shadow-md transition-all space-y-6"
+          className="harbor-well relative space-y-6 p-5 sm:p-6"
           onSubmit={(event) => {
             event.preventDefault();
             save();
           }}
         >
-          {/* Top highlight bar */}
-          <div className="absolute left-0 top-0 h-1 w-full bg-gradient-to-r from-indigo-500 via-primary to-purple-500" />
-
           <div className="flex items-center justify-between border-b pb-4">
             <div className="flex items-center gap-2">
-              <Sparkles className="h-4 w-4 text-indigo-500" />
+              <Sparkles className="h-4 w-4 text-primary" />
               <h3 className="font-semibold text-foreground tracking-tight">
                 {draft.id ? t("common.edit") : t("aggregation.add")} · {t("aggregation.title")}
               </h3>
@@ -671,7 +668,7 @@ export function AggregationManager({ providers }: { providers: NewApiProvider[] 
       {/* Empty State */}
       {!query.isPending && models.length === 0 && !draft && (
         <div className="rounded-2xl border border-dashed border-border/80 bg-card/50 p-8 text-center space-y-3">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-500/10 text-indigo-500 ring-1 ring-indigo-500/20">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary ring-1 ring-primary/20">
             <GitBranch className="h-6 w-6" />
           </div>
           <p role="status" className="text-sm text-muted-foreground">{t("aggregation.empty")}</p>
@@ -686,25 +683,16 @@ export function AggregationManager({ providers }: { providers: NewApiProvider[] 
             <div
               key={model.id}
               className={cn(
-                "group relative flex flex-col justify-between overflow-hidden rounded-2xl border bg-card/80 p-5 shadow-sm transition-all duration-300 hover:border-indigo-500/40 hover:shadow-md",
+                "group relative flex flex-col justify-between overflow-hidden rounded-[20px] border bg-card p-5 transition-colors duration-200 hover:border-primary/40",
                 isAvailable ? "border-border/80" : "border-destructive/30 bg-destructive/[0.01]",
               )}
             >
-              {/* Subtle top indicator bar */}
-              <div
-                className={cn(
-                  "absolute left-5 top-0 h-0.5 w-10 rounded-b-sm transition-all duration-300 group-hover:w-16",
-                  isAvailable
-                    ? "bg-gradient-to-r from-indigo-500 to-purple-500"
-                    : "bg-destructive",
-                )}
-              />
 
               <div className="space-y-3.5">
                 {/* Header row */}
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex min-w-0 max-w-full items-center gap-2.5">
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 shadow-inner ring-1 ring-indigo-500/20">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
                       <Cpu className="h-4 w-4" />
                     </div>
                     <div className="min-w-0">
@@ -849,7 +837,7 @@ export function AggregationManager({ providers }: { providers: NewApiProvider[] 
 
       {/* Aggregation gateway: external clients connect through here */}
       <div
-        className="rounded-2xl border border-border/80 bg-card/70 p-4 shadow-sm sm:p-5"
+        className="harbor-well p-4 sm:p-5"
         role="group"
         aria-labelledby="aggregate-export-title"
       >
@@ -860,7 +848,7 @@ export function AggregationManager({ providers }: { providers: NewApiProvider[] 
           contentId="aggregate-gateway-body"
           title={t("aggregation.gateway")}
           titleClassName="text-sm"
-          leading={<Share2 className="h-4 w-4 text-indigo-500" />}
+          leading={<Share2 className="h-4 w-4 text-primary" />}
           meta={
             <Badge
               variant="outline"

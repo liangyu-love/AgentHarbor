@@ -108,17 +108,27 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
 
       <SectionGroup index="01" kicker="Clients" icon={<Plug className="h-3 w-3" />} title={t("newapi.groups.clients")}
         description={t("newapi.groups.clientsDesc")} delay={80}>
-        <CodexAccessCard
-          store={store}
-          providers={providers}
-          selectedProvider={selectedProvider}
-          nativeCompatible={nativeCompatible}
-          onRestart={() => setRestartConfirmOpen(true)}
-          onRestartRequired={() => setRestartPromptOpen(true)}
-          onOpenRelays={onOpenRelays}
-        />
-        <ClientConfigs providers={providers} onOpenRelays={onOpenRelays} />
-        <ClaudeDesktopConfigCard providers={providers} />
+        {/* The two desktop apps share a row; the CLI clients follow. DOM order
+            stays Codex, CLI clients, Desktop for keyboard and assistive tech. */}
+        <div className="inject-grid">
+          <div className="inject-codex min-w-0">
+            <CodexAccessCard
+              store={store}
+              providers={providers}
+              selectedProvider={selectedProvider}
+              nativeCompatible={nativeCompatible}
+              onRestart={() => setRestartConfirmOpen(true)}
+              onRestartRequired={() => setRestartPromptOpen(true)}
+              onOpenRelays={onOpenRelays}
+            />
+          </div>
+          <div className="inject-clis min-w-0">
+            <ClientConfigs providers={providers} onOpenRelays={onOpenRelays} />
+          </div>
+          <div className="inject-desktop min-w-0">
+            <ClaudeDesktopConfigCard providers={providers} />
+          </div>
+        </div>
       </SectionGroup>
 
       <SectionGroup index="02" kicker="Routing" icon={<Layers3 className="h-3 w-3" />} title={t("newapi.groups.routing")}

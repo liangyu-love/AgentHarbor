@@ -234,7 +234,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
 
   return (
     <section
-      className="space-y-4 rounded-3xl border border-border bg-card p-4 shadow-sm transition-shadow duration-300 hover:shadow-md sm:p-5"
+      className="harbor-card space-y-4"
       aria-labelledby="claude-desktop-title"
     >
       <FoldHeader
@@ -262,7 +262,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
         </div>
       )}
 
-      <div className="group relative overflow-hidden rounded-2xl border border-border/80 bg-card/80 p-5 shadow-sm transition-all duration-300 hover:border-primary/40 hover:shadow-md">
+      <div className="harbor-well group relative overflow-hidden p-5">
         {/* Subtle top indicator bar */}
         <div className="absolute left-5 top-0 h-0.5 w-10 rounded-b-sm bg-primary transition-all duration-300 group-hover:w-16" />
 
@@ -308,7 +308,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
             </div>
 
             {/* Main Provider / Route targets card */}
-            <div className="rounded-xl border border-border/50 bg-background/60 p-3.5 shadow-sm space-y-2">
+            <div className="space-y-2 rounded-xl bg-card p-3.5">
               {data.mode !== "router" && (
                 <p data-desktop-provider className="break-words text-sm font-semibold text-foreground">
                   {data.isManaged ? data.providerName ?? "—" : t("claudeDesktop.card.hintUnmanaged")}

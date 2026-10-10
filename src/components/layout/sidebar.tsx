@@ -16,7 +16,10 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+import { useQuery } from "@tanstack/react-query";
 import { useThemeValue, type Theme } from "@/hooks/use-theme";
+import { api } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 import { AppAvatarImage, useAppAvatar } from "@/hooks/use-app-avatar";
 import { cn } from "@/lib/utils";
 import type { Route } from "@/types/navigation";
@@ -24,6 +27,8 @@ import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
+  SidebarGroup,
+  SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
@@ -52,6 +57,15 @@ export const appNavItems: {
 
 const hiddenNavRoutes = new Set<Route>([]);
 
+/** Navigation reads as a table of contents: what you connect, what you work on, what you extend. */
+const navGroups: { kicker: string; routes: Route[] }[] = [
+  { kicker: "Home", routes: ["overview"] },
+  { kicker: "Connect", routes: ["newapi", "relays", "accounts"] },
+  { kicker: "Work", routes: ["threads", "imageWorkbench"] },
+  { kicker: "Extend", routes: ["customInstructions", "mcp", "skills"] },
+  { kicker: "System", routes: ["maintenance", "settings"] },
+];
+
 export const SIDEBAR_EXPANDED_WIDTH_PX = 176 * 1.05;
 export const SIDEBAR_COLLAPSED_WIDTH_PX = 64;
 
@@ -60,12 +74,13 @@ const SIDEBAR_LOGO_TOP_OFFSET_PX = -21;
 const navButtonClassName =
   "app-nav-button relative overflow-hidden group-data-[state=expanded]:!rounded-[10px] group-data-[state=expanded]:!px-3 group-data-[state=expanded]:!py-2 group-data-[state=expanded]:gap-2.5 " +
   // Selected = filled pill. Kill any leftover ring/border that reads as a hollow orange box.
-  "data-[active=true]:!border-transparent data-[active=true]:!bg-primary/12 data-[active=true]:!text-foreground " +
-  "data-[active=true]:!shadow-none data-[active=true]:!ring-0 data-[active=true]:!outline-none " +
-  "data-[active=true]:hover:!bg-primary/16 " +
+  // Selected = a raised sheet with a short accent rule; no glow.
+  "data-[active=true]:!border-transparent data-[active=true]:!bg-background data-[active=true]:!text-foreground " +
+  "data-[active=true]:!shadow-[0_0_0_1px_hsl(var(--sidebar-border)),0_1px_2px_hsl(var(--foreground)/0.06)] data-[active=true]:!ring-0 data-[active=true]:!outline-none " +
+  "dark:data-[active=true]:!bg-white/[0.07] " +
   "data-[active=true]:before:absolute data-[active=true]:before:left-0 data-[active=true]:before:top-1/2 data-[active=true]:before:-translate-y-1/2 " +
-  "data-[active=true]:before:h-5 data-[active=true]:before:w-[3px] data-[active=true]:before:rounded-full data-[active=true]:before:bg-primary " +
-  "data-[active=true]:before:content-[''] data-[active=true]:before:shadow-[0_0_8px_hsl(var(--primary)/0.45)] " +
+  "data-[active=true]:before:h-4 data-[active=true]:before:w-[3px] data-[active=true]:before:rounded-full data-[active=true]:before:bg-primary " +
+  "data-[active=true]:before:content-[''] " +
   "group-data-[collapsible=icon]/sidebar:data-[active=true]:before:hidden " +
   // Keyboard focus only; mouse click should not leave a hollow accent ring.
   "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/35 focus-visible:ring-offset-1 focus-visible:ring-offset-sidebar " +
@@ -157,6 +172,11 @@ export function AppSidebar({
 
   const themeLabel =
     resolvedTheme === "dark" ? t("nav.sidebarDarkTheme") : t("nav.sidebarLightTheme");
+  // Routing at a glance from any page.
+  const routing = useQuery({ queryKey: queryKeys.providers, queryFn: api.providers.loadState, staleTime: 30_000 });
+  const routeState = !routing.data?.proxyRunning ? "stopped" : routing.data.router.enabled ? "routing" : "listening";
+  const routeLabel = t(routeState === "routing" ? "newapi.topology.hubRouting"
+    : routeState === "listening" ? "newapi.topology.hubListening" : "newapi.topology.hubStopped");
 
   return (
     <Sidebar collapsible="icon" variant="inset">
@@ -196,46 +216,63 @@ export function AppSidebar({
           </button>
         </div>
       </SidebarHeader>
-      <SidebarContent className="pt-[18px]">
-        <SidebarMenu>
-          {appNavItems
-            .filter((item) => !hiddenNavRoutes.has(item.route))
-            .map(({ route, icon: Icon, labelKey }) => {
-              const isActive = activeRoute === route;
-              return (
-                <SidebarMenuItem key={route}>
-                  <SidebarMenuButton
-                    isActive={isActive}
-                    tooltip={t(labelKey)}
-                    className={navButtonClassName}
-                    onClick={() => handleNavigate(route)}
-                  >
-                    <Icon
-                      strokeWidth={1.75}
-                      className={cn(
-                        "size-4 shrink-0 transition-colors duration-150",
-                        isActive
-                          ? "text-primary drop-shadow-[0_0_6px_hsl(var(--primary)/0.35)]"
-                          : "text-sidebar-foreground/80 group-hover/menu-item:text-sidebar-accent-foreground",
-                      )}
-                    />
-                    <span
-                      className={cn(
-                        "truncate transition-colors duration-150",
-                        isActive && "font-semibold text-foreground",
-                      )}
+      <SidebarContent className="gap-0 pt-3">
+        {navGroups.map((group) => (
+          <SidebarGroup key={group.kicker} className="py-1">
+            <SidebarGroupLabel className="poster-kicker h-6 px-3 text-[9px] text-sidebar-foreground/45">{group.kicker}</SidebarGroupLabel>
+            <SidebarMenu>
+              {group.routes.filter((route) => !hiddenNavRoutes.has(route)).map((route) => {
+                const item = appNavItems.find((entry) => entry.route === route);
+                if (!item) return null;
+                const { icon: Icon, labelKey } = item;
+                const isActive = activeRoute === route;
+                return (
+                  <SidebarMenuItem key={route}>
+                    <SidebarMenuButton
+                      isActive={isActive}
+                      tooltip={t(labelKey)}
+                      className={navButtonClassName}
+                      onClick={() => handleNavigate(route)}
                     >
-                      {t(labelKey)}
-                    </span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              );
-            })}
-        </SidebarMenu>
+                      <Icon
+                        strokeWidth={1.75}
+                        className={cn(
+                          "size-4 shrink-0 transition-colors duration-150",
+                          isActive
+                            ? "text-primary"
+                            : "text-sidebar-foreground/70 group-hover/menu-item:text-sidebar-accent-foreground",
+                        )}
+                      />
+                      <span
+                        className={cn(
+                          "truncate transition-colors duration-150",
+                          isActive && "font-semibold text-foreground",
+                        )}
+                      >
+                        {t(labelKey)}
+                      </span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                );
+              })}
+            </SidebarMenu>
+          </SidebarGroup>
+        ))}
       </SidebarContent>
 
       <SidebarFooter className="border-t border-sidebar-border px-0 pt-2 pb-2">
-        <SidebarMenu className="!gap-0">
+        <SidebarMenu className="!gap-1">
+          <SidebarMenuItem className="px-2 group-data-[collapsible=icon]/sidebar:px-0">
+            <SidebarMenuButton tooltip={routeLabel} className={cn(footerNavButtonClassName, "!h-8")}
+              onClick={() => handleNavigate("newapi")} data-sidebar-route-status={routeState}>
+              <span aria-hidden className={cn("relative flex size-4 shrink-0 items-center justify-center")}>
+                <span className={cn("h-2 w-2 rounded-full",
+                  routeState === "routing" ? "bg-emerald-500" : routeState === "listening" ? "bg-amber-500" : "bg-sidebar-foreground/35")} />
+                {routeState === "routing" && <span className="absolute h-2 w-2 animate-ping rounded-full bg-emerald-500/60 motion-reduce:animate-none" />}
+              </span>
+              <span className="truncate text-[12px]">{routeLabel}</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
           <SidebarThemeToggle
             resolvedTheme={resolvedTheme}
             onThemeChange={onThemeChange}

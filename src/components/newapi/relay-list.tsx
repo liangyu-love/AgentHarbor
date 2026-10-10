@@ -15,6 +15,7 @@ import { useRelayConsumers, type RelayConsumer } from "@/components/newapi/use-r
 import type { ProviderState } from "@/components/newapi/use-provider-state";
 import type { RelayView } from "@/components/newapi/use-relay-view";
 import type { NewApiProvider } from "@/types/newapi";
+import { PosterWatermark } from "@/components/ui/poster-watermark";
 
 const CONSUMER_ORDER: RelayConsumer[] = ["codex", "claudeCode", "claudeDesktop", "opencode", "pi"];
 const GRID = "grid items-start gap-x-4 gap-y-3 md:grid-cols-2 2xl:grid-cols-3";
@@ -60,7 +61,7 @@ export function RelayList({ store, view, providers, onEdit, onTest, onRemove, on
   return (
     <section className="space-y-4" aria-labelledby="newapi-providers-title">
       <div className="route-surface route-rise relative overflow-hidden rounded-3xl border border-border/80 bg-card p-5 shadow-sm sm:p-6">
-        <span aria-hidden className="poster-watermark right-[-0.03em] top-[-0.16em] text-[clamp(5rem,13vw,10rem)]">RELAYS</span>
+        <PosterWatermark text="RELAYS" className="bottom-[-0.12em] right-6 text-[clamp(3.5rem,8vw,6.5rem)]" />
         <div className="relative flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
             <div className="flex items-center gap-2.5">

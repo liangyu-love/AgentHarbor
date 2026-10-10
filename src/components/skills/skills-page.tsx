@@ -39,6 +39,7 @@ import {
   X,
   RotateCw,
 } from "lucide-react";
+import { PageHero } from "@/components/layout/page-hero";
 import { queryKeys } from "@/lib/query-keys";
 import { errorMessage, formatInvokeError } from "@/lib/invoke-error";
 
@@ -258,13 +259,7 @@ function SkillsWorkspace({ source, onSourceChange }: {
 
   return (
     <div className="space-y-6">
-      {/* Page header */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-bold tracking-tight text-foreground">{t("skills.title")}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">{t("skills.description")}</p>
-        </div>
-        <div className="flex items-center gap-2">
+      <PageHero kicker="Skills" watermark="SKILLS" icon={<Sparkles />} title={t("skills.title")} description={t("skills.description")} actions={<>
           <RainbowButton
             size="sm"
             className="h-9 rounded-lg font-medium"
@@ -289,8 +284,7 @@ function SkillsWorkspace({ source, onSourceChange }: {
               idleIcon={<RotateCw className="h-4 w-4" />}
             />
           </Button>
-        </div>
-      </div>
+      </>} />
 
       {sourceControl}
 
@@ -445,7 +439,9 @@ function SkillsWorkspace({ source, onSourceChange }: {
               <BentoCard
                 key={skill.id}
                 compact
-                className="group flex flex-col justify-between transition-all duration-200 hover:border-purple-500/40 hover:shadow-md"
+                data-skill-card={skill.id}
+                data-spotlight
+                className="group flex flex-col justify-between"
               >
                 <div>
                   {/* Card Header: Icon + Title + Slug */}

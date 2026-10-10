@@ -53,7 +53,7 @@ export async function testSkillsActivation({ page, reset, captureDir }) {
   assert.equal(await page.getByRole("radio", { name: "Claude Code", exact: true }).evaluate(node => node === document.activeElement), true, "keyboard focus survives source workspace remount");
   assert.equal(await page.getByRole("heading", { name: "Sample Skill", exact: true }).count(), 0, "same skill ID from Codex must not appear in Claude Code");
   assert.equal(await page.getByText("已跳过非 UTF-8 的 SKILL.md", { exact: true }).count(), 0, "source warnings remain isolated");
-  const linked = page.locator(".rounded-2xl.border.bg-card").filter({ has: page.getByRole("heading", { name: "Linked Skill", exact: true }) });
+  const linked = page.locator("[data-skill-card]").filter({ has: page.getByRole("heading", { name: "Linked Skill", exact: true }) });
   assert.equal(await linked.getByText("外部管理", { exact: true }).count(), 1);
   assert.equal(await linked.getByRole("switch").count(), 0);
   assert.equal(await linked.getByRole("button", { name: "删除", exact: true }).isDisabled(), true);

@@ -18,7 +18,8 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
-import { Sun, Moon, Monitor, Globe, Download, Loader2 } from "lucide-react";
+import { Sun, Moon, Monitor, Globe, Download, Loader2, Settings as SettingsIcon } from "lucide-react";
+import { PageHero } from "@/components/layout/page-hero";
 import { BentoCard } from "@/components/ui/bento-card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -223,6 +224,7 @@ export function SettingsPage({
 
   return (
     <div className="space-y-6">
+      <PageHero kicker="Settings" watermark="SETTINGS" icon={<SettingsIcon />} title={t("nav.settings")} description={t("settings.heroDesc")} />
       <div className="grid gap-5 lg:grid-cols-2 items-start">
         {/* Left Column: Appearance */}
         <Section title={t("settings.appearance")}>

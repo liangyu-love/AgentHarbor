@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { Loader2, LogIn, RefreshCw, Search, UsersRound } from "lucide-react";
+import { PageHero } from "@/components/layout/page-hero";
 
 import { AccountCard, planLabel } from "@/components/accounts/account-card";
 import { TokenUsagePanel } from "@/components/accounts/token-usage-panel";
@@ -40,16 +41,10 @@ export function AccountsPage({ refreshInterval, onManageProviders }: { refreshIn
 
   return (
     <div className="mx-auto max-w-7xl space-y-5 pb-8">
-        <section className="flex flex-col gap-3 rounded-2xl border border-border/70 bg-card/70 px-4 py-3 shadow-sm sm:flex-row sm:items-center sm:justify-between">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-xl font-semibold tracking-tight">{t("accounts.title")}</h2>
-              <Badge variant="outline" className="border-primary/25 bg-primary/5 text-[10px] text-primary">
-                {t("accounts.official")}
-              </Badge>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 sm:shrink-0">
+        <PageHero kicker="Accounts" watermark="ACCOUNTS" icon={<UsersRound />} titleAs="h2" title={t("accounts.title")}
+          description={t("accounts.heroDesc")}
+          badge={<Badge variant="outline" className="border-primary/25 bg-primary/5 text-[10px] text-primary">{t("accounts.official")}</Badge>}
+          actions={<>
             <Button
               variant="outline"
               onClick={() => void refresh()}
@@ -59,8 +54,7 @@ export function AccountsPage({ refreshInterval, onManageProviders }: { refreshIn
               {t("common.refresh")}
             </Button>
             {!loginPending && <Button onClick={startLogin}><LogIn />{t("accounts.oauthLogin")}</Button>}
-          </div>
-        </section>
+          </>} />
 
         {loginPending && (
           <section aria-label={t("accounts.oauthLogin")} className="flex flex-col gap-3 rounded-xl border border-border bg-card px-4 py-3 sm:flex-row sm:items-center sm:justify-between">

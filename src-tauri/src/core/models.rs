@@ -129,6 +129,14 @@ pub struct AppPathState {
     pub auth_exists: bool,
     pub registry_exists: bool,
     pub sessions_exists: bool,
+    /// AgentHarbor's own data directory (relays, routing state, caches).
+    #[serde(default)]
+    pub app_data_dir: String,
+    /// Claude Code's configuration directory and whether its transcripts exist.
+    #[serde(default)]
+    pub claude_home: String,
+    #[serde(default)]
+    pub claude_projects_exists: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -19,6 +19,9 @@ export interface AppPathState {
   authExists: boolean;
   registryExists: boolean;
   sessionsExists: boolean;
+  appDataDir?: string;
+  claudeHome?: string;
+  claudeProjectsExists?: boolean;
 }
 
 export interface AutoSwitchStatusPayload {

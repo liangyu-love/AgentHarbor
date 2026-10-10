@@ -47,7 +47,7 @@ export function CodexSubagentSettingsFields({ store }: { store: ProviderState })
     toast({ title: t(next ? "newapi.subagentSaved" : "newapi.subagentRestored"),
       description: change.applied ? t("newapi.subagentRestart") : undefined, variant: "success" });
   }, t("newapi.subagentSaveFailed"));
-  return <section aria-labelledby="codex-subagents-title" className="space-y-3 rounded-2xl border border-border/60 bg-background/55 p-4">
+  return <section aria-labelledby="codex-subagents-title" className="harbor-well space-y-3 p-4">
     <div className="flex flex-wrap items-baseline justify-between gap-2">
       <h3 id="codex-subagents-title" className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">{t("newapi.subagentDefaults")}</h3>
       {view.managed && <span className="text-xs text-muted-foreground">

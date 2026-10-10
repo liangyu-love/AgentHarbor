@@ -8,8 +8,8 @@ export function BentoInnerPanel({
   return (
     <div
       className={cn(
-        "rounded-xl border border-border p-4",
-        "bg-muted/50 dark:bg-black/25",
+        "rounded-2xl p-4",
+        "bg-muted/50 dark:bg-muted/35",
         className,
       )}
       {...props}

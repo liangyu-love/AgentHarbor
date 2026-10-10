@@ -376,6 +376,8 @@ impl Repository {
 
         let last_scan_at = current_timestamp();
 
+        let claude_paths = crate::core::client_config::ClientPaths::discover();
+        let claude_root = claude_paths.claude_root();
         let app_paths = AppPathState {
             codex_home: self.paths.codex_home.display().to_string(),
             accounts_path: self.paths.accounts_dir.display().to_string(),
@@ -385,6 +387,9 @@ impl Repository {
             auth_exists: self.paths.auth_path.exists(),
             registry_exists: self.paths.registry_path.exists(),
             sessions_exists: self.paths.sessions_dir.exists(),
+            app_data_dir: self.paths.app_data_dir.display().to_string(),
+            claude_home: claude_root.display().to_string(),
+            claude_projects_exists: claude_root.join("projects").is_dir(),
         };
 
         Ok(LoadedState {

@@ -14,9 +14,9 @@ export function BentoCard({
   return (
     <div
       className={cn(
-        "relative overflow-hidden rounded-2xl border border-border bg-card",
-        "shadow-[0_1px_2px_rgba(0,0,0,0.03)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.2)]",
-        "transition-all duration-200 ease-out hover:border-primary/25 hover:shadow-[0_4px_16px_rgba(0,0,0,0.05)] dark:hover:shadow-[0_4px_20px_rgba(0,0,0,0.35)] motion-reduce:transition-none",
+        // A hairline instead of a border box, so cards inside sections stay quiet.
+        "relative overflow-hidden rounded-[22px] bg-card shadow-[0_0_0_1px_hsl(var(--border)/0.85)]",
+        "transition-shadow duration-200 ease-out hover:shadow-[0_0_0_1px_hsl(var(--border)),0_10px_26px_-22px_hsl(var(--foreground)/0.35)] motion-reduce:transition-none",
         compact ? "p-4" : "p-6",
         className,
       )}

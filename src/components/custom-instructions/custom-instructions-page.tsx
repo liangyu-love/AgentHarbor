@@ -9,6 +9,7 @@ import {
   Search,
   Save,
 } from "lucide-react";
+import { PageHero } from "@/components/layout/page-hero";
 import { BentoCard } from "@/components/ui/bento-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -240,11 +241,8 @@ function InstructionsWorkspace({
 
   return (
     <div className="space-y-5" data-instruction-workspace={source}>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold">
-          {t("customInstructions.title")}
-        </h1>
-        <div className="flex flex-wrap items-center gap-2">
+      <PageHero kicker="Instructions" watermark="AGENTS" icon={<FileCode2 />} title={t("customInstructions.title")}
+        description={t("customInstructions.description")} actions={<>
           <SegmentedOptions
             value={tab}
             onChange={setTab}
@@ -268,8 +266,7 @@ function InstructionsWorkspace({
           >
             <RotateCw className="h-4 w-4" />
           </Button>
-        </div>
-      </div>
+      </>} />
       {stateQuery.isError ? (
         <BentoCard role="alert">
           <p>{t("customInstructions.loadFailed")}</p>

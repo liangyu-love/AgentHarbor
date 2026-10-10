@@ -20,18 +20,19 @@ export function AuroraCard({
   return (
     <div
       className={cn(
-        "group/aurora relative rounded-2xl border border-border bg-card transition-[border-color,box-shadow] duration-200 motion-reduce:transition-none",
-        shine && "border-primary/45 ring-1 ring-primary/15",
+        "group/aurora relative rounded-[22px] bg-card shadow-[0_0_0_1px_hsl(var(--border)/0.85)] transition-shadow duration-200 motion-reduce:transition-none",
+        shine && "shadow-[0_0_0_1px_hsl(var(--primary)/0.5)]",
         className,
       )}
       {...props}
     >
       <div className={cn("relative h-full overflow-hidden rounded-[inherit]", innerClassName)}>
-        <span
+        {/* Only status colors keep a marker; neutral cards stay plain. */}
+        {(color === "green" || color === "red" || color === "amber") && <span
           aria-hidden
-          className="absolute left-5 top-0 h-0.5 w-8 rounded-b-sm opacity-75 transition-[width] duration-200 group-hover/aurora:w-12 motion-reduce:transition-none"
-          style={{ backgroundColor: color === "green" || color === "red" || color === "amber" ? glowPalette[color].bar : "hsl(var(--primary))" }}
-        />
+          className="absolute left-5 top-0 h-0.5 w-8 rounded-b-sm opacity-75"
+          style={{ backgroundColor: glowPalette[color].bar }}
+        />}
         <div className="relative flex h-full flex-col">{children}</div>
       </div>
     </div>

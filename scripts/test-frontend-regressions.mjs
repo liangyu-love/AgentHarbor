@@ -44,7 +44,8 @@ const esbuild = require(require.resolve("esbuild", { paths: [require.resolve("vi
 const fixture = await readFile(path.join(root, "scripts/fixtures/frontend-regressions.tsx"), "utf8");
 const bundle = await esbuild.build({ stdin: { contents: fixture, loader: "tsx", resolveDir: root },
   bundle: true, write: false, format: "iife", platform: "browser", loader: { ".svg": "dataurl" }, alias: { "@": path.join(root, "src") },
-  define: { "process.env.NODE_ENV": '"production"' } });
+  // The IIFE bundle has no import.meta; asset URLs resolve against the fixture origin.
+  define: { "process.env.NODE_ENV": '"production"', "import.meta.url": '"http://127.0.0.1/fixture.js"' } });
 const assets = path.join(root, "dist/assets");
 let cssFiles;
 try { cssFiles = (await readdir(assets)).filter(name => name.endsWith(".css")); } catch { cssFiles = []; }
@@ -180,7 +181,7 @@ try {
   console.log("PASS balance API retries only transport failures and never retries auth or invalid responses");
 
   await page.getByText("Review thread 0", { exact: true }).waitFor();
-  await page.locator("section").evaluate(element => { element.scrollTop = 2800; });
+  await page.locator("[data-page-scroll-container]").evaluate(element => { element.scrollTop = 2800; });
   await page.waitForFunction(() => [...document.querySelectorAll("[data-thread-title]")].some(element => {
     const bounds = element.getBoundingClientRect();
     return /^Review thread [5-9][0-9]$/.test(element.textContent ?? "") && bounds.top < 600 && bounds.bottom > 0;
@@ -189,7 +190,7 @@ try {
   await page.evaluate(() => window.review.mount("grid"));
   // At 3 columns each group is ~820px tall, so Workspace 3 starts around
   // 2460px; scroll keeps its header inside the 600px-tall container.
-  await page.locator("section").evaluate(element => { element.scrollTop = 2000; });
+  await page.locator("[data-page-scroll-container]").evaluate(element => { element.scrollTop = 2000; });
   await page.waitForFunction(() => [...document.querySelectorAll("h2")].some(element => {
     const bounds = element.getBoundingClientRect();
     const viewport = element.closest("[data-page-scroll-container]")?.getBoundingClientRect();
@@ -1308,9 +1309,9 @@ try {
   assert.ok(await page.evaluate(() => window.review.thumbnailCalls.length < 100));
   assert.equal(await page.evaluate(() => window.review.originalCalls.length), 0);
   const galleryTop = await page.locator('button[title="gallery-0.png"]').evaluate(element =>
-    element.getBoundingClientRect().top + element.closest("section").scrollTop);
+    element.getBoundingClientRect().top + element.closest("[data-page-scroll-container]").scrollTop);
   for (let offset = 0; offset <= 5000; offset += 400) {
-    await page.locator("section").evaluate((element, scroll) => { element.scrollTop = scroll; }, galleryTop + offset);
+    await page.locator("[data-page-scroll-container]").evaluate((element, scroll) => { element.scrollTop = scroll; }, galleryTop + offset);
     await page.waitForTimeout(60);
   }
   await page.locator('button[title="gallery-0.png"]').scrollIntoViewIfNeeded();

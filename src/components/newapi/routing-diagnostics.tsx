@@ -105,7 +105,7 @@ export function RoutingDiagnostics({
 
   return (
     <section
-      className="rounded-3xl border border-border bg-card p-4 shadow-sm transition-shadow duration-300 hover:shadow-md sm:p-5"
+      className="harbor-card"
       aria-label={t("newapi.routeDiagnostics")}
     >
       {/* Header bar */}

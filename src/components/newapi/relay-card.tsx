@@ -288,7 +288,7 @@ export function RelayCard({ group, store, view, consumers, onEdit, onTest, onRem
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <button type="button" className={cardButton} title={t("newapi.networkMode")} aria-label={t("newapi.networkMode")} disabled={mutationLocked}>
-                    <Network className={cn("h-3.5 w-3.5", provider.networkMode === "direct" ? "text-emerald-600 dark:text-emerald-400" : "text-blue-600 dark:text-blue-400")} />
+                    <Network className={cn("h-3.5 w-3.5", provider.networkMode === "direct" ? "text-emerald-600 dark:text-emerald-400" : "text-foreground/70")} />
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-52">

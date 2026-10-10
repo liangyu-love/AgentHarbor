@@ -163,7 +163,17 @@
     "threadsToday": "{{count}} conversations active today",
     "recentThreads": "Recent conversations",
     "viewAll": "All conversations",
-    "noThreads": "No conversations yet"
+    "noThreads": "No conversations yet",
+    "dataLocations": "Data directories of every client",
+    "notDetected": "Not detected",
+    "codexFiles": "Codex key files",
+    "dataCodex": "{{count}} conversations",
+    "dataClaudeSessions": "Has conversation history",
+    "dataNoSessions": "No conversation history",
+    "dataManaged": "Managed by AgentHarbor",
+    "dataUnmanaged": "Not managed",
+    "dataConfigFile": "Configuration directory",
+    "dataHarbor": "Relays, routing and caches"
   },
   "clients": {
     "title": "Client configuration",
@@ -1629,7 +1639,8 @@
       "today": "Today’s hit rate",
       "lastSevenDays": "Seven-day hit rate",
       "allTime": "All-time hit rate"
-    }
+    },
+    "heroDesc": "Sign in, switch and track ChatGPT accounts, quota windows and local usage"
   },
   "nav": {
     "overview": "Dashboard",
@@ -2262,7 +2273,8 @@
     "checkUpdate": "Check for Updates",
     "checkUpdateBusy": "Checking",
     "upToDate": "Already up to date",
-    "updateCheckFailed": "Failed to check for updates"
+    "updateCheckFailed": "Failed to check for updates",
+    "heroDesc": "Appearance, language, proxy and updates"
   },
   "common": {
     "save": "Save",
