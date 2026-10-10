@@ -467,6 +467,36 @@ api.targets.restart = async target => {
   state = { ...state, router: { ...state.router, restartPending: false } };
 };
 api.targets.configs = async () => [];
+const keyFile = (id: string, name: string, path: string, exists: boolean, directory = false) =>
+  ({ id, name, path, exists, directory });
+api.targets.files = async () => [
+  { client: "codex", files: [
+    keyFile("config", "config.toml", "C:/synthetic/.codex/config.toml", true),
+    keyFile("auth", "auth.json", "C:/synthetic/.codex/auth.json", true),
+    keyFile("registry", "registry.json", "C:/synthetic/.codex/agentharbor/accounts/registry.json", false),
+    keyFile("sessions", "sessions/", "C:/synthetic/.codex/sessions", true, true),
+    keyFile("instructions", "AGENTS.md", "C:/synthetic/.codex/AGENTS.md", false),
+  ] },
+  { client: "claudeCode", files: [
+    keyFile("settings", "settings.json", "C:/synthetic/.claude/settings.json", true),
+    keyFile("userConfig", ".claude.json", "C:/synthetic/.claude.json", true),
+    keyFile("sessions", "projects/", "C:/synthetic/.claude/projects", true, true),
+    keyFile("instructions", "CLAUDE.md", "C:/synthetic/.claude/CLAUDE.md", false),
+  ] },
+  { client: "claudeDesktop", files: [
+    keyFile("normalConfig", "claude_desktop_config.json", "C:/synthetic/Claude/claude_desktop_config.json", true),
+    keyFile("thirdPartyConfig", "claude_desktop_config.json", "C:/synthetic/Claude-3p/claude_desktop_config.json", false),
+    keyFile("profile", "profile.json", "C:/synthetic/Claude-3p/configLibrary/profile.json", false),
+    keyFile("meta", "_meta.json", "C:/synthetic/Claude-3p/configLibrary/_meta.json", false),
+  ] },
+  { client: "opencode", files: [keyFile("config", "opencode.json", "C:/synthetic/.config/opencode/opencode.json", true)] },
+  { client: "pi", files: [
+    keyFile("models", "models.json", "C:/synthetic/.pi/agent/models.json", true),
+    keyFile("auth", "auth.json", "C:/synthetic/.pi/agent/auth.json", false),
+    keyFile("settings", "settings.json", "C:/synthetic/.pi/agent/settings.json", false),
+    keyFile("sessions", "sessions/", "C:/synthetic/.pi/agent/sessions", false, true),
+  ] },
+];
 api.targets.previewConfig = async request => {
   controls.review.previewed = request;
   return { path: "C:/synthetic/config.json", revision: "mock-revision", content: JSON.stringify({ model: request.model }) };

@@ -355,6 +355,15 @@ impl Manager {
         })
     }
 
+    /// 状态所描述的同一组四文件路径：已接管时取保存的路径，否则取发现的默认路径。
+    /// 不做进程探测与事务规划，供仪表盘只读展示。
+    pub fn current_paths(&self) -> Option<DesktopPaths> {
+        match self.load_state().ok().flatten() {
+            Some(state) => Some(status::state_paths(&state)),
+            None => self.discovery().default,
+        }
+    }
+
     /// 只读状态。写路径与读路径分开：这里不做任何写入或事务规划。
     pub fn status(&self, store: &Store) -> DesktopStatus {
         let detection = self.detection();

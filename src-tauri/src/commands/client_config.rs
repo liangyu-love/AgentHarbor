@@ -40,6 +40,20 @@ fn manager(paths: &CodexPaths) -> ConfigManager {
         .with_official_home(&paths.codex_home)
 }
 
+/// Each client's key files for the dashboard. Existence checks only.
+#[tauri::command]
+pub async fn list_client_files(
+    repo: State<'_, Mutex<Repository>>,
+) -> Result<Vec<crate::core::client_files::ClientFiles>, String> {
+    let paths = paths(&repo)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let desktop = crate::core::claude_desktop::Manager::new(&paths.app_data_dir).current_paths();
+        crate::core::client_files::collect(&paths, &ClientPaths::discover(), desktop.as_ref())
+    })
+    .await
+    .map_err(|_| "clients.errors.storage".to_owned())
+}
+
 #[tauri::command]
 pub fn list_client_configs(
     repo: State<'_, Mutex<Repository>>,

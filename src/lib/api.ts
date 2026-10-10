@@ -32,7 +32,7 @@ import type {
 import { claudeDesktopApi } from "@/lib/claude-desktop";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
 import { errorMessage } from "@/lib/invoke-error";
-import type { TargetId, ClientStatus, ClientConfigRequest, ClientConfigPreview, ClientConfigApplied, ClaudeOfficialPreview } from "@/types/clients";
+import type { TargetId, ClientStatus, ClientFiles, ClientConfigRequest, ClientConfigPreview, ClientConfigApplied, ClaudeOfficialPreview } from "@/types/clients";
 import type { CodexAccessMode, ModelProtocol, NewApiState, NewApiStateChange, NewApiImportResult, NewApiProvider, NewApiProviderInput, NewApiModel } from "@/types/newapi";
 
 export interface ImageGenerationRequest {
@@ -190,6 +190,7 @@ const imageApi = {
 const targetsApi = {
   restart: (targetId: TargetId) => invoke<void>("restart_target", { targetId }),
   configs: () => invoke<ClientStatus[]>("list_client_configs"),
+  files: () => invoke<ClientFiles[]>("list_client_files"),
   previewConfig: (request: ClientConfigRequest, replaceConflicts = false) => invoke<ClientConfigPreview>("preview_client_config", { request, replaceConflicts }),
   applyConfig: (request: ClientConfigRequest, revision: string, replaceConflicts = false) => invoke<ClientConfigApplied>("apply_client_config", { request, revision, replaceConflicts }),
   restoreConfig: (targetId: TargetId, replaceConflicts = false) => invoke<ClientConfigApplied>("restore_client_config", { targetId, replaceConflicts }),

@@ -193,6 +193,7 @@ pub fn run() {
             commands::desktop_exit::get_claude_desktop_exit_request,
             commands::desktop_exit::resolve_claude_desktop_exit,
             commands::client_config::list_client_configs,
+            commands::client_config::list_client_files,
             commands::client_config::preview_client_config,
             commands::client_config::apply_client_config,
             commands::client_config::restore_client_config,

@@ -2,8 +2,8 @@ import { useId, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
-  ArrowRight, ArrowUpRight, Check, CheckCircle2, CircleDashed, Copy, Cpu, FileCode2, FolderOpen, Image as ImageIcon,
-  MessagesSquare, RadioTower, RotateCw, Server, Settings, ShieldCheck, Sparkles, UsersRound, Waypoints, Wrench, XCircle, Zap,
+  ArrowRight, ArrowUpRight, Check, CircleDashed, Copy, Cpu, FileCode2, FolderOpen, Image as ImageIcon,
+  MessagesSquare, RadioTower, RotateCw, Server, Settings, ShieldCheck, Sparkles, UsersRound, Waypoints, Wrench, Zap,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import type { Route } from "@/types/navigation";
 import type { CodexAccountSummary } from "@/types";
+import type { ClientFiles, ClientKeyFile } from "@/types/clients";
 import { queryKeys } from "@/lib/query-keys";
 import { errorMessage, formatInvokeError } from "@/lib/invoke-error";
 import { formatRelative } from "@/lib/format-time";
@@ -19,17 +20,23 @@ import { ClientGlyph } from "@/components/newapi/configuration-shortcuts";
 import { CLIENTS, useRoutingLinks, type Client, type Link } from "@/components/newapi/use-routing-links";
 import { formatTokenCount } from "@/components/threads/thread-utils";
 
-function HealthItem({ name, detail, healthy }: { name: string; detail: string; healthy?: boolean }) {
+/** A client's key files as small status tags; hovering shows the full path. */
+function KeyFiles({ group, name }: { group?: ClientFiles; name: string }) {
+  const { t } = useTranslation();
+  if (!group?.files.length) return null;
+  // Desktop's two configs share a file name, so they are labelled by role.
+  const label = (file: ClientKeyFile) => group.client === "claudeDesktop"
+    ? t(`workspace.desktopFile.${file.id}`, { defaultValue: file.name }) : file.name;
   return (
-    <div className="overview-health-item">
-      {healthy === undefined
-        ? <CircleDashed aria-hidden className="overview-health-muted" />
-        : healthy ? <CheckCircle2 aria-hidden className="overview-health-good" /> : <XCircle aria-hidden className="overview-health-muted" />}
-      <div className="min-w-0">
-        <strong>{name}</strong>
-        <span>{detail}</span>
-      </div>
-    </div>
+    <ul className="data-files" aria-label={t("workspace.keyFiles", { name })}>
+      {group.files.map((file) => (
+        <li key={file.id} data-file={file.id} data-exists={file.exists || undefined} title={file.path}>
+          {file.exists ? <Check aria-hidden /> : <CircleDashed aria-hidden />}
+          <span className="data-file-name">{label(file)}</span>
+          <span className="sr-only">{t(file.exists ? "workspace.filePresent" : "workspace.fileMissing")}</span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -193,17 +200,18 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
   const usage = useQuery({ queryKey: queryKeys.tokenUsage, queryFn: api.usage.overview, staleTime: 5 * 60_000, refetchOnWindowFocus: false, retry: false });
   const threads = useQuery({ queryKey: queryKeys.conversations("codex"), queryFn: () => api.conversations.list("codex"), staleTime: 30_000 });
   const clientConfigs = useQuery({ queryKey: queryKeys.clientConfigs, queryFn: api.targets.configs });
+  const clientFiles = useQuery({ queryKey: queryKeys.clientFiles, queryFn: api.targets.files, refetchOnWindowFocus: false });
   const desktop = useQuery({ queryKey: queryKeys.claudeDesktopStatus, queryFn: api.claudeDesktop.status, refetchOnWindowFocus: false });
   const { links } = useRoutingLinks(newapi.data?.router);
 
   const status = snapshot.data?.data.status;
   const errors = [snapshot.error, newapi.error, mcp.error, skills.error, skillBackups.error, claudeSkills.error, claudeBackups.error, instructions.error].filter(Boolean);
-  const busy = [snapshot, newapi, mcp, skills, claudeSkills, instructions, accounts, usage, threads].some((query) => query.isFetching);
+  const busy = [snapshot, newapi, mcp, skills, claudeSkills, instructions, accounts, usage, threads, clientFiles].some((query) => query.isFetching);
 
   const refresh = () => {
     void Promise.all([
       snapshot.refetch(), newapi.refetch(), mcp.refetch(), skills.refetch(), skillBackups.refetch(), claudeSkills.refetch(),
-      claudeBackups.refetch(), instructions.refetch(), accounts.refetch(), usage.refetch(), threads.refetch(),
+      claudeBackups.refetch(), instructions.refetch(), accounts.refetch(), usage.refetch(), threads.refetch(), clientFiles.refetch(),
     ]);
   };
 
@@ -261,9 +269,13 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
   const instructionManaged = instructions.data?.data.current.managedBlockPresent ?? false;
   const lastTemplateTitle = instructions.data?.data.current.lastTemplateTitle;
   // Every client's data on this machine, in one list.
-  const configDir = (target: string) => {
-    const file = clientConfigs.data?.find((client) => client.targetId === target)?.path ?? "";
-    return file.replace(/[\\/][^\\/]*$/, "");
+  const parentDir = (file: string) => file.replace(/[\\/][^\\/]*$/, "");
+  const configDir = (target: string) => parentDir(clientConfigs.data?.find((client) => client.targetId === target)?.path ?? "");
+  const filesOf = (key: string) => clientFiles.data?.find((group) => group.client === key);
+  // A client whose key files exist is located even when no other source names its directory.
+  const locatedDir = (key: string) => {
+    const files = filesOf(key)?.files ?? [];
+    return files.some((file) => file.exists) ? parentDir(files[0].path) : "";
   };
   const dataLocations: { key: string; name: string; mark: ReactNode; path: string; ok: boolean; detail: string }[] = [
     { key: "codex", name: "Codex", mark: <ClientGlyph client="codex" className="h-4 w-4" />, path: status?.paths.codexHome ?? "",
@@ -278,7 +290,7 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
       ok: !!clientConfigs.data?.find((client) => client.targetId === "pi")?.configured, detail: t("workspace.dataConfigFile") },
     { key: "agentharbor", name: "AgentHarbor", mark: <Waypoints className="h-4 w-4 text-primary" />, path: status?.paths.appDataDir ?? "",
       ok: !!status?.paths.appDataDir, detail: t("workspace.dataHarbor") },
-  ];
+  ].map((location) => ({ ...location, path: location.path || locatedDir(location.key) }));
 
   const local = usage.data?.local;
   const daily = (local?.daily ?? []).slice(-14).map((day) => day.totals.totalTokens);
@@ -484,16 +496,10 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
                   <FolderOpen className="h-4 w-4" />
                 </Button>
               </span>
+              <KeyFiles group={filesOf(location.key)} name={location.name} />
             </li>
           ))}
         </ul>
-        <p className="mt-4 text-[11px] font-semibold text-muted-foreground">{t("workspace.codexFiles")}</p>
-        <div className="overview-health-grid">
-          <HealthItem name="auth.json" healthy={status?.paths.authExists} detail={t(!status ? "workspace.checking" : status.paths.authExists ? "workspace.authPresent" : "workspace.authMissing")} />
-          <HealthItem name="registry.json" healthy={status?.paths.registryExists} detail={t(!status ? "workspace.checking" : status.paths.registryExists ? "workspace.registryPresent" : "workspace.registryMissing")} />
-          <HealthItem name="sessions/" healthy={status?.paths.sessionsExists} detail={t(!status ? "workspace.checking" : status.paths.sessionsExists ? "workspace.sessionsPresent" : "workspace.sessionsMissing")} />
-          <HealthItem name="AGENTS.md" healthy={instructions.data ? instructionManaged : undefined} detail={t(!instructions.data ? "workspace.checking" : instructionManaged ? "workspace.instructionsPresent" : "workspace.instructionsMissing")} />
-        </div>
       </section>
     </div>
   );

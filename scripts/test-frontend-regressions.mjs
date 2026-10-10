@@ -445,6 +445,34 @@ try {
   }
   console.log("PASS overview uses four equal capability cards and exposes configured API proxy settings");
 
+  await reset("overview");
+  await page.locator('.data-row[data-location="claudeCode"] [data-file]').first().waitFor();
+  const keyFiles = await page.locator(".data-row").evaluateAll(rows => Object.fromEntries(rows.map(row => [
+    row.dataset.location,
+    [...row.querySelectorAll("[data-file]")].map(file => [file.querySelector(".data-file-name").textContent, file.hasAttribute("data-exists")]),
+  ])));
+  assert.deepEqual(keyFiles.claudeCode, [["settings.json", true], [".claude.json", true], ["projects/", true], ["CLAUDE.md", false]]);
+  assert.deepEqual(keyFiles.claudeDesktop.map(([name]) => name), ["常规配置", "第三方配置", "接管 profile", "接管元数据"]);
+  assert.deepEqual(keyFiles.codex.map(([name]) => name), ["config.toml", "auth.json", "registry.json", "sessions/", "AGENTS.md"]);
+  assert.deepEqual(keyFiles.opencode, [["opencode.json", true]]);
+  assert.equal(keyFiles.pi.length, 4);
+  assert.deepEqual(keyFiles.agentharbor, [], "AgentHarbor's own row keeps only its directory");
+  assert.equal(await page.locator('.data-row[data-location="pi"] [data-file="sessions"]').getAttribute("title"), "C:/synthetic/.pi/agent/sessions");
+  // Present key files locate a client whose directory no other source reported.
+  assert.equal(await page.locator('.data-row[data-location="opencode"] .font-mono').innerText(), "C:/synthetic/.config/opencode");
+  assert.equal(await page.getByRole("list", { name: "Claude Code 的关键文件" }).count(), 1);
+  assert.equal(await page.getByText("Codex 关键文件").count(), 0, "the separate Codex-only section is gone");
+  const fileTags = await page.locator(".data-files > li").evaluateAll(tags => tags.map(tag => {
+    const style = getComputedStyle(tag);
+    return { scroll: tag.scrollWidth - tag.clientWidth, dashed: style.borderStyle === "dashed", exists: tag.hasAttribute("data-exists") };
+  }));
+  assert.ok(fileTags.every(tag => tag.dashed === !tag.exists), JSON.stringify(fileTags));
+  if (captureDir) {
+    await page.locator(".overview-system").scrollIntoViewIfNeeded();
+    await page.locator(".overview-system").screenshot({ path: path.join(captureDir, "overview-key-files.png") });
+  }
+  console.log("PASS overview data map lists every client's key files with present and missing states");
+
   await page.setViewportSize({ width: 1440, height: 900 });
   await reset("usage");
   await page.locator(".usage-today-card").first().waitFor();

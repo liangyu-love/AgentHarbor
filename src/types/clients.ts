@@ -19,6 +19,19 @@ export interface ClientStatus {
   conflictFields?: string[];
 }
 export type ClientAccessMode = "native" | "router";
+/** One key file of a client on this machine; existence only, never contents. */
+export interface ClientKeyFile {
+  /** Stable role, e.g. `config`, `sessions`, `normalConfig`. */
+  id: string;
+  name: string;
+  path: string;
+  directory: boolean;
+  exists: boolean;
+}
+export interface ClientFiles {
+  client: "codex" | "claudeCode" | "claudeDesktop" | "opencode" | "pi";
+  files: ClientKeyFile[];
+}
 export interface ClaudeModels {
   sonnet: string;
   opus: string;
