@@ -1,8 +1,8 @@
-import { useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
-  ArrowRight, ArrowUpRight, Check, CircleDashed, Copy, Cpu, FileCode2, FolderOpen, Image as ImageIcon,
+  ArrowRight, ArrowUpRight, Check, ChevronDown, CircleDashed, Copy, Cpu, FileCode2, FolderOpen, Image as ImageIcon,
   MessagesSquare, RadioTower, RotateCw, Server, Settings, ShieldCheck, Sparkles, UsersRound, Waypoints, Wrench, Zap,
 } from "lucide-react";
 import { api } from "@/lib/api";
@@ -19,6 +19,7 @@ import { formatRelative } from "@/lib/format-time";
 import { ClientGlyph } from "@/components/newapi/configuration-shortcuts";
 import { CLIENTS, useRoutingLinks, type Client, type Link } from "@/components/newapi/use-routing-links";
 import { formatTokenCount } from "@/components/threads/thread-utils";
+import { useFold } from "@/hooks/use-fold";
 
 /** A client's key files as small status tags; hovering shows the full path. */
 function KeyFiles({ group, name }: { group?: ClientFiles; name: string }) {
@@ -185,6 +186,12 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
 }) {
   const { t, i18n } = useTranslation();
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
+  // Collapsed until the user opens it; the choice is remembered.
+  const dataMap = useFold("overview-data-map", false);
+  const dataMapRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    dataMapRef.current?.toggleAttribute("inert", !dataMap.open);
+  }, [dataMap.open]);
 
   const snapshot = useQuery({ queryKey: queryKeys.runtimeStateDisplay, queryFn: () => api.loadSnapshot(true) });
   const newapi = useQuery({ queryKey: queryKeys.providers, queryFn: api.providers.loadState });
@@ -461,10 +468,26 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
         </div>
       </section>
 
-      <section className="overview-system" aria-labelledby="overview-system-title">
-        <div className="overview-system-header" id="overview-system-title">
-          <div className="overview-system-title"><ShieldCheck aria-hidden /><h2>{t("baseline.localData")}</h2>
-            <span aria-hidden className="poster-kicker text-[9.5px] text-muted-foreground">Data map</span></div>
+      <section className="overview-system" aria-labelledby="overview-system-title" data-open={dataMap.open || undefined}>
+        <div className="overview-system-header">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+            <h2 id="overview-system-title" className="overview-system-title">
+              <button type="button" className="overview-system-toggle" aria-expanded={dataMap.open}
+                aria-controls="overview-data-map" onClick={dataMap.toggle}>
+                <ShieldCheck aria-hidden />{t("baseline.localData")}
+                <span aria-hidden className="poster-kicker text-[9.5px] text-muted-foreground">Data map</span>
+                <ChevronDown aria-hidden className="overview-system-chevron" />
+              </button>
+            </h2>
+            {!dataMap.open && (
+              <span className="overview-system-summary">
+                {t("workspace.dataMapSummary", {
+                  found: dataLocations.filter((location) => location.path).length,
+                  total: dataLocations.length,
+                })}
+              </span>
+            )}
+          </div>
           <div className="overview-system-tools">
             {systemInfo.data && <span className="overview-system-platform"><Cpu aria-hidden />{systemInfo.data.os} ({systemInfo.data.arch})</span>}
             <Button variant="outline" size="sm" onClick={() => void handleRestartCodex()} className="overview-restart">
@@ -472,6 +495,8 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
             </Button>
           </div>
         </div>
+        <div id="overview-data-map" ref={dataMapRef} className="overview-fold">
+        <div className="overview-fold-inner">
         <ul className="data-map" aria-label={t("workspace.dataLocations")}>
           {dataLocations.map((location) => (
             <li key={location.key} className="data-row" data-location={location.key}>
@@ -500,6 +525,8 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
             </li>
           ))}
         </ul>
+        </div>
+        </div>
       </section>
     </div>
   );

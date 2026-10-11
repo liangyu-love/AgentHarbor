@@ -10,6 +10,8 @@ import React, {
 import { toast } from "@/hooks/use-toast";
 import { storageKeys } from "@/lib/storage-keys";
 import { formatInvokeError } from "@/lib/invoke-error";
+import { useThemeValue } from "@/hooks/use-theme";
+import { darkScrimFloor, measureBrightness } from "@/lib/wallpaper-contrast";
 
 export interface WallpaperPreset {
   id: string;
@@ -144,6 +146,10 @@ interface CustomBackgroundContextType {
   opacity: number;
   blur: number;
   overlayDim: number;
+  /** The scrim actually drawn: the user's value, raised in dark mode until a bright wallpaper is readable. */
+  effectiveOverlayDim: number;
+  /** Dark mode raised the scrim above the user's value. */
+  autoDimmed: boolean;
   presetId: string | null;
   hasCustomUpload: boolean;
   customImageUrl: string | null;
@@ -194,6 +200,27 @@ export function CustomBackgroundProvider({ children }: { children: ReactNode }) 
       if (urlToRevoke) URL.revokeObjectURL(urlToRevoke);
     };
   }, []);
+
+  // Dark mode keeps light text readable: a bright wallpaper raises the scrim
+  // to the floor its measured brightness needs, never below the user's value.
+  const theme = useThemeValue();
+  const [imageBrightness, setImageBrightness] = useState<number | null>(null);
+  useEffect(() => {
+    if (!customImageUrl) {
+      setImageBrightness(null);
+      return;
+    }
+    let active = true;
+    measureBrightness(customImageUrl).then(
+      (value) => { if (active) setImageBrightness(value); },
+      () => { if (active) setImageBrightness(null); },
+    );
+    return () => { active = false; };
+  }, [customImageUrl]);
+  const autoFloor = theme === "dark" && imageBrightness !== null
+    ? darkScrimFloor(imageBrightness, settings.opacity) : 0;
+  const effectiveOverlayDim = Math.max(settings.overlayDim, autoFloor);
+  const autoDimmed = autoFloor - settings.overlayDim > 0.005;
 
   // Compute active background CSS style
   const activeBackgroundStyle = useMemo<React.CSSProperties | null>(() => {
@@ -334,6 +361,8 @@ export function CustomBackgroundProvider({ children }: { children: ReactNode }) 
         opacity: settings.opacity,
         blur: settings.blur,
         overlayDim: settings.overlayDim,
+        effectiveOverlayDim,
+        autoDimmed,
         presetId: settings.presetId,
         hasCustomUpload: settings.hasCustomUpload,
         customImageUrl,
@@ -367,16 +396,20 @@ export function CustomBackgroundLayer() {
     activeBackgroundStyle,
     opacity,
     blur,
-    overlayDim,
+    effectiveOverlayDim,
     customImageUrl,
   } = useCustomBackground();
 
   if (!enabled || !activeBackgroundStyle) return null;
 
+  // The theme's solid base sits under the image and in the scrim, so opacity
+  // and dimming blend towards the theme instead of a translucent surface.
   return (
     <div
       aria-hidden="true"
+      data-wallpaper-layer
       className="pointer-events-none fixed inset-0 z-0 overflow-hidden select-none"
+      style={{ backgroundColor: "hsl(var(--background))" }}
     >
       {/* Stretch & center across the entire window, like a desktop wallpaper. */}
       {customImageUrl ? (
@@ -405,12 +438,11 @@ export function CustomBackgroundLayer() {
           }}
         />
       )}
-      {overlayDim > 0 && (
-        <div
-          className="absolute inset-0 bg-background transition-opacity duration-300"
-          style={{ opacity: overlayDim }}
-        />
-      )}
+      <div
+        data-wallpaper-scrim
+        className="absolute inset-0 transition-opacity duration-300"
+        style={{ backgroundColor: "hsl(var(--background))", opacity: effectiveOverlayDim }}
+      />
     </div>
   );
 }

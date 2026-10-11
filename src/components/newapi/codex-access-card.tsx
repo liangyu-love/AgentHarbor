@@ -106,12 +106,13 @@ export function CodexAccessCard({
     : "—";
   const TargetIcon = !nativeAccess && aggregateSelected ? Network : Cpu;
 
-  const step = "flex min-w-0 items-center gap-3 rounded-xl border bg-card/90 p-2.5";
+  const step = "flex min-w-0 items-center gap-3 rounded-xl border bg-card/90 p-2.5 lg:flex-1";
   const stepIcon = (lit: boolean) => cn("flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ring-1 transition-colors",
     lit ? "bg-primary/10 text-primary ring-primary/25" : "bg-muted text-muted-foreground ring-border/70");
+  // Stacked on narrow screens, a left-to-right chain on wide ones.
   const connector = (
-    <div aria-hidden className="flex justify-center py-1">
-      <ArrowDown className={cn("h-3.5 w-3.5 transition-colors", routingReady ? "text-primary" : "text-muted-foreground/40")} />
+    <div aria-hidden className="flex shrink-0 justify-center py-1 lg:items-center lg:px-1 lg:py-0">
+      <ArrowDown className={cn("h-3.5 w-3.5 transition-colors lg:-rotate-90", routingReady ? "text-primary" : "text-muted-foreground/40")} />
     </div>
   );
   // Spans only: the node may be rendered inside a button.
@@ -234,7 +235,8 @@ export function CodexAccessCard({
         )}
 
         <div id="newapi-routing-body" className="space-y-4">
-          <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
+          {/* Settings side by side, the resulting route underneath. */}
+          <div className="grid items-stretch gap-4 lg:grid-cols-2">
             <Panel title={t("newapi.connectionPanel")}>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
                 <div className="min-w-0 space-y-1.5">
@@ -348,8 +350,12 @@ export function CodexAccessCard({
               )}
             </Panel>
 
-            {/* Pipeline: Codex -> gateway -> target */}
-            <Panel title={t("newapi.pipelinePanel")} className="text-xs">
+            <CodexSubagentSettingsFields store={store} />
+          </div>
+
+          {/* Pipeline: Codex -> gateway -> target */}
+          <Panel title={t("newapi.pipelinePanel")} className="text-xs">
+            <div data-codex-pipeline className="flex flex-col lg:flex-row lg:items-stretch">
               <div className={cn(step, "border-border/60")}>
                 <span className={stepIcon(true)}>
                   <ClientGlyph client="codex" className="h-4 w-4" />
@@ -392,14 +398,12 @@ export function CodexAccessCard({
                   {targetNode}
                 </div>
               )}
-              <p className="mt-3 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground">
-                <ArrowRight aria-hidden className="mt-0.5 h-3 w-3 shrink-0" />
-                {t(nativeAccess ? "newapi.pipelineNativeHint" : "newapi.pipelineRouterHint")}
-              </p>
-            </Panel>
-          </div>
-
-          <CodexSubagentSettingsFields store={store} />
+            </div>
+            <p className="mt-3 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground">
+              <ArrowRight aria-hidden className="mt-0.5 h-3 w-3 shrink-0" />
+              {t(nativeAccess ? "newapi.pipelineNativeHint" : "newapi.pipelineRouterHint")}
+            </p>
+          </Panel>
 
           {configDrifted && (
             <p

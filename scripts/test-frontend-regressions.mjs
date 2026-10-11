@@ -23,6 +23,7 @@ import { testCodexRoutingTransitions } from "./test-codex-routing-transitions.mj
 import { testRelayDeck } from "./test-relay-deck.mjs";
 import { testUiRefresh } from "./test-ui-refresh.mjs";
 import { testAggregationBoard } from "./test-aggregation-board.mjs";
+import { testUiRound7 } from "./test-ui-round7.mjs";
 import { testClaudeDesktopCard } from "./test-claude-desktop-card.mjs";
 import { testSkillsActivation } from "./test-skills-activation.mjs";
 import { testAggregation } from "./test-aggregation.mjs";
@@ -114,6 +115,8 @@ try {
     await testUiRefresh({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "aggregation-board") {
     await testAggregationBoard({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "ui-round7") {
+    await testUiRound7({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "oauth-login") {
     await testOAuthLogin({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "provider-model-preview") {
@@ -445,8 +448,24 @@ try {
   }
   console.log("PASS overview uses four equal capability cards and exposes configured API proxy settings");
 
+  await page.evaluate(() => localStorage.removeItem("agentharbor.folded-sections.v1"));
   await reset("overview");
-  await page.locator('.data-row[data-location="claudeCode"] [data-file]').first().waitFor();
+  // The data map starts folded: no height, nothing focusable, a one-line summary instead.
+  const dataMapToggle = page.getByRole("button", { name: /本地数据目录/ });
+  await dataMapToggle.waitFor();
+  assert.equal(await dataMapToggle.getAttribute("aria-expanded"), "false");
+  assert.equal(await page.locator("#overview-data-map").evaluate(element => element.hasAttribute("inert")), true);
+  assert.ok(await page.locator("#overview-data-map").evaluate(element => element.getBoundingClientRect().height) < 1);
+  await page.locator(".overview-system-summary").waitFor();
+  await dataMapToggle.click();
+  await page.waitForFunction(() => document.querySelector("#overview-data-map").getBoundingClientRect().height > 200);
+  assert.equal(await dataMapToggle.getAttribute("aria-expanded"), "true");
+  assert.equal(await page.locator("#overview-data-map").evaluate(element => element.hasAttribute("inert")), false);
+  assert.equal(await page.locator(".overview-system-summary").count(), 0);
+  // The choice survives a remount.
+  await reset("overview");
+  await page.locator('.data-row[data-location="claudeCode"] [data-file]').first().waitFor({ state: "visible" });
+  assert.equal(await page.getByRole("button", { name: /本地数据目录/ }).getAttribute("aria-expanded"), "true");
   const keyFiles = await page.locator(".data-row").evaluateAll(rows => Object.fromEntries(rows.map(row => [
     row.dataset.location,
     [...row.querySelectorAll("[data-file]")].map(file => [file.querySelector(".data-file-name").textContent, file.hasAttribute("data-exists")]),
@@ -471,7 +490,8 @@ try {
     await page.locator(".overview-system").scrollIntoViewIfNeeded();
     await page.locator(".overview-system").screenshot({ path: path.join(captureDir, "overview-key-files.png") });
   }
-  console.log("PASS overview data map lists every client's key files with present and missing states");
+  await page.evaluate(() => localStorage.removeItem("agentharbor.folded-sections.v1"));
+  console.log("PASS overview data map folds seamlessly, remembers the choice and lists every client's key files");
 
   await page.setViewportSize({ width: 1440, height: 900 });
   await reset("usage");
@@ -1399,6 +1419,7 @@ try {
   await testRelayDeck({ page, reset, captureDir });
   await testUiRefresh({ page, reset, captureDir });
   await testAggregationBoard({ page, reset, captureDir });
+  await testUiRound7({ page, reset, captureDir });
   await testClaudeDesktopCard({ page, reset, captureDir });
   await testSkillsActivation({ page, reset, captureDir });
   await reset("warnings");

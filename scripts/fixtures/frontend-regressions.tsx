@@ -38,6 +38,7 @@ import i18n from "@/lib/i18n";
 import { errorKey, errorMessage, formatInvokeError } from "@/lib/invoke-error";
 import { claudeOneMDefaults, clientDefaults } from "@/lib/client-config";
 import { mergeModelCatalog } from "@/lib/provider-models";
+import { darkScrimFloor } from "@/lib/wallpaper-contrast";
 
 const realBalanceQuery = api.providers.queryBalance;
 const controls = window as any;
@@ -1021,7 +1022,7 @@ function mount(mode: FixtureMode) {
   </TooltipProvider></QueryClientProvider>);
 }
 
-controls.review = { mount, t: (key: string, options?: Record<string, unknown>) => i18n.t(key, options),
+controls.review = { mount, darkScrimFloor, t: (key: string, options?: Record<string, unknown>) => i18n.t(key, options),
   setLanguage: (language: string) => i18n.changeLanguage(language),
   emitBalanceUpdate: (id: string, remaining: number) => {
     state = { ...state, providers: state.providers.map(provider => provider.id === id && provider.balance

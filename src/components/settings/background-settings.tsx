@@ -25,6 +25,8 @@ export function BackgroundSettings() {
     opacity,
     blur,
     overlayDim,
+    effectiveOverlayDim,
+    autoDimmed,
     hasCustomUpload,
     activeBackgroundStyle,
     setEnabled,
@@ -74,7 +76,8 @@ export function BackgroundSettings() {
       {enabled && (
         <div className="space-y-5 pt-2 animate-in fade-in slide-in-from-top-1 duration-200">
           {/* Live Preview Card */}
-          <div className="relative h-36 w-full overflow-hidden rounded-2xl border border-border/80 shadow-md">
+          <div className="relative h-36 w-full overflow-hidden rounded-2xl border border-border/80 shadow-md"
+            style={{ backgroundColor: "hsl(var(--background))" }}>
             {activeBackgroundStyle && (
               <div
                 className="absolute inset-0 transition-all duration-200"
@@ -88,12 +91,10 @@ export function BackgroundSettings() {
                 }}
               />
             )}
-            {overlayDim > 0 && (
-              <div
-                className="absolute inset-0 bg-background transition-opacity duration-200"
-                style={{ opacity: overlayDim }}
-              />
-            )}
+            <div
+              className="absolute inset-0 transition-opacity duration-200"
+              style={{ backgroundColor: "hsl(var(--background))", opacity: effectiveOverlayDim }}
+            />
 
             <div className="relative z-10 flex h-full flex-col justify-between p-3.5">
               <div className="flex items-center justify-between">
@@ -134,7 +135,7 @@ export function BackgroundSettings() {
                     : t("settings.bgUploadEmpty")}
                 </span>
                 <span className="rounded-md font-mono text-[10px] bg-background/75 px-2 py-0.5 backdrop-blur-md ring-1 ring-border/40 font-medium">
-                  {Math.round(opacity * 100)}% · {blur}px · {Math.round(overlayDim * 100)}%
+                  {Math.round(opacity * 100)}% · {blur}px · {Math.round(effectiveOverlayDim * 100)}%
                 </span>
               </div>
             </div>
@@ -279,6 +280,12 @@ export function BackgroundSettings() {
               <p className="text-[11px] text-muted-foreground">
                 {t("settings.bgOverlayDimTip")}
               </p>
+              {autoDimmed && (
+                <p data-wallpaper-auto-dim className="flex items-center gap-1.5 text-[11px] font-medium text-primary">
+                  <Contrast aria-hidden className="h-3.5 w-3.5 shrink-0" />
+                  {t("settings.bgAutoDimmed", { value: Math.round(effectiveOverlayDim * 100) })}
+                </p>
+              )}
             </div>
           </div>
 

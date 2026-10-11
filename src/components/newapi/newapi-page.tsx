@@ -37,7 +37,7 @@ function SectionGroup({ kicker, icon, title, description, delay, children }: {
   return (
     <div className="route-rise space-y-4" style={{ animationDelay: `${delay}ms` } as CSSProperties}>
       <div className="flex items-end gap-3.5 px-1">
-        <div className="min-w-0 pb-0.5">
+        <div className="wallpaper-plate min-w-0 pb-0.5">
           <p className="poster-kicker flex items-center gap-1.5 text-[10px] text-primary"><span aria-hidden>{icon}</span>{kicker}</p>
           <h2 className="font-display text-lg font-semibold tracking-tight text-foreground">{title}</h2>
           <p className="text-xs text-muted-foreground">{description}</p>

@@ -218,7 +218,8 @@
       "thirdPartyConfig": "第三方配置",
       "profile": "接管 profile",
       "meta": "接管元数据"
-    }
+    },
+    "dataMapSummary": "{{found}}/{{total}} 个位置已检测"
   },
   "clients": {
     "title": "客户端配置",
@@ -2345,7 +2346,8 @@
     "checkUpdateBusy": "检查中",
     "upToDate": "当前已是最新版本",
     "updateCheckFailed": "检查更新失败",
-    "heroDesc": "外观、语言、代理与更新"
+    "heroDesc": "外观、语言、代理与更新",
+    "bgAutoDimmed": "深色模式下壁纸偏亮，已自动加深至 {{value}}%，保证文字清晰"
   },
   "common": {
     "save": "保存",

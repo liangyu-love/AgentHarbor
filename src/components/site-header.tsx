@@ -56,7 +56,7 @@ export function SiteHeader({
       className={cn(
         "flex h-12 shrink-0 items-center justify-between border-b px-4 gap-3 transition-colors",
         hasCustomBackground
-          ? "border-border/50 bg-background/60 backdrop-blur-md"
+          ? "wallpaper-bar border-border/50"
           : "border-border/70 bg-background/95 backdrop-blur-md",
       )}
     >

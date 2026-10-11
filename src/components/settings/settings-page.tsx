@@ -447,7 +447,7 @@ function Section({
 }) {
   return (
     <div className="space-y-2">
-      <h2 className="px-1 text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
+      <h2 className="wallpaper-plate px-1 text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
         {title}
       </h2>
       <BentoCard className="p-0 [&>div]:divide-y [&>div]:divide-border">{children}</BentoCard>

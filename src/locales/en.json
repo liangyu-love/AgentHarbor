@@ -218,7 +218,8 @@
       "thirdPartyConfig": "Third-party config",
       "profile": "Managed profile",
       "meta": "Managed metadata"
-    }
+    },
+    "dataMapSummary": "{{found}}/{{total}} locations detected"
   },
   "clients": {
     "title": "Client configuration",
@@ -2345,7 +2346,8 @@
     "checkUpdateBusy": "Checking",
     "upToDate": "Already up to date",
     "updateCheckFailed": "Failed to check for updates",
-    "heroDesc": "Appearance, language, proxy and updates"
+    "heroDesc": "Appearance, language, proxy and updates",
+    "bgAutoDimmed": "This wallpaper is bright for dark mode, so it is dimmed to {{value}}% to keep text readable"
   },
   "common": {
     "save": "Save",

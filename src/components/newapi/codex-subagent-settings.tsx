@@ -19,7 +19,7 @@ export function CodexSubagentSettingsFields({ store }: { store: ProviderState })
   const [draft, setDraft] = useState<CodexSubagentSettings | null>(null);
   const { mutationLocked, busy, run, applyChange } = store;
   const view = query.data;
-  if (query.isPending) return <Skeleton className="h-20 w-full" aria-label={t("newapi.subagentLoading")} />;
+  if (query.isPending) return <Skeleton className="h-full min-h-20 w-full" aria-label={t("newapi.subagentLoading")} />;
   if (!view) return <div role="alert" className="flex flex-wrap items-center gap-2 text-sm text-destructive">
     <span>{t(providerErrorKey(query.error))}</span>
     <Button type="button" variant="outline" size="sm" onClick={() => void query.refetch()}>
@@ -47,7 +47,8 @@ export function CodexSubagentSettingsFields({ store }: { store: ProviderState })
     toast({ title: t(next ? "newapi.subagentSaved" : "newapi.subagentRestored"),
       description: change.applied ? t("newapi.subagentRestart") : undefined, variant: "success" });
   }, t("newapi.subagentSaveFailed"));
-  return <section aria-labelledby="codex-subagents-title" className="harbor-well space-y-3 p-4">
+  // Sits beside the connection panel; the actions stay at the bottom of the shared row height.
+  return <section aria-labelledby="codex-subagents-title" className="harbor-well flex min-w-0 flex-col gap-3 p-4">
     <div className="flex flex-wrap items-baseline justify-between gap-2">
       <h3 id="codex-subagents-title" className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">{t("newapi.subagentDefaults")}</h3>
       {view.managed && <span className="text-xs text-muted-foreground">
@@ -96,7 +97,7 @@ export function CodexSubagentSettingsFields({ store }: { store: ProviderState })
         {t("newapi.subagentRetry")}
       </Button>
     </div>}
-    <div className="flex flex-wrap items-center justify-between gap-2">
+    <div className="mt-auto flex flex-wrap items-center justify-between gap-2">
       <span className="text-xs text-muted-foreground">{t("newapi.subagentNewOnly")}</span>
       <div className="flex flex-wrap gap-2">
         <Button type="button" variant="ghost" size="sm" disabled={mutationLocked || !view.managed}
