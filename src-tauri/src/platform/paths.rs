@@ -49,8 +49,7 @@ impl CodexPaths {
         let accounts_dir = app_data_dir.join("accounts");
         let custom_instructions_dir = app_data_dir.join("custom-instructions");
 
-        // Copy the previous build's state once. Keeping the source intact lets
-        // AgentHarbor and an installed AiMaMi run independently.
+        // Copy the previous build's state once and leave the source intact.
         if !app_data_dir.exists() {
             if let Err(error) = migrate_previous_app_data(&codex_home, &app_data_dir) {
                 eprintln!(
@@ -157,46 +156,7 @@ fn migrate_previous_app_data(
         return stage_complete_directory(&previous_harbor, &staged, target);
     }
 
-    let previous = codex_home.join("codexmate");
-    let previous_accounts = codex_home.join("accounts");
-    if !previous.exists() && !previous_accounts.exists() {
-        return Ok(());
-    }
-
-    let result = (|| -> std::io::Result<()> {
-        std::fs::create_dir_all(&staged)?;
-        for name in [
-            "newapi-providers.dat",
-            "newapi-connection.dat",
-            "settings.json",
-            "bootstrap-cache.json",
-            "quota-history.jsonl",
-            "quota-store.json",
-            "auto-switch-pending.json",
-            "auto-switch-snooze.json",
-        ] {
-            let source = previous.join(name);
-            if source.is_file() {
-                std::fs::copy(source, staged.join(name))?;
-            }
-        }
-        for name in ["skill-backups", "custom-instructions"] {
-            copy_directory_if_present(&previous.join(name), &staged.join(name))?;
-        }
-        let previous_catalog = previous.join("relay").join("codex_router_catalog.json");
-        if previous_catalog.is_file() {
-            std::fs::copy(
-                previous_catalog,
-                staged.join("previous-router-catalog.json"),
-            )?;
-        }
-        copy_directory_if_present(&previous_accounts, &staged.join("accounts"))
-    })();
-    if let Err(error) = result {
-        let _ = std::fs::remove_dir_all(&staged);
-        return Err(error);
-    }
-    publish_migrated_directory(&staged, target)
+    Ok(())
 }
 
 fn stage_complete_directory(
@@ -260,56 +220,21 @@ mod tests {
     fn app_data_is_isolated_and_previous_state_is_copied_once() {
         let temp = tempfile::tempdir().unwrap();
         let codex_home = temp.path().join(".codex");
-        let previous = codex_home.join("codexmate");
-        let previous_accounts = codex_home.join("accounts");
-        std::fs::create_dir_all(previous.join("relay")).unwrap();
-        std::fs::create_dir_all(&previous_accounts).unwrap();
+        let previous = codex_home.join("codexharbor");
+        std::fs::create_dir_all(previous.join("accounts")).unwrap();
         std::fs::write(previous.join("settings.json"), "previous-settings").unwrap();
-        std::fs::write(previous.join("relay/codex_router_catalog.json"), "{}").unwrap();
-        std::fs::write(previous_accounts.join("registry.json"), "previous-registry").unwrap();
+        std::fs::write(previous.join("accounts/registry.json"), "previous-registry").unwrap();
 
         let paths = CodexPaths::from_home(codex_home.clone());
         assert_eq!(paths.app_data_dir, codex_home.join("agentharbor"));
         assert_eq!(paths.accounts_dir, codex_home.join("agentharbor/accounts"));
-        assert_eq!(
-            std::fs::read_to_string(&paths.settings_path).unwrap(),
-            "previous-settings"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&paths.registry_path).unwrap(),
-            "previous-registry"
-        );
-        assert!(paths
-            .app_data_dir
-            .join("previous-router-catalog.json")
-            .exists());
-        assert!(previous.join("settings.json").exists());
+        assert_eq!(std::fs::read_to_string(&paths.settings_path).unwrap(), "previous-settings");
+        assert_eq!(std::fs::read_to_string(&paths.registry_path).unwrap(), "previous-registry");
+        assert!(previous.join("settings.json").exists(), "the source is left in place");
 
         std::fs::write(previous.join("settings.json"), "changed-later").unwrap();
         let paths = CodexPaths::from_home(codex_home);
-        assert_eq!(
-            std::fs::read_to_string(paths.settings_path).unwrap(),
-            "previous-settings"
-        );
-    }
-
-    #[test]
-    fn intermediate_harbor_state_takes_priority_without_moving_it() {
-        let temp = tempfile::tempdir().unwrap();
-        let codex_home = temp.path().join(".codex");
-        let intermediate = codex_home.join("codexharbor");
-        let original = codex_home.join("codexmate");
-        std::fs::create_dir_all(&intermediate).unwrap();
-        std::fs::create_dir_all(&original).unwrap();
-        std::fs::write(intermediate.join("settings.json"), "intermediate").unwrap();
-        std::fs::write(original.join("settings.json"), "original").unwrap();
-
-        let paths = CodexPaths::from_home(codex_home);
-        assert_eq!(
-            std::fs::read_to_string(&paths.settings_path).unwrap(),
-            "intermediate"
-        );
-        assert!(intermediate.join("settings.json").exists());
+        assert_eq!(std::fs::read_to_string(paths.settings_path).unwrap(), "previous-settings");
     }
 
     #[test]

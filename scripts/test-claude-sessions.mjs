@@ -36,7 +36,7 @@ export async function testClaudeSessions({ page, reset, captureDir }) {
     "The header switches clients; export format belongs to the export controls");
   const codexTitle = page.getByRole("button", { name: "查看详情：Review thread 0", exact: true });
   await codexTitle.click();
-  await panel().getByText("aimami_relay_2d66f8bc24::gpt-6-astra", { exact: true }).waitFor();
+  await panel().getByText("relay_2d66f8bc24::gpt-6-astra", { exact: true }).waitFor();
   await panel().getByRole("button", { name: "查看对话", exact: true }).click();
   await panel().getByText("合成的用户问题", { exact: true }).waitFor();
   assert.equal((await calls("details")).at(-1).target, "codex");

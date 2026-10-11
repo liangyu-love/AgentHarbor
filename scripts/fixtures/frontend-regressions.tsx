@@ -973,7 +973,7 @@ function mount(mode: FixtureMode) {
   ).repeat(3);
   if (mode === "thread-tree") {
     threads.forEach((thread, index) => {
-      const project = index < 90 ? "C:/work/AiMaMi" : index < 95 ? "D:/work/AiMaMi" : index < 99 ? "C:/research" : "";
+      const project = index < 90 ? "C:/work/Lighthouse" : index < 95 ? "D:/work/Lighthouse" : index < 99 ? "C:/research" : "";
       Object.assign(thread, { cwd: project, folderName: project.split("/").at(-1) ?? "", updatedAt: 100 - index, archived: index % 2 === 0 });
     });
     controls.review.threadItems = threads;
@@ -1065,7 +1065,7 @@ function mount(mode: FixtureMode) {
     if (controls.review.detailError || mode === "thread-details-error") throw new Error("Synthetic rollout identity mismatch");
     return { schemaVersion: 1, success: true, code: "ok", message: "", warnings: [], data: {
       snapshotBytes: controls.review.snapshotBytes ?? 12345, snapshotId: controls.review.snapshotId ?? "fixture-1", usage: mode === "thread-details-unknown" ? null : usage,
-      byModel: [{ label: target === "claudeCode" ? "claude-fixture-model" : "aimami_relay_2d66f8bc24::gpt-6-astra", usage: { ...usage, total: 27401900 } }, { label: "gpt-6.1-sol", usage: { ...usage, total: 5900000 } }],
+      byModel: [{ label: target === "claudeCode" ? "claude-fixture-model" : "relay_2d66f8bc24::gpt-6-astra", usage: { ...usage, total: 27401900 } }, { label: "gpt-6.1-sol", usage: { ...usage, total: 5900000 } }],
       byDate: [{ label: "2026-09-29", usage: { ...usage, total: 14000000 } }, { label: "2026-09-30", usage: { ...usage, total: 19301900 } }],
       tools: [{ name: "exec_command", calls: 12 }, { name: "apply_patch", calls: 3 }], diagnostics,
     } };

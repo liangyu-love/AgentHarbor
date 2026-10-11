@@ -4,7 +4,7 @@ use super::models::CoreError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     io::Read,
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
@@ -91,6 +91,7 @@ pub(crate) fn parse(bytes: &[u8]) -> Option<Vec<Value>> {
     }
     (!models.is_empty()).then_some(models)
 }
+#[cfg(test)]
 pub(crate) fn load(source: &Path, backup: Option<&Path>) -> Snapshot {
     load_with_backup_mode(source, backup, true)
 }
@@ -204,7 +205,7 @@ pub(crate) fn official_read_only(codex_home: &Path, app_data: &Path) -> Snapshot
 }
 
 fn official_with_backup_mode(codex_home: &Path, app_data: &Path, write_backup: bool) -> Snapshot {
-    let mut snapshot = match current_account_key(codex_home) {
+    match current_account_key(codex_home) {
         Some(account_key) => load_account_catalog(codex_home, app_data, &account_key, write_backup),
         // Unscoped history is capability metadata only. It must never be
         // interpreted as an authenticated account's available model list.
@@ -213,24 +214,7 @@ fn official_with_backup_mode(codex_home: &Path, app_data: &Path, write_backup: b
             Some(&app_data.join("model-capabilities-last-good.json")),
             write_backup,
         ),
-    };
-    let previous = load(&app_data.join("previous-router-catalog.json"), None);
-    let mut slugs: HashSet<String> = snapshot
-        .models
-        .iter()
-        .filter_map(|m| m["slug"].as_str().map(str::to_owned))
-        .collect();
-    for entry in previous.models {
-        if let Some(slug) = entry["slug"].as_str() {
-            if slugs.insert(slug.into()) {
-                snapshot
-                    .model_updated_at
-                    .insert(slug.into(), previous.updated_at);
-                snapshot.models.push(entry);
-            }
-        }
     }
-    snapshot
 }
 
 fn account_catalog_with_backup_mode(
@@ -631,22 +615,9 @@ mod tests {
             serde_json::json!({"models":current}).to_string(),
         )
         .unwrap();
-        std::fs::write(
-            app_data.join("previous-router-catalog.json"),
-            serde_json::json!({"models":[
-                {"slug":"retired-model","visibility":"list"},
-                {"slug":"hidden-model","visibility":"list"}
-            ]})
-            .to_string(),
-        )
-        .unwrap();
         let menu = account_catalog(&home, &app_data);
         assert_eq!(menu.models, current.as_array().unwrap()[..2]);
         let metadata = official(&home, &app_data);
-        assert!(metadata
-            .models
-            .iter()
-            .any(|entry| entry["slug"] == "retired-model"));
         assert_eq!(metadata.models[1]["visibility"], "hide");
 
         // A bad refresh may keep this account's last good catalog, but never

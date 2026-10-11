@@ -26,6 +26,7 @@ import { testAggregationBoard } from "./test-aggregation-board.mjs";
 import { testUiRound7 } from "./test-ui-round7.mjs";
 import { testAccountsSplit } from "./test-accounts-split.mjs";
 import { testGateway } from "./test-gateway.mjs";
+import { testDashboardRecent } from "./test-dashboard-recent.mjs";
 import { testClaudeDesktopCard } from "./test-claude-desktop-card.mjs";
 import { testSkillsActivation } from "./test-skills-activation.mjs";
 import { testAggregation } from "./test-aggregation.mjs";
@@ -123,6 +124,8 @@ try {
     await testAccountsSplit({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "gateway") {
     await testGateway({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "dashboard-recent") {
+    await testDashboardRecent({ page, reset });
   } else if (process.env.FRONTEND_QA_SCOPE === "oauth-login") {
     await testOAuthLogin({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "provider-model-preview") {
@@ -1428,6 +1431,7 @@ try {
   await testUiRound7({ page, reset, captureDir });
   await testAccountsSplit({ page, reset, captureDir });
   await testGateway({ page, reset, captureDir });
+  await testDashboardRecent({ page, reset });
   await testClaudeDesktopCard({ page, reset, captureDir });
   await testSkillsActivation({ page, reset, captureDir });
   await reset("warnings");

@@ -20,7 +20,7 @@ pub(super) fn model_key(model_id: &str) -> String {
 }
 
 pub(super) fn channel_entry(model_id: &str) -> bool {
-    model_id.contains("::") || model_id.starts_with("aimami_relay_")
+    model_id.contains("::")
 }
 
 #[cfg(test)]

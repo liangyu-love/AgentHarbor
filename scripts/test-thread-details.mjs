@@ -31,7 +31,7 @@ export async function testThreadDetails({ page, reset, captureDir }) {
   assert.deepEqual(await page.evaluate(() => window.review.copiedText), ["t0"]);
   assert.equal(await page.evaluate(() => window.review.messageOffsets.length), 0, "Opening details does not eagerly read transcript bodies");
   assert.equal(await page.getByText("已选 1 个", { exact: true }).count(), 0, "Opening details must not select the card");
-  await panel.getByText("aimami_relay_2d66f8bc24::gpt-6-astra", { exact: true }).waitFor();
+  await panel.getByText("relay_2d66f8bc24::gpt-6-astra", { exact: true }).waitFor();
   await panel.getByText("查看每日记录", { exact: true }).click();
   assert.equal(await panel.locator("tbody tr").count(), 2);
   if (captureDir) await page.screenshot({ path: path.join(captureDir, "thread-details-usage-light.png"), animations: "disabled" });

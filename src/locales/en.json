@@ -208,7 +208,9 @@
       "profile": "Managed profile",
       "meta": "Managed metadata"
     },
-    "dataMapSummary": "{{found}}/{{total}} locations detected"
+    "dataMapSummary": "{{found}}/{{total}} locations detected",
+    "recentSource": "Session source",
+    "recentAll": "All"
   },
   "clients": {
     "title": "Client configuration",

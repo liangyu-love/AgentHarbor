@@ -16,12 +16,6 @@ function formatTokens(value: number) {
   return new Intl.NumberFormat(undefined, { notation: value >= 10_000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(value);
 }
 
-function cleanModelTitle(title: string) {
-  if (!title.startsWith("aimami_relay_")) return title;
-  const relayModel = title.split("::").pop();
-  return relayModel && relayModel !== title ? relayModel : title;
-}
-
 function emptyTotals(totals: UsageTotals): UsageTotals {
   return { totalTokens: totals.totalTokens, costMicros: totals.costMicros ?? 0, pricedCount: totals.pricedCount ?? 0, unpricedCount: totals.unpricedCount ?? 0,
     partialCount: totals.partialCount ?? 0, coverageUnknownCount: totals.coverageUnknownCount ?? 0 };
@@ -39,7 +33,7 @@ function prepareItems(items: UsageItem[], mergeDuplicateModels: boolean): Displa
   if (!mergeDuplicateModels) return items.map(item => ({ ...item, memberCount: 1, providerLabels: item.subtitle ? [item.subtitle] : [] }));
   const groups = new Map<string, DisplayItem>();
   for (const item of items) {
-    const title = cleanModelTitle(item.title);
+    const title = item.title;
     const key = title.trim().toLowerCase();
     const current = groups.get(key);
     if (!current) {

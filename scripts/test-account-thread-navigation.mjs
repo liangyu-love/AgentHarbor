@@ -51,14 +51,14 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   const tree = page.getByRole("navigation", { name: "项目线程树", exact: true });
   const results = page.locator("[data-thread-results]");
   await tree.getByRole("button", { name: "所有项目 100", exact: true }).waitFor();
-  assert.equal(await tree.getByRole("button", { name: "展开或收起 AiMaMi", exact: true }).count(), 2);
-  const project = tree.locator('button[title="C:/work/AiMaMi"]');
-  const other = tree.locator('button[title="D:/work/AiMaMi"]');
-  assert.equal(await tree.getByText("C:/work/AiMaMi", { exact: true }).count(), 1);
+  assert.equal(await tree.getByRole("button", { name: "展开或收起 Lighthouse", exact: true }).count(), 2);
+  const project = tree.locator('button[title="C:/work/Lighthouse"]');
+  const other = tree.locator('button[title="D:/work/Lighthouse"]');
+  assert.equal(await tree.getByText("C:/work/Lighthouse", { exact: true }).count(), 1);
   await project.click();
-  assert.equal(await results.getByText("AiMaMi", { exact: true }).count() > 0, true);
+  assert.equal(await results.getByText("Lighthouse", { exact: true }).count() > 0, true);
   assert.ok(await results.getByRole("checkbox").count() < 90, "Main list stays virtualized");
-  await tree.getByRole("button", { name: "展开或收起 AiMaMi", exact: true }).first().click();
+  await tree.getByRole("button", { name: "展开或收起 Lighthouse", exact: true }).first().click();
   assert.equal(await tree.locator('button[title^="Review thread"]').count(), 30, "Large tree branches are paged");
   await tree.getByRole("button", { name: "显示更多（剩余 60 条）", exact: true }).click();
   assert.equal(await tree.locator('button[title^="Review thread"]').count(), 60);
@@ -84,15 +84,15 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   await page.getByRole("radio", { name: "进行中 45", exact: true }).click();
   assert.equal(await results.getByRole("checkbox").count(), 45, "Archived focus is cleared by the active filter");
   await other.click();
-  await tree.getByRole("button", { name: "展开或收起 AiMaMi", exact: true }).nth(1).click();
+  await tree.getByRole("button", { name: "展开或收起 Lighthouse", exact: true }).nth(1).click();
   await tree.getByRole("button", { name: "Review thread 91", exact: true }).click();
   await page.evaluate(() => {
     window.review.threadItems = window.review.threadItems
-      .filter(thread => thread.cwd !== "D:/work/AiMaMi" || thread.key === "t91")
-      .map(thread => thread.key === "t91" ? { ...thread, cwd: "C:/work/AiMaMi" } : thread);
+      .filter(thread => thread.cwd !== "D:/work/Lighthouse" || thread.key === "t91")
+      .map(thread => thread.key === "t91" ? { ...thread, cwd: "C:/work/Lighthouse" } : thread);
   });
   await page.getByRole("button", { name: "刷新", exact: true }).click();
-  await page.waitForFunction(() => !document.querySelector('nav button[title="D:/work/AiMaMi"]'));
+  await page.waitForFunction(() => !document.querySelector('nav button[title="D:/work/Lighthouse"]'));
   assert.equal(await tree.getByRole("button", { name: /所有项目/ }).getAttribute("aria-current"), "page", "Removed project falls back to all threads");
   assert.ok(await results.getByRole("checkbox").count() > 1, "A moved thread must not leave an invisible single-thread focus");
 
@@ -100,11 +100,11 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   await page.evaluate(() => {
     window.review.threadItems = window.review.threadItems.slice(0, 7).map((thread, index) => ({
       ...thread,
-      cwd: ["D:/workspace/AiMaMi", "\\\\?\\D:\\workspace\\AiMaMi", "d:/WORKSPACE/aimami/",
+      cwd: ["D:/workspace/Lighthouse", "\\\\?\\D:\\workspace\\Lighthouse", "d:/WORKSPACE/lighthouse/",
         "C:/Users/demo/Documents/Codex/2026-09-30/new-chat",
         "\\\\?\\C:\\Users\\demo\\Documents\\Codex\\2026-09-29\\renamed-chat",
-        "C:/work/new-chat", "C:/work/AiMaMi"][index],
-      folderName: ["AiMaMi", "AiMaMi", "aimami", "new-chat", "renamed-chat", "new-chat", "AiMaMi"][index],
+        "C:/work/new-chat", "C:/work/Lighthouse"][index],
+      folderName: ["Lighthouse", "Lighthouse", "lighthouse", "new-chat", "renamed-chat", "new-chat", "Lighthouse"][index],
       userMessages: index + 1, agentMessages: (index + 1) * 2,
     }));
   });
@@ -114,8 +114,8 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   const metric = name => metrics.locator(`[data-metric="${name}"]`);
   assert.equal(await metric("threads").textContent(), "7");
   assert.equal(await metric("projects").textContent(), "3", "Direct chats do not count as workspaces");
-  assert.equal(await tree.getByRole("button", { name: "展开或收起 AiMaMi", exact: true }).count(), 2, "Windows aliases merge but different paths remain separate");
-  await tree.locator('button[title="D:/workspace/AiMaMi"]').click();
+  assert.equal(await tree.getByRole("button", { name: "展开或收起 Lighthouse", exact: true }).count(), 2, "Windows aliases merge but different paths remain separate");
+  await tree.locator('button[title="D:/workspace/Lighthouse"]').click();
   assert.equal(await metric("threads").textContent(), "3");
   // The overview card reports token breakdown now: 4 input / 3 cached / 6
   // output per fixture thread.
@@ -150,7 +150,7 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   console.log("PASS Windows aliases merge, direct chats share a folder, and input/output/storage totals follow project selection");
 
   await reset("thread-tree");
-  await tree.getByRole("button", { name: "展开或收起 AiMaMi", exact: true }).first().click();
+  await tree.getByRole("button", { name: "展开或收起 Lighthouse", exact: true }).first().click();
   await page.getByRole("button", { name: "网格视图", exact: true }).click();
   await capture("thread-project-tree-light.png");
   await page.evaluate(() => document.documentElement.classList.add("dark"));

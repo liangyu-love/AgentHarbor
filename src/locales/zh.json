@@ -208,7 +208,9 @@
       "profile": "接管 profile",
       "meta": "接管元数据"
     },
-    "dataMapSummary": "{{found}}/{{total}} 个位置已检测"
+    "dataMapSummary": "{{found}}/{{total}} 个位置已检测",
+    "recentSource": "会话来源",
+    "recentAll": "全部"
   },
   "clients": {
     "title": "客户端配置",

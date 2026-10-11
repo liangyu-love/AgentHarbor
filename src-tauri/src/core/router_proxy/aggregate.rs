@@ -496,7 +496,7 @@ pub(super) async fn execute(
                 return Err(error);
             }
         };
-        let mut prepared = forward::prepare(forward::Input {
+        let mut prepared = pipeline::request::prepare(pipeline::request::Input {
             context,
             store,
             catalog,
@@ -546,8 +546,8 @@ pub(super) async fn execute(
             &aggregate.id,
             &plan.resolved.member.id,
             &agg::projection::route_revision(store, aggregate),
-            forward::protocol_name(plan.resolved.protocol),
-            forward::protocol_name(plan.effective_protocol),
+            pipeline::request::protocol_name(plan.resolved.protocol),
+            pipeline::request::protocol_name(plan.effective_protocol),
             plan.compatibility_plan,
         );
         if prepared.hosted.is_some() {

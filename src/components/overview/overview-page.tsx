@@ -16,6 +16,7 @@ import type { ClientFiles, ClientKeyFile } from "@/types/clients";
 import { queryKeys } from "@/lib/query-keys";
 import { errorMessage, formatInvokeError } from "@/lib/invoke-error";
 import { formatRelative } from "@/lib/format-time";
+import { storageKeys } from "@/lib/storage-keys";
 import { ClientGlyph } from "@/components/newapi/configuration-shortcuts";
 import { CLIENTS, useRoutingLinks, type Client, type Link } from "@/components/newapi/use-routing-links";
 import { formatTokenCount } from "@/components/threads/thread-utils";
@@ -180,6 +181,8 @@ function QuotaRing({ account }: { account: CodexAccountSummary }) {
   );
 }
 
+type RecentSource = "all" | "codex" | "claudeCode";
+
 export function OverviewPage({ onNavigate, onOpenProxySettings }: {
   onNavigate: (route: Route) => void;
   onOpenProxySettings: () => void;
@@ -206,6 +209,8 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
   const accounts = useQuery({ queryKey: queryKeys.codexAccounts, queryFn: api.accounts.list, staleTime: 60_000, refetchOnWindowFocus: false });
   const usage = useQuery({ queryKey: queryKeys.tokenUsage, queryFn: api.usage.overview, staleTime: 5 * 60_000, refetchOnWindowFocus: false, retry: false });
   const threads = useQuery({ queryKey: queryKeys.conversations("codex"), queryFn: () => api.conversations.list("codex"), staleTime: 30_000 });
+  const claudeThreads = useQuery({ queryKey: queryKeys.conversations("claudeCode"), queryFn: () => api.conversations.list("claudeCode"), staleTime: 30_000 });
+  const [recentSource, setRecentSource] = useState<RecentSource>("all");
   const clientConfigs = useQuery({ queryKey: queryKeys.clientConfigs, queryFn: api.targets.configs });
   const clientFiles = useQuery({ queryKey: queryKeys.clientFiles, queryFn: api.targets.files, refetchOnWindowFocus: false });
   const desktop = useQuery({ queryKey: queryKeys.claudeDesktopStatus, queryFn: api.claudeDesktop.status, refetchOnWindowFocus: false });
@@ -213,12 +218,12 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
 
   const status = snapshot.data?.data.status;
   const errors = [snapshot.error, newapi.error, mcp.error, skills.error, skillBackups.error, claudeSkills.error, claudeBackups.error, instructions.error].filter(Boolean);
-  const busy = [snapshot, newapi, mcp, skills, claudeSkills, instructions, accounts, usage, threads, clientFiles].some((query) => query.isFetching);
+  const busy = [snapshot, newapi, mcp, skills, claudeSkills, instructions, accounts, usage, threads, claudeThreads, clientFiles].some((query) => query.isFetching);
 
   const refresh = () => {
     void Promise.all([
       snapshot.refetch(), newapi.refetch(), mcp.refetch(), skills.refetch(), skillBackups.refetch(), claudeSkills.refetch(),
-      claudeBackups.refetch(), instructions.refetch(), accounts.refetch(), usage.refetch(), threads.refetch(), clientFiles.refetch(),
+      claudeBackups.refetch(), instructions.refetch(), accounts.refetch(), usage.refetch(), threads.refetch(), claudeThreads.refetch(), clientFiles.refetch(),
     ]);
   };
 
@@ -302,10 +307,21 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
   const local = usage.data?.local;
   const daily = (local?.daily ?? []).slice(-14).map((day) => day.totals.totalTokens);
   const activeAccount = accounts.data?.items.find((account) => account.isActive) ?? null;
-  const threadItems = threads.data?.data.items ?? [];
+  // Codex and Claude Code sessions together, newest first; each keeps the client it came from.
+  const threadItems = [
+    ...(threads.data?.data.items ?? []).map((thread) => ({ ...thread, client: "codex" as const })),
+    ...(claudeThreads.data?.data.items ?? []).map((thread) => ({ ...thread, client: "claudeCode" as const })),
+  ];
   const startOfDay = new Date().setHours(0, 0, 0, 0) / 1000;
   const todayThreads = threadItems.filter((thread) => thread.updatedAt >= startOfDay).length;
-  const recent = [...threadItems].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 6);
+  const recent = threadItems.filter((thread) => recentSource === "all" || thread.client === recentSource)
+    .sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 6);
+  const recentLoading = threads.isLoading || claudeThreads.isLoading;
+  const openThreads = (client: "codex" | "claudeCode") => {
+    // The threads page opens on the source this session belongs to.
+    try { localStorage.setItem(storageKeys.threadsSource, client); } catch { /* storage unavailable */ }
+    onNavigate("threads");
+  };
   const connectionLabel = newapi.isError ? t("workspace.checkFailed") : !newapi.data ? t("workspace.checking")
     : proxyRunning ? t("workspace.proxyOnline") : t("workspace.proxyOffline");
 
@@ -395,14 +411,27 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
             <h2 id="overview-recent-title"><MessagesSquare aria-hidden />{t("workspace.recentThreads")}<span aria-hidden className="poster-kicker text-[9.5px] text-muted-foreground">Recent</span></h2>
             <button type="button" onClick={() => onNavigate("threads")}>{t("workspace.viewAll")}<ArrowRight aria-hidden className="h-3.5 w-3.5" /></button>
           </div>
+          <div className="dash-recent-filter" role="radiogroup" aria-label={t("workspace.recentSource")}>
+            {(["all", "codex", "claudeCode"] as const).map((source) => {
+              const count = source === "all" ? threadItems.length : threadItems.filter((thread) => thread.client === source).length;
+              return (
+                <button key={source} type="button" role="radio" aria-checked={recentSource === source} data-recent-source={source}
+                  onClick={() => setRecentSource(source)}>
+                  {source !== "all" && <ClientGlyph client={source} className="h-3.5 w-3.5" />}
+                  {source === "all" ? t("workspace.recentAll") : t(`newapi.topology.client.${source}`)}
+                  <span className="tabular-nums">{count}</span>
+                </button>
+              );
+            })}
+          </div>
           {recent.length === 0 ? (
-            <p className="dash-empty">{t(threads.isLoading ? "workspace.checking" : "workspace.noThreads")}</p>
+            <p className="dash-empty">{t(recentLoading ? "workspace.checking" : "workspace.noThreads")}</p>
           ) : (
             <ul className="dash-recent">
               {recent.map((thread, index) => (
-                <li key={thread.key} style={{ animationDelay: `${index * 45}ms` }}>
-                  <button type="button" onClick={() => onNavigate("threads")} title={thread.title}>
-                    <span className="dash-recent-mark"><ClientGlyph client="codex" className="h-4 w-4" /></span>
+                <li key={`${thread.client}:${thread.key}`} data-recent-client={thread.client} style={{ animationDelay: `${index * 45}ms` }}>
+                  <button type="button" onClick={() => openThreads(thread.client)} title={`${t(`newapi.topology.client.${thread.client}`)} · ${thread.title}`}>
+                    <span className="dash-recent-mark"><ClientGlyph client={thread.client} className="h-4 w-4" /></span>
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-[13px] font-medium text-foreground">{thread.title || t("threads.untitled")}</span>
                       <span className="block truncate text-[11px] text-muted-foreground">{thread.folderName || t("threads.directChats")} · {thread.model || t("threads.unknownModel")}</span>

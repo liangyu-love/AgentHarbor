@@ -33,7 +33,6 @@ pub use transition::{
 pub mod subagents;
 
 pub const DEFAULT_PORT: u16 = 43127;
-const PREVIOUS_DEFAULT_PORT: u16 = 25817;
 pub const PROVIDER_PREFIX: &str = "agentharbor_p";
 pub const CATALOG_PROVIDER_KEY: &str = "agentharbor_relay";
 pub const AGGREGATE_PROVIDER_KEY: &str = "agentharbor_aggregate";
@@ -43,7 +42,6 @@ const DIRECT_PROVIDER_KEY: &str = "agentharbor_newapi";
 const PREVIOUS_PROVIDER_PREFIX: &str = "codexharbor_p";
 const PREVIOUS_CATALOG_PROVIDER_KEY: &str = "codexharbor_relay";
 const PREVIOUS_DIRECT_PROVIDER_KEY: &str = "codexharbor_newapi";
-const PREVIOUS_RELAY_MODEL_PREFIX: &str = "aimami_relay_";
 const MAX_PROVIDERS: usize = 64;
 const MAX_MODELS_PER_PROVIDER: usize = 512;
 const STORE_VERSION: u32 = 9;
@@ -526,31 +524,12 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
             }
             changed = true;
         }
-        let mut migrated_previous_identity = store.router.port == PREVIOUS_DEFAULT_PORT
-            || store.router.bearer_token.starts_with("aimami_")
-            || store.router.bearer_token.starts_with("codexharbor_");
+        let migrated_previous_identity = store.router.bearer_token.starts_with("codexharbor_");
         // Preserve provenance only when identity migration can change it.
         // Ordinary store reads should not clone every cached model.
         if store.router.bearer_token.is_empty() || migrated_previous_identity {
             store.router.bearer_token = new_router_bearer();
             changed = true;
-        }
-        if store.router.port == PREVIOUS_DEFAULT_PORT {
-            store.router.port = DEFAULT_PORT;
-            changed = true;
-        }
-        let previous_active = store.active_provider_id.clone();
-        let mut migrated_active = None;
-        for provider in &mut store.providers {
-            if provider.id.starts_with("aimami_") {
-                migrated_previous_identity = true;
-                let previous_id =
-                    std::mem::replace(&mut provider.id, uuid::Uuid::new_v4().to_string());
-                if previous_active.as_deref() == Some(previous_id.as_str()) {
-                    migrated_active = Some(provider.id.clone());
-                }
-                changed = true;
-            }
         }
         if store.version < 6 {
             for provider in &mut store.providers {
@@ -628,9 +607,6 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
             }
             changed = true;
         }
-        if migrated_active.is_some() {
-            store.active_provider_id = migrated_active;
-        }
         if migrated_previous_identity && store.router.enabled {
             // Import credentials and choices, but require an explicit enable in
             // AgentHarbor so the old application's active route is not replaced.
@@ -700,10 +676,7 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
         }
         return Ok(store);
     }
-    let mut store = match migrate_original_relay(paths)? {
-        Some(store) => store,
-        None => migrate_legacy_connection(paths)?.unwrap_or_default(),
-    };
+    let mut store = migrate_legacy_connection(paths)?.unwrap_or_default();
     store.version = STORE_VERSION;
     store.router.bearer_token = new_router_bearer();
     // Persist the promoted store so later reads do not depend on the foreign files.
@@ -734,139 +707,6 @@ pub(crate) fn mutate_store(
 
 fn new_router_bearer() -> String {
     format!("agentharbor_{}", uuid::Uuid::new_v4().simple())
-}
-
-// The previous AiMaMi release keeps its relay data in `codexmate/relay/`:
-// state.json holds providers/settings, keys/<provider id> holds plaintext API keys.
-// Promoting it lets users of the installed app see their real relays immediately.
-fn migrate_original_relay(paths: &CodexPaths) -> Result<Option<Store>, String> {
-    let relay_dir = paths.codex_home.join("codexmate").join("relay");
-    let Ok(text) = std::fs::read_to_string(relay_dir.join("state.json")) else {
-        return Ok(None);
-    };
-    let Ok(value) = serde_json::from_str::<Value>(&text) else {
-        return Ok(None);
-    };
-    let items = value
-        .get("providers")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let active: Vec<String> = value
-        .pointer("/activeByIde/codex")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default();
-    let mut providers = Vec::new();
-    for item in &items {
-        let Some(id) = item
-            .get("id")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty() && s.len() <= 100)
-        else {
-            continue;
-        };
-        let Ok(base_url) =
-            newapi::base_url(item.get("baseUrl").and_then(Value::as_str).unwrap_or(""))
-        else {
-            continue;
-        };
-        let name = item
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or("relay")
-            .trim()
-            .to_owned();
-        let api_key = if item.get("apiKeyStored").and_then(Value::as_bool) == Some(true) {
-            std::fs::read_to_string(relay_dir.join("keys").join(id))
-                .map(|k| k.trim().to_owned())
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
-        let mut models = Vec::new();
-        for entry in item
-            .get("models")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let Some(model_id) = entry
-                .get("model")
-                .and_then(Value::as_str)
-                .filter(|s| !s.trim().is_empty() && s.len() <= 200)
-            else {
-                continue;
-            };
-            if models.iter().any(|m: &newapi::Model| m.id == model_id) {
-                continue;
-            }
-            models.push(newapi::Model {
-                id: model_id.to_owned(),
-                context_window: entry
-                    .get("contextWindow")
-                    .and_then(Value::as_u64)
-                    .filter(|v| *v > 0),
-                max_output_tokens: None,
-                endpoint_types: Vec::new(),
-                ..Default::default()
-            });
-        }
-        let updated = item.get("updatedAt").and_then(Value::as_i64).unwrap_or(0) / 1000;
-        providers.push(Provider {
-            id: uuid::Uuid::new_v4().to_string(),
-            name,
-            base_url: base_url.to_string(),
-            api_key,
-            model: item
-                .get("model")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .trim()
-                .to_owned(),
-            models_fetched_at: (!models.is_empty() && updated > 0).then_some(updated),
-            enabled: active.iter().any(|a| a == id),
-            test_status: "untested".to_owned(),
-            created_at: item.get("createdAt").and_then(Value::as_i64).unwrap_or(0) / 1000,
-            updated_at: updated,
-            models,
-            ..Default::default()
-        });
-    }
-    if providers.is_empty() {
-        return Ok(None);
-    }
-    let active_provider_id = providers
-        .iter()
-        .find(|provider| provider.enabled)
-        .map(|provider| provider.id.clone());
-    Ok(Some(Store {
-        version: STORE_VERSION,
-        codex_access_mode: CodexAccessMode::Router,
-        codex_subagents: None,
-        providers,
-        aggregates: vec![],
-        active_provider_id,
-        compression: model_policy::CompressionPolicy::percent(model_policy::DEFAULT_PERCENT),
-        router: RouterSettings {
-            enabled: false,
-            aggregate_external_enabled: false,
-            aggregate_model_id: None,
-            web_search_provider_id: None,
-            accountless: value
-                .get("codexRouterNoAccountMode")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            port: DEFAULT_PORT,
-            bearer_token: String::new(),
-            gateway_keys: Vec::new(),
-        },
-    }))
 }
 
 /// Read a store from an explicit path (used by the local proxy per request).
@@ -2710,7 +2550,7 @@ pub(crate) fn catalog_value(
             let Some(slug) = entry.get("slug").and_then(Value::as_str) else {
                 continue;
             };
-            let is_relay = slug.starts_with(PREVIOUS_RELAY_MODEL_PREFIX) || slug.contains("::");
+            let is_relay = slug.contains("::");
             if !is_relay && slugs.insert(slug.to_owned()) {
                 models.push(entry.clone());
             }
@@ -4756,45 +4596,6 @@ base_url = "http://127.0.0.1:43127/codex/v1"
     }
 
     #[test]
-    fn previous_router_identity_moves_to_the_isolated_port_and_namespace() {
-        let (_dir, paths) = paths();
-        let store = Store {
-            version: 1,
-            aggregates: vec![],
-            codex_access_mode: CodexAccessMode::Router,
-            codex_subagents: None,
-            providers: vec![Provider {
-                id: "aimami_relay_fixture".into(),
-                name: "Previous relay".into(),
-                base_url: "https://relay.example.com/".into(),
-                api_key: "sk-fixture".into(),
-                model: "model-a".into(),
-                enabled: true,
-                ..Default::default()
-            }],
-            router: RouterSettings {
-                port: PREVIOUS_DEFAULT_PORT,
-                bearer_token: "aimami_previous_token".into(),
-                enabled: true,
-                ..Default::default()
-            },
-            active_provider_id: Some("aimami_relay_fixture".into()),
-            compression: Default::default(),
-        };
-        secret_file::write(&store_path(&paths), &serde_json::to_vec(&store).unwrap()).unwrap();
-
-        let migrated = load_store(&paths).unwrap();
-        assert_eq!(migrated.router.port, DEFAULT_PORT);
-        assert!(!migrated.router.enabled);
-        assert!(migrated.router.bearer_token.starts_with("agentharbor_"));
-        assert!(!migrated.providers[0].id.starts_with("aimami_"));
-        assert_eq!(
-            migrated.active_provider_id.as_deref(),
-            Some(migrated.providers[0].id.as_str())
-        );
-    }
-
-    #[test]
     fn previous_harbor_router_token_is_rotated_and_disabled() {
         let (_dir, paths) = paths();
         let store = Store {
@@ -5007,7 +4808,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             router: RouterSettings {
                 enabled: true,
                 bearer_token: "codexharbor_fixture_token".into(),
-                port: PREVIOUS_DEFAULT_PORT,
+                port: DEFAULT_PORT,
                 ..Default::default()
             },
             active_provider_id: Some("legacy-chat".into()),
@@ -5147,13 +4948,13 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         let (_dir, paths) = paths();
         std::fs::write(
             &paths.config_path,
-            "# keep\nmodel = 'gpt-x'\nmodel_provider = 'aimami_newapi'\n[model_providers.other]\nname = 'Other'\n[model_providers.aimami_newapi]\nname = 'legacy'\npreferred_auth_method_placeholder = true\n",
+            "# keep\nmodel = 'gpt-x'\nmodel_provider = 'legacy_newapi'\n[model_providers.other]\nname = 'Other'\n[model_providers.legacy_newapi]\nname = 'legacy'\npreferred_auth_method_placeholder = true\n",
         )
         .unwrap();
         // The placeholder key above lives at top level; rewrite with a real one.
         std::fs::write(
             &paths.config_path,
-            "# keep\nmodel = 'gpt-x'\nmodel_provider = 'aimami_newapi'\npreferred_auth_method = 'chatgpt'\n[model_providers.other]\nname = 'Other'\n[model_providers.aimami_newapi]\nname = 'legacy'\n",
+            "# keep\nmodel = 'gpt-x'\nmodel_provider = 'legacy_newapi'\npreferred_auth_method = 'chatgpt'\n[model_providers.other]\nname = 'Other'\n[model_providers.legacy_newapi]\nname = 'legacy'\n",
         )
         .unwrap();
         let state = save_provider(&paths, input("Relay A", "https://a.example.com")).unwrap();
@@ -5179,7 +4980,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             Some("Other")
         );
         assert_eq!(
-            parsed["model_providers"]["aimami_newapi"]["name"].as_str(),
+            parsed["model_providers"]["legacy_newapi"]["name"].as_str(),
             Some("legacy")
         );
         assert!(text.contains("preferred_auth_method = \"apikey\""));
@@ -5197,7 +4998,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             Some("Other")
         );
         assert_eq!(parsed["model"].as_str(), Some("gpt-x"));
-        assert_eq!(parsed["model_provider"].as_str(), Some("aimami_newapi"));
+        assert_eq!(parsed["model_provider"].as_str(), Some("legacy_newapi"));
         assert_eq!(parsed["preferred_auth_method"].as_str(), Some("chatgpt"));
     }
 
@@ -5869,18 +5670,6 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         let cache_bytes = serde_json::to_vec(&serde_json::json!({"models": official})).unwrap();
         std::fs::write(paths.codex_home.join("models_cache.json"), &cache_bytes).unwrap();
         super::super::model_catalog::seed_test_account_catalog(&paths.codex_home, &paths.app_data_dir, &cache_bytes);
-        let previous_only =
-            serde_json::json!({"slug": "previous-only", "display_name": "Previous"});
-        std::fs::write(
-            paths.app_data_dir.join("previous-router-catalog.json"),
-            serde_json::to_vec(&serde_json::json!({"models": [
-                previous_only,
-                {"slug": "old-provider::stale-model"},
-                {"slug": "aimami_relay_stale-model"}
-            ]}))
-            .unwrap(),
-        )
-        .unwrap();
         let ids = ["account-model-a", "account-model-b", "unknown-relay-model"];
         let store_for = |base_url: &str| Store {
             providers: vec![Provider {
@@ -5914,14 +5703,6 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         let models = catalog["models"].as_array().unwrap();
         assert_eq!(models.len(), 2 + ids.len());
         assert_eq!(&models[..2], official.as_array().unwrap());
-        assert!(!models.iter().any(|model| model["slug"] == previous_only["slug"]));
-        assert!(catalog_entry_for_slug(
-            &paths.app_data_dir,
-            &paths.codex_home,
-            &store_for("https://relay.example.com"),
-            "previous-only",
-        )
-        .is_none());
 
         // Relay capabilities remain separate from the signed-in account.
         for (index, id) in ids.iter().enumerate() {
@@ -6448,58 +6229,6 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         assert!(relay_b.get("accessToken").is_none());
     }
 
-    #[test]
-    fn migrates_providers_from_the_original_app_relay_store() {
-        let (_dir, paths) = paths();
-        let relay = paths.codex_home.join("codexmate").join("relay");
-        std::fs::create_dir_all(relay.join("keys")).unwrap();
-        std::fs::write(
-            relay.join("state.json"),
-            serde_json::json!({
-                "schemaVersion": 13,
-                "providers": [
-                    {"id": "aimami_relay_602abf8b50", "name": "DeepSeek 官方", "baseUrl": "https://api.deepseek.com",
-                     "apiKeyStored": true, "model": "deepseek-flash", "models": [{"model": "deepseek-flash", "contextWindow": 128000}],
-                     "updatedAt": 1789477026171i64, "createdAt": 1785544851181i64},
-                    {"id": "aimami_relay_off", "name": "停用站", "baseUrl": "https://off.example.com",
-                     "apiKeyStored": false, "model": "", "models": []}
-                ],
-                "activeByIde": {"codex": ["aimami_relay_602abf8b50"]},
-                "proxy": {"running": true, "port": 25817},
-                "codexRouterEnabled": true,
-                "codexRouterNoAccountMode": false
-            })
-            .to_string(),
-        )
-        .unwrap();
-        std::fs::write(
-            relay.join("keys").join("aimami_relay_602abf8b50"),
-            "sk-original-key",
-        )
-        .unwrap();
-
-        let store = load_store(&paths).unwrap();
-        assert_eq!(store.providers.len(), 2);
-        let deepseek = &store.providers[0];
-        assert!(!deepseek.id.starts_with("aimami_"));
-        assert_eq!(deepseek.api_key, "sk-original-key");
-        assert_eq!(deepseek.base_url, "https://api.deepseek.com/");
-        assert_eq!(deepseek.models[0].id, "deepseek-flash");
-        assert_eq!(deepseek.models[0].context_window, Some(128000));
-        assert!(deepseek.enabled);
-        assert_eq!(deepseek.test_status, "untested");
-        assert!(!store.providers[1].enabled);
-        assert!(!store.router.enabled);
-        assert_eq!(store.router.port, DEFAULT_PORT);
-        assert_eq!(
-            store.active_provider_id.as_deref(),
-            Some(deepseek.id.as_str())
-        );
-        // The promoted store is persisted; removing the foreign files no longer matters.
-        std::fs::remove_file(relay.join("state.json")).unwrap();
-        let store = load_store(&paths).unwrap();
-        assert_eq!(store.providers.len(), 2);
-    }
 
     #[test]
     fn effective_active_falls_back_to_first_enabled() {
