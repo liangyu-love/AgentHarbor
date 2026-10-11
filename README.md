@@ -20,8 +20,6 @@ Codex, Claude Code, Claude Desktop, OpenCode and Pi each keep accounts, model se
 
 AgentHarbor is a Tauri 2 + React + Rust desktop app that does this for you. It runs a local model router (`127.0.0.1:43127`), writes each client's configuration as a reversible, field-level change with a backup, and shows what is actually happening on one dashboard. Codex is the primary integration; the other clients are supported through the same relays and router.
 
-It is an independent rebuild with its own app identity, data directory, single-instance lock and router port, so it can run next to an installed AiMaMi.
-
 ## Features
 
 | Area | What you can do |
