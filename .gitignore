@@ -38,3 +38,6 @@ pnpm-debug.log*
 
 # Test screenshots
 .playwright-cli/
+
+# Local planning notes (kept on this machine, not committed)
+plan/

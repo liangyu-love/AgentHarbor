@@ -1,13 +1,11 @@
-> **AgentHarbor:** an independent rebuild with its own application identity, local data directory, smart-router namespace, and default port. It can run alongside an installed AiMaMi release.
-
 <p align="center">
-  <img src="assets/app-icon-composed.png" alt="AgentHarbor" width="128" height="128" />
+  <img src="assets/app-icon.png" alt="AgentHarbor" width="128" height="128" />
 </p>
 
 <h1 align="center">AgentHarbor</h1>
 
 <p align="center">
-  <strong>A native desktop harbor for coding agents — manage accounts, routing, sessions, and local configuration in one place.</strong>
+  <strong>One desktop home for your coding agents: accounts, relays, a local model router, sessions and local configuration.</strong>
 </p>
 
 <p align="center">
@@ -16,118 +14,113 @@
 
 ---
 
-## Overview
+## What it is
 
-Codex stores accounts, sessions, MCP entries, Skills, smart-router settings, and relay configuration across multiple files under `~/.codex`. Multi-account switching, quota exhaustion, third-party model setup, session cleanup, and config drift quickly turn day-to-day work into hand-editing TOML, JSON, and SQLite.
+Codex, Claude Code, Claude Desktop, OpenCode and Pi each keep accounts, model settings, sessions, MCP servers and instructions in their own files. Switching accounts when a quota runs out, wiring in third-party relays, or cleaning up sessions usually means hand-editing TOML, JSON and SQLite.
 
-AgentHarbor is built with **Tauri 2, React, and Rust**. Codex is the first supported agent; the product identity and provider-specific modules are kept separate so adapters such as Claude Code can be added later. Today it consolidates Codex workflows — including smart routing and relay management — into a single desktop app that reduces risky manual file edits.
+AgentHarbor is a Tauri 2 + React + Rust desktop app that does this for you. It runs a local model router (`127.0.0.1:43127`), writes each client's configuration as a reversible, field-level change with a backup, and shows what is actually happening on one dashboard. Codex is the primary integration; the other clients are supported through the same relays and router.
 
----
+It is an independent rebuild with its own app identity, data directory, single-instance lock and router port, so it can run next to an installed AiMaMi.
 
-## Core Capabilities
+## Features
 
-| Module | Available in this source build |
+| Area | What you can do |
 | --- | --- |
-| **Account management** | Add accounts through Codex login, inspect quota, switch manually, and remove saved accounts |
-| **Codex access** | Choose local Router or direct Native access independently of model protocol and network settings |
-| **Relay management** | Provider defaults and per-model protocol overrides, connectivity tests, import/export, and diagnostics |
-| **Session management** | List, search, filter, and export selected Codex conversations as Markdown or JSONL |
-| **MCP / Skills** | Manage MCP entries and Skills lifecycle in the UI, with backup and restore |
-| **Client configuration** | Preview, apply, and restore Claude Code / OpenCode provider settings through the local router |
-| **Image workbench** | Generate or edit images with a configured provider and save results to a local gallery |
-| **Custom instructions** | Manage only the AgentHarbor-managed block in `~/.codex/AGENTS.md`, with preview and rollback |
-| **System maintenance** | Diagnose local state, clean redundant backups, rebuild the registry, and restart Codex |
-| **Settings & runtime** | Theme, language, quota refresh, network proxy, optional update checks, and a basic tray menu |
+| **Dashboard** | Routing topology of every client, today's token pulse, recent sessions, and a foldable map of each client's data directory and key files |
+| **Relays** | Manage many providers; per-model protocol (Responses, Chat Completions, Anthropic Messages), connectivity tests, New API balance, import/export, and a capability catalog (context, output limit, prices) from a bundled [models.dev](https://github.com/anomalyco/models.dev) snapshot |
+| **Client access** | Codex (local Router or direct Native, accountless mode, subagent defaults), Claude Code, Claude Desktop, OpenCode and Pi — preview, apply and restore, each with backups |
+| **Local router** | Protocol translation between the three wire formats, model aggregation with priority tiers, failover, first-token timeout and live member state, plus request-level route diagnostics |
+| **Accounts & usage** | ChatGPT OAuth login, quota windows, manual or threshold-based automatic switching, and a token monitor across Codex, Claude Code and relay traffic with recorded prices |
+| **Sessions** | Browse, search, export and delete Codex and Claude Code conversations; recover Codex threads its index lost |
+| **MCP / Skills / Instructions** | Manage MCP servers, Skills (with backups) and the AgentHarbor-managed block of `AGENTS.md` / `CLAUDE.md` for Codex and Claude Code |
+| **Image workbench** | Generate or edit images through a configured provider and keep them in a local gallery |
+| **Settings & maintenance** | Theme, language, custom wallpaper with automatic dark-mode contrast, app avatar, API proxy, Windows terminal proxy, diagnostics, backup cleanup and Codex restart |
 
-**Not implemented in this source build:** automatic account switching, account import/export, bulk deletion of conversations, and plugin management. Disabled controls or historical screenshots do not enable these features. The maintenance cleanup action removes redundant local backups and stale registry entries; it does not delete conversations. Quota heatmaps and a macOS notch quota display are also unavailable. Update checks require a separately configured, signed release service.
+Not available yet: account import/export, in-app plugin management, quota heatmaps and the macOS notch display. Update checks stay off until a signed release endpoint is configured.
 
-**Model protocols:** Each model can use Responses, Chat Completions, or Anthropic Messages. The provider protocol is only an inherited default for models without an override; it does not filter the catalog. Refreshing the model list preserves overrides. Upstream protocol, Codex access mode, and network route are separate settings.
+## How Codex connects
 
-**Codex access modes:** Router forwards requests through AgentHarbor and converts Chat Completions / Anthropic Messages for the Codex Responses interface. It can combine official and enabled relay models; keep AgentHarbor running. Native connects directly to the current provider: the selected default must use Responses, and its catalog contains only included Responses models from that provider, using real upstream model IDs. An incompatible selection is rejected rather than silently changing the model or provider; Chat / Anthropic models require Router.
+The access mode is independent of the upstream protocol and the network route.
 
-**Native authentication:** AgentHarbor stores the provider API key under a dedicated, randomly named variable in the Codex home `.env` file and refers to it through `env_key`. Treat `.env` and its backups as local secret files: protect access and keep them out of source control; they are not an encrypted credential vault. The key is not written to `auth.json` or exposed in config previews. Native sets `requires_openai_auth=false`, so Codex may hide the ChatGPT account even though the existing `auth.json` is preserved. To use official and relay models together with official account display, switch to Router with accountless mode off and restart Codex.
+| Mode | How requests flow | Keep AgentHarbor running? |
+| --- | --- | --- |
+| **Router** | Codex talks to the local Responses gateway, which forwards each model with its own protocol and translates Chat Completions / Anthropic Messages. Official and relay models can share one menu, and the official account stays signed in unless accountless mode is on. | Yes, while using routed models |
+| **Native** | Codex connects straight to the selected provider. Only that provider's Responses models are listed, under their real IDs; an incompatible default is rejected rather than swapped. | No |
 
-Restart Codex after changing access mode, model configuration, or its native network route. Use the AgentHarbor restart action to apply changed proxy settings to the Codex process. Native model requests do not require the local service to stay running; Claude Code / OpenCode configurations that use the local router still do.
+- Enabling access edits only the fields AgentHarbor manages in `config.toml`; disabling it restores what was there before. Restart Codex after changing the mode, models or proxy (the app has a restart button).
+- Relay models inherit Codex's client behaviour from the official model of the same name, so multi-agent V2 and the **Ultra** effort work through a relay too. Ultra is a Codex-side setting: upstream still receives a concrete effort such as `xhigh` or `max`.
+- Native authenticates with the provider key: it is stored in the Codex `.env` under a random AgentHarbor variable and referenced via `env_key`, never written to `auth.json` or shown in previews. Treat `.env` and its backups as secrets — they are not encrypted.
 
-See [running instructions](docs/RUNNING.md) for current feature boundaries, network modes, and isolated validation.
+## Data and safety
 
-<p align="center">
-  <img src="assets/console.png" alt="AgentHarbor" width="1200" height="812" />
-</p>
-## Platform Support
+- **Codex home**: `AGENT_HARBOR_CODEX_HOME`, else `CODEX_HOME`, else `~/.codex`.
+- **AgentHarbor data** (relays, routing state, usage ledger, caches): the platform's local data directory under `AgentHarbor` (for example `%LOCALAPPDATA%\AgentHarbor`), or `AGENT_HARBOR_DATA_DIR`. The dashboard's data map shows the exact paths.
+- **Provider credentials** live in `newapi-providers.dat`, encrypted with DPAPI for the current user on Windows and stored owner-only (`0600`, not encrypted) elsewhere. The UI never reads saved secrets back; leaving a field empty keeps the stored value.
+- **The local router** requires a local token. Requests to relays never carry the official account's credentials.
+- **Client configuration** is applied field by field with a backup. Fields edited by you or other tools are reported as conflicts instead of being overwritten silently.
+- **Proxy probes** only check network reachability, not authentication or quota. Codex's own login and Native requests leave from the Codex process, so restart Codex after changing its proxy.
+
+## Platform support
 
 | Platform | Notes |
 | --- | --- |
-| macOS | Universal (Apple Silicon + Intel), macOS 12+ |
-| Windows | x64, NSIS installer |
-| Linux | Best-effort support for some workflows |
+| Windows | x64, NSIS installer (Chinese and English); the primary development and test platform |
+| macOS | 12+, app bundle |
+| Linux | Best effort for some workflows |
 
----
+The terminal proxy is Windows-only.
 
-## Tech Stack
+## Development
 
-Tauri 2 · React 18 · TypeScript · Vite 6 · Tailwind CSS · shadcn/ui · Rust
-
----
-
-## Quick Start
-
-**Requirements:** Node.js · pnpm · Rust · [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)
+**Requirements:** Node.js (24 is used locally), pnpm 11.22, Rust stable and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/). On Windows that means the MSVC toolchain, Visual Studio 2022 Build Tools ("Desktop development with C++" plus the Windows SDK) and WebView2.
 
 ```bash
-cd AgentHarbor
-pnpm install
+pnpm install --frozen-lockfile
+pnpm tauri dev            # desktop app; `pnpm dev` is a browser-only preview without Rust commands
+```
+
+`scripts/tauri.mjs` selects `stable-x86_64-pc-windows-msvc` on Windows unless `RUSTUP_TOOLCHAIN` is set; your global Rust default is left alone.
+
+**Isolated runs.** Point AgentHarbor at a throwaway Codex home without touching your real one:
+
+```powershell
+$env:AGENT_HARBOR_CODEX_HOME = Join-Path (Get-Location) '.runtime-test\codex'
 pnpm tauri dev
 ```
 
+This also separates the single-instance lock and WebView data. `AGENT_HARBOR_CLIENT_HOME` does the same for Claude Code, Claude Desktop, OpenCode and Pi paths.
+
+**Checks.**
+
 ```bash
-pnpm build                                        # Frontend build check
-cargo check --manifest-path src-tauri/Cargo.toml  # Rust check
-pnpm tauri build                                  # Production build
+pnpm build           # TypeScript + Vite production build
+pnpm test:rust       # Rust unit and workflow tests
+pnpm test:frontend   # Playwright regressions against real components and mocked commands (run `pnpm build` first)
+pnpm tauri build     # release build; Windows installer in src-tauri/target/release/bundle/nsis/
 ```
 
----
+- The frontend tests need Playwright and Chromium. Use `PLAYWRIGHT_MODULE_PATH` and `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` if they are not on the default search path. Set `FRONTEND_QA_SCOPE` to run a single group.
+- Tests against a real Codex binary are skipped by default. Set `AGENTHARBOR_TEST_CODEX_BIN` and run `cargo test --manifest-path src-tauri/Cargo.toml -- --ignored real_codex`. They use temporary homes, synthetic credentials and loopback upstreams only.
+- To refresh the model catalog snapshot for a release, run `node scripts/build-models-dev-snapshot.mjs`. At runtime a downloaded cache replaces the bundled snapshot whenever it is complete and valid.
 
-## Project Structure
+## Project structure
 
 ```text
-src/           React frontend
-src-tauri/     Tauri shell and Rust backend
-src/locales/   i18n (en / zh)
-scripts/       Build and release scripts
-assets/        Branding and documentation assets
+src/                 React UI (pages, components, hooks, locales en / zh)
+src-tauri/src/core/  Rust domain logic: router and proxy, aggregation, client configs, accounts, sessions, MCP, Skills
+src-tauri/src/       Tauri commands and platform code
+scripts/             Build helpers and the frontend regression suite
+assets/, LICENSES/   Branding and third-party notices
 ```
-
----
-
-## Architecture
-
-```text
-React UI ── invoke() ──▶ Tauri commands ──▶ core/
-                                              ├── ~/.codex          (Codex native)
-                                              └── ~/.codex/agentharbor/ (AgentHarbor app data)
-                         platform/            macOS / Windows implementations
-```
-
-Model capabilities and prices come from one resolver fed by a bundled
-[models.dev](https://github.com/anomalyco/models.dev) snapshot plus an optional
-runtime cache; see [docs/models-dev.md](docs/models-dev.md) for matching rules,
-field precedence and the store migration.
-
----
 
 ## Contributing
 
-Issues and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, validation steps, and local Codex data-safety guidance. For larger changes, open an issue first so the approach can be discussed early.
-
----
+Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first: this app writes to real local Codex and client data, so changes must stay safe and reversible. For larger changes, open an issue first.
 
 ## License
 
-[Apache License 2.0](LICENSE)
-
----
+[Apache License 2.0](LICENSE). Third-party components and data, including the models.dev snapshot, are listed in [LICENSES/THIRD_PARTY.md](LICENSES/THIRD_PARTY.md).
 
 ## Disclaimer
 
-AgentHarbor is an independent tool for local Codex workflows. It is not affiliated with, endorsed by, or sponsored by OpenAI. Use third-party relay services at your own risk and comply with their terms of service.
+AgentHarbor is an independent tool. It is not affiliated with, endorsed by or sponsored by OpenAI or Anthropic. Use third-party relay services at your own risk and follow their terms of service.

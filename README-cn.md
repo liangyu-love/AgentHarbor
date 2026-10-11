@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="assets/app-icon-composed.png" alt="AgentHarbor" width="128" height="128" />
+  <img src="assets/app-icon.png" alt="AgentHarbor" width="128" height="128" />
 </p>
 
 <h1 align="center">AgentHarbor</h1>
 
 <p align="center">
-  <strong>面向编程 Agent 的原生桌面工作台 —— 统一管理账号、路由、会话与本地配置。</strong>
+  <strong>编程智能体的桌面港湾：账号、中转、本地模型路由、会话与本地配置，一处管理。</strong>
 </p>
 
 <p align="center">
@@ -14,117 +14,120 @@
 
 ---
 
-## 当前重构版
+## 这是什么
 
-AgentHarbor 已使用独立的应用标识、进程名、安装包名、单实例锁、本地数据目录、路由命名空间和默认端口，可以与本机已安装的 AiMaMi 并行运行。当前源码包含概览、中转管理、Codex 本地路由与原生接入、路由无账号模式、MCP、Skills、自定义指令、维护和设置等本地工作流。
+Codex、Claude Code、Claude Desktop、OpenCode 和 Pi 各自把账号、模型设置、会话、MCP 和指令存放在不同的文件里。额度用完要切号、接入第三方中转、清理会话，往往都得手改 TOML、JSON 和 SQLite。
 
-开发启动：`pnpm install --frozen-lockfile` 后运行 `pnpm tauri dev`。Windows 需要 Rust MSVC、Visual Studio C++ Build Tools 和 WebView2。完整步骤、隔离测试方式及验证记录见 [修复版运行说明](docs/RUNNING.md)。
+AgentHarbor 是基于 Tauri 2 + React + Rust 的桌面应用，替你完成这些事：
+- 运行一个本地模型路由（`127.0.0.1:43127`）。
+- 对每个客户端的配置做可撤回的逐字段修改，改之前先备份。
+- 在一个仪表盘上展示各客户端实际的连接状态。
 
-## 概述
+Codex 是主要集成对象，其他客户端共用同一套中转与路由。
 
-Codex 的账号、会话、MCP、Skills、智能路由与中转配置分散在 `~/.codex` 下的多个文件里。多账号切换、额度耗尽、第三方模型接入与路由维护、会话清理和配置漂移，都会把日常操作变成手改 TOML / JSON / SQLite。
+本项目是独立重构版，应用标识、数据目录、单实例锁和路由端口都与原版分开，可以与已安装的 AiMaMi 同时运行。
 
-AgentHarbor 基于 **Tauri 2 + React + Rust**。Codex 是首个已接入的 Agent，产品身份与工具专属模块保持分离，后续可继续增加 Claude Code 等适配器。当前版本把 Codex 的高频操作 —— 含智能路由与中转管理 —— 收敛到一个桌面应用里，减少手工修改本地文件带来的风险。
+## 功能
 
----
-
-## 核心能力
-
-| 模块 | 当前源码提供的能力 |
+| 模块 | 能做什么 |
 | --- | --- |
-| **账号管理** | 通过 Codex 登录添加账号、查看额度、手动切换和移除已保存账号 |
-| **Codex 接入** | 独立选择本地路由 Router 或原生直连 Native，与模型协议和网络设置分开 |
-| **中转管理** | 供应商默认协议与逐模型协议覆盖、连通性测试、导入导出和诊断 |
-| **会话管理** | 列出、搜索、筛选 Codex 会话，将选中会话导出为 Markdown 或 JSONL |
-| **MCP / Skills** | 图形化管理 MCP 条目与 Skills 生命周期，支持备份恢复 |
-| **客户端配置** | 预览、应用和恢复 Claude Code / OpenCode 经本地路由使用的供应商配置 |
-| **图片工作台** | 使用已配置的供应商生成或编辑图片，并保存到本地图册 |
-| **自定义指令** | 仅管理 `~/.codex/AGENTS.md` 中的 AgentHarbor 受控区块，支持预览与回滚 |
-| **系统维护** | 本地诊断、冗余备份清理、重建 registry 和重启 Codex |
-| **设置与运行时** | 主题、语言、额度刷新、网络代理、可选更新检查和基础托盘菜单 |
+| **仪表盘** | 各客户端的路由拓扑、今日 Token 概览、最近会话，以及可折叠的本地数据目录：列出各客户端的目录和关键文件 |
+| **中转模型** | 管理多个供应商；逐模型协议（Responses、Chat Completions、Anthropic Messages）、连通性测试、New API 余额、导入导出；能力目录（上下文、输出上限、价格）来自内置的 [models.dev](https://github.com/anomalyco/models.dev) 快照 |
+| **中转注入** | 为下列客户端预览、应用、恢复配置，每次都有备份：<br>• Codex：本地路由或原生直连，支持无账号模式和子代理默认配置<br>• Claude Code、Claude Desktop、OpenCode、Pi |
+| **本地路由** | 三种协议互相转换<br>模型聚合：按优先级分层、失败切换、首字超时切换、实时成员状态<br>请求级路由诊断 |
+| **账号与用量** | ChatGPT OAuth 登录、额度窗口、手动切号或按阈值自动切号<br>Token 监控覆盖 Codex、Claude Code 与中转流量，并记录当时价格 |
+| **线程管理** | 浏览、搜索、导出、删除 Codex 与 Claude Code 会话；恢复 Codex 索引里丢失的线程 |
+| **MCP / Skills / 自定义指令** | 管理 MCP 服务器、Skills（带备份），以及 Codex 和 Claude Code 的 `AGENTS.md` / `CLAUDE.md` 中由 AgentHarbor 管理的区块 |
+| **生图工作台** | 通过已配置的供应商生成或编辑图片，保存到本地图册 |
+| **设置与维护** | 主题、语言、自定义壁纸（深色模式自动保证对比度）、应用头像、API 代理、Windows 终端代理、诊断、备份清理和重启 Codex |
 
-**当前源码尚未实现：** 自动切换账号、账号导入导出、会话批量删除、插件管理。禁用的控件或历史截图不代表这些功能已经可用。维护页的清理仅处理冗余本地备份与过期索引，不会删除会话。额度热力图与 macOS 刘海额度展示也未提供；更新检查需要另行配置带签名的发布服务。
+尚未实现：账号导入导出、应用内插件管理、额度热力图和 macOS 刘海显示。检查更新在配置签名发布端点之前保持关闭。
 
-**模型协议：** 每个模型可分别使用 Responses、Chat Completions 或 Anthropic Messages。供应商协议只是未设置覆盖时的继承默认值，不会按协议筛掉模型；刷新列表会保留覆盖设置。上游协议、Codex 接入方式和网络出口相互独立。
+## Codex 的接入方式
 
-**Codex 接入方式：** Router 经 AgentHarbor 本地路由转发，为 Codex 的 Responses 接口转换 Chat Completions / Anthropic Messages，可同时使用官方和已启用的中转模型，需要保持 AgentHarbor 运行。Native 直接连接当前供应商：默认模型必须使用 Responses，目录只包含该供应商已选中的 Responses 模型，并使用上游真实模型 ID。选择不兼容时会报错，不会静默更换模型或供应商；Chat / Anthropic 模型应使用 Router。
+接入方式、上游协议和网络出口是三个独立的设置。
 
-**原生鉴权：** AgentHarbor 将供应商 API Key 存入 Codex 主目录 `.env` 中的专属随机变量，再通过 `env_key` 引用。`.env` 及其备份是本地秘密文件，不是加密凭据库，应保护访问权限并避免提交到版本控制。密钥不写入 `auth.json`，也不出现在配置预览中。Native 设置 `requires_openai_auth=false`，因此 Codex 可能不显示 ChatGPT 账号，但原有 `auth.json` 会保留。如需官方与中转模型并存及官方账号显示，请切回 Router、关闭无账号模式并重启 Codex。
+| 方式 | 请求如何流转 | 需要保持 AgentHarbor 运行吗？ |
+| --- | --- | --- |
+| **Router（本地路由）** | Codex 连接本地 Responses 网关，网关按各模型的协议转发，并转换 Chat Completions / Anthropic Messages。官方模型和中转模型可以出现在同一个菜单里；不开无账号模式时，官方账号保持登录。 | 使用中转模型期间需要 |
+| **Native（原生直连）** | Codex 直接连接所选供应商。只列出该供应商的 Responses 模型，使用真实模型 ID；默认模型不兼容时直接报错，不会被偷偷替换。 | 不需要 |
 
-切换接入方式、修改模型配置或原生网络出口后，请重启 Codex；修改代理后应使用 AgentHarbor 的重启入口，让 Codex 进程加载相应设置。Native 模型请求不要求本地服务持续运行，但仍经本地路由的 Claude Code / OpenCode 配置需要该服务。
+- **配置写入**：启用接入只修改 `config.toml` 中由 AgentHarbor 管理的字段，关闭时恢复原来的内容。切换方式、改模型或改代理后要重启 Codex，应用里有重启按钮。
+- **中转模型继承官方行为**：中转模型会沿用同名官方模型的 Codex 客户端行为，所以多代理 V2 和 **Ultra** 档位经中转也能用。Ultra 只是 Codex 客户端里的设置，上游实际收到的仍是 `xhigh`、`max` 这样的具体档位。
+- **Native 鉴权**：使用供应商密钥。密钥存放在 Codex 的 `.env` 里一个随机命名的 AgentHarbor 变量中，通过 `env_key` 引用；不会写进 `auth.json`，也不会出现在预览里。`.env` 及其备份不加密，请当作机密文件保管。
 
-<p align="center">
-  <img src="assets/console.png" alt="AgentHarbor" width="1200" height="812" />
-</p>
+## 数据与安全
+
+- **Codex 主目录**：依次取 `AGENT_HARBOR_CODEX_HOME`、`CODEX_HOME`，都没有时用 `~/.codex`。
+- **AgentHarbor 数据目录**：存放中转、路由状态、用量账本和缓存。位于系统本地数据目录下的 `AgentHarbor`（例如 `%LOCALAPPDATA%\AgentHarbor`），也可以用 `AGENT_HARBOR_DATA_DIR` 指定。仪表盘的数据目录里能看到确切路径。
+- **供应商凭据**：保存在 `newapi-providers.dat` 中。Windows 上用当前用户的 DPAPI 加密；其他平台只限文件所有者读写（`0600`），不加密。界面不会回读已保存的密钥，编辑时留空即保留原值。
+- **本地路由**：需要本地令牌才能访问。发往中转的请求不会携带官方账号凭据。
+- **客户端配置**：逐字段写入并先备份。被你或其他工具改过的字段会提示冲突，不会被悄悄覆盖。
+- **代理探测**：只检测网络是否可达，不检查鉴权和额度。Codex 自身的登录和 Native 请求从 Codex 进程发出，改了它的代理后要重启 Codex。
+
 ## 平台支持
 
 | 平台 | 说明 |
 | --- | --- |
-| macOS | Universal（Apple Silicon + Intel），macOS 12+ |
-| Windows | x64，NSIS 安装包 |
-| Linux | 部分能力为尽力支持 |
+| Windows | x64，NSIS 安装包（中文与英文）；主要的开发和测试平台 |
+| macOS | 12 及以上，app 包 |
+| Linux | 部分流程尽力支持 |
 
----
+终端代理目前仅支持 Windows。
 
-## 技术栈
+## 开发
 
-Tauri 2 · React 18 · TypeScript · Vite 6 · Tailwind CSS · shadcn/ui · Rust
-
----
-
-## 快速开始
-
-**环境要求：** Node.js · pnpm · Rust · [Tauri 系统依赖](https://v2.tauri.app/start/prerequisites/)
+**环境要求**：
+- Node.js（本机使用 24）、pnpm 11.22、Rust stable。
+- [Tauri 前置依赖](https://v2.tauri.app/start/prerequisites/)。在 Windows 上需要 MSVC 工具链、Visual Studio 2022 Build Tools（"使用 C++ 的桌面开发"及 Windows SDK）和 WebView2。
 
 ```bash
-cd AgentHarbor
-pnpm install
+pnpm install --frozen-lockfile
+pnpm tauri dev            # 桌面应用；`pnpm dev` 只是浏览器预览，没有 Rust 命令
+```
+
+在 Windows 上，`scripts/tauri.mjs` 默认使用 `stable-x86_64-pc-windows-msvc`；设置了 `RUSTUP_TOOLCHAIN` 时以它为准。全局的 Rust 默认工具链不会被改动。
+
+**隔离运行**：把 AgentHarbor 指向一个临时的 Codex 主目录，真实目录不受影响。
+
+```powershell
+$env:AGENT_HARBOR_CODEX_HOME = Join-Path (Get-Location) '.runtime-test\codex'
 pnpm tauri dev
 ```
 
+这样也会分开单实例锁和 WebView 数据。`AGENT_HARBOR_CLIENT_HOME` 对 Claude Code、Claude Desktop、OpenCode 和 Pi 的路径做同样的隔离。
+
+**检查**：
+
 ```bash
-pnpm build                                      # 前端构建检查
-cargo check --manifest-path src-tauri/Cargo.toml  # Rust 检查
-pnpm tauri build                                # 生产构建
+pnpm build           # TypeScript + Vite 生产构建
+pnpm test:rust       # Rust 单元与工作流测试
+pnpm test:frontend   # Playwright 回归：真实组件 + 模拟命令（先执行 pnpm build）
+pnpm tauri build     # 发布构建；Windows 安装包位于 src-tauri/target/release/bundle/nsis/
 ```
 
----
+- **前端测试**：需要 Playwright 和 Chromium。不在默认搜索路径时，用 `PLAYWRIGHT_MODULE_PATH` 和 `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` 指定；用 `FRONTEND_QA_SCOPE` 只跑某一组。
+- **真实 Codex 测试**：默认跳过。设置 `AGENTHARBOR_TEST_CODEX_BIN` 后运行 `cargo test --manifest-path src-tauri/Cargo.toml -- --ignored real_codex`。这些测试只使用临时目录、合成凭据和本地模拟上游。
+- **模型目录快照**：发布前用 `node scripts/build-models-dev-snapshot.mjs` 更新内置快照。运行时下载的缓存只要完整有效，就会取代内置快照。
 
 ## 项目结构
 
 ```text
-src/           React 前端
-src-tauri/     Tauri 壳与 Rust 后端
-src/locales/   国际化（中 / 英）
-scripts/       构建与发布脚本
-assets/        品牌与文档素材
+src/                 React 界面（页面、组件、hooks、中英文案）
+src-tauri/src/core/  Rust 领域逻辑：路由与代理、聚合、客户端配置、账号、会话、MCP、Skills
+src-tauri/src/       Tauri 命令与平台代码
+scripts/             构建辅助与前端回归测试
+assets/、LICENSES/   品牌素材与第三方声明
 ```
-
----
-
-## 架构
-
-```text
-React UI ── invoke() ──▶ Tauri commands ──▶ core/
-                                              ├── ~/.codex          (Codex 原生)
-                                              └── ~/.codex/agentharbor/ (AgentHarbor 数据)
-                         platform/            macOS / Windows 差异实现
-```
-
----
 
 ## 参与贡献
 
-欢迎提交 Issue 与 Pull Request。请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，了解开发环境、提交前检查以及本地 Codex 数据安全注意事项。较大改动建议先开 Issue 讨论方案。
-
----
+欢迎提交 Issue 和 PR。动手前请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)：本应用会写入真实的 Codex 和其他客户端数据，所有改动都必须安全、可撤回。较大的改动建议先开 Issue 讨论。
 
 ## 许可证
 
-[Apache License 2.0](LICENSE)
-
----
+[Apache License 2.0](LICENSE)。第三方组件和数据（包括 models.dev 快照）见 [LICENSES/THIRD_PARTY.md](LICENSES/THIRD_PARTY.md)。
 
 ## 免责声明
 
-AgentHarbor 是独立的 Codex 本地工作流工具，与 OpenAI 无隶属、背书或赞助关系。使用第三方中转服务请自行评估风险并遵守相应条款。
+AgentHarbor 是独立工具，与 OpenAI、Anthropic 没有隶属、背书或赞助关系。使用第三方中转服务的风险由你自行承担，并请遵守其服务条款。

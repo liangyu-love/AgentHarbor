@@ -30,7 +30,8 @@ For code changes, run the relevant checks before opening a pull request:
 
 ```bash
 pnpm build
-cargo check --manifest-path src-tauri/Cargo.toml
+pnpm test:rust
+pnpm test:frontend
 pnpm tauri build
 ```
 
@@ -38,7 +39,7 @@ For documentation-only changes, verify that links, commands, headings, and scree
 
 ## Local data safety
 
-AgentHarbor works with files under `~/.codex` and app-managed data under `~/.codex/agentharbor/`. When contributing features or fixes that read, write, import, export, clean, or rebuild local data:
+AgentHarbor works with files under `~/.codex`, other clients' configuration files, and its own data directory (`%LOCALAPPDATA%\AgentHarbor` on Windows; see the README). When contributing features or fixes that read, write, import, export, clean, or rebuild local data:
 
 - Prefer reversible operations and provide clear user confirmation for destructive actions.
 - Avoid silently overwriting user-managed configuration outside AgentHarbor-controlled blocks.
@@ -88,7 +89,8 @@ pnpm tauri dev
 
 ```bash
 pnpm build
-cargo check --manifest-path src-tauri/Cargo.toml
+pnpm test:rust
+pnpm test:frontend
 pnpm tauri build
 ```
 
@@ -96,7 +98,7 @@ pnpm tauri build
 
 ## 本地数据安全
 
-AgentHarbor 会处理 `~/.codex` 下的文件，以及 `~/.codex/agentharbor/` 下的应用数据。当贡献内容涉及读取、写入、导入、导出、清理或重建本地数据时：
+AgentHarbor 会处理 `~/.codex` 下的文件、其他客户端的配置文件，以及它自己的数据目录（Windows 上为 `%LOCALAPPDATA%\AgentHarbor`，详见 README）。当贡献内容涉及读取、写入、导入、导出、清理或重建本地数据时：
 
 - 优先设计可逆操作，对破坏性动作提供明确确认。
 - 避免静默覆盖 AgentHarbor 受控区块之外的用户配置。
