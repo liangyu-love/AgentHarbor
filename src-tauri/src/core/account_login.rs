@@ -327,7 +327,7 @@ fn validate_auth_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 #[cfg(windows)]
-fn open_browser(url: &str) -> Result<(), String> {
+pub(crate) fn open_browser(url: &str) -> Result<(), String> {
     use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
     let verb: Vec<u16> = "open\0".encode_utf16().collect();
     let url: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
@@ -348,7 +348,7 @@ fn open_browser(url: &str) -> Result<(), String> {
     }
 }
 #[cfg(not(windows))]
-fn open_browser(url: &str) -> Result<(), String> {
+pub(crate) fn open_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let program = "open";
     #[cfg(not(target_os = "macos"))]

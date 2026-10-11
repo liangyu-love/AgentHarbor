@@ -15,6 +15,8 @@ export const queryKeys = {
   claudeDesktopStatus: ["claude-desktop", "status"],
   claudeDesktopCandidates: ["claude-desktop", "candidates"],
   codexAccounts: ["codex-accounts"],
+  accountSources: ["account-sources"],
+  gateway: ["gateway"],
   tokenUsage: ["token-usage"],
   mcpServers: ["mcp-servers"],
   installedSkills: ["installed-skills"],

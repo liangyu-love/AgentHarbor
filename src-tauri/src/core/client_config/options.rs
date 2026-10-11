@@ -177,6 +177,8 @@ pub(super) fn client_endpoint_for_protocol<'a>(
             ),
             &store.router.bearer_token,
         ))
+    } else if provider.router_only() {
+        Err("accountSources.errors.routerOnly".into())
     } else {
         Ok((
             native_base(provider, with_version, protocol)?,

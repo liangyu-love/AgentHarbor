@@ -13,7 +13,6 @@ import { ConfirmDialog, type ConfirmRequest } from "@/components/ui/confirm-dial
 import { aggregationLiveQueryKey, aggregationQueryKey, type AggregateModel } from "@/types/aggregation";
 import type { NewApiProvider } from "@/types/newapi";
 import { AggregateEditor } from "./aggregate-editor";
-import { AggregateGateway } from "./aggregate-gateway";
 import { AggregateRouteRow } from "./aggregate-route-row";
 import { AggregateSuggestions } from "./aggregate-suggestions";
 import { aggregateFromSuggestion, initialAggregate, mergeSuggestions, normalizeTiers } from "./aggregation-model";
@@ -257,7 +256,6 @@ export function AggregationManager({ providers }: { providers: NewApiProvider[] 
           </ul>
         )}
 
-        <AggregateGateway state={query.data} ready={query.isSuccess} busy={busy} run={(action) => void run(action)} onChanged={changed} />
       </FoldBody>
 
       <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />

@@ -21,6 +21,8 @@ pub(super) struct Input<'a> {
     pub selection_reason: String,
     pub retry_reason: Option<String>,
     pub attempt_id: String,
+    /// The signed-in account an account source's attempt goes out as.
+    pub account: Option<&'a account_sources::RequestAuth>,
 }
 
 pub(super) struct Prepared {
@@ -43,6 +45,8 @@ pub(super) struct Prepared {
     pub hosted: Option<hosted_search::Plan>,
     pub search_backend: Option<hosted_search::SearchBackend>,
     pub credential: request_diagnostics::CredentialSnapshot,
+    /// Set for an account source, whose refusals are explained to the client.
+    pub account_source: Option<account_sources::SourceKind>,
 }
 
 pub(super) fn prepare(input: Input<'_>) -> ForwardResult<Prepared> {
@@ -65,6 +69,7 @@ pub(super) fn prepare(input: Input<'_>) -> ForwardResult<Prepared> {
         selection_reason,
         retry_reason,
         attempt_id,
+        account,
     } = input;
     let Destination::Provider {
         provider,
@@ -81,14 +86,20 @@ pub(super) fn prepare(input: Input<'_>) -> ForwardResult<Prepared> {
     let model = model_override
         .clone()
         .unwrap_or_else(|| provider.model.clone());
-    let (url, mut attempt_headers) = provider_target(
-        provider,
-        *upstream_protocol,
-        *translation,
-        suffix,
-        query,
-        headers.clone(),
-    )?;
+    let (url, mut attempt_headers) = match account {
+        Some(auth) => account_target(auth, *upstream_protocol, *translation, suffix, query, headers.clone())?,
+        None if provider.router_only() => {
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, "account source credentials were not resolved"));
+        }
+        None => provider_target(
+            provider,
+            *upstream_protocol,
+            *translation,
+            suffix,
+            query,
+            headers.clone(),
+        )?,
+    };
     if one_m && *upstream_protocol == router::ModelProtocol::AnthropicMessages {
         append_anthropic_beta(&mut attempt_headers);
     }
@@ -163,15 +174,20 @@ pub(super) fn prepare(input: Input<'_>) -> ForwardResult<Prepared> {
         let metadata = router::resolve_model_metadata(provider, &model, official, catalog);
         sent = session_compat::prepare_message_translation(sent, *upstream_protocol, &metadata)?;
     }
-    let (body, tool_adapter) = if resource {
+    let (mut body, tool_adapter) = if resource {
         (sent, Default::default())
     } else {
         tool_schema::prepare(sent, &model, *upstream_protocol)?
     };
+    if let (Some(auth), Some(bytes), false) = (account, &body, resource) {
+        if let Some(shaped) = auth.shape_body(*upstream_protocol, bytes) {
+            body = Some(Bytes::from(shaped));
+        }
+    }
     let client = client_for(context, destination)?;
     let credential = request_diagnostics::CredentialSnapshot::from_header(
         &context.app_data_dir,
-        "providerApiKey",
+        if account.is_some() { "accountSource" } else { "providerApiKey" },
         &format!("{}|{}", provider.id, url.split('?').next().unwrap_or(&url)),
         attempt_headers
             .get(AUTHORIZATION)
@@ -222,6 +238,7 @@ pub(super) fn prepare(input: Input<'_>) -> ForwardResult<Prepared> {
         hosted,
         search_backend,
         credential,
+        account_source: account.map(|auth| auth.kind),
     })
 }
 
@@ -250,6 +267,10 @@ impl Prepared {
         trace: route_trace::Trace,
         health: Option<super::super::aggregation::runtime::Health>,
     ) -> ForwardResult {
+        let response = match self.account_source {
+            Some(kind) if !response.status().is_success() => explain_account_refusal(kind, response).await.0,
+            _ => response,
+        };
         relay_response(
             response,
             self.translation,

@@ -11,9 +11,8 @@ import { queryKeys } from "@/lib/query-keys";
 import { errorMessage, formatInvokeError } from "@/lib/invoke-error";
 
 const QUERY_KEY = queryKeys.codexAccounts;
-const TOKEN_USAGE_QUERY_KEY = queryKeys.tokenUsage;
 
-// Account list and token usage queries (polled only while the page is active),
+// Account list query (polled only while the page is active),
 // the login / switch / delete / quota mutations, and the search + plan filter.
 export function useAccounts(refreshInterval: RefreshInterval) {
   const { t } = useTranslation();
@@ -34,17 +33,6 @@ export function useAccounts(refreshInterval: RefreshInterval) {
   const accountsQuery = useQuery({
     queryKey: QUERY_KEY,
     queryFn: api.accounts.refresh,
-    enabled: pageActive,
-    refetchInterval: pageActive ? REFRESH_INTERVAL_MS[refreshInterval] : false,
-    refetchIntervalInBackground: false,
-    refetchOnMount: "always",
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
-    retry: false,
-  });
-  const tokenUsageQuery = useQuery({
-    queryKey: TOKEN_USAGE_QUERY_KEY,
-    queryFn: api.usage.overview,
     enabled: pageActive,
     refetchInterval: pageActive ? REFRESH_INTERVAL_MS[refreshInterval] : false,
     refetchIntervalInBackground: false,
@@ -140,15 +128,15 @@ export function useAccounts(refreshInterval: RefreshInterval) {
     },
     onSuccess: (data) => {
       setData(data);
-      toast({ title: "账号额度已刷新", variant: "success" });
+      toast({ title: t("accounts.quotaRefreshed"), variant: "success" });
     },
     onError: (error) => {
-      toast({ title: "刷新失败", description: formatInvokeError(error), variant: "destructive" });
+      toast({ title: t("accounts.refreshFailed"), description: formatInvokeError(error), variant: "destructive" });
     },
   });
 
   const refresh = async () => {
-    const [accountsResult] = await Promise.all([accountsQuery.refetch(), tokenUsageQuery.refetch()]);
+    const accountsResult = await accountsQuery.refetch();
     if (accountsResult.data) toast({ title: t("accounts.refreshSuccess"), variant: "success" });
   };
 
@@ -167,7 +155,7 @@ export function useAccounts(refreshInterval: RefreshInterval) {
   }, [accounts, plan, search]);
 
   return {
-    accountsQuery, tokenUsageQuery, accounts, plans, filtered, search, setSearch, plan, setPlan,
+    accountsQuery, accounts, plans, filtered, search, setSearch, plan, setPlan,
     deleteTarget, setDeleteTarget, startLogin, cancelLogin, loginPending, loginCancelling,
     switchMutation, deleteMutation, refreshQuotaMutation, refresh,
   };

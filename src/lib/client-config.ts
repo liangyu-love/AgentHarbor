@@ -2,7 +2,7 @@ import { providerModelProtocol, supportsProtocol } from "./provider-models";
 import type { ClaudeModels, ClaudeOneM, ClientAccessMode, ClientStatus } from "@/types/clients";
 import type { ModelProtocol, NewApiProvider } from "@/types/newapi";
 
-export type Exclusion = "protocol" | "disabled" | "noApiKey" | "noModel";
+export type Exclusion = "protocol" | "disabled" | "noApiKey" | "noModel" | "routerOnly";
 export const claudeRoles: (keyof ClaudeModels)[] = ["sonnet", "opus", "fable", "haiku", "subagent"];
 export const emptyClaudeRoles = (): ClaudeModels => ({ sonnet: "", opus: "", fable: "", haiku: "", subagent: "" });
 // Missing fields adopt the safe default (unmarked); explicit values survive saving.
@@ -95,9 +95,11 @@ export const clientModels = (provider: NewApiProvider, protocols: ModelProtocol[
   });
 };
 
-export const exclusionOf = (provider: NewApiProvider, protocols: ModelProtocol[]): Exclusion | null => {
+/** Why a provider cannot serve a client; account sources are reachable only through the router. */
+export const exclusionOf = (provider: NewApiProvider, protocols: ModelProtocol[], mode?: ClientAccessMode): Exclusion | null => {
   if (!provider.enabled) return "disabled";
-  if (!provider.hasApiKey) return "noApiKey";
+  if (provider.accountSource && mode === "native") return "routerOnly";
+  if (!provider.hasApiKey && !provider.accountSource) return "noApiKey";
   if (!provider.model && !provider.models.some(model => model.included)) return "noModel";
   return clientModels(provider, protocols).length ? null : "protocol";
 };

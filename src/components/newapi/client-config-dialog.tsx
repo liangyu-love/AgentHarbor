@@ -59,7 +59,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
     if (saved?.modelSelection) return { ...saved, providerIds: saved.providerIds ?? [], claudeModels: saved.claudeModels ?? emptyRoles() };
     const accessMode = saved?.accessMode ?? (client.configured ? "router" : "native");
     const protocols = clientProtocols(client, accessMode);
-    const available = providers.filter(provider => !exclusionOf(provider, protocols));
+    const available = providers.filter(provider => !exclusionOf(provider, protocols, accessMode));
     const initial = available.find(provider => provider.id === client.providerId) ?? available[0];
     const models = initial ? clientModels(initial, protocols) : [];
     const restoredModels = isClaude && saved?.providerId === initial?.id && saved?.claudeModelIds
@@ -85,7 +85,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
         return mapping;
       }, emptyRoles()),
       claudeModelIds: isClaude
-        ? (saved?.providerId === initial?.id && saved.claudeModelIds != null ? saved.claudeModelIds : undefined)
+        ? (saved?.providerId === initial?.id && saved?.claudeModelIds != null ? saved.claudeModelIds : undefined)
         : undefined,
       claudeOneM: isClaude ? claudeOneMDefaults(saved?.claudeOneM) : undefined,
       authField: saved?.authField ?? "authToken",
@@ -107,7 +107,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
   const selectedAggregates = aggregates.filter(model => aggregateIds.includes(model.id));
   const defaultAggregate = defaultTarget?.kind === "aggregate" ? aggregates.find(model => model.id === defaultTarget.aggregateId) : undefined;
   const aggregateUnavailable = aggregateIds.some(id => !aggregates.some(model => model.id === id && model.available));
-  const compatible = providers.filter(provider => !exclusionOf(provider, protocols));
+  const compatible = providers.filter(provider => !exclusionOf(provider, protocols, request.accessMode));
   const selected = compatible.filter(provider => request.providerIds.includes(provider.id));
   const provider = selected.find(provider => provider.id === request.providerId);
   const models = isClaude && aggregateMode ? selectedAggregates.map(model => model.publicModelId) : provider ? clientModels(provider, protocols) : [];
@@ -193,7 +193,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
   };
   const changeMode = (accessMode: ClientAccessMode) => {
     const nextProtocols = clientProtocols(client, accessMode);
-    const eligible = providers.filter(p => !exclusionOf(p, nextProtocols));
+    const eligible = providers.filter(p => !exclusionOf(p, nextProtocols, accessMode));
     const next = eligible.find(p => p.id === request.providerId) ?? eligible[0];
     const availableModels = next ? (isClaude ? clientModels(next, nextProtocols)
       : selectedProviderModels(next, nextProtocols, request.providerModelIds?.[next.id])) : [];
@@ -291,7 +291,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
     }
     const accessMode = profile.request.accessMode === "router" ? "router" : "native";
     const profileProtocols = clientProtocols(client, accessMode);
-    const nextProvider = providers.find(item => item.id === profile.request.providerId && !exclusionOf(item, profileProtocols));
+    const nextProvider = providers.find(item => item.id === profile.request.providerId && !exclusionOf(item, profileProtocols, accessMode));
     if (!nextProvider) { setError("clients.errors.provider"); return; }
     const availableModels = clientModels(nextProvider, profileProtocols);
     const savedModelIds = profile.request.claudeModelIds;
@@ -468,15 +468,21 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
             <p id="client-provider-label" className="text-sm font-medium">{t(isClaude ? "clients.provider" : "clients.providers")}</p>
             <div className="grid max-h-56 gap-2 overflow-y-auto sm:grid-cols-2" aria-labelledby="client-provider-label">
               {providers.map(p => {
-                const reason = exclusionOf(p, protocols);
+                const reason = exclusionOf(p, protocols, request.accessMode);
                 const active = request.providerIds.includes(p.id) && !reason;
                 const availableCount = clientModels(p, protocols).length;
                 return <button key={p.id} type="button" disabled={busy || !!reason} aria-pressed={active} onClick={() => toggleProvider(p)}
                   className={"flex min-w-0 items-center gap-3 rounded-lg border p-3 text-left transition-[border-color,background-color,transform] duration-150 motion-safe:active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-45 "
                     + (active ? "border-primary/50 bg-primary/5" : "bg-card/60 hover:bg-muted/60")}>
-                  <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium" title={p.name}>{p.name}</span>
+                  <span className="min-w-0 flex-1"><span className="flex min-w-0 items-center gap-1.5">
+                      <span className="truncate text-sm font-medium" title={p.name}>{p.name}</span>
+                      {p.accountSource && <span data-account-source-badge className="shrink-0 rounded-full border border-primary/25 bg-primary/5 px-1.5 text-[10px] font-medium text-primary">{t("accountSources.badge")}</span>}
+                    </span>
                     <span className="mt-1 block text-xs text-muted-foreground">{reason ? t("clients.excluded." + reason, { count: 1 })
-                      : t("clients.modelsCount", { count: availableCount })}</span></span>
+                      : t("clients.modelsCount", { count: availableCount })}</span>
+                    {!reason && isClaude && (p.accountSource === "workbuddy" || p.accountSource === "workbuddy-ai") && (
+                      <span className="mt-1 block text-[11px] leading-snug text-amber-700 dark:text-amber-300" data-account-source-refusal>{t("accountSources.refusesClaudeCode")}</span>
+                    )}</span>
                   <span className={"flex h-4 w-4 shrink-0 items-center justify-center border " + (isClaude ? "rounded-full " : "rounded ")
                     + (active ? "border-primary bg-primary text-primary-foreground" : "border-input")}>
                     {active && <Check className="h-3 w-3" />}</span>

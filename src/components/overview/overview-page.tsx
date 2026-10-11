@@ -360,7 +360,7 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
       )}
 
       <section className="dash-bento" aria-label={t("workspace.pulse")}>
-        <Tile icon={<Zap className="h-3.5 w-3.5" />} label={t("workspace.tokensToday")} onClick={() => onNavigate("accounts")}
+        <Tile icon={<Zap className="h-3.5 w-3.5" />} label={t("workspace.tokensToday")} onClick={() => onNavigate("usage")}
           caption={local ? t("workspace.tokensWeek", { value: formatTokenCount(local.week.totalTokens), turns: local.today.turnCount }) : t(usage.isError ? "workspace.checkFailed" : "workspace.checking")}>
           <span className="dash-value"><CountUp value={local?.today.totalTokens ?? 0} format={formatTokenCount} /></span>
           <Sparkline values={daily} />

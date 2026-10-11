@@ -15,6 +15,11 @@ export async function testUiRound7({ page, reset, captureDir }) {
   await reset("access");
   const codex = page.locator('section[aria-labelledby="newapi-routing-title"]');
   await codex.locator('[aria-labelledby="codex-subagents-title"]').waitFor();
+  // Measure the settled layout, not a frame of an entrance animation. Endless
+  // loops (route flow, hub rings) never finish and are left running.
+  await page.evaluate(() => Promise.all(document.getAnimations()
+    .filter(animation => animation.effect?.getTiming().iterations !== Infinity)
+    .map(animation => animation.finished.catch(() => undefined))));
   const box = selector => codex.locator(selector).first().evaluate(element => {
     const rect = element.getBoundingClientRect();
     return { x: rect.x, y: rect.y, w: rect.width, h: rect.height, right: rect.right, bottom: rect.bottom };

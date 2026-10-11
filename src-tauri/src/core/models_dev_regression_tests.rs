@@ -68,6 +68,7 @@ fn provider(id: &str, context: u64) -> router::Provider {
 
 fn input(id: Option<String>, model: newapi::Model) -> router::ProviderInput {
     router::ProviderInput {
+        gateway_slug: None,
         id,
         name: "Relay".into(),
         base_url: "https://relay.example/v1".into(),

@@ -11,7 +11,7 @@ export type RelayConsumer = Exclude<ShortcutTarget, "aggregation">;
 export type RelayUse = { consumers: RelayConsumer[]; codex: "injected" | "direct" | null };
 
 /** The router injects every enabled relay with a key and a model into Codex's menu. */
-export const codexInjectable = (provider: NewApiProvider) => provider.enabled && provider.hasApiKey && !!provider.model;
+export const codexInjectable = (provider: NewApiProvider) => provider.enabled && (provider.hasApiKey || !!provider.accountSource) && !!provider.model;
 
 const providerTargets = (targets: (ModelTargetRef | null | undefined)[]) =>
   targets.flatMap((target) => target?.kind === "provider" ? [target.providerId] : []);

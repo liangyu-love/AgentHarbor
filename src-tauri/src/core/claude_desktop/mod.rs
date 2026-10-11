@@ -307,7 +307,7 @@ impl Manager {
         let policy = provider::DesktopVersionPolicy::from_version(Some(&detection.version));
         let catalog = models_dev::load(&self.app_data_dir);
         let mut views = Vec::with_capacity(store.providers.len());
-        for candidate in &store.providers {
+        for candidate in store.providers.iter().filter(|candidate| !candidate.router_only()) {
             let (eligible, reason, models) =
                 provider::provider_qualification(candidate, policy, &catalog);
             views.push(ProviderCandidateView {

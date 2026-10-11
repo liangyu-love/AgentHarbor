@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import {
   LayoutDashboard,
   Wallet,
+  ChartColumn,
   FileCode2,
   Server,
   Sparkles,
@@ -44,6 +45,7 @@ export const appNavItems: {
 }[] = [
   { route: "overview", icon: LayoutDashboard, labelKey: "nav.overview" },
   { route: "accounts", icon: UsersRound, labelKey: "nav.accounts" },
+  { route: "usage", icon: ChartColumn, labelKey: "nav.usage" },
   { route: "newapi", icon: Wallet, labelKey: "newapi.title" },
   { route: "relays", icon: RadioTower, labelKey: "newapi.providersSection" },
   { route: "imageWorkbench", icon: ImageIcon, labelKey: "image.title" },
@@ -59,7 +61,7 @@ const hiddenNavRoutes = new Set<Route>([]);
 
 /** Navigation reads as a table of contents: what you connect, what you work on, what you extend. */
 const navGroups: { kicker: string; routes: Route[] }[] = [
-  { kicker: "Home", routes: ["overview"] },
+  { kicker: "Home", routes: ["overview", "usage"] },
   { kicker: "Connect", routes: ["newapi", "relays", "accounts"] },
   { kicker: "Work", routes: ["threads", "imageWorkbench"] },
   { kicker: "Extend", routes: ["customInstructions", "mcp", "skills"] },

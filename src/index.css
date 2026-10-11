@@ -1286,6 +1286,31 @@ body {
   .route-draw { animation: none; stroke-dashoffset: 0; }
   .route-hub-halo { opacity: 0; }
 }
+/* ---------- Accounts & gateway: the same signal language as the topology ---------- */
+/* Switching sources slides along the row of sources and wipes in from that side.
+   Fill-mode backwards: no clip-path is left behind to cut card shadows. */
+.accounts-panel-enter { animation: accounts-panel-in 420ms cubic-bezier(0.16, 1, 0.3, 1) backwards; }
+.accounts-panel-enter[data-direction="forward"] { --panel-from: 28px; --panel-clip: inset(0 0 0 18% round 18px); }
+.accounts-panel-enter[data-direction="back"] { --panel-from: -28px; --panel-clip: inset(0 18% 0 0 round 18px); }
+@keyframes accounts-panel-in {
+  from { opacity: 0; transform: translateX(var(--panel-from, 0)); clip-path: var(--panel-clip, inset(0)); }
+  to { opacity: 1; transform: none; clip-path: inset(0 0 0 0 round 0); }
+}
+/* Credits grow from empty to what the cycle has used. */
+.source-credits-fill { transform-origin: left center; transform: scaleX(var(--fill, 0)); animation: source-credits-grow 900ms 120ms cubic-bezier(0.16, 1, 0.3, 1) backwards; }
+@keyframes source-credits-grow { from { transform: scaleX(0); } }
+/* A connection preview prints from the top down. */
+.gateway-preview-reveal { animation: gateway-preview-print 460ms cubic-bezier(0.16, 1, 0.3, 1) backwards; }
+@keyframes gateway-preview-print {
+  from { clip-path: inset(0 0 100% 0 round 12px); opacity: 0.4; }
+  to { clip-path: inset(0 0 0 0 round 12px); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .accounts-panel-enter { animation: accounts-panel-fade 160ms ease backwards; }
+  .source-credits-fill, .gateway-preview-reveal { animation: none; }
+}
+@keyframes accounts-panel-fade { from { opacity: 0; } }
+
 /* Narrow topology: icon above name, status dot in the corner. */
 [data-topology-layout="vertical"] .route-node { flex-direction: column; justify-content: center; gap: 0.3rem; padding: 0.55rem 0.35rem; text-align: center; }
 [data-topology-layout="vertical"] .route-node-text { flex: none; width: 100%; }

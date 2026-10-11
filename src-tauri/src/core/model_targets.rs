@@ -109,6 +109,8 @@ impl ClientModelSelection {
 pub enum LocalCredentialRef {
     Router,
     ClaudeDesktop,
+    /// One of the gateway's named keys.
+    Gateway,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -224,11 +226,11 @@ pub fn resolve_client_target_with_context(
             );
             let reason = if !provider.enabled {
                 Some("provider_disabled")
-            } else if credential.trim().is_empty() {
+            } else if !provider.router_only() && credential.trim().is_empty() {
                 Some("credential_missing")
             } else if newapi::provider_endpoint(&provider.base_url, "v1").is_err() {
                 Some("endpoint_invalid")
-            } else if newapi::model_auth_header(&provider.base_url, protocol, credential).is_err() {
+            } else if !provider.router_only() && newapi::model_auth_header(&provider.base_url, protocol, credential).is_err() {
                 Some("credential_invalid")
             } else if !provider.can_route_model(model_id)
                 || provider
@@ -267,12 +269,12 @@ pub fn resolve_client_target_with_context(
                     .ok()
                     .is_some_and(|resolved| {
                         Translation::can_serve(ingress, resolved.protocol)
-                            && newapi::model_auth_header(
+                            && (resolved.provider.router_only() || newapi::model_auth_header(
                                 &resolved.provider.base_url,
                                 resolved.protocol,
                                 resolved.provider.model_credential().api_key,
                             )
-                            .is_ok()
+                            .is_ok())
                             && minimum_context.is_none_or(|minimum| {
                                 !resolved.projection.context_is_fallback
                                     && resolved.projection.context_window >= minimum

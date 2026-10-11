@@ -244,6 +244,7 @@ pub async fn reveal_newapi_provider_api_key(
     id: String,
 ) -> Result<String, String> {
     let paths = paths(&repo)?;
+    router::ensure_relay(&paths, &id)?;
     let store = router::load_store(&paths)?;
     store
         .providers
@@ -260,6 +261,9 @@ pub async fn save_newapi_provider(
     provider: ProviderInput,
 ) -> Result<StateChange, String> {
     let paths = paths(&repo)?;
+    if let Some(id) = provider.id.as_deref() {
+        router::ensure_relay(&paths, id)?;
+    }
     let _guard = routing_runtime::mutation_guard().await;
     router::save_provider(&paths, provider)
 }
@@ -270,6 +274,7 @@ pub async fn delete_newapi_provider(
     id: String,
 ) -> Result<StateChange, String> {
     let paths = paths(&repo)?;
+    router::ensure_relay(&paths, &id)?;
     let _guard = routing_runtime::mutation_guard().await;
     router::delete_provider(&paths, &id)
 }
@@ -281,6 +286,7 @@ pub async fn set_newapi_provider_enabled(
     enabled: bool,
 ) -> Result<StateChange, String> {
     let paths = paths(&repo)?;
+    router::ensure_relay(&paths, &id)?;
     let _guard = routing_runtime::mutation_guard().await;
     router::set_enabled(&paths, &id, enabled)
 }
@@ -304,6 +310,7 @@ pub async fn test_newapi_provider(
     on_event: tauri::ipc::Channel<crate::core::provider_probe::ProbeEvent>,
 ) -> Result<ProviderView, String> {
     let paths = paths(&repo)?;
+    router::ensure_relay(&paths, &id)?;
     let proxy = newapi::proxy_from_settings(&paths.settings_path);
     tauri::async_runtime::spawn_blocking(move || {
         let emit = |event| {
@@ -324,6 +331,9 @@ pub async fn fetch_newapi_models(
     protocol: Option<ModelProtocol>,
 ) -> Result<Vec<crate::core::newapi::Model>, String> {
     let paths = paths(&repo)?;
+    if let Some(id) = provider_id.as_deref() {
+        router::ensure_relay(&paths, id)?;
+    }
     let proxy = newapi::proxy_from_settings(&paths.settings_path);
     tauri::async_runtime::spawn_blocking(move || {
         router::fetch_models(
@@ -348,6 +358,7 @@ pub async fn set_newapi_balance_credentials(
     access_token: String,
 ) -> Result<ProviderView, String> {
     let paths = paths(&repo)?;
+    router::ensure_relay(&paths, &id)?;
     super::blocking(move || {
         router::set_balance_credentials(&paths, &id, &expected_base_url, user_id, &access_token)
     })
@@ -362,6 +373,7 @@ pub async fn set_newapi_balance_script(
     script: String,
 ) -> Result<ProviderView, String> {
     let paths = paths(&repo)?;
+    router::ensure_relay(&paths, &id)?;
     super::blocking(move || router::set_balance_script(&paths, &id, &expected_base_url, &script))
         .await
 }
@@ -374,6 +386,7 @@ pub async fn set_newapi_balance_sharing(
     shared: bool,
 ) -> Result<ProviderView, String> {
     let paths = paths(&repo)?;
+    router::ensure_relay(&paths, &id)?;
     super::blocking(move || router::set_balance_sharing(&paths, &id, &expected_base_url, shared))
         .await
 }
@@ -386,6 +399,7 @@ pub async fn set_newapi_balance_refresh_interval(
     interval_minutes: u32,
 ) -> Result<ProviderView, String> {
     let paths = paths(&repo)?;
+    router::ensure_relay(&paths, &id)?;
     super::blocking(move || {
         router::set_balance_refresh_interval(&paths, &id, &expected_base_url, interval_minutes)
     })
@@ -427,6 +441,7 @@ pub async fn query_newapi_provider_balance(
     id: String,
 ) -> Result<ProviderView, String> {
     let paths = paths(&repo)?;
+    router::ensure_relay(&paths, &id)?;
     let proxy = newapi::proxy_from_settings(&paths.settings_path);
     tauri::async_runtime::spawn_blocking(move || {
         router::query_provider_balance(&paths, &id, &proxy)

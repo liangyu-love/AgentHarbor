@@ -44,9 +44,7 @@ async function seed(page, reset, mode, options = {}) {
       ], strategy: "weightedRoundRobin", affinity: "session", retryPolicy: { maxAttempts: 2, failureThreshold: 3 }, compression: { mode: "inherit" } };
     review.aggregateModels = options.empty ? [] : [aggregate];
     review.aggregateSaves = [];
-    review.aggregateExports = [];
     review.aggregateCodexSelections = [];
-    review.aggregateExternalEnabled = false;
     review.routerPatch = { enabled: false, accessMode: "router", aggregateModelId: options.codexTarget ?? null };
     if (mode.startsWith("clients")) {
       const targetId = mode.startsWith("clients-opencode") ? "opencode" : "claudeCode";
@@ -91,10 +89,6 @@ export async function testAggregation({ page, reset, captureDir }) {
   assert.equal(await copyId.locator(".lucide-check").count(), 0, "a failed retry clears the previous copy-success indicator");
   assert.equal(await manager().locator("[data-route-member]").count(), 2, "each upstream is displayed once");
   assert.equal(await manager().locator("[data-route-member] [data-route-member]").count(), 0);
-  await manager().getByRole("button", { name: await tr("aggregation.previewConnection"), exact: true }).click();
-  await page.evaluate(() => { navigator.clipboard.writeText = async () => { throw new Error("Synthetic preview clipboard denied"); }; });
-  await manager().getByRole("button", { name: await tr("aggregation.copyAll"), exact: true }).click();
-  await manager().getByRole("alert").getByText("Synthetic preview clipboard denied", { exact: true }).waitFor();
 
   await manager().getByRole("button", { name: await tr("common.edit"), exact: true }).click();
   await page.evaluate(() => { window.review.holdAggregateSave = true; });
@@ -238,54 +232,6 @@ export async function testAggregation({ page, reset, captureDir }) {
   await manager().locator("form").getByRole("button", { name: await tr("common.cancel"), exact: true }).click();
   console.log("PASS aggregation editor persists exact upstream identities, stable member IDs, priorities and weights");
 
-  await manager().getByRole("button", { name: await tr("aggregation.previewConnection"), exact: true }).click();
-  const preview = manager().locator("[data-aggregate-export-preview]");
-  await preview.waitFor();
-  assert.match(await preview.innerText(), /<redacted>/);
-  assert.doesNotMatch(await preview.innerText(), /synthetic-local-aggregate-token/);
-  await manager().getByRole("button", { name: await tr("aggregation.copyConnection"), exact: true }).click();
-  await page.waitForFunction(() => !!window.review.copiedAggregate);
-  assert.match(await page.evaluate(() => window.review.copiedAggregate), /synthetic-local-aggregate-token/);
-  assert.deepEqual(await page.evaluate(() => window.review.aggregateExports.map(request => request.revealCredential)), [false, true]);
-  await choose(manager().locator("#aggregate-export-profile"), "Anthropic SDK");
-  await manager().locator("#aggregate-export-protocol").click();
-  assert.equal(await page.getByRole("option", { name: "Responses", exact: true }).getAttribute("aria-disabled"), "true");
-  assert.equal(await page.getByRole("option", { name: "Chat", exact: true }).getAttribute("aria-disabled"), "true");
-  await page.keyboard.press("Escape");
-  await manager().getByRole("button", { name: await tr("aggregation.previewConnection"), exact: true }).click();
-  assert.equal(await page.evaluate(() => window.review.aggregateExports.at(-1).ingressProtocol), "anthropicMessages");
-  assert.match(await preview.innerText(), /http:\/\/127\.0\.0\.1:43127\/aggregate"/);
-  await choose(manager().locator("#aggregate-export-profile"), "OpenCode");
-  await choose(manager().locator("#aggregate-export-protocol"), "Chat");
-  assert.equal(await preview.count(), 0, "changing the ingress withdraws the previous connection preview");
-  await manager().getByRole("button", { name: await tr("aggregation.previewConnection"), exact: true }).click();
-  assert.deepEqual(await page.evaluate(() => {
-    const request = window.review.aggregateExports.at(-1);
-    return { consumerProfile: request.consumerProfile, ingressProtocol: request.ingressProtocol };
-  }), { consumerProfile: "opencode", ingressProtocol: "chatCompletions" });
-  assert.match(await preview.innerText(), /"protocol": "chatCompletions"/);
-  assert.equal(await manager().locator("#aggregate-external-enabled").getAttribute("aria-checked"), "false");
-  await manager().locator("#aggregate-external-enabled").click();
-  await page.waitForFunction(() => window.review.aggregateExternalEnabled);
-  await manager().getByText(await tr("aggregation.listenerReady"), { exact: true }).waitFor();
-  console.log("PASS connection preview masks the local token, copy reveals it explicitly, and SDK export follows the Messages base path");
-
-  await page.evaluate(async () => {
-    const review = window.review;
-    review.aggregateModels.push({ ...structuredClone(review.aggregateModels[0]), id: "pool-export-choice",
-      publicModelId: "minimax-m2.5", displayName: "Explicit export pool" });
-    await review.frontendClient.invalidateQueries({ queryKey: ["model-aggregation"] });
-  });
-  await choose(manager().locator("#aggregate-export-model"), "Explicit export pool");
-  await page.evaluate(async () => {
-    window.review.aggregateModels.find(model => model.id === "pool-export-choice").enabled = false;
-    await window.review.frontendClient.invalidateQueries({ queryKey: ["model-aggregation"] });
-  });
-  assert.equal(await manager().getByRole("button", { name: await tr("aggregation.previewConnection"), exact: true }).isDisabled(), true,
-    "a disabled explicit export choice must not fall back to the other available aggregate");
-  assert.equal(await manager().getByRole("button", { name: await tr("aggregation.copyConnection"), exact: true }).isDisabled(), true);
-  await choose(manager().locator("#aggregate-export-model"), POOL_NAME);
-  console.log("PASS connection export keeps an unavailable explicit choice rather than choosing another aggregate");
 
   const codex = page.locator('[aria-labelledby="newapi-routing-title"]');
   await choose(codex.locator("#codex-aggregate-model"), POOL_NAME + " · " + PUBLIC_MODEL);
@@ -313,8 +259,6 @@ export async function testAggregation({ page, reset, captureDir }) {
     window.review.aggregateModels[0].enabled = false;
     await window.review.frontendClient.invalidateQueries({ queryKey: ["model-aggregation"] });
   });
-  assert.equal(await manager().getByRole("button", { name: await tr("aggregation.previewConnection"), exact: true }).isDisabled(), true);
-  assert.equal(await manager().getByRole("button", { name: await tr("aggregation.copyConnection"), exact: true }).isDisabled(), true);
   await manager().getByRole("button", { name: await tr("common.delete"), exact: true }).click();
   const confirmation = page.getByRole("alertdialog");
   await confirmation.waitFor();

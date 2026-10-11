@@ -32,6 +32,8 @@ interface ProviderDraft {
   // Preserve legacy bindings on unrelated edits; new prices are automatic.
   priceCatalogProvider: string;
   priceMultiplier: string;
+  /** Gateway short name; empty keeps the stored one or derives one from the name. */
+  gatewaySlug: string;
 }
 const emptyDraft: ProviderDraft = {
   name: "",
@@ -45,6 +47,7 @@ const emptyDraft: ProviderDraft = {
   catalogProviders: "",
   priceCatalogProvider: "",
   priceMultiplier: "1",
+  gatewaySlug: "",
 };
 const fromProvider = (provider: NewApiProvider): ProviderDraft => {
   const compression = provider.compression ?? { mode: "inherit" as const };
@@ -65,6 +68,7 @@ const fromProvider = (provider: NewApiProvider): ProviderDraft => {
     catalogProviders: (provider.catalogProviders ?? []).join(", "),
     priceCatalogProvider: provider.priceCatalogProvider ?? "",
     priceMultiplier: String(provider.priceMultiplier ?? 1),
+    gatewaySlug: provider.gatewaySlug ?? "",
   };
 };
 function optionalNumber(text: string, errorKey: string) {
@@ -351,6 +355,7 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
           .filter(Boolean),
         priceCatalogProvider: draft.priceCatalogProvider.trim().toLowerCase() || null,
         priceMultiplier: priceMultiplier(draft.priceMultiplier),
+        gatewaySlug: draft.gatewaySlug.trim() || null,
       });
       onSaved(change);
       onOpenChange(false);
@@ -459,6 +464,7 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
               <section className="space-y-3 rounded-2xl border border-border/70 bg-muted/20 p-4">
                 <SectionLabel>{t("newapi.sectionConnection")}</SectionLabel>
                 {field("name", "newapi.name", { placeholder: t("newapi.namePlaceholder") })}
+                {field("gatewaySlug", "newapi.gatewaySlug", { placeholder: "deepseek", hint: t("newapi.gatewaySlugHint") })}
                 {field("baseUrl", "newapi.url", { placeholder: "https://example.com" })}
                 {field("apiKey", "newapi.apiKey", {
                   password: true,

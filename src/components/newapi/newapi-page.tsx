@@ -1,6 +1,6 @@
 import { useState, type CSSProperties, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Layers3, Plug, X } from "lucide-react";
+import { Layers3, Plug, Share2, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
 import {
@@ -18,6 +18,7 @@ import { ClaudeDesktopConfigCard } from "@/components/newapi/claude-desktop-conf
 import { CodexAccessCard } from "@/components/newapi/codex-access-card";
 import { RoutingDiagnostics } from "@/components/newapi/routing-diagnostics";
 import { AggregationManager } from "@/components/newapi/aggregation-manager";
+import { GatewayPanel } from "@/components/newapi/gateway-panel";
 import { ModelCapabilities } from "@/components/newapi/model-capabilities";
 import { useProviderState } from "@/components/newapi/use-provider-state";
 import { providerModelProtocol } from "@/lib/provider-models";
@@ -127,6 +128,11 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
             pi: <ClientConfigs target="pi" providers={providers} onOpenRelays={onOpenRelays} />,
           }}
         />
+      </SectionGroup>
+
+      <SectionGroup kicker="Gateway" icon={<Share2 className="h-3 w-3" />} title={t("gateway.groupTitle")}
+        description={t("gateway.groupDesc")} delay={120}>
+        <GatewayPanel providersRevision={state.dataUpdatedAt} />
       </SectionGroup>
 
       <SectionGroup kicker="Routing" icon={<Layers3 className="h-3 w-3" />} title={t("newapi.groups.routing")}

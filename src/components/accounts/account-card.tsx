@@ -37,6 +37,14 @@ export function planLabel(plan: string, unknown: string) {
   return labels[plan.toLowerCase()] ?? (plan && plan !== "unknown" ? plan : unknown);
 }
 
+/** An email shown by its first and last letters only, until revealed. */
+export function maskEmail(email: string) {
+  const [localPart, domain] = email.split("@");
+  return domain
+    ? `${localPart.slice(0, 1)}${"•".repeat(Math.max(3, localPart.length - 2))}${localPart.length > 1 ? localPart.slice(-1) : ""}@${domain}`
+    : email ? "••••" : "";
+}
+
 function statusStyle(status: CodexAccountSummary["usageStatus"]) {
   if (status === "healthy") return "bg-emerald-500";
   if (status === "expired") return "bg-amber-500";
@@ -180,10 +188,7 @@ export function AccountCard({
   const [emailVisible, setEmailVisible] = useState(false);
   const statusText = t(`accounts.${account.usageStatus}`);
   const email = account.email;
-  const [localPart, domain] = email.split("@");
-  const maskedEmail = domain
-    ? `${localPart.slice(0, 1)}${"•".repeat(Math.max(3, localPart.length - 2))}${localPart.length > 1 ? localPart.slice(-1) : ""}@${domain}`
-    : email ? "••••" : "";
+  const maskedEmail = maskEmail(email);
   const title = email ? (emailVisible ? email : maskedEmail) : account.displayName;
 
   const handleCopy = async () => {

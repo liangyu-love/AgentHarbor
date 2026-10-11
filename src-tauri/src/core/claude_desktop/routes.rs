@@ -186,6 +186,9 @@ pub fn candidates(store: &Store, catalog: &models_dev::Catalog) -> Vec<ProviderC
     store
         .providers
         .iter()
+        // Account sources sign each request with a refreshed token; Desktop
+        // routes freeze a provider key, so they are not offered here yet.
+        .filter(|card| !card.router_only())
         .map(|card| {
             let mut ids: Vec<String> = card.models.iter().map(|entry| entry.id.clone()).collect();
             if !card.model.trim().is_empty() && !ids.iter().any(|id| id == card.model.trim()) {

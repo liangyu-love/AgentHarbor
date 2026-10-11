@@ -256,6 +256,7 @@ fn native_validation_and_save_reject_selected_non_responses_without_fallback_or_
     let before_config = std::fs::read(&paths.config_path).unwrap();
     let current = &store.providers[0];
     let input = ProviderInput {
+        gateway_slug: None,
         id: Some(current.id.clone()),
         name: current.name.clone(),
         base_url: current.base_url.clone(),

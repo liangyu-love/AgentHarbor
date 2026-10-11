@@ -28,9 +28,11 @@ It is an independent rebuild with its own app identity, data directory, single-i
 | --- | --- |
 | **Dashboard** | Routing topology of every client, today's token pulse, recent sessions, and a foldable map of each client's data directory and key files |
 | **Relays** | Manage many providers; per-model protocol (Responses, Chat Completions, Anthropic Messages), connectivity tests, New API balance, import/export, and a capability catalog (context, output limit, prices) from a bundled [models.dev](https://github.com/anomalyco/models.dev) snapshot |
-| **Client access** | Codex (local Router or direct Native, accountless mode, subagent defaults), Claude Code, Claude Desktop, OpenCode and Pi — preview, apply and restore, each with backups |
+| **Model inject** | Connect relay models and official-account models to Codex (local Router or direct Native, accountless mode, subagent defaults), Claude Code, Claude Desktop, OpenCode and Pi — preview, apply and restore, each with backups |
 | **Local router** | Protocol translation between the three wire formats, model aggregation with priority tiers, failover, first-token timeout and live member state, plus request-level route diagnostics |
-| **Accounts & usage** | ChatGPT OAuth login, quota windows, manual or threshold-based automatic switching, and a token monitor across Codex, Claude Code and relay traffic with recorded prices |
+| **Gateway** | One local address and named keys give any agent that takes a base URL and an API key every enabled model (see below) |
+| **Accounts** | Codex: ChatGPT OAuth login, quota windows, manual or threshold-based automatic switching. Account sources: ChatGPT (Sign in with ChatGPT), WorkBuddy and WorkBuddy AI, which can be shared with model inject (see below) |
+| **Usage** | A token monitor across Codex, Claude Code and relay traffic with recorded prices |
 | **Sessions** | Browse, search, export and delete Codex and Claude Code conversations; recover Codex threads its index lost |
 | **MCP / Skills / Instructions** | Manage MCP servers, Skills (with backups) and the AgentHarbor-managed block of `AGENTS.md` / `CLAUDE.md` for Codex and Claude Code |
 | **Image workbench** | Generate or edit images through a configured provider and keep them in a local gallery |
@@ -51,11 +53,35 @@ The access mode is independent of the upstream protocol and the network route.
 - Relay models inherit Codex's client behaviour from the official model of the same name, so multi-agent V2 and the **Ultra** effort work through a relay too. Ultra is a Codex-side setting: upstream still receives a concrete effort such as `xhigh` or `max`.
 - Native authenticates with the provider key: it is stored in the Codex `.env` under a random AgentHarbor variable and referenced via `env_key`, never written to `auth.json` or shown in previews. Treat `.env` and its backups as secrets — they are not encrypted.
 
+## Gateway
+
+Instead of injecting a client, hand an agent the gateway from the model inject page:
+
+- **Address.** OpenAI compatible (Responses, Chat Completions): `http://127.0.0.1:43127/gateway/v1`. Anthropic Messages: `http://127.0.0.1:43127/gateway`. `/gateway/v1/models` lists every model the key can use.
+- **Keys.** Create a named key per agent; copy, regenerate or delete each on its own. Gateway keys are separate from the token injected client configs carry, and neither works in the other's place.
+- **Model names.**
+  - Relay and account-source models are `short name/model`, for example `deepseek/deepseek-v4-pro` or `workbuddy/glm-5.3`; aggregates use their public id.
+  - The short name is derived from the relay's name and can be edited in the relay editor; renaming the relay later does not change it.
+- **Protocol translation** works as for injected clients, for example calling a Chat Completions-only relay over Responses.
+- **Keep running.** Turn on "Keep the gateway running" to keep the local router up even with no client injected.
+- **Connection settings** can be copied as a generic, Anthropic SDK or OpenCode template. Previews mask the key; copying writes the real one.
+
+## Account sources
+
+An account source is a subscription whose own sign-in serves models. Sign in on the Accounts page and turn on "Share with model inject": the source then appears as a special provider on the model inject page and in aggregates.
+
+- **Router only.** For each request the router takes the active account's token and refreshes it when it is about to expire. No account token is ever written to a client config, so direct mode and Codex Native cannot select an account source.
+- **ChatGPT** uses OpenAI's Sign in with ChatGPT for apps on the user's machine: requests go to the standard `api.openai.com/v1/responses` with the client's own prompt. It is separate from the Codex accounts and needs its own sign-in. The limit is shared with ChatGPT and shown only at chatgpt.com; some plans are not eligible, and signing in says so.
+- **WorkBuddy / WorkBuddy AI** (Tencent's CodeBuddy plan, China and international builds) sign in on their own; the WorkBuddy desktop app's session is never read or changed. They refuse chats from Codex and Claude Code because of their system prompts, so use them from OpenCode or Pi; in an aggregate, a refused request moves to the next member.
+- **Claude Desktop** does not support account sources yet.
+
 ## Data and safety
 
 - **Codex home**: `AGENT_HARBOR_CODEX_HOME`, else `CODEX_HOME`, else `~/.codex`.
 - **AgentHarbor data** (relays, routing state, usage ledger, caches): the platform's local data directory under `AgentHarbor` (for example `%LOCALAPPDATA%\AgentHarbor`), or `AGENT_HARBOR_DATA_DIR`. The dashboard's data map shows the exact paths.
 - **Provider credentials** live in `newapi-providers.dat`, encrypted with DPAPI for the current user on Windows and stored owner-only (`0600`, not encrypted) elsewhere. The UI never reads saved secrets back; leaving a field empty keeps the stored value.
+- **Account source credentials** live in `account-sources.dat` with the same protection. Their tokens are used only when the router forwards a request and are never shown in the UI.
+- **Gateway keys** are stored encrypted with the provider credentials. The gateway listens on `127.0.0.1` only and accepts gateway keys only; upstream requests carry each relay's own credentials, never a gateway key.
 - **The local router** requires a local token. Requests to relays never carry the official account's credentials.
 - **Client configuration** is applied field by field with a backup. Fields edited by you or other tools are reported as conflicts instead of being overwritten silently.
 - **Proxy probes** only check network reachability, not authentication or quota. Codex's own login and Native requests leave from the Codex process, so restart Codex after changing its proxy.

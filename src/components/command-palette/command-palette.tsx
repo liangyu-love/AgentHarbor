@@ -19,6 +19,7 @@ import {
   ArrowRight,
   ShieldCheck,
   UsersRound,
+  ChartColumn,
   RadioTower,
 } from "lucide-react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
@@ -124,11 +125,22 @@ export function CommandPalette({
       {
         id: "nav-accounts",
         title: t("nav.accounts"),
-        subtitle: "Codex 官方账号登录、切换与额度监控",
+        subtitle: t("nav.accountsHint"),
         icon: UsersRound,
         category: "navigation",
         onSelect: () => {
           onNavigate("accounts");
+          onOpenChange(false);
+        },
+      },
+      {
+        id: "nav-usage",
+        title: t("nav.usage"),
+        subtitle: t("nav.usageHint"),
+        icon: ChartColumn,
+        category: "navigation",
+        onSelect: () => {
+          onNavigate("usage");
           onOpenChange(false);
         },
       },

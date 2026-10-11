@@ -1,6 +1,7 @@
 pub mod account_login;
 pub mod account_monitor;
 mod account_resets;
+pub mod account_sources;
 pub mod accounts;
 pub mod aggregation;
 pub mod api_client;
@@ -15,6 +16,7 @@ pub mod client_config;
 pub mod client_files;
 pub mod codex_config;
 pub mod custom_instructions;
+pub mod gateway;
 pub mod desktop_exit;
 pub mod local_usage;
 pub mod mcp;

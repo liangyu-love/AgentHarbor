@@ -28,7 +28,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import type { ClaudeOfficialPreview, ClientStatus } from "@/types/clients";
+import type { ClaudeOfficialPreview, ClientAccessMode, ClientStatus } from "@/types/clients";
 import type { ModelProtocol, NewApiProvider } from "@/types/newapi";
 import { queryKeys } from "@/lib/query-keys";
 import { aggregationQueryKey, type ModelTargetRef } from "@/types/aggregation";
@@ -42,14 +42,15 @@ const clientErrorKey = (error: unknown) =>
 const summarizeExclusions = (
   providers: NewApiProvider[],
   protocols: ModelProtocol[],
+  mode: ClientAccessMode,
   t: (key: string, options?: Record<string, unknown>) => string,
 ) => {
-  const counts: Record<Exclusion, number> = { protocol: 0, disabled: 0, noApiKey: 0, noModel: 0 };
+  const counts: Record<Exclusion, number> = { protocol: 0, disabled: 0, noApiKey: 0, noModel: 0, routerOnly: 0 };
   for (const provider of providers) {
-    const reason = exclusionOf(provider, protocols);
+    const reason = exclusionOf(provider, protocols, mode);
     if (reason) counts[reason] += 1;
   }
-  const order: Exclusion[] = ["protocol", "disabled", "noApiKey", "noModel"];
+  const order: Exclusion[] = ["protocol", "disabled", "noApiKey", "noModel", "routerOnly"];
   return order
     .filter((reason) => counts[reason] > 0)
     .map((reason) => t(`clients.excluded.${reason}`, { count: counts[reason] }));
@@ -226,7 +227,7 @@ export function ClientConfigs({ providers, onOpenRelays, target }: {
     if (ref.kind === "aggregate")
       return !aggregates.data?.models.some((model) => model.id === ref.aggregateId && model.available);
     const source = providers.find((item) => item.id === ref.providerId);
-    return !source || !!exclusionOf(source, protocols) || !clientModels(source, protocols).includes(ref.modelId);
+    return !source || !!exclusionOf(source, protocols, mode) || !clientModels(source, protocols).includes(ref.modelId);
   };
 
   const unavailable =
@@ -234,13 +235,13 @@ export function ClientConfigs({ providers, onOpenRelays, target }: {
     (selection
       ? !selection.defaultTarget || targetUnavailable(selection.defaultTarget) || selection.availableTargets.some(targetUnavailable)
       : !provider ||
-        !!exclusionOf(provider, protocols) ||
+        !!exclusionOf(provider, protocols, mode) ||
         !clientModels(provider, protocols).includes(client.model ?? "") ||
-        !!client.request?.providerIds.some((id) => !providers.some((p) => p.id === id && !exclusionOf(p, protocols))));
+        !!client.request?.providerIds.some((id) => !providers.some((p) => p.id === id && !exclusionOf(p, protocols, mode))));
 
-  const eligible = providers.filter((p) => !exclusionOf(p, protocols));
+  const eligible = providers.filter((p) => !exclusionOf(p, protocols, mode));
   const noEligible = !!client && eligible.length === 0 && !aggregates.data?.models.some((model) => model.available);
-  const reasons = noEligible ? summarizeExclusions(providers, protocols, t) : [];
+  const reasons = noEligible ? summarizeExclusions(providers, protocols, mode, t) : [];
   // What a configured client uses, as three facts instead of one long sentence.
   const facts: { key: string; value: string; mono?: boolean }[] = client?.configured
     ? [

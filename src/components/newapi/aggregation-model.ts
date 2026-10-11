@@ -72,7 +72,7 @@ export interface MergeSuggestion {
 export function mergeSuggestions(providers: NewApiProvider[], aggregates: AggregateModel[]): MergeSuggestion[] {
   const groups = new Map<string, MergeSuggestion & { spellings: string[]; official?: string }>();
   for (const provider of providers) {
-    if (!provider.enabled || !provider.hasApiKey) continue;
+    if (!provider.enabled || (!provider.hasApiKey && !provider.accountSource)) continue;
     for (const modelId of modelsOf(provider)) {
       const key = sameModel(modelId);
       if (!key) continue;

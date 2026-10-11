@@ -119,6 +119,10 @@ export interface NewApiProvider {
   balanceRefreshIntervalMinutes?: number;
   testStatus: "untested" | "ok" | "failed";
   testAt: number | null;
+  /** Set for the provider an official account source publishes; reachable only through the router. */
+  accountSource?: import("./account-sources").AccountSourceKind | null;
+  /** Short name in gateway model ids, `<short name>/<model>`. */
+  gatewaySlug?: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -457,6 +461,8 @@ export interface NewApiProviderInput {
   priceMultiplier?: number | null;
   compression?: CompressionPolicy;
   networkMode?: "proxy" | "direct";
+  /** Empty keeps the stored short name. */
+  gatewaySlug?: string | null;
 }
 export interface CompressionSettingInput {
   compression: CompressionPolicy;

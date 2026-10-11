@@ -1,5 +1,5 @@
 use super::models::ApiProxyConfigPayload;
-use super::{protocol, relay_usage, request_diagnostics, route_trace, router};
+use super::{account_sources, protocol, relay_usage, request_diagnostics, route_trace, router};
 use crate::platform::paths::CodexPaths;
 use futures_util::StreamExt;
 use http_body_util::{combinators::BoxBody, BodyExt, Full, StreamBody};
@@ -25,6 +25,12 @@ mod aggregate_output;
 mod aggregate_session;
 mod codex_compat;
 mod count_tokens;
+#[cfg(test)]
+#[path = "router_proxy/account_source_tests.rs"]
+mod account_source_tests;
+#[cfg(test)]
+#[path = "router_proxy/gateway_tests.rs"]
+mod gateway_tests;
 #[cfg(test)]
 mod aggregate_tests;
 #[cfg(test)]
@@ -833,9 +839,24 @@ async fn handle(mut request: Request<Incoming>, context: Arc<ArcContext>) -> For
             "router storage unavailable",
         )
     })?;
-    if desktop.is_none() && !authorized(request.headers(), &store.router.bearer_token) {
+    // The gateway admits its named keys only, and nothing else admits them.
+    let gateway_key = if segments.first() == Some(&"gateway") {
+        let bearer = request.headers().get(AUTHORIZATION).and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "));
+        let api_key = request.headers().get("x-api-key").and_then(|value| value.to_str().ok());
+        Some(super::gateway::authenticate(&store, bearer, api_key).map(|key| key.name.clone())
+            .ok_or((StatusCode::UNAUTHORIZED, "invalid gateway key"))?)
+    } else {
+        None
+    };
+    if desktop.is_none() && gateway_key.is_none() && !authorized(request.headers(), &store.router.bearer_token) {
         return Err((StatusCode::UNAUTHORIZED, "invalid local router token"));
     }
+    // Past authentication a gateway request is an ordinary `/v1` one whose
+    // model names a provider by short name, or an aggregate.
+    let segments: Vec<&str> = if gateway_key.is_some() { segments[1..].to_vec() } else { segments };
+    let gateway_source = gateway_key.as_ref().map(|name| format!("gateway:{name}"));
+    let client_source: Option<&str> = gateway_source.as_deref().or(client_source);
     // Responses-over-WebSocket is first-party only; 426 makes Codex use HTTP.
     if builtin.is_some() && codex_compat::websocket_upgrade(request.headers()) {
         return Err((StatusCode::UPGRADE_REQUIRED, "use HTTP Responses streaming"));
@@ -874,6 +895,27 @@ async fn handle(mut request: Request<Incoming>, context: Arc<ArcContext>) -> For
             } else {
                 value.to_string()
             }))
+            .expect("static response parts"));
+    }
+    if gateway_key.is_some() && matches!(segments.as_slice(), ["v1", "models"] | ["v1", "models", _]) {
+        let catalog = super::models_dev::load(&context.app_data_dir);
+        let anthropic = request.headers().contains_key("anthropic-version")
+            || query.as_deref().is_some_and(|query| query.split('&').any(|part| part == "format=anthropic"));
+        let mut models = super::gateway::models(&store, &catalog);
+        if let ["v1", "models", model] = segments.as_slice() {
+            models.retain(|entry| entry.id == *model);
+            if models.is_empty() {
+                return Err((StatusCode::NOT_FOUND, "unknown gateway model"));
+            }
+        }
+        let mut value = super::gateway::models_document(&models, anthropic);
+        if segments.len() == 3 {
+            value = value["data"][0].clone();
+        }
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, "application/json")
+            .body(full_body(if method == hyper::Method::HEAD { String::new() } else { value.to_string() }))
             .expect("static response parts"));
     }
     if path == "/claude-desktop/v1/models" {
@@ -929,6 +971,22 @@ async fn handle(mut request: Request<Incoming>, context: Arc<ArcContext>) -> For
 
     let required_protocol = request_protocol(&segments);
     let (requested_model, one_m_context) = requested_model(body.as_deref(), required_protocol);
+    // A gateway model id becomes the provider slug routing already reads
+    // (`<provider id>::<model>`), or the aggregate path.
+    let gateway_model = gateway_key.as_ref().and(requested_model.clone());
+    let gateway_target = gateway_model.as_deref().and_then(|model| super::gateway::resolve(&store, model));
+    if gateway_model.is_some() && gateway_target.is_none() {
+        return Err((StatusCode::NOT_FOUND, "unknown gateway model; GET /gateway/v1/models lists the models this key can use"));
+    }
+    let requested_model = match &gateway_target {
+        Some(super::gateway::Target::Provider { provider_id, model_id }) => Some(format!("{provider_id}::{model_id}")),
+        _ => requested_model,
+    };
+    let segments: Vec<&str> = if matches!(gateway_target, Some(super::gateway::Target::Aggregate { .. })) {
+        ["aggregate"].into_iter().chain(segments.iter().copied()).collect()
+    } else {
+        segments
+    };
     // Claude Code normally strips the marker before sending the request and
     // expresses the selected context through the Messages beta header instead.
     let one_m_context = one_m_context
@@ -952,7 +1010,7 @@ async fn handle(mut request: Request<Incoming>, context: Arc<ArcContext>) -> For
     let trace = if desktop_count_body.is_some() {
         route_trace::Trace::untracked()
     } else {
-        route_trace::Trace::begin(requested_model.as_deref().unwrap_or_default(), body.as_deref())
+        route_trace::Trace::begin(gateway_model.as_deref().or(requested_model.as_deref()).unwrap_or_default(), body.as_deref())
     };
     // Codex's built-in provider reaches the selected aggregate by its public ID.
     let codex_aggregate = codex_create
@@ -1086,7 +1144,7 @@ async fn handle(mut request: Request<Incoming>, context: Arc<ArcContext>) -> For
             route_revision: desktop.as_ref().map(|s| s.route_revision),
         }).or_else(|| client_source.map(|source| request_diagnostics::RequestIdentity {
             client_source: Some(source.into()),
-            requested_model: requested_model.clone(),
+            requested_model: gateway_model.clone().or_else(|| requested_model.clone()),
             ..Default::default()
         }));
         if let Some(identity) = &identity { trace.identity(identity); }
@@ -1173,6 +1231,7 @@ async fn handle(mut request: Request<Incoming>, context: Arc<ArcContext>) -> For
             // Codex's sticky-routing token belongs to the official backend.
             let mut headers = headers.clone();
             headers.remove("x-codex-turn-state");
+            let account = account_auth(&context, &destination).await?;
             let mut prepared = forward::prepare(forward::Input {
                 context: &context, store: &store, catalog: &request_catalog,
                 destination: &destination, suffix: &suffix, query: query.as_deref(), headers: &headers,
@@ -1180,6 +1239,7 @@ async fn handle(mut request: Request<Incoming>, context: Arc<ArcContext>) -> For
                 resource: response_resource || desktop_count_body.is_some(), one_m: one_m_context, affinity_key: affinity_key.as_deref(),
                 client_scope: desktop_history_scope, identity: identity.unwrap_or_default(),
                 trace: trace.clone(), selection_reason, retry_reason: None, attempt_id,
+                account: account.as_ref(),
             })?;
             // GET /models remains diagnostic-only and does not count as inference.
             if required_protocol.is_none() { prepared.usage = None; }
@@ -1694,6 +1754,82 @@ fn provider_target(
         ),
         headers,
     ))
+}
+
+/// An account source's credentials for this destination, refreshed when about
+/// to lapse; relays carry their own key and need none.
+async fn account_auth(context: &ArcContext, destination: &Destination) -> ForwardResult<Option<account_sources::RequestAuth>> {
+    let Destination::Provider { provider, .. } = destination else { return Ok(None) };
+    let Some(kind) = provider.account_source else { return Ok(None) };
+    let client = client_for(context, destination)?;
+    account_sources::credentials(&context.app_data_dir, &client, kind).await.map(Some)
+}
+
+/// URL and headers for an account source: its own endpoint, signed as the
+/// active account. Only inference (and ChatGPT's model list) is served.
+fn account_target(
+    auth: &account_sources::RequestAuth,
+    upstream_protocol: router::ModelProtocol,
+    translation: Option<protocol::Translation>,
+    suffix: &str,
+    query: Option<&str>,
+    mut headers: HeaderMap,
+) -> ForwardResult<(String, HeaderMap)> {
+    let served = match upstream_protocol {
+        router::ModelProtocol::ChatCompletions => suffix == "chat/completions",
+        router::ModelProtocol::Responses => suffix == "responses"
+            || (suffix == "models" && auth.kind == account_sources::SourceKind::ChatgptApi),
+        router::ModelProtocol::AnthropicMessages => false,
+    };
+    if !served {
+        return Err((StatusCode::NOT_FOUND, "this account source serves only model requests"));
+    }
+    headers.remove(AUTHORIZATION);
+    headers.remove("x-api-key");
+    headers.remove("anthropic-version");
+    headers.remove("anthropic-beta");
+    for (name, value) in &auth.headers {
+        let value = HeaderValue::from_str(value)
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid account source credentials"))?;
+        headers.insert(hyper::header::HeaderName::from_static(name), value);
+    }
+    Ok((format!("{}/{suffix}{}", auth.base.trim_end_matches('/'), provider_query(query, translation)), headers))
+}
+
+/// An account source's refusal with what the user can do about it added to
+/// its message, and whether there was anything to add.
+async fn explain_account_refusal(kind: account_sources::SourceKind, response: reqwest::Response) -> (reqwest::Response, bool) {
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = response.bytes().await.unwrap_or_default();
+    let hint = account_sources::explain(kind, status.as_u16(), &bytes);
+    let body = match &hint {
+        Some(hint) => {
+            let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+            let said = value["error"]["message"].as_str().or_else(|| value["error"].as_str())
+                .or_else(|| value["msg"].as_str()).or_else(|| value["message"].as_str())
+                .map(str::trim).filter(|said| !said.is_empty());
+            let message = match said {
+                Some(said) => format!("{said} — {hint}"),
+                None => hint.clone(),
+            };
+            let mut error = value["error"].as_object().cloned().unwrap_or_default();
+            error.insert("message".into(), json!(message));
+            error.entry("type").or_insert_with(|| json!("invalid_request_error"));
+            Bytes::from(json!({"error": error}).to_string())
+        }
+        None => bytes,
+    };
+    let mut rebuilt = hyper::Response::builder().status(status);
+    for (name, value) in &headers {
+        if name != CONTENT_LENGTH && name != TRANSFER_ENCODING && (hint.is_none() || name != CONTENT_TYPE) {
+            rebuilt = rebuilt.header(name, value);
+        }
+    }
+    if hint.is_some() {
+        rebuilt = rebuilt.header(CONTENT_TYPE, "application/json");
+    }
+    (reqwest::Response::from(rebuilt.body(body).expect("response parts")), hint.is_some())
 }
 
 /// URL and headers for official OpenAI models, using Codex's own credentials.
@@ -4595,6 +4731,7 @@ mod tests {
             router::save_provider(
                 &paths,
                 ProviderInput {
+                    gateway_slug: None,
                     id: Some(provider.id.clone()),
                     name: provider.name,
                     base_url: provider.base_url,

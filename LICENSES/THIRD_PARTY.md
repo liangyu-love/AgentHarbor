@@ -64,13 +64,19 @@ contain the snapshot.
 
 ---
 
-## Magpie — same-model name normalization (MIT License)
+## Magpie — same-model name normalization and account sources (MIT License)
 
 - Project: [yetone/magpie](https://github.com/yetone/magpie)
 - License: MIT
 - Copyright: © 2026 yetone
-- Ported into this repository: the `sameModel` normalization in
-  `src/lib/same-model.ts` (rewritten in TypeScript).
+- Ported into this repository (rewritten in TypeScript or Rust):
+  - the `sameModel` normalization in `src/lib/same-model.ts`;
+  - the WorkBuddy and WorkBuddy AI sign-in, token refresh, credit reading,
+    request headers and built-in model lists in
+    `src-tauri/src/core/account_sources/workbuddy.rs`;
+  - the Sign in with ChatGPT flow (app registration, ID token checks, token
+    refresh and revocation, request shaping and refusal explanations) in
+    `src-tauri/src/core/account_sources/chatgpt_api.rs`.
 - Other routing and catalog behaviour was only studied, not copied.
 
 The full MIT license text below applies to the ported code.

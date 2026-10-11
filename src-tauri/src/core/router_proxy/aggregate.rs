@@ -478,7 +478,25 @@ pub(super) async fn execute(
         let mut attempt_identity = identity.clone();
         attempt_identity.resolved_model = Some(plan.resolved.member.actual_model_id.clone());
         trace.identity(&attempt_identity);
-        let prepared = forward::prepare(forward::Input {
+        // An account source with no usable sign-in is passed over like a
+        // member that cannot be reached.
+        let account = match account_auth(context, &destination).await {
+            Ok(account) => account,
+            Err(error) => {
+                trace.failed_attempt("credentials", "account_unavailable", 0);
+                if attempts.may_retry(Failure::ConnectBeforeSend) {
+                    excluded.insert(plan.effective_target_key.clone());
+                    retry_reason = Some("aggregate_account_unavailable".into());
+                    if let Ok(next) = agg::runtime::shared().select(&aggregate.id, aggregate.strategy, &candidates, &excluded) {
+                        reserved = Some(next);
+                        drop(selected);
+                        continue;
+                    }
+                }
+                return Err(error);
+            }
+        };
+        let mut prepared = forward::prepare(forward::Input {
             context,
             store,
             catalog,
@@ -503,6 +521,7 @@ pub(super) async fn execute(
             },
             retry_reason: retry_reason.clone(),
             attempt_id: uuid::Uuid::new_v4().to_string(),
+            account: account.as_ref(),
         })?;
         // A frozen retry may be vetoed by revocation, never silently updated.
         let current = router::read_store(&context.store_path).map_err(|_| {
@@ -610,6 +629,27 @@ pub(super) async fn execute(
             if !upstream.status().is_success() { selected.lease.health().neutral(); }
             false
         };
+        // An account source's refusal (WorkBuddy turning a client's prompt
+        // away, a ChatGPT plan out of its limit) is explained, and another
+        // member is tried while nothing has reached the client.
+        if let Some(kind) = prepared.account_source.filter(|_| upstream.status().is_client_error()) {
+            let (explained, refused) = explain_account_refusal(kind, upstream).await;
+            upstream = explained;
+            prepared.account_source = None;
+            if refused && attempts.may_retry(Failure::RateLimited) {
+                excluded.insert(plan.effective_target_key.clone());
+                if let Ok(next) = agg::runtime::shared().select(&aggregate.id, aggregate.strategy, &candidates, &excluded) {
+                    if let Some(usage) = prepared.usage {
+                        usage.failed(upstream.status().as_u16(), "upstream_http_error");
+                    }
+                    trace.failed_attempt("headers", "account_refused", started.elapsed().as_millis() as u64);
+                    retry_reason = Some("aggregate_account_refused".into());
+                    reserved = Some(next);
+                    drop(selected);
+                    continue;
+                }
+            }
+        }
         if upstream.status() == StatusCode::TOO_MANY_REQUESTS {
             if switch && attempts.may_retry(Failure::RateLimited) {
                 excluded.insert(plan.effective_target_key.clone());

@@ -248,9 +248,12 @@ fn selected_provider(store: &Store) -> Result<&Provider, String> {
         None => store
             .providers
             .iter()
-            .find(|provider| provider.has_route_credentials() && !provider.model.is_empty()),
+            .find(|provider| provider.has_route_credentials() && !provider.router_only() && !provider.model.is_empty()),
     }
     .ok_or("newapi.errors.noActiveProvider")?;
+    if active.router_only() {
+        return Err("accountSources.errors.routerOnly".into());
+    }
     if active.selected_protocol() != ModelProtocol::Responses {
         return Err("newapi.errors.nativeResponsesRequired".into());
     }

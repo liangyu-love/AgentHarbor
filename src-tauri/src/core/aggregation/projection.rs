@@ -67,7 +67,7 @@ pub fn resolve_member(
     if !provider.enabled {
         return Err("provider_disabled".into());
     }
-    if provider.model_credential().api_key.trim().is_empty() {
+    if !provider.router_only() && provider.model_credential().api_key.trim().is_empty() {
         return Err("credential_missing".into());
     }
     let entry = provider
@@ -82,12 +82,14 @@ pub fn resolve_member(
     }
     newapi::provider_endpoint(&provider.base_url, "v1").map_err(|_| "endpoint_invalid")?;
     let protocol = provider.protocol_for_model(&member.actual_model_id);
-    newapi::model_auth_header(
-        &provider.base_url,
-        protocol,
-        provider.model_credential().api_key,
-    )
-    .map_err(|_| "credential_invalid")?;
+    if !provider.router_only() {
+        newapi::model_auth_header(
+            &provider.base_url,
+            protocol,
+            provider.model_credential().api_key,
+        )
+        .map_err(|_| "credential_invalid")?;
+    }
     let (metadata, projection) = router::model_projection(
         provider,
         &member.actual_model_id,

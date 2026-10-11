@@ -3,10 +3,10 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { ArrowRight, ChartNoAxesCombined, Database, ListFilter, RefreshCw, Rows3, Wallet } from "lucide-react";
-import { CacheUsagePanel } from "@/components/accounts/cache-usage-panel";
+import { CacheUsagePanel } from "@/components/usage/cache-usage-panel";
 import { cacheHitRate, formatCacheRate, requestCacheUsage } from "@/lib/cache-usage";
 
-import { UsageBreakdown } from "@/components/accounts/model-usage-breakdown";
+import { UsageBreakdown } from "@/components/usage/model-usage-breakdown";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";

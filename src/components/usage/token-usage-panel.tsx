@@ -1,10 +1,10 @@
 import { useTranslation } from "react-i18next";
 import { Activity, Clock3, RefreshCw } from "lucide-react";
 
-import { DailyTrendPanel } from "@/components/accounts/daily-trend-panel";
-import { UsageBreakdown } from "@/components/accounts/model-usage-breakdown";
-import { RelayUsagePanel } from "@/components/accounts/relay-usage-panel";
-import { RecentTurnsPanel } from "@/components/accounts/recent-turns-panel";
+import { DailyTrendPanel } from "@/components/usage/daily-trend-panel";
+import { UsageBreakdown } from "@/components/usage/model-usage-breakdown";
+import { RelayUsagePanel } from "@/components/usage/relay-usage-panel";
+import { RecentTurnsPanel } from "@/components/usage/recent-turns-panel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";

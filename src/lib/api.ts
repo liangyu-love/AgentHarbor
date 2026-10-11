@@ -33,6 +33,8 @@ import { claudeDesktopApi } from "@/lib/claude-desktop";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
 import { errorMessage } from "@/lib/invoke-error";
 import type { TargetId, ClientStatus, ClientFiles, ClientConfigRequest, ClientConfigPreview, ClientConfigApplied, ClaudeOfficialPreview } from "@/types/clients";
+import type { AccountSourceKind, AccountSourceListPayload } from "@/types/account-sources";
+import type { GatewayProfile, GatewayState } from "@/types/gateway";
 import type { CodexAccessMode, ModelProtocol, NewApiState, NewApiStateChange, NewApiImportResult, NewApiProvider, NewApiProviderInput, NewApiModel } from "@/types/newapi";
 
 export interface ImageGenerationRequest {
@@ -143,11 +145,20 @@ const aggregationApi = {
   live: () => invoke<import("@/types/aggregation").AggregateLive[]>("load_aggregation_live"),
   save: (model: import("@/types/aggregation").AggregateModel) => invoke<import("@/types/aggregation").AggregationState>("save_aggregate_model", { model }),
   delete: (id: string) => invoke<import("@/types/aggregation").AggregationState>("delete_aggregate_model", { id }),
-  setExternalEnabled: (enabled: boolean) => invoke<import("@/types/aggregation").AggregationState>("set_aggregation_external_enabled", { enabled }),
   selectCodex: (aggregateId: string | null) => invoke<NewApiStateChange>("select_codex_aggregate", { aggregateId }),
-  exportConnection: (request: { ingressProtocol: ModelProtocol; aggregateIds: string[]; selectedAggregateId: string | null;
-    consumerProfile: "generic" | "anthropicSdk" | "opencode"; revealCredential: boolean }) =>
-    invoke<import("@/types/aggregation").ConnectionExportResult>("export_aggregation_connection", request),
+};
+
+const gatewayApi = {
+  state: () => invoke<GatewayState>("load_gateway_state"),
+  createKey: (name: string) => invoke<GatewayState>("create_gateway_key", { name }),
+  renameKey: (id: string, name: string) => invoke<GatewayState>("rename_gateway_key", { id, name }),
+  regenerateKey: (id: string) => invoke<GatewayState>("regenerate_gateway_key", { id }),
+  deleteKey: (id: string) => invoke<GatewayState>("delete_gateway_key", { id }),
+  revealKey: (id: string) => invoke<string>("reveal_gateway_key", { id }),
+  setKeepRunning: (enabled: boolean) => invoke<GatewayState>("set_gateway_keep_running", { enabled }),
+  exportConnection: (request: { ingressProtocol: ModelProtocol; selectedModelId: string | null; consumerProfile: GatewayProfile;
+    keyId: string; revealCredential: boolean }) =>
+    invoke<import("@/types/aggregation").ConnectionExportResult>("export_gateway_connection", request),
 };
 
 export interface SavedImagesPayload {
@@ -254,6 +265,19 @@ const accountsApi = {
     invoke<CodexAccountListPayload>("delete_codex_account", { accountKey }),
 };
 
+const accountSourcesApi = {
+  list: () => invoke<AccountSourceListPayload>("list_account_sources"),
+  signIn: (kind: AccountSourceKind, attemptId: string) =>
+    invoke<AccountSourceListPayload>("sign_in_account_source", { kind, attemptId }),
+  cancelSignIn: (attemptId: string) => invoke<boolean>("cancel_account_source_sign_in", { attemptId }),
+  activate: (accountId: string) => invoke<AccountSourceListPayload>("activate_account_source", { accountId }),
+  remove: (accountId: string) => invoke<AccountSourceListPayload>("remove_account_source", { accountId }),
+  refreshQuota: (accountId: string) => invoke<AccountSourceListPayload>("refresh_account_source_quota", { accountId }),
+  refreshModels: (kind: AccountSourceKind) => invoke<AccountSourceListPayload>("refresh_account_source_models", { kind }),
+  setExposed: (kind: AccountSourceKind, exposed: boolean) =>
+    invoke<AccountSourceListPayload>("set_account_source_exposed", { kind, exposed }),
+};
+
 export const api = {
   aggregation: aggregationApi,
   providers: providersApi,
@@ -263,6 +287,8 @@ export const api = {
   targets: targetsApi,
   conversations: conversationsApi,
   accounts: accountsApi,
+  accountSources: accountSourcesApi,
+  gateway: gatewayApi,
   usage: usageApi,
 
   loadSnapshot: (localOnly = false) =>

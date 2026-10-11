@@ -116,6 +116,16 @@ pub struct Provider {
     pub balance_independent: bool,
     pub test_status: String,
     pub test_at: Option<i64>,
+    /// Set for the provider an official account source publishes (WorkBuddy,
+    /// ChatGPT): its credentials come from the signed-in account at request
+    /// time, so it is reachable only through the local router.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_source: Option<super::account_sources::SourceKind>,
+    /// The provider's name in gateway model ids (`<slug>/<model>`). Assigned
+    /// once from the name and kept through renames, so an agent's configured
+    /// model keeps working; editable, unique across providers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway_slug: Option<String>,
     /// Read only during migration from builds that exposed the removed Chat wire protocol.
     #[serde(rename = "wireApi", default = "default_wire_api", skip_serializing)]
     pub(crate) legacy_wire_api: String,
@@ -142,6 +152,18 @@ pub struct RouterSettings {
     pub accountless: bool,
     pub port: u16,
     pub bearer_token: String,
+    /// Keys agents use to reach every model through `/gateway`. Separate from
+    /// the bearer token managed client configs carry.
+    pub gateway_keys: Vec<GatewayKey>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayKey {
+    pub id: String,
+    pub name: String,
+    pub key: String,
+    pub created_at: i64,
 }
 
 impl Default for RouterSettings {
@@ -154,6 +176,7 @@ impl Default for RouterSettings {
             accountless: false,
             port: DEFAULT_PORT,
             bearer_token: String::new(),
+            gateway_keys: Vec::new(),
         }
     }
 }
@@ -213,6 +236,8 @@ pub struct ProviderView {
     pub balance_refresh_interval_minutes: u32,
     pub test_status: String,
     pub test_at: Option<i64>,
+    pub account_source: Option<super::account_sources::SourceKind>,
+    pub gateway_slug: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -245,6 +270,8 @@ impl Provider {
             balance_refresh_interval_minutes: self.balance_refresh_interval_minutes,
             test_status: self.test_status.clone(),
             test_at: self.test_at,
+            account_source: self.account_source,
+            gateway_slug: self.gateway_slug.clone(),
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
@@ -255,7 +282,13 @@ impl Provider {
     }
 
     pub(crate) fn has_route_credentials(&self) -> bool {
-        self.enabled && !self.api_key.is_empty()
+        self.enabled && (self.account_source.is_some() || !self.api_key.is_empty())
+    }
+
+    /// An account source's provider signs each request with its account's
+    /// token, so only the local router can reach it.
+    pub(crate) fn router_only(&self) -> bool {
+        self.account_source.is_some()
     }
 
     pub(crate) fn can_route_model(&self, model: &str) -> bool {
@@ -450,6 +483,9 @@ pub struct ProviderInput {
     /// 可选：proxy / direct；编辑时留空表示保持原设置。
     #[serde(default)]
     pub network_mode: String,
+    /// Gateway short name; empty keeps the stored one (or derives one).
+    #[serde(default)]
+    pub gateway_slug: Option<String>,
 }
 
 fn now() -> i64 {
@@ -629,6 +665,9 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
             store.version = STORE_VERSION;
             changed = true;
         }
+        if super::gateway::assign_slugs(&mut store) {
+            changed = true;
+        }
         if store.router.enabled && !codex_target_available(&store)
         {
             store.router.enabled = false;
@@ -687,6 +726,7 @@ pub(crate) fn mutate_store(
     let _guard = store_write_guard()?;
     let mut store = load_store_unlocked(paths)?;
     mutate(&mut store)?;
+    super::gateway::assign_slugs(&mut store);
     super::aggregation::config::validate(&store)?;
     save_store_unlocked(paths, &store)?;
     Ok(store)
@@ -824,6 +864,7 @@ fn migrate_original_relay(paths: &CodexPaths) -> Result<Option<Store>, String> {
                 .unwrap_or(false),
             port: DEFAULT_PORT,
             bearer_token: String::new(),
+            gateway_keys: Vec::new(),
         },
     }))
 }
@@ -832,9 +873,11 @@ fn migrate_original_relay(paths: &CodexPaths) -> Result<Option<Store>, String> {
 pub fn read_store(path: &Path) -> Result<Store, String> {
     match secret_file::read(path)? {
         Some(bytes) => {
-            let store: Store =
+            let mut store: Store =
                 serde_json::from_slice(&bytes).map_err(|_| "newapi.errors.storage")?;
             super::aggregation::config::validate(&store)?;
+            // Same assignment the next load persists; deterministic for one store.
+            super::gateway::assign_slugs(&mut store);
             Ok(store)
         }
         None => Ok(Store::default()),
@@ -963,9 +1006,9 @@ pub fn effective_active(store: &Store) -> Option<&Provider> {
             store
                 .providers
                 .iter()
-                .find(|p| &p.id == id && p.is_routable())
+                .find(|p| &p.id == id && p.is_routable() && !p.router_only())
         })
-        .or_else(|| store.providers.iter().find(|p| p.is_routable()))
+        .or_else(|| store.providers.iter().find(|p| p.is_routable() && !p.router_only()))
 }
 
 /// Validate the user's selected model before any config or store write. Native
@@ -979,8 +1022,11 @@ pub(crate) fn validate_native_selection(store: &Store) -> Result<(), String> {
         None => store
             .providers
             .iter()
-            .find(|provider| provider.has_route_credentials() && !provider.model.is_empty()),
+            .find(|provider| provider.has_route_credentials() && !provider.router_only() && !provider.model.is_empty()),
     };
+    if selected.is_some_and(Provider::router_only) {
+        return Err("accountSources.errors.routerOnly".into());
+    }
     if selected.is_some_and(|provider| provider.selected_protocol() != ModelProtocol::Responses) {
         return Err("newapi.errors.nativeResponsesRequired".into());
     }
@@ -1186,6 +1232,8 @@ pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<Sta
     validate_input(&mut input)?;
     let _guard = store_write_guard()?;
     let mut store = load_store_unlocked(paths)?;
+    // Checked before anything else changes, so a refused name writes nothing.
+    super::gateway::check_slug(&store, input.id.as_deref(), input.gateway_slug.as_deref())?;
     let timestamp = now();
     let previous = store.clone();
     let applied;
@@ -1305,6 +1353,11 @@ pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<Sta
             applied = apply_routing_if_enabled(paths, &store)?;
         }
     }
+    let saved_id = input.id.clone().or_else(|| store.providers.last().map(|provider| provider.id.clone()));
+    if let Some(id) = saved_id {
+        super::gateway::set_slug(&mut store, &id, input.gateway_slug.as_deref())?;
+    }
+    super::gateway::assign_slugs(&mut store);
     persist_connection_change(paths, &previous, &store, applied.is_some())?;
     Ok(StateChange {
         state: state_from_store_at(&store, super::router_proxy::is_running(), Some(paths)),
@@ -1487,6 +1540,71 @@ pub fn delete_provider(paths: &CodexPaths, id: &str) -> Result<StateChange, Stri
     if store.active_provider_id.as_deref() == Some(id) {
         store.active_provider_id = None;
     }
+    validate_native_selection(&store)?;
+    let applied = apply_routing_if_enabled(paths, &store)?;
+    persist_connection_change(paths, &previous, &store, applied.is_some())?;
+    Ok(StateChange {
+        state: state_from_store_at(&store, super::router_proxy::is_running(), Some(paths)),
+        applied,
+    })
+}
+
+/// Relay editing, testing and balance commands never act on an account
+/// source's provider: the Accounts page owns it.
+pub fn ensure_relay(paths: &CodexPaths, id: &str) -> Result<(), String> {
+    if load_store(paths)?.providers.iter().any(|provider| provider.id == id && provider.router_only()) {
+        return Err("accountSources.errors.managedByAccounts".into());
+    }
+    Ok(())
+}
+
+/// Publish or refresh the provider an account source serves through the
+/// router. Its models follow the source; per-model user settings survive.
+pub fn upsert_account_provider(paths: &CodexPaths, mut next: Provider) -> Result<StateChange, String> {
+    if next.account_source.is_none() {
+        return Err("newapi.errors.notFound".into());
+    }
+    let _guard = store_write_guard()?;
+    let mut store = load_store_unlocked(paths)?;
+    let previous = store.clone();
+    let timestamp = now();
+    next.models_fetched_at = Some(timestamp);
+    next.updated_at = timestamp;
+    match store.providers.iter_mut().find(|provider| provider.id == next.id) {
+        Some(provider) => {
+            if provider.account_source != next.account_source {
+                return Err("newapi.errors.notFound".into());
+            }
+            for model in &mut next.models {
+                if let Some(kept) = provider.models.iter().find(|kept| kept.id == model.id) {
+                    model.included = kept.included;
+                    model.overrides = kept.overrides.clone();
+                    model.catalog_ref = kept.catalog_ref.clone();
+                    model.price_ref = kept.price_ref.clone();
+                    model.compression = kept.compression.clone();
+                }
+            }
+            if next.models.iter().any(|model| model.id == provider.model) {
+                next.model = provider.model.clone();
+            }
+            provider.name = next.name;
+            provider.base_url = next.base_url;
+            provider.protocol = next.protocol;
+            provider.model = next.model;
+            provider.models = next.models;
+            provider.models_fetched_at = next.models_fetched_at;
+            provider.enabled = true;
+            provider.updated_at = timestamp;
+        }
+        None => {
+            if store.providers.len() >= MAX_PROVIDERS {
+                return Err("newapi.errors.tooMany".into());
+            }
+            next.created_at = timestamp;
+            store.providers.push(next);
+        }
+    }
+    super::gateway::assign_slugs(&mut store);
     validate_native_selection(&store)?;
     let applied = apply_routing_if_enabled(paths, &store)?;
     persist_connection_change(paths, &previous, &store, applied.is_some())?;
@@ -3829,6 +3947,7 @@ pub fn export_providers(paths: &CodexPaths, path: &Path) -> Result<(), String> {
     let providers: Vec<Value> = store
         .providers
         .iter()
+        .filter(|p| !p.router_only())
         .map(|p| {
             serde_json::json!({
                 "name": p.name,
@@ -3956,6 +4075,7 @@ mod tests {
 
     fn input(name: &str, base_url: &str) -> ProviderInput {
         ProviderInput {
+            gateway_slug: None,
             id: None,
             name: name.into(),
             base_url: base_url.into(),

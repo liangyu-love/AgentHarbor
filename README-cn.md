@@ -33,9 +33,11 @@ Codex 是主要集成对象，其他客户端共用同一套中转与路由。
 | --- | --- |
 | **仪表盘** | 各客户端的路由拓扑、今日 Token 概览、最近会话，以及可折叠的本地数据目录：列出各客户端的目录和关键文件 |
 | **中转模型** | 管理多个供应商；逐模型协议（Responses、Chat Completions、Anthropic Messages）、连通性测试、New API 余额、导入导出；能力目录（上下文、输出上限、价格）来自内置的 [models.dev](https://github.com/anomalyco/models.dev) 快照 |
-| **中转注入** | 为下列客户端预览、应用、恢复配置，每次都有备份：<br>• Codex：本地路由或原生直连，支持无账号模式和子代理默认配置<br>• Claude Code、Claude Desktop、OpenCode、Pi |
+| **模型注入** | 把中转模型和官方账号的模型接到下列客户端：预览、应用、恢复配置，每次都有备份<br>• Codex：本地路由或原生直连，支持无账号模式和子代理默认配置<br>• Claude Code、Claude Desktop、OpenCode、Pi |
 | **本地路由** | 三种协议互相转换<br>模型聚合：按优先级分层、失败切换、首字超时切换、实时成员状态<br>请求级路由诊断 |
-| **账号与用量** | ChatGPT OAuth 登录、额度窗口、手动切号或按阈值自动切号<br>Token 监控覆盖 Codex、Claude Code 与中转流量，并记录当时价格 |
+| **通用网关** | 一个本地地址加上命名 key，任何能填 Base URL 和 API Key 的 agent 都能使用全部开启的模型，见下文 |
+| **账号** | Codex：ChatGPT OAuth 登录、额度窗口、手动切号或按阈值自动切号<br>账号来源：ChatGPT（Sign in with ChatGPT）、WorkBuddy、WorkBuddy AI，登录后可以提供给模型注入使用，见下文 |
+| **用量** | Token 监控覆盖 Codex、Claude Code 与中转流量，并记录当时价格 |
 | **线程管理** | 浏览、搜索、导出、删除 Codex 与 Claude Code 会话；恢复 Codex 索引里丢失的线程 |
 | **MCP / Skills / 自定义指令** | 管理 MCP 服务器、Skills（带备份），以及 Codex 和 Claude Code 的 `AGENTS.md` / `CLAUDE.md` 中由 AgentHarbor 管理的区块 |
 | **生图工作台** | 通过已配置的供应商生成或编辑图片，保存到本地图册 |
@@ -56,11 +58,35 @@ Codex 是主要集成对象，其他客户端共用同一套中转与路由。
 - **中转模型继承官方行为**：中转模型会沿用同名官方模型的 Codex 客户端行为，所以多代理 V2 和 **Ultra** 档位经中转也能用。Ultra 只是 Codex 客户端里的设置，上游实际收到的仍是 `xhigh`、`max` 这样的具体档位。
 - **Native 鉴权**：使用供应商密钥。密钥存放在 Codex 的 `.env` 里一个随机命名的 AgentHarbor 变量中，通过 `env_key` 引用；不会写进 `auth.json`，也不会出现在预览里。`.env` 及其备份不加密，请当作机密文件保管。
 
+## 通用网关
+
+不想逐个注入时，可以把模型注入页的「通用网关」直接给 agent 用：
+
+- **地址**：OpenAI 兼容（Responses、Chat Completions）用 `http://127.0.0.1:43127/gateway/v1`，Anthropic Messages 用 `http://127.0.0.1:43127/gateway`。`/gateway/v1/models` 列出这个 key 能用的全部模型。
+- **key**：可以为每个 agent 建一个命名 key，单独复制、重新生成或删除。它和注入时写进客户端配置的内部令牌是分开的，互不通用。
+- **模型名**：
+  - 中转模型和账号来源是 `短名/模型`，例如 `deepseek/deepseek-v4-pro`、`workbuddy/glm-5.3`；聚合模型用它的公开名。
+  - 短名默认取自中转名称，可以在中转编辑里修改；之后给中转改名不会改变短名。
+- **协议转换**：和注入一样自动进行，比如用 Responses 调用只支持 Chat Completions 的中转。
+- **保持运行**：打开「保持网关运行」后，即使没有任何注入，本地路由也会常驻。
+- **连接配置**：可以按通用、Anthropic SDK、OpenCode 模板复制。预览里的 key 是隐藏的，点复制时才会写入真实 key。
+
+## 账号来源
+
+账号来源是自带模型的订阅账号。在账号页登录后，打开「提供给模型注入」，它就会作为一个特殊的供应商出现在模型注入页和聚合组里。
+
+- **只经本地路由使用**：每次请求由路由取当前账号的令牌，快过期时自动刷新。客户端配置里不会写入任何账号令牌，所以直连模式和 Codex 原生直连都不能选账号来源。
+- **ChatGPT**：使用 OpenAI 官方提供给本地应用的 Sign in with ChatGPT，请求走标准的 `api.openai.com/v1/responses`，提示词是客户端自己的。它和 Codex 账号互相独立，需要单独登录；额度与 ChatGPT 共用，剩余量只能在 chatgpt.com 查看；个别套餐没有资格，登录时会提示。
+- **WorkBuddy / WorkBuddy AI**：腾讯 CodeBuddy 套餐的国内版和国际版，使用自己的登录，不读取也不改动 WorkBuddy 桌面端的会话。它们会因系统提示词拒绝 Codex 和 Claude Code 的对话，适合在 OpenCode、Pi 中使用；放进聚合组时，被拒的请求会自动切到下一个成员。
+- **Claude Desktop** 暂不支持账号来源。
+
 ## 数据与安全
 
 - **Codex 主目录**：依次取 `AGENT_HARBOR_CODEX_HOME`、`CODEX_HOME`，都没有时用 `~/.codex`。
 - **AgentHarbor 数据目录**：存放中转、路由状态、用量账本和缓存。位于系统本地数据目录下的 `AgentHarbor`（例如 `%LOCALAPPDATA%\AgentHarbor`），也可以用 `AGENT_HARBOR_DATA_DIR` 指定。仪表盘的数据目录里能看到确切路径。
 - **供应商凭据**：保存在 `newapi-providers.dat` 中。Windows 上用当前用户的 DPAPI 加密；其他平台只限文件所有者读写（`0600`），不加密。界面不会回读已保存的密钥，编辑时留空即保留原值。
+- **账号来源凭据**：保存在 `account-sources.dat` 中，保护方式与供应商凭据相同；令牌只在路由转发请求时使用，界面里看不到。
+- **网关 key**：和供应商凭据一起加密保存。网关只监听 `127.0.0.1`，只接受网关 key；转发给上游时用的是各中转自己的凭据，网关 key 不会发出去。
 - **本地路由**：需要本地令牌才能访问。发往中转的请求不会携带官方账号凭据。
 - **客户端配置**：逐字段写入并先备份。被你或其他工具改过的字段会提示冲突，不会被悄悄覆盖。
 - **代理探测**：只检测网络是否可达，不检查鉴权和额度。Codex 自身的登录和 Native 请求从 Codex 进程发出，改了它的代理后要重启 Codex。

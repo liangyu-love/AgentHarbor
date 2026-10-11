@@ -61,6 +61,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(Mutex::new(repository))
         .manage(core::account_login::LoginManager::default())
+        .manage(commands::account_sources::SourceLoginManager::default())
         .manage(commands::hotspot::WindowRevealState::default())
         .manage(commands::desktop_exit::ExitCoordinator::default())
         .setup(|app| {
@@ -180,9 +181,7 @@ pub fn run() {
             commands::aggregation::load_aggregation_live,
             commands::aggregation::save_aggregate_model,
             commands::aggregation::delete_aggregate_model,
-            commands::aggregation::set_aggregation_external_enabled,
             commands::aggregation::select_codex_aggregate,
-            commands::aggregation::export_aggregation_connection,
             commands::claude_desktop::get_claude_desktop_status,
             commands::claude_desktop::list_claude_desktop_candidates,
             commands::claude_desktop::preview_claude_desktop_change,
@@ -205,6 +204,22 @@ pub fn run() {
             commands::usage::get_token_usage,
             commands::accounts::refresh_codex_accounts,
             commands::accounts::login_codex_account,
+            commands::gateway::load_gateway_state,
+            commands::gateway::create_gateway_key,
+            commands::gateway::rename_gateway_key,
+            commands::gateway::regenerate_gateway_key,
+            commands::gateway::delete_gateway_key,
+            commands::gateway::reveal_gateway_key,
+            commands::gateway::set_gateway_keep_running,
+            commands::gateway::export_gateway_connection,
+            commands::account_sources::list_account_sources,
+            commands::account_sources::sign_in_account_source,
+            commands::account_sources::cancel_account_source_sign_in,
+            commands::account_sources::activate_account_source,
+            commands::account_sources::remove_account_source,
+            commands::account_sources::refresh_account_source_quota,
+            commands::account_sources::refresh_account_source_models,
+            commands::account_sources::set_account_source_exposed,
             commands::accounts::cancel_codex_account_login,
             commands::accounts::switch_codex_account,
             commands::accounts::delete_codex_account,
@@ -333,6 +348,10 @@ pub fn run() {
         if matches!(event, RunEvent::Exit) {
             _app_handle
                 .state::<core::account_login::LoginManager>()
+                .shutdown();
+            _app_handle
+                .state::<commands::account_sources::SourceLoginManager>()
+                .0
                 .shutdown();
             // The proxy lives in this process. Restore every client that points
             // to it before exit; direct upstream configurations remain durable.

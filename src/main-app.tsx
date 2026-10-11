@@ -52,6 +52,7 @@ const McpPage = lazy(() =>
 );
 const OverviewPage = lazy(() => import("@/components/overview/overview-page").then((module) => ({ default: module.OverviewPage })));
 const AccountsPage = lazy(() => import("@/components/accounts/accounts-page").then((module) => ({ default: module.AccountsPage })));
+const UsagePage = lazy(() => import("@/components/usage/usage-page").then((module) => ({ default: module.UsagePage })));
 const NewApiPage = lazy(() => import("@/components/newapi/newapi-page").then((module) => ({ default: module.NewApiPage })));
 const RelayModelsPage = lazy(() => import("@/components/newapi/relays-page").then((module) => ({ default: module.RelayModelsPage })));
 const ImageWorkbenchPage = lazy(() => import("@/components/image-workbench/image-workbench-page").then((module) => ({ default: module.ImageWorkbenchPage })));
@@ -146,6 +147,7 @@ function MainApp() {
       void Promise.allSettled([
         import("@/components/mcp/mcp-page"),
         import("@/components/accounts/accounts-page"),
+        import("@/components/usage/usage-page"),
         import("@/components/newapi/relays-page"),
         import("@/components/image-workbench/image-workbench-page"),
         import("@/components/skills/skills-page"),
@@ -161,7 +163,9 @@ function MainApp() {
       case "overview":
         return <OverviewPage onNavigate={setRoute} onOpenProxySettings={openProxySettings} />;
       case "accounts":
-        return <AccountsPage refreshInterval={refreshInterval} onManageProviders={() => setRoute("relays")} />;
+        return <AccountsPage refreshInterval={refreshInterval} />;
+      case "usage":
+        return <UsagePage refreshInterval={refreshInterval} onManageProviders={() => setRoute("relays")} />;
       case "newapi":
         return <NewApiPage onOpenRelays={() => setRoute("relays")} />;
       case "relays":
@@ -207,6 +211,7 @@ function MainApp() {
   const routeOrder: Route[] = [
     "overview",
     "accounts",
+    "usage",
     "newapi",
     "relays",
     "imageWorkbench",

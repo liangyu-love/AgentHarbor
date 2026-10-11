@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-const reducedMotion = () => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+import { reducedMotion } from "@/lib/motion";
 
 /** A number that eases from its previous value (0 at first) to `value`. */
 export function CountUp({ value, duration = 700, format = (n: number) => String(Math.round(n)), className }: {

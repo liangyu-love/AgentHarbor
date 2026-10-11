@@ -690,6 +690,7 @@ fn real_l10_key_rotation() {
     router::save_provider(
         &codex,
         ProviderInput {
+            gateway_slug: None,
             id: Some(provider.id.clone()),
             name: provider.name.clone(),
             base_url: original_base.clone(),
@@ -1404,6 +1405,7 @@ fn seed_provider(codex: &CodexPaths) -> Store {
     router::save_provider(
         codex,
         ProviderInput {
+            gateway_slug: None,
             id: None,
             name: "中转 A".into(),
             base_url: "https://relay.example/v1".into(),

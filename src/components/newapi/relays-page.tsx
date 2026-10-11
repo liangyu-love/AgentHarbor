@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
 import { api } from "@/lib/api";
@@ -35,7 +35,8 @@ export function RelayModelsPage() {
   const [balanceId, setBalanceId] = useState<string | null>(null);
   const [removing, setRemoving] = useState<NewApiProvider | null>(null);
 
-  const providers = state.data?.providers ?? [];
+  // Account sources publish router providers too; the Accounts page owns them.
+  const providers = useMemo(() => (state.data?.providers ?? []).filter((provider) => !provider.accountSource), [state.data?.providers]);
   const balanceProvider = balanceId ? providers.find((provider) => provider.id === balanceId) : undefined;
   const view = useRelayView(providers, state.isSuccess);
 

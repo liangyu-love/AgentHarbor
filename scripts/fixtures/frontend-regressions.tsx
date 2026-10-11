@@ -21,7 +21,10 @@ import { UpdateOverlay } from "@/components/update/update-overlay";
 import { useUpdateCheck } from "@/hooks/use-update-check";
 import { OverviewPage } from "@/components/overview/overview-page";
 import { AccountsPage } from "@/components/accounts/accounts-page";
-import { TokenUsagePanel } from "@/components/accounts/token-usage-panel";
+import { TokenUsagePanel } from "@/components/usage/token-usage-panel";
+import { UsagePage } from "@/components/usage/usage-page";
+import type { AccountSourceKind, AccountSourceListPayload } from "@/types/account-sources";
+import type { GatewayModel, GatewayState } from "@/types/gateway";
 import { McpPage } from "@/components/mcp/mcp-page";
 import { CommandPalette } from "@/components/command-palette/command-palette";
 import { SkillsPage } from "@/components/skills/skills-page";
@@ -188,28 +191,61 @@ api.aggregation.delete = async id => {
   controls.review.aggregateModels = (controls.review.aggregateModels ?? []).filter((entry: AggregateModel) => entry.id !== id);
   return aggregationState();
 };
-api.aggregation.setExternalEnabled = async enabled => { controls.review.aggregateExternalEnabled = enabled; return aggregationState(); };
 api.aggregation.selectCodex = async aggregateId => {
   controls.review.aggregateCodexSelections = [...(controls.review.aggregateCodexSelections ?? []), aggregateId];
   state = { ...state, router: { ...state.router, aggregateModelId: aggregateId, accessMode: "router" } };
   return { state: structuredClone(state), applied: null };
 };
-api.aggregation.exportConnection = async request => {
-  controls.review.aggregateExports = [...(controls.review.aggregateExports ?? []), structuredClone(request)];
-  const models = aggregationState().models.filter(entry => request.aggregateIds.includes(entry.id) && entry.available);
-  const selected = models.find(entry => entry.id === request.selectedAggregateId);
-  if (request.selectedAggregateId && !selected) throw "aggregation.errors.unavailable";
-  const baseUrl = "http://127.0.0.1:43127/aggregate" + (request.consumerProfile === "anthropicSdk" ? "" : "/v1");
-  const configText = JSON.stringify({ baseUrl, model: selected?.publicModelId ?? null,
-    apiKey: request.revealCredential ? "synthetic-local-aggregate-token" : "<redacted>",
-    protocol: request.ingressProtocol }, null, 2);
-  return { configText, connection: { schemaVersion: 1, consumerProfile: { id: request.consumerProfile,
-    ingressProtocol: request.ingressProtocol, modelsFormat: request.ingressProtocol === "anthropicMessages" ? "anthropic" : "openAi" },
-    baseUrl, requestPath: request.ingressProtocol === "chatCompletions" ? "/chat/completions" : request.ingressProtocol === "anthropicMessages" ? "/v1/messages" : "/responses", modelsPath: "/v1/models",
-    selectedModelId: selected?.publicModelId ?? null, modelCatalog: models.map(entry => ({ targetRef: { kind: "aggregate", aggregateId: entry.id },
-      publicModelId: entry.publicModelId, label: entry.displayName, capabilities: {}, limits: {} })), authScheme: "bearer", localCredentialRef: "fixture-local",
-    listenerReady: aggregationState().listenerReady, runtimeRequirement: "keepApplicationRunning", configRevision: "fixture-v1",
-    catalogRevision: "fixture-catalog-v1", tokenVersion: "fixture-token-v1" } } as ConnectionExportResult;
+// Gateway: named keys, models by short name, connection export.
+type FixtureKey = { id: string; name: string; secret: string };
+const gatewayModelsFixture = (): GatewayModel[] => [
+  { id: "relay-a/fast-model", kind: "relay", sourceName: "Relay A", sourceId: "relay-a", modelId: "fast-model", label: "Fast", protocol: "responses", contextWindow: 200_000 },
+  { id: "relay-a/vendor/deep-model", kind: "relay", sourceName: "Relay A", sourceId: "relay-a", modelId: "vendor/deep-model", label: "Deep", protocol: "chatCompletions", contextWindow: null },
+  { id: "workbuddy/glm-5.3", kind: "account", sourceName: "WorkBuddy", sourceId: "account-workbuddy", modelId: "glm-5.3", label: "GLM-5.3", protocol: "chatCompletions", contextWindow: 1_000_000 },
+  { id: "harbor-pool", kind: "aggregate", sourceName: "Harbor Pool", sourceId: "pool", modelId: "harbor-pool", label: "Harbor Pool", protocol: "responses", contextWindow: 128_000 },
+];
+const gatewayState = (): GatewayState => ({
+  port: 43127, running: !!controls.review.gatewayKeepRunning, keepRunning: !!controls.review.gatewayKeepRunning,
+  keys: (controls.review.gatewayKeys as FixtureKey[]).map(key => ({ id: key.id, name: key.name, masked: `sk-ah-…${key.secret.slice(-4)}`, createdAt: 1 })),
+  models: controls.review.gatewayModels ?? gatewayModelsFixture(),
+});
+const installGateway = () => {
+  controls.review.gatewayKeys = structuredClone(controls.review.gatewayKeysFixture ?? []);
+  controls.review.gatewayKeepRunning = false;
+  controls.review.gatewayCalls = [];
+  const record = (...call: unknown[]) => controls.review.gatewayCalls.push(call);
+  const keyOf = (id: string) => {
+    const key = (controls.review.gatewayKeys as FixtureKey[]).find(entry => entry.id === id);
+    if (!key) throw "gateway.errors.keyNotFound";
+    return key;
+  };
+  api.gateway.state = async () => gatewayState();
+  api.gateway.createKey = async name => {
+    record("create", name);
+    if ((controls.review.gatewayKeys as FixtureKey[]).some(key => key.name === name)) throw "gateway.errors.keyNameTaken";
+    controls.review.gatewayKeys.push({ id: `key-${controls.review.gatewayKeys.length + 1}`, name, secret: `sk-ah-fixture-${name.toLowerCase()}-0001` });
+    return gatewayState();
+  };
+  api.gateway.renameKey = async (id, name) => { record("rename", id, name); keyOf(id).name = name; return gatewayState(); };
+  api.gateway.regenerateKey = async id => { record("regenerate", id); keyOf(id).secret = keyOf(id).secret.replace(/\d{4}$/, "0002"); return gatewayState(); };
+  api.gateway.deleteKey = async id => {
+    record("delete", id);
+    controls.review.gatewayKeys = (controls.review.gatewayKeys as FixtureKey[]).filter(key => key.id !== id);
+    return gatewayState();
+  };
+  api.gateway.revealKey = async id => { record("reveal", id); return keyOf(id).secret; };
+  api.gateway.setKeepRunning = async enabled => { record("keepRunning", enabled); controls.review.gatewayKeepRunning = enabled; return gatewayState(); };
+  api.gateway.exportConnection = async request => {
+    record("export", structuredClone(request));
+    const key = keyOf(request.keyId);
+    const models = gatewayState().models;
+    const selected = request.selectedModelId ? models.find(model => model.id === request.selectedModelId) : models[0];
+    if (!selected) throw "gateway.errors.unavailable";
+    const baseUrl = "http://127.0.0.1:43127/gateway" + (request.consumerProfile === "anthropicSdk" ? "" : "/v1");
+    const configText = JSON.stringify({ baseUrl, model: selected.id, apiKey: request.revealCredential ? key.secret : "<gateway key>",
+      protocol: request.ingressProtocol, template: request.consumerProfile }, null, 2);
+    return { configText, connection: {} } as unknown as ConnectionExportResult;
+  };
 };
 api.routing.diagnostics = async () => {
   if (controls.review.routeDiagnostics) return controls.review.routeDiagnostics;
@@ -354,6 +390,54 @@ const accountList = { activeAccountKey: "acct-a", refreshedAt: 1_800_000_000, it
 api.accounts.refresh = async () => accountList as any;
 api.accounts.list = async () => accountList as any;
 api.usage.overview = async () => ({ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } });
+// Account sources: one WorkBuddy account with credits, ChatGPT and WorkBuddy AI empty.
+const accountSourcesFixture = (): AccountSourceListPayload => ({ sources: [
+  { kind: "chatgpt-api", name: "ChatGPT", providerId: "account-chatgpt-api", protocol: "responses", exposed: false, models: [],
+    accounts: [], usageUrl: "https://chatgpt.com/settings/usage" },
+  { kind: "workbuddy", name: "WorkBuddy", providerId: "account-workbuddy", protocol: "chatCompletions", exposed: true,
+    models: [{ id: "glm-5.3", name: "GLM-5.3", contextWindow: 1_000_000, reasoning: ["low", "high"] }, { id: "kimi-k3-1", name: "Kimi-K3", contextWindow: 1_000_000, reasoning: [] }],
+    accounts: [
+      { id: "wb-1", name: "Harbor", plan: "Pro", active: true, lapsed: null, quota: { used: 750, limit: 1000, unit: "credits", paid: true, checkedAt: 1, error: null }, addedAt: 1 },
+      { id: "wb-2", name: "Spare", plan: null, active: false, lapsed: "signed out", quota: null, addedAt: 2 },
+    ], usageUrl: null },
+  { kind: "workbuddy-ai", name: "WorkBuddy AI", providerId: "account-workbuddy-ai", protocol: "chatCompletions", exposed: false,
+    models: [{ id: "gpt-5.5", name: "GPT-5.5", contextWindow: 1_000_000, reasoning: [] }], accounts: [], usageUrl: null },
+] });
+const installAccountSources = () => {
+  let payload = accountSourcesFixture();
+  controls.review.sourceCalls = [];
+  controls.review.sourceSignIns = [];
+  const record = (name: string, ...args: unknown[]) => controls.review.sourceCalls.push([name, ...args]);
+  api.accountSources.list = async () => structuredClone(payload);
+  api.accountSources.signIn = (kind: AccountSourceKind, attemptId: string) => new Promise((resolve, reject) => {
+    record("signIn", kind);
+    controls.review.sourceSignIns.push({ kind, attemptId, reject, resolve: () => {
+      payload = { sources: payload.sources.map(source => source.kind === kind
+        ? { ...source, exposed: true, accounts: [...source.accounts, { id: "new-1", name: "me@example.com", plan: "plus", active: source.accounts.length === 0, lapsed: null, quota: null, addedAt: 3 }] }
+        : source) };
+      resolve(structuredClone(payload));
+    } });
+  });
+  api.accountSources.cancelSignIn = async attemptId => { record("cancelSignIn", attemptId); return true; };
+  api.accountSources.activate = async id => {
+    record("activate", id);
+    payload = { sources: payload.sources.map(source => source.accounts.some(account => account.id === id)
+      ? { ...source, accounts: source.accounts.map(account => ({ ...account, active: account.id === id })) } : source) };
+    return structuredClone(payload);
+  };
+  api.accountSources.remove = async id => {
+    record("remove", id);
+    payload = { sources: payload.sources.map(source => ({ ...source, accounts: source.accounts.filter(account => account.id !== id) })) };
+    return structuredClone(payload);
+  };
+  api.accountSources.refreshQuota = async id => { record("refreshQuota", id); return structuredClone(payload); };
+  api.accountSources.refreshModels = async kind => { record("refreshModels", kind); return structuredClone(payload); };
+  api.accountSources.setExposed = async (kind, exposed) => {
+    record("setExposed", kind, exposed);
+    payload = { sources: payload.sources.map(source => source.kind === kind ? { ...source, exposed } : source) };
+    return structuredClone(payload);
+  };
+};
 api.loadInstalledSkills = async (source = "codex") => {
   (controls.review.skillsReadCalls ??= []).push(source);
   const items = source === "claudeCode" ? controls.review.claudeSkills : controls.review.skillItems;
@@ -619,7 +703,7 @@ function ProviderFixture({ mixed = false }: { mixed?: boolean }) {
       onOpenChange={open => setDialog(current => ({ ...current, open }))} onSaved={noop} /></>;
 }
 
-type FixtureMode = "sidebar" | "instructions" | "mcp-clients" | "skills" | "desktop-updater" | "desktop-exit" | "terminal-proxy" | "routing-cache" | "thread-details" | "thread-details-missing" | "thread-details-unknown" | "thread-details-error" | "compact" | "grid" | "image" | "mcp" | "accounts" | "account-resets" | "account-resets-unavailable" | "thread-tree" | "groups" | "overview" | "usage" | "provider" | "warnings" | "thread-actions" | "thread-queue-recovery" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-conflict" | "clients-opencode" | "clients-opencode-stale" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official" | "recovery-long" | "recovery-router";
+type FixtureMode = "sidebar" | "instructions" | "mcp-clients" | "skills" | "desktop-updater" | "desktop-exit" | "terminal-proxy" | "routing-cache" | "thread-details" | "thread-details-missing" | "thread-details-unknown" | "thread-details-error" | "compact" | "grid" | "image" | "mcp" | "accounts" | "account-resets" | "account-resets-unavailable" | "thread-tree" | "groups" | "overview" | "usage" | "usage-page" | "provider" | "warnings" | "thread-actions" | "thread-queue-recovery" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-conflict" | "clients-opencode" | "clients-opencode-stale" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official" | "recovery-long" | "recovery-router";
 
 function RoutingCacheFixture() {
   const [page, setPage] = useState("threads");
@@ -673,6 +757,7 @@ let mountSequence = 0;
 function mount(mode: FixtureMode) {
   controls.review.routingCalls = [];
   localStorage.removeItem("agentharbor.mcp-source");
+  if (!controls.review.keepAccountsTab) localStorage.removeItem("agentharbor.accounts-tab.v1");
   localStorage.removeItem("agentharbor.instruction-source");
   // The injection console opens on Codex unless a suite asks for another client.
   if (controls.review.injectClient) localStorage.setItem("agentharbor.inject-client.v1", controls.review.injectClient);
@@ -755,6 +840,8 @@ function mount(mode: FixtureMode) {
       if (controls.review.terminalOpenFailure) throw "settings.terminalProxy.errors.launch";
     };
   }
+  installAccountSources();
+  installGateway();
   controls.review.loginCalls = [];
   controls.review.cancelCalls = [];
   controls.review.cancelFailures = 0;
@@ -1011,7 +1098,7 @@ function mount(mode: FixtureMode) {
       {(mode.startsWith("thread-details") || mode === "thread-tree" || mode === "thread-actions" || mode === "terminal-proxy" || mode === "skills" || mode === "groups" || mode === "access") && <ThreadToastProbe />}
       {mode === "sidebar" ? <AppAvatarProvider><SidebarProvider><AppSidebar activeRoute={controls.review.sidebarRoute ?? "relays"} onNavigate={route => { controls.review.navigatedTo = route; }} onThemeChange={noop} /><div className="flex-1" /></SidebarProvider></AppAvatarProvider> : mode === "routing-cache" ? <RoutingCacheFixture /> : mode === "desktop-updater" ? <DesktopUpdaterFixture /> : mode === "desktop-exit" ? <ClaudeDesktopRouterExitDialog /> : mode.startsWith("recovery-") ? <RecoveryFixture thread={threads[0] as ThreadSummary} /> :
         mode === "skills" ? <SkillsPage /> : mode === "terminal-proxy" ? <div className="mx-auto max-w-xl rounded-xl bg-card shadow-sm"><TerminalProxySettings currentProxy={{ mode: "manual", url: "http://127.0.0.1:7890" }} /></div> :
-        mode === "image" ? <ImageWorkbenchPage /> : mode === "instructions" ? <CustomInstructionsPage /> : mode === "mcp-clients" ? <McpClientFixture /> : mode === "mcp" ? <McpPage /> : mode === "accounts" || mode.startsWith("account-resets") ? <AccountsPage refreshInterval="5m" onManageProviders={noop} /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage" ? <TokenUsagePanel data={{ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } }} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode.startsWith("thread-details") || mode === "thread-tree" || mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :
+        mode === "image" ? <ImageWorkbenchPage /> : mode === "instructions" ? <CustomInstructionsPage /> : mode === "mcp-clients" ? <McpClientFixture /> : mode === "mcp" ? <McpPage /> : mode === "accounts" || mode.startsWith("account-resets") ? <AccountsPage refreshInterval="5m" /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage-page" ? <UsagePage refreshInterval="5m" onManageProviders={() => { controls.review.navigatedTo = "relays"; }} /> : mode === "usage" ? <TokenUsagePanel data={{ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } }} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode.startsWith("thread-details") || mode === "thread-tree" || mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :
         mode === "access" || mode === "incompatible" || mode === "native-invalid" || mode === "groups" ? <><NewApiPage onOpenRelays={() => { controls.review.navigatedTo = "relays"; }} /><RelayModelsPage /></> :
         mode === "test" ? <ProviderTestDialog open provider={mixedProvider} onOpenChange={noop} onTested={noop} onFailed={noop} /> :
         mode.startsWith("clients") ? <div className="space-y-8">{(["claudeCode", "opencode", "pi"] as const).filter(target => clientStatuses.some(status => status.targetId === target) || (!clientStatuses.length && target === (openCode ? "opencode" : "claudeCode"))).map(target => <ClientConfigs key={target} target={target} providers={controls.review.providerFixtures ? state.providers : openCode ? [mixedProvider, provider("alternate")] : [selectedProvider]} />)}</div> :
