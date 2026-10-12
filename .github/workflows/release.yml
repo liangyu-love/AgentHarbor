@@ -1,0 +1,99 @@
+name: Release
+
+# Push an annotated tag `vX.Y.Z` naming the version in tauri.conf.json; its
+# message becomes the release notes. The tests run first, then the installer
+# is built and signed for the in-app updater, and a draft release carries the
+# four files: publish it on GitHub (as the latest release) for users to get it.
+# Run it by hand to build without a release (the files stay as artifacts).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: Build, sign and draft the release
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Release notes
+        shell: bash
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+              echo "::error::The tag $GITHUB_REF_NAME does not name version $version in tauri.conf.json"
+              exit 1
+            fi
+            # The checkout carries the tag as a commit; fetch the tag itself for its message.
+            git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+            git tag -l --format='%(contents)' "$GITHUB_REF_NAME" | sed '/^-----BEGIN PGP SIGNATURE-----/,$d' > "$RUNNER_TEMP/notes.md"
+          fi
+          if [ ! -s "$RUNNER_TEMP/notes.md" ]; then
+            echo "AgentHarbor v$version" > "$RUNNER_TEMP/notes.md"
+          fi
+
+      - name: Build and sign
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::The TAURI_SIGNING_PRIVATE_KEY secret is not set"
+            exit 1
+          fi
+          node scripts/release.mjs --notes "$RUNNER_TEMP/notes.md"
+
+      - name: Keep the files
+        uses: actions/upload-artifact@v4
+        with:
+          name: AgentHarbor-${{ env.VERSION }}
+          path: |
+            src-tauri/target/release/bundle/nsis/AgentHarbor_${{ env.VERSION }}_x64-setup.exe
+            src-tauri/target/release/bundle/nsis/AgentHarbor_${{ env.VERSION }}_x64-setup.exe.sig
+            src-tauri/target/release/bundle/nsis/latest.json
+            src-tauri/target/release/bundle/nsis/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Draft the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          bundle=src-tauri/target/release/bundle/nsis
+          gh release create "$GITHUB_REF_NAME" \
+            "$bundle/AgentHarbor_${VERSION}_x64-setup.exe" \
+            "$bundle/AgentHarbor_${VERSION}_x64-setup.exe.sig" \
+            "$bundle/latest.json" \
+            "$bundle/SHA256SUMS.txt" \
+            --draft --verify-tag \
+            --title "AgentHarbor $GITHUB_REF_NAME" \
+            --notes-file "$RUNNER_TEMP/notes.md"

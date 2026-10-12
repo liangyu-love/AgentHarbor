@@ -138,7 +138,9 @@ pnpm release         # 签名发布构建：安装包、更新签名、latest.js
 
 - **前端测试**：需要 Playwright 和 Chromium。不在默认搜索路径时，用 `PLAYWRIGHT_MODULE_PATH` 和 `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` 指定；用 `FRONTEND_QA_SCOPE` 只跑某一组。
 - **真实 Codex 测试**：默认跳过。设置 `AGENTHARBOR_TEST_CODEX_BIN` 后运行 `cargo test --manifest-path src-tauri/Cargo.toml -- --ignored real_codex`。这些测试只使用临时目录、合成凭据和本地模拟上游。
-- **发布与更新签名**：发布构建会为应用内更新签名安装包。私钥依次从 `TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PATH` 或 `~/.tauri/agentharbor-updater.key` 读取，不进仓库；请备份好，已安装的版本只接受用它签名的更新。每次发布都要升版本号并上传上面四个文件；更新地址是 `releases/latest/download/latest.json`，所以发布时要设为最新版本（不要标成预发布）。
+- **更新签名**：发布构建会为应用内更新签名安装包。私钥依次从 `TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PATH` 或 `~/.tauri/agentharbor-updater.key` 读取，不进仓库；请备份好，已安装的版本只接受用它签名的更新。
+- **发布**：升版本号（`package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`）并提交，再推送一个带注释的标签，标签说明就是发布说明：`git tag -a v1.0.2 -F notes.md && git push origin v1.0.2`。GitHub Actions 会先跑测试，再用仓库密钥 `TAURI_SIGNING_PRIVATE_KEY` 签名构建，并带上面四个文件创建草稿 Release。确认后把草稿发布为最新版本（不要标成预发布）：更新地址是 `releases/latest/download/latest.json`。手动运行 Release 工作流只构建文件（保存为构建产物），不建 Release。
+- **持续集成**：每次推送到 `main` 和每个 PR 都会跑类型检查、Rust 测试和前端回归。
 - **模型目录快照**：发布前用 `node scripts/build-models-dev-snapshot.mjs` 更新内置快照。运行时下载的缓存只要完整有效，就会取代内置快照。
 
 ## 项目结构
