@@ -121,17 +121,25 @@ mod tests {
         assert!(String::from_utf8_lossy(&result.stdout).contains("desktop-helper"));
     }
 
+    /// Not a test of its own: the hung helper the test below runs, as this
+    /// test binary, which starts at once (PowerShell can take seconds).
+    #[test]
+    #[ignore]
+    fn hung_helper_stand_in() {
+        if let Ok(path) = std::env::var("DESKTOP_HELPER_PID") {
+            std::fs::write(path, std::process::id().to_string()).unwrap();
+            std::thread::sleep(Duration::from_secs(120));
+        }
+    }
+
     #[test]
     fn a_hung_helper_times_out_and_is_reaped_without_blocking_the_writer() {
         let temp = tempfile::tempdir().unwrap();
         let pid_path = temp.path().join("pid");
-        let mut command = crate::platform::windows::background_command("powershell");
-        command.args(["-NoProfile", "-NonInteractive", "-Command",
-            "[IO.File]::WriteAllText($env:DESKTOP_HELPER_PID, [string]$PID); Start-Sleep -Seconds 120"])
+        let mut command = crate::platform::windows::background_command_path(&std::env::current_exe().unwrap());
+        command.args(["--exact", "core::claude_desktop::desktop_app::command::tests::hung_helper_stand_in", "--ignored", "--nocapture"])
             .env("DESKTOP_HELPER_PID", &pid_path);
-        // Long enough for a cold PowerShell start (seconds on a CI runner) to
-        // write its PID before the timeout kills it.
-        let timeout = Duration::from_secs(8);
+        let timeout = Duration::from_secs(5);
         let started = Instant::now();
         let error = output(&mut command, timeout).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
