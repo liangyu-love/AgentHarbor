@@ -475,6 +475,11 @@ const installAccountSources = () => {
     payload = { sources: payload.sources.map(source => source.kind === kind ? { ...source, exposed } : source) };
     return structuredClone(payload);
   };
+  api.accountSources.setHiddenModels = async (kind, hidden) => {
+    record("setHiddenModels", kind, hidden);
+    payload = { sources: payload.sources.map(source => source.kind === kind ? { ...source, hiddenModels: hidden } : source) };
+    return structuredClone(payload);
+  };
 };
 api.loadInstalledSkills = async (source = "codex") => {
   (controls.review.skillsReadCalls ??= []).push(source);
@@ -904,6 +909,7 @@ function mount(mode: FixtureMode) {
       return structuredClone(controls.review.autostartStatus);
     };
   }
+  api.codexMenuOverflow = async () => structuredClone(controls.review.menuOverflow ?? { total: 12, limit: 100, cut: [] });
   installAccountSources();
   installGateway();
   controls.review.loginCalls = [];

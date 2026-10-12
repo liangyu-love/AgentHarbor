@@ -730,3 +730,32 @@ async fn cursor_models_for_test(paths: &CodexPaths) -> Vec<(String, u64)> {
     cursor::fetch_models(&paths.app_data_dir).await.unwrap().into_iter()
         .map(|model| (model.id, model.context_window.unwrap())).collect()
 }
+
+#[test]
+fn models_left_out_of_a_share_never_reach_the_router_and_one_always_stays() {
+    let _guard = crate::core::router_proxy::global_router_test_lock();
+    let (_dir, paths) = temp_paths();
+    store::mutate(&paths.app_data_dir, |store| {
+        store.models.insert(SourceKind::Grok, ["grok-4.7", "grok-4.7-fast", "grok-code"].iter()
+            .map(|id| SourceModel { id: (*id).into(), name: (*id).into(), ..Default::default() }).collect());
+        Ok(())
+    }).unwrap();
+    // Before it is shared, every model may be left out.
+    set_hidden_models(&paths, SourceKind::Grok, vec!["grok-4.7".into(), "grok-4.7-fast".into(), "grok-code".into()]).unwrap();
+    set_hidden_models(&paths, SourceKind::Grok, vec!["grok-4.7-fast".into(), "unknown".into()]).unwrap();
+    set_exposed(&paths, SourceKind::Grok, true).unwrap();
+    let shared = |paths: &CodexPaths| -> Vec<String> {
+        router::load_store(paths).unwrap().providers.into_iter().find(|provider| provider.account_source == Some(SourceKind::Grok))
+            .unwrap().models.into_iter().map(|model| model.id).collect()
+    };
+    assert_eq!(shared(&paths), ["grok-4.7", "grok-code"]);
+    let source = list(&paths).unwrap().sources.into_iter().find(|source| source.kind == SourceKind::Grok).unwrap();
+    assert_eq!(source.hidden_models, ["grok-4.7-fast"], "an unknown id is not kept");
+    assert_eq!(source.models.len(), 3, "the page still lists every model");
+    assert_eq!(
+        set_hidden_models(&paths, SourceKind::Grok, vec!["grok-4.7".into(), "grok-4.7-fast".into(), "grok-code".into()]).unwrap_err(),
+        "accountSources.errors.noModelsSelected"
+    );
+    set_hidden_models(&paths, SourceKind::Grok, Vec::new()).unwrap();
+    assert_eq!(shared(&paths), ["grok-4.7", "grok-4.7-fast", "grok-code"]);
+}

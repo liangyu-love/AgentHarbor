@@ -183,6 +183,8 @@ pub struct SourceView {
     /// Shared with model inject: its router provider exists.
     pub exposed: bool,
     pub models: Vec<SourceModel>,
+    /// Models left out of the share with model inject.
+    pub hidden_models: Vec<String>,
     pub accounts: Vec<AccountView>,
     /// Where the vendor shows an allowance it does not report through its API.
     pub usage_url: Option<&'static str>,
@@ -207,6 +209,35 @@ fn source_models(store: &store::Store, kind: SourceKind) -> Vec<SourceModel> {
     }
 }
 
+/// The models a shared source offers: its list without those left out.
+fn shared_models(store: &store::Store, kind: SourceKind) -> Vec<SourceModel> {
+    let hidden = store.hidden_models.get(&kind);
+    source_models(store, kind).into_iter()
+        .filter(|model| hidden.is_none_or(|hidden| !hidden.contains(&model.id)))
+        .collect()
+}
+
+/// Leave models out of a source's share (or bring them back). A shared
+/// source keeps at least one.
+pub fn set_hidden_models(paths: &CodexPaths, kind: SourceKind, hidden: Vec<String>) -> Result<(), String> {
+    let exposed = router::load_store(paths)?.providers.iter().any(|provider| provider.account_source == Some(kind));
+    store::mutate(&paths.app_data_dir, |store| {
+        let all = source_models(store, kind);
+        let mut kept: Vec<String> = all.iter().filter(|model| hidden.contains(&model.id)).map(|model| model.id.clone()).collect();
+        kept.dedup();
+        if exposed && !all.is_empty() && kept.len() == all.len() {
+            return Err("accountSources.errors.noModelsSelected".into());
+        }
+        if kept.is_empty() {
+            store.hidden_models.remove(&kind);
+        } else {
+            store.hidden_models.insert(kind, kept);
+        }
+        Ok(())
+    })?;
+    sync_provider(paths, kind)
+}
+
 pub fn list(paths: &CodexPaths) -> Result<ListPayload, String> {
     let accounts = store::load(&paths.app_data_dir)?;
     let routes = router::load_store(paths)?;
@@ -217,6 +248,7 @@ pub fn list(paths: &CodexPaths) -> Result<ListPayload, String> {
         protocol: kind.protocol(),
         exposed: routes.providers.iter().any(|provider| provider.account_source == Some(kind)),
         models: source_models(&accounts, kind),
+        hidden_models: accounts.hidden_models.get(&kind).cloned().unwrap_or_default(),
         accounts: accounts.accounts.iter().filter(|account| account.kind == kind).map(|account| AccountView {
             id: account.id.clone(),
             name: account.name.clone(),
@@ -435,7 +467,7 @@ fn provider_for(kind: SourceKind, models: &[SourceModel]) -> Result<router::Prov
 /// Share a source with model inject (publish its router provider) or stop.
 pub fn set_exposed(paths: &CodexPaths, kind: SourceKind, exposed: bool) -> Result<(), String> {
     if exposed {
-        let models = source_models(&store::load(&paths.app_data_dir)?, kind);
+        let models = shared_models(&store::load(&paths.app_data_dir)?, kind);
         router::upsert_account_provider(paths, provider_for(kind, &models)?)?;
     } else if router::load_store(paths)?.providers.iter().any(|provider| provider.id == kind.provider_id()) {
         router::delete_provider(paths, kind.provider_id())?;

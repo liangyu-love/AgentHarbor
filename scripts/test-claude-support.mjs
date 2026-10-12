@@ -165,9 +165,14 @@ export async function testClaudeSupport({ page, reset, captureDir }) {
   });
   await page.getByRole("switch").click();
   await page.waitForFunction(() => !!window.review.mcpResolve);
-  assert.equal(await radio("Codex").isDisabled(), true);
-  assert.equal(await page.getByRole("switch").isDisabled(), true);
-  assert.equal(await (await button("mcp.addServer")).isDisabled(), true);
+  // The pending write disables them on the next render, which a slow runner shows later.
+  const disabled = async (locator, what) => {
+    for (let attempt = 0; attempt < 100 && !(await locator.isDisabled()); attempt++) await page.waitForTimeout(50);
+    assert.equal(await locator.isDisabled(), true, what);
+  };
+  await disabled(await radio("Codex"), "the client switch waits for the write");
+  await disabled(page.getByRole("switch"), "the toggle waits for the write");
+  await disabled(await button("mcp.addServer"), "adding waits for the write");
   assert.equal(await (await button("mcp.edit")).isDisabled(), true);
   assert.equal(await (await button("mcp.delete")).isDisabled(), true);
   await page.evaluate(() => {

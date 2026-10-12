@@ -1474,7 +1474,9 @@
     "capabilityQuickOutput": "Output {{value}}",
     "gatewaySlug": "Gateway short name",
     "gatewaySlugHint": "Gateway models are named “short name/model”; leave empty to derive one. Renaming the relay does not change it",
-    "codexContextPresetMax": "Codex default context · {{value}}, up to {{max}}"
+    "codexContextPresetMax": "Codex default context · {{value}}, up to {{max}}",
+    "codexMenuOverflow": "The Codex desktop app's model menu shows the first {{limit}} models. There are {{total}} now, so the last {{count}} are missing there (the CLI still has them): {{names}}. Leave unused models out on the relay cards, or share only the account-source models you need on the Accounts page.",
+    "codexMenuOverflowMore": "{{names}} and more"
   },
   "avatar": {
     "title": "App avatar",
@@ -2498,7 +2500,8 @@
       "geminiNeedsProject": "Google serves Gemini CLI's sign-in only to Gemini Code Assist Standard and Enterprise: enter the Google Cloud project ID it bills. Use Antigravity for a personal Google account.",
       "grokCli": "The Grok CLI was not found. Install Grok Build (x.ai/cli), then sign in.",
       "cursorCli": "Cursor's CLI (cursor-agent) was not found. Install it (cursor.com/cli), then sign in.",
-      "noAccount": "The sign-in ended without the CLI naming an account. Try again."
+      "noAccount": "The sign-in ended without the CLI naming an account. Try again.",
+      "noModelsSelected": "A source shared with model inject keeps at least one model"
     },
     "badge": "Official account",
     "refusesClaudeCode": "{{name}} refuses Claude Code's system prompt; requests may fail",
@@ -2531,7 +2534,12 @@
     "usedPercent": "{{value}}% used",
     "project": "Google Cloud project",
     "projectPlaceholder": "Google Cloud project ID",
-    "projectSaved": "Project saved and the account set up again"
+    "projectSaved": "Project saved and the account set up again",
+    "modelListShared": "Models · {{shared}} of {{count}} shared",
+    "modelFilterHint": "Click a model to leave it out of the share or bring it back; a model left out is not offered to model inject or shown in Codex's model menu.",
+    "modelsAll": "Share all",
+    "modelsNone": "Leave all out",
+    "modelsNoneShared": "A source shared with model inject keeps at least one model"
   },
   "gateway": {
     "groupTitle": "Gateway",

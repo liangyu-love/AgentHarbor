@@ -2499,6 +2499,45 @@ pub(crate) fn aggregate_catalog_value(
     serde_json::json!({"models":models})
 }
 
+/// How many models the Codex desktop app shows: it asks its app-server for
+/// one page of the model list and never for the next, while the CLI reads
+/// the whole catalog.
+pub const CODEX_DESKTOP_MENU_LIMIT: usize = 100;
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexMenuOverflow {
+    /// Entries in the catalog Codex reads.
+    pub total: usize,
+    pub limit: usize,
+    /// Display names of the entries past the desktop app's page, in order.
+    pub cut: Vec<String>,
+}
+
+/// The models the Codex desktop app's menu leaves out, from the catalog as
+/// Codex reads it (in the order its app-server lists it).
+pub fn codex_menu_overflow(paths: &CodexPaths) -> Result<CodexMenuOverflow, String> {
+    let store = load_store(paths)?;
+    let document = if store.router.aggregate_model_id.is_some() {
+        aggregate_catalog_value(&paths.app_data_dir, &paths.codex_home, &store)
+    } else {
+        catalog_value(&paths.app_data_dir, &paths.codex_home, &store)
+    };
+    Ok(menu_overflow(&document))
+}
+
+fn menu_overflow(document: &Value) -> CodexMenuOverflow {
+    let models = document["models"].as_array().map(Vec::as_slice).unwrap_or_default();
+    CodexMenuOverflow {
+        total: models.len(),
+        limit: CODEX_DESKTOP_MENU_LIMIT,
+        cut: models.iter().skip(CODEX_DESKTOP_MENU_LIMIT).map(|model| {
+            model["display_name"].as_str().filter(|name| !name.is_empty())
+                .or(model["slug"].as_str()).unwrap_or_default().to_owned()
+        }).collect(),
+    }
+}
+
 /// Codex reads relay + official models from this catalog file (`model_catalog_json`),
 /// matching the original app's protocol. Official entries are borrowed read-only from
 /// the original app's catalog when it is present.
@@ -3815,6 +3854,23 @@ pub fn export_providers(paths: &CodexPaths, path: &Path) -> Result<(), String> {
         serde_json::to_vec_pretty(&document).map_err(|_| "newapi.errors.storage".to_owned())?;
     text.push(b'\n');
     storage::write_atomic(path, &text).map_err(|_| "newapi.errors.storage".to_owned())
+}
+
+#[cfg(test)]
+mod menu_tests {
+    use super::*;
+
+    #[test]
+    fn the_desktop_menu_shows_the_first_hundred_and_names_the_rest() {
+        let document = serde_json::json!({"models": (0..134).map(|index| serde_json::json!({
+            "slug": format!("relay::m{index}"), "display_name": if index == 133 { String::new() } else { format!("Relay/M{index}") }
+        })).collect::<Vec<_>>()});
+        let overflow = menu_overflow(&document);
+        assert_eq!((overflow.total, overflow.limit, overflow.cut.len()), (134, 100, 34));
+        assert_eq!(overflow.cut.first().map(String::as_str), Some("Relay/M100"));
+        assert_eq!(overflow.cut.last().map(String::as_str), Some("relay::m133"), "a nameless entry goes by its slug");
+        assert!(menu_overflow(&serde_json::json!({"models": []})).cut.is_empty());
+    }
 }
 
 #[cfg(test)]

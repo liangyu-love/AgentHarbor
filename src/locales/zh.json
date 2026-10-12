@@ -1474,7 +1474,9 @@
     "capabilityQuickOutput": "输出 {{value}}",
     "gatewaySlug": "网关短名",
     "gatewaySlugHint": "通用网关里的模型名是「短名/模型」；留空自动生成，改名不影响已配置的 agent",
-    "codexContextPresetMax": "Codex 默认上下文 · {{value}}，最大 {{max}}"
+    "codexContextPresetMax": "Codex 默认上下文 · {{value}}，最大 {{max}}",
+    "codexMenuOverflow": "Codex 桌面版的模型菜单只显示前 {{limit}} 个模型，现在有 {{total}} 个，排在后面的 {{count}} 个在桌面版里看不到（命令行不受影响）：{{names}}。可以在中转卡片里取消不用的模型，或在账号页只共享需要的账号来源模型。",
+    "codexMenuOverflowMore": "{{names}} 等"
   },
   "avatar": {
     "title": "应用头像",
@@ -2498,7 +2500,8 @@
       "geminiNeedsProject": "Google 只给 Gemini Code Assist 标准版 / 企业版提供 Gemini CLI 登录，需要填上计费的 Google Cloud 项目 ID；个人 Google 账号请改用 Antigravity。",
       "grokCli": "没有找到 Grok CLI，请先安装 Grok Build（x.ai/cli）再登录。",
       "cursorCli": "没有找到 Cursor CLI（cursor-agent），请先安装（cursor.com/cli）再登录。",
-      "noAccount": "登录结束了，但 CLI 没有给出账号，请重试。"
+      "noAccount": "登录结束了，但 CLI 没有给出账号，请重试。",
+      "noModelsSelected": "已提供给模型注入的来源至少要保留一个模型"
     },
     "badge": "官方账号",
     "refusesClaudeCode": "{{name}} 会拒绝 Claude Code 的系统提示词，请求可能失败",
@@ -2531,7 +2534,12 @@
     "usedPercent": "已用 {{value}}%",
     "project": "Google Cloud 项目",
     "projectPlaceholder": "Google Cloud 项目 ID",
-    "projectSaved": "项目已保存，账号已重新设置"
+    "projectSaved": "项目已保存，账号已重新设置",
+    "modelListShared": "模型 · 已共享 {{shared}} / {{count}}",
+    "modelFilterHint": "点模型可以取消或恢复共享；取消的模型不会提供给模型注入，也不会出现在 Codex 的模型菜单里。",
+    "modelsAll": "全部共享",
+    "modelsNone": "全部取消",
+    "modelsNoneShared": "已提供给模型注入的来源至少要保留一个模型"
   },
   "gateway": {
     "groupTitle": "通用网关",

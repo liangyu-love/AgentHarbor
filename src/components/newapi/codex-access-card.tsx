@@ -58,6 +58,14 @@ export function CodexAccessCard({
   const restartPending = !!router?.restartPending;
   const listenerUnavailable = routingEnabled && !nativeAccess && !store.state.data?.proxyRunning;
   const routingReady = routingEnabled && !configDrifted && !listenerUnavailable;
+  // The desktop app lists only the first page (100) of Codex's model catalog.
+  const menu = useQuery({
+    queryKey: ["codex-menu-overflow", store.state.dataUpdatedAt],
+    queryFn: api.codexMenuOverflow,
+    enabled: routingEnabled && !nativeAccess,
+    retry: false,
+  });
+  const menuCut = menu.data && menu.data.cut.length > 0 ? menu.data : null;
   const aggregates = useQuery({ queryKey: aggregationQueryKey, queryFn: api.aggregation.state });
   const aggregate = aggregates.data?.models.find((model) => model.id === router?.aggregateModelId);
   const aggregateSelected = router?.aggregateModelId != null;
@@ -232,6 +240,17 @@ export function CodexAccessCard({
               {t("newapi.restartNow")}
             </Button>
           </div>
+        )}
+
+        {menuCut && (
+          <p role="status" data-codex-menu-overflow className="rounded-2xl border border-amber-500/30 bg-amber-500/[0.07] px-3.5 py-2.5 text-[13px] leading-relaxed text-amber-800 dark:text-amber-200">
+            {t("newapi.codexMenuOverflow", {
+              limit: menuCut.limit, total: menuCut.total, count: menuCut.cut.length,
+              names: menuCut.cut.length > 6
+                ? t("newapi.codexMenuOverflowMore", { names: menuCut.cut.slice(0, 6).join("、") })
+                : menuCut.cut.join("、"),
+            })}
+          </p>
         )}
 
         <div id="newapi-routing-body" className="space-y-4">

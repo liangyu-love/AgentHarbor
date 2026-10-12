@@ -21,6 +21,9 @@ pub struct Store {
     pub accounts: Vec<Account>,
     /// Model lists a source fetched for its accounts; WorkBuddy's are built in.
     pub models: BTreeMap<SourceKind, Vec<SourceModel>>,
+    /// Models the user left out of a source's share; a model fetched later
+    /// is shared until left out too.
+    pub hidden_models: BTreeMap<SourceKind, Vec<String>>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

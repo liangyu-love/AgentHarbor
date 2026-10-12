@@ -12,6 +12,18 @@ export async function testCodexRoutingTransitions({ page, reset }) {
     }, options);
     await page.waitForFunction(() => window.review.getState().router.enabled);
   };
+  // Past the desktop app's 100-model menu, the card names what it leaves out.
+  await mount({ menuOverflow: { total: 108, limit: 100, cut: ["R/a", "R/b", "R/c", "R/d", "R/e", "R/f", "R/g", "R/h"] } });
+  const overflow = page.locator("[data-codex-menu-overflow]");
+  await overflow.waitFor();
+  const said = await overflow.innerText();
+  assert.match(said, /108/);
+  assert.match(said, /R\/a、R\/b、R\/c、R\/d、R\/e、R\/f/);
+  assert.doesNotMatch(said, /R\/g/, "six names, then 'and more'");
+  await mount();
+  assert.equal(await page.locator("[data-codex-menu-overflow]").count(), 0, "within the menu nothing is said");
+  console.log("PASS the Codex card names the models the desktop app's 100-model menu leaves out");
+
   await mount();
   const labels = await page.evaluate(() => ({
     access: window.review.t("newapi.codexAccess"),

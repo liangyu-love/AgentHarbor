@@ -278,6 +278,9 @@ export function AccountSourcePanel({ kind, sources }: { kind: AccountSourceKind;
   }
   const exposing = sources.setExposed.isPending && sources.setExposed.variables?.kind === kind;
   const modelsRefreshing = sources.refreshModels.isPending && sources.refreshModels.variables === kind;
+  const hidden = new Set(source.hiddenModels ?? []);
+  const choosing = sources.setHiddenModels.isPending && sources.setHiddenModels.variables?.kind === kind;
+  const chooseModels = (next: string[]) => sources.setHiddenModels.mutate({ kind, hidden: next });
   const includedModels = source.models.length;
   return (
     <section aria-labelledby={titleId} data-account-source={kind} className="space-y-4">
@@ -362,15 +365,34 @@ export function AccountSourcePanel({ kind, sources }: { kind: AccountSourceKind;
       {source.models.length > 0 && (
         <div className="rounded-xl border border-border/60 bg-card/60 px-4 py-3" data-source-models>
           <FoldHeader open={modelsFold.open} onToggle={modelsFold.toggle} titleId={`${titleId}-models`} contentId={`${titleId}-models-body`}
-            title={t("accountSources.modelList", { count: source.models.length })} titleClassName="text-sm font-medium" />
-          <FoldBody open={modelsFold.open} id={`${titleId}-models-body`} className="mt-3">
+            title={t("accountSources.modelListShared", { shared: source.models.length - hidden.size, count: source.models.length })} titleClassName="text-sm font-medium" />
+          <FoldBody open={modelsFold.open} id={`${titleId}-models-body`} className="mt-3 space-y-2">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+              <span className="min-w-0 flex-1">{t("accountSources.modelFilterHint")}</span>
+              <button type="button" className="font-medium text-primary hover:underline disabled:opacity-40" data-models-all
+                disabled={choosing || hidden.size === 0} onClick={() => chooseModels([])}>{t("accountSources.modelsAll")}</button>
+              <button type="button" className="font-medium text-primary hover:underline disabled:opacity-40" data-models-none
+                disabled={choosing || source.exposed || hidden.size === source.models.length}
+                title={source.exposed ? t("accountSources.modelsNoneShared") : undefined}
+                onClick={() => chooseModels(source.models.map(model => model.id))}>{t("accountSources.modelsNone")}</button>
+            </div>
             <ul className="flex flex-wrap gap-1.5">
-              {source.models.map((model, index) => (
-                <li key={model.id} className="route-rise rounded-full border border-border/70 bg-muted/40 px-2.5 py-0.5 font-mono text-[11px]"
-                  style={{ animationDelay: `${Math.min(index, 24) * 18}ms` }} title={model.id}>
-                  {model.name || model.id}
-                </li>
-              ))}
+              {source.models.map((model, index) => {
+                const shared = !hidden.has(model.id);
+                const last = shared && source.exposed && hidden.size === source.models.length - 1;
+                return (
+                  <li key={model.id} className="route-rise" style={{ animationDelay: `${Math.min(index, 24) * 18}ms` }}>
+                    <button type="button" aria-pressed={shared} data-source-model={model.id} disabled={choosing || last}
+                      title={last ? t("accountSources.modelsNoneShared") : model.id}
+                      onClick={() => chooseModels(shared ? [...hidden, model.id] : [...hidden].filter(id => id !== model.id))}
+                      className={cn("rounded-full border px-2.5 py-0.5 font-mono text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                        shared ? "border-primary/40 bg-primary/10 text-foreground" : "border-border/60 bg-transparent text-muted-foreground line-through decoration-muted-foreground/60",
+                        !last && "hover:border-primary/60")}>
+                      {model.name || model.id}
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           </FoldBody>
         </div>

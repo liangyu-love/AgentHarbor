@@ -278,6 +278,8 @@ const accountSourcesApi = {
   refreshModels: (kind: AccountSourceKind) => invoke<AccountSourceListPayload>("refresh_account_source_models", { kind }),
   setExposed: (kind: AccountSourceKind, exposed: boolean) =>
     invoke<AccountSourceListPayload>("set_account_source_exposed", { kind, exposed }),
+  setHiddenModels: (kind: AccountSourceKind, hidden: string[]) =>
+    invoke<AccountSourceListPayload>("set_account_source_hidden_models", { kind, hidden }),
   setProject: (accountId: string, project: string) =>
     invoke<AccountSourceListPayload>("set_account_source_project", { accountId, project }),
   /** A sign-in's page and device code, as soon as the vendor gives them. */
@@ -407,6 +409,9 @@ export const api = {
   isUpdaterConfigured: () => invoke<boolean>("is_updater_configured"),
   /** The proxy update checks and downloads use: the app proxy or the system's. */
   updaterProxy: () => invoke<string | null>("updater_proxy"),
+
+  /** The models the Codex desktop app's menu leaves out (it shows 100). */
+  codexMenuOverflow: () => invoke<{ total: number; limit: number; cut: string[] }>("load_codex_menu_overflow"),
 
   /** Text the backend shows by itself (notifications) follows the interface language. */
   setUiLanguage: (language: string) => invoke<void>("set_ui_language", { language }),

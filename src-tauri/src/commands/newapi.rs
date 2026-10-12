@@ -201,6 +201,15 @@ pub async fn set_newapi_model_price(
     router::set_model_price_override(&paths, &provider_id, &model_id, price)
 }
 
+/// The models the Codex desktop app's menu leaves out (it shows 100).
+#[tauri::command]
+pub async fn load_codex_menu_overflow(repo: State<'_, Mutex<Repository>>) -> Result<router::CodexMenuOverflow, String> {
+    let paths = paths(&repo)?;
+    tauri::async_runtime::spawn_blocking(move || router::codex_menu_overflow(&paths))
+        .await
+        .map_err(|_| "newapi.errors.storage".to_owned())?
+}
+
 #[tauri::command]
 pub async fn load_newapi_state(repo: State<'_, Mutex<Repository>>) -> Result<NewApiState, String> {
     let paths = paths(&repo)?;

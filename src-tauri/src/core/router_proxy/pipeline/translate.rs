@@ -93,6 +93,45 @@ impl PreparedForward {
     }
 }
 
+/// Responses tool types other protocols can carry: functions, and the
+/// namespaced and freeform ones the translation itself handles.
+const PORTABLE_TOOLS: [&str; 3] = ["function", "namespace", "custom"];
+/// History items of hosted tools, which only a Responses provider can read.
+const HOSTED_ITEMS: [&str; 4] = ["web_search_call", "image_generation_call", "tool_search_call", "tool_search_output"];
+
+/// The request without hosted tools, their tool choice and their history
+/// items; `None` when it has none of them.
+fn without_hosted_tools(value: &Value) -> Option<Value> {
+    let mut stripped = value.clone();
+    let mut changed = false;
+    if let Some(tools) = stripped.get_mut("tools").and_then(Value::as_array_mut) {
+        let before = tools.len();
+        tools.retain(|tool| tool["type"].as_str().is_some_and(|kind| PORTABLE_TOOLS.contains(&kind)));
+        changed |= tools.len() != before;
+    }
+    if let Some(object) = stripped.as_object_mut() {
+        let hosted_choice = object.get("tool_choice").and_then(Value::as_object)
+            .and_then(|choice| choice.get("type")).and_then(Value::as_str)
+            .is_some_and(|kind| !PORTABLE_TOOLS.contains(&kind) && kind != "allowed_tools");
+        if hosted_choice {
+            object.remove("tool_choice");
+            changed = true;
+        }
+        if object.get("tools").and_then(Value::as_array).is_some_and(Vec::is_empty) {
+            object.remove("tools");
+            if object.get("tool_choice").is_some() {
+                object.remove("tool_choice");
+            }
+        }
+    }
+    if let Some(items) = stripped.get_mut("input").and_then(Value::as_array_mut) {
+        let before = items.len();
+        items.retain(|item| item["type"].as_str().is_none_or(|kind| !HOSTED_ITEMS.contains(&kind)));
+        changed |= items.len() != before;
+    }
+    changed.then_some(stripped)
+}
+
 pub(in crate::core::router_proxy) fn upstream_body(
     destination: &Destination,
     body: Option<Bytes>) -> ForwardResult<PreparedForward> {
@@ -117,8 +156,23 @@ pub(in crate::core::router_proxy) fn upstream_body(
             if let Some(model) = model_override.as_deref() {
                 value["model"] = json!(model);
             }
-            let adapted = WireAdapter::new(*upstream_protocol)
-                .encode_request(translation.from, &value).map_err(|error| {
+            let adapter = WireAdapter::new(*upstream_protocol);
+            let adapted = match adapter.encode_request(translation.from, &value) {
+                // Codex offers its built-in tools (web search, image generation,
+                // tool search) with every request. A relay on another protocol
+                // cannot run them, so it gets the request without them rather
+                // than a refusal of the whole turn.
+                Err(error) if translation.from == router::ModelProtocol::Responses
+                    && matches!(error.code.as_str(), "protocol.errors.unsupportedHostedTool" | "protocol.errors.unsupportedContent") =>
+                {
+                    match without_hosted_tools(&value) {
+                        Some(stripped) => adapter.encode_request(translation.from, &stripped),
+                        None => Err(error),
+                    }
+                }
+                other => other,
+            };
+            let adapted = adapted.map_err(|error| {
                 (
                     StatusCode::BAD_REQUEST,
                     match error.code.as_str() {
@@ -221,4 +275,49 @@ pub(in crate::core::router_proxy) fn prepare_relay_body(
         )
     })?;
     Ok(Bytes::from(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn destination(target: router::ModelProtocol) -> Destination {
+        Destination::Provider {
+            provider: Box::new(router::Provider::default()),
+            upstream_protocol: target,
+            model_override: Some("relay-model".into()),
+            translation: protocol::Translation::between(router::ModelProtocol::Responses, target),
+        }
+    }
+
+    #[test]
+    fn codex_hosted_tools_are_left_out_for_a_relay_on_another_protocol() {
+        let codex = json!({"model": "relay::model", "stream": true,
+            "input": [
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "find it"}]},
+                {"type": "web_search_call", "id": "ws_1", "status": "completed", "action": {"type": "search", "query": "q"}},
+                {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "found"}]},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "go on"}]}],
+            "tools": [
+                {"type": "function", "name": "exec", "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}}},
+                {"type": "web_search", "external_web_access": true},
+                {"type": "image_generation"}],
+            "tool_choice": "auto"});
+        for target in [router::ModelProtocol::ChatCompletions, router::ModelProtocol::AnthropicMessages] {
+            let prepared = upstream_body(&destination(target), Some(Bytes::from(codex.to_string())))
+                .unwrap_or_else(|error| panic!("{target:?}: {error:?}"));
+            let body: Value = serde_json::from_slice(&prepared.body.unwrap()).unwrap();
+            assert_eq!(body["tools"].as_array().unwrap().len(), 1, "{target:?} keeps the function only");
+            let text = body.to_string();
+            assert!(!text.contains("web_search") && !text.contains("image_generation"), "{target:?}: {text}");
+            assert!(text.contains("go on"), "the conversation itself goes on");
+        }
+        // The protocol layer itself still refuses; only the router leaves them out.
+        let refused = WireAdapter::new(router::ModelProtocol::ChatCompletions)
+            .encode_request(router::ModelProtocol::Responses, &codex);
+        assert!(refused.is_err());
+        // Nothing hosted to leave out: a refusal stays one.
+        let lossy = json!({"model": "m", "input": [{"type": "item_reference", "id": "x"}]});
+        assert!(upstream_body(&destination(router::ModelProtocol::ChatCompletions), Some(Bytes::from(lossy.to_string()))).is_err());
+    }
 }

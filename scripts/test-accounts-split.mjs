@@ -51,7 +51,7 @@ export async function testAccountsSplit({ page, reset, captureDir }) {
   await workbuddy.getByText(await tr("accountSources.exposedModels", { count: 2 }), { exact: true }).waitFor();
   const modelList = workbuddy.locator("[data-source-models]");
   assert.equal(await modelList.locator("details, summary").count(), 0, "no native disclosure triangle");
-  const modelFold = modelList.getByRole("button", { name: await tr("accountSources.modelList", { count: 2 }) });
+  const modelFold = modelList.getByRole("button", { name: await tr("accountSources.modelListShared", { shared: 2, count: 2 }) });
   assert.equal(await modelFold.getAttribute("aria-expanded"), "false");
   await modelList.locator("li").first().waitFor({ state: "detached" });
   await modelFold.click();
@@ -206,4 +206,25 @@ export async function testAccountsSplit({ page, reset, captureDir }) {
   await card.locator("[data-account-source-refusal]").waitFor();
   if (captureDir) await dialog.screenshot({ path: path.join(captureDir, "inject-account-source.png") });
   console.log("PASS model inject badges account sources, keeps them router-only and warns Claude Code about WorkBuddy");
+
+  // A source's models can be left out of the share; a shared source keeps one.
+  await reset("accounts");
+  await page.locator('[data-berth="workbuddy"]').click();
+  const filtered = page.locator('[data-account-source="workbuddy"]');
+  const models = filtered.locator("[data-source-models]");
+  await models.getByRole("button", { name: await tr("accountSources.modelListShared", { shared: 2, count: 2 }) }).click();
+  const kimi = models.locator('[data-source-model="kimi-k3-1"]');
+  const glm = models.locator('[data-source-model="glm-5.3"]');
+  assert.equal(await kimi.getAttribute("aria-pressed"), "true");
+  assert.equal(await models.locator("[data-models-none]").isDisabled(), true, "a shared source cannot leave every model out");
+  await kimi.click();
+  await page.waitForFunction(() => window.review.sourceCalls.some(call => call[0] === "setHiddenModels"));
+  assert.deepEqual((await calls()).filter(call => call[0] === "setHiddenModels").at(-1), ["setHiddenModels", "workbuddy", ["kimi-k3-1"]]);
+  await models.locator('[data-source-model="kimi-k3-1"][aria-pressed="false"]').waitFor();
+  await models.getByText(await tr("accountSources.modelListShared", { shared: 1, count: 2 })).waitFor();
+  assert.equal(await glm.isDisabled(), true, "the last shared model stays");
+  await models.locator("[data-models-all]").click();
+  await models.locator('[data-source-model="kimi-k3-1"][aria-pressed="true"]').waitFor();
+  assert.deepEqual((await calls()).filter(call => call[0] === "setHiddenModels").at(-1), ["setHiddenModels", "workbuddy", []]);
+  console.log("PASS a source's models can be left out of the share and brought back, keeping one while shared");
 }

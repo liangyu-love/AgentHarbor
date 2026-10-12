@@ -42,6 +42,8 @@ export interface AccountSource {
   protocol: ModelProtocol;
   /** Shared with model inject: its router provider exists. */
   exposed: boolean;
+  /** Models left out of the share with model inject (and Codex's menu). */
+  hiddenModels?: string[];
   models: AccountSourceModel[];
   accounts: AccountSourceAccount[];
   usageUrl: string | null;

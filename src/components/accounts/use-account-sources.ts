@@ -134,10 +134,15 @@ export function useAccountSources(refreshInterval: RefreshInterval) {
     onSuccess: settle,
     onError: failed,
   });
+  const setHiddenModels = useMutation({
+    mutationFn: ({ kind, hidden }: { kind: AccountSourceKind; hidden: string[] }) => api.accountSources.setHiddenModels(kind, hidden),
+    onSuccess: settle,
+    onError: failed,
+  });
 
   return {
     query, sources: query.data?.sources ?? [], pending, prompt: pending && prompt?.attemptId === pending.id ? prompt : null,
     cancelling, signIn, cancelSignIn, riskFor, acceptRisk, dismissRisk: () => setRiskFor(null),
-    activate, remove, refreshQuota, refreshModels, setExposed, setProject,
+    activate, remove, refreshQuota, refreshModels, setExposed, setHiddenModels, setProject,
   };
 }

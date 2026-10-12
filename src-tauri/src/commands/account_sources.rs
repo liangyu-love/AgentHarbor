@@ -107,6 +107,17 @@ pub async fn set_account_source_project(repo: State<'_, Mutex<Repository>>, acco
     account_sources::list(&paths)
 }
 
+/// Leave a source's models out of its share with model inject, or bring them back.
+#[tauri::command]
+pub async fn set_account_source_hidden_models(repo: State<'_, Mutex<Repository>>, kind: SourceKind, hidden: Vec<String>) -> Result<ListPayload, String> {
+    let (paths, _) = context(&repo)?;
+    let _guard = routing_runtime::mutation_guard().await;
+    super::blocking(move || {
+        account_sources::set_hidden_models(&paths, kind, hidden)?;
+        account_sources::list(&paths)
+    }).await
+}
+
 #[tauri::command]
 pub async fn set_account_source_exposed(repo: State<'_, Mutex<Repository>>, kind: SourceKind, exposed: bool) -> Result<ListPayload, String> {
     let (paths, _) = context(&repo)?;
