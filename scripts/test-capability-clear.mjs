@@ -77,7 +77,7 @@ export async function testCapabilityClear({ page, reset, captureDir }) {
   assert.match(await clear.locator('[data-clear-row="clientOutput"]').innerText(), /200,000[\s\S]*100,000/);
   assert.equal(await clear.locator('[data-clear-row="outputLimit"]').count(), 0, "unchanged raw metadata is hidden while its changed client clamp stays visible");
   await clear.getByRole("button", { name: "完整结果", exact: true }).click();
-  assert.equal(await clear.locator('[data-clear-row="outputLimit"]').isVisible(), true);
+  await eventually(async () => assert.equal(await clear.locator('[data-clear-row="outputLimit"]').isVisible(), true));
   await page.evaluate(() => { window.review.clearSharedEffect = true; });
   await preview(clear);
   await clear.getByText("受影响模型（3）", { exact: true }).waitFor();
@@ -88,7 +88,7 @@ export async function testCapabilityClear({ page, reset, captureDir }) {
   assert.match(await clear.locator('[data-clear-row="sharedCompression"]').innerText(), /90,000[\s\S]*80,000/);
   assert.match(await clear.locator('[data-clear-row="codexCompression"]').innerText(), /90,000[\s\S]*80,000/);
   await clear.getByText("受影响模型（3）", { exact: true }).click();
-  assert.equal(await clear.locator("li").count(), 3);
+  await eventually(async () => assert.equal(await clear.locator("li").count(), 3));
   await clear.getByText("small", { exact: true }).waitFor();
   assert.match(await clear.innerText(), /3 \/ 3 个模型结果变化/);
   await clear.evaluate(element => element.scrollIntoView({ block: "start" }));

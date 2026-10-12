@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { eventually } from "./eventually.mjs";
 
 export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   const capture = async name => { if (captureDir) await page.screenshot({ path: path.join(captureDir, name), animations: "disabled" }); };
@@ -16,7 +17,7 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   await page.waitForTimeout(250);
   assert.equal(await panel.isVisible(), true, "Hover panel must survive the gap from its trigger");
   await panel.locator("summary").click();
-  assert.equal(await panel.locator("time").count(), 3, "History excludes grants older than 30 days");
+  await eventually(async () => assert.equal(await panel.locator("time").count(), 3, "History excludes grants older than 30 days"));
   await panel.getByText("已使用", { exact: true }).waitFor();
   assert.equal(await panel.getByText("已到期", { exact: true }).count(), 0);
   await capture("official-reset-credits-light.png");
@@ -56,14 +57,14 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   const other = tree.locator('button[title="D:/work/Lighthouse"]');
   assert.equal(await tree.getByText("C:/work/Lighthouse", { exact: true }).count(), 1);
   await project.click();
-  assert.equal(await results.getByText("Lighthouse", { exact: true }).count() > 0, true);
+  await eventually(async () => assert.equal(await results.getByText("Lighthouse", { exact: true }).count() > 0, true));
   assert.ok(await results.getByRole("checkbox").count() < 90, "Main list stays virtualized");
   await tree.getByRole("button", { name: "展开或收起 Lighthouse", exact: true }).first().click();
-  assert.equal(await tree.locator('button[title^="Review thread"]').count(), 30, "Large tree branches are paged");
+  await eventually(async () => assert.equal(await tree.locator('button[title^="Review thread"]').count(), 30, "Large tree branches are paged"));
   await tree.getByRole("button", { name: "显示更多（剩余 60 条）", exact: true }).click();
-  assert.equal(await tree.locator('button[title^="Review thread"]').count(), 60);
+  await eventually(async () => assert.equal(await tree.locator('button[title^="Review thread"]').count(), 60));
   await tree.getByRole("button", { name: "Review thread 42", exact: true }).click();
-  assert.equal(await results.getByRole("checkbox").count(), 1);
+  await eventually(async () => assert.equal(await results.getByRole("checkbox").count(), 1));
   await results.getByRole("checkbox", { name: "Review thread 42", exact: true }).click();
   await page.getByText("已选 1 个", { exact: true }).first().waitFor();
   await other.focus();
@@ -71,18 +72,18 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   await page.getByText("已选 1 个", { exact: true }).first().waitFor({ state: "hidden" });
   assert.equal(await results.getByRole("checkbox").count(), 5, "Same-name projects stay isolated by path");
   await page.getByPlaceholder(/搜索.*标题/).fill("Review thread 91");
-  assert.equal(await results.getByRole("checkbox").count(), 1);
+  await eventually(async () => assert.equal(await results.getByRole("checkbox").count(), 1));
   await tree.getByRole("button", { name: "所有项目 1/100", exact: true }).waitFor();
   await project.click();
   await results.getByText("未找到匹配的会话", { exact: true }).waitFor();
   await page.getByPlaceholder(/搜索.*标题/).fill("");
   await page.getByRole("radio", { name: "已归档 45", exact: true }).click();
-  assert.equal(await results.getByRole("checkbox").count(), 45);
+  await eventually(async () => assert.equal(await results.getByRole("checkbox").count(), 45));
   assert.match(await project.textContent(), /45\/90/);
   await page.getByRole("radio", { name: "全部 90", exact: true }).click();
   await tree.getByRole("button", { name: "Review thread 42", exact: true }).click();
   await page.getByRole("radio", { name: "进行中 45", exact: true }).click();
-  assert.equal(await results.getByRole("checkbox").count(), 45, "Archived focus is cleared by the active filter");
+  await eventually(async () => assert.equal(await results.getByRole("checkbox").count(), 45, "Archived focus is cleared by the active filter"));
   await other.click();
   await tree.getByRole("button", { name: "展开或收起 Lighthouse", exact: true }).nth(1).click();
   await tree.getByRole("button", { name: "Review thread 91", exact: true }).click();
@@ -116,7 +117,7 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   assert.equal(await metric("projects").textContent(), "3", "Direct chats do not count as workspaces");
   assert.equal(await tree.getByRole("button", { name: "展开或收起 Lighthouse", exact: true }).count(), 2, "Windows aliases merge but different paths remain separate");
   await tree.locator('button[title="D:/workspace/Lighthouse"]').click();
-  assert.equal(await metric("threads").textContent(), "3");
+  await eventually(async () => assert.equal(await metric("threads").textContent(), "3"));
   // The overview card reports token breakdown now: 4 input / 3 cached / 6
   // output per fixture thread.
   assert.equal(await metric("input").textContent(), "12");
@@ -130,17 +131,17 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   assert.equal(await metric("threads").textContent(), "3", "Search does not silently change project totals");
   await page.getByPlaceholder(/搜索.*标题/).fill("");
   await tree.getByRole("button", { name: "直接对话 2", exact: true }).click();
-  assert.equal(await results.getByRole("checkbox").count(), 2);
+  await eventually(async () => assert.equal(await results.getByRole("checkbox").count(), 2));
   assert.equal(await metric("projects").textContent(), "0");
   assert.equal(await metric("input").textContent(), "8");
   assert.equal(await metric("cached").textContent(), "6");
   assert.equal(await metric("output").textContent(), "12");
   await tree.getByRole("button", { name: "展开或收起 直接对话", exact: true }).click();
   await tree.getByRole("button", { name: "Review thread 4", exact: true }).click();
-  assert.equal(await results.getByRole("checkbox").count(), 1);
+  await eventually(async () => assert.equal(await results.getByRole("checkbox").count(), 1));
   assert.equal(await metric("threads").textContent(), "2", "Thread focus preserves the selected folder overview");
   await tree.getByRole("button", { name: "所有项目 7", exact: true }).click();
-  assert.equal(await metric("input").textContent(), "28");
+  await eventually(async () => assert.equal(await metric("input").textContent(), "28"));
   assert.equal(await metric("output").textContent(), "42");
   await capture("thread-project-overview-desktop.png");
   await page.setViewportSize({ width: 390, height: 700 });

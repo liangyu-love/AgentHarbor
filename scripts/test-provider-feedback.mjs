@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { eventually } from "./eventually.mjs";
 
 export async function testProviderFeedback({ page, reset, captureDir }) {
   await reset("usage");
@@ -20,7 +21,7 @@ export async function testProviderFeedback({ page, reset, captureDir }) {
     ["Command Code", "https://api.commandcode.ai/provider/v1"],
   ]) {
     await dialog.locator(`[data-preset="${name}"]`).click();
-    assert.equal(await dialog.locator(`[data-preset="${name}"]`).getAttribute("aria-pressed"), "true");
+    await eventually(async () => assert.equal(await dialog.locator(`[data-preset="${name}"]`).getAttribute("aria-pressed"), "true"));
     assert.equal(await dialog.locator("#newapi-provider-baseUrl").inputValue(), baseUrl);
     assert.equal(await dialog.locator("#newapi-provider-name").inputValue(), name);
     assert.equal(await dialog.locator("#newapi-provider-apiKey").inputValue(), "");
@@ -102,9 +103,9 @@ export async function testProviderFeedback({ page, reset, captureDir }) {
   assert.deepEqual(await page.evaluate(() => window.review.balanceRequests), [], "saving an interval does not issue a manual balance request");
   await dialog.getByRole("button", { name: "关闭", exact: true }).click();
   await page.getByRole("button", { name: "查询余额 Quota fixture", exact: true }).click();
-  assert.equal(await interval.inputValue(), "5");
+  await eventually(async () => assert.equal(await interval.inputValue(), "5"));
   await interval.fill("1.5");
-  assert.equal(await saveInterval.isDisabled(), true);
+  await eventually(async () => assert.equal(await saveInterval.isDisabled(), true));
   await dialog.getByRole("alert").getByText("请输入 0 到 10080 之间的整数分钟。", { exact: true }).waitFor();
   await interval.fill("10");
   await page.evaluate(() => { window.review.failBalanceIntervalSave = true; });
@@ -127,7 +128,7 @@ export async function testProviderFeedback({ page, reset, captureDir }) {
   await loadProvider({ balanceRefreshIntervalMinutes: 5 }, true);
   await page.getByRole("button", { name: "下一个站点配置" }).click();
   await page.getByRole("button", { name: "查询余额 Shared fixture", exact: true }).click();
-  assert.equal(await interval.inputValue(), "5");
+  await eventually(async () => assert.equal(await interval.inputValue(), "5"));
   await interval.fill("15");
   await saveInterval.click();
   await page.waitForFunction(() => window.review.getState().providers.every(provider => provider.balanceRefreshIntervalMinutes === 15));
@@ -276,12 +277,12 @@ export async function testProviderFeedback({ page, reset, captureDir }) {
   assert.equal(await goSummary.getByRole("progressbar").count(), 0, "legacy balances cannot invent window totals");
   await loadProvider({ baseUrl: "https://opencode.ai/zen/go/v1", balanceSource: "custom", balanceScript: "return {remaining: 62, unit: 'USD'};", balance: goBalance });
   await page.getByRole("button", { name: "查询余额 Quota fixture", exact: true }).click();
-  assert.equal(await goSummary.count(), 0, "custom scripts keep the generic interface");
+  await eventually(async () => assert.equal(await goSummary.count(), 0, "custom scripts keep the generic interface"));
   console.log("PASS OpenCode Go legacy balances preserve unknown fields and custom scripts keep their own presentation");
 
   await loadProvider({ baseUrl: "https://api.commandcode.ai/provider/v1", balanceSource: "custom", balanceScript: "return {remaining: 62, unit: 'credits'};", balance: commandBalance });
   await page.getByRole("button", { name: "查询余额 Quota fixture", exact: true }).click();
-  assert.equal(await summary.count(), 0);
+  await eventually(async () => assert.equal(await summary.count(), 0));
   assert.ok((await face.innerText()).includes("62 credits"));
   assert.match(await dialog.innerText(), /已购额度剩余/);
   assert.equal(await dialog.getByText("余额不足或账户当前不可用", { exact: true }).count(), 2);

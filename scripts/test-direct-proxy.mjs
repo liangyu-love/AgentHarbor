@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { eventually } from "./eventually.mjs";
 
 // Synthetic client statuses and terminal proxy states only; nothing is written.
 export async function testDirectProxy({ page, reset, captureDir }) {
@@ -43,7 +44,7 @@ export async function testDirectProxy({ page, reset, captureDir }) {
   await note().getByRole("button", { name: await t("clients.directProxy.open"), exact: true }).click();
   assert.equal(await page.evaluate(() => window.review.terminalProxyOpened), 1);
   await dialog().getByRole("button", { name: await t("clients.accessRouter"), exact: true }).click();
-  assert.equal(await note().count(), 0, "the router goes through the app proxy itself");
+  await eventually(async () => assert.equal(await note().count(), 0, "the router goes through the app proxy itself"));
   console.log("PASS Claude Code direct mode explains the proxy it gets and links to the terminal proxy");
 
   await open("claudeCode", { terminal: { enabled: true, applied: true, url: "http://127.0.0.1:7890/" } });

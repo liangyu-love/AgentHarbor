@@ -43,7 +43,7 @@ export async function testProviderModelResolutions({ page, reset, captureDir }) 
   const preset = row("model-A").getByRole("button", { name: /272K/ });
   assert.equal(await preset.getAttribute("aria-pressed"), "false");
   await preset.click();
-  assert.equal(await context("model-A").inputValue(), "272000");
+  await eventually(async () => assert.equal(await context("model-A").inputValue(), "272000"));
   assert.equal(await preset.getAttribute("aria-pressed"), "true");
   const presetSaved = await save();
   assert.equal(presetSaved.models[0].overrides.contextWindow, 272000);
@@ -51,7 +51,7 @@ export async function testProviderModelResolutions({ page, reset, captureDir }) 
   assert.equal(presetSaved.models[0].overrides.inputLimit, undefined);
   assert.deepEqual(presetSaved.models[0].compression, { mode: "inherit" });
   await page.locator("#reopen-saved").click();
-  assert.equal(await context("model-A").inputValue(), "272000");
+  await eventually(async () => assert.equal(await context("model-A").inputValue(), "272000"));
   await row("model-A").getByRole("button", { name: /自动|Auto/i, exact: true }).click();
   await ready();
   assert.equal(await context("model-A").inputValue(), "");
@@ -69,7 +69,7 @@ export async function testProviderModelResolutions({ page, reset, captureDir }) 
   assert.match(await solPreset.getAttribute("title"), /500,000.*872,000/);
   assert.equal(await row("model-A").getByRole("button", { name: /272K/ }).count(), 0);
   await solPreset.click();
-  assert.equal(await context("model-A").inputValue(), "500000");
+  await eventually(async () => assert.equal(await context("model-A").inputValue(), "500000"));
   assert.equal(await solPreset.getAttribute("aria-pressed"), "true");
   await page.evaluate(() => { window.review.modelResolutionPatches = {}; });
   console.log("PASS the Codex context shortcut follows Codex's own default for the model (GPT-6.1 Sol 500K) and names its maximum");

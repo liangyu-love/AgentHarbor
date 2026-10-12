@@ -27,7 +27,7 @@ export async function testTerminalProxy({ page, reset, captureDir }) {
   await open();
   assert.equal(await save().isEnabled(), false);
   await dialog().getByRole("button", { name: "使用软件代理地址" }).click();
-  assert.equal(await url().inputValue(), "http://127.0.0.1:7890");
+  await eventually(async () => assert.equal(await url().inputValue(), "http://127.0.0.1:7890"));
   await dialog().getByLabel("直连地址", { exact: true }).fill("example.internal,localhost,127.0.0.1,::1");
   await test().click();
   await dialog().getByText("可连接 · HTTP 401", { exact: true }).waitFor();

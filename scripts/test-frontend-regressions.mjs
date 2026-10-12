@@ -283,7 +283,7 @@ try {
   await eventually(async () => assert.equal(await page.locator('[data-generation-job-status="queued"]').count(), 2));
   await page.locator('[data-generation-job-status="queued"]').filter({ hasText: "Cancelled canvas" })
     .getByRole("button", { name: "取消排队" }).click();
-  assert.equal(await page.locator('[data-generation-job-status]').count(), 3);
+  await eventually(async () => assert.equal(await page.locator('[data-generation-job-status]').count(), 3));
   await page.evaluate(() => window.review.imageResolvers[1]());
   await page.waitForFunction(() => window.review.imageRequests.length === 3);
   await eventually(async () => assert.equal(await page.locator('[data-generation-job-status="running"]').filter({ hasText: "First canvas" }).count(), 1));
@@ -439,9 +439,9 @@ try {
   assert.equal(await accountCard.getByRole("heading", { name: "alpha@example.invalid" }).count(), 0);
   assert.match(await accountCard.locator("h3").innerText(), /^a•+a@example\.invalid$/);
   await showEmail.click();
-  assert.equal(await accountCard.locator("h3").innerText(), "alpha@example.invalid");
+  await eventually(async () => assert.equal(await accountCard.locator("h3").innerText(), "alpha@example.invalid"));
   await accountCard.getByRole("button", { name: "隐藏邮箱" }).click();
-  assert.equal(await accountCard.getByRole("heading", { name: "alpha@example.invalid" }).count(), 0);
+  await eventually(async () => assert.equal(await accountCard.getByRole("heading", { name: "alpha@example.invalid" }).count(), 0));
   console.log("PASS account email is masked by default and toggles without leaking through the title");
 
   await reset("overview");
@@ -531,7 +531,7 @@ try {
     await page.screenshot({ path: path.join(captureDir, "usage-trend.png") });
   }
   await page.locator(".usage-trend-svg").first().hover({ position: { x: 420, y: 100 } });
-  assert.equal(await page.locator(".usage-model-chip").count(), 3);
+  await eventually(async () => assert.equal(await page.locator(".usage-model-chip").count(), 3));
   await page.getByRole("tab", { name: "请求明细" }).click();
   await page.getByText("1140 ms").waitFor();
   await page.getByText("320 ms").waitFor();
@@ -548,7 +548,7 @@ try {
   await page.getByText("9 USD").waitFor();
   await page.getByRole("tab", { name: "模型" }).click();
   await page.locator(".usage-relay-body .usage-model-row").first().hover();
-  assert.equal(await page.locator(".usage-relay-body .usage-donut-segment").first().getAttribute("stroke-width"), "16");
+  await eventually(async () => assert.equal(await page.locator(".usage-relay-body .usage-donut-segment").first().getAttribute("stroke-width"), "16"));
   await page.setViewportSize({ width: 390, height: 844 });
   await reset("usage");
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
@@ -564,10 +564,10 @@ try {
   await page.waitForFunction(() => document.querySelector('#newapi-provider-apiKey').type === 'text');
   assert.equal(await keyInput.inputValue(), 'synthetic-key-A');
   await page.getByRole('button', { name: 'hide', exact: true }).click();
-  assert.equal(await keyInput.getAttribute('type'), 'password');
+  await eventually(async () => assert.equal(await keyInput.getAttribute('type'), 'password'));
   await keyInput.fill('synthetic-replacement');
   await page.getByRole('button', { name: 'show', exact: true }).click();
-  assert.equal(await keyInput.inputValue(), 'synthetic-replacement');
+  await eventually(async () => assert.equal(await keyInput.inputValue(), 'synthetic-replacement'));
   assert.deepEqual(await page.evaluate(() => window.review.revealedIds), ['A']);
   await reset('provider');
   await page.getByRole('button', { name: 'show', exact: true }).click();
@@ -600,14 +600,14 @@ try {
   // Unchecking or removing the default is allowed and clears the default
   // instead of silently moving it to another model.
   await page.getByRole("checkbox", { name: labels.includeModelA, exact: true }).uncheck();
-  assert.equal(await page.locator('[data-model-default-empty]').count(), 1);
+  await eventually(async () => assert.equal(await page.locator('[data-model-default-empty]').count(), 1));
   assert.equal(await page.getByRole("button", { name: labels.defaultModelA, exact: true }).count(), 0);
   await page.getByRole("checkbox", { name: labels.includeModelA, exact: true }).check();
   await page.getByRole("button", { name: labels.defaultModelA, exact: true }).click();
   await page.getByRole("button", { name: labels.defaultModelA, exact: true }).click();
-  assert.equal(await page.getByRole("button", { name: labels.defaultModelA, exact: true }).getAttribute("aria-pressed"), "false");
+  await eventually(async () => assert.equal(await page.getByRole("button", { name: labels.defaultModelA, exact: true }).getAttribute("aria-pressed"), "false"));
   await page.getByRole("button", { name: labels.clearModels, exact: true }).click();
-  assert.equal(await page.locator('[data-model-default-empty]').count(), 1);
+  await eventually(async () => assert.equal(await page.locator('[data-model-default-empty]').count(), 1));
   assert.equal(await page.getByRole('checkbox', { checked: true }).count(), 0);
   await page.getByRole('button', { name: labels.clearPendingModels, exact: true }).click();
   await page.locator('button[type="submit"]').click();
@@ -628,7 +628,7 @@ try {
   if (captureDir) await page.screenshot({ path: path.join(captureDir, "provider-model-search.png"), animations: "disabled" });
   await page.getByRole("button", { name: labels.selectMatchingModels, exact: true }).click();
   await search.fill("");
-  assert.equal(await page.locator('[data-pending-models]').getByText("other-model", { exact: true }).count(), 1);
+  await eventually(async () => assert.equal(await page.locator('[data-pending-models]').getByText("other-model", { exact: true }).count(), 1));
   assert.equal(await page.locator('[data-pending-models]').getByText("match-one", { exact: true }).count(), 0);
   await page.locator('button[type="submit"]').click();
   await page.waitForFunction(() => Boolean(window.review.saved));
@@ -692,7 +692,7 @@ try {
   await page.getByRole("option", { name: labels.responses, exact: true }).click();
   // The provider default is a radio group of described protocol cards.
   await page.locator("#newapi-provider-protocol").getByRole("radio", { name: labels.anthropic, exact: true }).click();
-  assert.equal(await page.getByRole("button", { name: labels.defaultResponses, exact: true }).getAttribute("aria-pressed"), "true");
+  await eventually(async () => assert.equal(await page.getByRole("button", { name: labels.defaultResponses, exact: true }).getAttribute("aria-pressed"), "true"));
   assert.equal(await chatProtocol.textContent(), labels.responses);
   assert.ok((await page.getByRole("combobox", { name: labels.inheritedProtocol, exact: true }).textContent()).includes(labels.anthropic));
   await page.getByRole("button", { name: labels.defaultChat, exact: true }).click();
@@ -757,7 +757,7 @@ try {
   await page.getByRole("switch", { name: labels.accountless, exact: true }).click();
   await page.waitForFunction(() => !window.review.getState().router.accountless);
   await page.locator("#codex-access-mode").click();
-  assert.equal(await page.getByRole("option", { name: labels.accessNative, exact: true }).isEnabled(), true);
+  await eventually(async () => assert.equal(await page.getByRole("option", { name: labels.accessNative, exact: true }).isEnabled(), true));
   await page.getByRole("option", { name: labels.accessNative, exact: true }).click();
   await page.getByText(labels.nativeNoRouter, { exact: true }).waitFor();
   assert.equal(await codexAccessCard.getByText(selectedResponsesModel, { exact: true }).count(), 1);
@@ -789,7 +789,7 @@ try {
   assert.doesNotMatch(await relayTarget.innerText(), /Provider mixed|Provider alternate|chat-model/);
   assert.equal(await page.getByText(labels.nativeProtocolHint, { exact: true }).count(), 0);
   await page.locator("#codex-access-mode").click();
-  assert.equal(await page.getByRole("option", { name: labels.accessNative, exact: true }).getAttribute("aria-disabled"), "true");
+  await eventually(async () => assert.equal(await page.getByRole("option", { name: labels.accessNative, exact: true }).getAttribute("aria-disabled"), "true"));
   assert.deepEqual(await page.evaluate(() => window.review.accessCalls), []);
   assert.equal(await page.evaluate(() => window.review.getState().providers[0].model), "chat-model");
   await reset("native-invalid");
@@ -852,7 +852,7 @@ try {
     { id: "responses-model", displayName: "responses-model", contextWindow: null, maxOutputTokens: null, endpointTypes: ["responses"], included: true, metadataSource: "upstream", protocol: "chatCompletions" },
   ]));
   await page.getByRole("combobox").selectOption("responses-model");
-  assert.match(await page.getByRole("option", { name: /responses-model/ }).textContent(), /responses/);
+  await eventually(async () => assert.match(await page.getByRole("option", { name: /responses-model/ }).textContent(), /responses/));
   await page.getByRole("combobox").selectOption("anthropic-model");
   await page.getByRole("button", { name: labels.sendTest, exact: true }).click();
   await page.waitForFunction(() => Boolean(window.review.tested));
@@ -924,10 +924,10 @@ try {
     window.review.recoveryApplyError = message;
   }, recoveryFailure);
   await recovery.getByRole("button", { name: labels.recoveryConfirm, exact: true }).click();
-  assert.equal(await recovery.getByRole("button", { name: labels.recoveryApplying, exact: true }).isDisabled(), true);
+  await eventually(async () => assert.equal(await recovery.getByRole("button", { name: labels.recoveryApplying, exact: true }).isDisabled(), true));
   assert.equal(await recovery.getByRole("button", { name: labels.close, exact: true }).isDisabled(), true);
   await page.keyboard.press("Escape");
-  assert.equal(await recovery.count(), 1, "pending repairs cannot be dismissed mid-write");
+  await eventually(async () => assert.equal(await recovery.count(), 1, "pending repairs cannot be dismissed mid-write"));
   await page.evaluate(() => window.review.finishRecoveryApply());
   await recovery.getByRole("button", { name: labels.recoveryConfirm, exact: true }).waitFor();
   assert.equal(await recovery.getByRole("alert").textContent(), recoveryFailure);
@@ -1012,9 +1012,9 @@ try {
   const threadCheckbox = page.getByRole("checkbox", { name: "Review thread 0", exact: true });
   await threadCheckbox.focus();
   await page.keyboard.press("Space");
-  assert.equal(await threadCheckbox.getAttribute("aria-checked"), "true");
+  await eventually(async () => assert.equal(await threadCheckbox.getAttribute("aria-checked"), "true"));
   await page.keyboard.press("Enter");
-  assert.equal(await threadCheckbox.getAttribute("aria-checked"), "false");
+  await eventually(async () => assert.equal(await threadCheckbox.getAttribute("aria-checked"), "false"));
   console.log("PASS thread selection works from the keyboard and exposes its checked state");
 
   await reset("thread-actions");
@@ -1094,7 +1094,7 @@ try {
   assert.deepEqual(await page.evaluate(() => ({ mode: window.review.previewed.accessMode, ids: window.review.previewed.providerIds, model: window.review.previewed.model })),
     { mode: "native", ids: ["mixed"], model: "anthropic-model" });
   await page.getByRole("button", { name: labels.clientRouter, exact: true }).click();
-  assert.equal(await page.getByRole("button", { name: labels.clientApply, exact: true }).count(), 0);
+  await eventually(async () => assert.equal(await page.getByRole("button", { name: labels.clientApply, exact: true }).count(), 0));
   await page.locator("#client-model").click();
   await page.getByRole("option", { name: "responses-model", exact: true }).click();
   await page.getByText(labels.clientAdvanced, { exact: true }).click();
@@ -1119,10 +1119,10 @@ try {
   assert.deepEqual(await page.evaluate(() => window.review.accessCalls), []);
   await reset("clients-existing");
   await page.getByRole("button", { name: labels.changeClient, exact: true }).click();
-  assert.equal(await page.locator("#client-model").textContent(), "responses-model");
+  await eventually(async () => assert.equal(await page.locator("#client-model").textContent(), "responses-model"));
   assert.equal(await page.getByRole("button", { name: labels.clientRouter, exact: true }).getAttribute("aria-pressed"), "true");
   await page.getByText(labels.clientAdvanced, { exact: true }).click();
-  assert.equal(await page.locator("#client-role-sonnet").textContent(), "chat-model");
+  await eventually(async () => assert.equal(await page.locator("#client-role-sonnet").textContent(), "chat-model"));
   assert.equal(await page.locator("#client-auth").textContent(), "ANTHROPIC_API_KEY");
   console.log("PASS Claude defaults to native, filters models, supports independent routing, invalidates preview and restores advanced choices");
 
@@ -1144,16 +1144,16 @@ try {
   assert.equal(await page.evaluate(() => window.review.previewed.claudeModels.opus), "claude-opus-4-8");
   await page.locator("#client-model").click();
   await page.getByRole("option", { name: "Opus 4.8", exact: true }).click();
-  assert.equal(await page.getByRole("button", { name: labels.clientApply, exact: true }).count(), 0);
+  await eventually(async () => assert.equal(await page.getByRole("button", { name: labels.clientApply, exact: true }).count(), 0));
   await selectedVersion("claude-opus-4-8").uncheck();
-  assert.equal(await page.locator("#client-model").textContent(), "Opus 5.5");
+  await eventually(async () => assert.equal(await page.locator("#client-model").textContent(), "Opus 5.5"));
   assert.ok((await page.locator("#client-role-opus").textContent()).includes("Opus 5.5"));
   await page.getByRole("button", { name: labels.preview, exact: true }).click();
   await page.waitForFunction(() => window.review.previewed?.claudeModelIds?.length === 2);
   assert.deepEqual(await page.evaluate(() => window.review.previewed.claudeModelIds), versionIds.slice(0, 2));
   assert.equal(await page.evaluate(() => window.review.previewed.claudeModels.opus), "");
   await selectedVersion("claude-opus-5-5").uncheck();
-  assert.equal(await page.locator("#client-model").textContent(), "Fable 5.1");
+  await eventually(async () => assert.equal(await page.locator("#client-model").textContent(), "Fable 5.1"));
   assert.equal(await selectedVersion("claude-fable-5-1").isDisabled(), false);
   await page.getByRole("button", { name: labels.clientDeselectAllModels, exact: true }).click();
   for (const id of versionIds) assert.equal(await selectedVersion(id).isChecked(), false);
@@ -1169,7 +1169,7 @@ try {
 
   await reset("clients-versions-existing");
   await page.getByRole("button", { name: labels.changeClient, exact: true }).click();
-  assert.equal(await selectedVersion("claude-opus-5-5").isChecked(), true);
+  await eventually(async () => assert.equal(await selectedVersion("claude-opus-5-5").isChecked(), true));
   assert.equal(await selectedVersion("claude-opus-4-8").isChecked(), true);
   assert.equal(await selectedVersion("claude-fable-5-1").isChecked(), false);
   assert.equal(await page.locator("#client-model").textContent(), "Opus 4.8");
@@ -1182,7 +1182,7 @@ try {
   await page.getByRole("button", { name: labels.configure, exact: true }).click();
   await selectedVersion("claude-fable-5-1").uncheck();
   await page.getByRole("button", { name: labels.clientRouter, exact: true }).click();
-  assert.equal(await selectedVersion("claude-fable-5-1").isChecked(), false);
+  await eventually(async () => assert.equal(await selectedVersion("claude-fable-5-1").isChecked(), false));
   await page.getByRole("button", { name: labels.preview, exact: true }).click();
   await page.waitForFunction(() => window.review.previewed?.claudeModelIds?.length === 2);
   assert.deepEqual(await page.evaluate(() => window.review.previewed.claudeModelIds), versionIds.filter(id => id !== "claude-fable-5-1"));
@@ -1210,7 +1210,7 @@ try {
   for (const checkbox of oneMCheckboxes) await checkbox.check();
   await page.locator("#client-model").click();
   await page.getByRole("option", { name: "Fable 5.1", exact: true }).click();
-  assert.equal(await startupOneM.isChecked(), true);
+  await eventually(async () => assert.equal(await startupOneM.isChecked(), true));
   await page.getByRole("button", { name: labels.clientNative, exact: true }).click();
   await page.getByRole("button", { name: labels.clientRouter, exact: true }).click();
   await page.getByRole("button", { name: labels.preview, exact: true }).click();
@@ -1353,7 +1353,7 @@ try {
     provider: window.review.previewed.providerId, model: window.review.previewed.model, context: window.review.previewed.contextWindow })),
     { mode: "native", ids: ["mixed", "alternate"], provider: "alternate", model: "model-alternate", context: 64000 });
   await page.getByRole("button", { name: /Provider alternate/ }).click();
-  assert.equal(await page.getByRole("button", { name: labels.clientApply, exact: true }).count(), 0);
+  await eventually(async () => assert.equal(await page.getByRole("button", { name: labels.clientApply, exact: true }).count(), 0));
   assert.equal(await page.locator("#client-model").textContent(), "responses-model");
   await page.getByRole("button", { name: labels.preview, exact: true }).click();
   await page.waitForFunction(() => window.review.previewed?.providerIds.length === 1);
@@ -1458,7 +1458,7 @@ try {
   await page.getByText("Review thread 0", { exact: true }).waitFor();
   const warning = page.getByRole("status");
   await warning.locator("summary").click();
-  assert.equal(await warning.getByText("Skipped synthetic-corrupt-session.jsonl: invalid UTF-8", { exact: true }).isVisible(), true);
+  await eventually(async () => assert.equal(await warning.getByText("Skipped synthetic-corrupt-session.jsonl: invalid UTF-8", { exact: true }).isVisible(), true));
   assert.equal(await page.getByText("Review thread 0", { exact: true }).isVisible(), true);
   console.log("PASS unreadable conversation warnings remain visible alongside usable conversations");
   }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { eventually } from "./eventually.mjs";
 
 export async function testRelayDeck({ page, reset, captureDir }) {
   const deck = () => page.locator("[data-relay-deck]").first();
@@ -98,7 +99,7 @@ export async function testRelayDeck({ page, reset, captureDir }) {
   console.log("PASS edit, shared balance and enable operations target the displayed member without turning the deck");
 
   await face().getByRole("button", { name: "展开同中转配置", exact: true }).click();
-  assert.equal(await deck().locator(".relay-deck-layer").count(), 0);
+  await eventually(async () => assert.equal(await deck().locator(".relay-deck-layer").count(), 0));
   await deck().getByRole("button", { name: "Relay Gamma", exact: true }).click();
   await member("group-c");
   await settled();

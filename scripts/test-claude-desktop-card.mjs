@@ -13,6 +13,7 @@
 // contract itself (break-all on the config path, break-words on the model list) is asserted too.
 import assert from "node:assert/strict";
 import path from "node:path";
+import { eventually } from "./eventually.mjs";
 
 // Exact zh strings of src/locales/zh.json (the harness renders the app in Chinese, like its
 // other suites). Keeping them literal means a renamed or dropped locale key fails here.
@@ -405,7 +406,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   assert.doesNotMatch(content.innerText, /本地恢复备份: 3/, "backup details should stay collapsed by default");
   assert.doesNotMatch(content.innerText, /未消费的预览|AGENT_HARBOR_CLIENT_HOME/, "technical state belongs in details");
   await card().locator("details > summary").click();
-  assert.match(await card().innerText(), /本地恢复备份: 3/);
+  await eventually(async () => assert.match(await card().innerText(), /本地恢复备份: 3/));
   assert.match(await card().innerText(), /未消费的预览|AGENT_HARBOR_CLIENT_HOME/);
   await card().locator("details > summary").click();
   assert.deepEqual(content.foldToggles, [], "the console panel has no fold toggle");
@@ -584,7 +585,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
       const legacyOneM = row.getByRole("checkbox", { name: "1M", exact: true });
       assert.equal(await legacyOneM.isEnabled(), true, "an existing Auto choice stays cancellable when capability is unavailable");
       await legacyOneM.click();
-      assert.equal(await legacyOneM.getAttribute("aria-checked"), "false");
+      await eventually(async () => assert.equal(await legacyOneM.getAttribute("aria-checked"), "false"));
       assert.equal(await legacyOneM.isDisabled(), true, "after cancellation an unsupported choice cannot be newly enabled");
       assert.equal(await legacyOneM.locator("..").getAttribute("title"), null, "the 1M control has no explanatory tooltip");
     }
@@ -631,16 +632,16 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
     const checkbox = modelCheckbox(modelId);
     assert.equal(await tabTo("desktop-model-" + modelId), true, "checkbox not reachable with Tab: " + modelId);
     await page.keyboard.press("Space");
-    assert.equal(await checkbox.getAttribute("aria-checked"), "true", "Space must select " + modelId);
+    await eventually(async () => assert.equal(await checkbox.getAttribute("aria-checked"), "true", "Space must select " + modelId));
     await page.keyboard.press("Space");
-    assert.equal(await checkbox.getAttribute("aria-checked"), "false", "Space must deselect " + modelId);
+    await eventually(async () => assert.equal(await checkbox.getAttribute("aria-checked"), "false", "Space must deselect " + modelId));
   }
   assert.equal(await dialog().getByRole("button", { name: ZH.messagesCheck, exact: true }).isDisabled(), true);
   console.log("PASS every model checkbox is tabbable, labelled through htmlFor and toggled with Space");
 
   // Select both models, then click and keyboard-toggle the 1M checkbox on the long row.
   for (const modelId of modelIds) await modelCheckbox(modelId).check();
-  assert.equal(await dialog().getByRole("button", { name: ZH.messagesCheck, exact: true }).isEnabled(), true);
+  await eventually(async () => assert.equal(await dialog().getByRole("button", { name: ZH.messagesCheck, exact: true }).isEnabled(), true));
   const longRow = dialog().locator("li").filter({ has: page.locator('[id="desktop-model-' + LONG_MODEL_ID + '"]') });
   const oneM = longRow.getByRole("checkbox", { name: "1M", exact: true });
   assert.equal(await oneM.count(), 1, "a selected model must expose the 1M checkbox");
@@ -651,12 +652,12 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   assert.equal(await shortRow.getByRole("checkbox", { name: "1M", exact: true }).isDisabled(), true,
     "a new selection cannot offer an unsupported 1M variant");
   await oneM.click();
-  assert.equal(await oneM.getAttribute("aria-checked"), "false", "a single click cancels the default 1M intent");
+  await eventually(async () => assert.equal(await oneM.getAttribute("aria-checked"), "false", "a single click cancels the default 1M intent"));
   await oneM.focus();
   await page.keyboard.press("Space");
-  assert.equal(await oneM.getAttribute("aria-checked"), "true", "Space toggles the labelled 1M checkbox on");
+  await eventually(async () => assert.equal(await oneM.getAttribute("aria-checked"), "true", "Space toggles the labelled 1M checkbox on"));
   await oneM.uncheck();
-  assert.equal(await dialog().getByRole("combobox").count(), 1, "only saved configurations may use a dropdown; installation and 1M stay one-click controls");
+  await eventually(async () => assert.equal(await dialog().getByRole("combobox").count(), 1, "only saved configurations may use a dropdown; installation and 1M stay one-click controls"));
   assert.equal(await dialog().locator("#desktop-saved-config").count(), 1);
   assert.doesNotMatch(await dialog().innerText(), /协议由模型名称推断|未经上游验证/, "the protocol inference badge is omitted");
   if (captureDir) await page.screenshot({ path: path.join(captureDir, "claude-desktop-dialog.png"), animations: "disabled" });
@@ -802,11 +803,11 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   await dialog().getByRole("button", { name: ZH.messagesCheck, exact: true }).click();
   await success.waitFor();
   await modelCheckbox(LONG_MODEL_ID).check();
-  assert.equal(await success.count(), 0, "changing the selected model list must invalidate Messages evidence");
+  await eventually(async () => assert.equal(await success.count(), 0, "changing the selected model list must invalidate Messages evidence"));
   await dialog().getByRole("button", { name: ZH.messagesCheck, exact: true }).click();
   await success.waitFor();
   await dialog().getByRole("button", { name: /Relay Gamma/ }).click();
-  assert.equal(await success.count(), 0, "a new provider cannot retain another provider's green Messages report");
+  await eventually(async () => assert.equal(await success.count(), 0, "a new provider cannot retain another provider's green Messages report"));
   assert.equal(await dialog().getByText("https://relay.invalid/v1/messages", { exact: true }).count(), 0,
     "the old endpoint must disappear with its evidence");
   await modelCheckbox(SHORT_MODEL_ID).check();
@@ -837,14 +838,14 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   await actionButton(ZH.change).click();
   await dialog().locator("#desktop-path").waitFor();
   await modelCheckbox(SHORT_MODEL_ID).check();
-  assert.equal(await dialog().getByRole("button", { name: ZH.preview, exact: true }).isDisabled(), true);
+  await eventually(async () => assert.equal(await dialog().getByRole("button", { name: ZH.preview, exact: true }).isDisabled(), true));
   assert.equal(await dialog().getByRole("button", { name: ZH.messagesCheck, exact: true }).isDisabled(), true);
   assert.equal(await dialog().getByText("请先选择 Claude Desktop 的配置位置。", { exact: true }).count(), 2,
     "path selection and disabled-action explanation must both identify the missing choice");
   const pathSelect = dialog().locator("#desktop-path");
   await pathSelect.click();
   await page.getByRole("option", { name: "C:/synthetic/Claude-Beta", exact: true }).click();
-  assert.equal(await dialog().getByRole("button", { name: ZH.preview, exact: true }).isEnabled(), true);
+  await eventually(async () => assert.equal(await dialog().getByRole("button", { name: ZH.preview, exact: true }).isEnabled(), true));
   await dialog().getByRole("button", { name: ZH.preview, exact: true }).click();
   await dialog().locator("[data-desktop-preview-files]").waitFor();
   assert.deepEqual(await page.evaluate(() => window.review.desktopCalls.preview.at(-1).request.paths),
@@ -1008,7 +1009,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   assert.deepEqual(await page.evaluate(() => window.review.desktopCalls.preview.at(-1).request.models),
     [{ modelId: "claude-opus-4-7", labelOverride: null, oneMMode: "off" }]);
   await opusOneM.click();
-  assert.equal(await opusPreview.count(), 0, "changing the 1M intent must invalidate its preview");
+  await eventually(async () => assert.equal(await opusPreview.count(), 0, "changing the 1M intent must invalidate its preview"));
   await dialog().getByRole("button", { name: ZH.preview, exact: true }).click();
   await opusAfter.waitFor();
   assert.deepEqual(JSON.parse(await opusAfter.innerText()), [{ name: "claude-opus-4-7", labelOverride: "Opus 4.7", supports1m: true }],
@@ -1078,7 +1079,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   }
   await unavailable.getByRole("button", { name: "移除 claude-opus-4-6", exact: true }).click();
   await unavailable.getByRole("button", { name: "移除 claude-sonnet-4-6", exact: true }).click();
-  assert.equal(await unavailable.count(), 0);
+  await eventually(async () => assert.equal(await unavailable.count(), 0));
   await modelCheckbox("claude-opus-4-7").check();
   await dialog().getByRole("button", { name: ZH.preview, exact: true }).click();
   await dialog().locator("[data-desktop-preview-files]").waitFor();
@@ -1122,16 +1123,16 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
     "all roles remain visibly empty until the user assigns them");
   assert.equal(await dialog().getByRole("button", { name: ZH.preview, exact: true }).isDisabled(), true);
   await roleRow("sonnet").getByRole("combobox", { name: "sonnet 中转卡片", exact: true }).click();
-  assert.equal(await page.getByRole("option", { name: "Disabled Relay · 未启用", exact: true }).getAttribute("aria-disabled"), "true");
+  await eventually(async () => assert.equal(await page.getByRole("option", { name: "Disabled Relay · 未启用", exact: true }).getAttribute("aria-disabled"), "true"));
   await page.getByRole("option", { name: "Chat Relay", exact: true }).click();
   await roleRow("sonnet").getByRole("combobox", { name: "sonnet 模型", exact: true }).click();
-  assert.equal(await page.getByRole("option", { name: "excluded-model · 不可用", exact: true }).getAttribute("aria-disabled"), "true");
+  await eventually(async () => assert.equal(await page.getByRole("option", { name: "excluded-model · 不可用", exact: true }).getAttribute("aria-disabled"), "true"));
   await page.getByRole("option", { name: "deepseek-chat", exact: true }).click();
   const sonnetRouteOneM = roleRow("sonnet").getByRole("checkbox", { name: "1M", exact: true });
   assert.equal(await sonnetRouteOneM.isEnabled(), true, "a capable Chat target can opt into 1M");
   assert.equal(await sonnetRouteOneM.getAttribute("aria-checked"), "false", "Chat 1M stays off until explicitly selected");
   await sonnetRouteOneM.click();
-  assert.equal(await sonnetRouteOneM.getAttribute("aria-checked"), "true");
+  await eventually(async () => assert.equal(await sonnetRouteOneM.getAttribute("aria-checked"), "true"));
   await sonnetRouteOneM.click();
   await pick("sonnet", "model", "small-chat");
   assert.equal(await sonnetRouteOneM.isDisabled(), true, "Chat with insufficient context cannot offer 1M");
@@ -1144,7 +1145,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   assert.equal(await responsesRouteOneM.isEnabled(), true, "a capable Responses target can opt into 1M");
   assert.equal(await responsesRouteOneM.getAttribute("aria-checked"), "false", "Responses 1M defaults off");
   await responsesRouteOneM.click();
-  assert.equal(await responsesRouteOneM.getAttribute("aria-checked"), "true");
+  await eventually(async () => assert.equal(await responsesRouteOneM.getAttribute("aria-checked"), "true"));
   await pick("opus", "model", "small-responses");
   assert.equal(await responsesRouteOneM.isDisabled(), true, "Responses with insufficient context cannot offer 1M");
   await pick("opus", "provider", "Messages Relay");
@@ -1252,7 +1253,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   console.log("PASS routing previews release temporary leases, retain input after expired tickets, show actual targets and retry restart failures");
 
   await actionButton(ZH.change).click();
-  assert.equal(await dialog().getByRole("button", { name: "路由", exact: true }).getAttribute("aria-pressed"), "true");
+  await eventually(async () => assert.equal(await dialog().getByRole("button", { name: "路由", exact: true }).getAttribute("aria-pressed"), "true"));
   await page.evaluate(async () => {
     const model = window.review.desktopCandidates.routeProviders.find(provider => provider.providerId === "route-messages").models[0];
     model.supports1m = false;
@@ -1266,7 +1267,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   assert.equal(await dialog().getByRole("button", { name: ZH.preview, exact: true }).isDisabled(), true,
     "stale 1M intent must be resolved before preview");
   await savedOneM.click();
-  assert.equal(await savedOneM.getAttribute("aria-checked"), "false");
+  await eventually(async () => assert.equal(await savedOneM.getAttribute("aria-checked"), "false"));
   assert.equal(await savedOneM.isDisabled(), true, "a target that lost the capability cannot turn 1M back on");
   await dialog().getByRole("button", { name: ZH.preview, exact: true }).click();
   await routeFiles.waitFor();

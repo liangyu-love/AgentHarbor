@@ -38,7 +38,7 @@ export async function testClaudeSupport({ page, reset, captureDir }) {
   await editor().waitFor();
   assert.match(await editor().inputValue(), /阅读项目指令/);
   await editor().fill("My Claude instructions");
-  assert.match(await currentFile().textContent(), /claudeCode rules/);
+  await eventually(async () => assert.match(await currentFile().textContent(), /claudeCode rules/));
   assert.doesNotMatch(await currentFile().textContent(), /My Claude instructions/);
   await page
     .getByRole("textbox", {
@@ -85,7 +85,7 @@ export async function testClaudeSupport({ page, reset, captureDir }) {
   assert.equal(applied.target, "claudeCode");
   assert.equal(applied.expectedContent, "claudeCode rules");
   await radio("Codex").click();
-  assert.equal(await editor().inputValue(), "codex rules");
+  await eventually(async () => assert.equal(await editor().inputValue(), "codex rules"));
   await (await button("customInstructions.chooseTemplate")).click();
   await (await button("customInstructions.categories.saved")).click();
   assert.equal(
@@ -93,11 +93,11 @@ export async function testClaudeSupport({ page, reset, captureDir }) {
     0,
   );
   await radio("Claude Code").click();
-  assert.equal(await editor().inputValue(), "My Claude instructions");
+  await eventually(async () => assert.equal(await editor().inputValue(), "My Claude instructions"));
   await editor().fill("Preserved scratch draft");
   await radio("Codex").click();
   await radio("Claude Code").click();
-  assert.equal(await editor().inputValue(), "Preserved scratch draft");
+  await eventually(async () => assert.equal(await editor().inputValue(), "Preserved scratch draft"));
   assert.doesNotMatch(await currentFile().textContent(), /Preserved scratch draft/);
   await (await button("customInstructions.chooseTemplate")).click();
   await (await button("customInstructions.categories.saved")).click();

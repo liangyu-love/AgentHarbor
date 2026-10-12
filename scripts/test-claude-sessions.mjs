@@ -84,7 +84,7 @@ export async function testClaudeSessions({ page, reset, captureDir }) {
       await page.getByRole("menuitem", { name: await label("threads.formatJsonl"), exact: true }).click();
     }
     await claudeSelect.click();
-    assert.equal(await page.getByRole("button", { name: /^删除所选/ }).count(), 1);
+    await eventually(async () => assert.equal(await page.getByRole("button", { name: /^删除所选/ }).count(), 1));
     await page.getByRole("button", { name: /^导出所选/ }).click();
     await page.waitForFunction(count => window.review.conversationCalls.filter(call => call.operation === "export").length === count,
       format === "markdown" ? 1 : 2);

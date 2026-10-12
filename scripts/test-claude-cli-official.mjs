@@ -63,7 +63,7 @@ export async function testClaudeCliOfficial({ page, reset, captureDir }) {
   await eventually(async () => assert.equal(await dialog().getByRole("button", { name: await tr("clients.switchOfficial"), exact: true }).isDisabled(), true));
   await eventually(async () => assert.equal(await dialog().getByRole("button", { name: await tr("common.cancel"), exact: true }).isDisabled(), true));
   await page.keyboard.press("Escape");
-  assert.equal(await dialog().count(), 1, "a writing operation cannot be dismissed");
+  await eventually(async () => assert.equal(await dialog().count(), 1, "a writing operation cannot be dismissed"));
   await page.evaluate(() => window.review.officialApplyResolve());
   await dialog().waitFor({ state: "detached" });
   assert.deepEqual(await page.evaluate(() => window.review.officialSwitchCalls), ["official-1"]);

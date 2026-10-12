@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { eventually } from "./eventually.mjs";
 
 // The general gateway panel: keep-running switch, addresses, named keys
 // (reveal, copy, regenerate, delete), the model list by short name, the
@@ -73,7 +74,7 @@ export async function testGateway({ page, reset, captureDir }) {
   const savePrefix = gateway.locator("[data-gateway-prefix]").getByRole("button", { name: await tr("common.save") });
   assert.equal(await savePrefix.isDisabled(), true, "nothing to save until the prefix changes");
   await prefix.fill("Relay-A");
-  assert.equal(await prefix.inputValue(), "relay-a", "the prefix is typed in lowercase");
+  await eventually(async () => assert.equal(await prefix.inputValue(), "relay-a", "the prefix is typed in lowercase"));
   await savePrefix.click();
   await gateway.getByRole("alert").getByText(await tr("gateway.errors.prefixTaken")).waitFor();
   await prefix.fill("mix");
@@ -95,11 +96,11 @@ export async function testGateway({ page, reset, captureDir }) {
   await page.waitForFunction(() => window.review.copied?.includes("sk-ah-fixture-hermes-0001"));
   await choose(gateway.locator("#gateway-export-profile"), "Anthropic SDK");
   await gateway.locator("#gateway-export-protocol").click();
-  assert.equal(await page.getByRole("option", { name: "Responses", exact: true }).getAttribute("aria-disabled"), "true");
+  await eventually(async () => assert.equal(await page.getByRole("option", { name: "Responses", exact: true }).getAttribute("aria-disabled"), "true"));
   assert.equal(await page.getByRole("option", { name: "Chat", exact: true }).getAttribute("aria-disabled"), "true");
   await page.keyboard.press("Escape");
   await gateway.getByRole("button", { name: await tr("gateway.preview"), exact: true }).click();
-  assert.match(await preview.innerText(), /127\.0\.0\.1:43127\/gateway"/, "the Anthropic SDK takes the bare gateway root");
+  await eventually(async () => assert.match(await preview.innerText(), /127\.0\.0\.1:43127\/gateway"/, "the Anthropic SDK takes the bare gateway root"));
   await choose(gateway.locator("#gateway-export-profile"), "OpenCode");
   await choose(gateway.locator("#gateway-export-protocol"), "Chat");
   assert.equal(await preview.count(), 0, "changing a setting withdraws the previous preview");

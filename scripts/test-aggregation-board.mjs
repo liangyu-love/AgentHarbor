@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { eventually } from "./eventually.mjs";
 
 // The injection console and the aggregation routing board: one client panel
 // at a time, merge suggestions from relays serving the same model, tiers and
@@ -84,7 +85,7 @@ export async function testAggregationBoard({ page, reset, captureDir }) {
   assert.equal(await lanes.count(), 3);
   const members = editor.locator("[data-aggregate-member]");
   await members.nth(2).getByRole("button", { name: await tr("aggregation.moveUp", { index: 3 }), exact: true }).click();
-  assert.equal(await lanes.count(), 2, "moving the only member of a tier up removes the empty tier");
+  await eventually(async () => assert.equal(await lanes.count(), 2, "moving the only member of a tier up removes the empty tier"));
   await members.nth(3).locator('[id^="member-weight-"]').fill("4");
   await members.nth(3).getByRole("switch").click();
   await editor.getByRole("button", { name: await tr("common.save"), exact: true }).click();
@@ -103,10 +104,10 @@ export async function testAggregationBoard({ page, reset, captureDir }) {
   assert.equal(await panel("claudeDesktop").isHidden(), true);
   await tab("codex").focus();
   await page.keyboard.press("ArrowDown");
-  assert.equal(await tab("claudeCode").getAttribute("aria-selected"), "true");
+  await eventually(async () => assert.equal(await tab("claudeCode").getAttribute("aria-selected"), "true"));
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-client-tab")), "claudeCode");
   await page.keyboard.press("End");
-  assert.equal(await tab("pi").getAttribute("aria-selected"), "true");
+  await eventually(async () => assert.equal(await tab("pi").getAttribute("aria-selected"), "true"));
   assert.equal(await panel("pi").isVisible(), true);
   assert.equal(await panel("codex").isHidden(), true);
   assert.equal(await page.evaluate(() => localStorage.getItem("agentharbor.inject-client.v1")), "pi");
@@ -154,10 +155,10 @@ export async function testAggregationBoard({ page, reset, captureDir }) {
   assert.deepEqual(await routes.locator("details").evaluateAll(nodes => nodes.map(node => node.getAttribute("data-route-state"))),
     ["complete", "failed", "running"]);
   await summaries.nth(0).click();
-  assert.match(await routes.innerText(), new RegExp(await tr("newapi.traceRetryReason.aggregate_first_token_timeout")));
+  await eventually(async () => assert.match(await routes.innerText(), new RegExp(await tr("newapi.traceRetryReason.aggregate_first_token_timeout"))));
   const failuresOnly = routes.getByRole("button", { name: await tr("newapi.traceFailedOnly"), exact: true });
   await failuresOnly.click();
-  assert.equal(await failuresOnly.getAttribute("aria-pressed"), "true");
+  await eventually(async () => assert.equal(await failuresOnly.getAttribute("aria-pressed"), "true"));
   await page.waitForFunction(() => document.querySelectorAll('[data-route-diagnostics] summary').length === 1);
   assert.match(await summaries.first().innerText(), /broken\/model/);
   await failuresOnly.click();

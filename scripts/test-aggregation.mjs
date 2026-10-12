@@ -187,7 +187,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   const gatewayId = manager().locator("[data-gateway-id-preview] code");
   assert.equal(await gatewayId.innerText(), `pool/${PUBLIC_MODEL}`, "an empty prefix keeps the gateway's shared one");
   await manager().locator("#aggregate-gateway-prefix").fill("CN");
-  assert.equal(await gatewayId.innerText(), `cn/${PUBLIC_MODEL}`);
+  await eventually(async () => assert.equal(await gatewayId.innerText(), `cn/${PUBLIC_MODEL}`));
   const addMember = manager().getByRole("button", { name: await tr("aggregation.addMember"), exact: true });
   await addMember.click();
   await addMember.click();
@@ -227,7 +227,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   assert.ok(saved.members.every(member => Object.keys(member).sort().join(",") === "actualModelId,enabled,id,priority,providerId,weight"),
     "members save exact references and never copy card credentials");
   await manager().getByRole("button", { name: await tr("common.edit"), exact: true }).click();
-  assert.equal(await manager().locator("#aggregate-public-id").isDisabled(), true, "public identity remains stable after creation");
+  await eventually(async () => assert.equal(await manager().locator("#aggregate-public-id").isDisabled(), true, "public identity remains stable after creation"));
   assert.equal(await manager().locator("#aggregate-failure-threshold").innerText(), "4");
   assert.equal(await manager().locator("#aggregate-gateway-prefix").inputValue(), "cn");
   assert.equal(await members.nth(0).locator('[id^="member-model-"]').innerText(), FAST_WIRE_MODEL);
@@ -248,7 +248,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   assert.equal(await codex.locator("[data-relay-link]").count(), 0);
   assert.deepEqual(await page.evaluate(() => window.review.aggregateCodexSelections), [saved.id]);
   await codex.locator("#codex-access-mode").click();
-  assert.equal(await page.getByRole("option", { name: await tr("newapi.accessNative"), exact: true }).getAttribute("aria-disabled"), "true");
+  await eventually(async () => assert.equal(await page.getByRole("option", { name: await tr("newapi.accessNative"), exact: true }).getAttribute("aria-disabled"), "true"));
   await page.keyboard.press("Escape");
   await codex.getByRole("switch", { name: await tr("newapi.codexAccess"), exact: true }).click();
   await page.waitForFunction(() => window.review.getState().router.enabled);
@@ -306,7 +306,7 @@ export async function testAggregation({ page, reset, captureDir }) {
     await page.screenshot({ path: path.join(captureDir, "injection-saved-client.png"), animations: "disabled" });
   }
   await clientsCard.getByRole("button", { name: await tr("clients.change"), exact: true }).click();
-  assert.equal(await dialog.getByRole("checkbox", { name: await tr("clients.includeModel", { model: POOL_NAME }), exact: true }).isChecked(), true);
+  await eventually(async () => assert.equal(await dialog.getByRole("checkbox", { name: await tr("clients.includeModel", { model: POOL_NAME }), exact: true }).isChecked(), true));
   assert.equal(await dialog.getByRole("checkbox", { name: await tr("clients.oneMStartup"), exact: true }).isChecked(), true);
   console.log("PASS Claude Code aggregation profiles save, reload, apply and reopen without losing roles or 1M choices");
 
@@ -328,7 +328,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   await choose(dialog.locator("#client-model"), await tr("aggregation.target") + " / " + POOL_NAME);
   // Adding a second ordinary provider must not reset the explicit aggregate default.
   await dialog.getByRole("button", { name: "Relay B", exact: false }).click();
-  assert.equal(await dialog.locator("#client-model").innerText(), await tr("aggregation.target") + " / " + POOL_NAME);
+  await eventually(async () => assert.equal(await dialog.locator("#client-model").innerText(), await tr("aggregation.target") + " / " + POOL_NAME));
   await choose(dialog.locator("#client-aggregate-protocol"), "Chat");
   await dialog.getByRole("button", { name: await tr("clients.preview"), exact: true }).click();
   await page.waitForFunction(() => !!window.review.previewed);
@@ -344,7 +344,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   await dialog.getByRole("button", { name: await tr("clients.apply"), exact: true }).click();
   await dialog.waitFor({ state: "detached" });
   await clientsCard.getByRole("button", { name: await tr("clients.change"), exact: true }).click();
-  assert.equal(await dialog.locator("#client-aggregate-protocol").innerText(), "Chat");
+  await eventually(async () => assert.equal(await dialog.locator("#client-aggregate-protocol").innerText(), "Chat"));
   assert.equal(await dialog.locator("#client-model").innerText(), await tr("aggregation.target") + " / " + POOL_NAME);
   assert.equal(await dialog.getByRole("checkbox", { name: await tr("clients.includeModel", { model: POOL_NAME }), exact: true }).isChecked(), true);
   console.log("PASS OpenCode combines exact provider subsets and aggregation while retaining its explicit default across save/reopen");

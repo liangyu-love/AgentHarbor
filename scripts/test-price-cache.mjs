@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { eventually } from "./eventually.mjs";
 
 export async function testPriceCache({ page, reset, captureDir }) {
   await reset("provider");
@@ -32,7 +33,7 @@ export async function testPriceCache({ page, reset, captureDir }) {
   const catalog = page.getByRole("region", { name: "模型能力目录与匹配预览" });
   await catalog.getByRole("button", { name: "模型能力目录与匹配预览", exact: true }).click();
   await catalog.locator("summary").click();
-  assert.match(await catalog.innerText(), /倍率 ×0.5/);
+  await eventually(async () => assert.match(await catalog.innerText(), /倍率 ×0.5/));
   assert.match(await catalog.innerText(), /2.5 \/ 10/);
   console.log("PASS automatic model prices expose the applied channel multiplier and resulting rates");
 
@@ -80,7 +81,7 @@ export async function testPriceCache({ page, reset, captureDir }) {
   assert.match(await row("Actual relay member").innerText(), /3 \/ 4/);
   assert.deepEqual(await row("Unreported relay").locator("td").allTextContents(), ["Unreported relay", "—", "—", "—", "—", "0 / 4"]);
   await cache.getByRole("tab", { name: "按模型", exact: true }).click();
-  assert.match(await cache.innerText(), /cache-hit/);
+  await eventually(async () => assert.match(await cache.innerText(), /cache-hit/));
   assert.match(await cache.innerText(), /unknown-model/);
   if (captureDir) await usage.screenshot({ path: path.join(captureDir, "cache-usage-desktop.png") });
   await page.setViewportSize({ width: 390, height: 844 });

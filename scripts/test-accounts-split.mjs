@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { eventually } from "./eventually.mjs";
 
 // Accounts and usage on their own pages, account-source tabs with sign-in,
 // sharing with model inject, and account sources in the inject dialog.
@@ -55,7 +56,7 @@ export async function testAccountsSplit({ page, reset, captureDir }) {
   assert.equal(await modelFold.getAttribute("aria-expanded"), "false");
   await modelList.locator("li").first().waitFor({ state: "detached" });
   await modelFold.click();
-  assert.deepEqual(await modelList.locator("li").allInnerTexts(), ["GLM-5.3", "Kimi-K3"]);
+  await eventually(async () => assert.deepEqual(await modelList.locator("li").allInnerTexts(), ["GLM-5.3", "Kimi-K3"]));
   await modelFold.click();
   await modelList.locator("li").first().waitFor({ state: "detached" });
   if (captureDir) await page.screenshot({ path: path.join(captureDir, "accounts-workbuddy.png"), fullPage: true });
@@ -87,7 +88,7 @@ export async function testAccountsSplit({ page, reset, captureDir }) {
   assert.equal(await forward.getAttribute("data-direction"), "forward");
   assert.equal(await forward.evaluate(element => getComputedStyle(element).animationName), "accounts-panel-in");
   await page.getByRole("radiogroup").getByRole("radio", { name: await tr("accountSources.berth", { name: "WorkBuddy", count: 2 }), exact: true }).click();
-  assert.equal(await page.locator('[data-accounts-panel="workbuddy"]').getAttribute("data-direction"), "back");
+  await eventually(async () => assert.equal(await page.locator('[data-accounts-panel="workbuddy"]').getAttribute("data-direction"), "back"));
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.evaluate(() => { window.review.keepAccountsTab = true; window.review.mount("accounts"); });
   await page.locator('[data-source-channel="live"]').waitFor();
@@ -202,7 +203,7 @@ export async function testAccountsSplit({ page, reset, captureDir }) {
   assert.equal(await card.isDisabled(), true, "direct mode cannot reach an account source");
   assert.match(await card.innerText(), new RegExp(await tr("clients.excluded.routerOnly", { count: 1 })));
   await dialog.getByRole("button", { name: await tr("clients.accessRouter"), exact: true }).click();
-  assert.equal(await card.isDisabled(), false, "the router serves it");
+  await eventually(async () => assert.equal(await card.isDisabled(), false, "the router serves it"));
   await card.locator("[data-account-source-refusal]").waitFor();
   if (captureDir) await dialog.screenshot({ path: path.join(captureDir, "inject-account-source.png") });
   console.log("PASS model inject badges account sources, keeps them router-only and warns Claude Code about WorkBuddy");

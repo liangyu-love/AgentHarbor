@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { eventually } from "./eventually.mjs";
 
 export async function testMagpieOptimizations({ page, reset, captureDir }) {
   await reset("compact");
@@ -18,7 +19,7 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   await searchService.waitFor();
   assert.equal(await searchService.isEnabled(), true);
   await searchService.click();
-  assert.equal(await page.getByRole("option", { name: "Other relay", exact: true }).count(), 0);
+  await eventually(async () => assert.equal(await page.getByRole("option", { name: "Other relay", exact: true }).count(), 0));
   await page.getByRole("option", { name: "Command Messages", exact: true }).click();
   await page.waitForFunction(() => window.review.getState().router.webSearchProviderId === "command-messages");
   await searchService.click();
@@ -58,7 +59,7 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   const modelSummary = catalog.locator("summary").filter({ hasText: "Synthetic channel" });
   await modelSummary.waitFor();
   await modelSummary.click();
-  assert.equal(await catalog.getByText("My custom alias", { exact: false }).isVisible(), true);
+  await eventually(async () => assert.equal(await catalog.getByText("My custom alias", { exact: false }).isVisible(), true));
   assert.match(await catalog.innerText(), /继续使用上一份有效目录/);
   assert.match(await catalog.innerText(), /1,000,000/);
   assert.match(await catalog.innerText(), /内置模型规则/);
@@ -125,7 +126,7 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   await nativeCatalog.getByRole("button", { name: "模型能力目录与匹配预览", exact: true }).click();
   await nativeCatalog.locator("summary").first().waitFor();
   for (const summary of await nativeCatalog.locator("summary").all()) await summary.click();
-  assert.match(await nativeCatalog.innerText(), /阈值 900,000/);
+  await eventually(async () => assert.match(await nativeCatalog.innerText(), /阈值 900,000/));
   assert.match(await nativeCatalog.innerText(), /原生共享阈值：90,000；当前配置：90,000/);
   assert.match(await nativeCatalog.innerText(), /由 small 限制/);
   assert.match(await nativeCatalog.innerText(), /当前客户端配置未应用此模型的压缩设置，仅显示建议值/);
@@ -199,9 +200,9 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   assert.match(await usage.locator(".usage-model-row").filter({ hasText: "free-model" }).innerText(), /\$0/);
   assert.match(await usage.locator(".usage-model-row").filter({ hasText: "unknown-model" }).innerText(), /无法可靠计算成本/);
   await usage.getByRole("button", { name: "明细", exact: true }).click();
-  assert.match(await usage.locator(".usage-model-detail-row").filter({ hasText: "same-model" }).innerText(), /1 笔部分计价/);
+  await eventually(async () => assert.match(await usage.locator(".usage-model-detail-row").filter({ hasText: "same-model" }).innerText(), /1 笔部分计价/));
   await usage.getByRole("tab", { name: "供应商与额度" }).click();
-  assert.match(await usage.locator(".usage-cost-line").innerText(), /1 笔部分计价/);
+  await eventually(async () => assert.match(await usage.locator(".usage-cost-line").innerText(), /1 笔部分计价/));
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
   await usage.getByRole("tab", { name: "模型", exact: true }).click();
@@ -384,7 +385,7 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   await manualPrices.getByRole("button", { name: "模型能力目录与匹配预览", exact: true }).click();
   await manualPrices.locator("summary").click();
   await manualPrices.getByRole("button", { name: "编辑价格", exact: true }).click();
-  assert.equal(await manualPrices.getByLabel("输入", { exact: true }).inputValue(), "0");
+  await eventually(async () => assert.equal(await manualPrices.getByLabel("输入", { exact: true }).inputValue(), "0"));
   assert.equal(await manualPrices.getByLabel("输出", { exact: true }).inputValue(), "0");
   await manualPrices.getByRole("button", { name: "恢复自动价格", exact: true }).click();
   await page.waitForFunction(() => window.review.priceSaves?.length === 1);
@@ -399,7 +400,7 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   });
   const providerDialog = page.getByRole("dialog");
   await providerDialog.locator("#newapi-provider-name").fill("Renamed relay");
-  assert.equal(await providerDialog.locator("#newapi-provider-price-catalog").count(), 0);
+  await eventually(async () => assert.equal(await providerDialog.locator("#newapi-provider-price-catalog").count(), 0));
   await providerDialog.getByRole("button", { name: "保存", exact: true }).click();
   await page.waitForFunction(() => window.review.saved?.name === "Renamed relay");
   assert.equal(await page.evaluate(() => window.review.saved.priceCatalogProvider), "deepseek",
