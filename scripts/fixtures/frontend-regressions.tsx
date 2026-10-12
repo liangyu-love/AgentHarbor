@@ -30,6 +30,7 @@ import { CommandPalette } from "@/components/command-palette/command-palette";
 import { SkillsPage } from "@/components/skills/skills-page";
 import { ClientConfigs } from "@/components/newapi/client-configs";
 import { TerminalProxySettings } from "@/components/settings/terminal-proxy-settings";
+import { AutostartSetting } from "@/components/settings/autostart-setting";
 import type { CodexSubagentSettings, NewApiProvider, NewApiState } from "@/types/newapi";
 import type { TokenUsagePayload } from "@/types";
 import type { ClientConfigRequest, ClientStatus } from "@/types/clients";
@@ -422,6 +423,10 @@ const accountSourcesFixture = (): AccountSourceListPayload => ({ sources: [
     risk: "Google may suspend an Antigravity account it sees used outside Antigravity. Use one you can afford to lose." },
   { kind: "kiro", name: "Kiro", providerId: "account-kiro", protocol: "chatCompletions", exposed: false, models: [],
     accounts: [], usageUrl: "https://app.kiro.dev/account/usage", hasQuota: true, fetchesModels: true },
+  { kind: "grok", name: "Grok", providerId: "account-grok", protocol: "responses", exposed: false, models: [],
+    accounts: [], usageUrl: null, hasQuota: true, fetchesModels: true },
+  { kind: "cursor", name: "Cursor", providerId: "account-cursor", protocol: "chatCompletions", exposed: false, models: [],
+    accounts: [], usageUrl: "https://cursor.com/dashboard", hasQuota: true, fetchesModels: true },
 ] });
 const installAccountSources = () => {
   let payload = accountSourcesFixture();
@@ -736,7 +741,7 @@ function ProviderFixture({ mixed = false }: { mixed?: boolean }) {
       onOpenChange={open => setDialog(current => ({ ...current, open }))} onSaved={noop} /></>;
 }
 
-type FixtureMode = "sidebar" | "instructions" | "mcp-clients" | "skills" | "desktop-updater" | "desktop-exit" | "terminal-proxy" | "routing-cache" | "thread-details" | "thread-details-missing" | "thread-details-unknown" | "thread-details-error" | "compact" | "grid" | "image" | "mcp" | "accounts" | "account-resets" | "account-resets-unavailable" | "thread-tree" | "groups" | "overview" | "usage" | "usage-page" | "provider" | "warnings" | "thread-actions" | "thread-queue-recovery" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-conflict" | "clients-opencode" | "clients-opencode-stale" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official" | "recovery-long" | "recovery-router";
+type FixtureMode = "sidebar" | "instructions" | "mcp-clients" | "skills" | "desktop-updater" | "desktop-exit" | "terminal-proxy" | "autostart" | "routing-cache" | "thread-details" | "thread-details-missing" | "thread-details-unknown" | "thread-details-error" | "compact" | "grid" | "image" | "mcp" | "accounts" | "account-resets" | "account-resets-unavailable" | "thread-tree" | "groups" | "overview" | "usage" | "usage-page" | "provider" | "warnings" | "thread-actions" | "thread-queue-recovery" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-conflict" | "clients-opencode" | "clients-opencode-stale" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official" | "recovery-long" | "recovery-router";
 
 function RoutingCacheFixture() {
   const [page, setPage] = useState("threads");
@@ -887,6 +892,17 @@ function mount(mode: FixtureMode) {
     api.terminalProxy.load = async () => ({ supported: true, enabled: false, applied: false,
       url: null, noProxy: "localhost,127.0.0.1,::1", recoveryRequired: false, conflicts: [],
       preservedVariables: [], notificationSent: false, ...controls.review.terminalStatusPatch });
+  }
+  if (mode === "autostart") {
+    controls.review.autostartCalls = [];
+    controls.review.autostartStatus = { supported: true, enabled: false, blocked: false, ...controls.review.autostartPatch };
+    api.autostart.status = async () => structuredClone(controls.review.autostartStatus);
+    api.autostart.set = async enabled => {
+      controls.review.autostartCalls.push(enabled);
+      if (controls.review.autostartFailure) throw "settings.autostart.errors.write";
+      controls.review.autostartStatus = { ...controls.review.autostartStatus, enabled, blocked: false };
+      return structuredClone(controls.review.autostartStatus);
+    };
   }
   installAccountSources();
   installGateway();
@@ -1143,9 +1159,10 @@ function mount(mode: FixtureMode) {
   if (mode === "groups") controls.review.providersClient = queryClient;
   root.render(<QueryClientProvider key={++mountSequence} client={queryClient}><TooltipProvider>
     <div style={{ position: "relative", height: 600 }}><PageStage state="active">
-      {(mode.startsWith("thread-details") || mode === "thread-tree" || mode === "thread-actions" || mode === "terminal-proxy" || mode === "skills" || mode === "groups" || mode === "access") && <ThreadToastProbe />}
+      {(mode.startsWith("thread-details") || mode === "thread-tree" || mode === "thread-actions" || mode === "terminal-proxy" || mode === "autostart" || mode === "skills" || mode === "groups" || mode === "access") && <ThreadToastProbe />}
       {mode === "sidebar" ? <AppAvatarProvider><SidebarProvider><AppSidebar activeRoute={controls.review.sidebarRoute ?? "relays"} onNavigate={route => { controls.review.navigatedTo = route; }} onThemeChange={noop} /><div className="flex-1" /></SidebarProvider></AppAvatarProvider> : mode === "routing-cache" ? <RoutingCacheFixture /> : mode === "desktop-updater" ? <DesktopUpdaterFixture /> : mode === "desktop-exit" ? <ClaudeDesktopRouterExitDialog /> : mode.startsWith("recovery-") ? <RecoveryFixture thread={threads[0] as ThreadSummary} /> :
         mode === "skills" ? <SkillsPage /> : mode === "terminal-proxy" ? <div className="mx-auto max-w-xl rounded-xl bg-card shadow-sm"><TerminalProxyFixture /></div> :
+        mode === "autostart" ? <div className="mx-auto max-w-xl rounded-xl bg-card shadow-sm"><AutostartSetting /></div> :
         mode === "image" ? <ImageWorkbenchPage /> : mode === "instructions" ? <CustomInstructionsPage /> : mode === "mcp-clients" ? <McpClientFixture /> : mode === "mcp" ? <McpPage /> : mode === "accounts" || mode.startsWith("account-resets") ? <AccountsPage refreshInterval="5m" /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage-page" ? <UsagePage refreshInterval="5m" onManageProviders={() => { controls.review.navigatedTo = "relays"; }} /> : mode === "usage" ? <TokenUsagePanel data={{ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } }} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode.startsWith("thread-details") || mode === "thread-tree" || mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :
         mode === "access" || mode === "incompatible" || mode === "native-invalid" || mode === "groups" ? <><NewApiPage onOpenRelays={() => { controls.review.navigatedTo = "relays"; }} /><RelayModelsPage /></> :
         mode === "test" ? <ProviderTestDialog open provider={mixedProvider} onOpenChange={noop} onTested={noop} onFailed={noop} /> :

@@ -1,7 +1,7 @@
 import type { ModelProtocol } from "@/types/newapi";
 
 /** Official account sources whose sign-in serves models through the local router. */
-export type AccountSourceKind = "chatgpt-api" | "workbuddy" | "workbuddy-ai" | "copilot" | "gemini-cli" | "antigravity" | "kiro";
+export type AccountSourceKind = "chatgpt-api" | "workbuddy" | "workbuddy-ai" | "copilot" | "gemini-cli" | "antigravity" | "kiro" | "grok" | "cursor";
 
 export interface AccountSourceQuota {
   used: number;

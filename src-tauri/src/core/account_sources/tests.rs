@@ -586,3 +586,147 @@ fn kiro_sign_in_with_github_reads_the_profile_plan_and_models() {
         assert!(source.exposed);
     });
 }
+
+/// A stand-in Grok CLI: `login` prints its device link and signs in to
+/// GROK_HOME; anything else does nothing.
+fn fake_grok(dir: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        let script = dir.join("grok.cmd");
+        std::fs::write(&script, "@echo off\r\nif not \"%1\"==\"login\" exit /b 0\r\necho Open https://accounts.x.ai/device?user_code=GROK-1234 to sign in\r\necho {\"https://auth.x.ai\":{\"key\":\"grok-key\",\"email\":\"Me@X.ai\",\"expires_at\":\"2099-01-01T00:00:00Z\"}}> \"%GROK_HOME%/auth.json\"\r\necho Signed in.\r\nexit /b 0\r\n").unwrap();
+        script
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("grok");
+        std::fs::write(&script, "#!/bin/sh\n[ \"$1\" = login ] || exit 0\necho 'Open https://accounts.x.ai/device?user_code=GROK-1234 to sign in'\necho '{\"https://auth.x.ai\":{\"key\":\"grok-key\",\"email\":\"Me@X.ai\",\"expires_at\":\"2099-01-01T00:00:00Z\"}}' > \"$GROK_HOME/auth.json\"\necho 'Signed in.'\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+}
+
+#[test]
+fn grok_signs_in_through_its_cli_in_a_home_of_its_own_and_forgets_it_on_removal() {
+    let _guard = crate::core::router_proxy::global_router_test_lock();
+    runtime().block_on(async {
+        let (dir, paths) = temp_paths();
+        *grok::EXECUTABLE.lock().unwrap() = Some(fake_grok(dir.path()));
+        let (_cancel, cancel) = watch::channel(false);
+        let opened = Arc::new(Mutex::new(String::new()));
+        let page = opened.clone();
+        let account = sign_in(&paths, &client(), SourceKind::Grok, cancel, move |prompt| {
+            *page.lock().unwrap() = prompt.url.to_owned();
+            Ok(())
+        }).await.unwrap();
+        *grok::EXECUTABLE.lock().unwrap() = None;
+        assert_eq!(opened.lock().unwrap().as_str(), "https://accounts.x.ai/device?user_code=GROK-1234");
+        assert_eq!((account.name.as_str(), account.subject.as_str()), ("Me@X.ai", "me@x.ai"));
+        let Credentials::Grok(creds) = account.credentials.clone() else { panic!("Grok credentials") };
+        let home = std::path::PathBuf::from(&creds.home);
+        assert!(home.starts_with(paths.app_data_dir.join("account-sources").join("grok")), "a home of AgentHarbor's, never ~/.grok");
+        assert!(matches!(grok::token(&paths.app_data_dir, &creds).await, Ok(token) if token == "grok-key"));
+        assert!(!serde_json::to_string(&account.credentials).unwrap().contains("grok-key"), "the token stays in the CLI's home");
+        keep(&paths, account).unwrap();
+        let id = store::load(&paths.app_data_dir).unwrap().accounts[0].id.clone();
+        remove(&paths, &client(), &id).await.unwrap();
+        assert!(!home.exists(), "the home made for it goes with it");
+    });
+}
+
+/// A stand-in Cursor CLI: `login` prints a link it wraps and signs in,
+/// `about` says who is signed in, `models` lists two.
+fn fake_cursor(dir: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        let script = dir.join("cursor-agent.cmd");
+        let lines = [
+            "@echo off",
+            "if \"%1\"==\"about\" goto about",
+            "if \"%1\"==\"login\" goto login",
+            "if \"%1\"==\"models\" goto models",
+            "exit /b 0",
+            ":about",
+            "if not exist \"%~dp0signed-in\" (echo Not logged in& exit /b 1)",
+            "echo {\"userEmail\":\"Me@Cursor.sh\",\"subscriptionTier\":\"Pro\"}",
+            "exit /b 0",
+            ":login",
+            "echo Open this link to sign in:",
+            "echo https://cursor.com/loginDeepControl?challenge=abc^&uuid=1b4e28ba-2fa1-11d2-883f-0016d3cca427",
+            "echo ^&mode=login^&redirectTarget=cli^&supportsSelectedTeamLogin=true",
+            "echo Waiting for sign-in...",
+            "type nul > \"%~dp0signed-in\"",
+            "exit /b 0",
+            ":models",
+            "echo auto - Auto",
+            "echo gpt-6-high - GPT-6 High 1M",
+            "exit /b 0",
+        ];
+        std::fs::write(&script, lines.join("\r\n") + "\r\n").unwrap();
+        script
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("cursor-agent");
+        let body = r#"#!/bin/sh
+here=$(dirname "$0")
+case "$1" in
+about) [ -f "$here/signed-in" ] || { echo 'Not logged in'; exit 1; }
+  echo '{"userEmail":"Me@Cursor.sh","subscriptionTier":"Pro"}' ;;
+login) echo 'Open this link to sign in:'
+  echo 'https://cursor.com/loginDeepControl?challenge=abc&uuid=1b4e28ba-2fa1-11d2-883f-0016d3cca427'
+  echo '&mode=login&redirectTarget=cli&supportsSelectedTeamLogin=true'
+  echo 'Waiting for sign-in...'
+  touch "$here/signed-in" ;;
+models) echo 'auto - Auto'; echo 'gpt-6-high - GPT-6 High 1M' ;;
+esac
+"#;
+        std::fs::write(&script, body).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+}
+
+#[test]
+fn cursor_signs_in_through_its_cli_and_keeps_the_one_sign_in_the_cli_has() {
+    let _guard = crate::core::router_proxy::global_router_test_lock();
+    runtime().block_on(async {
+        let (dir, paths) = temp_paths();
+        *cursor::EXECUTABLE.lock().unwrap() = Some(fake_cursor(dir.path()));
+        *cursor::TOKEN.lock().unwrap() = Some(String::new());
+        let (_cancel, cancel) = watch::channel(false);
+        let opened = Arc::new(Mutex::new(String::new()));
+        let page = opened.clone();
+        let account = sign_in(&paths, &client(), SourceKind::Cursor, cancel.clone(), move |prompt| {
+            *page.lock().unwrap() = prompt.url.to_owned();
+            Ok(())
+        }).await.unwrap();
+        assert_eq!(opened.lock().unwrap().as_str(), "https://cursor.com/loginDeepControl?challenge=abc&uuid=1b4e28ba-2fa1-11d2-883f-0016d3cca427&mode=login&redirectTarget=cli&supportsSelectedTeamLogin=true",
+            "the link the CLI wrapped is handed on whole");
+        assert_eq!((account.name.as_str(), account.subject.as_str(), account.plan.as_deref()), ("Me@Cursor.sh", "me@cursor.sh", Some("Pro")));
+        keep(&paths, account).unwrap();
+
+        // Signed in already: kept as it is, without a page to open.
+        *cursor::TOKEN.lock().unwrap() = Some("tok".into());
+        let again = sign_in(&paths, &client(), SourceKind::Cursor, cancel, |_| panic!("no page for a CLI signed in already")).await.unwrap();
+        keep(&paths, again).unwrap();
+        let mut other = store::load(&paths.app_data_dir).unwrap().accounts[0].clone();
+        other.id = "other".into();
+        other.subject = "someone@else.sh".into();
+        keep(&paths, other).unwrap();
+        let kept: Vec<_> = store::load(&paths.app_data_dir).unwrap().accounts.into_iter().filter(|account| account.kind == SourceKind::Cursor).collect();
+        assert_eq!(kept.len(), 1, "the CLI keeps one sign-in, and so does its source");
+        assert_eq!(kept[0].subject, "someone@else.sh");
+
+        let models = cursor_models_for_test(&paths).await;
+        assert_eq!(models, vec![("auto".to_owned(), 200_000), ("gpt-6-high".to_owned(), 1_000_000)]);
+        *cursor::EXECUTABLE.lock().unwrap() = None;
+        *cursor::TOKEN.lock().unwrap() = None;
+    });
+}
+
+async fn cursor_models_for_test(paths: &CodexPaths) -> Vec<(String, u64)> {
+    cursor::fetch_models(&paths.app_data_dir).await.unwrap().into_iter()
+        .map(|model| (model.id, model.context_window.unwrap())).collect()
+}

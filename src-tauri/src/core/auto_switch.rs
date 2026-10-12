@@ -1,12 +1,13 @@
 //! In-app automatic account switching. While AgentHarbor runs, a background loop
-//! refreshes every account's quota and, once the active account drops to a
-//! configured threshold, switches to the account with the most headroom.
+//! refreshes the active account's quota and, once it drops to a configured
+//! threshold, refreshes the others and switches to the one with the most
+//! headroom. A running Codex keeps its task until the old account is used up.
 
 use super::accounts::{CodexAccountListPayload, CodexAccountSummary};
 use super::models::RateLimitWindow;
 use super::repository::AutoSwitchConfig;
 
-/// Quota refreshes spawn app-servers per account, so never poll faster than this.
+/// Each round asks OpenAI for the active account's quota; never poll faster than this.
 pub const MIN_CHECK_INTERVAL_SECS: u64 = 60;
 /// Gives the new account's quota time to show up before another switch is considered.
 pub const SWITCH_COOLDOWN_SECS: i64 = 10 * 60;
@@ -47,6 +48,52 @@ fn headroom(account: &CodexAccountSummary) -> Option<i32> {
     .min()
 }
 
+/// Whether the active account, on fresh data, is low enough to look for another.
+pub fn active_is_low(accounts: &CodexAccountListPayload, config: &AutoSwitchConfig) -> bool {
+    accounts
+        .items
+        .iter()
+        .find(|item| item.is_active)
+        .is_some_and(|active| active.usage_status == "healthy" && is_low(active, config))
+}
+
+/// A window with nothing left: requests on this account now fail until it resets.
+pub fn is_used_up(account: &CodexAccountSummary) -> bool {
+    account.usage_status == "healthy"
+        && [account.primary_window.as_ref(), account.secondary_window.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|window| window.remaining_percent <= 0)
+}
+
+/// What a switch does with Codex.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Restart {
+    /// Codex is running on an account already used up: restart it now.
+    Now,
+    /// Codex is running on an account with quota left: let its task go on and
+    /// restart it once that account is used up.
+    WhenUsedUp,
+    /// Codex is not running and picks the new account up when it starts.
+    NextStart,
+}
+
+pub fn restart_plan(codex_running: bool, active_used_up: bool) -> Restart {
+    match (codex_running, active_used_up) {
+        (false, _) => Restart::NextStart,
+        (true, true) => Restart::Now,
+        (true, false) => Restart::WhenUsedUp,
+    }
+}
+
+/// An account switched away from while Codex kept running on it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Draining {
+    pub from: String,
+    pub to: String,
+    pub to_label: String,
+}
+
 fn is_candidate(account: &CodexAccountSummary, config: &AutoSwitchConfig) -> bool {
     // Only trust quotas fetched successfully in this round; stale or expired
     // accounts would just fail after the switch.
@@ -84,6 +131,8 @@ pub struct LoopState {
     /// The active account already reported as having no candidate, so the user is
     /// notified once per exhausted account rather than every round.
     notified_exhausted: Option<String>,
+    /// Codex still running on the account switched away from.
+    pub draining: Option<Draining>,
 }
 
 impl LoopState {
@@ -161,6 +210,29 @@ mod tests {
             threshold_5h_percent: 15,
             threshold_weekly_percent: 10,
         }
+    }
+
+    #[test]
+    fn only_a_low_active_account_on_fresh_data_needs_the_others() {
+        assert!(!active_is_low(&list(vec![account("a", true, 16, 11), account("b", false, 0, 0)]), &config()));
+        assert!(active_is_low(&list(vec![account("a", true, 15, 50)]), &config()));
+        let mut stale = account("a", true, 5, 5);
+        stale.usage_status = "error".into();
+        assert!(!active_is_low(&list(vec![stale]), &config()), "an error keeps the current account");
+    }
+
+    #[test]
+    fn a_running_codex_keeps_its_task_until_the_account_is_used_up() {
+        assert!(!is_used_up(&account("a", true, 1, 40)));
+        assert!(is_used_up(&account("a", true, 0, 40)));
+        assert!(is_used_up(&account("a", true, 60, 0)));
+        let mut failed = account("a", true, 0, 0);
+        failed.usage_status = "error".into();
+        assert!(!is_used_up(&failed), "only a fresh reading counts");
+        assert_eq!(restart_plan(true, false), Restart::WhenUsedUp);
+        assert_eq!(restart_plan(true, true), Restart::Now);
+        assert_eq!(restart_plan(false, true), Restart::NextStart);
+        assert_eq!(restart_plan(false, false), Restart::NextStart);
     }
 
     #[test]

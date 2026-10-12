@@ -579,15 +579,22 @@ pub(super) async fn execute(
             .await;
         }
         let started = std::time::Instant::now();
-        let mut outbound = prepared
-            .client
-            .request(method.clone(), &prepared.url)
-            .headers(prepared.headers.clone())
-            .timeout(attempts.remaining());
-        if let Some(body) = &prepared.body {
-            outbound = outbound.body(body.clone());
-        }
-        let mut upstream = match outbound.send().await {
+        let sent = match prepared.exchange.take() {
+            // A source that answers the request itself (Cursor's Runs).
+            Some(exchange) => Ok(exchange.run().await),
+            None => {
+                let mut outbound = prepared
+                    .client
+                    .request(method.clone(), &prepared.url)
+                    .headers(prepared.headers.clone())
+                    .timeout(attempts.remaining());
+                if let Some(body) = &prepared.body {
+                    outbound = outbound.body(body.clone());
+                }
+                outbound.send().await
+            }
+        };
+        let mut upstream = match sent {
             Ok(response) => response,
             Err(error) => {
                 let connect = error.is_connect() && !error.is_timeout();

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { Bot, Briefcase, Ghost, Globe2, Link2, MessageCircle, Orbit, Sparkles, SquareTerminal, type LucideIcon } from "lucide-react";
+import { Bot, Briefcase, Ghost, Globe2, Link2, MessageCircle, MousePointer2, Orbit, Sparkles, SquareTerminal, Zap, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AccountSourceKind } from "@/types/account-sources";
 
@@ -24,6 +24,8 @@ const PIERS: { id: string; berths: DockValue[] }[] = [
   { id: "github", berths: ["copilot"] },
   { id: "google", berths: ["gemini-cli", "antigravity"] },
   { id: "aws", berths: ["kiro"] },
+  { id: "xai", berths: ["grok"] },
+  { id: "cursor", berths: ["cursor"] },
 ];
 export const DOCK_ORDER: DockValue[] = PIERS.flatMap(pier => pier.berths);
 
@@ -36,6 +38,8 @@ const GLYPHS: Record<DockValue, LucideIcon> = {
   "gemini-cli": Sparkles,
   antigravity: Orbit,
   kiro: Ghost,
+  grok: Zap,
+  cursor: MousePointer2,
 };
 
 /** At most this many lights; the rest read as "+n". */

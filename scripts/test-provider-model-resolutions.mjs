@@ -61,6 +61,20 @@ export async function testProviderModelResolutions({ page, reset, captureDir }) 
 
   await reset("provider");
   await ready();
+  await page.evaluate(() => { window.review.modelResolutionPatches["model-A"] = { codexContext: { default: 500000, max: 872000 } }; });
+  await context("model-A").fill("64000");
+  const solPreset = row("model-A").getByRole("button", { name: /500K/ });
+  await solPreset.waitFor();
+  assert.match(await solPreset.getAttribute("title"), /500,000.*872,000/);
+  assert.equal(await row("model-A").getByRole("button", { name: /272K/ }).count(), 0);
+  await solPreset.click();
+  assert.equal(await context("model-A").inputValue(), "500000");
+  assert.equal(await solPreset.getAttribute("aria-pressed"), "true");
+  await page.evaluate(() => { window.review.modelResolutionPatches = {}; });
+  console.log("PASS the Codex context shortcut follows Codex's own default for the model (GPT-6.1 Sol 500K) and names its maximum");
+
+  await reset("provider");
+  await ready();
   await context("model-A").fill("64000");
   await page.waitForFunction(() => window.review.modelResolutionRequests.at(-1)?.models[0]?.overrides?.contextWindow === 64000);
   assert.equal(await context("model-A").inputValue(), "64000");

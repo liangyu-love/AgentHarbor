@@ -29,14 +29,14 @@ AgentHarbor is a Tauri 2 + React + Rust desktop app that does this for you. It r
 | **Model inject** | Connect relay models and official-account models to Codex (local Router or direct Native, accountless mode, subagent defaults), Claude Code, Claude Desktop, OpenCode and Pi — preview, apply and restore, each with backups |
 | **Local router** | Protocol translation between the three wire formats, model aggregation with priority tiers, failover, first-token timeout and live member state, plus request-level route diagnostics |
 | **Gateway** | One local address and named keys give any agent that takes a base URL and an API key every enabled model (see below) |
-| **Accounts** | Codex: ChatGPT OAuth login, quota windows, manual or threshold-based automatic switching. Account sources: ChatGPT (Sign in with ChatGPT), WorkBuddy, WorkBuddy AI, GitHub Copilot, Gemini CLI, Antigravity and Kiro, which can be shared with model inject (see below) |
+| **Accounts** | Codex: ChatGPT OAuth login, quota windows, manual or threshold-based automatic switching (a running Codex keeps its task until the old account is used up). Account sources: ChatGPT (Sign in with ChatGPT), WorkBuddy, WorkBuddy AI, GitHub Copilot, Gemini CLI, Antigravity, Kiro, Grok and Cursor, which can be shared with model inject (see below) |
 | **Usage** | A token monitor across Codex, Claude Code and relay traffic with recorded prices |
 | **Sessions** | Browse, search, export and delete Codex and Claude Code conversations; recover Codex threads its index lost |
 | **MCP / Skills / Instructions** | Manage MCP servers, Skills (with backups) and the AgentHarbor-managed block of `AGENTS.md` / `CLAUDE.md` for Codex and Claude Code |
 | **Image workbench** | Generate or edit images through a configured provider and keep them in a local gallery |
-| **Settings & maintenance** | Theme, language, custom wallpaper with automatic dark-mode contrast, app avatar, API proxy, Windows terminal proxy, diagnostics, backup cleanup and Codex restart |
+| **Settings & maintenance** | Theme, language, custom wallpaper with automatic dark-mode contrast, app avatar, API proxy, Windows terminal proxy, start at sign-in (into the tray), diagnostics, backup cleanup and Codex restart |
 
-Not available yet: account import/export, in-app plugin management, quota heatmaps and the macOS notch display. Update checks stay off until a signed release endpoint is configured.
+Not available yet: account import/export, in-app plugin management, quota heatmaps and the macOS notch display. Updates come from GitHub Releases and are installed in the app once their signature checks out.
 
 ## How Codex connects
 
@@ -74,7 +74,9 @@ An account source is a subscription whose own sign-in serves models. Sign in on 
 - **GitHub Copilot** signs in with a GitHub device code (the code is shown on the Accounts page). Each model is asked on the API Copilot serves it on: Claude models on Anthropic Messages, newer GPT models on Responses, the rest on Chat Completions. Only models the account may call now are listed; a model whose terms are not accepted yet is enabled in GitHub's Copilot settings, never by AgentHarbor. The card shows this month's premium requests.
 - **Gemini CLI / Antigravity** sign in with each app's Google sign-in and are served by Google Code Assist. Gemini CLI's sign-in is served only to Gemini Code Assist Standard and Enterprise, which need a Google Cloud project (entered on the account card). Antigravity serves personal accounts, but Google may suspend an account it sees used outside Antigravity, so the Accounts page asks first. Antigravity answers the system prompt of Claude Code and the Claude Agent SDK with a 429, so use it from OpenCode or Pi, or in an aggregate.
 - **Kiro** signs in on Kiro's own page (Google, GitHub, AWS Builder ID or IAM Identity Center); each account is AgentHarbor's own, and the Kiro IDE's and kiro-cli's sign-ins are left alone. The card shows this month's credits.
-- Google's and Kiro's own APIs are spoken through Chat Completions inside the router, so every client protocol reaches them with the usual translation.
+- **Grok** (SuperGrok, X Premium+) signs in with xAI's Grok CLI (Grok Build), which must be installed: AgentHarbor runs `grok login` in a Grok home of its own, so the grok in your terminal stays signed in as it is, and the CLI keeps and renews the token. Requests go to the Responses API the CLI uses. Codex's grouped and freeform tools are turned into what Grok takes and restored in the reply, and whole numbers Grok writes as `2500.0` in tool arguments go back as `2500`.
+- **Cursor** signs in with Cursor's CLI (`cursor-agent`), which must be installed and keeps one sign-in per machine; removing the account here does not sign the CLI out. Each request is a Cursor agent run over HTTP/2: the conversation goes in privacy mode, the client's tools are offered as tools Cursor calls back, and Cursor's own commands (shell, file edits) are never run by AgentHarbor.
+- Google's, Kiro's and Cursor's own APIs are spoken through Chat Completions inside the router, so every client protocol reaches them with the usual translation.
 - **Claude Desktop** does not support account sources yet.
 
 ## Data and safety
@@ -124,11 +126,12 @@ This also separates the single-instance lock and WebView data. `AGENT_HARBOR_CLI
 pnpm build           # TypeScript + Vite production build
 pnpm test:rust       # Rust unit and workflow tests
 pnpm test:frontend   # Playwright regressions against real components and mocked commands (run `pnpm build` first)
-pnpm tauri build     # release build; Windows installer in src-tauri/target/release/bundle/nsis/
+pnpm release         # signed release build: installer, updater signature, latest.json and SHA256SUMS.txt in src-tauri/target/release/bundle/nsis/
 ```
 
 - The frontend tests need Playwright and Chromium. Use `PLAYWRIGHT_MODULE_PATH` and `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` if they are not on the default search path. Set `FRONTEND_QA_SCOPE` to run a single group.
 - Tests against a real Codex binary are skipped by default. Set `AGENTHARBOR_TEST_CODEX_BIN` and run `cargo test --manifest-path src-tauri/Cargo.toml -- --ignored real_codex`. They use temporary homes, synthetic credentials and loopback upstreams only.
+- Release builds sign their installer for the in-app updater. The private key is read from `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PATH` or `~/.tauri/agentharbor-updater.key` and never enters the repository; keep a backup, since installs only accept updates signed with it. Each release bumps the version and uploads the four files above; the updater reads `releases/latest/download/latest.json`, so publish releases as the latest (not as a pre-release).
 - To refresh the model catalog snapshot for a release, run `node scripts/build-models-dev-snapshot.mjs`. At runtime a downloaded cache replaces the bundled snapshot whenever it is complete and valid.
 
 ## Project structure

@@ -42,6 +42,9 @@ pub(crate) fn configure_async_client(
     config: &ApiProxyConfigPayload,
 ) -> Result<reqwest::ClientBuilder, CoreError> {
     let config = sanitize_proxy_config(config)?;
+    // Relays and vendor APIs stay on HTTP/1.1; only Cursor's duplex stream
+    // builds its own HTTP/2 client.
+    let builder = builder.http1_only();
     Ok(match config.mode {
         ApiProxyMode::System => builder,
         ApiProxyMode::Direct => builder.no_proxy(),
@@ -57,6 +60,7 @@ pub(crate) fn configure_blocking_client(
     config: &ApiProxyConfigPayload,
 ) -> Result<reqwest::blocking::ClientBuilder, CoreError> {
     let config = sanitize_proxy_config(config)?;
+    let builder = builder.http1_only();
     Ok(match config.mode {
         ApiProxyMode::System => builder,
         ApiProxyMode::Direct => builder.no_proxy(),

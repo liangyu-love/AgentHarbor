@@ -28,9 +28,20 @@ pub async fn refresh_codex_accounts(
     refresh_all(&repo).await
 }
 
-/// Shared by the accounts page and the auto-switch loop.
+/// Every account's quota and catalog, for the accounts page.
 pub(crate) async fn refresh_all(
     repo: &Mutex<Repository>,
+) -> Result<CodexAccountListPayload, String> {
+    let payload = refresh_where(repo, |_| true).await?;
+    refresh_model_catalogs(repo, None, CATALOG_REFRESH_INTERVAL).await;
+    Ok(payload)
+}
+
+/// The quotas of the accounts `pick` chooses; the others keep their last
+/// reading. The auto-switch loop asks only for what it is about to judge.
+pub(crate) async fn refresh_where(
+    repo: &Mutex<Repository>,
+    pick: impl Fn(&str) -> bool,
 ) -> Result<CodexAccountListPayload, String> {
     let (credentials, proxy) = {
         let repo = repo
@@ -41,19 +52,19 @@ pub(crate) async fn refresh_all(
     // Each account may start its own app-server with multi-second timeouts, so
     // refresh a few at a time instead of one after another.
     use futures_util::StreamExt;
-    let updates: Vec<_> = futures_util::stream::iter(credentials)
-        .map(|credential| account_monitor::refresh_account(credential, proxy.clone()))
-        .buffered(3)
-        .collect()
-        .await;
-    let payload = {
-        let repo = repo
-            .lock()
-            .map_err(|_| "Repository lock poisoned".to_string())?;
-        accounts::apply_usage_updates(&repo, updates).map_err(|error| error.to_string())?
-    };
-    refresh_model_catalogs(repo, None, CATALOG_REFRESH_INTERVAL).await;
-    Ok(payload)
+    let updates: Vec<_> = futures_util::stream::iter(
+        credentials
+            .into_iter()
+            .filter(|credential| pick(&credential.account_key)),
+    )
+    .map(|credential| account_monitor::refresh_account(credential, proxy.clone()))
+    .buffered(3)
+    .collect()
+    .await;
+    let repo = repo
+        .lock()
+        .map_err(|_| "Repository lock poisoned".to_string())?;
+    accounts::apply_usage_updates(&repo, updates).map_err(|error| error.to_string())
 }
 
 /// Official catalogs change rarely; quota refreshes renew them at most this often.

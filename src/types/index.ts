@@ -52,6 +52,13 @@ export interface TerminalProxyStatus {
   notificationSent: boolean;
 }
 
+export interface AutostartStatus {
+  supported: boolean;
+  enabled: boolean;
+  /** Turned off outside the app (Windows Task Manager's Startup apps). */
+  blocked: boolean;
+}
+
 export interface TerminalProxyProbe {
   service: string;
   reachable: boolean;

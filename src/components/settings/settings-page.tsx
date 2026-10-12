@@ -34,6 +34,7 @@ import { ApiProxyDialog } from "@/components/runtime/api-proxy-dialog";
 import { AvatarSettings } from "@/components/settings/avatar-settings";
 import { BackgroundSettings } from "@/components/settings/background-settings";
 import { TerminalProxySettings } from "@/components/settings/terminal-proxy-settings";
+import { AutostartSetting } from "@/components/settings/autostart-setting";
 import { queryKeys } from "@/lib/query-keys";
 import { formatInvokeError } from "@/lib/invoke-error";
 import { focusRing, pressable } from "@/lib/a11y";
@@ -352,6 +353,7 @@ export function SettingsPage({
           </Section>
 
           <Section title={t("settings.about")}>
+            <AutostartSetting />
             <SettingRow label={t("settings.version")}>
               <span className=" text-sm text-muted-foreground">
                 {appVersion}

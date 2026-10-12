@@ -35,6 +35,27 @@ pub struct DraftModelResolution {
     pub input_limit: model_metadata::Field<u64>,
     pub output: model_metadata::Field<u64>,
     pub projection: model_policy::ClientProjection,
+    /// Codex's own context for the same model in the signed-in account's
+    /// catalog, offered as a one-click override; never applied by itself.
+    pub codex_context: Option<CodexContext>,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexContext {
+    pub default: u64,
+    /// The most Codex allows when it is above the default.
+    pub max: Option<u64>,
+}
+
+fn codex_context(official: &[serde_json::Value], model_id: &str) -> Option<CodexContext> {
+    let entry = router::matched_official_model(official, model_id)?;
+    let default = entry.get("context_window")?.as_u64().filter(|value| *value > 0)?;
+    let max = entry
+        .get("max_context_window")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|max| *max > default);
+    Some(CodexContext { default, max })
 }
 
 #[derive(Serialize)]
@@ -239,6 +260,7 @@ fn resolve_with_sources(
         .models
         .iter()
         .map(|model| {
+            let codex_context = codex_context(official, &model.id);
             let official = router::matched_official_model(official, &model.id)
                 .filter(|_| router::official_endpoint_applies(&provider));
             let (metadata, projection) =
@@ -257,6 +279,7 @@ fn resolve_with_sources(
                 input_limit: metadata.input_limit,
                 output: metadata.output_limit,
                 projection,
+                codex_context,
             }
         })
         .collect();
@@ -642,6 +665,27 @@ mod tests {
             load_store_read_only(&paths).err().unwrap(),
             "newapi.errors.storage"
         );
+    }
+
+    #[test]
+    fn a_relay_model_is_offered_codex_own_context_without_inheriting_it() {
+        let global = model_policy::CompressionPolicy::Inherit;
+        let mut draft = draft();
+        draft.base_url = "https://relay.example/v1".into();
+        draft.models[0].id = "relay::gpt-6.1-sol".into();
+        let official = vec![
+            json!({"slug":"gpt-6.1-sol","context_window":500000,"max_context_window":872000}),
+            json!({"slug":"gpt-6-luna","context_window":272000,"max_context_window":272000}),
+        ];
+        let resolved = resolve_with_sources(&draft, &store(&global), &official, &catalog());
+        assert_eq!(resolved.models[0].codex_context, Some(CodexContext { default: 500_000, max: Some(872_000) }));
+        assert_ne!(resolved.models[0].context.value, Some(500_000), "an offer, not the relay's context");
+        draft.models[0].id = "gpt-6-luna".into();
+        let resolved = resolve_with_sources(&draft, &store(&global), &official, &catalog());
+        assert_eq!(resolved.models[0].codex_context, Some(CodexContext { default: 272_000, max: None }));
+        draft.models[0].id = "unknown-model".into();
+        let resolved = resolve_with_sources(&draft, &store(&global), &official, &catalog());
+        assert_eq!(resolved.models[0].codex_context, None);
     }
 
     #[test]

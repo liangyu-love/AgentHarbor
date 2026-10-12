@@ -354,6 +354,8 @@ export interface ProviderModelResolution {
   inputLimit: ResolvedField<number>;
   output: ResolvedField<number>;
   projection: ClientProjection;
+  /** Codex's own context for this model in the signed-in account's catalog; an offer, never applied. */
+  codexContext?: { default: number; max: number | null } | null;
 }
 export interface ProviderModelResolutions {
   models: ProviderModelResolution[];

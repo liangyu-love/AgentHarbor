@@ -33,7 +33,7 @@ impl ToolNamespaces {
         Ok(encoded)
     }
 
-    pub(super) fn prepare(value: &mut Value) -> Result<Self, String> {
+    pub(crate) fn prepare(value: &mut Value) -> Result<Self, String> {
         let mut map = Self::default();
         let mut plain_names = HashSet::new();
         if let Some(tools) = value.get_mut("tools") {

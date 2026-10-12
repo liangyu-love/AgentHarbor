@@ -126,6 +126,8 @@ fn default_slug(provider: &router::Provider) -> String {
             super::account_sources::SourceKind::GeminiCli => "gemini-cli",
             super::account_sources::SourceKind::Antigravity => "antigravity",
             super::account_sources::SourceKind::Kiro => "kiro",
+            super::account_sources::SourceKind::Grok => "grok",
+            super::account_sources::SourceKind::Cursor => "cursor",
         }.to_owned();
     }
     let from_name = slugify(&provider.name);

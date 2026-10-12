@@ -65,7 +65,15 @@ pub fn run() {
         .manage(commands::hotspot::WindowRevealState::default())
         .manage(commands::desktop_exit::ExitCoordinator::default())
         .setup(|app| {
+            core::autostart::refresh();
             if let Some(window) = app.get_webview_window("main") {
+                // The window starts hidden; a sign-in start stays in the tray.
+                if core::autostart::launched_at_sign_in() {
+                    #[cfg(target_os = "macos")]
+                    platform::dock::set_dock_visible(false);
+                } else {
+                    let _ = window.show();
+                }
                 let win = window.clone();
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -271,6 +279,10 @@ pub fn run() {
             commands::image::delete_gallery_image,
             commands::system::load_snapshot,
             commands::system::is_updater_configured,
+            commands::system::set_ui_language,
+            commands::system::updater_proxy,
+            commands::system::get_autostart_status,
+            commands::system::set_autostart,
             commands::mcp::load_mcp_servers,
             commands::mcp::upsert_mcp_server,
             commands::mcp::set_mcp_server_enabled,

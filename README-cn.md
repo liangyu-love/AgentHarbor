@@ -34,14 +34,14 @@ Codex 是主要集成对象，其他客户端共用同一套中转与路由。
 | **模型注入** | 把中转模型和官方账号的模型接到下列客户端：预览、应用、恢复配置，每次都有备份<br>• Codex：本地路由或原生直连，支持无账号模式和子代理默认配置<br>• Claude Code、Claude Desktop、OpenCode、Pi |
 | **本地路由** | 三种协议互相转换<br>模型聚合：按优先级分层、失败切换、首字超时切换、实时成员状态<br>请求级路由诊断 |
 | **通用网关** | 一个本地地址加上命名 key，任何能填 Base URL 和 API Key 的 agent 都能使用全部开启的模型，见下文 |
-| **账号** | Codex：ChatGPT OAuth 登录、额度窗口、手动切号或按阈值自动切号<br>账号来源：ChatGPT（Sign in with ChatGPT）、WorkBuddy、WorkBuddy AI、GitHub Copilot、Gemini CLI、Antigravity、Kiro，登录后可以提供给模型注入使用，见下文 |
+| **账号** | Codex：ChatGPT OAuth 登录、额度窗口、手动切号或按阈值自动切号（正在运行的 Codex 会把任务做完，原账号额度用尽时才重启）<br>账号来源：ChatGPT（Sign in with ChatGPT）、WorkBuddy、WorkBuddy AI、GitHub Copilot、Gemini CLI、Antigravity、Kiro、Grok、Cursor，登录后可以提供给模型注入使用，见下文 |
 | **用量** | Token 监控覆盖 Codex、Claude Code 与中转流量，并记录当时价格 |
 | **线程管理** | 浏览、搜索、导出、删除 Codex 与 Claude Code 会话；恢复 Codex 索引里丢失的线程 |
 | **MCP / Skills / 自定义指令** | 管理 MCP 服务器、Skills（带备份），以及 Codex 和 Claude Code 的 `AGENTS.md` / `CLAUDE.md` 中由 AgentHarbor 管理的区块 |
 | **生图工作台** | 通过已配置的供应商生成或编辑图片，保存到本地图册 |
-| **设置与维护** | 主题、语言、自定义壁纸（深色模式自动保证对比度）、应用头像、API 代理、Windows 终端代理、诊断、备份清理和重启 Codex |
+| **设置与维护** | 主题、语言、自定义壁纸（深色模式自动保证对比度）、应用头像、API 代理、Windows 终端代理、开机自启（启动到托盘）、诊断、备份清理和重启 Codex |
 
-尚未实现：账号导入导出、应用内插件管理、额度热力图和 macOS 刘海显示。检查更新在配置签名发布端点之前保持关闭。
+尚未实现：账号导入导出、应用内插件管理、额度热力图和 macOS 刘海显示。更新来自 GitHub Releases，校验签名后在应用内安装。
 
 ## Codex 的接入方式
 
@@ -79,7 +79,9 @@ Codex 是主要集成对象，其他客户端共用同一套中转与路由。
 - **GitHub Copilot**：用 GitHub 设备码登录，账号页会显示要输入的代码。每个模型走 Copilot 提供它的接口：Claude 系列走 Anthropic Messages，新 GPT 走 Responses，其余走 Chat Completions。只列出账号现在能用的模型；需要先同意条款的模型请到 GitHub 的 Copilot 设置里启用，AgentHarbor 不会代为同意。卡片显示本月高级请求。
 - **Gemini CLI / Antigravity**：分别用两个应用自己的 Google 登录，由 Google Code Assist 提供模型。Gemini CLI 的登录只对 Gemini Code Assist 标准版 / 企业版开放，需要 Google Cloud 项目（在账号卡片里填写）。Antigravity 个人账号也能用，但 Google 可能封禁在 Antigravity 之外使用的账号，所以登录前会先确认。Antigravity 会对 Claude Code 和 Claude Agent SDK 的系统提示词返回 429，请在 OpenCode、Pi 中使用，或放进聚合组。
 - **Kiro**：在 Kiro 官网登录（Google、GitHub、AWS Builder ID 或 IAM Identity Center），每个账号独立保存，不影响 Kiro IDE 和 kiro-cli 的登录。卡片显示本月积分。
-- Google 和 Kiro 的接口在路由内部经 Chat Completions 转换，所以各种客户端协议都能照常用上它们。
+- **Grok**（SuperGrok、X Premium+）：用 xAI 的 Grok CLI（Grok Build）登录，需要先安装。AgentHarbor 在自己的 Grok 目录里运行 `grok login`，不影响你终端里 grok 的登录；令牌由 CLI 保存并续期。请求走 CLI 用的 Responses 接口。Codex 的分组工具和自由格式工具会转成 Grok 能接受的形式，回复里再还原；工具参数里 Grok 写成 `2500.0` 的整数会改回 `2500`。
+- **Cursor**：用 Cursor CLI（`cursor-agent`）的登录，需要先安装；CLI 在本机只保留一个登录，移除这里的账号不会退出 CLI。每次请求是一次走 HTTP/2 的 Cursor Agent 运行：对话以隐私模式发送，客户端的工具作为 Cursor 可回调的工具提供，Cursor 自己的命令（终端、改文件）AgentHarbor 一律不执行。
+- Google、Kiro 和 Cursor 的接口在路由内部经 Chat Completions 转换，所以各种客户端协议都能照常用上它们。
 - **Claude Desktop** 暂不支持账号来源。
 
 ## 数据与安全
@@ -131,11 +133,12 @@ pnpm tauri dev
 pnpm build           # TypeScript + Vite 生产构建
 pnpm test:rust       # Rust 单元与工作流测试
 pnpm test:frontend   # Playwright 回归：真实组件 + 模拟命令（先执行 pnpm build）
-pnpm tauri build     # 发布构建；Windows 安装包位于 src-tauri/target/release/bundle/nsis/
+pnpm release         # 签名发布构建：安装包、更新签名、latest.json 和 SHA256SUMS.txt，位于 src-tauri/target/release/bundle/nsis/
 ```
 
 - **前端测试**：需要 Playwright 和 Chromium。不在默认搜索路径时，用 `PLAYWRIGHT_MODULE_PATH` 和 `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` 指定；用 `FRONTEND_QA_SCOPE` 只跑某一组。
 - **真实 Codex 测试**：默认跳过。设置 `AGENTHARBOR_TEST_CODEX_BIN` 后运行 `cargo test --manifest-path src-tauri/Cargo.toml -- --ignored real_codex`。这些测试只使用临时目录、合成凭据和本地模拟上游。
+- **发布与更新签名**：发布构建会为应用内更新签名安装包。私钥依次从 `TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PATH` 或 `~/.tauri/agentharbor-updater.key` 读取，不进仓库；请备份好，已安装的版本只接受用它签名的更新。每次发布都要升版本号并上传上面四个文件；更新地址是 `releases/latest/download/latest.json`，所以发布时要设为最新版本（不要标成预发布）。
 - **模型目录快照**：发布前用 `node scripts/build-models-dev-snapshot.mjs` 更新内置快照。运行时下载的缓存只要完整有效，就会取代内置快照。
 
 ## 项目结构

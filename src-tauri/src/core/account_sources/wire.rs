@@ -115,7 +115,7 @@ impl Decoder {
 }
 
 /// Builds Chat from events: SSE chunks for a stream, one completion else.
-struct Writer {
+pub(super) struct Writer {
     stream: bool,
     id: String,
     model: String,
@@ -132,7 +132,7 @@ struct Writer {
 }
 
 impl Writer {
-    fn new(model: &str, stream: bool) -> Self {
+    pub(super) fn new(model: &str, stream: bool) -> Self {
         Writer {
             stream,
             id: format!("chatcmpl-{}", uuid::Uuid::new_v4().simple()),
@@ -162,7 +162,7 @@ impl Writer {
     }
 
     /// SSE for these events.
-    fn write(&mut self, events: Vec<Event>) -> String {
+    pub(super) fn write(&mut self, events: Vec<Event>) -> String {
         let mut out = String::new();
         for event in events {
             if self.finished && !matches!(event, Event::Usage { .. }) {
@@ -206,7 +206,7 @@ impl Writer {
     }
 
     /// The end of a stream: a finish if the vendor gave none, then `[DONE]`.
-    fn done(&mut self) -> String {
+    pub(super) fn done(&mut self) -> String {
         let mut out = String::new();
         if !self.finished {
             if !self.started {
@@ -220,7 +220,7 @@ impl Writer {
     }
 
     /// One completion from every event of a reply that did not stream.
-    fn collect(&mut self, events: Vec<Event>) -> Value {
+    pub(super) fn collect(&mut self, events: Vec<Event>) -> Value {
         for event in events {
             match event {
                 Event::Text(text) => self.content.push_str(&text),

@@ -50,6 +50,10 @@ pub(in crate::core::router_proxy) struct Prepared {
     pub account_source: Option<account_sources::SourceKind>,
     /// Turns a vendor wire's reply into Chat before anything reads it.
     pub wire: Option<account_sources::wire::Decoder>,
+    /// Turns a source's reply into what the client takes (Grok's calls).
+    pub reply_fix: Option<account_sources::ReplyFix>,
+    /// A source that answers the request itself (Cursor's Runs).
+    pub exchange: Option<account_sources::cursor::Exchange>,
 }
 
 /// One attempt's fixed facts, read by every stage.
@@ -77,6 +81,8 @@ struct Draft {
     tool_adapter: tool_schema::Adapter,
     /// Reads the reply of a source spoken through Chat (`account_sources::wire`).
     wire: Option<account_sources::wire::Decoder>,
+    reply_fix: Option<account_sources::ReplyFix>,
+    exchange: Option<account_sources::cursor::Exchange>,
 }
 
 type Stage = fn(&Attempt<'_>, &mut Draft) -> ForwardResult<()>;
@@ -235,6 +241,11 @@ fn tools(attempt: &Attempt<'_>, draft: &mut Draft) -> ForwardResult<()> {
 fn vendor(attempt: &Attempt<'_>, draft: &mut Draft) -> ForwardResult<()> {
     let input = attempt.input;
     if let (Some(auth), Some(bytes), false) = (input.account, &draft.body, input.resource) {
+        if let Some(exchange) = auth.exchange(attempt.upstream_protocol, bytes, &attempt.model).transpose()? {
+            draft.url = format!("{}/agent.v1.AgentService/Run", auth.base.trim_end_matches('/'));
+            draft.exchange = Some(exchange);
+            return Ok(());
+        }
         if let Some(encoded) = auth.encode(attempt.upstream_protocol, bytes, &attempt.model).transpose()? {
             draft.url = format!("{}/{}", auth.base.trim_end_matches('/'), encoded.path);
             for (name, value) in encoded.headers {
@@ -247,6 +258,7 @@ fn vendor(attempt: &Attempt<'_>, draft: &mut Draft) -> ForwardResult<()> {
             draft.wire = Some(encoded.decoder);
             return Ok(());
         }
+        draft.reply_fix = auth.reply_fix(attempt.upstream_protocol, bytes);
         for (name, value) in auth.body_headers(attempt.upstream_protocol, bytes) {
             let value = HeaderValue::from_str(&value)
                 .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid account source header"))?;
@@ -347,6 +359,8 @@ fn meter(
         credential,
         account_source: account.map(|auth| auth.kind),
         wire: draft.wire,
+        reply_fix: draft.reply_fix,
+        exchange: draft.exchange,
     })
 }
 
@@ -378,6 +392,10 @@ impl Prepared {
         let response = match self.account_source {
             Some(kind) if !response.status().is_success() => explain_account_refusal(kind, response).await.0,
             _ => response,
+        };
+        let response = match self.reply_fix {
+            Some(fix) => fix.apply(response).await,
+            None => response,
         };
         // A vendor wire's reply is Chat from here on.
         let response = match self.wire {

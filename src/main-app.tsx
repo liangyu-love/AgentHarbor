@@ -139,6 +139,12 @@ function MainApp() {
   const clearTerminalProxyRequest = useCallback(() => setTerminalProxyRequested(false), []);
 
   useAccountsChangedListener();
+  useEffect(() => {
+    const sync = (language: string) => { void api.setUiLanguage(language).catch(() => {}); };
+    sync(i18n.language);
+    i18n.on("languageChanged", sync);
+    return () => { i18n.off("languageChanged", sync); };
+  }, [i18n]);
 
   // Global Ctrl+K / Cmd+K listener
   useEffect(() => {

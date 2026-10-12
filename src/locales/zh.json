@@ -887,8 +887,8 @@
     "menuDisplayName": "别名（编码器菜单显示）",
     "menuDisplayNameFor": "{{model}} 的菜单显示名",
     "contextWindowShort": "上下文窗口",
-    "codexContextPreset": "Codex 上下文覆盖 · 272,000",
-    "codexContextPresetAria": "将 {{model}} 的上下文设为 272K",
+    "codexContextPreset": "Codex 默认上下文 · {{value}}",
+    "codexContextPresetAria": "将 {{model}} 的上下文设为 {{value}}",
     "modelLimitsColumn": "上限 · 目录 · 压缩",
     "modelLimitsColumnHint": "上限留空即自动解析；目录填写 provider/model 精确匹配；压缩留空跟随上级策略。",
     "limitShort": "上限",
@@ -1473,7 +1473,8 @@
     "capabilityQuickContext": "上下文 {{value}}",
     "capabilityQuickOutput": "输出 {{value}}",
     "gatewaySlug": "网关短名",
-    "gatewaySlugHint": "通用网关里的模型名是「短名/模型」；留空自动生成，改名不影响已配置的 agent"
+    "gatewaySlugHint": "通用网关里的模型名是「短名/模型」；留空自动生成，改名不影响已配置的 agent",
+    "codexContextPresetMax": "Codex 默认上下文 · {{value}}，最大 {{max}}"
   },
   "avatar": {
     "title": "应用头像",
@@ -2329,7 +2330,7 @@
     "apiProxySavedDesc": "AgentHarbor 和智能路由已应用新设置。请通过 AgentHarbor 的“重启 Codex”将设置应用到 Codex 自身的登录和账号请求。",
     "refreshIntervalSaveFailedTitle": "刷新频率保存失败",
     "refreshIntervalSaveFailedDesc": "已保持当前配置，请稍后重试。",
-    "autoSwitchDesc": "当前账号额度低于阈值时自动切换到额度最充足的账号。",
+    "autoSwitchDesc": "当前账号额度低于阈值时切换到额度最充足的账号。正在运行的 Codex 不会被打断，原账号额度用尽时才自动重启。",
     "autoSwitchEnabled": "自动切换已开启",
     "autoSwitchEnabledDesc": "AgentHarbor 会在后台检查额度，切换后会发系统通知。",
     "autoSwitchDisabled": "自动切换已关闭",
@@ -2358,7 +2359,7 @@
     "accentColor": "主题色",
     "accentColorDesc": "自定义按钮、选中态和高亮元素的主色调。",
     "refreshInterval": "数据刷新频率",
-    "refreshIntervalDesc": "此设置只控制额度 API（wham/usage）的自动刷新频率。",
+    "refreshIntervalDesc": "账号、用量页面打开时的自动刷新间隔，也是自动切换账号的检查间隔（最短 1 分钟，每次只查询当前账号）。",
     "refresh30s": "30 秒",
     "refresh1m": "1 分钟",
     "refresh3m": "3 分钟",
@@ -2370,7 +2371,16 @@
     "upToDate": "当前已是最新版本",
     "updateCheckFailed": "检查更新失败",
     "heroDesc": "外观、语言、代理与更新",
-    "bgAutoDimmed": "深色模式下壁纸偏亮，已自动加深至 {{value}}%，保证文字清晰"
+    "bgAutoDimmed": "深色模式下壁纸偏亮，已自动加深至 {{value}}%，保证文字清晰",
+    "autostart": {
+      "title": "开机自启",
+      "description": "登录系统后在后台启动，只显示托盘图标；本地路由、自动切换账号随之就绪。",
+      "blocked": "已在任务管理器的「启动应用」里被禁用。在这里重新打开会一并恢复。",
+      "failed": "开机自启设置失败",
+      "errors": {
+        "write": "无法写入开机启动项，请检查权限后重试。"
+      }
+    }
   },
   "common": {
     "save": "保存",
@@ -2442,7 +2452,9 @@
       "copilot": "GitHub Copilot 套餐（Free / Pro / Pro+ / 商业版）的账号，用 GitHub 设备码登录。Claude 系列走 Anthropic Messages，新 GPT 走 Responses，其余走 Chat Completions，每个模型自动选对接口。",
       "gemini-cli": "用 Gemini CLI 的 Google 登录，经 Google Code Assist 使用 Gemini 模型。Google 只给 Gemini Code Assist 标准版 / 企业版提供这种登录，需要一个 Google Cloud 项目。",
       "antigravity": "用 Antigravity 的 Google 登录，经 Google Code Assist 使用 Antigravity 提供的 Gemini、Claude 和 GPT-OSS 模型，个人 Google 账号也能用。",
-      "kiro": "Kiro 账号（Google、GitHub、AWS Builder ID 或 IAM Identity Center 登录），经 Kiro 自己的接口使用 Claude 等模型；每个账号独立保存，不影响 Kiro IDE 和 kiro-cli 的登录。"
+      "kiro": "Kiro 账号（Google、GitHub、AWS Builder ID 或 IAM Identity Center 登录），经 Kiro 自己的接口使用 Claude 等模型；每个账号独立保存，不影响 Kiro IDE 和 kiro-cli 的登录。",
+      "grok": "SuperGrok / X Premium+ 订阅，用 xAI 的 Grok CLI（Grok Build）登录：AgentHarbor 在自己的 Grok 目录里运行 `grok login`，不影响你终端里 grok 的登录。模型走 Responses。",
+      "cursor": "Cursor 套餐，用 Cursor CLI（cursor-agent）的登录：模型经 Cursor 的 Agent 接口提供给其他客户端，工具调用交还给客户端执行，Cursor 自己的命令一律不在这里运行。"
     },
     "note": {
       "chatgpt-api": "有些套餐没有资格使用这种登录，登录时会明确提示。Team、Business、Enterprise 工作区要管理员先允许「Sign in with ChatGPT」应用，否则登录页会说组织尚未启用访问权限；也可以在登录页切到个人工作区。不会在 OpenAI 保存任何内容，部分参数和 OpenAI 托管工具会从请求中去掉。",
@@ -2451,7 +2463,9 @@
       "copilot": "只列出这个账号现在能用的模型；需要先同意条款的模型（如部分 Claude、Gemini）请到 GitHub 的 Copilot 设置里启用，再刷新模型。每轮由你发起的对话计一次高级请求，工具回传不计。",
       "gemini-cli": "个人 Google 账号请用 Antigravity。登录后若提示缺少项目，在账号卡片里填上 Google Cloud 项目 ID 即可。模型列表按 Gemini CLI 对这个账号开放的为准。",
       "antigravity": "Antigravity 会对 Claude Code 和 Claude Agent SDK 的系统提示词直接返回 429（不管额度还剩多少），请在 OpenCode、Pi 中使用，或放进聚合组让被拒请求切到下一个成员。额度显示的是用得最多的那个模型。",
-      "kiro": "登录页会打开 Kiro 官网，选择登录方式后回到这里。额度为本月积分；思考强度为中、高时，Claude 模型会把思考过程一并返回。"
+      "kiro": "登录页会打开 Kiro 官网，选择登录方式后回到这里。额度为本月积分；思考强度为中、高时，Claude 模型会把思考过程一并返回。",
+      "grok": "需要先安装 Grok Build（x.ai/cli）。令牌由 Grok CLI 保存并续期，AgentHarbor 只在请求时读取。Codex 的分组工具和自由格式工具会转成 Grok 能接受的形式，回复里再还原；工具参数里 Grok 写成 2500.0 的整数会改回 2500。",
+      "cursor": "需要先安装 cursor-agent（cursor.com/cli）。CLI 在本机只保留一个登录，这里的账号就是它；移除账号不会退出 CLI。请求以隐私模式发送（不用于训练）。上下文按模型名判断：名字带 1M 的为 1M，其余为 200K。"
     },
     "errors": {
       "storage": "账号来源的存储读写失败",
@@ -2481,7 +2495,10 @@
       "kiroUnsupportedSignIn": "暂不支持这种 Kiro 登录方式（企业自有身份提供商），请换 Google、GitHub 或 AWS 登录",
       "kiroNoProfile": "Kiro 没有为这个登录提供配置文件",
       "kiroNoModels": "这个 Kiro 账号现在没有可用的模型",
-      "geminiNeedsProject": "Google 只给 Gemini Code Assist 标准版 / 企业版提供 Gemini CLI 登录，需要填上计费的 Google Cloud 项目 ID；个人 Google 账号请改用 Antigravity。"
+      "geminiNeedsProject": "Google 只给 Gemini Code Assist 标准版 / 企业版提供 Gemini CLI 登录，需要填上计费的 Google Cloud 项目 ID；个人 Google 账号请改用 Antigravity。",
+      "grokCli": "没有找到 Grok CLI，请先安装 Grok Build（x.ai/cli）再登录。",
+      "cursorCli": "没有找到 Cursor CLI（cursor-agent），请先安装（cursor.com/cli）再登录。",
+      "noAccount": "登录结束了，但 CLI 没有给出账号，请重试。"
     },
     "badge": "官方账号",
     "refusesClaudeCode": "{{name}} 会拒绝 Claude Code 的系统提示词，请求可能失败",
@@ -2490,7 +2507,9 @@
       "tencent": "腾讯",
       "github": "GitHub",
       "google": "Google",
-      "aws": "AWS"
+      "aws": "AWS",
+      "xai": "xAI",
+      "cursor": "Cursor"
     },
     "berth": "{{name}}，{{count}} 个账号",
     "berthEmpty": "未登录",

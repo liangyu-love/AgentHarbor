@@ -46,7 +46,9 @@ export function useUpdateCheck() {
         return "unconfigured";
       }
       const { check } = await import("@tauri-apps/plugin-updater");
-      const update = await check();
+      // GitHub is often reachable only through a proxy; the download reuses it.
+      const proxy = await api.updaterProxy().catch(() => null);
+      const update = await check(proxy ? { proxy } : undefined);
       if (update) {
         updateRef.current = update;
         setUpdateInfo({

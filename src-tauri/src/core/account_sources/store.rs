@@ -1,6 +1,6 @@
 //! Signed-in accounts of the official account sources, kept encrypted beside
 //! the relay store. Tokens leave this module only as request headers.
-use super::{chatgpt_api, copilot, google, kiro, workbuddy, SourceKind};
+use super::{chatgpt_api, copilot, cursor, google, grok, kiro, workbuddy, SourceKind};
 use crate::core::secret_file;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -53,6 +53,8 @@ pub enum Credentials {
     Copilot(copilot::Creds),
     Google(google::Creds),
     Kiro(kiro::Creds),
+    Grok(grok::Creds),
+    Cursor(cursor::Creds),
 }
 
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]

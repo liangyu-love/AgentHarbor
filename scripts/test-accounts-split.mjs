@@ -20,9 +20,9 @@ export async function testAccountsSplit({ page, reset, captureDir }) {
   const tabs = page.getByRole("radiogroup");
   const berth = async (name, count) => tabs.getByRole("radio", { name: await tr("accountSources.berth", { name, count }), exact: true });
   await (await berth("Codex", 3)).waitFor();
-  assert.equal(await tabs.getByRole("radio").count(), 8);
+  assert.equal(await tabs.getByRole("radio").count(), 10);
   assert.deepEqual(await page.locator("[data-pier]").evaluateAll(piers => piers.map(pier => pier.getAttribute("data-pier"))),
-    ["openai", "tencent", "github", "google", "aws"], "channels sit on their vendors' piers");
+    ["openai", "tencent", "github", "google", "aws", "xai", "cursor"], "channels sit on their vendors' piers");
   assert.equal(await tabs.getByRole("radio", { name: /^Codex/ }).getAttribute("aria-checked"), "true");
   const hullLeft = () => page.locator(".source-dock-hull").evaluate(element => parseFloat(element.style.left));
   const codexLeft = await hullLeft();
@@ -127,8 +127,9 @@ export async function testAccountsSplit({ page, reset, captureDir }) {
   // Arrow keys walk the berths; Copilot's device sign-in shows the code to type at GitHub.
   await page.locator('[data-berth="chatgpt-api"]').focus();
   await page.keyboard.press("End");
-  await page.locator('[data-account-source="kiro"]').waitFor();
-  for (let step = 0; step < 3; step++) await page.keyboard.press("ArrowLeft");
+  await page.locator('[data-account-source="cursor"]').waitFor();
+  await page.locator('[data-pier="cursor"] [data-berth="cursor"]').waitFor();
+  for (let step = 0; step < 5; step++) await page.keyboard.press("ArrowLeft");
   await page.locator('[data-account-source="copilot"]').waitFor();
   assert.equal(await page.locator('[data-berth="copilot"]').getAttribute("aria-checked"), "true");
   await page.evaluate(() => {

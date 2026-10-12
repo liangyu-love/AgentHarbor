@@ -30,6 +30,9 @@ export function ModelResolutionFields({ model, resolution, loading, error, disab
   const context = resolvedLimitPlaceholder(resolution?.context, i18n.language, unavailable);
   const catalog = resolution?.matched ? `${resolution.matched.providerId}/${resolution.matched.modelId}` : unavailable;
   const plan = resolution?.projection.compression;
+  // Codex's own default for this model (GPT-6.1 Sol: 500K); 272K is Codex's long-standing default otherwise.
+  const codexPreset = resolution?.codexContext?.default ?? 272_000;
+  const codexMax = resolution?.codexContext?.max ?? null;
   const compressionLabel = (value: CompressionPlan | undefined) => {
     if (!value) return unavailable;
     const source = t(`newapi.modelResolution.${value.source}`);
@@ -64,12 +67,14 @@ export function ModelResolutionFields({ model, resolution, loading, error, disab
         aria-label={t("newapi.contextFor", { model: model.id })}
         onChange={event => onChange({ overrides: { ...model.overrides, contextWindow: event.target.value ? Number(event.target.value) : null } })} />
       <button type="button" disabled={disabled}
-        aria-label={t("newapi.codexContextPresetAria", { model: model.id })}
-        title={t("newapi.codexContextPreset")}
-        aria-pressed={model.overrides?.contextWindow === 272_000}
-        onClick={() => onChange({ overrides: { ...model.overrides, contextWindow: 272_000 } })}
+        aria-label={t("newapi.codexContextPresetAria", { model: model.id, value: compactTokens(codexPreset) })}
+        title={t(codexMax ? "newapi.codexContextPresetMax" : "newapi.codexContextPreset", {
+          value: codexPreset.toLocaleString(i18n.language), max: codexMax?.toLocaleString(i18n.language) })}
+        aria-pressed={model.overrides?.contextWindow === codexPreset}
+        data-codex-context-preset={codexPreset}
+        onClick={() => onChange({ overrides: { ...model.overrides, contextWindow: codexPreset } })}
         className="shrink-0 rounded px-1 text-[10px] font-medium text-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40">
-        272K
+        {compactTokens(codexPreset)}
       </button>
       {model.overrides?.contextWindow != null && <button type="button" disabled={disabled}
         onClick={() => onChange({ overrides: { ...model.overrides, contextWindow: null } })}

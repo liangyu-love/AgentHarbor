@@ -4,6 +4,44 @@ use serde::Serialize;
 use std::sync::Mutex;
 use tauri::{AppHandle, State};
 
+/// The interface language, for text the backend shows by itself (notifications).
+static UI_LANGUAGE: std::sync::RwLock<String> = std::sync::RwLock::new(String::new());
+
+#[tauri::command]
+pub fn set_ui_language(language: String) {
+    if let Ok(mut current) = UI_LANGUAGE.write() {
+        *current = language.chars().take(16).collect();
+    }
+}
+
+pub(crate) fn ui_language_is_english() -> bool {
+    UI_LANGUAGE.read().is_ok_and(|language| language.starts_with("en"))
+}
+
+/// The proxy update checks and downloads go through: the app proxy, or the
+/// system's when the app follows it.
+#[tauri::command]
+pub fn updater_proxy(repo: State<'_, Mutex<Repository>>) -> Option<String> {
+    let proxy = repo.lock().ok()?.api_proxy_config();
+    match proxy.mode {
+        ApiProxyMode::Manual => proxy.url.filter(|url| !url.trim().is_empty()),
+        ApiProxyMode::System => crate::platform::proxy::detect_system_proxy_candidates()
+            .into_iter()
+            .next(),
+        ApiProxyMode::Direct => None,
+    }
+}
+
+#[tauri::command]
+pub fn get_autostart_status() -> crate::core::autostart::AutostartStatus {
+    crate::core::autostart::status()
+}
+
+#[tauri::command]
+pub fn set_autostart(enabled: bool) -> Result<crate::core::autostart::AutostartStatus, String> {
+    crate::core::autostart::set(enabled)
+}
+
 #[tauri::command]
 pub fn load_snapshot(
     repo: State<'_, Mutex<Repository>>,
@@ -341,6 +379,25 @@ pub fn open_path(path: String) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod updater_tests {
+    #[test]
+    fn the_shipped_build_checks_github_releases_for_signed_updates() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../../tauri.conf.json")).unwrap();
+        let updater = &config["plugins"]["updater"];
+        assert!(updater["pubkey"].as_str().is_some_and(|key| key.len() > 40));
+        assert_eq!(
+            updater["endpoints"][0],
+            "https://github.com/liangyu-love/AgentHarbor/releases/latest/download/latest.json"
+        );
+        assert_eq!(config["bundle"]["createUpdaterArtifacts"], true);
+        let config: tauri::Config =
+            serde_json::from_str(include_str!("../../tauri.conf.json")).unwrap();
+        assert!(super::updater_configured(&config));
+    }
 }
 
 #[cfg(test)]

@@ -10,6 +10,7 @@ import type {
   ApiProxyDetectPayload,
   ApiProxyTestPayload,
   TerminalProxyStatus,
+  AutostartStatus,
   TerminalProxyProbe,
   UpdateInstallabilityPayload,
   DiagnosePayload,
@@ -340,6 +341,11 @@ export const api = {
     openTerminal: () => invoke<void>("open_proxy_terminal"),
   },
 
+  autostart: {
+    status: () => invoke<AutostartStatus>("get_autostart_status"),
+    set: (enabled: boolean) => invoke<AutostartStatus>("set_autostart", { enabled }),
+  },
+
   checkUpdateInstallability: () =>
     invoke<UpdateInstallabilityPayload>("check_update_installability"),
 
@@ -399,6 +405,11 @@ export const api = {
     invoke<CoreEnvelope<CustomInstructionStatePayload>>("rollback_custom_instruction", { historyId, targetId }),
 
   isUpdaterConfigured: () => invoke<boolean>("is_updater_configured"),
+  /** The proxy update checks and downloads use: the app proxy or the system's. */
+  updaterProxy: () => invoke<string | null>("updater_proxy"),
+
+  /** Text the backend shows by itself (notifications) follows the interface language. */
+  setUiLanguage: (language: string) => invoke<void>("set_ui_language", { language }),
 
   openPath: (path: string) =>
     invoke<void>("open_path", { path }),

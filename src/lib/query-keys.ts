@@ -30,4 +30,5 @@ export const queryKeys = {
   threadMessages: (key: string, snapshot: number, offset: number, source: "codex" | "claudeCode" = "codex") => ["threads", source, "messages", key, snapshot, offset],
   systemInfo: ["system-info"],
   terminalProxy: ["terminal-proxy"],
+  autostart: ["autostart"],
 } as const;

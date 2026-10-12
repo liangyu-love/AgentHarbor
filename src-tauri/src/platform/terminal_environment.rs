@@ -74,7 +74,7 @@ pub(crate) mod windows {
         }
 
         // Tests use a temporary HKCU subkey, never the real user environment.
-        pub(super) fn open_at(path: &str, writable: bool) -> Result<Self, String> {
+        pub(crate) fn open_at(path: &str, writable: bool) -> Result<Self, String> {
             let name = wide(path);
             let mut key = null_mut();
             let access = KEY_QUERY_VALUE | if writable { KEY_SET_VALUE } else { 0 };

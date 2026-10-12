@@ -1,14 +1,17 @@
 //! Official account sources: subscriptions whose own sign-in serves models
 //! (WorkBuddy, WorkBuddy AI, ChatGPT through Sign in with ChatGPT, GitHub
-//! Copilot, Google's Gemini CLI and Antigravity, Kiro). Each source
+//! Copilot, Google's Gemini CLI and Antigravity, Kiro, Grok, Cursor). Each source
 //! keeps its accounts here and, when shared with model inject, publishes one
 //! router provider whose credentials are the active account's, fetched (and
 //! refreshed) per request. Those providers are reachable only through the
 //! local router: no client config ever receives an account token.
 pub mod chatgpt_api;
+mod cli;
 pub mod codeassist;
 pub mod copilot;
+pub mod cursor;
 pub mod google;
+pub mod grok;
 pub mod kiro;
 mod loopback;
 pub mod store;
@@ -33,11 +36,13 @@ pub enum SourceKind {
     GeminiCli,
     Antigravity,
     Kiro,
+    Grok,
+    Cursor,
 }
 
 impl SourceKind {
-    pub const ALL: [SourceKind; 7] = [SourceKind::ChatgptApi, SourceKind::Workbuddy, SourceKind::WorkbuddyAi, SourceKind::Copilot,
-        SourceKind::GeminiCli, SourceKind::Antigravity, SourceKind::Kiro];
+    pub const ALL: [SourceKind; 9] = [SourceKind::ChatgptApi, SourceKind::Workbuddy, SourceKind::WorkbuddyAi, SourceKind::Copilot,
+        SourceKind::GeminiCli, SourceKind::Antigravity, SourceKind::Kiro, SourceKind::Grok, SourceKind::Cursor];
 
     pub fn provider_id(self) -> &'static str {
         match self {
@@ -48,6 +53,8 @@ impl SourceKind {
             SourceKind::GeminiCli => "account-gemini-cli",
             SourceKind::Antigravity => "account-antigravity",
             SourceKind::Kiro => "account-kiro",
+            SourceKind::Grok => "account-grok",
+            SourceKind::Cursor => "account-cursor",
         }
     }
 
@@ -60,14 +67,16 @@ impl SourceKind {
             SourceKind::GeminiCli => "Gemini CLI",
             SourceKind::Antigravity => "Antigravity",
             SourceKind::Kiro => "Kiro",
+            SourceKind::Grok => "Grok",
+            SourceKind::Cursor => "Cursor",
         }
     }
 
     /// The source's API; a model may name another (`SourceModel::protocol`).
     pub fn protocol(self) -> router::ModelProtocol {
         match self {
-            SourceKind::ChatgptApi => router::ModelProtocol::Responses,
-            // Google's and Kiro's own APIs are spoken through Chat (`wire`).
+            SourceKind::ChatgptApi | SourceKind::Grok => router::ModelProtocol::Responses,
+            // Google's, Kiro's and Cursor's own APIs are spoken through Chat.
             _ => router::ModelProtocol::ChatCompletions,
         }
     }
@@ -79,6 +88,8 @@ impl SourceKind {
             SourceKind::Copilot => copilot::api_base(),
             SourceKind::GeminiCli | SourceKind::Antigravity => google::base(google::app_of(self)),
             SourceKind::Kiro => kiro::runtime("us-east-1"),
+            SourceKind::Grok => grok::api_base(),
+            SourceKind::Cursor => cursor::API.into(),
         }
     }
 
@@ -93,7 +104,8 @@ impl SourceKind {
             SourceKind::ChatgptApi => Some(chatgpt_api::USAGE_URL),
             SourceKind::Copilot => Some(copilot::SETTINGS_URL),
             SourceKind::Kiro => Some(kiro::USAGE_URL),
-            SourceKind::Workbuddy | SourceKind::WorkbuddyAi | SourceKind::GeminiCli | SourceKind::Antigravity => None,
+            SourceKind::Cursor => Some(cursor::USAGE_URL),
+            SourceKind::Workbuddy | SourceKind::WorkbuddyAi | SourceKind::GeminiCli | SourceKind::Antigravity | SourceKind::Grok => None,
         }
     }
 
@@ -293,6 +305,27 @@ pub async fn sign_in(
             kept.quota = done.note.map(|note| Quota { error: Some(note), checked_at: added_at, ..Default::default() });
             Ok(kept)
         }
+        SourceKind::Cursor => {
+            let pending = cursor::begin_sign_in(&paths.app_data_dir).await?;
+            if *cancel.borrow() {
+                return Err("accounts.loginCancelled".into());
+            }
+            if let Some(url) = &pending.url {
+                prompt(SignInPrompt { url, code: None })?;
+            }
+            let done = cursor::finish_sign_in(&paths.app_data_dir, pending, cancel).await?;
+            let email = done.creds.email.clone();
+            Ok(account(email.clone(), email.to_ascii_lowercase(), done.plan, Credentials::Cursor(done.creds)))
+        }
+        SourceKind::Grok => {
+            let pending = grok::begin_sign_in(&paths.app_data_dir).await?;
+            if *cancel.borrow() {
+                return Err("accounts.loginCancelled".into());
+            }
+            prompt(SignInPrompt { url: &pending.url, code: None })?;
+            let done = grok::finish_sign_in(pending, cancel).await?;
+            Ok(account(done.email.clone(), done.email.to_ascii_lowercase(), None, Credentials::Grok(done.creds)))
+        }
         SourceKind::Kiro => {
             let pending = kiro::begin_sign_in().await?;
             if *cancel.borrow() {
@@ -309,6 +342,11 @@ pub async fn sign_in(
 /// Keep a finished sign-in. True when it is the first account of its source.
 pub fn keep(paths: &CodexPaths, account: Account) -> Result<bool, String> {
     store::mutate(&paths.app_data_dir, |store| {
+        if account.kind == SourceKind::Cursor {
+            // The CLI keeps one sign-in for the machine: another account
+            // signed in there replaces the one kept before.
+            store.accounts.retain(|existing| existing.kind != SourceKind::Cursor || existing.subject == account.subject);
+        }
         let first = !store.accounts.iter().any(|existing| existing.kind == account.kind);
         store.keep_sign_in(account);
         Ok(first)
@@ -340,9 +378,12 @@ pub fn activate(paths: &CodexPaths, id: &str) -> Result<(), String> {
 
 pub async fn remove(paths: &CodexPaths, client: &Client, id: &str) -> Result<(), String> {
     let removed = store::mutate(&paths.app_data_dir, |store| store.remove(id))?;
-    if let Credentials::ChatgptApi(creds) = &removed.credentials {
+    match &removed.credentials {
         // Signed out here, signed out at OpenAI too; a failure leaves nothing behind locally.
-        chatgpt_api::revoke(client, creds).await;
+        Credentials::ChatgptApi(creds) => chatgpt_api::revoke(client, creds).await,
+        // The Grok home made for it goes with it; the user's own is never touched.
+        Credentials::Grok(creds) => grok::forget(&paths.app_data_dir, creds),
+        _ => {}
     }
     Ok(())
 }
@@ -379,6 +420,8 @@ fn provider_for(kind: SourceKind, models: &[SourceModel]) -> Result<router::Prov
             SourceKind::GeminiCli => vec!["google".into()],
             SourceKind::Antigravity => vec!["google".into(), "anthropic".into()],
             SourceKind::Kiro => vec!["anthropic".into()],
+            SourceKind::Grok => vec!["xai".into()],
+            SourceKind::Cursor => Vec::new(),
             SourceKind::Workbuddy | SourceKind::WorkbuddyAi => Vec::new(),
         },
         enabled: true,
@@ -422,6 +465,11 @@ pub async fn refresh_models(paths: &CodexPaths, client: &Client, kind: SourceKin
         Credentials::Copilot(creds) => copilot::fetch_models(client, creds).await?,
         Credentials::Google(creds) => google::fetch_models(client, google::app_of(kind), creds).await?,
         Credentials::Kiro(creds) => kiro::fetch_models(client, creds).await?,
+        Credentials::Grok(creds) => {
+            let token = grok::token(&paths.app_data_dir, creds).await.map_err(|_| "accountSources.errors.signedOut")?;
+            grok::fetch_models(client, &token).await?
+        }
+        Credentials::Cursor(_) => cursor::fetch_models(&paths.app_data_dir).await?,
         Credentials::WorkBuddy(_) => return Err("accountSources.errors.notFound".into()),
     };
     store::mutate(&paths.app_data_dir, |store| {
@@ -454,6 +502,14 @@ pub async fn refresh_quota(paths: &CodexPaths, client: &Client, id: &str) -> Res
             let creds = fresh_kiro(&paths.app_data_dir, client, &account, creds).await.map_err(|(_, message)| message.to_owned())?;
             kiro::quota(client, &creds).await
         }
+        Credentials::Grok(creds) => match grok::token(&paths.app_data_dir, creds).await {
+            Ok(token) => (grok::quota(client, &token).await, None),
+            Err(_) => (Quota { checked_at: chrono::Utc::now().timestamp(), error: Some("Grok is not signed in".into()), ..Default::default() }, None),
+        },
+        Credentials::Cursor(_) => match cursor::token(&paths.app_data_dir).await {
+            Ok(token) => (cursor::quota(client, &token).await, None),
+            Err(_) => (Quota { checked_at: chrono::Utc::now().timestamp(), error: Some("Cursor is not signed in".into()), ..Default::default() }, None),
+        },
         Credentials::ChatgptApi(_) => return Ok(()),
     };
     store::mutate(&paths.app_data_dir, |store| {
@@ -518,6 +574,8 @@ pub struct RequestAuth {
 /// What encoding a request on a vendor wire needs to know of the account.
 enum Wire {
     CodeAssist { app: codeassist::App, project: String, flags: google::Flags },
+    /// Cursor's Runs, answered by the source itself (`RequestAuth::exchange`).
+    Cursor { token: String, proxy: crate::core::models::ApiProxyConfigPayload },
     Kiro { profile: String, windows: std::collections::HashMap<String, u64> },
 }
 
@@ -697,6 +755,28 @@ pub async fn credentials(dir: &Path, client: &Client, kind: SourceKind) -> Resul
             Ok(RequestAuth { kind, base: google::base(app), headers,
                 wire: Some(Wire::CodeAssist { app, project: creds.project.clone(), flags }), credentials: Credentials::Google(creds) })
         }
+        Credentials::Cursor(creds) => match cursor::token(dir).await {
+            Ok(token) => {
+                let proxy = newapi::proxy_from_settings(&dir.join("settings.json"));
+                let base = cursor::agent_url_with(&proxy, &token).await;
+                Ok(RequestAuth { kind, base, headers: Vec::new(), credentials: Credentials::Cursor(creds.clone()),
+                    wire: Some(Wire::Cursor { token, proxy }) })
+            }
+            Err(cursor::TokenError::SignedOut(reason)) => {
+                mark_lapsed(dir, &account.id, &reason);
+                Err(SIGNED_OUT)
+            }
+            Err(cursor::TokenError::Transient) => Err(REFRESH_FAILED),
+        },
+        Credentials::Grok(creds) => match grok::token(dir, creds).await {
+            Ok(token) => Ok(RequestAuth { kind, base: grok::api_base(), headers: grok::request_headers(&token).await,
+                credentials: Credentials::Grok(creds.clone()), wire: None }),
+            Err(grok::TokenError::SignedOut(reason)) => {
+                mark_lapsed(dir, &account.id, &reason);
+                Err(SIGNED_OUT)
+            }
+            Err(grok::TokenError::Transient) => Err(REFRESH_FAILED),
+        },
         Credentials::Kiro(creds) => {
             let creds = fresh_kiro(dir, client, &account, creds).await?;
             let windows = store.models.get(&kind).into_iter().flatten()
@@ -718,6 +798,7 @@ impl RequestAuth {
             (_, ChatCompletions) => suffix == "chat/completions",
             (SourceKind::Copilot, Responses) => suffix == "responses",
             (SourceKind::Copilot, AnthropicMessages) => suffix == "messages",
+            (SourceKind::Grok, Responses) => suffix == "responses",
             _ => false,
         }
     }
@@ -734,6 +815,9 @@ impl RequestAuth {
     /// Chat (`wire`); `None` for any other source.
     pub fn encode(&self, protocol: router::ModelProtocol, body: &[u8], model: &str) -> Option<Result<wire::Encoded, RouteError>> {
         let wire = self.wire.as_ref().filter(|_| protocol == router::ModelProtocol::ChatCompletions)?;
+        if matches!(wire, Wire::Cursor { .. }) {
+            return None;
+        }
         let Ok(chat) = serde_json::from_slice::<serde_json::Value>(body) else {
             return Some(Err((hyper::StatusCode::BAD_REQUEST, "invalid chat request")));
         };
@@ -756,6 +840,7 @@ impl RequestAuth {
                     decoder: wire::Decoder::new(wire::Codec::CodeAssist(codeassist::Decoder::default()), &model, stream),
                 }
             }
+            Wire::Cursor { .. } => unreachable!("Cursor answers through its exchange"),
             Wire::Kiro { profile, windows } => {
                 let (body, names, thinking) = kiro::kiro_request(&chat, &model, profile);
                 wire::Encoded {
@@ -768,10 +853,21 @@ impl RequestAuth {
         }))
     }
 
+    /// A Chat request a source answers itself, over a stream both ways (Cursor).
+    pub fn exchange(&self, protocol: router::ModelProtocol, body: &[u8], model: &str) -> Option<Result<cursor::Exchange, RouteError>> {
+        match &self.wire {
+            Some(Wire::Cursor { token, proxy }) if protocol == router::ModelProtocol::ChatCompletions => {
+                Some(cursor::exchange(proxy, token, &self.base, body, model))
+            }
+            _ => None,
+        }
+    }
+
     /// Headers that depend on the request body.
     pub fn body_headers(&self, protocol: router::ModelProtocol, body: &[u8]) -> Vec<(&'static str, String)> {
         match self.kind {
             SourceKind::Copilot => copilot::body_headers(protocol, body),
+            SourceKind::Grok if protocol == router::ModelProtocol::Responses => grok::body_headers(body),
             _ => Vec::new(),
         }
     }
@@ -781,7 +877,27 @@ impl RequestAuth {
         match (self.kind, protocol) {
             (SourceKind::Workbuddy | SourceKind::WorkbuddyAi, router::ModelProtocol::ChatCompletions) => workbuddy::shape_chat_body(body),
             (SourceKind::ChatgptApi, router::ModelProtocol::Responses) => chatgpt_api::shape_body(body),
+            (SourceKind::Grok, router::ModelProtocol::Responses) => grok::shape_body(body),
             _ => None,
+        }
+    }
+
+    /// What reads the reply of this request, given before it was shaped.
+    pub fn reply_fix(&self, protocol: router::ModelProtocol, body: &[u8]) -> Option<ReplyFix> {
+        (self.kind == SourceKind::Grok && protocol == router::ModelProtocol::Responses)
+            .then(|| ReplyFix::Grok(grok::reply_fix(body)))
+    }
+}
+
+/// A source's reply turned into what the client takes.
+pub enum ReplyFix {
+    Grok(grok::ReplyFix),
+}
+
+impl ReplyFix {
+    pub async fn apply(self, response: reqwest::Response) -> reqwest::Response {
+        match self {
+            ReplyFix::Grok(fix) => fix.apply(response).await,
         }
     }
 }
@@ -794,6 +910,8 @@ pub fn explain(kind: SourceKind, status: u16, body: &[u8]) -> Option<String> {
         SourceKind::Copilot => copilot::explain(status, body),
         SourceKind::GeminiCli | SourceKind::Antigravity => codeassist::explain(google::app_of(kind), status, body),
         SourceKind::Kiro => kiro::explain(status, body),
+        SourceKind::Grok => grok::explain(status, body),
+        SourceKind::Cursor => cursor::explain(status, body),
     }
 }
 

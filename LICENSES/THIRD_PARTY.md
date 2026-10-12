@@ -86,7 +86,15 @@ contain the snapshot.
     `src-tauri/src/core/account_sources/google.rs` and `codeassist.rs`;
   - the Kiro sign-in, token refresh, profile, model and credit reading, the
     conversation request and the AWS event-stream decoding in
-    `src-tauri/src/core/account_sources/kiro.rs`.
+    `src-tauri/src/core/account_sources/kiro.rs`;
+  - the Grok CLI sign-in in its own home, token renewal through the CLI,
+    request headers, model and allowance reading, and the request shaping
+    (tool types, object-root parameters, agent messages) and whole-number
+    argument rule in `src-tauri/src/core/account_sources/grok.rs`;
+  - the Cursor CLI sign-in and identity, token reading, model list,
+    allowance, agent URL lookup, and the agent Run (conversation blobs, MCP
+    tool definitions, Connect framing, server message handling and error
+    mapping) in `src-tauri/src/core/account_sources/cursor.rs`.
 - Other routing and catalog behaviour was only studied, not copied.
 
 The full MIT license text below applies to the ported code.

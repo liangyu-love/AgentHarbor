@@ -887,8 +887,8 @@
     "menuDisplayName": "Alias (shown in the Codex menu)",
     "menuDisplayNameFor": "Menu display name for {{model}}",
     "contextWindowShort": "Context window",
-    "codexContextPreset": "Codex context override · 272,000",
-    "codexContextPresetAria": "Set {{model}} context to 272K",
+    "codexContextPreset": "Codex default context · {{value}}",
+    "codexContextPresetAria": "Set {{model}} context to {{value}}",
     "modelLimitsColumn": "Limits · catalog · compact",
     "modelLimitsColumnHint": "Leave the limit empty to resolve it automatically; set provider/model for an exact catalog match; leave compression empty to inherit.",
     "limitShort": "Limit",
@@ -1473,7 +1473,8 @@
     "capabilityQuickContext": "Context {{value}}",
     "capabilityQuickOutput": "Output {{value}}",
     "gatewaySlug": "Gateway short name",
-    "gatewaySlugHint": "Gateway models are named “short name/model”; leave empty to derive one. Renaming the relay does not change it"
+    "gatewaySlugHint": "Gateway models are named “short name/model”; leave empty to derive one. Renaming the relay does not change it",
+    "codexContextPresetMax": "Codex default context · {{value}}, up to {{max}}"
   },
   "avatar": {
     "title": "App avatar",
@@ -2329,7 +2330,7 @@
     "apiProxySavedDesc": "AgentHarbor and smart routing now use the new setting. Use Restart Codex in AgentHarbor to apply it to Codex's own sign-in and account requests.",
     "refreshIntervalSaveFailedTitle": "Failed to save refresh interval",
     "refreshIntervalSaveFailedDesc": "Kept the current background setting. Please try again later.",
-    "autoSwitchDesc": "Switch to the account with the most quota when the current one drops below the threshold.",
+    "autoSwitchDesc": "Switches to the account with the most quota once the current one drops below a threshold. A running Codex is not interrupted; it restarts only once the previous account is used up.",
     "autoSwitchEnabled": "Auto-switch enabled",
     "autoSwitchEnabledDesc": "AgentHarbor checks quotas in the background and sends a notification after switching.",
     "autoSwitchDisabled": "Auto-switch disabled",
@@ -2358,7 +2359,7 @@
     "accentColor": "Accent Color",
     "accentColorDesc": "Customize the primary color for buttons, selections and highlights.",
     "refreshInterval": "Refresh Interval",
-    "refreshIntervalDesc": "This setting controls only the quota API (wham/usage) auto-refresh cadence.",
+    "refreshIntervalDesc": "How often the Accounts and Usage pages refresh while open, and how often auto-switch checks (at least once a minute, asking only for the current account).",
     "refresh30s": "30 sec",
     "refresh1m": "1 min",
     "refresh3m": "3 min",
@@ -2370,7 +2371,16 @@
     "upToDate": "Already up to date",
     "updateCheckFailed": "Failed to check for updates",
     "heroDesc": "Appearance, language, proxy and updates",
-    "bgAutoDimmed": "This wallpaper is bright for dark mode, so it is dimmed to {{value}}% to keep text readable"
+    "bgAutoDimmed": "This wallpaper is bright for dark mode, so it is dimmed to {{value}}% to keep text readable",
+    "autostart": {
+      "title": "Start at sign-in",
+      "description": "Starts in the background when you sign in, showing only the tray icon; the local router and auto-switch are ready right away.",
+      "blocked": "Turned off in Task Manager's Startup apps. Turning it on here turns it on there too.",
+      "failed": "Couldn't change start at sign-in",
+      "errors": {
+        "write": "Couldn't write the startup entry. Check permissions and try again."
+      }
+    }
   },
   "common": {
     "save": "Save",
@@ -2442,7 +2452,9 @@
       "copilot": "A GitHub Copilot plan (Free, Pro, Pro+, Business), signed in with a GitHub device code. Claude models use Anthropic Messages, newer GPT models Responses, the rest Chat Completions; each model is asked on its own API.",
       "gemini-cli": "Gemini CLI's Google sign-in: Gemini models through Google Code Assist. Google serves this sign-in only to Gemini Code Assist Standard and Enterprise, which need a Google Cloud project.",
       "antigravity": "Antigravity's Google sign-in: the Gemini, Claude and GPT-OSS models Antigravity offers, through Google Code Assist. Personal Google accounts work.",
-      "kiro": "A Kiro account (signed in with Google, GitHub, AWS Builder ID or IAM Identity Center): Claude and other models through Kiro's own API. Each account is kept on its own; the Kiro IDE's and kiro-cli's sign-ins are left alone."
+      "kiro": "A Kiro account (signed in with Google, GitHub, AWS Builder ID or IAM Identity Center): Claude and other models through Kiro's own API. Each account is kept on its own; the Kiro IDE's and kiro-cli's sign-ins are left alone.",
+      "grok": "A SuperGrok or X Premium+ subscription, signed in with xAI's Grok CLI (Grok Build): AgentHarbor runs `grok login` in a Grok home of its own, so the grok in your terminal stays signed in as it is. Models use Responses.",
+      "cursor": "A Cursor plan, signed in with Cursor's CLI (cursor-agent): its models are served to other clients through Cursor's agent API, tool calls go back to the client to run, and Cursor's own commands never run here."
     },
     "note": {
       "chatgpt-api": "Some plans are not eligible for this sign-in; signing in says so. A Team, Business or Enterprise workspace must first allow Sign in with ChatGPT apps (its admin decides), or the sign-in page says the organization has not enabled access; you can also pick a personal workspace there. Nothing is stored at OpenAI, and some parameters and OpenAI-hosted tools are removed from requests.",
@@ -2451,7 +2463,9 @@
       "copilot": "Only models this account may call now are listed; a model that asks you to accept its terms first (some Claude and Gemini models) is enabled in GitHub's Copilot settings, then refresh the models. Each turn you start counts as one premium request; tool results do not.",
       "gemini-cli": "Use Antigravity for a personal Google account. If signing in says a project is missing, enter the Google Cloud project ID on the account card. The models are the ones Gemini CLI offers this account.",
       "antigravity": "Antigravity answers the system prompt of Claude Code and the Claude Agent SDK with a 429 whatever quota is left: use it from OpenCode or Pi, or put it in an aggregate so a refused request moves to the next member. The allowance shown is the most-used model's.",
-      "kiro": "Signing in opens Kiro's site; pick a way to sign in and it comes back here. The allowance is this month's credits; at medium or high effort, Claude models send their thinking too."
+      "kiro": "Signing in opens Kiro's site; pick a way to sign in and it comes back here. The allowance is this month's credits; at medium or high effort, Claude models send their thinking too.",
+      "grok": "Install Grok Build first (x.ai/cli). The Grok CLI keeps and renews the token; AgentHarbor only reads it per request. Codex's grouped and freeform tools are turned into what Grok takes and restored in the reply; whole numbers Grok writes as 2500.0 in tool arguments go back as 2500.",
+      "cursor": "Install cursor-agent first (cursor.com/cli). The CLI keeps one sign-in per machine, and this account is that one; removing it here does not sign the CLI out. Requests go in privacy mode (not used for training). Context follows the model's name: 1M where it says 1M, 200K otherwise."
     },
     "errors": {
       "storage": "Could not read or write the account source store",
@@ -2481,7 +2495,10 @@
       "kiroUnsupportedSignIn": "This Kiro sign-in (a company's own identity provider) is not supported yet; use Google, GitHub or AWS",
       "kiroNoProfile": "Kiro has no profile for this sign-in",
       "kiroNoModels": "This Kiro account has no models it may use now",
-      "geminiNeedsProject": "Google serves Gemini CLI's sign-in only to Gemini Code Assist Standard and Enterprise: enter the Google Cloud project ID it bills. Use Antigravity for a personal Google account."
+      "geminiNeedsProject": "Google serves Gemini CLI's sign-in only to Gemini Code Assist Standard and Enterprise: enter the Google Cloud project ID it bills. Use Antigravity for a personal Google account.",
+      "grokCli": "The Grok CLI was not found. Install Grok Build (x.ai/cli), then sign in.",
+      "cursorCli": "Cursor's CLI (cursor-agent) was not found. Install it (cursor.com/cli), then sign in.",
+      "noAccount": "The sign-in ended without the CLI naming an account. Try again."
     },
     "badge": "Official account",
     "refusesClaudeCode": "{{name}} refuses Claude Code's system prompt; requests may fail",
@@ -2490,7 +2507,9 @@
       "tencent": "Tencent",
       "github": "GitHub",
       "google": "Google",
-      "aws": "AWS"
+      "aws": "AWS",
+      "xai": "xAI",
+      "cursor": "Cursor"
     },
     "berth": "{{name}}, {{count}} accounts",
     "berthEmpty": "No account",

@@ -381,3 +381,268 @@ fn kiro_answers_through_its_event_stream_to_chat_and_messages_clients() {
         account_sources::set_endpoint_override(SourceKind::Kiro, None);
     });
 }
+
+#[test]
+fn grok_answers_codex_with_its_tools_shaped_and_its_calls_named_and_whole() {
+    let _guard = global_router_test_lock();
+    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    runtime.block_on(async {
+        let upstream = account_sources::tests::mock_raw(|seen| {
+            let body: Value = serde_json::from_str(&seen.body).unwrap_or(Value::Null);
+            if seen.path != "/responses" {
+                return (404, "application/json", b"{}".to_vec());
+            }
+            if body["stream"] != true {
+                let reply = json!({"id":"resp_1","object":"response","status":"completed","model":body["model"],
+                    "output":[{"type":"message","id":"m1","role":"assistant","status":"completed",
+                        "content":[{"type":"output_text","text":"from grok","annotations":[]}]}],
+                    "usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}});
+                return (200, "application/json", reply.to_string().into_bytes());
+            }
+            // Grok is given the namespaced tool under its flat name and calls it so.
+            let flat = body["tools"].as_array().unwrap().iter()
+                .find(|tool| tool["description"].as_str().is_some_and(|text| text.starts_with("Original tool: collaboration.spawn_agent")))
+                .map(|tool| tool["name"].clone()).unwrap_or(Value::Null);
+            let item = json!({"type":"function_call","id":"fc_1","call_id":"call_1","name":flat,"arguments":"","status":"in_progress"});
+            let done = json!({"type":"function_call","id":"fc_1","call_id":"call_1","name":flat,"arguments":"{\"wait\":2500.0}","status":"completed"});
+            let events = [
+                json!({"type":"response.created","response":{"id":"resp_2","object":"response","status":"in_progress","model":body["model"],"output":[]}}),
+                json!({"type":"response.output_item.added","output_index":0,"item":item}),
+                json!({"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_1","delta":"{\"wait\":2500."}),
+                json!({"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_1","delta":"0}"}),
+                json!({"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_1","arguments":"{\"wait\":2500.0}"}),
+                json!({"type":"response.output_item.done","output_index":0,"item":done}),
+                json!({"type":"response.completed","response":{"id":"resp_2","object":"response","status":"completed","model":body["model"],
+                    "output":[done],"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}),
+            ];
+            let sse: String = events.iter().map(|event| format!("event: {}\ndata: {event}\n\n", event["type"].as_str().unwrap())).collect();
+            (200, "text/event-stream", sse.into_bytes())
+        }).await;
+        account_sources::set_endpoint_override(SourceKind::Grok, Some(upstream.base.clone()));
+        *account_sources::grok::EXECUTABLE.lock().unwrap() = Some(std::path::PathBuf::from("missing-grok-cli"));
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().join("codex"));
+        paths.ensure_directories().unwrap();
+        let home = dir.path().join("grok-home");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("auth.json"), json!({"https://auth.x.ai": {"key": "grok-key", "email": "me@x.ai",
+            "expires_at": (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339()}}).to_string()).unwrap();
+        keep_shared(&paths, SourceKind::Grok,
+            sources::Credentials::Grok(account_sources::grok::Creds { home: home.to_string_lossy().into_owned() }), &["grok-4.7"]);
+        let port = ensure_running(0, paths.clone(), ApiProxyConfigPayload::default()).await.unwrap();
+        let client = Client::builder().no_proxy().timeout(Duration::from_secs(10)).build().unwrap();
+        let base = format!("http://127.0.0.1:{port}");
+        let last = || upstream.seen.lock().unwrap().iter().rev().find(|seen| seen.path == "/responses").cloned().unwrap();
+
+        let codex = client.post(format!("{base}/p/account-grok/v1/responses")).bearer_auth(ROUTER_TOKEN)
+            .json(&json!({"model":"grok-4.7","stream":true,"prompt_cache_key":"thread-1","input":[{"type":"message","role":"user",
+                "content":[{"type":"input_text","text":"go"}]}],
+                "tools":[{"type":"custom","name":"apply_patch"},
+                    {"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"spawn_agent","parameters":{"type":"object"}}]},
+                    {"type":"function","name":"exec","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}]}))
+            .send().await.unwrap();
+        assert_eq!(codex.status(), 200);
+        let text = codex.text().await.unwrap();
+        let sent = last();
+        assert_eq!(sent.headers["authorization"], "Bearer grok-key");
+        assert_eq!(sent.headers["x-xai-token-auth"], "xai-grok-cli");
+        assert_eq!(sent.headers["x-grok-model-override"], "grok-4.7");
+        assert_eq!(sent.headers["x-grok-conv-id"], "thread-1");
+        assert!(sent.headers["user-agent"].starts_with("grok-shell/"));
+        assert!(!sent.headers.values().any(|value| value.contains(ROUTER_TOKEN)), "the router token never reaches Grok");
+        let shaped: Value = serde_json::from_str(&sent.body).unwrap();
+        let types: Vec<_> = shaped["tools"].as_array().unwrap().iter().map(|tool| tool["type"].as_str().unwrap()).collect();
+        assert_eq!(types, ["function", "function"], "no freeform tool and no namespace reach Grok");
+        let events: Vec<Value> = text.split("\n\n").filter_map(|event| event.lines().find_map(|line| line.strip_prefix("data: ")))
+            .filter_map(|data| serde_json::from_str(data).ok()).collect();
+        let added = events.iter().find(|event| event["type"] == "response.output_item.added").unwrap();
+        assert_eq!(added["item"]["name"], "spawn_agent");
+        assert_eq!(added["item"]["namespace"], "collaboration");
+        let deltas: String = events.iter().filter(|event| event["type"] == "response.function_call_arguments.delta")
+            .map(|event| event["delta"].as_str().unwrap()).collect();
+        assert_eq!(deltas, "{\"wait\":2500}");
+        let completed = events.iter().find(|event| event["type"] == "response.completed").unwrap();
+        assert_eq!(completed["response"]["output"][0]["arguments"], "{\"wait\":2500}");
+        assert_eq!(completed["response"]["output"][0]["name"], "spawn_agent");
+
+        let chat_answer = client.post(format!("{base}/p/account-grok/v1/chat/completions")).bearer_auth(ROUTER_TOKEN)
+            .json(&json!({"model":"grok-4.7","messages":[{"role":"user","content":"hi"}],"stream":false})).send().await.unwrap();
+        assert_eq!(chat_answer.status(), 200);
+        assert_eq!(chat_answer.json::<Value>().await.unwrap()["choices"][0]["message"]["content"], "from grok");
+
+        stop_unchecked();
+        account_sources::set_endpoint_override(SourceKind::Grok, None);
+        *account_sources::grok::EXECUTABLE.lock().unwrap() = None;
+    });
+}
+
+/// The next message a Cursor client sent on a Run, heartbeats left out.
+async fn next_cursor_message(body: &mut hyper::body::Incoming, buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
+    use crate::core::account_sources::cursor::tests::{decode_fields, server};
+    use http_body_util::BodyExt;
+    loop {
+        while let Some(message) = server::take(buffer) {
+            if decode_fields(&message).first().is_some_and(|field| field.0 == 7) {
+                continue;
+            }
+            return Some(message);
+        }
+        match body.frame().await {
+            Some(Ok(frame)) => {
+                if let Some(data) = frame.data_ref() {
+                    buffer.extend_from_slice(data);
+                }
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// A stand-in for Cursor's API over HTTP/2: the server config names it as
+/// the agent API, and each Run plays a turn by the model it asks for.
+async fn cursor_stand_in(seen: Arc<Mutex<Vec<String>>>) -> String {
+    use crate::core::account_sources::cursor::tests::{decode_fields, server};
+    use http_body_util::{BodyExt, Full, StreamBody};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let named = base.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else { return };
+            let seen = seen.clone();
+            let named = named.clone();
+            let service = hyper::service::service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
+                let seen = seen.clone();
+                let named = named.clone();
+                async move {
+                    type Body = http_body_util::combinators::UnsyncBoxBody<Bytes, std::convert::Infallible>;
+                    if request.uri().path().ends_with("GetServerConfig") {
+                        let config = json!({"agentUrlConfig": {"agentUrl": named}}).to_string();
+                        return Ok::<_, std::convert::Infallible>(hyper::Response::new(Full::new(Bytes::from(config)).boxed_unsync() as Body));
+                    }
+                    let headers = request.headers();
+                    seen.lock().unwrap().push(format!("headers {} {} {} {}", headers["authorization"].to_str().unwrap(),
+                        headers["x-cursor-client-type"].to_str().unwrap(), headers["x-ghost-mode"].to_str().unwrap(),
+                        headers["content-type"].to_str().unwrap()));
+                    let mut body = request.into_body();
+                    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
+                    tokio::spawn(async move {
+                        let mut buffer = Vec::new();
+                        let Some(first) = next_cursor_message(&mut body, &mut buffer).await else { return };
+                        let run = decode_fields(&decode_fields(&first)[0].2);
+                        let state = decode_fields(&run.iter().find(|field| field.0 == 1).unwrap().2);
+                        let details = decode_fields(&run.iter().find(|field| field.0 == 3).unwrap().2);
+                        let model = String::from_utf8(details[0].2.clone()).unwrap();
+                        seen.lock().unwrap().push(format!("model {model}"));
+                        let send = |message: Vec<u8>| { let _ = sender.send(server::envelope(&message)); };
+                        if model == "tool-model" {
+                            send(server::calls(1));
+                            send(server::mcp_call(9, "e1", "read", "call_1\nfc_9", &json!({"path": "a.txt", "n": 3})));
+                            // The client runs no tool itself: it ends the Run and hands the call on.
+                            while next_cursor_message(&mut body, &mut buffer).await.is_some() {}
+                            seen.lock().unwrap().push("closed".into());
+                            return;
+                        }
+                        let blob = state.iter().find(|field| field.0 == 1).unwrap().2.clone();
+                        send(server::get_blob(7, &blob));
+                        let answer = next_cursor_message(&mut body, &mut buffer).await.unwrap();
+                        let kv = decode_fields(&decode_fields(&answer)[0].2);
+                        let result = decode_fields(&kv.iter().find(|field| field.0 == 2).unwrap().2);
+                        seen.lock().unwrap().push(format!("blob {}", String::from_utf8_lossy(&result[0].2)));
+                        send(server::shell(3));
+                        let refusal = next_cursor_message(&mut body, &mut buffer).await.unwrap();
+                        let control = decode_fields(&decode_fields(&refusal)[0].2);
+                        if control[0].0 == 2 {
+                            seen.lock().unwrap().push("refused".into());
+                        }
+                        send(server::thinking("plan"));
+                        send(server::text("hello "));
+                        send(server::text("from cursor"));
+                        send(server::turn_ended(100, 5, 40));
+                        let _ = sender.send(server::end("{}"));
+                    });
+                    let frames = futures_util::stream::unfold(receiver, |mut receiver| async move {
+                        receiver.recv().await.map(|bytes| (Ok::<_, std::convert::Infallible>(hyper::body::Frame::data(bytes)), receiver))
+                    });
+                    let mut response = hyper::Response::new(StreamBody::new(frames).boxed_unsync() as Body);
+                    response.headers_mut().insert("content-type", hyper::header::HeaderValue::from_static("application/connect+proto"));
+                    Ok(response)
+                }
+            });
+            tokio::spawn(async move {
+                let _ = hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+                    .serve_connection(hyper_util::rt::TokioIo::new(stream), service).await;
+            });
+        }
+    });
+    base
+}
+
+#[test]
+fn cursor_runs_a_duplex_stream_that_serves_blobs_refuses_its_own_tools_and_hands_calls_on() {
+    let _guard = global_router_test_lock();
+    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    runtime.block_on(async {
+        use base64::Engine;
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let base = cursor_stand_in(seen.clone()).await;
+        account_sources::set_endpoint_override(SourceKind::Cursor, Some(base.clone()));
+        let token = format!("h.{}.s", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"exp":4102444800}"#));
+        *account_sources::cursor::TOKEN.lock().unwrap() = Some(token.clone());
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().join("codex"));
+        paths.ensure_directories().unwrap();
+        keep_shared(&paths, SourceKind::Cursor,
+            sources::Credentials::Cursor(account_sources::cursor::Creds { email: "me@cursor.sh".into() }), &["claude-cursor", "tool-model"]);
+        let port = ensure_running(0, paths.clone(), ApiProxyConfigPayload::default()).await.unwrap();
+        let client = Client::builder().no_proxy().timeout(Duration::from_secs(20)).build().unwrap();
+        let router = format!("http://127.0.0.1:{port}");
+
+        let answer = client.post(format!("{router}/p/account-cursor/v1/chat/completions")).bearer_auth(ROUTER_TOKEN)
+            .json(&json!({"model": "claude-cursor", "stream": false,
+                "messages": [{"role": "system", "content": "Be brief."}, {"role": "user", "content": "hi"}]}))
+            .send().await.unwrap();
+        let status = answer.status();
+        let text = answer.text().await.unwrap();
+        assert_eq!(status, 200, "{text}");
+        let answer: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(answer["choices"][0]["message"]["content"], "hello from cursor");
+        assert_eq!(answer["usage"]["prompt_tokens"], 100);
+        assert_eq!(answer["usage"]["prompt_tokens_details"]["cached_tokens"], 40);
+        {
+            let seen = seen.lock().unwrap();
+            assert!(seen.contains(&format!("headers Bearer {token} cli true application/connect+proto")), "{seen:?}");
+            assert!(seen.contains(&"model claude-cursor".to_owned()));
+            assert!(seen.contains(&r#"blob {"role":"system","content":"Be brief."}"#.to_owned()), "the server reads the conversation from blobs: {seen:?}");
+            assert!(seen.contains(&"refused".to_owned()), "Cursor's own shell is never run here");
+        }
+
+        let streamed = client.post(format!("{router}/p/account-cursor/v1/chat/completions")).bearer_auth(ROUTER_TOKEN)
+            .json(&json!({"model": "tool-model", "stream": true, "messages": [{"role": "user", "content": "read it"}],
+                "tools": [{"type": "function", "function": {"name": "read", "description": "Read a file",
+                    "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "n": {"type": "integer"}}}}}]}))
+            .send().await.unwrap();
+        assert_eq!(streamed.status(), 200);
+        let sse = streamed.text().await.unwrap();
+        let chunks: Vec<Value> = sse.lines().filter_map(|line| line.strip_prefix("data: ")).filter(|data| *data != "[DONE]")
+            .map(|data| serde_json::from_str(data).unwrap()).collect();
+        let call = chunks.iter().find(|chunk| chunk["choices"][0]["delta"]["tool_calls"][0]["function"]["name"].is_string()).unwrap();
+        assert_eq!(call["choices"][0]["delta"]["tool_calls"][0]["id"], "call_1__fc_9");
+        let arguments: String = chunks.iter().filter_map(|chunk| chunk["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"].as_str()).collect();
+        assert_eq!(serde_json::from_str::<Value>(&arguments).unwrap(), json!({"path": "a.txt", "n": 3}));
+        assert!(chunks.iter().any(|chunk| chunk["choices"][0]["finish_reason"] == "tool_calls"));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(seen.lock().unwrap().contains(&"closed".to_owned()), "the Run ends once its calls are made");
+
+        let codex = client.post(format!("{router}/p/account-cursor/v1/responses")).bearer_auth(ROUTER_TOKEN)
+            .json(&json!({"model": "claude-cursor", "stream": false, "input": "hi"})).send().await.unwrap();
+        let status = codex.status();
+        let text = codex.text().await.unwrap();
+        assert_eq!(status, 200, "{text}");
+        assert!(text.contains("hello from cursor"), "a Responses client is answered through the same Run");
+
+        stop_unchecked();
+        account_sources::set_endpoint_override(SourceKind::Cursor, None);
+        *account_sources::cursor::TOKEN.lock().unwrap() = None;
+    });
+}

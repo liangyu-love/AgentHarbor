@@ -1213,12 +1213,19 @@ async fn handle(mut request: Request<Incoming>, context: Arc<ArcContext>) -> For
                 drop(_decision);
                 return prepared.search(trace.clone(), None).await;
             }
-            let mut outbound = prepared.client.request(method.clone(), &prepared.url).headers(prepared.headers.clone());
-            if desktop_count_body.is_some() {
-                outbound = outbound.timeout(Duration::from_secs(2));
-            }
-            if let Some(sent) = &prepared.body { outbound = outbound.body(sent.clone()); }
-            let response = match outbound.send().await {
+            let sent = match prepared.exchange.take() {
+                // A source that answers the request itself (Cursor's Runs).
+                Some(exchange) => Ok(exchange.run().await),
+                None => {
+                    let mut outbound = prepared.client.request(method.clone(), &prepared.url).headers(prepared.headers.clone());
+                    if desktop_count_body.is_some() {
+                        outbound = outbound.timeout(Duration::from_secs(2));
+                    }
+                    if let Some(sent) = &prepared.body { outbound = outbound.body(sent.clone()); }
+                    outbound.send().await
+                }
+            };
+            let response = match sent {
                 Ok(response) => response,
                 Err(error) => {
                     if let Some(count_body) = desktop_count_body.as_deref() {
