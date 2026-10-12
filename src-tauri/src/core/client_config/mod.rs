@@ -18,7 +18,9 @@ pub use options::{ClaudeAuthField, ClaudeModels, ClaudeOneM, ClientAccessMode, C
 mod tests;
 
 use super::{
-    model_catalog, models_dev,
+    model_catalog,
+    models::{ApiProxyConfigPayload, ApiProxyMode},
+    models_dev,
     router::{ModelProtocol, Provider, Store},
     secret_file, storage,
     targets::TargetId,
@@ -117,6 +119,8 @@ pub(super) struct EditContext<'a> {
     /// Provider nodes already owned by this session; new external nodes must
     /// never be silently taken over by an additive adapter.
     pub managed_provider_keys: Vec<String>,
+    /// The proxy a direct configuration's client reaches its relay through.
+    pub proxy: Option<String>,
 }
 
 trait ClientAdapter: Sync {
@@ -188,6 +192,9 @@ pub struct ClientStatus {
     pub conflict_fields: Vec<String>,
     /// Claude Code CLI version when it could be detected.
     pub client_version: Option<String>,
+    /// A direct configuration whose relay card changed address or key since
+    /// it was written (or was deleted): the file still holds the old values.
+    pub stale: bool,
 }
 
 #[derive(Serialize)]
@@ -246,6 +253,38 @@ struct Session {
     installed: Value,
     changes: Vec<FieldChange>,
     request: ConfigRequest,
+    /// A direct configuration's cards (address and key) as written; the
+    /// router reads them live, so a router configuration keeps none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    connection: Option<String>,
+}
+
+/// The network a direct configuration is checked against. A direct client
+/// reaches its relay itself, never through this app's proxy.
+#[derive(Default)]
+pub struct Network {
+    /// The app proxy, which relay cards follow unless set to direct.
+    pub proxy: ApiProxyConfigPayload,
+    /// The terminal proxy's address while new terminals carry it.
+    pub terminal: Option<String>,
+    /// Whether a system proxy is set, for the app proxy's system mode.
+    pub system: bool,
+}
+
+/// What a direct Claude Code configuration does about its card's proxy.
+/// Claude Code reads proxy variables only: never the system proxy, and no
+/// SOCKS.
+#[derive(Debug, PartialEq)]
+enum DirectProxy {
+    /// Nothing: router mode, a card set to direct, no app proxy, or the
+    /// terminal proxy already carries one into new terminals.
+    None,
+    /// The app's manual HTTP proxy, written as the client's HTTPS_PROXY.
+    Write(String),
+    /// A manual SOCKS proxy, which Claude Code cannot use.
+    Socks,
+    /// The system proxy, which Claude Code does not read.
+    System,
 }
 
 pub struct ConfigManager {
@@ -254,6 +293,7 @@ pub struct ConfigManager {
     app_data_dir: PathBuf,
     official_home: Option<PathBuf>,
     paths: ClientPaths,
+    network: Network,
 }
 
 impl ConfigManager {
@@ -263,6 +303,7 @@ impl ConfigManager {
             app_data_dir: data_dir.to_path_buf(),
             official_home: None,
             paths,
+            network: Network::default(),
         }
     }
 
@@ -271,7 +312,45 @@ impl ConfigManager {
         self
     }
 
+    pub fn with_network(mut self, network: Network) -> Self {
+        self.network = network;
+        self
+    }
+
+    fn direct_proxy(&self, store: &Store, request: &ConfigRequest) -> DirectProxy {
+        if request.target_id != TargetId::ClaudeCode
+            || request.needs_router()
+            || self.network.terminal.is_some()
+        {
+            return DirectProxy::None;
+        }
+        match selected_provider(store, request) {
+            Ok(provider) if provider.network_mode() == "proxy" => {}
+            _ => return DirectProxy::None,
+        }
+        match self.network.proxy.mode {
+            ApiProxyMode::Manual => {
+                let Some(url) = self.network.proxy.url.as_deref().map(str::trim).filter(|url| !url.is_empty()) else {
+                    return DirectProxy::None;
+                };
+                match reqwest::Url::parse(url) {
+                    Ok(parsed) if matches!(parsed.scheme(), "http" | "https") => DirectProxy::Write(url.to_owned()),
+                    Ok(_) => DirectProxy::Socks,
+                    Err(_) => DirectProxy::None,
+                }
+            }
+            ApiProxyMode::System if self.network.system => DirectProxy::System,
+            _ => DirectProxy::None,
+        }
+    }
+
     pub fn list(&self) -> Vec<ClientStatus> {
+        self.list_with(None)
+    }
+
+    /// The clients, each direct configuration checked against `store` for a
+    /// card changed since it was written.
+    pub fn list_with(&self, store: Option<&Store>) -> Vec<ClientStatus> {
         [TargetId::ClaudeCode, TargetId::OpenCode, TargetId::Pi]
             .into_iter()
             .map(|id| {
@@ -289,6 +368,7 @@ impl ConfigManager {
                     request: None,
                     conflict_fields: Vec::new(),
                     client_version: None,
+                    stale: false,
                 };
                 if id == TargetId::ClaudeCode {
                     status.client_version = version::detected();
@@ -301,6 +381,13 @@ impl ConfigManager {
                         status.provider_id = Some(session.request.provider_id.clone());
                         status.model = Some(session.request.model.clone());
                         status.request = Some(session.request.clone());
+                        status.stale = match (store, &session.connection) {
+                            (Some(store), Some(written)) => {
+                                let proxy = self.direct_proxy(store, &session.request);
+                                connection_fingerprint(store, &session.request, &proxy) != *written
+                            }
+                            _ => false,
+                        };
                         let current = parse(read_text(&session.path)?.as_deref(), id)?;
                         let conflict_paths = conflicting_paths(&current, session);
                         status.conflict = !conflict_paths.is_empty();
@@ -422,22 +509,42 @@ impl ConfigManager {
     }
 
     /// Only an explicit restore confirmation may replace conflicting managed
-    /// fields. Automatic exit restoration always uses the strict wrapper.
+    /// fields; without one a conflict refuses the restore.
     pub fn restore_confirmed(
         &self,
         id: TargetId,
         replace_conflicts: bool,
     ) -> Result<ConfigApplied, String> {
+        self.restore_with(id, if replace_conflicts { ConflictPolicy::Replace } else { ConflictPolicy::Refuse })
+    }
+
+    fn restore_with(&self, id: TargetId, policy: ConflictPolicy) -> Result<ConfigApplied, String> {
         let _guard = WRITE_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
             .map_err(|_| "clients.errors.storage")?;
         adapter(id)?;
-        let session = self.session(id)?.ok_or("clients.errors.notConfigured")?;
+        let mut session = self.session(id)?.ok_or("clients.errors.notConfigured")?;
         let current = read_text(&session.path)?;
         let document = parse(current.as_deref(), id)?;
-        if !replace_conflicts {
-            verify_fields(&document, &session)?;
+        let mut warnings = Vec::new();
+        match policy {
+            ConflictPolicy::Refuse => verify_fields(&document, &session)?,
+            ConflictPolicy::Replace => {}
+            ConflictPolicy::KeepEdits => {
+                let conflicts = conflicting_paths(&document, &session);
+                if !conflicts.is_empty() {
+                    // Another tool owns the connection now: the file no longer
+                    // reaches this router, so it is left exactly as it is.
+                    if session.changes.iter().any(|change| conflicts.contains(&change.path) && carries_connection(change)) {
+                        return Err("clients.errors.conflict".into());
+                    }
+                    // The connection is still ours: withdraw it with every
+                    // other field we own, and keep the user's edits.
+                    session.changes.retain(|change| !conflicts.contains(&change.path));
+                    warnings.push("clients.warnings.keptEdits".into());
+                }
+            }
         }
         let restored = if document == session.installed {
             // If there were no independent edits, restore exact bytes (including comments).
@@ -477,7 +584,7 @@ impl ConfigManager {
                 serde_json::to_string_pretty(&document).map_err(|_| "clients.errors.storage")?
             ))
         };
-        self.commit(id, &session.path, current, restored, None, Vec::new())
+        self.commit(id, &session.path, current, restored, None, warnings)
     }
 
     /// Re-inject the stored request without reopening the configuration
@@ -537,12 +644,23 @@ impl ConfigManager {
     /// Local-router URLs stop working with this process. Direct client
     /// configurations are persistent and remain in place across app restarts.
     /// Attempt each client independently so one conflict cannot strand another.
+    /// A user's edit to a field other than the connection must not leave the
+    /// client aimed at a dead router with the local token: the connection is
+    /// withdrawn and the edit kept.
     pub fn restore_router_configs_on_exit(&self) -> Vec<(TargetId, String)> {
         [TargetId::ClaudeCode, TargetId::OpenCode, TargetId::Pi]
             .into_iter()
             .filter_map(|id| match self.session(id) {
                 Ok(Some(session)) if session.request.needs_router() => {
-                    self.restore(id).err().map(|error| (id, error))
+                    match self.restore_with(id, ConflictPolicy::KeepEdits) {
+                        Ok(applied) => {
+                            if !applied.warnings.is_empty() {
+                                log::info!("{id:?} router config withdrawn on exit; the user's own edits were kept");
+                            }
+                            None
+                        }
+                        Err(error) => Some((id, error)),
+                    }
                 }
                 Ok(_) => None,
                 Err(error) => Some((id, error)),
@@ -713,6 +831,12 @@ impl ConfigManager {
             ));
         }
         let mut warnings = Vec::new();
+        let direct_proxy = self.direct_proxy(store, request);
+        match &direct_proxy {
+            DirectProxy::Socks => warnings.push("clients.warnings.proxySocks".into()),
+            DirectProxy::System => warnings.push("clients.warnings.systemProxy".into()),
+            DirectProxy::None | DirectProxy::Write(_) => {}
+        }
         let edits = {
             let catalog = models_dev::load(&self.app_data_dir);
             let official = self
@@ -731,6 +855,10 @@ impl ConfigManager {
                             .then(|| change.path.get(1).cloned()).flatten()
                     }).collect()
                 }).unwrap_or_default(),
+                proxy: match &direct_proxy {
+                    DirectProxy::Write(url) => Some(url.clone()),
+                    _ => None,
+                },
             };
             adapter.edits(
                 &document,
@@ -767,6 +895,8 @@ impl ConfigManager {
             installed: document,
             changes,
             request: request.clone(),
+            connection: (!request.needs_router())
+                .then(|| connection_fingerprint(store, request, &direct_proxy)),
         };
         let mut hasher = Sha256::new();
         hasher.update(
@@ -864,6 +994,60 @@ impl ConfigManager {
             warnings,
         })
     }
+}
+
+/// The relay cards a direct configuration points at, as one fingerprint of
+/// their addresses and keys and the proxy written for them; a deleted card
+/// counts as changed.
+fn connection_fingerprint(store: &Store, request: &ConfigRequest, proxy: &DirectProxy) -> String {
+    let mut ids: Vec<&str> = std::iter::once(request.provider_id.as_str())
+        .chain(request.options.provider_ids.iter().map(String::as_str))
+        .filter(|id| !id.is_empty())
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let mut hasher = Sha256::new();
+    for id in ids {
+        hasher.update(id.as_bytes());
+        hasher.update([0]);
+        match store.providers.iter().find(|provider| provider.id == id) {
+            Some(provider) => {
+                hasher.update(provider.base_url.trim().as_bytes());
+                hasher.update([0]);
+                hasher.update(provider.api_key.trim().as_bytes());
+            }
+            None => hasher.update(b"missing"),
+        }
+        hasher.update([1]);
+    }
+    // Absent from fingerprints written before proxies were.
+    if let DirectProxy::Write(url) = proxy {
+        hasher.update(b"proxy");
+        hasher.update(url.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+/// What a restore does with managed fields the user changed since the apply.
+#[derive(Clone, Copy)]
+enum ConflictPolicy {
+    /// Refuse the restore (an ordinary restore before confirmation).
+    Refuse,
+    /// Put the baseline back over them (a confirmed restore).
+    Replace,
+    /// Keep them and restore everything else, unless another tool now owns
+    /// the connection (the restore on exit).
+    KeepEdits,
+}
+
+/// Whether a managed field carries the client's connection: an address on
+/// this machine's router, or a credential.
+fn carries_connection(change: &FieldChange) -> bool {
+    let credential = change.path.last().is_some_and(|key| {
+        let key: String = key.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect();
+        key.ends_with("apikey") || key.ends_with("token") || key.ends_with("authorization") || key.ends_with("baseurl")
+    });
+    credential || change.after.as_ref().is_some_and(|value| value.to_string().contains("http://127.0.0.1:"))
 }
 
 struct Plan {
@@ -1057,6 +1241,8 @@ fn redact(value: &mut Value) {
                     || normalized.contains("secret")
                     || normalized.contains("password")
                     || normalized.contains("credential")
+                    // A proxy address with a user name and password.
+                    || (normalized.ends_with("proxy") && value.as_str().is_some_and(|url| url.contains('@')))
                 {
                     *value = json!("[managed locally]");
                 } else {

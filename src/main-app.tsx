@@ -10,6 +10,7 @@ import { useAutoRefresh } from "@/hooks/use-auto-refresh";
 import { useUpdateCheck } from "@/hooks/use-update-check";
 import { useDeferredReady } from "@/hooks/use-deferred-ready";
 import { useRouteTransition } from "@/hooks/use-route-transition";
+import { OPEN_TERMINAL_PROXY_EVENT } from "@/lib/terminal-proxy-link";
 import { PageStage } from "@/components/layout/page-stage";
 import {
   AppSidebar,
@@ -126,6 +127,16 @@ function MainApp() {
     setRoute("settings");
   }, []);
   const clearProxySettingsRequest = useCallback(() => setProxySettingsRequested(false), []);
+  const [terminalProxyRequested, setTerminalProxyRequested] = useState(false);
+  useEffect(() => {
+    const open = () => {
+      setTerminalProxyRequested(true);
+      setRoute("settings");
+    };
+    window.addEventListener(OPEN_TERMINAL_PROXY_EVENT, open);
+    return () => window.removeEventListener(OPEN_TERMINAL_PROXY_EVENT, open);
+  }, []);
+  const clearTerminalProxyRequest = useCallback(() => setTerminalProxyRequested(false), []);
 
   useAccountsChangedListener();
 
@@ -199,6 +210,8 @@ function MainApp() {
             onCheckUpdate={update.checkForUpdate}
             openProxySettingsRequested={proxySettingsRequested}
             onProxySettingsRequestHandled={clearProxySettingsRequest}
+            terminalProxyRequested={terminalProxyRequested}
+            onTerminalProxyRequestHandled={clearTerminalProxyRequest}
           />
         );
       default:

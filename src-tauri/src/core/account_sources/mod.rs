@@ -1,11 +1,18 @@
 //! Official account sources: subscriptions whose own sign-in serves models
-//! (WorkBuddy, WorkBuddy AI, ChatGPT through Sign in with ChatGPT). Each source
+//! (WorkBuddy, WorkBuddy AI, ChatGPT through Sign in with ChatGPT, GitHub
+//! Copilot, Google's Gemini CLI and Antigravity, Kiro). Each source
 //! keeps its accounts here and, when shared with model inject, publishes one
 //! router provider whose credentials are the active account's, fetched (and
 //! refreshed) per request. Those providers are reachable only through the
 //! local router: no client config ever receives an account token.
 pub mod chatgpt_api;
+pub mod codeassist;
+pub mod copilot;
+pub mod google;
+pub mod kiro;
+mod loopback;
 pub mod store;
+pub mod wire;
 pub mod workbuddy;
 
 use super::{newapi, router};
@@ -22,16 +29,25 @@ pub enum SourceKind {
     ChatgptApi,
     Workbuddy,
     WorkbuddyAi,
+    Copilot,
+    GeminiCli,
+    Antigravity,
+    Kiro,
 }
 
 impl SourceKind {
-    pub const ALL: [SourceKind; 3] = [SourceKind::ChatgptApi, SourceKind::Workbuddy, SourceKind::WorkbuddyAi];
+    pub const ALL: [SourceKind; 7] = [SourceKind::ChatgptApi, SourceKind::Workbuddy, SourceKind::WorkbuddyAi, SourceKind::Copilot,
+        SourceKind::GeminiCli, SourceKind::Antigravity, SourceKind::Kiro];
 
     pub fn provider_id(self) -> &'static str {
         match self {
             SourceKind::ChatgptApi => "account-chatgpt-api",
             SourceKind::Workbuddy => "account-workbuddy",
             SourceKind::WorkbuddyAi => "account-workbuddy-ai",
+            SourceKind::Copilot => "account-copilot",
+            SourceKind::GeminiCli => "account-gemini-cli",
+            SourceKind::Antigravity => "account-antigravity",
+            SourceKind::Kiro => "account-kiro",
         }
     }
 
@@ -40,13 +56,19 @@ impl SourceKind {
             SourceKind::ChatgptApi => "ChatGPT",
             SourceKind::Workbuddy => "WorkBuddy",
             SourceKind::WorkbuddyAi => "WorkBuddy AI",
+            SourceKind::Copilot => "GitHub Copilot",
+            SourceKind::GeminiCli => "Gemini CLI",
+            SourceKind::Antigravity => "Antigravity",
+            SourceKind::Kiro => "Kiro",
         }
     }
 
+    /// The source's API; a model may name another (`SourceModel::protocol`).
     pub fn protocol(self) -> router::ModelProtocol {
         match self {
             SourceKind::ChatgptApi => router::ModelProtocol::Responses,
-            SourceKind::Workbuddy | SourceKind::WorkbuddyAi => router::ModelProtocol::ChatCompletions,
+            // Google's and Kiro's own APIs are spoken through Chat (`wire`).
+            _ => router::ModelProtocol::ChatCompletions,
         }
     }
 
@@ -54,8 +76,43 @@ impl SourceKind {
         match self {
             SourceKind::ChatgptApi => chatgpt_api::api_base(),
             SourceKind::Workbuddy | SourceKind::WorkbuddyAi => workbuddy::site(self).chat_base(),
+            SourceKind::Copilot => copilot::api_base(),
+            SourceKind::GeminiCli | SourceKind::Antigravity => google::base(google::app_of(self)),
+            SourceKind::Kiro => kiro::runtime("us-east-1"),
         }
     }
+
+    /// The source reports an allowance the Accounts page can show.
+    fn has_quota(self) -> bool {
+        !matches!(self, SourceKind::ChatgptApi)
+    }
+
+    /// Where the vendor shows what its API does not report.
+    fn usage_url(self) -> Option<&'static str> {
+        match self {
+            SourceKind::ChatgptApi => Some(chatgpt_api::USAGE_URL),
+            SourceKind::Copilot => Some(copilot::SETTINGS_URL),
+            SourceKind::Kiro => Some(kiro::USAGE_URL),
+            SourceKind::Workbuddy | SourceKind::WorkbuddyAi | SourceKind::GeminiCli | SourceKind::Antigravity => None,
+        }
+    }
+
+    /// Its model list is fetched with an account, not built in.
+    fn fetches_models(self) -> bool {
+        !matches!(self, SourceKind::Workbuddy | SourceKind::WorkbuddyAi)
+    }
+
+    /// What the user should know before signing in.
+    fn risk(self) -> Option<&'static str> {
+        (self == SourceKind::Antigravity).then_some(google::ANTIGRAVITY_RISK)
+    }
+}
+
+/// What a sign-in asks of the user: the vendor's page, and the code to type
+/// there for a device sign-in.
+pub struct SignInPrompt<'a> {
+    pub url: &'a str,
+    pub code: Option<&'a str>,
 }
 
 #[cfg(test)]
@@ -96,6 +153,8 @@ pub struct AccountView {
     pub id: String,
     pub name: String,
     pub plan: Option<String>,
+    /// The Google Cloud project a Gemini CLI or Antigravity account's requests go to.
+    pub project: Option<String>,
     pub active: bool,
     pub lapsed: Option<String>,
     pub quota: Option<Quota>,
@@ -115,6 +174,12 @@ pub struct SourceView {
     pub accounts: Vec<AccountView>,
     /// Where the vendor shows an allowance it does not report through its API.
     pub usage_url: Option<&'static str>,
+    /// Its accounts report an allowance (`AccountView::quota`).
+    pub has_quota: bool,
+    /// Its model list is fetched with an account (and can be refreshed).
+    pub fetches_models: bool,
+    /// A risk to know of before signing in.
+    pub risk: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -125,8 +190,8 @@ pub struct ListPayload {
 
 fn source_models(store: &store::Store, kind: SourceKind) -> Vec<SourceModel> {
     match kind {
-        SourceKind::ChatgptApi => store.models.get(&kind).cloned().unwrap_or_default(),
         SourceKind::Workbuddy | SourceKind::WorkbuddyAi => workbuddy::models(kind),
+        _ => store.models.get(&kind).cloned().unwrap_or_default(),
     }
 }
 
@@ -144,12 +209,19 @@ pub fn list(paths: &CodexPaths) -> Result<ListPayload, String> {
             id: account.id.clone(),
             name: account.name.clone(),
             plan: account.plan.clone(),
+            project: match &account.credentials {
+                Credentials::Google(creds) => Some(creds.project.clone()),
+                _ => None,
+            },
             active: accounts.active(kind).is_some_and(|active| active.id == account.id),
             lapsed: account.lapsed.clone(),
             quota: account.quota.clone(),
             added_at: account.added_at,
         }).collect(),
-        usage_url: (kind == SourceKind::ChatgptApi).then_some(chatgpt_api::USAGE_URL),
+        usage_url: kind.usage_url(),
+        has_quota: kind.has_quota(),
+        fetches_models: kind.fetches_models(),
+        risk: kind.risk(),
     }).collect();
     Ok(ListPayload { sources })
 }
@@ -161,13 +233,13 @@ const POLL_INTERVAL: std::time::Duration = if cfg!(test) {
     std::time::Duration::from_secs(1)
 };
 
-/// Run a source's browser sign-in; `open` shows the vendor's page.
+/// Run a source's sign-in; `prompt` shows the vendor's page (and a device code).
 pub async fn sign_in(
     paths: &CodexPaths,
     client: &Client,
     kind: SourceKind,
     cancel: watch::Receiver<bool>,
-    open: impl Fn(&str) -> Result<(), String>,
+    prompt: impl Fn(SignInPrompt<'_>) -> Result<(), String>,
 ) -> Result<Account, String> {
     let added_at = chrono::Utc::now().timestamp();
     let account = |name: String, subject: String, plan: Option<String>, credentials: Credentials| Account {
@@ -181,7 +253,7 @@ pub async fn sign_in(
             if *cancel.borrow() {
                 return Err("accounts.loginCancelled".into());
             }
-            open(&pending.url)?;
+            prompt(SignInPrompt { url: &pending.url, code: None })?;
             let done = workbuddy::finish_sign_in(client, &site, pending, cancel, POLL_INTERVAL).await?;
             Ok(account(done.name, done.creds.uid.clone(), None, Credentials::WorkBuddy(done.creds)))
         }
@@ -193,10 +265,43 @@ pub async fn sign_in(
             if *cancel.borrow() {
                 return Err("accounts.loginCancelled".into());
             }
-            open(&pending.url)?;
+            prompt(SignInPrompt { url: &pending.url, code: None })?;
             let done = chatgpt_api::finish_sign_in(client, pending, cancel).await?;
             let subject = if done.creds.subject.is_empty() { done.name.clone() } else { done.creds.subject.clone() };
             Ok(account(done.name, subject, done.plan, Credentials::ChatgptApi(done.creds)))
+        }
+        SourceKind::Copilot => {
+            let code = copilot::begin_sign_in(client).await?;
+            if *cancel.borrow() {
+                return Err("accounts.loginCancelled".into());
+            }
+            prompt(SignInPrompt { url: &code.verification_uri, code: Some(&code.user_code) })?;
+            let done = copilot::finish_sign_in(client, code, cancel, POLL_INTERVAL).await?;
+            let login = done.creds.login.clone();
+            Ok(account(login.clone(), login.to_ascii_lowercase(), done.plan, Credentials::Copilot(done.creds)))
+        }
+        SourceKind::GeminiCli | SourceKind::Antigravity => {
+            let pending = google::begin_sign_in(google::app_of(kind)).await?;
+            if *cancel.borrow() {
+                return Err("accounts.loginCancelled".into());
+            }
+            prompt(SignInPrompt { url: &pending.url, code: None })?;
+            let done = google::finish_sign_in(client, pending, cancel).await?;
+            let email = done.creds.email.clone();
+            let mut kept = account(email.clone(), email.to_ascii_lowercase(), done.plan, Credentials::Google(done.creds));
+            // Kept without a project: a Standard account names one afterwards.
+            kept.quota = done.note.map(|note| Quota { error: Some(note), checked_at: added_at, ..Default::default() });
+            Ok(kept)
+        }
+        SourceKind::Kiro => {
+            let pending = kiro::begin_sign_in().await?;
+            if *cancel.borrow() {
+                return Err("accounts.loginCancelled".into());
+            }
+            prompt(SignInPrompt { url: &pending.url, code: None })?;
+            let done = kiro::finish_sign_in(client, pending, cancel).await?;
+            let subject = format!("{}|{}", done.creds.profile, done.email.to_ascii_lowercase());
+            Ok(account(done.email, subject, done.plan, Credentials::Kiro(done.creds)))
         }
     }
 }
@@ -210,15 +315,15 @@ pub fn keep(paths: &CodexPaths, account: Account) -> Result<bool, String> {
     })
 }
 
-/// Fill in what a new sign-in can tell: ChatGPT's model list, WorkBuddy's
-/// credits; a source's first account is shared with model inject.
+/// Fill in what a new sign-in can tell: a fetched model list, an allowance;
+/// a source's first account is shared with model inject.
 pub async fn after_sign_in(paths: &CodexPaths, client: &Client, kind: SourceKind, first: bool) -> Result<(), String> {
-    match kind {
-        SourceKind::ChatgptApi => refresh_models(paths, client, kind).await?,
-        SourceKind::Workbuddy | SourceKind::WorkbuddyAi => {
-            if let Some(id) = store::load(&paths.app_data_dir)?.active(kind).map(|account| account.id.clone()) {
-                refresh_quota(paths, client, &id).await?;
-            }
+    if kind.fetches_models() {
+        refresh_models(paths, client, kind).await?;
+    }
+    if kind.has_quota() {
+        if let Some(id) = store::load(&paths.app_data_dir)?.active(kind).map(|account| account.id.clone()) {
+            refresh_quota(paths, client, &id).await?;
         }
     }
     if first {
@@ -246,7 +351,9 @@ fn to_model(model: &SourceModel) -> newapi::Model {
     newapi::Model {
         id: model.id.clone(),
         display_name: model.name.clone(),
+        protocol: model.protocol,
         context_window: model.context_window,
+        max_output_tokens: model.max_output_tokens,
         included: true,
         metadata_source: "upstream".into(),
         supported_reasoning_levels: (!model.reasoning.is_empty()).then(|| model.reasoning.iter()
@@ -263,9 +370,15 @@ fn provider_for(kind: SourceKind, models: &[SourceModel]) -> Result<router::Prov
         base_url: kind.base_url(),
         protocol: kind.protocol(),
         model: first.id.clone(),
-        models: models.iter().map(to_model).collect(),
+        // Every model names its API: a source's Claude model is asked on the
+        // source's own API, not taken for Anthropic's by its name.
+        models: models.iter().map(|model| newapi::Model { protocol: model.protocol.or(Some(kind.protocol())), ..to_model(model) }).collect(),
         catalog_providers: match kind {
             SourceKind::ChatgptApi => vec!["openai".into()],
+            SourceKind::Copilot => vec!["github-copilot".into()],
+            SourceKind::GeminiCli => vec!["google".into()],
+            SourceKind::Antigravity => vec!["google".into(), "anthropic".into()],
+            SourceKind::Kiro => vec!["anthropic".into()],
             SourceKind::Workbuddy | SourceKind::WorkbuddyAi => Vec::new(),
         },
         enabled: true,
@@ -295,15 +408,22 @@ fn sync_provider(paths: &CodexPaths, kind: SourceKind) -> Result<(), String> {
     Ok(())
 }
 
-/// Fetch a source's model list with its active account (ChatGPT only; WorkBuddy's are built in).
+/// Fetch a source's model list with its active account (WorkBuddy's are built in).
 pub async fn refresh_models(paths: &CodexPaths, client: &Client, kind: SourceKind) -> Result<(), String> {
-    if kind != SourceKind::ChatgptApi {
+    if !kind.fetches_models() {
         return sync_provider(paths, kind);
     }
     let auth = credentials(&paths.app_data_dir, client, kind).await.map_err(|(_, message)| message.to_owned())?;
-    let Credentials::ChatgptApi(creds) = auth.credentials else { return Err("accountSources.errors.notFound".into()) };
-    let official = super::model_catalog::official(&paths.codex_home, &paths.app_data_dir);
-    let models = chatgpt_api::fetch_models(client, &creds, &official.models).await?;
+    let models = match &auth.credentials {
+        Credentials::ChatgptApi(creds) => {
+            let official = super::model_catalog::official(&paths.codex_home, &paths.app_data_dir);
+            chatgpt_api::fetch_models(client, creds, &official.models).await?
+        }
+        Credentials::Copilot(creds) => copilot::fetch_models(client, creds).await?,
+        Credentials::Google(creds) => google::fetch_models(client, google::app_of(kind), creds).await?,
+        Credentials::Kiro(creds) => kiro::fetch_models(client, creds).await?,
+        Credentials::WorkBuddy(_) => return Err("accountSources.errors.notFound".into()),
+    };
     store::mutate(&paths.app_data_dir, |store| {
         store.models.insert(kind, models);
         Ok(())
@@ -311,22 +431,65 @@ pub async fn refresh_models(paths: &CodexPaths, client: &Client, kind: SourceKin
     sync_provider(paths, kind)
 }
 
-/// Read a WorkBuddy account's credits (ChatGPT reports none through its API).
+/// Read an account's allowance: WorkBuddy's credits, Copilot's premium
+/// requests (ChatGPT reports none through its API).
 pub async fn refresh_quota(paths: &CodexPaths, client: &Client, id: &str) -> Result<(), String> {
     let account = store::load(&paths.app_data_dir)?.accounts.into_iter().find(|account| account.id == id)
         .ok_or("accountSources.errors.notFound")?;
-    let Credentials::WorkBuddy(creds) = &account.credentials else { return Ok(()) };
-    let site = workbuddy::site(account.kind);
-    let creds = fresh_workbuddy(&paths.app_data_dir, client, &account, creds).await
-        .map_err(|(_, message)| message.to_owned())?;
-    let quota = workbuddy::quota(client, &site, &creds).await;
+    let (quota, plan) = match &account.credentials {
+        Credentials::WorkBuddy(creds) => {
+            let site = workbuddy::site(account.kind);
+            let creds = fresh_workbuddy(&paths.app_data_dir, client, &account, creds).await
+                .map_err(|(_, message)| message.to_owned())?;
+            let quota = workbuddy::quota(client, &site, &creds).await;
+            let plan = quota.paid.map(|paid| if paid { "Pro".to_owned() } else { "Free".to_owned() });
+            (quota, plan)
+        }
+        Credentials::Copilot(creds) => (copilot::quota(client, creds).await, None),
+        Credentials::Google(creds) => {
+            let creds = fresh_google(&paths.app_data_dir, client, &account, creds).await.map_err(|(_, message)| message.to_owned())?;
+            (google::quota(client, google::app_of(account.kind), &creds).await, None)
+        }
+        Credentials::Kiro(creds) => {
+            let creds = fresh_kiro(&paths.app_data_dir, client, &account, creds).await.map_err(|(_, message)| message.to_owned())?;
+            kiro::quota(client, &creds).await
+        }
+        Credentials::ChatgptApi(_) => return Ok(()),
+    };
     store::mutate(&paths.app_data_dir, |store| {
         if let Some(account) = store.accounts.iter_mut().find(|account| account.id == id) {
-            account.plan = quota.paid.map(|paid| if paid { "Pro".into() } else { "Free".into() }).or(account.plan.take());
+            account.plan = plan.or(account.plan.take());
             account.quota = Some(quota);
         }
         Ok(())
     })
+}
+
+/// Name the Google Cloud project a Gemini CLI (or Antigravity) account's
+/// requests go to, set the account up with it and read its models again.
+pub async fn set_project(paths: &CodexPaths, client: &Client, id: &str, project: &str) -> Result<(), String> {
+    let project = project.trim();
+    if project.is_empty() || project.len() > 64 || !project.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == ':' || ch == '.') {
+        return Err("accountSources.errors.googleProject".into());
+    }
+    let account = store::load(&paths.app_data_dir)?.accounts.into_iter().find(|account| account.id == id)
+        .ok_or("accountSources.errors.notFound")?;
+    let Credentials::Google(creds) = &account.credentials else { return Err("accountSources.errors.notFound".into()) };
+    let mut creds = fresh_google(&paths.app_data_dir, client, &account, creds).await.map_err(|(_, message)| message.to_owned())?;
+    creds.project = project.to_owned();
+    let plan = google::setup(client, google::app_of(account.kind), &mut creds).await?;
+    store::mutate(&paths.app_data_dir, |store| {
+        if let Some(found) = store.accounts.iter_mut().find(|found| found.id == id) {
+            found.credentials = Credentials::Google(creds);
+            found.plan = plan.or(found.plan.take());
+            found.quota = None;
+        }
+        Ok(())
+    })?;
+    if store::load(&paths.app_data_dir)?.active(account.kind).is_some_and(|active| active.id == id) {
+        refresh_models(paths, client, account.kind).await?;
+    }
+    refresh_quota(paths, client, id).await
 }
 
 pub type RouteError = (hyper::StatusCode, &'static str);
@@ -338,6 +501,8 @@ const SIGNED_OUT: RouteError = (hyper::StatusCode::UNAUTHORIZED,
 const REFRESH_FAILED: RouteError = (hyper::StatusCode::BAD_GATEWAY,
     "cannot refresh the account source's token; try again");
 const STORAGE: RouteError = (hyper::StatusCode::INTERNAL_SERVER_ERROR, "account source storage is unavailable");
+const NO_PROJECT: RouteError = (hyper::StatusCode::FAILED_DEPENDENCY,
+    "this Google account has no Google Cloud project for Code Assist yet; set one on the Accounts page");
 
 /// One request's upstream for an account source: where to send it and the
 /// headers that sign it as the active account.
@@ -346,6 +511,14 @@ pub struct RequestAuth {
     pub base: String,
     pub headers: Vec<(&'static str, String)>,
     credentials: Credentials,
+    /// A source whose own API is spoken through Chat.
+    wire: Option<Wire>,
+}
+
+/// What encoding a request on a vendor wire needs to know of the account.
+enum Wire {
+    CodeAssist { app: codeassist::App, project: String, flags: google::Flags },
+    Kiro { profile: String, windows: std::collections::HashMap<String, u64> },
 }
 
 /// Serialises refreshes: tokens rotate, so two concurrent refreshes would
@@ -403,6 +576,58 @@ async fn fresh_workbuddy(dir: &Path, client: &Client, account: &Account, creds: 
     }
 }
 
+async fn fresh_google(dir: &Path, client: &Client, account: &Account, creds: &google::Creds) -> Result<google::Creds, RouteError> {
+    if !creds.near_expiry() {
+        return Ok(creds.clone());
+    }
+    let _refreshing = REFRESHING.lock().await;
+    let current = match reload(dir, &account.id)?.map(|account| account.credentials) {
+        Some(Credentials::Google(current)) => current,
+        _ => return Err(NO_ACCOUNT),
+    };
+    if !current.near_expiry() {
+        return Ok(current);
+    }
+    match google::refresh(client, google::app_of(account.kind), &current).await {
+        Ok(next) => {
+            save_credentials(dir, &account.id, Credentials::Google(next.clone()));
+            Ok(next)
+        }
+        Err(google::RefreshError::SignedOut(reason)) => {
+            mark_lapsed(dir, &account.id, &reason);
+            Err(SIGNED_OUT)
+        }
+        Err(google::RefreshError::Transient) => Err(REFRESH_FAILED),
+    }
+}
+
+async fn fresh_kiro(dir: &Path, client: &Client, account: &Account, creds: &kiro::Creds) -> Result<kiro::Creds, RouteError> {
+    if !creds.near_expiry() {
+        return Ok(creds.clone());
+    }
+    let _refreshing = REFRESHING.lock().await;
+    let current = match reload(dir, &account.id)?.map(|account| account.credentials) {
+        Some(Credentials::Kiro(current)) => current,
+        _ => return Err(NO_ACCOUNT),
+    };
+    if !current.near_expiry() {
+        return Ok(current);
+    }
+    match kiro::refresh(client, &current).await {
+        Ok(next) => {
+            save_credentials(dir, &account.id, Credentials::Kiro(next.clone()));
+            Ok(next)
+        }
+        Err(kiro::RefreshError::SignedOut(reason)) => {
+            mark_lapsed(dir, &account.id, &reason);
+            Err(SIGNED_OUT)
+        }
+        // The token in hand may still be accepted.
+        Err(kiro::RefreshError::Transient) if current.expires_at > chrono::Utc::now().timestamp() => Ok(current),
+        Err(kiro::RefreshError::Transient) => Err(REFRESH_FAILED),
+    }
+}
+
 async fn fresh_chatgpt(dir: &Path, client: &Client, account: &Account, creds: &chatgpt_api::Creds) -> Result<chatgpt_api::Creds, RouteError> {
     if !creds.near_expiry() {
         return Ok(creds.clone());
@@ -441,18 +666,116 @@ pub async fn credentials(dir: &Path, client: &Client, kind: SourceKind) -> Resul
             let creds = fresh_workbuddy(dir, client, &account, creds).await?;
             let site = workbuddy::site(kind);
             Ok(RequestAuth { kind, base: site.chat_base(), headers: workbuddy::auth_headers(&site, &creds),
-                credentials: Credentials::WorkBuddy(creds) })
+                credentials: Credentials::WorkBuddy(creds), wire: None })
         }
         Credentials::ChatgptApi(creds) => {
             let creds = fresh_chatgpt(dir, client, &account, creds).await?;
             Ok(RequestAuth { kind, base: chatgpt_api::api_base(),
                 headers: vec![("authorization", format!("Bearer {}", creds.access))],
-                credentials: Credentials::ChatgptApi(creds) })
+                credentials: Credentials::ChatgptApi(creds), wire: None })
+        }
+        Credentials::Copilot(creds) => match copilot::session(client, creds).await {
+            Ok(session) => Ok(RequestAuth { kind, base: session.api.clone(), headers: copilot::request_headers(&session),
+                credentials: Credentials::Copilot(creds.clone()), wire: None }),
+            Err(copilot::SessionError::SignedOut(reason)) => {
+                mark_lapsed(dir, &account.id, &reason);
+                Err(SIGNED_OUT)
+            }
+            Err(copilot::SessionError::Transient) => Err(REFRESH_FAILED),
+        },
+        Credentials::Google(creds) => {
+            let creds = fresh_google(dir, client, &account, creds).await?;
+            if creds.project.is_empty() {
+                return Err(NO_PROJECT);
+            }
+            let app = google::app_of(kind);
+            let mut headers = vec![("authorization", format!("Bearer {}", creds.access))];
+            if app == codeassist::App::Antigravity {
+                headers.push(("user-agent", google::user_agent(client, app, "").await));
+            }
+            let flags = if app == codeassist::App::GeminiCli { google::flags(client, &creds).await } else { google::Flags::default() };
+            Ok(RequestAuth { kind, base: google::base(app), headers,
+                wire: Some(Wire::CodeAssist { app, project: creds.project.clone(), flags }), credentials: Credentials::Google(creds) })
+        }
+        Credentials::Kiro(creds) => {
+            let creds = fresh_kiro(dir, client, &account, creds).await?;
+            let windows = store.models.get(&kind).into_iter().flatten()
+                .filter_map(|model| model.context_window.map(|window| (model.id.clone(), window))).collect();
+            Ok(RequestAuth { kind, base: kiro::runtime(&creds.api_region()), headers: kiro::request_headers(&creds),
+                wire: Some(Wire::Kiro { profile: creds.profile.clone(), windows }), credentials: Credentials::Kiro(creds) })
         }
     }
 }
 
 impl RequestAuth {
+    /// Whether this source answers `suffix` on `protocol`: inference, and
+    /// ChatGPT's model list.
+    pub fn serves(&self, protocol: router::ModelProtocol, suffix: &str) -> bool {
+        use router::ModelProtocol::*;
+        match (self.kind, protocol) {
+            (SourceKind::ChatgptApi, Responses) => suffix == "responses" || suffix == "models",
+            (SourceKind::ChatgptApi, _) => false,
+            (_, ChatCompletions) => suffix == "chat/completions",
+            (SourceKind::Copilot, Responses) => suffix == "responses",
+            (SourceKind::Copilot, AnthropicMessages) => suffix == "messages",
+            _ => false,
+        }
+    }
+
+    /// The path below `base` that `suffix` is asked at.
+    pub fn path(&self, suffix: &str) -> String {
+        match (self.kind, suffix) {
+            (SourceKind::Copilot, "messages") => "v1/messages".into(),
+            _ => suffix.to_owned(),
+        }
+    }
+
+    /// A Chat request in the vendor's own shape, for a source spoken through
+    /// Chat (`wire`); `None` for any other source.
+    pub fn encode(&self, protocol: router::ModelProtocol, body: &[u8], model: &str) -> Option<Result<wire::Encoded, RouteError>> {
+        let wire = self.wire.as_ref().filter(|_| protocol == router::ModelProtocol::ChatCompletions)?;
+        let Ok(chat) = serde_json::from_slice::<serde_json::Value>(body) else {
+            return Some(Err((hyper::StatusCode::BAD_REQUEST, "invalid chat request")));
+        };
+        let model = chat["model"].as_str().filter(|model| !model.is_empty()).unwrap_or(model).to_owned();
+        let stream = chat["stream"].as_bool().unwrap_or(false);
+        Some(Ok(match wire {
+            Wire::CodeAssist { app, project, flags } => {
+                let sent = if *app == codeassist::App::GeminiCli { flags.wire(&model) } else { model.clone() };
+                let request = codeassist::gemini_request(&chat, &sent, *app);
+                let mut headers = vec![("content-type", "application/json".to_owned()), ("accept", "text/event-stream".to_owned())];
+                if *app == codeassist::App::GeminiCli {
+                    let (os, arch) = (if cfg!(windows) { "win32" } else if cfg!(target_os = "macos") { "darwin" } else { "linux" },
+                        if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" });
+                    headers.push(("user-agent", format!("GeminiCLI/0.61.0/{model} ({os}; {arch}; terminal)")));
+                }
+                wire::Encoded {
+                    body: codeassist::envelope(request, &sent, project, *app).to_string().into_bytes(),
+                    path: "v1internal:streamGenerateContent?alt=sse".into(),
+                    headers,
+                    decoder: wire::Decoder::new(wire::Codec::CodeAssist(codeassist::Decoder::default()), &model, stream),
+                }
+            }
+            Wire::Kiro { profile, windows } => {
+                let (body, names, thinking) = kiro::kiro_request(&chat, &model, profile);
+                wire::Encoded {
+                    body: body.to_string().into_bytes(),
+                    path: "generateAssistantResponse".into(),
+                    headers: vec![("content-type", "application/json".to_owned())],
+                    decoder: wire::Decoder::new(wire::Codec::Kiro(kiro::Decoder::new(names, thinking, windows.get(&model).copied())), &model, stream),
+                }
+            }
+        }))
+    }
+
+    /// Headers that depend on the request body.
+    pub fn body_headers(&self, protocol: router::ModelProtocol, body: &[u8]) -> Vec<(&'static str, String)> {
+        match self.kind {
+            SourceKind::Copilot => copilot::body_headers(protocol, body),
+            _ => Vec::new(),
+        }
+    }
+
     /// The request body as the source takes it, `None` when unchanged.
     pub fn shape_body(&self, protocol: router::ModelProtocol, body: &[u8]) -> Option<Vec<u8>> {
         match (self.kind, protocol) {
@@ -468,6 +791,9 @@ pub fn explain(kind: SourceKind, status: u16, body: &[u8]) -> Option<String> {
     match kind {
         SourceKind::Workbuddy | SourceKind::WorkbuddyAi => workbuddy::refused(status, body).then(|| workbuddy::REFUSED_HINT.to_owned()),
         SourceKind::ChatgptApi => (status >= 400).then(|| chatgpt_api::explain(status, body)).flatten(),
+        SourceKind::Copilot => copilot::explain(status, body),
+        SourceKind::GeminiCli | SourceKind::Antigravity => codeassist::explain(google::app_of(kind), status, body),
+        SourceKind::Kiro => kiro::explain(status, body),
     }
 }
 

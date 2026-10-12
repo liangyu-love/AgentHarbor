@@ -608,7 +608,8 @@ fn validate_endpoint(method: &hyper::Method, segments: &[&str]) -> ForwardResult
         _ => return Err((StatusCode::NOT_FOUND, "unknown router endpoint")),
     };
     let allowed = match suffix {
-        ["models"] | ["models", _] => matches!(*method, hyper::Method::GET | hyper::Method::HEAD),
+        // A model id may hold `/` (`relay-a/vendor/m`), so any depth below `models`.
+        ["models", ..] => matches!(*method, hyper::Method::GET | hyper::Method::HEAD),
         ["responses"] | ["responses", "compact"] | ["messages"] | ["messages", "count_tokens"]
             | ["chat", "completions"] => *method == hyper::Method::POST,
         ["responses", _] => matches!(*method, hyper::Method::GET | hyper::Method::HEAD | hyper::Method::DELETE),
@@ -848,19 +849,21 @@ async fn handle(mut request: Request<Incoming>, context: Arc<ArcContext>) -> For
             }))
             .expect("static response parts"));
     }
-    if gateway_key.is_some() && matches!(segments.as_slice(), ["v1", "models"] | ["v1", "models", _]) {
+    if gateway_key.is_some() && matches!(segments.as_slice(), ["v1", "models", ..]) {
         let catalog = super::models_dev::load(&context.app_data_dir);
         let anthropic = request.headers().contains_key("anthropic-version")
             || query.as_deref().is_some_and(|query| query.split('&').any(|part| part == "format=anthropic"));
         let mut models = super::gateway::models(&store, &catalog);
-        if let ["v1", "models", model] = segments.as_slice() {
+        // Gateway ids hold `/`: the rest of the path is the id, raw or escaped.
+        let one = (segments.len() > 2).then(|| segments[2..].join("/").replace("%2F", "/").replace("%2f", "/"));
+        if let Some(model) = &one {
             models.retain(|entry| entry.id == *model);
             if models.is_empty() {
                 return Err((StatusCode::NOT_FOUND, "unknown gateway model"));
             }
         }
         let mut value = super::gateway::models_document(&models, anthropic);
-        if segments.len() == 3 {
+        if one.is_some() {
             value = value["data"][0].clone();
         }
         return Ok(Response::builder()
@@ -931,7 +934,8 @@ async fn handle(mut request: Request<Incoming>, context: Arc<ArcContext>) -> For
     }
     let requested_model = match &gateway_target {
         Some(super::gateway::Target::Provider { provider_id, model_id }) => Some(format!("{provider_id}::{model_id}")),
-        _ => requested_model,
+        Some(super::gateway::Target::Aggregate { public_id }) => Some(public_id.clone()),
+        None => requested_model,
     };
     let segments: Vec<&str> = if matches!(gateway_target, Some(super::gateway::Target::Aggregate { .. })) {
         ["aggregate"].into_iter().chain(segments.iter().copied()).collect()

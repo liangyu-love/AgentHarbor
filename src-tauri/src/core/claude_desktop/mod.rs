@@ -111,6 +111,10 @@ pub struct Manager {
     /// 显式路径覆盖；只用于隔离的集成测试，生产路径始终由发现决定。
     paths_override: Option<DesktopPaths>,
     listener_lease: Option<types::ListenerLease>,
+    /// Set by the exit restore once Desktop is confirmed stopped: Desktop may
+    /// have written its own mode back into the two mode files on quit, which
+    /// the restore overwrites anyway, so that drift is not a conflict.
+    exit_restore: bool,
     #[cfg(test)]
     stop_check: Option<std::sync::Arc<dyn Fn(&DesktopPaths) -> DesktopResult<()> + Send + Sync>>,
     #[cfg(test)]
@@ -124,6 +128,7 @@ impl Manager {
             version_hint: None,
             paths_override: None,
             listener_lease: None,
+            exit_restore: false,
             #[cfg(test)]
             stop_check: None,
             #[cfg(test)]
@@ -146,6 +151,12 @@ impl Manager {
     pub fn with_paths(mut self, mut paths: DesktopPaths) -> Self {
         paths.overridden = true;
         self.paths_override = Some(paths);
+        self
+    }
+
+    /// The exit restore's manager, after Desktop was confirmed stopped.
+    pub fn after_confirmed_stop(mut self) -> Self {
+        self.exit_restore = true;
         self
     }
 
@@ -501,7 +512,18 @@ impl Manager {
         // 预览阶段就检测受管漂移；未显式 re-baseline 时不允许静默覆盖。
         if let Some(state) = &previous {
             if !request.rebaseline {
-                let drifted = transaction::drifted_roles(state, &paths)?;
+                let mut drifted = transaction::drifted_roles(state, &paths)?;
+                if action == DesktopAction::RestorePrevious {
+                    // A file already back at its takeover baseline needs no
+                    // restore: whoever put it there did the restore's work.
+                    let settled = transaction::at_baseline_roles(state, &paths)?;
+                    drifted.retain(|name| !settled.contains(name));
+                    if self.exit_restore {
+                        // Desktop, confirmed stopped, may have written its own
+                        // mode back on quit; the restore puts the baseline there.
+                        drifted.retain(|name| !matches!(name.as_str(), role::NORMAL_CONFIG | role::THIRD_PARTY_CONFIG));
+                    }
+                }
                 conflicts.extend(drifted.iter().map(|name| format!("drift:{name}")));
             }
         }

@@ -7,7 +7,7 @@ import { AccountCard, planLabel } from "@/components/accounts/account-card";
 import { AccountSourcePanel } from "@/components/accounts/account-source-panel";
 import { useAccountSources } from "@/components/accounts/use-account-sources";
 import { useAccounts } from "@/components/accounts/use-accounts";
-import { AnimatedSegmentedControl } from "@/components/ui/animated-segmented-control";
+import { DOCK_ORDER, SourceDock, type Berth, type DockValue } from "@/components/accounts/source-dock";
 
 import {
   AlertDialog,
@@ -35,14 +35,15 @@ import { cn } from "@/lib/utils";
 import { formatInvokeError } from "@/lib/invoke-error";
 import type { AccountSourceKind } from "@/types/account-sources";
 
-const TABS = ["codex", "chatgpt-api", "workbuddy", "workbuddy-ai"] as const;
-type Tab = (typeof TABS)[number];
+type Tab = DockValue;
 const TAB_KEY = "agentharbor.accounts-tab.v1";
+/** A berth's name where its pier already names the vendor. */
+const SHORT_NAMES: Partial<Record<AccountSourceKind, string>> = { copilot: "Copilot" };
 
 function readTab(): Tab {
   try {
     const saved = localStorage.getItem(TAB_KEY);
-    return (TABS as readonly string[]).includes(saved ?? "") ? saved as Tab : "codex";
+    return (DOCK_ORDER as string[]).includes(saved ?? "") ? saved as Tab : "codex";
   } catch {
     return "codex";
   }
@@ -56,26 +57,28 @@ export function AccountsPage({ refreshInterval }: { refreshInterval: RefreshInte
     switchMutation, deleteMutation, refreshQuotaMutation, refresh,
   } = useAccounts(refreshInterval);
   const sources = useAccountSources(refreshInterval);
-  const [tab, setTabState] = useState<Tab>(readTab);
+  const [chosen, setTabState] = useState<Tab>(readTab);
+  // A remembered source this build no longer lists opens Codex instead.
+  const tab: Tab = chosen !== "codex" && sources.query.isSuccess && !sources.sources.some(source => source.kind === chosen) ? "codex" : chosen;
   // The panel enters from the side of the newly chosen source, so switching
   // reads as moving along the row of sources rather than a page swap.
   const [direction, setDirection] = useState<"forward" | "back" | null>(null);
   const setTab = (next: Tab) => {
-    if (next !== tab) setDirection(TABS.indexOf(next) > TABS.indexOf(tab) ? "forward" : "back");
+    if (next !== tab) setDirection(DOCK_ORDER.indexOf(next) > DOCK_ORDER.indexOf(tab) ? "forward" : "back");
     setTabState(next);
     try { localStorage.setItem(TAB_KEY, next); } catch { /* storage unavailable: the tab is not remembered */ }
   };
   const sourceTab = tab === "codex" ? null : tab as AccountSourceKind;
   const sourceName = (kind: AccountSourceKind) => sources.sources.find(source => source.kind === kind)?.name ?? kind;
-  const countOf = (value: Tab) => value === "codex" ? accounts.length
-    : sources.sources.find(source => source.kind === value)?.accounts.length ?? 0;
-  const tabItems = TABS.map(value => ({
-    value,
-    label: <span className="flex items-center gap-1.5">
-      {value === "codex" ? "Codex" : value === "chatgpt-api" ? "ChatGPT" : value === "workbuddy" ? "WorkBuddy" : "WorkBuddy AI"}
-      <span className="rounded-full bg-current/10 px-1.5 font-mono text-[10px] leading-4 tabular-nums opacity-70">{countOf(value)}</span>
-    </span>,
-  }));
+  const berths: Berth[] = [
+    { value: "codex", name: "Codex", lights: accounts.map(account => account.isActive ? "active" : "ready"), shared: false },
+    ...sources.sources.map((source): Berth => ({
+      value: source.kind,
+      name: SHORT_NAMES[source.kind] ?? source.name,
+      lights: source.accounts.map(account => account.lapsed ? "lapsed" : account.active ? "active" : "ready"),
+      shared: source.exposed,
+    })),
+  ];
   const fetching = sourceTab ? sources.query.isFetching : accountsQuery.isFetching;
 
   return (
@@ -97,15 +100,8 @@ export function AccountsPage({ refreshInterval }: { refreshInterval: RefreshInte
               : !loginPending && <Button onClick={startLogin}><LogIn />{t("accounts.oauthLogin")}</Button>}
           </>} />
 
-        <nav aria-label={t("accountSources.tabs")} data-accounts-tabs className="max-w-full overflow-x-auto">
-          <div className="inline-flex rounded-full bg-muted p-0.5 dark:bg-white/[0.06]">
-            <AnimatedSegmentedControl items={tabItems} value={tab} onValueChange={value => setTab(value as Tab)}
-              className="gap-0.5"
-              indicatorClassName="rounded-full bg-primary shadow-sm"
-              itemClassName="rounded-full px-4 py-[5px] text-[13px] font-medium whitespace-nowrap"
-              activeItemClassName="text-primary-foreground"
-              inactiveItemClassName="text-muted-foreground hover:text-foreground" />
-          </div>
+        <nav aria-label={t("accountSources.tabs")}>
+          <SourceDock berths={berths} value={tab} onChange={setTab} />
         </nav>
 
         <div key={tab} data-accounts-panel={tab} data-direction={direction ?? undefined}

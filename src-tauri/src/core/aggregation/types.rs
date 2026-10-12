@@ -84,6 +84,8 @@ pub struct AggregateModel {
     /// or a tool call) before a request that may still move is sent to another
     /// member instead; 0 waits as long as it takes.
     pub first_token_timeout_secs: u16,
+    /// Its gateway id prefix; `None` uses the gateway's shared one.
+    pub gateway_prefix: Option<String>,
 }
 
 impl Default for AggregateModel {
@@ -100,6 +102,7 @@ impl Default for AggregateModel {
             retry_policy: RetryPolicy::default(),
             compression: model_policy::CompressionPolicy::Inherit,
             first_token_timeout_secs: 0,
+            gateway_prefix: None,
         }
     }
 }

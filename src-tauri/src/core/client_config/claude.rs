@@ -102,6 +102,20 @@ impl ClientAdapter for ClaudeCode {
             edit(&["env", auth], json!(credential)),
             remove(&["env", other_auth]),
         ];
+        // A direct configuration reaches its relay outside this app's proxy,
+        // and Claude Code reads only proxy variables. A proxy variable the user
+        // set stays theirs; local addresses (MCP servers, a local relay) stay
+        // off the proxy unless the user already chose otherwise.
+        if let Some(proxy) = &ctx.proxy {
+            let env = document.get("env");
+            let set = |name: &str| env.and_then(|env| env.get(name)).is_some_and(|value| !value.is_null());
+            if !["https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY"].into_iter().any(set) {
+                edits.push(edit(&["env", "HTTPS_PROXY"], json!(proxy)));
+                if !["no_proxy", "NO_PROXY"].into_iter().any(set) {
+                    edits.push(edit(&["env", "NO_PROXY"], json!("localhost,127.0.0.1,::1")));
+                }
+            }
+        }
         let mapping = &request.options.claude_models;
         let mut available = provider.map(|p| request.models(p)).unwrap_or_else(|| {
             aggregate_models

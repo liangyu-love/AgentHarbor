@@ -11,6 +11,8 @@ export interface AggregateModel {
   retryPolicy: { maxAttempts: number; failureThreshold: number }; compression: CompressionPolicy;
   /** Seconds a streamed reply may stay silent before another member is asked; 0 waits. */
   firstTokenTimeoutSecs?: number;
+  /** Its gateway id prefix; empty uses the gateway's shared one. */
+  gatewayPrefix?: string | null;
 }
 export interface AggregateView extends AggregateModel {
   available: boolean; reason: string | null; projection: ClientProjection | null; routeRevision: string;

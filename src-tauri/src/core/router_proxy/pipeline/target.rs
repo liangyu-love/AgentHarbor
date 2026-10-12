@@ -83,7 +83,8 @@ pub(in crate::core::router_proxy) async fn account_auth(context: &ArcContext, de
 }
 
 /// URL and headers for an account source: its own endpoint, signed as the
-/// active account. Only inference (and ChatGPT's model list) is served.
+/// active account. Only what the source serves (inference, ChatGPT's model
+/// list) is asked.
 pub(in crate::core::router_proxy) fn account_target(
     auth: &account_sources::RequestAuth,
     upstream_protocol: router::ModelProtocol,
@@ -92,13 +93,7 @@ pub(in crate::core::router_proxy) fn account_target(
     query: Option<&str>,
     mut headers: HeaderMap,
 ) -> ForwardResult<(String, HeaderMap)> {
-    let served = match upstream_protocol {
-        router::ModelProtocol::ChatCompletions => suffix == "chat/completions",
-        router::ModelProtocol::Responses => suffix == "responses"
-            || (suffix == "models" && auth.kind == account_sources::SourceKind::ChatgptApi),
-        router::ModelProtocol::AnthropicMessages => false,
-    };
-    if !served {
+    if !auth.serves(upstream_protocol, suffix) {
         return Err((StatusCode::NOT_FOUND, "this account source serves only model requests"));
     }
     headers.remove(AUTHORIZATION);
@@ -110,7 +105,7 @@ pub(in crate::core::router_proxy) fn account_target(
             .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid account source credentials"))?;
         headers.insert(hyper::header::HeaderName::from_static(name), value);
     }
-    Ok((format!("{}/{suffix}{}", auth.base.trim_end_matches('/'), provider_query(query, translation)), headers))
+    Ok((format!("{}/{}{}", auth.base.trim_end_matches('/'), auth.path(suffix), provider_query(query, translation)), headers))
 }
 
 /// URL and headers for official OpenAI models, using Codex's own credentials.

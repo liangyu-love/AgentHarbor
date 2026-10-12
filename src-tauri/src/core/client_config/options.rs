@@ -182,9 +182,17 @@ pub(super) fn client_endpoint_for_protocol<'a>(
     } else {
         Ok((
             native_base(provider, with_version, protocol)?,
-            &provider.api_key,
+            native_key(&provider.api_key),
         ))
     }
+}
+
+/// The card's key as a client sends it itself: a pasted `Bearer ` prefix is
+/// dropped, as the router and Claude Desktop drop it, or the client would
+/// send `Bearer Bearer …`.
+fn native_key(key: &str) -> &str {
+    let key = key.trim();
+    key.strip_prefix("Bearer ").or_else(|| key.strip_prefix("bearer ")).map(str::trim).filter(|key| !key.is_empty()).unwrap_or(key)
 }
 
 pub(super) fn router_source_prefix(target: TargetId) -> &'static str {

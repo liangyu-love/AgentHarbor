@@ -15,7 +15,7 @@ export async function testClaudeCliOfficial({ page, reset, captureDir }) {
       review.providerFixtures = options.noProviders ? [] : [provider];
       review.clientStatusFixtures = [
         { targetId: "claudeCode", name: "Claude Code", path: "C:/synthetic/.claude/settings.json",
-          protocols: ["anthropicMessages"], configured: !!options.managed, conflict: !!options.conflict,
+          protocols: ["anthropicMessages"], configured: !!options.managed, conflict: !!options.conflict, stale: !!options.stale,
           conflictFields: options.conflict ? ["model"] : [], error: null,
           providerId: options.managed ? provider.id : null, model: options.managed ? provider.model : null,
           request: options.managed ? { targetId: "claudeCode", providerId: provider.id, model: provider.model,
@@ -152,4 +152,16 @@ export async function testClaudeCliOfficial({ page, reset, captureDir }) {
   await cancel();
   await page.setViewportSize({ width: 1200, height: 700 });
   console.log("PASS official confirmation stays usable in desktop light and narrow dark themes");
+
+  // A direct configuration whose relay card changed says so and offers to reapply it.
+  await seed({ managed: true });
+  assert.equal(await card("Claude Code").locator("[data-client-stale]").count(), 0);
+  await seed({ managed: true, stale: true });
+  const stale = card("Claude Code").locator("[data-client-stale]");
+  await stale.getByText(await tr("clients.stale")).waitFor();
+  await stale.getByRole("button", { name: await tr("clients.reapply"), exact: true }).click();
+  await dialog().getByRole("button", { name: await tr("clients.reapply"), exact: true }).click();
+  await page.waitForFunction(() => window.review.reappliedClient?.rebaseline === false);
+  await stale.waitFor({ state: "detached" });
+  console.log("PASS a direct configuration whose relay card changed says so and reapplies from the notice");
 }

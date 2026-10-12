@@ -80,6 +80,8 @@ fn restore_gateway_with(
         stop(&paths)?;
         ensure_stopped(&paths)?;
     }
+    // Desktop is stopped from here on: its quit may have rewritten its mode files.
+    let manager = &manager.clone().after_confirmed_stop();
     // Interrupted gateway writes need the same stop confirmation as a healthy
     // gateway. Recover first, then restore the resulting committed generation.
     manager.recover_at_startup()?;
@@ -408,5 +410,55 @@ mod tests {
         )
         .unwrap());
         assert!(manager.load_state().unwrap().unwrap().tombstone);
+    }
+
+    fn restore_request() -> ActionRequest {
+        ActionRequest {
+            provider_id: None,
+            models: Vec::new(),
+            paths: Default::default(),
+            rebaseline: false,
+            routes: Vec::new(),
+            rotate_gateway_token: false,
+        }
+    }
+
+    #[test]
+    fn desktop_writing_its_mode_back_on_quit_does_not_block_the_exit_restore() {
+        let _env = claude_desktop::env_test_lock();
+        let (_root, paths, manager, store, _) = fixture();
+        let stopped = Cell::new(false);
+        assert!(restore_gateway_with(
+            &manager,
+            &store,
+            true,
+            |_| if stopped.get() { Ok(()) } else { Err(running()) },
+            |paths| {
+                // Desktop writes the mode it started with back on quit.
+                std::fs::write(&paths.normal_config, r#"{"deploymentMode":"2p","external":true}"#).unwrap();
+                stopped.set(true);
+                Ok(())
+            },
+        )
+        .unwrap(), "the restore after a confirmed stop puts the baseline back over the mode Desktop wrote");
+        assert!(manager.load_state().unwrap().unwrap().tombstone);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&paths.normal_config).unwrap()).unwrap(),
+            serde_json::json!({"deploymentMode": "1p", "external": true})
+        );
+        assert!(!paths.profile_path.exists());
+    }
+
+    #[test]
+    fn a_file_already_at_its_baseline_is_no_conflict_for_a_restore_but_a_third_value_is() {
+        let _env = claude_desktop::env_test_lock();
+        let (_root, paths, manager, store, _) = fixture();
+        std::fs::write(&paths.normal_config, r#"{"deploymentMode":"1p","external":true}"#).unwrap();
+        let prepared = manager.prepare(&store, DesktopAction::RestorePrevious, &restore_request()).unwrap();
+        assert!(!prepared.conflicts.iter().any(|conflict| conflict == "drift:normalConfig"), "{:?}", prepared.conflicts);
+        std::fs::write(&paths.normal_config, r#"{"deploymentMode":"2p","external":true}"#).unwrap();
+        let prepared = manager.prepare(&store, DesktopAction::RestorePrevious, &restore_request()).unwrap();
+        assert!(prepared.conflicts.iter().any(|conflict| conflict == "drift:normalConfig"),
+            "outside the exit restore a third value is still a conflict");
     }
 }

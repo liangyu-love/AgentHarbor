@@ -1,15 +1,18 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { AlertTriangle, Check, ExternalLink, Globe, KeyRound, Loader2, LogIn, Plug, RefreshCw, Sparkles, Trash2, UsersRound, Waypoints } from "lucide-react";
+import { AlertTriangle, Check, Copy, ExternalLink, Globe, KeyRound, Loader2, LogIn, Plug, RefreshCw, Sparkles, Trash2, UsersRound, Waypoints } from "lucide-react";
 
 import { maskEmail } from "@/components/accounts/account-card";
 import type { useAccountSources } from "@/components/accounts/use-account-sources";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog, type ConfirmRequest } from "@/components/ui/confirm-dialog";
+import { FoldBody, FoldHeader } from "@/components/ui/fold-header";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { SignalPath, linkPath, useAnchors } from "@/components/ui/signal-lines";
+import { useFold } from "@/hooks/use-fold";
 import { formatInvokeError } from "@/lib/invoke-error";
 import { reducedMotion } from "@/lib/motion";
 import { cn } from "@/lib/utils";
@@ -25,15 +28,18 @@ function CreditsMeter({ account }: { account: AccountSourceAccount }) {
   const { t } = useTranslation();
   const quota = account.quota;
   if (!quota) return <p className="text-xs text-muted-foreground">{t("accountSources.quotaUnread")}</p>;
-  if (quota.error) return <p className="text-xs text-destructive">{quota.error}</p>;
+  if (quota.error) return <p className="text-xs text-destructive">{formatInvokeError(quota.error, quota.error)}</p>;
   if (quota.limit <= 0) return <p className="text-xs text-muted-foreground">{t("accountSources.quotaNone")}</p>;
   const share = Math.min(100, Math.max(0, (quota.used / quota.limit) * 100));
   const left = 100 - share;
+  const label = quota.unit === "premium" ? "accountSources.premiumRequests" : quota.unit === "percent" ? "accountSources.tightestModel" : "accountSources.credits";
   return (
     <div className="space-y-1.5" data-source-quota>
       <div className="flex items-baseline justify-between gap-2 text-xs">
-        <span className="text-muted-foreground">{t("accountSources.credits")}</span>
-        <span className="font-mono tabular-nums text-foreground/90">{formatCount(quota.used)} / {formatCount(quota.limit)}</span>
+        <span className="text-muted-foreground">{t(label)}</span>
+        <span className="font-mono tabular-nums text-foreground/90">
+          {quota.unit === "percent" ? t("accountSources.usedPercent", { value: Math.round(share) }) : `${formatCount(quota.used)} / ${formatCount(quota.limit)}`}
+        </span>
       </div>
       <div className="h-1.5 overflow-hidden rounded-full bg-muted" role="meter" aria-valuemin={0} aria-valuemax={100}
         aria-valuenow={Math.round(left)} aria-label={t("accountSources.creditsLeft", { value: Math.round(left) })}>
@@ -129,7 +135,7 @@ function SourceAccountCard({ source, account, sources, order, onRemove }: {
   const title = isEmail && !revealed ? maskEmail(account.name) : account.name;
   const activating = sources.activate.isPending && sources.activate.variables === account.id;
   const refreshing = sources.refreshQuota.isPending && sources.refreshQuota.variables === account.id;
-  const workbuddy = source.kind !== "chatgpt-api";
+  const usageHost = source.usageUrl ? new URL(source.usageUrl).host : null;
   return (
     <article data-source-account={account.id} data-active={account.active || undefined}
       style={{ animationDelay: `${Math.min(order, 4) * 50}ms` }}
@@ -164,12 +170,15 @@ function SourceAccountCard({ source, account, sources, order, onRemove }: {
           <p role="status" className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-300">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />{t("accountSources.lapsed")}
           </p>
-        ) : workbuddy ? <CreditsMeter account={account} /> : (
+        ) : source.hasQuota ? <>
+          <CreditsMeter account={account} />
+          {source.kind === "gemini-cli" && <ProjectField account={account} sources={sources} />}
+        </> : (
           <p className="text-xs text-muted-foreground">
-            {t("accountSources.chatgptUsage")}{" "}
+            {t(`accountSources.usage.${source.kind}`, { defaultValue: t("accountSources.vendorUsage") })}{" "}
             {source.usageUrl && (
               <a className="inline-flex items-center gap-0.5 font-medium text-primary hover:underline" href={source.usageUrl} target="_blank" rel="noreferrer">
-                chatgpt.com<ExternalLink className="h-3 w-3" />
+                {usageHost}<ExternalLink className="h-3 w-3" />
               </a>
             )}
           </p>
@@ -186,7 +195,7 @@ function SourceAccountCard({ source, account, sources, order, onRemove }: {
           </Button>
         )}
         <div className="flex items-center gap-1">
-          {workbuddy && (
+          {source.hasQuota && (
             <Button variant="ghost" size="icon-sm" className="h-7 w-7 text-muted-foreground" disabled={refreshing}
               aria-label={t("accountSources.refreshQuota")} title={t("accountSources.refreshQuota")}
               onClick={() => sources.refreshQuota.mutate(account.id)}>
@@ -203,10 +212,56 @@ function SourceAccountCard({ source, account, sources, order, onRemove }: {
   );
 }
 
+/** The Google Cloud project a Gemini CLI account's requests are billed to. */
+function ProjectField({ account, sources }: { account: AccountSourceAccount; sources: Sources }) {
+  const { t } = useTranslation();
+  const [draft, setDraft] = useState(account.project ?? "");
+  useEffect(() => setDraft(account.project ?? ""), [account.project]);
+  const saving = sources.setProject.isPending && sources.setProject.variables?.id === account.id;
+  const next = draft.trim();
+  return (
+    <form className="mt-2 flex items-center gap-1.5" data-source-project
+      onSubmit={event => { event.preventDefault(); if (next && next !== account.project) sources.setProject.mutate({ id: account.id, project: next }); }}>
+      <Input value={draft} onChange={event => setDraft(event.target.value)} placeholder={t("accountSources.projectPlaceholder")}
+        aria-label={t("accountSources.project")} className="h-7 min-w-0 flex-1 font-mono text-[11px]" spellCheck={false} maxLength={64} disabled={saving} />
+      <Button type="submit" variant="outline" size="xs" className="h-7 shrink-0" disabled={saving || !next || next === account.project}>
+        {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : t("common.save")}
+      </Button>
+    </form>
+  );
+}
+
+/** The code a device sign-in asks the user to type at the vendor's page. */
+function DeviceCode({ code, url }: { code: string; url: string }) {
+  const { t } = useTranslation();
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3 sm:justify-center" data-device-code>
+      <span className="sr-only">{t("accountSources.deviceCode")}</span>
+      <code className="source-device-code" aria-live="polite">
+        {[...code].map((char, index) => (
+          <span key={index} style={{ animationDelay: `${index * 45}ms` }} data-dash={char === "-" || undefined}>{char}</span>
+        ))}
+      </code>
+      <div className="flex items-center gap-1.5">
+        <Button type="button" variant="outline" size="xs" className="h-7 gap-1.5"
+          onClick={() => void navigator.clipboard?.writeText(code).then(() => setCopied(true), () => setCopied(false))}>
+          {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}{t(copied ? "accountSources.codeCopied" : "accountSources.copyCode")}
+        </Button>
+        <a href={url} target="_blank" rel="noreferrer"
+          className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs font-medium text-primary hover:bg-primary/10">
+          {new URL(url).host}<ExternalLink className="h-3 w-3" />
+        </a>
+      </div>
+    </div>
+  );
+}
+
 /** One account source: its share with model inject, sign-in, accounts and models. */
 export function AccountSourcePanel({ kind, sources }: { kind: AccountSourceKind; sources: Sources }) {
   const { t } = useTranslation();
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
+  const modelsFold = useFold(`account-source-models-${kind}`, false);
   const source = sources.sources.find(item => item.kind === kind);
   const titleId = `account-source-${kind}-title`;
   const signingIn = sources.pending?.kind === kind;
@@ -231,6 +286,11 @@ export function AccountSourcePanel({ kind, sources }: { kind: AccountSourceKind;
           <h3 id={titleId} className="text-sm font-semibold">{source.name}</h3>
           <p className="max-w-2xl text-sm text-muted-foreground">{t(`accountSources.desc.${kind}`)}</p>
           <p className="max-w-2xl text-xs text-muted-foreground/90" data-source-note>{t(`accountSources.note.${kind}`)}</p>
+          {source.risk && (
+            <p className="flex max-w-2xl items-start gap-1.5 text-xs text-amber-700 dark:text-amber-300" data-source-risk>
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />{t(`accountSources.risk.${kind}`)}
+            </p>
+          )}
         </div>
         <div className="flex min-w-0 flex-col items-stretch gap-3 md:items-end">
           <SourceChannel source={source} />
@@ -241,7 +301,7 @@ export function AccountSourcePanel({ kind, sources }: { kind: AccountSourceKind;
                 onCheckedChange={exposed => sources.setExposed.mutate({ kind, exposed })} />
               {t("accountSources.expose")}
             </label>
-            {kind === "chatgpt-api" && (
+            {source.fetchesModels && (
               <Button variant="outline" size="xs" className="h-7 gap-1.5" disabled={modelsRefreshing || source.accounts.length === 0}
                 onClick={() => sources.refreshModels.mutate(kind)}>
                 <RefreshCw className={cn("h-3.5 w-3.5", modelsRefreshing && "animate-spin")} />{t("accountSources.refreshModels")}
@@ -263,9 +323,12 @@ export function AccountSourcePanel({ kind, sources }: { kind: AccountSourceKind;
             <SignInHandshake />
             <div className="min-w-0 space-y-1">
               <p className="text-sm font-medium">{t(sources.cancelling ? "accounts.cancellingLogin" : "accounts.adding")}</p>
-              <p className="text-sm text-muted-foreground">{t(sources.cancelling ? "accounts.cancellingHint" : "accountSources.signInHint")}</p>
+              <p className="text-sm text-muted-foreground">
+                {t(sources.cancelling ? "accounts.cancellingHint" : sources.prompt?.code ? "accountSources.deviceCodeHint" : "accountSources.signInHint")}
+              </p>
             </div>
           </div>
+          {sources.prompt?.code && <DeviceCode code={sources.prompt.code} url={sources.prompt.url} />}
           <Button variant="outline" onClick={sources.cancelSignIn} disabled={sources.cancelling} className="w-full shrink-0 sm:w-auto">
             {t(sources.cancelling ? "accounts.cancellingLogin" : "accounts.cancelLogin")}
           </Button>
@@ -297,20 +360,29 @@ export function AccountSourcePanel({ kind, sources }: { kind: AccountSourceKind;
       )}
 
       {source.models.length > 0 && (
-        <details className="group rounded-xl border border-border/60 bg-card/60 px-4 py-3" data-source-models>
-          <summary className="cursor-pointer text-sm font-medium">
-            {t("accountSources.modelList", { count: source.models.length })}
-          </summary>
-          <ul className="mt-3 flex flex-wrap gap-1.5">
-            {source.models.map(model => (
-              <li key={model.id} className="rounded-full border border-border/70 bg-muted/40 px-2.5 py-0.5 font-mono text-[11px]" title={model.id}>
-                {model.name || model.id}
-              </li>
-            ))}
-          </ul>
-        </details>
+        <div className="rounded-xl border border-border/60 bg-card/60 px-4 py-3" data-source-models>
+          <FoldHeader open={modelsFold.open} onToggle={modelsFold.toggle} titleId={`${titleId}-models`} contentId={`${titleId}-models-body`}
+            title={t("accountSources.modelList", { count: source.models.length })} titleClassName="text-sm font-medium" />
+          <FoldBody open={modelsFold.open} id={`${titleId}-models-body`} className="mt-3">
+            <ul className="flex flex-wrap gap-1.5">
+              {source.models.map((model, index) => (
+                <li key={model.id} className="route-rise rounded-full border border-border/70 bg-muted/40 px-2.5 py-0.5 font-mono text-[11px]"
+                  style={{ animationDelay: `${Math.min(index, 24) * 18}ms` }} title={model.id}>
+                  {model.name || model.id}
+                </li>
+              ))}
+            </ul>
+          </FoldBody>
+        </div>
       )}
       <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
+      <ConfirmDialog onClose={sources.dismissRisk} request={sources.riskFor === kind ? {
+        title: t("accountSources.riskTitle", { name: source.name }),
+        description: t(`accountSources.risk.${kind}`),
+        confirmLabel: t("accountSources.riskAccept"),
+        destructive: true,
+        onConfirm: sources.acceptRisk,
+      } : null} />
     </section>
   );
 }

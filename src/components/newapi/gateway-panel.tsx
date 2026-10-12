@@ -41,6 +41,29 @@ function CopyButton({ text, label, onCopy }: { text?: string; label: string; onC
 }
 
 const KIND_ORDER: GatewayModel["kind"][] = ["relay", "account", "aggregate"];
+
+/** The shared prefix of aggregates' gateway ids; an aggregate may name its own. */
+function AggregatePrefixForm({ value, busy, onSave }: { value: string; busy: boolean; onSave: (prefix: string) => void }) {
+  const { t } = useTranslation();
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  const next = draft.trim();
+  const dirty = next !== value;
+  return (
+    <form className="flex flex-wrap items-center gap-x-2 gap-y-1.5" data-gateway-prefix
+      onSubmit={event => { event.preventDefault(); if (dirty && next) onSave(next); }}>
+      <Label htmlFor="gateway-aggregate-prefix" className="text-xs font-medium">{t("gateway.aggregatePrefix")}</Label>
+      <span className="inline-flex items-center gap-1 font-mono text-xs">
+        <Input id="gateway-aggregate-prefix" value={draft} onChange={event => setDraft(event.target.value.toLowerCase())}
+          className="h-8 w-28 font-mono text-xs" maxLength={40} spellCheck={false} disabled={busy}
+          aria-describedby="gateway-aggregate-prefix-hint" />
+        <span aria-hidden className="text-muted-foreground">/gpt-5.5</span>
+      </span>
+      <Button type="submit" size="sm" variant="outline" className="h-8" disabled={busy || !dirty || !next}>{t("common.save")}</Button>
+      <p id="gateway-aggregate-prefix-hint" className="w-full text-[11px] text-muted-foreground">{t("gateway.aggregatePrefixHint")}</p>
+    </form>
+  );
+}
 const KIND_ICON = { relay: Boxes, account: UsersRound, aggregate: Layers3 } as const;
 const SHOWN_KEYS = 4;
 
@@ -295,6 +318,8 @@ export function GatewayPanel({ providersRevision }: { providersRevision: number 
         <FoldHeader open={modelsFold.open} onToggle={modelsFold.toggle} titleId="gateway-models-title" contentId="gateway-models-body"
           title={t("gateway.models", { count: models.length })} titleClassName="text-xs" />
         <FoldBody open={modelsFold.open} id="gateway-models-body" className="mt-3 space-y-3">
+          <AggregatePrefixForm value={state?.aggregatePrefix ?? "pool"} busy={busy || !query.isSuccess}
+            onSave={prefix => void run(() => api.gateway.setAggregatePrefix(prefix))} />
           <div className="relative">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input value={filter} onChange={event => setFilter(event.target.value)} className="h-8 pl-8 text-xs"

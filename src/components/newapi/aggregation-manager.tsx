@@ -79,6 +79,7 @@ export function AggregationManager({ providers }: { providers: NewApiProvider[] 
       cache.invalidateQueries({ queryKey: queryKeys.clientConfigs }),
       cache.invalidateQueries({ queryKey: queryKeys.claudeDesktopCandidates }),
       cache.invalidateQueries({ queryKey: queryKeys.claudeDesktopStatus }),
+      cache.invalidateQueries({ queryKey: queryKeys.gateway }),
     ]);
   };
 

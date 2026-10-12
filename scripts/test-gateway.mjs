@@ -59,13 +59,31 @@ export async function testGateway({ page, reset, captureDir }) {
   assert.deepEqual(await gateway.locator("[data-gateway-group]").evaluateAll(groups => groups.map(group => group.getAttribute("data-gateway-group"))),
     ["relay", "account", "aggregate"]);
   assert.deepEqual(await gateway.locator("[data-gateway-model]").evaluateAll(rows => rows.map(row => row.getAttribute("data-gateway-model"))),
-    ["relay-a/fast-model", "relay-a/vendor/deep-model", "workbuddy/glm-5.3", "harbor-pool"]);
+    ["relay-a/fast-model", "relay-a/vendor/deep-model", "workbuddy/glm-5.3", "pool/harbor-pool"]);
   await gateway.getByRole("textbox", { name: await tr("gateway.filterModels") }).fill("glm");
   assert.deepEqual(await gateway.locator("[data-gateway-model]").evaluateAll(rows => rows.map(row => row.getAttribute("data-gateway-model"))),
     ["workbuddy/glm-5.3"]);
   await gateway.locator('[data-gateway-model="workbuddy/glm-5.3"]').getByRole("button", { name: await tr("gateway.copyModel") }).click();
   await page.waitForFunction(() => window.review.copied === "workbuddy/glm-5.3");
+  await gateway.getByRole("textbox", { name: await tr("gateway.filterModels") }).fill("");
   console.log("PASS the gateway keeps running on request and lists relay, account and aggregate models by their gateway names");
+
+  const prefix = gateway.getByRole("textbox", { name: await tr("gateway.aggregatePrefix") });
+  assert.equal(await prefix.inputValue(), "pool");
+  const savePrefix = gateway.locator("[data-gateway-prefix]").getByRole("button", { name: await tr("common.save") });
+  assert.equal(await savePrefix.isDisabled(), true, "nothing to save until the prefix changes");
+  await prefix.fill("Relay-A");
+  assert.equal(await prefix.inputValue(), "relay-a", "the prefix is typed in lowercase");
+  await savePrefix.click();
+  await gateway.getByRole("alert").getByText(await tr("gateway.errors.prefixTaken")).waitFor();
+  await prefix.fill("mix");
+  await savePrefix.click();
+  await gateway.locator('[data-gateway-model="mix/harbor-pool"]').waitFor();
+  assert.deepEqual((await calls()).filter(call => call[0] === "prefix").map(call => call[1]), ["relay-a", "mix"]);
+  await prefix.fill("pool");
+  await savePrefix.click();
+  await gateway.locator('[data-gateway-model="pool/harbor-pool"]').waitFor();
+  console.log("PASS aggregates carry an editable gateway prefix that no relay short name may take");
 
   await gateway.getByRole("button", { name: await tr("gateway.connection") }).click();
   await gateway.getByRole("button", { name: await tr("gateway.preview"), exact: true }).click();
@@ -85,11 +103,11 @@ export async function testGateway({ page, reset, captureDir }) {
   await choose(gateway.locator("#gateway-export-profile"), "OpenCode");
   await choose(gateway.locator("#gateway-export-protocol"), "Chat");
   assert.equal(await preview.count(), 0, "changing a setting withdraws the previous preview");
-  await choose(gateway.locator("#gateway-export-model"), "harbor-pool");
+  await choose(gateway.locator("#gateway-export-model"), "pool/harbor-pool");
   await gateway.getByRole("button", { name: await tr("gateway.preview"), exact: true }).click();
   const exports = (await calls()).filter(call => call[0] === "export").map(call => call[1]);
   assert.deepEqual(exports.map(request => request.revealCredential), [false, true, false, false]);
-  assert.deepEqual({ ...exports.at(-1) }, { ingressProtocol: "chatCompletions", selectedModelId: "harbor-pool", consumerProfile: "opencode",
+  assert.deepEqual({ ...exports.at(-1) }, { ingressProtocol: "chatCompletions", selectedModelId: "pool/harbor-pool", consumerProfile: "opencode",
     keyId: "key-1", revealCredential: false });
   await page.evaluate(async () => {
     window.review.gatewayModels = [];

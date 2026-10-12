@@ -342,7 +342,7 @@ pub fn refused(status: u16, body: &[u8]) -> bool {
 
 fn model(id: &str, name: &str, context: u64, reasoning: &[&str]) -> SourceModel {
     SourceModel { id: id.into(), name: name.into(), context_window: Some(context),
-        reasoning: reasoning.iter().map(|level| (*level).to_owned()).collect() }
+        reasoning: reasoning.iter().map(|level| (*level).to_owned()).collect(), ..Default::default() }
 }
 
 /// The plan's models: WorkBuddy's CLI agent's picks, with the names and

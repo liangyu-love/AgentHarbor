@@ -52,6 +52,9 @@ interface SettingsPageProps {
   onRefreshUsageStatus?: () => Promise<unknown>;
   openProxySettingsRequested?: boolean;
   onProxySettingsRequestHandled?: () => void;
+  /** Scroll to and highlight the terminal proxy, asked for from a direct client. */
+  terminalProxyRequested?: boolean;
+  onTerminalProxyRequestHandled?: () => void;
 }
 
 function proxyModeBadgeLabel(
@@ -77,6 +80,8 @@ export function SettingsPage({
   onRefreshUsageStatus,
   openProxySettingsRequested,
   onProxySettingsRequestHandled,
+  terminalProxyRequested,
+  onTerminalProxyRequestHandled,
 }: SettingsPageProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -342,7 +347,8 @@ export function SettingsPage({
                 {t("common.edit")}
               </Button>
             </SettingRow>
-            <TerminalProxySettings currentProxy={currentProxy} />
+            <TerminalProxySettings currentProxy={currentProxy} focusRequested={terminalProxyRequested}
+              onFocusHandled={onTerminalProxyRequestHandled} />
           </Section>
 
           <Section title={t("settings.about")}>

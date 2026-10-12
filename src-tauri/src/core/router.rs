@@ -153,6 +153,9 @@ pub struct RouterSettings {
     /// Keys agents use to reach every model through `/gateway`. Separate from
     /// the bearer token managed client configs carry.
     pub gateway_keys: Vec<GatewayKey>,
+    /// What gateway ids of aggregates start with (`pool/gpt-5.5`), unless an
+    /// aggregate names its own; sets them apart from a relay's same model.
+    pub gateway_aggregate_prefix: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -175,6 +178,7 @@ impl Default for RouterSettings {
             port: DEFAULT_PORT,
             bearer_token: String::new(),
             gateway_keys: Vec::new(),
+            gateway_aggregate_prefix: super::gateway::DEFAULT_AGGREGATE_PREFIX.into(),
         }
     }
 }

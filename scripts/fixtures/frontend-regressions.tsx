@@ -1,6 +1,6 @@
 import { CustomInstructionsPage } from "@/components/custom-instructions/custom-instructions-page";
 // Synthetic browser fixture: every application API used here is mocked.
-import React, { useState } from "react";
+import React, { useCallback, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -202,17 +202,19 @@ const gatewayModelsFixture = (): GatewayModel[] => [
   { id: "relay-a/fast-model", kind: "relay", sourceName: "Relay A", sourceId: "relay-a", modelId: "fast-model", label: "Fast", protocol: "responses", contextWindow: 200_000 },
   { id: "relay-a/vendor/deep-model", kind: "relay", sourceName: "Relay A", sourceId: "relay-a", modelId: "vendor/deep-model", label: "Deep", protocol: "chatCompletions", contextWindow: null },
   { id: "workbuddy/glm-5.3", kind: "account", sourceName: "WorkBuddy", sourceId: "account-workbuddy", modelId: "glm-5.3", label: "GLM-5.3", protocol: "chatCompletions", contextWindow: 1_000_000 },
-  { id: "harbor-pool", kind: "aggregate", sourceName: "Harbor Pool", sourceId: "pool", modelId: "harbor-pool", label: "Harbor Pool", protocol: "responses", contextWindow: 128_000 },
+  { id: `${controls.review.gatewayPrefix ?? "pool"}/harbor-pool`, kind: "aggregate", sourceName: "Harbor Pool", sourceId: "pool", modelId: "harbor-pool", label: "Harbor Pool", protocol: "responses", contextWindow: 128_000 },
 ];
 const gatewayState = (): GatewayState => ({
   port: 43127, running: !!controls.review.gatewayKeepRunning, keepRunning: !!controls.review.gatewayKeepRunning,
   keys: (controls.review.gatewayKeys as FixtureKey[]).map(key => ({ id: key.id, name: key.name, masked: `sk-ah-…${key.secret.slice(-4)}`, createdAt: 1 })),
   models: controls.review.gatewayModels ?? gatewayModelsFixture(),
+  aggregatePrefix: controls.review.gatewayPrefix ?? "pool",
 });
 const installGateway = () => {
   controls.review.gatewayKeys = structuredClone(controls.review.gatewayKeysFixture ?? []);
   controls.review.gatewayKeepRunning = false;
   controls.review.gatewayCalls = [];
+  delete controls.review.gatewayPrefix;
   const record = (...call: unknown[]) => controls.review.gatewayCalls.push(call);
   const keyOf = (id: string) => {
     const key = (controls.review.gatewayKeys as FixtureKey[]).find(entry => entry.id === id);
@@ -235,6 +237,12 @@ const installGateway = () => {
   };
   api.gateway.revealKey = async id => { record("reveal", id); return keyOf(id).secret; };
   api.gateway.setKeepRunning = async enabled => { record("keepRunning", enabled); controls.review.gatewayKeepRunning = enabled; return gatewayState(); };
+  api.gateway.setAggregatePrefix = async prefix => {
+    record("prefix", prefix);
+    if (prefix === "relay-a") throw "gateway.errors.prefixTaken";
+    controls.review.gatewayPrefix = prefix;
+    return gatewayState();
+  };
   api.gateway.exportConnection = async request => {
     record("export", structuredClone(request));
     const key = keyOf(request.keyId);
@@ -390,18 +398,30 @@ const accountList = { activeAccountKey: "acct-a", refreshedAt: 1_800_000_000, it
 api.accounts.refresh = async () => accountList as any;
 api.accounts.list = async () => accountList as any;
 api.usage.overview = async () => ({ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } });
-// Account sources: one WorkBuddy account with credits, ChatGPT and WorkBuddy AI empty.
+// Account sources: one WorkBuddy account with credits, a Gemini CLI account
+// still without its Google Cloud project, the rest empty.
 const accountSourcesFixture = (): AccountSourceListPayload => ({ sources: [
   { kind: "chatgpt-api", name: "ChatGPT", providerId: "account-chatgpt-api", protocol: "responses", exposed: false, models: [],
-    accounts: [], usageUrl: "https://chatgpt.com/settings/usage" },
+    accounts: [], usageUrl: "https://chatgpt.com/settings/usage", hasQuota: false, fetchesModels: true },
   { kind: "workbuddy", name: "WorkBuddy", providerId: "account-workbuddy", protocol: "chatCompletions", exposed: true,
     models: [{ id: "glm-5.3", name: "GLM-5.3", contextWindow: 1_000_000, reasoning: ["low", "high"] }, { id: "kimi-k3-1", name: "Kimi-K3", contextWindow: 1_000_000, reasoning: [] }],
     accounts: [
       { id: "wb-1", name: "Harbor", plan: "Pro", active: true, lapsed: null, quota: { used: 750, limit: 1000, unit: "credits", paid: true, checkedAt: 1, error: null }, addedAt: 1 },
       { id: "wb-2", name: "Spare", plan: null, active: false, lapsed: "signed out", quota: null, addedAt: 2 },
-    ], usageUrl: null },
+    ], usageUrl: null, hasQuota: true, fetchesModels: false },
   { kind: "workbuddy-ai", name: "WorkBuddy AI", providerId: "account-workbuddy-ai", protocol: "chatCompletions", exposed: false,
-    models: [{ id: "gpt-5.5", name: "GPT-5.5", contextWindow: 1_000_000, reasoning: [] }], accounts: [], usageUrl: null },
+    models: [{ id: "gpt-5.5", name: "GPT-5.5", contextWindow: 1_000_000, reasoning: [] }], accounts: [], usageUrl: null, hasQuota: true, fetchesModels: false },
+  { kind: "copilot", name: "GitHub Copilot", providerId: "account-copilot", protocol: "chatCompletions", exposed: false, models: [],
+    accounts: [], usageUrl: "https://github.com/settings/copilot/features", hasQuota: true, fetchesModels: true },
+  { kind: "gemini-cli", name: "Gemini CLI", providerId: "account-gemini-cli", protocol: "chatCompletions", exposed: false, models: [],
+    accounts: [{ id: "gc-1", name: "dev@corp.example", plan: "Standard", project: "", active: true, lapsed: null, addedAt: 1,
+      quota: { used: 0, limit: 0, unit: "", paid: null, checkedAt: 1, error: "Google serves Gemini CLI's sign-in only to Gemini Code Assist Standard and Enterprise" } }],
+    usageUrl: null, hasQuota: true, fetchesModels: true },
+  { kind: "antigravity", name: "Antigravity", providerId: "account-antigravity", protocol: "chatCompletions", exposed: false, models: [],
+    accounts: [], usageUrl: null, hasQuota: true, fetchesModels: true,
+    risk: "Google may suspend an Antigravity account it sees used outside Antigravity. Use one you can afford to lose." },
+  { kind: "kiro", name: "Kiro", providerId: "account-kiro", protocol: "chatCompletions", exposed: false, models: [],
+    accounts: [], usageUrl: "https://app.kiro.dev/account/usage", hasQuota: true, fetchesModels: true },
 ] });
 const installAccountSources = () => {
   let payload = accountSourcesFixture();
@@ -409,8 +429,15 @@ const installAccountSources = () => {
   controls.review.sourceSignIns = [];
   const record = (name: string, ...args: unknown[]) => controls.review.sourceCalls.push([name, ...args]);
   api.accountSources.list = async () => structuredClone(payload);
+  api.accountSources.onSignInPrompt = async callback => {
+    controls.review.sourcePrompt = callback;
+    return () => { if (controls.review.sourcePrompt === callback) controls.review.sourcePrompt = undefined; };
+  };
   api.accountSources.signIn = (kind: AccountSourceKind, attemptId: string) => new Promise((resolve, reject) => {
     record("signIn", kind);
+    if (kind === "copilot") {
+      setTimeout(() => controls.review.sourcePrompt?.({ attemptId, kind, url: "https://github.com/login/device", code: "ABCD-1234" }), 0);
+    }
     controls.review.sourceSignIns.push({ kind, attemptId, reject, resolve: () => {
       payload = { sources: payload.sources.map(source => source.kind === kind
         ? { ...source, exposed: true, accounts: [...source.accounts, { id: "new-1", name: "me@example.com", plan: "plus", active: source.accounts.length === 0, lapsed: null, quota: null, addedAt: 3 }] }
@@ -432,6 +459,12 @@ const installAccountSources = () => {
   };
   api.accountSources.refreshQuota = async id => { record("refreshQuota", id); return structuredClone(payload); };
   api.accountSources.refreshModels = async kind => { record("refreshModels", kind); return structuredClone(payload); };
+  api.accountSources.setProject = async (id, project) => {
+    record("setProject", id, project);
+    payload = { sources: payload.sources.map(source => ({ ...source, accounts: source.accounts.map(account => account.id === id
+      ? { ...account, project, quota: { used: 20, limit: 100, unit: "percent", paid: true, checkedAt: 2, error: null } } : account) })) };
+    return structuredClone(payload);
+  };
   api.accountSources.setExposed = async (kind, exposed) => {
     record("setExposed", kind, exposed);
     payload = { sources: payload.sources.map(source => source.kind === kind ? { ...source, exposed } : source) };
@@ -754,6 +787,16 @@ function recoveryPreview(mode: FixtureMode) {
 }
 
 let mountSequence = 0;
+/** The terminal proxy row, asked to scroll into view the way a direct client's link asks. */
+function TerminalProxyFixture() {
+  const [focus, setFocus] = useState(!!controls.review.terminalFocusRequested);
+  const handled = useCallback(() => {
+    controls.review.terminalFocusHandled = (controls.review.terminalFocusHandled ?? 0) + 1;
+    setFocus(false);
+  }, []);
+  return <TerminalProxySettings currentProxy={{ mode: "manual", url: "http://127.0.0.1:7890" }} focusRequested={focus} onFocusHandled={handled} />;
+}
+
 function mount(mode: FixtureMode) {
   controls.review.routingCalls = [];
   localStorage.removeItem("agentharbor.mcp-source");
@@ -839,6 +882,11 @@ function mount(mode: FixtureMode) {
       controls.review.terminalOpenCalls++;
       if (controls.review.terminalOpenFailure) throw "settings.terminalProxy.errors.launch";
     };
+  } else {
+    // Direct clients show the terminal proxy's state.
+    api.terminalProxy.load = async () => ({ supported: true, enabled: false, applied: false,
+      url: null, noProxy: "localhost,127.0.0.1,::1", recoveryRequired: false, conflicts: [],
+      preservedVariables: [], notificationSent: false, ...controls.review.terminalStatusPatch });
   }
   installAccountSources();
   installGateway();
@@ -929,7 +977,7 @@ function mount(mode: FixtureMode) {
   api.targets.reapplyConfig = async (_targetId, rebaseline) => {
     if (clientStatuses[0].conflict && !rebaseline) throw "clients.errors.conflict";
     controls.review.reappliedClient = { rebaseline };
-    Object.assign(clientStatuses[0], { conflict: false, conflictFields: [] });
+    Object.assign(clientStatuses[0], { conflict: false, conflictFields: [], stale: false });
     return { path: "C:/synthetic/config.json", backupPath: "C:/synthetic/config.backup" };
   };
   api.targets.releaseConfig = async () => { controls.review.releasedClientCount += 1; };
@@ -1097,7 +1145,7 @@ function mount(mode: FixtureMode) {
     <div style={{ position: "relative", height: 600 }}><PageStage state="active">
       {(mode.startsWith("thread-details") || mode === "thread-tree" || mode === "thread-actions" || mode === "terminal-proxy" || mode === "skills" || mode === "groups" || mode === "access") && <ThreadToastProbe />}
       {mode === "sidebar" ? <AppAvatarProvider><SidebarProvider><AppSidebar activeRoute={controls.review.sidebarRoute ?? "relays"} onNavigate={route => { controls.review.navigatedTo = route; }} onThemeChange={noop} /><div className="flex-1" /></SidebarProvider></AppAvatarProvider> : mode === "routing-cache" ? <RoutingCacheFixture /> : mode === "desktop-updater" ? <DesktopUpdaterFixture /> : mode === "desktop-exit" ? <ClaudeDesktopRouterExitDialog /> : mode.startsWith("recovery-") ? <RecoveryFixture thread={threads[0] as ThreadSummary} /> :
-        mode === "skills" ? <SkillsPage /> : mode === "terminal-proxy" ? <div className="mx-auto max-w-xl rounded-xl bg-card shadow-sm"><TerminalProxySettings currentProxy={{ mode: "manual", url: "http://127.0.0.1:7890" }} /></div> :
+        mode === "skills" ? <SkillsPage /> : mode === "terminal-proxy" ? <div className="mx-auto max-w-xl rounded-xl bg-card shadow-sm"><TerminalProxyFixture /></div> :
         mode === "image" ? <ImageWorkbenchPage /> : mode === "instructions" ? <CustomInstructionsPage /> : mode === "mcp-clients" ? <McpClientFixture /> : mode === "mcp" ? <McpPage /> : mode === "accounts" || mode.startsWith("account-resets") ? <AccountsPage refreshInterval="5m" /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage-page" ? <UsagePage refreshInterval="5m" onManageProviders={() => { controls.review.navigatedTo = "relays"; }} /> : mode === "usage" ? <TokenUsagePanel data={{ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } }} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode.startsWith("thread-details") || mode === "thread-tree" || mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :
         mode === "access" || mode === "incompatible" || mode === "native-invalid" || mode === "groups" ? <><NewApiPage onOpenRelays={() => { controls.review.navigatedTo = "relays"; }} /><RelayModelsPage /></> :
         mode === "test" ? <ProviderTestDialog open provider={mixedProvider} onOpenChange={noop} onTested={noop} onFailed={noop} /> :

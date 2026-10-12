@@ -2,15 +2,19 @@
 //! reaches every enabled relay model, shared account source and aggregate,
 //! each under its own id, with the router's protocol translation.
 //!
-//! Model ids are `<provider short name>/<model>` for providers and the public
-//! id for aggregates. The short name is assigned once from the provider's
-//! name (or its host) and kept through renames.
+//! Model ids are `<provider short name>/<model>` for providers and
+//! `<aggregate prefix>/<public id>` for aggregates (`pool/gpt-5.5` beside a
+//! relay's `relay-a/gpt-5.5`). The short name is assigned once from the
+//! provider's name (or its host) and kept through renames; aggregates share
+//! one prefix unless one names its own, and no provider may take a prefix.
 use super::{aggregation, models_dev, router, router::Store};
 use crate::platform::paths::CodexPaths;
 use serde::Serialize;
 use serde_json::{json, Value};
 
 const MAX_SLUG: usize = 40;
+/// What aggregates' gateway ids start with until the user picks another.
+pub const DEFAULT_AGGREGATE_PREFIX: &str = "pool";
 const MAX_KEYS: usize = 32;
 const MAX_KEY_NAME: usize = 40;
 
@@ -52,10 +56,54 @@ pub fn valid_slug(slug: &str) -> bool {
         && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '-' | '.' | '_'))
 }
 
+/// The shared prefix of aggregates' gateway ids.
+pub fn shared_prefix(store: &Store) -> &str {
+    let prefix = store.router.gateway_aggregate_prefix.trim();
+    if prefix.is_empty() { DEFAULT_AGGREGATE_PREFIX } else { prefix }
+}
+
+/// The prefix of one aggregate's gateway id: its own, else the shared one.
+pub fn aggregate_prefix<'a>(store: &'a Store, aggregate: &'a aggregation::AggregateModel) -> &'a str {
+    aggregate.gateway_prefix.as_deref().map(str::trim).filter(|prefix| !prefix.is_empty()).unwrap_or_else(|| shared_prefix(store))
+}
+
+/// An aggregate's gateway id.
+pub fn aggregate_id(store: &Store, aggregate: &aggregation::AggregateModel) -> String {
+    format!("{}/{}", aggregate_prefix(store, aggregate), aggregate.public_model_id)
+}
+
+/// Whether `slug` is an aggregate prefix (the shared one or an aggregate's own).
+fn is_prefix(store: &Store, slug: &str) -> bool {
+    shared_prefix(store) == slug || store.aggregates.iter().any(|aggregate| aggregate_prefix(store, aggregate) == slug)
+}
+
+/// Whether `prefix` may be an aggregate prefix: a valid short name no
+/// provider uses.
+pub(crate) fn check_prefix(store: &Store, prefix: &str) -> Result<(), String> {
+    if !valid_slug(prefix) {
+        return Err("gateway.errors.prefix".into());
+    }
+    if store.providers.iter().any(|provider| provider.gateway_slug.as_deref() == Some(prefix)) {
+        return Err("gateway.errors.prefixTaken".into());
+    }
+    Ok(())
+}
+
+/// Set the shared aggregate prefix; empty restores the default.
+pub fn set_shared_prefix(paths: &CodexPaths, prefix: &str) -> Result<(), String> {
+    let prefix = prefix.trim();
+    let prefix = if prefix.is_empty() { DEFAULT_AGGREGATE_PREFIX } else { prefix }.to_owned();
+    router::mutate_store(paths, move |store| {
+        check_prefix(store, &prefix)?;
+        store.router.gateway_aggregate_prefix = prefix;
+        Ok(())
+    }).map(|_| ())
+}
+
 /// A free short name for `provider`, preferring `wanted`.
 fn free_slug(store: &Store, provider_id: &str, wanted: &str) -> String {
     let base = if wanted.is_empty() { "relay".to_owned() } else { wanted.to_owned() };
-    let taken = |candidate: &str| store.providers.iter()
+    let taken = |candidate: &str| is_prefix(store, candidate) || store.providers.iter()
         .any(|other| other.id != provider_id && other.gateway_slug.as_deref() == Some(candidate));
     if !taken(&base) {
         return base;
@@ -74,6 +122,10 @@ fn default_slug(provider: &router::Provider) -> String {
             super::account_sources::SourceKind::ChatgptApi => "chatgpt",
             super::account_sources::SourceKind::Workbuddy => "workbuddy",
             super::account_sources::SourceKind::WorkbuddyAi => "workbuddy-ai",
+            super::account_sources::SourceKind::Copilot => "copilot",
+            super::account_sources::SourceKind::GeminiCli => "gemini-cli",
+            super::account_sources::SourceKind::Antigravity => "antigravity",
+            super::account_sources::SourceKind::Kiro => "kiro",
         }.to_owned();
     }
     let from_name = slugify(&provider.name);
@@ -85,7 +137,7 @@ pub(crate) fn assign_slugs(store: &mut Store) -> bool {
     let mut changed = false;
     for index in 0..store.providers.len() {
         let current = store.providers[index].gateway_slug.clone();
-        let keep = current.as_deref().is_some_and(|slug| valid_slug(slug) && !store.providers.iter()
+        let keep = current.as_deref().is_some_and(|slug| valid_slug(slug) && !is_prefix(store, slug) && !store.providers.iter()
             .take(index).any(|earlier| earlier.gateway_slug.as_deref() == Some(slug)));
         if keep {
             continue;
@@ -106,6 +158,9 @@ pub(crate) fn check_slug(store: &Store, provider_id: Option<&str>, wanted: Optio
     }
     if store.providers.iter().any(|other| Some(other.id.as_str()) != provider_id && other.gateway_slug.as_deref() == Some(wanted)) {
         return Err("newapi.errors.gatewaySlugTaken".into());
+    }
+    if is_prefix(store, wanted) {
+        return Err("newapi.errors.gatewaySlugIsPrefix".into());
     }
     Ok(())
 }
@@ -293,7 +348,7 @@ pub fn models(store: &Store, catalog: &models_dev::Catalog) -> Vec<GatewayModel>
             continue;
         }
         out.push(GatewayModel {
-            id: aggregate.public_model_id.clone(),
+            id: aggregate_id(store, aggregate),
             kind: ModelKind::Aggregate,
             source_name: aggregate.display_name.clone(),
             source_id: aggregate.id.clone(),
@@ -306,17 +361,23 @@ pub fn models(store: &Store, catalog: &models_dev::Catalog) -> Vec<GatewayModel>
     out
 }
 
-/// Resolve a gateway model id: an enabled aggregate's public id first, then
-/// `<short name>/<model>`, the model itself possibly containing `/`.
+/// Resolve a gateway model id: an enabled aggregate's `<prefix>/<public id>`
+/// first, then a provider's `<short name>/<model>` (the model itself possibly
+/// containing `/`), then an aggregate's bare public id, which clients set up
+/// before aggregates had a prefix still send.
 pub fn resolve(store: &Store, model: &str) -> Option<Target> {
     let model = model.trim();
-    if store.aggregates.iter().any(|aggregate| aggregate.enabled && aggregate.public_model_id == model) {
-        return Some(Target::Aggregate { public_id: model.to_owned() });
+    let enabled = || store.aggregates.iter().filter(|aggregate| aggregate.enabled);
+    if let Some(aggregate) = enabled().find(|aggregate| aggregate_id(store, aggregate) == model) {
+        return Some(Target::Aggregate { public_id: aggregate.public_model_id.clone() });
     }
-    let (slug, model_id) = model.split_once('/')?;
-    let provider = store.providers.iter().find(|provider| provider.gateway_slug.as_deref() == Some(slug))?;
-    (provider.has_route_credentials() && served_models(provider).contains(&model_id))
-        .then(|| Target::Provider { provider_id: provider.id.clone(), model_id: model_id.to_owned() })
+    let provider = model.split_once('/').and_then(|(slug, model_id)| {
+        let provider = store.providers.iter().find(|provider| provider.gateway_slug.as_deref() == Some(slug))?;
+        (provider.has_route_credentials() && served_models(provider).contains(&model_id))
+            .then(|| Target::Provider { provider_id: provider.id.clone(), model_id: model_id.to_owned() })
+    });
+    provider.or_else(|| enabled().find(|aggregate| aggregate.public_model_id == model)
+        .map(|aggregate| Target::Aggregate { public_id: aggregate.public_model_id.clone() }))
 }
 
 /// `/gateway/v1/models` in OpenAI's list shape, or Anthropic's.
@@ -403,7 +464,32 @@ mod tests {
         assert_eq!(resolve(&store, "off/m1"), None);
         assert_eq!(resolve(&store, "m1"), None);
         store.aggregates.push(aggregation::AggregateModel { id: "agg".into(), public_model_id: "relay-a/m1".into(), ..Default::default() });
-        assert_eq!(resolve(&store, "relay-a/m1"), Some(Target::Aggregate { public_id: "relay-a/m1".into() }), "an aggregate's public id wins");
+        assert_eq!(resolve(&store, "pool/relay-a/m1"), Some(Target::Aggregate { public_id: "relay-a/m1".into() }));
+        assert_eq!(resolve(&store, "relay-a/m1"), Some(Target::Provider { provider_id: "a".into(), model_id: "m1".into() }),
+            "a relay's own id is never taken by an aggregate's bare public id");
+    }
+
+    #[test]
+    fn aggregates_carry_a_prefix_no_relay_may_take() {
+        let mut store = Store { providers: vec![provider("a", "Pool", "https://a.example/v1")], ..Default::default() };
+        store.aggregates.push(aggregation::AggregateModel { id: "x".into(), public_model_id: "gpt-5.5".into(), ..Default::default() });
+        store.aggregates.push(aggregation::AggregateModel { id: "y".into(), public_model_id: "glm-5".into(),
+            gateway_prefix: Some("cn".into()), ..Default::default() });
+        assign_slugs(&mut store);
+        assert_eq!(store.providers[0].gateway_slug.as_deref(), Some("pool-2"), "a relay named like the prefix steps aside");
+        assert_eq!(aggregate_id(&store, &store.aggregates[0]), "pool/gpt-5.5");
+        assert_eq!(aggregate_id(&store, &store.aggregates[1]), "cn/glm-5", "an aggregate's own prefix wins");
+        assert_eq!(resolve(&store, "pool/gpt-5.5"), Some(Target::Aggregate { public_id: "gpt-5.5".into() }));
+        assert_eq!(resolve(&store, "cn/glm-5"), Some(Target::Aggregate { public_id: "glm-5".into() }));
+        assert_eq!(resolve(&store, "pool/glm-5"), None, "only the aggregate's own prefix names it");
+        assert_eq!(resolve(&store, "gpt-5.5"), Some(Target::Aggregate { public_id: "gpt-5.5".into() }), "bare ids still resolve");
+        assert_eq!(check_slug(&store, Some("a"), Some("cn")).unwrap_err(), "newapi.errors.gatewaySlugIsPrefix");
+        assert_eq!(check_prefix(&store, "pool-2").unwrap_err(), "gateway.errors.prefixTaken");
+        assert_eq!(check_prefix(&store, "Pool!").unwrap_err(), "gateway.errors.prefix");
+        store.router.gateway_aggregate_prefix = "mix".into();
+        assert_eq!(resolve(&store, "mix/gpt-5.5"), Some(Target::Aggregate { public_id: "gpt-5.5".into() }));
+        store.router.gateway_aggregate_prefix = String::new();
+        assert_eq!(shared_prefix(&store), DEFAULT_AGGREGATE_PREFIX, "an empty prefix falls back to the default");
     }
 
     #[test]

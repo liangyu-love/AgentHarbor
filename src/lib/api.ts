@@ -156,6 +156,7 @@ const gatewayApi = {
   deleteKey: (id: string) => invoke<GatewayState>("delete_gateway_key", { id }),
   revealKey: (id: string) => invoke<string>("reveal_gateway_key", { id }),
   setKeepRunning: (enabled: boolean) => invoke<GatewayState>("set_gateway_keep_running", { enabled }),
+  setAggregatePrefix: (prefix: string) => invoke<GatewayState>("set_gateway_aggregate_prefix", { prefix }),
   exportConnection: (request: { ingressProtocol: ModelProtocol; selectedModelId: string | null; consumerProfile: GatewayProfile;
     keyId: string; revealCredential: boolean }) =>
     invoke<import("@/types/aggregation").ConnectionExportResult>("export_gateway_connection", request),
@@ -276,6 +277,13 @@ const accountSourcesApi = {
   refreshModels: (kind: AccountSourceKind) => invoke<AccountSourceListPayload>("refresh_account_source_models", { kind }),
   setExposed: (kind: AccountSourceKind, exposed: boolean) =>
     invoke<AccountSourceListPayload>("set_account_source_exposed", { kind, exposed }),
+  setProject: (accountId: string, project: string) =>
+    invoke<AccountSourceListPayload>("set_account_source_project", { accountId, project }),
+  /** A sign-in's page and device code, as soon as the vendor gives them. */
+  onSignInPrompt: async (callback: (prompt: import("@/types/account-sources").AccountSourceSignInPrompt) => void): Promise<() => void> => {
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen<import("@/types/account-sources").AccountSourceSignInPrompt>("account-source-sign-in-prompt", event => callback(event.payload));
+  },
 };
 
 export const api = {

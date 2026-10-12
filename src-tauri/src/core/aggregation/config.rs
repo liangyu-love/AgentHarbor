@@ -129,7 +129,11 @@ pub fn save(paths: &CodexPaths, mut model: AggregateModel) -> Result<Aggregation
             member.id = uuid::Uuid::new_v4().to_string();
         }
     }
+    model.gateway_prefix = model.gateway_prefix.map(|prefix| prefix.trim().to_owned()).filter(|prefix| !prefix.is_empty());
     let store = router::mutate_store(paths, |store| {
+        if let Some(prefix) = &model.gateway_prefix {
+            crate::core::gateway::check_prefix(store, prefix)?;
+        }
         let old = store.aggregates.iter().find(|a| a.id == model.id).cloned();
         if old
             .as_ref()

@@ -76,7 +76,17 @@ contain the snapshot.
     `src-tauri/src/core/account_sources/workbuddy.rs`;
   - the Sign in with ChatGPT flow (app registration, ID token checks, token
     refresh and revocation, request shaping and refusal explanations) in
-    `src-tauri/src/core/account_sources/chatgpt_api.rs`.
+    `src-tauri/src/core/account_sources/chatgpt_api.rs`;
+  - the GitHub Copilot device sign-in, token exchange, model list, request
+    headers and refusal explanations in
+    `src-tauri/src/core/account_sources/copilot.rs`;
+  - the Gemini CLI and Antigravity Google sign-ins, Code Assist project
+    setup, model lists and allowances, and the Code Assist request envelope,
+    schema simplification and stream decoding in
+    `src-tauri/src/core/account_sources/google.rs` and `codeassist.rs`;
+  - the Kiro sign-in, token refresh, profile, model and credit reading, the
+    conversation request and the AWS event-stream decoding in
+    `src-tauri/src/core/account_sources/kiro.rs`.
 - Other routing and catalog behaviour was only studied, not copied.
 
 The full MIT license text below applies to the ported code.

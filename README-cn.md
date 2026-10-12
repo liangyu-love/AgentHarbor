@@ -34,7 +34,7 @@ Codex 是主要集成对象，其他客户端共用同一套中转与路由。
 | **模型注入** | 把中转模型和官方账号的模型接到下列客户端：预览、应用、恢复配置，每次都有备份<br>• Codex：本地路由或原生直连，支持无账号模式和子代理默认配置<br>• Claude Code、Claude Desktop、OpenCode、Pi |
 | **本地路由** | 三种协议互相转换<br>模型聚合：按优先级分层、失败切换、首字超时切换、实时成员状态<br>请求级路由诊断 |
 | **通用网关** | 一个本地地址加上命名 key，任何能填 Base URL 和 API Key 的 agent 都能使用全部开启的模型，见下文 |
-| **账号** | Codex：ChatGPT OAuth 登录、额度窗口、手动切号或按阈值自动切号<br>账号来源：ChatGPT（Sign in with ChatGPT）、WorkBuddy、WorkBuddy AI，登录后可以提供给模型注入使用，见下文 |
+| **账号** | Codex：ChatGPT OAuth 登录、额度窗口、手动切号或按阈值自动切号<br>账号来源：ChatGPT（Sign in with ChatGPT）、WorkBuddy、WorkBuddy AI、GitHub Copilot、Gemini CLI、Antigravity、Kiro，登录后可以提供给模型注入使用，见下文 |
 | **用量** | Token 监控覆盖 Codex、Claude Code 与中转流量，并记录当时价格 |
 | **线程管理** | 浏览、搜索、导出、删除 Codex 与 Claude Code 会话；恢复 Codex 索引里丢失的线程 |
 | **MCP / Skills / 自定义指令** | 管理 MCP 服务器、Skills（带备份），以及 Codex 和 Claude Code 的 `AGENTS.md` / `CLAUDE.md` 中由 AgentHarbor 管理的区块 |
@@ -63,7 +63,7 @@ Codex 是主要集成对象，其他客户端共用同一套中转与路由。
 - **地址**：OpenAI 兼容（Responses、Chat Completions）用 `http://127.0.0.1:43127/gateway/v1`，Anthropic Messages 用 `http://127.0.0.1:43127/gateway`。`/gateway/v1/models` 列出这个 key 能用的全部模型。
 - **key**：可以为每个 agent 建一个命名 key，单独复制、重新生成或删除。它和注入时写进客户端配置的内部令牌是分开的，互不通用。
 - **模型名**：
-  - 中转模型和账号来源是 `短名/模型`，例如 `deepseek/deepseek-v4-pro`、`workbuddy/glm-5.3`；聚合模型用它的公开名。
+  - 中转模型和账号来源是 `短名/模型`，例如 `deepseek/deepseek-v4-pro`、`workbuddy/glm-5.3`。聚合模型是 `前缀/公开名`，默认 `pool/gpt-5.5`，不会和中转里的同名模型混淆；共用前缀在网关面板里改，单个聚合也可以设自己的前缀。仍然直接写聚合公开名的请求照常可用。
   - 短名默认取自中转名称，可以在中转编辑里修改；之后给中转改名不会改变短名。
 - **协议转换**：和注入一样自动进行，比如用 Responses 调用只支持 Chat Completions 的中转。
 - **保持运行**：打开「保持网关运行」后，即使没有任何注入，本地路由也会常驻。
@@ -74,8 +74,12 @@ Codex 是主要集成对象，其他客户端共用同一套中转与路由。
 账号来源是自带模型的订阅账号。在账号页登录后，打开「提供给模型注入」，它就会作为一个特殊的供应商出现在模型注入页和聚合组里。
 
 - **只经本地路由使用**：每次请求由路由取当前账号的令牌，快过期时自动刷新。客户端配置里不会写入任何账号令牌，所以直连模式和 Codex 原生直连都不能选账号来源。
-- **ChatGPT**：使用 OpenAI 官方提供给本地应用的 Sign in with ChatGPT，请求走标准的 `api.openai.com/v1/responses`，提示词是客户端自己的。它和 Codex 账号互相独立，需要单独登录；额度与 ChatGPT 共用，剩余量只能在 chatgpt.com 查看；个别套餐没有资格，登录时会提示。
+- **ChatGPT**：使用 OpenAI 官方提供给本地应用的 Sign in with ChatGPT，请求走标准的 `api.openai.com/v1/responses`，提示词是客户端自己的。它和 Codex 账号互相独立，需要单独登录；额度与 ChatGPT 共用，剩余量只能在 chatgpt.com 查看；个别套餐没有资格，登录时会提示。Team、Business、Enterprise 工作区要管理员先允许「Sign in with ChatGPT」应用，或者在登录页切到个人工作区。
 - **WorkBuddy / WorkBuddy AI**：腾讯 CodeBuddy 套餐的国内版和国际版，使用自己的登录，不读取也不改动 WorkBuddy 桌面端的会话。它们会因系统提示词拒绝 Codex 和 Claude Code 的对话，适合在 OpenCode、Pi 中使用；放进聚合组时，被拒的请求会自动切到下一个成员。
+- **GitHub Copilot**：用 GitHub 设备码登录，账号页会显示要输入的代码。每个模型走 Copilot 提供它的接口：Claude 系列走 Anthropic Messages，新 GPT 走 Responses，其余走 Chat Completions。只列出账号现在能用的模型；需要先同意条款的模型请到 GitHub 的 Copilot 设置里启用，AgentHarbor 不会代为同意。卡片显示本月高级请求。
+- **Gemini CLI / Antigravity**：分别用两个应用自己的 Google 登录，由 Google Code Assist 提供模型。Gemini CLI 的登录只对 Gemini Code Assist 标准版 / 企业版开放，需要 Google Cloud 项目（在账号卡片里填写）。Antigravity 个人账号也能用，但 Google 可能封禁在 Antigravity 之外使用的账号，所以登录前会先确认。Antigravity 会对 Claude Code 和 Claude Agent SDK 的系统提示词返回 429，请在 OpenCode、Pi 中使用，或放进聚合组。
+- **Kiro**：在 Kiro 官网登录（Google、GitHub、AWS Builder ID 或 IAM Identity Center），每个账号独立保存，不影响 Kiro IDE 和 kiro-cli 的登录。卡片显示本月积分。
+- Google 和 Kiro 的接口在路由内部经 Chat Completions 转换，所以各种客户端协议都能照常用上它们。
 - **Claude Desktop** 暂不支持账号来源。
 
 ## 数据与安全

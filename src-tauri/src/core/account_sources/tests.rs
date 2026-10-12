@@ -32,8 +32,17 @@ impl Drop for Mock {
     }
 }
 
-/// A loopback HTTP server answering each request with `respond`.
+/// A loopback HTTP server answering each request with `respond`, as JSON.
 pub(crate) async fn mock(respond: impl Fn(&Seen) -> (u16, String) + Send + Sync + 'static) -> Mock {
+    mock_raw(move |seen| {
+        let (status, body) = respond(seen);
+        (status, "application/json", body.into_bytes())
+    }).await
+}
+
+/// A loopback HTTP server answering each request with `respond`: status,
+/// content type and raw bytes (an AWS event stream, an SSE stream).
+pub(crate) async fn mock_raw(respond: impl Fn(&Seen) -> (u16, &'static str, Vec<u8>) + Send + Sync + 'static) -> Mock {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -58,10 +67,10 @@ pub(crate) async fn mock(respond: impl Fn(&Seen) -> (u16, String) + Send + Sync 
                                 .map(|(name, value)| (name.to_string(), value.to_str().unwrap_or_default().to_owned())).collect(),
                             body: String::from_utf8_lossy(&body).into_owned(),
                         };
-                        let (status, reply) = respond(&seen);
+                        let (status, content_type, reply) = respond(&seen);
                         record.lock().unwrap().push(seen);
                         Ok::<_, std::convert::Infallible>(Response::builder().status(status)
-                            .header("content-type", "application/json").body(Full::new(Bytes::from(reply))).unwrap())
+                            .header("content-type", content_type).body(Full::new(Bytes::from(reply))).unwrap())
                     }
                 });
                 let _ = http1::Builder::new().serve_connection(TokioIo::new(stream), service).await;
@@ -123,8 +132,9 @@ fn workbuddy_sign_in_waits_for_the_browser_then_keeps_the_account() {
         let (_cancel, cancel) = watch::channel(false);
         let opened = Arc::new(Mutex::new(String::new()));
         let page = opened.clone();
-        let account = sign_in(&paths, &client(), SourceKind::Workbuddy, cancel, move |url| {
-            *page.lock().unwrap() = url.to_owned();
+        let account = sign_in(&paths, &client(), SourceKind::Workbuddy, cancel, move |prompt| {
+            assert!(prompt.code.is_none());
+            *page.lock().unwrap() = prompt.url.to_owned();
             Ok(())
         }).await.unwrap();
         set_endpoint_override(SourceKind::Workbuddy, None);
@@ -268,8 +278,8 @@ fn chatgpt_sign_in_registers_the_app_and_checks_the_id_token() {
         let (_dir, paths) = temp_paths();
         let (_cancel, cancel) = watch::channel(false);
         let page_nonce = nonce.clone();
-        let account = sign_in(&paths, &client(), SourceKind::ChatgptApi, cancel, move |url| {
-            let url = reqwest::Url::parse(url).unwrap();
+        let account = sign_in(&paths, &client(), SourceKind::ChatgptApi, cancel, move |prompt| {
+            let url = reqwest::Url::parse(prompt.url).unwrap();
             assert_eq!(url.path(), "/api/accounts/authorize");
             let query: HashMap<_, _> = url.query_pairs().into_owned().collect();
             assert_eq!(query["client_id"], "dynamic_agent_client");
@@ -301,8 +311,8 @@ fn a_chatgpt_callback_from_another_sign_in_is_refused() {
         set_endpoint_override(SourceKind::ChatgptApi, Some(upstream.base.clone()));
         let (_dir, paths) = temp_paths();
         let (_cancel, cancel) = watch::channel(false);
-        let result = sign_in(&paths, &client(), SourceKind::ChatgptApi, cancel, |url| {
-            let url = reqwest::Url::parse(url).unwrap();
+        let result = sign_in(&paths, &client(), SourceKind::ChatgptApi, cancel, |prompt| {
+            let url = reqwest::Url::parse(prompt.url).unwrap();
             let query: HashMap<_, _> = url.query_pairs().into_owned().collect();
             let back = format!("{}?code=c&state=forged&client_id=x", query["redirect_uri"]);
             tokio::spawn(async move { let _ = Client::builder().no_proxy().build().unwrap().get(back).send().await; });
@@ -379,4 +389,200 @@ fn sharing_a_source_publishes_a_router_only_provider_and_keeps_model_choices() {
     set_exposed(&paths, SourceKind::Workbuddy, false).unwrap();
     assert!(router::load_store(&paths).unwrap().providers.is_empty());
     assert!(list(&paths).unwrap().sources.iter().all(|source| !source.exposed));
+}
+
+#[test]
+fn copilot_device_sign_in_reads_the_account_its_models_and_allowance() {
+    let _guard = crate::core::router_proxy::global_router_test_lock();
+    runtime().block_on(async {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let count = polls.clone();
+        let upstream = mock(move |seen| {
+            let reply = match (seen.method.as_str(), seen.path.as_str()) {
+                ("POST", "/login/device/code") => {
+                    assert_eq!(form(&seen.body)["client_id"], "Iv1.b507a08c87ecfe98");
+                    json!({"device_code":"dc-1","user_code":"ABCD-1234","verification_uri":"https://github.com/login/device","interval":0,"expires_in":900})
+                }
+                ("POST", "/login/oauth/access_token") => {
+                    assert_eq!(form(&seen.body)["device_code"], "dc-1");
+                    if count.fetch_add(1, Ordering::SeqCst) == 0 { json!({"error":"authorization_pending"}) } else { json!({"access_token":"gho-1"}) }
+                }
+                ("GET", "/user") => {
+                    assert_eq!(seen.headers["authorization"], "token gho-1");
+                    json!({"login":"Octo"})
+                }
+                ("GET", "/copilot_internal/user") => json!({"copilot_plan":"individual",
+                    "quota_snapshots":{"premium_interactions":{"entitlement":300,"remaining":250,"unlimited":false}}}),
+                ("GET", "/copilot_internal/v2/token") => {
+                    assert_eq!(seen.headers["editor-version"], "vscode/1.140.0");
+                    json!({"token":"cop-1","expires_at":chrono::Utc::now().timestamp() + 1800,"endpoints":{"api":"https://elsewhere.invalid"}})
+                }
+                ("GET", "/models") => {
+                    assert_eq!(seen.headers["authorization"], "Bearer cop-1");
+                    assert_eq!(seen.headers["copilot-integration-id"], "vscode-chat");
+                    json!({"data":[
+                        {"id":"claude-sonnet-4.6","name":"Claude Sonnet 4.6","model_picker_enabled":true,"capabilities":{"type":"chat"},
+                         "supported_endpoints":["/chat/completions","/v1/messages"],"policy":{"state":"enabled"}},
+                        {"id":"gpt-4.1","name":"GPT-4.1","model_picker_enabled":true,"capabilities":{"type":"chat"}}
+                    ]})
+                }
+                _ => return (404, "{}".into()),
+            };
+            (200, reply.to_string())
+        }).await;
+        set_endpoint_override(SourceKind::Copilot, Some(upstream.base.clone()));
+        let (_dir, paths) = temp_paths();
+        let (_cancel, cancel) = watch::channel(false);
+        let shown = Arc::new(Mutex::new(None));
+        let prompt_seen = shown.clone();
+        let account = sign_in(&paths, &client(), SourceKind::Copilot, cancel, move |prompt| {
+            *prompt_seen.lock().unwrap() = Some((prompt.url.to_owned(), prompt.code.map(str::to_owned)));
+            Ok(())
+        }).await.unwrap();
+        assert_eq!(*shown.lock().unwrap(), Some(("https://github.com/login/device".to_owned(), Some("ABCD-1234".to_owned()))),
+            "the device code is shown with GitHub's page");
+        assert_eq!(polls.load(Ordering::SeqCst), 2, "a pending code is asked again");
+        assert_eq!((account.name.as_str(), account.subject.as_str(), account.plan.as_deref()), ("Octo", "octo", Some("Pro")));
+        let first = keep(&paths, account).unwrap();
+        after_sign_in(&paths, &client(), SourceKind::Copilot, first).await.unwrap();
+        set_endpoint_override(SourceKind::Copilot, None);
+
+        let listed = list(&paths).unwrap();
+        let source = listed.sources.iter().find(|source| source.kind == SourceKind::Copilot).unwrap();
+        assert!(source.exposed && source.has_quota);
+        let quota = source.accounts[0].quota.clone().unwrap();
+        assert_eq!((quota.used, quota.limit, quota.unit.as_str()), (50.0, 300.0, "premium"));
+        assert!(!serde_json::to_string(&listed).unwrap().contains("gho-1"), "views never carry tokens");
+        let store = router::load_store(&paths).unwrap();
+        let provider = store.providers.iter().find(|provider| provider.id == "account-copilot").unwrap();
+        assert_eq!(provider.protocol_for_model("claude-sonnet-4.6"), router::ModelProtocol::AnthropicMessages);
+        assert_eq!(provider.protocol_for_model("gpt-4.1"), router::ModelProtocol::ChatCompletions);
+    });
+}
+
+/// Follow a sign-in's page back to its own loopback callback, as the browser would.
+fn come_back(url: &str, path: &str, extra: &str) {
+    let url = reqwest::Url::parse(url).unwrap();
+    let query: HashMap<_, _> = url.query_pairs().into_owned().collect();
+    let base = query["redirect_uri"].clone();
+    let back = if base.ends_with(path) { format!("{base}?{extra}&state={}", query["state"]) } else { format!("{base}{path}?{extra}&state={}", query["state"]) };
+    tokio::spawn(async move {
+        let page = Client::builder().no_proxy().build().unwrap().get(back).send().await.unwrap();
+        assert!(page.text().await.unwrap().contains("Signed in"));
+    });
+}
+
+#[test]
+fn antigravity_sign_in_sets_the_account_up_and_reads_its_models_and_allowance() {
+    let _guard = crate::core::router_proxy::global_router_test_lock();
+    runtime().block_on(async {
+        let upstream = mock(|seen| {
+            let reply = match seen.path.as_str() {
+                "/token" => {
+                    let fields = form(&seen.body);
+                    assert_eq!(fields["grant_type"], "authorization_code");
+                    assert_eq!(fields["client_id"], "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com");
+                    assert!(fields["code_verifier"].len() >= 43);
+                    json!({"access_token":"ya29-a","refresh_token":"1//r","expires_in":3600})
+                }
+                "/userinfo" => json!({"email":"Me@Gmail.com"}),
+                "/v1internal:loadCodeAssist" => {
+                    assert_eq!(seen.headers["authorization"], "Bearer ya29-a");
+                    assert!(seen.headers["user-agent"].starts_with("antigravity/hub/"));
+                    json!({"currentTier":{"id":"free-tier","name":"Antigravity Free"},"allowedTiers":[{"id":"free-tier","isDefault":true}]})
+                }
+                "/v1internal:onboardUser" => {
+                    assert_eq!(serde_json::from_str::<Value>(&seen.body).unwrap()["metadata"]["ide_type"], "ANTIGRAVITY");
+                    json!({"done":true,"response":{"cloudaicompanionProject":{"id":"proj-9","name":"x"}}})
+                }
+                "/v1internal:fetchAvailableModels" => {
+                    assert_eq!(serde_json::from_str::<Value>(&seen.body).unwrap()["project"], "proj-9");
+                    json!({"models":{
+                        "gemini-3-flash":{"displayName":"Gemini 3 Flash","maxTokens":1048576,"maxOutputTokens":65536,"quotaInfo":{"remainingFraction":0.8}},
+                        "claude-sonnet-4-6":{"displayName":"Claude Sonnet 4.6","maxTokens":200000,"quotaInfo":{"remainingFraction":0.25}},
+                        "tab_flash_lite_preview":{"displayName":"tab"}},
+                      "agentModelSorts":[{"groups":[{"modelIds":["claude-sonnet-4-6","gemini-3-flash"]}]}]})
+                }
+                _ => return (404, "{}".into()),
+            };
+            (200, reply.to_string())
+        }).await;
+        set_endpoint_override(SourceKind::Antigravity, Some(upstream.base.clone()));
+        let (_dir, paths) = temp_paths();
+        let (_cancel, cancel) = watch::channel(false);
+        let account = sign_in(&paths, &client(), SourceKind::Antigravity, cancel, |prompt| {
+            assert!(prompt.url.contains("/authorize?") && prompt.url.contains("access_type=offline"));
+            assert!(prompt.url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A"), "the Antigravity client comes back to localhost");
+            come_back(prompt.url, "/oauth-callback", "code=g-code");
+            Ok(())
+        }).await.unwrap();
+        assert_eq!((account.name.as_str(), account.subject.as_str(), account.plan.as_deref()), ("Me@Gmail.com", "me@gmail.com", Some("Antigravity Free")));
+        let Credentials::Google(creds) = &account.credentials else { panic!("Google credentials") };
+        assert_eq!(creds.project, "proj-9");
+        let first = keep(&paths, account).unwrap();
+        after_sign_in(&paths, &client(), SourceKind::Antigravity, first).await.unwrap();
+        set_endpoint_override(SourceKind::Antigravity, None);
+
+        let listed = list(&paths).unwrap();
+        let source = listed.sources.iter().find(|source| source.kind == SourceKind::Antigravity).unwrap();
+        assert!(source.exposed && source.risk.is_some());
+        let ids: Vec<_> = source.models.iter().map(|model| model.id.as_str()).collect();
+        assert_eq!(ids, ["claude-sonnet-4-6", "gemini-3-flash"], "the Antigravity picker order, chat models only");
+        assert_eq!(source.models[1].max_output_tokens, Some(65536));
+        let quota = source.accounts[0].quota.clone().unwrap();
+        assert_eq!((quota.used, quota.limit, quota.unit.as_str()), (75.0, 100.0, "percent"), "the tightest model allowance");
+        assert_eq!(source.accounts[0].project.as_deref(), Some("proj-9"));
+        assert!(!serde_json::to_string(&listed).unwrap().contains("1//r"), "views never carry tokens");
+    });
+}
+
+#[test]
+fn kiro_sign_in_with_github_reads_the_profile_plan_and_models() {
+    let _guard = crate::core::router_proxy::global_router_test_lock();
+    runtime().block_on(async {
+        let upstream = mock(|seen| {
+            let path = seen.path.split('?').next().unwrap_or_default();
+            let reply = match path {
+                "/oauth/token" => {
+                    let body: Value = serde_json::from_str(&seen.body).unwrap();
+                    assert_eq!(body["code"], "k-code");
+                    assert!(body["redirect_uri"].as_str().unwrap().ends_with("/oauth/callback?login_option=github"));
+                    assert!(seen.headers["user-agent"].starts_with("KiroIDE-"));
+                    json!({"accessToken":"kat","refreshToken":"krt","expiresIn":3600,"profileArn":"arn:aws:codewhisperer:us-east-1:7:profile/P"})
+                }
+                "/Get-Usage-Limits" => {
+                    assert_eq!(seen.headers["authorization"], "Bearer kat");
+                    assert!(seen.path.contains("profileArn=arn"));
+                    json!({"userInfo":{"email":"kiro@example.com"},"subscriptionInfo":{"subscriptionTitle":"KIRO PRO+"},
+                        "usageBreakdownList":[{"currentUsageWithPrecision":120.5,"usageLimitWithPrecision":1000}]})
+                }
+                "/List-Available-Models" => json!({"models":[
+                    {"modelId":"claude-sonnet-4.5","modelName":"Claude Sonnet 4.5","tokenLimits":{"maxInputTokens":200000,"maxOutputTokens":64000}},
+                    {"modelId":"auto"}],"defaultModel":{"modelId":"auto"}}),
+                _ => return (404, "{}".into()),
+            };
+            (200, reply.to_string())
+        }).await;
+        set_endpoint_override(SourceKind::Kiro, Some(upstream.base.clone()));
+        let (_dir, paths) = temp_paths();
+        let (_cancel, cancel) = watch::channel(false);
+        let account = sign_in(&paths, &client(), SourceKind::Kiro, cancel, |prompt| {
+            assert!(prompt.url.contains("/signin?") && prompt.url.contains("redirect_from=KiroIDE"));
+            come_back(prompt.url, "/oauth/callback", "login_option=github&code=k-code");
+            Ok(())
+        }).await.unwrap();
+        assert_eq!((account.name.as_str(), account.plan.as_deref()), ("kiro@example.com", Some("Kiro Pro+")));
+        let Credentials::Kiro(creds) = &account.credentials else { panic!("Kiro credentials") };
+        assert_eq!((creds.method.as_str(), creds.provider.as_str(), creds.api_region().as_str()), ("social", "Github", "us-east-1"));
+        let first = keep(&paths, account).unwrap();
+        after_sign_in(&paths, &client(), SourceKind::Kiro, first).await.unwrap();
+        set_endpoint_override(SourceKind::Kiro, None);
+        let listed = list(&paths).unwrap();
+        let source = listed.sources.iter().find(|source| source.kind == SourceKind::Kiro).unwrap();
+        let names: Vec<_> = source.models.iter().map(|model| model.name.as_str()).collect();
+        assert_eq!(names, ["Auto", "Claude Sonnet 4.5"], "the Kiro default first");
+        let quota = source.accounts[0].quota.clone().unwrap();
+        assert_eq!((quota.used, quota.limit, quota.unit.as_str()), (120.5, 1000.0, "credits"));
+        assert!(source.exposed);
+    });
 }

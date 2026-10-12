@@ -6,6 +6,7 @@ import { BookmarkPlus, Check, ChevronDown, Eye, Loader2, Trash2 } from "lucide-r
 import { api } from "@/lib/api";
 import { claudeRoles as roles, emptyClaudeRoles as emptyRoles, claudeOneMDefaults, clientDefaults, clientModels, clientProtocols, exclusionOf, knownSmallContext, effectiveContext } from "@/lib/client-config";
 import { ClaudeModelConfig } from "./claude-model-config";
+import { DirectProxyNote } from "./direct-proxy-note";
 import { providerModelProtocol } from "@/lib/provider-models";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -447,6 +448,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
               variant={request.accessMode === mode ? "secondary" : "ghost"} aria-pressed={request.accessMode === mode}
               disabled={busy} onClick={() => changeMode(mode)}>{t("clients.access" + (mode === "native" ? "Native" : "Router"))}</Button>)}
           </div>
+          {request.accessMode === "native" && <DirectProxyNote name={client.name} isClaude={isClaude} provider={provider} />}
           {request.accessMode === "router" && <section className="space-y-2" aria-label={t("aggregation.title")}>
             <p className="text-sm font-medium">{t("aggregation.title")}</p>
             <div className="grid max-h-48 gap-2 overflow-y-auto sm:grid-cols-2">{aggregates.map(entry => <label key={entry.id}
@@ -480,8 +482,9 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
                     </span>
                     <span className="mt-1 block text-xs text-muted-foreground">{reason ? t("clients.excluded." + reason, { count: 1 })
                       : t("clients.modelsCount", { count: availableCount })}</span>
-                    {!reason && isClaude && (p.accountSource === "workbuddy" || p.accountSource === "workbuddy-ai") && (
-                      <span className="mt-1 block text-[11px] leading-snug text-amber-700 dark:text-amber-300" data-account-source-refusal>{t("accountSources.refusesClaudeCode")}</span>
+                    {!reason && isClaude && (p.accountSource === "workbuddy" || p.accountSource === "workbuddy-ai" || p.accountSource === "antigravity") && (
+                      <span className="mt-1 block text-[11px] leading-snug text-amber-700 dark:text-amber-300" data-account-source-refusal>
+                        {t("accountSources.refusesClaudeCode", { name: p.accountSource === "antigravity" ? "Antigravity" : "WorkBuddy" })}</span>
                     )}</span>
                   <span className={"flex h-4 w-4 shrink-0 items-center justify-center border " + (isClaude ? "rounded-full " : "rounded ")
                     + (active ? "border-primary bg-primary text-primary-foreground" : "border-input")}>

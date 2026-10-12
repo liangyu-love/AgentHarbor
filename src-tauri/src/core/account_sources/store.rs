@@ -1,6 +1,6 @@
 //! Signed-in accounts of the official account sources, kept encrypted beside
 //! the relay store. Tokens leave this module only as request headers.
-use super::{chatgpt_api, workbuddy, SourceKind};
+use super::{chatgpt_api, copilot, google, kiro, workbuddy, SourceKind};
 use crate::core::secret_file;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -19,7 +19,7 @@ pub struct Store {
     /// This machine's id for Sign in with ChatGPT (`urn:uuid:…`), made once.
     pub host_id: Option<String>,
     pub accounts: Vec<Account>,
-    /// Model lists a source fetched for its accounts (ChatGPT); WorkBuddy's are built in.
+    /// Model lists a source fetched for its accounts; WorkBuddy's are built in.
     pub models: BTreeMap<SourceKind, Vec<SourceModel>>,
 }
 
@@ -50,6 +50,9 @@ pub struct Account {
 pub enum Credentials {
     WorkBuddy(workbuddy::Creds),
     ChatgptApi(chatgpt_api::Creds),
+    Copilot(copilot::Creds),
+    Google(google::Creds),
+    Kiro(kiro::Creds),
 }
 
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
@@ -69,7 +72,10 @@ pub struct SourceModel {
     pub id: String,
     pub name: String,
     pub context_window: Option<u64>,
+    pub max_output_tokens: Option<u64>,
     pub reasoning: Vec<String>,
+    /// The API this model is asked on, when it differs from its source's.
+    pub protocol: Option<crate::core::router::ModelProtocol>,
 }
 
 fn path(dir: &Path) -> PathBuf {

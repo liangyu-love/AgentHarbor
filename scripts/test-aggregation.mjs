@@ -183,6 +183,10 @@ export async function testAggregation({ page, reset, captureDir }) {
   await manager().getByRole("button", { name: await tr("aggregation.add"), exact: true }).click();
   await manager().locator("#aggregate-public-id").fill(PUBLIC_MODEL);
   await manager().locator("#aggregate-display-name").fill(POOL_NAME);
+  const gatewayId = manager().locator("[data-gateway-id-preview] code");
+  assert.equal(await gatewayId.innerText(), `pool/${PUBLIC_MODEL}`, "an empty prefix keeps the gateway's shared one");
+  await manager().locator("#aggregate-gateway-prefix").fill("CN");
+  assert.equal(await gatewayId.innerText(), `cn/${PUBLIC_MODEL}`);
   const addMember = manager().getByRole("button", { name: await tr("aggregation.addMember"), exact: true });
   await addMember.click();
   await addMember.click();
@@ -212,6 +216,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   assert.equal(saved.strategy, "weightedRoundRobin");
   assert.deepEqual(saved.retryPolicy, { maxAttempts: 1, failureThreshold: 4 });
   assert.equal(saved.firstTokenTimeoutSecs, 30);
+  assert.equal(saved.gatewayPrefix, "cn");
   assert.deepEqual(saved.compression, { mode: "percent", percent: 85 });
   assert.deepEqual(saved.members.map(({ providerId, actualModelId, priority, weight }) => ({ providerId, actualModelId, priority, weight })), [
     { providerId: "relay-a", actualModelId: FAST_WIRE_MODEL, priority: 0, weight: 3 },
@@ -223,6 +228,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   await manager().getByRole("button", { name: await tr("common.edit"), exact: true }).click();
   assert.equal(await manager().locator("#aggregate-public-id").isDisabled(), true, "public identity remains stable after creation");
   assert.equal(await manager().locator("#aggregate-failure-threshold").innerText(), "4");
+  assert.equal(await manager().locator("#aggregate-gateway-prefix").inputValue(), "cn");
   assert.equal(await members.nth(0).locator('[id^="member-model-"]').innerText(), FAST_WIRE_MODEL);
   assert.equal(await manager().getByRole("spinbutton", { name: await tr("newapi.compression.modelLevel"), exact: true }).inputValue(), "85");
   await page.setViewportSize({ width: 390, height: 844 });

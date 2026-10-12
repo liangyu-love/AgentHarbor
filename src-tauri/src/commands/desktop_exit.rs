@@ -189,6 +189,10 @@ pub fn get_claude_desktop_exit_request(
 pub enum ExitDecision {
     Background,
     StopAndExit,
+    /// Exit without restoring Desktop: it keeps pointing at the local gateway,
+    /// which works again when AgentHarbor runs, and its State stays for the
+    /// next start, as after a forced shutdown. Offered when a restore failed.
+    LeaveAndExit,
 }
 
 #[tauri::command]
@@ -222,20 +226,47 @@ pub async fn resolve_claude_desktop_exit(
         if state.busy {
             return Err("claudeDesktop.errors.writerBusy".into());
         }
-        match decision {
-            ExitDecision::Background => unreachable!(),
-            ExitDecision::StopAndExit => {
-                let intent = state
-                    .pending
-                    .as_ref()
-                    .ok_or("claudeDesktop.errors.previewExpired")?
-                    .intent;
-                state.busy = true;
-                intent
-            }
-        }
+        let intent = state
+            .pending
+            .as_ref()
+            .ok_or("claudeDesktop.errors.previewExpired")?
+            .intent;
+        state.busy = true;
+        intent
     };
-    attempt_exit(&app, intent, true).await
+    match decision {
+        ExitDecision::Background => unreachable!(),
+        ExitDecision::StopAndExit => attempt_exit(&app, intent, true).await,
+        ExitDecision::LeaveAndExit => leave_and_exit(&app, intent).await,
+    }
+}
+
+/// Exit with Desktop left as it is. Codex is still released from the router,
+/// as on every exit; the CLI clients are restored by the final Exit callback.
+async fn leave_and_exit(app: &AppHandle, intent: ExitIntent) -> Result<(), String> {
+    let _guard = routing_runtime::mutation_guard().await;
+    let paths = app
+        .state::<Mutex<Repository>>()
+        .lock()
+        .map_err(|_| "claudeDesktop.errors.storage".to_owned())
+        .map(|repo| repo.paths().clone());
+    if let Ok(paths) = paths {
+        let released = super::blocking(move || {
+            if router::load_store(&paths)?.router.enabled {
+                router::release_codex_connection_on_exit(&paths)?;
+            }
+            Ok(())
+        })
+        .await;
+        if let Err(error) = released {
+            log::warn!("Codex routing cleanup before exit failed: {error}");
+        }
+    }
+    if let Err(error) = finish_exit(app, intent) {
+        show_request(app, Some(error.clone()));
+        return Err(error);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -19,6 +19,8 @@ pub struct GatewayState {
     pub keep_running: bool,
     pub keys: Vec<gateway::KeyView>,
     pub models: Vec<gateway::GatewayModel>,
+    /// What aggregates' gateway ids start with, unless one names its own.
+    pub aggregate_prefix: String,
 }
 
 fn state(paths: &CodexPaths) -> Result<GatewayState, String> {
@@ -30,6 +32,7 @@ fn state(paths: &CodexPaths) -> Result<GatewayState, String> {
         keep_running: store.router.aggregate_external_enabled,
         keys: gateway::key_views(&store),
         models: gateway::models(&store, &catalog),
+        aggregate_prefix: gateway::shared_prefix(&store).to_owned(),
     })
 }
 
@@ -118,4 +121,14 @@ pub async fn set_gateway_keep_running(repo: State<'_, Mutex<Repository>>, enable
     }
     routing_runtime::reconcile(&paths).await?;
     state(&paths)
+}
+
+#[tauri::command]
+pub async fn set_gateway_aggregate_prefix(repo: State<'_, Mutex<Repository>>, prefix: String) -> Result<GatewayState, String> {
+    let paths = paths(&repo)?;
+    let _guard = routing_runtime::mutation_guard().await;
+    super::blocking(move || {
+        gateway::set_shared_prefix(&paths, &prefix)?;
+        state(&paths)
+    }).await
 }

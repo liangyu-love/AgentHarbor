@@ -512,6 +512,9 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
     "opening the dialog from the keyboard must move focus into it");
   assert.equal(await page.evaluate(() => window.review.desktopCalls.candidates.length), 1);
   console.log("PASS the configure button is focusable and opens the dialog from the keyboard");
+  assert.equal(await dialog().locator("[data-desktop-direct-proxy]").innerText(),
+    await page.evaluate(() => window.review.t("claudeDesktop.dialog.directProxy")));
+  console.log("PASS Desktop direct mode says it reaches the relay outside the app and terminal proxies");
 
   const dialogSurface = await dialog().evaluate(node => {
     const scrollArea = node.querySelector("[data-claude-desktop-scroll]");
@@ -1315,15 +1318,22 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   assert.deepEqual(await page.evaluate(() => window.review.desktopExitCalls), ["background"]);
   await page.evaluate(() => window.review.emitDesktopExit({ intent: "restart" }));
   await exit.getByRole("heading", { name: "重启前恢复 Claude Desktop？", exact: true }).waitFor();
+  assert.equal(await exit.locator("[data-desktop-exit-leave]").count(), 0, "leaving Desktop as it is is offered only after a failed restore");
   await page.evaluate(() => { window.review.desktopExitFailure = "claudeDesktop.errors.processStopTimeout"; });
   await exit.getByRole("button", { name: "停止 Desktop 并恢复重启", exact: true }).click();
   await exit.getByRole("alert").filter({ hasText: "无法结束 Claude Desktop" }).waitFor();
   assert.equal(await exit.getByRole("button", { name: "仍然退出", exact: true }).count(), 0);
+  await exit.locator("[data-desktop-exit-leave]").getByRole("button", { name: "不恢复，直接重启", exact: true }).waitFor();
   assert.equal(await exit.getByRole("button", { name: "停止 Desktop 并恢复重启", exact: true }).isEnabled(), true);
   await page.evaluate(() => { window.review.desktopExitFailure = null; });
   await exit.getByRole("button", { name: "停止 Desktop 并恢复重启", exact: true }).click();
   await exit.waitFor({ state: "hidden" });
   assert.deepEqual(await page.evaluate(() => window.review.desktopExitCalls), ["background", "stopAndExit", "stopAndExit"]);
+  // A restore that keeps failing (a conflict, an installation gone) cannot trap the app.
+  await page.evaluate(() => window.review.emitDesktopExit({ intent: "quit", error: "claudeDesktop.errors.conflict" }));
+  await exit.locator("[data-desktop-exit-leave]").getByRole("button", { name: "不恢复，直接退出", exact: true }).click();
+  await exit.waitFor({ state: "hidden" });
+  assert.deepEqual((await page.evaluate(() => window.review.desktopExitCalls)).at(-1), "leaveAndExit");
   await page.evaluate(() => window.review.mount("mcp"));
   await page.waitForFunction(() => window.review.desktopExitUnlisten === 1);
   await page.evaluate(() => {
@@ -1344,7 +1354,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   await exit.waitFor({ state: "hidden" });
   await page.evaluate(() => window.review.mount("mcp"));
   await page.waitForFunction(() => window.review.desktopExitUnlisten === 2);
-  console.log("PASS full exit honors background choice, preserves restart intent on failure, retries and cleans its listener");
+  console.log("PASS full exit honors background choice, preserves restart intent on failure, retries, can leave Desktop as it is after a failure and cleans its listener");
 
   // The updater can install once, keep the gateway in the background and restart later without reinstalling.
   await page.evaluate(() => {

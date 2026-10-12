@@ -81,7 +81,7 @@ pub fn new_host_id() -> String {
     format!("urn:uuid:{}", uuid::Uuid::new_v4())
 }
 
-fn random_token(bytes: usize) -> String {
+pub(super) fn random_token(bytes: usize) -> String {
     let raw: Vec<u8> = (0..bytes.div_ceil(16)).flat_map(|_| *uuid::Uuid::new_v4().as_bytes()).take(bytes).collect();
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw)
 }
@@ -143,13 +143,14 @@ pub async fn finish_sign_in(client: &Client, sign_in: SignIn, mut cancel: watch:
             let result = if params.get("state") != Some(&sign_in.state) {
                 Err("accounts.loginFailed".to_owned())
             } else if let Some(error) = params.get("error") {
-                Err(format!("ChatGPT sign-in: {}", params.get("error_description").unwrap_or(error)))
+                Err(authorize_error(error, params.get("error_description").map(String::as_str)))
             } else {
                 exchange(client, &sign_in, params.get("code").map(String::as_str).unwrap_or_default(),
                     params.get("client_id").map(|id| id.trim()).unwrap_or_default()).await
             };
             let (title, detail) = match &result {
                 Ok(done) => ("Signed in", format!("{} is added to AgentHarbor. You can close this tab.", done.name)),
+                Err(error) if error == WORKSPACE_NOT_ENABLED => ("Sign-in didn't finish", WORKSPACE_HINT.to_owned()),
                 Err(error) => ("Sign-in didn't finish", error.clone()),
             };
             let page = format!("<!doctype html><meta charset=utf-8><title>AgentHarbor</title><h1>{}</h1><p>{}</p>",
@@ -163,6 +164,20 @@ pub async fn finish_sign_in(client: &Client, sign_in: SignIn, mut cancel: watch:
         _ = super::cancelled(&mut cancel) => Err("accounts.loginCancelled".into()),
         result = tokio::time::timeout(SIGN_IN_WINDOW, wait) => result.unwrap_or_else(|_| Err("accounts.loginTimeout".into())),
     }
+}
+
+const WORKSPACE_NOT_ENABLED: &str = "accountSources.errors.workspaceNotEnabled";
+const WORKSPACE_HINT: &str = "This ChatGPT workspace has not allowed Sign in with ChatGPT apps. Ask its admin to allow them, \
+    or sign in again and pick a personal workspace.";
+
+/// OpenAI's refusal of the sign-in itself. A Team, Business or Enterprise
+/// workspace lets these apps in only when its admin allows them.
+fn authorize_error(error: &str, description: Option<&str>) -> String {
+    let text = format!("{error} {}", description.unwrap_or_default()).to_ascii_lowercase();
+    if ["organization", "organisation", "workspace", "not enabled", "admin"].iter().any(|needle| text.contains(needle)) {
+        return WORKSPACE_NOT_ENABLED.into();
+    }
+    format!("ChatGPT sign-in: {}", description.unwrap_or(error))
 }
 
 fn html_escape(text: &str) -> String {
@@ -358,6 +373,7 @@ fn model_of(entry: &Value, id: &str) -> SourceModel {
         context_window: entry["context_window"].as_u64().filter(|value| *value > 0),
         reasoning: entry["supported_reasoning_levels"].as_array().into_iter().flatten()
             .filter_map(|level| level["effort"].as_str().map(str::to_owned)).collect(),
+        ..Default::default()
     }
 }
 
@@ -504,5 +520,14 @@ mod tests {
         assert!(explain(400, br#"{"detail":{"code":"subscription_sharing_unsupported_capability","param":"reasoning.summary"}}"#).unwrap().contains("reasoning.summary"));
         assert!(explain(401, b"{}").is_some());
         assert!(explain(500, b"{}").is_none());
+    }
+
+    #[test]
+    fn a_workspace_that_has_not_allowed_the_app_is_named() {
+        assert_eq!(authorize_error("access_denied", Some("Your organization has not enabled access to this application")),
+            WORKSPACE_NOT_ENABLED);
+        assert_eq!(authorize_error("unauthorized_client", Some("Workspace admin approval required")), WORKSPACE_NOT_ENABLED);
+        assert_eq!(authorize_error("access_denied", Some("The user denied the request")), "ChatGPT sign-in: The user denied the request");
+        assert_eq!(authorize_error("server_error", None), "ChatGPT sign-in: server_error");
     }
 }

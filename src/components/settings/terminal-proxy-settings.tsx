@@ -19,12 +19,36 @@ import type { ApiProxyConfigPayload, TerminalProxyProbe } from "@/types";
 const PREFIX = "settings.terminalProxy.";
 
 /** This owns only the terminal environment; the application's API proxy is separate. */
-export function TerminalProxySettings({ currentProxy }: { currentProxy?: ApiProxyConfigPayload }) {
+export function TerminalProxySettings({ currentProxy, focusRequested, onFocusHandled }: {
+  currentProxy?: ApiProxyConfigPayload; focusRequested?: boolean; onFocusHandled?: () => void;
+}) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const inputId = useId();
   const query = useQuery({ queryKey: queryKeys.terminalProxy, queryFn: api.terminalProxy.load, retry: false });
   const status = query.data;
+  const rowRef = useRef<HTMLDivElement>(null);
+  const editRef = useRef<HTMLButtonElement>(null);
+  const [highlighted, setHighlighted] = useState(false);
+  const [focusCount, setFocusCount] = useState(0);
+  useEffect(() => {
+    if (!focusRequested) return;
+    onFocusHandled?.();
+    setFocusCount(count => count + 1);
+  }, [focusRequested, onFocusHandled]);
+  const loaded = !query.isPending;
+  useEffect(() => {
+    // The edit button takes focus only once the status enables it.
+    if (!focusCount || !loaded) return;
+    // Wait a frame for the page to lay out after the route change.
+    const frame = requestAnimationFrame(() => {
+      rowRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+      editRef.current?.focus({ preventScroll: true });
+      setHighlighted(true);
+    });
+    const timer = window.setTimeout(() => setHighlighted(false), 2000);
+    return () => { cancelAnimationFrame(frame); window.clearTimeout(timer); };
+  }, [focusCount, loaded]);
   const [open, setOpen] = useState(false);
   const [url, setUrl] = useState("");
   const [noProxy, setNoProxy] = useState("");
@@ -112,7 +136,8 @@ export function TerminalProxySettings({ currentProxy }: { currentProxy?: ApiProx
 
   return (
     <>
-      <div className="space-y-3 px-5 py-4" data-terminal-proxy>
+      <div ref={rowRef} className={cn("space-y-3 px-5 py-4 transition-colors duration-500", highlighted && "bg-primary/5")}
+        data-terminal-proxy data-terminal-proxy-highlighted={highlighted || undefined}>
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 space-y-1">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -122,10 +147,11 @@ export function TerminalProxySettings({ currentProxy }: { currentProxy?: ApiProx
               </Badge>
             </div>
             <p className="text-xs leading-relaxed text-muted-foreground">{t(PREFIX + "description")}</p>
+            <p className="text-xs leading-relaxed text-muted-foreground" data-terminal-proxy-direct>{t(PREFIX + "directClients")}</p>
             {status?.enabled && status.url && <p className="break-all font-mono text-[11px] text-foreground/70">{status.url}</p>}
           </div>
           {query.isError ? <Button variant="outline" size="sm" onClick={() => void query.refetch()}>{t(PREFIX + "retry")}</Button>
-            : <Button variant="outline" size="sm" disabled={!status?.supported || save.isPending} onClick={() => changeOpen(true)} aria-label={t(PREFIX + "edit")}>
+            : <Button ref={editRef} variant="outline" size="sm" disabled={!status?.supported || save.isPending} onClick={() => changeOpen(true)} aria-label={t(PREFIX + "edit")}>
               {t("common.edit")}
             </Button>}
         </div>

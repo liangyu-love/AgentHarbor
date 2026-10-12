@@ -124,7 +124,9 @@
       "less": "Show less"
     },
     "tierBackupOnly": "Backup",
-    "compression": "Auto compaction (model level)"
+    "compression": "Auto compaction (model level)",
+    "gatewayPrefix": "Gateway prefix",
+    "gatewayPrefixHint": "Through the gateway:"
   },
   "modelTargets": {
     "errors": {
@@ -322,7 +324,10 @@
       "takeoverCredential": "The existing credential will be replaced by this configuration's credential.",
       "takeoverModelConfig": "The existing default model, /model menu, or available-model list will be taken over by this configuration.",
       "managedSettings": "A managed-settings.json defines the same environment variables; it outranks the user file and will override this injection.",
-      "oneMIgnored": "Some roles had their [1m] mark dropped because the model's catalog context is below 1M; see the model mapping for the values actually written."
+      "oneMIgnored": "Some roles had their [1m] mark dropped because the model's catalog context is below 1M; see the model mapping for the values actually written.",
+      "keptEdits": "The local router address and token were withdrawn; fields you edited yourself were kept.",
+      "proxySocks": "The app proxy is a SOCKS address, which Claude Code cannot use, so no proxy was written. For a proxy, turn on the terminal proxy with an HTTP address, or use router mode.",
+      "systemProxy": "The app proxy follows the system proxy, which Claude Code does not read, so no proxy was written. For a proxy, turn on the terminal proxy, or set the app proxy to a manual HTTP address in Settings."
     },
     "errors": {
       "piProviderConflict": "Pi already has a provider with this ID. Rename the external provider before applying.",
@@ -374,7 +379,18 @@
       "source": "Source",
       "model": "Default model"
     },
-    "factModels": "{{count}} models"
+    "factModels": "{{count}} models",
+    "stale": "The relay card's address, key or proxy setting changed after this direct configuration was written; it still holds the old values until you reapply it.",
+    "directProxy": {
+      "title": "Direct mode skips AgentHarbor's proxy",
+      "terminalOn": "The terminal proxy is on: start {{name}} from a new terminal and it reaches the relay through {{url}}.",
+      "claudeOff": "The terminal proxy is off. When the relay card follows the proxy and the app proxy is a manual HTTP address, that address is written to Claude Code's HTTPS_PROXY (withdrawn on restore). You can also turn on the terminal proxy.",
+      "claudeUnsupported": "When the relay card follows the proxy and the app proxy is a manual HTTP address, that address is written to Claude Code's HTTPS_PROXY (withdrawn on restore).",
+      "claudeCardDirect": "This relay card is set to direct, so no proxy is written for Claude Code.",
+      "otherOff": "The terminal proxy is off. If you need a proxy, turn it on and start {{name}} from a new terminal, or use router mode.",
+      "otherUnsupported": "In direct mode {{name}} skips the app proxy and reads only its own proxy environment variables; use router mode to go through the app proxy.",
+      "open": "Terminal proxy settings"
+    }
   },
   "claudeDesktop": {
     "title": "Claude Desktop",
@@ -643,7 +659,8 @@
       "providerDisabledBadge": "Outside routing pool",
       "reapplyTitle": "Reapply configuration?",
       "reapplyDescription": "Update the saved mode and model settings while keeping the original restore point.",
-      "needPaths": "Choose the Claude Desktop configuration location first."
+      "needPaths": "Choose the Claude Desktop configuration location first.",
+      "directProxy": "In direct mode Claude Desktop reaches the relay itself: it skips AgentHarbor's app proxy and does not read the terminal proxy. Use router mode to go through the app proxy."
     },
     "banner": {
       "independent": "This is independent from the Claude Code client; neither one changes the other."
@@ -716,7 +733,10 @@
       "background": "Keep running in background",
       "stopAndExit": "Stop Desktop, restore and quit",
       "stopAndRestart": "Stop Desktop, restore and restart",
-      "restoring": "Stopping and restoring"
+      "restoring": "Stopping and restoring",
+      "leaveHint": "You can also quit without restoring: Claude Desktop keeps pointing at the local router and works again once AgentHarbor is open; restore or reapply it from the Claude Desktop card later.",
+      "leaveAndExit": "Quit without restoring",
+      "leaveAndRestart": "Restart without restoring"
     }
   },
   "newapi": {
@@ -958,7 +978,8 @@
       "balanceInterval": "Enter a whole number of minutes from 0 to 10080.",
       "priceMultiplier": "Enter a price multiplier from 0 to 1000; 1 keeps the original rates.",
       "gatewaySlug": "Use lowercase letters, digits and . _ -, starting with a letter or digit, at most 40 characters",
-      "gatewaySlugTaken": "Another relay already uses this short name"
+      "gatewaySlugTaken": "Another relay already uses this short name",
+      "gatewaySlugIsPrefix": "This short name is an aggregate prefix in the gateway; pick another"
     },
     "balanceRemaining": "Remaining balance",
     "useDefault": "Blank = default",
@@ -2262,7 +2283,8 @@
         "environment": "Could not read or write Windows user environment variables. Try again.",
         "launch": "Could not open PowerShell. Check that it is installed.",
         "test": "Proxy connectivity test failed. Try again."
-      }
+      },
+      "directClients": "Claude Code, OpenCode and Pi in direct mode use it when started from a new terminal."
     },
     "appearance": "Appearance",
     "backgroundTitle": "Custom Background",
@@ -2406,7 +2428,6 @@
     "creditsLeft": "{{value}}% left",
     "quotaUnread": "Credits not read yet",
     "quotaNone": "No credit package on this account",
-    "chatgptUsage": "The limit is shared with ChatGPT; OpenAI shows what is left only at",
     "lapsed": "This sign-in has expired; sign in to the account again.",
     "emptyTitle": "No {{name}} accounts yet",
     "emptyDescription": "After you sign in, this account's models can be served to Claude Code, OpenCode, Pi and other clients through the local router.",
@@ -2417,12 +2438,20 @@
     "desc": {
       "chatgpt-api": "Signs in with OpenAI's Sign in with ChatGPT: the plan's models are served to other clients through the local router over the standard Responses API, with each client's own prompt. Separate from the Codex accounts.",
       "workbuddy": "Tencent WorkBuddy (CodeBuddy plan), China build. Models use OpenAI-compatible Chat Completions.",
-      "workbuddy-ai": "WorkBuddy AI, the international build (workbuddy.ai). Same API as the China build, different models."
+      "workbuddy-ai": "WorkBuddy AI, the international build (workbuddy.ai). Same API as the China build, different models.",
+      "copilot": "A GitHub Copilot plan (Free, Pro, Pro+, Business), signed in with a GitHub device code. Claude models use Anthropic Messages, newer GPT models Responses, the rest Chat Completions; each model is asked on its own API.",
+      "gemini-cli": "Gemini CLI's Google sign-in: Gemini models through Google Code Assist. Google serves this sign-in only to Gemini Code Assist Standard and Enterprise, which need a Google Cloud project.",
+      "antigravity": "Antigravity's Google sign-in: the Gemini, Claude and GPT-OSS models Antigravity offers, through Google Code Assist. Personal Google accounts work.",
+      "kiro": "A Kiro account (signed in with Google, GitHub, AWS Builder ID or IAM Identity Center): Claude and other models through Kiro's own API. Each account is kept on its own; the Kiro IDE's and kiro-cli's sign-ins are left alone."
     },
     "note": {
-      "chatgpt-api": "Some plans are not eligible for this sign-in; signing in says so. Nothing is stored at OpenAI, and some parameters and OpenAI-hosted tools are removed from requests.",
+      "chatgpt-api": "Some plans are not eligible for this sign-in; signing in says so. A Team, Business or Enterprise workspace must first allow Sign in with ChatGPT apps (its admin decides), or the sign-in page says the organization has not enabled access; you can also pick a personal workspace there. Nothing is stored at OpenAI, and some parameters and OpenAI-hosted tools are removed from requests.",
       "workbuddy": "WorkBuddy refuses chats from Codex and Claude Code because of their system prompt: use it from OpenCode or Pi, or put it in an aggregate so a refused request moves to the next member. Streaming chats only.",
-      "workbuddy-ai": "WorkBuddy AI refuses chats from Codex and Claude Code because of their system prompt: use it from OpenCode or Pi, or put it in an aggregate so a refused request moves to the next member. Streaming chats only."
+      "workbuddy-ai": "WorkBuddy AI refuses chats from Codex and Claude Code because of their system prompt: use it from OpenCode or Pi, or put it in an aggregate so a refused request moves to the next member. Streaming chats only.",
+      "copilot": "Only models this account may call now are listed; a model that asks you to accept its terms first (some Claude and Gemini models) is enabled in GitHub's Copilot settings, then refresh the models. Each turn you start counts as one premium request; tool results do not.",
+      "gemini-cli": "Use Antigravity for a personal Google account. If signing in says a project is missing, enter the Google Cloud project ID on the account card. The models are the ones Gemini CLI offers this account.",
+      "antigravity": "Antigravity answers the system prompt of Claude Code and the Claude Agent SDK with a 429 whatever quota is left: use it from OpenCode or Pi, or put it in an aggregate so a refused request moves to the next member. The allowance shown is the most-used model's.",
+      "kiro": "Signing in opens Kiro's site; pick a way to sign in and it comes back here. The allowance is this month's credits; at medium or high effort, Claude models send their thinking too."
     },
     "errors": {
       "storage": "Could not read or write the account source store",
@@ -2432,10 +2461,58 @@
       "chatgptNoClient": "OpenAI did not finish registering the app (no client id came back); sign in again",
       "chatgptNoModels": "This ChatGPT account lists no models",
       "routerOnly": "Account source models are reachable only through the local router; switch the access mode to the router",
-      "managedByAccounts": "These models come from an account source; manage them on the Accounts page"
+      "managedByAccounts": "These models come from an account source; manage them on the Accounts page",
+      "workspaceNotEnabled": "This ChatGPT workspace has not allowed Sign in with ChatGPT apps: ask the workspace admin to allow them, or sign in again and pick a personal workspace",
+      "copilotUnreachable": "Cannot reach GitHub or Copilot; check the network or proxy",
+      "copilotNoCode": "GitHub gave no device code; try again",
+      "copilotNoUser": "GitHub did not say whose account this is; sign in again",
+      "copilotNoPlan": "This GitHub account has no Copilot plan",
+      "copilotNoModels": "This Copilot account has no models it may use now",
+      "signedOut": "This account's sign-in has expired; sign in again",
+      "googleUnreachable": "Cannot reach Google; check the network or proxy",
+      "googleNoToken": "Google sent back no token; sign in again",
+      "googleNoUser": "Google did not say whose account this is; sign in again",
+      "googleNoProject": "This Google account has no Code Assist project yet; sign in to the Antigravity app with it once, then try again",
+      "googleNoModels": "This Google account has no models it may use now",
+      "googleProject": "A project ID uses letters, digits and - . : only, at most 64 characters",
+      "kiroUnreachable": "Cannot reach Kiro; check the network or proxy",
+      "kiroPortsBusy": "The ports Kiro's sign-in comes back to are all busy; close a Kiro IDE sign-in in progress and try again",
+      "kiroNoToken": "Kiro sent back no token; sign in again",
+      "kiroUnsupportedSignIn": "This Kiro sign-in (a company's own identity provider) is not supported yet; use Google, GitHub or AWS",
+      "kiroNoProfile": "Kiro has no profile for this sign-in",
+      "kiroNoModels": "This Kiro account has no models it may use now",
+      "geminiNeedsProject": "Google serves Gemini CLI's sign-in only to Gemini Code Assist Standard and Enterprise: enter the Google Cloud project ID it bills. Use Antigravity for a personal Google account."
     },
     "badge": "Official account",
-    "refusesClaudeCode": "WorkBuddy refuses Claude Code's system prompt; requests may fail"
+    "refusesClaudeCode": "{{name}} refuses Claude Code's system prompt; requests may fail",
+    "vendor": {
+      "openai": "OpenAI",
+      "tencent": "Tencent",
+      "github": "GitHub",
+      "google": "Google",
+      "aws": "AWS"
+    },
+    "berth": "{{name}}, {{count}} accounts",
+    "berthEmpty": "No account",
+    "premiumRequests": "Premium requests this month",
+    "vendorUsage": "The vendor keeps the allowance; see what is left at",
+    "usage": {
+      "chatgpt-api": "The limit is shared with ChatGPT; OpenAI shows what is left only at"
+    },
+    "deviceCode": "Device code",
+    "copyCode": "Copy code",
+    "codeCopied": "Copied",
+    "deviceCodeHint": "Enter this code on the page that opened and authorize; this page continues by itself.",
+    "risk": {
+      "antigravity": "Google may suspend an account it sees used outside Antigravity. Use an account you can afford to lose."
+    },
+    "riskTitle": "Before signing in to {{name}}",
+    "riskAccept": "I understand, sign in",
+    "tightestModel": "Most-used model",
+    "usedPercent": "{{value}}% used",
+    "project": "Google Cloud project",
+    "projectPlaceholder": "Google Cloud project ID",
+    "projectSaved": "Project saved and the account set up again"
   },
   "gateway": {
     "groupTitle": "Gateway",
@@ -2488,8 +2565,12 @@
       "tooManyKeys": "At most 32 keys",
       "keyNotFound": "This key was not found",
       "consumerUnsupported": "This template does not support the selected protocol",
-      "unavailable": "The selected model is not available right now"
+      "unavailable": "The selected model is not available right now",
+      "prefix": "Use lowercase letters, digits and . _ -, starting with a letter or digit, at most 40 characters",
+      "prefixTaken": "A relay's short name already uses this prefix; pick another"
     },
-    "schematicNoKey": "No agents yet"
+    "schematicNoKey": "No agents yet",
+    "aggregatePrefix": "Aggregate prefix",
+    "aggregatePrefixHint": "Aggregates are named prefix/model in the gateway, apart from a relay's short-name/model. One aggregate can set its own prefix under Model aggregation; requests that still send the bare model name keep working."
   }
 }

@@ -61,15 +61,15 @@ fn gateway_keys_reach_every_model_by_short_name_with_translation() {
         let models: Value = client.get(format!("{base}/gateway/v1/models")).bearer_auth(GATEWAY_KEY)
             .send().await.unwrap().json().await.unwrap();
         let ids: Vec<&str> = models["data"].as_array().unwrap().iter().filter_map(|entry| entry["id"].as_str()).collect();
-        assert_eq!(ids, ["relay-chat/chat-model", "relay-chat/vendor/deep-model", "harbor-pool"]);
+        assert_eq!(ids, ["relay-chat/chat-model", "relay-chat/vendor/deep-model", "pool/harbor-pool"]);
         assert_eq!(models["data"][0]["owned_by"], "Relay Chat");
         let anthropic: Value = client.get(format!("{base}/gateway/v1/models")).header("x-api-key", GATEWAY_KEY)
             .header("anthropic-version", "2023-06-01").send().await.unwrap().json().await.unwrap();
         assert_eq!(anthropic["data"][0]["type"], "model");
         assert_eq!(anthropic["first_id"], "relay-chat/chat-model");
-        let one: Value = client.get(format!("{base}/gateway/v1/models/harbor-pool")).bearer_auth(GATEWAY_KEY)
+        let one: Value = client.get(format!("{base}/gateway/v1/models/pool/harbor-pool")).bearer_auth(GATEWAY_KEY)
             .send().await.unwrap().json().await.unwrap();
-        assert_eq!(one["id"], "harbor-pool");
+        assert_eq!(one["id"], "pool/harbor-pool");
 
         for (token, path) in [(None, "/gateway/v1/models"), (Some(ROUTER_TOKEN), "/gateway/v1/models"),
             (Some("sk-ah-wrong"), "/gateway/v1/models"), (Some(GATEWAY_KEY), "/v1/models")] {
@@ -99,11 +99,14 @@ fn gateway_keys_reach_every_model_by_short_name_with_translation() {
         assert_eq!(messages["type"], "message", "{messages}");
         assert_eq!(messages["content"][0]["text"], "hello through the gateway");
 
-        let pooled = client.post(format!("{base}/gateway/v1/chat/completions")).bearer_auth(GATEWAY_KEY)
-            .json(&json!({"model":"harbor-pool","messages":[{"role":"user","content":"hi"}]}))
-            .send().await.unwrap();
-        assert_eq!(pooled.status(), 200);
-        assert_eq!(pooled.json::<Value>().await.unwrap()["choices"][0]["message"]["content"], "hello through the gateway");
+        // The listed id, and the bare public id clients set up before aggregates had a prefix.
+        for model in ["pool/harbor-pool", "harbor-pool"] {
+            let pooled = client.post(format!("{base}/gateway/v1/chat/completions")).bearer_auth(GATEWAY_KEY)
+                .json(&json!({"model":model,"messages":[{"role":"user","content":"hi"}]}))
+                .send().await.unwrap();
+            assert_eq!(pooled.status(), 200, "{model}");
+            assert_eq!(pooled.json::<Value>().await.unwrap()["choices"][0]["message"]["content"], "hello through the gateway");
+        }
 
         for model in ["relay-chat/excluded-model", "chat-model", "nobody/chat-model"] {
             let unknown = client.post(format!("{base}/gateway/v1/chat/completions")).bearer_auth(GATEWAY_KEY)

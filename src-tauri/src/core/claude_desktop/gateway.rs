@@ -11,7 +11,9 @@ use super::{
 };
 use crate::core::{models_dev, router::Store};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::SystemTime;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -74,9 +76,47 @@ impl std::fmt::Debug for GatewaySnapshot {
     }
 }
 
+/// The State file as last read: its size and modification time. A committed
+/// State changes only by its file being replaced, which moves both.
+type FileKey = Option<(u64, SystemTime)>;
+
+fn file_key(path: &Path) -> FileKey {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some((metadata.len(), metadata.modified().ok()?))
+}
+
+/// The last snapshot read with no journal pending, by data directory and
+/// State file. Every Desktop request reads it: with the State unchanged it is
+/// answered without the writer lock, which a Desktop restart holds for many
+/// seconds, and without decrypting the State again.
+static SNAPSHOT: Mutex<Option<(PathBuf, FileKey, Option<GatewaySnapshot>)>> = Mutex::new(None);
+
 pub fn committed_snapshot(app_data_dir: &Path) -> DesktopResult<Option<GatewaySnapshot>> {
-    let _guard = Manager::write_lock()?;
     let manager = Manager::new(app_data_dir);
+    let state_path = manager.state_path();
+    // A pending journal needs the full check below on every request.
+    let settled = !manager.pending_path().exists();
+    if settled {
+        let key = file_key(&state_path);
+        if let Some((_, _, snapshot)) = SNAPSHOT.lock().ok().and_then(|cached| cached.clone())
+            .filter(|(dir, cached_key, _)| dir == app_data_dir && *cached_key == key)
+        {
+            return Ok(snapshot);
+        }
+    }
+    let _guard = Manager::write_lock()?;
+    // Read under the lock, which every writer holds while replacing the State.
+    let key = file_key(&state_path);
+    let snapshot = read_committed(&manager)?;
+    if settled && !manager.pending_path().exists() {
+        if let Ok(mut cached) = SNAPSHOT.lock() {
+            *cached = Some((app_data_dir.to_path_buf(), key, snapshot.clone()));
+        }
+    }
+    Ok(snapshot)
+}
+
+fn read_committed(manager: &Manager) -> DesktopResult<Option<GatewaySnapshot>> {
     let Some(state) = manager.load_state()? else {
         return Ok(None);
     };

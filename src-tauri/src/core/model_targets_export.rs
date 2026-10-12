@@ -179,7 +179,7 @@ mod tests {
             ..Default::default()
         };
         crate::core::gateway::assign_slugs(&mut store);
-        let sdk = export(&store, &catalog, ModelProtocol::AnthropicMessages, Some("official-model"), "anthropicSdk", "k", true).unwrap();
+        let sdk = export(&store, &catalog, ModelProtocol::AnthropicMessages, Some("pool/official-model"), "anthropicSdk", "k", true).unwrap();
         assert!(sdk.connection.base_url.ends_with("/gateway"));
         assert_eq!(sdk.connection.request_path, "/v1/messages");
         assert!(sdk.connection.models_path.unwrap().ends_with("?format=anthropic"));
@@ -197,7 +197,7 @@ mod tests {
         assert_eq!(config["provider"]["agentharbor"]["options"]["baseURL"], chat.connection.base_url);
         assert_eq!(config["model"], "agentharbor/provider/wire");
         let models = config["provider"]["agentharbor"]["models"].as_object().unwrap();
-        assert!(models.contains_key("provider/wire") && models.contains_key("official-model"), "relay models and aggregates");
+        assert!(models.contains_key("provider/wire") && models.contains_key("pool/official-model"), "relay models and aggregates");
         let generic = export(&store, &catalog, ModelProtocol::ChatCompletions, None, "generic", "k", false).unwrap();
         assert_eq!(generic.connection.request_path, "/chat/completions");
         assert!(export(&store, &catalog, ModelProtocol::ChatCompletions, None, "anthropicSdk", "k", true).is_err());

@@ -17,6 +17,8 @@ export interface ClientStatus {
   clientVersion?: string | null;
   /** Managed fields that no longer match what the last apply wrote. */
   conflictFields?: string[];
+  /** A direct configuration whose relay card changed address or key since it was written. */
+  stale?: boolean;
 }
 export type ClientAccessMode = "native" | "router";
 /** One key file of a client on this machine; existence only, never contents. */

@@ -124,7 +124,9 @@
       "less": "收起"
     },
     "tierBackupOnly": "备用",
-    "compression": "自动压缩阈值（模型级）"
+    "compression": "自动压缩阈值（模型级）",
+    "gatewayPrefix": "网关前缀",
+    "gatewayPrefixHint": "经网关使用："
   },
   "modelTargets": {
     "errors": {
@@ -322,7 +324,10 @@
       "takeoverCredential": "现有的认证凭据将被本次配置的凭据替换。",
       "takeoverModelConfig": "现有的默认模型、/model 菜单或可用模型列表将被本次配置接管。",
       "managedSettings": "检测到管理级 managed-settings.json 定义了相同的环境变量；它优先于用户配置，会覆盖本次注入。",
-      "oneMIgnored": "部分角色按模型目录数据忽略了 [1m] 标记（该模型不支持 1M 上下文），可在模型映射中查看实际写入值。"
+      "oneMIgnored": "部分角色按模型目录数据忽略了 [1m] 标记（该模型不支持 1M 上下文），可在模型映射中查看实际写入值。",
+      "keptEdits": "已撤回本地路由的地址和令牌，你自己改过的字段保持不变。",
+      "proxySocks": "软件代理是 SOCKS 地址，Claude Code 不支持，未写入代理。需要代理时请开启终端代理（HTTP 地址），或改用路由模式。",
+      "systemProxy": "软件代理跟随系统代理，而 Claude Code 不读取系统代理，未写入代理。需要代理时请开启终端代理，或在设置中把软件代理改为手动 HTTP 地址。"
     },
     "errors": {
       "piProviderConflict": "Pi 中已存在同名供应商。请先更名外部配置，避免覆盖。",
@@ -374,7 +379,18 @@
       "source": "来源",
       "model": "默认模型"
     },
-    "factModels": "{{count}} 个模型"
+    "factModels": "{{count}} 个模型",
+    "stale": "中转卡片的地址、密钥或代理设置在注入后改过，这份直连配置里还是旧值；重新应用后生效。",
+    "directProxy": {
+      "title": "直连不经过 AgentHarbor 的代理",
+      "terminalOn": "终端代理已开启：从新打开的终端启动 {{name}}，就会通过 {{url}} 连接中转。",
+      "claudeOff": "终端代理未开启。中转卡片走代理、软件代理是手动 HTTP 地址时，会把它写进 Claude Code 的 HTTPS_PROXY（恢复时撤回）；也可以开启终端代理。",
+      "claudeUnsupported": "中转卡片走代理、软件代理是手动 HTTP 地址时，会把它写进 Claude Code 的 HTTPS_PROXY（恢复时撤回）。",
+      "claudeCardDirect": "这张中转卡片设为直连，不会给 Claude Code 写入代理。",
+      "otherOff": "终端代理未开启。需要代理时，开启终端代理后从新终端启动 {{name}}，或改用路由模式。",
+      "otherUnsupported": "{{name}} 直连时不经过软件代理，只读取它自己的代理环境变量；需要软件代理时请改用路由模式。",
+      "open": "去设置终端代理"
+    }
   },
   "claudeDesktop": {
     "title": "Claude Desktop",
@@ -643,7 +659,8 @@
       "providerDisabledBadge": "未加入路由池",
       "reapplyTitle": "重新应用配置？",
       "reapplyDescription": "按已保存的模式与模型设置更新配置，接管前的还原点保持不变。",
-      "needPaths": "请先选择 Claude Desktop 的配置位置。"
+      "needPaths": "请先选择 Claude Desktop 的配置位置。",
+      "directProxy": "直连时由 Claude Desktop 自己连接中转，不经过 AgentHarbor 的软件代理，也不读取终端代理；需要经过软件代理时请用路由模式。"
     },
     "banner": {
       "independent": "本项与 Claude Code 客户端相互独立，两者互不影响。"
@@ -716,7 +733,10 @@
       "background": "保持后台运行",
       "stopAndExit": "停止 Desktop 并恢复退出",
       "stopAndRestart": "停止 Desktop 并恢复重启",
-      "restoring": "正在停止并恢复"
+      "restoring": "正在停止并恢复",
+      "leaveHint": "也可以不恢复直接退出：Claude Desktop 会继续指向本地路由，下次打开 AgentHarbor 后照常可用，之后再在 Claude Desktop 卡片里恢复或重新应用。",
+      "leaveAndExit": "不恢复，直接退出",
+      "leaveAndRestart": "不恢复，直接重启"
     }
   },
   "newapi": {
@@ -958,7 +978,8 @@
       "balanceInterval": "请输入 0 到 10080 之间的整数分钟。",
       "priceMultiplier": "请输入 0 到 1000 的价格倍率，1 为原价。",
       "gatewaySlug": "短名只能用小写字母、数字和 . _ -，以字母或数字开头，最多 40 个字符",
-      "gatewaySlugTaken": "这个短名已被其他中转使用"
+      "gatewaySlugTaken": "这个短名已被其他中转使用",
+      "gatewaySlugIsPrefix": "这个短名是模型聚合的网关前缀，请换一个"
     },
     "balanceRemaining": "剩余额度",
     "useDefault": "留空使用默认",
@@ -2262,7 +2283,8 @@
         "environment": "无法读取或写入 Windows 用户环境变量，请重试。",
         "launch": "无法打开 PowerShell，请检查其是否已安装。",
         "test": "代理连通性测试失败，请重试。"
-      }
+      },
+      "directClients": "直连模式的 Claude Code、OpenCode、Pi 从新终端启动时会使用它。"
     },
     "appearance": "外观",
     "backgroundTitle": "自定义背景壁纸",
@@ -2406,7 +2428,6 @@
     "creditsLeft": "剩余 {{value}}%",
     "quotaUnread": "还没有读取额度",
     "quotaNone": "这个账号没有积分套餐",
-    "chatgptUsage": "额度与 ChatGPT 共用，OpenAI 只在网页上显示剩余量：",
     "lapsed": "登录已失效，请重新登录这个账号。",
     "emptyTitle": "还没有 {{name}} 账号",
     "emptyDescription": "登录后，这个账号的模型可以经本地路由提供给 Claude Code、OpenCode、Pi 等客户端。",
@@ -2417,12 +2438,20 @@
     "desc": {
       "chatgpt-api": "用 OpenAI 官方的 Sign in with ChatGPT 登录：ChatGPT 套餐的模型经本地路由提供给其他客户端，走标准 Responses API，用的是客户端自己的提示词。与 Codex 账号互相独立。",
       "workbuddy": "腾讯 WorkBuddy（CodeBuddy 套餐）国内版账号，模型走 OpenAI 兼容的 Chat Completions。",
-      "workbuddy-ai": "WorkBuddy AI 国际版（workbuddy.ai）账号，接口与国内版相同，模型列表不同。"
+      "workbuddy-ai": "WorkBuddy AI 国际版（workbuddy.ai）账号，接口与国内版相同，模型列表不同。",
+      "copilot": "GitHub Copilot 套餐（Free / Pro / Pro+ / 商业版）的账号，用 GitHub 设备码登录。Claude 系列走 Anthropic Messages，新 GPT 走 Responses，其余走 Chat Completions，每个模型自动选对接口。",
+      "gemini-cli": "用 Gemini CLI 的 Google 登录，经 Google Code Assist 使用 Gemini 模型。Google 只给 Gemini Code Assist 标准版 / 企业版提供这种登录，需要一个 Google Cloud 项目。",
+      "antigravity": "用 Antigravity 的 Google 登录，经 Google Code Assist 使用 Antigravity 提供的 Gemini、Claude 和 GPT-OSS 模型，个人 Google 账号也能用。",
+      "kiro": "Kiro 账号（Google、GitHub、AWS Builder ID 或 IAM Identity Center 登录），经 Kiro 自己的接口使用 Claude 等模型；每个账号独立保存，不影响 Kiro IDE 和 kiro-cli 的登录。"
     },
     "note": {
-      "chatgpt-api": "个别套餐没有资格使用这种登录，登录时会明确提示。请求不在 OpenAI 保存，部分参数和 OpenAI 托管工具会被去掉。",
+      "chatgpt-api": "有些套餐没有资格使用这种登录，登录时会明确提示。Team、Business、Enterprise 工作区要管理员先允许「Sign in with ChatGPT」应用，否则登录页会说组织尚未启用访问权限；也可以在登录页切到个人工作区。不会在 OpenAI 保存任何内容，部分参数和 OpenAI 托管工具会从请求中去掉。",
       "workbuddy": "WorkBuddy 会因系统提示词拒绝 Codex 和 Claude Code 的对话：请在 OpenCode、Pi 中使用，或放进聚合组，被拒时自动切到下一个成员。只支持流式对话。",
-      "workbuddy-ai": "WorkBuddy AI 会因系统提示词拒绝 Codex 和 Claude Code 的对话：请在 OpenCode、Pi 中使用，或放进聚合组，被拒时自动切到下一个成员。只支持流式对话。"
+      "workbuddy-ai": "WorkBuddy AI 会因系统提示词拒绝 Codex 和 Claude Code 的对话：请在 OpenCode、Pi 中使用，或放进聚合组，被拒时自动切到下一个成员。只支持流式对话。",
+      "copilot": "只列出这个账号现在能用的模型；需要先同意条款的模型（如部分 Claude、Gemini）请到 GitHub 的 Copilot 设置里启用，再刷新模型。每轮由你发起的对话计一次高级请求，工具回传不计。",
+      "gemini-cli": "个人 Google 账号请用 Antigravity。登录后若提示缺少项目，在账号卡片里填上 Google Cloud 项目 ID 即可。模型列表按 Gemini CLI 对这个账号开放的为准。",
+      "antigravity": "Antigravity 会对 Claude Code 和 Claude Agent SDK 的系统提示词直接返回 429（不管额度还剩多少），请在 OpenCode、Pi 中使用，或放进聚合组让被拒请求切到下一个成员。额度显示的是用得最多的那个模型。",
+      "kiro": "登录页会打开 Kiro 官网，选择登录方式后回到这里。额度为本月积分；思考强度为中、高时，Claude 模型会把思考过程一并返回。"
     },
     "errors": {
       "storage": "账号来源的存储读写失败",
@@ -2432,10 +2461,58 @@
       "chatgptNoClient": "OpenAI 没有完成应用注册（没有返回 client id），请重新登录",
       "chatgptNoModels": "这个 ChatGPT 账号没有可用的模型",
       "routerOnly": "账号来源的模型只能经本地路由使用，请把接入方式切换为本地路由",
-      "managedByAccounts": "这是账号来源提供的模型，请在账号页管理"
+      "managedByAccounts": "这是账号来源提供的模型，请在账号页管理",
+      "workspaceNotEnabled": "这个 ChatGPT 工作区还没有允许「Sign in with ChatGPT」应用：请工作区管理员在设置里开启，或重新登录并切换到个人工作区",
+      "copilotUnreachable": "连不上 GitHub / Copilot，请检查网络或代理",
+      "copilotNoCode": "GitHub 没有给出设备码，请重试",
+      "copilotNoUser": "GitHub 没有说明这是谁的账号，请重新登录",
+      "copilotNoPlan": "这个 GitHub 账号没有 Copilot 套餐",
+      "copilotNoModels": "这个 Copilot 账号现在没有可用的模型",
+      "signedOut": "这个账号的登录已失效，请重新登录",
+      "googleUnreachable": "连不上 Google，请检查网络或代理",
+      "googleNoToken": "Google 没有返回令牌，请重新登录",
+      "googleNoUser": "Google 没有说明这是谁的账号，请重新登录",
+      "googleNoProject": "这个 Google 账号还没有 Code Assist 项目，请先在 Antigravity 应用里登录一次再试",
+      "googleNoModels": "这个 Google 账号现在没有可用的模型",
+      "googleProject": "项目 ID 只能包含字母、数字、- . :，最多 64 个字符",
+      "kiroUnreachable": "连不上 Kiro，请检查网络或代理",
+      "kiroPortsBusy": "Kiro 登录要用的本机端口都被占用了，请先关掉 Kiro IDE 正在进行的登录再试",
+      "kiroNoToken": "Kiro 没有返回令牌，请重新登录",
+      "kiroUnsupportedSignIn": "暂不支持这种 Kiro 登录方式（企业自有身份提供商），请换 Google、GitHub 或 AWS 登录",
+      "kiroNoProfile": "Kiro 没有为这个登录提供配置文件",
+      "kiroNoModels": "这个 Kiro 账号现在没有可用的模型",
+      "geminiNeedsProject": "Google 只给 Gemini Code Assist 标准版 / 企业版提供 Gemini CLI 登录，需要填上计费的 Google Cloud 项目 ID；个人 Google 账号请改用 Antigravity。"
     },
     "badge": "官方账号",
-    "refusesClaudeCode": "WorkBuddy 会拒绝 Claude Code 的系统提示词，请求可能失败"
+    "refusesClaudeCode": "{{name}} 会拒绝 Claude Code 的系统提示词，请求可能失败",
+    "vendor": {
+      "openai": "OpenAI",
+      "tencent": "腾讯",
+      "github": "GitHub",
+      "google": "Google",
+      "aws": "AWS"
+    },
+    "berth": "{{name}}，{{count}} 个账号",
+    "berthEmpty": "未登录",
+    "premiumRequests": "本月高级请求",
+    "vendorUsage": "额度由厂商管理，剩余量请到网页查看：",
+    "usage": {
+      "chatgpt-api": "额度与 ChatGPT 共用，OpenAI 只在网页上显示剩余量："
+    },
+    "deviceCode": "设备码",
+    "copyCode": "复制代码",
+    "codeCopied": "已复制",
+    "deviceCodeHint": "在打开的页面输入这串代码并授权，完成后这里会自动继续。",
+    "risk": {
+      "antigravity": "Google 可能封禁被发现在 Antigravity 之外使用的账号。请使用可以承受损失的账号。"
+    },
+    "riskTitle": "登录 {{name}} 之前",
+    "riskAccept": "我了解，继续登录",
+    "tightestModel": "用得最多的模型",
+    "usedPercent": "已用 {{value}}%",
+    "project": "Google Cloud 项目",
+    "projectPlaceholder": "Google Cloud 项目 ID",
+    "projectSaved": "项目已保存，账号已重新设置"
   },
   "gateway": {
     "groupTitle": "通用网关",
@@ -2488,8 +2565,12 @@
       "tooManyKeys": "最多 32 个 key",
       "keyNotFound": "找不到这个 key",
       "consumerUnsupported": "这个模板不支持所选协议",
-      "unavailable": "所选模型当前不可用"
+      "unavailable": "所选模型当前不可用",
+      "prefix": "前缀只能用小写字母、数字和 . _ -，以字母或数字开头，最多 40 个字符",
+      "prefixTaken": "这个前缀已被某个中转的短名占用，请换一个"
     },
-    "schematicNoKey": "还没有 agent"
+    "schematicNoKey": "还没有 agent",
+    "aggregatePrefix": "聚合前缀",
+    "aggregatePrefixHint": "模型聚合在网关里叫「前缀/模型名」，和中转的「短名/模型名」区分开。单个聚合可以在模型聚合里另设前缀；以前直接写模型名的请求仍然能用。"
   }
 }

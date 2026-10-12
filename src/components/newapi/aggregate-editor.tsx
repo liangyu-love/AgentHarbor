@@ -1,4 +1,5 @@
 import { useState, type DragEvent, type ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { ArrowDown, ArrowUp, GripVertical, Plus, Save, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -8,6 +9,8 @@ import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { AggregateMember, AggregateModel } from "@/types/aggregation";
 import type { CompressionPolicy, ModelRef, NewApiProvider } from "@/types/newapi";
+import { api } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 import { cn } from "@/lib/utils";
 import { modelsOf, shiftedPriority, tiersOf } from "./aggregation-model";
 
@@ -71,6 +74,9 @@ export function AggregateEditor({ draft, update, providers, busy, suggestions, r
   onCancel: () => void;
 }) {
   const { t } = useTranslation();
+  // The gateway's shared aggregate prefix, which an empty field keeps.
+  const gateway = useQuery({ queryKey: queryKeys.gateway, queryFn: api.gateway.state, refetchOnWindowFocus: false });
+  const sharedPrefix = gateway.data?.aggregatePrefix ?? "pool";
   const [dragged, setDragged] = useState<string | null>(null);
   const [dropTier, setDropTier] = useState<number | "new" | null>(null);
   const tiers = tiersOf(draft.members);
@@ -239,7 +245,7 @@ export function AggregateEditor({ draft, update, providers, busy, suggestions, r
       </div>
 
       <fieldset disabled={busy} className="min-w-0 space-y-6">
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1.3fr)_minmax(0,1fr)]">
           <div className="space-y-1.5">
             <Label htmlFor="aggregate-public-id" className="text-xs font-medium">{t("aggregation.publicId")}</Label>
             <Input
@@ -271,6 +277,23 @@ export function AggregateEditor({ draft, update, providers, busy, suggestions, r
               onChange={(event) => update({ displayName: event.target.value })}
               maxLength={200}
             />
+          </div>
+          <div className="space-y-1.5 sm:col-span-2 xl:col-span-1">
+            <Label htmlFor="aggregate-gateway-prefix" className="text-xs font-medium">{t("aggregation.gatewayPrefix")}</Label>
+            <Input
+              id="aggregate-gateway-prefix"
+              value={draft.gatewayPrefix ?? ""}
+              placeholder={sharedPrefix}
+              className="bg-card font-mono text-sm"
+              aria-describedby="aggregate-gateway-prefix-hint"
+              onChange={(event) => update({ gatewayPrefix: event.target.value.toLowerCase() || null })}
+              maxLength={40}
+              spellCheck={false}
+            />
+            <p id="aggregate-gateway-prefix-hint" className="truncate text-[11px] text-muted-foreground" data-gateway-id-preview>
+              {t("aggregation.gatewayPrefixHint")}{" "}
+              <code className="font-mono text-foreground/80">{`${draft.gatewayPrefix?.trim() || sharedPrefix}/${draft.publicModelId || "…"}`}</code>
+            </p>
           </div>
         </div>
 

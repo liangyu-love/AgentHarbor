@@ -25,6 +25,8 @@ export interface GatewayState {
   keepRunning: boolean;
   keys: GatewayKey[];
   models: GatewayModel[];
+  /** What aggregates' gateway ids start with, unless one names its own. */
+  aggregatePrefix: string;
 }
 
 export type GatewayProfile = "generic" | "anthropicSdk" | "opencode";

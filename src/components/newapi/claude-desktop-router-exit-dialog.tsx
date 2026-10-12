@@ -37,7 +37,7 @@ export function ClaudeDesktopRouterExitDialog() {
     return () => { alive = false; void unlisten.then(remove => remove()).catch(() => {}); };
   }, []);
 
-  const resolve = async (decision: "background" | "stopAndExit") => {
+  const resolve = async (decision: "background" | "stopAndExit" | "leaveAndExit") => {
     if (busy) return;
     setBusy(true);
     setError(null);
@@ -59,6 +59,17 @@ export function ClaudeDesktopRouterExitDialog() {
           <AlertDialogDescription>{t("claudeDesktop.exit.description")}</AlertDialogDescription>
         </AlertDialogHeader>
         {error && <p role="alert" className="break-words text-sm text-destructive">{t(error)}</p>}
+        {/* A restore that keeps failing must never trap the app: Desktop can be
+            left on the local gateway, which works again when AgentHarbor runs. */}
+        {error && (
+          <div className="space-y-2 rounded-lg border border-border/70 bg-muted/40 px-3 py-2.5" data-desktop-exit-leave>
+            <p className="text-xs text-muted-foreground">{t("claudeDesktop.exit.leaveHint")}</p>
+            <button type="button" disabled={busy} onClick={() => void resolve("leaveAndExit")}
+              className="text-xs font-medium text-primary underline-offset-2 hover:underline disabled:opacity-50">
+              {t(request?.intent === "restart" ? "claudeDesktop.exit.leaveAndRestart" : "claudeDesktop.exit.leaveAndExit")}
+            </button>
+          </div>
+        )}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={busy} onClick={event => { event.preventDefault(); void resolve("background"); }}>
             {t("claudeDesktop.exit.background")}

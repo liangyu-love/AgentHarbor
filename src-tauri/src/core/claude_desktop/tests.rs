@@ -489,6 +489,26 @@ fn router_preview_binds_listener_lease_but_not_prices_or_key_contents() {
 }
 
 #[test]
+fn an_unchanged_state_is_answered_while_a_restart_holds_the_writer_lock() {
+    let _env = env_lock();
+    let (base, _, manager, store, request) = router_fixture("snapshotCache");
+    apply_router(&manager, &store, &request);
+    let first = super::gateway::committed_snapshot(&base).unwrap().unwrap();
+    // A Desktop restart holds the writer lock while it stops and launches Desktop.
+    let _held = super::Manager::write_lock().unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let dir = base.clone();
+    std::thread::spawn(move || {
+        let _ = sender.send(super::gateway::committed_snapshot(&dir).map(|snapshot| snapshot.map(|snapshot| snapshot.token)));
+    });
+    let token = receiver.recv_timeout(std::time::Duration::from_secs(5))
+        .expect("a Desktop request is answered without waiting for the restart")
+        .unwrap()
+        .unwrap();
+    assert_eq!(token, first.token);
+}
+
+#[test]
 fn router_token_rotation_has_one_durable_commit_point() {
     let _env = env_lock();
     let (base, paths, manager, store, mut request) = router_fixture("routerTokenGeneration");

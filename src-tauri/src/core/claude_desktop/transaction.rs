@@ -1073,24 +1073,41 @@ pub fn restart_mode_plan(
 // 漂移检测
 // ---------------------------------------------------------------------------
 
+/// 一个受管文件现在的受管值；路径不属于本会话时为 `None`。
+fn current_managed(edition: &Edition, paths: &DesktopPaths) -> DesktopResult<Option<ManagedValues>> {
+    let Some(path) = edition_path(edition, paths) else {
+        return Ok(None);
+    };
+    let text = read_text_or(&path)?;
+    let current = match &text {
+        None => null_for(edition),
+        Some(text) => parse_for(edition, text)?,
+    };
+    Ok(Some(if text.is_none() && matches!(edition.baseline, ManagedValues::Whole { .. }) {
+        ManagedValues::Whole { value: None }
+    } else {
+        read_managed(&current, edition)
+    }))
+}
+
 /// 检查最近安装值是否仍等于当前受管值。返回发生漂移的文件角色。
 pub fn drifted_roles(state: &State, paths: &DesktopPaths) -> DesktopResult<Vec<String>> {
     let mut out = Vec::new();
     for edition in &state.data.files {
-        let Some(path) = edition_path(edition, paths) else {
-            continue;
-        };
-        let text = read_text_or(&path)?;
-        let current = match &text {
-            None => null_for(edition),
-            Some(text) => parse_for(edition, text)?,
-        };
-        let now = if text.is_none() && matches!(edition.baseline, ManagedValues::Whole { .. }) {
-            ManagedValues::Whole { value: None }
-        } else {
-            read_managed(&current, edition)
-        };
-        if edition.installed.drifted(&now) {
+        if current_managed(edition, paths)?.is_some_and(|now| edition.installed.drifted(&now)) {
+            out.push(edition.role.clone());
+        }
+    }
+    Ok(out)
+}
+
+/// Roles whose managed values already equal the takeover baseline exactly:
+/// restoring them changes nothing, so whatever brought them back there (the
+/// user, or Desktop writing its mode on quit) is no conflict for a restore.
+pub fn at_baseline_roles(state: &State, paths: &DesktopPaths) -> DesktopResult<Vec<String>> {
+    let mut out = Vec::new();
+    for edition in &state.data.files {
+        if current_managed(edition, paths)?.is_some_and(|now| now == edition.baseline) {
             out.push(edition.role.clone());
         }
     }

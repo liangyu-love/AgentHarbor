@@ -412,6 +412,17 @@ export function ClientConfigs({ providers, onOpenRelays, target }: {
             <span className="min-w-0 truncate font-mono" title={client.path}>{client.path}</span>
           </div>
 
+          {client.configured && client.stale && !client.conflict && !client.error && (
+            <div role="status" data-client-stale
+              className="flex flex-col gap-2 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-800 sm:flex-row sm:items-center sm:justify-between dark:text-amber-200">
+              <p className="flex items-start gap-2"><AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />{t("clients.stale")}</p>
+              <Button size="sm" variant="outline" className="h-7 shrink-0 gap-1.5 text-xs" disabled={actionsLocked}
+                onClick={() => setReapplying({ client, rebaseline: false })}>
+                <RefreshCw className="h-3.5 w-3.5" />{t("clients.reapply")}
+              </Button>
+            </div>
+          )}
+
           {(client.conflict || client.error || unavailable) && (
             <div
               role="alert"

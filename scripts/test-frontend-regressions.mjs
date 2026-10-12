@@ -19,6 +19,7 @@ import { testPriceCache } from "./test-price-cache.mjs";
 import { testProviderFeedback } from "./test-provider-feedback.mjs";
 import { testProviderModelResolutions } from "./test-provider-model-resolutions.mjs";
 import { testTerminalProxy } from "./test-terminal-proxy.mjs";
+import { testDirectProxy } from "./test-direct-proxy.mjs";
 import { testCodexRoutingTransitions } from "./test-codex-routing-transitions.mjs";
 import { testRelayDeck } from "./test-relay-deck.mjs";
 import { testUiRefresh } from "./test-ui-refresh.mjs";
@@ -108,6 +109,8 @@ try {
     await testAggregation({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "skills") {
     await testSkillsActivation({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "direct-proxy") {
+    await testDirectProxy({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "terminal-proxy") {
     await testTerminalProxy({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "codex-routing-transitions") {
@@ -1424,6 +1427,7 @@ try {
   await testProviderFeedback({ page, reset, captureDir });
   await testProviderModelResolutions({ page, reset, captureDir });
   await testTerminalProxy({ page, reset, captureDir });
+  await testDirectProxy({ page, reset, captureDir });
   await testCodexRoutingTransitions({ page, reset });
   await testRelayDeck({ page, reset, captureDir });
   await testUiRefresh({ page, reset, captureDir });

@@ -1,8 +1,9 @@
 use crate::core::{
     client_config::{
         ClaudeOfficialPreview, ClientPaths, ClientStatus, ConfigApplied, ConfigManager,
-        ConfigPreview, ConfigRequest,
+        ConfigPreview, ConfigRequest, Network,
     },
+    models::ApiProxyMode,
     repository::Repository,
     router, routing_runtime,
     targets::TargetId,
@@ -40,6 +41,19 @@ fn manager(paths: &CodexPaths) -> ConfigManager {
         .with_official_home(&paths.codex_home)
 }
 
+/// The manager for writing or checking direct configurations, which follow
+/// the app proxy setting and the terminal proxy.
+fn configuring(paths: &CodexPaths) -> ConfigManager {
+    let proxy = crate::core::newapi::proxy_from_settings(&paths.settings_path);
+    let system = proxy.mode == ApiProxyMode::System
+        && !crate::platform::proxy::detect_system_proxy_candidates().is_empty();
+    manager(paths).with_network(Network {
+        proxy,
+        terminal: crate::core::terminal_proxy::active_url(paths),
+        system,
+    })
+}
+
 /// Each client's key files for the dashboard. Existence checks only.
 #[tauri::command]
 pub async fn list_client_files(
@@ -58,7 +72,10 @@ pub async fn list_client_files(
 pub fn list_client_configs(
     repo: State<'_, Mutex<Repository>>,
 ) -> Result<Vec<ClientStatus>, String> {
-    Ok(manager(&paths(&repo)?).list())
+    let paths = paths(&repo)?;
+    // An unreadable store only skips the check for changed relay cards.
+    let store = router::load_store(&paths).ok();
+    Ok(configuring(&paths).list_with(store.as_ref()))
 }
 
 #[tauri::command]
@@ -68,7 +85,7 @@ pub fn preview_client_config(
     replace_conflicts: Option<bool>,
 ) -> Result<ConfigPreview, String> {
     let paths = paths(&repo)?;
-    manager(&paths).preview_with_conflicts(
+    configuring(&paths).preview_with_conflicts(
         &router::load_store(&paths)?,
         &request,
         replace_conflicts.unwrap_or(false),
@@ -88,7 +105,7 @@ pub async fn apply_client_config(
         routing_runtime::ensure_available(&paths).await?;
     }
     let result = router::load_store(&paths).and_then(|store| {
-        manager(&paths).apply_with_conflicts(
+        configuring(&paths).apply_with_conflicts(
             &store,
             &request,
             &revision,
@@ -147,7 +164,7 @@ pub async fn reapply_client_config(
         routing_runtime::ensure_available(&paths).await?;
     }
     let result = router::load_store(&paths)
-        .and_then(|store| manager(&paths).reapply(&store, target_id, rebaseline));
+        .and_then(|store| configuring(&paths).reapply(&store, target_id, rebaseline));
     attach_reconcile_warning(result, routing_runtime::reconcile(&paths).await)
 }
 

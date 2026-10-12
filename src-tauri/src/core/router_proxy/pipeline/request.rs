@@ -48,6 +48,8 @@ pub(in crate::core::router_proxy) struct Prepared {
     pub credential: request_diagnostics::CredentialSnapshot,
     /// Set for an account source, whose refusals are explained to the client.
     pub account_source: Option<account_sources::SourceKind>,
+    /// Turns a vendor wire's reply into Chat before anything reads it.
+    pub wire: Option<account_sources::wire::Decoder>,
 }
 
 /// One attempt's fixed facts, read by every stage.
@@ -73,6 +75,8 @@ struct Draft {
     namespaces: protocol::tool_namespaces::ToolNamespaces,
     response_options: protocol::ResponseOptions,
     tool_adapter: tool_schema::Adapter,
+    /// Reads the reply of a source spoken through Chat (`account_sources::wire`).
+    wire: Option<account_sources::wire::Decoder>,
 }
 
 type Stage = fn(&Attempt<'_>, &mut Draft) -> ForwardResult<()>;
@@ -225,11 +229,29 @@ fn tools(attempt: &Attempt<'_>, draft: &mut Draft) -> ForwardResult<()> {
     Ok(())
 }
 
-/// An account source's own request shape (WorkBuddy's system message, the
-/// fields a ChatGPT sign-in refuses).
+/// An account source's own request shape: headers that depend on the body
+/// (who started a Copilot turn), WorkBuddy's system message, the fields a
+/// ChatGPT sign-in refuses.
 fn vendor(attempt: &Attempt<'_>, draft: &mut Draft) -> ForwardResult<()> {
     let input = attempt.input;
     if let (Some(auth), Some(bytes), false) = (input.account, &draft.body, input.resource) {
+        if let Some(encoded) = auth.encode(attempt.upstream_protocol, bytes, &attempt.model).transpose()? {
+            draft.url = format!("{}/{}", auth.base.trim_end_matches('/'), encoded.path);
+            for (name, value) in encoded.headers {
+                let value = HeaderValue::from_str(&value)
+                    .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid account source header"))?;
+                draft.headers.insert(hyper::header::HeaderName::from_static(name), value);
+            }
+            draft.headers.remove(hyper::header::CONTENT_LENGTH);
+            draft.body = Some(Bytes::from(encoded.body));
+            draft.wire = Some(encoded.decoder);
+            return Ok(());
+        }
+        for (name, value) in auth.body_headers(attempt.upstream_protocol, bytes) {
+            let value = HeaderValue::from_str(&value)
+                .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid account source header"))?;
+            draft.headers.insert(hyper::header::HeaderName::from_static(name), value);
+        }
         if let Some(shaped) = auth.shape_body(attempt.upstream_protocol, bytes) {
             draft.body = Some(Bytes::from(shaped));
         }
@@ -324,6 +346,7 @@ fn meter(
         search_backend: draft.search_backend,
         credential,
         account_source: account.map(|auth| auth.kind),
+        wire: draft.wire,
     })
 }
 
@@ -355,6 +378,11 @@ impl Prepared {
         let response = match self.account_source {
             Some(kind) if !response.status().is_success() => explain_account_refusal(kind, response).await.0,
             _ => response,
+        };
+        // A vendor wire's reply is Chat from here on.
+        let response = match self.wire {
+            Some(decoder) => decoder.decode(response).await,
+            None => response,
         };
         relay_response(
             response,

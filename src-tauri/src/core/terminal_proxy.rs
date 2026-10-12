@@ -384,6 +384,15 @@ pub fn load_status(paths: &CodexPaths) -> Result<TerminalProxyStatus, String> {
     }
 }
 
+/// The terminal proxy's address while new terminals carry it: a client set
+/// up to reach its relay directly inherits it when started from one.
+pub fn active_url(paths: &CodexPaths) -> Option<String> {
+    load_status(paths)
+        .ok()
+        .filter(|status| status.applied)
+        .and_then(|status| status.url)
+}
+
 pub fn set(
     paths: &CodexPaths,
     enabled: bool,

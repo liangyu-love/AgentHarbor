@@ -7,6 +7,8 @@ mod native_tests;
 mod ownership_tests;
 #[path = "pi_tests.rs"]
 mod pi_tests;
+#[path = "proxy_tests.rs"]
+mod proxy_tests;
 
 #[test]
 fn claude_user_json_follows_the_actual_config_root_not_its_directory_name() {
@@ -156,6 +158,53 @@ fn exit_does_not_overwrite_an_external_claude_takeover() {
     assert_eq!(errors[0].0, TargetId::ClaudeCode);
     assert_eq!(errors[0].1, "clients.errors.conflict");
     assert_eq!(read(&manager.paths.claude), changed);
+}
+
+#[test]
+fn exit_withdraws_the_router_connection_and_keeps_the_users_own_model_edit() {
+    let (_temp, manager, store, request) = fixture();
+    write(&manager.paths.claude, &json!({"env": {"CUSTOM": "before"}}));
+    apply(&manager, &store, &request);
+    let mut edited = read(&manager.paths.claude);
+    edited["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] = json!("my-own-opus");
+    write(&manager.paths.claude, &edited);
+    assert!(manager.restore_router_configs_on_exit().is_empty(), "a model edit no longer blocks the exit restore");
+    let restored = read(&manager.paths.claude);
+    assert!(restored["env"].get("ANTHROPIC_BASE_URL").is_none(), "the dead router address is gone");
+    assert!(!restored.to_string().contains("local-secret"), "the local token never stays behind");
+    assert_eq!(restored["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"], "my-own-opus", "the user's edit is kept");
+    assert_eq!(restored["env"]["CUSTOM"], "before");
+    assert!(!manager.list()[0].configured, "the client is no longer managed");
+}
+
+#[test]
+fn a_direct_configuration_reports_a_relay_card_changed_since_it_was_written() {
+    let (_temp, manager, mut store, mut request) = fixture();
+    request.options.access_mode = ClientAccessMode::Native;
+    apply(&manager, &store, &request);
+    assert!(!manager.list_with(Some(&store))[0].stale);
+    store.providers[0].api_key = "rotated-secret".into();
+    assert!(manager.list_with(Some(&store))[0].stale, "the file still holds the old key");
+    assert!(!manager.list()[0].stale, "without the store nothing is claimed");
+    manager.reapply(&store, TargetId::ClaudeCode, false).unwrap();
+    assert!(!manager.list_with(Some(&store))[0].stale, "reapplying writes the new key");
+    assert_eq!(read(&manager.paths.claude)["env"]["ANTHROPIC_AUTH_TOKEN"], "rotated-secret");
+    store.providers.clear();
+    assert!(manager.list_with(Some(&store))[0].stale, "a deleted card counts as changed");
+
+    let (_temp, manager, mut store, request) = fixture();
+    apply(&manager, &store, &request);
+    store.providers[0].api_key = "rotated-secret".into();
+    assert!(!manager.list_with(Some(&store))[0].stale, "the router reads the card live");
+}
+
+#[test]
+fn a_direct_configuration_drops_a_pasted_bearer_prefix_from_the_key() {
+    let (_temp, manager, mut store, mut request) = fixture();
+    request.options.access_mode = ClientAccessMode::Native;
+    store.providers[0].api_key = "Bearer upstream-secret".into();
+    apply(&manager, &store, &request);
+    assert_eq!(read(&manager.paths.claude)["env"]["ANTHROPIC_AUTH_TOKEN"], "upstream-secret");
 }
 
 #[test]

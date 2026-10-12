@@ -598,6 +598,9 @@ export function ClaudeDesktopDialog({
                 </button>
               ))}
             </div>
+            {mode === "direct" && <p data-desktop-direct-proxy className="text-xs leading-relaxed text-muted-foreground">
+              {t("claudeDesktop.dialog.directProxy")}
+            </p>}
             {/* 1. 供应商 */}
             {mode === "direct" && <div className="space-y-2">
               <StepHeading step="1" text={t("claudeDesktop.dialog.stepProvider")} />
