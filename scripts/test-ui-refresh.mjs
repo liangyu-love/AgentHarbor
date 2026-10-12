@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { eventually } from "./eventually.mjs";
 
 // Routing topology, relay cards and thread repair reflect what each client
 // actually uses rather than a single "active" provider.
@@ -40,7 +41,7 @@ export async function testUiRefresh({ page, reset, captureDir }) {
 
   await mountRouted({ accessMode: "native" }, { activeProviderId: "group-b" });
   await page.locator("[data-relay-direct]").waitFor();
-  assert.equal(await page.locator("[data-relay-direct]").count(), 1);
+  await eventually(async () => assert.equal(await page.locator("[data-relay-direct]").count(), 1));
   assert.equal(await faces.first().getAttribute("data-provider-id"), "group-b", "The deck opens on the member Codex uses");
   assert.equal(await page.locator("[data-relay-injected]").count(), 0);
   console.log("PASS topology and relay cards light only the destinations each client actually uses");
@@ -54,11 +55,11 @@ export async function testUiRefresh({ page, reset, captureDir }) {
   await page.getByRole("button", { name: "刷新", exact: true }).click();
   const notice = page.locator("[data-thread-misplaced-notice]");
   await notice.waitFor();
-  assert.match(await notice.innerText(), /2 个会话存储在其他 provider 下/);
+  await eventually(async () => assert.match(await notice.innerText(), /2 个会话存储在其他 provider 下/));
   await notice.getByRole("button", { name: "只看这些会话", exact: true }).click();
   const results = page.locator("[data-thread-results]");
   await page.waitForFunction(() => document.querySelectorAll("[data-thread-results] [role=checkbox]").length === 2);
-  assert.equal(await results.locator("[data-thread-misplaced]").count(), 2);
+  await eventually(async () => assert.equal(await results.locator("[data-thread-misplaced]").count(), 2));
   assert.equal(await results.getByRole("button", { name: "修复会话", exact: false }).count(), 2);
   await notice.getByRole("button", { name: "显示全部", exact: true }).click();
   await page.waitForFunction(() => document.querySelectorAll("[data-thread-results] [role=checkbox]").length > 2);

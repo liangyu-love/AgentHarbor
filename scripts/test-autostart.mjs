@@ -26,14 +26,14 @@ export async function testAutostart({ page, reset }) {
   await page.getByText(await t("settings.autostart.blocked")).waitFor();
   await (await toggle()).click();
   await page.locator('[data-autostart="on"]').waitFor();
-  assert.equal(await page.getByText(await t("settings.autostart.blocked")).count(), 0);
+  await eventually(async () => assert.equal(await page.getByText(await t("settings.autostart.blocked")).count(), 0));
   console.log("PASS a startup entry turned off in Task Manager says so and turns on again from here");
 
   await mount({ autostartFailure: true });
   await (await toggle()).click();
   const failed = await t("settings.autostart.failed");
   await page.waitForFunction(title => window.review.lastToast === title, failed);
-  assert.equal(await page.locator("[data-autostart]").getAttribute("data-autostart"), "off");
+  await eventually(async () => assert.equal(await page.locator("[data-autostart]").getAttribute("data-autostart"), "off"));
   console.log("PASS a failed write is reported and leaves the switch as it was");
 
   await reset("compact");

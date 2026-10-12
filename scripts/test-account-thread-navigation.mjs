@@ -11,7 +11,7 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   const panel = page.getByRole("dialog", { name: "重置卡 2" });
   await panel.waitFor();
   await panel.getByText("重置卡 1", { exact: true }).waitFor();
-  assert.equal(await panel.getByText("23 天后到期", { exact: true }).count(), 1);
+  await eventually(async () => assert.equal(await panel.getByText("23 天后到期", { exact: true }).count(), 1));
   assert.equal(await panel.getByText("30 天后到期", { exact: true }).count(), 1);
   await panel.hover();
   await page.waitForTimeout(250);
@@ -19,13 +19,13 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   await panel.locator("summary").click();
   await eventually(async () => assert.equal(await panel.locator("time").count(), 3, "History excludes grants older than 30 days"));
   await panel.getByText("已使用", { exact: true }).waitFor();
-  assert.equal(await panel.getByText("已到期", { exact: true }).count(), 0);
+  await eventually(async () => assert.equal(await panel.getByText("已到期", { exact: true }).count(), 0));
   await capture("official-reset-credits-light.png");
   await panel.getByRole("button", { name: "刷新", exact: true }).click();
   await page.waitForFunction(() => window.review.accountRefreshCalls > 0);
   await page.keyboard.press("Escape");
   await panel.waitFor({ state: "hidden" });
-  assert.equal(await badge.getAttribute("aria-expanded"), "false", "Focus return must not reopen a dismissed panel");
+  await eventually(async () => assert.equal(await badge.getAttribute("aria-expanded"), "false", "Focus return must not reopen a dismissed panel"));
   await badge.focus();
   await page.keyboard.press("Enter");
   await panel.waitFor();
@@ -45,14 +45,14 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   await reset("account-resets-unavailable");
   await page.getByRole("button", { name: "2 次可用重置", exact: true }).click();
   await page.getByRole("dialog").getByText(/暂时无法读取卡片详情/).waitFor();
-  assert.equal(await page.getByText("重置卡 1", { exact: true }).count(), 0);
+  await eventually(async () => assert.equal(await page.getByText("重置卡 1", { exact: true }).count(), 0));
   console.log("PASS official reset credits distinguish zero/unknown/failed details, show expiry and 30-day history, hover/keyboard/close/refresh");
 
   await reset("thread-tree");
   const tree = page.getByRole("navigation", { name: "项目线程树", exact: true });
   const results = page.locator("[data-thread-results]");
   await tree.getByRole("button", { name: "所有项目 100", exact: true }).waitFor();
-  assert.equal(await tree.getByRole("button", { name: "展开或收起 Lighthouse", exact: true }).count(), 2);
+  await eventually(async () => assert.equal(await tree.getByRole("button", { name: "展开或收起 Lighthouse", exact: true }).count(), 2));
   const project = tree.locator('button[title="C:/work/Lighthouse"]');
   const other = tree.locator('button[title="D:/work/Lighthouse"]');
   assert.equal(await tree.getByText("C:/work/Lighthouse", { exact: true }).count(), 1);
@@ -70,7 +70,7 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   await other.focus();
   await page.keyboard.press("Enter");
   await page.getByText("已选 1 个", { exact: true }).first().waitFor({ state: "hidden" });
-  assert.equal(await results.getByRole("checkbox").count(), 5, "Same-name projects stay isolated by path");
+  await eventually(async () => assert.equal(await results.getByRole("checkbox").count(), 5, "Same-name projects stay isolated by path"));
   await page.getByPlaceholder(/搜索.*标题/).fill("Review thread 91");
   await eventually(async () => assert.equal(await results.getByRole("checkbox").count(), 1));
   await tree.getByRole("button", { name: "所有项目 1/100", exact: true }).waitFor();
@@ -94,7 +94,7 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   });
   await page.getByRole("button", { name: "刷新", exact: true }).click();
   await page.waitForFunction(() => !document.querySelector('nav button[title="D:/work/Lighthouse"]'));
-  assert.equal(await tree.getByRole("button", { name: /所有项目/ }).getAttribute("aria-current"), "page", "Removed project falls back to all threads");
+  await eventually(async () => assert.equal(await tree.getByRole("button", { name: /所有项目/ }).getAttribute("aria-current"), "page", "Removed project falls back to all threads"));
   assert.ok(await results.getByRole("checkbox").count() > 1, "A moved thread must not leave an invisible single-thread focus");
 
   await reset("thread-tree");
@@ -128,7 +128,7 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   assert.equal(await results.getByRole("checkbox").count(), 3, "Project filtering uses the normalized identity too");
   await page.getByPlaceholder(/搜索.*标题/).fill("no-such-thread");
   await results.getByText("未找到匹配的会话", { exact: true }).waitFor();
-  assert.equal(await metric("threads").textContent(), "3", "Search does not silently change project totals");
+  await eventually(async () => assert.equal(await metric("threads").textContent(), "3", "Search does not silently change project totals"));
   await page.getByPlaceholder(/搜索.*标题/).fill("");
   await tree.getByRole("button", { name: "直接对话 2", exact: true }).click();
   await eventually(async () => assert.equal(await results.getByRole("checkbox").count(), 2));

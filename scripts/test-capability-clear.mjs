@@ -44,18 +44,18 @@ export async function testCapabilityClear({ page, reset, captureDir }) {
   await page.evaluate(() => { window.review.clearNoOverride = true; });
   await preview(clear);
   await clear.getByText("此项已没有手动设置，无需恢复。", { exact: true }).waitFor();
-  assert.equal(await apply(clear).isDisabled(), true);
+  await eventually(async () => assert.equal(await apply(clear).isDisabled(), true));
   await page.evaluate(() => { window.review.clearNoOverride = false; window.review.clearPreviewFailure = true; });
   await preview(clear);
   await clear.getByRole("alert").waitFor();
-  assert.equal(await clear.locator("[data-clear-result]").count(), 0, "failed previews must drop the previous apply target");
+  await eventually(async () => assert.equal(await clear.locator("[data-clear-result]").count(), 0, "failed previews must drop the previous apply target"));
   await page.evaluate(() => { window.review.clearPreviewFailure = false; });
   await preview(clear);
   await apply(clear).waitFor();
   await page.evaluate(() => { window.review.clearApplyFailure = true; });
   await apply(clear).click();
   await clear.getByRole("alert").waitFor();
-  assert.equal(await apply(clear).isEnabled(), true, "failed writes remain retryable with the reviewed result");
+  await eventually(async () => assert.equal(await apply(clear).isEnabled(), true, "failed writes remain retryable with the reviewed result"));
   await page.evaluate(() => { window.review.clearApplyFailure = false; window.review.clearApplyHold = true; window.review.clearApplyStale = true; });
   await apply(clear).evaluate(button => { button.click(); button.click(); });
   await page.waitForFunction(() => window.review.clearApplyCalls.length === 2);
@@ -72,7 +72,7 @@ export async function testCapabilityClear({ page, reset, captureDir }) {
   clear = await open();
   await preview(clear);
   await clear.locator('[data-clear-row="clientOutput"]').waitFor();
-  assert.match(await clear.locator('[data-clear-row="compression"]').innerText(), /270,000[\s\S]*90,000/);
+  await eventually(async () => assert.match(await clear.locator('[data-clear-row="compression"]').innerText(), /270,000[\s\S]*90,000/));
   assert.match(await clear.locator('[data-clear-row="codexCompression"]').innerText(), /270,000[\s\S]*90,000/);
   assert.match(await clear.locator('[data-clear-row="clientOutput"]').innerText(), /200,000[\s\S]*100,000/);
   assert.equal(await clear.locator('[data-clear-row="outputLimit"]').count(), 0, "unchanged raw metadata is hidden while its changed client clamp stays visible");
@@ -85,12 +85,12 @@ export async function testCapabilityClear({ page, reset, captureDir }) {
   await choose(clear, "providerCompression");
   await preview(clear);
   await clear.locator('[data-clear-row="sharedCompression"]').waitFor();
-  assert.match(await clear.locator('[data-clear-row="sharedCompression"]').innerText(), /90,000[\s\S]*80,000/);
+  await eventually(async () => assert.match(await clear.locator('[data-clear-row="sharedCompression"]').innerText(), /90,000[\s\S]*80,000/));
   assert.match(await clear.locator('[data-clear-row="codexCompression"]').innerText(), /90,000[\s\S]*80,000/);
   await clear.getByText("受影响模型（3）", { exact: true }).click();
   await eventually(async () => assert.equal(await clear.locator("li").count(), 3));
   await clear.getByText("small", { exact: true }).waitFor();
-  assert.match(await clear.innerText(), /3 \/ 3 个模型结果变化/);
+  await eventually(async () => assert.match(await clear.innerText(), /3 \/ 3 个模型结果变化/));
   await clear.evaluate(element => element.scrollIntoView({ block: "start" }));
   if (captureDir) await clear.screenshot({ path: path.join(captureDir, "capability-clear-1200-light.png") });
   await page.setViewportSize({ width: 390, height: 844 });
@@ -127,7 +127,7 @@ export async function testCapabilityClear({ page, reset, captureDir }) {
     ...current, models: current.models.map(model => ({ ...model, manualOverrides: [] })),
   })));
   await clear.getByText("恢复中…", { exact: true }).waitFor();
-  assert.equal(await clear.locator("select").count(), 0, "removing every field during a write leaves progress visible without another action");
+  await eventually(async () => assert.equal(await clear.locator("select").count(), 0, "removing every field during a write leaves progress visible without another action"));
   await page.evaluate(() => window.review.clearApplyResolve());
   await clear.getByText("已恢复自动值。", { exact: true }).waitFor();
   console.log("PASS model refresh invalidates old previews while preserving the lock and outcome of an ongoing write");
@@ -137,11 +137,11 @@ export async function testCapabilityClear({ page, reset, captureDir }) {
     ...current, models: current.models.map(model => ({ ...model, manualOverrides: ["compression"] })),
   })));
   await page.waitForFunction(() => document.querySelector('[data-capability-clear] select')?.value === "compression");
-  assert.equal(await clear.locator("option").count(), 1);
+  await eventually(async () => assert.equal(await clear.locator("option").count(), 1));
   assert.equal(await clear.locator("optgroup").count(), 1);
   await preview(clear);
   await clear.getByText("将移除手动设置；当前自动结果与现值相同。", { exact: true }).waitFor();
-  assert.equal(await apply(clear).isEnabled(), true, "a stored setting with an equal automatic value is still removable");
+  await eventually(async () => assert.equal(await apply(clear).isEnabled(), true, "a stored setting with an equal automatic value is still removable"));
   assert.equal(await page.evaluate(() => window.review.clearPreviewCalls.at(-1).field), "compression");
 
   clear = await open();

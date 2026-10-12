@@ -14,7 +14,7 @@ export async function testThreadDetails({ page, reset, captureDir }) {
   await page.setViewportSize({ width: 1440, height: 820 });
   let { trigger, panel } = await open("thread-details");
   await panel.getByText("33,301,900 Token", { exact: true }).waitFor();
-  assert.equal(await page.getByRole("dialog").count(), 0, "Details are an inline region, without a modal overlay");
+  await eventually(async () => assert.equal(await page.getByRole("dialog").count(), 0, "Details are an inline region, without a modal overlay"));
   assert.equal(await page.locator('[data-thread-card][data-detail-active]').count(), 1, "The originating card is highlighted");
   assert.equal(await trigger.isVisible(), true, "The thread title remains visible beside the details");
   const panelBox = await panel.boundingBox();
@@ -55,7 +55,7 @@ export async function testThreadDetails({ page, reset, captureDir }) {
   await panel.getByRole("button", { name: "收起正文", exact: true }).click();
   await panel.getByRole("button", { name: "下一页", exact: true }).click();
   await panel.getByText("第二页的合成消息", { exact: true }).waitFor();
-  assert.equal(await panel.getByRole("button", { name: "下一页", exact: true }).isDisabled(), true);
+  await eventually(async () => assert.equal(await panel.getByRole("button", { name: "下一页", exact: true }).isDisabled(), true));
   assert.deepEqual(await page.evaluate(() => window.review.messageOffsets), [0, 50]);
   assert.equal(await panel.getByRole("tabpanel").evaluate(element => element.scrollTop), 0, "Pagination resets scroll position");
   await panel.getByRole("button", { name: "上一页", exact: true }).click();
@@ -70,7 +70,7 @@ export async function testThreadDetails({ page, reset, captureDir }) {
   const detailCalls = await page.evaluate(() => window.review.detailCalls);
   await panel.getByRole("button", { name: "重试", exact: true }).click();
   await panel.getByText("合成的用户问题", { exact: true }).waitFor();
-  assert.equal(await panel.getByRole("alert").count(), 0);
+  await eventually(async () => assert.equal(await panel.getByRole("alert").count(), 0));
   assert.ok(await page.evaluate(() => window.review.detailCalls) > detailCalls);
   assert.deepEqual(await page.evaluate(() => window.review.messageRequests.at(-1)),
     { snapshot: 12345, offset: 0, snapshotId: "fixture-2" });
@@ -94,7 +94,7 @@ export async function testThreadDetails({ page, reset, captureDir }) {
   await page.keyboard.press("Escape");
   ({ panel } = await open("thread-details-missing"));
   await panel.getByText(/原始 JSONL 记录不存在/).waitFor();
-  assert.equal(await panel.getByRole("button", { name: "查看对话", exact: true }).isDisabled(), true);
+  await eventually(async () => assert.equal(await panel.getByRole("button", { name: "查看对话", exact: true }).isDisabled(), true));
   assert.equal(await page.evaluate(() => window.review.detailCalls), 0);
   await page.keyboard.press("Escape");
 
@@ -122,7 +122,7 @@ export async function testThreadDetails({ page, reset, captureDir }) {
   panel = page.getByRole('complementary', { name: '线程详情', exact: true });
   await page.getByRole('button', { name: '查看详情：Review thread 1', exact: true }).click();
   await panel.getByRole('heading', { name: 'Review thread 1', exact: true }).waitFor();
-  assert.equal(await page.locator('[data-thread-card][data-detail-active]').count(), 1, 'Switching threads moves the highlight');
+  await eventually(async () => assert.equal(await page.locator('[data-thread-card][data-detail-active]').count(), 1, 'Switching threads moves the highlight'));
   assert.equal(await page.getByText('已选 1 个', { exact: true }).count(), 0, 'Detail highlighting remains separate from batch selection');
   await panel.getByRole('button', { name: '关闭', exact: true }).click();
 

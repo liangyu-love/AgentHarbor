@@ -70,7 +70,7 @@ export async function testRelayDeck({ page, reset, captureDir }) {
   await face().getByRole("button", { name: "编辑", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog.locator("#newapi-provider-name").waitFor();
-  assert.equal(await dialog.locator("#newapi-provider-name").inputValue(), "Relay Beta");
+  await eventually(async () => assert.equal(await dialog.locator("#newapi-provider-name").inputValue(), "Relay Beta"));
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "hidden" });
   await member("group-b");

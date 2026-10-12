@@ -20,7 +20,7 @@ export async function testGateway({ page, reset, captureDir }) {
   });
   const gateway = page.locator("[data-gateway]");
   await gateway.waitFor();
-  assert.equal(await gateway.locator("[data-gateway-status]").innerText(), await tr("gateway.stopped"));
+  await eventually(async () => assert.equal(await gateway.locator("[data-gateway-status]").innerText(), await tr("gateway.stopped")));
   const endpoints = await gateway.locator("[data-gateway-endpoint] code").allInnerTexts();
   assert.deepEqual(endpoints, ["http://127.0.0.1:43127/gateway/v1", "http://127.0.0.1:43127/gateway"]);
   await gateway.getByText(await tr("gateway.noKeys"), { exact: true }).waitFor();
@@ -30,7 +30,7 @@ export async function testGateway({ page, reset, captureDir }) {
   await gateway.getByRole("button", { name: await tr("gateway.createKey") }).click();
   const hermes = gateway.locator('[data-gateway-key="key-1"]');
   await hermes.waitFor();
-  assert.equal(await hermes.locator("[data-gateway-secret]").innerText(), "sk-ah-…0001");
+  await eventually(async () => assert.equal(await hermes.locator("[data-gateway-secret]").innerText(), "sk-ah-…0001"));
   assert.equal(await keyName.inputValue(), "", "the name field clears after creating");
   await keyName.fill("Hermes");
   await gateway.getByRole("button", { name: await tr("gateway.createKey") }).click();
@@ -48,10 +48,10 @@ export async function testGateway({ page, reset, captureDir }) {
   const schematic = gateway.locator("[data-gateway-schematic]");
   assert.equal(await schematic.getAttribute("data-gateway-schematic"), "idle");
   await schematic.locator('[data-schematic-key="key-1"]').waitFor();
-  assert.equal(await schematic.locator('[data-signal="live"]').count(), 0, "a stopped gateway shows dashed lines only");
+  await eventually(async () => assert.equal(await schematic.locator('[data-signal="live"]').count(), 0, "a stopped gateway shows dashed lines only"));
   await gateway.getByRole("switch", { name: await tr("gateway.keepRunning") }).click();
   await gateway.locator("[data-gateway-status]").getByText(await tr("gateway.running")).waitFor();
-  assert.equal(await schematic.getAttribute("data-gateway-schematic"), "live");
+  await eventually(async () => assert.equal(await schematic.getAttribute("data-gateway-schematic"), "live"));
   // One key line plus a line to each kind of model that has any.
   assert.equal(await schematic.locator('[data-signal="live"]').count(), 4);
   assert.equal(await schematic.locator('[data-schematic-kind="account"]').getAttribute("data-live"), "true");
@@ -90,7 +90,7 @@ export async function testGateway({ page, reset, captureDir }) {
   await gateway.getByRole("button", { name: await tr("gateway.preview"), exact: true }).click();
   const preview = gateway.locator("[data-gateway-preview]");
   await preview.waitFor();
-  assert.match(await preview.innerText(), /<gateway key>/);
+  await eventually(async () => assert.match(await preview.innerText(), /<gateway key>/));
   assert.match(await preview.innerText(), /127\.0\.0\.1:43127\/gateway\/v1/);
   await gateway.getByRole("button", { name: await tr("gateway.copyConnection") }).click();
   await page.waitForFunction(() => window.review.copied?.includes("sk-ah-fixture-hermes-0001"));

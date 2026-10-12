@@ -23,7 +23,7 @@ export async function testTerminalProxy({ page, reset, captureDir }) {
 
   await mount();
   await state("disabled").waitFor();
-  assert.equal(await page.getByRole("button", { name: "打开 PowerShell" }).count(), 0);
+  await eventually(async () => assert.equal(await page.getByRole("button", { name: "打开 PowerShell" }).count(), 0));
   await open();
   assert.equal(await save().isEnabled(), false);
   await dialog().getByRole("button", { name: "使用软件代理地址" }).click();
@@ -67,7 +67,7 @@ export async function testTerminalProxy({ page, reset, captureDir }) {
   for (const [patch, expected] of [[{ ...active, conflicts: ["HTTP_PROXY"] }, "changed"], [{ ...active, applied: false, recoveryRequired: true }, "recoveryRequired"]]) {
     await mount({ terminalStatusPatch: patch });
     await state(expected).waitFor();
-    assert.equal(await page.getByRole("button", { name: "打开 PowerShell", exact: true }).isDisabled(), true);
+    await eventually(async () => assert.equal(await page.getByRole("button", { name: "打开 PowerShell", exact: true }).isDisabled(), true));
     await open();
     assert.equal(await save().count(), 0);
     // Restoring remains possible with an empty or invalid address.
@@ -129,7 +129,7 @@ export async function testTerminalProxy({ page, reset, captureDir }) {
   await url().fill("http://127.0.0.1:7890");
   await save().click();
   await dialog().getByRole("alert").filter({ hasText: "无法读取或写入 Windows 用户环境变量" }).waitFor();
-  assert.equal(await url().inputValue(), "http://127.0.0.1:7890");
+  await eventually(async () => assert.equal(await url().inputValue(), "http://127.0.0.1:7890"));
   await page.evaluate(() => { window.review.terminalSaveFailure = null; });
   await save().click();
   await state("enabled").waitFor();
@@ -146,7 +146,7 @@ export async function testTerminalProxy({ page, reset, captureDir }) {
   await state("disabled").waitFor();
   await mount({ terminalStatusPatch: { supported: false } });
   await state("unsupported").waitFor();
-  assert.equal(await edit().isDisabled(), true);
+  await eventually(async () => assert.equal(await edit().isDisabled(), true));
   console.log("PASS terminal proxy retries a failed status load and disables editing on unsupported platforms");
 
   await mount({ terminalSetResultPatch: { preservedVariables: ["HTTPS_PROXY"] }, terminalStatusPatch: active });

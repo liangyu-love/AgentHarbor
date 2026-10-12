@@ -66,7 +66,7 @@ export async function testProviderModelResolutions({ page, reset, captureDir }) 
   await context("model-A").fill("64000");
   const solPreset = row("model-A").getByRole("button", { name: /500K/ });
   await solPreset.waitFor();
-  assert.match(await solPreset.getAttribute("title"), /500,000.*872,000/);
+  await eventually(async () => assert.match(await solPreset.getAttribute("title"), /500,000.*872,000/));
   assert.equal(await row("model-A").getByRole("button", { name: /272K/ }).count(), 0);
   await solPreset.click();
   await eventually(async () => assert.equal(await context("model-A").inputValue(), "500000"));
@@ -117,7 +117,7 @@ export async function testProviderModelResolutions({ page, reset, captureDir }) 
       contextWindow: null, maxOutputTokens: null, endpointTypes: ["responses"], included: true, metadataSource: "upstream" })),
   ]));
   await page.locator("[data-pending-models]").getByText("newly-fetched-model", { exact: true }).waitFor();
-  assert.equal(await row("newly-fetched-model").count(), 0);
+  await eventually(async () => assert.equal(await row("newly-fetched-model").count(), 0));
   assert.deepEqual((await lastRequest()).models.map(item => item.id), ["model-A"]);
   await page.getByRole("checkbox", { name: text.includeFetchedModel, exact: true }).check();
   await ready("newly-fetched-model");

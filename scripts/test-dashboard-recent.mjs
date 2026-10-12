@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { eventually } from "./eventually.mjs";
 
 // The dashboard's recent sessions merge Codex and Claude Code, filter by
 // client, and open the threads page on the session's own source.
@@ -18,7 +19,7 @@ export async function testDashboardRecent({ page, reset }) {
   await filter.locator('[data-recent-source="claudeCode"]').click();
   const rows = panel.locator("[data-recent-client]");
   await panel.locator('[data-recent-client="claudeCode"]').waitFor();
-  assert.deepEqual(await rows.evaluateAll(items => items.map(item => item.getAttribute("data-recent-client"))), ["claudeCode"]);
+  await eventually(async () => assert.deepEqual(await rows.evaluateAll(items => items.map(item => item.getAttribute("data-recent-client"))), ["claudeCode"]));
   await rows.first().getByRole("button").click();
   assert.equal(await page.evaluate(() => window.review.navigatedTo), "threads");
   assert.equal(await page.evaluate(() => localStorage.getItem("threads_source")), "claudeCode", "the threads page opens on Claude Code");

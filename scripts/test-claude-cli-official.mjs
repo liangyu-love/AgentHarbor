@@ -43,7 +43,7 @@ export async function testClaudeCliOfficial({ page, reset, captureDir }) {
   assert.equal(await card("OpenCode").getByRole("button", { name: await tr("clients.switchOfficial"), exact: true }).count(), 0);
   await open();
   await dialog().getByText("env.ANTHROPIC_BASE_URL", { exact: true }).waitFor();
-  assert.equal(await dialog().getByText("env.ANTHROPIC_AUTH_TOKEN", { exact: true }).count(), 1);
+  await eventually(async () => assert.equal(await dialog().getByText("env.ANTHROPIC_AUTH_TOKEN", { exact: true }).count(), 1));
   assert.equal(await dialog().getByText("C:/synthetic/.claude/settings.json", { exact: true }).count(), 1);
   assert.equal(await dialog().locator("pre").count(), 0, "the preview exposes names, never configuration contents");
   assert.deepEqual(await page.evaluate(() => window.review.officialSwitchCalls), []);
@@ -117,14 +117,14 @@ export async function testClaudeCliOfficial({ page, reset, captureDir }) {
   await dialog().getByText("env.ANTHROPIC_BASE_URL", { exact: true }).waitFor();
   await confirm();
   await dialog().getByRole("alert").getByText(await tr("clients.errors.storage"), { exact: true }).waitFor();
-  assert.equal(await dialog().getByText("env.ANTHROPIC_BASE_URL", { exact: true }).count(), 0);
+  await eventually(async () => assert.equal(await dialog().getByText("env.ANTHROPIC_BASE_URL", { exact: true }).count(), 0));
   await cancel();
   console.log("PASS official preview and write failures remain visible and discard invalidated previews");
 
   await seed({ officialNoChanges: true });
   await open();
   await dialog().getByText(await tr("clients.officialNoChanges"), { exact: true }).waitFor();
-  assert.equal(await dialog().getByRole("button", { name: await tr("clients.switchOfficial"), exact: true }).isDisabled(), true);
+  await eventually(async () => assert.equal(await dialog().getByRole("button", { name: await tr("clients.switchOfficial"), exact: true }).isDisabled(), true));
   assert.deepEqual(await page.evaluate(() => window.review.officialSwitchCalls), []);
   if (captureDir) await page.screenshot({ path: path.join(captureDir, "claude-cli-official-unchanged.png"), fullPage: true });
   await cancel();
@@ -132,7 +132,7 @@ export async function testClaudeCliOfficial({ page, reset, captureDir }) {
   await seed({ officialSessionOnly: true, officialWarnings: ["clients.warnings.officialManagedSettings"] });
   await open();
   await dialog().getByText("C:/synthetic/.claude/settings.json", { exact: true }).waitFor();
-  assert.equal(await dialog().getByText(await tr("clients.officialRemovedFields"), { exact: true }).count(), 0);
+  await eventually(async () => assert.equal(await dialog().getByText(await tr("clients.officialRemovedFields"), { exact: true }).count(), 0));
   assert.equal(await dialog().getByRole("button", { name: await tr("clients.switchOfficial"), exact: true }).isEnabled(), true,
     "management cleanup may need a write even when no settings fields remain");
   assert.equal(await dialog().getByText(await tr("clients.warnings.officialManagedSettings"), { exact: true }).count(), 1);

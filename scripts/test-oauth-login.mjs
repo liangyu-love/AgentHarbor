@@ -8,7 +8,7 @@ export async function testOAuthLogin({ page, reset, captureDir }) {
   await reset("accounts");
   await start().click();
   await page.getByRole("status").filter({ hasText: "等待浏览器登录" }).waitFor();
-  assert.equal(await start().count(), 0);
+  await eventually(async () => assert.equal(await start().count(), 0));
   assert.equal(await page.evaluate(() => window.review.loginCalls.length), 1);
   if (captureDir) {
     for (const [width, height] of [[1200, 760], [390, 844]]) {
@@ -22,7 +22,7 @@ export async function testOAuthLogin({ page, reset, captureDir }) {
   await cancel().click();
   const cancelling = page.getByRole("button", { name: "正在取消登录…", exact: true });
   await cancelling.waitFor();
-  assert.equal(await cancelling.isDisabled(), true);
+  await eventually(async () => assert.equal(await cancelling.isDisabled(), true));
   await page.evaluate(() => window.review.releaseCancel());
   await start().waitFor();
   await start().click();
@@ -83,10 +83,10 @@ export async function testOAuthLogin({ page, reset, captureDir }) {
   await emptyAdd.waitFor();
   await emptyAdd.click();
   await cancel().waitFor();
-  assert.equal(await emptyAdd.isDisabled(), true);
+  await eventually(async () => assert.equal(await emptyAdd.isDisabled(), true));
   await cancel().click();
   await start().waitFor();
-  assert.equal(await emptyAdd.isEnabled(), true);
+  await eventually(async () => assert.equal(await emptyAdd.isEnabled(), true));
   console.log("PASS OAuth empty account page uses the same cancellable login flow");
 
 }

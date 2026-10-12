@@ -41,7 +41,7 @@ export async function testAggregationBoard({ page, reset, captureDir }) {
   await suggestions.first().click();
   const editor = manager().locator("form[data-aggregate-editor]");
   await editor.waitFor();
-  assert.equal(await editor.locator("#aggregate-public-id").inputValue(), "claude-opus-5.5");
+  await eventually(async () => assert.equal(await editor.locator("#aggregate-public-id").inputValue(), "claude-opus-5.5"));
   assert.deepEqual(await editor.locator('[id^="member-model-"]').allInnerTexts(),
     ["claude-opus-5.5", "claude-opus-5-5-20260801", "anthropic/claude-opus-5.5"]);
   assert.equal(await manager().locator("[data-merge-suggestions]").count(), 0, "suggestions step aside while a draft is open");
@@ -160,7 +160,7 @@ export async function testAggregationBoard({ page, reset, captureDir }) {
   await failuresOnly.click();
   await eventually(async () => assert.equal(await failuresOnly.getAttribute("aria-pressed"), "true"));
   await page.waitForFunction(() => document.querySelectorAll('[data-route-diagnostics] summary').length === 1);
-  assert.match(await summaries.first().innerText(), /broken\/model/);
+  await eventually(async () => assert.match(await summaries.first().innerText(), /broken\/model/));
   await failuresOnly.click();
   await summaries.nth(2).waitFor();
   const clear = routes.locator("[data-trace-clear]");

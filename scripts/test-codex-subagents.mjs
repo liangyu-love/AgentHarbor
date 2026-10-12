@@ -43,7 +43,7 @@ export async function testCodexSubagents({ page, reset, captureDir }) {
     await fields().waitFor();
     await page.locator("#codex-subagent-model").click();
     await page.getByRole("option", { name: expected, exact: true }).waitFor();
-    assert.equal(await page.getByRole("option", { name: absent, exact: true }).count(), 0);
+    await eventually(async () => assert.equal(await page.getByRole("option", { name: absent, exact: true }).count(), 0));
     await page.keyboard.press("Escape");
   }
   console.log("PASS child model choices respect Native and aggregation namespaces");
@@ -80,7 +80,7 @@ export async function testCodexSubagents({ page, reset, captureDir }) {
     window.review.mount("access");
   });
   await fields().getByRole("combobox").first().getByText("Official Luna").waitFor();
-  assert.equal(await fields().getByRole("button", { name: "保存", exact: true }).isEnabled(), true);
+  await eventually(async () => assert.equal(await fields().getByRole("button", { name: "保存", exact: true }).isEnabled(), true));
   await fields().getByRole("button", { name: "保存", exact: true }).click();
   await page.waitForFunction(() => window.review.subagentSaves?.length === 1);
   assert.deepEqual(await page.evaluate(() => window.review.subagentSaves[0]),

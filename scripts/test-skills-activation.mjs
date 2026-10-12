@@ -8,7 +8,7 @@ export async function testSkillsActivation({ page, reset, captureDir }) {
   const toggle = page.getByRole("switch", { name: "启用 Sample Skill", exact: true });
   const conflict = page.getByRole("switch", { name: "启用 Conflict Skill", exact: true });
   await toggle.waitFor();
-  assert.equal(await toggle.getAttribute("aria-checked"), "true");
+  await eventually(async () => assert.equal(await toggle.getAttribute("aria-checked"), "true"));
   assert.equal(await conflict.count(), 0, "conflicts do not show a misleading active switch");
   assert.equal(await page.getByText("已跳过非 UTF-8 的 SKILL.md", { exact: true }).count(), 1);
   assert.equal(await page.getByRole("button", { name: "打开禁用副本", exact: true }).count(), 1);
@@ -16,12 +16,12 @@ export async function testSkillsActivation({ page, reset, captureDir }) {
   await toggle.click();
   await page.waitForFunction(() => Boolean(window.review.skillToggleResolve));
   await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="启用 Sample Skill"]')?.disabled === true);
-  assert.equal(await toggle.isDisabled(), true);
+  await eventually(async () => assert.equal(await toggle.isDisabled(), true));
   assert.equal(await page.getByRole("radio", { name: "Claude Code", exact: true }).isDisabled(), true, "cannot change source while a disk write is pending");
   assert.equal(await toggle.getAttribute("aria-checked"), "true", "retain real state while a write is pending");
   await page.evaluate(() => { window.review.skillToggleHold = false; window.review.skillToggleResolve(); });
   await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="启用 Sample Skill"]')?.getAttribute("aria-checked") === "false");
-  assert.equal(await page.getByRole("heading", { name: "Sample Skill", exact: true }).count(), 1, "disabled skills remain listed");
+  await eventually(async () => assert.equal(await page.getByRole("heading", { name: "Sample Skill", exact: true }).count(), 1, "disabled skills remain listed"));
   await page.evaluate(() => { window.review.skillToggleFailure = true; });
   await toggle.click();
   await page.waitForFunction(() => window.review.lastToast === "出错了");
@@ -34,7 +34,7 @@ export async function testSkillsActivation({ page, reset, captureDir }) {
   assert.equal(await page.evaluate(() => window.review.skillConflictChoice), null, "selecting a copy requires confirmation");
   await page.getByRole("alertdialog").getByRole("button", { name: "确认", exact: true }).click();
   await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="启用 Conflict Skill"]')?.disabled === false);
-  assert.equal(await conflict.getAttribute("aria-checked"), "false");
+  await eventually(async () => assert.equal(await conflict.getAttribute("aria-checked"), "false"));
   assert.deepEqual(await page.evaluate(() => window.review.skillConflictChoice), { id: "conflict", keepEnabled: false, source: "codex" });
   for (const width of [1200, 390]) {
     await page.setViewportSize({ width, height: 900 });
@@ -63,7 +63,7 @@ export async function testSkillsActivation({ page, reset, captureDir }) {
   await page.evaluate(() => { window.review.skillToggleHold = true; window.review.skillToggleResolve = null; });
   await claudeToggle.click();
   await page.waitForFunction(() => Boolean(window.review.skillToggleResolve));
-  assert.equal(await page.getByRole("radio", { name: "Codex", exact: true }).isDisabled(), true);
+  await eventually(async () => assert.equal(await page.getByRole("radio", { name: "Codex", exact: true }).isDisabled(), true));
   await page.evaluate(() => { window.review.skillToggleHold = false; window.review.skillToggleResolve(); });
   await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="启用 Claude Sample Skill"]')?.getAttribute("aria-checked") === "false");
   assert.deepEqual(await page.evaluate(() => window.review.skillToggleCalls.at(-1)), { id: "sample", enabled: false, source: "claudeCode" });
@@ -74,7 +74,7 @@ export async function testSkillsActivation({ page, reset, captureDir }) {
   assert.deepEqual(await page.evaluate(() => window.review.skillRestoreCalls[0]), { id: "claude-backup", source: "claudeCode" });
   await page.getByRole("radio", { name: "Codex", exact: true }).click();
   await toggle.waitFor();
-  assert.equal(await toggle.getAttribute("aria-checked"), "true", "Claude disable must not change Codex skill state");
+  await eventually(async () => assert.equal(await toggle.getAttribute("aria-checked"), "true", "Claude disable must not change Codex skill state"));
   assert.equal(await page.getByRole("heading", { name: "Claude Backup", exact: true }).count(), 0, "switching source resets backup tab");
   assert.deepEqual(await page.evaluate(() => window.review.skillToggleCalls.map(call => call.source)), ["codex", "codex", "codex", "claudeCode"]);
   for (const width of [1200, 390]) {

@@ -55,7 +55,7 @@ export async function testCodexRoutingTransitions({ page, reset }) {
     await begin(native);
     await completed(native);
     await page.waitForFunction(value => window.review.lastToastDescription === value, labels.restartHint);
-    assert.equal(await page.getByRole("alertdialog").count(), 0);
+    await eventually(async () => assert.equal(await page.getByRole("alertdialog").count(), 0));
     assert.deepEqual(await page.evaluate(() => window.review.routingCalls), [expected(native)]);
     assert.deepEqual(await page.evaluate(() => window.review.restartCalls ?? []), []);
   }

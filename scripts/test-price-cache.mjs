@@ -11,14 +11,14 @@ export async function testPriceCache({ page, reset, captureDir }) {
   const dialog = page.getByRole("dialog");
   const multiplier = dialog.getByLabel("价格倍率（1 为原价）", { exact: true });
   await multiplier.waitFor();
-  assert.equal(await multiplier.inputValue(), "0.5");
+  await eventually(async () => assert.equal(await multiplier.inputValue(), "0.5"));
   await multiplier.fill("0");
   if (captureDir) await dialog.screenshot({ path: path.join(captureDir, "price-multiplier.png") });
   await dialog.getByRole("button", { name: "保存", exact: true }).click();
   await page.waitForFunction(() => window.review.saved?.priceMultiplier === 0);
   await page.locator("#reopen-saved").click();
   await multiplier.waitFor();
-  assert.equal(await multiplier.inputValue(), "0");
+  await eventually(async () => assert.equal(await multiplier.inputValue(), "0"));
   await multiplier.fill("1");
   await dialog.getByRole("button", { name: "保存", exact: true }).click();
   await page.waitForFunction(() => window.review.saved?.priceMultiplier === 1);

@@ -77,7 +77,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   });
   await copyId.click();
   await manager().getByRole("alert").getByText("Synthetic clipboard denied", { exact: true }).waitFor();
-  assert.equal(await copyId.locator(".lucide-check").count(), 0, "a rejected clipboard write never reports success");
+  await eventually(async () => assert.equal(await copyId.locator(".lucide-check").count(), 0, "a rejected clipboard write never reports success"));
   await page.evaluate(() => {
     navigator.clipboard.writeText = async text => { window.review.copiedAggregate = text; };
   });
@@ -87,7 +87,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   await page.evaluate(() => { navigator.clipboard.writeText = async () => { throw new Error("Synthetic clipboard retry denied"); }; });
   await copyId.click();
   await manager().getByRole("alert").getByText("Synthetic clipboard retry denied", { exact: true }).waitFor();
-  assert.equal(await copyId.locator(".lucide-check").count(), 0, "a failed retry clears the previous copy-success indicator");
+  await eventually(async () => assert.equal(await copyId.locator(".lucide-check").count(), 0, "a failed retry clears the previous copy-success indicator"));
   assert.equal(await manager().locator("[data-route-member]").count(), 2, "each upstream is displayed once");
   assert.equal(await manager().locator("[data-route-member] [data-route-member]").count(), 0);
 
@@ -108,7 +108,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   });
   await choose(pipeline.locator("#codex-access-mode"), await tr("newapi.accessNative"));
   await pipeline.getByText("https://relay-a.invalid/v1", { exact: true }).waitFor();
-  assert.equal(await pipeline.getByText("chatgpt.com / api.openai.com", { exact: true }).count(), 0);
+  await eventually(async () => assert.equal(await pipeline.getByText("chatgpt.com / api.openai.com", { exact: true }).count(), 0));
   assert.equal(await pipeline.getByText("/codex/v1/responses", { exact: true }).count(), 0, "native access bypasses the local gateway");
   await choose(pipeline.locator("#codex-access-mode"), await tr("newapi.accessRouter"));
 
@@ -300,7 +300,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   await dialog.waitFor({ state: "detached" });
   const clientsCard = page.locator('section[id^="client-config-"]');
   await clientsCard.getByRole("button", { name: await tr("clients.reapply"), exact: true }).waitFor();
-  assert.equal(await clientsCard.getByRole("alert").count(), 0, "saved aggregate target is recognized as a configured client");
+  await eventually(async () => assert.equal(await clientsCard.getByRole("alert").count(), 0, "saved aggregate target is recognized as a configured client"));
   if (captureDir) {
     await clientsCard.evaluate(element => element.scrollIntoView({ block: "start" }));
     await page.screenshot({ path: path.join(captureDir, "injection-saved-client.png"), animations: "disabled" });

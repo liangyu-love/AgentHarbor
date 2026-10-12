@@ -17,7 +17,7 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   });
   const searchService = page.getByRole("combobox", { name: "WebSearch 搜索服务", exact: true });
   await searchService.waitFor();
-  assert.equal(await searchService.isEnabled(), true);
+  await eventually(async () => assert.equal(await searchService.isEnabled(), true));
   await searchService.click();
   await eventually(async () => assert.equal(await page.getByRole("option", { name: "Other relay", exact: true }).count(), 0));
   await page.getByRole("option", { name: "Command Messages", exact: true }).click();
@@ -42,7 +42,7 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   await routes.locator("summary").waitFor();
   await routes.locator("summary").click();
   await routes.getByText("客户端请求参数", { exact: true }).waitFor();
-  assert.equal(await routes.getByText("reasoning.effort", { exact: true }).isVisible(), true);
+  await eventually(async () => assert.equal(await routes.getByText("reasoning.effort", { exact: true }).isVisible(), true));
   assert.equal(await routes.getByText("output_config.effort", { exact: true }).isVisible(), true);
   assert.match(await routes.innerText(), /claude-opus-5-5-kiro/);
   assert.match(await routes.innerText(), /claude-opus-5-5 → Synthetic channel/);
@@ -232,11 +232,11 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   const desktopRoutes = page.getByRole("region", { name: "请求级路由诊断" });
   await desktopRoutes.getByRole("button", { name: "请求级路由诊断", exact: true }).click();
   await desktopRoutes.getByText("claude-sonnet-4-6 → deepseek-fixture", { exact: true }).waitFor();
-  assert.equal(await desktopRoutes.locator("summary").count(), 2);
+  await eventually(async () => assert.equal(await desktopRoutes.locator("summary").count(), 2));
   await desktopRoutes.getByRole("combobox", { name: "客户端来源" }).click();
   await page.getByRole("option", { name: "Claude Desktop", exact: true }).click();
   await desktopRoutes.getByText("claude-sonnet-4-6 → deepseek-fixture", { exact: true }).waitFor();
-  assert.equal(await desktopRoutes.locator("summary").count(), 1);
+  await eventually(async () => assert.equal(await desktopRoutes.locator("summary").count(), 1));
   assert.match(await desktopRoutes.locator("summary").innerText(), /claude-sonnet-4-6 → deepseek-fixture/);
   await desktopRoutes.locator("summary").click();
   await desktopRoutes.getByText("Claude Desktop 角色映射", { exact: true }).waitFor();
@@ -245,7 +245,7 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   await desktopRoutes.getByRole("combobox", { name: "客户端来源" }).click();
   await page.getByRole("option", { name: "未记录", exact: true }).click();
   await desktopRoutes.getByText("relay::claude-opus-5-5-kiro", { exact: true }).waitFor();
-  assert.equal(await desktopRoutes.locator("summary").count(), 1);
+  await eventually(async () => assert.equal(await desktopRoutes.locator("summary").count(), 1));
   assert.match(await desktopRoutes.locator("summary").innerText(), /relay::claude-opus-5-5-kiro/);
 
   await reset("usage");
@@ -261,10 +261,10 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   const desktopUsage = page.locator(".usage-relay-panel");
   await desktopUsage.getByRole("tab", { name: "请求明细" }).click();
   await desktopUsage.locator("tbody tr").nth(1).waitFor();
-  assert.equal(await desktopUsage.locator("tbody tr").count(), 2);
+  await eventually(async () => assert.equal(await desktopUsage.locator("tbody tr").count(), 2));
   await desktopUsage.getByLabel("客户端来源", { exact: true }).selectOption("claudeDesktop");
   await desktopUsage.getByText("claude-sonnet-4-6 → deepseek-fixture", { exact: true }).waitFor();
-  assert.equal(await desktopUsage.locator("tbody tr").count(), 1);
+  await eventually(async () => assert.equal(await desktopUsage.locator("tbody tr").count(), 1));
   assert.match(await desktopUsage.locator("tbody tr").innerText(), /claude-sonnet-4-6 → deepseek-fixture/);
   assert.match(await desktopUsage.locator("tbody tr").innerText(), /Claude Desktop/);
   assert.match(await desktopUsage.locator("tbody tr").innerText(), /\$0/);
@@ -272,7 +272,7 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
     "usage records retain and localize the reference-price source");
   await desktopUsage.getByLabel("客户端来源", { exact: true }).selectOption("unknown");
   await desktopUsage.locator("tbody tr .usage-request-source").filter({ hasText: /^未记录$/ }).waitFor();
-  assert.equal(await desktopUsage.locator("tbody tr").count(), 1);
+  await eventually(async () => assert.equal(await desktopUsage.locator("tbody tr").count(), 1));
   assert.match(await desktopUsage.locator("tbody tr").innerText(), /未记录/);
   console.log("PASS Desktop diagnostics and usage filter client source while retaining alias, actual billing model and zero cost");
 
@@ -297,14 +297,14 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
     await sourceRoutes.getByRole("combobox", { name: "客户端来源" }).click();
     await page.getByRole("option", { name: label, exact: true }).click();
     await sourceRoutes.getByText(`source-${value}`, { exact: true }).waitFor();
-    assert.equal(await sourceRoutes.locator("summary").count(), 1);
+    await eventually(async () => assert.equal(await sourceRoutes.locator("summary").count(), 1));
     assert.match(await sourceRoutes.locator("summary").innerText(), new RegExp(`source-${value}.*${label}`, "s"));
   }
   await sourceRoutes.getByRole("combobox", { name: "客户端来源" }).click();
   await page.getByRole("option", { name: "未记录", exact: true }).click();
   await sourceRoutes.getByText("source-future", { exact: true }).waitFor();
   await sourceRoutes.getByText("source-legacy", { exact: true }).waitFor();
-  assert.equal(await sourceRoutes.locator("summary").count(), 2, "missing and unrecognized client sources must share the unknown filter");
+  await eventually(async () => assert.equal(await sourceRoutes.locator("summary").count(), 2, "missing and unrecognized client sources must share the unknown filter"));
 
   await reset("usage");
   await page.evaluate(samples => {
@@ -325,12 +325,12 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   for (const [value, label] of sourceSamples) {
     await sourceUsage.getByLabel("客户端来源", { exact: true }).selectOption(value);
     await sourceUsage.locator("tbody tr").filter({ hasText: `source-${value}` }).waitFor();
-    assert.equal(await sourceUsage.locator("tbody tr").count(), 1);
+    await eventually(async () => assert.equal(await sourceUsage.locator("tbody tr").count(), 1));
     assert.equal(await sourceUsage.locator("tbody tr .usage-request-source").innerText(), label);
   }
   await sourceUsage.getByLabel("客户端来源", { exact: true }).selectOption("unknown");
   await sourceUsage.locator("tbody tr").nth(1).waitFor();
-  assert.equal(await sourceUsage.locator("tbody tr").count(), 2);
+  await eventually(async () => assert.equal(await sourceUsage.locator("tbody tr").count(), 2));
   console.log("PASS request diagnostics and relay usage distinguish every client source and group missing or future values as unrecorded");
 
   await reset("access");

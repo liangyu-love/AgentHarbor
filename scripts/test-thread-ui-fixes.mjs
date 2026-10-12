@@ -127,7 +127,7 @@ export async function testThreadUiFixes({ page, reset, captureDir }) {
   await panel.getByRole("button", { name: "全部 (7)", exact: true }).click();
   await panel.getByRole("button", { name: "下一页", exact: true }).click();
   await panel.getByRole("button", { name: "全部 (1)", exact: true }).waitFor();
-  assert.equal(await articles.first().getByRole("button", { name: "展开正文", exact: true }).count(), 1, "Page state cannot migrate across offsets");
+  await eventually(async () => assert.equal(await articles.first().getByRole("button", { name: "展开正文", exact: true }).count(), 1, "Page state cannot migrate across offsets"));
   await page.evaluate(() => {
     window.review.snapshotBytes = 54321;
     window.review.messageFixtures[0] = [{ role: "assistant", timestamp: "2026-09-30T08:00:00Z",

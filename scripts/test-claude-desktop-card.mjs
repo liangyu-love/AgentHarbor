@@ -727,7 +727,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   await actionButton(ZH.reapply).click();
   const confirm = page.getByRole("alertdialog");
   await confirm.getByRole("heading", { name: ZH.reapplyTitle, exact: true }).waitFor();
-  assert.equal(await confirm.getByText(ZH.reapplyDescription, { exact: true }).count(), 1);
+  await eventually(async () => assert.equal(await confirm.getByText(ZH.reapplyDescription, { exact: true }).count(), 1));
   assert.equal(await confirm.getByText(ZH.restoreDescription, { exact: true }).count(), 0,
     "reapply must not promise restoration");
   await confirm.getByRole("button", { name: ZH.confirm, exact: true }).click();
@@ -798,7 +798,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   await page.evaluate(() => { window.review.desktopProbeFailure = "claudeDesktop.errors.noInferenceKey"; });
   await dialog().getByRole("button", { name: ZH.messagesCheck, exact: true }).click();
   await dialog().getByRole("alert").filter({ hasText: ZH.noInferenceKey }).waitFor();
-  assert.equal(await success.count(), 0, "a failed recheck cannot retain an older green Messages report");
+  await eventually(async () => assert.equal(await success.count(), 0, "a failed recheck cannot retain an older green Messages report"));
   await page.evaluate(() => { window.review.desktopProbeFailure = null; });
   await dialog().getByRole("button", { name: ZH.messagesCheck, exact: true }).click();
   await success.waitFor();
@@ -819,7 +819,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   await page.evaluate(() => { window.review.desktopProbeResolvers.shift()(); window.review.desktopHoldProbe = false; });
   await dialog().getByRole("button", { name: ZH.cancel, exact: true }).waitFor({ state: "visible" });
   await page.waitForFunction(() => !document.querySelector('[data-claude-desktop-scroll] fieldset')?.disabled);
-  assert.equal(await success.count(), 0, "a late result from before a candidate/credential refresh must be ignored");
+  await eventually(async () => assert.equal(await success.count(), 0, "a late result from before a candidate/credential refresh must be ignored"));
   await dialog().getByRole("button", { name: ZH.cancel, exact: true }).click();
   await dialog().waitFor({ state: "hidden" });
   console.log("PASS model/provider changes clear evidence and candidate refresh ignores an in-flight old probe");
@@ -1211,7 +1211,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   await page.evaluate(() => { window.review.desktopCommitFailure = "claudeDesktop.errors.previewExpired"; });
   await dialog().getByRole("button", { name: ZH.apply, exact: true }).click();
   await dialog().getByRole("alert").filter({ hasText: "该预览已过期" }).waitFor();
-  assert.equal(await roleRow("sonnet").getByRole("textbox").inputValue(), "我的 Chat");
+  await eventually(async () => assert.equal(await roleRow("sonnet").getByRole("textbox").inputValue(), "我的 Chat"));
   assert.equal(await opusRouteOneM.getAttribute("aria-checked"), "true");
   await page.evaluate(() => { window.review.desktopCommitFailure = null; });
   await dialog().getByRole("button", { name: ZH.preview, exact: true }).click();
@@ -1235,7 +1235,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
     await window.review.providersClient.invalidateQueries({ queryKey: ["claude-desktop", "status"] });
   });
   await card().getByText("网关未就绪", { exact: true }).waitFor({ state: "hidden" });
-  assert.match(await card().locator("[data-desktop-route-targets]").innerText(), /Chat Relay · deepseek-chat[\s\S]*Messages Relay · claude-opus-4-7/);
+  await eventually(async () => assert.match(await card().locator("[data-desktop-route-targets]").innerText(), /Chat Relay · deepseek-chat[\s\S]*Messages Relay · claude-opus-4-7/));
   assert.equal(await actionButton(ZH.release).isDisabled(), true, "localhost routing must restore before releasing management");
   await actionButton(ZH.reapply).click();
   await confirm.getByRole("button", { name: ZH.confirm, exact: true }).click();
@@ -1245,7 +1245,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   await page.evaluate(() => { window.review.desktopRestartFailure = "claudeDesktop.errors.processStopTimeout"; });
   await actionButton(ZH.restart).click();
   await card().getByRole("alert").filter({ hasText: "无法结束 Claude Desktop" }).waitFor();
-  assert.equal(await actionButton(ZH.restart).isEnabled(), true);
+  await eventually(async () => assert.equal(await actionButton(ZH.restart).isEnabled(), true));
   assert.equal(await card().getByText(ZH.requiresRestart, { exact: true }).count(), 1);
   await page.evaluate(() => { window.review.desktopRestartFailure = null; });
   await actionButton(ZH.restart).click();
@@ -1262,7 +1262,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   });
   const savedOneM = roleRow("opus").getByRole("checkbox", { name: "1M", exact: true });
   await roleRow("opus").getByText("请关闭额外 1M 选项或选择支持 1M 的模型。", { exact: true }).waitFor();
-  assert.equal(await savedOneM.getAttribute("aria-checked"), "true", "a saved 1M choice remains visible after its effective capability changes");
+  await eventually(async () => assert.equal(await savedOneM.getAttribute("aria-checked"), "true", "a saved 1M choice remains visible after its effective capability changes"));
   assert.equal(await savedOneM.isEnabled(), true, "an obsolete 1M choice must remain operable so the user can turn it off");
   assert.equal(await dialog().getByRole("button", { name: ZH.preview, exact: true }).isDisabled(), true,
     "stale 1M intent must be resolved before preview");
@@ -1319,13 +1319,13 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   assert.deepEqual(await page.evaluate(() => window.review.desktopExitCalls), ["background"]);
   await page.evaluate(() => window.review.emitDesktopExit({ intent: "restart" }));
   await exit.getByRole("heading", { name: "重启前恢复 Claude Desktop？", exact: true }).waitFor();
-  assert.equal(await exit.locator("[data-desktop-exit-leave]").count(), 0, "leaving Desktop as it is is offered only after a failed restore");
+  await eventually(async () => assert.equal(await exit.locator("[data-desktop-exit-leave]").count(), 0, "leaving Desktop as it is is offered only after a failed restore"));
   await page.evaluate(() => { window.review.desktopExitFailure = "claudeDesktop.errors.processStopTimeout"; });
   await exit.getByRole("button", { name: "停止 Desktop 并恢复重启", exact: true }).click();
   await exit.getByRole("alert").filter({ hasText: "无法结束 Claude Desktop" }).waitFor();
-  assert.equal(await exit.getByRole("button", { name: "仍然退出", exact: true }).count(), 0);
+  await eventually(async () => assert.equal(await exit.getByRole("button", { name: "仍然退出", exact: true }).count(), 0));
   await exit.locator("[data-desktop-exit-leave]").getByRole("button", { name: "不恢复，直接重启", exact: true }).waitFor();
-  assert.equal(await exit.getByRole("button", { name: "停止 Desktop 并恢复重启", exact: true }).isEnabled(), true);
+  await eventually(async () => assert.equal(await exit.getByRole("button", { name: "停止 Desktop 并恢复重启", exact: true }).isEnabled(), true));
   await page.evaluate(() => { window.review.desktopExitFailure = null; });
   await exit.getByRole("button", { name: "停止 Desktop 并恢复重启", exact: true }).click();
   await exit.waitFor({ state: "hidden" });

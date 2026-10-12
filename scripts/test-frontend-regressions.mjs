@@ -256,7 +256,7 @@ try {
   await page.locator('input[type="password"]').fill("sk-shared-fixture");
   await page.evaluate(() => window.review.imageResolvers[0]());
   await page.locator('[data-generation-job-status="completed"]').waitFor();
-  assert.equal(await page.locator('input[type="password"]').inputValue(), "sk-shared-fixture");
+  await eventually(async () => assert.equal(await page.locator('input[type="password"]').inputValue(), "sk-shared-fixture"));
   assert.equal(await page.getByRole("button", { name: "忘记此站点的密钥" }).count(), 0);
   // Resolve only the old site's saves. A blur may independently save site B;
   // that success is allowed to clear its own key and is a different scenario.
@@ -402,7 +402,7 @@ try {
   assert.deepEqual(await page.evaluate(() => window.review.balanceCredentialSaves[0]), { id: "group-a", expectedBaseUrl: "https://relay.invalid/v1", userId: 42, accessToken: "synthetic-token" });
   await page.evaluate(() => window.review.balanceResolvers.at(-1)());
   await balanceDialog.getByRole("button", { name: "刷新余额", exact: true }).waitFor({ state: "visible" });
-  assert.equal(await balanceDialog.locator("#balance-access-token").inputValue(), "");
+  await eventually(async () => assert.equal(await balanceDialog.locator("#balance-access-token").inputValue(), ""));
   await balanceDialog.getByRole("checkbox", { name: "自定义余额脚本", exact: true }).check();
   const scriptText = await balanceDialog.getByRole("textbox", { name: "自定义余额脚本", exact: true }).inputValue();
   assert.match(scriptText, /extractor/);
@@ -416,7 +416,7 @@ try {
 
   await page.keyboard.press("Escape");
   await balanceDialog.waitFor({ state: "hidden" });
-  assert.match(await page.locator(".relay-member-name").textContent(), /Relay Alpha/);
+  await eventually(async () => assert.match(await page.locator(".relay-member-name").textContent(), /Relay Alpha/));
   assert.equal(await page.locator("[data-relay-card-face]").first().evaluate(element => getComputedStyle(element).animationName), "none");
   await page.getByRole("button", { name: "下一个站点配置" }).click();
   await page.locator(".relay-member-name", { hasText: "Relay Beta" }).waitFor();
@@ -436,7 +436,7 @@ try {
   const accountCard = page.locator("article").filter({ has: page.getByText("Alpha", { exact: true }) }).first();
   const showEmail = accountCard.getByRole("button", { name: "显示邮箱" });
   await showEmail.waitFor();
-  assert.equal(await accountCard.getByRole("heading", { name: "alpha@example.invalid" }).count(), 0);
+  await eventually(async () => assert.equal(await accountCard.getByRole("heading", { name: "alpha@example.invalid" }).count(), 0));
   assert.match(await accountCard.locator("h3").innerText(), /^a•+a@example\.invalid$/);
   await showEmail.click();
   await eventually(async () => assert.equal(await accountCard.locator("h3").innerText(), "alpha@example.invalid"));
@@ -476,19 +476,19 @@ try {
   // The data map starts folded: no height, nothing focusable, a one-line summary instead.
   const dataMapToggle = page.getByRole("button", { name: /本地数据目录/ });
   await dataMapToggle.waitFor();
-  assert.equal(await dataMapToggle.getAttribute("aria-expanded"), "false");
+  await eventually(async () => assert.equal(await dataMapToggle.getAttribute("aria-expanded"), "false"));
   assert.equal(await page.locator("#overview-data-map").evaluate(element => element.hasAttribute("inert")), true);
   assert.ok(await page.locator("#overview-data-map").evaluate(element => element.getBoundingClientRect().height) < 1);
   await page.locator(".overview-system-summary").waitFor();
   await dataMapToggle.click();
   await page.waitForFunction(() => document.querySelector("#overview-data-map").getBoundingClientRect().height > 200);
-  assert.equal(await dataMapToggle.getAttribute("aria-expanded"), "true");
+  await eventually(async () => assert.equal(await dataMapToggle.getAttribute("aria-expanded"), "true"));
   assert.equal(await page.locator("#overview-data-map").evaluate(element => element.hasAttribute("inert")), false);
   assert.equal(await page.locator(".overview-system-summary").count(), 0);
   // The choice survives a remount.
   await reset("overview");
   await page.locator('.data-row[data-location="claudeCode"] [data-file]').first().waitFor({ state: "visible" });
-  assert.equal(await page.getByRole("button", { name: /本地数据目录/ }).getAttribute("aria-expanded"), "true");
+  await eventually(async () => assert.equal(await page.getByRole("button", { name: /本地数据目录/ }).getAttribute("aria-expanded"), "true"));
   const keyFiles = await page.locator(".data-row").evaluateAll(rows => Object.fromEntries(rows.map(row => [
     row.dataset.location,
     [...row.querySelectorAll("[data-file]")].map(file => [file.querySelector(".data-file-name").textContent, file.hasAttribute("data-exists")]),
@@ -519,7 +519,7 @@ try {
   await page.setViewportSize({ width: 1440, height: 900 });
   await reset("usage");
   await page.locator(".usage-today-card").first().waitFor();
-  assert.equal(await page.locator(".usage-today-card").count(), 2);
+  await eventually(async () => assert.equal(await page.locator(".usage-today-card").count(), 2));
   assert.equal(await page.locator(".usage-source-card .usage-metric-orange").count(), 2);
   const usageWidth = await page.locator(".usage-trend-card").evaluate(element => ({
     card: element.getBoundingClientRect().width, parent: element.parentElement.getBoundingClientRect().width,
@@ -535,7 +535,7 @@ try {
   await page.getByRole("tab", { name: "请求明细" }).click();
   await page.getByText("1140 ms").waitFor();
   await page.getByText("320 ms").waitFor();
-  assert.equal(await page.locator(".usage-request-table tbody tr").count(), 1);
+  await eventually(async () => assert.equal(await page.locator(".usage-request-table tbody tr").count(), 1));
   if (captureDir) {
     await page.locator(".usage-relay-panel").evaluate(element => element.scrollIntoView({ block: "start" }));
     await page.screenshot({ path: path.join(captureDir, "usage-requests.png") });
@@ -562,7 +562,7 @@ try {
   await page.getByRole('button', { name: 'show', exact: true }).click();
   await page.evaluate(() => window.review.resolveApiKey());
   await page.waitForFunction(() => document.querySelector('#newapi-provider-apiKey').type === 'text');
-  assert.equal(await keyInput.inputValue(), 'synthetic-key-A');
+  await eventually(async () => assert.equal(await keyInput.inputValue(), 'synthetic-key-A'));
   await page.getByRole('button', { name: 'hide', exact: true }).click();
   await eventually(async () => assert.equal(await keyInput.getAttribute('type'), 'password'));
   await keyInput.fill('synthetic-replacement');
@@ -579,7 +579,7 @@ try {
   await page.getByRole('button', { name: 'show', exact: true }).click();
   await page.evaluate(() => window.review.rejectApiKey());
   await page.getByText(labels.apiKeyMissing, { exact: true }).waitFor();
-  assert.equal(await keyInput.inputValue(), '');
+  await eventually(async () => assert.equal(await keyInput.inputValue(), ''));
   await page.getByRole('button', { name: 'show', exact: true }).click();
   await page.evaluate(() => window.review.resolveApiKey());
   await page.waitForFunction(() => document.querySelector('#newapi-provider-apiKey').value === 'synthetic-key-B');
@@ -593,7 +593,7 @@ try {
     { id: "newly-fetched-model", displayName: "newly-fetched-model", contextWindow: null, maxOutputTokens: null, endpointTypes: ["responses"], included: true, metadataSource: "upstream" },
   ]));
   await page.getByText("newly-fetched-model", { exact: true }).waitFor();
-  assert.equal(await page.locator('[data-pending-models]').getByText('newly-fetched-model', { exact: true }).count(), 1);
+  await eventually(async () => assert.equal(await page.locator('[data-pending-models]').getByText('newly-fetched-model', { exact: true }).count(), 1));
   assert.equal(await page.getByRole('button', { name: /newly-fetched-model/ }).count(), 0, 'Pending models have no default or editing controls');
   assert.equal(await page.getByRole("checkbox", { name: labels.includeFetchedModel, exact: true }).isChecked(), false);
   assert.equal(await page.getByRole("button", { name: labels.defaultModelA, exact: true }).getAttribute("aria-pressed"), "true");
@@ -760,7 +760,7 @@ try {
   await eventually(async () => assert.equal(await page.getByRole("option", { name: labels.accessNative, exact: true }).isEnabled(), true));
   await page.getByRole("option", { name: labels.accessNative, exact: true }).click();
   await page.getByText(labels.nativeNoRouter, { exact: true }).waitFor();
-  assert.equal(await codexAccessCard.getByText(selectedResponsesModel, { exact: true }).count(), 1);
+  await eventually(async () => assert.equal(await codexAccessCard.getByText(selectedResponsesModel, { exact: true }).count(), 1));
   const nativeTarget = codexAccessCard.locator('[data-codex-target="native"]');
   assert.match(await nativeTarget.innerText(), /Provider mixed/);
   assert.match(await nativeTarget.innerText(), /responses-model/);
@@ -794,7 +794,7 @@ try {
   assert.equal(await page.evaluate(() => window.review.getState().providers[0].model), "chat-model");
   await reset("native-invalid");
   await page.getByText(labels.nativeProtocolHint, { exact: true }).waitFor();
-  assert.equal(await page.getByRole("switch", { name: labels.codexAccess, exact: true }).isDisabled(), true);
+  await eventually(async () => assert.equal(await page.getByRole("switch", { name: labels.codexAccess, exact: true }).isDisabled(), true));
   assert.equal(await page.getByRole("switch", { name: labels.accountless, exact: true }).count(), 0);
   console.log("PASS Codex access mode is independent of protocol/network and rejects incompatible native selection");
 
@@ -820,7 +820,7 @@ try {
   const ordinaryRelayOption = await page.evaluate(() => window.review.t("aggregation.singleChannel"));
   await page.getByRole("option", { name: ordinaryRelayOption, exact: true }).click();
   await relayTarget.waitFor();
-  assert.equal(await relayTarget.innerText(), relayTargetLabel);
+  await eventually(async () => assert.equal(await relayTarget.innerText(), relayTargetLabel));
   console.log("PASS Codex routing uses distinct abstract relay-model and aggregation targets while native access keeps its destination");
 
   await reset("access");
@@ -861,7 +861,7 @@ try {
   await page.getByText("HTTP 200", { exact: true }).waitFor();
   await page.evaluate(() => window.review.finishProbe());
   await page.getByRole("log").getByText("Hello from the streaming model.").waitFor();
-  assert.equal(await page.getByRole("dialog").isVisible(), true);
+  await eventually(async () => assert.equal(await page.getByRole("dialog").isVisible(), true));
   if (captureDir) {
     await page.screenshot({ path: path.join(captureDir, "stream-probe.png") });
     await page.setViewportSize({ width: 960, height: 640 });
@@ -873,7 +873,7 @@ try {
   await page.getByRole("button", { name: labels.sendTest, exact: true }).click();
   await page.evaluate(() => window.review.failProbe());
   await page.getByRole("alert").waitFor();
-  assert.equal(await page.getByRole("button", { name: labels.sendTest, exact: true }).isEnabled(), true);
+  await eventually(async () => assert.equal(await page.getByRole("button", { name: labels.sendTest, exact: true }).isEnabled(), true));
   console.log("PASS connectivity tests stream real stages, retain results and recover after timeout");
 
   for (const [width, height, action] of [
@@ -930,7 +930,7 @@ try {
   await eventually(async () => assert.equal(await recovery.count(), 1, "pending repairs cannot be dismissed mid-write"));
   await page.evaluate(() => window.review.finishRecoveryApply());
   await recovery.getByRole("button", { name: labels.recoveryConfirm, exact: true }).waitFor();
-  assert.equal(await recovery.getByRole("alert").textContent(), recoveryFailure);
+  await eventually(async () => assert.equal(await recovery.getByRole("alert").textContent(), recoveryFailure));
   await page.setViewportSize({ width: 390, height: 320 });
   assert.equal(await recovery.getByRole("alert").evaluate(element => element.scrollHeight > element.clientHeight), true);
   for (const name of [labels.close, labels.cancel, labels.recoveryConfirm]) {
@@ -984,7 +984,7 @@ try {
 
   await reset("recovery-official");
   await page.getByText(labels.recoveryOfficialStatus, { exact: true }).waitFor();
-  assert.equal(await page.getByText("Local metadata cannot identify the ChatGPT account that owns the server thread", { exact: true }).count(), 0);
+  await eventually(async () => assert.equal(await page.getByText("Local metadata cannot identify the ChatGPT account that owns the server thread", { exact: true }).count(), 0));
   assert.equal(await page.getByRole("button", { name: labels.recoveryCatalogConfirm, exact: true }).count(), 0);
   assert.equal(await page.evaluate(() => window.review.recoveryApplyCalls), 0);
   console.log("PASS official threads disclose unverified server-account ownership and remain read-only");
@@ -1053,7 +1053,7 @@ try {
     await confirmAlert(action);
     const configureButton = page.getByRole("button", { name: configure, exact: true });
     await configureButton.waitFor();
-    assert.equal(await configureButton.isEnabled(), true);
+    await eventually(async () => assert.equal(await configureButton.isEnabled(), true));
     await configureButton.click();
     await page.getByRole("button", { name: labels.preview, exact: true }).click();
     await page.getByRole("button", { name: labels.clientApply, exact: true }).click();

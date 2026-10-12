@@ -66,7 +66,7 @@ export async function testProviderFeedback({ page, reset, captureDir }) {
   assert.equal(await face.getByRole("button", { name: "刷新余额", exact: true }).isDisabled(), true);
   await page.getByRole("button", { name: "查询余额 Quota fixture", exact: true }).click();
   await dialog.getByText(/本应用尚未接入 MiMo 官方余额查询/).waitFor();
-  assert.match(await dialog.locator("strong").innerText(), /12.5/);
+  await eventually(async () => assert.match(await dialog.locator("strong").innerText(), /12.5/));
   assert.equal(await dialog.getByRole("button", { name: "刷新余额", exact: true }).isDisabled(), true);
   assert.deepEqual(await page.evaluate(() => window.review.balanceRequests), []);
   await dialog.getByRole("checkbox", { name: "自定义余额脚本", exact: true }).check();
@@ -74,7 +74,7 @@ export async function testProviderFeedback({ page, reset, captureDir }) {
   await page.waitForFunction(() => window.review.balanceRequests.length === 1);
   await page.evaluate(() => window.review.balanceResolvers[0]());
   await dialog.getByText("USD", { exact: true }).first().waitFor();
-  assert.equal(await dialog.getByRole("button", { name: "刷新余额", exact: true }).isEnabled(), true);
+  await eventually(async () => assert.equal(await dialog.getByRole("button", { name: "刷新余额", exact: true }).isEnabled(), true));
   console.log("PASS MiMo keeps existing balances, avoids unsupported automatic queries and permits an explicit custom balance script");
 
   await loadProvider({ balanceScript: "return { remaining: 12.5, unit: 'CNY' };" }, true);
@@ -153,7 +153,7 @@ export async function testProviderFeedback({ page, reset, captureDir }) {
   await page.getByRole("button", { name: "查询余额 Quota fixture", exact: true }).click();
   const summary = dialog.locator("[data-command-code-balance]");
   await summary.getByText("liangyu-love", { exact: true }).waitFor();
-  assert.match(await summary.innerText(), /默认账户/);
+  await eventually(async () => assert.match(await summary.innerText(), /默认账户/));
   assert.match(await summary.locator('[data-command-code-stat="requests"]').innerText(), /2,159/);
   assert.match(await summary.locator('[data-command-code-stat="requests"]').innerText(), /失败 0/);
   assert.match(await summary.locator('[data-command-code-stat="successRate"]').innerText(), /100%/);
@@ -185,14 +185,14 @@ export async function testProviderFeedback({ page, reset, captureDir }) {
   await page.waitForFunction(() => window.review.balanceRequests.length === 1);
   await page.evaluate(() => window.review.balanceRejectors[0]("newapi.errors.auth"));
   await dialog.getByText("查询未成功，保留上次查询结果。", { exact: true }).waitFor();
-  assert.match(await summary.innerText(), /125\.9M/);
+  await eventually(async () => assert.match(await summary.innerText(), /125\.9M/));
   assert.equal(await dialog.getByRole("button", { name: "刷新余额", exact: true }).isEnabled(), true);
   console.log("PASS failed Command Code refresh keeps the complete last successful report and remains retryable");
 
   await loadCommand(commandBalance);
   await page.getByRole("button", { name: "查询余额 Quota fixture", exact: true }).click();
   await summary.waitFor();
-  assert.equal(await summary.locator('[data-command-code-usage]').count(), 0);
+  await eventually(async () => assert.equal(await summary.locator('[data-command-code-usage]').count(), 0));
   assert.match(await summary.innerText(), /\$62/);
   assert.match(await summary.innerText(), /Command Code · GOAT/);
   console.log("PASS old saved Command Code balances still show their credits and windows without inventing missing statistics");
@@ -201,7 +201,7 @@ export async function testProviderFeedback({ page, reset, captureDir }) {
   await loadCommand({ ...commandBalance, commandCode: { ...details, usage: { ...partialUsage, failedCount: 0, totalCost: 0, totalTokensIn: 0 } } });
   await page.getByRole("button", { name: "查询余额 Quota fixture", exact: true }).click();
   await summary.waitFor();
-  assert.match(await summary.locator('[data-command-code-stat="requests"]').innerText(), /—[\s\S]*失败 0/);
+  await eventually(async () => assert.match(await summary.locator('[data-command-code-stat="requests"]').innerText(), /—[\s\S]*失败 0/));
   assert.match(await summary.locator('[data-command-code-stat="successRate"]').innerText(), /—/);
   assert.match(await summary.locator('[data-command-code-stat="cost"]').innerText(), /\$0/);
   assert.match(await summary.locator('[data-command-code-stat="tokens"]').innerText(), /—[\s\S]*0 入 \/ — 出/);
@@ -211,7 +211,7 @@ export async function testProviderFeedback({ page, reset, captureDir }) {
   await loadCommand({ ...commandBalance, entries: [{ ...entry(8, 10, "weekly"), valid: false }, entry(5, 10, "future-pool")] });
   await page.getByRole("button", { name: "查询余额 Quota fixture", exact: true }).click();
   await summary.waitFor();
-  assert.equal(await summary.locator('[data-command-code-credits]').count(), 0);
+  await eventually(async () => assert.equal(await summary.locator('[data-command-code-credits]').count(), 0));
   assert.equal(await summary.getByText("窗口额度已用尽", { exact: true }).count(), 1);
   assert.equal(await summary.locator('[data-command-code-window="weekly"] [role="progressbar"]').getAttribute("aria-valuenow"), "20");
   console.log("PASS exhausted windows remain visible and unknown future pools do not become monthly credits");
@@ -225,7 +225,7 @@ export async function testProviderFeedback({ page, reset, captureDir }) {
   if (captureDir) await face.screenshot({ path: path.join(captureDir, "command-code-window-only.png"), animations: "disabled" });
   await page.getByRole("button", { name: "查询余额 Quota fixture", exact: true }).click();
   await summary.waitFor();
-  assert.equal(await summary.locator('[data-command-code-credits]').count(), 0);
+  await eventually(async () => assert.equal(await summary.locator('[data-command-code-credits]').count(), 0));
   assert.equal(await summary.locator('[data-command-code-window="weekly"] [role="progressbar"]').getAttribute("aria-valuenow"), "30");
   console.log("PASS window-only Command Code results are labeled as quota instead of account balance");
 
@@ -240,7 +240,7 @@ export async function testProviderFeedback({ page, reset, captureDir }) {
   await page.getByRole("button", { name: "查询余额 Quota fixture", exact: true }).click();
   const goSummary = dialog.locator("[data-opencode-go-balance]");
   await goSummary.waitFor();
-  assert.equal(await summary.count(), 0, "OpenCode Go does not invent Command Code account or billing data");
+  await eventually(async () => assert.equal(await summary.count(), 0, "OpenCode Go does not invent Command Code account or billing data"));
   for (const [name, used, remaining] of [["rolling", 0, 100], ["weekly", 42, 58], ["monthly", 100, 0]]) {
     const window = goSummary.locator(`[data-opencode-go-window="${name}"]`);
     assert.equal(await window.locator('[role="progressbar"]').getAttribute("aria-valuenow"), String(used));
@@ -266,14 +266,14 @@ export async function testProviderFeedback({ page, reset, captureDir }) {
   await page.waitForFunction(() => window.review.balanceRequests.length === 1);
   await page.evaluate(() => window.review.balanceRejectors[0]("newapi.errors.auth"));
   await dialog.getByText("查询未成功，保留上次查询结果。", { exact: true }).waitFor();
-  assert.equal(await goSummary.locator('[data-opencode-go-window="weekly"] [role="progressbar"]').getAttribute("aria-valuenow"), "42");
+  await eventually(async () => assert.equal(await goSummary.locator('[data-opencode-go-window="weekly"] [role="progressbar"]').getAttribute("aria-valuenow"), "42"));
   assert.equal(await dialog.getByRole("button", { name: "刷新余额", exact: true }).isEnabled(), true);
   console.log("PASS OpenCode Go shows official percentage windows with resets, zero/exhausted states and retains results after a failed refresh");
 
   await loadGo({ ...goBalance, remaining: 58, rawQuota: 58, used: 42, entries: [] });
   await page.getByRole("button", { name: "查询余额 Quota fixture", exact: true }).click();
   await goSummary.waitFor();
-  assert.match(await goSummary.innerText(), /58%/);
+  await eventually(async () => assert.match(await goSummary.innerText(), /58%/));
   assert.equal(await goSummary.getByRole("progressbar").count(), 0, "legacy balances cannot invent window totals");
   await loadProvider({ baseUrl: "https://opencode.ai/zen/go/v1", balanceSource: "custom", balanceScript: "return {remaining: 62, unit: 'USD'};", balance: goBalance });
   await page.getByRole("button", { name: "查询余额 Quota fixture", exact: true }).click();

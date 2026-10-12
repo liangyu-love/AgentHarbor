@@ -20,13 +20,13 @@ export async function testClaudeSupport({ page, reset, captureDir }) {
   const editor = () => page.locator("textarea[id^=instruction-editor-]");
   const currentFile = () => page.locator("[data-instruction-current]");
   await editor().waitFor();
-  assert.equal(await editor().inputValue(), "codex rules");
+  await eventually(async () => assert.equal(await editor().inputValue(), "codex rules"));
   assert.match(await currentFile().textContent(), /User rules[\s\S]*codex rules/);
   await radio("Claude Code").click();
   await page
     .getByText("C:/synthetic/.claude/CLAUDE.md", { exact: true })
     .waitFor();
-  assert.equal(await editor().inputValue(), "claudeCode rules");
+  await eventually(async () => assert.equal(await editor().inputValue(), "claudeCode rules"));
   await (await button("customInstructions.chooseTemplate")).click();
   const card = page.locator('[data-instruction-template="implementation"]');
   await card
@@ -36,7 +36,7 @@ export async function testClaudeSupport({ page, reset, captureDir }) {
     })
     .click();
   await editor().waitFor();
-  assert.match(await editor().inputValue(), /阅读项目指令/);
+  await eventually(async () => assert.match(await editor().inputValue(), /阅读项目指令/));
   await editor().fill("My Claude instructions");
   await eventually(async () => assert.match(await currentFile().textContent(), /claudeCode rules/));
   assert.doesNotMatch(await currentFile().textContent(), /My Claude instructions/);
@@ -78,7 +78,7 @@ export async function testClaudeSupport({ page, reset, captureDir }) {
     window.review.instructionApplyResolve();
   });
   await dialog.waitFor({ state: "hidden" });
-  assert.match(await currentFile().textContent(), /User rules[\s\S]*My Claude instructions/);
+  await eventually(async () => assert.match(await currentFile().textContent(), /User rules[\s\S]*My Claude instructions/));
   const applied = await page.evaluate(() =>
     window.review.instructionCalls.find((call) => call.operation === "apply"),
   );
@@ -115,7 +115,7 @@ export async function testClaudeSupport({ page, reset, captureDir }) {
     })
     .click();
   await page.getByRole("alertdialog").waitFor({ state: "hidden" });
-  assert.equal(await currentFile().textContent(), "User rules\n");
+  await eventually(async () => assert.equal(await currentFile().textContent(), "User rules\n"));
   await page.evaluate(() => {
     const current = window.review.instructionStates.claudeCode.current;
     current.fileContent = '<script>external rules</script>\n' + 'long-rule-'.repeat(80);
@@ -124,7 +124,7 @@ export async function testClaudeSupport({ page, reset, captureDir }) {
   });
   await (await button("common.refresh")).click();
   await page.waitForFunction(() => document.querySelector("[data-instruction-current]")?.textContent.includes("external rules"));
-  assert.equal(await currentFile().locator("script").count(), 0);
+  await eventually(async () => assert.equal(await currentFile().locator("script").count(), 0));
   assert.equal(await editor().isDisabled(), true);
   assert.equal(
     (
@@ -219,7 +219,7 @@ export async function testClaudeSupport({ page, reset, captureDir }) {
   await page.setViewportSize({ width: 1200, height: 820 });
   await page.getByRole("button", { name: "测试命令面板", exact: true }).click();
   await page.getByText("MCP: claude-new", { exact: true }).waitFor();
-  assert.equal(await page.getByText("MCP: filesystem", { exact: true }).count(), 0);
+  await eventually(async () => assert.equal(await page.getByText("MCP: filesystem", { exact: true }).count(), 0));
   await page.getByText("MCP: claude-new", { exact: true }).click();
   assert.equal(await page.evaluate(() => window.review.navigatedTo), "mcp");
   await radio("Codex").click();
@@ -234,7 +234,7 @@ export async function testClaudeSupport({ page, reset, captureDir }) {
   );
   await page.getByRole("button", { name: "测试命令面板", exact: true }).click();
   await page.getByText("MCP: filesystem", { exact: true }).waitFor();
-  assert.equal(await page.getByText("MCP: claude-new", { exact: true }).count(), 0);
+  await eventually(async () => assert.equal(await page.getByText("MCP: claude-new", { exact: true }).count(), 0));
   await page.keyboard.press("Escape");
   console.log(
     "PASS Claude instructions: client isolation, templates, saved presets, draft, preview, apply lock, clear; MCP client schema and writes",

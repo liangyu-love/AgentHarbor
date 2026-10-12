@@ -32,7 +32,7 @@ export async function testClaudeSessions({ page, reset, captureDir }) {
   });
   await installNativeMocks();
   await source("Codex").waitFor();
-  assert.equal(await source("Codex").getAttribute("aria-checked"), "true");
+  await eventually(async () => assert.equal(await source("Codex").getAttribute("aria-checked"), "true"));
   assert.equal(await page.getByRole("radio", { name: "Markdown", exact: true }).count(), 0,
     "The header switches clients; export format belongs to the export controls");
   const codexTitle = page.getByRole("button", { name: "查看详情：Review thread 0", exact: true });
@@ -69,7 +69,7 @@ export async function testClaudeSessions({ page, reset, captureDir }) {
     "A shared key cannot return Codex detail cache data for Claude");
   await panel().getByRole("button", { name: "查看对话", exact: true }).click();
   await panel().getByText("Claude fixture message", { exact: true }).waitFor();
-  assert.equal(await panel().getByText("合成的用户问题", { exact: true }).count(), 0);
+  await eventually(async () => assert.equal(await panel().getByText("合成的用户问题", { exact: true }).count(), 0));
   assert.equal((await calls("messages")).at(-1).target, "claudeCode");
   assert.equal(await panel().getByRole("button", { name: await label("threads.deleteThread"), exact: true }).count(), 1);
   await panel().getByRole("button", { name: await label("threads.copyResumeCommand"), exact: true }).click();
@@ -113,7 +113,7 @@ export async function testClaudeSessions({ page, reset, captureDir }) {
   await page.setViewportSize({ width: 1200, height: 820 });
   await source("Codex").click();
   await codexTitle.waitFor();
-  assert.equal(await source("Codex").getAttribute("aria-checked"), "true");
+  await eventually(async () => assert.equal(await source("Codex").getAttribute("aria-checked"), "true"));
   await capture("codex-sessions-desktop-light.png");
 
   // A delayed old-source response must never replace the active client's list.
