@@ -1074,6 +1074,8 @@ try {
   assert.equal(await page.getByRole("button", { name: labels.clientNative, exact: true }).getAttribute("aria-pressed"), "true");
   assert.equal(await page.locator("#client-model").textContent(), "anthropic-model");
   await page.locator("#client-model").click();
+  // Escape before the list opens would close the dialog instead.
+  await page.getByRole("listbox").waitFor();
   assert.equal(await page.getByRole("option", { name: "responses-model", exact: true }).count(), 0);
   await page.keyboard.press("Escape");
   await screenshotClient("claude-native-light.png");
