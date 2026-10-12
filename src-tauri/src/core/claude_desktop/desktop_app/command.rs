@@ -127,12 +127,15 @@ mod tests {
         let pid_path = temp.path().join("pid");
         let mut command = crate::platform::windows::background_command("powershell");
         command.args(["-NoProfile", "-NonInteractive", "-Command",
-            "[IO.File]::WriteAllText($env:DESKTOP_HELPER_PID, [string]$PID); Start-Sleep -Seconds 30"])
+            "[IO.File]::WriteAllText($env:DESKTOP_HELPER_PID, [string]$PID); Start-Sleep -Seconds 120"])
             .env("DESKTOP_HELPER_PID", &pid_path);
+        // Long enough for a cold PowerShell start (seconds on a CI runner) to
+        // write its PID before the timeout kills it.
+        let timeout = Duration::from_secs(8);
         let started = Instant::now();
-        let error = output(&mut command, Duration::from_secs(2)).unwrap_err();
+        let error = output(&mut command, timeout).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
-        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(started.elapsed() < timeout + Duration::from_secs(4));
         let pid = std::fs::read_to_string(&pid_path)
             .unwrap()
             .parse::<u32>()
