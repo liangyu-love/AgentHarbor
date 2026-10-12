@@ -74,10 +74,17 @@ const screenshotDir = process.env.FRONTEND_QA_CAPTURE_DIR ?? path.join(root, ".p
 const captureDir = process.env.FRONTEND_QA_CAPTURE_DIR ? screenshotDir : null;
 await mkdir(screenshotDir, { recursive: true });
 let browser;
+let openPage;
 try {
   const executablePath = argument("--browser-executable") ?? process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
   browser = await playwright.chromium.launch({ headless: true, ...(executablePath ? { executablePath } : { channel: "chromium" }) });
   const page = await browser.newPage({ viewport: { width: 1200, height: 700 } });
+  openPage = page;
+  // FRONTEND_QA_CPU_THROTTLE=4 runs as slowly as a CI runner, to reproduce its timing.
+  if (Number(process.env.FRONTEND_QA_CPU_THROTTLE) > 1) {
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Emulation.setCPUThrottlingRate", { rate: Number(process.env.FRONTEND_QA_CPU_THROTTLE) });
+  }
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   // Native confirm/prompt would block the test silently; the app uses AlertDialog instead.
@@ -1074,8 +1081,10 @@ try {
   assert.equal(await page.getByRole("button", { name: labels.clientNative, exact: true }).getAttribute("aria-pressed"), "true");
   assert.equal(await page.locator("#client-model").textContent(), "anthropic-model");
   await page.locator("#client-model").click();
-  // Escape before the list opens would close the dialog instead.
+  // An Escape in the instant before the open list takes over its key closes
+  // the dialog instead; a slow runner hits that instant.
   await page.getByRole("listbox").waitFor();
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 50)))));
   assert.equal(await page.getByRole("option", { name: "responses-model", exact: true }).count(), 0);
   await page.keyboard.press("Escape");
   await screenshotClient("claude-native-light.png");
@@ -1453,6 +1462,10 @@ try {
   console.log("PASS unreadable conversation warnings remain visible alongside usable conversations");
   }
   assert.deepEqual(errors, [], "Unexpected browser errors");
+} catch (error) {
+  // What the page showed when it failed, for a failure seen only on CI.
+  await openPage?.screenshot({ path: path.join(screenshotDir, "failure.png"), fullPage: true }).catch(() => {});
+  throw error;
 } finally {
   if (browser) await browser.close();
   await new Promise(resolve => server.close(resolve));

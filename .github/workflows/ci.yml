@@ -51,3 +51,11 @@ jobs:
           node scripts/test-release.mjs
           node scripts/test-claude-desktop-config.mjs
           node scripts/test-frontend-regressions.mjs
+
+      - name: Keep the failure screenshot
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-failure
+          path: .playwright-cli/failure.png
+          if-no-files-found: ignore
