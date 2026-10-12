@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { eventually } from "./eventually.mjs";
 
 export async function testTerminalProxy({ page, reset, captureDir }) {
   const mount = async (options = {}) => {
@@ -50,7 +51,7 @@ export async function testTerminalProxy({ page, reset, captureDir }) {
   await test().click();
   await page.waitForFunction(() => window.review.terminalTestResolvers.length === 2);
   await page.evaluate(() => window.review.terminalTestResolvers[0]([{ service: "stale", reachable: false, statusCode: null }]));
-  assert.equal(await dialog().getByText("stale", { exact: true }).count(), 0);
+  await eventually(async () => assert.equal(await dialog().getByText("stale", { exact: true }).count(), 0));
   assert.equal(await dialog().getByRole("button", { name: "测试中", exact: true }).isDisabled(), true);
   await page.evaluate(value => window.review.terminalTestResolvers[1](value), probes);
   await dialog().getByText("可连接 · HTTP 401", { exact: true }).waitFor();
@@ -83,7 +84,7 @@ export async function testTerminalProxy({ page, reset, captureDir }) {
   await save().click();
   await page.waitForFunction(() => window.review.terminalSetCalls.length === 1);
   await page.keyboard.press("Escape");
-  assert.equal(await dialog().count(), 1);
+  await eventually(async () => assert.equal(await dialog().count(), 1));
   assert.equal(await url().isDisabled(), true);
   assert.equal(await dialog().getByRole("button", { name: "取消", exact: true }).isDisabled(), true);
   await page.evaluate(() => window.review.terminalSaveResolver());

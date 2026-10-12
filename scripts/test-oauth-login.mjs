@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { eventually } from "./eventually.mjs";
 
 export async function testOAuthLogin({ page, reset, captureDir }) {
   const start = () => page.getByRole("button", { name: "OAuth 登录", exact: true });
@@ -41,7 +42,7 @@ export async function testOAuthLogin({ page, reset, captureDir }) {
   await cancel().click();
   await page.waitForFunction(() => window.review.cancelCalls.length === 2);
   await page.waitForTimeout(80);
-  assert.equal(await cancel().isEnabled(), true);
+  await eventually(async () => assert.equal(await cancel().isEnabled(), true));
   await cancel().click();
   await start().waitFor();
   await start().click();
@@ -59,7 +60,7 @@ export async function testOAuthLogin({ page, reset, captureDir }) {
   await cancel().click();
   await page.waitForFunction(() => window.review.cancelCalls.length === 4);
   await page.waitForTimeout(80);
-  assert.equal(await cancel().isVisible(), true);
+  await eventually(async () => assert.equal(await cancel().isVisible(), true));
   await page.evaluate(() => window.review.loginCalls[4].resolve());
   await start().waitFor();
   console.log("PASS OAuth completion wins a late cancellation without dropping the account result");

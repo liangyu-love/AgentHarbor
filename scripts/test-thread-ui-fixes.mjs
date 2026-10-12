@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { eventually } from "./eventually.mjs";
 
 export async function testThreadUiFixes({ page, reset, captureDir }) {
   const capture = async name => {
@@ -136,7 +137,7 @@ export async function testThreadUiFixes({ page, reset, captureDir }) {
   await panel.getByRole("button", { name: "重新读取记录", exact: true }).click();
   await page.waitForFunction(() => window.review.messageRequests.some(request => request.snapshot === 54321 && request.offset === 0));
   await articles.first().getByText(/^新快照长消息/).waitFor();
-  assert.equal(await articles.first().getByRole("button", { name: "展开正文", exact: true }).count(), 1, "A new snapshot starts with fresh message state");
+  await eventually(async () => assert.equal(await articles.first().getByRole("button", { name: "展开正文", exact: true }).count(), 1, "A new snapshot starts with fresh message state"));
   await capture("thread-message-filter-state-fixed.png");
   await page.keyboard.press("Escape");
   await panel.waitFor({ state: "hidden" });

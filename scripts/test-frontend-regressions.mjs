@@ -35,6 +35,7 @@ import { testAggregation } from "./test-aggregation.mjs";
 import { testCodexSubagents } from "./test-codex-subagents.mjs";
 import { testCapabilityClear } from "./test-capability-clear.mjs";
 import { testClaudeCliOfficial } from "./test-claude-cli-official.mjs";
+import { eventually } from "./eventually.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -261,8 +262,8 @@ try {
   // that success is allowed to clear its own key and is a different scenario.
   await page.evaluate(() => window.review.imageKeySaveResolvers.filter(resolve => resolve.site === "https://site-a.invalid").forEach(resolve => resolve()));
   await page.waitForFunction(() => window.review.imageKeySaveResolvedSites?.includes("https://site-a.invalid"));
-  assert.equal(await page.locator('input[type="password"]').inputValue(), "sk-shared-fixture");
-  assert.equal(await page.getByRole("button", { name: "忘记此站点的密钥" }).count(), 0);
+  await eventually(async () => assert.equal(await page.locator('input[type="password"]').inputValue(), "sk-shared-fixture"));
+  await eventually(async () => assert.equal(await page.getByRole("button", { name: "忘记此站点的密钥" }).count(), 0));
   console.log("PASS late generation and key saves cannot change credentials for a different manual site");
 
   await reset("image");
@@ -279,18 +280,18 @@ try {
   await imagePrompt.fill("Cancelled canvas");
   await imageSubmit.click();
   await page.waitForFunction(() => window.review.imageRequests.length === 2);
-  assert.equal(await page.locator('[data-generation-job-status="queued"]').count(), 2);
+  await eventually(async () => assert.equal(await page.locator('[data-generation-job-status="queued"]').count(), 2));
   await page.locator('[data-generation-job-status="queued"]').filter({ hasText: "Cancelled canvas" })
     .getByRole("button", { name: "取消排队" }).click();
   assert.equal(await page.locator('[data-generation-job-status]').count(), 3);
   await page.evaluate(() => window.review.imageResolvers[1]());
   await page.waitForFunction(() => window.review.imageRequests.length === 3);
-  assert.equal(await page.locator('[data-generation-job-status="running"]').filter({ hasText: "First canvas" }).count(), 1);
+  await eventually(async () => assert.equal(await page.locator('[data-generation-job-status="running"]').filter({ hasText: "First canvas" }).count(), 1));
   await page.locator('[data-generation-job-status="completed"]').filter({ hasText: "Second canvas" }).locator("img").waitFor();
   await page.evaluate(() => window.review.imageResolvers[0]());
   await page.evaluate(() => window.review.imageResolvers[2]());
   await page.waitForFunction(() => window.review.gallerySaves === 3);
-  assert.equal(await page.locator('[data-generation-job-status="completed"]').count(), 3);
+  await eventually(async () => assert.equal(await page.locator('[data-generation-job-status="completed"]').count(), 3));
   console.log("PASS image jobs run concurrently, keep separate canvases, queue and cancel independently");
 
   await reset("image");
@@ -825,11 +826,11 @@ try {
   await reset("access");
   await page.getByRole("button", { name: "刷新余额", exact: true }).click();
   await page.waitForFunction(() => window.review.balanceRequests.length === 1);
-  assert.equal(await page.getByRole("switch", { name: labels.codexAccess, exact: true }).isEnabled(), true);
+  await eventually(async () => assert.equal(await page.getByRole("switch", { name: labels.codexAccess, exact: true }).isEnabled(), true));
   await page.getByRole("switch", { name: labels.codexAccess, exact: true }).click();
   await page.waitForFunction(() => window.review.getState().router.enabled);
   await page.getByRole("button", { name: "导入 / 导出", exact: true }).click();
-  assert.equal(await page.getByRole("menuitem", { name: "导出中转", exact: true }).isEnabled(), true);
+  await eventually(async () => assert.equal(await page.getByRole("menuitem", { name: "导出中转", exact: true }).isEnabled(), true));
   await page.keyboard.press("Escape");
   await page.evaluate(() => window.review.balanceResolvers[0]());
   await page.getByText("$9").waitFor();
@@ -839,7 +840,7 @@ try {
   await page.evaluate(() => { window.review.routingCalls = []; });
   await page.getByRole("switch", { name: labels.codexAccess, exact: true }).click();
   await page.waitForFunction(() => window.review.routingCalls.length === 1);
-  assert.equal(await page.getByRole("alertdialog").count(), 0);
+  await eventually(async () => assert.equal(await page.getByRole("alertdialog").count(), 0));
   assert.equal(await page.evaluate(() => window.review.getState().router.enabled), false);
   assert.deepEqual(await page.evaluate(() => window.review.routingCalls), [{ operation: "enabled", enabled: false }]);
   console.log("PASS turning routing off is a single backend call without thread migration prompts");
@@ -978,7 +979,7 @@ try {
   await page.getByText(labels.recoveryCoordinationTitle, { exact: true }).waitFor();
   await page.getByRole("button", { name: labels.recoveryOpenDirectory, exact: true }).click();
   await page.waitForFunction(() => window.review.openedPath === "C:/synthetic/recovery");
-  assert.equal(await page.getByRole("button", { name: labels.recoveryCatalogConfirm, exact: true }).count(), 0);
+  await eventually(async () => assert.equal(await page.getByRole("button", { name: labels.recoveryCatalogConfirm, exact: true }).count(), 0));
   console.log("PASS blocked recovery shows manual coordination details and opens the recovery directory");
 
   await reset("recovery-official");
@@ -1294,7 +1295,7 @@ try {
   await page.getByRole("button", { name: labels.clientApply, exact: true }).click();
   await page.waitForFunction(() => window.review.appliedClient?.request.model === "claude-fable-5-1");
   assert.equal(await page.evaluate(() => Object.values(window.review.appliedClient.request.claudeOneM).every(value => value === false)), true);
-  assert.equal(await page.getByRole("dialog").count(), 0);
+  await eventually(async () => assert.equal(await page.getByRole("dialog").count(), 0));
   await reset("clients-versions");
   await page.getByRole("button", { name: labels.configure, exact: true }).click();
   await page.getByRole("button", { name: labels.manageProfiles, exact: true }).click();
@@ -1393,7 +1394,7 @@ try {
   }
   await page.locator('button[title="gallery-0.png"]').scrollIntoViewIfNeeded();
   await page.waitForFunction(() => window.review.thumbnailCalls.filter(path => path.endsWith("gallery-0.png")).length >= 2);
-  assert.ok(await page.locator('img[alt^="gallery-"]').count() < 48);
+  await eventually(async () => assert.ok(await page.locator('img[alt^="gallery-"]').count() < 48));
   assert.equal(await page.evaluate(() => window.review.originalCalls.length), 0);
   await page.getByRole("button", { name: "收起画册", exact: true }).click();
   await page.evaluate(() => { window.review.holdThumbnails = true; });

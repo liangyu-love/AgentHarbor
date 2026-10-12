@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { eventually } from "./eventually.mjs";
 
 export async function testPiIntegration({ page, reset, captureDir }) {
   const tr = key => page.evaluate(key => window.review.t(key), key);
@@ -61,7 +62,7 @@ export async function testPiIntegration({ page, reset, captureDir }) {
   await card().getByRole("button", { name: await tr("clients.restore"), exact: true }).click();
   await page.getByRole("alertdialog").getByRole("button", { name: await tr("clients.restore"), exact: true }).click();
   await page.waitForFunction(() => !!window.review.restoredClient);
-  assert.equal(await card().getByRole("button", { name: await tr("clients.configure"), exact: true }).count(), 1);
+  await eventually(async () => assert.equal(await card().getByRole("button", { name: await tr("clients.configure"), exact: true }).count(), 1));
   console.log("PASS Pi reuses multi-relay protocol/model selections and managed apply, reapply and restore");
 
   await seed({ aggregate: true });

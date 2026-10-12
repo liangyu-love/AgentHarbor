@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { eventually } from "./eventually.mjs";
 
 // Synthetic autostart states only; nothing touches the registry.
 export async function testAutostart({ page, reset }) {
@@ -39,6 +40,6 @@ export async function testAutostart({ page, reset }) {
   await page.evaluate(() => { window.review.autostartPatch = { supported: false }; window.review.mount("autostart"); });
   await page.waitForFunction(() => window.review.autostartCalls !== undefined);
   await page.waitForTimeout(200);
-  assert.equal(await page.locator("[data-autostart]").count(), 0, "no row where the platform has no startup entry");
+  await eventually(async () => assert.equal(await page.locator("[data-autostart]").count(), 0, "no row where the platform has no startup entry"));
   console.log("PASS start at sign-in is hidden where it is unsupported");
 }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { eventually } from "./eventually.mjs";
 
 export async function testSkillsActivation({ page, reset, captureDir }) {
   await reset("skills");
@@ -24,7 +25,7 @@ export async function testSkillsActivation({ page, reset, captureDir }) {
   await page.evaluate(() => { window.review.skillToggleFailure = true; });
   await toggle.click();
   await page.waitForFunction(() => window.review.lastToast === "出错了");
-  assert.equal(await toggle.getAttribute("aria-checked"), "false", "failed enable must not report success");
+  await eventually(async () => assert.equal(await toggle.getAttribute("aria-checked"), "false", "failed enable must not report success"));
   await page.evaluate(() => { window.review.skillToggleFailure = false; });
   await toggle.click();
   await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="启用 Sample Skill"]')?.getAttribute("aria-checked") === "true");

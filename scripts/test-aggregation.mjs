@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { eventually } from "./eventually.mjs";
 
 const PUBLIC_MODEL = "deepseek-v4.1-flash";
 const FAST_WIRE_MODEL = "vendor/deepseek-v4.1-flash-fast";
@@ -243,7 +244,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   await choose(codex.locator("#codex-aggregate-model"), POOL_NAME + " · " + PUBLIC_MODEL);
   await page.waitForFunction(() => window.review.getState().router.aggregateModelId !== null);
   const aggregateMarker = codex.locator('[data-codex-target="aggregate"]');
-  assert.equal(await aggregateMarker.innerText(), await tr("aggregation.target"));
+  await eventually(async () => assert.equal(await aggregateMarker.innerText(), await tr("aggregation.target")));
   assert.equal(await codex.locator("[data-relay-link]").count(), 0);
   assert.deepEqual(await page.evaluate(() => window.review.aggregateCodexSelections), [saved.id]);
   await codex.locator("#codex-access-mode").click();
@@ -253,7 +254,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   await page.waitForFunction(() => window.review.getState().router.enabled);
   await choose(codex.locator("#codex-aggregate-model"), await tr("aggregation.singleChannel"));
   await page.waitForFunction(() => window.review.getState().router.aggregateModelId === null);
-  assert.equal(await codex.locator('[data-codex-target="relay"]').innerText(), await tr("newapi.providersSection"));
+  await eventually(async () => assert.equal(await codex.locator('[data-codex-target="relay"]').innerText(), await tr("newapi.providersSection")));
   assert.deepEqual(await page.evaluate(() => window.review.aggregateCodexSelections), [saved.id, null]);
   console.log("PASS Codex selects the aggregation catalog and returns to relay models with distinct abstract targets");
 

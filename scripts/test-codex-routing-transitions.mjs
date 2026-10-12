@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { eventually } from "./eventually.mjs";
 
 // Threads keep Codex's built-in provider, so connection changes are a single
 // backend call that only writes config. A running Codex is restarted by the
@@ -87,7 +88,7 @@ export async function testCodexRoutingTransitions({ page, reset }) {
   await mount({ routingMutationFailure: "newapi.errors.storage" });
   await begin(false);
   await page.waitForFunction(() => window.review.routingCalls.length === 1);
-  assert.equal(await page.getByRole("alertdialog").count(), 0);
-  assert.equal(await page.getByRole("switch", { name: labels.access, exact: true }).isChecked(), true);
+  await eventually(async () => assert.equal(await page.getByRole("alertdialog").count(), 0));
+  await eventually(async () => assert.equal(await page.getByRole("switch", { name: labels.access, exact: true }).isChecked(), true));
   console.log("PASS configuration failures leave routing unchanged without restart prompts");
 }

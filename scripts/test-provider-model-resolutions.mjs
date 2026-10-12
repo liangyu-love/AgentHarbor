@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { eventually } from "./eventually.mjs";
 
 export async function testProviderModelResolutions({ page, reset, captureDir }) {
   const row = id => page.locator("[data-model-row]").filter({ has: page.locator(`span[title="${id}"]`) });
@@ -77,7 +78,7 @@ export async function testProviderModelResolutions({ page, reset, captureDir }) 
   await ready();
   await context("model-A").fill("64000");
   await page.waitForFunction(() => window.review.modelResolutionRequests.at(-1)?.models[0]?.overrides?.contextWindow === 64000);
-  assert.equal(await context("model-A").inputValue(), "64000");
+  await eventually(async () => assert.equal(await context("model-A").inputValue(), "64000"));
   await context("model-A").fill("");
   await page.waitForFunction(() => window.review.modelResolutionRequests.at(-1)?.models[0]?.overrides?.contextWindow === null);
   await ready();
@@ -97,7 +98,7 @@ export async function testProviderModelResolutions({ page, reset, captureDir }) 
   await catalog("model-A").fill(" fixture-official / model-A ");
   await page.waitForFunction(() => window.review.modelResolutionRequests.at(-1)?.models[0]?.catalogRef?.providerId === "fixture-official"
     && window.review.modelResolutionRequests.at(-1)?.models[0]?.catalogRef?.modelId === "model-A");
-  assert.equal(await catalog("model-A").inputValue(), "fixture-official/model-A");
+  await eventually(async () => assert.equal(await catalog("model-A").inputValue(), "fixture-official/model-A"));
   await catalog("model-A").fill("");
   await ready();
   const cleared = await save();
@@ -152,7 +153,7 @@ export async function testProviderModelResolutions({ page, reset, captureDir }) 
   await page.getByRole("option", { name: /跟随上级|Inherit/i }).click();
   await page.waitForFunction(() => window.review.modelResolutionRequests.at(-1)?.compression?.mode === "inherit");
   await ready();
-  assert.match(await inherit("model-A").innerText(), /90%/);
+  await eventually(async () => assert.match(await inherit("model-A").innerText(), /90%/));
   assert.match(await inherit("model-A").innerText(), /720\s*K/i);
   const compressionSaved = await save();
   assert.deepEqual(compressionSaved.compression, { mode: "inherit" });

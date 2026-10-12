@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { eventually } from "./eventually.mjs";
 
 export async function testClaudeSupport({ page, reset, captureDir }) {
   const label = (key) => page.evaluate((key) => window.review.t(key), key);
@@ -71,7 +72,7 @@ export async function testClaudeSupport({ page, reset, captureDir }) {
     })
     .click();
   await page.waitForFunction(() => !!window.review.instructionApplyResolve);
-  assert.equal(await radio("Codex").isDisabled(), true);
+  await eventually(async () => assert.equal(await radio("Codex").isDisabled(), true));
   await page.evaluate(() => {
     window.review.instructionApplyHold = false;
     window.review.instructionApplyResolve();

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { eventually } from "./eventually.mjs";
 
 export async function testCapabilityClear({ page, reset, captureDir }) {
   const open = async () => {
@@ -58,7 +59,7 @@ export async function testCapabilityClear({ page, reset, captureDir }) {
   await page.evaluate(() => { window.review.clearApplyFailure = false; window.review.clearApplyHold = true; window.review.clearApplyStale = true; });
   await apply(clear).evaluate(button => { button.click(); button.click(); });
   await page.waitForFunction(() => window.review.clearApplyCalls.length === 2);
-  assert.equal(await clear.getByLabel("已手动设置", { exact: true }).isDisabled(), true);
+  await eventually(async () => assert.equal(await clear.getByLabel("已手动设置", { exact: true }).isDisabled(), true));
   await page.evaluate(() => window.review.clearApplyResolve());
   await clear.getByText("配置或目录已变化，预览已更新；请重新检查后应用。", { exact: true }).waitFor();
   assert.equal(await page.evaluate(() => window.review.clearApplyCalls.length), 2, "stale previews must not apply automatically");

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { eventually } from "./eventually.mjs";
 
 export async function testCodexSubagents({ page, reset, captureDir }) {
   await reset("access");
@@ -27,7 +28,7 @@ export async function testCodexSubagents({ page, reset, captureDir }) {
   await page.waitForFunction(() => window.review.subagentSaves?.length === 3);
   assert.equal(await page.evaluate(() => window.review.subagentSaves[2]), null);
   await page.waitForFunction(() => window.review.lastToast === "已恢复子代理原配置");
-  assert.equal(await fields().getByRole("button", { name: "恢复原配置", exact: true }).isDisabled(), true);
+  await eventually(async () => assert.equal(await fields().getByRole("button", { name: "恢复原配置", exact: true }).isDisabled(), true));
   console.log("PASS Codex subagent save, reopen, inherit and restore original");
 
   for (const [mode, expected, absent] of [
@@ -57,12 +58,12 @@ export async function testCodexSubagents({ page, reset, captureDir }) {
   await page.evaluate(() => { window.review.failSubagentSave = true; });
   await fields().getByRole("button", { name: "保存", exact: true }).click();
   await page.waitForFunction(() => window.review.lastToast);
-  assert.equal(await page.locator("#codex-subagent-model").textContent(), "Official Luna");
+  await eventually(async () => assert.equal(await page.locator("#codex-subagent-model").textContent(), "Official Luna"));
   await page.evaluate(() => { window.review.failSubagentSave = false; window.review.holdSubagentSave = true; });
   await fields().getByRole("button", { name: "保存", exact: true }).click();
   await page.waitForFunction(() => window.review.releaseSubagentSave);
-  assert.equal(await fields().getByRole("combobox").first().isDisabled(), true);
-  assert.equal(await fields().getByRole("button", { name: "保存中…", exact: true }).isDisabled(), true);
+  await eventually(async () => assert.equal(await fields().getByRole("combobox").first().isDisabled(), true));
+  await eventually(async () => assert.equal(await fields().getByRole("button", { name: "保存中…", exact: true }).isDisabled(), true));
   await page.evaluate(() => window.review.releaseSubagentSave());
   await fields().getByText("待应用", { exact: true }).waitFor();
   console.log("PASS invalid saved target, failed save retention and shared operation lock");

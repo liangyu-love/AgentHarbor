@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { eventually } from "./eventually.mjs";
 
 // Synthetic client statuses and IPC stubs only; no credentials or CLI files.
 export async function testClaudeCliOfficial({ page, reset, captureDir }) {
@@ -59,8 +60,8 @@ export async function testClaudeCliOfficial({ page, reset, captureDir }) {
   await dialog().getByText("env.ANTHROPIC_BASE_URL", { exact: true }).waitFor();
   await dialog().getByRole("button", { name: await tr("clients.switchOfficial"), exact: true }).evaluate(button => { button.click(); button.click(); });
   await page.waitForFunction(() => window.review.officialSwitchCalls.length === 1);
-  assert.equal(await dialog().getByRole("button", { name: await tr("clients.switchOfficial"), exact: true }).isDisabled(), true);
-  assert.equal(await dialog().getByRole("button", { name: await tr("common.cancel"), exact: true }).isDisabled(), true);
+  await eventually(async () => assert.equal(await dialog().getByRole("button", { name: await tr("clients.switchOfficial"), exact: true }).isDisabled(), true));
+  await eventually(async () => assert.equal(await dialog().getByRole("button", { name: await tr("common.cancel"), exact: true }).isDisabled(), true));
   await page.keyboard.press("Escape");
   assert.equal(await dialog().count(), 1, "a writing operation cannot be dismissed");
   await page.evaluate(() => window.review.officialApplyResolve());
@@ -75,7 +76,7 @@ export async function testClaudeCliOfficial({ page, reset, captureDir }) {
   await seed({ officialPreviewHold: true });
   await open();
   await page.waitForFunction(() => window.review.officialPreviewCalls.length === 1);
-  assert.equal(await dialog().getByRole("button", { name: await tr("clients.switchOfficial"), exact: true }).isDisabled(), true);
+  await eventually(async () => assert.equal(await dialog().getByRole("button", { name: await tr("clients.switchOfficial"), exact: true }).isDisabled(), true));
   await cancel();
   await dialog().waitFor({ state: "detached" });
   await open();

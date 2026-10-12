@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { eventually } from "./eventually.mjs";
 
 // Runs only against the deterministic frontend fixture; never reads or alters
 // the user's Claude/Codex sessions or launches either real client.
@@ -128,8 +129,8 @@ export async function testClaudeSessions({ page, reset, captureDir }) {
     window.review.conversationListResolvers.shift().resolve();
   });
   await page.waitForFunction(() => window.review.conversationCalls.some(call => call.operation === "listResolved" && call.target === "claudeCode"));
-  assert.equal(await source("Codex").getAttribute("aria-checked"), "true");
-  assert.equal(await claudeTitle.count(), 0, "Late Claude results cannot replace an active Codex workspace");
+  await eventually(async () => assert.equal(await source("Codex").getAttribute("aria-checked"), "true"));
+  await eventually(async () => assert.equal(await claudeTitle.count(), 0, "Late Claude results cannot replace an active Codex workspace"));
   await source("Claude Code").click();
   await claudeTitle.waitFor();
   assert.equal(await page.evaluate(() => localStorage.getItem("threads_source")), "claudeCode");

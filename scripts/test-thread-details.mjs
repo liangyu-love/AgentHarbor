@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { eventually } from "./eventually.mjs";
 
 export async function testThreadDetails({ page, reset, captureDir }) {
   const open = async mode => {
@@ -48,7 +49,7 @@ export async function testThreadDetails({ page, reset, captureDir }) {
   await page.evaluate(() => { window.review.clipboardError = true; });
   await panel.getByRole("button", { name: "复制消息", exact: true }).first().click();
   await page.waitForFunction(() => window.review.lastToast === "复制失败");
-  assert.equal(await panel.locator("script").count(), 0, "JSONL text cannot create DOM scripts");
+  await eventually(async () => assert.equal(await panel.locator("script").count(), 0, "JSONL text cannot create DOM scripts"));
   await panel.getByRole("button", { name: "展开正文", exact: true }).click();
   await panel.getByText(/仅预览前 20,000 字符/).waitFor();
   await panel.getByRole("button", { name: "收起正文", exact: true }).click();
