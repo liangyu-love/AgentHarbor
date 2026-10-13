@@ -141,12 +141,13 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
         <RoutingDiagnostics
           disabled={nativeAccess || !state.isSuccess || store.mutationLocked}
           webSearchProviderId={router?.webSearchProviderId ?? null}
+          webSearchModelId={router?.webSearchModelId ?? null}
           searchProviders={providers.filter((provider) => provider.webSearchCapable)}
           searchDisabled={!state.isSuccess || store.mutationLocked}
-          onWebSearchProvider={(providerId) => {
+          onWebSearchProvider={(providerId, modelId) => {
             void run(
               "web-search-provider",
-              async () => applyChange(await api.routing.setWebSearchProvider(providerId)),
+              async () => applyChange(await api.routing.setWebSearchProvider(providerId, modelId)),
               t("newapi.webSearchSaveFailed"),
             );
           }}

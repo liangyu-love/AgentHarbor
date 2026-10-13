@@ -36,7 +36,39 @@ export async function testProviderModelResolutions({ page, reset, captureDir }) 
   assert.deepEqual(automatic.models[0].overrides, {});
   assert.equal(automatic.models[0].catalogRef, null);
   assert.deepEqual(automatic.models[0].compression, { mode: "inherit" });
+  assert.equal(automatic.chatSearch,"auto","older cards default to automatic contract matching");
   console.log("PASS model resolutions show the matched limits, catalog and input-budget threshold without saving automatic values as overrides");
+
+  await reset("provider");
+  await ready();
+  await page.getByRole("button",{name:/高级设置/}).click();
+  const searchContract = page.getByRole("combobox",{name:"跨协议搜索方式",exact:true});
+  await searchContract.click();
+  await page.getByRole("option",{name:"上游 MiMo Chat 搜索",exact:true}).click();
+  const searchSaved = await save();
+  assert.equal(searchSaved.chatSearch,"mimo");
+  await page.locator("#reopen-saved").click();
+  if (!(await searchContract.isVisible())) await page.getByRole("button",{name:/高级设置/}).click();
+  await searchContract.getByText("上游 MiMo Chat 搜索",{exact:true}).waitFor();
+  if (captureDir) {
+    await searchContract.scrollIntoViewIfNeeded();
+    await page.screenshot({path:path.join(captureDir,"provider-search-contract.png"),animations:"disabled"});
+  }
+  console.log("PASS the search contract saves and reopens without changing the selected model or protocol");
+
+  await reset("provider");
+  await ready();
+  await page.getByRole("button",{name:/高级设置/}).click();
+  await page.getByRole("button",{name:"检测搜索能力",exact:true}).click();
+  await page.getByText("已实际执行搜索",{exact:true}).waitFor();
+  await page.getByText("拒绝搜索声明",{exact:true}).waitFor();
+  await page.getByText("2 个来源").waitFor();
+  const probed = await page.evaluate(() => window.review.searchProbe);
+  assert.ok(probed?.id && probed.model, "the probe uses the saved card and its selected model");
+  await page.getByRole("button",{name:"使用建议：上游 OpenAI Chat 搜索",exact:true}).click();
+  await page.getByRole("combobox",{name:"跨协议搜索方式",exact:true}).getByText("上游 OpenAI Chat 搜索",{exact:true}).waitFor();
+  assert.equal((await save()).chatSearch,"openAi","a suggestion changes the draft only; saving applies it");
+  console.log("PASS search capability check reports actual outcomes and applies a suggestion only to the draft");
 
   await reset("provider");
   await ready();

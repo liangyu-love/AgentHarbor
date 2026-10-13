@@ -101,7 +101,9 @@ export interface NewApiProvider {
   hasAccessToken: boolean;
   hasApiKey: boolean;
   webSearchCapable?: boolean;
+  webSearchModels?: string[];
   protocol: ModelProtocol;
+  chatSearch?: "auto" | "openAi" | "mimo" | "command" | "selected" | "disabled";
   model: string;
   models: NewApiModel[];
   contextWindow: number | null;
@@ -132,10 +134,26 @@ export interface ProviderProbeEvent {
   status: number | null;
   text: string;
 }
+export interface SearchProbeAttempt {
+  format: "responses" | "messages" | "mimoChat" | "openAiChat";
+  outcome: "executed" | "failed" | "notExecuted" | "misclassified" | "rejected" | "error";
+  status: number | null;
+  sources: number;
+  detail: string;
+}
+
+export interface SearchProbeReport {
+  model: string;
+  protocol: ModelProtocol;
+  attempts: SearchProbeAttempt[];
+  suggestion: NewApiProvider["chatSearch"] | null;
+}
+
 export interface NewApiRouterView {
   enabled: boolean;
   aggregateModelId?: string | null;
   webSearchProviderId?: string | null;
+  webSearchModelId?: string | null;
   accessMode: CodexAccessMode;
   accountless: boolean;
   port: number;
@@ -171,6 +189,13 @@ export interface RouteAttempt {
   configuredProtocol?: string | null;
   effectiveProtocol?: string | null;
   compatibilityPlan?: string | null;
+  searchCompatibility?: string | null;
+  searchExecutions?: {
+    attemptId: string; providerId: string; providerName: string; model: string;
+    protocol: ModelProtocol; status: number | null; error: string | null;
+    durationMs: number; credential: CredentialSnapshot;
+    modelObservation?: ServedModelObservation | null;
+  }[];
   credential: CredentialSnapshot;
   modelObservation: ServedModelObservation;
 }
@@ -453,6 +478,7 @@ export interface NewApiProviderInput {
   accessToken: string;
   apiKey: string;
   protocol: ModelProtocol;
+  chatSearch?: NewApiProvider["chatSearch"];
   model: string;
   models: NewApiModel[];
   contextWindow: number | null;

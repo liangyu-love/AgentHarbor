@@ -188,7 +188,7 @@ pub fn run(
     result
 }
 
-fn redact(text: &str, config: &newapi::Connection) -> String {
+pub(crate) fn redact(text: &str, config: &newapi::Connection) -> String {
     let mut text = text.to_owned();
     for secret in [&config.api_key, &config.access_token] {
         for token in [
@@ -209,7 +209,7 @@ fn redact(text: &str, config: &newapi::Connection) -> String {
         .collect()
 }
 
-fn error_message(bytes: &[u8]) -> Option<String> {
+pub(crate) fn error_message(bytes: &[u8]) -> Option<String> {
     let value = serde_json::from_slice::<Value>(bytes).ok();
     let message = value
         .as_ref()

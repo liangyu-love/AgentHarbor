@@ -152,14 +152,15 @@ fn chat_to_responses(value: &Value) -> Result<Value, String> {
             "summary": [{ "type": "summary_text", "text": reasoning }],
         }));
     }
-    let text = message.get("content").and_then(Value::as_str).unwrap_or("");
+    let mut text = message.get("content").and_then(Value::as_str).unwrap_or("").to_owned();
+    let annotations = super::search_compat::citations(&mut text, &message["annotations"]);
     if !text.is_empty() {
         output.push(json!({
             "id": item_id("msg"),
             "type": "message",
             "role": "assistant",
             "status": "completed",
-            "content": [{ "type": "output_text", "text": text, "annotations": [] }],
+            "content": [{ "type": "output_text", "text": text, "annotations": annotations }],
         }));
     }
     if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
@@ -175,7 +176,9 @@ fn chat_to_responses(value: &Value) -> Result<Value, String> {
             }));
         }
     }
-    let completion = if let Some(refusal) = message
+    let completion = if message["error_message"].as_str().is_some_and(|message| !message.is_empty()) {
+        Completion::Failed("upstream_search_error")
+    } else if let Some(refusal) = message
         .get("refusal")
         .and_then(Value::as_str)
         .filter(|text| !text.is_empty())
@@ -191,12 +194,16 @@ fn chat_to_responses(value: &Value) -> Result<Value, String> {
             choice.get("finish_reason").and_then(Value::as_str),
         )
     };
-    Ok(finish(
+    let mut response = finish(
         value,
         output,
         value.get("usage").map(openai_usage),
         completion,
-    ))
+    );
+    if let Some(usage) = value["usage"].get("web_search_usage") {
+        response["usage"]["web_search_usage"] = usage.clone();
+    }
+    Ok(response)
 }
 
 fn anthropic_to_responses(value: &Value) -> Result<Value, String> {
@@ -205,19 +212,32 @@ fn anthropic_to_responses(value: &Value) -> Result<Value, String> {
         .get("content")
         .and_then(Value::as_array)
         .ok_or("protocol.errors.invalidResponse")?;
+    // Claude splits a cited answer into many text blocks. Consecutive blocks
+    // form one message whose sources are listed once at its end.
+    fn flush_text(output: &mut Vec<Value>, run: &mut Option<(String, Vec<Value>)>) {
+        if let Some((mut text, citations)) = run.take() {
+            let annotations = super::search_compat::citations(&mut text, &Value::Array(citations));
+            if !text.is_empty() {
+                output.push(json!({
+                    "id": item_id("msg"),
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{ "type": "output_text", "text": text, "annotations": annotations }],
+                }));
+            }
+        }
+    }
+    let mut text_run: Option<(String, Vec<Value>)> = None;
     for block in blocks {
+        if block["type"] != "text" {
+            flush_text(&mut output, &mut text_run);
+        }
         match block.get("type").and_then(Value::as_str) {
             Some("text") => {
-                let text = block.get("text").and_then(Value::as_str).unwrap_or("");
-                if !text.is_empty() {
-                    output.push(json!({
-                        "id": item_id("msg"),
-                        "type": "message",
-                        "role": "assistant",
-                        "status": "completed",
-                        "content": [{ "type": "output_text", "text": text, "annotations": [] }],
-                    }));
-                }
+                let run = text_run.get_or_insert_with(Default::default);
+                run.0.push_str(block.get("text").and_then(Value::as_str).unwrap_or(""));
+                run.1.extend(block["citations"].as_array().into_iter().flatten().cloned());
             }
             Some("thinking") => {
                 let text = block.get("thinking").and_then(Value::as_str).unwrap_or("");
@@ -240,9 +260,23 @@ fn anthropic_to_responses(value: &Value) -> Result<Value, String> {
                     "status": "completed",
                 }));
             }
+            Some("server_tool_use") if block["name"] == "web_search" => {
+                let result = blocks.iter().find(|result| result["type"] == "web_search_tool_result"
+                    && result["tool_use_id"] == block["id"])
+                    .ok_or("protocol.errors.invalidResponse")?;
+                let search = super::web_search::history_call(block, result)
+                    .map_err(|_| "protocol.errors.invalidResponse")?;
+                output.push(search);
+            }
+            Some("web_search_tool_result") => {
+                if !blocks.iter().any(|call| call["type"] == "server_tool_use" && call["id"] == block["tool_use_id"]) {
+                    return Err("protocol.errors.invalidResponse".into());
+                }
+            }
             _ => {}
         }
     }
+    flush_text(&mut output, &mut text_run);
     Ok(finish(
         value,
         output,
@@ -318,11 +352,13 @@ fn anthropic_usage(usage: &Value) -> Value {
         .get("output_tokens")
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    json!({
+    let mut mapped = json!({
         "input_tokens": input,
         "output_tokens": output,
         "total_tokens": input + output,
-    })
+    });
+    if let Some(search) = usage.get("server_tool_use") { mapped["server_tool_use"] = search.clone(); }
+    mapped
 }
 
 fn item_id(prefix: &str) -> String {

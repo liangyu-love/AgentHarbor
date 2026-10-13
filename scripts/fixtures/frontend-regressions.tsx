@@ -263,7 +263,7 @@ api.routing.diagnostics = async () => {
   attempts: [{ providerId: "relay", providerName: "Synthetic channel", upstreamModel: "claude-opus-5-5-kiro", matchedModel: "claude-opus-5-5", protocol: "anthropicMessages",
     sent: { "thinking.type": "adaptive", "output_config.effort": "high", max_tokens: 8192 }, status: 200, failureStage: null, error: null, durationMs: 830,
     catalogRevision: "abcdef1234567890", matchKind: "normalized", pricingStatus: "priced", pricingSource: "catalogReference",
-    attemptId: "synthetic-attempt", selectionReason: "active_provider", retryReason: null,
+    attemptId: "synthetic-attempt", selectionReason: "active_provider", retryReason: null, searchCompatibility: "optional_search_omitted",
     credential: { kind: "providerApiKey", status: "recorded", reason: null, versionFingerprint: "fixture-version", accountId: null, accountStatus: "not_recorded", label: null },
     modelObservation: { servedModel: "claude-opus-5-5-kiro", modelMatchStatus: "same", modelMatchBasis: "raw_exact", unknownReason: null, conflictingModel: null } }] };
   return controls.review.desktopDiagnostics ? [base, { ...base, id: "desktop-route", clientSource: "claudeDesktop",
@@ -376,7 +376,7 @@ api.routing.applyCapabilityClear = async preview => {
   (controls.review.clearedFields ??= []).push(preview.field);
   return { applied: { state, applied: null }, refreshedPreview: null };
 };
-api.routing.setWebSearchProvider = async providerId => { state = { ...state, router: { ...state.router, webSearchProviderId: providerId } }; return { state, applied: null }; };
+api.routing.setWebSearchProvider = async (providerId, modelId = null) => { state = { ...state, router: { ...state.router, webSearchProviderId: providerId, webSearchModelId: modelId } }; return { state, applied: null }; };
 api.loadSnapshot = async () => ({ data: { status: {
   paths: { codexHome: "C:/synthetic/codex", authExists: true, registryExists: true, sessionsExists: true },
   api: { proxy: { mode: "manual", url: "http://127.0.0.1:7890" } },
@@ -736,6 +736,13 @@ api.providers.revealApiKey = id => {
 api.providers.save = async input => {
   controls.review.saved = input;
   return { state, applied: controls.review.savedApplied ?? null };
+};
+api.providers.probeSearch = async (id, model) => {
+  controls.review.searchProbe = { id, model };
+  return { model, protocol: "chatCompletions", suggestion: "openAi", attempts: [
+    { format: "mimoChat", outcome: "rejected", status: 400, sources: 0, detail: "Param Incorrect" },
+    { format: "openAiChat", outcome: "executed", status: 200, sources: 2, detail: "Rust 1.99 shipped." },
+  ] };
 };
 
 function ProviderFixture({ mixed = false }: { mixed?: boolean }) {

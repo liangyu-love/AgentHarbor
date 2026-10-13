@@ -34,6 +34,21 @@ pub(super) fn request_from_responses(
     target: ModelProtocol,
     value: &Value,
 ) -> Result<Value, String> {
+    request_from_responses_with_search(target, value, None)
+}
+
+pub(super) fn request_from_responses_with_search(
+    target: ModelProtocol,
+    value: &Value,
+    search: Option<super::ChatSearch>,
+) -> Result<Value, String> {
+    let prepared = super::search_compat::prepare(target, value, search)?;
+    let mut body = request_without_search(target, &prepared.value)?;
+    prepared.apply(&mut body);
+    Ok(body)
+}
+
+fn request_without_search(target: ModelProtocol, value: &Value) -> Result<Value, String> {
     let object = value.as_object().ok_or("protocol.errors.invalidRequest")?;
     let model = object
         .get("model")
@@ -244,6 +259,11 @@ fn messages_from_responses(
             let mut pending_calls: Vec<Value> = Vec::new();
             for item in items {
                 match item.get("type").and_then(Value::as_str) {
+                    Some("web_search_call") => {
+                        flush_calls(target, &mut messages, &mut pending_calls)?;
+                        let readable = super::search_compat::readable_history(item)?;
+                        messages.push(json!({"role":"assistant","content":content_of(target, readable.get("content"))?}));
+                    }
                     Some("function_call") => {
                         let name = item.get("name").and_then(Value::as_str).unwrap_or_default();
                         pending_calls.push(json!({
@@ -677,6 +697,11 @@ mod tests {
                 json!({"type":"function"}),
                 json!({"type":"function","name":"lookup","parameters":[]}),
             ] {
+                if tool["type"] == "web_search" && target == ModelProtocol::AnthropicMessages {
+                    let translated = request_from_responses(target, &json!({"model":"m","input":"hi","tools":[tool]})).unwrap();
+                    assert_eq!(translated["tools"][0]["type"], "web_search_20250305");
+                    continue;
+                }
                 let result = request_from_responses(
                     target,
                     &json!({"model":"m","input":"hi","tools":[tool]}),
@@ -691,12 +716,18 @@ mod tests {
             for item in [
                 json!({"type":"custom_tool_call","name":"apply_patch","input":"patch"}),
                 json!({"type":"custom_tool_call_output","call_id":"c","output":"done"}),
-                json!({"type":"web_search_call","status":"completed"}),
                 json!({"type":"item_reference","id":"x"}),
                 json!({"type":"future_item","role":"assistant","content":"important"}),
             ] {
                 let result = request_from_responses(target, &json!({"model":"m","input":[item]}));
                 assert_eq!(result.unwrap_err(), "protocol.errors.unsupportedContent");
+            }
+            // A stored search stays readable context even without the id or
+            // action Codex may drop; it must never fail the following turns.
+            for item in [json!({"type":"web_search_call","status":"completed"}),
+                json!({"type":"web_search_call","action":{"type":"other"}})] {
+                let readable = request_from_responses(target, &json!({"model":"m","input":[item]})).unwrap();
+                assert!(readable.to_string().contains("[Previous web search]"), "{readable}");
             }
             let result = request_from_responses(
                 target,

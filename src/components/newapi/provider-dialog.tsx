@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
 import { mergeModelCatalog } from "@/lib/provider-models";
-import type { CompressionPolicy, ModelProtocol, NewApiProvider, NewApiStateChange, NewApiModel } from "@/types/newapi";
+import type { CompressionPolicy, ModelProtocol, NewApiProvider, NewApiStateChange, NewApiModel, SearchProbeReport } from "@/types/newapi";
 import { ProviderModelEditor } from "@/components/newapi/provider-model-editor";
 import { useModelResolutions } from "@/components/newapi/use-model-resolutions";
 import { ProviderPresetGallery } from "@/components/newapi/provider-preset-gallery";
@@ -24,6 +24,7 @@ interface ProviderDraft {
   baseUrl: string;
   apiKey: string;
   protocol: ModelProtocol;
+  chatSearch: NonNullable<NewApiProvider["chatSearch"]>;
   model: string;
   contextWindow: string;
   compressionMode: "inherit" | "percent" | "tokens" | "clientDefault";
@@ -40,6 +41,7 @@ const emptyDraft: ProviderDraft = {
   baseUrl: "",
   apiKey: "",
   protocol: DEFAULT_PROTOCOL,
+  chatSearch: "auto",
   model: "",
   contextWindow: "",
   compressionMode: "inherit",
@@ -56,6 +58,7 @@ const fromProvider = (provider: NewApiProvider): ProviderDraft => {
     baseUrl: provider.baseUrl,
     apiKey: "",
     protocol: provider.protocol,
+    chatSearch: provider.chatSearch ?? "auto",
     model: provider.model,
     contextWindow: provider.contextWindow?.toString() ?? "",
     compressionMode: compression.mode,
@@ -228,6 +231,7 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
   const [models, setModels] = useState<NewApiModel[]>([]);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [searchProbe, setSearchProbe] = useState<{ running: boolean; report?: SearchProbeReport; error?: string }>({ running: false });
   const modelRequest = useRef(0);
   const fetchScope = JSON.stringify([open, provider?.id, draft.baseUrl.trim(), draft.apiKey, draft.protocol]);
   const currentFetchScope = useRef(fetchScope);
@@ -244,6 +248,7 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
       setDraft(provider ? fromProvider(provider) : emptyDraft);
       setPreset(null);
       setError(null);
+      setSearchProbe({ running: false });
       setShowAdvanced(!!provider && (!!provider.userId || provider.hasAccessToken || !!provider.contextWindow || (provider.compression?.mode ?? "inherit") !== "inherit" || !!provider.catalogProviders?.length || (provider.priceMultiplier ?? 1) !== 1));
       setModels(provider?.models.length ? provider.models : provider?.model ? [{
         id: provider.model,
@@ -346,6 +351,7 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
         apiKey: draft.apiKey,
         protocol: draft.protocol,
         model: draft.model,
+        chatSearch: draft.chatSearch,
         models,
         contextWindow: optionalNumber(draft.contextWindow, "newapi.errors.context"),
         compression,
@@ -369,7 +375,8 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
     }
   };
   const hasAdvancedConfigured =
-    !!draft.contextWindow
+    draft.chatSearch !== "auto"
+    || !!draft.contextWindow
     || draft.compressionMode !== "inherit"
     || Number(draft.priceMultiplier || 1) !== 1
     || !!draft.catalogProviders.trim();
@@ -516,6 +523,60 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
 
               {showAdvanced && (
                 <div className="grid gap-3 rounded-xl bg-muted/25 p-3 sm:grid-cols-2">
+                  <div className="space-y-1.5 sm:col-span-2">
+                    <Label htmlFor="newapi-provider-chat-search" className="text-[13px]">{t("newapi.chatSearch.title")}</Label>
+                    <Select value={draft.chatSearch} disabled={saving}
+                      onValueChange={value => setDraft(current => ({ ...current, chatSearch: value as ProviderDraft["chatSearch"] }))}>
+                      <SelectTrigger id="newapi-provider-chat-search"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {(["auto", "openAi", "mimo", "selected", "command", "disabled"] as const).map(mode =>
+                          <SelectItem key={mode} value={mode}>{t(`newapi.chatSearch.${mode}`)}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">{t("newapi.chatSearch.hint")}</p>
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      <Button type="button" size="sm" variant="outline"
+                        disabled={saving || searchProbe.running || !provider?.id || !!provider?.accountSource || !draft.model.trim()}
+                        onClick={async () => {
+                          if (!provider?.id) return;
+                          setSearchProbe({ running: true });
+                          try {
+                            setSearchProbe({ running: false, report: await api.providers.probeSearch(provider.id, draft.model.trim()) });
+                          } catch (cause) {
+                            setSearchProbe({ running: false, error: t(String(cause), { defaultValue: String(cause) }) });
+                          }
+                        }}>
+                        {searchProbe.running && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />}
+                        {t(searchProbe.running ? "newapi.searchProbe.running" : "newapi.searchProbe.action")}
+                      </Button>
+                      <span className="text-xs text-muted-foreground">{t(provider?.id ? "newapi.searchProbe.hint" : "newapi.searchProbe.saveFirst")}</span>
+                    </div>
+                    {searchProbe.error && <p className="text-xs text-destructive" role="alert">{searchProbe.error}</p>}
+                    {searchProbe.report && (
+                      <div className="space-y-1 rounded-lg border border-border/60 bg-card/60 p-2 text-xs" aria-live="polite">
+                        {searchProbe.report.attempts.map(attempt => (
+                          <p key={attempt.format} className="min-w-0 break-words">
+                            <span className="font-medium">{t("newapi.searchProbe.formats." + attempt.format)}</span>
+                            {" · "}
+                            <span className={attempt.outcome === "executed" ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground"}>
+                              {t("newapi.searchProbe.outcomes." + attempt.outcome)}
+                            </span>
+                            {attempt.status !== null && " · HTTP " + attempt.status}
+                            {attempt.sources > 0 && " · " + t("newapi.searchProbe.sources", { count: attempt.sources })}
+                            {attempt.detail && <span className="block text-muted-foreground">{attempt.detail}</span>}
+                          </p>
+                        ))}
+                        {searchProbe.report.suggestion && searchProbe.report.suggestion !== draft.chatSearch ? (
+                          <Button type="button" size="sm" variant="secondary" className="mt-1"
+                            onClick={() => setDraft(current => ({ ...current, chatSearch: searchProbe.report!.suggestion! }))}>
+                            {t("newapi.searchProbe.apply", { mode: t("newapi.chatSearch." + searchProbe.report.suggestion) })}
+                          </Button>
+                        ) : !searchProbe.report.attempts.some(attempt => attempt.outcome === "executed") && (
+                          <p className="text-muted-foreground">{t("newapi.searchProbe.none")}</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
                   {field("contextWindow", "newapi.contextWindow", { numeric: true, placeholder: t("newapi.useDefault") })}
                   <div className="space-y-1.5">
                     <Label htmlFor="newapi-provider-compression" className="text-[13px]">{t("newapi.compression.providerLevel")}</Label>

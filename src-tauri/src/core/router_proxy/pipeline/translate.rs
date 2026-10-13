@@ -88,7 +88,10 @@ pub(in crate::core::router_proxy) struct PreparedForward {
 
 impl PreparedForward {
     pub(in crate::core::router_proxy) fn native(body: Option<Bytes>) -> Self {
-        Self { body, input: Vec::new(), namespaces: Default::default(), response_options: Default::default(),
+        let required = body.as_deref().and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())
+            .is_some_and(|value| protocol::web_search::required(&value));
+        Self { body, input: Vec::new(), namespaces: Default::default(),
+            response_options: protocol::ResponseOptions { search_required:required, ..Default::default() },
         }
     }
 }
@@ -97,22 +100,24 @@ impl PreparedForward {
 /// namespaced and freeform ones the translation itself handles.
 const PORTABLE_TOOLS: [&str; 3] = ["function", "namespace", "custom"];
 /// History items of hosted tools, which only a Responses provider can read.
-const HOSTED_ITEMS: [&str; 4] = ["web_search_call", "image_generation_call", "tool_search_call", "tool_search_output"];
+const HOSTED_ITEMS: [&str; 3] = ["image_generation_call", "tool_search_call", "tool_search_output"];
 
 /// The request without hosted tools, their tool choice and their history
 /// items; `None` when it has none of them.
-fn without_hosted_tools(value: &Value) -> Option<Value> {
+fn without_hosted_tools(value: &Value, keep_search: bool) -> Option<Value> {
     let mut stripped = value.clone();
     let mut changed = false;
     if let Some(tools) = stripped.get_mut("tools").and_then(Value::as_array_mut) {
         let before = tools.len();
-        tools.retain(|tool| tool["type"].as_str().is_some_and(|kind| PORTABLE_TOOLS.contains(&kind)));
+        tools.retain(|tool| tool["type"].as_str().is_some_and(|kind| PORTABLE_TOOLS.contains(&kind))
+            || (keep_search && protocol::web_search::is_search(tool)));
         changed |= tools.len() != before;
     }
     if let Some(object) = stripped.as_object_mut() {
         let hosted_choice = object.get("tool_choice").and_then(Value::as_object)
             .and_then(|choice| choice.get("type")).and_then(Value::as_str)
-            .is_some_and(|kind| !PORTABLE_TOOLS.contains(&kind) && kind != "allowed_tools");
+            .is_some_and(|kind| !PORTABLE_TOOLS.contains(&kind) && kind != "allowed_tools"
+                && !(keep_search && kind.starts_with("web_search")));
         if hosted_choice {
             object.remove("tool_choice");
             changed = true;
@@ -132,11 +137,69 @@ fn without_hosted_tools(value: &Value) -> Option<Value> {
     changed.then_some(stripped)
 }
 
+/// A native endpoint can advertise the protocol without implementing search.
+/// Retry only a specifically rejected optional declaration, never a forced call.
+pub(in crate::core::router_proxy) fn optional_native_search(body: &[u8]) -> Option<Bytes> {
+    let mut value: Value = serde_json::from_slice(body).ok()?;
+    let tools = value["tools"].as_array().cloned().unwrap_or_default();
+    let searches: Vec<_> = tools.iter().filter(|tool| protocol::web_search::is_search(tool)).collect();
+    let forced = protocol::web_search::required(&value);
+    if forced || (searches.is_empty() && value.get("web_search_options").is_none()) { return None; }
+    let object = value.as_object_mut()?;
+    object.remove("web_search_options");
+    if let Some(tools) = object.get_mut("tools").and_then(Value::as_array_mut) {
+        tools.retain(|tool| !protocol::web_search::is_search(tool));
+        if tools.is_empty() {
+            object.remove("tools");
+            object.remove("tool_choice");
+        }
+    }
+    serde_json::to_vec(&value).ok().map(Bytes::from)
+}
+
+/// Gate retries on a single structured error, including gateways that wrap an
+/// HTTP 400 in an SSE data frame. Multiple payloads (possibly executed tools)
+/// cannot parse as one JSON object and must never trigger a search retry.
+fn search_error(body: &[u8]) -> Option<Value> {
+    serde_json::from_slice(body).ok().or_else(|| {
+        let data = std::str::from_utf8(body).ok()?.trim_start_matches('\u{feff}').lines()
+            .filter_map(|line| line.strip_prefix("data:").map(str::trim_start))
+            .collect::<Vec<_>>().join("\n");
+        serde_json::from_str(&data).ok()
+    })
+}
+
+pub(in crate::core::router_proxy) fn rejected_native_search(status: StatusCode, body: &[u8]) -> bool {
+    if !matches!(status, StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY) { return false; }
+    let Some(value) = search_error(body) else { return false; };
+    let error = &value["error"];
+    // MiMo puts the reason in `param`: "web search tool found in the request
+    // body, but webSearchEnabled is false" under message "Param Incorrect".
+    let text = ["code", "type", "message", "param"].iter()
+        .filter_map(|key| error[*key].as_str()).collect::<Vec<_>>().join(" ").to_ascii_lowercase();
+    if ["permission", "unauthorized", "api key", "api_key", "authentication", "quota", "rate_limit", "rate limit", "billing", "too_many_requests"].iter()
+        .any(|word| text.contains(word)) { return false; }
+    ["web_search", "web search", "websearch"].iter().any(|word| text.contains(word))
+        && ["unsupported", "not supported", "unknown tool", "unknown parameter", "unknown field", "unrecognized",
+            "not enabled", "enabled is false", "is disabled", "not available"].iter().any(|word| text.contains(word))
+}
+
+/// Some Gemini relays cannot combine hosted and client tools. Their standard
+/// protocol ignores the native Google ToolConfig flag; separate execution on
+/// the same provider preserves both capabilities without assuming a backend.
+pub(in crate::core::router_proxy) fn rejected_mixed_search(status: StatusCode, body: &[u8]) -> bool {
+    if !matches!(status, StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY) {return false;}
+    let Some(value) = search_error(body) else {return false;};
+    let message = value["error"]["message"].as_str().unwrap_or_default().to_ascii_lowercase();
+    message.trim().trim_end_matches('.') == "please enable tool_config.include_server_side_tool_invocations to use built-in tools with function calling"
+}
+
 pub(in crate::core::router_proxy) fn upstream_body(
     destination: &Destination,
     body: Option<Bytes>) -> ForwardResult<PreparedForward> {
     let (
         Destination::Provider {
+            provider,
             model_override,
             upstream_protocol,
             translation,
@@ -157,18 +220,41 @@ pub(in crate::core::router_proxy) fn upstream_body(
                 value["model"] = json!(model);
             }
             let adapter = WireAdapter::new(*upstream_protocol);
-            let adapted = match adapter.encode_request(translation.from, &value) {
+            let chat_search = provider.chat_search.resolve(&provider.base_url,
+                value["model"].as_str().unwrap_or(&provider.model));
+            let had_search = value["tools"].as_array().into_iter().flatten().any(protocol::web_search::is_search);
+            let forced_search = protocol::web_search::required(&value);
+            let mut search_downgraded = false;
+            let adapted = match adapter.encode_request_with_chat_search(translation.from, &value, chat_search) {
                 // Codex offers its built-in tools (web search, image generation,
                 // tool search) with every request. A relay on another protocol
                 // cannot run them, so it gets the request without them rather
                 // than a refusal of the whole turn.
                 Err(error) if translation.from == router::ModelProtocol::Responses
-                    && matches!(error.code.as_str(), "protocol.errors.unsupportedHostedTool" | "protocol.errors.unsupportedContent") =>
+                    && matches!(error.code.as_str(), "protocol.errors.unsupportedHostedTool" | "protocol.errors.unsupportedContent" | "protocol.errors.unsupportedSearchOptions")
+                    =>
                 {
-                    match without_hosted_tools(&value) {
-                        Some(stripped) => adapter.encode_request(translation.from, &stripped),
+                    let keep_search = error.code != "protocol.errors.unsupportedSearchOptions"
+                        && (*upstream_protocol == router::ModelProtocol::AnthropicMessages || chat_search.is_some());
+                    search_downgraded = had_search && !keep_search;
+                    match without_hosted_tools(&value, keep_search) {
+                        _ if (forced_search && !keep_search)
+                            || (value["tool_choice"] == "none" && chat_search == Some(protocol::ChatSearch::OpenAi)) => Err(error),
+                        Some(stripped) => adapter.encode_request_with_chat_search(translation.from, &stripped, chat_search),
                         None => Err(error),
                     }
+                }
+                Err(error) if translation.from == router::ModelProtocol::AnthropicMessages && had_search && !forced_search
+                    && !(value["tool_choice"]["type"] == "none" && chat_search == Some(protocol::ChatSearch::OpenAi))
+                    && matches!(error.code.as_str(), "protocol.errors.unsupportedHostedTool" | "protocol.errors.unsupportedSearchOptions") => {
+                    let mut stripped = value.clone();
+                    stripped["tools"].as_array_mut().unwrap().retain(|tool| !protocol::web_search::is_search(tool));
+                    if stripped["tools"].as_array().is_some_and(Vec::is_empty) {
+                        stripped.as_object_mut().unwrap().remove("tools");
+                        stripped.as_object_mut().unwrap().remove("tool_choice");
+                    }
+                    search_downgraded = true;
+                    adapter.encode_request_with_chat_search(translation.from, &stripped, chat_search)
                 }
                 other => other,
             };
@@ -183,7 +269,7 @@ pub(in crate::core::router_proxy) fn upstream_body(
                         "protocol.errors.unsupportedToolDefinition" =>
                             "cannot translate request: unsupported hosted/custom tool, tool choice or function schema; select a provider using the caller's native protocol",
                         "protocol.errors.unsupportedHostedTool" =>
-                            "this target protocol has no equivalent hosted tool; WebSearch requires a Responses or native Messages provider with search support",
+                            "this target has no compatible hosted search contract; configure a supported native search format or an explicitly selected search backend",
                         "protocol.errors.unsupportedSearchOptions" =>
                             "cannot translate WebSearch options without loss: unsupported tool version, programmatic caller, domain exclusion or result policy",
                         "protocol.errors.unansweredToolCall" =>
@@ -202,12 +288,14 @@ pub(in crate::core::router_proxy) fn upstream_body(
                     },
                 )
             })?;
-            let AdapterRequest::Translated(rewritten) = adapted else {
+            let AdapterRequest::Translated(mut rewritten) = adapted else {
                 return Err((
                     StatusCode::BAD_REQUEST,
                     "invalid provider protocol translation",
                 ));
             };
+            rewritten.response_options.search_downgraded = search_downgraded;
+            rewritten.response_options.search_required = forced_search;
             if translation.from == router::ModelProtocol::Responses {
                 // Check the expanded history too: a cached continuation may carry
                 // items that the target protocol cannot represent without loss.
@@ -281,6 +369,52 @@ pub(in crate::core::router_proxy) fn prepare_relay_body(
 mod tests {
     use super::*;
 
+    #[test]
+    fn mixed_search_recovery_requires_the_specific_configuration_error() {
+        let message = "Please enable tool_config.include_server_side_tool_invocations to use Built-in tools with Function calling.";
+        for (status,text,expected) in [(400,message,true),(422,message,true),(401,message,false),(429,message,false),(503,message,false),
+            (400,"invalid function schema",false),(400,"tool_config.include_server_side_tool_invocations is not supported",false)] {
+            assert_eq!(rejected_mixed_search(StatusCode::from_u16(status).unwrap(),
+                json!({"error":{"message":text}}).to_string().as_bytes()),expected);
+        }
+        assert!(!rejected_mixed_search(StatusCode::BAD_REQUEST,message.as_bytes()));
+    }
+
+    #[test]
+    fn optional_search_retry_is_specific_and_preserves_client_tools() {
+        let source = json!({"tools":[{"type":"web_search"},{"type":"function","function":{"name":"web_search","parameters":{}}}],
+            "tool_choice":"auto","messages":[{"role":"user","content":"hi"}]});
+        let stripped: Value = serde_json::from_slice(&optional_native_search(source.to_string().as_bytes()).unwrap()).unwrap();
+        assert_eq!(stripped["tools"], json!([source["tools"][1]]));
+        assert_eq!(stripped["messages"], source["messages"]);
+        for choice in [json!({"type":"web_search"}),json!({"type":"allowed_tools","mode":"required","tools":[{"type":"web_search"}]})] {
+            let mut forced = source.clone(); forced["tool_choice"] = choice;
+            assert!(optional_native_search(forced.to_string().as_bytes()).is_none());
+        }
+        for (status, message, expected) in [
+            (400,"web_search is not supported",true), (422,"unknown tool web_search",true),
+            (400,"web_search quota exceeded: unsupported account",false),
+            (400,"web_search permission denied; unsupported plan",false),
+            (401,"web_search is not supported",false), (429,"web_search is not supported",false),
+            (503,"web_search is not supported",false), (400,"invalid function schema",false),
+        ] {
+            assert_eq!(rejected_native_search(StatusCode::from_u16(status).unwrap(),
+                json!({"error":{"message":message}}).to_string().as_bytes()),expected,"{status}: {message}");
+        }
+        let error = json!({"error":{"code":"responses_feature_not_supported","message":"tool type 'web_search' is not supported by this gateway phase.","type":"unsupported_feature"}});
+        for wire in [format!("data:{error}\n\n"),format!("\u{feff}event: error\r\ndata: {error}\r\n\r\n")] {
+            assert!(rejected_native_search(StatusCode::BAD_REQUEST,wire.as_bytes()));
+            assert!(!rejected_native_search(StatusCode::UNAUTHORIZED,wire.as_bytes()));
+            assert!(!rejected_native_search(StatusCode::TOO_MANY_REQUESTS,wire.as_bytes()));
+        }
+        let partial = format!("data: {{\"type\":\"web_search_call\",\"status\":\"completed\"}}\n\ndata: {error}\n\n");
+        assert!(!rejected_native_search(StatusCode::BAD_REQUEST,partial.as_bytes()));
+        // Captured from MiMo Chat with the account's search plugin switched off.
+        let mimo = br#"{"error":{"code":"400","message":"Param Incorrect","param":"web search tool found in the request body, but webSearchEnabled is false","type":""}}"#;
+        assert!(rejected_native_search(StatusCode::BAD_REQUEST,mimo));
+        assert!(!rejected_native_search(StatusCode::BAD_REQUEST,br#"{"error":{"message":"Param Incorrect","param":"messages[0].content"}}"#));
+    }
+
     fn destination(target: router::ModelProtocol) -> Destination {
         Destination::Provider {
             provider: Box::new(router::Provider::default()),
@@ -288,6 +422,18 @@ mod tests {
             model_override: Some("relay-model".into()),
             translation: protocol::Translation::between(router::ModelProtocol::Responses, target),
         }
+    }
+
+    #[test]
+    fn review_claude_disabled_search_is_not_downgraded_to_always_search_chat() {
+        let mut target = destination(router::ModelProtocol::ChatCompletions);
+        if let Destination::Provider {provider,translation,..} = &mut target {
+            provider.chat_search = protocol::ChatSearch::OpenAi;
+            *translation = protocol::Translation::between(router::ModelProtocol::AnthropicMessages,router::ModelProtocol::ChatCompletions);
+        }
+        let request = json!({"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],
+            "tools":[{"type":"web_search_20250305","name":"web_search"}],"tool_choice":{"type":"none"}});
+        assert!(upstream_body(&target,Some(Bytes::from(request.to_string()))).is_err());
     }
 
     #[test]
@@ -307,9 +453,12 @@ mod tests {
             let prepared = upstream_body(&destination(target), Some(Bytes::from(codex.to_string())))
                 .unwrap_or_else(|error| panic!("{target:?}: {error:?}"));
             let body: Value = serde_json::from_slice(&prepared.body.unwrap()).unwrap();
-            assert_eq!(body["tools"].as_array().unwrap().len(), 1, "{target:?} keeps the function only");
+            let native_search = target == router::ModelProtocol::AnthropicMessages;
+            assert_eq!(body["tools"].as_array().unwrap().len(), if native_search {2} else {1}, "{target:?}");
             let text = body.to_string();
-            assert!(!text.contains("web_search") && !text.contains("image_generation"), "{target:?}: {text}");
+            assert_eq!(text.contains("web_search"), native_search, "{target:?}: {text}");
+            assert!(!text.contains("image_generation"), "{target:?}: {text}");
+            assert_eq!(prepared.response_options.search_downgraded, !native_search);
             assert!(text.contains("go on"), "the conversation itself goes on");
         }
         // The protocol layer itself still refuses; only the router leaves them out.
@@ -319,5 +468,31 @@ mod tests {
         // Nothing hosted to leave out: a refusal stays one.
         let lossy = json!({"model": "m", "input": [{"type": "item_reference", "id": "x"}]});
         assert!(upstream_body(&destination(router::ModelProtocol::ChatCompletions), Some(Bytes::from(lossy.to_string()))).is_err());
+    }
+
+    #[test]
+    fn unknown_account_sources_keep_messages_but_cannot_claim_forced_search() {
+        let mut target = destination(router::ModelProtocol::ChatCompletions);
+        if let Destination::Provider { provider, .. } = &mut target {
+            provider.account_source = Some(account_sources::SourceKind::GeminiCli);
+        }
+        let optional = json!({"model":"m","input":"hi","tools":[{"type":"web_search"}],"tool_choice":"auto"});
+        let prepared = upstream_body(&target, Some(Bytes::from(optional.to_string()))).unwrap();
+        assert!(prepared.response_options.search_downgraded);
+        let outgoing: Value = serde_json::from_slice(&prepared.body.unwrap()).unwrap();
+        assert_eq!(outgoing["messages"][0]["content"], "hi");
+        assert!(outgoing.get("tools").is_none());
+        let mut forced = optional;
+        forced["tool_choice"] = json!({"type":"web_search"});
+        assert_eq!(upstream_body(&target, Some(Bytes::from(forced.to_string()))).unwrap_err().0, StatusCode::BAD_REQUEST);
+        if let Destination::Provider { translation, .. } = &mut target {
+            *translation = protocol::Translation::between(router::ModelProtocol::AnthropicMessages, router::ModelProtocol::ChatCompletions);
+        }
+        let claude = json!({"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],
+            "tools":[{"type":"web_search_20250305","name":"web_search"}],"tool_choice":{"type":"auto"}});
+        assert!(upstream_body(&target, Some(Bytes::from(claude.to_string()))).unwrap().response_options.search_downgraded);
+        let mut forced = claude;
+        forced["tool_choice"] = json!({"type":"tool","name":"web_search"});
+        assert!(upstream_body(&target, Some(Bytes::from(forced.to_string()))).is_err());
     }
 }

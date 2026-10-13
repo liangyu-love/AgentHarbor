@@ -218,7 +218,7 @@ pub(super) async fn execute(
         ));
     }
     let mut plans = Vec::new();
-    // Protocol preflight is shared by members with the same effective egress.
+    // Search contracts belong to the actual member, including account sources.
     // It never restores any candidate's private cache or touches network state.
     let mut preflight = std::collections::HashMap::new();
     let mut last_rejection = None;
@@ -234,14 +234,15 @@ pub(super) async fn execute(
             owner.member_id == member.id
                 && owner.connection_key == resolved.target_key
                 && owner.effective_protocol == router::ModelProtocol::ChatCompletions
-                && owner.configured_protocol == router::ModelProtocol::Responses
+                && matches!(owner.configured_protocol,router::ModelProtocol::Responses | router::ModelProtocol::AnthropicMessages)
         });
         // A Command search turn can choose Chat for a configured Responses
         // member. Keep that exact effective protocol for subsequent history,
         // even when the next request no longer declares the search tool.
-        let compatibility = ingress == router::ModelProtocol::AnthropicMessages
-            && (requirements.search || bound_chat)
-            && resolved.protocol == router::ModelProtocol::Responses
+        let command_selected = hosted_search::Plan::command_enabled(&resolved.provider,store);
+        let compatibility = matches!(ingress,router::ModelProtocol::AnthropicMessages | router::ModelProtocol::Responses)
+            && ((requirements.search && command_selected) || bound_chat)
+            && matches!(resolved.protocol,router::ModelProtocol::Responses | router::ModelProtocol::AnthropicMessages)
             && router::supports_command_search(&resolved.provider)
             && resolved.provider.supports_model_protocol(
                 &member.actual_model_id,
@@ -257,35 +258,44 @@ pub(super) async fn execute(
             trace.skip_member(&member.id, "count_tokens_requires_messages");
             continue;
         }
-        if let Err(reason) = requirements.admit(&resolved, effective) {
+        let mut member_requirements = requirements.clone();
+        let probe_destination = Destination::Provider {provider:Box::new(resolved.provider.clone()),model_override:Some(member.actual_model_id.clone()),
+            upstream_protocol:effective,translation:protocol::Translation::between(ingress,effective)};
+        let delegated = if requirements.search && !count_tokens {
+            match hosted_search::Plan::delegated(&probe_destination,store,original.as_deref()) {
+                Ok(plan) => plan.map(|plan| plan.normalized),
+                Err(_) => {last_rejection=Some("request_not_representable");trace.skip_member(&member.id,"request_not_representable");continue;}
+            }
+        } else {None};
+        // Function-calling metadata does not establish hosted search support.
+        // A locally executed Command search does need function calling.
+        if value["tools"].as_array().is_some_and(|tools| !tools.is_empty() && tools.iter().all(protocol::web_search::is_search)) {
+            member_requirements.tools = (command_selected || delegated.is_some()) && value["tool_choice"] != "none" && value["tool_choice"]["type"] != "none";
+        }
+        if let Err(reason) = member_requirements.admit(&resolved, effective) {
             last_rejection = Some(reason);
             trace.skip_member(&member.id, reason);
             continue;
         }
         if create || compact {
-            let valid = *preflight.entry(effective).or_insert_with(|| {
-                let Some(pair) = protocol::Translation::between(ingress, effective) else {
+            let valid = *preflight.entry((effective,resolved.provider.chat_search,resolved.target_key.clone())).or_insert_with(|| {
+                if protocol::Translation::between(ingress, effective).is_none() && delegated.is_none() {
                     return true;
-                };
-                let destination = Destination::Provider {
-                    provider: Box::new(resolved.provider.clone()),
-                    model_override: Some(member.actual_model_id.clone()),
-                    upstream_protocol: effective,
-                    translation: Some(pair),
-                };
-                let normalized = if ingress == router::ModelProtocol::AnthropicMessages
-                    && effective == router::ModelProtocol::ChatCompletions
-                    && requirements.search
-                {
-                    hosted_search::Plan::prepare(value.clone()).map(|plan| Some(plan.normalized))
+                }
+                let destination = &probe_destination;
+                let normalized = if let Some(normalized) = &delegated {
+                    Ok(Some(normalized.clone()))
+                } else if command_selected && requirements.search {
+                    hosted_search::Plan::for_destination(&destination, original.as_deref()).and_then(|plan| {
+                        match plan { Some(plan) => Ok(Some(plan.normalized)), None => hosted_search::Plan::history_only(&destination,original.clone()) }
+                    })
                 } else {
                     hosted_search::Plan::history_only(&destination, original.clone())
                 };
                 normalized
                     .ok()
                     .flatten()
-                    .and_then(|body| serde_json::from_slice::<Value>(&body).ok())
-                    .is_some_and(|body| protocol::request_body(pair, &body).is_ok())
+                    .is_some_and(|body| upstream_body(&destination,Some(body)).is_ok())
             });
             if !valid {
                 last_rejection = Some("request_not_representable");
@@ -507,6 +517,7 @@ pub(super) async fn execute(
             body: portable_body.clone(),
             ingress,
             resource: resource_id.is_some() || count_tokens,
+            create: create && *method == hyper::Method::POST,
             one_m,
             affinity_key: session_key.as_deref(),
             client_scope,
@@ -522,7 +533,7 @@ pub(super) async fn execute(
             retry_reason: retry_reason.clone(),
             attempt_id: uuid::Uuid::new_v4().to_string(),
             account: account.as_ref(),
-        })?;
+        }).await?;
         // A frozen retry may be vetoed by revocation, never silently updated.
         let current = router::read_store(&context.store_path).map_err(|_| {
             (
@@ -729,16 +740,16 @@ pub(super) async fn execute(
             }
         }
         attempts.commit();
-        if upstream.status().is_success() {
+        drop(decision);
+        let response = prepared.response(upstream, method.clone(), trace.clone(), Some(selected.lease.health())).await.map_err(|error| {
+            if error.1 == "cannot read provider response" { selected.lease.fail(None); }
+            error
+        })?;
+        if response.status().is_success() {
             if let Some(reservation) = binding_reservation.take() {
                 reservation.commit(owner.clone());
             }
         }
-        drop(decision);
-        let response = prepared.response(upstream, trace.clone(), Some(selected.lease.health())).await.map_err(|error| {
-            if error.1 == "cannot read provider response" { selected.lease.fail(None); }
-            error
-        })?;
         return aggregate_output::project(
             response,
             aggregate_output::Projection {

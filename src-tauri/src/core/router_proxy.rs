@@ -13,7 +13,9 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use protocol::adapters::{AdapterRequest, InboundAdapter, OutboundAdapter, WireAdapter};
+use protocol::adapters::{AdapterRequest, InboundAdapter, WireAdapter};
+#[cfg(test)]
+use protocol::adapters::OutboundAdapter;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -303,6 +305,7 @@ pub async fn ensure_running(
     Ok(bound_port)
 }
 
+#[derive(Clone)]
 struct ArcContext {
     bound_port: u16,
     store_path: PathBuf,
@@ -1128,7 +1131,11 @@ async fn handle(mut request: Request<Incoming>, context: Arc<ArcContext>) -> For
                 return Ok(desktop_count_tokens_response(count_body));
             }
         }
-        hosted_search::Plan::command_responses_search_to_chat(&mut destination, body.as_deref());
+        let command_selected = match &destination {
+            Destination::Provider { provider, .. } => hosted_search::Plan::command_enabled(provider,&store),
+            _ => false,
+        };
+        hosted_search::Plan::command_responses_search_to_chat(&mut destination, body.as_deref(), command_selected);
         let request_catalog = desktop_catalog.clone()
             .unwrap_or_else(|| super::models_dev::load(&context.app_data_dir));
         if one_m_context
@@ -1192,10 +1199,11 @@ async fn handle(mut request: Request<Incoming>, context: Arc<ArcContext>) -> For
                 destination: &destination, suffix: &suffix, query: query.as_deref(), headers: &headers,
                 body, ingress: required_protocol.unwrap_or(*upstream_protocol),
                 resource: response_resource || desktop_count_body.is_some(), one_m: one_m_context, affinity_key: affinity_key.as_deref(),
+                create: inference_create,
                 client_scope: desktop_history_scope, identity: identity.unwrap_or_default(),
                 trace: trace.clone(), selection_reason, retry_reason: None, attempt_id,
                 account: account.as_ref(),
-            })?;
+            }).await?;
             // GET /models remains diagnostic-only and does not count as inference.
             if required_protocol.is_none() { prepared.usage = None; }
             if desktop_count_body.is_none() {
@@ -1263,7 +1271,7 @@ async fn handle(mut request: Request<Incoming>, context: Arc<ArcContext>) -> For
             }
             trace.status(response.status().as_u16());
             drop(_decision);
-            let response = prepared.response(response, trace.clone(), None).await?;
+            let response = prepared.response(response, method.clone(), trace.clone(), None).await?;
             return if emulate_compaction {
                 codex_compat::compaction_response(response).await
             } else {
@@ -3539,6 +3547,7 @@ mod tests {
             router::save_provider(
                 &paths,
                 ProviderInput {
+                    chat_search: None,
                     gateway_slug: None,
                     id: Some(provider.id.clone()),
                     name: provider.name,

@@ -65,7 +65,7 @@ fn forced_hosted_search_does_not_allow_a_different_tool_to_satisfy_required() {
 #[test]
 fn hosted_search_rejects_lossy_options_and_invalid_limits() {
     for changes in [json!({"type":"web_search_20991231"}), json!({"blocked_domains":["example.org"]}),
-        json!({"allowed_callers":["code_execution_20260120"]}), json!({"type":"web_search_20260318"}),
+        json!({"allowed_callers":["code_execution_20260120"]}),
         json!({"response_inclusion":"excluded"}), json!({"defer_loading":true}),
         json!({"max_uses":0}), json!({"max_uses":1.5}), json!({"allowed_domains":5})] {
         let mut request = search_request();
@@ -76,6 +76,18 @@ fn hosted_search_rejects_lossy_options_and_invalid_limits() {
     request["tools"][0]["type"] = json!("web_search_20260318");
     request["tools"][0]["allowed_callers"] = json!(["direct"]);
     assert!(request_body(pair(ModelProtocol::Responses), &request).is_ok());
+    // Newer versions default to programmatic callers; without a code
+    // execution tool in the request every call is still direct.
+    for version in ["web_search_20260209", "web_search_20260318"] {
+        let tool = json!({"type":version,"name":"web_search"});
+        assert!(web_search::prepare(ModelProtocol::Responses, &tool, false).is_ok());
+        assert!(web_search::prepare(ModelProtocol::Responses, &tool, true).is_err());
+        let mut request = search_request();
+        request["tools"][0]["type"] = json!(version);
+        request["tools"][0].as_object_mut().unwrap().remove("allowed_callers");
+        assert!(request_body(pair(ModelProtocol::Responses), &request).is_ok(), "{version}");
+    }
+    assert!(web_search::programmatic_callers(&[json!({"type":"code_execution_20260120","name":"code_execution"})]));
 }
 
 #[test]

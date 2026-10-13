@@ -254,6 +254,7 @@ pub fn run() {
             commands::newapi::set_newapi_provider_enabled,
             commands::newapi::set_newapi_provider_network,
             commands::newapi::test_newapi_provider,
+            commands::newapi::probe_newapi_provider_search,
             commands::newapi::fetch_newapi_models,
             commands::newapi::query_newapi_provider_balance,
             commands::newapi::set_newapi_balance_refresh_interval,

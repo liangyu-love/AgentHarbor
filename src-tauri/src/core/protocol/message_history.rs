@@ -250,6 +250,56 @@ fn local_search_name(source: &Value, messages: &[Value]) -> Option<(String, Stri
     ))
 }
 
+fn native_search_span(source: &Value, name: &str, visible_name: &str, protocol: ModelProtocol) -> Option<Vec<Value>> {
+    let mut messages = super::web_search::local_search_history(std::slice::from_ref(source),name,visible_name).ok()?;
+    if protocol == ModelProtocol::AnthropicMessages {return (!messages.is_empty()).then_some(messages)}
+    let placeholders = client_placeholders(source);
+    let count = placeholders.len();
+    if count > 0 {messages.push(json!({"role":"user","content":placeholders}));}
+    let value = super::anthropic::request_body(protocol,&json!({"model":"history","max_tokens":1,"messages":messages})).ok()?;
+    let mut input = value["input"].as_array()?.clone();
+    input.truncate(input.len().checked_sub(count)?);
+    (!input.is_empty()).then_some(input)
+}
+
+fn client_placeholders(source: &Value) -> Vec<Value> {
+    source["content"].as_array().into_iter().flatten().filter(|block| block["type"] == "tool_use")
+        .map(|block| json!({"type":"tool_result","tool_use_id":block["id"],"content":""})).collect()
+}
+
+fn safe_native_search_replay(source: &Value, name: &str, messages: &[Value], protocol: ModelProtocol) -> bool {
+    let mut messages = if protocol == ModelProtocol::AnthropicMessages {messages.to_vec()} else {
+        let mut turns = Vec::new();
+        for item in messages {
+            let turn = match item["type"].as_str() {
+                Some("reasoning") => continue,
+                Some("message") if item["role"] == "assistant" => json!({"role":"assistant","content":item["content"].as_array().into_iter().flatten()
+                    .map(|part| json!({"type":"text","text":part["text"]})).collect::<Vec<_>>()}),
+                Some("function_call") => {
+                    let Some(arguments) = item["arguments"].as_str().and_then(|args| serde_json::from_str::<Value>(args).ok()) else {return false};
+                    json!({"role":"assistant","content":[{"type":"tool_use","id":item["call_id"],"name":item["name"],"input":arguments}]})
+                }
+                Some("function_call_output") => json!({"role":"user","content":[{"type":"tool_result","tool_use_id":item["call_id"],"content":item["output"]}]}),
+                _ => return false,
+            };
+            // Responses splits a single assistant call group into output items.
+            if turn["role"] == "assistant" && turns.last().is_some_and(|turn: &Value| turn["role"] == "assistant") {
+                turns.last_mut().unwrap()["content"].as_array_mut().unwrap().extend(turn["content"].as_array().unwrap().iter().cloned());
+            } else {turns.push(turn)}
+        }
+        turns
+    };
+    let placeholders = client_placeholders(source);
+    let count = placeholders.len();
+    if count > 0 {messages.push(json!({"role":"user","content":placeholders}));}
+    let value = super::anthropic::request_body(ModelProtocol::ChatCompletions,&json!({"model":"history","max_tokens":1,"messages":messages}));
+    value.ok().and_then(|value| value["messages"].as_array().cloned()).is_some_and(|mut messages| {
+        let Some(len) = messages.len().checked_sub(count) else {return false};
+        messages.truncate(len);
+        safe_local_replay(source,name,&messages)
+    })
+}
+
 /// Exact replay may end with unanswered caller tools, but never an unanswered
 /// local search or an extra tool/role absent from the visible reply.
 fn safe_local_replay(source: &Value, name: &str, messages: &[Value]) -> bool {
@@ -372,7 +422,7 @@ pub struct Context {
 /// Extra client identity is independent of provider credentials and visible
 /// conversation content. Aliases and revisions sharing a target cannot reuse
 /// another client's retained private output.
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 pub struct ClientScope<'a> {
     pub client_source: &'a str,
     pub config_identity: &'a str,
@@ -465,16 +515,15 @@ impl Context {
         visible_name: &str,
         messages: &[Value],
     ) {
-        if self.protocol != ModelProtocol::ChatCompletions
-            || visible["role"] != "assistant"
-            || local_search_span(visible, name, visible_name).is_none()
-            || !safe_local_replay(visible, name, messages)
-        {
+        let safe = if self.protocol == ModelProtocol::ChatCompletions {
+            local_search_span(visible,name,visible_name).is_some() && safe_local_replay(visible,name,messages)
+        } else {native_search_span(visible,name,visible_name,self.protocol).is_some() && safe_native_search_replay(visible,name,messages,self.protocol)};
+        if visible["role"] != "assistant" || !safe {
             return;
         }
         let signature = visible_signature(visible);
         let key = self.key(self.messages.len(), signature.as_array().unwrap());
-        let output = json!([{"type":"local_search_replay","name":name,"visible_name":visible_name,"messages":messages}]);
+        let output = json!([{"type":if self.protocol == ModelProtocol::ChatCompletions {"local_search_replay"} else {"native_search_replay"},"name":name,"visible_name":visible_name,"messages":messages}]);
         if let Ok(bytes) = serde_json::to_vec(&output) {
             if let Ok(mut cache) = cache().lock() {
                 cache.record(key, CachedOutput::from(bytes));
@@ -522,6 +571,33 @@ impl Context {
         for (source, signature, output) in restored {
             let output = output.and_then(|bytes| serde_json::from_slice::<Vec<Value>>(&bytes).ok())
                 .filter(|items| !items.is_empty());
+            if self.protocol != ModelProtocol::ChatCompletions {
+                if let Some(replay) = output.as_ref().and_then(|items| items.first()).filter(|item| item["type"] == "native_search_replay") {
+                    let restored = (|| {
+                        let name = replay["name"].as_str()?;
+                        let visible_name = replay["visible_name"].as_str()?;
+                        let replayed = replay["messages"].as_array()?;
+                        if !safe_native_search_replay(source,name,replayed,self.protocol) {return None}
+                        let expected = native_search_span(source,name,visible_name,self.protocol)?;
+                        let items = body[if self.protocol == ModelProtocol::AnthropicMessages {"messages"} else {"input"}].as_array_mut()?;
+                        let found = items[cursor..].windows(expected.len()).position(|items| items == expected.as_slice()).map(|index| (cursor+index,expected.len()))
+                            .or_else(|| (self.protocol == ModelProtocol::AnthropicMessages).then(|| items[cursor..].iter().position(|item| item["role"] == "assistant" && visible_signature(item) == signature)
+                                .map(|index| (cursor+index,1))).flatten())
+                            .or_else(|| {
+                                if self.protocol != ModelProtocol::Responses {return None}
+                                let original = super::anthropic::request_body(ModelProtocol::Responses,&json!({"model":"history","max_tokens":1,"messages":[source]})).ok()?;
+                                let original = original["input"].as_array().filter(|items| !items.is_empty())?;
+                                items[cursor..].windows(original.len()).position(|items| items == original.as_slice()).map(|index| (cursor+index,original.len()))
+                            });
+                        let (index,len) = found?;
+                        items.splice(index..index+len,replayed.iter().cloned());
+                        cursor = index+replayed.len();
+                        Some(())
+                    })();
+                    let _ = restored;
+                    continue;
+                }
+            }
             if self.protocol == ModelProtocol::ChatCompletions {
                 if let Some(messages) = body["messages"].as_array_mut() {
                     let replay = output

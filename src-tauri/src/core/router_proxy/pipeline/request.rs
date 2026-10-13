@@ -3,6 +3,7 @@
 //! from the immutable caller body; private member history never feeds a retry.
 use super::super::*;
 
+#[derive(Clone)]
 pub(in crate::core::router_proxy) struct Input<'a> {
     pub context: &'a ArcContext,
     pub store: &'a router::Store,
@@ -14,6 +15,7 @@ pub(in crate::core::router_proxy) struct Input<'a> {
     pub body: Option<Bytes>,
     pub ingress: router::ModelProtocol,
     pub resource: bool,
+    pub create: bool,
     pub one_m: bool,
     pub affinity_key: Option<&'a str>,
     pub client_scope: Option<protocol::message_history::ClientScope<'a>>,
@@ -54,6 +56,15 @@ pub(in crate::core::router_proxy) struct Prepared {
     pub reply_fix: Option<account_sources::ReplyFix>,
     /// A source that answers the request itself (Cursor's Runs).
     pub exchange: Option<account_sources::cursor::Exchange>,
+    search_retry_allowed: bool,
+    account: Option<account_sources::RequestAuth>,
+    native_fallback: Option<Box<Prepared>>,
+    native_recovery: Option<Box<Prepared>>,
+    deferred_search: Option<hosted_search::Selection>,
+    /// Physical target for learned search behavior (`hosted_search::Learned`).
+    search_key: Option<String>,
+    /// Diagnostics label overriding the one derived from the plan/options.
+    search_label: Option<&'static str>,
 }
 
 /// One attempt's fixed facts, read by every stage.
@@ -83,6 +94,7 @@ struct Draft {
     wire: Option<account_sources::wire::Decoder>,
     reply_fix: Option<account_sources::ReplyFix>,
     exchange: Option<account_sources::cursor::Exchange>,
+    deferred_search: Option<hosted_search::Selection>,
 }
 
 type Stage = fn(&Attempt<'_>, &mut Draft) -> ForwardResult<()>;
@@ -128,7 +140,7 @@ fn beta(attempt: &Attempt<'_>, draft: &mut Draft) -> ForwardResult<()> {
 /// signatures, tool ids) the target protocol cannot carry, per conversation.
 fn history(attempt: &Attempt<'_>, draft: &mut Draft) -> ForwardResult<()> {
     let input = attempt.input;
-    if input.ingress != router::ModelProtocol::AnthropicMessages || attempt.translation.is_none() {
+    if input.ingress != router::ModelProtocol::AnthropicMessages || (attempt.translation.is_none() && !hosted_search::Plan::selected(input.store)) {
         return Ok(());
     }
     draft.history = input.body.as_deref().and_then(|bytes| {
@@ -158,10 +170,36 @@ fn history(attempt: &Attempt<'_>, draft: &mut Draft) -> ForwardResult<()> {
 /// backend that will run it.
 fn search(attempt: &Attempt<'_>, draft: &mut Draft) -> ForwardResult<()> {
     let input = attempt.input;
-    if input.suffix == "messages/count_tokens" {
+    if !input.create || input.resource || !matches!(input.suffix,"responses" | "messages" | "chat/completions") {
         return Ok(());
     }
-    draft.hosted = hosted_search::Plan::for_destination(input.destination, input.body.as_deref())?;
+    if let Some(plan) = hosted_search::Plan::delegated(input.destination,input.store,input.body.as_deref())? {
+        let selection = hosted_search::Selection::new(input.context,input.store,input.catalog,&input.trace,input.identity.clone())
+            .and_then(|selection| {selection.validate(&plan)?;Ok(selection)});
+        match selection {
+            Ok(selection) => draft.deferred_search=Some(selection),
+            Err(_) if !plan.required() && attempt.provider.chat_search != protocol::ChatSearch::Selected => return Ok(()),
+            Err(error) => return Err(error),
+        }
+        draft.hosted = Some(plan);
+        return Ok(());
+    }
+    if attempt.provider.chat_search == protocol::ChatSearch::Selected {
+        let caller = attempt.translation.map_or(attempt.upstream_protocol,|pair| pair.from);
+        if hosted_search::Plan::native(caller,input.body.as_deref())?.is_some() {
+            return Err((StatusCode::BAD_REQUEST,"select a Responses or Messages WebSearch service and model"));
+        }
+    }
+    let command_selected = hosted_search::Plan::command_enabled(attempt.provider,input.store);
+    draft.hosted = if command_selected {
+        hosted_search::Plan::for_destination(input.destination, input.body.as_deref())?
+    } else { None };
+    if attempt.provider.chat_search == protocol::ChatSearch::Command && draft.hosted.is_none()
+        && input.body.as_deref().and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok()).is_some_and(|value|
+            value["tool_choice"] != "none" && value["tool_choice"]["type"] != "none"
+                && value["tools"].as_array().is_some_and(|tools| tools.iter().any(protocol::web_search::is_search))) {
+        return Err((StatusCode::BAD_REQUEST,"selected Command search requires a verified Chat endpoint for this model"));
+    }
     draft.search_backend = draft.hosted.as_ref()
         .map(|_| hosted_search::SearchBackend::select(input.context, input.store, input.destination))
         .transpose()?;
@@ -239,6 +277,8 @@ fn tools(attempt: &Attempt<'_>, draft: &mut Draft) -> ForwardResult<()> {
 /// (who started a Copilot turn), WorkBuddy's system message, the fields a
 /// ChatGPT sign-in refuses.
 fn vendor(attempt: &Attempt<'_>, draft: &mut Draft) -> ForwardResult<()> {
+    // Hosted loops apply the source envelope/decoder freshly on every round.
+    if draft.hosted.is_some() {return Ok(())}
     let input = attempt.input;
     if let (Some(auth), Some(bytes), false) = (input.account, &draft.body, input.resource) {
         if let Some(exchange) = auth.exchange(attempt.upstream_protocol, bytes, &attempt.model).transpose()? {
@@ -273,12 +313,85 @@ fn vendor(attempt: &Attempt<'_>, draft: &mut Draft) -> ForwardResult<()> {
 
 /// Run every request stage for one attempt, then meter it: the outbound
 /// client, the credential snapshot, the price and the usage record.
-pub(in crate::core::router_proxy) fn prepare(input: Input<'_>) -> ForwardResult<Prepared> {
+pub(in crate::core::router_proxy) async fn prepare(input: Input<'_>) -> ForwardResult<Prepared> {
+    let mut prepared = build(input.clone(),None,None).await?;
+    if prepared.hosted.is_none() && input.create && !input.resource && hosted_search::Plan::selected(input.store)
+        && matches!(input.suffix,"responses" | "messages" | "chat/completions") {
+        let Destination::Provider {provider,upstream_protocol,translation,..} = input.destination else {return Ok(prepared)};
+        if provider.chat_search != protocol::ChatSearch::Disabled {
+            let caller = translation.map_or(*upstream_protocol,|pair| pair.from);
+            if let Ok(Some(plan)) = hosted_search::Plan::native(caller,input.body.as_deref()) {
+                let mut fallback_input = input.clone();
+                fallback_input.attempt_id = uuid::Uuid::new_v4().to_string();
+                // An unavailable optional fallback must not prevent a supported
+                // native request. It is never sent unless the tool is rejected.
+                if let Ok(fallback) = build(fallback_input,Some(plan),None).await {prepared.native_fallback = Some(Box::new(fallback));}
+            }
+        }
+    }
+    if prepared.hosted.is_none() && input.create && !input.resource && prepared.wire.is_none()
+        && !prepared.response_options.search_downgraded && matches!(input.suffix,"responses" | "messages") {
+        if let Destination::Provider {provider,upstream_protocol,translation,..} = input.destination {
+            if !matches!(provider.chat_search,protocol::ChatSearch::Disabled | protocol::ChatSearch::Command)
+                && matches!(upstream_protocol,router::ModelProtocol::Responses | router::ModelProtocol::AnthropicMessages)
+                && input.body.as_deref().and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok()).is_some_and(|body|
+                    body["tools"].as_array().is_some_and(|tools| tools.iter().any(|tool| !protocol::web_search::is_search(tool)))) {
+                let caller = translation.map_or(*upstream_protocol,|pair| pair.from);
+                if let Ok(Some(plan)) = hosted_search::Plan::native(caller,input.body.as_deref()) {
+                    if let Ok(selection) = hosted_search::Selection::for_destination(input.context,input.destination,input.catalog,
+                        &input.trace,input.identity.clone(),input.account).and_then(|selection| {selection.validate(&plan)?;Ok(selection)}) {
+                        let mut retry = input.clone();
+                        retry.attempt_id = uuid::Uuid::new_v4().to_string();
+                        retry.retry_reason = Some("native_search_tool_misclassified".into());
+                        if let Ok(recovery) = Box::pin(build(retry,Some(plan),Some(selection))).await {prepared.native_recovery=Some(Box::new(recovery));}
+                    }
+                }
+            }
+        }
+    }
+    prepared.search_key = hosted_search::target_key(input.destination);
+    Ok(apply_learned(prepared))
+}
+
+/// Skip a first attempt this target already failed the same way: run the
+/// selected search service, omit the optional declaration, or search
+/// separately from client functions on the same account and model.
+fn apply_learned(mut prepared: Prepared) -> Prepared {
+    let Some(key) = prepared.search_key.clone() else { return prepared };
+    if prepared.hosted.is_some() || !prepared.search_retry_allowed { return prepared; }
+    if hosted_search::learned(&key, hosted_search::Learned::RejectsSearch) {
+        if let Some(mut fallback) = prepared.native_fallback.take() {
+            fallback.search_key = Some(key);
+            return *fallback;
+        }
+        if !prepared.response_options.search_required && prepared.wire.is_none() && prepared.exchange.is_none() {
+            if let Some(stripped) = prepared.body.as_deref().and_then(super::translate::optional_native_search) {
+                prepared.body = Some(stripped);
+                prepared.response_options.search = None;
+                prepared.response_options.search_downgraded = true;
+                prepared.native_recovery = None;
+            }
+        }
+        return prepared;
+    }
+    if hosted_search::learned(&key, hosted_search::Learned::SeparateSearch) {
+        if let Some(mut recovery) = prepared.native_recovery.take() {
+            recovery.metadata.retry_reason = None;
+            recovery.search_key = Some(key);
+            recovery.search_label = Some("native_search_separate");
+            return *recovery;
+        }
+    }
+    prepared
+}
+
+async fn build(input: Input<'_>, mut forced: Option<hosted_search::Plan>, selection: Option<hosted_search::Selection>) -> ForwardResult<Prepared> {
     let Destination::Provider { provider, model_override, upstream_protocol, translation } = input.destination else {
         return Err((StatusCode::BAD_REQUEST, "aggregate member requires a provider"));
     };
     let model = model_override.clone().unwrap_or_else(|| provider.model.clone());
     let mut draft = Draft::default();
+    draft.deferred_search = selection;
     {
         let attempt = Attempt {
             input: &input,
@@ -287,9 +400,15 @@ pub(in crate::core::router_proxy) fn prepare(input: Input<'_>) -> ForwardResult<
             translation: *translation,
             model: model.clone(),
         };
-        for (_, stage) in STAGES {
-            stage(&attempt, &mut draft)?;
+        for (name, stage) in STAGES {
+            if name == "search" && forced.is_some() {draft.hosted = forced.take();}
+            else {stage(&attempt, &mut draft)?;}
         }
+    }
+    if draft.hosted.as_ref().is_some_and(|plan| plan.is_native()) && draft.deferred_search.is_none() {
+        let selection = hosted_search::Selection::new(input.context,input.store,input.catalog,&input.trace,input.identity.clone())?;
+        selection.validate(draft.hosted.as_ref().expect("native plan"))?;
+        draft.deferred_search = Some(selection);
     }
     meter(input, provider, *upstream_protocol, *translation, model, draft)
 }
@@ -302,6 +421,7 @@ fn meter(
     model: String,
     draft: Draft,
 ) -> ForwardResult<Prepared> {
+    let search_retry_allowed = !input.resource && matches!(input.suffix,"responses" | "messages" | "chat/completions");
     let Input { context, catalog, destination, suffix, ingress, identity, trace, selection_reason, retry_reason, attempt_id, account, .. } = input;
     let client = client_for(context, destination)?;
     let credential = request_diagnostics::CredentialSnapshot::from_header(
@@ -361,6 +481,13 @@ fn meter(
         wire: draft.wire,
         reply_fix: draft.reply_fix,
         exchange: draft.exchange,
+        search_retry_allowed,
+        account: account.cloned(),
+        native_fallback: None,
+        native_recovery: None,
+        deferred_search: draft.deferred_search,
+        search_key: None,
+        search_label: None,
     })
 }
 
@@ -381,14 +508,120 @@ impl Prepared {
             self.metadata.clone(),
         );
         trace.sent(self.body.as_deref(), self.credential.clone());
+        if let Some(label) = self.search_label {
+            trace.search_compatibility(label);
+        } else if self.response_options.search_downgraded {
+            trace.search_compatibility("optional_search_omitted");
+        } else if self.hosted.is_some() {
+            trace.search_compatibility(if self.hosted.as_ref().is_some_and(|plan| plan.is_native()) {"selected_search"} else {"command_search"});
+        } else if self.response_options.search.is_some() {
+            trace.search_compatibility(if self.response_options.search_budget_approximate {"native_search_budget_approx"}
+                else if self.response_options.search_cached_as_live {"native_search_live"} else {"native_search"});
+        }
     }
 
     pub async fn response(
-        self,
-        response: reqwest::Response,
+        mut self,
+        mut response: reqwest::Response,
+        method: hyper::Method,
         trace: route_trace::Trace,
         health: Option<crate::core::aggregation::runtime::Health>,
     ) -> ForwardResult {
+        if method == hyper::Method::POST && self.native_recovery.is_some()
+            && matches!(response.status(),StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY) {
+            let status = response.status();
+            let headers = response.headers().clone();
+            let mut metered = self.usage.take().map(|usage| usage.observe(status.as_u16(),false));
+            let bytes = tokio::time::timeout(Duration::from_secs(90),hosted_search::limited(response)).await
+                .map_err(|_| (StatusCode::GATEWAY_TIMEOUT,"native search error response timed out"))??;
+            if super::translate::rejected_mixed_search(status,&bytes) {
+                let mut recovery = self.native_recovery.take().expect("prepared same-provider recovery");
+                if let Some(key) = &self.search_key { hosted_search::learn(key, hosted_search::Learned::SeparateSearch); }
+                let reason = "native_search_mixed_tools";
+                recovery.metadata.retry_reason = Some(reason.into());
+                trace.status(status.as_u16());
+                trace.failed_attempt("response",reason,0);
+                trace.attempt_elapsed();
+                if let Some(mut rejected) = metered.take() {rejected.observe(&bytes);}
+                trace.native_search_recovery(&recovery.metadata.attempt_id,reason);
+                if recovery.headers.contains_key("idempotency-key") {
+                    recovery.headers.insert("idempotency-key",HeaderValue::from_str(&recovery.metadata.attempt_id).expect("UUID header"));
+                }
+                trace.sent(recovery.body.as_deref(),recovery.credential.clone());
+                trace.search_compatibility("native_search_separate");
+                return Box::pin(recovery.search(trace,health)).await;
+            }
+            self.usage = metered.and_then(relay_usage::RelayUsageObserver::resume_request);
+            let mut restored = hyper::Response::builder().status(status);
+            for (name,value) in &headers {
+                if name != CONTENT_LENGTH && name != TRANSFER_ENCODING {restored=restored.header(name,value);}
+            }
+            response = reqwest::Response::from(restored.body(bytes).expect("valid response parts"));
+        }
+        // A successful reply streams through untouched. A misclassified hosted
+        // call is learned for the next request instead of buffering this one.
+        if response.status().is_success() && method == hyper::Method::POST {
+            if let (Some(plan), Some(key)) = (self.native_recovery.take().and_then(|mut recovery| recovery.hosted.take()), self.search_key.clone()) {
+                response = hosted_search::watch_misclassified(response, plan, self.protocol, key, trace.clone());
+            }
+        }
+        if self.search_retry_allowed && method == hyper::Method::POST && self.wire.is_none() && (self.native_fallback.is_some() || !self.response_options.search_required)
+            && matches!(response.status(), StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY) {
+            let stripped = self.body.as_deref().and_then(super::translate::optional_native_search);
+            if stripped.is_some() || self.native_fallback.is_some() {
+                let status = response.status();
+                let headers = response.headers().clone();
+                let mut bytes = Vec::new();
+                let mut stream = response.bytes_stream();
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk.map_err(|_| (StatusCode::BAD_GATEWAY, "cannot read provider response"))?;
+                    if bytes.len() + chunk.len() > 256 * 1024 {
+                        return Err((StatusCode::BAD_GATEWAY, "provider error exceeded the response limit"));
+                    }
+                    bytes.extend_from_slice(&chunk);
+                }
+                if super::translate::rejected_native_search(status, &bytes) {
+                    if let Some(key) = &self.search_key { hosted_search::learn(key, hosted_search::Learned::RejectsSearch); }
+                    trace.status(status.as_u16());
+                    trace.failed_attempt("response", "optional_search_unsupported", 0);
+                    trace.attempt_elapsed();
+                    let attempt_id = self.native_fallback.as_ref().map(|fallback| fallback.metadata.attempt_id.clone()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                    if let Some(usage) = self.usage.take() {
+                        let next = usage.followup(&attempt_id);
+                        let mut rejected = usage.observe(status.as_u16(),false);
+                        rejected.observe(&bytes);
+                        self.usage = Some(next);
+                    }
+                    if let Some(mut fallback) = self.native_fallback.take() {
+                        fallback.usage = self.usage.take();
+                        trace.search_retry(&fallback.metadata.attempt_id);
+                        if fallback.headers.contains_key("idempotency-key") {fallback.headers.insert("idempotency-key",HeaderValue::from_str(&fallback.metadata.attempt_id).expect("UUID header"));}
+                        trace.sent(fallback.body.as_deref(),fallback.credential.clone());
+                        trace.search_compatibility("selected_search");
+                        return fallback.search(trace,health).await;
+                    }
+                    let stripped = stripped.expect("optional search or validated fallback");
+                    trace.search_retry(&attempt_id);
+                    self.metadata.attempt_id = attempt_id;
+                    if self.headers.contains_key("idempotency-key") {
+                        self.headers.insert("idempotency-key",HeaderValue::from_str(&self.metadata.attempt_id).expect("UUID header"));
+                    }
+                    self.body = Some(stripped.clone());
+                    self.response_options.search = None;
+                    self.response_options.search_downgraded = true;
+                    trace.sent(Some(&stripped), self.credential.clone());
+                    trace.search_compatibility("optional_search_omitted");
+                    response = self.client.request(method.clone(),&self.url).headers(self.headers.clone()).body(stripped).send().await
+                        .map_err(|_| (StatusCode::BAD_GATEWAY, "cannot reach provider after omitting unsupported search"))?;
+                } else {
+                    let mut restored = hyper::Response::builder().status(status);
+                    for (name, value) in &headers {
+                        if name != CONTENT_LENGTH && name != TRANSFER_ENCODING { restored = restored.header(name, value); }
+                    }
+                    response = reqwest::Response::from(restored.body(bytes).expect("valid response parts"));
+                }
+            }
+        }
         let response = match self.account_source {
             Some(kind) if !response.status().is_success() => explain_account_refusal(kind, response).await.0,
             _ => response,
@@ -425,9 +658,12 @@ impl Prepared {
         trace: route_trace::Trace,
         health: Option<crate::core::aggregation::runtime::Health>,
     ) -> ForwardResult {
+        let backend = self.search_backend.unwrap_or_else(|| hosted_search::SearchBackend {
+            client:self.client.clone(),endpoint:String::new(),headers:HeaderMap::new(),native:None,
+        });
         hosted_search::relay(hosted_search::Execution {
             plan: self.hosted.expect("hosted plan"),
-            backend: self.search_backend.expect("validated search backend"),
+            backend,
             client: self.client,
             url: self.url,
             headers: self.headers,
@@ -439,12 +675,18 @@ impl Prepared {
             attempt: self.metadata,
             model: self.model,
             history: self.history,
+            input: self.input,
+            namespaces: self.namespaces,
             adapter: self.tool_adapter,
             credential: self.credential,
             health,
+            protocol: self.protocol,
+            account: self.account,
+            selection: self.deferred_search,
         })
         .await
     }
+
 }
 
 pub(in crate::core::router_proxy) fn protocol_name(protocol: router::ModelProtocol) -> &'static str {

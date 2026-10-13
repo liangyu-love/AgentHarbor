@@ -594,6 +594,7 @@ const NO_PROJECT: RouteError = (hyper::StatusCode::FAILED_DEPENDENCY,
 
 /// One request's upstream for an account source: where to send it and the
 /// headers that sign it as the active account.
+#[derive(Clone)]
 pub struct RequestAuth {
     pub kind: SourceKind,
     pub base: String,
@@ -604,6 +605,7 @@ pub struct RequestAuth {
 }
 
 /// What encoding a request on a vendor wire needs to know of the account.
+#[derive(Clone)]
 enum Wire {
     CodeAssist { app: codeassist::App, project: String, flags: google::Flags },
     /// Cursor's Runs, answered by the source itself (`RequestAuth::exchange`).
@@ -906,18 +908,23 @@ impl RequestAuth {
 
     /// The request body as the source takes it, `None` when unchanged.
     pub fn shape_body(&self, protocol: router::ModelProtocol, body: &[u8]) -> Option<Vec<u8>> {
-        match (self.kind, protocol) {
-            (SourceKind::Workbuddy | SourceKind::WorkbuddyAi, router::ModelProtocol::ChatCompletions) => workbuddy::shape_chat_body(body),
-            (SourceKind::ChatgptApi, router::ModelProtocol::Responses) => chatgpt_api::shape_body(body),
-            (SourceKind::Grok, router::ModelProtocol::Responses) => grok::shape_body(body),
-            _ => None,
-        }
+        shape_body_for_source(self.kind,protocol,body)
     }
 
     /// What reads the reply of this request, given before it was shaped.
     pub fn reply_fix(&self, protocol: router::ModelProtocol, body: &[u8]) -> Option<ReplyFix> {
         (self.kind == SourceKind::Grok && protocol == router::ModelProtocol::Responses)
             .then(|| ReplyFix::Grok(grok::reply_fix(body)))
+    }
+}
+
+/// Pure source contract checks do not require loading or refreshing credentials.
+pub(crate) fn shape_body_for_source(kind: SourceKind, protocol: router::ModelProtocol, body: &[u8]) -> Option<Vec<u8>> {
+    match (kind,protocol) {
+        (SourceKind::Workbuddy | SourceKind::WorkbuddyAi, router::ModelProtocol::ChatCompletions) => workbuddy::shape_chat_body(body),
+        (SourceKind::ChatgptApi, router::ModelProtocol::Responses) => chatgpt_api::shape_body(body),
+        (SourceKind::Grok, router::ModelProtocol::Responses) => grok::shape_body(body),
+        _ => None,
     }
 }
 

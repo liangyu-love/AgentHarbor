@@ -282,3 +282,104 @@ fn run_installed_cli(tool_mode: bool, conversation: bool) {
         upstream.abort();
     });
 }
+
+#[test]
+#[ignore = "requires CLAUDE_ROUTER_TEST_EXE pointing to an installed Claude Code executable"]
+fn installed_claude_cli_web_search_runs_on_a_mimo_chat_contract() {
+    // Claude Code (also Desktop's bundled agent) runs WebSearch as a separate
+    // forced hosted-search request with max_uses 8. A Chat model with a native
+    // search contract must answer it as Claude search blocks the CLI accepts.
+    let executable = std::env::var_os("CLAUDE_ROUTER_TEST_EXE").expect("set CLAUDE_ROUTER_TEST_EXE");
+    let _lock = global_router_test_lock();
+    tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().join("codex"));
+        std::fs::create_dir_all(&paths.app_data_dir).unwrap();
+        let observed = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let upstream_port = listener.local_addr().unwrap().port();
+        let captured = observed.clone();
+        let upstream = tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                let captured = captured.clone();
+                tokio::spawn(async move {
+                    let service = service_fn(move |req: Request<Incoming>| {
+                        let captured = captured.clone();
+                        async move {
+                            assert_eq!(req.uri().path(), "/v1/chat/completions");
+                            let bytes = req.into_body().collect().await.unwrap().to_bytes();
+                            let body: Value = serde_json::from_slice(&bytes).unwrap();
+                            let model = body["model"].as_str().unwrap_or_default().to_owned();
+                            let tools = body["tools"].as_array().cloned().unwrap_or_default();
+                            let search = tools.iter().find(|tool| tool["type"] == "web_search").cloned();
+                            let main_loop = tools.iter().any(|tool| tool["function"]["name"] == "WebSearch");
+                            let continued = body["messages"].as_array().into_iter().flatten().any(|m| m["role"] == "tool");
+                            captured.lock().unwrap().push(json!({"search":search,"mainLoop":main_loop,"continued":continued,
+                                "toolResult":body["messages"].as_array().into_iter().flatten().filter(|m| m["role"] == "tool")
+                                    .map(|m| m["content"].to_string()).collect::<String>()}));
+                            let frames = if search.is_some() {
+                                vec![json!({"id":"chat-search","model":model,"choices":[{"index":0,"delta":{"role":"assistant","content":"Rust 1.99 shipped.",
+                                        "annotations":[{"type":"url_citation","url":"https://www.rust-lang.org/","title":"Rust","summary":"Release"}]},"finish_reason":null}]}),
+                                    json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],
+                                        "usage":{"prompt_tokens":20,"completion_tokens":5,"web_search_usage":{"tool_usage":1,"page_usage":1}}})]
+                            } else if main_loop && !continued {
+                                vec![json!({"model":model,"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-search","type":"function",
+                                        "function":{"name":"WebSearch","arguments":"{\"query\":\"Rust release\"}"}}]},"finish_reason":"tool_calls"}]}),
+                                    json!({"choices":[],"usage":{"prompt_tokens":20,"completion_tokens":5}})]
+                            } else {
+                                vec![json!({"id":"chat-final","model":model,"choices":[{"index":0,"delta":{"role":"assistant","content":"Local search fixture passed"},"finish_reason":null}]}),
+                                    json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":5}})]
+                            };
+                            let mut stream = frames.iter().map(|frame| format!("data: {frame}\n\n")).collect::<String>();
+                            stream.push_str("data: [DONE]\n\n");
+                            Ok::<_, std::convert::Infallible>(Response::builder().header(CONTENT_TYPE, "text/event-stream").body(Full::new(Bytes::from(stream))).unwrap())
+                        }
+                    });
+                    let _ = http1::Builder::new().serve_connection(TokioIo::new(socket), service).await;
+                });
+            }
+        });
+        let store = Store {
+            providers: vec![Provider { id:"mimo".into(), name:"Local MiMo".into(), base_url:format!("http://127.0.0.1:{upstream_port}/"),
+                api_key:"fixture-upstream-key".into(), enabled:true, model:"mimo-v2.6-flash".into(), protocol:ModelProtocol::ChatCompletions,
+                chat_search:crate::core::protocol::ChatSearch::Mimo, network_mode:"direct".into(),
+                models:vec![Model {id:"mimo-v2.6-flash".into(), ..Default::default()}], ..Default::default() }],
+            router: RouterSettings { bearer_token:"fixture-router-key".into(), ..Default::default() },
+            ..Default::default()
+        };
+        crate::core::secret_file::write(&paths.app_data_dir.join("newapi-providers.dat"), &serde_json::to_vec(&store).unwrap()).unwrap();
+        let port = ensure_running(0, paths.clone(), ApiProxyConfigPayload::default()).await.unwrap();
+        struct StopRouter;
+        impl Drop for StopRouter { fn drop(&mut self) { stop(); } }
+        let _stop = StopRouter;
+        let mut command = tokio::process::Command::new(&executable);
+        for (key, _) in std::env::vars_os() {
+            let name = key.to_string_lossy().to_uppercase();
+            if ["ANTHROPIC", "CLAUDE", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"].iter().any(|prefix| name.starts_with(prefix)) { command.env_remove(key); }
+        }
+        command.current_dir(dir.path()).kill_on_drop(true)
+            .env("ANTHROPIC_BASE_URL", format!("http://127.0.0.1:{port}"))
+            .env("ANTHROPIC_API_KEY", "fixture-router-key")
+            .env("CLAUDE_CONFIG_DIR", dir.path().join("claude-search"))
+            .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
+            .env("NO_PROXY", "127.0.0.1,localhost")
+            .args(["-p", "Search the web for the latest Rust release.", "--system-prompt", "Local router diagnostic",
+                "--model", "mimo::mimo-v2.6-flash", "--setting-sources", "", "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}",
+                "--no-session-persistence", "--tools", "WebSearch", "--allowedTools", "WebSearch", "--max-turns", "3"]);
+        #[cfg(windows)]
+        command.creation_flags(0x08000000);
+        let output = tokio::time::timeout(Duration::from_secs(60), command.output()).await.expect("CLI timeout").unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let captured = observed.lock().unwrap().clone();
+        assert!(output.status.success() && stdout.contains("Local search fixture passed"),
+            "CLI failed: {stdout} {} {captured:?}", String::from_utf8_lossy(&output.stderr));
+        let search = captured.iter().find(|entry| !entry["search"].is_null()).expect("the CLI sent its WebSearch request");
+        // Claude Code forces the search only for Claude model names (Desktop's
+        // aliases); a routed non-Claude name gets tool_choice auto.
+        assert_eq!(search["search"], json!({"type":"web_search","force_search":false,"max_keyword":8}));
+        let result = captured.iter().find(|entry| entry["mainLoop"] == true && entry["continued"] == true).expect("search result returned to the main loop");
+        assert!(result["toolResult"].as_str().unwrap().contains("rust-lang.org"), "{result}");
+        upstream.abort();
+        eprintln!("installed Claude CLI WebSearch through a MiMo Chat contract: {} upstream requests", captured.len());
+    });
+}

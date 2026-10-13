@@ -56,6 +56,9 @@ impl StreamTranslator {
     }
 
     pub fn with_options(mut self, options: ResponseOptions) -> Self {
+        if let Some(chat) = self.chat.take() {
+            self.chat = Some(chat.with_search(options.search.is_some()));
+        }
         self.content_ready = options.search.is_none();
         self.options = options;
         self

@@ -35,6 +35,7 @@ pub mod newapi;
 pub mod protocol;
 pub mod provider_model_preview;
 pub mod provider_probe;
+pub mod search_probe;
 pub mod quota_store;
 pub mod relay_usage;
 pub mod usage_cache;

@@ -139,6 +139,67 @@ fn hosted_search_reaches_responses_through_both_messages_ingresses_and_replays_h
     });
 }
 
+#[test]
+fn claude_code_web_search_reaches_chat_search_contracts_through_both_messages_ingresses() {
+    // The request shape Claude Code 2.1.x (CLI and Desktop's bundled agent)
+    // sends for its WebSearch tool: one forced hosted search, max_uses 8.
+    let _lock = global_router_test_lock();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let message = json!({"role":"assistant","content":"Rust 1.99 shipped.",
+            "annotations":[{"type":"url_citation","url":"https://rust-lang.org","title":"Rust","summary":"Release"}]});
+        let usage = json!({"prompt_tokens":3,"completion_tokens":4,"total_tokens":7,"web_search_usage":{"tool_usage":1,"page_usage":1}});
+        let reply = json!({"id":"chat-search","object":"chat.completion","model":"fixture-model",
+            "choices":[{"index":0,"finish_reason":"stop","message":message}],"usage":usage}).to_string();
+        let stream = format!("data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+            json!({"id":"chat-search","model":"fixture-model","choices":[{"index":0,"delta":message,"finish_reason":null}]}),
+            json!({"id":"chat-search","model":"fixture-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":usage}));
+        for contract in [crate::core::protocol::ChatSearch::Mimo, crate::core::protocol::ChatSearch::OpenAi] {
+        for streaming in [false, true] {
+            let (url, calls, captured, server) = routing_safety_tests::mock(200, if streaming { stream.clone() } else { reply.clone() },
+                if streaming { "text/event-stream" } else { "application/json" }).await;
+            let temp = tempfile::tempdir().unwrap();
+            let paths = CodexPaths::from_home(temp.path().join("codex"));
+            std::fs::create_dir_all(&paths.app_data_dir).unwrap();
+            let store = Store { providers: vec![Provider { id:"desktop0".into(), api_key:"fixture-upstream".into(), base_url:url,
+                protocol:ModelProtocol::ChatCompletions, chat_search:contract, enabled:true, model:"fixture-model".into(),
+                network_mode:"direct".into(), ..Default::default() }],
+                router:RouterSettings { bearer_token:"router-fixture".into(), ..Default::default() }, ..Default::default() };
+            write_store(&paths, &store);
+            let port = ensure_running(0, paths.clone(), ApiProxyConfigPayload::default()).await.unwrap();
+            let _stop = Stop;
+            let mut routes = choices(); routes.retain(|r| r.role == "haiku"); routes[0].provider_id = "desktop0".into();
+            write_state(&paths, port, routes, 1, "desktop-fixture");
+            let client = Client::builder().no_proxy().timeout(Duration::from_secs(5)).build().unwrap();
+            for desktop in [false, true] {
+                let endpoint = format!("http://127.0.0.1:{port}/{}", if desktop { "claude-desktop/v1/messages" } else { "v1/messages" });
+                let request = json!({"model":if desktop { "claude-haiku-4-5-20251001" } else { "desktop0::fixture-model" },
+                    "max_tokens":4096,"stream":streaming,"thinking":{"type":"disabled"},
+                    "system":[{"type":"text","text":"You are an assistant for performing a web search tool use"}],
+                    "tools":[{"type":"web_search_20250305","name":"web_search","max_uses":8,"search_profile":"default"}],
+                    "tool_choice":{"type":"tool","name":"web_search"},
+                    "messages":[{"role":"user","content":"Perform a web search for the query: Rust release"}]});
+                let reply = client.post(&endpoint).bearer_auth(if desktop { "desktop-fixture" } else { "router-fixture" })
+                    .json(&request).send().await.unwrap();
+                assert_eq!(reply.status(), StatusCode::OK, "{contract:?}/{streaming}/{desktop}");
+                let text = reply.text().await.unwrap();
+                assert!(text.contains("server_tool_use") && text.contains("web_search_tool_result")
+                    && text.contains("https://rust-lang.org") && text.contains("Rust 1.99"), "{contract:?}/{streaming}: {text}");
+                let sent = captured.lock().unwrap().last().unwrap().clone();
+                assert_eq!(sent["model"], "fixture-model");
+                if contract == crate::core::protocol::ChatSearch::Mimo {
+                    assert_eq!(sent["tools"], json!([{"type":"web_search","force_search":true,"max_keyword":8}]));
+                } else {
+                    assert_eq!(sent["web_search_options"], json!({}));
+                    assert!(sent.get("tools").is_none() && sent.get("tool_choice").is_none(), "{sent}");
+                }
+            }
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+            server.abort();
+        }
+        }
+    });
+}
+
 fn native_reply(body: &Value) -> (String, String) {
     let continued = body["messages"].to_string().contains("tool_result");
     let content = if continued {

@@ -9,13 +9,14 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
     window.review.providerFixtures = [
       { ...base, id: "command-chat", name: "Command Chat", protocol: "chatCompletions", webSearchCapable: true },
       { ...base, id: "command-messages", name: "Command Messages", protocol: "anthropicMessages", webSearchCapable: true },
+      { ...base, id: "native-search", name: "Native search", model: "search-r", protocol: "responses", webSearchCapable: true, webSearchModels: ["search-r", "search-m"] },
       { ...base, id: "unsupported-search", name: "Other relay", webSearchCapable: false },
     ];
     // Codex Native does not disable Desktop's independent search settings.
     window.review.routerPatch = { accessMode: "native" };
     window.review.mount("access");
   });
-  const searchService = page.getByRole("combobox", { name: "WebSearch 搜索服务", exact: true });
+  const searchService = page.getByRole("combobox", { name: "搜索执行账号", exact: true });
   await searchService.waitFor();
   await eventually(async () => assert.equal(await searchService.isEnabled(), true));
   await searchService.click();
@@ -23,13 +24,30 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   await page.getByRole("option", { name: "Command Messages", exact: true }).click();
   await page.waitForFunction(() => window.review.getState().router.webSearchProviderId === "command-messages");
   await searchService.click();
-  await page.getByRole("option", { name: "自动", exact: true }).click();
+  await page.getByRole("option", { name: "Native search", exact: true }).click();
+  await page.waitForFunction(() => window.review.getState().router.webSearchModelId === "search-r");
+  const searchModel = page.getByRole("combobox", { name: "搜索模型", exact: true });
+  await searchModel.click();
+  await page.getByRole("option", { name: "search-m", exact: true }).click();
+  await page.waitForFunction(() => window.review.getState().router.webSearchModelId === "search-m");
+  await page.evaluate(() => {
+    window.review.routerPatch = { ...window.review.routerPatch, webSearchProviderId: "native-search", webSearchModelId: "search-m" };
+    window.review.mount("access");
+  });
+  await searchModel.getByText("search-m", { exact: true }).waitFor();
+  if (captureDir) {
+    await searchModel.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(captureDir, "native-search-settings.png"), animations: "disabled" });
+  }
+  await searchService.click();
+  await page.getByRole("option", { name: "未指定原生搜索兜底", exact: true }).click();
   await page.waitForFunction(() => window.review.getState().router.webSearchProviderId === null);
+  assert.equal(await page.evaluate(() => window.review.getState().router.webSearchModelId), null);
   await page.evaluate(() => {
     window.review.providerFixtures = window.review.providerFixtures.filter(provider => provider.id === "command-chat");
     window.review.mount("access");
   });
-  await searchService.waitFor({ state: "detached" });
+  await searchService.waitFor();
   await page.evaluate(() => window.review.mount("compact"));
   await searchService.waitFor({ state: "detached" });
   await page.evaluate(() => { window.review.routerPatch = { webSearchProviderId: "removed-service" }; window.review.mount("access"); });
@@ -50,6 +68,7 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   assert.match(await routes.innerText(), /尝试 ID: syntheti/);
   assert.match(await routes.innerText(), /fixture-vers/);
   assert.match(await routes.innerText(), /模型目录参考价/);
+  assert.match(await routes.innerText(), /未发送搜索声明（兼容兜底）/);
   assert.doesNotMatch(await routes.innerText(), /catalogReference/);
   assert.equal(await routes.getByRole("switch", { name: "同模型渠道故障切换" }).count(), 0,
     "ordinary provider requests no longer expose hidden cross-card failover");

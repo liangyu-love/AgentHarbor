@@ -84,6 +84,10 @@ pub struct Provider {
     #[serde(default)]
     pub protocol: ModelProtocol,
     pub model: String,
+    /// An explicit Chat search contract for a relay. Auto resolves only known
+    /// official endpoints; unknown/account wires use the optional-tool fallback.
+    #[serde(default)]
+    pub chat_search: protocol::ChatSearch,
     pub context_window: Option<u64>,
     /// Legacy fixed threshold; migrated into `compression` on load and no
     /// longer read by injection.
@@ -147,6 +151,8 @@ pub struct RouterSettings {
     /// Independent search service used when a Chat model calls a hosted tool.
     /// None chooses the current Command card, or the sole available search card.
     pub web_search_provider_id: Option<String>,
+    /// Explicit inference model used by the selected native search service.
+    pub web_search_model_id: Option<String>,
     pub accountless: bool,
     pub port: u16,
     pub bearer_token: String,
@@ -174,6 +180,7 @@ impl Default for RouterSettings {
             aggregate_external_enabled: false,
             aggregate_model_id: None,
             web_search_provider_id: None,
+            web_search_model_id: None,
             accountless: false,
             port: DEFAULT_PORT,
             bearer_token: String::new(),
@@ -220,8 +227,10 @@ pub struct ProviderView {
     pub has_access_token: bool,
     pub has_api_key: bool,
     pub web_search_capable: bool,
+    pub web_search_models: Vec<String>,
     pub protocol: ModelProtocol,
     pub model: String,
+    pub chat_search: protocol::ChatSearch,
     pub context_window: Option<u64>,
     pub catalog_providers: Vec<String>,
     pub price_catalog_provider: Option<String>,
@@ -253,9 +262,11 @@ impl Provider {
             user_id: self.user_id,
             has_access_token: !self.access_token.is_empty(),
             has_api_key: !self.api_key.is_empty(),
-            web_search_capable: supports_command_search(self),
+            web_search_capable: supports_command_search(self) || !native_search_models(self).is_empty(),
+            web_search_models: if supports_command_search(self) {Vec::new()} else {native_search_models(self)},
             protocol: self.protocol,
             model: self.model.clone(),
+            chat_search: self.chat_search,
             context_window: self.context_window,
             catalog_providers: self.catalog_providers.clone(),
             price_catalog_provider: self.price_catalog_provider.clone(),
@@ -416,6 +427,7 @@ pub struct RouterView {
     pub enabled: bool,
     pub aggregate_model_id: Option<String>,
     pub web_search_provider_id: Option<String>,
+    pub web_search_model_id: Option<String>,
     pub access_mode: CodexAccessMode,
     pub accountless: bool,
     pub port: u16,
@@ -467,6 +479,8 @@ pub struct ProviderInput {
     #[serde(default)]
     pub protocol: ModelProtocol,
     pub model: String,
+    #[serde(default)]
+    pub chat_search: Option<protocol::ChatSearch>,
     #[serde(default)]
     pub models: Vec<newapi::Model>,
     pub context_window: Option<u64>,
@@ -793,6 +807,7 @@ pub(crate) fn state_from_store_at(
             enabled: store.router.enabled,
             aggregate_model_id: store.router.aggregate_model_id.clone(),
             web_search_provider_id: store.router.web_search_provider_id.clone(),
+            web_search_model_id: store.router.web_search_model_id.clone(),
             access_mode: store.codex_access_mode,
             accountless: store.router.accountless,
             port: store.router.port,
@@ -1118,6 +1133,7 @@ pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<Sta
             provider.access_token = input.access_token.clone();
             provider.api_key = input.api_key.clone();
             provider.protocol = input.protocol;
+            if let Some(search) = input.chat_search { provider.chat_search = search; }
             provider.model = input.model.clone();
             provider.models = input.models.clone();
             provider.context_window = input.context_window;
@@ -1167,6 +1183,7 @@ pub fn save_provider(paths: &CodexPaths, mut input: ProviderInput) -> Result<Sta
                 access_token: input.access_token.clone(),
                 api_key: input.api_key.clone(),
                 protocol: input.protocol,
+                chat_search: input.chat_search.unwrap_or_default(),
                 model: input.model.clone(),
                 models: input.models.clone(),
                 models_fetched_at: (!input.models.is_empty()).then_some(timestamp),
@@ -1638,6 +1655,35 @@ pub fn test_provider_with_progress(
     Ok(store.providers[index].view())
 }
 
+/// Check whether this relay model actually searches; it never changes the card.
+pub fn probe_provider_search(
+    paths: &CodexPaths,
+    id: &str,
+    model: &str,
+    proxy: &ApiProxyConfigPayload,
+) -> Result<super::search_probe::SearchProbeReport, String> {
+    let provider = load_store(paths)?
+        .providers
+        .into_iter()
+        .find(|provider| provider.id == id)
+        .ok_or("newapi.errors.notFound")?;
+    let connection = newapi::Connection {
+        base_url: provider.base_url.clone(),
+        api_key: provider.api_key.clone(),
+        ..Default::default()
+    };
+    if connection.api_key.is_empty() {
+        return Err("newapi.errors.apiKeyRequired".into());
+    }
+    let model = model.trim();
+    super::search_probe::run(
+        &connection,
+        model,
+        provider.protocol_for_model(model),
+        &newapi::effective_proxy(provider.network_mode(), proxy),
+    )
+}
+
 /// 设置供应商网络出口：proxy = 跟随全局代理，direct = 直连。
 pub fn set_network_mode(paths: &CodexPaths, id: &str, mode: &str) -> Result<StateChange, String> {
     if !matches!(mode, "proxy" | "direct") {
@@ -2048,16 +2094,47 @@ pub fn set_web_search_provider(
     paths: &CodexPaths,
     provider_id: Option<String>,
 ) -> Result<StateChange, String> {
+    set_web_search_service(paths, provider_id, None)
+}
+
+/// A native protocol is a candidate contract, not proof of model permissions.
+/// Actual execution must return a completed hosted call before reporting search.
+pub(crate) fn native_search_models(provider: &Provider) -> Vec<String> {
+    if !provider.router_only() && provider.model_credential().api_key.trim().is_empty() {
+        return Vec::new();
+    }
+    let mut models = vec![provider.model.clone()];
+    models.extend(provider.models.iter().map(|model| model.id.clone()));
+    models.retain(|model| !model.is_empty() && matches!(provider.protocol_for_model(model),
+        ModelProtocol::Responses | ModelProtocol::AnthropicMessages)
+        && provider.supports_model_protocol(model,provider.protocol_for_model(model)));
+    models.sort();
+    models.dedup();
+    models
+}
+
+pub fn set_web_search_service(
+    paths: &CodexPaths,
+    provider_id: Option<String>,
+    model_id: Option<String>,
+) -> Result<StateChange, String> {
     let _guard = store_write_guard()?;
     let mut store = load_store_unlocked(paths)?;
-    if let Some(id) = provider_id.as_deref() {
+    let selected_model = if let Some(id) = provider_id.as_deref() {
         let provider = store.providers.iter().find(|provider| provider.id == id)
             .ok_or("newapi.errors.notFound")?;
-        if !supports_command_search(provider) {
+        if supports_command_search(provider) {
+            None
+        } else {
+            let model = model_id.unwrap_or_else(|| provider.model.clone());
+            if !native_search_models(provider).contains(&model) {
             return Err("newapi.errors.webSearchProviderUnsupported".into());
+            }
+            Some(model)
         }
-    }
+    } else { None };
     store.router.web_search_provider_id = provider_id;
+    store.router.web_search_model_id = selected_model;
     save_store_unlocked(paths, &store)?;
     Ok(StateChange {
         state: state_from_store_at(&store, super::router_proxy::is_running(), Some(paths)),
@@ -3723,6 +3800,8 @@ fn remove_connection_config(
 
 #[derive(Deserialize)]
 struct ExportedProvider {
+    #[serde(default, alias = "chatSearch")]
+    chat_search: protocol::ChatSearch,
     #[serde(default, alias = "priceMultiplier")]
     price_multiplier: Option<f64>,
     name: String,
@@ -3804,6 +3883,7 @@ pub fn import_providers(paths: &CodexPaths, path: &Path) -> Result<ImportResult,
             protocol: entry
                 .protocol
                 .unwrap_or_else(|| protocol::infer_protocol_from_models(&models, &entry.model)),
+            chat_search: entry.chat_search,
             model: entry.model,
             models,
             context_window: entry.context_window,
@@ -3837,6 +3917,7 @@ pub fn export_providers(paths: &CodexPaths, path: &Path) -> Result<(), String> {
                 "baseUrl": p.base_url,
                 "userId": p.user_id,
                 "protocol": p.protocol,
+                "chatSearch": p.chat_search,
                 "model": p.model,
                 "models": p.models,
                 "contextWindow": p.context_window,
@@ -3975,6 +4056,7 @@ mod tests {
 
     fn input(name: &str, base_url: &str) -> ProviderInput {
         ProviderInput {
+            chat_search: None,
             gateway_slug: None,
             id: None,
             name: name.into(),
@@ -4028,7 +4110,9 @@ mod tests {
         assert!(selected.applied.is_none());
         assert_eq!(load_store(&paths).unwrap().router.web_search_provider_id.as_deref(), Some(id.as_str()));
         assert_eq!(set_web_search_provider(&paths, Some("missing".into())).err().as_deref(), Some("newapi.errors.notFound"));
-        let other = save_provider(&paths, input("Other", "https://relay.example.com")).unwrap();
+        let mut other_input = input("Other", "https://relay.example.com");
+        other_input.protocol = ModelProtocol::ChatCompletions;
+        let other = save_provider(&paths, other_input).unwrap();
         let other_id = other.state.providers.iter().find(|provider| provider.name == "Other").unwrap().id.clone();
         assert_eq!(set_web_search_provider(&paths, Some(other_id)).err().as_deref(), Some("newapi.errors.webSearchProviderUnsupported"));
         assert_eq!(load_store(&paths).unwrap().router.web_search_provider_id.as_deref(), Some(id.as_str()));
@@ -4042,6 +4126,26 @@ mod tests {
     fn legacy_router_settings_default_to_automatic_search() {
         let router: RouterSettings = serde_json::from_str(r#"{"enabled":false,"port":43127}"#).unwrap();
         assert!(router.web_search_provider_id.is_none());
+        assert!(router.web_search_model_id.is_none());
+    }
+
+    #[test]
+    fn native_search_selection_validates_and_persists_an_independent_model() {
+        let (_dir, paths) = paths();
+        let mut draft = input("Native search", "https://relay.example.com");
+        draft.models = vec![newapi::Model {id:"search-model".into(),protocol:Some(ModelProtocol::AnthropicMessages),..Default::default()},
+            newapi::Model {id:"chat-only".into(),protocol:Some(ModelProtocol::Responses),endpoint_types:vec!["/chat/completions".into()],..Default::default()}];
+        let saved = save_provider(&paths,draft).unwrap();
+        let id = saved.state.providers[0].id.clone();
+        let selected = set_web_search_service(&paths,Some(id.clone()),Some("search-model".into())).unwrap();
+        assert_eq!(selected.state.router.web_search_model_id.as_deref(),Some("search-model"));
+        assert_eq!(selected.state.providers[0].model,"model-a","search selection does not change the inference model");
+        assert_eq!(set_web_search_service(&paths,Some(id.clone()),Some("missing".into())).err().as_deref(),Some("newapi.errors.webSearchProviderUnsupported"));
+        assert_eq!(set_web_search_service(&paths,Some(id.clone()),Some("chat-only".into())).err().as_deref(),Some("newapi.errors.webSearchProviderUnsupported"));
+        assert_eq!(load_store(&paths).unwrap().router.web_search_model_id.as_deref(),Some("search-model"));
+        delete_provider(&paths,&id).unwrap();
+        assert_eq!(load_store(&paths).unwrap().router.web_search_model_id.as_deref(),Some("search-model"));
+        assert!(set_web_search_service(&paths,None,None).unwrap().state.router.web_search_model_id.is_none());
     }
 
     #[test]
@@ -4388,6 +4492,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         let (_dir, paths) = paths();
         let mut draft = input("Relay", "https://relay.example.com");
         draft.price_multiplier = Some(0.5);
+        draft.chat_search = Some(protocol::ChatSearch::Mimo);
         let saved = save_provider(&paths, draft).unwrap();
         let id = saved.state.providers[0].id.clone();
         assert_eq!(saved.state.providers[0].price_multiplier, Some(0.5));
@@ -4401,6 +4506,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         save_provider(&paths, edit(None)).unwrap(); // Older callers omit the field.
         let store = load_store(&paths).unwrap();
         assert_eq!(store.providers[0].price_multiplier, Some(0.5));
+        assert_eq!(store.providers[0].chat_search, protocol::ChatSearch::Mimo, "older editors preserve the search contract");
         assert_eq!(store.providers[0].api_key, "sk-a");
         let exported = paths.app_data_dir.join("export.json");
         export_providers(&paths, &exported).unwrap();
@@ -4408,6 +4514,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         let imported = import_providers(&other_paths, &exported).unwrap();
         assert_eq!(imported.imported, 1);
         assert_eq!(imported.state.providers[0].price_multiplier, Some(0.5));
+        assert_eq!(imported.state.providers[0].chat_search, protocol::ChatSearch::Mimo);
         for factor in [0.0, 1.0, 1000.0] {
             save_provider(&paths, edit(Some(factor))).unwrap();
             assert_eq!(

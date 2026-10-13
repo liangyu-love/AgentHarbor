@@ -1196,3 +1196,111 @@ fn live_codex_switches_configured_relays() {
     assert!(result.iter().all(|row| row["completed"] == true));
     assert!(result[1..].iter().all(|row| row["marker_retained"] == true));
 }
+
+/// One Codex turn: its completed items and the final turn.
+fn search_turn(server: &mut AppServer, id: u64, thread_id: &str, text: &str) -> (Vec<Value>, Value) {
+    server.send(json!({"id":id,"method":"turn/start","params":{"threadId":thread_id,
+        "input":[{"type":"text","text":text,"text_elements":[]}]}}));
+    let deadline = Instant::now() + RPC_TIMEOUT;
+    let mut items = Vec::new();
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let message = server.messages.recv_timeout(remaining).unwrap_or_else(|error| {
+            panic!("Codex search turn did not complete: {error}; stderr: {}", server.stderr.lock().unwrap())
+        }).expect("Codex stdout must contain JSON-RPC messages");
+        if message.get("id").and_then(Value::as_u64) == Some(id) {
+            assert!(message.get("error").is_none(), "turn/start failed: {message}");
+            continue;
+        }
+        let params = &message["params"];
+        if params.get("threadId").and_then(Value::as_str) != Some(thread_id) { continue; }
+        match message.get("method").and_then(Value::as_str) {
+            Some("item/completed") => items.push(params["item"].clone()),
+            Some("turn/completed") => return (items, params["turn"].clone()),
+            Some("error") => panic!("Codex reported an error: {message}"),
+            _ => {}
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires AGENTHARBOR_TEST_CODEX_BIN pointing to an installed Codex CLI"]
+fn real_codex_default_hosted_search_runs_on_a_messages_relay_and_continues() {
+    // Default Codex config: hosted web_search in cached mode (no Search
+    // Service). A Messages relay runs it as live native search; Codex must
+    // accept the translated search, the merged cited answer and continue.
+    let _serial = ROUTER_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let binary = PathBuf::from(std::env::var_os("AGENTHARBOR_TEST_CODEX_BIN")
+        .expect("set AGENTHARBOR_TEST_CODEX_BIN to an installed codex executable"));
+    assert!(binary.is_absolute() && binary.is_file());
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path().join("workspace");
+    fs::create_dir_all(&cwd).unwrap();
+    let paths = CodexPaths::from_home(temp.path().join("codex"));
+    paths.ensure_directories().unwrap();
+    let proxy = RejectingProxy::start();
+    let cite = |url: &str, title: &str| json!({"type":"web_search_result_location","url":url,"title":title,"cited_text":"x","encrypted_index":"e"});
+    let mock = MockResponses::with_stream(ModelProtocol::AnthropicMessages, [
+        json!({"type":"message_start","message":{"id":"msg_search","type":"message","role":"assistant","model":"claude-haiku-4-5","content":[],"stop_reason":null,"usage":{"input_tokens":1,"output_tokens":0}}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_01fixture","name":"web_search","input":{}}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"Rust release\"}"}}),
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"content_block_start","index":1,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_01fixture","content":[
+            {"type":"web_search_result","url":"https://www.rust-lang.org/","title":"Rust","encrypted_content":"opaque","page_age":null}]}}),
+        json!({"type":"content_block_stop","index":1}),
+        json!({"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}),
+        json!({"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"Rust 1.99 shipped"}}),
+        json!({"type":"content_block_delta","index":2,"delta":{"type":"citations_delta","citation":cite("https://www.rust-lang.org/","Rust")}}),
+        json!({"type":"content_block_stop","index":2}),
+        json!({"type":"content_block_start","index":3,"content_block":{"type":"text","text":" with fixes."}}),
+        json!({"type":"content_block_stop","index":3}),
+        json!({"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":5,"server_tool_use":{"web_search_requests":1}}}),
+        json!({"type":"message_stop"}),
+    ].into_iter().map(|value| format!("event: {}\ndata: {value}\n\n", value["type"].as_str().unwrap())).collect());
+    fs::write(&paths.config_path, format!(
+        "cli_auth_credentials_store = 'file'\ncheck_for_update_on_startup = false\nchatgpt_base_url = '{}'\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n", proxy.url
+    )).unwrap();
+    fs::write(&paths.auth_path, synthetic_auth()).unwrap();
+    let input = serde_json::from_value(json!({
+        "name":"Synthetic search relay", "baseUrl":format!("http://127.0.0.1:{}", mock.port),
+        "accessToken":"", "apiKey":"synthetic-upstream-key", "model":"claude-haiku-4-5",
+        "models":[{"id":"claude-haiku-4-5","metadataSource":"local"}],
+        "networkMode":"direct", "protocol":ModelProtocol::AnthropicMessages,
+    })).unwrap();
+    let saved = router::save_provider(&paths, input).unwrap();
+    router::set_enabled(&paths, &saved.state.providers[0].id, true).unwrap();
+    router::set_smart_routing(&paths, true).unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let port = runtime.block_on(router_proxy::ensure_running(0, paths.clone(),
+        ApiProxyConfigPayload { mode: ApiProxyMode::Manual, url: Some(proxy.url.clone()) })).unwrap();
+    let _router_guard = StopRouter;
+    let mut store = router::load_store(&paths).unwrap();
+    store.router.port = port;
+    router::apply_routing_config(&paths, &store).unwrap();
+
+    let mut server = AppServer::start(&binary, &paths, &cwd, &proxy);
+    let started = server.request(2, "thread/start", json!({"cwd":cwd.to_string_lossy(), "ephemeral":true,
+        "approvalPolicy":"never", "sandbox":"read-only"}));
+    let thread_id = started["thread"]["id"].as_str().expect("thread id").to_owned();
+    let (items, turn) = search_turn(&mut server, 3, &thread_id, "Search the web for the latest Rust release.");
+    assert_eq!(turn["status"], "completed", "{turn}");
+    let first: Value = serde_json::from_slice(&mock.requests.recv_timeout(RPC_TIMEOUT).unwrap().body).unwrap();
+    let search_tool = first["tools"].as_array().unwrap().iter().find(|tool| tool["type"] == "web_search_20250305")
+        .unwrap_or_else(|| panic!("hosted search was not mapped: {}", first["tools"]));
+    assert_eq!(search_tool["name"], "web_search");
+    let searches: Vec<_> = items.iter().filter(|item| item["type"] == "webSearch").collect();
+    assert_eq!(searches.len(), 1, "{items:?}");
+    assert!(searches[0].to_string().contains("Rust release"), "{}", searches[0]);
+    let answer: String = items.iter().filter(|item| item["type"] == "agentMessage")
+        .filter_map(|item| item["text"].as_str()).collect();
+    assert_eq!(answer, "Rust 1.99 shipped with fixes.\n\nSources:\n- [Rust](https://www.rust-lang.org/)", "{items:?}");
+
+    // The next turn replays the stored search item; it must not fail.
+    let (_, turn) = search_turn(&mut server, 4, &thread_id, "Summarize it in one line.");
+    assert_eq!(turn["status"], "completed", "{turn}");
+    let second: Value = serde_json::from_slice(&mock.requests.recv_timeout(RPC_TIMEOUT).unwrap().body).unwrap();
+    let history = second["messages"].to_string();
+    assert!(history.contains("[Previous web search]") && history.contains("Rust release"), "{history}");
+    assert!(history.contains("Sources:"), "{history}");
+    eprintln!("real Codex hosted search through Messages relay: tools={}, items={}", first["tools"].as_array().unwrap().len(), items.len());
+}

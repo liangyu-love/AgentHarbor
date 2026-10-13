@@ -17,8 +17,11 @@ pub mod history;
 pub mod message_history;
 #[cfg(test)]
 mod performance_tests;
+#[cfg(test)]
+mod search_compat_tests;
 mod reasoning;
 mod responses;
+mod search_compat;
 mod sse;
 pub mod tool_namespaces;
 mod types;
@@ -28,6 +31,7 @@ use serde_json::Value;
 pub use types::{ModelProtocol, ProtocolError, ProtocolErrorKind};
 
 pub use responses::is_responses_body;
+pub use search_compat::ChatSearch;
 
 pub fn response_body(translation: Translation, value: &Value) -> Result<Value, String> {
     response_body_with_options(translation, value, &ResponseOptions::default())
@@ -36,6 +40,14 @@ pub fn response_body(translation: Translation, value: &Value) -> Result<Value, S
 #[derive(Clone, Debug, Default)]
 pub struct ResponseOptions {
     pub search: Option<web_search::Search>,
+    /// Optional declarations were omitted to keep ordinary messages usable.
+    pub search_downgraded: bool,
+    /// Keep a forced caller choice even when the native wire encodes it as auto.
+    pub search_required: bool,
+    /// A Codex cached/indexed search declaration runs as the target's live search.
+    pub search_cached_as_live: bool,
+    /// The target's search format has only an approximate call budget.
+    pub search_budget_approximate: bool,
     /// Chat's usage-only terminal chunk is opt-in on its ingress contract.
     pub chat_include_usage: bool,
 }
@@ -45,7 +57,13 @@ pub fn response_body_with_options(
     value: &Value,
     options: &ResponseOptions,
 ) -> Result<Value, String> {
-    let canonical = canonical_response(translation, value)?;
+    let mut canonical = canonical_response(translation, value)?;
+    if translation.to == ModelProtocol::ChatCompletions && options.search.is_some() && canonical["status"] == "completed" {
+        if let Some(search) = search_compat::chat_result(canonical["output"].as_array().ok_or("protocol.errors.invalidResponse")?,
+            &canonical["usage"], canonical["id"].as_str().unwrap_or("search")) {
+            canonical["output"].as_array_mut().unwrap().insert(0, search);
+        }
+    }
     if translation.from == ModelProtocol::AnthropicMessages {
         anthropic::response_body_with_options(&canonical, options)
     } else if translation.from == ModelProtocol::ChatCompletions {
@@ -176,6 +194,12 @@ pub struct TranslatedRequest {
 }
 
 pub fn request_body(translation: Translation, value: &Value) -> Result<TranslatedRequest, String> {
+    request_body_with_chat_search(translation, value, None)
+}
+
+pub(crate) fn request_body_with_chat_search(
+    translation: Translation, value: &Value, chat_search: Option<ChatSearch>,
+) -> Result<TranslatedRequest, String> {
     use ModelProtocol::*;
     match (translation.from, translation.to) {
         (Responses, ChatCompletions) | (Responses, AnthropicMessages) => {
@@ -187,16 +211,23 @@ pub fn request_body(translation: Translation, value: &Value) -> Result<Translate
             object.remove("previous_response_id");
             object.insert("input".into(), Value::Array(input.clone()));
             let namespaces = tool_namespaces::ToolNamespaces::prepare(&mut expanded)?;
-            let body = chat::request_from_responses(translation.to, &expanded)?;
+            let body = chat::request_from_responses_with_search(translation.to, &expanded, chat_search)?;
+            let declared = expanded["tools"].as_array().into_iter().flatten().find(|tool| web_search::is_search(tool));
+            let search = (expanded["tool_choice"] != "none" && declared.is_some())
+                .then(|| web_search::Search { name:"web_search".into(), max_uses:expanded["max_tool_calls"].as_u64() });
+            let search_cached_as_live = search.is_some() && declared.is_some_and(|tool|
+                tool["external_web_access"] == false || tool["indexed_web_access"] == true);
+            let search_budget_approximate = search.is_some() && translation.to == ChatCompletions
+                && expanded.get("max_tool_calls").is_some();
             Ok(TranslatedRequest {
                 body,
                 input,
                 namespaces,
-                response_options: Default::default(),
+                response_options: ResponseOptions { search, search_cached_as_live, search_budget_approximate, ..Default::default() },
             })
         }
         (AnthropicMessages, ChatCompletions) | (AnthropicMessages, Responses) => {
-            let (body, response_options) = anthropic::request_with_options(translation.to, value)?;
+            let (body, response_options) = anthropic::request_with_search(translation.to, value, chat_search)?;
             if translation.to == ChatCompletions {
                 chat::validate_tool_history(&body)?;
             }
@@ -319,7 +350,7 @@ pub fn stream_translator_with_options(
 ) -> StreamTranslator {
     StreamTranslator {
         responses: (translation.from == ModelProtocol::Responses)
-            .then(|| sse::StreamTranslator::new(translation)),
+            .then(|| sse::StreamTranslator::new(translation).with_search(options.search.is_some())),
         anthropic: (translation.from == ModelProtocol::AnthropicMessages).then(|| {
             anthropic_sse::StreamTranslator::new(translation.to).with_options(options.clone())
         }),

@@ -99,6 +99,10 @@ pub(super) fn request_body(target: ModelProtocol, value: &Value) -> Result<Value
 }
 
 pub(super) fn request_with_options(target: ModelProtocol, value: &Value) -> Result<(Value, ResponseOptions), String> {
+    request_with_search(target, value, None)
+}
+
+pub(super) fn request_with_search(target: ModelProtocol, value: &Value, chat_search: Option<super::ChatSearch>) -> Result<(Value, ResponseOptions), String> {
     let model = string(value, "model")?;
     let messages = value["messages"].as_array().ok_or(INVALID)?;
     let max = value["max_tokens"]
@@ -180,13 +184,15 @@ pub(super) fn request_with_options(target: ModelProtocol, value: &Value) -> Resu
                                     input.push(json!({"role":"user","content":attachments}));
                                 }
                             }
-                            "server_tool_use" if role == "assistant" && target == ModelProtocol::Responses => {
+                            "server_tool_use" if role == "assistant" && (target == ModelProtocol::Responses || chat_search.is_some()) => {
                                 let result = blocks.iter().find(|r| r["type"] == "web_search_tool_result" && r["tool_use_id"] == block["id"])
                                     .ok_or(UNSUPPORTED)?;
                                 flush(&mut input, &mut parts, role);
-                                input.push(web_search::history_call(block, result)?);
+                                input.push(if target == ModelProtocol::Responses {
+                                    web_search::history_input(block, result)?
+                                } else {web_search::history_call(block, result)?});
                             }
-                            "web_search_tool_result" if role == "assistant" && target == ModelProtocol::Responses => {
+                            "web_search_tool_result" if role == "assistant" && (target == ModelProtocol::Responses || chat_search.is_some()) => {
                                 if !blocks.iter().any(|b| b["type"] == "server_tool_use" && b["id"] == block["tool_use_id"]) {
                                     return Err(INVALID.into());
                                 }
@@ -231,6 +237,7 @@ pub(super) fn request_with_options(target: ModelProtocol, value: &Value) -> Resu
     }
     if let Some(tools) = value.get("tools") {
         let mut names = std::collections::HashSet::new();
+        let programmatic = tools.as_array().is_some_and(|tools| web_search::programmatic_callers(tools));
         response["tools"] = json!(tools
             .as_array()
             .ok_or(INVALID)?
@@ -239,7 +246,7 @@ pub(super) fn request_with_options(target: ModelProtocol, value: &Value) -> Resu
                 if !names.insert(string(tool, "name")?) { return Err(INVALID.into()); }
                 if web_search::is_search(tool) {
                     if options.search.is_some() { return Err("protocol.errors.unsupportedSearchOptions".into()); }
-                    let (search, mapped) = web_search::prepare(target, tool)?;
+                    let (search, mapped) = web_search::prepare(if chat_search.is_some() { ModelProtocol::Responses } else { target }, tool, programmatic)?;
                     options.search = Some(search);
                     return Ok(mapped);
                 }
@@ -257,6 +264,7 @@ pub(super) fn request_with_options(target: ModelProtocol, value: &Value) -> Resu
     if let Some(search) = &options.search {
         response["include"] = json!(["web_search_call.action.sources"]);
         if let Some(max) = search.max_uses { response["max_tool_calls"] = json!(max); }
+        options.search_budget_approximate = target == ModelProtocol::ChatCompletions && search.max_uses.is_some();
     }
     if let Some(choice) = value.get("tool_choice") {
         response["tool_choice"] = match string(choice, "type")? {
@@ -276,6 +284,7 @@ pub(super) fn request_with_options(target: ModelProtocol, value: &Value) -> Resu
         if choice["disable_parallel_tool_use"] == true {
             response["parallel_tool_calls"] = json!(false);
         }
+        if choice["type"] == "none" { options.search = None; }
     }
     for key in ["temperature", "top_p"] {
         if let Some(setting) = value.get(key) {
@@ -304,7 +313,7 @@ pub(super) fn request_with_options(target: ModelProtocol, value: &Value) -> Resu
             Ok((response, options))
         }
         ModelProtocol::ChatCompletions => {
-            let mut chat = chat::request_from_responses(target, &response)?;
+            let mut chat = chat::request_from_responses_with_search(target, &response, chat_search)?;
             if let Some(stops) = stops {
                 chat["stop"] = json!(stops);
             }
@@ -324,8 +333,10 @@ pub(super) fn usage(value: &Value) -> Value {
         .as_u64()
         .unwrap_or(0)
         .min(input);
-    json!({"input_tokens":input - cached,"output_tokens":value["output_tokens"].as_u64().unwrap_or(0),
-        "cache_read_input_tokens":cached,"cache_creation_input_tokens":0})
+    let mut usage = json!({"input_tokens":input - cached,"output_tokens":value["output_tokens"].as_u64().unwrap_or(0),
+        "cache_read_input_tokens":cached,"cache_creation_input_tokens":0});
+    if let Some(search) = value.get("server_tool_use") { usage["server_tool_use"] = search.clone(); }
+    usage
 }
 
 pub(super) fn response_body(value: &Value) -> Result<Value, String> {

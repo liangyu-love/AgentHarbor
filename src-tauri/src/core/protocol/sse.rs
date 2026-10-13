@@ -24,6 +24,11 @@ pub struct StreamTranslator {
     reasoning_index: Option<usize>,
     tool_indices: HashMap<u64, usize>,
     tool_initial_inputs: HashSet<usize>,
+    search_blocks: HashMap<u64, Value>,
+    search_arguments: HashMap<u64, String>,
+    search_indices: HashMap<String, usize>,
+    citations: Vec<Value>,
+    native_search: bool,
     usage: Option<Value>,
     anthropic_input_tokens: u64,
     anthropic_cache_read_tokens: u64,
@@ -49,6 +54,11 @@ impl StreamTranslator {
             reasoning_index: None,
             tool_indices: HashMap::new(),
             tool_initial_inputs: HashSet::new(),
+            search_blocks: HashMap::new(),
+            search_arguments: HashMap::new(),
+            search_indices: HashMap::new(),
+            citations: Vec::new(),
+            native_search: false,
             usage: None,
             anthropic_input_tokens: 0,
             anthropic_cache_read_tokens: 0,
@@ -63,6 +73,10 @@ impl StreamTranslator {
     /// Include tool metadata only for the Messages stream adapter.
     pub(super) fn with_tool_metadata(mut self) -> Self {
         self.include_tool_metadata = true;
+        self
+    }
+    pub(super) fn with_search(mut self, enabled: bool) -> Self {
+        self.native_search = enabled;
         self
     }
 
@@ -222,12 +236,24 @@ impl StreamTranslator {
         }
         if let Some(usage) = value.get("usage").filter(|usage| !usage.is_null()) {
             self.usage = Some(openai_usage(usage));
+            if let Some(search) = usage.get("web_search_usage") {
+                self.usage.as_mut().unwrap()["web_search_usage"] = search.clone();
+            }
         }
         let Some(choice) = value.get("choices").and_then(|choices| choices.get(0)) else {
             return Vec::new(); // A final usage chunk has no choices.
         };
         let mut events = Vec::new();
         if let Some(delta) = choice.get("delta") {
+            if delta["error_message"].as_str().is_some_and(|message| !message.is_empty()) {
+                return self.terminal(Completion::Failed("upstream_search_error"));
+            }
+            if let Some(annotations) = delta["annotations"].as_array() {
+                if !self.retain_replacing(0, delta["annotations"].to_string().len()) {
+                    return self.terminal(Completion::Failed("invalid_stream_frame"));
+                }
+                self.citations.extend(annotations.iter().cloned());
+            }
             if let Some(text) = delta
                 .get("reasoning_content")
                 .or_else(|| delta.get("reasoning"))
@@ -316,9 +342,12 @@ impl StreamTranslator {
                     }
                 }
             }
+            // WorkBuddy sends an empty legacy field alongside valid tool_calls
+            // in its terminal chunk. Reject actual unsupported legacy calls.
             if delta
                 .get("function_call")
-                .is_some_and(|call| !call.is_null())
+                .is_some_and(|call| !call.is_null() && !call.as_object().is_some_and(|object|
+                    object.iter().all(|(key,value)| matches!(key.as_str(), "name" | "arguments") && value == "")))
             {
                 events.extend(self.terminal(Completion::Failed("invalid_tool_arguments")));
                 return events;
@@ -365,7 +394,46 @@ impl StreamTranslator {
             }
             Some("content_block_start") => {
                 let block = &value["content_block"];
+                // Claude splits one cited answer into many text blocks; only a
+                // tool or search between them starts the next message item.
+                if matches!(block["type"].as_str(), Some("server_tool_use" | "web_search_tool_result" | "tool_use")) {
+                    events.extend(self.flush_citations());
+                    if self.finished { return events; }
+                    self.text_index = None;
+                }
                 match block.get("type").and_then(Value::as_str) {
+                    Some("server_tool_use") if block["name"] == "web_search" => {
+                        let index = value["index"].as_u64().unwrap_or(0);
+                        let Some(id) = block["id"].as_str().filter(|id| !id.is_empty()) else {
+                            return self.terminal(Completion::Failed("invalid_search_result"));
+                        };
+                        if self.search_blocks.contains_key(&index) || self.search_indices.contains_key(id)
+                            || self.search_blocks.len() >= 128 || !self.retain_replacing(0, block.to_string().len()) {
+                            return self.terminal(Completion::Failed("invalid_search_result"));
+                        }
+                        self.search_blocks.insert(index, block.clone());
+                        self.search_indices.insert(id.to_owned(), self.output.len());
+                        let item = json!({"type":"web_search_call","id":id,"status":"in_progress",
+                            "action":{"type":"search","query":block["input"]["query"].as_str().unwrap_or("")}});
+                        events.push(sse_frame("response.output_item.added", json!({"output_index":self.output.len(),"item":item})));
+                        self.output.push(item);
+                    }
+                    Some("web_search_tool_result") => {
+                        let Some((_, call)) = self.search_blocks.iter().find(|(_, call)| call["id"] == block["tool_use_id"]) else {
+                            return self.terminal(Completion::Failed("invalid_search_result"));
+                        };
+                        let Ok(item) = super::web_search::history_call(call, block) else {
+                            return self.terminal(Completion::Failed("invalid_search_result"));
+                        };
+                        let index = self.search_indices[block["tool_use_id"].as_str().unwrap()];
+                        if self.output[index]["status"] != "in_progress" || !self.retain_replacing(0, item.to_string().len()) {
+                            return self.terminal(Completion::Failed("invalid_search_result"));
+                        }
+                        self.output[index] = item;
+                        if self.output[index]["status"] == "completed" {
+                            events.push(sse_frame("response.web_search_call.completed", json!({"output_index":index,"item_id":self.output[index]["id"]})));
+                        }
+                    }
                     Some("tool_use") => {
                         let index = value.get("index").and_then(Value::as_u64).unwrap_or(0);
                         if self.tool_indices.contains_key(&index) || self.tool_indices.len() >= 128
@@ -391,15 +459,21 @@ impl StreamTranslator {
                         self.tool_initial_inputs.insert(index);
                         events.push(event);
                     }
-                    Some("text") => events.extend(
-                        self.text_delta(
+                    Some("text") => {
+                        if let Some(citations) = block["citations"].as_array() {
+                            if !self.retain_replacing(0, block["citations"].to_string().len()) {
+                                return self.terminal(Completion::Failed("invalid_stream_frame"));
+                            }
+                            self.citations.extend(citations.iter().cloned());
+                        }
+                        events.extend(self.text_delta(
                             block
                                 .get("text")
                                 .and_then(Value::as_str)
                                 .unwrap_or_default(),
                             false,
-                        ),
-                    ),
+                        ));
+                    }
                     Some("thinking") => events.extend(
                         self.text_delta(
                             block
@@ -415,6 +489,12 @@ impl StreamTranslator {
             Some("content_block_delta") => {
                 let delta = &value["delta"];
                 match delta.get("type").and_then(Value::as_str) {
+                    Some("citations_delta") => {
+                        if !self.retain_replacing(0, delta["citation"].to_string().len()) {
+                            return self.terminal(Completion::Failed("invalid_stream_frame"));
+                        }
+                        self.citations.push(delta["citation"].clone());
+                    }
                     Some("text_delta") => events.extend(
                         self.text_delta(
                             delta
@@ -436,6 +516,14 @@ impl StreamTranslator {
                     Some("input_json_delta") => {
                         let upstream_index =
                             value.get("index").and_then(Value::as_u64).unwrap_or(0);
+                        if self.search_blocks.contains_key(&upstream_index) {
+                            let partial = delta["partial_json"].as_str().unwrap_or("");
+                            if !self.retain_replacing(0, partial.len()) {
+                                return self.terminal(Completion::Failed("invalid_stream_frame"));
+                            }
+                            self.search_arguments.entry(upstream_index).or_default().push_str(partial);
+                            return events;
+                        }
                         let Some(index) = self.tool_indices.get(&upstream_index).copied() else {
                             return self.terminal(Completion::Failed("invalid_tool_arguments"));
                         };
@@ -460,6 +548,16 @@ impl StreamTranslator {
                         events.push(event);
                     }
                     _ => {}
+                }
+            }
+            Some("content_block_stop") => {
+                let index = value["index"].as_u64().unwrap_or(0);
+                if let Some(arguments) = self.search_arguments.remove(&index) {
+                    let Ok(input) = serde_json::from_str::<Value>(&arguments) else {
+                        return self.terminal(Completion::Failed("invalid_search_result"));
+                    };
+                    if !input.is_object() { return self.terminal(Completion::Failed("invalid_search_result")); }
+                    self.search_blocks.get_mut(&index).unwrap()["input"] = input;
                 }
             }
             Some("message_delta") => {
@@ -494,6 +592,9 @@ impl StreamTranslator {
         let merged = self
             .usage
             .get_or_insert_with(|| json!({"input_tokens":0,"output_tokens":0,"total_tokens":0}));
+        if let Some(search) = usage.get("server_tool_use") {
+            merged["server_tool_use"] = search.clone();
+        }
         for key in ["input_tokens", "output_tokens"] {
             if let Some(count) = usage.get(key).and_then(Value::as_u64) {
                 merged[key] = json!(count);
@@ -662,18 +763,53 @@ impl StreamTranslator {
         response
     }
 
-    fn terminal(&mut self, completion: Completion) -> Vec<Value> {
-        if self.finished {
-            return Vec::new();
+    fn flush_citations(&mut self) -> Vec<Value> {
+        let mut events = Vec::new();
+        if !self.citations.is_empty() {
+            let previous = self.text_index.and_then(|index| self.output[index]["content"][0]["text"].as_str())
+                .unwrap_or("").to_owned();
+            let mut text = previous.clone();
+            let annotations = super::search_compat::citations(&mut text, &json!(std::mem::take(&mut self.citations)));
+            events.extend(self.text_delta(&text[previous.len()..], false));
+            if self.finished { return events; }
+            if let Some(index) = self.text_index {
+                self.output[index]["content"][0]["annotations"] = json!(annotations);
+                for (ordinal, annotation) in annotations.iter().enumerate() {
+                    events.push(sse_frame("response.output_text.annotation.added", json!({"item_id":self.output[index]["id"],
+                        "output_index":index,"content_index":0,"annotation_index":ordinal,"annotation":annotation})));
+                }
+            }
+        }
+        events
+    }
+
+    fn terminal(&mut self, mut completion: Completion) -> Vec<Value> {
+        if self.finished { return Vec::new(); }
+        let mut events = self.flush_citations();
+        if self.finished { return events; }
+        if completion == Completion::Completed && self.output.iter().any(|item| item["type"] == "web_search_call" && item["status"] == "in_progress") {
+            completion = Completion::Failed("invalid_search_result");
+        }
+        if self.native_search && self.translation.to == ModelProtocol::ChatCompletions && completion == Completion::Completed {
+            if let Some(search) = super::search_compat::chat_result(&self.output, self.usage.as_ref().unwrap_or(&Value::Null), &self.response_id) {
+                if !self.retain_replacing(0, search.to_string().len()) {
+                    completion = Completion::Failed("invalid_stream_frame");
+                } else {
+                    events.push(sse_frame("response.output_item.added", json!({"output_index":self.output.len(),"item":search})));
+                    self.output.push(search);
+                }
+            }
         }
         self.finished = true;
         if let Completion::Failed(code) = completion {
             self.failure = Some(code);
         }
         let success = completion == Completion::Completed;
-        let mut events = Vec::new();
         for (index, item) in self.output.iter_mut().enumerate() {
-            if item.get("status").is_some() {
+            if item["type"] == "web_search_call" && item["status"] == "in_progress" && !success {
+                item["status"] = json!("incomplete");
+            }
+            if item.get("status").is_some() && item["type"] != "web_search_call" {
                 item["status"] = json!(if success { "completed" } else { "incomplete" });
             }
             // Incomplete/failed tools must not become executable.
@@ -964,6 +1100,34 @@ mod tests {
             assert!(t.completed_response().is_none());
             assert!(t.finish().is_empty());
         }
+    }
+
+    #[test]
+    fn empty_legacy_call_placeholder_does_not_reject_valid_chat_tools() {
+        let arguments = r#"{"system2_search_query":[{"q":"Rust","recency":7,"domains":null}]}"#;
+        let mut t = translator(ModelProtocol::ChatCompletions);
+        let mut events = tool(&mut t, "");
+        for part in ["{", &arguments[1..arguments.len()-1], "}"] {
+            events.extend(feed(&mut t, json!({"choices":[{"delta":{"tool_calls":[
+                {"index":0,"function":{"name":"","arguments":part}}]},"finish_reason":""}]})));
+        }
+        events.extend(feed(&mut t, json!({"choices":[{"delta":{"tool_calls":[],
+            "function_call":{"name":"","arguments":""}},"finish_reason":"tool_calls"}]})));
+        events.extend(t.push(b"data: [DONE]\n\n"));
+        assert_eq!(terminal_response(&events)["status"], "completed");
+        assert_eq!(t.completed_response().unwrap()["output"][0]["arguments"], arguments);
+
+        // A real legacy call or malformed modern arguments must still fail.
+        for placeholder in [json!({"name":"legacy","arguments":"{}"}),json!({"name":"","arguments":"{}"}),json!({"unexpected":true})] {
+            let mut t = translator(ModelProtocol::ChatCompletions);
+            tool(&mut t, "{}");
+            let events = feed(&mut t, json!({"choices":[{"delta":{"function_call":placeholder},"finish_reason":"tool_calls"}]}));
+            assert_eq!(terminal_response(&events)["error"]["reason"], "invalid_tool_arguments");
+        }
+        let mut t = translator(ModelProtocol::ChatCompletions);
+        tool(&mut t, "{");
+        feed(&mut t, json!({"choices":[{"delta":{"function_call":{"name":"","arguments":""}},"finish_reason":"tool_calls"}]}));
+        assert_eq!(terminal_response(&t.push(b"data: [DONE]\n\n"))["error"]["reason"], "invalid_tool_arguments");
     }
 
     #[test]

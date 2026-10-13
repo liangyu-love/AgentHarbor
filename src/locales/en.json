@@ -1102,7 +1102,10 @@
       "aggregate_rotation": "Aggregate channel rotation",
       "aggregate_preferred": "Aggregate preferred channel",
       "aggregate_retry": "Aggregate alternative attempt",
-      "hosted_tool_followup": "Hosted tool result continuation on the same channel"
+      "hosted_tool_followup": "Hosted tool result continuation on the same channel",
+      "optional_search_unsupported": "Retry messaging on the same channel after optional search rejection",
+      "native_search_tool_misclassified": "Upstream returned hosted search as a client tool; use its native search",
+      "native_search_mixed_tools": "Upstream rejected mixed tools; search separately on the original account and model"
     },
     "traceCredentialStatus": {
       "recorded": "version recorded",
@@ -1126,14 +1129,59 @@
       "aggregate_rate_limited": "First channel returned HTTP 429",
       "aggregate_failure_threshold": "Consecutive channel failure threshold reached",
       "aggregate_connect_error": "First channel connection failed",
-      "aggregate_first_token_timeout": "First channel did not start replying in time"
+      "aggregate_first_token_timeout": "First channel did not start replying in time",
+      "optional_search_unsupported": "Upstream explicitly rejected optional search",
+      "native_search_tool_misclassified": "Repair the search call type on the original account and model",
+      "native_search_mixed_tools": "Separate search and client tools on the original account and model"
     },
     "traceCompatibility": {
       "commandSearchViaChat": "Command search adaptation"
     },
-    "webSearchService": "WebSearch service",
-    "webSearchAutomatic": "Automatic",
+    "webSearchService": "Search account",
+    "webSearchModel": "Search model",
+    "webSearchAutomatic": "No native search fallback",
     "webSearchUnavailable": "Selected search service unavailable",
+    "chatSearch": {
+      "title": "Search across protocols",
+      "auto": "Match known official endpoints",
+      "openAi": "Upstream OpenAI Chat search",
+      "mimo": "Upstream MiMo Chat search",
+      "command": "Independent Command search",
+      "selected": "Always use selected search account",
+      "disabled": "Disable hosted Chat search",
+      "hint": "Automatic uses native search first, then the selected Responses/Messages search account and model when the target cannot carry it or explicitly rejects it. Without a service, only optional search declarations are omitted. Search permissions must be supported by the selected service. Search usage is recorded separately and the inference model stays unchanged. Command requires explicit selection.",
+      "native_search": "Native search adaptation",
+      "command_search": "Independent Command search",
+      "selected_search": "Selected account search",
+      "optional_search_omitted": "Search declaration omitted (compatibility fallback)",
+      "native_search_live": "Native search adapted (Codex cached mode runs as live search)",
+      "native_search_separate": "Search runs separately on the same account and model",
+      "native_search_tool_misclassified": "Provider returned hosted search as a client call; later requests search separately",
+      "native_search_budget_approx": "Native search adapted (call budget mapped to the closest available limit)"
+    },
+    "searchProbe": {
+      "action": "Check search capability",
+      "running": "Checking…",
+      "hint": "Uses the saved address and key; sends 1–2 small billable requests and changes nothing.",
+      "saveFirst": "Save the provider first to check its search capability.",
+      "apply": "Use suggestion: {{mode}}",
+      "none": "No format actually searched. Select a search model in routing settings, or let Codex use its Search Service.",
+      "sources": "{{count}} sources",
+      "formats": {
+        "responses": "Responses web_search",
+        "messages": "Messages web_search",
+        "mimoChat": "MiMo Chat search",
+        "openAiChat": "OpenAI Chat search"
+      },
+      "outcomes": {
+        "executed": "Search executed",
+        "failed": "Search failed",
+        "notExecuted": "Answered without searching",
+        "misclassified": "Returned search as a client call",
+        "rejected": "Search declaration rejected",
+        "error": "Request failed"
+      }
+    },
     "webSearchSaveFailed": "Could not save search service",
     "upstreamModel": "Upstream model ID",
     "modelCapabilities": "Model capabilities and match preview",

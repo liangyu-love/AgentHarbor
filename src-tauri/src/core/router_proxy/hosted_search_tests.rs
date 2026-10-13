@@ -2,8 +2,11 @@
 //! search service deliberately use different endpoints and credentials.
 use super::*;
 use crate::core::router::ModelProtocol;
+use crate::core::aggregation;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[path = "hosted_search_tests/native_tests.rs"]
+mod native_tests;
 
 struct Reply {
     status: u16,
@@ -61,22 +64,29 @@ impl Mock {
                                 .and_then(|v| v.to_str().ok())
                                 .unwrap_or_default()
                                 .to_owned();
+                            let idempotency = request.headers().get("idempotency-key").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
+                            let api_key = request.headers().get("x-api-key").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
                             let body: Value = serde_json::from_slice(
                                 &request.into_body().collect().await.unwrap().to_bytes(),
                             )
                             .unwrap();
                             captured.lock().unwrap().push(
-                                json!({"path":path, "authorization":authorization, "body":body}),
+                                json!({"path":path, "authorization":authorization,"apiKey":api_key, "body":body,"idempotencyKey":idempotency}),
                             );
                             let reply = respond(calls.fetch_add(1, Ordering::SeqCst), &body);
                             if !reply.delay.is_zero() {
                                 tokio::time::sleep(reply.delay).await;
                             }
+                            let sse = reply.body.as_str().is_some_and(|body| body.starts_with("event:") || body.starts_with("data:"));
+                            let aws = reply.body["__aws_events"].as_array();
+                            let payload = if let Some(events) = aws {events.iter().flat_map(|event|
+                                account_sources::kiro::tests::frame(event["event"].as_str().unwrap(),&event["payload"])).collect::<Vec<_>>()}
+                                else if sse {reply.body.as_str().unwrap().as_bytes().to_vec()} else {reply.body.to_string().into_bytes()};
                             Ok::<_, std::convert::Infallible>(
                                 Response::builder()
                                     .status(reply.status)
-                                    .header(CONTENT_TYPE, "application/json")
-                                    .body(Full::new(Bytes::from(reply.body.to_string())))
+                                    .header(CONTENT_TYPE, if aws.is_some() {"application/vnd.amazon.eventstream"} else if sse {"text/event-stream"} else {"application/json"})
+                                    .body(Full::new(Bytes::from(payload)))
                                     .unwrap(),
                             )
                         }
@@ -205,11 +215,14 @@ fn execution(
         .build()
         .unwrap();
     hosted_search::Execution {
+        input: Vec::new(),
+        namespaces: Default::default(),
         plan,
         backend: hosted_search::SearchBackend {
             client: client.clone(),
             endpoint: format!("{}/alpha/web-search", search.url),
             headers: bearer("Bearer search-only"),
+            native: None,
         },
         client,
         url: format!("{}/v1/chat/completions", model.url),
@@ -223,6 +236,9 @@ fn execution(
         adapter: tool_schema::Adapter::default(),
         credential,
         health: None,
+        protocol: ModelProtocol::ChatCompletions,
+        account: None,
+        selection: None,
     }
 }
 
@@ -239,6 +255,7 @@ fn hosted_chat_plan_is_protocol_based_and_preserves_native_search_paths() {
     let destination = |target| Destination::Provider {
         provider: Box::new(router::Provider {
             base_url: "https://unrelated-model-provider.example/v1".into(),
+            chat_search: protocol::ChatSearch::Command,
             ..Default::default()
         }),
         upstream_protocol: target,
@@ -266,6 +283,140 @@ fn hosted_chat_plan_is_protocol_based_and_preserves_native_search_paths() {
     )
     .unwrap()
     .is_none());
+    let mut unselected = destination(ModelProtocol::ChatCompletions);
+    if let Destination::Provider { provider, .. } = &mut unselected { provider.chat_search = protocol::ChatSearch::Auto; }
+    assert!(hosted_search::Plan::for_destination(&unselected,Some(inbound.as_bytes())).unwrap().is_none());
+}
+
+#[test]
+fn native_search_and_optional_rejection_traverse_the_real_router_for_both_clients() {
+    let _guard = global_router_test_lock();
+    struct Cleanup;
+    impl Drop for Cleanup { fn drop(&mut self) { stop_unchecked(); } }
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let chat = Mock::new(|_, body| {
+            if body["web_search_options"].is_object() {
+                return Reply { status:400,body:json!({"error":{"message":"web_search_options is not supported"}}),delay:Duration::ZERO };
+            }
+            if body["messages"].to_string().contains("quota-test") {
+                return Reply { status:400,body:json!({"error":{"message":"web_search quota exceeded: unsupported plan"}}),delay:Duration::ZERO };
+            }
+            Reply::ok(chat_reply(json!({"role":"assistant","content":"Native answer",
+                "annotations":[{"type":"url_citation","url":"https://rust-lang.org","title":"Rust"}]}),"stop"))
+        }).await;
+        let messages = Mock::new(|_, _| Reply::ok(json!({"id":"msg-native","type":"message","model":"fixture-chat","stop_reason":"end_turn",
+            "content":[{"type":"server_tool_use","id":"ws-native","name":"web_search","input":{"query":"Rust"}},
+                {"type":"web_search_tool_result","tool_use_id":"ws-native","content":[{"type":"web_search_result","url":"https://rust-lang.org","title":"Rust","encrypted_content":"opaque"}]},
+                {"type":"text","text":"Native answer"}],"usage":{"input_tokens":2,"output_tokens":3}}))).await;
+        let responses = Mock::new(|_, _| Reply::ok(json!({"id":"resp-native","object":"response","status":"completed","model":"fixture-chat",
+            "output":[{"type":"web_search_call","id":"ws-native","status":"completed","action":{"type":"search","query":"Rust","sources":[{"type":"url","url":"https://rust-lang.org","title":"Rust"}]}},
+                {"type":"message","id":"answer-native","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Native answer","annotations":[]}]}],
+            "usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}))).await;
+        let temp = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(temp.path().join("codex"));
+        std::fs::create_dir_all(&paths.app_data_dir).unwrap();
+        let providers = [
+            ("chat",&chat.url,ModelProtocol::ChatCompletions,protocol::ChatSearch::Mimo),
+            ("unknown",&chat.url,ModelProtocol::ChatCompletions,protocol::ChatSearch::Auto),
+            ("reject",&chat.url,ModelProtocol::ChatCompletions,protocol::ChatSearch::OpenAi),
+            ("messages",&messages.url,ModelProtocol::AnthropicMessages,protocol::ChatSearch::Auto),
+            ("responses",&responses.url,ModelProtocol::Responses,protocol::ChatSearch::Auto),
+        ].into_iter().map(|(id,url,protocol,chat_search)| router::Provider {
+            id:id.into(),name:id.into(),base_url:url.clone(),model:"fixture-chat".into(),protocol,chat_search,
+            api_key:"model-only".into(),enabled:true,network_mode:"direct".into(),..Default::default()
+        }).collect();
+        let mut store = router::Store {providers,router:router::RouterSettings {bearer_token:"router-local".into(),..Default::default()},..Default::default()};
+        store.aggregates.push(aggregation::AggregateModel {
+            id:uuid::Uuid::new_v4().to_string(),public_model_id:"search-fixture".into(),display_name:"Search fixture".into(),
+            affinity:aggregation::Affinity::StatelessRotation,
+            members:["chat","messages","unknown"].into_iter().map(|id| aggregation::AggregateMember {
+                id:format!("member-{id}"),provider_id:id.into(),actual_model_id:"fixture-chat".into(),..Default::default()
+            }).collect(),..Default::default()
+        });
+        crate::core::secret_file::write(&paths.app_data_dir.join("newapi-providers.dat"),&serde_json::to_vec(&store).unwrap()).unwrap();
+        let _cleanup = Cleanup;
+        let port = ensure_running(0,paths.clone(),ApiProxyConfigPayload::default()).await.unwrap();
+        let client = Client::builder().no_proxy().timeout(Duration::from_secs(5)).build().unwrap();
+        for (caller,target) in [(ModelProtocol::Responses,"messages"),(ModelProtocol::Responses,"chat"),
+            (ModelProtocol::AnthropicMessages,"responses"),(ModelProtocol::AnthropicMessages,"chat")] {
+            let inbound = if caller == ModelProtocol::Responses {
+                json!({"model":format!("{target}::fixture-chat"),"input":"Search Rust","tools":[{"type":"web_search"}]})
+            } else {json!({"model":format!("{target}::fixture-chat"),"max_tokens":100,"messages":[{"role":"user","content":"Search Rust"}],
+                "tools":[{"type":"web_search_20250305","name":"web_search"}]})};
+            let endpoint = if caller == ModelProtocol::Responses {"responses"} else {"messages"};
+            let reply = client.post(format!("http://127.0.0.1:{port}/v1/{endpoint}")).bearer_auth("router-local").json(&inbound).send().await.unwrap();
+            assert_eq!(reply.status(),StatusCode::OK,"{caller:?} -> {target}");
+            let text = reply.text().await.unwrap();
+            assert!(text.contains("https://rust-lang.org"),"{caller:?} -> {target}: {text}");
+            assert!(text.contains(if caller == ModelProtocol::Responses {"web_search_call"} else {"web_search_tool_result"}),"{text}");
+        }
+        assert_eq!(chat.captured()[0]["body"]["tools"][0]["type"],"web_search");
+        assert_eq!(messages.captured()[0]["body"]["tools"][0]["type"],"web_search_20250305");
+        assert_eq!(responses.captured()[0]["body"]["tools"][0]["type"],"web_search");
+
+        let send = |target: &str, choice: Value, text: &str| client.post(format!("http://127.0.0.1:{port}/v1/responses")).bearer_auth("router-local")
+            .json(&json!({"model":format!("{target}::fixture-chat"),"input":text,"tools":[{"type":"web_search"}],"tool_choice":choice}));
+        let before = chat.captured().len();
+        let reply = send("reject",json!("auto"),"hello").header("idempotency-key","caller-key").send().await.unwrap();
+        assert_eq!(reply.status(),StatusCode::OK);
+        let reply: Value = reply.json().await.unwrap();
+        assert!(reply["output"].as_array().unwrap().iter().all(|item| item["type"] != "web_search_call"));
+        assert_eq!(chat.captured().len(),before + 2,"one compatibility retry");
+        assert!(chat.captured()[before]["body"]["web_search_options"].is_object());
+        assert!(chat.captured()[before+1]["body"].get("web_search_options").is_none());
+        assert_eq!(chat.captured()[before]["idempotencyKey"],"caller-key");
+        assert_ne!(chat.captured()[before+1]["idempotencyKey"],"caller-key","changed payload needs a distinct idempotency key");
+        let reply = send("reject",json!({"type":"web_search"}),"hello").send().await.unwrap();
+        assert_eq!(reply.status(),StatusCode::BAD_REQUEST);
+        assert_eq!(chat.captured().len(),before + 3,"forced search must not retry without search");
+        let reply = send("chat",json!("auto"),"quota-test").send().await.unwrap();
+        assert_eq!(reply.status(),StatusCode::BAD_REQUEST);
+        assert_eq!(chat.captured().len(),before + 4,"quota rejection must not downgrade");
+        let reply = send("unknown",json!("auto"),"hello").send().await.unwrap();
+        assert_eq!(reply.status(),StatusCode::OK);
+        assert!(chat.captured().last().unwrap()["body"].get("tools").is_none());
+        let count = chat.captured().len();
+        assert_eq!(send("unknown",json!({"type":"web_search"}),"hello").send().await.unwrap().status(),StatusCode::BAD_REQUEST);
+        assert_eq!(chat.captured().len(),count,"unsupported forced search never reaches upstream");
+        assert!(chat.captured().iter().all(|request| request["authorization"] == "Bearer model-only" && request["body"]["model"] == "fixture-chat"));
+        for selected in 0..3 {
+            for (index,member) in store.aggregates[0].members.iter_mut().enumerate() { member.enabled = index == selected; }
+            crate::core::secret_file::write(&paths.app_data_dir.join("newapi-providers.dat"),&serde_json::to_vec(&store).unwrap()).unwrap();
+            let reply = client.post(format!("http://127.0.0.1:{port}/aggregate/v1/responses")).bearer_auth("router-local")
+                .json(&json!({"model":"search-fixture","input":format!("Search aggregate member {selected}"),"tools":[{"type":"web_search"}]})).send().await.unwrap();
+            let status = reply.status();
+            let bytes = reply.bytes().await.unwrap();
+            assert_eq!(status,StatusCode::OK,"member {selected}: {}",String::from_utf8_lossy(&bytes));
+            let reply: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(reply["model"],"search-fixture");
+            assert_eq!(reply["output"].as_array().unwrap().iter().any(|item| item["type"] == "web_search_call"),selected != 2,"{reply}");
+        }
+        // Both members speak Chat: the first cannot satisfy forced search, but
+        // its preflight rejection must not be cached for the native member.
+        store.aggregates[0].members.swap(0,2);
+        for member in &mut store.aggregates[0].members { member.enabled = member.provider_id != "messages"; }
+        crate::core::secret_file::write(&paths.app_data_dir.join("newapi-providers.dat"),&serde_json::to_vec(&store).unwrap()).unwrap();
+        let reply = client.post(format!("http://127.0.0.1:{port}/aggregate/v1/responses")).bearer_auth("router-local")
+            .json(&json!({"model":"search-fixture","input":"Forced aggregate search","tools":[{"type":"web_search"}],"tool_choice":{"type":"web_search"}})).send().await.unwrap();
+        assert_eq!(reply.status(),StatusCode::OK);
+        assert_eq!(chat.captured().last().unwrap()["body"]["tools"][0]["force_search"],true);
+        let traces = route_trace::recent();
+        assert!(traces.iter().any(|trace| trace.attempts.len() == 2 && trace.failure_stage.is_none()
+            && trace.attempts[0].error.as_deref() == Some("optional_search_unsupported")
+            && trace.attempts[1].search_compatibility.as_deref() == Some("optional_search_omitted")));
+    });
+}
+
+#[test]
+fn review_builtin_search_budget_can_mix_client_function_tools() {
+    let target = Destination::Provider {provider:Box::new(router::Provider {chat_search:protocol::ChatSearch::Command,..Default::default()}),
+        upstream_protocol:ModelProtocol::ChatCompletions,model_override:None,translation:protocol::Translation::between(ModelProtocol::Responses,ModelProtocol::ChatCompletions)};
+    let request = json!({"model":"m","input":"hi","max_tool_calls":2,
+        "tools":[{"type":"web_search"},{"type":"function","name":"exec","parameters":{"type":"object","properties":{}}}]});
+    assert!(hosted_search::Plan::for_destination(&target,Some(request.to_string().as_bytes())).is_ok());
+    let translated = protocol::request_body(protocol::Translation {from:ModelProtocol::Responses,to:ModelProtocol::AnthropicMessages},&request).unwrap();
+    assert_eq!(translated.body["tools"].as_array().unwrap().len(),2);
+    assert_eq!(translated.body["tools"][1]["max_uses"],2);
 }
 
 #[test]
@@ -705,7 +856,7 @@ fn hosted_chat_search_can_be_disabled_after_a_search_reply_without_losing_histor
 }
 
 #[test]
-fn hosted_chat_search_reaches_the_executor_from_desktop_and_messages_ingresses() {
+fn hosted_chat_search_reaches_the_executor_from_codex_desktop_and_messages_ingresses() {
     use crate::core::claude_desktop::{
         gateway::RouterConfig,
         paths::DesktopPaths,
@@ -723,7 +874,7 @@ fn hosted_chat_search_reaches_the_executor_from_desktop_and_messages_ingresses()
     }
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let model = Mock::new(|round, body| {
-            if round % 2 == 0 {
+            if body.get("tools").is_some() && round % 2 == 0 {
                 Reply::ok(chat_reply(
                     json!({"role":"assistant","content":null,
                 "tool_calls":[search_call(body,"search-1","Rust")]}),
@@ -745,7 +896,8 @@ fn hosted_chat_search_reaches_the_executor_from_desktop_and_messages_ingresses()
             providers: vec![
                 router::Provider {
                     id: "model-card".into(),
-                    name: "Unrelated Chat vendor".into(),
+                    name: "Chat vendor with explicitly selected Command search".into(),
+                    chat_search: protocol::ChatSearch::Command,
                     api_key: "model-only".into(),
                     base_url: model.url.clone(),
                     model: "fixture-chat".into(),
@@ -862,8 +1014,26 @@ fn hosted_chat_search_reaches_the_executor_from_desktop_and_messages_ingresses()
                 );
             }
         }
-        assert_eq!(model.captured().len(), 8);
-        assert_eq!(search.captured().len(), 4);
+        let mut previous = Value::Null;
+        for streaming in [false,true] {
+            let inbound = json!({"model":"model-card::fixture-chat","input":format!("Search Codex/{streaming}"),
+                "tools":[{"type":"web_search"}],"tool_choice":{"type":"web_search"},"stream":streaming});
+            let response = client.post(format!("http://127.0.0.1:{port}/v1/responses")).bearer_auth("router-local").json(&inbound).send().await.unwrap();
+            assert_eq!(response.status(),StatusCode::OK);
+            let text = response.text().await.unwrap();
+            assert!(text.contains("web_search_call") && text.contains("https://www.rust-lang.org/releases"),"{text}");
+            if streaming {
+                assert_eq!(text.matches("event: response.completed\n").count(),1,"{text}");
+                assert!(text.contains("response.output_text.delta"));
+            } else { previous = serde_json::from_str::<Value>(&text).unwrap()["id"].clone(); }
+        }
+        let response = client.post(format!("http://127.0.0.1:{port}/v1/responses")).bearer_auth("router-local")
+            .json(&json!({"model":"model-card::fixture-chat","input":"Continue without search","previous_response_id":previous})).send().await.unwrap();
+        assert_eq!(response.status(),StatusCode::OK,"{}",response.text().await.unwrap_or_default());
+        assert!(model.captured().last().unwrap()["body"]["messages"].to_string().contains("https://www.rust-lang.org/releases"));
+        assert!(model.captured().last().unwrap()["body"].get("tools").is_none());
+        assert_eq!(model.captured().len(), 13);
+        assert_eq!(search.captured().len(), 6);
         assert!(model
             .captured()
             .iter()
@@ -873,7 +1043,7 @@ fn hosted_chat_search_reaches_the_executor_from_desktop_and_messages_ingresses()
             .iter()
             .all(|call| call["authorization"] == "Bearer search-only"));
         let ledger = relay_usage::load(&paths.app_data_dir).unwrap();
-        assert_eq!(ledger.recent.len(), 8);
+        assert_eq!(ledger.recent.len(), 13);
         assert_eq!(
             ledger
                 .recent

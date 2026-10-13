@@ -51,6 +51,15 @@ The access mode is independent of the upstream protocol and the network route.
 - Relay models inherit Codex's client behaviour from the official model of the same name, so multi-agent V2 and the **Ultra** effort work through a relay too. Ultra is a Codex-side setting: upstream still receives a concrete effort such as `xhigh` or `max`.
 - Native authenticates with the provider key: it is stored in the Codex `.env` under a random AgentHarbor variable and referenced via `env_key`, never written to `auth.json` or shown in previews. Treat `.env` and its backups as secrets — they are not encrypted.
 
+## Cross-protocol web search
+
+Codex, Claude Code and Claude Desktop keep their own WebSearch. The router translates the search declaration, results, citations and history to the target model's protocol.
+
+- **Native first**: Codex's `web_search` runs on Anthropic Messages models and Claude's search runs on Responses models. A Chat model gets search only through a confirmed format, currently OpenAI Chat search and MiMo search: official endpoints are recognised automatically, and for a relay you pick the format under the provider's Advanced settings → cross-protocol search. Codex's default cached search mode runs as live search on other providers.
+- **Check search capability**: the provider's Advanced settings can send one or two small billable requests with the saved key to see whether the model really searches. If a Chat format works, the check suggests it; the suggestion only changes the draft and is not saved automatically.
+- **Fallbacks**: when the upstream explicitly refuses an optional search declaration, only the declaration is removed and the message goes through. That does not count as a successful search, and native search is not retried on that target for 30 minutes. You can also select a Responses / Messages search model in routing settings (off by default): it runs the searches and the original model writes the answer.
+- **Diagnostics**: per-request route diagnostics show what each request actually used: native adaptation, the selected search account, a separately run search, or an omitted declaration.
+
 ## Gateway
 
 Instead of injecting a client, hand an agent the gateway from the model inject page:

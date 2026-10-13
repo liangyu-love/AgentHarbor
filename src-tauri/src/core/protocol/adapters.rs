@@ -58,6 +58,17 @@ impl WireAdapter {
     pub fn new(protocol: ModelProtocol) -> Self {
         Self { protocol }
     }
+
+    pub(crate) fn encode_request_with_chat_search(
+        &self, caller: ModelProtocol, value: &Value, search: Option<super::ChatSearch>,
+    ) -> Result<AdapterRequest, ProtocolError> {
+        match translation(caller, self.protocol)? {
+            None => Ok(AdapterRequest::Passthrough(value.clone())),
+            Some(pair) => super::request_body_with_chat_search(pair, value, search)
+                .map(AdapterRequest::Translated)
+                .map_err(|code| ProtocolError::from_legacy(code, caller, self.protocol)),
+        }
+    }
 }
 
 fn translation(

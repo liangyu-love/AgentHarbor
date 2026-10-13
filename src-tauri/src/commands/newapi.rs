@@ -170,10 +170,11 @@ pub async fn apply_newapi_capability_clear(
 pub async fn set_router_web_search_provider(
     repo: State<'_, Mutex<Repository>>,
     provider_id: Option<String>,
+    model_id: Option<String>,
 ) -> Result<StateChange, String> {
     let paths = paths(&repo)?;
     let _guard = routing_runtime::mutation_guard().await;
-    router::set_web_search_provider(&paths, provider_id)
+    router::set_web_search_service(&paths, provider_id, model_id)
 }
 
 /// Global compression policy (default 90%). Existing injections are re-derived.
@@ -329,6 +330,20 @@ pub async fn test_newapi_provider(
     })
     .await
     .map_err(|_| "newapi.errors.network")?
+}
+
+#[tauri::command]
+pub async fn probe_newapi_provider_search(
+    repo: State<'_, Mutex<Repository>>,
+    id: String,
+    model: String,
+) -> Result<crate::core::search_probe::SearchProbeReport, String> {
+    let paths = paths(&repo)?;
+    router::ensure_relay(&paths, &id)?;
+    let proxy = newapi::proxy_from_settings(&paths.settings_path);
+    tauri::async_runtime::spawn_blocking(move || router::probe_provider_search(&paths, &id, &model, &proxy))
+        .await
+        .map_err(|_| "newapi.errors.network")?
 }
 
 #[tauri::command]

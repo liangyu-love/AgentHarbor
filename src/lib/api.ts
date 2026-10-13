@@ -80,6 +80,8 @@ const providersApi = {
     onEvent.onmessage = event => onProgress?.(event);
     return invoke<NewApiProvider>("test_newapi_provider", { id, model, onEvent });
   },
+  probeSearch: (id: string, model: string) =>
+    invoke<import("@/types/newapi").SearchProbeReport>("probe_newapi_provider_search", { id, model }),
   saveBalanceScript: (id: string, expectedBaseUrl: string, script: string) =>
     invoke<NewApiProvider>("set_newapi_balance_script", { id, expectedBaseUrl, script }),
   setBalanceSharing: (id: string, expectedBaseUrl: string, shared: boolean) =>
@@ -124,8 +126,8 @@ const routingApi = {
   catalogStatus: () => invoke<import("@/types/newapi").ModelsDevCatalogStatus>("load_models_dev_status"),
   refreshCatalog: () =>
     invoke<import("@/types/newapi").ModelsDevCatalogStatus>("refresh_models_dev_catalog"),
-  setWebSearchProvider: (providerId: string | null) =>
-    invoke<NewApiStateChange>("set_router_web_search_provider", { providerId }),
+  setWebSearchProvider: (providerId: string | null, modelId: string | null = null) =>
+    invoke<NewApiStateChange>("set_router_web_search_provider", { providerId, modelId }),
   setCompression: (policy: import("@/types/newapi").CompressionPolicy) =>
     invoke<NewApiStateChange>("set_newapi_compression", { policy }),
   setModelPrice: (

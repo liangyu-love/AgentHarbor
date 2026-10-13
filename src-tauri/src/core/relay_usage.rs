@@ -659,6 +659,12 @@ pub struct RelayUsageObserver {
 }
 
 impl RelayUsageObserver {
+    /// Return an unobserved request when a compatibility inspection decides to
+    /// forward the original body. Cancellation before this handoff still meters
+    /// the received HTTP response through this observer's Drop implementation.
+    pub(crate) fn resume_request(mut self) -> Option<RelayUsageRequest> {
+        self.request.take()
+    }
     pub fn fail_delivery(&mut self) {
         self.delivery_failed = true;
     }

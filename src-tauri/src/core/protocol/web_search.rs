@@ -137,9 +137,10 @@ pub(crate) fn options_from_tools(
 ) -> Result<super::ResponseOptions, String> {
     let mut options = super::ResponseOptions::default();
     if let Some(tools) = value.get("tools") {
-        for tool in tools.as_array().ok_or(INVALID)?.iter().filter(|tool| is_search(tool)) {
+        let tools = tools.as_array().ok_or(INVALID)?;
+        for tool in tools.iter().filter(|tool| is_search(tool)) {
             if options.search.is_some() { return Err(UNSUPPORTED.into()); }
-            options.search = Some(prepare(target, tool)?.0);
+            options.search = Some(prepare(target, tool, programmatic_callers(tools))?.0);
         }
     }
     Ok(options)
@@ -157,13 +158,34 @@ pub(crate) fn is_search(tool: &Value) -> bool {
         .is_some_and(|t| t == "web_search" || t.starts_with("web_search_"))
 }
 
-pub(super) fn prepare(target: ModelProtocol, tool: &Value) -> Result<(Search, Value), String> {
+/// A required search cannot be replaced with an ordinary answer. Inspect both
+/// client choices and native Chat declarations before any wire normalization.
+pub(crate) fn required(value: &Value) -> bool {
+    let tools = value["tools"].as_array().cloned().unwrap_or_default();
+    let searches: Vec<_> = tools.iter().filter(|tool| is_search(tool)).collect();
+    if searches.is_empty() { return false; }
+    let choice = &value["tool_choice"];
+    choice["type"].as_str().is_some_and(|kind| kind.starts_with("web_search"))
+        || searches.iter().any(|tool| tool["force_search"] == true
+            || (choice["type"] == "tool" && tool["name"] == choice["name"]))
+        || ((choice == "required" || choice["type"] == "any") && tools.len() == searches.len())
+        || (choice["type"] == "allowed_tools" && choice["mode"] == "required"
+            && choice["tools"].as_array().is_some_and(|choices| !choices.is_empty() && choices.iter().all(is_search)))
+}
+
+/// Newer search versions may be called from code execution unless restricted.
+/// Without a code execution tool in the request, every call is direct.
+pub(crate) fn programmatic_callers(tools: &[Value]) -> bool {
+    tools.iter().any(|tool| tool["type"].as_str().is_some_and(|kind| kind.starts_with("code_execution")))
+}
+
+pub(super) fn prepare(target: ModelProtocol, tool: &Value, programmatic: bool) -> Result<(Search, Value), String> {
     if target != ModelProtocol::Responses {
         return Err("protocol.errors.unsupportedHostedTool".into());
     }
     let direct_default = match tool["type"].as_str() {
         Some("web_search" | "web_search_20250305") => true,
-        Some("web_search_20260209" | "web_search_20260318") => false,
+        Some("web_search_20260209" | "web_search_20260318") => !programmatic,
         _ => return Err(UNSUPPORTED.into()),
     };
     match tool.get("allowed_callers") {
@@ -230,7 +252,7 @@ pub(super) fn prepare(target: ModelProtocol, tool: &Value) -> Result<(Search, Va
     ))
 }
 
-fn url(value: &Value) -> Option<&str> {
+pub(crate) fn url(value: &Value) -> Option<&str> {
     let text = value.as_str()?;
     let parsed = reqwest::Url::parse(text).ok()?;
     (matches!(parsed.scheme(), "http" | "https")
@@ -260,7 +282,7 @@ pub(super) fn results(item: &Value) -> Vec<Value> {
 /// Some gateways omit action.sources but still return citations in the final
 /// answer. Match known URLs first; attach unattributed citations to the last
 /// successful search, as CC Switch does, without inventing call attribution.
-pub(super) fn enrich_output(output: &[Value], max_uses: Option<u64>) -> Vec<Value> {
+pub(crate) fn enrich_output(output: &[Value], max_uses: Option<u64>) -> Vec<Value> {
     let mut output = output.to_vec();
     let mut citations = Vec::new();
     let mut by_url = std::collections::HashMap::new();
@@ -400,7 +422,12 @@ pub(super) fn blocks(
     {
         Some("max_uses_exceeded")
     } else if item["status"] != "completed" {
-        Some("unavailable")
+        // Claude clients and Anthropic history validation accept only these.
+        Some(match item["error"]["code"].as_str() {
+            Some(code @ ("invalid_tool_input" | "unavailable" | "max_uses_exceeded"
+                | "too_many_requests" | "query_too_long" | "request_too_large")) => code,
+            _ => "unavailable",
+        })
     } else {
         None
     };
@@ -411,6 +438,17 @@ pub(super) fn blocks(
         json!({"type":"server_tool_use","id":id,"name":search.map_or("web_search", |s| s.name.as_str()),"input":input}),
         json!({"type":"web_search_tool_result","tool_use_id":id,"content":content}),
     ])
+}
+
+/// Responses input accepts only `{type,url}` sources and no error object;
+/// titles and failure codes stay in the visible/readable conversions.
+pub(super) fn history_input(call: &Value, result: &Value) -> Result<Value, String> {
+    let mut item = history_call(call, result)?;
+    item.as_object_mut().ok_or(INVALID)?.remove("error");
+    for source in item["action"]["sources"].as_array_mut().into_iter().flatten() {
+        if let Some(source) = source.as_object_mut() { source.remove("title"); }
+    }
+    Ok(item)
 }
 
 /// Replay hosted context without treating a server tool as a client function.
@@ -442,7 +480,7 @@ pub(super) fn history_call(call: &Value, result: &Value) -> Result<Value, String
     let status = if let Some(items) = result["content"].as_array() {
         let sources: Vec<_> = items
             .iter()
-            .filter_map(|r| url(&r["url"]).map(|u| json!({"type":"url","url":u})))
+            .filter_map(|r| url(&r["url"]).map(|u| json!({"type":"url","url":u,"title":r["title"].as_str().unwrap_or(u)})))
             .collect();
         action["sources"] = json!(sources);
         "completed"
@@ -451,7 +489,11 @@ pub(super) fn history_call(call: &Value, result: &Value) -> Result<Value, String
     } else {
         return Err(INVALID.into());
     };
-    Ok(json!({"type":"web_search_call","id":id,"status":status,"action":action}))
+    let mut item = json!({"type":"web_search_call","id":id,"status":status,"action":action});
+    if status == "failed" {
+        item["error"] = json!({"code":result["content"]["error_code"]});
+    }
+    Ok(item)
 }
 
 #[cfg(test)]

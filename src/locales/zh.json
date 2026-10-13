@@ -1102,7 +1102,10 @@
       "aggregate_rotation": "聚合渠道轮转",
       "aggregate_preferred": "聚合首选渠道",
       "aggregate_retry": "聚合备用尝试",
-      "hosted_tool_followup": "托管工具结果回填，同渠道续轮"
+      "hosted_tool_followup": "托管工具结果回填，同渠道续轮",
+      "optional_search_unsupported": "上游不支持可选搜索声明，同渠道重试消息",
+      "native_search_tool_misclassified": "上游将托管搜索返回为客户端工具，使用原账号原生搜索",
+      "native_search_mixed_tools": "上游拒绝混合工具，使用原账号原模型单独执行搜索"
     },
     "traceCredentialStatus": {
       "recorded": "已记录凭据版本",
@@ -1126,14 +1129,59 @@
       "aggregate_rate_limited": "首渠道返回 HTTP 429",
       "aggregate_failure_threshold": "连续渠道故障达到阈值",
       "aggregate_connect_error": "首渠道连接建立失败",
-      "aggregate_first_token_timeout": "首渠道未在时限内开始回复"
+      "aggregate_first_token_timeout": "首渠道未在时限内开始回复",
+      "optional_search_unsupported": "上游明确拒绝可选搜索声明",
+      "native_search_tool_misclassified": "修复上游搜索调用类型，保持原账号和模型",
+      "native_search_mixed_tools": "分开执行搜索与普通工具，保持原账号和模型"
     },
     "traceCompatibility": {
       "commandSearchViaChat": "Command 搜索适配"
     },
-    "webSearchService": "WebSearch 搜索服务",
-    "webSearchAutomatic": "自动",
+    "webSearchService": "搜索执行账号",
+    "webSearchModel": "搜索模型",
+    "webSearchAutomatic": "未指定原生搜索兜底",
     "webSearchUnavailable": "已选搜索服务不可用",
+    "chatSearch": {
+      "title": "跨协议搜索方式",
+      "auto": "自动匹配已知官方接口",
+      "openAi": "上游 OpenAI Chat 搜索",
+      "mimo": "上游 MiMo Chat 搜索",
+      "command": "Command 独立搜索",
+      "selected": "始终使用选定搜索账号",
+      "disabled": "不使用 Chat 托管搜索",
+      "hint": "自动模式优先使用目标原生搜索；无法承载或明确拒绝时，使用路由设置中选定的 Responses/Messages 搜索账号和模型。未配置时仅省略可选搜索声明。搜索账号须实际支持搜索，搜索用量单独记录；推理模型保持不变。Command 接口需明确选择。",
+      "native_search": "原生搜索适配",
+      "command_search": "Command 独立搜索",
+      "selected_search": "选定账号执行搜索",
+      "optional_search_omitted": "未发送搜索声明（兼容兜底）",
+      "native_search_live": "原生搜索适配（Codex cached 模式按实时搜索）",
+      "native_search_separate": "原账号原模型单独执行搜索",
+      "native_search_tool_misclassified": "上游把托管搜索返回为客户端工具；后续请求改为单独执行搜索",
+      "native_search_budget_approx": "原生搜索适配（次数为近似上限）"
+    },
+    "searchProbe": {
+      "action": "检测搜索能力",
+      "running": "检测中…",
+      "hint": "使用已保存的地址和密钥，会发送 1–2 个小的计费请求，不修改任何设置。",
+      "saveFirst": "保存供应商后才能检测搜索能力。",
+      "apply": "使用建议：{{mode}}",
+      "none": "没有格式真正执行搜索。可在路由设置中指定搜索模型，或让 Codex 使用自带的 Search Service。",
+      "sources": "{{count}} 个来源",
+      "formats": {
+        "responses": "Responses web_search",
+        "messages": "Messages web_search",
+        "mimoChat": "MiMo Chat 搜索",
+        "openAiChat": "OpenAI Chat 搜索"
+      },
+      "outcomes": {
+        "executed": "已实际执行搜索",
+        "failed": "搜索执行失败",
+        "notExecuted": "未搜索直接回答",
+        "misclassified": "把搜索返回成了普通工具调用",
+        "rejected": "拒绝搜索声明",
+        "error": "请求失败"
+      }
+    },
     "webSearchSaveFailed": "无法保存搜索服务",
     "upstreamModel": "上游请求模型 ID",
     "modelCapabilities": "模型能力目录与匹配预览",

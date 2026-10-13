@@ -130,7 +130,7 @@ pub(in crate::core::router_proxy) async fn relay_response(
             diagnostic.value(&value);
             tool_adapter.response(&mut value, upstream_protocol).map_err(|code| {
                 diagnostic.translation_error(code);
-                (StatusCode::BAD_GATEWAY, "invalid Gemini tool arguments")
+                (StatusCode::BAD_GATEWAY, "invalid tool arguments")
             })?;
             let mut converted = WireAdapter::new(translation.from)
                 .encode_response(upstream_protocol, &value, &response_options).map_err(|_| {
@@ -188,7 +188,7 @@ pub(in crate::core::router_proxy) async fn relay_response(
             diagnostic.value(&value);
             tool_adapter.response(&mut value, upstream_protocol).map_err(|code| {
                 diagnostic.translation_error(code);
-                (StatusCode::BAD_GATEWAY, "invalid Gemini tool arguments")
+                (StatusCode::BAD_GATEWAY, "invalid tool arguments")
             })?;
             diagnostic.finish();
             BodyExt::boxed(Full::new(Bytes::from(value.to_string())).map_err(|never| match never {}),
@@ -289,7 +289,11 @@ pub(in crate::core::router_proxy) fn translated_stream(
                     )
                 }
                 None => (match tools.finish() {
-                    Ok(()) => translator.finish(),
+                    Ok(rest) => {
+                        let mut events = translator.push(&rest);
+                        events.extend(translator.finish());
+                        events
+                    }
                     Err(code) => translator.fail(code),
                 }, true,
                 ),
@@ -382,9 +386,9 @@ pub(in crate::core::router_proxy) fn adapted_native_stream(
                 }
                 None => (
                     gate.flush().and_then(|bytes| {
-                        let bytes = adapter.push(&bytes)?;
-                        adapter.finish()?;
-                        observer.stream_ended().map_or(Ok(bytes), Err)
+                        let mut bytes = adapter.push(&bytes)?.to_vec();
+                        bytes.extend_from_slice(&adapter.finish()?);
+                        observer.stream_ended().map_or(Ok(Bytes::from(bytes)), Err)
                     }),
                     true,
                 ),

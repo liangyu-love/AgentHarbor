@@ -48,10 +48,29 @@ pub struct Attempt {
     pub effective_protocol: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compatibility_plan: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search_compatibility: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub search_executions: Vec<SearchExecution>,
     pub credential: CredentialSnapshot,
     pub model_observation: ServedModelObservation,
     #[serde(skip)]
     started: Instant,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchExecution {
+    pub attempt_id: String,
+    pub provider_id: String,
+    pub provider_name: String,
+    pub model: String,
+    pub protocol: String,
+    pub status: Option<u16>,
+    pub error: Option<String>,
+    pub duration_ms: u64,
+    pub credential: CredentialSnapshot,
+    pub model_observation: Option<ServedModelObservation>,
 }
 
 /// Metadata the request used at dispatch time: the catalog revision and
@@ -323,6 +342,8 @@ impl Trace {
                 configured_protocol: None,
                 effective_protocol: None,
                 compatibility_plan: None,
+                search_compatibility: None,
+                search_executions: Vec::new(),
                 credential: CredentialSnapshot::not_sent(),
                 model_observation: ServedModelObservation {
                     model_match_status: "unknown".into(),
@@ -343,21 +364,50 @@ impl Trace {
             }
         });
     }
+    pub fn search_compatibility(&self, mode: &str) {
+        self.update(|route| {
+            if let Some(attempt) = route.attempts.last_mut() {
+                attempt.search_compatibility = Some(label(mode));
+            }
+        });
+    }
+    /// Auxiliary search does not become the inference target of tool_followup.
+    pub fn search_execution(&self, id: &str, provider: &str, name: &str, model: &str, protocol: &str,
+        status: Option<u16>, error: Option<&str>, duration_ms: u64, credential: CredentialSnapshot, model_observation: Option<ServedModelObservation>) {
+        self.update(|route| {
+            if let Some(attempt) = route.attempts.last_mut() {
+                if attempt.search_executions.len() < 32 {
+                    attempt.search_executions.push(SearchExecution {attempt_id:label(id),provider_id:label(provider),provider_name:label(name),
+                        model:label(model),protocol:label(protocol),status,error:error.map(label),duration_ms,credential,model_observation});
+                }
+            }
+        });
+    }
     /// A hosted-tool continuation reuses the selected physical target. Preserve
     /// its aggregate/member and protocol snapshot, but start fresh response state.
     pub fn tool_followup(&self, attempt_id: &str) {
+        self.followup(attempt_id, "hosted_tool_followup", None);
+    }
+    pub fn search_retry(&self, attempt_id: &str) {
+        self.followup(attempt_id, "optional_search_unsupported", Some("optional_search_unsupported"));
+    }
+    pub fn native_search_recovery(&self, attempt_id: &str, reason: &str) {
+        self.followup(attempt_id, reason, Some(reason));
+    }
+    fn followup(&self, attempt_id: &str, reason: &str, retry: Option<&str>) {
         self.update(|route| {
             let Some(mut attempt) = route.attempts.last().cloned() else {
                 return;
             };
             attempt.attempt_id = attempt_id.into();
-            attempt.selection_reason = "hosted_tool_followup".into();
-            attempt.retry_reason = None;
+            attempt.selection_reason = reason.into();
+            attempt.retry_reason = retry.map(str::to_owned);
             attempt.sent = Value::Object(Map::new());
             attempt.status = None;
             attempt.failure_stage = None;
             attempt.error = None;
             attempt.duration_ms = 0;
+            attempt.search_executions.clear();
             attempt.credential = CredentialSnapshot::not_sent();
             attempt.model_observation = ServedModelObservation {
                 model_match_status: "unknown".into(),

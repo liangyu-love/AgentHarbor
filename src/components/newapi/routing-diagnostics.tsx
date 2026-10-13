@@ -102,6 +102,17 @@ function Attempt({ route, attempt, index }: { route: RouteDiagnostic; attempt: R
             {attempt.compatibilityPlan && ` · ${t("newapi.traceCompatibility." + attempt.compatibilityPlan, { defaultValue: attempt.compatibilityPlan })}`}
           </p>
         )}
+        {attempt.searchCompatibility && (
+          <p className="min-w-0">{t(`newapi.chatSearch.${attempt.searchCompatibility}`, { defaultValue: attempt.searchCompatibility })}</p>
+        )}
+        {attempt.searchExecutions?.map(search => (
+          <p key={search.attemptId} className="min-w-0 break-all">
+            {t("newapi.webSearchService")}: {search.providerName} · {search.model} · {search.protocol}
+            {" · "}HTTP {search.status ?? "—"} · {duration(search.durationMs)}
+            {search.modelObservation?.servedModel && search.modelObservation.servedModel !== search.model && ` · ${t("newapi.traceServedModel")}: ${search.modelObservation.servedModel}`}
+            {search.error && ` · ${search.error}`}
+          </p>
+        ))}
         <Fact label={t("newapi.traceAttemptId")} mono>{attempt.attemptId?.slice(0, 8) ?? "—"}</Fact>
         <p className="min-w-0">
           {t("newapi.traceCredential")}: {t("newapi.traceCredentialStatus." + (credential?.status ?? "not_recorded"))}
@@ -146,6 +157,7 @@ export function RoutingDiagnostics({
   compression,
   onCompression,
   webSearchProviderId,
+  webSearchModelId,
   searchProviders,
   searchDisabled,
   onWebSearchProvider,
@@ -154,9 +166,10 @@ export function RoutingDiagnostics({
   compression: CompressionPolicy;
   onCompression: (policy: CompressionPolicy) => void;
   webSearchProviderId: string | null;
+  webSearchModelId?: string | null;
   searchProviders: NewApiProvider[];
   searchDisabled: boolean;
-  onWebSearchProvider: (providerId: string | null) => void;
+  onWebSearchProvider: (providerId: string | null, modelId: string | null) => void;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -167,6 +180,8 @@ export function RoutingDiagnostics({
   const [compressionValue, setCompressionValue] = useState("");
   const selectedSearchUnavailable = webSearchProviderId !== null &&
     !searchProviders.some(provider => provider.id === webSearchProviderId);
+  const searchProvider = searchProviders.find(provider => provider.id === webSearchProviderId);
+  const searchModels = searchProvider?.webSearchModels ?? [];
   const query = useQuery({
     queryKey: ["route-diagnostics"],
     queryFn: api.routing.diagnostics,
@@ -253,12 +268,17 @@ export function RoutingDiagnostics({
 
         {/* Routing-wide settings that apply to every request shown below. */}
         <div className="flex flex-wrap items-center gap-2">
-          {(searchProviders.length > 1 || selectedSearchUnavailable) && (
+          {(searchProviders.length > 0 || selectedSearchUnavailable) && (
             <div className="diag-setting">
               <Globe className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
               <span id="web-search-provider-label">{t("newapi.webSearchService")}</span>
               <Select value={webSearchProviderId ?? "__automatic"} disabled={searchDisabled}
-                onValueChange={value => onWebSearchProvider(value === "__automatic" ? null : value)}>
+                onValueChange={value => {
+                  const provider = searchProviders.find(provider => provider.id === value);
+                  const models = provider?.webSearchModels ?? [];
+                  onWebSearchProvider(value === "__automatic" ? null : value,
+                    models.includes(provider?.model ?? "") ? provider!.model : models[0] ?? null);
+                }}>
                 <SelectTrigger className="h-7 w-36 bg-card text-xs" aria-labelledby="web-search-provider-label">
                   <SelectValue />
                 </SelectTrigger>
@@ -268,6 +288,19 @@ export function RoutingDiagnostics({
                     <SelectItem value={webSearchProviderId} disabled>{t("newapi.webSearchUnavailable")}</SelectItem>
                   )}
                   {searchProviders.map(provider => <SelectItem key={provider.id} value={provider.id}>{provider.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+          {searchProvider && searchModels.length > 0 && (
+            <div className="diag-setting">
+              <span id="web-search-model-label">{t("newapi.webSearchModel")}</span>
+              <Select value={webSearchModelId ?? "__missing"} disabled={searchDisabled}
+                onValueChange={value => onWebSearchProvider(searchProvider.id, value)}>
+                <SelectTrigger className="h-7 w-48 bg-card text-xs" aria-labelledby="web-search-model-label"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {(!webSearchModelId || !searchModels.includes(webSearchModelId)) && <SelectItem value={webSearchModelId ?? "__missing"} disabled>{t("newapi.webSearchUnavailable")}</SelectItem>}
+                  {searchModels.map(model => <SelectItem key={model} value={model}>{model}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
