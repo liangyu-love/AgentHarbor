@@ -93,7 +93,11 @@ impl PromptAssets {
         })
     }
 
-    fn read(mut asset: impl FnMut(&str) -> Result<Option<String>>) -> Result<Self> {
+    fn read(mut read: impl FnMut(&str) -> Result<Option<String>>) -> Result<Self> {
+        // A Windows checkout may turn the files' line endings into CRLF; the
+        // prompts and their runtime markers are written with LF.
+        let mut asset =
+            |path: &str| read(path).map(|text| text.map(|text| text.replace("\r\n", "\n")));
         let catalog = Catalog::parse(
             &asset("tools.json")?
                 .ok_or_else(|| Error::Config("missing Cursor tools.json".into()))?,

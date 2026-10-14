@@ -1,0 +1,2 @@
+# Cursor's prompts are embedded as written; keep them LF in every checkout.
+src-tauri/cursor-engine/prompt/** text eol=lf
