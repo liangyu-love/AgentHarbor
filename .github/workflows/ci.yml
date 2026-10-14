@@ -41,7 +41,7 @@ jobs:
         run: pnpm build
 
       - name: Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+        run: cargo test --manifest-path src-tauri/Cargo.toml --workspace --locked
 
       - name: Install Chromium for the frontend regressions
         run: pnpm exec playwright install chromium

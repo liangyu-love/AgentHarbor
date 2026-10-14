@@ -101,6 +101,16 @@ pub fn collect(
             dir("sessions", pi.join("sessions")),
         ],
     });
+    let engine = codex.app_data_dir.join("cursor");
+    groups.push(ClientFiles {
+        client: "cursor",
+        files: vec![
+            file("settings", clients.cursor.join("settings.json")),
+            file("cliConfig", clients.cursor_cli.join("cli-config.json")),
+            file("certificate", engine.join("cursor-ca.crt")),
+            file("conversations", engine.join("conversations.db")),
+        ],
+    });
     groups
 }
 
@@ -159,7 +169,7 @@ mod tests {
         };
         assert_eq!(
             groups.iter().map(|group| group.client).collect::<Vec<_>>(),
-            ["codex", "claudeCode", "claudeDesktop", "opencode", "pi"]
+            ["codex", "claudeCode", "claudeDesktop", "opencode", "pi", "cursor"]
         );
         assert_eq!(
             present("codex"),
@@ -191,6 +201,15 @@ mod tests {
                 ("auth", "auth.json", false),
                 ("settings", "settings.json", false),
                 ("sessions", "sessions/", false),
+            ]
+        );
+        assert_eq!(
+            present("cursor"),
+            [
+                ("settings", "settings.json", false),
+                ("cliConfig", "cli-config.json", false),
+                ("certificate", "cursor-ca.crt", false),
+                ("conversations", "conversations.db", false),
             ]
         );
         let paths: Vec<_> = groups

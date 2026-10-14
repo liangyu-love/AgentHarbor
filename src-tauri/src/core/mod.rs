@@ -16,6 +16,7 @@ pub mod claude_sessions;
 pub mod client_config;
 pub mod client_files;
 pub mod codex_config;
+pub mod cursor_inject;
 pub mod custom_instructions;
 pub mod gateway;
 pub mod desktop_exit;

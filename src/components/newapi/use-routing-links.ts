@@ -11,7 +11,7 @@ export type Link = "routed" | "direct" | "idle";
 export type Client = Exclude<ShortcutTarget, "aggregation">;
 export type Destination = "official" | "relays" | "aggregation";
 
-export const CLIENTS: Client[] = ["codex", "claudeCode", "claudeDesktop", "opencode", "pi"];
+export const CLIENTS: Client[] = ["codex", "claudeCode", "claudeDesktop", "opencode", "pi", "cursor"];
 export const DESTINATIONS: Destination[] = ["official", "relays", "aggregation"];
 
 /** The status dot of a connection, shared by the topology and the client console. */
@@ -36,6 +36,7 @@ export function useRoutingLinks(router: NewApiRouterView | undefined) {
   const clients = useQuery({ queryKey: queryKeys.clientConfigs, queryFn: api.targets.configs });
   const desktop = useQuery({ queryKey: queryKeys.claudeDesktopStatus, queryFn: api.claudeDesktop.status,
     refetchOnWindowFocus: false });
+  const cursor = useQuery({ queryKey: queryKeys.cursorStatus, queryFn: api.cursor.status, refetchOnWindowFocus: false });
   return useMemo(() => {
     const links = {} as Record<Client, Link>;
     const uses = {} as Record<Client, Destination[]>;
@@ -61,6 +62,14 @@ export function useRoutingLinks(router: NewApiRouterView | undefined) {
     uses.claudeDesktop = links.claudeDesktop === "routed"
       ? targetDestinations((desktopStatus?.routeViews ?? []).map((view) => view.targetRef))
       : ["relays"];
+    // Cursor reaches AgentHarbor's models through the router; its own models
+    // go to Cursor directly, so "official" is never one of its destinations.
+    const cursorStatus = cursor.data;
+    links.cursor = cursorStatus?.running && (cursorStatus.ideApplied || cursorStatus.cliApplied) ? "routed" : "idle";
+    uses.cursor = [
+      ...(cursorStatus?.sources.relay || cursorStatus?.sources.account ? ["relays" as const] : []),
+      ...(cursorStatus?.sources.aggregate ? ["aggregation" as const] : []),
+    ];
     return { links, uses };
-  }, [router, clients.data, desktop.data]);
+  }, [router, clients.data, desktop.data, cursor.data]);
 }

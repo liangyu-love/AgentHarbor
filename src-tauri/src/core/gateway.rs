@@ -299,6 +299,21 @@ pub struct GatewayModel {
     pub label: String,
     pub protocol: router::ModelProtocol,
     pub context_window: Option<u64>,
+    /// The thinking levels the model offers, in order; none when it has none.
+    #[serde(skip)]
+    pub reasoning: Vec<String>,
+    #[serde(skip)]
+    pub default_reasoning: Option<String>,
+    #[serde(skip)]
+    pub output_limit: Option<u64>,
+    /// The account source behind the model, if it is one.
+    #[serde(skip)]
+    pub account_source: Option<super::account_sources::SourceKind>,
+}
+
+/// The levels of a client projection, by name.
+fn levels(projection: &super::model_policy::ClientProjection) -> Vec<String> {
+    projection.reasoning.iter().filter_map(|level| level["effort"].as_str().map(str::to_owned)).collect()
 }
 
 /// What a gateway model id names.
@@ -364,6 +379,10 @@ pub fn all_models(store: &Store, catalog: &models_dev::Catalog) -> Vec<GatewayMo
                 label: label.to_owned(),
                 protocol: provider.protocol_for_model(model_id),
                 context_window: (!projection.context_is_fallback).then_some(projection.context_window),
+                reasoning: levels(&projection),
+                default_reasoning: projection.default_reasoning.clone(),
+                output_limit: projection.output_limit,
+                account_source: provider.account_source,
             });
         }
     }
@@ -380,7 +399,11 @@ pub fn all_models(store: &Store, catalog: &models_dev::Catalog) -> Vec<GatewayMo
             model_id: aggregate.public_model_id.clone(),
             label: aggregate.display_name.clone(),
             protocol: router::ModelProtocol::Responses,
-            context_window: view.projection.map(|projection| projection.context_window),
+            context_window: view.projection.as_ref().map(|projection| projection.context_window),
+            reasoning: view.projection.as_ref().map(levels).unwrap_or_default(),
+            default_reasoning: view.projection.as_ref().and_then(|projection| projection.default_reasoning.clone()),
+            output_limit: view.projection.as_ref().and_then(|projection| projection.output_limit),
+            account_source: None,
         });
     }
     out

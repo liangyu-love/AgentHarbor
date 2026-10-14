@@ -146,6 +146,16 @@ fn gateway_keys_reach_every_model_by_short_name_with_translation() {
         let traced = route_trace::recent().into_iter()
             .find(|route| route.requested_model == "pool/harbor-pool" && route.client_source.as_deref() == Some("claudeCode"));
         assert!(traced.is_some(), "a combined request is traced as Claude Code's");
+
+        // Cursor injection calls the same ids in each model's own protocol.
+        let chat = client.post(format!("{base}/clients/cursor/mix/v1/chat/completions")).bearer_auth(ROUTER_TOKEN)
+            .json(&json!({"model":"relay-chat/vendor/deep-model","stream":false,"messages":[{"role":"user","content":"hi"}]}))
+            .send().await.unwrap();
+        assert_eq!(chat.status(), 200);
+        assert_eq!(chat.json::<Value>().await.unwrap()["choices"][0]["message"]["content"], "hello through the gateway");
+        let traced = route_trace::recent().into_iter()
+            .find(|route| route.requested_model == "relay-chat/vendor/deep-model" && route.client_source.as_deref() == Some("cursor"));
+        assert!(traced.is_some(), "a Cursor request is traced as Cursor's");
         stop_unchecked();
     });
 }

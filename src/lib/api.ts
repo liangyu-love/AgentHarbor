@@ -36,6 +36,7 @@ import { errorMessage } from "@/lib/invoke-error";
 import type { TargetId, ClientStatus, ClientFiles, ClientConfigRequest, ClientConfigPreview, ClientConfigApplied, ClaudeOfficialPreview } from "@/types/clients";
 import type { AccountSourceKind, AccountSourceListPayload } from "@/types/account-sources";
 import type { GatewayProfile, GatewayState, ModelSources } from "@/types/gateway";
+import type { CursorCommitLocale, CursorStatus } from "@/types/cursor";
 import type { CodexAccessMode, ModelProtocol, NewApiState, NewApiStateChange, NewApiImportResult, NewApiProvider, NewApiProviderInput, NewApiModel } from "@/types/newapi";
 
 export interface ImageGenerationRequest {
@@ -150,6 +151,20 @@ const aggregationApi = {
   delete: (id: string) => invoke<import("@/types/aggregation").AggregationState>("delete_aggregate_model", { id }),
   selectCodex: (aggregateId: string | null) => invoke<NewApiStateChange>("select_codex_aggregate", { aggregateId }),
   setCodexSources: (sources: ModelSources) => invoke<NewApiStateChange>("set_codex_sources", { sources }),
+};
+
+const cursorApi = {
+  status: () => invoke<CursorStatus>("load_cursor_status"),
+  setIde: (enabled: boolean) => invoke<CursorStatus>("set_cursor_ide", { enabled }),
+  setCli: (enabled: boolean) => invoke<CursorStatus>("set_cursor_cli", { enabled }),
+  setSources: (sources: ModelSources) => invoke<CursorStatus>("set_cursor_sources", { sources }),
+  setTabModel: (model: string | null) => invoke<CursorStatus>("set_cursor_tab_model", { model }),
+  setCommitModel: (model: string | null, locale: CursorCommitLocale) =>
+    invoke<CursorStatus>("set_cursor_commit_model", { model, locale }),
+  trustCertificate: () => invoke<CursorStatus>("trust_cursor_certificate"),
+  distrustCertificate: () => invoke<CursorStatus>("distrust_cursor_certificate"),
+  restartIde: () => invoke<void>("restart_cursor_ide"),
+  openTerminal: () => invoke<void>("open_cursor_terminal"),
 };
 
 const gatewayApi = {
@@ -304,6 +319,7 @@ export const api = {
   accounts: accountsApi,
   accountSources: accountSourcesApi,
   gateway: gatewayApi,
+  cursor: cursorApi,
   usage: usageApi,
 
   loadSnapshot: (localOnly = false) =>

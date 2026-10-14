@@ -107,10 +107,12 @@ export async function testAggregationBoard({ page, reset, captureDir }) {
   await eventually(async () => assert.equal(await tab("claudeCode").getAttribute("aria-selected"), "true"));
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-client-tab")), "claudeCode");
   await page.keyboard.press("End");
-  await eventually(async () => assert.equal(await tab("pi").getAttribute("aria-selected"), "true"));
-  assert.equal(await panel("pi").isVisible(), true);
+  await eventually(async () => assert.equal(await tab("cursor").getAttribute("aria-selected"), "true"));
+  assert.equal(await panel("cursor").isVisible(), true);
   assert.equal(await panel("codex").isHidden(), true);
-  assert.equal(await page.evaluate(() => localStorage.getItem("agentharbor.inject-client.v1")), "pi");
+  assert.equal(await page.evaluate(() => localStorage.getItem("agentharbor.inject-client.v1")), "cursor");
+  await page.keyboard.press("ArrowUp");
+  await eventually(async () => assert.equal(await tab("pi").getAttribute("aria-selected"), "true"));
   await page.locator('[data-route-shortcut="claudeDesktop"]').click();
   await page.waitForFunction(() => document.querySelector('[data-client-tab="claudeDesktop"]')?.getAttribute("aria-selected") === "true");
   await page.waitForFunction(() => document.getElementById("claude-desktop-title")?.closest("[role=tabpanel]")?.hidden === false);

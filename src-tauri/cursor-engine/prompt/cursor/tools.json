@@ -1,0 +1,922 @@
+{
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "AskQuestion",
+        "description": "Ask the user one or more multiple-choice questions and wait for the answers. Use it only when a decision is genuinely the user's and cannot be settled from the request, the code or a sensible default. The user can always type an answer of their own.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "questions": {
+              "items": {
+                "properties": {
+                  "allow_multiple": {
+                    "type": "boolean",
+                    "description": "Whether several options may be chosen. Defaults to false."
+                  },
+                  "id": {
+                    "type": "string",
+                    "description": "Stable identifier of the question."
+                  },
+                  "options": {
+                    "items": {
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "Stable identifier of the choice."
+                        },
+                        "label": {
+                          "type": "string",
+                          "description": "The choice as the user reads it."
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "label"
+                      ],
+                      "type": "object"
+                    },
+                    "minItems": 2,
+                    "type": "array",
+                    "description": "At least two choices."
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "description": "The question as the user reads it."
+                  }
+                },
+                "required": [
+                  "id",
+                  "prompt",
+                  "options"
+                ],
+                "type": "object"
+              },
+              "minItems": 1,
+              "type": "array",
+              "description": "The questions, at least one."
+            },
+            "title": {
+              "type": "string",
+              "description": "Optional heading shown above the questions."
+            }
+          },
+          "required": [
+            "questions"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "CallMcpTool",
+        "description": "Call a tool exposed by one of the user's MCP servers. Look up the server and tool name, and the tool's argument schema, with GetMcpTools first when you do not already know them.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "arguments": {
+              "type": "object",
+              "description": "Arguments matching the tool's input schema."
+            },
+            "description": {
+              "type": "string",
+              "description": "A few words on why this call is made, shown to the user."
+            },
+            "requestSmartModeApproval": {
+              "type": "boolean",
+              "description": "Ask the user to approve this call explicitly."
+            },
+            "server": {
+              "type": "string",
+              "description": "The MCP server's identifier."
+            },
+            "smartModeBlockReason": {
+              "type": "string",
+              "description": "Why the call needs approval, when asking for it."
+            },
+            "toolName": {
+              "type": "string",
+              "description": "The tool's name on that server."
+            }
+          },
+          "required": [
+            "server",
+            "toolName"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "SembleSearch",
+        "description": "Search an indexed repository by meaning.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "description": {
+              "type": "string",
+              "description": "Why this search is made."
+            },
+            "repo": {
+              "type": "string",
+              "description": "Repository root."
+            },
+            "query": {
+              "type": "string",
+              "description": "What to look for."
+            },
+            "content": {
+              "enum": [
+                "code",
+                "docs",
+                "config",
+                "all"
+              ],
+              "type": "string",
+              "default": "code",
+              "description": "Which kind of files to search."
+            },
+            "top_k": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 5,
+              "description": "How many results to return."
+            },
+            "max_snippet_lines": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 10,
+              "description": "Lines shown per result."
+            }
+          },
+          "required": [
+            "repo",
+            "query"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "SembleFindRelated",
+        "description": "Find code related to a given line of a file.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "description": {
+              "type": "string",
+              "description": "Why this search is made."
+            },
+            "repo": {
+              "type": "string",
+              "description": "Repository root."
+            },
+            "file_path": {
+              "type": "string",
+              "description": "The file holding the line."
+            },
+            "line": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "The 1-based line number."
+            },
+            "content": {
+              "enum": [
+                "code",
+                "docs",
+                "config",
+                "all"
+              ],
+              "type": "string",
+              "default": "code",
+              "description": "Which kind of files to search."
+            },
+            "top_k": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 5,
+              "description": "How many results to return."
+            },
+            "max_snippet_lines": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 10,
+              "description": "Lines shown per result."
+            }
+          },
+          "required": [
+            "repo",
+            "file_path",
+            "line"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "CreatePlan",
+        "description": "Present an implementation plan for the user to review and confirm. Use it in Plan mode once research is done; nothing is changed until the user accepts.",
+        "parameters": {
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "A short name for the plan."
+            },
+            "overview": {
+              "type": "string",
+              "description": "One or two sentences on what the plan achieves."
+            },
+            "plan": {
+              "type": "string",
+              "description": "The plan in Markdown: concrete steps, the files they touch, and why."
+            },
+            "todos": {
+              "items": {
+                "properties": {
+                  "content": {
+                    "type": "string",
+                    "description": "What the step does."
+                  },
+                  "id": {
+                    "type": "string",
+                    "description": "Stable identifier of the step."
+                  }
+                },
+                "required": [
+                  "id",
+                  "content"
+                ],
+                "type": "object"
+              },
+              "type": "array",
+              "description": "The plan's steps as a checklist."
+            }
+          },
+          "type": "object"
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "Delete",
+        "description": "Delete a file. Fails quietly when the file does not exist or the operation is refused.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "The file to delete, absolute or relative to the workspace."
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "EditNotebook",
+        "description": "Edit one cell of a Jupyter notebook, or insert a new cell. To change a cell, give enough of its current text in old_string to identify the change uniquely; to add a cell, set is_new_cell and leave old_string empty.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "cell_idx": {
+              "type": "number",
+              "description": "0-based index of the cell to edit, or where the new cell goes."
+            },
+            "cell_language": {
+              "type": "string",
+              "description": "The cell's language, such as python, markdown or raw."
+            },
+            "is_new_cell": {
+              "type": "boolean",
+              "description": "Whether to insert a new cell at cell_idx."
+            },
+            "new_string": {
+              "type": "string",
+              "description": "The replacement text, or the new cell's contents."
+            },
+            "old_string": {
+              "type": "string",
+              "description": "Existing text to replace; empty for a new cell."
+            },
+            "target_notebook": {
+              "type": "string",
+              "description": "The notebook file."
+            }
+          },
+          "required": [
+            "target_notebook",
+            "cell_idx",
+            "is_new_cell",
+            "cell_language",
+            "old_string",
+            "new_string"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "FetchMcpResource",
+        "description": "Read a resource from one of the user's MCP servers, optionally saving it to a file.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "downloadPath": {
+              "type": "string",
+              "description": "Optional workspace path to save the resource to."
+            },
+            "requestSmartModeApproval": {
+              "type": "boolean",
+              "description": "Ask the user to approve this read explicitly."
+            },
+            "server": {
+              "type": "string",
+              "description": "The MCP server's identifier."
+            },
+            "smartModeBlockReason": {
+              "type": "string",
+              "description": "Why the read needs approval, when asking for it."
+            },
+            "uri": {
+              "type": "string",
+              "description": "The resource URI."
+            }
+          },
+          "required": [
+            "server",
+            "uri"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "GenerateImage",
+        "description": "Generate an image from a description and save it in the workspace.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "aspect_ratio": {
+              "enum": [
+                "1:1",
+                "4:3",
+                "3:4",
+                "16:9",
+                "9:16"
+              ],
+              "type": "string",
+              "description": "The image's shape."
+            },
+            "description": {
+              "type": "string",
+              "description": "What the image shows, in detail."
+            },
+            "filename": {
+              "type": "string",
+              "description": "Optional file name for the image."
+            },
+            "reference_image_paths": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array",
+              "description": "Optional images to base the result on."
+            }
+          },
+          "required": [
+            "description"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "GetMcpTools",
+        "description": "List the tools the user's MCP servers expose, with their argument schemas. Filter by server, tool name or a pattern to keep the list short.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "pattern": {
+              "type": "string",
+              "description": "Only tools whose name or description matches this text."
+            },
+            "server": {
+              "type": "string",
+              "description": "Only this server's tools."
+            },
+            "toolName": {
+              "type": "string",
+              "description": "Only this tool."
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "Glob",
+        "description": "Find files whose paths match a glob pattern, newest first. Patterns without a leading **/ are searched recursively anyway.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "glob_pattern": {
+              "type": "string",
+              "description": "The pattern, such as **/*.ts or src/**/test_*.py."
+            },
+            "target_directory": {
+              "type": "string",
+              "description": "Directory to search in; the workspace when omitted."
+            }
+          },
+          "required": [
+            "glob_pattern"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "Grep",
+        "description": "Search file contents with a regular expression (ripgrep syntax). Prefer it over running grep or rg in the shell. Results respect .gitignore.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "-A": {
+              "type": "number",
+              "description": "Lines of context after each match (content mode)."
+            },
+            "-B": {
+              "type": "number",
+              "description": "Lines of context before each match (content mode)."
+            },
+            "-C": {
+              "type": "number",
+              "description": "Lines of context around each match (content mode)."
+            },
+            "-i": {
+              "type": "boolean",
+              "description": "Ignore case."
+            },
+            "glob": {
+              "type": "string",
+              "description": "Only files matching this glob, such as *.rs."
+            },
+            "head_limit": {
+              "minimum": 0,
+              "type": "number",
+              "description": "Return at most this many lines or entries."
+            },
+            "multiline": {
+              "type": "boolean",
+              "description": "Let patterns span lines; . also matches newlines."
+            },
+            "offset": {
+              "minimum": 0,
+              "type": "number",
+              "description": "Skip this many lines or entries first."
+            },
+            "output_mode": {
+              "enum": [
+                "content",
+                "files_with_matches",
+                "count"
+              ],
+              "type": "string",
+              "description": "content shows matching lines, files_with_matches only paths (the default), count the number of matches per file."
+            },
+            "path": {
+              "type": "string",
+              "description": "File or directory to search; the workspace when omitted."
+            },
+            "pattern": {
+              "type": "string",
+              "description": "The regular expression."
+            },
+            "type": {
+              "type": "string",
+              "description": "Only files of this ripgrep type, such as js or py."
+            }
+          },
+          "required": [
+            "pattern"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "Read",
+        "description": "Read a file. Lines come back numbered as LINE_NUMBER|CONTENT. Large files can be read in parts with offset and limit. Images are returned as images. Reading a file that does not exist reports an error.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "limit": {
+              "type": "integer",
+              "description": "How many lines to read."
+            },
+            "offset": {
+              "type": "integer",
+              "description": "1-based line to start from."
+            },
+            "path": {
+              "type": "string",
+              "description": "The file, absolute or relative to the workspace."
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "ReadLints",
+        "description": "Read the editor's current diagnostics (lint and type errors) for files or directories, or for the whole workspace when no paths are given. Use it after editing to check your changes.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "paths": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array",
+              "description": "Files or directories to report on."
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "Shell",
+        "description": "Run a command in a shell in the user's workspace. Each call starts in the workspace root unless working_directory is set. Quote paths that contain spaces. Prefer the dedicated tools for reading, searching and editing files. A command that keeps running past block_until_ms moves to the background; its output stays readable in the terminal files.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "block_until_ms": {
+              "type": "number",
+              "description": "How long to wait for the command before moving it to the background; 0 starts it in the background at once."
+            },
+            "command": {
+              "type": "string",
+              "description": "The command to run."
+            },
+            "description": {
+              "type": "string",
+              "description": "A few words on what the command does, shown to the user."
+            },
+            "notify_on_output": {
+              "properties": {
+                "debounce_ms": {
+                  "type": "number",
+                  "description": "Wait this long after a match before notifying."
+                },
+                "pattern": {
+                  "type": "string",
+                  "description": "Regular expression to watch for."
+                },
+                "reason": {
+                  "type": "string",
+                  "description": "Why you want to know."
+                }
+              },
+              "required": [
+                "pattern",
+                "reason"
+              ],
+              "type": "object",
+              "description": "Notify you when background output matches a pattern."
+            },
+            "request_smart_mode_approval": {
+              "type": "boolean",
+              "description": "Ask the user to approve this command explicitly."
+            },
+            "smart_mode_block_reason": {
+              "type": "string",
+              "description": "Why the command needs approval, when asking for it."
+            },
+            "working_directory": {
+              "type": "string",
+              "description": "Directory to run the command in."
+            },
+            "required_permissions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "full_network",
+                  "all"
+                ]
+              },
+              "description": "Extra sandbox permissions the command needs: full_network for network access, all for no sandbox."
+            }
+          },
+          "required": [
+            "command"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "StrReplace",
+        "description": "Replace text in a file. old_string must match the file exactly, including whitespace, and must be unique unless replace_all is set. Read the file before editing it. To create a file use Write.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "new_string": {
+              "type": "string",
+              "description": "The text to put in its place; it must differ from old_string."
+            },
+            "old_string": {
+              "type": "string",
+              "description": "The exact text to replace."
+            },
+            "path": {
+              "type": "string",
+              "description": "The file to edit."
+            },
+            "replace_all": {
+              "type": "boolean",
+              "description": "Replace every occurrence instead of exactly one."
+            }
+          },
+          "required": [
+            "path",
+            "old_string",
+            "new_string"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "SwitchMode",
+        "description": "Ask to switch the conversation to another mode, such as from Agent to Plan when the task needs a plan first. The user confirms the switch.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "explanation": {
+              "type": "string",
+              "description": "Why switching helps, shown to the user."
+            },
+            "target_mode_id": {
+              "type": "string",
+              "description": "The mode to switch to, such as plan or agent."
+            }
+          },
+          "required": [
+            "target_mode_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "Task",
+        "description": "Start a subagent that works on a bounded task on its own and reports back. Give it a complete, self-contained prompt: it does not see this conversation. Use explore for read-only investigation and generalPurpose for work that changes files. Background subagents report when they finish; do not wait for them.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "cloud_base_branch": {
+              "type": "string",
+              "description": "Branch a cloud subagent starts from."
+            },
+            "description": {
+              "type": "string",
+              "description": "A short title for the task, shown to the user."
+            },
+            "environment": {
+              "enum": [
+                "local",
+                "cloud"
+              ],
+              "type": "string",
+              "description": "Where the subagent runs."
+            },
+            "file_attachments": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array",
+              "description": "Files to hand to the subagent."
+            },
+            "interrupt": {
+              "type": "boolean",
+              "description": "Interrupt the resumed subagent's current work."
+            },
+            "model": {
+              "type": "string",
+              "description": "Optional model for the subagent; the current one when omitted."
+            },
+            "prompt": {
+              "type": "string",
+              "description": "Everything the subagent needs to know to do the task."
+            },
+            "resume": {
+              "type": "string",
+              "description": "Identifier of an earlier subagent to continue."
+            },
+            "run_in_background": {
+              "type": "boolean",
+              "description": "Run without waiting; you are notified when it finishes."
+            },
+            "subagent_type": {
+              "enum": [
+                "generalPurpose",
+                "explore",
+                "shell",
+                "cursor-guide",
+                "ci-investigator",
+                "bugbot",
+                "security-review",
+                "best-of-n-runner",
+                "test-subagent"
+              ],
+              "type": "string",
+              "description": "The kind of subagent."
+            }
+          },
+          "required": [
+            "description",
+            "prompt"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "TodoWrite",
+        "description": "Create or update the task list shown to the user. Use it for work with several steps: keep exactly one item in_progress while working, and mark items completed as soon as they are done.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "merge": {
+              "type": "boolean",
+              "description": "true updates the items with matching ids and keeps the rest; false replaces the list."
+            },
+            "todos": {
+              "items": {
+                "properties": {
+                  "content": {
+                    "type": "string",
+                    "description": "What the item is."
+                  },
+                  "id": {
+                    "type": "string",
+                    "description": "Stable identifier of the item."
+                  },
+                  "status": {
+                    "enum": [
+                      "pending",
+                      "in_progress",
+                      "completed",
+                      "cancelled"
+                    ],
+                    "type": "string",
+                    "description": "The item's state."
+                  }
+                },
+                "required": [
+                  "id",
+                  "content",
+                  "status"
+                ],
+                "type": "object"
+              },
+              "minItems": 2,
+              "type": "array",
+              "description": "The items to write."
+            }
+          },
+          "required": [
+            "todos",
+            "merge"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "UpdateCurrentStep",
+        "description": "Tell the parent agent what you are working on now, in a few words.",
+        "parameters": {
+          "properties": {
+            "completed_subtitle": {
+              "$ref": "#/properties/current_step",
+              "description": "A short note on what the finished step achieved."
+            },
+            "current_step": {
+              "minLength": 1,
+              "type": "string",
+              "description": "The step in progress."
+            },
+            "final_summary": {
+              "$ref": "#/properties/current_step",
+              "description": "When everything is done, a short summary of the result."
+            }
+          },
+          "type": "object"
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "WebFetch",
+        "description": "Fetch a web page and return its readable content as Markdown. The user may be asked to approve the fetch. Only public http(s) addresses can be fetched.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "requestSmartModeApproval": {
+              "type": "boolean",
+              "description": "Ask the user to approve this fetch explicitly."
+            },
+            "smartModeBlockReason": {
+              "type": "string",
+              "description": "Why the fetch needs approval, when asking for it."
+            },
+            "url": {
+              "type": "string",
+              "description": "The address to fetch."
+            }
+          },
+          "required": [
+            "url"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "WebSearch",
+        "description": "Search the web for current information: recent releases, documentation, error messages, facts that may have changed. Returns titles, links and snippets. The user may be asked to approve the search.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "explanation": {
+              "type": "string",
+              "description": "Why the search helps, shown to the user."
+            },
+            "search_term": {
+              "type": "string",
+              "description": "What to search for; be specific and include versions or dates when they matter."
+            }
+          },
+          "required": [
+            "search_term"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "Write",
+        "description": "Write a file, creating it or replacing all of its contents. Read an existing file before overwriting it, and prefer StrReplace for changing part of a file.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "contents": {
+              "type": "string",
+              "description": "The complete new contents."
+            },
+            "path": {
+              "type": "string",
+              "description": "The file to write."
+            }
+          },
+          "required": [
+            "path",
+            "contents"
+          ]
+        }
+      }
+    }
+  ]
+}

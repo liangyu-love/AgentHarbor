@@ -292,6 +292,8 @@ mod tests {
             claude_user: Path::new("custom/.claude.json").into(),
             opencode: Path::new("unused").into(),
             pi: Path::new("unused-pi").into(),
+            cursor: Path::new("unused-cursor").into(),
+            cursor_cli: Path::new("unused-cursor-cli").into(),
         };
         assert_eq!(
             custom.claude_user_config(),
@@ -302,6 +304,8 @@ mod tests {
             claude_user: Path::new("custom/.claude/.claude.json").into(),
             opencode: Path::new("unused").into(),
             pi: Path::new("unused-pi").into(),
+            cursor: Path::new("unused-cursor").into(),
+            cursor_cli: Path::new("unused-cursor-cli").into(),
         };
         assert_eq!(
             named_default.claude_user_config(),

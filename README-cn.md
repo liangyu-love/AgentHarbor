@@ -16,7 +16,7 @@
 
 ## 这是什么
 
-Codex、Claude Code、Claude Desktop、OpenCode 和 Pi 各自把账号、模型设置、会话、MCP 和指令存放在不同的文件里。额度用完要切号、接入第三方中转、清理会话，往往都得手改 TOML、JSON 和 SQLite。
+Codex、Claude Code、Claude Desktop、OpenCode、Pi 和 Cursor 各自把账号、模型设置、会话、MCP 和指令存放在不同的文件里。额度用完要切号、接入第三方中转、清理会话，往往都得手改 TOML、JSON 和 SQLite。
 
 AgentHarbor 是基于 Tauri 2 + React + Rust 的桌面应用，替你完成这些事：
 - 运行一个本地模型路由（`127.0.0.1:43127`）。
@@ -31,7 +31,7 @@ Codex 是主要集成对象，其他客户端共用同一套中转与路由。
 | --- | --- |
 | **仪表盘** | 各客户端的路由拓扑、今日 Token 概览、最近会话，以及可折叠的本地数据目录：列出各客户端的目录和关键文件 |
 | **中转模型** | 管理多个供应商；逐模型协议（Responses、Chat Completions、Anthropic Messages）、连通性测试、New API 余额、导入导出；能力目录（上下文、输出上限、价格）来自内置的 [models.dev](https://github.com/anomalyco/models.dev) 快照 |
-| **模型注入** | 把中转模型和官方账号的模型接到下列客户端：预览、应用、恢复配置，每次都有备份；路由模式下中转、官方账号、聚合模型三类可以任意组合<br>• Codex：本地路由或原生直连，支持无账号模式和子代理默认配置<br>• Claude Code、Claude Desktop、OpenCode、Pi |
+| **模型注入** | 把中转模型和官方账号的模型接到下列客户端：预览、应用、恢复配置，每次都有备份；路由模式下中转、官方账号、聚合模型三类可以任意组合<br>• Codex：本地路由或原生直连，支持无账号模式和子代理默认配置<br>• Claude Code、Claude Desktop、OpenCode、Pi<br>• Cursor IDE 与 cursor-agent：Agent、Tab 补全和提交信息都能用这些模型，见下文 |
 | **本地路由** | 三种协议互相转换<br>模型聚合：按优先级分层、失败切换、首字超时切换、实时成员状态<br>请求级路由诊断 |
 | **通用网关** | 一个本地地址加上命名 key，任何能填 Base URL 和 API Key 的 agent 都能使用全部开启的模型，见下文 |
 | **账号** | Codex：ChatGPT OAuth 登录、额度窗口、手动切号或按阈值自动切号（正在运行的 Codex 会把任务做完，原账号额度用尽时才重启）<br>账号来源：ChatGPT（Sign in with ChatGPT）、WorkBuddy、WorkBuddy AI、GitHub Copilot、Gemini CLI、Antigravity、Kiro、Grok、Cursor，登录后可以提供给模型注入使用，见下文 |
@@ -61,6 +61,27 @@ Codex 是主要集成对象，其他客户端共用同一套中转与路由。
 ## 组合模型来源
 
 Claude Code、OpenCode、Pi 的注入弹窗在路由模式下也有这三个开关：关掉一类会取消它已选的中转或聚合，并从列表里隐藏。Claude Code 只选一个中转、或只用聚合时和以前一样；同时选多个中转，或中转加聚合时，它经本地路由使用和网关相同的 `短名/模型` id，`/model` 菜单里会列出全部所选模型。
+
+## Cursor 的接入方式
+
+Cursor 自己决定模型和 Agent 在哪里运行，没有可以填写的第三方地址。AgentHarbor 在本机提供一个接入端口，替 Cursor 的服务端处理选中 AgentHarbor 模型时的请求：
+
+```text
+Cursor IDE ── http.proxy ──┐
+cursor-agent ── CURSOR_API_ENDPOINT ─┤──▶ AgentHarbor 接入端口（127.0.0.1）
+                                     ├ 模型列表、Agent、Tab、提交信息 → 本地处理，经本地路由调用模型
+                                     └ 其余请求、Cursor 自带的模型 → 原样发往 Cursor
+```
+
+- **Cursor IDE**：在注入页的 Cursor 面板打开开关后，AgentHarbor 会在 Cursor 的 `settings.json` 里写入 `http.proxy` 等四项设置。编辑时保留原有的注释和格式；关闭开关或退出 AgentHarbor 时，只把自己写过的项改回原值，你之后自己改过的项不动。重启 Cursor 后生效，面板上有重启按钮。
+- **本地证书**：Cursor 通过 HTTPS 访问服务器，所以本地代理需要一张 Cursor 信任的证书。证书在本机生成，带名称约束，只能用于 `cursor.sh` 及其子域名，冒充不了其他网站。在 Windows 上点「安装并信任」会装进当前用户的根证书库，系统会先弹窗确认，不需要管理员权限；也可以一键移除。macOS 和 Linux 上，面板会给出安装命令。只有发往 `*.cursor.sh` 的流量会被解密，其他网站原样走隧道；如果 Cursor 原来配置了代理，隧道会继续经过它。
+- **cursor-agent CLI**：打开开关后，AgentHarbor 会为当前用户设置环境变量 `CURSOR_API_ENDPOINT`（Windows），之后新开的终端里 `cursor-agent` 就会接入；也可以点「打开已接入的终端」。CLI 不需要证书。其他系统上，面板会给出启动命令。
+- **账号**：需要在 Cursor 里登录你自己的账号。AgentHarbor 不写入任何令牌，不改动账号、订阅和用量信息；选 Cursor 自带的模型时，请求原样发往 Cursor。Cursor 是否允许某个套餐使用自定义模型，以 Cursor 自己的规则为准。
+- **Agent**：选 AgentHarbor 提供的模型后，Agent 循环由 AgentHarbor 在本地运行。工具（终端、读写和编辑文件、搜索、MCP、子 Agent）由 Cursor 执行，结果再交回模型；会话检查点保存在 `cursor/conversations.db`。WebSearch 使用「路由能力 → 联网搜索」里选的模型，WebFetch 由 AgentHarbor 抓取网页。提示词按 Cursor 的工具约定编写，模型能正常调用 Cursor 的工具。
+- **模型来源**：面板上同样有「中转模型 / 官方账号 / 聚合模型」三个开关，可以任意组合。思考档位与 models.dev 的声明一致；Cursor 账号来源的模型不会再提供给 Cursor。
+- **Tab 补全和提交信息**：默认保持 Cursor 官方，不做任何改动。选择一个模型后，Tab 补全在本地生成，代码不会发给 Cursor 的 Tab 服务；Git 提交信息也可以选模型和语言（中文或英文）。
+
+Agent 部分的协议适配移植自 [cursor-byok](https://github.com/leookun/cursor-byok)（MIT），见 `LICENSES/THIRD_PARTY.md`。
 
 ## 跨协议搜索
 
@@ -110,6 +131,7 @@ Codex 与 Claude Code / Claude Desktop 保留各自原来的 WebSearch 用法，
 - **网关 key**：和供应商凭据一起加密保存。网关只监听 `127.0.0.1`，只接受网关 key；转发给上游时用的是各中转自己的凭据，网关 key 不会发出去。
 - **本地路由**：需要本地令牌才能访问。发往中转的请求不会携带官方账号凭据。
 - **客户端配置**：逐字段写入并先备份。被你或其他工具改过的字段会提示冲突，不会被悄悄覆盖。
+- **Cursor**：本地证书和它的私钥在 AgentHarbor 数据目录的 `cursor` 子目录里，私钥只限文件所有者读写。证书受名称约束，只能用于 `cursor.sh`。退出 AgentHarbor 时会还原 Cursor 的 `settings.json` 和 `CURSOR_API_ENDPOINT`，Cursor 不会指向一个已经没有程序监听的端口；下次启动时重新接入。
 - **代理探测**：只检测网络是否可达，不检查鉴权和额度。Codex 自身的登录和 Native 请求从 Codex 进程发出，改了它的代理后要重启 Codex。
 
 ## 平台支持
@@ -142,7 +164,7 @@ $env:AGENT_HARBOR_CODEX_HOME = Join-Path (Get-Location) '.runtime-test\codex'
 pnpm tauri dev
 ```
 
-这样也会分开单实例锁和 WebView 数据。`AGENT_HARBOR_CLIENT_HOME` 对 Claude Code、Claude Desktop、OpenCode 和 Pi 的路径做同样的隔离。
+这样也会分开单实例锁和 WebView 数据。`AGENT_HARBOR_CLIENT_HOME` 对 Claude Code、Claude Desktop、OpenCode、Pi 和 Cursor IDE 的路径做同样的隔离（并且不改动 `CURSOR_API_ENDPOINT`）。
 
 **检查**：
 

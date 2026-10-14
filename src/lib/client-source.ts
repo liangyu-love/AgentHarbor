@@ -4,6 +4,7 @@ export const CLIENT_SOURCES = [
   { value: "opencode", labelKey: "newapi.routeSourceOpenCode" },
   { value: "pi", labelKey: "newapi.routeSourcePi" },
   { value: "claudeDesktop", labelKey: "newapi.routeSourceClaudeDesktop" },
+  { value: "cursor", labelKey: "newapi.routeSourceCursor" },
   { value: "aggregate", labelKey: "newapi.routeSourceAggregate" },
   { value: "unknown", labelKey: "newapi.routeSourceUnknown" },
 ] as const;

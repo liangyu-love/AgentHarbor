@@ -122,3 +122,52 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+---
+
+## cursor-byok — Cursor Agent protocol adapter (MIT License)
+
+- Project: [leookun/cursor-byok](https://github.com/leookun/cursor-byok), commit `31e9f5c`
+- License: MIT
+- Copyright: © 2026 leookun
+- Ported into `src-tauri/cursor-engine/` (Rust, adapted):
+  - the Cursor Agent protocol adapter (`src/cursor/`): transport, conversation
+    runtime, input compilation, checkpoints, tool codecs and results, model
+    catalog merging, commit message generation;
+  - the Agent loop (`src/run/`), model API adapters (`src/provider/`), domain
+    types (`src/model/`), conversation store (`src/store/`, with a new schema),
+    web fetch and cache (`src/search/`), and the Cursor-facing HTTP handlers
+    (`src/api/`);
+  - `proto/agent_v1.proto`, the Cursor protocol schema as extracted by that
+    project;
+  - the tool names and parameter schemas in `prompt/cursor/tools.json` (the
+    descriptions and every prompt text are AgentHarbor's own);
+  - behaviour tests under `cursor-engine/tests/`.
+- Modifications: plugins, the local account and plan emulation, knowledge
+  cache, code index search and request traces are left out; models, settings
+  and web search come from AgentHarbor; the local certificate authority and the
+  proxy front are rewritten.
+
+```
+MIT License
+
+Copyright (c) 2026 leookun
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

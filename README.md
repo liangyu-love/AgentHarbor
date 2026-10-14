@@ -16,7 +16,7 @@
 
 ## What it is
 
-Codex, Claude Code, Claude Desktop, OpenCode and Pi each keep accounts, model settings, sessions, MCP servers and instructions in their own files. Switching accounts when a quota runs out, wiring in third-party relays, or cleaning up sessions usually means hand-editing TOML, JSON and SQLite.
+Codex, Claude Code, Claude Desktop, OpenCode, Pi and Cursor each keep accounts, model settings, sessions, MCP servers and instructions in their own files. Switching accounts when a quota runs out, wiring in third-party relays, or cleaning up sessions usually means hand-editing TOML, JSON and SQLite.
 
 AgentHarbor is a Tauri 2 + React + Rust desktop app that does this for you. It runs a local model router (`127.0.0.1:43127`), writes each client's configuration as a reversible, field-level change with a backup, and shows what is actually happening on one dashboard. Codex is the primary integration; the other clients are supported through the same relays and router.
 
@@ -26,7 +26,7 @@ AgentHarbor is a Tauri 2 + React + Rust desktop app that does this for you. It r
 | --- | --- |
 | **Dashboard** | Routing topology of every client, today's token pulse, recent sessions, and a foldable map of each client's data directory and key files |
 | **Relays** | Manage many providers; per-model protocol (Responses, Chat Completions, Anthropic Messages), connectivity tests, New API balance, import/export, and a capability catalog (context, output limit, prices) from a bundled [models.dev](https://github.com/anomalyco/models.dev) snapshot |
-| **Model inject** | Connect relay models and official-account models to Codex (local Router or direct Native, accountless mode, subagent defaults), Claude Code, Claude Desktop, OpenCode and Pi — preview, apply and restore, each with backups. Through the router, relays, account sources and aggregates combine freely |
+| **Model inject** | Connect relay models and official-account models to Codex (local Router or direct Native, accountless mode, subagent defaults), Claude Code, Claude Desktop, OpenCode and Pi — preview, apply and restore, each with backups. Through the router, relays, account sources and aggregates combine freely. Cursor IDE and cursor-agent use them for the Agent, Tab and commit messages (see below) |
 | **Local router** | Protocol translation between the three wire formats, model aggregation with priority tiers, failover, first-token timeout and live member state, plus request-level route diagnostics |
 | **Gateway** | One local address and named keys give any agent that takes a base URL and an API key every enabled model (see below) |
 | **Accounts** | Codex: ChatGPT OAuth login, quota windows, manual or threshold-based automatic switching (a running Codex keeps its task until the old account is used up). Account sources: ChatGPT (Sign in with ChatGPT), WorkBuddy, WorkBuddy AI, GitHub Copilot, Gemini CLI, Antigravity, Kiro, Grok and Cursor, which can be shared with model inject (see below) |
@@ -56,6 +56,27 @@ The access mode is independent of the upstream protocol and the network route.
 ## Combining model sources
 
 The Claude Code, OpenCode and Pi inject dialogs have the same three switches in router mode: turning a kind off drops its chosen relays or aggregates and hides them. Claude Code with one relay, or with aggregates alone, works as before; with several relays, or relays and aggregates, it reaches them through the local router under the gateway's `short name/model` ids, and its `/model` menu lists every chosen model.
+
+## How Cursor connects
+
+Cursor decides where its models and Agent run and offers no address to fill in. AgentHarbor serves a local port that answers, in Cursor's servers' place, the calls made for an AgentHarbor model:
+
+```text
+Cursor IDE ── http.proxy ──┐
+cursor-agent ── CURSOR_API_ENDPOINT ─┤──▶ AgentHarbor's Cursor port (127.0.0.1)
+                                     ├ model list, Agent, Tab, commit messages → handled here, models called through the local router
+                                     └ everything else and Cursor's own models → sent to Cursor unchanged
+```
+
+- **Cursor IDE**: turning it on in the Cursor panel of the inject page writes four settings, `http.proxy` among them, into Cursor's `settings.json`, keeping its comments and layout. Turning it off, or quitting AgentHarbor, puts back only what AgentHarbor wrote; a value you changed since is left as it is. Restart Cursor to apply it; the panel has a restart button.
+- **Local certificate**: Cursor reaches its servers over HTTPS, so the local proxy needs a certificate Cursor trusts. It is made on this machine and name-constrained to `cursor.sh` and its subdomains, so it cannot stand in for any other site. On Windows, *Install and trust* adds it to your user's root store after Windows asks you, with no administrator rights; it can be removed the same way. On macOS and Linux the panel shows the command. Only traffic to `*.cursor.sh` is decrypted; every other site passes through a plain tunnel, through Cursor's previous proxy if it had one.
+- **cursor-agent CLI**: turning it on sets `CURSOR_API_ENDPOINT` for your user (Windows), so `cursor-agent` in every terminal opened afterwards is connected; *Open a connected terminal* does it for one. The CLI needs no certificate. Elsewhere the panel shows the command to start it with.
+- **Account**: sign in to Cursor with your own account. AgentHarbor writes no token and leaves the account, plan and usage alone; Cursor's own models keep going to Cursor. Whether a plan may use custom models is Cursor's rule.
+- **Agent**: with a model AgentHarbor offers, AgentHarbor runs the Agent loop locally. Cursor runs the tools (terminal, reading and editing files, search, MCP, subagents) and the results go back to the model; conversation checkpoints are kept in `cursor/conversations.db`. WebSearch uses the model chosen under Routing → Web search, and WebFetch pages are fetched by AgentHarbor. The prompts follow Cursor's tool conventions, so models call Cursor's tools as Cursor expects.
+- **Model sources**: the panel has the same relay / account / aggregate switches, combined freely. Thinking levels follow models.dev; models of the Cursor account source are not offered back to Cursor.
+- **Tab and commit messages**: by default both stay with Cursor, untouched. With a model chosen, Tab suggestions are made locally and your code is not sent to Cursor's Tab service; Git commit messages can use a model too, in English or Chinese.
+
+The Agent protocol adapter is derived from [cursor-byok](https://github.com/leookun/cursor-byok) (MIT); see `LICENSES/THIRD_PARTY.md`.
 
 ## Cross-protocol web search
 
@@ -102,6 +123,7 @@ An account source is a subscription whose own sign-in serves models. Sign in on 
 - **AgentHarbor data** (relays, routing state, usage ledger, caches): the platform's local data directory under `AgentHarbor` (for example `%LOCALAPPDATA%\AgentHarbor`), or `AGENT_HARBOR_DATA_DIR`. The dashboard's data map shows the exact paths.
 - **Provider credentials** live in `newapi-providers.dat`, encrypted with DPAPI for the current user on Windows and stored owner-only (`0600`, not encrypted) elsewhere. The UI never reads saved secrets back; leaving a field empty keeps the stored value.
 - **Account source credentials** live in `account-sources.dat` with the same protection. Their tokens are used only when the router forwards a request and are never shown in the UI.
+- **Cursor**: the local certificate and its key live in the `cursor` folder of the AgentHarbor data directory, the key readable by its owner only. The certificate is name-constrained to `cursor.sh`. Quitting AgentHarbor restores Cursor's `settings.json` and `CURSOR_API_ENDPOINT`, so Cursor never points at a port nothing listens on; the next start connects it again.
 - **Gateway keys** are stored encrypted with the provider credentials. The gateway listens on `127.0.0.1` only and accepts gateway keys only; upstream requests carry each relay's own credentials, never a gateway key.
 - **The local router** requires a local token. Requests to relays never carry the official account's credentials.
 - **Client configuration** is applied field by field with a backup. Fields edited by you or other tools are reported as conflicts instead of being overwritten silently.
@@ -135,7 +157,7 @@ $env:AGENT_HARBOR_CODEX_HOME = Join-Path (Get-Location) '.runtime-test\codex'
 pnpm tauri dev
 ```
 
-This also separates the single-instance lock and WebView data. `AGENT_HARBOR_CLIENT_HOME` does the same for Claude Code, Claude Desktop, OpenCode and Pi paths.
+This also separates the single-instance lock and WebView data. `AGENT_HARBOR_CLIENT_HOME` does the same for Claude Code, Claude Desktop, OpenCode, Pi and Cursor IDE paths (and leaves `CURSOR_API_ENDPOINT` alone).
 
 **Checks.**
 

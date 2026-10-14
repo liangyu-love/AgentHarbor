@@ -1,0 +1,7 @@
+{
+  "tools": [
+    "AskQuestion", "CallMcpTool", "Delete", "FetchMcpResource", "Glob", "Grep",
+    "Read", "ReadLints", "Shell", "StrReplace", "SwitchMode", "Task",
+    "TodoWrite", "WebFetch", "WebSearch", "Write", "GenerateImage"
+  ]
+}

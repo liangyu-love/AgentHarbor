@@ -716,6 +716,7 @@ fn client_request_path(path: &str) -> (String, Option<&'static str>) {
         ("/clients/opencode/", "opencode"),
         ("/clients/pi/", "pi"),
         ("/clients/codex/", "codex"),
+        ("/clients/cursor/", "cursor"),
     ] {
         if let Some(rest) = path.strip_prefix(prefix) {
             return (format!("/{rest}"), Some(source));

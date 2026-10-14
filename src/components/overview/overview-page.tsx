@@ -74,7 +74,7 @@ function OrbitHub({ links, running, onOpen }: { links: Record<Client, Link>; run
           <path id={`${id}-ring`} d="M160,160 m-157,0 a157,157 0 1,1 314,0 a157,157 0 1,1 -314,0" />
         </defs>
         <g className="orbit-text-spin">
-          <text className="orbit-text"><textPath href={`#${id}-ring`}>AGENTHARBOR · LOCAL ROUTER · CODEX · CLAUDE · OPENCODE · PI ·</textPath></text>
+          <text className="orbit-text"><textPath href={`#${id}-ring`}>AGENTHARBOR · LOCAL ROUTER · CODEX · CLAUDE · OPENCODE · PI · CURSOR ·</textPath></text>
         </g>
         <circle cx="160" cy="160" r={ORBIT} fill="none" className="dash-orbit-ring stroke-muted-foreground/30" strokeWidth="1.2" strokeDasharray="2 7" />
         <circle cx="160" cy="160" r={ORBIT - 46} fill="none" className="stroke-muted-foreground/20" strokeDasharray="1 6" />
@@ -214,16 +214,17 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
   const clientConfigs = useQuery({ queryKey: queryKeys.clientConfigs, queryFn: api.targets.configs });
   const clientFiles = useQuery({ queryKey: queryKeys.clientFiles, queryFn: api.targets.files, refetchOnWindowFocus: false });
   const desktop = useQuery({ queryKey: queryKeys.claudeDesktopStatus, queryFn: api.claudeDesktop.status, refetchOnWindowFocus: false });
+  const cursor = useQuery({ queryKey: queryKeys.cursorStatus, queryFn: api.cursor.status, refetchOnWindowFocus: false });
   const { links } = useRoutingLinks(newapi.data?.router);
 
   const status = snapshot.data?.data.status;
   const errors = [snapshot.error, newapi.error, mcp.error, skills.error, skillBackups.error, claudeSkills.error, claudeBackups.error, instructions.error].filter(Boolean);
-  const busy = [snapshot, newapi, mcp, skills, claudeSkills, instructions, accounts, usage, threads, claudeThreads, clientFiles].some((query) => query.isFetching);
+  const busy = [snapshot, newapi, mcp, skills, claudeSkills, instructions, accounts, usage, threads, claudeThreads, clientFiles, cursor].some((query) => query.isFetching);
 
   const refresh = () => {
     void Promise.all([
       snapshot.refetch(), newapi.refetch(), mcp.refetch(), skills.refetch(), skillBackups.refetch(), claudeSkills.refetch(),
-      claudeBackups.refetch(), instructions.refetch(), accounts.refetch(), usage.refetch(), threads.refetch(), claudeThreads.refetch(), clientFiles.refetch(),
+      claudeBackups.refetch(), instructions.refetch(), accounts.refetch(), usage.refetch(), threads.refetch(), claudeThreads.refetch(), clientFiles.refetch(), cursor.refetch(),
     ]);
   };
 
@@ -300,6 +301,10 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
       ok: !!clientConfigs.data?.find((client) => client.targetId === "opencode")?.configured, detail: t("workspace.dataConfigFile") },
     { key: "pi", name: "Pi", mark: <ClientGlyph client="pi" className="h-4 w-4" />, path: configDir("pi"),
       ok: !!clientConfigs.data?.find((client) => client.targetId === "pi")?.configured, detail: t("workspace.dataConfigFile") },
+    { key: "cursor", name: "Cursor", mark: <ClientGlyph client="cursor" className="h-4 w-4" />,
+      path: cursor.data?.settingsPath ? parentDir(cursor.data.settingsPath) : "",
+      ok: !!cursor.data && (cursor.data.ideApplied || cursor.data.cliApplied),
+      detail: t(cursor.data && (cursor.data.ideApplied || cursor.data.cliApplied) ? "workspace.dataCursorInjected" : "workspace.dataCursorIdle") },
     { key: "agentharbor", name: "AgentHarbor", mark: <Waypoints className="h-4 w-4 text-primary" />, path: status?.paths.appDataDir ?? "",
       ok: !!status?.paths.appDataDir, detail: t("workspace.dataHarbor") },
   ].map((location) => ({ ...location, path: location.path || locatedDir(location.key) }));

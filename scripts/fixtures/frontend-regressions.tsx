@@ -25,6 +25,7 @@ import { TokenUsagePanel } from "@/components/usage/token-usage-panel";
 import { UsagePage } from "@/components/usage/usage-page";
 import type { AccountSourceKind, AccountSourceListPayload } from "@/types/account-sources";
 import type { GatewayModel, GatewayState } from "@/types/gateway";
+import type { CursorStatus } from "@/types/cursor";
 import { McpPage } from "@/components/mcp/mcp-page";
 import { CommandPalette } from "@/components/command-palette/command-palette";
 import { SkillsPage } from "@/components/skills/skills-page";
@@ -647,7 +648,57 @@ api.targets.files = async () => [
     keyFile("settings", "settings.json", "C:/synthetic/.pi/agent/settings.json", false),
     keyFile("sessions", "sessions/", "C:/synthetic/.pi/agent/sessions", false, true),
   ] },
+  { client: "cursor", files: [
+    keyFile("settings", "settings.json", "C:/synthetic/Cursor/User/settings.json", true),
+    keyFile("cliConfig", "cli-config.json", "C:/synthetic/.cursor/cli-config.json", false),
+    keyFile("certificate", "cursor-ca.crt", "C:/synthetic/.codex/agentharbor/cursor/cursor-ca.crt", true),
+    keyFile("conversations", "conversations.db", "C:/synthetic/.codex/agentharbor/cursor/conversations.db", false),
+  ] },
 ];
+// Cursor injection: a settings record the switches change, as cursor_inject does.
+const cursorFixture = (): CursorStatus => {
+  const saved = controls.review.cursor ?? (controls.review.cursor = { ide: false, cli: false, certificate: "untrusted",
+    sources: { relay: true, account: true, aggregate: true }, tabModel: null, commitModel: null, commitLocale: "english" });
+  const active = saved.ide || saved.cli;
+  const port = active ? 47331 : null;
+  const models = [
+    { id: "relay-a/model-A", cursorId: "ah-3c2f1a9b0d", label: "Model A", sourceName: "Relay A", kind: "relay" as const },
+    { id: "pool/harbor-pool", cursorId: "ah-81d0e4c7aa", label: "Harbor Pool", sourceName: "Harbor Pool", kind: "aggregate" as const },
+  ].filter(model => saved.sources[model.kind]);
+  return { ideInstalled: true, cliInstalled: true, cliSupported: true, settingsPath: "C:/synthetic/Cursor/User/settings.json",
+    ide: saved.ide, cli: saved.cli, running: active, port, url: port ? `http://127.0.0.1:${port}` : null,
+    ideApplied: saved.ide, cliApplied: saved.cli, cliCommand: port ? `$env:CURSOR_API_ENDPOINT="http://127.0.0.1:${port}"; cursor-agent` : null,
+    certificate: saved.certificate, certificatePath: "C:/synthetic/.codex/agentharbor/cursor/cursor-ca.crt", trustCommand: null,
+    sources: saved.sources, models, tabModel: saved.tabModel, commitModel: saved.commitModel, commitLocale: saved.commitLocale,
+    webSearchReady: false, routerRunning: active };
+};
+const cursorCall = (...call: unknown[]) => { (controls.review.cursorCalls ??= []).push(call); };
+api.cursor.status = async () => cursorFixture();
+api.cursor.setIde = async enabled => {
+  cursorCall("ide", enabled);
+  cursorFixture();
+  if (enabled && controls.review.cursor.certificate !== "trusted") throw "cursor.errors.untrusted";
+  controls.review.cursor.ide = enabled;
+  return cursorFixture();
+};
+api.cursor.setCli = async enabled => { cursorCall("cli", enabled); cursorFixture(); controls.review.cursor.cli = enabled; return cursorFixture(); };
+api.cursor.setSources = async sources => { cursorCall("sources", structuredClone(sources)); cursorFixture(); controls.review.cursor.sources = sources; return cursorFixture(); };
+api.cursor.setTabModel = async model => { cursorCall("tab", model); cursorFixture(); controls.review.cursor.tabModel = model; return cursorFixture(); };
+api.cursor.setCommitModel = async (model, locale) => {
+  cursorCall("commit", model, locale);
+  cursorFixture();
+  Object.assign(controls.review.cursor, { commitModel: model, commitLocale: locale });
+  return cursorFixture();
+};
+api.cursor.trustCertificate = async () => { cursorCall("trust"); cursorFixture(); controls.review.cursor.certificate = "trusted"; return cursorFixture(); };
+api.cursor.distrustCertificate = async () => {
+  cursorCall("distrust");
+  cursorFixture();
+  Object.assign(controls.review.cursor, { certificate: "untrusted", ide: false });
+  return cursorFixture();
+};
+api.cursor.restartIde = async () => { cursorCall("restart"); };
+api.cursor.openTerminal = async () => { cursorCall("terminal"); };
 api.targets.previewConfig = async request => {
   controls.review.previewed = request;
   return { path: "C:/synthetic/config.json", revision: "mock-revision", content: JSON.stringify({ model: request.model }) };
@@ -839,6 +890,10 @@ function TerminalProxyFixture() {
 
 function mount(mode: FixtureMode) {
   controls.review.routingCalls = [];
+  if (!controls.review.keepCursor) {
+    delete controls.review.cursor;
+    controls.review.cursorCalls = [];
+  }
   localStorage.removeItem("agentharbor.mcp-source");
   if (!controls.review.keepAccountsTab) localStorage.removeItem("agentharbor.accounts-tab.v1");
   localStorage.removeItem("agentharbor.instruction-source");

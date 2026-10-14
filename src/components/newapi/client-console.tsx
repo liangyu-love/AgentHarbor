@@ -41,7 +41,7 @@ export function ConsoleHeader({ titleId, title, leading, meta, actions }: {
   );
 }
 
-// One client at a time: a rail of the five clients with how each is connected,
+// One client at a time: a rail of the clients with how each is connected,
 // and the chosen client's whole configuration beside it. Every panel stays
 // mounted so unsaved edits survive switching.
 export function ClientConsole({ router, panels }: {

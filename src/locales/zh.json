@@ -212,7 +212,9 @@
     },
     "dataMapSummary": "{{found}}/{{total}} 个位置已检测",
     "recentSource": "会话来源",
-    "recentAll": "全部"
+    "recentAll": "全部",
+    "dataCursorInjected": "已接入 AgentHarbor",
+    "dataCursorIdle": "未接入"
   },
   "clients": {
     "title": "客户端配置",
@@ -1429,7 +1431,8 @@
         "claudeCode": "Claude Code",
         "claudeDesktop": "Claude Desktop",
         "opencode": "OpenCode",
-        "pi": "Pi"
+        "pi": "Pi",
+        "cursor": "Cursor"
       },
       "hubRouting": "路由运行中",
       "hubListening": "路由待命",
@@ -1531,7 +1534,8 @@
     "gatewaySlugHint": "通用网关里的模型名是「短名/模型」；留空自动生成，改名不影响已配置的 agent",
     "codexContextPresetMax": "Codex 默认上下文 · {{value}}，最大 {{max}}",
     "codexMenuOverflow": "Codex 桌面版的模型菜单只显示前 {{limit}} 个模型，现在有 {{total}} 个，排在后面的 {{count}} 个在桌面版里看不到（命令行不受影响）：{{names}}。可以在中转卡片里取消不用的模型，或在账号页只共享需要的账号来源模型。",
-    "codexMenuOverflowMore": "{{names}} 等"
+    "codexMenuOverflowMore": "{{names}} 等",
+    "routeSourceCursor": "Cursor"
   },
   "avatar": {
     "title": "应用头像",
@@ -2659,5 +2663,87 @@
     "schematicNoKey": "还没有 agent",
     "aggregatePrefix": "聚合前缀",
     "aggregatePrefixHint": "模型聚合在网关里叫「前缀/模型名」，和中转的「短名/模型名」区分开。单个聚合可以在模型聚合里另设前缀；以前直接写模型名的请求仍然能用。"
+  },
+  "cursor": {
+    "title": "Cursor",
+    "failed": "Cursor 设置未能完成",
+    "copyFailed": "复制失败",
+    "restart": "重启 Cursor",
+    "restarted": "已重启 Cursor IDE",
+    "status": {
+      "routed": "已接入",
+      "pending": "等待生效"
+    },
+    "accessPanel": "接入方式",
+    "ide": "Cursor IDE",
+    "ideHint": "经本地代理接管 Cursor 的 Agent、模型列表、Tab 与提交信息请求；其他请求原样发往 Cursor",
+    "ideMissing": "没有找到 Cursor IDE 的用户目录",
+    "ideOn": "已写入 Cursor 设置，重启 Cursor 后生效",
+    "ideOff": "已还原 Cursor 设置",
+    "trustFirst": "先在右侧安装并信任本地证书，Cursor 才能连上本地代理",
+    "cli": "cursor-agent CLI",
+    "cliHint": "为当前用户设置环境变量 CURSOR_API_ENDPOINT，之后新开的终端都会接入",
+    "cliMissing": "没有找到 cursor-agent；安装后新开的终端同样会接入",
+    "cliManual": "这个系统上无法设置用户级环境变量，请用下面的命令启动 cursor-agent",
+    "cliOn": "已设置 CURSOR_API_ENDPOINT，新开的终端生效",
+    "cliOff": "已还原 CURSOR_API_ENDPOINT",
+    "applied": "已生效",
+    "notApplied": "未生效",
+    "copyCommand": "复制命令",
+    "openTerminal": "打开已接入的终端",
+    "accountNote": "需要在 Cursor 中登录你自己的账号；AgentHarbor 不改动账号、订阅与用量，选 Cursor 自带的模型时照常走官方。退出 AgentHarbor 时会自动还原设置。",
+    "certificatePanel": "本地证书",
+    "certificate": {
+      "trusted": "已信任",
+      "untrusted": "未信任",
+      "manual": "需手动信任",
+      "install": "安装并信任",
+      "installed": "证书已安装",
+      "remove": "移除证书",
+      "removed": "证书已移除",
+      "hint": "Cursor IDE 经 HTTPS 连接服务器，本地代理需要一张它信任的证书。这张证书在本机生成，并带有名称约束，只能用于 cursor.sh 及其子域名，无法冒充其他网站。安装时 Windows 会弹出确认框。"
+    },
+    "modelsPanel": "提供的模型",
+    "sources": "Cursor 模型列表提供",
+    "sourcesHint": "可以任意组合；关掉的类别不会出现在 Cursor 的模型列表里。Cursor 自己的模型始终保留。",
+    "sourcesApplied": "Cursor 模型列表已更新",
+    "sourcesNone": "只有 Cursor 自己的模型",
+    "moreModels": "另有 {{count}} 个",
+    "noModels": "还没有可提供的模型，去添加中转",
+    "modelCount": "{{count}} 个模型",
+    "extrasPanel": "Tab 补全与提交信息",
+    "official": "Cursor 官方",
+    "modelGone": "{{model}}（已不可用）",
+    "tab": "Tab 补全",
+    "tabHint": "选择一个模型后，Tab 补全在本地生成，代码不会发给 Cursor 的 Tab 服务；保持「Cursor 官方」则不做任何改动",
+    "tabApplied": "Tab 补全设置已更新",
+    "commit": "Git 提交信息",
+    "commitLocale": "提交信息语言",
+    "commitApplied": "提交信息设置已更新",
+    "locale": {
+      "english": "英文",
+      "chinese": "中文"
+    },
+    "webSearchReady": "Agent 的 WebSearch 会使用「路由能力 → 联网搜索」里选的模型",
+    "webSearchMissing": "Agent 的 WebSearch 需要先在「路由能力 → 联网搜索」选一个搜索模型",
+    "pipelineClients": "Cursor IDE / cursor-agent",
+    "pipelinePort": "AgentHarbor 接入端口 :{{port}}",
+    "pipelinePortHint": "Agent · 模型列表 · Tab · 提交信息",
+    "pipelineHint": "选 AgentHarbor 提供的模型时，Agent 由 AgentHarbor 在本地运行，再经本地路由调用中转、账号或聚合；Cursor 负责执行工具（终端、读写文件、MCP）。",
+    "routerDown": "本地路由没有运行，模型请求会失败；请检查路由端口是否被占用",
+    "errors": {
+      "storage": "无法保存 Cursor 设置",
+      "engine": "Cursor 接入端口启动失败",
+      "certificate": "本地证书无法生成或读取",
+      "trust": "证书没有安装（可能在确认框中取消了）",
+      "distrust": "证书没有移除",
+      "untrusted": "请先安装并信任本地证书",
+      "ideMissing": "没有找到 Cursor IDE",
+      "restart": "Cursor 没能重新启动",
+      "settingsUnreadable": "Cursor 的 settings.json 无法解析",
+      "settingsWrite": "无法写入 Cursor 的 settings.json",
+      "cliUnsupported": "这个系统上无法设置用户级环境变量",
+      "notRunning": "Cursor 接入端口没有运行"
+    }
   }
 }

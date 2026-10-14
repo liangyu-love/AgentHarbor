@@ -16,6 +16,7 @@ import {
 import { ClientConfigs } from "@/components/newapi/client-configs";
 import { ClaudeDesktopConfigCard } from "@/components/newapi/claude-desktop-config-card";
 import { CodexAccessCard } from "@/components/newapi/codex-access-card";
+import { CursorAccessCard } from "@/components/newapi/cursor-access-card";
 import { RoutingDiagnostics } from "@/components/newapi/routing-diagnostics";
 import { AggregationManager } from "@/components/newapi/aggregation-manager";
 import { GatewayPanel } from "@/components/newapi/gateway-panel";
@@ -50,7 +51,7 @@ function SectionGroup({ kicker, icon, title, description, delay, children }: {
   );
 }
 
-// Injection page: how Codex, Claude Code, Claude Desktop and the aggregation
+// Injection page: how Codex, Claude Code, Claude Desktop, OpenCode, Pi, Cursor and the aggregation
 // gateway reach the relays. The relays themselves live on their own page.
 export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
   const { t } = useTranslation();
@@ -126,6 +127,7 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
             claudeDesktop: <ClaudeDesktopConfigCard providers={providers} />,
             opencode: <ClientConfigs target="opencode" providers={providers} onOpenRelays={onOpenRelays} />,
             pi: <ClientConfigs target="pi" providers={providers} onOpenRelays={onOpenRelays} />,
+            cursor: <CursorAccessCard onOpenRelays={onOpenRelays} />,
           }}
         />
       </SectionGroup>

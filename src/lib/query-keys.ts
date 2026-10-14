@@ -13,6 +13,7 @@ export const queryKeys = {
   clientConfigs: ["client-configs"],
   clientFiles: ["client-files"],
   claudeDesktopStatus: ["claude-desktop", "status"],
+  cursorStatus: ["cursor", "status"],
   claudeDesktopCandidates: ["claude-desktop", "candidates"],
   codexAccounts: ["codex-accounts"],
   accountSources: ["account-sources"],

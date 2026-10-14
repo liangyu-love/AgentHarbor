@@ -45,6 +45,10 @@ pub struct ClientPaths {
     pub claude_user: PathBuf,
     pub opencode: PathBuf,
     pub pi: PathBuf,
+    /// Cursor IDE's user directory (`.../Cursor/User`).
+    pub cursor: PathBuf,
+    /// `cursor-agent`'s directory (`~/.cursor`).
+    pub cursor_cli: PathBuf,
 }
 
 impl ClientPaths {
@@ -73,6 +77,8 @@ impl ClientPaths {
             opencode: env_path("OPENCODE_CONFIG")
                 .unwrap_or_else(|| opencode_path(&config.join("opencode"))),
             pi: pi::models_path(&home, std::env::var_os("PI_CODING_AGENT_DIR")),
+            cursor: super::cursor_inject::ide::user_dir().unwrap_or_else(|| config.join("Cursor").join("User")),
+            cursor_cli: home.join(".cursor"),
         }
     }
 
@@ -82,6 +88,8 @@ impl ClientPaths {
             claude_user: home.join(".claude.json"),
             opencode: opencode_path(&home.join(".config/opencode")),
             pi: home.join(".pi/agent/models.json"),
+            cursor: home.join(".config/Cursor/User"),
+            cursor_cli: home.join(".cursor"),
         }
     }
 }

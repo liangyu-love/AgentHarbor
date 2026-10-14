@@ -1,6 +1,6 @@
 [package]
 name = "agent-harbor"
-version = "1.0.3"
+version = "1.0.4"
 default-run = "AgentHarbor"
 description = "Cross-platform coding-agent desktop workspace"
 authors = ["AgentHarbor contributors"]
@@ -8,6 +8,9 @@ license = "Apache-2.0"
 edition = "2021"
 # Locked dependencies (notably notify-rust) require Rust 1.89.
 rust-version = "1.89"
+
+[workspace]
+members = ["cursor-engine"]
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
@@ -40,6 +43,8 @@ tauri-plugin-notification = "=2.3.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 json5 = "0.4"
+# Edits Cursor's settings.json in place, keeping its comments and layout.
+jsonc-parser = { version = "0.34", features = ["cst", "serde_json"] }
 rquickjs = "0.11"
 toml = "0.8"
 toml_edit = "0.22"
@@ -63,6 +68,8 @@ hostname = "0.4"
 log = "0.4"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "process", "signal"] }
+# Serves Cursor's Agent protocol for the Cursor injection.
+cursor-engine = { path = "cursor-engine" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_System_Registry", "Win32_Foundation", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_System_JobObjects", "Win32_Security"] }

@@ -83,6 +83,9 @@ pub fn command(exe: &Path, args: &[&str], env: &[(String, String)]) -> Command {
         Command::new(exe)
     };
     command.args(args);
+    // Cursor injection may point `cursor-agent` at AgentHarbor itself; the
+    // account source must reach Cursor.
+    command.env_remove("CURSOR_API_ENDPOINT");
     for (name, value) in env {
         command.env(name, value);
     }

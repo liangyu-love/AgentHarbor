@@ -99,6 +99,7 @@ fn release_router_clients_at(paths: &CodexPaths, clients: client_config::ClientP
     for (target, error) in manager.restore_router_configs_on_exit() {
         log::warn!("{target:?} router config cleanup failed: {error}");
     }
+    super::cursor_inject::release_on_exit(&paths.app_data_dir);
     if let Err(error) = router::stop_smart_routing_on_exit(paths) {
         log::warn!("Codex router config cleanup failed: {error}");
     }
@@ -126,7 +127,8 @@ async fn reconcile_on_startup_at(
             error.message
         );
     }
-    let result = reconcile(paths).await;
+    // Cursor's settings and variable are pointed back at this process.
+    let result = reconcile_with(paths, true).await;
     if result.as_ref().err().map(String::as_str) == Some("newapi.errors.portBusy") {
         release_router_clients_at(paths, clients);
     }
@@ -135,6 +137,13 @@ async fn reconcile_on_startup_at(
 }
 
 pub async fn reconcile(paths: &CodexPaths) -> Result<(), String> {
+    reconcile_with(paths, false).await
+}
+
+/// [`reconcile`], rewriting Cursor's settings and variable when
+/// `cursor_leases` (at startup and when its switches change) and otherwise
+/// leaving a user's own edit to them alone.
+pub async fn reconcile_with(paths: &CodexPaths, cursor_leases: bool) -> Result<(), String> {
     prune_preview_listeners();
     let store = router::load_store(paths)?;
     super::aggregation::reconcile_runtime(&store);
@@ -145,16 +154,21 @@ pub async fn reconcile(paths: &CodexPaths) -> Result<(), String> {
     let desktop_port = claude_desktop::gateway::required_port(&paths.app_data_dir)
         .map_err(|error| error.message)?;
     router_proxy::set_desktop_pin(desktop_port)?;
-    if needs_server(
+    let cursor = super::cursor_inject::active(&paths.app_data_dir);
+    let result = if needs_server(
         &store,
-        client_config::has_router_configs(&paths.app_data_dir)?,
+        client_config::has_router_configs(&paths.app_data_dir)? || cursor,
         router_proxy::desktop_listener_required(),
     ) {
         ensure_available(paths).await
     } else {
         router_proxy::stop();
         Ok(())
+    };
+    if let Err(error) = super::cursor_inject::reconcile(paths, cursor_leases).await {
+        log::warn!("Cursor injection reconcile failed: {error}");
     }
+    result
 }
 
 fn needs_server(
