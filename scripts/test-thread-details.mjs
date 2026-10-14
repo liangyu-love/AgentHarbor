@@ -76,7 +76,8 @@ export async function testThreadDetails({ page, reset, captureDir }) {
     { snapshot: 12345, offset: 0, snapshotId: "fixture-2" });
   await page.keyboard.press("Escape");
   await panel.waitFor({ state: "hidden" });
-  assert.equal(await trigger.evaluate(element => element === document.activeElement), true, "Escape restores invoking title focus");
+  await eventually(async () => assert.equal(await trigger.evaluate(element => element === document.activeElement), true,
+    "Escape restores invoking title focus"));
 
   ({ panel } = await open("thread-details"));
   await panel.getByRole("button", { name: "删除会话", exact: true }).click();
