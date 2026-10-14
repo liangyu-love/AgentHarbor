@@ -604,6 +604,9 @@ fn to_match(entry: super::models_dev::Match<'_>) -> CatalogMatch<'_> {
     }
 }
 
+/// Thinking budgets the router sends for each level (`protocol::reasoning`).
+const BUDGET_LEVELS: [(&str, u64); 4] = [("low", 4096), ("medium", 10_000), ("high", 24_000), ("xhigh", 32_000)];
+
 fn effective_levels(model: &super::models_dev::Model) -> Option<Vec<ReasoningLevel>> {
     if model.reasoning == Some(false) {
         return Some(Vec::new());
@@ -613,6 +616,21 @@ fn effective_levels(model: &super::models_dev::Model) -> Option<Vec<ReasoningLev
         for value in option.efforts() {
             if !values.iter().any(|known| known.eq_ignore_ascii_case(value)) {
                 values.push(value.clone());
+            }
+        }
+    }
+    // A thinking budget takes the levels the router turns into budgets,
+    // within the budget range the model declares.
+    if values.is_empty() {
+        for option in &model.reasoning_options {
+            if let super::models_dev::ReasoningOption::BudgetTokens { min, max } = option {
+                values.extend(
+                    BUDGET_LEVELS
+                        .iter()
+                        .filter(|(_, budget)| min.is_none_or(|min| *budget >= min) && max.is_none_or(|max| *budget <= max))
+                        .map(|(effort, _)| (*effort).to_owned()),
+                );
+                break;
             }
         }
     }
@@ -629,6 +647,27 @@ fn effective_levels(model: &super::models_dev::Model) -> Option<Vec<ReasoningLev
     }
     // Reasoning is declared (toggle / budget) but no discrete efforts exist.
     model.reasoning.map(|_| Vec::new())
+}
+
+/// The levels every catalog source that lists levels agrees on, in the first
+/// one's order. A source declaring only that the model thinks (or switches
+/// thinking) does not narrow them; one declaring it does not think leaves none.
+fn shared_levels(matches: &[CatalogMatch<'_>]) -> Option<Vec<ReasoningLevel>> {
+    if matches.iter().any(|entry| entry.model.reasoning == Some(false)) {
+        return None;
+    }
+    let sets: Vec<Vec<ReasoningLevel>> = matches
+        .iter()
+        .filter_map(|entry| effective_levels(entry.model))
+        .filter(|levels| !levels.is_empty())
+        .collect();
+    let (first, rest) = sets.split_first()?;
+    let shared: Vec<ReasoningLevel> = first
+        .iter()
+        .filter(|level| rest.iter().all(|set| set.iter().any(|other| other.effort.eq_ignore_ascii_case(&level.effort))))
+        .cloned()
+        .collect();
+    (!shared.is_empty()).then_some(shared)
 }
 
 pub fn effort_description(effort: &str) -> String {
@@ -1020,9 +1059,10 @@ pub fn resolve_with_global_fallback(
         source::CATALOG_GENERIC
     };
 
-    // A speed deployment can have different ceilings and reasoning controls.
-    // Keep those unknown unless the actual variant, user or upstream declares
-    // them. The reference's only transferable field is the total context.
+    // A speed deployment can have different ceilings: keep those unknown
+    // unless the actual variant, user or upstream declares them. It thinks
+    // like its base model, so the reference carries the total context and
+    // the reasoning controls.
     let variant_matches: &[CatalogMatch<'_>] = if context_reference { &[] } else { &matches };
 
     // Numbers.
@@ -1036,7 +1076,7 @@ pub fn resolve_with_global_fallback(
     let (output_ref, output_updated) =
         field_provenance(variant_matches, |model| model.limit.output.is_some());
     let (reasoning_ref, reasoning_updated) =
-        field_provenance(variant_matches, |model| effective_levels(model).is_some());
+        field_provenance(&matches, |model| effective_levels(model).is_some());
     let official_time = request
         .official
         .as_ref()
@@ -1123,8 +1163,8 @@ pub fn resolve_with_global_fallback(
     result.output_limit = output_field;
 
     // Reasoning.
-    let levels = agreement(variant_matches, |entry| effective_levels(entry.model));
-    let supports = agreement(variant_matches, |entry| entry.model.reasoning);
+    let levels = agreement(&matches, |entry| effective_levels(entry.model));
+    let supports = agreement(&matches, |entry| entry.model.reasoning);
     let levels_field = if let Some(user) = request.user.reasoning.clone() {
         Field::new(user, source::MANUAL, None, None)
     } else if let Some(upstream) = live_upstream.and_then(|values| values.reasoning.clone()) {
@@ -1165,15 +1205,35 @@ pub fn resolve_with_global_fallback(
                         })
                         .collect(),
                 });
-                Field::unknown()
+                // The conflict stays visible; the levels every source lists
+                // are still ones the model accepts.
+                shared_levels(&matches)
+                    .map(|shared| Field::new(shared, catalog_source, None, None))
+                    .unwrap_or_else(Field::unknown)
             }
             Agreement::Missing => Field::unknown(),
         }
     };
+    // Levels the trusted sources leave unknown may still be listed for this
+    // exact model elsewhere in the catalog (a deployment its publisher does
+    // not list). Only the levels every such entry agrees on are taken.
+    let levels_field = if levels_field.value.is_some() {
+        levels_field
+    } else {
+        let exact: Vec<CatalogMatch<'_>> = candidates
+            .iter()
+            .filter(|candidate| !candidate.context_reference)
+            .flat_map(|candidate| catalog.global(&candidate.value))
+            .map(to_match)
+            .collect();
+        shared_levels(&exact)
+            .map(|shared| Field::new(shared, source::CATALOG_GENERIC, None, None))
+            .unwrap_or(levels_field)
+    };
     result.reasoning = ReasoningInfo {
         levels: levels_field,
         supports: supports.agreed().copied(),
-        options: variant_matches
+        options: matches
             .first()
             .map(|entry| option_infos(entry.model))
             .unwrap_or_default(),
@@ -1210,11 +1270,18 @@ pub fn resolve_with_global_fallback(
                 .map(|effort| (effort, declared_source.clone()))
         });
     let (default_effort, default_source) = declared_default.unwrap_or_else(|| {
-        let policy = final_levels
+        // Medium, else high, else the middle thinking level: a model without
+        // a medium (low / high / max) starts on high rather than its least.
+        let thinking: Vec<&ReasoningLevel> = final_levels
             .iter()
-            .find(|level| level.effort.eq_ignore_ascii_case("medium"))
-            .or_else(|| final_levels.first())
-            .map(|level| level.effort.clone());
+            .filter(|level| !level.effort.eq_ignore_ascii_case("none"))
+            .collect();
+        let policy = ["medium", "high"]
+            .iter()
+            .find_map(|effort| thinking.iter().find(|level| level.effort.eq_ignore_ascii_case(effort)))
+            .or_else(|| thinking.get(thinking.len().saturating_sub(1) / 2))
+            .map(|level| level.effort.clone())
+            .or_else(|| final_levels.first().map(|level| level.effort.clone()));
         (
             policy.unwrap_or_default(),
             if final_levels.is_empty() {
@@ -1658,10 +1725,13 @@ mod tests {
             );
             assert!(resolved.input_limit.value.is_none());
             assert!(resolved.output_limit.value.is_none());
-            assert!(resolved.reasoning.levels.value.is_none());
-            assert!(resolved.reasoning.supports.is_none());
-            assert!(resolved.reasoning.options.is_empty());
-            assert!(resolved.default_effort.is_none());
+            // It thinks like its base model; ceilings and prices stay its own.
+            let levels: Vec<_> = resolved.reasoning.levels.value.as_ref().unwrap().iter().map(|level| level.effort.as_str()).collect();
+            assert_eq!(levels, ["off", "low", "high"], "{suffix}");
+            assert_eq!(resolved.reasoning.levels.source, source::CATALOG_SPEED_REFERENCE);
+            assert_eq!(resolved.reasoning.supports, Some(true));
+            assert!(resolved.reasoning.options.iter().any(|option| option.kind == "toggle"));
+            assert_eq!(resolved.default_effort.as_deref(), Some("high"));
             assert!(resolved.price.input.is_none());
             assert_eq!(resolved.price.source, source::UNKNOWN);
             assert!(resolved
@@ -2133,6 +2203,63 @@ mod tests {
         let resolved = resolve(&catalog, &legacy);
         assert_eq!(resolved.context_window.value, Some(200_000));
         assert_eq!(resolved.context_window.source, source::CATALOG);
+    }
+
+    #[test]
+    fn levels_come_from_every_source_that_lists_them() {
+        let bytes = serde_json::to_vec(&json!({
+            "schemaVersion": 1, "sourceUrl": "https://models.dev/api.json", "fetchedAt": 1_700_000_000, "revision": "fixture",
+            "providers": [
+                {"id": "deepseek", "name": "DeepSeek", "models": [
+                    {"id": "deepseek-v4-pro", "name": "V4 Pro", "reasoning": true,
+                     "reasoningOptions": [{"type": "toggle"}, {"type": "effort", "values": ["low", "high", "max"]}]}
+                ]},
+                {"id": "mirror-a", "name": "Mirror A", "models": [
+                    {"id": "vendor/fast-model", "reasoning": true, "reasoningOptions": [{"type": "effort", "values": ["none", "low", "high", "max"]}]},
+                    {"id": "vendor/split", "reasoning": true, "reasoningOptions": [{"type": "effort", "values": ["low", "medium", "high"]}]},
+                    {"id": "vendor/budget", "reasoning": true, "reasoningOptions": [{"type": "budget_tokens", "min": 1024, "max": 24576}]},
+                    {"id": "vendor/refused", "reasoning": true, "reasoningOptions": [{"type": "effort", "values": ["low", "high"]}]}
+                ]},
+                {"id": "mirror-b", "name": "Mirror B", "models": [
+                    {"id": "fast-model", "reasoning": true, "reasoningOptions": [{"type": "effort", "values": ["none", "low", "medium", "high"]}]},
+                    {"id": "vendor/split", "reasoning": true, "reasoningOptions": [{"type": "toggle"}]},
+                    {"id": "vendor/refused", "reasoning": false}
+                ]}
+            ]
+        })).unwrap();
+        let catalog = Catalog::parse(&bytes, super::super::models_dev::Origin::Runtime).unwrap();
+        let efforts = |resolved: &ResolvedMetadata| resolved.reasoning.levels.value.as_ref()
+            .map(|levels| levels.iter().map(|level| level.effort.clone()).collect::<Vec<_>>());
+
+        // Without a medium, the default is high rather than the least.
+        let scope = ["deepseek".to_owned()];
+        let mut request = input_for("deepseek-v4-pro");
+        request.catalog_providers = &scope;
+        let resolved = resolve(&catalog, &request);
+        assert_eq!(efforts(&resolved).unwrap(), ["low", "high", "max"]);
+        assert_eq!(resolved.default_effort.as_deref(), Some("high"));
+
+        // A source declaring only a switch does not wipe another's levels.
+        let resolved = resolve(&catalog, &input_for("vendor/split"));
+        assert_eq!(efforts(&resolved).unwrap(), ["low", "medium", "high"]);
+        assert_eq!(resolved.default_effort.as_deref(), Some("medium"));
+        assert!(resolved.conflicts.iter().any(|conflict| conflict.field == "reasoning"), "the conflict stays visible");
+
+        // A thinking budget takes the levels the router turns into budgets, within its range.
+        let resolved = resolve(&catalog, &input_for("vendor/budget"));
+        assert_eq!(efforts(&resolved).unwrap(), ["low", "medium", "high"]);
+
+        // A source saying the model does not think leaves its levels unknown.
+        assert!(efforts(&resolve(&catalog, &input_for("vendor/refused"))).is_none());
+
+        // A deployment its publisher does not list: the levels its own
+        // entries elsewhere agree on, labelled as a generic reference.
+        let mut request = input_for("vendor/fast-model");
+        request.catalog_providers = &scope;
+        let resolved = resolve_with_global_fallback(&catalog, &request, false, Some(&["deepseek"]));
+        assert_eq!(efforts(&resolved).unwrap(), ["none", "low", "high"]);
+        assert_eq!(resolved.reasoning.levels.source, source::CATALOG_GENERIC);
+        assert_eq!(resolved.default_effort.as_deref(), Some("high"));
     }
 
     #[test]
