@@ -40,4 +40,4 @@ pnpm-debug.log*
 .playwright-cli/
 
 # Local planning notes (kept on this machine, not committed)
-plan/
+/plan/
