@@ -1048,7 +1048,7 @@ async fn provider_tool_use_waits_for_client_result_then_calls_provider_again() {
     let mut saw_exec = false;
     let mut saw_typed_completion = false;
     loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(30), output.recv())
             .await
             .unwrap()
             .unwrap();

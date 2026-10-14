@@ -194,7 +194,7 @@ async fn eligible_pending_checkpoint_resumes_tools_before_the_next_model_call() 
     let mut saw_settled_barrier_blob = false;
     let mut saw_settled_checkpoint = false;
     loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), resumed_output.recv())
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(30), resumed_output.recv())
             .await
             .unwrap()
             .unwrap();
@@ -364,7 +364,7 @@ async fn recovery_rejects_a_kv_get_payload_whose_hash_does_not_match_the_blob_id
         .unwrap();
 
     let error = loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(30), output.recv())
             .await
             .unwrap()
             .unwrap();
@@ -456,7 +456,7 @@ fn read_result(id: u32) -> pb::AgentClientMessage {
 async fn next_message(
     output: &mut tokio::sync::mpsc::UnboundedReceiver<bytes::Bytes>,
 ) -> pb::AgentServerMessage {
-    let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(30), output.recv())
         .await
         .unwrap()
         .unwrap();

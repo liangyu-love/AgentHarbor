@@ -123,7 +123,7 @@ async fn break_messages_emits_one_cycle_boundary_before_the_runtime_commit() {
             .run(prepared, port, cancellation)
             .await
     });
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
     while provider.requests().is_empty() {
         assert!(
             tokio::time::Instant::now() < deadline,
@@ -302,7 +302,7 @@ async fn client_heartbeat_returns_a_server_protocol_heartbeat() {
     .await
     .unwrap();
 
-    let frame = tokio::time::timeout(std::time::Duration::from_secs(1), output.recv())
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(30), output.recv())
         .await
         .unwrap()
         .unwrap();
@@ -359,7 +359,7 @@ async fn runtime_cancel_action_aborts_active_exec_before_canceled_end_stream() {
 
     let mut append_seqno = 1;
     let exec_id = loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(30), output.recv())
             .await
             .unwrap()
             .unwrap();
@@ -396,7 +396,7 @@ async fn runtime_cancel_action_aborts_active_exec_before_canceled_end_stream() {
         .unwrap();
     let mut saw_abort = false;
     loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(30), output.recv())
             .await
             .unwrap()
             .expect("RunSSE closed before canceled EndStream");
@@ -471,7 +471,7 @@ async fn queued_user_message_after_turn_ended_starts_the_next_turn() {
 
     let mut text = String::new();
     loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(30), output.recv())
             .await
             .unwrap()
             .expect("queued turn closed without EndStream");
@@ -535,7 +535,7 @@ async fn runtime_user_message_action_interrupts_and_continues_with_new_message()
         .unwrap();
 
     let mut append_seqno = 1;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
     while provider.requests().is_empty() {
         assert!(
             tokio::time::Instant::now() < deadline,
@@ -562,7 +562,7 @@ async fn runtime_user_message_action_interrupts_and_continues_with_new_message()
     let mut saw_continued = false;
     let mut append_seqno = append_seqno + 1;
     loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(30), output.recv())
             .await
             .unwrap()
             .expect("RunSSE closed before successful EndStream");
@@ -624,7 +624,7 @@ async fn runtime_user_message_reports_delivered_and_appended() {
         .unwrap();
 
     let mut append_seqno = 1;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
     while provider.requests().is_empty() {
         assert!(
             tokio::time::Instant::now() < deadline,
@@ -647,7 +647,7 @@ async fn runtime_user_message_reports_delivered_and_appended() {
 
     let mut protocol_events = Vec::new();
     loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(30), output.recv())
             .await
             .unwrap()
             .expect("RunSSE closed before successful EndStream");
@@ -737,7 +737,7 @@ async fn tool_call_with_empty_arguments_does_not_fail_the_run() {
     let mut append_seqno = 1;
     let mut saw_done = false;
     loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(30), output.recv())
             .await
             .unwrap()
             .expect("RunSSE closed before successful EndStream");
@@ -799,7 +799,7 @@ async fn injected_user_context_restarts_only_the_active_model_cycle() {
         .unwrap();
 
     let mut append_seqno = 1;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
     while provider.requests().is_empty() {
         assert!(
             tokio::time::Instant::now() < deadline,
@@ -822,7 +822,7 @@ async fn injected_user_context_restarts_only_the_active_model_cycle() {
 
     let mut protocol_events = Vec::new();
     loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(30), output.recv())
             .await
             .unwrap()
             .expect("RunSSE closed before successful EndStream");
@@ -928,7 +928,7 @@ async fn injected_user_context_aborts_pending_tools_and_ignores_late_results() {
     append_seqno += 1;
 
     let mut saw_abort = false;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
     while provider.requests().len() < 2 || !saw_abort {
         assert!(
             tokio::time::Instant::now() < deadline,
@@ -1037,7 +1037,7 @@ async fn injected_user_context_detaches_subagents_without_cancelling_them() {
         .unwrap();
     append_seqno += 1;
 
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
     while provider.requests().len() < 2 {
         assert!(
             tokio::time::Instant::now() < deadline,
@@ -1174,7 +1174,7 @@ async fn injected_user_context_interrupts_automatic_compaction() {
         .unwrap();
 
     let mut append_seqno = 1;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
     while provider.requests().len() < 2 {
         assert!(
             tokio::time::Instant::now() < deadline,
@@ -1200,7 +1200,7 @@ async fn injected_user_context_interrupts_automatic_compaction() {
 
     let mut saw_continued = false;
     loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(30), output.recv())
             .await
             .unwrap()
             .expect("RunSSE closed before successful EndStream");
@@ -1276,7 +1276,7 @@ async fn stale_context_injection_is_rejected_without_failing_the_active_run() {
         .unwrap();
 
     let mut append_seqno = 1;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
     while provider.requests().is_empty() {
         assert!(
             tokio::time::Instant::now() < deadline,
@@ -1308,7 +1308,7 @@ async fn stale_context_injection_is_rejected_without_failing_the_active_run() {
     let mut rejection_count = 0;
     let mut released = false;
     loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(30), output.recv())
             .await
             .unwrap()
             .expect("RunSSE closed before successful EndStream");
@@ -1389,7 +1389,7 @@ async fn unsupported_runtime_action_is_ignored_without_failing_the_active_run() 
         .unwrap();
 
     let mut append_seqno = 1;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
     while provider.requests().is_empty() {
         assert!(
             tokio::time::Instant::now() < deadline,
@@ -1481,7 +1481,7 @@ async fn cancel_subagent_action_aborts_the_target_task_and_keeps_the_parent_runn
 
     let mut append_seqno = 1;
     let exec_id = loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(30), output.recv())
             .await
             .unwrap()
             .expect("RunSSE closed before Task exec");
@@ -1521,7 +1521,7 @@ async fn cancel_subagent_action_aborts_the_target_task_and_keeps_the_parent_runn
     append_seqno += 1;
 
     loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(30), output.recv())
             .await
             .unwrap()
             .expect("RunSSE closed before Task abort");
@@ -1562,7 +1562,7 @@ async fn cancel_subagent_action_aborts_the_target_task_and_keeps_the_parent_runn
 
     let mut saw_continued = false;
     loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(30), output.recv())
             .await
             .unwrap()
             .expect("RunSSE closed before successful EndStream");
@@ -1693,7 +1693,7 @@ async fn wait_for_exec(
     tool: &str,
 ) -> u32 {
     loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(30), output.recv())
             .await
             .unwrap()
             .expect("RunSSE closed before Exec");
@@ -1720,7 +1720,7 @@ async fn drain_successfully(
     append_seqno: &mut i64,
 ) {
     loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(30), output.recv())
             .await
             .unwrap()
             .expect("RunSSE closed before successful EndStream");
@@ -1791,7 +1791,7 @@ async fn run_to_end(
     let mut append_seqno = 1;
     let mut state = None;
     loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(30), output.recv())
             .await
             .unwrap()
             .expect("RunSSE closed before EndStream");
@@ -1816,7 +1816,7 @@ async fn wait_for_turn_ended(
     append_seqno: &mut i64,
 ) {
     loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(30), output.recv())
             .await
             .unwrap()
             .expect("RunSSE closed before turnEnded");

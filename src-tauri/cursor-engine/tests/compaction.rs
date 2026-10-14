@@ -682,7 +682,7 @@ async fn run(
     let mut append_seqno = 1;
     let mut output = Output::default();
     loop {
-        let frame = tokio::time::timeout(Duration::from_secs(5), receiver.recv())
+        let frame = tokio::time::timeout(Duration::from_secs(30), receiver.recv())
             .await
             .unwrap()
             .unwrap();

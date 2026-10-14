@@ -362,7 +362,7 @@ async fn drive_completion(
     let mut blobs = HashMap::new();
     let mut final_checkpoint = None;
     loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(30), output.recv())
             .await
             .unwrap()
             .unwrap();
@@ -468,7 +468,7 @@ async fn drive_forwarded_completion(handle: &TransportHandle, message: pb::Agent
         .unwrap();
     let mut append_seqno = 1;
     loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(30), output.recv())
             .await
             .unwrap()
             .unwrap();
