@@ -17,6 +17,8 @@ import type { CodexAccessMode, NewApiProvider, NewApiStateChange } from "@/types
 import { cn } from "@/lib/utils";
 import { ClientGlyph } from "./configuration-shortcuts";
 import { CodexSubagentSettingsFields } from "./codex-subagent-settings";
+import { ModelSourceSwitches } from "./model-source-switches";
+import type { ModelSources } from "@/types/gateway";
 import { ConsoleHeader } from "./client-console";
 
 function Panel({ title, children, className }: { title: string; children: ReactNode; className?: string }) {
@@ -70,6 +72,18 @@ export function CodexAccessCard({
   const aggregate = aggregates.data?.models.find((model) => model.id === router?.aggregateModelId);
   const aggregateSelected = router?.aggregateModelId != null;
   const aggregateAvailable = !!aggregate?.available;
+  // Builds before the switches: relays alone, or aggregates alone once one was chosen.
+  const sources: ModelSources = router?.codexSources
+    ?? { relay: !aggregateSelected, account: !aggregateSelected, aggregate: aggregateSelected };
+  const availableAggregates = (aggregates.data?.models ?? []).filter(model => model.available);
+  const sourceCounts = {
+    relay: providers.filter(provider => !provider.accountSource).length,
+    account: providers.filter(provider => !!provider.accountSource).length,
+    aggregate: availableAggregates.length,
+  };
+  const relayOffered = (sources.relay && sourceCounts.relay > 0) || (sources.account && sourceCounts.account > 0);
+  const routerReachable = aggregateSelected ? aggregateAvailable
+    : relayOffered || (sources.aggregate && availableAggregates.length > 0);
 
   // Threads keep their provider, so a connection change only rewrites
   // config.toml. A running Codex picks it up when the user restarts it.
@@ -93,6 +107,16 @@ export function CodexAccessCard({
       t("newapi.routingFailed"),
     );
 
+  const changeSources = (next: ModelSources) =>
+    run(
+      "codex-sources",
+      async () => {
+        const change = await api.aggregation.setCodexSources(next);
+        connectionChanged(change, t("newapi.codexSourcesApplied"));
+      },
+      t("newapi.routingFailed"),
+    );
+
   const changeAccessMode = (mode: CodexAccessMode) =>
     run(
       "access-mode",
@@ -105,14 +129,15 @@ export function CodexAccessCard({
 
   // The router target represents a catalog. A conversation's selected model
   // can change independently of the app's pinned default provider.
+  const offered = (["relay", "account", "aggregate"] as const).filter(kind => sources[kind]);
   const targetName = nativeAccess
     ? selectedProvider?.name ?? t("clients.notConfigured")
-    : t(aggregateSelected ? "aggregation.target" : "newapi.providersSection");
+    : offered.length ? offered.map(kind => t(`gateway.kind.${kind}`)).join(" + ") : t("newapi.codexSourcesNone");
   const targetModel = selectedProvider?.model ?? "—";
   const targetProtocol = selectedProvider
     ? t(protocolBadgeKey[providerModelProtocol(selectedProvider)])
     : "—";
-  const TargetIcon = !nativeAccess && aggregateSelected ? Network : Cpu;
+  const TargetIcon = !nativeAccess && sources.aggregate ? Network : Cpu;
 
   const step = "flex min-w-0 items-center gap-3 rounded-xl border bg-card/90 p-2.5 lg:flex-1";
   const stepIcon = (lit: boolean) => cn("flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ring-1 transition-colors",
@@ -221,9 +246,7 @@ export function CodexAccessCard({
                 disabled={
                   mutationLocked ||
                   (!routingEnabled &&
-                    (aggregateSelected
-                      ? !aggregateAvailable
-                      : providers.length === 0 || (nativeAccess && !nativeCompatible)))
+                    (nativeAccess ? providers.length === 0 || !nativeCompatible : !routerReachable))
                 }
                 onCheckedChange={(value) => void toggleRouting(value)}
               />
@@ -288,10 +311,10 @@ export function CodexAccessCard({
                   )}
                 </div>
 
-                {!nativeAccess && (
+                {!nativeAccess && sources.aggregate && (
                   <div className="min-w-0 space-y-1.5">
                     <Label htmlFor="codex-aggregate-model" className="text-xs font-medium text-muted-foreground">
-                      {t("aggregation.codexTarget")}
+                      {t("aggregation.codexDefault")}
                     </Label>
                     <Select
                       value={router?.aggregateModelId ?? "__single__"}
@@ -310,7 +333,7 @@ export function CodexAccessCard({
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="__single__">{t("aggregation.singleChannel")}</SelectItem>
+                        <SelectItem value="__single__" disabled={!relayOffered}>{t("aggregation.followRelay")}</SelectItem>
                         {router?.aggregateModelId && !aggregate && (
                           <SelectItem value={router.aggregateModelId} disabled>
                             {t("aggregation.unavailable")}
@@ -326,6 +349,15 @@ export function CodexAccessCard({
                   </div>
                 )}
               </div>
+
+              {!nativeAccess && (
+                <div className="mt-3 space-y-1.5" data-codex-sources>
+                  <p className="text-xs font-medium text-muted-foreground">{t("newapi.codexSources")}</p>
+                  <ModelSourceSwitches value={sources} counts={sourceCounts} disabled={mutationLocked}
+                    label={t("newapi.codexSources")} onChange={next => void changeSources(next)} />
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">{t("newapi.codexSourcesHint")}</p>
+                </div>
+              )}
 
               {!nativeAccess && (
                 <div className="mt-3 flex items-center justify-between gap-4 rounded-xl border border-border/60 bg-card px-3.5 py-2.5">
@@ -401,11 +433,11 @@ export function CodexAccessCard({
                 </>
               )}
               {connector}
-              {onOpenRelays && (nativeAccess || !aggregateSelected) ? (
+              {onOpenRelays && (nativeAccess || relayOffered) ? (
                 <button
                   type="button"
                   data-relay-link
-                  data-codex-target={nativeAccess ? "native" : aggregateSelected ? "aggregate" : "relay"}
+                  data-codex-target={nativeAccess ? "native" : offered.join("+") || "none"}
                   title={t("newapi.providersSection")}
                   onClick={onOpenRelays}
                   className={cn(step, "group w-full border-border/60 text-left transition-colors hover:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring")}
@@ -413,7 +445,7 @@ export function CodexAccessCard({
                   {targetNode}
                 </button>
               ) : (
-                <div data-codex-target={nativeAccess ? "native" : aggregateSelected ? "aggregate" : "relay"} className={cn(step, "border-border/60")}>
+                <div data-codex-target={nativeAccess ? "native" : offered.join("+") || "none"} className={cn(step, "border-border/60")}>
                   {targetNode}
                 </div>
               )}

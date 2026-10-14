@@ -455,7 +455,9 @@ fn aggregate_entry_borrows_codex_ultra_from_its_public_official_model() {
                 .into(),
         );
     }
-    let value = router::aggregate_catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
+    // Codex offered aggregates alone: the aggregate leads its menu.
+    store.router.codex_sources = Some(router::ModelSources { relay: false, account: false, aggregate: true });
+    let value = router::catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
     let entry = &value["models"][0];
     assert_eq!(entry["slug"], "official-model");
     assert_eq!(entry["multi_agent_version"], "v2");
@@ -472,7 +474,7 @@ fn aggregate_entry_borrows_codex_ultra_from_its_public_official_model() {
     // A custom public name is not the official model and gains nothing.
     store.aggregates[0].public_model_id = "my-custom-model".into();
     store.aggregates[0].canonical_ref = None;
-    let value = router::aggregate_catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
+    let value = router::catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
     let entry = &value["models"][0];
     assert!(entry.get("multi_agent_version").is_none());
     assert!(!entry["supported_reasoning_levels"]

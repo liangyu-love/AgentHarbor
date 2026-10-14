@@ -270,3 +270,40 @@ fn claude_aggregate_one_m_marker_uses_capacity_instead_of_the_egress_protocol() 
         assert_eq!(read(&manager.paths.claude)["model"], "official-model");
     }
 }
+
+#[test]
+fn claude_combines_relay_models_and_aggregates_under_gateway_ids() {
+    let (_temp, manager, mut store, mut request) = aggregate_fixture(TargetId::ClaudeCode);
+    crate::core::gateway::assign_slugs(&mut store);
+    let relay = format!("{}/subset-model", store.providers[0].gateway_slug.as_deref().unwrap());
+    let selection = request.options.model_selection.as_mut().unwrap();
+    selection.available_targets.push(ModelTargetRef::provider("test-relay", "subset-model"));
+    selection.default_target = Some(ModelTargetRef::provider("test-relay", "subset-model"));
+    request.provider_id = "test-relay".into();
+    request.model = relay.clone();
+    request.options.claude_model_ids = Some(vec![relay.clone(), "pool/official-model".into()]);
+    request.options.claude_models.opus = "pool/official-model".into();
+    let original = "{\n \"permissions\":{\"allow\":[\"Read\"]}\n}";
+    storage::write_atomic(&manager.paths.claude, original.as_bytes()).unwrap();
+    apply(&manager, &store, &request);
+    let installed = read(&manager.paths.claude);
+    assert_eq!(installed["env"]["ANTHROPIC_BASE_URL"], "http://127.0.0.1:43127/clients/claude-code/mix");
+    assert_eq!(installed["env"]["ANTHROPIC_AUTH_TOKEN"], "local-secret");
+    assert_eq!(installed["model"], relay.as_str());
+    assert_eq!(installed["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"], "pool/official-model");
+    assert_eq!(installed["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL_NAME"], "Official model");
+    let mut picker: Vec<_> = installed["modelPicker"]["options"].as_array().unwrap().iter()
+        .map(|row| (row["model"].as_str().unwrap().to_owned(), row["label"].as_str().unwrap().to_owned())).collect();
+    picker.sort();
+    assert_eq!(picker, [("pool/official-model".to_owned(), "Official model".to_owned()), (relay.clone(), "Relay / subset-model".to_owned())]);
+    assert!(!installed.to_string().contains("upstream-secret"));
+    let saved = manager.stored_request(TargetId::ClaudeCode).unwrap().unwrap();
+    assert_eq!(saved.model, relay, "the startup model keeps its gateway id");
+    assert!(!manager.list()[0].conflict);
+    manager.restore(TargetId::ClaudeCode).unwrap();
+    assert_eq!(std::fs::read_to_string(&manager.paths.claude).unwrap(), original);
+
+    // A model the selection does not hold is refused, as for a single relay.
+    request.options.claude_model_ids = Some(vec![relay.clone(), "relay/excluded-elsewhere".into()]);
+    assert_eq!(manager.preview(&store, &request).err().as_deref(), Some("clients.errors.modelSelection"));
+}

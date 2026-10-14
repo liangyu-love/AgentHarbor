@@ -118,6 +118,34 @@ fn gateway_keys_reach_every_model_by_short_name_with_translation() {
         let traced = route_trace::recent().into_iter()
             .find(|route| route.requested_model == "relay-chat/vendor/deep-model").expect("traced gateway request");
         assert_eq!(traced.client_source.as_deref(), Some("gateway:Hermes"));
+
+        // Claude Code combining sources: the same ids under `/mix`, with the
+        // router's own token, whatever kinds the gateway serves its keys.
+        router::mutate_store(&paths, |store| {
+            store.router.gateway_sources = router::ModelSources { relay: false, account: false, aggregate: false };
+            Ok(())
+        }).unwrap();
+        for model in ["relay-chat/chat-model", "pool/harbor-pool"] {
+            let mixed = client.post(format!("{base}/clients/claude-code/mix/v1/messages")).header("x-api-key", ROUTER_TOKEN)
+                .header("anthropic-version", "2023-06-01")
+                .json(&json!({"model":model,"max_tokens":64,"messages":[{"role":"user","content":"hi"}]}))
+                .send().await.unwrap();
+            assert_eq!(mixed.status(), 200, "{model}");
+            assert_eq!(mixed.json::<Value>().await.unwrap()["content"][0]["text"], "hello through the gateway");
+        }
+        let unknown = client.post(format!("{base}/clients/claude-code/mix/v1/messages")).header("x-api-key", ROUTER_TOKEN)
+            .header("anthropic-version", "2023-06-01")
+            .json(&json!({"model":"relay-chat/excluded-model","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}))
+            .send().await.unwrap();
+        assert_eq!(unknown.status(), 404);
+        let keyed = client.post(format!("{base}/mix/v1/messages")).header("x-api-key", GATEWAY_KEY)
+            .header("anthropic-version", "2023-06-01")
+            .json(&json!({"model":"relay-chat/chat-model","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}))
+            .send().await.unwrap();
+        assert_eq!(keyed.status(), 401, "a gateway key does not open the clients' namespace");
+        let traced = route_trace::recent().into_iter()
+            .find(|route| route.requested_model == "pool/harbor-pool" && route.client_source.as_deref() == Some("claudeCode"));
+        assert!(traced.is_some(), "a combined request is traced as Claude Code's");
         stop_unchecked();
     });
 }

@@ -31,7 +31,13 @@ impl ClientAdapter for ClaudeCode {
         official_models: &[Value],
         ctx: &mut EditContext<'_>,
     ) -> Result<Vec<Edit>, String> {
-        let aggregate_mode = request.aggregate_target().is_some();
+        let mixed = super::mixed_models::is_mixed(request);
+        let mixed_models = if mixed {
+            super::mixed_models::models(store, request, catalog, official_models)?
+        } else {
+            Vec::new()
+        };
+        let aggregate_mode = !mixed && request.aggregate_target().is_some();
         let aggregate_models = if aggregate_mode {
             if request
                 .options
@@ -52,13 +58,15 @@ impl ClientAdapter for ClaudeCode {
         } else {
             Vec::new()
         };
-        let provider = if aggregate_mode {
+        let provider = if aggregate_mode || mixed {
             None
         } else {
             Some(selected_provider(store, request)?)
         };
         let (base, credential) = if let Some(provider) = provider {
             client_endpoint(store, provider, request, false)?
+        } else if mixed {
+            super::mixed_models::endpoint(store)
         } else {
             aggregate_models::endpoint(store, false, request.target_id)
         };
@@ -67,6 +75,7 @@ impl ClientAdapter for ClaudeCode {
                 .iter()
                 .find(|entry| entry.id == model)
                 .map(|entry| entry.label.clone())
+                .or_else(|| mixed_models.iter().find(|entry| entry.id == model).map(|entry| entry.label.clone()))
                 .or_else(|| {
                     provider
                         .and_then(|p| p.models.iter().find(|entry| entry.id == model))
@@ -121,6 +130,7 @@ impl ClientAdapter for ClaudeCode {
             aggregate_models
                 .iter()
                 .map(|entry| entry.id.clone())
+                .chain(mixed_models.iter().map(|entry| entry.id.clone()))
                 .collect()
         });
         // Older requests can explicitly name models before a catalog has been fetched.
@@ -170,6 +180,9 @@ impl ClientAdapter for ClaudeCode {
         let one_m = &request.options.claude_one_m;
         let known_small = |model: &str| {
             if let Some(entry) = aggregate_models.iter().find(|entry| entry.id == model) {
+                return !entry.one_m;
+            }
+            if let Some(entry) = mixed_models.iter().find(|entry| entry.id == model) {
                 return !entry.one_m;
             }
             let provider = provider.expect("ordinary model projection requires its provider");

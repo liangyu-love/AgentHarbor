@@ -241,10 +241,19 @@ export async function testAggregation({ page, reset, captureDir }) {
 
 
   const codex = page.locator('[aria-labelledby="newapi-routing-title"]');
+  const source = kind => codex.locator(`[data-codex-sources] [data-model-source="${kind}"]`);
+  assert.equal(await codex.locator("#codex-aggregate-model").count(), 0, "no startup aggregate while aggregates are off");
+  // Aggregates alone: turn them on, relays and account sources off.
+  for (const kind of ["aggregate", "relay", "account"]) {
+    const before = await source(kind).getAttribute("aria-pressed");
+    await source(kind).click();
+    await eventually(async () => assert.notEqual(await source(kind).getAttribute("aria-pressed"), before));
+  }
+  assert.deepEqual(await page.evaluate(() => window.review.codexSourceCalls.at(-1)), { relay: false, account: false, aggregate: true });
   await choose(codex.locator("#codex-aggregate-model"), POOL_NAME + " · " + PUBLIC_MODEL);
   await page.waitForFunction(() => window.review.getState().router.aggregateModelId !== null);
   const aggregateMarker = codex.locator('[data-codex-target="aggregate"]');
-  await eventually(async () => assert.equal(await aggregateMarker.innerText(), await tr("aggregation.target")));
+  await eventually(async () => assert.equal(await aggregateMarker.innerText(), await tr("gateway.kind.aggregate")));
   assert.equal(await codex.locator("[data-relay-link]").count(), 0);
   assert.deepEqual(await page.evaluate(() => window.review.aggregateCodexSelections), [saved.id]);
   await codex.locator("#codex-access-mode").click();
@@ -252,11 +261,22 @@ export async function testAggregation({ page, reset, captureDir }) {
   await page.keyboard.press("Escape");
   await codex.getByRole("switch", { name: await tr("newapi.codexAccess"), exact: true }).click();
   await page.waitForFunction(() => window.review.getState().router.enabled);
-  await choose(codex.locator("#codex-aggregate-model"), await tr("aggregation.singleChannel"));
+  // Relays and account sources back on beside aggregates: one menu for all three.
+  await source("relay").click();
+  await source("account").click();
+  const mixed = codex.locator('[data-codex-target="relay+account+aggregate"]');
+  await eventually(async () => assert.equal(await mixed.innerText(),
+    [await tr("gateway.kind.relay"), await tr("gateway.kind.account"), await tr("gateway.kind.aggregate")].join(" + ")));
+  assert.equal(await page.evaluate(() => window.review.getState().router.aggregateModelId), saved.id, "the startup aggregate stays");
+  await choose(codex.locator("#codex-aggregate-model"), await tr("aggregation.followRelay"));
   await page.waitForFunction(() => window.review.getState().router.aggregateModelId === null);
-  await eventually(async () => assert.equal(await codex.locator('[data-codex-target="relay"]').innerText(), await tr("newapi.providersSection")));
+  // Aggregates off: relay and account models only.
+  await source("aggregate").click();
+  await eventually(async () => assert.equal(await codex.locator('[data-codex-target="relay+account"]').innerText(),
+    [await tr("gateway.kind.relay"), await tr("gateway.kind.account")].join(" + ")));
+  assert.equal(await codex.locator("#codex-aggregate-model").count(), 0);
   assert.deepEqual(await page.evaluate(() => window.review.aggregateCodexSelections), [saved.id, null]);
-  console.log("PASS Codex selects the aggregation catalog and returns to relay models with distinct abstract targets");
+  console.log("PASS Codex offers relays, account sources and aggregates in any combination, with an optional startup aggregate");
 
   await seed(page, reset, "access", { codexTarget: "deleted-pool" });
   await codex.locator("#codex-aggregate-model").waitFor();
@@ -279,7 +299,23 @@ export async function testAggregation({ page, reset, captureDir }) {
   await page.getByRole("button", { name: await tr("clients.configure"), exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("button", { name: await tr("clients.accessRouter"), exact: true }).click();
+  const claudeSource = kind => dialog.locator(`[data-client-sources] [data-model-source="${kind}"]`);
+  // A relay and an aggregate together make one combined menu under gateway ids.
   await dialog.getByRole("checkbox", { name: await tr("clients.includeModel", { model: POOL_NAME }), exact: true }).check();
+  await dialog.locator('[data-client-model-id="pool/deepseek-v4.1-flash"]').waitFor();
+  assert.equal(await dialog.locator("#aggregate-claude-opus").count(), 0, "a combined menu maps roles like a relay's");
+  await dialog.getByRole("button", { name: await tr("clients.preview"), exact: true }).click();
+  await page.waitForFunction(() => window.review.previewed?.modelSelection?.availableTargets?.some(target => target.kind === "aggregate"));
+  const combined = await page.evaluate(() => window.review.previewed);
+  const relayTargets = combined.modelSelection.availableTargets.filter(target => target.kind === "provider");
+  assert.ok(relayTargets.length > 0, "the relay's models stay beside the aggregate");
+  assert.deepEqual(combined.modelSelection.defaultTarget, relayTargets[0]);
+  assert.equal(combined.model, `${relayTargets[0].providerId}/${relayTargets[0].modelId}`, "models go by gateway id");
+  assert.deepEqual(combined.claudeModelIds, [...relayTargets.map(target => `${target.providerId}/${target.modelId}`), "pool/deepseek-v4.1-flash"]);
+  // Relays and account sources off: the aggregate alone, as before.
+  await claudeSource("relay").click();
+  await claudeSource("account").click();
+  await eventually(async () => assert.equal(await dialog.getByRole("button", { name: "Relay A", exact: false }).count(), 0, "a kind turned off is hidden"));
   await choose(dialog.locator("#aggregate-claude-opus"), POOL_NAME);
   await dialog.getByRole("checkbox", { name: await tr("clients.oneMStartup"), exact: true }).check();
   await dialog.getByRole("button", { name: await tr("clients.saveProfile"), exact: true }).click();
@@ -290,6 +326,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   assert.deepEqual(profile.request.modelSelection.availableTargets, [{ kind: "aggregate", aggregateId: "pool-main" }]);
   assert.equal(profile.request.claudeModels.opus, PUBLIC_MODEL);
   assert.equal(profile.request.claudeOneM.startup, true);
+  await claudeSource("relay").click();
   await dialog.getByRole("button", { name: "Relay B", exact: false }).click();
   await choose(dialog.locator("#claude-saved-profile"), PROFILE_NAME + " · " + POOL_NAME);
   await page.waitForFunction(() => window.review.previewed?.modelSelection?.defaultTarget?.kind === "aggregate");
@@ -308,7 +345,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   await clientsCard.getByRole("button", { name: await tr("clients.change"), exact: true }).click();
   await eventually(async () => assert.equal(await dialog.getByRole("checkbox", { name: await tr("clients.includeModel", { model: POOL_NAME }), exact: true }).isChecked(), true));
   assert.equal(await dialog.getByRole("checkbox", { name: await tr("clients.oneMStartup"), exact: true }).isChecked(), true);
-  console.log("PASS Claude Code aggregation profiles save, reload, apply and reopen without losing roles or 1M choices");
+  console.log("PASS Claude Code combines a relay with an aggregate, or takes the aggregate alone; profiles save, reload, apply and reopen");
 
   await seed(page, reset, "clients", { empty: true });
   await page.getByRole("button", { name: await tr("clients.configure"), exact: true }).click();
@@ -347,7 +384,16 @@ export async function testAggregation({ page, reset, captureDir }) {
   await eventually(async () => assert.equal(await dialog.locator("#client-aggregate-protocol").innerText(), "Chat"));
   assert.equal(await dialog.locator("#client-model").innerText(), await tr("aggregation.target") + " / " + POOL_NAME);
   assert.equal(await dialog.getByRole("checkbox", { name: await tr("clients.includeModel", { model: POOL_NAME }), exact: true }).isChecked(), true);
-  console.log("PASS OpenCode combines exact provider subsets and aggregation while retaining its explicit default across save/reopen");
+  // Aggregates turned off: the pool leaves, the default moves to a relay model.
+  await dialog.locator('[data-client-sources] [data-model-source="aggregate"]').click();
+  await eventually(async () => assert.equal(await dialog.getByRole("checkbox", { name: await tr("clients.includeModel", { model: POOL_NAME }), exact: true }).count(), 0));
+  await eventually(async () => assert.doesNotMatch(await dialog.locator("#client-model").innerText(), new RegExp(POOL_NAME)));
+  await dialog.getByRole("button", { name: await tr("clients.preview"), exact: true }).click();
+  await page.waitForFunction(() => window.review.previewed?.modelSelection?.defaultTarget?.kind === "provider"
+    || !window.review.previewed?.modelSelection);
+  const withoutPool = await page.evaluate(() => window.review.previewed);
+  assert.ok(!(withoutPool.modelSelection?.availableTargets ?? []).some(target => target.kind === "aggregate"));
+  console.log("PASS OpenCode combines exact provider subsets and aggregation while retaining its explicit default across save/reopen, and drops a kind turned off");
 
   await seed(page, reset, "compact");
   await page.evaluate(publicModel => {

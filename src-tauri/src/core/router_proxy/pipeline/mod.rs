@@ -11,11 +11,13 @@
 //! 5. **translate** — the body in the upstream's protocol, or the native
 //!    preparation a relay needs (`translate`).
 //! 6. **restore** — remembered history is put back into the translated body.
-//! 7. **compat** — Messages ingress: reasoning and output limits the target
+//! 7. **thinking** — Chat upstream: the effort of a model whose thinking is a
+//!    switch becomes its upstream's on/off field (`session_compat`).
+//! 8. **compat** — Messages ingress: reasoning and output limits the target
 //!    model takes (`session_compat`).
-//! 8. **tools** — tool schemas adapted to the model (`tool_schema`).
-//! 9. **vendor** — an account source's own request shape.
-//! 10. **meter** — outbound client, credential snapshot, price and usage record.
+//! 9. **tools** — tool schemas adapted to the model (`tool_schema`).
+//! 10. **vendor** — an account source's own request shape.
+//! 11. **meter** — outbound client, credential snapshot, price and usage record.
 //!
 //! Response (`relay`): an account source's refusal explained, then the stream
 //! translated or adapted to the client's protocol while usage is observed.

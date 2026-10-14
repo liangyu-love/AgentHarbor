@@ -152,6 +152,8 @@ export interface SearchProbeReport {
 export interface NewApiRouterView {
   enabled: boolean;
   aggregateModelId?: string | null;
+  /** The kinds of model Codex's menu offers. */
+  codexSources?: import("./gateway").ModelSources;
   webSearchProviderId?: string | null;
   webSearchModelId?: string | null;
   accessMode: CodexAccessMode;

@@ -125,6 +125,44 @@ fn official_switch_does_not_restore_a_third_party_baseline_or_touch_login() {
 }
 
 #[test]
+fn official_switch_drops_the_model_picker_it_empties() {
+    for mode in [ClientAccessMode::Native, ClientAccessMode::Router] {
+        let (_dir, manager, store, request) = fixture(mode);
+        write(
+            &manager.paths.claude,
+            json!({"permissions":{"allow":["Read"]}}),
+        );
+        inject(&manager, &store, &request);
+        let preview = manager.preview_claude_official().unwrap();
+        assert!(preview.removed_fields.contains(&"modelPicker".into()));
+        manager.switch_claude_official(&preview.revision).unwrap();
+        assert_eq!(
+            read(&manager.paths.claude),
+            json!({"permissions":{"allow":["Read"]}}),
+            "neither an emptied modelPicker nor an emptied env is left behind"
+        );
+    }
+    // An env the user kept empty is theirs.
+    let (_dir, manager, _store, _request) = fixture(ClientAccessMode::Native);
+    write(&manager.paths.claude, json!({"env":{}}));
+    assert!(!manager.preview_claude_official().unwrap().has_changes);
+    // An earlier build left `"modelPicker": {}` behind; a user's own keys stay.
+    for (original, expected) in [
+        (json!({"modelPicker":{}}), json!({})),
+        (
+            json!({"modelPicker":{"custom":"keep"}}),
+            json!({"modelPicker":{"custom":"keep"}}),
+        ),
+    ] {
+        let (_dir, manager, _store, _request) = fixture(ClientAccessMode::Native);
+        write(&manager.paths.claude, original);
+        let preview = manager.preview_claude_official().unwrap();
+        manager.switch_claude_official(&preview.revision).unwrap();
+        assert_eq!(read(&manager.paths.claude), expected);
+    }
+}
+
+#[test]
 fn official_switch_cleans_unmanaged_cloud_and_gateway_fields_but_keeps_policy() {
     let (_dir, manager, _store, _request) = fixture(ClientAccessMode::Native);
     let mut env = serde_json::Map::new();

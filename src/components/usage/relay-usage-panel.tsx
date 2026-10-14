@@ -75,16 +75,16 @@ function RelayTrend({ relay }: { relay: RelayUsagePayload }) {
     <div className="usage-trend-selection"><span>{day.date}</span><strong>{formatTokens(day.totals.totalTokens)} Token</strong></div>
     <svg viewBox="0 0 1000 265" role="img" className="usage-trend-svg" aria-label={t("accounts.relayTrend")}
       onMouseMove={onMove} onMouseLeave={() => setActiveIndex(null)}>
-      <defs><linearGradient id="usage-relay-area" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#ed7c35" stopOpacity="0.22" /><stop offset="100%" stopColor="#ed7c35" stopOpacity="0" /></linearGradient></defs>
+      <defs><linearGradient id="usage-relay-area" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity="0.22" /><stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity="0" /></linearGradient></defs>
       {[0, .25, .5, .75, 1].map(ratio => {
         const y = CHART_BASE - ratio * 190;
         return <g key={ratio}><line x1={CHART_LEFT} x2={CHART_WIDTH - CHART_RIGHT} y1={y} y2={y} className="usage-chart-gridline" />
           <text x={CHART_LEFT - 10} y={y + 4} textAnchor="end" className="usage-chart-axis">{formatTokens(chart.maximum * ratio)}</text></g>;
       })}
       <path d={chart.area} fill="url(#usage-relay-area)" className="usage-area-enter" />
-      <path d={chart.path} fill="none" stroke="#ed7c35" strokeWidth="3" strokeLinecap="round" />
+      <path d={chart.path} className="usage-trend-line" />
       <line x1={active.x} x2={active.x} y1="36" y2={CHART_BASE} className="usage-chart-crosshair" />
-      <circle cx={active.x} cy={active.y} r="6.5" fill="#ed7c35" stroke="hsl(var(--card))" strokeWidth="3" />
+      <circle cx={active.x} cy={active.y} r="6.5" className="usage-chart-active-point" />
       {daily.map((item, index) => <g key={item.date}>
         {(index % 2 === 0 || index === daily.length - 1) && <text x={chart.points[index].x} y="255" textAnchor="middle" className="usage-chart-axis">{index === daily.length - 1 ? t("accounts.todayShort") : item.date.slice(5)}</text>}
         <circle cx={chart.points[index].x} cy={chart.points[index].y} r="12" fill="transparent" tabIndex={0}

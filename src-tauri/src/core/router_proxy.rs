@@ -807,9 +807,12 @@ async fn handle(mut request: Request<Incoming>, context: Arc<ArcContext>) -> For
     if desktop.is_none() && gateway_key.is_none() && !authorized(request.headers(), &store.router.bearer_token) {
         return Err((StatusCode::UNAUTHORIZED, "invalid local router token"));
     }
+    // `/mix`: a managed client combining sources (Claude Code) names models
+    // by their gateway ids, with the router's own token and every kind.
+    let mix = desktop.is_none() && gateway_key.is_none() && segments.first() == Some(&"mix");
     // Past authentication a gateway request is an ordinary `/v1` one whose
     // model names a provider by short name, or an aggregate.
-    let segments: Vec<&str> = if gateway_key.is_some() { segments[1..].to_vec() } else { segments };
+    let segments: Vec<&str> = if gateway_key.is_some() || mix { segments[1..].to_vec() } else { segments };
     let gateway_source = gateway_key.as_ref().map(|name| format!("gateway:{name}"));
     let client_source: Option<&str> = gateway_source.as_deref().or(client_source);
     // Responses-over-WebSocket is first-party only; 426 makes Codex use HTTP.
@@ -930,10 +933,18 @@ async fn handle(mut request: Request<Incoming>, context: Arc<ArcContext>) -> For
     let (requested_model, one_m_context) = requested_model(body.as_deref(), required_protocol);
     // A gateway model id becomes the provider slug routing already reads
     // (`<provider id>::<model>`), or the aggregate path.
-    let gateway_model = gateway_key.as_ref().and(requested_model.clone());
-    let gateway_target = gateway_model.as_deref().and_then(|model| super::gateway::resolve(&store, model));
+    let gateway_model = (gateway_key.is_some() || mix).then(|| requested_model.clone()).flatten();
+    let gateway_target = gateway_model.as_deref().and_then(|model| if mix {
+        super::gateway::resolve_with(&store, model, router::ModelSources::default())
+    } else {
+        super::gateway::resolve(&store, model)
+    });
     if gateway_model.is_some() && gateway_target.is_none() {
-        return Err((StatusCode::NOT_FOUND, "unknown gateway model; GET /gateway/v1/models lists the models this key can use"));
+        return Err((StatusCode::NOT_FOUND, if mix {
+            "unknown model; it may have been removed or turned off since the client was configured"
+        } else {
+            "unknown gateway model; GET /gateway/v1/models lists the models this key can use"
+        }));
     }
     let requested_model = match &gateway_target {
         Some(super::gateway::Target::Provider { provider_id, model_id }) => Some(format!("{provider_id}::{model_id}")),
@@ -970,14 +981,11 @@ async fn handle(mut request: Request<Incoming>, context: Arc<ArcContext>) -> For
     } else {
         route_trace::Trace::begin(gateway_model.as_deref().or(requested_model.as_deref()).unwrap_or_default(), body.as_deref())
     };
-    // Codex's built-in provider reaches the selected aggregate by its public ID.
+    // Codex reaches every aggregate its menu offers by the public ID.
     let codex_aggregate = codex_create
+        && router::codex_sources(&store).aggregate
         && requested_model.as_deref().is_some_and(|model| {
-            store.aggregates.iter().any(|aggregate| {
-                aggregate.enabled
-                    && store.router.aggregate_model_id.as_deref() == Some(aggregate.id.as_str())
-                    && aggregate.public_model_id == model
-            })
+            store.aggregates.iter().any(|aggregate| aggregate.enabled && aggregate.public_model_id == model)
         });
     let segments: Vec<&str> = if codex_aggregate {
         ["aggregate", "v1"].into_iter().chain(segments[2..].iter().copied()).collect()
@@ -1488,6 +1496,17 @@ fn resolve_destination_explain(
     let (destination, reason) = match segments {
         // Codex protocol: model slug `<provider id>::<model>` decides the route.
         ["codex", "v1", ..] => match prefixed_model {
+            // A kind turned off for Codex is not reached by an old selection either.
+            Some((provider_id, _))
+                if store.providers.iter().any(|provider| {
+                    provider.id == provider_id && !router::codex_sources(store).admits_provider(provider)
+                }) =>
+            {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    "this kind of model is turned off for Codex; select another model",
+                ));
+            }
             Some((provider_id, model_id)) => (
                 select_provider(
                     provider_id,
@@ -2599,6 +2618,30 @@ mod tests {
                 assert!(messages.contains(text), "{target:?}: {messages}");
             }
         }
+    }
+
+    #[test]
+    fn codex_refuses_a_model_of_a_kind_turned_off_for_it() {
+        let mut store = Store {
+            providers: vec![Provider {
+                id: "relay".into(),
+                api_key: "synthetic-key".into(),
+                model: "model".into(),
+                enabled: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let segments = ["codex", "v1", "responses"];
+        let required = request_protocol(&segments);
+        assert!(resolve_destination(&store, &segments, required, Some("relay::model"), None).is_ok());
+        store.router.codex_sources = Some(router::ModelSources { relay: false, ..Default::default() });
+        assert_eq!(
+            resolve_destination(&store, &segments, required, Some("relay::model"), None).err().map(|error| error.0),
+            Some(StatusCode::FORBIDDEN)
+        );
+        // Other namespaces keep their own rules.
+        assert!(resolve_destination(&store, &["v1", "responses"], required, Some("relay::model"), None).is_ok());
     }
 
     #[test]

@@ -32,8 +32,8 @@
     "deleteTitle": "Delete aggregate?",
     "deleteDescription": "Saved configurations using “{{name}}” will become unavailable. Original configurations remain restorable.",
     "ingress": "Client protocol",
-    "codexTarget": "Codex model source",
-    "singleChannel": "No aggregate",
+    "codexDefault": "Startup model",
+    "followRelay": "Follow the active relay",
     "target": "Aggregate",
     "followDefault": "Follow default model",
     "targetUnavailable": "A selected aggregate is unavailable. Check its channels or select another target.",
@@ -363,6 +363,9 @@
     "accessMode": "Connection",
     "accessNative": "Native",
     "accessRouter": "Local router",
+    "sources": "Model sources",
+    "sourcesHint": "Combine freely: turning a kind off drops its chosen relays or aggregates and hides them below.",
+    "sourcesHintClaude": "Combine freely. One relay, or aggregates alone, work as before; several relays, or relays with aggregates, reach Claude Code through the local router as short name/model.",
     "advanced": "Advanced settings",
     "modelsCount": "{{count}} available models",
     "selectModel": "Select a default model",
@@ -1457,6 +1460,10 @@
     "pipelineRouterHint": "Threads always keep Codex's built-in provider. Toggling routing only rewrites openai_base_url and never migrates conversations.",
     "pipelineNativeHint": "In direct mode Codex calls the selected relay itself, without the local router.",
     "accountlessHint": "Skip ChatGPT sign-in and offer relay and aggregate models only",
+    "codexSources": "Codex menu offers",
+    "codexSourcesHint": "Combine freely: a kind turned off leaves Codex's model menu and can no longer be called. ChatGPT's own models follow the accountless switch below.",
+    "codexSourcesApplied": "Codex menu updated",
+    "codexSourcesNone": "ChatGPT models only",
     "restartPendingHint": "The configuration changed, but Codex still uses its previous connection until it restarts. That connection keeps working meanwhile.",
     "restartPromptTitle": "Restart Codex to apply",
     "restartPromptDesc": "The configuration is saved. Codex is running and keeps its previous connection until it restarts; restarting interrupts running tasks.",
@@ -2481,6 +2488,7 @@
     "exposedModels": "{{count}} models shared through the local router",
     "notExposed": "Not shared: model inject does not list this source",
     "noModelsYet": "Sign in to get the model list",
+    "noModelsChosen": "No model chosen: pick the models to share in the list below",
     "refreshModels": "Refresh models",
     "modelsRefreshed": "Model list refreshed",
     "refreshQuota": "Refresh credits",
@@ -2549,7 +2557,7 @@
       "grokCli": "The Grok CLI was not found. Install Grok Build (x.ai/cli), then sign in.",
       "cursorCli": "Cursor's CLI (cursor-agent) was not found. Install it (cursor.com/cli), then sign in.",
       "noAccount": "The sign-in ended without the CLI naming an account. Try again.",
-      "noModelsSelected": "A source shared with model inject keeps at least one model"
+      "noModelsSelected": "Choose at least one model to share first"
     },
     "badge": "Official account",
     "refusesClaudeCode": "{{name}} refuses Claude Code's system prompt; requests may fail",
@@ -2587,7 +2595,7 @@
     "modelFilterHint": "Click a model to leave it out of the share or bring it back; a model left out is not offered to model inject or shown in Codex's model menu.",
     "modelsAll": "Share all",
     "modelsNone": "Leave all out",
-    "modelsNoneShared": "A source shared with model inject keeps at least one model"
+    "modelsNoneShared": "Leaving every model out also stops sharing with model inject"
   },
   "gateway": {
     "groupTitle": "Gateway",
@@ -2630,6 +2638,7 @@
     "generic": "Generic",
     "unavailable": "No longer available",
     "preview": "Preview",
+    "hidePreview": "Hide preview",
     "copyConnection": "Copy settings",
     "copied": "Settings copied (key included)",
     "copyFailed": "Copy failed",
@@ -2644,6 +2653,9 @@
       "prefix": "Use lowercase letters, digits and . _ -, starting with a letter or digit, at most 40 characters",
       "prefixTaken": "A relay's short name already uses this prefix; pick another"
     },
+    "sourcesHint": "Click a kind on the right to turn it on or off: a kind turned off is left out of the model list and its requests are refused.",
+    "stopServing": "{{kind}}: served. Click to stop",
+    "startServing": "{{kind}}: not served. Click to serve",
     "schematicNoKey": "No agents yet",
     "aggregatePrefix": "Aggregate prefix",
     "aggregatePrefixHint": "Aggregates are named prefix/model in the gateway, apart from a relay's short-name/model. One aggregate can set its own prefix under Model aggregation; requests that still send the bare model name keep working."

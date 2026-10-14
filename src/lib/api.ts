@@ -35,7 +35,7 @@ import { isTauriRuntime } from "@/lib/tauri-runtime";
 import { errorMessage } from "@/lib/invoke-error";
 import type { TargetId, ClientStatus, ClientFiles, ClientConfigRequest, ClientConfigPreview, ClientConfigApplied, ClaudeOfficialPreview } from "@/types/clients";
 import type { AccountSourceKind, AccountSourceListPayload } from "@/types/account-sources";
-import type { GatewayProfile, GatewayState } from "@/types/gateway";
+import type { GatewayProfile, GatewayState, ModelSources } from "@/types/gateway";
 import type { CodexAccessMode, ModelProtocol, NewApiState, NewApiStateChange, NewApiImportResult, NewApiProvider, NewApiProviderInput, NewApiModel } from "@/types/newapi";
 
 export interface ImageGenerationRequest {
@@ -149,6 +149,7 @@ const aggregationApi = {
   save: (model: import("@/types/aggregation").AggregateModel) => invoke<import("@/types/aggregation").AggregationState>("save_aggregate_model", { model }),
   delete: (id: string) => invoke<import("@/types/aggregation").AggregationState>("delete_aggregate_model", { id }),
   selectCodex: (aggregateId: string | null) => invoke<NewApiStateChange>("select_codex_aggregate", { aggregateId }),
+  setCodexSources: (sources: ModelSources) => invoke<NewApiStateChange>("set_codex_sources", { sources }),
 };
 
 const gatewayApi = {
@@ -160,6 +161,7 @@ const gatewayApi = {
   revealKey: (id: string) => invoke<string>("reveal_gateway_key", { id }),
   setKeepRunning: (enabled: boolean) => invoke<GatewayState>("set_gateway_keep_running", { enabled }),
   setAggregatePrefix: (prefix: string) => invoke<GatewayState>("set_gateway_aggregate_prefix", { prefix }),
+  setSources: (sources: ModelSources) => invoke<GatewayState>("set_gateway_sources", { sources }),
   exportConnection: (request: { ingressProtocol: ModelProtocol; selectedModelId: string | null; consumerProfile: GatewayProfile;
     keyId: string; revealCredential: boolean }) =>
     invoke<import("@/types/aggregation").ConnectionExportResult>("export_gateway_connection", request),

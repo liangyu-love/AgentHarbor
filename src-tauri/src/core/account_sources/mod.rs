@@ -217,25 +217,26 @@ fn shared_models(store: &store::Store, kind: SourceKind) -> Vec<SourceModel> {
         .collect()
 }
 
-/// Leave models out of a source's share (or bring them back). A shared
-/// source keeps at least one.
+/// Leave models out of a source's share (or bring them back). Leaving every
+/// model out of a shared source stops sharing it.
 pub fn set_hidden_models(paths: &CodexPaths, kind: SourceKind, hidden: Vec<String>) -> Result<(), String> {
-    let exposed = router::load_store(paths)?.providers.iter().any(|provider| provider.account_source == Some(kind));
-    store::mutate(&paths.app_data_dir, |store| {
+    let left_out_all = store::mutate(&paths.app_data_dir, |store| {
         let all = source_models(store, kind);
         let mut kept: Vec<String> = all.iter().filter(|model| hidden.contains(&model.id)).map(|model| model.id.clone()).collect();
         kept.dedup();
-        if exposed && !all.is_empty() && kept.len() == all.len() {
-            return Err("accountSources.errors.noModelsSelected".into());
-        }
+        let left_out_all = !all.is_empty() && kept.len() == all.len();
         if kept.is_empty() {
             store.hidden_models.remove(&kind);
         } else {
             store.hidden_models.insert(kind, kept);
         }
-        Ok(())
+        Ok(left_out_all)
     })?;
-    sync_provider(paths, kind)
+    if left_out_all {
+        set_exposed(paths, kind, false)
+    } else {
+        sync_provider(paths, kind)
+    }
 }
 
 pub fn list(paths: &CodexPaths) -> Result<ListPayload, String> {
@@ -467,7 +468,11 @@ fn provider_for(kind: SourceKind, models: &[SourceModel]) -> Result<router::Prov
 /// Share a source with model inject (publish its router provider) or stop.
 pub fn set_exposed(paths: &CodexPaths, kind: SourceKind, exposed: bool) -> Result<(), String> {
     if exposed {
-        let models = shared_models(&store::load(&paths.app_data_dir)?, kind);
+        let accounts = store::load(&paths.app_data_dir)?;
+        let models = shared_models(&accounts, kind);
+        if models.is_empty() && !source_models(&accounts, kind).is_empty() {
+            return Err("accountSources.errors.noModelsSelected".into());
+        }
         router::upsert_account_provider(paths, provider_for(kind, &models)?)?;
     } else if router::load_store(paths)?.providers.iter().any(|provider| provider.id == kind.provider_id()) {
         router::delete_provider(paths, kind.provider_id())?;

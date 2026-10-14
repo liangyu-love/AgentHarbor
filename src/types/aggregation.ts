@@ -16,6 +16,8 @@ export interface AggregateModel {
 }
 export interface AggregateView extends AggregateModel {
   available: boolean; reason: string | null; projection: ClientProjection | null; routeRevision: string;
+  /** Its id in the gateway's id space (`pool/gpt-5.5`); Claude Code uses it when combining sources. */
+  gatewayId?: string;
   memberStates: { memberId: string; providerName: string; protocol: ModelProtocol | null; available: boolean;
     reason: string | null; projection: ClientProjection | null }[];
 }

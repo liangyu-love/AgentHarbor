@@ -39,7 +39,7 @@ pub async fn save_aggregate_model(
     let _guard = routing_runtime::mutation_guard().await;
     aggregation::save(&paths, model)?;
     let store = router::load_store(&paths)?;
-    if store.router.aggregate_model_id.is_some() {
+    if router::codex_sources(&store).aggregate {
         router::write_catalog(&paths, &store)?;
     }
     routing_runtime::reconcile(&paths).await?;
@@ -57,6 +57,18 @@ pub async fn delete_aggregate_model(
     aggregation::runtime::shared().forget_scope(&id);
     routing_runtime::reconcile(&paths).await?;
     aggregation::state(&paths)
+}
+/// Turn the kinds of model Codex's menu offers on or off.
+#[tauri::command]
+pub async fn set_codex_sources(
+    repo: State<'_, Mutex<Repository>>,
+    sources: router::ModelSources,
+) -> Result<router::StateChange, String> {
+    let paths = paths(&repo)?;
+    let _guard = routing_runtime::mutation_guard().await;
+    let result = router::set_codex_sources(&paths, sources)?;
+    routing_runtime::reconcile(&paths).await?;
+    Ok(result)
 }
 #[tauri::command]
 pub async fn select_codex_aggregate(

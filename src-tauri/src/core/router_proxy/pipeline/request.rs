@@ -100,13 +100,14 @@ struct Draft {
 type Stage = fn(&Attempt<'_>, &mut Draft) -> ForwardResult<()>;
 
 /// The request pipeline, in order (see `pipeline` for what each stage owns).
-const STAGES: [(&str, Stage); 9] = [
+const STAGES: [(&str, Stage); 10] = [
     ("target", target),
     ("beta", beta),
     ("history", history),
     ("search", search),
     ("translate", translate),
     ("restore", restore),
+    ("thinking", thinking),
     ("compat", compat),
     ("tools", tools),
     ("vendor", vendor),
@@ -241,6 +242,25 @@ fn restore(_attempt: &Attempt<'_>, draft: &mut Draft) -> ForwardResult<()> {
         history.restore(&mut value);
         draft.body = Some(Bytes::from(value.to_string()));
     }
+    Ok(())
+}
+
+/// A Chat model whose thinking is a switch: the effort the request carries
+/// becomes its upstream's on/off field.
+fn thinking(attempt: &Attempt<'_>, draft: &mut Draft) -> ForwardResult<()> {
+    if attempt.upstream_protocol != router::ModelProtocol::ChatCompletions || attempt.input.resource {
+        return Ok(());
+    }
+    let input = attempt.input;
+    draft.body = session_compat::prepare_thinking_switch(draft.body.take(), || {
+        let official_snapshot = router::official_endpoint_applies(attempt.provider).then(|| {
+            crate::core::model_catalog::official(&input.context.codex_home, &input.context.app_data_dir)
+        });
+        let official = official_snapshot
+            .as_ref()
+            .and_then(|snapshot| router::matched_official_model(&snapshot.models, &attempt.model));
+        router::resolve_model_metadata(attempt.provider, &attempt.model, official, input.catalog)
+    }, &attempt.provider.base_url)?;
     Ok(())
 }
 
@@ -704,9 +724,9 @@ mod tests {
     #[test]
     fn stages_run_in_the_documented_order() {
         // Order matters: history needs the target's URL and credential,
-        // translation reads the search plan, restore and compat work on the
-        // translated body, and the vendor shape is applied last.
+        // translation reads the search plan, restore, thinking and compat
+        // work on the translated body, and the vendor shape is applied last.
         assert_eq!(STAGES.map(|(name, _)| name),
-            ["target", "beta", "history", "search", "translate", "restore", "compat", "tools", "vendor"]);
+            ["target", "beta", "history", "search", "translate", "restore", "thinking", "compat", "tools", "vendor"]);
     }
 }

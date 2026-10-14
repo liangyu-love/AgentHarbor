@@ -208,7 +208,7 @@ export async function testAccountsSplit({ page, reset, captureDir }) {
   if (captureDir) await dialog.screenshot({ path: path.join(captureDir, "inject-account-source.png") });
   console.log("PASS model inject badges account sources, keeps them router-only and warns Claude Code about WorkBuddy");
 
-  // A source's models can be left out of the share; a shared source keeps one.
+  // A source's models can be left out of the share; leaving all out stops it.
   await reset("accounts");
   await page.locator('[data-berth="workbuddy"]').click();
   const filtered = page.locator('[data-account-source="workbuddy"]');
@@ -217,15 +217,23 @@ export async function testAccountsSplit({ page, reset, captureDir }) {
   const kimi = models.locator('[data-source-model="kimi-k3-1"]');
   const glm = models.locator('[data-source-model="glm-5.3"]');
   assert.equal(await kimi.getAttribute("aria-pressed"), "true");
-  assert.equal(await models.locator("[data-models-none]").isDisabled(), true, "a shared source cannot leave every model out");
+  assert.equal(await models.locator("[data-models-none]").isDisabled(), false, "a shared source can leave every model out");
   await kimi.click();
   await page.waitForFunction(() => window.review.sourceCalls.some(call => call[0] === "setHiddenModels"));
   assert.deepEqual((await calls()).filter(call => call[0] === "setHiddenModels").at(-1), ["setHiddenModels", "workbuddy", ["kimi-k3-1"]]);
   await models.locator('[data-source-model="kimi-k3-1"][aria-pressed="false"]').waitFor();
   await models.getByText(await tr("accountSources.modelListShared", { shared: 1, count: 2 })).waitFor();
-  await eventually(async () => assert.equal(await glm.isDisabled(), true, "the last shared model stays"));
+  assert.equal(await glm.isDisabled(), false, "the last shared model can be left out too");
   await models.locator("[data-models-all]").click();
   await models.locator('[data-source-model="kimi-k3-1"][aria-pressed="true"]').waitFor();
   assert.deepEqual((await calls()).filter(call => call[0] === "setHiddenModels").at(-1), ["setHiddenModels", "workbuddy", []]);
-  console.log("PASS a source's models can be left out of the share and brought back, keeping one while shared");
+  const share = filtered.getByRole("switch");
+  assert.equal(await share.getAttribute("aria-checked"), "true");
+  await models.locator("[data-models-none]").click();
+  await models.getByText(await tr("accountSources.modelListShared", { shared: 0, count: 2 })).waitFor();
+  assert.deepEqual((await calls()).filter(call => call[0] === "setHiddenModels").at(-1), ["setHiddenModels", "workbuddy", ["glm-5.3", "kimi-k3-1"]]);
+  await eventually(async () => assert.equal(await share.getAttribute("aria-checked"), "false", "leaving every model out stops the share"));
+  assert.equal(await share.isDisabled(), true, "nothing to share until a model is chosen");
+  await filtered.getByText(await tr("accountSources.noModelsChosen")).waitFor();
+  console.log("PASS a source's models can be left out of the share and brought back; leaving all out stops sharing");
 }

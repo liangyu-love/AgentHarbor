@@ -27,6 +27,17 @@ export interface GatewayState {
   models: GatewayModel[];
   /** What aggregates' gateway ids start with, unless one names its own. */
   aggregatePrefix: string;
+  /** The kinds of model the gateway serves. */
+  sources: ModelSources;
+  /** How many models of each kind there are, served or not. */
+  kindCounts: Record<GatewayModel["kind"], number>;
+}
+
+/** The kinds of model a consumer is offered, each turned on or off on its own. */
+export interface ModelSources {
+  relay: boolean;
+  account: boolean;
+  aggregate: boolean;
 }
 
 export type GatewayProfile = "generic" | "anthropicSdk" | "opencode";

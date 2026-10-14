@@ -732,7 +732,7 @@ async fn cursor_models_for_test(paths: &CodexPaths) -> Vec<(String, u64)> {
 }
 
 #[test]
-fn models_left_out_of_a_share_never_reach_the_router_and_one_always_stays() {
+fn models_left_out_of_a_share_never_reach_the_router_and_leaving_all_out_stops_it() {
     let _guard = crate::core::router_proxy::global_router_test_lock();
     let (_dir, paths) = temp_paths();
     store::mutate(&paths.app_data_dir, |store| {
@@ -752,10 +752,15 @@ fn models_left_out_of_a_share_never_reach_the_router_and_one_always_stays() {
     let source = list(&paths).unwrap().sources.into_iter().find(|source| source.kind == SourceKind::Grok).unwrap();
     assert_eq!(source.hidden_models, ["grok-4.7-fast"], "an unknown id is not kept");
     assert_eq!(source.models.len(), 3, "the page still lists every model");
-    assert_eq!(
-        set_hidden_models(&paths, SourceKind::Grok, vec!["grok-4.7".into(), "grok-4.7-fast".into(), "grok-code".into()]).unwrap_err(),
-        "accountSources.errors.noModelsSelected"
-    );
+    // Leaving every model out stops the share instead of being refused.
+    set_hidden_models(&paths, SourceKind::Grok, vec!["grok-4.7".into(), "grok-4.7-fast".into(), "grok-code".into()]).unwrap();
+    let exposed = |paths: &CodexPaths| list(paths).unwrap().sources.into_iter().find(|source| source.kind == SourceKind::Grok).unwrap().exposed;
+    assert!(!exposed(&paths));
+    assert!(!router::load_store(&paths).unwrap().providers.iter().any(|provider| provider.account_source == Some(SourceKind::Grok)));
+    assert_eq!(set_exposed(&paths, SourceKind::Grok, true).unwrap_err(), "accountSources.errors.noModelsSelected",
+        "a source with every model left out cannot be shared");
     set_hidden_models(&paths, SourceKind::Grok, Vec::new()).unwrap();
+    assert!(!exposed(&paths), "bringing models back does not share the source by itself");
+    set_exposed(&paths, SourceKind::Grok, true).unwrap();
     assert_eq!(shared(&paths), ["grok-4.7", "grok-4.7-fast", "grok-code"]);
 }

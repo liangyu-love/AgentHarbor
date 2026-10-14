@@ -26,7 +26,7 @@ AgentHarbor is a Tauri 2 + React + Rust desktop app that does this for you. It r
 | --- | --- |
 | **Dashboard** | Routing topology of every client, today's token pulse, recent sessions, and a foldable map of each client's data directory and key files |
 | **Relays** | Manage many providers; per-model protocol (Responses, Chat Completions, Anthropic Messages), connectivity tests, New API balance, import/export, and a capability catalog (context, output limit, prices) from a bundled [models.dev](https://github.com/anomalyco/models.dev) snapshot |
-| **Model inject** | Connect relay models and official-account models to Codex (local Router or direct Native, accountless mode, subagent defaults), Claude Code, Claude Desktop, OpenCode and Pi — preview, apply and restore, each with backups |
+| **Model inject** | Connect relay models and official-account models to Codex (local Router or direct Native, accountless mode, subagent defaults), Claude Code, Claude Desktop, OpenCode and Pi — preview, apply and restore, each with backups. Through the router, relays, account sources and aggregates combine freely |
 | **Local router** | Protocol translation between the three wire formats, model aggregation with priority tiers, failover, first-token timeout and live member state, plus request-level route diagnostics |
 | **Gateway** | One local address and named keys give any agent that takes a base URL and an API key every enabled model (see below) |
 | **Accounts** | Codex: ChatGPT OAuth login, quota windows, manual or threshold-based automatic switching (a running Codex keeps its task until the old account is used up). Account sources: ChatGPT (Sign in with ChatGPT), WorkBuddy, WorkBuddy AI, GitHub Copilot, Gemini CLI, Antigravity, Kiro, Grok and Cursor, which can be shared with model inject (see below) |
@@ -48,8 +48,14 @@ The access mode is independent of the upstream protocol and the network route.
 | **Native** | Codex connects straight to the selected provider. Only that provider's Responses models are listed, under their real IDs; an incompatible default is rejected rather than swapped. | No |
 
 - Enabling access edits only the fields AgentHarbor manages in `config.toml`; disabling it restores what was there before. Restart Codex after changing the mode, models or proxy (the app has a restart button).
+- **Model sources.** The Codex card's relay / account source / aggregate switches combine freely: the menu holds every kind turned on, and a kind turned off can no longer be called. With aggregates on, one can be Codex's startup model. ChatGPT's own models still follow accountless mode.
+- **Thinking levels.** A relay model's levels come from what the model declares. A model whose thinking is only a switch (MiMo, for example) shows on and off; a model with levels that can also stop thinking gets an extra off. Off reaches the upstream as its own field: `thinking.type`, OpenRouter's `reasoning.enabled` or DashScope's `enable_thinking`. Levels typed under the relay model's field overrides are shown as typed.
 - Relay models inherit Codex's client behaviour from the official model of the same name, so multi-agent V2 and the **Ultra** effort work through a relay too. Ultra is a Codex-side setting: upstream still receives a concrete effort such as `xhigh` or `max`.
 - Native authenticates with the provider key: it is stored in the Codex `.env` under a random AgentHarbor variable and referenced via `env_key`, never written to `auth.json` or shown in previews. Treat `.env` and its backups as secrets — they are not encrypted.
+
+## Combining model sources
+
+The Claude Code, OpenCode and Pi inject dialogs have the same three switches in router mode: turning a kind off drops its chosen relays or aggregates and hides them. Claude Code with one relay, or with aggregates alone, works as before; with several relays, or relays and aggregates, it reaches them through the local router under the gateway's `short name/model` ids, and its `/model` menu lists every chosen model.
 
 ## Cross-protocol web search
 
@@ -69,6 +75,7 @@ Instead of injecting a client, hand an agent the gateway from the model inject p
 - **Model names.**
   - Relay and account-source models are `short name/model`, for example `deepseek/deepseek-v4-pro` or `workbuddy/glm-5.3`. Aggregates are `prefix/public id`, `pool/gpt-5.5` by default, so they never read as a relay's model of the same name; the shared prefix is set in the gateway panel and one aggregate can name its own. A request that still sends an aggregate's bare public id keeps working.
   - The short name is derived from the relay's name and can be edited in the relay editor; renaming the relay later does not change it.
+- **What it serves.** Click relay models, account sources or aggregates on the right of the gateway diagram to turn that kind off: it leaves the model list and its requests are refused.
 - **Protocol translation** works as for injected clients, for example calling a Chat Completions-only relay over Responses.
 - **Keep running.** Turn on "Keep the gateway running" to keep the local router up even with no client injected.
 - **Connection settings** can be copied as a generic, Anthropic SDK or OpenCode template. Previews mask the key; copying writes the real one.
@@ -77,7 +84,7 @@ Instead of injecting a client, hand an agent the gateway from the model inject p
 
 An account source is a subscription whose own sign-in serves models. Sign in on the Accounts page and turn on "Share with model inject": the source then appears as a special provider on the model inject page and in aggregates.
 
-- **Pick the models.** A source shares all its models by default; click a model on the Accounts page to leave it out of model inject and Codex's menu (the Codex desktop app's menu shows the first 100 models, and the Codex card names any it leaves out).
+- **Pick the models.** A source shares all its models by default; click a model on the Accounts page to leave it out of model inject and Codex's menu (the Codex desktop app's menu shows the first 100 models, and the Codex card names any it leaves out). Leaving every model out stops the share.
 - **Router only.** For each request the router takes the active account's token and refreshes it when it is about to expire. No account token is ever written to a client config, so direct mode and Codex Native cannot select an account source.
 - **ChatGPT** uses OpenAI's Sign in with ChatGPT for apps on the user's machine: requests go to the standard `api.openai.com/v1/responses` with the client's own prompt. It is separate from the Codex accounts and needs its own sign-in. The limit is shared with ChatGPT and shown only at chatgpt.com; some plans are not eligible, and signing in says so. A Team, Business or Enterprise workspace must allow Sign in with ChatGPT apps first (its admin decides), or pick a personal workspace on the sign-in page.
 - **WorkBuddy / WorkBuddy AI** (Tencent's CodeBuddy plan, China and international builds) sign in on their own; the WorkBuddy desktop app's session is never read or changed. They refuse chats from Codex and Claude Code because of their system prompts, so use them from OpenCode or Pi; in an aggregate, a refused request moves to the next member.

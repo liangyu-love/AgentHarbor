@@ -77,6 +77,64 @@ pub(super) fn prepare_message_translation(
         })
 }
 
+/// How a Chat upstream switches a model's thinking on or off: OpenRouter and
+/// DashScope by their own fields, everyone else (MiMo, GLM, DeepSeek, Kimi)
+/// by `thinking.type`.
+fn thinking_switch(base_url: &str, on: bool) -> (&'static str, Value) {
+    let host = reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+        .unwrap_or_default();
+    if host == "openrouter.ai" || host.ends_with(".openrouter.ai") {
+        ("reasoning", serde_json::json!({"enabled": on}))
+    } else if host.starts_with("dashscope") {
+        ("enable_thinking", Value::Bool(on))
+    } else {
+        ("thinking", serde_json::json!({"type": if on { "enabled" } else { "disabled" }}))
+    }
+}
+
+/// A Chat request's effort for a model whose thinking is a switch. `none`
+/// turns it off unless the model declares `none` as a level of its own; a
+/// model with the switch and no levels takes any other effort as on. Declared
+/// levels and manual capabilities pass through untouched.
+pub(super) fn prepare_thinking_switch(
+    body: Option<Bytes>,
+    metadata: impl FnOnce() -> crate::core::model_metadata::ResolvedMetadata,
+    base_url: &str,
+) -> ForwardResult<Option<Bytes>> {
+    let Some(bytes) = &body else { return Ok(body) };
+    let Ok(mut value) = serde_json::from_slice::<Value>(bytes) else {
+        return Ok(body);
+    };
+    let Some(effort) = value.get("reasoning_effort").and_then(Value::as_str).map(str::to_owned) else {
+        return Ok(body);
+    };
+    let metadata = metadata();
+    let switch = metadata.reasoning.supports != Some(false)
+        && metadata.reasoning.options.iter().any(|option| option.kind == "toggle");
+    if !switch || metadata.reasoning.levels.source == crate::core::model_metadata::source::MANUAL {
+        return Ok(body);
+    }
+    let levels = metadata.reasoning.levels.value.unwrap_or_default();
+    let on = effort != "none";
+    if levels.iter().any(|level| level.effort == effort) || (on && !levels.is_empty()) {
+        return Ok(body);
+    }
+    let object = value.as_object_mut().expect("request object");
+    object.remove("reasoning_effort");
+    let (field, setting) = thinking_switch(base_url, on);
+    object.insert(field.into(), setting);
+    serde_json::to_vec(&value)
+        .map(|bytes| Some(Bytes::from(bytes)))
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "cannot re-encode request",
+            )
+        })
+}
+
 /// A model switch can leave the previous model's effort (notably `none`) in
 /// the request. Remove only an effort excluded by a known, nonempty catalog
 /// list. Unknown/empty capabilities are not evidence to change the request.
@@ -190,6 +248,45 @@ pub(super) fn validate_translated_input(input: &[Value]) -> ForwardResult<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_thinking_switch_takes_none_as_off_and_any_other_effort_as_on() {
+        use crate::core::model_metadata::{ReasoningLevel, ReasoningOptionInfo, ResolvedMetadata};
+        let switch_only = || {
+            let mut metadata = ResolvedMetadata::default();
+            metadata.reasoning.supports = Some(true);
+            metadata.reasoning.levels.value = Some(Vec::new());
+            metadata.reasoning.levels.source = "catalogExact".into();
+            metadata.reasoning.options = vec![ReasoningOptionInfo { kind: "toggle".into(), ..Default::default() }];
+            metadata
+        };
+        let send = |effort: &str, base: &str, metadata: ResolvedMetadata| -> Value {
+            let body = Bytes::from(json!({"model":"m","messages":[],"reasoning_effort":effort}).to_string());
+            serde_json::from_slice(&prepare_thinking_switch(Some(body), || metadata, base).unwrap().unwrap()).unwrap()
+        };
+        let off = send("none", "https://api.xiaomimimo.com/v1", switch_only());
+        assert_eq!(off["thinking"], json!({"type":"disabled"}));
+        assert!(off.get("reasoning_effort").is_none());
+        assert_eq!(send("high", "https://api.xiaomimimo.com/v1", switch_only())["thinking"], json!({"type":"enabled"}));
+        assert_eq!(send("none", "https://openrouter.ai/api/v1", switch_only())["reasoning"], json!({"enabled":false}));
+        assert_eq!(send("none", "https://dashscope.aliyuncs.com/compatible-mode/v1", switch_only())["enable_thinking"], false);
+        // A model with levels of its own keeps them; only an undeclared none is the switch.
+        let mut leveled = switch_only();
+        leveled.reasoning.levels.value = Some(["low", "high"].map(|effort| ReasoningLevel { effort: effort.into(), description: String::new() }).into());
+        assert_eq!(send("high", "https://glm.example/v1", leveled.clone())["reasoning_effort"], "high");
+        assert_eq!(send("none", "https://glm.example/v1", leveled.clone())["thinking"], json!({"type":"disabled"}));
+        // Levels the user set by hand, and models without a switch, are left alone.
+        let mut manual = switch_only();
+        manual.reasoning.levels.source = crate::core::model_metadata::source::MANUAL.into();
+        assert_eq!(send("none", "https://glm.example/v1", manual)["reasoning_effort"], "none");
+        assert_eq!(send("none", "https://glm.example/v1", ResolvedMetadata::default())["reasoning_effort"], "none");
+        // A request without an effort is not even resolved.
+        let untouched = Bytes::from_static(br#"{"model":"m","messages":[]}"#);
+        assert_eq!(
+            prepare_thinking_switch(Some(untouched.clone()), || unreachable!("no effort, no lookup"), "https://x.example").unwrap(),
+            Some(untouched)
+        );
+    }
 
     #[test]
     fn translated_messages_effort_uses_known_levels_without_changing_history() {

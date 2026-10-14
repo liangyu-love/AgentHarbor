@@ -32,8 +32,8 @@
     "deleteTitle": "删除聚合模型？",
     "deleteDescription": "删除“{{name}}”后，使用它的保存配置将不可用，仍可恢复原配置。",
     "ingress": "客户端协议",
-    "codexTarget": "Codex 使用的模型",
-    "singleChannel": "不使用聚合",
+    "codexDefault": "启动模型",
+    "followRelay": "跟随当前中转",
     "target": "聚合",
     "followDefault": "跟随默认模型",
     "targetUnavailable": "已选聚合不可用，请检查渠道或更换目标。",
@@ -363,6 +363,9 @@
     "accessMode": "接入方式",
     "accessNative": "原生直连",
     "accessRouter": "本地路由",
+    "sources": "提供的模型来源",
+    "sourcesHint": "可以任意组合：关掉一类会取消它已选的中转或聚合，并从下面的列表里隐藏。",
+    "sourcesHintClaude": "可以任意组合。只选一个中转、或只用聚合时和以前一样；同时选多个中转，或中转加聚合时，Claude Code 经本地路由用「短名/模型」区分它们。",
     "advanced": "高级设置",
     "modelsCount": "{{count}} 个可用模型",
     "selectModel": "选择默认模型",
@@ -1457,6 +1460,10 @@
     "pipelineRouterHint": "线程始终使用 Codex 内置 provider；开关路由只改写 openai_base_url，不迁移任何会话。",
     "pipelineNativeHint": "直连模式由 Codex 直接请求所选中转，不经过本地路由。",
     "accountlessHint": "不使用 ChatGPT 登录，只提供中转与聚合模型",
+    "codexSources": "Codex 菜单提供",
+    "codexSourcesHint": "可以任意组合：关掉的类别不会出现在 Codex 的模型菜单里，也不能再被调用。ChatGPT 官方模型由下面的「无账号登录模式」控制。",
+    "codexSourcesApplied": "Codex 菜单已更新",
+    "codexSourcesNone": "只有 ChatGPT 官方模型",
     "restartPendingHint": "配置已更新，Codex 仍在使用旧连接；重启 Codex 后生效，旧连接在此之前继续可用。",
     "restartPromptTitle": "重启 Codex 以生效",
     "restartPromptDesc": "配置已写入。Codex 正在运行，会继续使用原来的连接直到重启；重启会中断进行中的任务。",
@@ -2481,6 +2488,7 @@
     "exposedModels": "已提供 {{count}} 个模型，经本地路由使用",
     "notExposed": "未提供：模型注入页不会列出这个来源",
     "noModelsYet": "登录后才能获取模型列表",
+    "noModelsChosen": "一个模型都没选：先在下方模型列表里选择要共享的模型",
     "refreshModels": "刷新模型",
     "modelsRefreshed": "模型列表已刷新",
     "refreshQuota": "刷新额度",
@@ -2549,7 +2557,7 @@
       "grokCli": "没有找到 Grok CLI，请先安装 Grok Build（x.ai/cli）再登录。",
       "cursorCli": "没有找到 Cursor CLI（cursor-agent），请先安装（cursor.com/cli）再登录。",
       "noAccount": "登录结束了，但 CLI 没有给出账号，请重试。",
-      "noModelsSelected": "已提供给模型注入的来源至少要保留一个模型"
+      "noModelsSelected": "先选择至少一个要共享的模型"
     },
     "badge": "官方账号",
     "refusesClaudeCode": "{{name}} 会拒绝 Claude Code 的系统提示词，请求可能失败",
@@ -2587,7 +2595,7 @@
     "modelFilterHint": "点模型可以取消或恢复共享；取消的模型不会提供给模型注入，也不会出现在 Codex 的模型菜单里。",
     "modelsAll": "全部共享",
     "modelsNone": "全部取消",
-    "modelsNoneShared": "已提供给模型注入的来源至少要保留一个模型"
+    "modelsNoneShared": "取消全部模型会同时停止提供给模型注入"
   },
   "gateway": {
     "groupTitle": "通用网关",
@@ -2630,6 +2638,7 @@
     "generic": "通用",
     "unavailable": "已不可用",
     "preview": "预览",
+    "hidePreview": "收起预览",
     "copyConnection": "复制配置",
     "copied": "配置已复制（包含 key）",
     "copyFailed": "复制失败",
@@ -2644,6 +2653,9 @@
       "prefix": "前缀只能用小写字母、数字和 . _ -，以字母或数字开头，最多 40 个字符",
       "prefixTaken": "这个前缀已被某个中转的短名占用，请换一个"
     },
+    "sourcesHint": "点右侧的类别可以开关网关提供的模型：关掉的类别不会出现在模型列表里，用它的请求也会被拒绝。",
+    "stopServing": "{{kind}}：正在提供，点击停止",
+    "startServing": "{{kind}}：已停止，点击提供",
     "schematicNoKey": "还没有 agent",
     "aggregatePrefix": "聚合前缀",
     "aggregatePrefixHint": "模型聚合在网关里叫「前缀/模型名」，和中转的「短名/模型名」区分开。单个聚合可以在模型聚合里另设前缀；以前直接写模型名的请求仍然能用。"

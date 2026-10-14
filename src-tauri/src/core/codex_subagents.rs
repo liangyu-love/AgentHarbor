@@ -50,11 +50,7 @@ fn catalog(paths: &CodexPaths, store: &Store) -> Result<Value, String> {
             Err(error) => Err(error),
         };
     }
-    Ok(if store.router.aggregate_model_id.is_some() {
-        aggregate_catalog_value(&paths.app_data_dir, &paths.codex_home, store)
-    } else {
-        catalog_value(&paths.app_data_dir, &paths.codex_home, store)
-    })
+    Ok(catalog_value(&paths.app_data_dir, &paths.codex_home, store))
 }
 
 fn choices(paths: &CodexPaths, store: &Store) -> Result<Vec<ModelChoice>, String> {

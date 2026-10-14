@@ -128,6 +128,9 @@ pub struct AggregateView {
     pub projection: Option<model_policy::ClientProjection>,
     pub member_states: Vec<MemberView>,
     pub route_revision: String,
+    /// The aggregate's id in the gateway's id space (`pool/gpt-5.5`), which
+    /// Claude Code also uses when it combines sources.
+    pub gateway_id: String,
 }
 
 /// One member's routing state right now, as the gateway sees it.

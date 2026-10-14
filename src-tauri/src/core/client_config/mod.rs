@@ -5,6 +5,7 @@
 mod aggregate_models;
 mod claude;
 mod claude_official;
+mod mixed_models;
 mod opencode;
 mod pi;
 mod options;

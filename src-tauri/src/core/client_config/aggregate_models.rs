@@ -67,6 +67,10 @@ pub(super) fn canonical_request(
             }
             None => {}
         }
+        // Claude Code combining sources names every model by its gateway id.
+        if let Some(target) = selection.default_target.as_ref().filter(|_| super::mixed_models::is_mixed(&result)) {
+            result.model = super::mixed_models::target_id(store, target)?;
+        }
     }
     Ok(result)
 }

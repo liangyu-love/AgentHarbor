@@ -209,6 +209,7 @@ pub fn project(
         projection,
         member_states,
         route_revision: route_revision(store, aggregate),
+        gateway_id: crate::core::gateway::aggregate_id(store, aggregate),
     }
 }
 

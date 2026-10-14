@@ -85,7 +85,7 @@ fn accountless_toggle_replaces_official_selection_and_keeps_account_catalogs() {
         )
         .is_some());
         let injected: serde_json::Value =
-            serde_json::from_slice(&fs::read(selected_catalog_path(&paths, &store)).unwrap())
+            serde_json::from_slice(&fs::read(catalog_path(&paths)).unwrap())
                 .unwrap();
         assert_eq!(injected, menu);
         assert!(super::subagents::load(&paths)

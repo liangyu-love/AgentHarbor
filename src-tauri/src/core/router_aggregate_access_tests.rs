@@ -50,7 +50,7 @@ fn codex_aggregate_selection_saves_then_applies_the_public_model_and_restores_us
         .and_then(|providers| providers.get(AGGREGATE_PROVIDER_KEY))
         .is_none());
     let catalog: serde_json::Value =
-        serde_json::from_slice(&fs::read(selected_catalog_path(&paths, &store)).unwrap()).unwrap();
+        serde_json::from_slice(&fs::read(catalog_path(&paths)).unwrap()).unwrap();
     assert_eq!(catalog["models"][0]["slug"], "official-model");
     assert!(!catalog.to_string().contains("synthetic-native-mode-key"));
     assert!(!catalog.to_string().contains("fixture-model"));
@@ -120,4 +120,63 @@ fn codex_aggregate_never_changes_native_mode_or_a_foreign_config_without_authori
     let external = fs::read(&paths.config_path).unwrap();
     select_aggregate(&paths, None).unwrap();
     assert_eq!(fs::read(&paths.config_path).unwrap(), external);
+}
+
+fn menu_slugs(paths: &CodexPaths) -> Vec<String> {
+    catalog_value(&paths.app_data_dir, &paths.codex_home, &load_store(paths).unwrap())["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|model| model["slug"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn codex_menu_offers_every_kind_turned_on_and_earlier_builds_keep_their_choice() {
+    let (_directory, paths) = aggregate_fixture();
+    let relay = format!("{}::fixture-model", load_store(&paths).unwrap().providers[0].id);
+    // A store from before the switches: relays alone until an aggregate is chosen.
+    assert!(menu_slugs(&paths).contains(&relay));
+    assert!(!menu_slugs(&paths).contains(&"official-model".to_owned()));
+    select_aggregate(&paths, Some("pool".into())).unwrap();
+    assert_eq!(menu_slugs(&paths), ["official-model"]);
+    // Every kind together; aggregates lead the menu.
+    set_codex_sources(&paths, ModelSources::default()).unwrap();
+    let slugs = menu_slugs(&paths);
+    assert_eq!(slugs[0], "official-model");
+    assert!(slugs.contains(&relay));
+    assert_eq!(load_store(&paths).unwrap().router.aggregate_model_id.as_deref(), Some("pool"),
+        "turning relays on keeps the default aggregate");
+    // Turning aggregates off drops the default aggregate with them.
+    set_codex_sources(&paths, ModelSources { aggregate: false, ..Default::default() }).unwrap();
+    assert_eq!(menu_slugs(&paths), [relay.clone()]);
+    assert!(load_store(&paths).unwrap().router.aggregate_model_id.is_none());
+}
+
+#[test]
+fn codex_keeps_a_selection_its_menu_still_offers_and_refuses_an_empty_one() {
+    let (_directory, paths) = aggregate_fixture();
+    let relay = format!("{}::fixture-model", load_store(&paths).unwrap().providers[0].id);
+    set_codex_sources(&paths, ModelSources::default()).unwrap();
+    select_aggregate(&paths, Some("pool".into())).unwrap();
+    set_smart_routing(&paths, true).unwrap();
+    assert_eq!(config(&paths)["model"].as_str(), Some("official-model"));
+    // The user picks a relay model in Codex: it is a valid menu choice.
+    let mut document: toml_edit::DocumentMut = fs::read_to_string(&paths.config_path).unwrap().parse().unwrap();
+    document["model"] = toml_edit::value(relay.as_str());
+    fs::write(&paths.config_path, document.to_string()).unwrap();
+    assert!(routing_config_matches(&paths, &load_store(&paths).unwrap()).unwrap());
+    set_codex_sources(&paths, ModelSources { aggregate: false, ..Default::default() }).unwrap();
+    assert_eq!(config(&paths)["model"].as_str(), Some(relay.as_str()), "a selection still offered stays");
+    // Relays off: the selection leaves the menu and the first aggregate starts Codex.
+    set_codex_sources(&paths, ModelSources { relay: false, account: false, aggregate: true }).unwrap();
+    assert_eq!(config(&paths)["model"].as_str(), Some("official-model"));
+    // Nothing left to start on is refused and changes nothing.
+    let before = file_state(&paths);
+    assert_eq!(
+        set_codex_sources(&paths, ModelSources { relay: false, account: false, aggregate: false }).err().as_deref(),
+        Some("newapi.errors.noActiveProvider")
+    );
+    assert_eq!(file_state(&paths), before);
+    assert_eq!(codex_sources(&load_store(&paths).unwrap()), ModelSources { relay: false, account: false, aggregate: true });
 }

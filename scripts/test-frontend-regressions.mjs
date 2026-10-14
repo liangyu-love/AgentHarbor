@@ -744,8 +744,8 @@ try {
     provider: window.review.getState().providers[0].name,
     model: "responses-model", protocol: window.review.t("newapi.protocolShortResponses"),
   }));
-  const relayTarget = codexAccessCard.locator('[data-codex-target="relay"]');
-  const relayTargetLabel = await page.evaluate(() => window.review.t("newapi.providersSection"));
+  const relayTarget = codexAccessCard.locator('[data-codex-target="relay+account"]');
+  const relayTargetLabel = await page.evaluate(() => ["relay", "account"].map(kind => window.review.t(`gateway.kind.${kind}`)).join(" + "));
   assert.equal(await relayTarget.innerText(), relayTargetLabel);
   assert.equal(await codexAccessCard.getByText(selectedResponsesModel, { exact: true }).count(), 0,
     "router mode represents the model catalog rather than its pinned default");
@@ -811,14 +811,16 @@ try {
   });
   const aggregateTarget = codexAccessCard.locator('[data-codex-target="aggregate"]');
   await aggregateTarget.waitFor();
-  assert.equal(await aggregateTarget.innerText(), await page.evaluate(() => window.review.t("aggregation.target")));
+  assert.equal(await aggregateTarget.innerText(), await page.evaluate(() => window.review.t("gateway.kind.aggregate")));
   assert.equal(await codexAccessCard.locator("[data-relay-link]").count(), 0,
     "the aggregation marker must not navigate to an unrelated relay page");
   assert.doesNotMatch(await aggregateTarget.innerText(), /Codex target pool|public-model|Provider mixed/);
   assert.equal(await codexAccessCard.getByText(selectedResponsesModel, { exact: true }).count(), 0);
-  await codexAccessCard.locator("#codex-aggregate-model").click();
-  const ordinaryRelayOption = await page.evaluate(() => window.review.t("aggregation.singleChannel"));
-  await page.getByRole("option", { name: ordinaryRelayOption, exact: true }).click();
+  // Back to relay and account models: switch them on and aggregates off.
+  for (const kind of ["relay", "account", "aggregate"]) {
+    await codexAccessCard.locator(`[data-codex-sources] [data-model-source="${kind}"]`).click();
+    await page.waitForFunction(count => (window.review.codexSourceCalls ?? []).length === count, ["relay", "account", "aggregate"].indexOf(kind) + 1);
+  }
   await relayTarget.waitFor();
   await eventually(async () => assert.equal(await relayTarget.innerText(), relayTargetLabel));
   console.log("PASS Codex routing uses distinct abstract relay-model and aggregation targets while native access keeps its destination");

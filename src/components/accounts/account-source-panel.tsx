@@ -281,7 +281,7 @@ export function AccountSourcePanel({ kind, sources }: { kind: AccountSourceKind;
   const hidden = new Set(source.hiddenModels ?? []);
   const choosing = sources.setHiddenModels.isPending && sources.setHiddenModels.variables?.kind === kind;
   const chooseModels = (next: string[]) => sources.setHiddenModels.mutate({ kind, hidden: next });
-  const includedModels = source.models.length;
+  const includedModels = source.models.length - source.models.filter(model => hidden.has(model.id)).length;
   return (
     <section aria-labelledby={titleId} data-account-source={kind} className="space-y-4">
       <div className="harbor-well grid gap-5 p-4 md:grid-cols-[minmax(0,1fr)_minmax(16rem,24rem)] md:items-center">
@@ -314,7 +314,8 @@ export function AccountSourcePanel({ kind, sources }: { kind: AccountSourceKind;
           <p id={`${titleId}-share`} className="text-xs text-muted-foreground md:text-right">
             {source.exposed
               ? t("accountSources.exposedModels", { count: includedModels })
-              : includedModels === 0 ? t("accountSources.noModelsYet") : t("accountSources.notExposed")}
+              : source.models.length === 0 ? t("accountSources.noModelsYet")
+                : includedModels === 0 ? t("accountSources.noModelsChosen") : t("accountSources.notExposed")}
           </p>
         </div>
       </div>
@@ -372,22 +373,21 @@ export function AccountSourcePanel({ kind, sources }: { kind: AccountSourceKind;
               <button type="button" className="font-medium text-primary hover:underline disabled:opacity-40" data-models-all
                 disabled={choosing || hidden.size === 0} onClick={() => chooseModels([])}>{t("accountSources.modelsAll")}</button>
               <button type="button" className="font-medium text-primary hover:underline disabled:opacity-40" data-models-none
-                disabled={choosing || source.exposed || hidden.size === source.models.length}
+                disabled={choosing || includedModels === 0}
                 title={source.exposed ? t("accountSources.modelsNoneShared") : undefined}
                 onClick={() => chooseModels(source.models.map(model => model.id))}>{t("accountSources.modelsNone")}</button>
             </div>
             <ul className="flex flex-wrap gap-1.5">
               {source.models.map((model, index) => {
                 const shared = !hidden.has(model.id);
-                const last = shared && source.exposed && hidden.size === source.models.length - 1;
+                const last = shared && source.exposed && includedModels === 1;
                 return (
                   <li key={model.id} className="route-rise" style={{ animationDelay: `${Math.min(index, 24) * 18}ms` }}>
-                    <button type="button" aria-pressed={shared} data-source-model={model.id} disabled={choosing || last}
+                    <button type="button" aria-pressed={shared} data-source-model={model.id} disabled={choosing}
                       title={last ? t("accountSources.modelsNoneShared") : model.id}
                       onClick={() => chooseModels(shared ? [...hidden, model.id] : [...hidden].filter(id => id !== model.id))}
-                      className={cn("rounded-full border px-2.5 py-0.5 font-mono text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                        shared ? "border-primary/40 bg-primary/10 text-foreground" : "border-border/60 bg-transparent text-muted-foreground line-through decoration-muted-foreground/60",
-                        !last && "hover:border-primary/60")}>
+                      className={cn("rounded-full border px-2.5 py-0.5 font-mono text-[11px] transition-colors hover:border-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                        shared ? "border-primary/40 bg-primary/10 text-foreground" : "border-border/60 bg-transparent text-muted-foreground line-through decoration-muted-foreground/60")}>
                       {model.name || model.id}
                     </button>
                   </li>

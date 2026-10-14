@@ -76,17 +76,22 @@ function KeySecret({ text }: { text: string }) {
 /**
  * Agents (their keys) → the gateway port → the three kinds of model it serves.
  * Running, the lines carry traffic as on the routing topology; a key or kind
- * with nothing behind it stays a dashed hairline. Turning the gateway on or
+ * with nothing behind it stays a dashed hairline. Each kind is a switch: one
+ * turned off is not served and its line goes dark. Turning the gateway on or
  * adding a key re-lights the lines that changed.
  */
-function GatewaySchematic({ state }: { state: GatewayState | undefined }) {
+function GatewaySchematic({ state, disabled, onToggle }: {
+  state: GatewayState | undefined; disabled: boolean; onToggle: (kind: GatewayModel["kind"]) => void;
+}) {
   const { t } = useTranslation();
   const board = useRef<HTMLDivElement>(null);
   const { anchors, register, measure } = useAnchors(board);
   const keys = state?.keys ?? [];
   const shown = keys.slice(0, SHOWN_KEYS);
   const running = state?.running ?? false;
-  const counts = Object.fromEntries(KIND_ORDER.map(kind => [kind, (state?.models ?? []).filter(model => model.kind === kind).length]));
+  const counts = Object.fromEntries(KIND_ORDER.map(kind => [kind, state?.kindCounts?.[kind]
+    ?? (state?.models ?? []).filter(model => model.kind === kind).length]));
+  const served = (kind: GatewayModel["kind"]) => state?.sources?.[kind] ?? true;
   const [ignition, setIgnition] = useState(0);
   const first = useRef(true);
   useEffect(() => {
@@ -112,7 +117,7 @@ function GatewaySchematic({ state }: { state: GatewayState | undefined }) {
         ))}
         {shown.length === 0 && <SignalPath d={linkPath(anchors, "key:none", "hub")} live={false} />}
         {KIND_ORDER.map(kind => (
-          <SignalPath key={kind} d={linkPath(anchors, "hub", `kind:${kind}`)} live={running && counts[kind] > 0} ignition={ignition} speed={1.15} />
+          <SignalPath key={kind} d={linkPath(anchors, "hub", `kind:${kind}`)} live={running && served(kind) && counts[kind] > 0} ignition={ignition} speed={1.15} />
         ))}
       </svg>
       <div className="relative flex min-w-0 flex-col items-start gap-2">
@@ -139,15 +144,21 @@ function GatewaySchematic({ state }: { state: GatewayState | undefined }) {
       <div className="relative flex min-w-0 flex-col items-end gap-2">
         {KIND_ORDER.map(kind => {
           const Icon = KIND_ICON[kind];
-          const live = running && counts[kind] > 0;
+          const on = served(kind);
+          const live = running && on && counts[kind] > 0;
+          const name = t(`gateway.kind.${kind}`);
           return (
-            <span key={kind} ref={register(`kind:${kind}`)} data-schematic-kind={kind} data-live={live || undefined}
+            <button key={kind} type="button" ref={register(`kind:${kind}`)} data-schematic-kind={kind} data-live={live || undefined}
+              aria-pressed={on} disabled={disabled} onClick={() => onToggle(kind)}
+              title={t(on ? "gateway.stopServing" : "gateway.startServing", { kind: name })}
               className={cn("flex items-center gap-2 rounded-xl border bg-card px-2.5 py-1.5 text-xs shadow-sm transition-[border-color,opacity] duration-300",
-                live ? "border-primary/40" : "border-border", counts[kind] === 0 && "opacity-60")}>
+                "hover:border-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed",
+                live ? "border-primary/40" : "border-border", !on && "border-dashed opacity-55", on && counts[kind] === 0 && "opacity-60")}>
               <Icon aria-hidden className={cn("h-3.5 w-3.5", live ? "text-primary" : "text-muted-foreground")} />
-              <span className="truncate">{t(`gateway.kind.${kind}`)}</span>
+              <span className={cn("truncate", !on && "line-through decoration-muted-foreground/60")}>{name}</span>
               <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{counts[kind]}</span>
-            </span>
+              <span aria-hidden className={cn("ml-0.5 h-1.5 w-1.5 rounded-full", on ? "bg-primary" : "bg-muted-foreground/40")} />
+            </button>
           );
         })}
       </div>
@@ -244,7 +255,9 @@ export function GatewayPanel({ providersRevision }: { providersRevision: number 
         </p>
       )}
 
-      <GatewaySchematic state={state} />
+      <GatewaySchematic state={state} disabled={busy || !query.isSuccess}
+        onToggle={kind => state && void run(() => api.gateway.setSources({ ...state.sources, [kind]: !state.sources[kind] }))} />
+      <p className="-mt-2 text-[11px] text-muted-foreground">{t("gateway.sourcesHint")}</p>
 
       <div className="grid gap-3 md:grid-cols-2">
         {([["gateway.openAiBase", openAiBase], ["gateway.anthropicBase", anthropicBase]] as const).map(([label, url]) => (
@@ -393,9 +406,11 @@ export function GatewayPanel({ providersRevision }: { providersRevision: number 
               </Select>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <Button variant="outline" size="sm" className="h-9 text-xs" disabled={busy || !exportKey || !exportModel}
-                onClick={() => void run(async () => setConfigText((await exportConnection(false)).configText))}>
-                {t("gateway.preview")}
+              <Button variant="outline" size="sm" className="h-9 text-xs" disabled={busy || configText === null && (!exportKey || !exportModel)}
+                aria-expanded={configText !== null}
+                onClick={() => configText !== null ? setConfigText(null)
+                  : void run(async () => setConfigText((await exportConnection(false)).configText))}>
+                {t(configText !== null ? "gateway.hidePreview" : "gateway.preview")}
               </Button>
               <Button size="sm" className="h-9 gap-1.5 text-xs" disabled={busy || !exportKey || !exportModel}
                 onClick={() => void run(async () => {

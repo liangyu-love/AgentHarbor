@@ -21,11 +21,30 @@ pub struct GatewayState {
     pub models: Vec<gateway::GatewayModel>,
     /// What aggregates' gateway ids start with, unless one names its own.
     pub aggregate_prefix: String,
+    /// The kinds of model the gateway serves.
+    pub sources: router::ModelSources,
+    /// How many models of each kind there are, served or not.
+    pub kind_counts: KindCounts,
+}
+
+#[derive(Serialize, Default)]
+pub struct KindCounts {
+    pub relay: usize,
+    pub account: usize,
+    pub aggregate: usize,
 }
 
 fn state(paths: &CodexPaths) -> Result<GatewayState, String> {
     let store = router::load_store(paths)?;
     let catalog = models_dev::load(&paths.app_data_dir);
+    let mut kind_counts = KindCounts::default();
+    for model in gateway::all_models(&store, &catalog) {
+        *match model.kind {
+            gateway::ModelKind::Relay => &mut kind_counts.relay,
+            gateway::ModelKind::Account => &mut kind_counts.account,
+            gateway::ModelKind::Aggregate => &mut kind_counts.aggregate,
+        } += 1;
+    }
     Ok(GatewayState {
         port: store.router.port,
         running: crate::core::router_proxy::is_running(),
@@ -33,7 +52,19 @@ fn state(paths: &CodexPaths) -> Result<GatewayState, String> {
         keys: gateway::key_views(&store),
         models: gateway::models(&store, &catalog),
         aggregate_prefix: gateway::shared_prefix(&store).to_owned(),
+        sources: store.router.gateway_sources,
+        kind_counts,
     })
+}
+
+#[tauri::command]
+pub async fn set_gateway_sources(repo: State<'_, Mutex<Repository>>, sources: router::ModelSources) -> Result<GatewayState, String> {
+    let paths = paths(&repo)?;
+    let _guard = routing_runtime::mutation_guard().await;
+    super::blocking(move || {
+        gateway::set_sources(&paths, sources)?;
+        state(&paths)
+    }).await
 }
 
 #[tauri::command]

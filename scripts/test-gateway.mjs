@@ -69,6 +69,21 @@ export async function testGateway({ page, reset, captureDir }) {
   await gateway.getByRole("textbox", { name: await tr("gateway.filterModels") }).fill("");
   console.log("PASS the gateway keeps running on request and lists relay, account and aggregate models by their gateway names");
 
+  // Each kind of model is a switch on the schematic.
+  const accountKind = schematic.locator('[data-schematic-kind="account"]');
+  assert.equal(await accountKind.getAttribute("aria-pressed"), "true");
+  await accountKind.click();
+  await eventually(async () => assert.equal(await accountKind.getAttribute("aria-pressed"), "false"));
+  assert.deepEqual((await calls()).filter(call => call[0] === "sources").at(-1)[1], { relay: true, account: false, aggregate: true });
+  assert.equal(await accountKind.getAttribute("data-live"), null, "a kind turned off carries no traffic");
+  assert.match(await accountKind.innerText(), /1/, "its models are still counted");
+  assert.deepEqual(await gateway.locator("[data-gateway-model]").evaluateAll(rows => rows.map(row => row.getAttribute("data-gateway-model"))),
+    ["relay-a/fast-model", "relay-a/vendor/deep-model", "pool/harbor-pool"], "nor listed");
+  await accountKind.click();
+  await gateway.locator('[data-gateway-model="workbuddy/glm-5.3"]').waitFor();
+  await eventually(async () => assert.equal(await accountKind.getAttribute("data-live"), "true"));
+  console.log("PASS each kind of model can be turned off for the gateway and back on from its schematic node");
+
   const prefix = gateway.getByRole("textbox", { name: await tr("gateway.aggregatePrefix") });
   assert.equal(await prefix.inputValue(), "pool");
   const savePrefix = gateway.locator("[data-gateway-prefix]").getByRole("button", { name: await tr("common.save") });
@@ -92,6 +107,11 @@ export async function testGateway({ page, reset, captureDir }) {
   await preview.waitFor();
   await eventually(async () => assert.match(await preview.innerText(), /<gateway key>/));
   assert.match(await preview.innerText(), /127\.0\.0\.1:43127\/gateway\/v1/);
+  // A second click closes the preview, a third opens it again.
+  await gateway.getByRole("button", { name: await tr("gateway.hidePreview"), exact: true }).click();
+  await preview.waitFor({ state: "detached" });
+  await gateway.getByRole("button", { name: await tr("gateway.preview"), exact: true }).click();
+  await preview.waitFor();
   await gateway.getByRole("button", { name: await tr("gateway.copyConnection") }).click();
   await page.waitForFunction(() => window.review.copied?.includes("sk-ah-fixture-hermes-0001"));
   await choose(gateway.locator("#gateway-export-profile"), "Anthropic SDK");
@@ -107,13 +127,15 @@ export async function testGateway({ page, reset, captureDir }) {
   await choose(gateway.locator("#gateway-export-model"), "pool/harbor-pool");
   await gateway.getByRole("button", { name: await tr("gateway.preview"), exact: true }).click();
   const exports = (await calls()).filter(call => call[0] === "export").map(call => call[1]);
-  assert.deepEqual(exports.map(request => request.revealCredential), [false, true, false, false]);
+  assert.deepEqual(exports.map(request => request.revealCredential), [false, false, true, false, false]);
   assert.deepEqual({ ...exports.at(-1) }, { ingressProtocol: "chatCompletions", selectedModelId: "pool/harbor-pool", consumerProfile: "opencode",
     keyId: "key-1", revealCredential: false });
   await page.evaluate(async () => {
     window.review.gatewayModels = [];
     await window.review.frontendClient.invalidateQueries({ queryKey: ["gateway"] });
   });
+  // The open preview can still be closed; a new one cannot be made.
+  await gateway.getByRole("button", { name: await tr("gateway.hidePreview"), exact: true }).click();
   await gateway.getByRole("button", { name: await tr("gateway.preview"), exact: true }).and(page.locator(":disabled")).waitFor();
   assert.equal(await gateway.getByRole("button", { name: await tr("gateway.copyConnection") }).isDisabled(), true,
     "an unavailable explicit choice is never replaced by another model");

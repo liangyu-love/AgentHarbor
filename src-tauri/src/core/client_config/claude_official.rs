@@ -164,6 +164,20 @@ impl ConfigManager {
             &["modelPicker", "replaceBuiltInOptions"],
             &mut removed,
         )?;
+        // Claude Code rejects a modelPicker without options. Drop the empty
+        // object this cleanup leaves, or one an earlier build left behind.
+        if next
+            .get("modelPicker")
+            .and_then(Value::as_object)
+            .is_some_and(|picker| picker.is_empty())
+        {
+            clean_field(&mut next, &["modelPicker"], &mut removed)?;
+        }
+        // An env this cleanup emptied goes too; one the user kept empty stays.
+        let empty_env = |document: &Value| document.get("env").and_then(Value::as_object).map(|env| env.is_empty());
+        if empty_env(&before) == Some(false) && empty_env(&next) == Some(true) {
+            clean_field(&mut next, &["env"], &mut removed)?;
+        }
         removed.sort();
         let document_changed = before != next;
         let has_changes =

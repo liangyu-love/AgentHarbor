@@ -172,7 +172,7 @@ const aggregationState = (): AggregationState => ({
     return { ...structuredClone(entry), available: entry.enabled && eligible.length > 0,
       reason: !entry.enabled ? "aggregate_disabled" : eligible.length ? null : "no_eligible_members",
       projection: eligible.length ? aggregateProjection(Math.min(...eligible.map(member => member.projection!.contextWindow))) as AggregateView["projection"] : null,
-      routeRevision: "fixture-aggregate-v1", memberStates };
+      routeRevision: "fixture-aggregate-v1", memberStates, gatewayId: `${entry.gatewayPrefix ?? "pool"}/${entry.publicModelId}` };
   }), externalEnabled: controls.review.aggregateExternalEnabled ?? false,
   listenerReady: !!controls.review.aggregateExternalEnabled || !!state.router.enabled,
 });
@@ -194,7 +194,16 @@ api.aggregation.delete = async id => {
 };
 api.aggregation.selectCodex = async aggregateId => {
   controls.review.aggregateCodexSelections = [...(controls.review.aggregateCodexSelections ?? []), aggregateId];
-  state = { ...state, router: { ...state.router, aggregateModelId: aggregateId, accessMode: "router" } };
+  // A default aggregate is offered in the menu it starts Codex on.
+  const codexSources = state.router.codexSources && aggregateId ? { ...state.router.codexSources, aggregate: true } : state.router.codexSources;
+  state = { ...state, router: { ...state.router, aggregateModelId: aggregateId, codexSources, accessMode: "router" } };
+  return { state: structuredClone(state), applied: null };
+};
+api.aggregation.setCodexSources = async sources => {
+  controls.review.codexSourceCalls = [...(controls.review.codexSourceCalls ?? []), sources];
+  // Turning aggregates off drops the default aggregate with them.
+  state = { ...state, router: { ...state.router, codexSources: sources,
+    aggregateModelId: sources.aggregate ? state.router.aggregateModelId : null } };
   return { state: structuredClone(state), applied: null };
 };
 // Gateway: named keys, models by short name, connection export.
@@ -205,17 +214,24 @@ const gatewayModelsFixture = (): GatewayModel[] => [
   { id: "workbuddy/glm-5.3", kind: "account", sourceName: "WorkBuddy", sourceId: "account-workbuddy", modelId: "glm-5.3", label: "GLM-5.3", protocol: "chatCompletions", contextWindow: 1_000_000 },
   { id: `${controls.review.gatewayPrefix ?? "pool"}/harbor-pool`, kind: "aggregate", sourceName: "Harbor Pool", sourceId: "pool", modelId: "harbor-pool", label: "Harbor Pool", protocol: "responses", contextWindow: 128_000 },
 ];
-const gatewayState = (): GatewayState => ({
-  port: 43127, running: !!controls.review.gatewayKeepRunning, keepRunning: !!controls.review.gatewayKeepRunning,
-  keys: (controls.review.gatewayKeys as FixtureKey[]).map(key => ({ id: key.id, name: key.name, masked: `sk-ah-…${key.secret.slice(-4)}`, createdAt: 1 })),
-  models: controls.review.gatewayModels ?? gatewayModelsFixture(),
-  aggregatePrefix: controls.review.gatewayPrefix ?? "pool",
-});
+const gatewayState = (): GatewayState => {
+  const all = controls.review.gatewayModels ?? gatewayModelsFixture();
+  const sources = controls.review.gatewaySources ?? { relay: true, account: true, aggregate: true };
+  const count = (kind: GatewayModel["kind"]) => all.filter((model: GatewayModel) => model.kind === kind).length;
+  return {
+    port: 43127, running: !!controls.review.gatewayKeepRunning, keepRunning: !!controls.review.gatewayKeepRunning,
+    keys: (controls.review.gatewayKeys as FixtureKey[]).map(key => ({ id: key.id, name: key.name, masked: `sk-ah-…${key.secret.slice(-4)}`, createdAt: 1 })),
+    models: all.filter((model: GatewayModel) => sources[model.kind]),
+    aggregatePrefix: controls.review.gatewayPrefix ?? "pool",
+    sources, kindCounts: { relay: count("relay"), account: count("account"), aggregate: count("aggregate") },
+  };
+};
 const installGateway = () => {
   controls.review.gatewayKeys = structuredClone(controls.review.gatewayKeysFixture ?? []);
   controls.review.gatewayKeepRunning = false;
   controls.review.gatewayCalls = [];
   delete controls.review.gatewayPrefix;
+  delete controls.review.gatewaySources;
   const record = (...call: unknown[]) => controls.review.gatewayCalls.push(call);
   const keyOf = (id: string) => {
     const key = (controls.review.gatewayKeys as FixtureKey[]).find(entry => entry.id === id);
@@ -242,6 +258,11 @@ const installGateway = () => {
     record("prefix", prefix);
     if (prefix === "relay-a") throw "gateway.errors.prefixTaken";
     controls.review.gatewayPrefix = prefix;
+    return gatewayState();
+  };
+  api.gateway.setSources = async sources => {
+    record("sources", structuredClone(sources));
+    controls.review.gatewaySources = sources;
     return gatewayState();
   };
   api.gateway.exportConnection = async request => {
@@ -477,7 +498,9 @@ const installAccountSources = () => {
   };
   api.accountSources.setHiddenModels = async (kind, hidden) => {
     record("setHiddenModels", kind, hidden);
-    payload = { sources: payload.sources.map(source => source.kind === kind ? { ...source, hiddenModels: hidden } : source) };
+    // Leaving every model out of a shared source stops sharing it.
+    payload = { sources: payload.sources.map(source => source.kind === kind ? { ...source, hiddenModels: hidden,
+      exposed: source.exposed && source.models.some(model => !hidden.includes(model.id)) } : source) };
     return structuredClone(payload);
   };
 };

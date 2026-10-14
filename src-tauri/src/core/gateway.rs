@@ -320,8 +320,31 @@ fn served_models(provider: &router::Provider) -> Vec<&str> {
     ids
 }
 
-/// Every model the gateway serves, providers in their saved order, then aggregates.
+fn admits(sources: router::ModelSources, kind: ModelKind) -> bool {
+    match kind {
+        ModelKind::Relay => sources.relay,
+        ModelKind::Account => sources.account,
+        ModelKind::Aggregate => sources.aggregate,
+    }
+}
+
+/// The models the gateway serves: those of the kinds it has turned on.
 pub fn models(store: &Store, catalog: &models_dev::Catalog) -> Vec<GatewayModel> {
+    let sources = store.router.gateway_sources;
+    all_models(store, catalog).into_iter().filter(|model| admits(sources, model.kind)).collect()
+}
+
+/// Turn the kinds of model the gateway serves on or off.
+pub fn set_sources(paths: &CodexPaths, sources: router::ModelSources) -> Result<(), String> {
+    router::mutate_store(paths, move |store| {
+        store.router.gateway_sources = sources;
+        Ok(())
+    }).map(|_| ())
+}
+
+/// Every model the gateway could serve, whatever kinds are turned on:
+/// providers in their saved order, then aggregates.
+pub fn all_models(store: &Store, catalog: &models_dev::Catalog) -> Vec<GatewayModel> {
     let mut out = Vec::new();
     for provider in &store.providers {
         let Some(slug) = provider.gateway_slug.as_deref() else { continue };
@@ -368,14 +391,19 @@ pub fn models(store: &Store, catalog: &models_dev::Catalog) -> Vec<GatewayModel>
 /// containing `/`), then an aggregate's bare public id, which clients set up
 /// before aggregates had a prefix still send.
 pub fn resolve(store: &Store, model: &str) -> Option<Target> {
+    resolve_with(store, model, store.router.gateway_sources)
+}
+
+/// [`resolve`] against the kinds `sources` turns on rather than the gateway's.
+pub fn resolve_with(store: &Store, model: &str, sources: router::ModelSources) -> Option<Target> {
     let model = model.trim();
-    let enabled = || store.aggregates.iter().filter(|aggregate| aggregate.enabled);
+    let enabled = || store.aggregates.iter().filter(|aggregate| sources.aggregate && aggregate.enabled);
     if let Some(aggregate) = enabled().find(|aggregate| aggregate_id(store, aggregate) == model) {
         return Some(Target::Aggregate { public_id: aggregate.public_model_id.clone() });
     }
     let provider = model.split_once('/').and_then(|(slug, model_id)| {
         let provider = store.providers.iter().find(|provider| provider.gateway_slug.as_deref() == Some(slug))?;
-        (provider.has_route_credentials() && served_models(provider).contains(&model_id))
+        (sources.admits_provider(provider) && provider.has_route_credentials() && served_models(provider).contains(&model_id))
             .then(|| Target::Provider { provider_id: provider.id.clone(), model_id: model_id.to_owned() })
     });
     provider.or_else(|| enabled().find(|aggregate| aggregate.public_model_id == model)
@@ -469,6 +497,38 @@ mod tests {
         assert_eq!(resolve(&store, "pool/relay-a/m1"), Some(Target::Aggregate { public_id: "relay-a/m1".into() }));
         assert_eq!(resolve(&store, "relay-a/m1"), Some(Target::Provider { provider_id: "a".into(), model_id: "m1".into() }),
             "a relay's own id is never taken by an aggregate's bare public id");
+    }
+
+    #[test]
+    fn kinds_turned_off_are_neither_listed_nor_resolved() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = models_dev::load(dir.path());
+        let mut store = Store { providers: vec![
+            provider("a", "Relay A", "https://a.example/v1"),
+            router::Provider { api_key: String::new(), account_source: Some(super::super::account_sources::SourceKind::Workbuddy),
+                ..provider("c", "WorkBuddy", "https://copilot.tencent.com/v2") },
+        ], ..Default::default() };
+        store.aggregates.push(aggregation::AggregateModel { id: "agg".into(), public_model_id: "mix".into(), ..Default::default() });
+        assign_slugs(&mut store);
+        let kinds = |store: &Store| {
+            let mut kinds: Vec<_> = models(store, &catalog).into_iter().map(|model| model.kind).collect();
+            kinds.dedup();
+            kinds
+        };
+        assert_eq!(kinds(&store), [ModelKind::Relay, ModelKind::Account]);
+        store.router.gateway_sources.account = false;
+        assert_eq!(kinds(&store), [ModelKind::Relay]);
+        assert_eq!(resolve(&store, "workbuddy/m1"), None, "an account source turned off is refused");
+        assert!(resolve(&store, "relay-a/m1").is_some());
+        assert_eq!(all_models(&store, &catalog).len(), 4, "every model is still counted");
+        store.router.gateway_sources.relay = false;
+        assert_eq!(resolve(&store, "relay-a/m1"), None);
+        assert_eq!(resolve(&store, "pool/mix"), Some(Target::Aggregate { public_id: "mix".into() }));
+        store.router.gateway_sources.aggregate = false;
+        assert_eq!(resolve(&store, "pool/mix"), None);
+        assert_eq!(resolve(&store, "mix"), None, "nor by its bare id");
+        assert!(resolve_with(&store, "workbuddy/m1", router::ModelSources::default()).is_some(),
+            "other consumers resolve with their own kinds");
     }
 
     #[test]

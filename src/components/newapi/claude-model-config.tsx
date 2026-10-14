@@ -9,9 +9,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import type { ClaudeModels, ClaudeOneM } from "@/types/clients";
 import type { NewApiProvider } from "@/types/newapi";
 
-export function ClaudeModelConfig({ provider, models, selected, mapping, defaultModel, disabled,
+export function ClaudeModelConfig({ provider, labelOf, smallContext, models, selected, mapping, defaultModel, disabled,
   oneM, clientVersion, onSelectedChange, onMappingChange, onOneMChange }: {
   provider?: NewApiProvider;
+  /** Labels and known small contexts of models from several sources. */
+  labelOf?: (id: string) => string;
+  smallContext?: (id: string) => boolean;
   models: string[];
   selected: string[];
   mapping: ClaudeModels;
@@ -26,7 +29,7 @@ export function ClaudeModelConfig({ provider, models, selected, mapping, default
   const { t } = useTranslation();
   const [search, setSearch] = useState("");
   const versionState = pickerVersionState(clientVersion);
-  const label = (id: string) => provider?.models.find(model => model.id === id)?.displayName || id;
+  const label = (id: string) => labelOf?.(id) ?? (provider?.models.find(model => model.id === id)?.displayName || id);
   const query = search.trim().toLowerCase();
   const filtered = models.filter(id => (id + " " + label(id)).toLowerCase().includes(query));
 
@@ -94,7 +97,7 @@ export function ClaudeModelConfig({ provider, models, selected, mapping, default
             const oneMEnabled = oneM[role];
             // A known sub-1M context must not be marked; the backend drops the
             // mark too, so the checkbox is pinned off instead of lying.
-            const oneMUnavailable = knownSmallContext(effectiveContext(provider, modelId));
+            const oneMUnavailable = smallContext ? !!modelId && smallContext(modelId) : knownSmallContext(effectiveContext(provider, modelId));
             return <tr key={role} className="border-t">
               <th scope="row" className="px-3 py-2 text-left font-medium">
                 <Label htmlFor={"client-role-" + role}>{role === "subagent" ? t("clients.subagent") : role[0].toUpperCase() + role.slice(1)}</Label>

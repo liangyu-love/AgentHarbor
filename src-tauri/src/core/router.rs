@@ -146,8 +146,12 @@ pub struct RouterSettings {
     /// Explicit external consumers need the aggregate listener independently
     /// of a managed client injection.
     pub aggregate_external_enabled: bool,
-    /// Codex aggregate target. A missing referenced target never selects a substitute.
+    /// Codex's default aggregate: its startup model, chosen explicitly. A
+    /// missing referenced target never selects a substitute.
     pub aggregate_model_id: Option<String>,
+    /// The kinds of model Codex's menu offers. None until the user chooses;
+    /// see [`codex_sources`] for what earlier builds mean.
+    pub codex_sources: Option<ModelSources>,
     /// Independent search service used when a Chat model calls a hosted tool.
     /// None chooses the current Command card, or the sole available search card.
     pub web_search_provider_id: Option<String>,
@@ -162,6 +166,43 @@ pub struct RouterSettings {
     /// What gateway ids of aggregates start with (`pool/gpt-5.5`), unless an
     /// aggregate names its own; sets them apart from a relay's same model.
     pub gateway_aggregate_prefix: String,
+    /// The kinds of model the gateway serves to its keys.
+    pub gateway_sources: ModelSources,
+}
+
+/// The kinds of model a consumer is offered — relays, shared account sources
+/// and aggregates — each turned on or off on its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ModelSources {
+    pub relay: bool,
+    pub account: bool,
+    pub aggregate: bool,
+}
+
+impl Default for ModelSources {
+    fn default() -> Self {
+        Self { relay: true, account: true, aggregate: true }
+    }
+}
+
+impl ModelSources {
+    /// Whether a provider's models are offered: an account source's by
+    /// `account`, a relay's by `relay`.
+    pub fn admits_provider(&self, provider: &Provider) -> bool {
+        if provider.router_only() { self.account } else { self.relay }
+    }
+}
+
+/// The kinds of model Codex is offered. Before the switches existed Codex had
+/// either every relay and account source, or aggregates alone once one was
+/// chosen; a store that never chose keeps meaning that.
+pub fn codex_sources(store: &Store) -> ModelSources {
+    store.router.codex_sources.unwrap_or(ModelSources {
+        relay: store.router.aggregate_model_id.is_none(),
+        account: store.router.aggregate_model_id.is_none(),
+        aggregate: store.router.aggregate_model_id.is_some(),
+    })
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -179,6 +220,7 @@ impl Default for RouterSettings {
             enabled: false,
             aggregate_external_enabled: false,
             aggregate_model_id: None,
+            codex_sources: None,
             web_search_provider_id: None,
             web_search_model_id: None,
             accountless: false,
@@ -186,6 +228,7 @@ impl Default for RouterSettings {
             bearer_token: String::new(),
             gateway_keys: Vec::new(),
             gateway_aggregate_prefix: super::gateway::DEFAULT_AGGREGATE_PREFIX.into(),
+            gateway_sources: ModelSources::default(),
         }
     }
 }
@@ -426,6 +469,7 @@ fn model_supports_protocol(model: &newapi::Model, protocol: ModelProtocol) -> bo
 pub struct RouterView {
     pub enabled: bool,
     pub aggregate_model_id: Option<String>,
+    pub codex_sources: ModelSources,
     pub web_search_provider_id: Option<String>,
     pub web_search_model_id: Option<String>,
     pub access_mode: CodexAccessMode,
@@ -806,6 +850,7 @@ pub(crate) fn state_from_store_at(
         router: RouterView {
             enabled: store.router.enabled,
             aggregate_model_id: store.router.aggregate_model_id.clone(),
+            codex_sources: codex_sources(store),
             web_search_provider_id: store.router.web_search_provider_id.clone(),
             web_search_model_id: store.router.web_search_model_id.clone(),
             access_mode: store.codex_access_mode,
@@ -1068,6 +1113,16 @@ fn apply_routing_if_enabled(
     paths: &CodexPaths,
     store: &Store,
 ) -> Result<Option<newapi::AppliedConfig>, String> {
+    apply_routing_if_enabled_with(paths, store, true)
+}
+
+/// `keep_selection`: a model Codex selected that the menu still has stays
+/// selected; otherwise the default replaces it.
+fn apply_routing_if_enabled_with(
+    paths: &CodexPaths,
+    store: &Store,
+    keep_selection: bool,
+) -> Result<Option<newapi::AppliedConfig>, String> {
     // Provider edits may refresh an active injection, but must not reclaim
     // config.toml after another tool has selected its own provider.
     if !store.router.enabled || !config_snapshot::path(paths).is_file() {
@@ -1077,7 +1132,7 @@ fn apply_routing_if_enabled(
     if !route_is_ours(&document) {
         return Ok(None);
     }
-    Ok(Some(apply_routing_config(paths, store)?))
+    Ok(Some(apply_routing_config_with(paths, store, keep_selection)?))
 }
 
 pub(crate) fn active_routing_config_is_ours(paths: &CodexPaths) -> bool {
@@ -2044,7 +2099,35 @@ pub fn select_aggregate(paths: &CodexPaths, id: Option<String>) -> Result<StateC
         }
     }
     let previous = store.clone();
+    // A default aggregate is offered in the menu it starts Codex on.
+    if id.is_some() {
+        if let Some(sources) = store.router.codex_sources.as_mut() {
+            sources.aggregate = true;
+        }
+    }
     store.router.aggregate_model_id = id;
+    // An explicit default replaces the model Codex last selected.
+    let applied = apply_routing_if_enabled_with(paths, &store, false)?;
+    persist_connection_change(paths, &previous, &store, applied.is_some())?;
+    Ok(StateChange {
+        state: state_from_store_at(&store, super::router_proxy::is_running(), Some(paths)),
+        applied,
+    })
+}
+
+/// Turn the kinds of model Codex's menu offers on or off. Turning aggregates
+/// off also drops a default aggregate; the active relay becomes the default.
+pub fn set_codex_sources(paths: &CodexPaths, sources: ModelSources) -> Result<StateChange, String> {
+    let _guard = store_write_guard()?;
+    let mut store = load_store_unlocked(paths)?;
+    let previous = store.clone();
+    store.router.codex_sources = Some(sources);
+    if !sources.aggregate {
+        store.router.aggregate_model_id = None;
+    }
+    if store.router.enabled && store.codex_access_mode == CodexAccessMode::Router {
+        codex_default_model(&store)?;
+    }
     let applied = apply_routing_if_enabled(paths, &store)?;
     persist_connection_change(paths, &previous, &store, applied.is_some())?;
     Ok(StateChange {
@@ -2053,22 +2136,53 @@ pub fn select_aggregate(paths: &CodexPaths, id: Option<String>) -> Result<StateC
     })
 }
 
+/// An aggregate the router can serve: enabled, with an enabled member on a
+/// provider that routes the member's model.
+fn aggregate_routable(store: &Store, aggregate: &super::aggregation::AggregateModel) -> bool {
+    aggregate.enabled
+        && aggregate.members.iter().any(|member| {
+            member.enabled
+                && store.providers.iter().any(|provider| {
+                    provider.id == member.provider_id && provider.can_route_model(&member.actual_model_id)
+                })
+        })
+}
+
+/// The model Codex starts on: the default aggregate when one is chosen,
+/// else the active relay's model among the kinds Codex is offered, else the
+/// first aggregate it is offered.
+pub(crate) fn codex_default_model(store: &Store) -> Result<String, String> {
+    if let Some(id) = &store.router.aggregate_model_id {
+        // An explicit choice never falls back to a substitute.
+        let aggregate = store
+            .aggregates
+            .iter()
+            .find(|aggregate| aggregate.id == *id && aggregate.enabled)
+            .ok_or("aggregation.errors.unavailable")?;
+        return Ok(aggregate.public_model_id.clone());
+    }
+    let sources = codex_sources(store);
+    let provider = effective_active_for(store, ModelProtocol::Responses)
+        .filter(|provider| sources.admits_provider(provider))
+        .or_else(|| store.providers.iter().find(|provider| provider.is_routable() && sources.admits_provider(provider)));
+    if let Some(provider) = provider {
+        return Ok(format!("{}::{}", provider.id, provider.model));
+    }
+    store
+        .aggregates
+        .iter()
+        .find(|aggregate| sources.aggregate && aggregate_routable(store, aggregate))
+        .map(|aggregate| aggregate.public_model_id.clone())
+        .ok_or_else(|| "newapi.errors.noActiveProvider".into())
+}
+
 fn codex_target_available(store: &Store) -> bool {
-    if let Some(id) = store.router.aggregate_model_id.as_deref() {
-        store.codex_access_mode == CodexAccessMode::Router
-            && store.aggregates.iter().any(|aggregate| {
-                aggregate.id == id
-                    && aggregate.enabled
-                    && aggregate.members.iter().any(|member| {
-                        member.enabled
-                            && store.providers.iter().any(|provider| {
-                                provider.id == member.provider_id
-                                    && provider.can_route_model(&member.actual_model_id)
-                            })
-                    })
-            })
-    } else {
-        effective_active_for(store, ModelProtocol::Responses).is_some()
+    match store.router.aggregate_model_id.as_deref() {
+        Some(id) => {
+            store.codex_access_mode == CodexAccessMode::Router
+                && store.aggregates.iter().any(|aggregate| aggregate.id == id && aggregate_routable(store, aggregate))
+        }
+        None => codex_default_model(store).is_ok(),
     }
 }
 
@@ -2546,34 +2660,20 @@ pub(crate) fn catalog_path(paths: &CodexPaths) -> PathBuf {
 fn aggregate_catalog_path(paths: &CodexPaths) -> PathBuf {
     paths.app_data_dir.join("aggregate-router-catalog.json")
 }
-fn selected_catalog_path(paths: &CodexPaths, store: &Store) -> PathBuf {
-    if store.router.aggregate_model_id.is_some() {
-        aggregate_catalog_path(paths)
-    } else {
-        catalog_path(paths)
-    }
-}
-pub(crate) fn aggregate_catalog_value(
-    app_data_dir: &std::path::Path,
-    codex_home: &std::path::Path,
-    store: &Store,
-) -> Value {
-    let catalog = models_dev::load(app_data_dir);
-    let official = super::model_catalog::official(codex_home, app_data_dir);
-    let models: Vec<_> = store
+/// Menu entries of the available aggregates, by their public ids.
+fn aggregate_menu_entries(store: &Store, catalog: &models_dev::Catalog, official: &[Value]) -> Vec<Value> {
+    store
         .aggregates
         .iter()
         .filter_map(|aggregate| {
-            let view = super::aggregation::project(store, aggregate, &catalog);
+            let view = super::aggregation::project(store, aggregate, catalog);
             view.projection.filter(|_| view.available).map(|projection| {
                 let mut entry = aggregate_catalog_entry(aggregate, &projection);
-                let model = matched_official_model(&official.models, &aggregate.public_model_id);
-                adopt_codex_behavior(&mut entry, model);
+                adopt_codex_behavior(&mut entry, matched_official_model(official, &aggregate.public_model_id));
                 entry
             })
         })
-        .collect();
-    serde_json::json!({"models":models})
+        .collect()
 }
 
 /// How many models the Codex desktop app shows: it asks its app-server for
@@ -2595,11 +2695,7 @@ pub struct CodexMenuOverflow {
 /// Codex reads it (in the order its app-server lists it).
 pub fn codex_menu_overflow(paths: &CodexPaths) -> Result<CodexMenuOverflow, String> {
     let store = load_store(paths)?;
-    let document = if store.router.aggregate_model_id.is_some() {
-        aggregate_catalog_value(&paths.app_data_dir, &paths.codex_home, &store)
-    } else {
-        catalog_value(&paths.app_data_dir, &paths.codex_home, &store)
-    };
+    let document = catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
     Ok(menu_overflow(&document))
 }
 
@@ -2619,12 +2715,8 @@ fn menu_overflow(document: &Value) -> CodexMenuOverflow {
 /// matching the original app's protocol. Official entries are borrowed read-only from
 /// the original app's catalog when it is present.
 pub(crate) fn write_catalog(paths: &CodexPaths, store: &Store) -> Result<PathBuf, String> {
-    let document = if store.router.aggregate_model_id.is_some() {
-        aggregate_catalog_value(&paths.app_data_dir, &paths.codex_home, store)
-    } else {
-        catalog_value(&paths.app_data_dir, &paths.codex_home, store)
-    };
-    let target = selected_catalog_path(paths, store);
+    let document = catalog_value(&paths.app_data_dir, &paths.codex_home, store);
+    let target = catalog_path(paths);
     let bytes =
         serde_json::to_vec_pretty(&document).map_err(|_| "newapi.errors.storage".to_owned())?;
     storage::write_atomic(&target, &bytes)
@@ -2635,12 +2727,8 @@ pub(crate) fn write_catalog(paths: &CodexPaths, store: &Store) -> Result<PathBuf
 /// Codex refreshes its account model cache after login. Keep the injected
 /// catalog file in sync without rewriting or reclaiming config.toml.
 pub(crate) fn refresh_catalog_if_changed(paths: &CodexPaths, store: &Store) -> Result<(), String> {
-    let expected = if store.router.aggregate_model_id.is_some() {
-        aggregate_catalog_value(&paths.app_data_dir, &paths.codex_home, store)
-    } else {
-        catalog_value(&paths.app_data_dir, &paths.codex_home, store)
-    };
-    let path = selected_catalog_path(paths, store);
+    let expected = catalog_value(&paths.app_data_dir, &paths.codex_home, store);
+    let path = catalog_path(paths);
     if std::fs::read(&path)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
@@ -2662,6 +2750,23 @@ pub(crate) fn catalog_value(
 ) -> Value {
     let mut models: Vec<Value> = Vec::new();
     let mut slugs = HashSet::new();
+    let sources = codex_sources(store);
+    // Capability history can inform a relay without expanding account access.
+    let official_metadata = super::model_catalog::official(codex_home, app_data_dir);
+    let models_dev = models_dev::load(app_data_dir);
+    // An aggregate is an explicit choice: it takes its public id from an
+    // official model of the same name.
+    let aggregates = if sources.aggregate {
+        aggregate_menu_entries(store, &models_dev, &official_metadata.models)
+    } else {
+        Vec::new()
+    };
+    // Aggregates lead the menu: the desktop app lists only its first page.
+    for entry in aggregates {
+        if entry["slug"].as_str().is_some_and(|slug| slugs.insert(slug.to_owned())) {
+            models.push(entry);
+        }
+    }
     // Retained login credentials/catalogs do not grant official model access
     // while the user explicitly selects accountless routing.
     if !store.router.accountless {
@@ -2676,16 +2781,14 @@ pub(crate) fn catalog_value(
             }
         }
     }
-    // Capability history can inform a relay without expanding account access.
-    let official_metadata = super::model_catalog::official(codex_home, app_data_dir);
-    let models_dev = models_dev::load(app_data_dir);
     let global_compression = store.global_compression();
-    // Any routable provider can back Codex: a non-Responses relay is reached
-    // through the router's protocol translation, so it belongs in the menu.
+    // Any routable provider of a kind Codex is offered can back it: a
+    // non-Responses relay is reached through the router's protocol
+    // translation, so it belongs in the menu.
     for provider in store
         .providers
         .iter()
-        .filter(|provider| provider.has_route_credentials())
+        .filter(|provider| provider.has_route_credentials() && sources.admits_provider(provider))
     {
         let mut provider_models: Vec<String> = provider
             .models
@@ -2745,6 +2848,8 @@ fn relay_menu_entry(
     );
     let alias = metadata.display_name.trim();
     let display_name = menu_display_name(&provider.name, alias, model_id);
+    let (levels, default_level) =
+        codex_reasoning_levels(&metadata, projection.reasoning, projection.default_reasoning);
     // Codex parses every entry in model_catalog_json as a complete model
     // definition during config/read. A short display-only entry makes that RPC
     // fail, which also blocks the desktop sign-in page.
@@ -2754,8 +2859,8 @@ fn relay_menu_entry(
         format!("{} → {model_id}", provider.name),
         projection.context_window,
         projection.output_limit,
-        projection.reasoning,
-        projection.default_reasoning,
+        levels,
+        default_level,
     );
     // A unified menu must not apply one provider's compaction threshold
     // globally to unrelated official/relay models.
@@ -2764,6 +2869,32 @@ fn relay_menu_entry(
     }
     adopt_codex_behavior(&mut entry, official);
     entry
+}
+
+/// Codex's reasoning menu for a relay model: its declared levels, with `none`
+/// added when the model can also switch thinking off. A model whose thinking
+/// is only a switch gets exactly on and off — no level it lacks is invented
+/// — with on first, where Codex lands when it switches models. Levels the
+/// user set by hand are shown as set.
+fn codex_reasoning_levels(
+    metadata: &model_metadata::ResolvedMetadata,
+    mut levels: Vec<Value>,
+    mut default_level: Option<String>,
+) -> (Vec<Value>, Option<String>) {
+    let switch = metadata.reasoning.supports != Some(false)
+        && metadata.reasoning.options.iter().any(|option| option.kind == "toggle");
+    if !switch
+        || metadata.reasoning.levels.source == model_metadata::source::MANUAL
+        || levels.iter().any(|level| level["effort"] == "none")
+    {
+        return (levels, default_level);
+    }
+    if levels.is_empty() {
+        levels.push(serde_json::json!({"effort": "high", "description": "Thinking on"}));
+        default_level = Some("high".into());
+    }
+    levels.push(serde_json::json!({"effort": "none", "description": "Thinking off"}));
+    (levels, default_level)
 }
 
 /// One entry of the menu a request would see, by slug: either a borrowed
@@ -2787,10 +2918,10 @@ pub(crate) fn catalog_entry_for_slug(
             .cloned();
     };
     let official_snapshot = super::model_catalog::official(codex_home, app_data_dir);
-    let provider = store
-        .providers
-        .iter()
-        .find(|provider| provider.id == provider_id && provider.has_route_credentials())?;
+    let sources = codex_sources(store);
+    let provider = store.providers.iter().find(|provider| {
+        provider.id == provider_id && provider.has_route_credentials() && sources.admits_provider(provider)
+    })?;
     // Mirror the menu's inclusion rules; a request for a model the menu does not
     // list must not silently gain an entry.
     let listed =
@@ -3394,11 +3525,19 @@ pub fn apply_routing_config(
     paths: &CodexPaths,
     store: &Store,
 ) -> Result<newapi::AppliedConfig, String> {
+    apply_routing_config_with(paths, store, true)
+}
+
+fn apply_routing_config_with(
+    paths: &CodexPaths,
+    store: &Store,
+    keep_selection: bool,
+) -> Result<newapi::AppliedConfig, String> {
     if store.codex_access_mode == CodexAccessMode::Native {
         return native_config::apply(paths, store);
     }
     subagents::validate(paths, store)?;
-    let applied = apply_local_router_config(paths, store)?;
+    let applied = apply_local_router_config(paths, store, keep_selection)?;
     cleanup_native_credentials(paths);
     Ok(applied)
 }
@@ -3412,6 +3551,7 @@ fn cleanup_native_credentials(paths: &CodexPaths) {
 fn apply_local_router_config(
     paths: &CodexPaths,
     store: &Store,
+    keep_selection: bool,
 ) -> Result<newapi::AppliedConfig, String> {
     use toml_edit::value;
     let _guard = config_snapshot::guard().map_err(config_update_error)?;
@@ -3419,12 +3559,8 @@ fn apply_local_router_config(
         return Err("newapi.errors.storage".into());
     }
     let (provider_key, default_model, namespace) = codex_connection(store)?;
-    let catalog = selected_catalog_path(paths, store);
-    let menu = if store.router.aggregate_model_id.is_some() {
-        aggregate_catalog_value(&paths.app_data_dir, &paths.codex_home, store)
-    } else {
-        catalog_value(&paths.app_data_dir, &paths.codex_home, store)
-    };
+    let catalog = catalog_path(paths);
+    let menu = catalog_value(&paths.app_data_dir, &paths.codex_home, store);
     let mut pending = None;
     let result = CodexConfigRepository::new(paths)
         .update(|original| {
@@ -3464,7 +3600,7 @@ fn apply_local_router_config(
             let selected = document.get("model")
                 .and_then(toml_edit::Item::as_str)
                 .filter(|selected| {
-                    store.router.aggregate_model_id.is_none()
+                    keep_selection
                         && route_is_ours(&document)
                         && menu_contains(&menu, selected)
                 })
@@ -3555,27 +3691,10 @@ fn apply_local_router_config(
     Ok(applied_config(result))
 }
 
+/// One menu for every kind of model: relays by `<provider>::<model>`,
+/// aggregates and official models by their ids, all through `/codex`.
 fn codex_connection(store: &Store) -> Result<(&'static str, String, &'static str), String> {
-    if let Some(id) = &store.router.aggregate_model_id {
-        let aggregate = store
-            .aggregates
-            .iter()
-            .find(|aggregate| aggregate.id == *id && aggregate.enabled)
-            .ok_or("aggregation.errors.unavailable")?;
-        Ok((
-            AGGREGATE_PROVIDER_KEY,
-            aggregate.public_model_id.clone(),
-            "aggregate",
-        ))
-    } else {
-        let provider = effective_active_for(store, ModelProtocol::Responses)
-            .ok_or("newapi.errors.noActiveProvider")?;
-        Ok((
-            CATALOG_PROVIDER_KEY,
-            format!("{}::{}", provider.id, provider.model),
-            "codex",
-        ))
-    }
+    Ok((CATALOG_PROVIDER_KEY, codex_default_model(store)?, "codex"))
 }
 
 /// Repair an enabled router configuration only when its critical fields are
@@ -3609,32 +3728,22 @@ pub(crate) fn routing_config_matches(paths: &CodexPaths, store: &Store) -> Resul
     {
         return Ok(false);
     }
-    let (provider_key, expected_model, namespace) = codex_connection(store)?;
+    let (provider_key, _, namespace) = codex_connection(store)?;
     let (original, document) = open_config(paths)?;
     let ownership_matches = config_snapshot::load(paths, original.as_deref().unwrap_or(""))
         .map_err(config_update_error)?
         .is_some_and(|snapshot| snapshot.subagents_match(store.codex_subagents.as_ref()));
     let expected_base = format!("http://127.0.0.1:{}/{namespace}/v1", store.router.port);
-    let expected_catalog = selected_catalog_path(paths, store).to_string_lossy().to_string();
-    let expected_menu = if store.router.aggregate_model_id.is_some() {
-        aggregate_catalog_value(&paths.app_data_dir, &paths.codex_home, store)
-    } else {
-        catalog_value(&paths.app_data_dir, &paths.codex_home, store)
-    };
+    let expected_catalog = catalog_path(paths).to_string_lossy().to_string();
+    let expected_menu = catalog_value(&paths.app_data_dir, &paths.codex_home, store);
     // Codex can persist a model selected during a conversation. A valid menu
-    // choice (official or relay) does not invalidate its provider. Explicit
-    // aggregate selection retains its existing configured-default behavior.
+    // choice (official, relay or aggregate) does not invalidate its provider;
+    // an explicit default is written when it is chosen.
     let selected_model_valid = document
         .get("model")
         .and_then(toml_edit::Item::as_str)
-        .is_some_and(|selected| {
-            if store.router.aggregate_model_id.is_some() {
-                selected == expected_model
-            } else {
-                menu_contains(&expected_menu, selected)
-            }
-        });
-    let catalog_current = std::fs::read(selected_catalog_path(paths, store))
+        .is_some_and(|selected| menu_contains(&expected_menu, selected));
+    let catalog_current = std::fs::read(catalog_path(paths))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .is_some_and(|catalog| catalog == expected_menu);
@@ -5610,6 +5719,34 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         };
         let catalog = catalog_value(&paths.app_data_dir, &paths.codex_home, &store);
         assert_eq!(catalog["models"][0]["context_window"], 128_000);
+    }
+
+    #[test]
+    fn codex_offers_thinking_off_only_to_models_that_can_switch_it() {
+        use model_metadata::{ReasoningOptionInfo, ResolvedMetadata};
+        let switch = |supports: bool| {
+            let mut metadata = ResolvedMetadata::default();
+            metadata.reasoning.supports = Some(supports);
+            metadata.reasoning.options = vec![ReasoningOptionInfo { kind: "toggle".into(), ..Default::default() }];
+            metadata
+        };
+        let efforts = |levels: &[Value]| levels.iter().map(|level| level["effort"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+        let level = |effort: &str| serde_json::json!({"effort": effort, "description": effort});
+        // MiMo: a switch and no levels gets on and off, on first.
+        let (levels, default) = codex_reasoning_levels(&switch(true), Vec::new(), None);
+        assert_eq!(efforts(&levels), ["high", "none"]);
+        assert_eq!(default.as_deref(), Some("high"));
+        // Levels of its own stay, with off after them.
+        let (levels, default) = codex_reasoning_levels(&switch(true), vec![level("low"), level("high"), level("max")], Some("high".into()));
+        assert_eq!(efforts(&levels), ["low", "high", "max", "none"]);
+        assert_eq!(default.as_deref(), Some("high"));
+        // Already declared, no switch, thinking unsupported, or set by hand: as declared.
+        assert_eq!(efforts(&codex_reasoning_levels(&switch(true), vec![level("none"), level("high")], None).0), ["none", "high"]);
+        assert!(codex_reasoning_levels(&ResolvedMetadata::default(), Vec::new(), None).0.is_empty());
+        assert!(codex_reasoning_levels(&switch(false), Vec::new(), None).0.is_empty());
+        let mut manual = switch(true);
+        manual.reasoning.levels.source = model_metadata::source::MANUAL.into();
+        assert!(codex_reasoning_levels(&manual, Vec::new(), None).0.is_empty());
     }
 
     #[test]
