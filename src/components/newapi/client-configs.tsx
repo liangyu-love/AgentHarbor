@@ -11,7 +11,7 @@ import {
   Unlink,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import { clientModels, clientProtocols, conflictScopes, exclusionOf, type Exclusion } from "@/lib/client-config";
+import { clientModels, clientProtocols, conflictScopes, exclusionOf, reloadHint, type Exclusion } from "@/lib/client-config";
 import { ConfigDialog } from "./client-config-dialog";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -60,7 +60,7 @@ const summarizeExclusions = (
 export function ClientConfigs({ providers, onOpenRelays, target }: {
   providers: NewApiProvider[];
   onOpenRelays?: () => void;
-  target: "claudeCode" | "opencode" | "pi";
+  target: "claudeCode" | "opencode" | "pi" | "harness";
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -182,7 +182,7 @@ export function ClientConfigs({ providers, onOpenRelays, target }: {
         title: t(reapplying.rebaseline ? "clients.reappliedRebaseline" : "clients.reapplied"),
         description: applied.warnings?.length
           ? applied.warnings.map((key) => t(key)).join(" ")
-          : t(reapplying.client.targetId === "pi" ? "clients.piReload" : "clients.restartHint"),
+          : t(reloadHint(reapplying.client.targetId)),
         variant: applied.warnings?.length ? "destructive" : "success",
       });
       setReapplying(null);
@@ -239,6 +239,8 @@ export function ClientConfigs({ providers, onOpenRelays, target }: {
         !clientModels(provider, protocols).includes(client.model ?? "") ||
         !!client.request?.providerIds.some((id) => !providers.some((p) => p.id === id && !exclusionOf(p, protocols, mode))));
 
+  // Harness writes into a profile it initialized itself; none yet means nothing to write.
+  const noHarnessProfile = target === "harness" && !client?.configured && !client?.harness?.profiles.length;
   const eligible = providers.filter((p) => !exclusionOf(p, protocols, mode));
   const noEligible = !!client && eligible.length === 0 && !aggregates.data?.models.some((model) => model.available);
   const reasons = noEligible ? summarizeExclusions(providers, protocols, mode, t) : [];
@@ -246,6 +248,8 @@ export function ClientConfigs({ providers, onOpenRelays, target }: {
   const facts: { key: string; value: string; mono?: boolean }[] = client?.configured
     ? [
         { key: "access", value: t(mode === "native" ? "clients.accessNative" : "clients.accessRouter") },
+        // Which Harness profile the routes went into; the others are untouched.
+        ...(target === "harness" ? [{ key: "profile", value: client.request?.harnessProfile ?? "—", mono: true }] : []),
         { key: "source", value: sourceName ?? "—" },
         modelIds?.length
           ? { key: "model", value: t("clients.factModels", { count: new Set(modelIds).size }) }
@@ -359,7 +363,7 @@ export function ClientConfigs({ providers, onOpenRelays, target }: {
               data-config-action
               variant={client.configured ? "outline" : "default"}
               className="h-8 gap-1.5 rounded-lg text-xs font-semibold shadow-sm"
-              disabled={actionsLocked || !!client.error}
+              disabled={actionsLocked || !!client.error || noHarnessProfile}
               onClick={() => setSelected(client)}
             >
               <Settings2 className="h-3.5 w-3.5" />
@@ -393,7 +397,7 @@ export function ClientConfigs({ providers, onOpenRelays, target }: {
       {client && (
         <>
           {facts.length > 0 ? (
-            <dl className="grid gap-3 sm:grid-cols-3" data-client-facts>
+            <dl className={cn("grid gap-3", facts.length > 3 ? "sm:grid-cols-2 xl:grid-cols-4" : "sm:grid-cols-3")} data-client-facts>
               {facts.map((fact) => (
                 <div key={fact.key} className="harbor-well min-w-0 px-4 py-3">
                   <dt className="poster-kicker text-[10px] text-muted-foreground">{t(`clients.fact.${fact.key}`)}</dt>
@@ -405,6 +409,13 @@ export function ClientConfigs({ providers, onOpenRelays, target }: {
             </dl>
           ) : (
             <p className="harbor-well p-4 text-sm leading-relaxed text-muted-foreground">{t(`clients.${client.targetId}Hint`)}</p>
+          )}
+
+          {noHarnessProfile && (
+            <p role="status" data-harness-no-profile
+              className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-800 dark:text-amber-200">
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />{t("clients.harnessNoProfiles", { home: client.harness?.home ?? "~/.dsh" })}
+            </p>
           )}
 
           <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">

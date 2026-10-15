@@ -654,6 +654,12 @@ api.targets.files = async () => [
     keyFile("certificate", "cursor-ca.crt", "C:/synthetic/.codex/agentharbor/cursor/cursor-ca.crt", true),
     keyFile("conversations", "conversations.db", "C:/synthetic/.codex/agentharbor/cursor/conversations.db", false),
   ] },
+  { client: "harness", files: [
+    keyFile("profiles", "profiles/", "C:/synthetic/.dsh/profiles", true, true),
+    keyFile("credentials", ".credentials.yaml", "C:/synthetic/.dsh/.credentials.yaml", true),
+    keyFile("homePatch", "cordis.patch.yml", "C:/synthetic/.dsh/cordis.patch.yml", false),
+    keyFile("sessions", "sessions/", "C:/synthetic/.dsh/sessions", true, true),
+  ] },
 ];
 // Cursor injection: a settings record the switches change, as cursor_inject does.
 const cursorFixture = (): CursorStatus => {

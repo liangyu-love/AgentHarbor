@@ -11,6 +11,8 @@ pub enum TargetId {
     ClaudeCode,
     OpenCode,
     Pi,
+    /// DeepSeek Harness (`dsh`), configured through a profile's Cordis patch.
+    Harness,
 }
 
 /// Paths for the Codex catalog-backed conversation store. Claude Code uses its

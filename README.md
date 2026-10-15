@@ -16,7 +16,7 @@
 
 ## What it is
 
-Codex, Claude Code, Claude Desktop, OpenCode, Pi and Cursor each keep accounts, model settings, sessions, MCP servers and instructions in their own files. Switching accounts when a quota runs out, wiring in third-party relays, or cleaning up sessions usually means hand-editing TOML, JSON and SQLite.
+Codex, Claude Code, Claude Desktop, OpenCode, Pi, DeepSeek Harness and Cursor each keep accounts, model settings, sessions, MCP servers and instructions in their own files. Switching accounts when a quota runs out, wiring in third-party relays, or cleaning up sessions usually means hand-editing TOML, JSON and SQLite.
 
 AgentHarbor is a Tauri 2 + React + Rust desktop app that does this for you. It runs a local model router (`127.0.0.1:43127`), writes each client's configuration as a reversible, field-level change with a backup, and shows what is actually happening on one dashboard. Codex is the primary integration; the other clients are supported through the same relays and router.
 
@@ -26,7 +26,7 @@ AgentHarbor is a Tauri 2 + React + Rust desktop app that does this for you. It r
 | --- | --- |
 | **Dashboard** | Routing topology of every client, today's token pulse, recent sessions, and a foldable map of each client's data directory and key files |
 | **Relays** | Manage many providers; per-model protocol (Responses, Chat Completions, Anthropic Messages), connectivity tests, New API balance, import/export, and a capability catalog with per-relay match preview (context, output limit, prices) from a bundled [models.dev](https://github.com/anomalyco/models.dev) snapshot |
-| **Model inject** | Connect relay models and official-account models to Codex (local Router or direct Native, accountless mode, subagent defaults), Claude Code, Claude Desktop, OpenCode and Pi — preview, apply and restore, each with backups. Through the router, relays, account sources and aggregates combine freely. Cursor IDE and cursor-agent use them for the Agent, Tab and commit messages (see below) |
+| **Model inject** | Connect relay models and official-account models to Codex (local Router or direct Native, accountless mode, subagent defaults), Claude Code, Claude Desktop, OpenCode, Pi and DeepSeek Harness — preview, apply and restore, each with backups. Through the router, relays, account sources and aggregates combine freely. Cursor IDE and cursor-agent use them for the Agent, Tab and commit messages (see below) |
 | **Local router** | Protocol translation between the three wire formats, model aggregation with priority tiers, failover, first-token timeout and live member state, plus request-level route diagnostics |
 | **Gateway** | One local address and named keys give any agent that takes a base URL and an API key every enabled model (see below) |
 | **Accounts** | Codex: ChatGPT OAuth login, quota windows, manual or threshold-based automatic switching (a running Codex keeps its task until the old account is used up). Account sources: ChatGPT (Sign in with ChatGPT), WorkBuddy, WorkBuddy AI, GitHub Copilot, Gemini CLI, Antigravity, Kiro, Grok and Cursor, which can be shared with model inject (see below) |
@@ -55,7 +55,17 @@ The access mode is independent of the upstream protocol and the network route.
 
 ## Combining model sources
 
-The Claude Code, OpenCode and Pi inject dialogs have the same three switches in router mode: turning a kind off drops its chosen relays or aggregates and hides them. Claude Code with one relay, or with aggregates alone, works as before; with several relays, or relays and aggregates, it reaches them through the local router under the gateway's `short name/model` ids, and its `/model` menu lists every chosen model.
+The Claude Code, OpenCode, Pi and DeepSeek Harness inject dialogs have the same three switches in router mode: turning a kind off drops its chosen relays or aggregates and hides them. Claude Code with one relay, or with aggregates alone, works as before; with several relays, or relays and aggregates, it reaches them through the local router under the gateway's `short name/model` ids, and its `/model` menu lists every chosen model.
+
+## How DeepSeek Harness connects
+
+DeepSeek Harness (`dsh`, Harness Desktop) runs its custom models through pi-ai routes declared in a profile's `cordis.patch.yml`. Its inject dialog writes into one profile you choose (`desktop`, `web`, or any other under `$DSH_HOME/profiles`; `$DSH_HOME` defaults to `~/.dsh`):
+
+- **Routes**: one `agentharbor-*` provider per relay and protocol (a route speaks one of Chat Completions, Responses or Anthropic Messages), plus one for the chosen aggregates, added to the profile's own `llm-pi-ai` entry next to your providers. A patch entry's `config` replaces the composed one as a whole, so AgentHarbor never adds a second `llm-pi-ai` entry.
+- **Keys**: the routes name a credential reference; the value goes into Harness's `$DSH_HOME/.credentials.yaml` (`AGENTHARBOR_ROUTER_TOKEN` for the local router, one `AGENTHARBOR_RELAY_*` per relay in direct mode). Account sources and aggregates are reached through the router only, which keeps and refreshes their credentials.
+- **Default model**: optionally, `agent-default-model` starts new sessions on the chosen model. Picking another model in Harness afterwards is normal use, not a conflict, and a restore leaves your pick in place.
+- Comments, `!!js` expressions and every other entry are kept as they are; each edit is read back and refused if the file would not read exactly as intended. Restoring puts the files back byte for byte when nothing else changed, otherwise field by field; an empty patch goes back as `[]`, which Harness needs to start. Quitting AgentHarbor withdraws router routes the same way.
+- Harness reads the profile patch again for the next request. A `$DSH_HOME/cordis.patch.yml` entry for the same id outranks the profile and is reported, never edited.
 
 ## How Cursor connects
 
@@ -124,6 +134,7 @@ An account source is a subscription whose own sign-in serves models. Sign in on 
 - **Provider credentials** live in `newapi-providers.dat`, encrypted with DPAPI for the current user on Windows and stored owner-only (`0600`, not encrypted) elsewhere. The UI never reads saved secrets back; leaving a field empty keeps the stored value.
 - **Account source credentials** live in `account-sources.dat` with the same protection. Their tokens are used only when the router forwards a request and are never shown in the UI.
 - **Cursor**: the local certificate and its key live in the `cursor` folder of the AgentHarbor data directory, the key readable by its owner only. The certificate is name-constrained to `cursor.sh` and `cursor.com`. Quitting AgentHarbor restores its local identity writes, Cursor's `settings.json` and `CURSOR_API_ENDPOINT`; the next start connects it again.
+- **DeepSeek Harness** keeps the keys its routes name in its own `.credentials.yaml` (written owner-only, `0600`, on macOS and Linux, as Harness requires; not encrypted); the profile patch holds only the reference names.
 - **Gateway keys** are stored encrypted with the provider credentials. The gateway listens on `127.0.0.1` only and accepts gateway keys only; upstream requests carry each relay's own credentials, never a gateway key.
 - **The local router** requires a local token. Requests to relays never carry the official account's credentials.
 - **Client configuration** is applied field by field with a backup. Fields edited by you or other tools are reported as conflicts instead of being overwritten silently.
@@ -157,7 +168,7 @@ $env:AGENT_HARBOR_CODEX_HOME = Join-Path (Get-Location) '.runtime-test\codex'
 pnpm tauri dev
 ```
 
-This also separates the single-instance lock and WebView data. `AGENT_HARBOR_CLIENT_HOME` does the same for Claude Code, Claude Desktop, OpenCode, Pi and Cursor IDE paths (and leaves `CURSOR_API_ENDPOINT` alone).
+This also separates the single-instance lock and WebView data. `AGENT_HARBOR_CLIENT_HOME` does the same for Claude Code, Claude Desktop, OpenCode, Pi, DeepSeek Harness (`.dsh` under it instead of `DSH_HOME`) and Cursor IDE paths (and leaves `CURSOR_API_ENDPOINT` alone).
 
 **Checks.**
 
@@ -170,6 +181,7 @@ pnpm release         # signed release build: installer, updater signature, lates
 
 - The frontend tests need Playwright and Chromium. Use `PLAYWRIGHT_MODULE_PATH` and `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` if they are not on the default search path. Set `FRONTEND_QA_SCOPE` to run a single group.
 - Tests against a real Codex binary are skipped by default. Set `AGENTHARBOR_TEST_CODEX_BIN` and run `cargo test --manifest-path src-tauri/Cargo.toml -- --ignored real_codex`. They use temporary homes, synthetic credentials and loopback upstreams only.
+- The real DeepSeek Harness test is skipped the same way: set `AGENTHARBOR_TEST_DSH_BIN` to an installed `dsh` (or its `lib/bin.js`, run with Node) and run `cargo test --manifest-path src-tauri/Cargo.toml -- --ignored real_harness`. It initializes a profile in a temporary `DSH_HOME` and drives each route kind through the router to a loopback upstream.
 - Release builds sign their installer for the in-app updater. The private key is read from `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PATH` or `~/.tauri/agentharbor-updater.key` and never enters the repository; keep a backup, since installs only accept updates signed with it.
 - To release, bump the version (`package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`), commit, and push an annotated tag whose message is the release notes: `git tag -a v1.0.2 -F notes.md && git push origin v1.0.2`. GitHub Actions runs the tests, builds and signs with the `TAURI_SIGNING_PRIVATE_KEY` repository secret, and drafts the release with the four files above. Publish the draft as the latest release (not a pre-release): the updater reads `releases/latest/download/latest.json`. Running the Release workflow by hand builds the files as artifacts without a release.
 - CI runs the type check, the Rust tests and the frontend regressions on every push to `main` and every pull request.

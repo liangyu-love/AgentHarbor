@@ -336,7 +336,7 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
   assert.equal(structure.panelId, "client-panel-claudeDesktop", "the card is the console's Claude Desktop panel");
   assert.equal(structure.panelShown, true);
   assert.equal(structure.tabSelected, "true", "the panel is labelled by its selected tab");
-  assert.deepEqual(structure.clientPanels, ["client-panel-claudeCode", "client-panel-opencode", "client-panel-pi"],
+  assert.deepEqual(structure.clientPanels, ["client-panel-claudeCode", "client-panel-opencode", "client-panel-pi", "client-panel-harness"],
     "each CLI client has its own panel next to the Desktop one");
   assert.equal(structure.clientsAlerts, 0, "the CLI client panels stay error-free next to the Desktop card");
   assert.equal(structure.nested, false, "the card must not be nested inside a CLI client panel");

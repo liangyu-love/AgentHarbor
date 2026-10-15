@@ -69,6 +69,13 @@ pub struct ClientOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_model_ids: Option<Vec<String>>,
     pub auth_field: ClaudeAuthField,
+    /// The DeepSeek Harness profile (`$DSH_HOME/profiles/<name>`) written.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness_profile: Option<String>,
+    /// Whether Harness's default model for new sessions is managed too;
+    /// absent means yes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness_default_model: Option<bool>,
 }
 
 impl ConfigRequest {
@@ -111,6 +118,8 @@ impl ConfigRequest {
                 ModelProtocol::AnthropicMessages,
                 protocol,
             )
+        } else if self.target_id == TargetId::Harness {
+            super::harness::PROTOCOLS.contains(&protocol)
         } else {
             adapter(self.target_id).is_ok_and(|adapter| adapter.protocols().contains(&protocol))
         }
@@ -201,6 +210,7 @@ pub(super) fn router_source_prefix(target: TargetId) -> &'static str {
         TargetId::OpenCode => "/clients/opencode",
         TargetId::Codex => "/clients/codex",
         TargetId::Pi => "/clients/pi",
+        TargetId::Harness => "/clients/harness",
     }
 }
 

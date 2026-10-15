@@ -1,5 +1,6 @@
 import { testClaudeSupport } from "./test-claude-support.mjs";
 import { testPiIntegration } from "./test-pi-integration.mjs";
+import { testHarnessIntegration } from "./test-harness-integration.mjs";
 import { testImageDownload } from "./test-image-download.mjs";
 import { testImageApi } from "./test-image-api.mjs";
 import { testOAuthLogin } from "./test-oauth-login.mjs";
@@ -106,6 +107,8 @@ try {
 
   if (process.env.FRONTEND_QA_SCOPE === "pi-integration") {
     await testPiIntegration({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "harness-integration") {
+    await testHarnessIntegration({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "claude-support") {
     await testClaudeSupport({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "image-download") {
@@ -1442,6 +1445,7 @@ try {
   await testClaudeSessions({ page, reset, captureDir });
   await testClaudeSupport({ page, reset, captureDir });
   await testPiIntegration({ page, reset, captureDir });
+  await testHarnessIntegration({ page, reset, captureDir });
   await testThreadUiFixes({ page, reset, captureDir });
   await testAggregation({ page, reset, captureDir });
   await testCodexSubagents({ page, reset, captureDir });

@@ -112,6 +112,8 @@ export async function testAggregationBoard({ page, reset, captureDir }) {
   assert.equal(await panel("codex").isHidden(), true);
   assert.equal(await page.evaluate(() => localStorage.getItem("agentharbor.inject-client.v1")), "cursor");
   await page.keyboard.press("ArrowUp");
+  await eventually(async () => assert.equal(await tab("harness").getAttribute("aria-selected"), "true"));
+  await page.keyboard.press("ArrowUp");
   await eventually(async () => assert.equal(await tab("pi").getAttribute("aria-selected"), "true"));
   await page.locator('[data-route-shortcut="claudeDesktop"]').click();
   await page.waitForFunction(() => document.querySelector('[data-client-tab="claudeDesktop"]')?.getAttribute("aria-selected") === "true");

@@ -81,13 +81,13 @@ export async function testPiIntegration({ page, reset, captureDir }) {
 
   await seed({ allClients: true, folded: true });
   const nav = page.getByRole("navigation", { name: await tr("newapi.configShortcuts") });
-  assert.equal(await nav.locator("button[data-route-shortcut]").count(), 7);
+  assert.equal(await nav.locator("button[data-route-shortcut]").count(), 8);
   for (const mark of await nav.locator("img").all()) {
     assert.equal(await mark.evaluate(image => image.complete && image.naturalWidth > 0), true, "brand marks are actual loaded images");
   }
   for (const [label, target] of [["newapi.routeSourcePi", "client-config-pi"], ["newapi.routeSourceClaudeCode", "client-config-claudeCode"],
     ["newapi.routeSourceOpenCode", "client-config-opencode"], ["newapi.routeSourceCodex", "newapi-routing-title"],
-    ["newapi.routeSourceCursor", "cursor-access-title"],
+    ["newapi.routeSourceCursor", "cursor-access-title"], ["newapi.routeSourceHarness", "client-config-harness"],
     ["newapi.routeSourceClaudeDesktop", "claude-desktop-title"], ["aggregation.title", "aggregation-title"]]) {
     await nav.getByRole("button", { name: await tr(label), exact: true }).click();
     await page.waitForFunction(target => {

@@ -11,7 +11,7 @@ export type Link = "routed" | "direct" | "idle";
 export type Client = Exclude<ShortcutTarget, "aggregation">;
 export type Destination = "official" | "relays" | "aggregation";
 
-export const CLIENTS: Client[] = ["codex", "claudeCode", "claudeDesktop", "opencode", "pi", "cursor"];
+export const CLIENTS: Client[] = ["codex", "claudeCode", "claudeDesktop", "opencode", "pi", "harness", "cursor"];
 export const DESTINATIONS: Destination[] = ["official", "relays", "aggregation"];
 
 /** The status dot of a connection, shared by the topology and the client console. */
@@ -48,7 +48,7 @@ export function useRoutingLinks(router: NewApiRouterView | undefined) {
     uses.codex = links.codex === "direct" ? ["relays"]
       : router?.aggregateModelId ? ["aggregation"]
       : router?.accountless ? ["relays"] : ["official", "relays"];
-    for (const target of ["claudeCode", "opencode", "pi"] as const) {
+    for (const target of ["claudeCode", "opencode", "pi", "harness"] as const) {
       const status = clients.data?.find((client) => client.targetId === target);
       const request = status?.request;
       links[target] = !status?.configured ? "idle" : request?.accessMode === "router" ? "routed" : "direct";

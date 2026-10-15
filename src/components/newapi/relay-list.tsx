@@ -16,7 +16,7 @@ import type { ProviderState } from "@/components/newapi/use-provider-state";
 import type { RelayView } from "@/components/newapi/use-relay-view";
 import type { NewApiProvider } from "@/types/newapi";
 
-const CONSUMER_ORDER: RelayConsumer[] = ["codex", "claudeCode", "claudeDesktop", "opencode", "pi"];
+const CONSUMER_ORDER: RelayConsumer[] = ["codex", "claudeCode", "claudeDesktop", "opencode", "pi", "harness"];
 const GRID = "grid items-start gap-x-4 gap-y-3 md:grid-cols-2 2xl:grid-cols-3";
 
 function Stat({ label, children, caption, className }: { label: string; children: React.ReactNode; caption: React.ReactNode; className?: string }) {

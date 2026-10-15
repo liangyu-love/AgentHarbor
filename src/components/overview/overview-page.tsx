@@ -74,7 +74,7 @@ function OrbitHub({ links, running, onOpen }: { links: Record<Client, Link>; run
           <path id={`${id}-ring`} d="M160,160 m-157,0 a157,157 0 1,1 314,0 a157,157 0 1,1 -314,0" />
         </defs>
         <g className="orbit-text-spin">
-          <text className="orbit-text"><textPath href={`#${id}-ring`}>AGENTHARBOR · LOCAL ROUTER · CODEX · CLAUDE · OPENCODE · PI · CURSOR ·</textPath></text>
+          <text className="orbit-text"><textPath href={`#${id}-ring`}>AGENTHARBOR · LOCAL ROUTER · CODEX · CLAUDE · OPENCODE · PI · HARNESS · CURSOR ·</textPath></text>
         </g>
         <circle cx="160" cy="160" r={ORBIT} fill="none" className="dash-orbit-ring stroke-muted-foreground/30" strokeWidth="1.2" strokeDasharray="2 7" />
         <circle cx="160" cy="160" r={ORBIT - 46} fill="none" className="stroke-muted-foreground/20" strokeDasharray="1 6" />
@@ -285,6 +285,7 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
   const parentDir = (file: string) => file.replace(/[\\/][^\\/]*$/, "");
   const configDir = (target: string) => parentDir(clientConfigs.data?.find((client) => client.targetId === target)?.path ?? "");
   const filesOf = (key: string) => clientFiles.data?.find((group) => group.client === key);
+  const harness = clientConfigs.data?.find((client) => client.targetId === "harness");
   // A client whose key files exist is located even when no other source names its directory.
   const locatedDir = (key: string) => {
     const files = filesOf(key)?.files ?? [];
@@ -301,6 +302,10 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
       ok: !!clientConfigs.data?.find((client) => client.targetId === "opencode")?.configured, detail: t("workspace.dataConfigFile") },
     { key: "pi", name: "Pi", mark: <ClientGlyph client="pi" className="h-4 w-4" />, path: configDir("pi"),
       ok: !!clientConfigs.data?.find((client) => client.targetId === "pi")?.configured, detail: t("workspace.dataConfigFile") },
+    { key: "harness", name: "DeepSeek Harness", mark: <ClientGlyph client="harness" className="h-4 w-4" />,
+      path: harness?.harness?.home ?? "", ok: !!harness?.configured,
+      detail: harness?.configured && harness.request?.harnessProfile
+        ? t("workspace.dataHarnessProfile", { profile: harness.request.harnessProfile }) : t("workspace.dataConfigFile") },
     { key: "cursor", name: "Cursor", mark: <ClientGlyph client="cursor" className="h-4 w-4" />,
       path: cursor.data?.settingsPath ? parentDir(cursor.data.settingsPath) : "",
       ok: !!cursor.data && (cursor.data.ideApplied || cursor.data.cliApplied),

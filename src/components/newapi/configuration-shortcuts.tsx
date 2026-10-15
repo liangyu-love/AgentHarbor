@@ -4,8 +4,9 @@ import { cn } from "@/lib/utils";
 import claudeMark from "@/assets/client-marks/claude.svg";
 import codexMark from "@/assets/client-marks/openai.svg";
 import openCodeMark from "@/assets/client-marks/opencode.svg";
+import { HARNESS_MARK_PATH, HARNESS_MARK_VIEWBOX } from "./harness-mark";
 
-export type ShortcutTarget = "codex" | "claudeCode" | "claudeDesktop" | "opencode" | "pi" | "cursor" | "aggregation";
+export type ShortcutTarget = "codex" | "claudeCode" | "claudeDesktop" | "opencode" | "pi" | "cursor" | "harness" | "aggregation";
 
 // Provider marks are shared with the client cards; Claude's small badge
 // distinguishes desktop from CLI without adding a second text row.
@@ -20,6 +21,10 @@ export function ClientGlyph({ client, className }: { client: ShortcutTarget; cla
   // Cursor's cube from its official favicon, following the foreground colour.
   if (client === "cursor") return <svg viewBox="88 64 336 384" className={className} fill="currentColor" aria-hidden>
     <path d="m415.035 156.35-151.503-87.4695c-4.865-2.8094-10.868-2.8094-15.733 0l-151.4969 87.4695c-4.0897 2.362-6.6146 6.729-6.6146 11.459v176.383c0 4.73 2.5249 9.097 6.6146 11.458l151.5039 87.47c4.865 2.809 10.868 2.809 15.733 0l151.504-87.47c4.089-2.361 6.614-6.728 6.614-11.458v-176.383c0-4.73-2.525-9.097-6.614-11.459zm-9.516 18.528-146.255 253.32c-.988 1.707-3.599 1.01-3.599-.967v-165.872c0-3.314-1.771-6.379-4.644-8.044l-143.645-82.932c-1.707-.988-1.01-3.599.968-3.599h292.509c4.154 0 6.75 4.503 4.673 8.101h-.007z" />
+  </svg>;
+  // Harness's own whale, following the foreground colour as its sidebar does.
+  if (client === "harness") return <svg viewBox={HARNESS_MARK_VIEWBOX} className={className} fill="currentColor" aria-hidden>
+    <path d={HARNESS_MARK_PATH} />
   </svg>;
   const claude = client === "claudeCode" || client === "claudeDesktop";
   const mark = claude ? claudeMark : client === "opencode" ? openCodeMark : codexMark;
@@ -40,6 +45,7 @@ export const shortcutEntries: Record<ShortcutTarget, { label: string; fold: stri
   opencode: { label: "newapi.routeSourceOpenCode", fold: "client-configs", target: "client-config-opencode" },
   pi: { label: "newapi.routeSourcePi", fold: "client-configs", target: "client-config-pi" },
   cursor: { label: "newapi.routeSourceCursor", fold: "client-configs", target: "cursor-access-title" },
+  harness: { label: "newapi.routeSourceHarness", fold: "client-configs", target: "client-config-harness" },
   aggregation: { label: "aggregation.title", fold: "aggregation", target: "aggregation-title" },
 };
 

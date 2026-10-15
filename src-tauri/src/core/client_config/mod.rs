@@ -5,7 +5,9 @@
 mod aggregate_models;
 mod claude;
 mod claude_official;
+mod harness;
 mod mixed_models;
+mod model_facts;
 mod opencode;
 mod pi;
 mod options;
@@ -13,6 +15,7 @@ mod owned;
 mod takeover;
 mod version;
 pub use claude_official::ClaudeOfficialPreview;
+pub use harness::{HarnessInfo, HarnessProfile};
 use options::{client_endpoint, validate_model};
 pub use options::{ClaudeAuthField, ClaudeModels, ClaudeOneM, ClientAccessMode, ClientOptions};
 #[cfg(test)]
@@ -49,6 +52,8 @@ pub struct ClientPaths {
     pub cursor: PathBuf,
     /// `cursor-agent`'s directory (`~/.cursor`).
     pub cursor_cli: PathBuf,
+    /// DeepSeek Harness's home (`$DSH_HOME`, else `~/.dsh`).
+    pub harness: PathBuf,
 }
 
 impl ClientPaths {
@@ -79,6 +84,7 @@ impl ClientPaths {
             pi: pi::models_path(&home, std::env::var_os("PI_CODING_AGENT_DIR")),
             cursor: super::cursor_inject::ide::user_dir().unwrap_or_else(|| config.join("Cursor").join("User")),
             cursor_cli: home.join(".cursor"),
+            harness: harness::home(&home, std::env::var_os("DSH_HOME")),
         }
     }
 
@@ -90,6 +96,7 @@ impl ClientPaths {
             pi: home.join(".pi/agent/models.json"),
             cursor: home.join(".config/Cursor/User"),
             cursor_cli: home.join(".cursor"),
+            harness: home.join(".dsh"),
         }
     }
 }
@@ -159,7 +166,8 @@ fn adapter(id: TargetId) -> Result<&'static dyn ClientAdapter, String> {
         TargetId::ClaudeCode => Ok(&CLAUDE),
         TargetId::OpenCode => Ok(&OPENCODE),
         TargetId::Pi => Ok(&PI),
-        TargetId::Codex => Err("clients.errors.unsupported".into()),
+        // Harness edits two YAML files through its own transaction (harness/).
+        TargetId::Codex | TargetId::Harness => Err("clients.errors.unsupported".into()),
     }
 }
 
@@ -204,6 +212,9 @@ pub struct ClientStatus {
     /// A direct configuration whose relay card changed address or key since
     /// it was written (or was deleted): the file still holds the old values.
     pub stale: bool,
+    /// DeepSeek Harness's home and profiles, for its card only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness: Option<HarnessInfo>,
 }
 
 #[derive(Serialize)]
@@ -378,6 +389,7 @@ impl ConfigManager {
                     conflict_fields: Vec::new(),
                     client_version: None,
                     stale: false,
+                    harness: None,
                 };
                 if id == TargetId::ClaudeCode {
                     status.client_version = version::detected();
@@ -412,6 +424,7 @@ impl ConfigManager {
                 status.error = result.err();
                 status
             })
+            .chain(std::iter::once(self.harness_status(store)))
             .collect()
     }
 
@@ -420,6 +433,7 @@ impl ConfigManager {
             TargetId::ClaudeCode => "claude-code.dat",
             TargetId::OpenCode => "opencode.dat",
             TargetId::Pi => "pi.dat",
+            TargetId::Harness => "harness.dat",
             TargetId::Codex => "codex.dat",
         })
     }
@@ -451,6 +465,9 @@ impl ConfigManager {
         request: &ConfigRequest,
         replace_conflicts: bool,
     ) -> Result<ConfigPreview, String> {
+        if request.target_id == TargetId::Harness {
+            return self.harness_preview(store, request, replace_conflicts);
+        }
         let plan = self.prepare(store, request, false, replace_conflicts)?;
         let mut patch = json!({});
         for change in &plan.session.changes {
@@ -494,6 +511,9 @@ impl ConfigManager {
             .get_or_init(|| Mutex::new(()))
             .lock()
             .map_err(|_| "clients.errors.storage")?;
+        if request.target_id == TargetId::Harness {
+            return self.harness_apply(store, request, expected_revision, replace_conflicts);
+        }
         let plan = self.prepare(store, request, false, replace_conflicts)?;
         if plan.revision != expected_revision {
             return Err("clients.errors.changed".into());
@@ -524,6 +544,10 @@ impl ConfigManager {
         id: TargetId,
         replace_conflicts: bool,
     ) -> Result<ConfigApplied, String> {
+        if id == TargetId::Harness {
+            let _guard = WRITE_LOCK.get_or_init(|| Mutex::new(())).lock().map_err(|_| "clients.errors.storage")?;
+            return self.harness_restore(replace_conflicts);
+        }
         self.restore_with(id, if replace_conflicts { ConflictPolicy::Replace } else { ConflictPolicy::Refuse })
     }
 
@@ -610,6 +634,9 @@ impl ConfigManager {
             .get_or_init(|| Mutex::new(()))
             .lock()
             .map_err(|_| "clients.errors.storage")?;
+        if id == TargetId::Harness {
+            return self.harness_reapply(store, rebaseline);
+        }
         adapter(id)?;
         let session = self.session(id)?.ok_or("clients.errors.notConfigured")?;
         let plan = self.prepare(store, &session.request, rebaseline, false)?;
@@ -631,6 +658,9 @@ impl ConfigManager {
     /// The stored request for a client; reapply uses it to decide whether the
     /// local router must be running.
     pub fn stored_request(&self, id: TargetId) -> Result<Option<ConfigRequest>, String> {
+        if id == TargetId::Harness {
+            return self.harness_stored_request();
+        }
         Ok(self.session(id)?.map(|session| session.request))
     }
 
@@ -642,6 +672,9 @@ impl ConfigManager {
             .get_or_init(|| Mutex::new(()))
             .lock()
             .map_err(|_| "clients.errors.storage")?;
+        if id == TargetId::Harness {
+            return self.harness_release();
+        }
         adapter(id)?;
         let journal = self.session_path(id);
         if journal.exists() {
@@ -674,6 +707,7 @@ impl ConfigManager {
                 Ok(_) => None,
                 Err(error) => Some((id, error)),
             })
+            .chain(self.harness_restore_on_exit().and_then(|result| result.err()).map(|error| (TargetId::Harness, error)))
             .collect()
     }
 
@@ -1079,7 +1113,13 @@ pub fn has_router_configs(data_dir: &Path) -> Result<bool, String> {
             Err(error) => log::warn!("skipping unreadable {id:?} client session: {error}"),
         }
     }
-    Ok(false)
+    match manager.harness_uses_router() {
+        Ok(uses) => Ok(uses),
+        Err(error) => {
+            log::warn!("skipping unreadable Harness client session: {error}");
+            Ok(false)
+        }
+    }
 }
 
 fn selected_provider<'a>(

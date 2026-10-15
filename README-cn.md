@@ -16,7 +16,7 @@
 
 ## 这是什么
 
-Codex、Claude Code、Claude Desktop、OpenCode、Pi 和 Cursor 各自把账号、模型设置、会话、MCP 和指令存放在不同的文件里。额度用完要切号、接入第三方中转、清理会话，往往都得手改 TOML、JSON 和 SQLite。
+Codex、Claude Code、Claude Desktop、OpenCode、Pi、DeepSeek Harness 和 Cursor 各自把账号、模型设置、会话、MCP 和指令存放在不同的文件里。额度用完要切号、接入第三方中转、清理会话，往往都得手改 TOML、JSON 和 SQLite。
 
 AgentHarbor 是基于 Tauri 2 + React + Rust 的桌面应用，替你完成这些事：
 - 运行一个本地模型路由（`127.0.0.1:43127`）。
@@ -31,7 +31,7 @@ Codex 是主要集成对象，其他客户端共用同一套中转与路由。
 | --- | --- |
 | **仪表盘** | 各客户端的路由拓扑、今日 Token 概览、最近会话，以及可折叠的本地数据目录：列出各客户端的目录和关键文件 |
 | **中转模型** | 管理多个供应商；逐模型协议（Responses、Chat Completions、Anthropic Messages）、连通性测试、New API 余额、导入导出；能力目录与逐中转的匹配预览（上下文、输出上限、价格）来自内置的 [models.dev](https://github.com/anomalyco/models.dev) 快照 |
-| **模型注入** | 把中转模型和官方账号的模型接到下列客户端：预览、应用、恢复配置，每次都有备份；路由模式下中转、官方账号、聚合模型三类可以任意组合<br>• Codex：本地路由或原生直连，支持无账号模式和子代理默认配置<br>• Claude Code、Claude Desktop、OpenCode、Pi<br>• Cursor IDE 与 cursor-agent：Agent、Tab 补全和提交信息都能用这些模型，见下文 |
+| **模型注入** | 把中转模型和官方账号的模型接到下列客户端：预览、应用、恢复配置，每次都有备份；路由模式下中转、官方账号、聚合模型三类可以任意组合<br>• Codex：本地路由或原生直连，支持无账号模式和子代理默认配置<br>• Claude Code、Claude Desktop、OpenCode、Pi、DeepSeek Harness<br>• Cursor IDE 与 cursor-agent：Agent、Tab 补全和提交信息都能用这些模型，见下文 |
 | **本地路由** | 三种协议互相转换<br>模型聚合：按优先级分层、失败切换、首字超时切换、实时成员状态<br>请求级路由诊断 |
 | **通用网关** | 一个本地地址加上命名 key，任何能填 Base URL 和 API Key 的 agent 都能使用全部开启的模型，见下文 |
 | **账号** | Codex：ChatGPT OAuth 登录、额度窗口、手动切号或按阈值自动切号（正在运行的 Codex 会把任务做完，原账号额度用尽时才重启）<br>账号来源：ChatGPT（Sign in with ChatGPT）、WorkBuddy、WorkBuddy AI、GitHub Copilot、Gemini CLI、Antigravity、Kiro、Grok、Cursor，登录后可以提供给模型注入使用，见下文 |
@@ -60,7 +60,17 @@ Codex 是主要集成对象，其他客户端共用同一套中转与路由。
 
 ## 组合模型来源
 
-Claude Code、OpenCode、Pi 的注入弹窗在路由模式下也有这三个开关：关掉一类会取消它已选的中转或聚合，并从列表里隐藏。Claude Code 只选一个中转、或只用聚合时和以前一样；同时选多个中转，或中转加聚合时，它经本地路由使用和网关相同的 `短名/模型` id，`/model` 菜单里会列出全部所选模型。
+Claude Code、OpenCode、Pi、DeepSeek Harness 的注入弹窗在路由模式下也有这三个开关：关掉一类会取消它已选的中转或聚合，并从列表里隐藏。Claude Code 只选一个中转、或只用聚合时和以前一样；同时选多个中转，或中转加聚合时，它经本地路由使用和网关相同的 `短名/模型` id，`/model` 菜单里会列出全部所选模型。
+
+## DeepSeek Harness 的接入方式
+
+DeepSeek Harness（`dsh`、Harness 桌面版）的自定义模型走 pi-ai 路由，写在 profile 的 `cordis.patch.yml` 里。注入弹窗只写入你选的一个 profile（`desktop`、`web` 或 `$DSH_HOME/profiles` 下的其他 profile；`$DSH_HOME` 默认为 `~/.dsh`）：
+
+- **路由**：每个中转按协议各建一条 `agentharbor-*` provider（一条路由只用 Chat Completions、Responses、Anthropic Messages 中的一种），所选聚合共用一条，都加进该 profile 自己的 `llm-pi-ai` 条目，和你的 provider 并列。patch 条目的 `config` 会整块替换组合出的配置，所以 AgentHarbor 不会另加第二个 `llm-pi-ai` 条目。
+- **密钥**：路由里只写凭据引用名，值存进 Harness 的 `$DSH_HOME/.credentials.yaml`（本地路由用 `AGENTHARBOR_ROUTER_TOKEN`，直连时每个中转一个 `AGENTHARBOR_RELAY_*`）。账号来源和聚合只能经本地路由使用，由路由持有并刷新它们的凭据。
+- **默认模型**：可选写入 `agent-default-model`，让新会话用所选模型。之后在 Harness 里换成别的模型属于正常使用，不算冲突；恢复时也会保留你的选择。
+- 注释、`!!js` 表达式和其他条目都原样保留；每次修改都会重新解析，结果和预期不完全一致就拒绝写入。恢复时，文件没被别的改动过就逐字节还原，否则逐字段撤回；patch 被清空时写回 `[]`（Harness 遇到空文件会启动失败）。退出 AgentHarbor 时也会这样撤回路由模式的配置。
+- Harness 会在下一次请求时重新读取 profile patch。`$DSH_HOME/cordis.patch.yml` 中同 id 的条目优先级高于 profile，只会提示，不会被修改。
 
 ## Cursor 的接入方式
 
@@ -128,6 +138,7 @@ Codex 与 Claude Code / Claude Desktop 保留各自原来的 WebSearch 用法，
 - **AgentHarbor 数据目录**：存放中转、路由状态、用量账本和缓存。位于系统本地数据目录下的 `AgentHarbor`（例如 `%LOCALAPPDATA%\AgentHarbor`），也可以用 `AGENT_HARBOR_DATA_DIR` 指定。仪表盘的数据目录里能看到确切路径。
 - **供应商凭据**：保存在 `newapi-providers.dat` 中。Windows 上用当前用户的 DPAPI 加密；其他平台只限文件所有者读写（`0600`），不加密。界面不会回读已保存的密钥，编辑时留空即保留原值。
 - **账号来源凭据**：保存在 `account-sources.dat` 中，保护方式与供应商凭据相同；令牌只在路由转发请求时使用，界面里看不到。
+- **DeepSeek Harness**：路由所需的密钥存在它自己的 `.credentials.yaml` 里（macOS 和 Linux 上按 Harness 的要求只限所有者读写 `0600`，不加密）；profile patch 里只有引用名。
 - **网关 key**：和供应商凭据一起加密保存。网关只监听 `127.0.0.1`，只接受网关 key；转发给上游时用的是各中转自己的凭据，网关 key 不会发出去。
 - **本地路由**：需要本地令牌才能访问。发往中转的请求不会携带官方账号凭据。
 - **客户端配置**：逐字段写入并先备份。被你或其他工具改过的字段会提示冲突，不会被悄悄覆盖。
@@ -164,7 +175,7 @@ $env:AGENT_HARBOR_CODEX_HOME = Join-Path (Get-Location) '.runtime-test\codex'
 pnpm tauri dev
 ```
 
-这样也会分开单实例锁和 WebView 数据。`AGENT_HARBOR_CLIENT_HOME` 对 Claude Code、Claude Desktop、OpenCode、Pi 和 Cursor IDE 的路径做同样的隔离（并且不改动 `CURSOR_API_ENDPOINT`）。
+这样也会分开单实例锁和 WebView 数据。`AGENT_HARBOR_CLIENT_HOME` 对 Claude Code、Claude Desktop、OpenCode、Pi、DeepSeek Harness（改用其下的 `.dsh`，不读 `DSH_HOME`）和 Cursor IDE 的路径做同样的隔离（并且不改动 `CURSOR_API_ENDPOINT`）。
 
 **检查**：
 
@@ -177,6 +188,7 @@ pnpm release         # 签名发布构建：安装包、更新签名、latest.js
 
 - **前端测试**：需要 Playwright 和 Chromium。不在默认搜索路径时，用 `PLAYWRIGHT_MODULE_PATH` 和 `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` 指定；用 `FRONTEND_QA_SCOPE` 只跑某一组。
 - **真实 Codex 测试**：默认跳过。设置 `AGENTHARBOR_TEST_CODEX_BIN` 后运行 `cargo test --manifest-path src-tauri/Cargo.toml -- --ignored real_codex`。这些测试只使用临时目录、合成凭据和本地模拟上游。
+- **真实 DeepSeek Harness 测试**：同样默认跳过。把 `AGENTHARBOR_TEST_DSH_BIN` 设为已安装的 `dsh`（或它的 `lib/bin.js`，用 Node 运行），再运行 `cargo test --manifest-path src-tauri/Cargo.toml -- --ignored real_harness`。它在临时 `DSH_HOME` 里初始化 profile，让每种路由经本地路由访问本地模拟上游。
 - **更新签名**：发布构建会为应用内更新签名安装包。私钥依次从 `TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PATH` 或 `~/.tauri/agentharbor-updater.key` 读取，不进仓库；请备份好，已安装的版本只接受用它签名的更新。
 - **发布**：升版本号（`package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`）并提交，再推送一个带注释的标签，标签说明就是发布说明：`git tag -a v1.0.2 -F notes.md && git push origin v1.0.2`。GitHub Actions 会先跑测试，再用仓库密钥 `TAURI_SIGNING_PRIVATE_KEY` 签名构建，并带上面四个文件创建草稿 Release。确认后把草稿发布为最新版本（不要标成预发布）：更新地址是 `releases/latest/download/latest.json`。手动运行 Release 工作流只构建文件（保存为构建产物），不建 Release。
 - **持续集成**：每次推送到 `main` 和每个 PR 都会跑类型检查、Rust 测试和前端回归。

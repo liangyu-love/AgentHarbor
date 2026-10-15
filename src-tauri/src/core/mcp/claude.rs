@@ -294,6 +294,7 @@ mod tests {
             pi: Path::new("unused-pi").into(),
             cursor: Path::new("unused-cursor").into(),
             cursor_cli: Path::new("unused-cursor-cli").into(),
+            harness: Path::new("unused-harness").into(),
         };
         assert_eq!(
             custom.claude_user_config(),
@@ -306,6 +307,7 @@ mod tests {
             pi: Path::new("unused-pi").into(),
             cursor: Path::new("unused-cursor").into(),
             cursor_cli: Path::new("unused-cursor-cli").into(),
+            harness: Path::new("unused-harness").into(),
         };
         assert_eq!(
             named_default.claude_user_config(),

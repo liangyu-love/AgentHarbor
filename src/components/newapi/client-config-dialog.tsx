@@ -4,7 +4,7 @@ import { aggregationQueryKey, type ModelTargetRef } from "@/types/aggregation";
 import { useTranslation } from "react-i18next";
 import { BookmarkPlus, Check, ChevronDown, Eye, Loader2, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
-import { claudeRoles as roles, emptyClaudeRoles as emptyRoles, claudeOneMDefaults, clientDefaults, clientModels, clientProtocols, exclusionOf, knownSmallContext, effectiveContext } from "@/lib/client-config";
+import { claudeRoles as roles, emptyClaudeRoles as emptyRoles, claudeOneMDefaults, clientDefaults, clientModels, clientProtocols, exclusionOf, knownSmallContext, effectiveContext, reloadHint } from "@/lib/client-config";
 import { ClaudeModelConfig } from "./claude-model-config";
 import { DirectProxyNote } from "./direct-proxy-note";
 import { ModelSourceSwitches, type SourceKind } from "./model-source-switches";
@@ -60,6 +60,8 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
 }) {
   const { t } = useTranslation();
   const isClaude = client.targetId === "claudeCode";
+  const isHarness = client.targetId === "harness";
+  const harnessProfiles = client.harness?.profiles ?? [];
   const aggregateQuery = useQuery({ queryKey: aggregationQueryKey, queryFn: api.aggregation.state });
   const aggregates = aggregateQuery.data?.models ?? [];
   const [request, setRequest] = useState<ClientConfigRequest>(() => {
@@ -97,6 +99,8 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
         : undefined,
       claudeOneM: isClaude ? claudeOneMDefaults(saved?.claudeOneM) : undefined,
       authField: saved?.authField ?? "authToken",
+      ...(isHarness ? { harnessProfile: saved?.harnessProfile ?? harnessProfiles[0]?.name ?? null,
+        harnessDefaultModel: saved?.harnessDefaultModel ?? true } : {}),
     };
   });
   // A configured client shows the kinds it uses; a new one offers every kind.
@@ -521,7 +525,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
           title: t("clients.applied"),
           description: applied.warnings?.length
             ? applied.warnings.map(key => t(key)).join(" ")
-            : t(client.targetId === "pi" ? "clients.piReload" : "clients.restartHint"),
+            : t(reloadHint(client.targetId)),
           variant: applied.warnings?.length ? "destructive" : "success",
         });
         onClose();
@@ -543,6 +547,17 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
           {t("clients.updateConflictDescription")}
         </p>}
         <fieldset disabled={busy} className="min-w-0 space-y-4">
+          {isHarness && <section className="space-y-1.5 border-b border-border/60 pb-4" data-harness-profile>
+            <Label htmlFor="harness-profile">{t("clients.harnessProfile")}</Label>
+            <Select disabled={busy || client.configured} value={request.harnessProfile ?? ""}
+              onValueChange={value => update({ harnessProfile: value })}>
+              <SelectTrigger id="harness-profile"><SelectValue placeholder={t("clients.harnessProfilePick")} /></SelectTrigger>
+              <SelectContent>{harnessProfiles.map(profile => <SelectItem key={profile.name} value={profile.name}>
+                {profile.name}{profile.name === "desktop" ? ` · ${t("clients.harnessDesktop")}` : profile.name === "web" ? " · dsh web" : ""}
+              </SelectItem>)}</SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">{t(client.configured ? "clients.harnessProfileLocked" : "clients.harnessProfileHint")}</p>
+          </section>}
           {isClaude && <section className="space-y-2 border-b border-border/60 pb-4" aria-label={t("clients.savedProfiles")}>
             <div className="flex flex-wrap items-center gap-2">
               {claudeProfiles.length > 0
@@ -723,6 +738,12 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
                 </SelectItem>)}
               </SelectContent>
             </Select>
+            {isHarness && <label className="flex items-center gap-2 pt-1 text-xs text-muted-foreground" data-harness-default-model>
+              <input type="checkbox" checked={request.harnessDefaultModel !== false} disabled={busy}
+                className="h-4 w-4 accent-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                onChange={event => update({ harnessDefaultModel: event.target.checked })} />
+              {t("clients.harnessDefaultModel")}
+            </label>}
             {isClaude && <label className="flex items-center gap-2 pt-1 text-xs text-muted-foreground"
               title={startupOneMUnavailable ? t("clients.oneMUnavailable") : undefined}>
               <input type="checkbox" checked={!startupOneMUnavailable && (request.claudeOneM?.startup ?? false)}
@@ -772,7 +793,8 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
         {error && <p role="alert" className="text-sm text-destructive">{t(error)}</p>}
         </div>
         <DialogFooter className="shrink-0 gap-2 sm:gap-0"><Button variant="outline" onClick={onClose} disabled={busy}>{t("common.cancel")}</Button>
-          <Button disabled={busy || !modelCompatible || aggregateUnavailable || selected.length + selectedAggregates.length === 0} onClick={() => void run()}>
+          <Button disabled={busy || !modelCompatible || aggregateUnavailable || selected.length + selectedAggregates.length === 0
+            || (isHarness && !request.harnessProfile)} onClick={() => void run()}>
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}{t(preview ? client.conflict ? "clients.applyConflict" : "clients.apply" : "clients.preview")}
           </Button>
         </DialogFooter>

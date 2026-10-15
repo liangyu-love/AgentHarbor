@@ -23,7 +23,7 @@ pub(super) fn models_path(home: &Path, override_dir: Option<OsString>) -> PathBu
     root.join("models.json")
 }
 
-fn api(protocol: ModelProtocol) -> &'static str {
+pub(super) fn api(protocol: ModelProtocol) -> &'static str {
     match protocol {
         ModelProtocol::ChatCompletions => "openai-completions",
         ModelProtocol::Responses => "openai-responses",
@@ -47,7 +47,7 @@ fn literal(value: &str) -> String {
     }
 }
 
-fn model(
+pub(super) fn model(
     id: &str,
     label: &str,
     projection: &super::super::model_policy::ClientProjection,
@@ -202,97 +202,35 @@ impl ClientAdapter for Pi {
                     .iter()
                     .filter(|id| provider.protocol_for_model(id) == *protocol)
                 {
-                    let official =
-                        super::super::router::matched_official_model(official_models, id)
-                            .filter(|_| super::super::router::official_endpoint_applies(provider));
-                    let (metadata, projection) = super::super::router::model_projection(
-                        provider,
-                        id,
-                        official,
-                        catalog,
-                        &store.global_compression(),
-                    );
-                    let label = provider
-                        .models
-                        .iter()
-                        .find(|m| &m.id == id)
-                        .map(|m| m.display_name.as_str())
-                        .filter(|name| !name.is_empty())
-                        .unwrap_or(&metadata.display_name);
+                    let facts = model_facts::facts(store, provider, id, catalog, official_models);
                     let mut entry = model(
                         id,
-                        label,
-                        &projection,
+                        &facts.label,
+                        &facts.projection,
                         request,
                         provider.id == request.provider_id && id == &request.model,
                         false,
                     )?;
-                    // Explicit effort levels are also a capability declaration:
-                    // a manually configured, uncatalogued model must remain usable.
-                    let reasoning = metadata
-                        .reasoning
-                        .levels
-                        .value
-                        .as_ref()
-                        .filter(|levels| !levels.is_empty())
-                        .map(|_| true)
-                        .or(metadata.reasoning.supports);
-                    if let Some(reasoning) = reasoning {
+                    if let Some(reasoning) = facts.reasoning {
                         entry["reasoning"] = json!(reasoning);
                     }
-                    if let Some(levels) = metadata
-                        .reasoning
-                        .levels
-                        .value
-                        .as_ref()
-                        .filter(|levels| !levels.is_empty())
-                    {
+                    if !facts.efforts.is_empty() {
                         let mut map = serde_json::Map::new();
-                        for level in ["off", "minimal", "low", "medium", "high", "xhigh", "max"] {
-                            let effort = levels.iter().find(|declared| {
-                                declared.effort == level
-                                    || (level == "off" && declared.effort == "none")
-                            });
-                            map.insert(
-                                level.into(),
-                                effort
-                                    .map(|declared| json!(declared.effort))
-                                    .unwrap_or(Value::Null),
-                            );
+                        for level in model_facts::THINKING_LEVELS {
+                            map.insert(level.into(), facts.effort_for(level).map(|effort| json!(effort)).unwrap_or(Value::Null));
                         }
                         entry["thinkingLevelMap"] = json!(map);
                     }
-                    // A context-only Fast/preview match does not advertise vision.
-                    if !metadata.steps.iter().any(|step| {
-                        matches!(
-                            step.step.as_str(),
-                            "speedVariantReference" | "previewContextReference"
-                        )
-                    }) {
-                        if let Some(reference) = metadata.matched.as_ref() {
-                            if let Some(matched) =
-                                catalog.exact_in(&reference.provider_id, &reference.model_id)
-                            {
-                                if let Some(modalities) = matched.model.modalities.as_ref() {
-                                    entry["input"] =
-                                        if modalities.input.iter().any(|input| input == "image") {
-                                            json!(["text", "image"])
-                                        } else {
-                                            json!(["text"])
-                                        };
-                                }
-                            }
-                        }
+                    if let Some(image) = facts.image_input {
+                        entry["input"] = if image { json!(["text", "image"]) } else { json!(["text"]) };
                     }
-                    let price = metadata.price;
-                    if price.complete && price.currency == "USD" {
-                        entry["cost"] = json!({"input": price.input.unwrap_or(0.0), "output": price.output.unwrap_or(0.0),
-                            "cacheRead": price.cache_read.unwrap_or(0.0), "cacheWrite": price.cache_write.unwrap_or(0.0)});
+                    if let Some([input, output, cache_read, cache_write]) = facts.price {
+                        entry["cost"] = json!({"input": input, "output": output, "cacheRead": cache_read, "cacheWrite": cache_write});
                     }
                     if *protocol == ModelProtocol::ChatCompletions {
                         // Do not send an effort field unless metadata explicitly
                         // declares an effort control for this exact deployment.
-                        entry["compat"] = json!({"supportsReasoningEffort": metadata.reasoning.levels.value.as_ref().is_some_and(|levels| !levels.is_empty())});
+                        entry["compat"] = json!({"supportsReasoningEffort": !facts.efforts.is_empty()});
                     }
                     models.push(entry);
                 }

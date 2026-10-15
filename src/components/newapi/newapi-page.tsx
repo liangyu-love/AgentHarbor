@@ -127,6 +127,7 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
             claudeDesktop: <ClaudeDesktopConfigCard providers={providers} />,
             opencode: <ClientConfigs target="opencode" providers={providers} onOpenRelays={onOpenRelays} />,
             pi: <ClientConfigs target="pi" providers={providers} onOpenRelays={onOpenRelays} />,
+            harness: <ClientConfigs target="harness" providers={providers} onOpenRelays={onOpenRelays} />,
             cursor: <CursorAccessCard onOpenRelays={onOpenRelays} />,
           }}
           shared={<WebSearchSettings store={store} providers={providers} />}

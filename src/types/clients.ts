@@ -1,7 +1,19 @@
 import type { ModelProtocol } from "./newapi";
 import type { ModelSelection } from "./aggregation";
 
-export type TargetId = "codex" | "claudeCode" | "opencode" | "pi";
+export type TargetId = "codex" | "claudeCode" | "opencode" | "pi" | "harness";
+/** One initialized DeepSeek Harness profile and its patch file. */
+export interface HarnessProfile {
+  name: string;
+  path: string;
+}
+export interface HarnessInfo {
+  /** `$DSH_HOME`, else `~/.dsh`. */
+  home: string;
+  /** Desktop's and the web profile first. */
+  profiles: HarnessProfile[];
+  credentials: string;
+}
 export interface ClientStatus {
   targetId: TargetId;
   name: string;
@@ -19,6 +31,8 @@ export interface ClientStatus {
   conflictFields?: string[];
   /** A direct configuration whose relay card changed address or key since it was written. */
   stale?: boolean;
+  /** DeepSeek Harness's home and profiles; only on its own status. */
+  harness?: HarnessInfo | null;
 }
 export type ClientAccessMode = "native" | "router";
 /** One key file of a client on this machine; existence only, never contents. */
@@ -31,7 +45,7 @@ export interface ClientKeyFile {
   exists: boolean;
 }
 export interface ClientFiles {
-  client: "codex" | "claudeCode" | "claudeDesktop" | "opencode" | "pi";
+  client: "codex" | "claudeCode" | "claudeDesktop" | "opencode" | "pi" | "cursor" | "harness";
   files: ClientKeyFile[];
 }
 export interface ClaudeModels {
@@ -66,6 +80,10 @@ export interface ClientConfigRequest {
   claudeModelIds?: string[] | null;
   claudeOneM?: ClaudeOneM | null;
   authField: "authToken" | "apiKey";
+  /** DeepSeek Harness: the profile whose patch is written. */
+  harnessProfile?: string | null;
+  /** DeepSeek Harness: whether new sessions start on the chosen model; absent means yes. */
+  harnessDefaultModel?: boolean | null;
 }
 export interface ClientConfigPreview {
   path: string;

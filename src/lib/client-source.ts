@@ -3,6 +3,7 @@ export const CLIENT_SOURCES = [
   { value: "claudeCode", labelKey: "newapi.routeSourceClaudeCode" },
   { value: "opencode", labelKey: "newapi.routeSourceOpenCode" },
   { value: "pi", labelKey: "newapi.routeSourcePi" },
+  { value: "harness", labelKey: "newapi.routeSourceHarness" },
   { value: "claudeDesktop", labelKey: "newapi.routeSourceClaudeDesktop" },
   { value: "cursor", labelKey: "newapi.routeSourceCursor" },
   { value: "aggregate", labelKey: "newapi.routeSourceAggregate" },

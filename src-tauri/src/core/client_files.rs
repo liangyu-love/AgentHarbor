@@ -111,6 +111,15 @@ pub fn collect(
             file("conversations", engine.join("conversations.db")),
         ],
     });
+    groups.push(ClientFiles {
+        client: "harness",
+        files: vec![
+            dir("profiles", clients.harness.join("profiles")),
+            file("credentials", clients.harness.join(".credentials.yaml")),
+            file("homePatch", clients.harness.join("cordis.patch.yml")),
+            dir("sessions", clients.harness.join("sessions")),
+        ],
+    });
     groups
 }
 
@@ -169,7 +178,7 @@ mod tests {
         };
         assert_eq!(
             groups.iter().map(|group| group.client).collect::<Vec<_>>(),
-            ["codex", "claudeCode", "claudeDesktop", "opencode", "pi", "cursor"]
+            ["codex", "claudeCode", "claudeDesktop", "opencode", "pi", "cursor", "harness"]
         );
         assert_eq!(
             present("codex"),

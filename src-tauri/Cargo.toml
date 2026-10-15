@@ -45,6 +45,10 @@ serde_json = { version = "1", features = ["preserve_order"] }
 json5 = "0.4"
 # Edits Cursor's settings.json in place, keeping its comments and layout.
 jsonc-parser = { version = "0.34", features = ["cst", "serde_json"] }
+# Edits DeepSeek Harness YAML (profile patch, credentials) in place, keeping comments and `!!js` tags.
+yaml-edit = { version = "0.3", default-features = false }
+# An independent reading of every Harness edit before it is written.
+serde_yaml = "0.9"
 rquickjs = "0.11"
 toml = "0.8"
 toml_edit = "0.22"
