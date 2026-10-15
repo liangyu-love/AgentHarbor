@@ -2708,7 +2708,7 @@
     "sourcesHint": "Combine freely; a kind turned off does not appear in Cursor's model list. Cursor's own models always stay.",
     "sourcesApplied": "Cursor's model list was updated",
     "sourcesNone": "Cursor's own models only",
-    "moreModels": "{{count}} more",
+    "modelDetails": "Model details",
     "noModels": "Nothing to offer yet; add a relay",
     "modelCount": "{{count}} models",
     "extrasPanel": "Tab and commit messages",

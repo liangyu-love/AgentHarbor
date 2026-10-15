@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  ArrowDown, ArrowRight, Check, Copy, FileCode2, Layers3, Loader2, RefreshCw, ShieldAlert, ShieldCheck, ShieldOff, SquareTerminal,
+  ArrowDown, ArrowRight, Check, ChevronDown, Copy, FileCode2, Layers3, Loader2, RefreshCw, ShieldAlert, ShieldCheck, ShieldOff, SquareTerminal,
   TerminalSquare, Waypoints,
 } from "lucide-react";
 import { api } from "@/lib/api";
@@ -113,6 +113,14 @@ export function CursorAccessCard({ onOpenRelays }: { onOpenRelays?: () => void }
   };
   const locked = !!busy || !data;
   const models = data?.models ?? [];
+  const modelGroups = new Map<string, typeof models>();
+  for (const model of models) {
+    const key = `${model.kind}/${model.sourceName}`;
+    const group = modelGroups.get(key);
+    if (group) group.push(model);
+    else modelGroups.set(key, [model]);
+  }
+  const sourceNames = [...modelGroups.values()].map(group => group[0].sourceName).join(" · ");
   const modelLabel = (id: string) => {
     const model = models.find(item => item.id === id);
     return model ? `${model.label} · ${model.sourceName}` : id;
@@ -271,22 +279,44 @@ export function CursorAccessCard({ onOpenRelays }: { onOpenRelays?: () => void }
               onChange={(next: ModelSources) => void run("sources", () => api.cursor.setSources(next), t("cursor.sourcesApplied"))} />
             <p className="text-[11px] leading-relaxed text-muted-foreground">{t("cursor.sourcesHint")}</p>
           </div>
-          <div className="mt-3 flex flex-wrap gap-1.5" data-cursor-models>
-            {models.slice(0, 12).map(model => (
-              <span key={model.id} title={`${model.id} → ${model.cursorId}`}
-                className="max-w-[14rem] truncate rounded-full border border-border/60 bg-card px-2 py-0.5 text-[11px]">
-                {model.label}<span className="text-muted-foreground"> · {model.sourceName}</span>
-              </span>
-            ))}
-            {models.length > 12 && (
-              <span className="rounded-full px-2 py-0.5 text-[11px] text-muted-foreground">{t("cursor.moreModels", { count: models.length - 12 })}</span>
-            )}
-            {data && models.length === 0 && (
-              <button type="button" onClick={onOpenRelays} className="text-[11px] text-primary underline-offset-2 hover:underline">
-                {t("cursor.noModels")}
-              </button>
-            )}
-          </div>
+          {models.length > 0 ? (
+            <details className="group/models mt-3 border-t border-border/60 pt-3" data-cursor-models>
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-md text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 [&::-webkit-details-marker]:hidden">
+                <span className="min-w-0">
+                  <span className="font-medium">{t("cursor.modelCount", { count: models.length })}</span>
+                  <span className="mt-0.5 block truncate text-[11px] text-muted-foreground" title={sourceNames}>{sourceNames}</span>
+                </span>
+                <span className="flex shrink-0 items-center gap-1.5 text-muted-foreground">
+                  {t("cursor.modelDetails")}
+                  <ChevronDown aria-hidden className="h-3.5 w-3.5 transition-transform group-open/models:rotate-180 motion-reduce:transition-none" />
+                </span>
+              </summary>
+              <div role="region" aria-label={t("cursor.modelDetails")} tabIndex={0}
+                className="mt-3 max-h-52 space-y-3 overflow-y-auto overscroll-contain rounded-md pr-2 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                data-cursor-model-list>
+                {[...modelGroups].map(([key, group]) => (
+                  <div key={key}>
+                    <div className="mb-1 flex min-w-0 items-center justify-between gap-3 text-[11px] text-muted-foreground">
+                      <span className="truncate font-medium" title={group[0].sourceName}>{group[0].sourceName}</span>
+                      <span className="shrink-0 tabular-nums">{group.length}</span>
+                    </div>
+                    <ul className="space-y-0.5">
+                      {group.map(model => (
+                        <li key={model.id} title={`${model.label} · ${model.id} → ${model.cursorId}`}
+                          className="truncate py-1 text-xs" data-cursor-model={model.id}>
+                          {model.label}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            </details>
+          ) : data && (
+            <button type="button" onClick={onOpenRelays} className="mt-3 text-[11px] text-primary underline-offset-2 hover:underline" data-cursor-models>
+              {t("cursor.noModels")}
+            </button>
+          )}
         </Panel>
 
         <Panel title={t("cursor.extrasPanel")}>

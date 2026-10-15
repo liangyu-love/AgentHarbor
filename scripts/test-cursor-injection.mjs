@@ -43,10 +43,18 @@ export async function testCursorInjection({ page, reset, captureDir }) {
   console.log("PASS cursor-agent gets its endpoint and a connected terminal");
 
   const sources = panel.locator("[data-cursor-sources]");
+  const modelDetails = panel.locator("details[data-cursor-models]");
+  assert.equal(await modelDetails.getAttribute("open"), null, "model details start collapsed");
+  assert.equal(await panel.locator("[data-cursor-model-list]").isVisible(), false);
+  await modelDetails.locator("summary").focus();
+  await page.keyboard.press("Enter");
   await panel.locator("[data-cursor-models]").getByText("Harbor Pool", { exact: false }).first().waitFor();
   await sources.locator('[data-model-source="aggregate"]').click();
   await eventually(async () => assert.deepEqual((await calls()).at(-1), ["sources", { relay: true, account: true, aggregate: false }]));
   await eventually(async () => assert.equal(await panel.locator("[data-cursor-models]").getByText("Harbor Pool").count(), 0));
+  await modelDetails.locator("summary").focus();
+  await page.keyboard.press("Space");
+  await eventually(async () => assert.equal(await modelDetails.getAttribute("open"), null));
   console.log("PASS model kinds combine freely and the offered list follows them");
 
   await choose(panel.locator("#cursor-tab-model"), "Model A · Relay A");
@@ -102,4 +110,61 @@ export async function testCursorInjection({ page, reset, captureDir }) {
   assert.deepEqual(await files.locator("li").evaluateAll(items => items.map(item => item.getAttribute("data-file"))),
     ["settings", "cliConfig", "certificate", "conversations"]);
   console.log("PASS the dashboard orbit and data map include Cursor");
+
+  // Many models and long provider names must not stretch the default panel.
+  await reset("access");
+  await page.locator('[data-client-tab="cursor"]').click();
+  const defaultHeight = (await panel.locator("details[data-cursor-models]").locator("..").boundingBox()).height;
+  await page.evaluate(() => {
+    window.review.cursorModels = Array.from({ length: 48 }, (_, index) => ({
+      id: `relay-${index % 2}/model-${index}`, cursorId: `ah-test-${index}`,
+      label: `Model ${String(index + 1).padStart(2, "0")} with a long context and reasoning variant`,
+      sourceName: index % 2 ? "A provider with a very long name for narrow screen layout checks" : "Relay A",
+      kind: "relay",
+    }));
+    window.review.keepCursor = true;
+    window.review.mount("access");
+    window.review.keepCursor = false;
+  });
+  await page.locator('[data-client-tab="cursor"]').click();
+  const manyDetails = panel.locator("details[data-cursor-models]");
+  await manyDetails.getByText(await tr("cursor.modelCount", { count: 48 }), { exact: true }).waitFor();
+  assert.equal(await manyDetails.getAttribute("open"), null);
+  assert.ok((await manyDetails.locator("..").boundingBox()).height <= defaultHeight + 1,
+    "48 models take no more default space than two models");
+  assert.equal(await manyDetails.locator("[data-cursor-model]").count(), 48, "every model remains available");
+  for (const [device, width, height] of [["desktop", 1200, 700], ["mobile", 390, 844]]) {
+    await page.setViewportSize({ width, height });
+    for (const theme of ["light", "dark"]) {
+      await page.evaluate(dark => document.documentElement.classList.toggle("dark", dark), theme === "dark");
+      assert.equal(await panel.evaluate(node => node.scrollWidth <= node.clientWidth), true);
+      if (captureDir) await manyDetails.locator("..").screenshot({
+        path: path.join(captureDir, `cursor-models-${device}-${theme}-collapsed.png`), animations: "disabled",
+      });
+      await manyDetails.locator("summary").click();
+      const list = panel.locator("[data-cursor-model-list]");
+      const bounds = await list.evaluate(node => ({ height: node.clientHeight, content: node.scrollHeight }));
+      assert.ok(bounds.height <= 208 && bounds.content > bounds.height, "expanded models scroll within a bounded region");
+      await list.locator('[data-cursor-model="relay-1/model-47"]').scrollIntoViewIfNeeded();
+      await list.locator('[data-cursor-model="relay-1/model-47"]').waitFor({ state: "visible" });
+      assert.equal(await panel.evaluate(node => node.scrollWidth <= node.clientWidth), true);
+      await list.evaluate(node => { node.scrollTop = 0; });
+      if (captureDir) await manyDetails.locator("..").screenshot({
+        path: path.join(captureDir, `cursor-models-${device}-${theme}-expanded.png`), animations: "disabled",
+      });
+      await manyDetails.locator("summary").click();
+    }
+  }
+  await page.evaluate(() => document.documentElement.classList.remove("dark"));
+  await page.evaluate(() => window.review.setLanguage("en"));
+  assert.equal(await panel.evaluate(node => node.scrollWidth <= node.clientWidth), true, "English labels fit on mobile");
+  await manyDetails.getByText("Model details", { exact: true }).waitFor();
+  await page.evaluate(() => window.review.setLanguage("zh"));
+  await page.setViewportSize({ width: 1200, height: 700 });
+  console.log("PASS 48 models stay compact by default, expand completely and scroll on desktop and mobile in both themes");
+
+  await sources.locator('[data-model-source="relay"]').click();
+  await panel.getByText(await tr("cursor.noModels"), { exact: true }).waitFor();
+  assert.equal(await panel.locator("details[data-cursor-models]").count(), 0);
+  console.log("PASS turning off all offered models leaves a clear empty-state action");
 }

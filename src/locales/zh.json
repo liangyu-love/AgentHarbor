@@ -2708,7 +2708,7 @@
     "sourcesHint": "可以任意组合；关掉的类别不会出现在 Cursor 的模型列表里。Cursor 自己的模型始终保留。",
     "sourcesApplied": "Cursor 模型列表已更新",
     "sourcesNone": "只有 Cursor 自己的模型",
-    "moreModels": "另有 {{count}} 个",
+    "modelDetails": "模型明细",
     "noModels": "还没有可提供的模型，去添加中转",
     "modelCount": "{{count}} 个模型",
     "extrasPanel": "Tab 补全与提交信息",

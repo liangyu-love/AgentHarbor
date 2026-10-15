@@ -661,10 +661,10 @@ const cursorFixture = (): CursorStatus => {
     sources: { relay: true, account: true, aggregate: true }, tabModel: null, commitModel: null, commitLocale: "english" });
   const active = saved.ide || saved.cli;
   const port = active ? 47331 : null;
-  const models = [
+  const models: CursorStatus["models"] = (controls.review.cursorModels ?? [
     { id: "relay-a/model-A", cursorId: "ah-3c2f1a9b0d", label: "Model A", sourceName: "Relay A", kind: "relay" as const },
     { id: "pool/harbor-pool", cursorId: "ah-81d0e4c7aa", label: "Harbor Pool", sourceName: "Harbor Pool", kind: "aggregate" as const },
-  ].filter(model => saved.sources[model.kind]);
+  ]).filter((model: CursorStatus["models"][number]) => saved.sources[model.kind]);
   return { ideInstalled: true, cliInstalled: true, cliSupported: true, settingsPath: "C:/synthetic/Cursor/User/settings.json",
     ide: saved.ide, cli: saved.cli, running: active, port, url: port ? `http://127.0.0.1:${port}` : null,
     ideApplied: saved.ide, cliApplied: saved.cli, cliCommand: port ? `$env:CURSOR_API_ENDPOINT="http://127.0.0.1:${port}"; cursor-agent` : null,
@@ -892,6 +892,7 @@ function mount(mode: FixtureMode) {
   controls.review.routingCalls = [];
   if (!controls.review.keepCursor) {
     delete controls.review.cursor;
+    delete controls.review.cursorModels;
     controls.review.cursorCalls = [];
   }
   localStorage.removeItem("agentharbor.mcp-source");
