@@ -151,4 +151,34 @@ export async function testCapabilityClear({ page, reset, captureDir }) {
   await clear.waitFor({ state: "detached" });
   assert.equal(await page.evaluate(() => window.review.clearPreviewCalls?.length ?? 0), 0);
   console.log("PASS fully automatic models expose no restore operation or unnecessary preview request");
+
+  // The catalog lives on the relay page; each relay card opens it scoped to that relay.
+  await reset("compact");
+  await page.evaluate(() => {
+    const base = window.review.getState().providers[0];
+    window.review.providerFixtures = [
+      { ...base, id: "relay", name: "Synthetic channel", baseUrl: "https://synthetic.invalid/v1" },
+      { ...base, id: "other", name: "Other relay", baseUrl: "https://other.invalid/v1" },
+    ];
+    window.review.mount("access");
+  });
+  const catalog = page.locator("[data-model-capabilities]");
+  assert.equal(await catalog.count(), 1, "only the relay page shows the catalog");
+  assert.equal(await page.locator("[data-route-diagnostics] [data-model-capabilities]").count(), 0);
+  await page.locator('[data-relay-capabilities="other"]').click();
+  await catalog.locator('[data-capability-focus="other"]').waitFor();
+  await catalog.getByText("仅看 Other relay", { exact: true }).waitFor();
+  await eventually(async () => assert.equal(await catalog.locator("[data-capability-row]").count(), 0, "other relays' models are filtered out"));
+  await page.locator('[data-relay-capabilities="relay"]').click();
+  await catalog.locator('[data-capability-focus="relay"]').waitFor();
+  await eventually(async () => assert.equal(await catalog.locator("[data-capability-row]").count(), 1));
+  await eventually(async () => assert.equal(await catalog.evaluate(node => {
+    const box = node.getBoundingClientRect();
+    return box.top < window.innerHeight && box.bottom > 0;
+  }), true, "the catalog scrolls into view"));
+  await catalog.getByRole("button", { name: "显示全部中转", exact: true }).click();
+  await eventually(async () => assert.equal(await catalog.locator("[data-capability-focus]").count(), 0));
+  await eventually(async () => assert.equal(await catalog.locator("[data-capability-row]").count(), 1));
+  await page.evaluate(() => { delete window.review.providerFixtures; });
+  console.log("PASS relay cards open the capability catalog scoped to their relay and the scope can be cleared");
 }

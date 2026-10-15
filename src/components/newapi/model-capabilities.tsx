@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
@@ -622,14 +622,31 @@ function CatalogNotice({ catalog, children }: { catalog: ModelsDevCatalogStatus;
   );
 }
 
-export function ModelCapabilities() {
+/** A relay card asked to see its models; `nonce` repeats the request for the same relay. */
+export type CapabilityFocus = { providerId: string; label: string; nonce: number };
+
+export function ModelCapabilities({ focus, onClearFocus }: {
+  focus?: CapabilityFocus | null;
+  onClearFocus?: () => void;
+}) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const section = useRef<HTMLElement>(null);
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<"all" | "unmatched" | "conflicts">("all");
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
+
+  // Opening from a relay card shows that relay's whole list from the top.
+  useEffect(() => {
+    if (!focus) return;
+    setOpen(true);
+    setFilter("all");
+    setSearch("");
+    section.current?.scrollIntoView({ block: "start",
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
+  }, [focus]);
 
   const query = useQuery({
     queryKey: ["model-capabilities"],
@@ -638,7 +655,10 @@ export function ModelCapabilities() {
     refetchInterval: open ? 30_000 : false,
   });
 
-  const allModels = useMemo(() => query.data?.models ?? [], [query.data]);
+  const allModels = useMemo(
+    () => (query.data?.models ?? []).filter((model) => !focus || model.providerId === focus.providerId),
+    [query.data, focus],
+  );
   const models = useMemo(
     () =>
       allModels.filter((model) => {
@@ -680,8 +700,10 @@ export function ModelCapabilities() {
 
   return (
     <section
-      className="harbor-card"
+      ref={section}
+      className="harbor-card scroll-mt-4"
       aria-label={t("newapi.modelCapabilities")}
+      data-model-capabilities
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <button type="button" aria-expanded={open} onClick={() => setOpen(!open)} className="diag-toggle">
@@ -717,6 +739,17 @@ export function ModelCapabilities() {
           )}
 
           <div className="flex flex-wrap items-center gap-2">
+            {focus && (
+              <span className="inline-flex h-9 max-w-full items-center gap-1.5 rounded-xl bg-primary/10 pl-3 pr-1.5 text-xs font-semibold text-primary"
+                data-capability-focus={focus.providerId}>
+                <span className="truncate" title={focus.label}>{t("newapi.capabilityFocus", { name: focus.label })}</span>
+                <button type="button" onClick={onClearFocus} aria-label={t("newapi.capabilityFocusClear")}
+                  title={t("newapi.capabilityFocusClear")}
+                  className="rounded-md p-1 transition-colors hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </span>
+            )}
             <div className="relative min-w-[12rem] flex-1">
               <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input

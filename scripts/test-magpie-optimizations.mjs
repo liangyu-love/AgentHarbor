@@ -16,8 +16,16 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
     window.review.routerPatch = { accessMode: "native" };
     window.review.mount("access");
   });
+  // WebSearch is shared by every routed client, so it sits under the client
+  // console instead of in one client's panel and stays visible on every tab.
+  await page.locator('[data-client-tab="cursor"]').click();
   const searchService = page.getByRole("combobox", { name: "搜索执行账号", exact: true });
   await searchService.waitFor();
+  assert.equal(await page.locator("[data-client-console] > [data-client-shared] [data-web-search-settings]").count(), 1);
+  assert.equal(await page.locator('[role="tabpanel"] [data-web-search-settings]').count(), 0);
+  assert.equal(await page.locator("[data-route-diagnostics] [data-web-search-settings]").count(), 0);
+  await page.locator('[data-client-tab="codex"]').click();
+  assert.equal(await searchService.isVisible(), true);
   await eventually(async () => assert.equal(await searchService.isEnabled(), true));
   await searchService.click();
   await eventually(async () => assert.equal(await page.getByRole("option", { name: "Other relay", exact: true }).count(), 0));
@@ -53,6 +61,10 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   await page.evaluate(() => { window.review.routerPatch = { webSearchProviderId: "removed-service" }; window.review.mount("access"); });
   await searchService.getByText("已选搜索服务不可用", { exact: true }).waitFor();
   await page.evaluate(() => { delete window.review.providerFixtures; delete window.review.routerPatch; });
+  await page.evaluate(() => { window.review.providerFixtures = []; window.review.mount("access"); });
+  await page.getByText("还没有能执行联网搜索的中转或账号；添加后可以在这里指定，供所有经路由的客户端使用。", { exact: true }).waitFor();
+  await eventually(async () => assert.equal(await searchService.isDisabled(), true, "nothing to choose without a search-capable relay"));
+  await page.evaluate(() => { delete window.review.providerFixtures; });
   console.log("PASS search service selection accepts either model protocol, saves automatic mode and retains unavailable explicit choices");
   await reset("access");
   const routes = page.getByRole("region", { name: "请求级路由诊断" });

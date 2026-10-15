@@ -31,7 +31,7 @@ function Stat({ label, children, caption, className }: { label: string; children
 
 // Relay library: an overview of every relay site, a search and site filter,
 // and the card grid.
-export function RelayList({ store, view, providers, onEdit, onTest, onRemove, onBalance }: {
+export function RelayList({ store, view, providers, onEdit, onTest, onRemove, onBalance, onCapabilities }: {
   store: ProviderState;
   view: RelayView;
   providers: NewApiProvider[];
@@ -39,6 +39,7 @@ export function RelayList({ store, view, providers, onEdit, onTest, onRemove, on
   onTest: (provider: NewApiProvider) => void;
   onRemove: (provider: NewApiProvider) => void;
   onBalance: (provider: NewApiProvider) => void;
+  onCapabilities: (provider: NewApiProvider) => void;
 }) {
   const { t } = useTranslation();
   const { state, mutationLocked, exportBusy, importProviders, exportProviders } = store;
@@ -221,7 +222,7 @@ export function RelayList({ store, view, providers, onEdit, onTest, onRemove, on
           {shown.map((group, index) => (
             <div key={group.key} className="route-rise min-w-0" style={{ animationDelay: `${Math.min(index, 8) * 40}ms` }}>
               <RelayCard group={group} store={store} view={view} consumers={consumers}
-                onEdit={onEdit} onTest={onTest} onRemove={onRemove} onBalance={onBalance} />
+                onEdit={onEdit} onTest={onTest} onRemove={onRemove} onBalance={onBalance} onCapabilities={onCapabilities} />
             </div>
           ))}
         </div>

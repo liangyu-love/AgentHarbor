@@ -43,10 +43,12 @@ export function ConsoleHeader({ titleId, title, leading, meta, actions }: {
 
 // One client at a time: a rail of the clients with how each is connected,
 // and the chosen client's whole configuration beside it. Every panel stays
-// mounted so unsaved edits survive switching.
-export function ClientConsole({ router, panels }: {
+// mounted so unsaved edits survive switching. Settings every client shares
+// sit in a strip under both.
+export function ClientConsole({ router, panels, shared }: {
   router: NewApiRouterView | undefined;
   panels: Record<Client, ReactNode>;
+  shared?: ReactNode;
 }) {
   const { t } = useTranslation();
   const { links, uses } = useRoutingLinks(router);
@@ -138,6 +140,7 @@ export function ClientConsole({ router, panels }: {
           {panels[client]}
         </div>
       ))}
+      {shared && <div className="inject-shared" data-client-shared>{shared}</div>}
     </section>
   );
 }

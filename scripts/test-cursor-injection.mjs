@@ -68,16 +68,36 @@ export async function testCursorInjection({ page, reset, captureDir }) {
   await panel.getByText(await tr("cursor.webSearchMissing"), { exact: true }).waitFor();
   console.log("PASS Tab and commit messages take a chosen model or stay with Cursor");
 
+  // WebSearch is chosen once under the client console; Cursor links there
+  // without leaving its own panel.
+  await panel.locator("[data-cursor-web-search]").getByRole("button", { name: await tr("cursor.webSearchSet"), exact: true }).click();
+  await eventually(async () => assert.equal(await page.evaluate(() => !!document.activeElement?.closest("[data-client-shared] [data-web-search-settings]")),
+    true, "the shared search setting takes focus"));
+  assert.equal(await page.locator('[data-client-tab="cursor"]').getAttribute("aria-selected"), "true");
+  await panel.waitFor();
+  console.log("PASS Cursor's WebSearch hint focuses the search setting shared under the client console");
+
+  // The explanations, certificate details and request path stay folded.
+  const notes = panel.locator("details[data-cursor-notes]");
+  assert.equal(await notes.getAttribute("open"), null, "notes start collapsed");
+  assert.equal(await panel.locator("[data-cursor-pipeline]").isVisible(), false);
+  await notes.locator("summary").click();
+  await panel.locator("[data-cursor-pipeline]").waitFor();
+  await notes.getByText(await tr("cursor.certificate.hint"), { exact: true }).waitFor();
+  await notes.locator("summary").click();
+  await eventually(async () => assert.equal(await panel.locator("[data-cursor-pipeline]").isVisible(), false));
+  console.log("PASS the Cursor panel folds its notes, certificate details and request path");
+
   const node = page.locator('[data-route-shortcut="cursor"]');
   await eventually(async () => assert.match(await node.innerText(), new RegExp(await tr("newapi.topology.dest.relays"))));
   assert.equal(await page.locator('[data-client-tab="cursor"]').getAttribute("data-link"), "routed");
   if (captureDir) {
     for (const theme of ["light", "dark"]) {
       await page.evaluate(dark => document.documentElement.classList.toggle("dark", dark), theme === "dark");
-      for (const [part, anchor] of [["top", "#cursor-access-title"], ["bottom", "[data-cursor-pipeline]"]]) {
-        await page.locator(anchor).evaluate(node => node.scrollIntoView({ block: "start" }));
-        await page.screenshot({ path: path.join(captureDir, `cursor-access-${part}-${theme}.png`), animations: "disabled" });
-      }
+      await panel.screenshot({ path: path.join(captureDir, `cursor-access-${theme}.png`), animations: "disabled" });
+      await notes.locator("summary").click();
+      await notes.screenshot({ path: path.join(captureDir, `cursor-notes-${theme}.png`), animations: "disabled" });
+      await notes.locator("summary").click();
     }
     await page.evaluate(() => document.documentElement.classList.remove("dark"));
   }

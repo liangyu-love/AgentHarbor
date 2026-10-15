@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  ChevronLeft, ChevronRight, Layers, Loader2, Network, PlugZap, RadioTower, RefreshCw, SquarePen, Tag, Trash2, Wallet,
+  ChevronLeft, ChevronRight, Layers, Loader2, Network, PlugZap, RadioTower, RefreshCw, ScanSearch, SquarePen, Tag, Trash2, Wallet,
 } from "lucide-react";
 import { balanceSourceName, isMimoBalanceSite } from "@/lib/provider-balance";
 import { api } from "@/lib/api";
@@ -32,7 +32,7 @@ const testLabel = { ok: "newapi.badgeOk", failed: "newapi.badgeFailed", untested
 
 // One relay site: the displayed member's face, a stack of peeking layers for
 // the other members, and the expanded member list.
-export function RelayCard({ group, store, view, consumers, onEdit, onTest, onRemove, onBalance }: {
+export function RelayCard({ group, store, view, consumers, onEdit, onTest, onRemove, onBalance, onCapabilities }: {
   group: RelayGroup;
   store: ProviderState;
   view: RelayView;
@@ -41,6 +41,8 @@ export function RelayCard({ group, store, view, consumers, onEdit, onTest, onRem
   onTest: (provider: NewApiProvider) => void;
   onRemove: (provider: NewApiProvider) => void;
   onBalance: (provider: NewApiProvider) => void;
+  /** Show how this member's models match the capability catalog. */
+  onCapabilities: (provider: NewApiProvider) => void;
 }) {
   const { t, i18n } = useTranslation();
   const { mutationLocked, run, applyChange, balanceBusy, refreshBalance } = store;
@@ -222,7 +224,14 @@ export function RelayCard({ group, store, view, consumers, onEdit, onTest, onRem
               </span>
             </div>
             <div className="flex min-w-0 flex-col gap-1 border-l border-border/60 p-3">
-              <span className="flex h-6 items-center text-[11px] font-medium text-muted-foreground">{t("newapi.model")}</span>
+              <div className="flex items-center justify-between gap-1">
+                <span className="truncate text-[11px] font-medium text-muted-foreground">{t("newapi.model")}</span>
+                <button type="button" className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                  title={t("newapi.capabilityOpen")} aria-label={`${t("newapi.capabilityOpen")} ${provider.name}`}
+                  data-relay-capabilities={provider.id} onClick={() => onCapabilities(provider)}>
+                  <ScanSearch className="h-3 w-3" />
+                </button>
+              </div>
               <span className="block truncate font-mono text-[13px] font-medium leading-7" title={provider.model || t("newapi.noModel")}>
                 {provider.model || t("newapi.noModel")}
               </span>

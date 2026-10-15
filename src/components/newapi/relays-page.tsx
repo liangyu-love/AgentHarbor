@@ -17,12 +17,14 @@ import { ProviderDialog } from "@/components/newapi/provider-dialog";
 import { ProviderTestDialog } from "@/components/newapi/provider-test-dialog";
 import { GroupAliasDialog } from "@/components/newapi/group-alias-dialog";
 import { RelayList } from "@/components/newapi/relay-list";
+import { ModelCapabilities, type CapabilityFocus } from "@/components/newapi/model-capabilities";
 import { useProviderState } from "@/components/newapi/use-provider-state";
 import { useRelayView } from "@/components/newapi/use-relay-view";
 import type { NewApiProvider } from "@/types/newapi";
 import { formatInvokeError } from "@/lib/invoke-error";
 
-// Relay model library: add, test, edit and remove the upstream relays.
+// Relay model library: add, test, edit and remove the upstream relays, and
+// check how their imported models match the capability catalog.
 export function RelayModelsPage() {
   const { t } = useTranslation();
   const store = useProviderState();
@@ -34,6 +36,7 @@ export function RelayModelsPage() {
   const [testDialog, setTestDialog] = useState<NewApiProvider | null>(null);
   const [balanceId, setBalanceId] = useState<string | null>(null);
   const [removing, setRemoving] = useState<NewApiProvider | null>(null);
+  const [capabilityFocus, setCapabilityFocus] = useState<CapabilityFocus | null>(null);
 
   // Account sources publish router providers too; the Accounts page owns them.
   const providers = useMemo(() => (state.data?.providers ?? []).filter((provider) => !provider.accountSource), [state.data?.providers]);
@@ -70,7 +73,10 @@ export function RelayModelsPage() {
         onTest={setTestDialog}
         onRemove={setRemoving}
         onBalance={(provider) => setBalanceId(provider.id)}
+        onCapabilities={(provider) => setCapabilityFocus({ providerId: provider.id, label: provider.name, nonce: Date.now() })}
       />
+
+      <ModelCapabilities focus={capabilityFocus} onClearFocus={() => setCapabilityFocus(null)} />
 
       <ProviderDialog
         open={dialog.open}

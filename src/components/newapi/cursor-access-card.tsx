@@ -2,8 +2,8 @@ import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  ArrowDown, ArrowRight, Check, ChevronDown, Copy, FileCode2, Layers3, Loader2, RefreshCw, ShieldAlert, ShieldCheck, ShieldOff, SquareTerminal,
-  TerminalSquare, Waypoints,
+  ArrowDown, ArrowRight, Check, ChevronDown, Copy, FileCode2, Info, Layers3, Loader2, RefreshCw, ShieldAlert, ShieldCheck, ShieldOff,
+  SquareTerminal, TerminalSquare, Waypoints,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
@@ -21,6 +21,7 @@ import { softBadge } from "./relay-groups";
 import { ClientGlyph } from "./configuration-shortcuts";
 import { ConsoleHeader } from "./client-console";
 import { ModelSourceSwitches } from "./model-source-switches";
+import { revealWebSearchSettings } from "./web-search-settings";
 
 const OFFICIAL = "__cursor__";
 
@@ -59,13 +60,13 @@ function AccessRow({ icon, title, hint, state, control, children }: {
   );
 }
 
-function CopyLine({ text, label }: { text: string; label: string }) {
+function CopyLine({ text, label, className, children }: { text: string; label: string; className?: string; children?: ReactNode }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   return (
-    <div className="mt-2.5 flex min-w-0 items-center gap-2 rounded-lg border border-border/50 bg-background/60 py-1 pl-2.5 pr-1">
+    <div className={cn("flex min-w-0 items-center gap-1 rounded-lg border border-border/50 bg-background/60 py-1 pl-2.5 pr-1", className)}>
       <code className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground" title={text}>{text}</code>
-      <Button type="button" size="icon" variant="ghost" className="h-6 w-6 shrink-0" aria-label={label}
+      <Button type="button" size="icon" variant="ghost" className="h-6 w-6 shrink-0" aria-label={label} title={label}
         onClick={() => {
           void navigator.clipboard?.writeText(text).then(() => {
             setCopied(true);
@@ -74,12 +75,24 @@ function CopyLine({ text, label }: { text: string; label: string }) {
         }}>
         {copied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
       </Button>
+      {children}
     </div>
   );
 }
 
-// Cursor IDE and cursor-agent: the local port they reach AgentHarbor through,
-// the certificate the IDE needs, the models offered, and Tab / commit messages.
+/** A short explanation inside the folded notes. */
+function Note({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="min-w-0 space-y-1">
+      <h4 className="text-[11px] font-semibold text-foreground">{title}</h4>
+      <div className="space-y-1.5 text-[11px] leading-relaxed text-muted-foreground">{children}</div>
+    </div>
+  );
+}
+
+// Cursor IDE and cursor-agent: how each connects (the IDE with its local
+// certificate), the models, Tab and commit messages offered, and the longer
+// explanations folded underneath.
 export function CursorAccessCard({ onOpenRelays }: { onOpenRelays?: () => void }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -126,6 +139,7 @@ export function CursorAccessCard({ onOpenRelays }: { onOpenRelays?: () => void }
     return model ? `${model.label} · ${model.sourceName}` : id;
   };
   const offered = (["relay", "account", "aggregate"] as const).filter(kind => data?.sources[kind]);
+  const searchMissing = !!data && !data.webSearchReady;
 
   const step = "flex min-w-0 items-center gap-3 rounded-xl border bg-card/90 p-2.5 lg:flex-1";
   const stepIcon = (lit: boolean) => cn("flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ring-1 transition-colors",
@@ -135,6 +149,9 @@ export function CursorAccessCard({ onOpenRelays }: { onOpenRelays?: () => void }
       <ArrowDown className={cn("h-3.5 w-3.5 transition-colors lg:-rotate-90", routed ? "text-primary" : "text-muted-foreground/40")} />
     </div>
   );
+  const appliedBadge = (applied: boolean) => applied
+    ? <Badge className={cn(softBadge("green"), "px-1.5 py-0 text-[10px] font-medium")}>{t("cursor.applied")}</Badge>
+    : <Badge className={cn(softBadge("amber"), "px-1.5 py-0 text-[10px] font-medium")}>{t("cursor.notApplied")}</Badge>;
 
   const headerStatus = !data ? null : routed ? (
     <Badge className={cn(softBadge("green"), "gap-1 font-medium")}>
@@ -159,7 +176,7 @@ export function CursorAccessCard({ onOpenRelays }: { onOpenRelays?: () => void }
   );
 
   return (
-    <section aria-labelledby="cursor-access-title" className="space-y-5" data-cursor-access>
+    <section aria-labelledby="cursor-access-title" className="space-y-4" data-cursor-access>
       <ConsoleHeader
         titleId="cursor-access-title"
         title={t("cursor.title")}
@@ -200,9 +217,7 @@ export function CursorAccessCard({ onOpenRelays }: { onOpenRelays?: () => void }
               icon={<FileCode2 className="h-4 w-4" />}
               title={t("cursor.ide")}
               hint={t(data && !data.ideInstalled ? "cursor.ideMissing" : "cursor.ideHint")}
-              state={ide && data && (data.ideApplied
-                ? <Badge className={cn(softBadge("green"), "px-1.5 py-0 text-[10px] font-medium")}>{t("cursor.applied")}</Badge>
-                : <Badge className={cn(softBadge("amber"), "px-1.5 py-0 text-[10px] font-medium")}>{t("cursor.notApplied")}</Badge>)}
+              state={ide && data && appliedBadge(data.ideApplied)}
               control={
                 <Switch aria-label={t("cursor.ide")} data-cursor-switch="ide" checked={ide}
                   disabled={locked || (!ide && (!data?.ideInstalled || data.certificate === "untrusted"))}
@@ -210,11 +225,31 @@ export function CursorAccessCard({ onOpenRelays }: { onOpenRelays?: () => void }
                     t(value ? "cursor.ideOn" : "cursor.ideOff"))} />
               }
             >
+              {/* The certificate only matters to the IDE, so it lives on its row. */}
+              <div className="mt-2.5 flex flex-wrap items-center gap-2 border-t border-border/50 pt-2.5" data-cursor-certificate-row>
+                <span className="text-[11px] font-medium text-muted-foreground">{t("cursor.certificatePanel")}</span>
+                {certificateBadge}
+                {data && data.certificate !== "manual" && (trusted ? (
+                  <Button type="button" variant="ghost" size="sm" className="ml-auto h-7 gap-1.5 rounded-lg px-2.5 text-xs text-muted-foreground"
+                    data-cursor-certificate="remove" disabled={locked}
+                    onClick={() => void run("distrust", api.cursor.distrustCertificate, t("cursor.certificate.removed"))}>
+                    {busy === "distrust" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldOff className="h-3.5 w-3.5" />}
+                    {t("cursor.certificate.remove")}
+                  </Button>
+                ) : (
+                  <Button type="button" size="sm" className="ml-auto h-7 gap-1.5 rounded-lg px-2.5 text-xs"
+                    data-cursor-certificate="trust" disabled={locked}
+                    onClick={() => void run("trust", api.cursor.trustCertificate, t("cursor.certificate.installed"))}>
+                    {busy === "trust" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
+                    {t("cursor.certificate.install")}
+                  </Button>
+                ))}
+              </div>
               {!ide && data?.ideInstalled && data.certificate === "untrusted" && (
                 <p className="mt-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-300">{t("cursor.trustFirst")}</p>
               )}
-              {data?.settingsPath && (
-                <p className="mt-1.5 truncate font-mono text-[10.5px] text-muted-foreground/80" title={data.settingsPath}>{data.settingsPath}</p>
+              {data?.certificate === "manual" && data.trustCommand && (
+                <CopyLine className="mt-2" text={data.trustCommand} label={t("cursor.copyCommand")} />
               )}
             </AccessRow>
 
@@ -222,9 +257,7 @@ export function CursorAccessCard({ onOpenRelays }: { onOpenRelays?: () => void }
               icon={<TerminalSquare className="h-4 w-4" />}
               title={t("cursor.cli")}
               hint={t(!data?.cliSupported ? "cursor.cliManual" : data.cliInstalled ? "cursor.cliHint" : "cursor.cliMissing")}
-              state={cli && data && (data.cliApplied
-                ? <Badge className={cn(softBadge("green"), "px-1.5 py-0 text-[10px] font-medium")}>{t("cursor.applied")}</Badge>
-                : <Badge className={cn(softBadge("amber"), "px-1.5 py-0 text-[10px] font-medium")}>{t("cursor.notApplied")}</Badge>)}
+              state={cli && data && appliedBadge(data.cliApplied)}
               control={
                 <Switch aria-label={t("cursor.cli")} data-cursor-switch="cli" checked={cli}
                   disabled={locked || (!cli && !data?.cliSupported)}
@@ -232,43 +265,19 @@ export function CursorAccessCard({ onOpenRelays }: { onOpenRelays?: () => void }
                     t(value ? "cursor.cliOn" : "cursor.cliOff"))} />
               }
             >
-              {data?.cliCommand && <CopyLine text={data.cliCommand} label={t("cursor.copyCommand")} />}
-              {data?.running && (
-                <Button type="button" variant="outline" size="sm" className="mt-2.5 h-7 gap-1.5 rounded-lg px-2.5 text-xs"
-                  disabled={locked} onClick={() => void run("terminal", async () => { await api.cursor.openTerminal(); })}>
-                  <SquareTerminal className="h-3.5 w-3.5" />
-                  {t("cursor.openTerminal")}
-                </Button>
+              {data?.cliCommand && (
+                <CopyLine className="mt-2.5" text={data.cliCommand} label={t("cursor.copyCommand")}>
+                  {data.running && (
+                    <Button type="button" size="icon" variant="ghost" className="h-6 w-6 shrink-0"
+                      aria-label={t("cursor.openTerminal")} title={t("cursor.openTerminal")} disabled={locked}
+                      onClick={() => void run("terminal", async () => { await api.cursor.openTerminal(); })}>
+                      <SquareTerminal className="h-3.5 w-3.5" />
+                    </Button>
+                  )}
+                </CopyLine>
               )}
             </AccessRow>
           </div>
-          <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">{t("cursor.accountNote")}</p>
-        </Panel>
-
-        <Panel title={t("cursor.certificatePanel")}>
-          <div className="flex flex-wrap items-center gap-2">
-            {certificateBadge}
-            {data?.certificate !== "manual" && (trusted ? (
-              <Button type="button" variant="outline" size="sm" className="h-7 gap-1.5 rounded-lg px-2.5 text-xs"
-                data-cursor-certificate="remove" disabled={locked}
-                onClick={() => void run("distrust", api.cursor.distrustCertificate, t("cursor.certificate.removed"))}>
-                {busy === "distrust" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldOff className="h-3.5 w-3.5" />}
-                {t("cursor.certificate.remove")}
-              </Button>
-            ) : (
-              <Button type="button" size="sm" className="h-7 gap-1.5 rounded-lg px-2.5 text-xs"
-                data-cursor-certificate="trust" disabled={locked}
-                onClick={() => void run("trust", api.cursor.trustCertificate, t("cursor.certificate.installed"))}>
-                {busy === "trust" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
-                {t("cursor.certificate.install")}
-              </Button>
-            ))}
-          </div>
-          <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">{t("cursor.certificate.hint")}</p>
-          {data?.trustCommand && <CopyLine text={data.trustCommand} label={t("cursor.copyCommand")} />}
-          {data?.certificatePath && (
-            <p className="mt-2 truncate font-mono text-[10.5px] text-muted-foreground/80" title={data.certificatePath}>{data.certificatePath}</p>
-          )}
         </Panel>
 
         <Panel title={t("cursor.modelsPanel")}>
@@ -277,7 +286,6 @@ export function CursorAccessCard({ onOpenRelays }: { onOpenRelays?: () => void }
             <ModelSourceSwitches value={data?.sources ?? { relay: true, account: true, aggregate: true }} counts={counts}
               disabled={locked} label={t("cursor.sources")}
               onChange={(next: ModelSources) => void run("sources", () => api.cursor.setSources(next), t("cursor.sourcesApplied"))} />
-            <p className="text-[11px] leading-relaxed text-muted-foreground">{t("cursor.sourcesHint")}</p>
           </div>
           {models.length > 0 ? (
             <details className="group/models mt-3 border-t border-border/60 pt-3" data-cursor-models>
@@ -317,15 +325,13 @@ export function CursorAccessCard({ onOpenRelays }: { onOpenRelays?: () => void }
               {t("cursor.noModels")}
             </button>
           )}
-        </Panel>
 
-        <Panel title={t("cursor.extrasPanel")}>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+          <div className="mt-3 grid gap-3 border-t border-border/60 pt-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
             <div className="min-w-0 space-y-1.5">
               <Label htmlFor="cursor-tab-model" className="text-xs font-medium text-muted-foreground">{t("cursor.tab")}</Label>
               <Select value={data?.tabModel ?? OFFICIAL} disabled={locked}
                 onValueChange={value => void run("tab", () => api.cursor.setTabModel(value === OFFICIAL ? null : value), t("cursor.tabApplied"))}>
-                <SelectTrigger id="cursor-tab-model" className="bg-card"><SelectValue /></SelectTrigger>
+                <SelectTrigger id="cursor-tab-model" className="min-w-0 bg-card [&>span]:truncate"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value={OFFICIAL}>{t("cursor.official")}</SelectItem>
                   {data?.tabModel && !models.some(model => model.id === data.tabModel) && (
@@ -334,80 +340,126 @@ export function CursorAccessCard({ onOpenRelays }: { onOpenRelays?: () => void }
                   {models.map(model => <SelectItem key={model.id} value={model.id}>{modelLabel(model.id)}</SelectItem>)}
                 </SelectContent>
               </Select>
-              <p className="text-[11px] leading-relaxed text-muted-foreground">{t("cursor.tabHint")}</p>
             </div>
             <div className="min-w-0 space-y-1.5">
               <Label htmlFor="cursor-commit-model" className="text-xs font-medium text-muted-foreground">{t("cursor.commit")}</Label>
-              <Select value={data?.commitModel ?? OFFICIAL} disabled={locked}
-                onValueChange={value => void run("commit", () => api.cursor.setCommitModel(value === OFFICIAL ? null : value,
-                  data?.commitLocale ?? "english"), t("cursor.commitApplied"))}>
-                <SelectTrigger id="cursor-commit-model" className="bg-card"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={OFFICIAL}>{t("cursor.official")}</SelectItem>
-                  {data?.commitModel && !models.some(model => model.id === data.commitModel) && (
-                    <SelectItem value={data.commitModel} disabled>{t("cursor.modelGone", { model: data.commitModel })}</SelectItem>
-                  )}
-                  {models.map(model => <SelectItem key={model.id} value={model.id}>{modelLabel(model.id)}</SelectItem>)}
-                </SelectContent>
-              </Select>
-              {data?.commitModel && (
-                <Select value={data.commitLocale} disabled={locked}
-                  onValueChange={value => void run("commit", () => api.cursor.setCommitModel(data.commitModel,
-                    value as CursorCommitLocale), t("cursor.commitApplied"))}>
-                  <SelectTrigger aria-label={t("cursor.commitLocale")} className="h-8 bg-card text-xs"><SelectValue /></SelectTrigger>
+              <div className="flex min-w-0 gap-1.5">
+                <Select value={data?.commitModel ?? OFFICIAL} disabled={locked}
+                  onValueChange={value => void run("commit", () => api.cursor.setCommitModel(value === OFFICIAL ? null : value,
+                    data?.commitLocale ?? "english"), t("cursor.commitApplied"))}>
+                  <SelectTrigger id="cursor-commit-model" className="min-w-0 flex-1 bg-card [&>span]:truncate"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="english">{t("cursor.locale.english")}</SelectItem>
-                    <SelectItem value="chinese">{t("cursor.locale.chinese")}</SelectItem>
+                    <SelectItem value={OFFICIAL}>{t("cursor.official")}</SelectItem>
+                    {data?.commitModel && !models.some(model => model.id === data.commitModel) && (
+                      <SelectItem value={data.commitModel} disabled>{t("cursor.modelGone", { model: data.commitModel })}</SelectItem>
+                    )}
+                    {models.map(model => <SelectItem key={model.id} value={model.id}>{modelLabel(model.id)}</SelectItem>)}
                   </SelectContent>
                 </Select>
-              )}
+                {data?.commitModel && (
+                  <Select value={data.commitLocale} disabled={locked}
+                    onValueChange={value => void run("commit", () => api.cursor.setCommitModel(data.commitModel,
+                      value as CursorCommitLocale), t("cursor.commitApplied"))}>
+                    <SelectTrigger aria-label={t("cursor.commitLocale")} className="w-24 shrink-0 bg-card text-xs"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="english">{t("cursor.locale.english")}</SelectItem>
+                      <SelectItem value="chinese">{t("cursor.locale.chinese")}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
             </div>
           </div>
-          <p className={cn("mt-3 text-[11px] leading-relaxed", data && !data.webSearchReady ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground")}>
-            {t(data && !data.webSearchReady ? "cursor.webSearchMissing" : "cursor.webSearchReady")}
-          </p>
+
+          {/* WebSearch runs on the search service shared under the client console. */}
+          <div className="mt-3 flex items-center justify-between gap-3" data-cursor-web-search>
+            <p className={cn("min-w-0 text-[11px] leading-relaxed", searchMissing ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground")}>
+              {t(searchMissing ? "cursor.webSearchMissing" : "cursor.webSearchReady")}
+            </p>
+            <button type="button" onClick={revealWebSearchSettings}
+              className="shrink-0 rounded-md text-[11px] font-medium text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              {t("cursor.webSearchSet")}
+            </button>
+          </div>
         </Panel>
       </div>
 
-      <Panel title={t("newapi.pipelinePanel")} className="text-xs">
-        <div data-cursor-pipeline className="flex flex-col lg:flex-row lg:items-stretch">
-          <div className={cn(step, "border-border/60")}>
-            <span className={stepIcon(routed)}><ClientGlyph client="cursor" className="h-4 w-4" /></span>
-            <span className="min-w-0">
-              <span className="block font-medium text-foreground">{t("cursor.pipelineClients")}</span>
-              <span className="block truncate font-mono text-[11px] text-muted-foreground">
-                {[ide && "http.proxy", cli && "CURSOR_API_ENDPOINT"].filter(Boolean).join(" · ") || "—"}
-              </span>
-            </span>
-          </div>
-          {connector}
-          <div className={cn(step, routed ? "border-primary/35" : "border-border/60")}>
-            <span className={stepIcon(routed)}><Waypoints className="h-4 w-4" /></span>
-            <span className="min-w-0">
-              <span className="block font-medium text-foreground">{t("cursor.pipelinePort", { port: data?.port ?? "—" })}</span>
-              <span className="block truncate font-mono text-[11px] text-muted-foreground">{t("cursor.pipelinePortHint")}</span>
-            </span>
-          </div>
-          {connector}
-          <button type="button" onClick={onOpenRelays} disabled={!onOpenRelays}
-            className={cn(step, "group w-full border-border/60 text-left transition-colors hover:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:hover:border-border/60")}>
-            <span className={stepIcon(routed && offered.length > 0)}><Layers3 className="h-4 w-4" /></span>
-            <span className="min-w-0">
-              <span className="block truncate font-medium text-foreground">
-                {offered.length ? offered.map(kind => t(`gateway.kind.${kind}`)).join(" + ") : t("cursor.sourcesNone")}
-              </span>
-              <span className="block truncate font-mono text-[11px] text-muted-foreground">{t("cursor.modelCount", { count: models.length })}</span>
-            </span>
-          </button>
-        </div>
-        <p className="mt-3 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground">
-          <ArrowRight aria-hidden className="mt-0.5 h-3 w-3 shrink-0" />
-          {t("cursor.pipelineHint")}
+      {data && !data.routerRunning && (ide || cli) && (
+        <p role="status" className="rounded-xl border border-amber-500/30 bg-amber-500/[0.07] px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300">
+          {t("cursor.routerDown")}
         </p>
-        {data && !data.routerRunning && (ide || cli) && (
-          <p role="status" className="mt-2 text-[11px] text-amber-700 dark:text-amber-300">{t("cursor.routerDown")}</p>
-        )}
-      </Panel>
+      )}
+
+      {/* How it works, kept one click away so the panel stays short. */}
+      <details className="group/notes harbor-well min-w-0 text-xs" data-cursor-notes>
+        <summary className="flex cursor-pointer list-none items-center gap-2.5 rounded-[inherit] px-4 py-3 outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+          <Info aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span className="shrink-0 font-medium text-foreground">{t("cursor.notesPanel")}</span>
+          <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">{t("cursor.notesSummary")}</span>
+          <ChevronDown aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open/notes:rotate-180 motion-reduce:transition-none" />
+        </summary>
+        <div className="space-y-4 border-t border-border/60 px-4 pb-4 pt-3">
+          <div data-cursor-pipeline className="flex flex-col lg:flex-row lg:items-stretch">
+            <div className={cn(step, "border-border/60")}>
+              <span className={stepIcon(routed)}><ClientGlyph client="cursor" className="h-4 w-4" /></span>
+              <span className="min-w-0">
+                <span className="block font-medium text-foreground">{t("cursor.pipelineClients")}</span>
+                <span className="block truncate font-mono text-[11px] text-muted-foreground">
+                  {[ide && "http.proxy", cli && "CURSOR_API_ENDPOINT"].filter(Boolean).join(" · ") || "—"}
+                </span>
+              </span>
+            </div>
+            {connector}
+            <div className={cn(step, routed ? "border-primary/35" : "border-border/60")}>
+              <span className={stepIcon(routed)}><Waypoints className="h-4 w-4" /></span>
+              <span className="min-w-0">
+                <span className="block font-medium text-foreground">{t("cursor.pipelinePort", { port: data?.port ?? "—" })}</span>
+                <span className="block truncate font-mono text-[11px] text-muted-foreground">{t("cursor.pipelinePortHint")}</span>
+              </span>
+            </div>
+            {connector}
+            <button type="button" onClick={onOpenRelays} disabled={!onOpenRelays}
+              className={cn(step, "group w-full border-border/60 text-left transition-colors hover:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:hover:border-border/60")}>
+              <span className={stepIcon(routed && offered.length > 0)}><Layers3 className="h-4 w-4" /></span>
+              <span className="min-w-0">
+                <span className="block truncate font-medium text-foreground">
+                  {offered.length ? offered.map(kind => t(`gateway.kind.${kind}`)).join(" + ") : t("cursor.sourcesNone")}
+                </span>
+                <span className="block truncate font-mono text-[11px] text-muted-foreground">{t("cursor.modelCount", { count: models.length })}</span>
+              </span>
+            </button>
+          </div>
+
+          <div className="grid gap-x-6 gap-y-4 lg:grid-cols-2">
+            <Note title={t("cursor.notes.routing")}>
+              <p className="flex items-start gap-1.5">
+                <ArrowRight aria-hidden className="mt-0.5 h-3 w-3 shrink-0" />
+                {t("cursor.pipelineHint")}
+              </p>
+              <p>{t("cursor.notes.ide")}</p>
+            </Note>
+            <Note title={t("cursor.notes.account")}>
+              <p>{t("cursor.accountNote")}</p>
+            </Note>
+            <Note title={t("cursor.certificatePanel")}>
+              <p>{t("cursor.certificate.hint")}</p>
+              {data?.trustCommand && data.certificate !== "manual" && (
+                <CopyLine text={data.trustCommand} label={t("cursor.copyCommand")} />
+              )}
+              {data?.certificatePath && (
+                <p className="truncate font-mono text-[10.5px] text-muted-foreground/80" title={data.certificatePath}>{data.certificatePath}</p>
+              )}
+            </Note>
+            <Note title={t("cursor.notes.models")}>
+              <p>{t("cursor.sourcesHint")}</p>
+              <p>{t("cursor.tabHint")}</p>
+              {data?.settingsPath && (
+                <p className="truncate font-mono text-[10.5px] text-muted-foreground/80" title={data.settingsPath}>{data.settingsPath}</p>
+              )}
+            </Note>
+          </div>
+        </div>
+      </details>
     </section>
   );
 }

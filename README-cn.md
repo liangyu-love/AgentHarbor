@@ -30,7 +30,7 @@ Codex 是主要集成对象，其他客户端共用同一套中转与路由。
 | 模块 | 能做什么 |
 | --- | --- |
 | **仪表盘** | 各客户端的路由拓扑、今日 Token 概览、最近会话，以及可折叠的本地数据目录：列出各客户端的目录和关键文件 |
-| **中转模型** | 管理多个供应商；逐模型协议（Responses、Chat Completions、Anthropic Messages）、连通性测试、New API 余额、导入导出；能力目录（上下文、输出上限、价格）来自内置的 [models.dev](https://github.com/anomalyco/models.dev) 快照 |
+| **中转模型** | 管理多个供应商；逐模型协议（Responses、Chat Completions、Anthropic Messages）、连通性测试、New API 余额、导入导出；能力目录与逐中转的匹配预览（上下文、输出上限、价格）来自内置的 [models.dev](https://github.com/anomalyco/models.dev) 快照 |
 | **模型注入** | 把中转模型和官方账号的模型接到下列客户端：预览、应用、恢复配置，每次都有备份；路由模式下中转、官方账号、聚合模型三类可以任意组合<br>• Codex：本地路由或原生直连，支持无账号模式和子代理默认配置<br>• Claude Code、Claude Desktop、OpenCode、Pi<br>• Cursor IDE 与 cursor-agent：Agent、Tab 补全和提交信息都能用这些模型，见下文 |
 | **本地路由** | 三种协议互相转换<br>模型聚合：按优先级分层、失败切换、首字超时切换、实时成员状态<br>请求级路由诊断 |
 | **通用网关** | 一个本地地址加上命名 key，任何能填 Base URL 和 API Key 的 agent 都能使用全部开启的模型，见下文 |
@@ -77,7 +77,7 @@ cursor-agent ── CURSOR_API_ENDPOINT ─┤──▶ AgentHarbor 接入端口
 - **本地证书**：Cursor 通过 HTTPS 访问服务器，所以本地代理需要一张 Cursor 信任的证书。证书在本机生成，带名称约束，只能用于 `cursor.sh` 及其子域名，冒充不了其他网站。在 Windows 上点「安装并信任」会装进当前用户的根证书库，系统会先弹窗确认，不需要管理员权限；也可以一键移除。macOS 和 Linux 上，面板会给出安装命令。只有发往 `*.cursor.sh` 的流量会被解密，其他网站原样走隧道；如果 Cursor 原来配置了代理，隧道会继续经过它。
 - **cursor-agent CLI**：打开开关后，AgentHarbor 会为当前用户设置环境变量 `CURSOR_API_ENDPOINT`（Windows），之后新开的终端里 `cursor-agent` 就会接入；也可以点「打开已接入的终端」。CLI 不需要证书。其他系统上，面板会给出启动命令。
 - **账号**：需要在 Cursor 里登录你自己的账号。AgentHarbor 不写入任何令牌，不改动账号、订阅和用量信息；选 Cursor 自带的模型时，请求原样发往 Cursor。Cursor 是否允许某个套餐使用自定义模型，以 Cursor 自己的规则为准。
-- **Agent**：选 AgentHarbor 提供的模型后，Agent 循环由 AgentHarbor 在本地运行。工具（终端、读写和编辑文件、搜索、MCP、子 Agent）由 Cursor 执行，结果再交回模型；会话检查点保存在 `cursor/conversations.db`。WebSearch 使用「路由能力 → 联网搜索」里选的模型，WebFetch 由 AgentHarbor 抓取网页。提示词按 Cursor 的工具约定编写，模型能正常调用 Cursor 的工具。
+- **Agent**：选 AgentHarbor 提供的模型后，Agent 循环由 AgentHarbor 在本地运行。工具（终端、读写和编辑文件、搜索、MCP、子 Agent）由 Cursor 执行，结果再交回模型；会话检查点保存在 `cursor/conversations.db`。WebSearch 使用客户端接入底部共用的「联网搜索」里选的搜索账号，WebFetch 由 AgentHarbor 抓取网页。提示词按 Cursor 的工具约定编写，模型能正常调用 Cursor 的工具。
 - **模型来源**：面板上同样有「中转模型 / 官方账号 / 聚合模型」三个开关，可以任意组合。思考档位与 models.dev 的声明一致；Cursor 账号来源的模型不会再提供给 Cursor。
 - **Tab 补全和提交信息**：默认保持 Cursor 官方，不做任何改动。选择一个模型后，Tab 补全在本地生成，代码不会发给 Cursor 的 Tab 服务；Git 提交信息也可以选模型和语言（中文或英文）。
 
@@ -89,7 +89,7 @@ Codex 与 Claude Code / Claude Desktop 保留各自原来的 WebSearch 用法，
 
 - **原生优先**：Codex 的 `web_search` 可以在 Anthropic Messages 模型上执行，Claude 的搜索可以在 Responses 模型上执行。Chat 模型只有确认支持的格式才转换，目前是 OpenAI Chat 搜索和 MiMo 搜索：官方地址会自动识别，中转需要在供应商的“高级设置 → 跨协议搜索方式”里指定。Codex 默认的 cached 搜索模式在其它供应商上按实时搜索执行。
 - **检测搜索能力**：在供应商的高级设置里，可以用已保存的密钥发一到两个小的计费请求，看这个模型是否真的执行了搜索。如果某种 Chat 格式能用，会给出建议，但只修改草稿，不会自动保存。
-- **兜底**：上游明确拒绝可选的搜索声明时，只移除搜索声明，让消息照常发出，这不算搜索成功；同一目标 30 分钟内不会再试原生搜索。也可以在路由设置里指定一个 Responses / Messages 搜索模型（默认关闭），由它执行搜索，原来的推理模型继续回答。
+- **兜底**：上游明确拒绝可选的搜索声明时，只移除搜索声明，让消息照常发出，这不算搜索成功；同一目标 30 分钟内不会再试原生搜索。也可以在注入页客户端接入底部的「联网搜索」里指定一个 Responses / Messages 搜索模型（默认关闭，所有经路由的客户端共用），由它执行搜索，原来的推理模型继续回答。
 - **诊断**：请求级路由诊断里会标出这次请求实际用的方式：原生适配、指定账号搜索、单独执行搜索，还是省略了搜索声明。
 
 ## 通用网关

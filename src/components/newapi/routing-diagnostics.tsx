@@ -1,7 +1,7 @@
 import { useState, type CSSProperties, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Activity, AlertCircle, ChevronDown, Gauge, Globe, RefreshCw, Route, Trash2 } from "lucide-react";
+import { Activity, AlertCircle, ChevronDown, Gauge, RefreshCw, Route, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { formatInvokeError } from "@/lib/invoke-error";
 import { toast } from "@/hooks/use-toast";
@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { CLIENT_SOURCES, clientSourceLabelKey, matchesClientSource, type ClientSourceFilter } from "@/lib/client-source";
-import type { CompressionPolicy, NewApiProvider, RouteAttempt, RouteDiagnostic } from "@/types/newapi";
+import type { CompressionPolicy, RouteAttempt, RouteDiagnostic } from "@/types/newapi";
 
 type RouteState = "complete" | "failed" | "running";
 
@@ -156,20 +156,10 @@ export function RoutingDiagnostics({
   disabled,
   compression,
   onCompression,
-  webSearchProviderId,
-  webSearchModelId,
-  searchProviders,
-  searchDisabled,
-  onWebSearchProvider,
 }: {
   disabled: boolean;
   compression: CompressionPolicy;
   onCompression: (policy: CompressionPolicy) => void;
-  webSearchProviderId: string | null;
-  webSearchModelId?: string | null;
-  searchProviders: NewApiProvider[];
-  searchDisabled: boolean;
-  onWebSearchProvider: (providerId: string | null, modelId: string | null) => void;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -178,10 +168,6 @@ export function RoutingDiagnostics({
   const [clearing, setClearing] = useState(false);
   const [clearError, setClearError] = useState<string | null>(null);
   const [compressionValue, setCompressionValue] = useState("");
-  const selectedSearchUnavailable = webSearchProviderId !== null &&
-    !searchProviders.some(provider => provider.id === webSearchProviderId);
-  const searchProvider = searchProviders.find(provider => provider.id === webSearchProviderId);
-  const searchModels = searchProvider?.webSearchModels ?? [];
   const query = useQuery({
     queryKey: ["route-diagnostics"],
     queryFn: api.routing.diagnostics,
@@ -266,45 +252,8 @@ export function RoutingDiagnostics({
           )}
         </div>
 
-        {/* Routing-wide settings that apply to every request shown below. */}
+        {/* The routing-wide compaction default that applies to every request shown below. */}
         <div className="flex flex-wrap items-center gap-2">
-          {(searchProviders.length > 0 || selectedSearchUnavailable) && (
-            <div className="diag-setting">
-              <Globe className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
-              <span id="web-search-provider-label">{t("newapi.webSearchService")}</span>
-              <Select value={webSearchProviderId ?? "__automatic"} disabled={searchDisabled}
-                onValueChange={value => {
-                  const provider = searchProviders.find(provider => provider.id === value);
-                  const models = provider?.webSearchModels ?? [];
-                  onWebSearchProvider(value === "__automatic" ? null : value,
-                    models.includes(provider?.model ?? "") ? provider!.model : models[0] ?? null);
-                }}>
-                <SelectTrigger className="h-7 w-36 bg-card text-xs" aria-labelledby="web-search-provider-label">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__automatic">{t("newapi.webSearchAutomatic")}</SelectItem>
-                  {selectedSearchUnavailable && webSearchProviderId && (
-                    <SelectItem value={webSearchProviderId} disabled>{t("newapi.webSearchUnavailable")}</SelectItem>
-                  )}
-                  {searchProviders.map(provider => <SelectItem key={provider.id} value={provider.id}>{provider.name}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
-          {searchProvider && searchModels.length > 0 && (
-            <div className="diag-setting">
-              <span id="web-search-model-label">{t("newapi.webSearchModel")}</span>
-              <Select value={webSearchModelId ?? "__missing"} disabled={searchDisabled}
-                onValueChange={value => onWebSearchProvider(searchProvider.id, value)}>
-                <SelectTrigger className="h-7 w-48 bg-card text-xs" aria-labelledby="web-search-model-label"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {(!webSearchModelId || !searchModels.includes(webSearchModelId)) && <SelectItem value={webSearchModelId ?? "__missing"} disabled>{t("newapi.webSearchUnavailable")}</SelectItem>}
-                  {searchModels.map(model => <SelectItem key={model} value={model}>{model}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
           <label className="diag-setting">
             <Gauge className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
             <span>{t("newapi.compression.globalDefault")}</span>

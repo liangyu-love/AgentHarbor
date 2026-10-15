@@ -20,12 +20,12 @@ import { CursorAccessCard } from "@/components/newapi/cursor-access-card";
 import { RoutingDiagnostics } from "@/components/newapi/routing-diagnostics";
 import { AggregationManager } from "@/components/newapi/aggregation-manager";
 import { GatewayPanel } from "@/components/newapi/gateway-panel";
-import { ModelCapabilities } from "@/components/newapi/model-capabilities";
 import { useProviderState } from "@/components/newapi/use-provider-state";
 import { providerModelProtocol } from "@/lib/provider-models";
 import { formatInvokeError } from "@/lib/invoke-error";
 import { RoutingTopology } from "./routing-topology";
 import { ClientConsole } from "./client-console";
+import { WebSearchSettings } from "./web-search-settings";
 
 // Section opener: an English kicker, the title and a hairline to the edge.
 function SectionGroup({ kicker, icon, title, description, delay, children }: {
@@ -129,6 +129,7 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
             pi: <ClientConfigs target="pi" providers={providers} onOpenRelays={onOpenRelays} />,
             cursor: <CursorAccessCard onOpenRelays={onOpenRelays} />,
           }}
+          shared={<WebSearchSettings store={store} providers={providers} />}
         />
       </SectionGroup>
 
@@ -142,17 +143,6 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
         <AggregationManager providers={providers} />
         <RoutingDiagnostics
           disabled={nativeAccess || !state.isSuccess || store.mutationLocked}
-          webSearchProviderId={router?.webSearchProviderId ?? null}
-          webSearchModelId={router?.webSearchModelId ?? null}
-          searchProviders={providers.filter((provider) => provider.webSearchCapable)}
-          searchDisabled={!state.isSuccess || store.mutationLocked}
-          onWebSearchProvider={(providerId, modelId) => {
-            void run(
-              "web-search-provider",
-              async () => applyChange(await api.routing.setWebSearchProvider(providerId, modelId)),
-              t("newapi.webSearchSaveFailed"),
-            );
-          }}
           compression={state.data?.compression ?? { mode: "percent", percent: 90 }}
           onCompression={(policy) => {
             void run(
@@ -162,7 +152,6 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
             );
           }}
         />
-        <ModelCapabilities />
       </SectionGroup>
 
       <AlertDialog open={restartConfirmOpen} onOpenChange={setRestartConfirmOpen}>
