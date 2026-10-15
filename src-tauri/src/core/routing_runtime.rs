@@ -165,10 +165,11 @@ pub async fn reconcile_with(paths: &CodexPaths, cursor_leases: bool) -> Result<(
         router_proxy::stop();
         Ok(())
     };
-    if let Err(error) = super::cursor_inject::reconcile(paths, cursor_leases).await {
+    let cursor_result = super::cursor_inject::reconcile(paths, cursor_leases).await;
+    if let Err(error) = &cursor_result {
         log::warn!("Cursor injection reconcile failed: {error}");
     }
-    result
+    result.and(cursor_result)
 }
 
 fn needs_server(

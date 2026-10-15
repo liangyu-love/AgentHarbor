@@ -133,7 +133,8 @@ SOFTWARE.
 - Ported into `src-tauri/cursor-engine/` (Rust, adapted):
   - the Cursor Agent protocol adapter (`src/cursor/`): transport, conversation
     runtime, input compilation, checkpoints, tool codecs and results, model
-    catalog merging, commit message generation;
+    catalog merging, commit message generation, account/plan response definitions
+    and the confirmed Free entitlement cache;
   - the Agent loop (`src/run/`), model API adapters (`src/provider/`), domain
     types (`src/model/`), conversation store (`src/store/`, with a new schema),
     web fetch and cache (`src/search/`), and the Cursor-facing HTTP handlers
@@ -143,10 +144,11 @@ SOFTWARE.
   - the tool names and parameter schemas in `prompt/cursor/tools.json` (the
     descriptions and every prompt text are AgentHarbor's own);
   - behaviour tests under `cursor-engine/tests/`.
-- Modifications: plugins, the local account and plan emulation, knowledge
-  cache, code index search and request traces are left out; models, settings
-  and web search come from AgentHarbor; the local certificate authority and the
-  proxy front are rewritten.
+- Modifications: plugins, knowledge cache, code index search and request traces
+  are left out; models, settings and web search come from AgentHarbor; the
+  local certificate authority and proxy front are rewritten. Local identity
+  injection uses AgentHarbor's reversible leases; paid account responses remain
+  upstream and authentication failures invalidate cached Free state.
 
 ```
 MIT License

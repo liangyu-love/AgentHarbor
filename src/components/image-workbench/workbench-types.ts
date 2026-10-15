@@ -14,17 +14,26 @@ export const SIZES: AspectRatioOption[] = [
   { label: "1:1 方幅", name: "1024x1024", value: "1024x1024", desc: "经典正方 · 头像/画作" },
   { label: "3:2 横卷", name: "1536x1024", value: "1536x1024", desc: "宽幅山水 · 桌面壁纸" },
   { label: "2:3 立轴", name: "1024x1536", value: "1024x1536", desc: "高挑挂轴 · 移动端屏保" },
-  { label: "16:9 广角", name: "1792x1024", value: "1792x1024", desc: "全景巨卷 · 影视镜头" },
-  { label: "9:16 宣幅", name: "1024x1792", value: "1024x1792", desc: "通景长轴 · 竖幅插画" },
+  { label: "16:9 广角", name: "1536x864", value: "1536x864", desc: "全景巨卷 · 影视镜头" },
+  { label: "9:16 宣幅", name: "864x1536", value: "864x1536", desc: "通景长轴 · 竖幅插画" },
+  { label: "7:4 宽幅", name: "1792x1024", value: "1792x1024", desc: "兼容已保存的宽幅尺寸" },
+  { label: "4:7 竖幅", name: "1024x1792", value: "1024x1792", desc: "兼容已保存的竖幅尺寸" },
   { label: "自选尺幅", name: "auto", value: "auto", desc: "默认比例 · 智能匹配" },
 ];
 
-export const QUALITIES = [
+const QUALITIES = [
   { value: "auto", label: "自动", tip: "由模型选择" },
+  { value: "max", label: "最高", tip: "更多生成时间与费用" },
+  { value: "xhigh", label: "超高", tip: "比高画质更精细" },
   { value: "high", label: "高", tip: "更多画面细节" },
   { value: "medium", label: "中", tip: "平衡细节与速度" },
   { value: "low", label: "低", tip: "优先生成速度" },
 ];
+
+export function qualitiesForModel(model: string) {
+  const extended = /^gpt-image-2\.5-(sunburst|flare)(?:-\d{4}-\d{2}-\d{2})?$/.test(model.trim());
+  return QUALITIES.filter(item => extended || !["xhigh", "max"].includes(item.value));
+}
 
 export type SavedImageConfig = {
   baseUrl: string;

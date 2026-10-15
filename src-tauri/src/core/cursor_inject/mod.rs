@@ -7,8 +7,9 @@
 //!   cli on  → user variable CURSOR_API_ENDPOINT = engine         (cli::Lease)
 //!   models  → gateway models of the kinds turned on, via router /mix
 //! ```
-//! The engine runs while either is on; the router runs with it. On exit both
-//! leases are released, so Cursor never points at a port nobody listens on.
+//! The engine runs while either is on; the router runs with it. On exit the
+//! account, IDE and CLI leases are released.
+pub mod account;
 pub mod cli;
 pub mod ide;
 pub mod models;
@@ -51,6 +52,7 @@ pub struct CursorSettings {
     pub commit_model: Option<String>,
     pub commit_locale: CommitLocale,
     pub(crate) ide_lease: Option<ide::Lease>,
+    pub(crate) account_lease: Option<account::Lease>,
     pub(crate) cli_lease: Option<cli::Lease>,
 }
 
@@ -133,8 +135,7 @@ pub async fn reconcile(paths: &CodexPaths, apply_leases: bool) -> Result<(), Str
             running.stop().await;
             *PORT.lock().unwrap_or_else(|poison| poison.into_inner()) = None;
         }
-        release_leases(&paths.app_data_dir, &mut settings);
-        return Ok(());
+        return release_leases(&paths.app_data_dir, &mut settings);
     }
     if engine.is_none() {
         let host = Host::new();
@@ -151,13 +152,16 @@ pub async fn reconcile(paths: &CodexPaths, apply_leases: bool) -> Result<(), Str
     let url = running.url();
     let port_moved = settings.port != running.port();
     settings.port = running.port();
-    if apply_leases || port_moved {
-        apply_leases_now(&mut settings, &url);
+    let applied = if apply_leases || port_moved {
+        apply_leases_now(&mut settings, &url)
+    } else {
+        Ok(())
+    };
+    // Earlier writes still need their recovery leases if a later step fails.
+    if settings != before {
+        save(&paths.app_data_dir, &settings)?;
     }
-    if settings == before {
-        return Ok(());
-    }
-    save(&paths.app_data_dir, &settings)
+    applied
 }
 
 /// Points the host at AgentHarbor's models, settings, search and network.
@@ -213,21 +217,29 @@ fn searcher(paths: &CodexPaths) -> Option<Arc<dyn cursor_engine::Searcher>> {
     }))
 }
 
-fn apply_leases_now(settings: &mut CursorSettings, url: &str) {
-    match (settings.ide, ide::settings_path()) {
-        (true, Some(path)) => match ide::apply(&path, url, settings.ide_lease.as_ref()) {
-            Ok(lease) => settings.ide_lease = Some(lease),
-            Err(error) => log::warn!("Cursor settings were not updated: {error}"),
-        },
-        _ => {
-            if let Some(lease) = settings.ide_lease.take() {
-                if let Err(error) = ide::release(&lease) {
-                    log::warn!("Cursor settings were not restored: {error}");
-                    settings.ide_lease = Some(lease);
-                }
-            }
+fn apply_ide_leases(settings: &mut CursorSettings, url: &str, user_dir: Option<&Path>) -> Result<(), String> {
+    if settings.ide {
+        let directory = user_dir.ok_or("cursor.errors.ideMissing")?;
+        settings.ide_lease = Some(ide::apply(&directory.join("settings.json"), url, settings.ide_lease.as_ref())?);
+        let storage = directory.join("globalStorage");
+        std::fs::create_dir_all(&storage).map_err(|_| "cursor.errors.accountWrite")?;
+        settings.account_lease = account::apply(&storage.join("state.vscdb"), settings.account_lease.as_ref())?;
+    } else {
+        // Keep the proxy while an account restoration still needs a retry.
+        if let Some(lease) = settings.account_lease.as_ref() {
+            account::release(lease)?;
+            settings.account_lease = None;
+        }
+        if let Some(lease) = settings.ide_lease.as_ref() {
+            ide::release(lease)?;
+            settings.ide_lease = None;
         }
     }
+    Ok(())
+}
+
+fn apply_leases_now(settings: &mut CursorSettings, url: &str) -> Result<(), String> {
+    apply_ide_leases(settings, url, ide::user_dir().as_deref())?;
     if settings.cli && cli::supported() {
         match cli::apply(url, settings.cli_lease.as_ref()) {
             Ok(lease) => settings.cli_lease = Some(lease),
@@ -239,15 +251,28 @@ fn apply_leases_now(settings: &mut CursorSettings, url: &str) {
             settings.cli_lease = Some(lease);
         }
     }
+    Ok(())
 }
 
-fn release_leases(app_data_dir: &Path, settings: &mut CursorSettings) {
+fn release_leases(app_data_dir: &Path, settings: &mut CursorSettings) -> Result<(), String> {
     let mut changed = false;
+    let mut failure = None;
+    if let Some(lease) = settings.account_lease.take() {
+        match account::release(&lease) {
+            Ok(()) => changed = true,
+            Err(error) => {
+                log::warn!("Cursor local account was not restored: {error}");
+                failure = Some(error);
+                settings.account_lease = Some(lease);
+            }
+        }
+    }
     if let Some(lease) = settings.ide_lease.take() {
         match ide::release(&lease) {
             Ok(()) => changed = true,
             Err(error) => {
                 log::warn!("Cursor settings were not restored: {error}");
+                failure.get_or_insert(error);
                 settings.ide_lease = Some(lease);
             }
         }
@@ -257,20 +282,24 @@ fn release_leases(app_data_dir: &Path, settings: &mut CursorSettings) {
             Ok(()) => changed = true,
             Err(error) => {
                 log::warn!("{} was not restored: {error}", cli::VARIABLE);
+                failure.get_or_insert(error);
                 settings.cli_lease = Some(lease);
             }
         }
     }
     if changed {
-        let _ = save(app_data_dir, settings);
+        save(app_data_dir, settings)?;
     }
+    failure.map_or(Ok(()), Err)
 }
 
 /// On exit: Cursor and `cursor-agent` stop pointing at this process. The
 /// switches stay on, so the next start points them back.
 pub fn release_on_exit(app_data_dir: &Path) {
     let mut settings = load(app_data_dir);
-    release_leases(app_data_dir, &mut settings);
+    if let Err(error) = release_leases(app_data_dir, &mut settings) {
+        log::warn!("Cursor injection could not be fully released: {error}");
+    }
 }
 
 // ---- what the window shows and changes -------------------------------------------
@@ -469,5 +498,70 @@ mod tests {
         save(directory.path(), &settings).unwrap();
         assert_eq!(load(directory.path()), settings);
         assert!(active(directory.path()));
+    }
+
+    #[test]
+    fn exit_restores_the_local_identity_and_proxy_and_keeps_the_switch_on() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("globalStorage/state.vscdb");
+        let cursor_settings = directory.path().join("settings.json");
+        std::fs::write(&cursor_settings, r#"{"http.proxy":"http://previous:8080"}"#).unwrap();
+        let mut settings = CursorSettings {
+            ide: true,
+            ..Default::default()
+        };
+        apply_ide_leases(&mut settings, "http://127.0.0.1:4567", Some(directory.path())).unwrap();
+        assert!(settings.account_lease.is_some());
+        assert!(ide::applied(&cursor_settings, "http://127.0.0.1:4567"));
+        save(directory.path(), &settings).unwrap();
+        assert_eq!(load(directory.path()), settings);
+        release_on_exit(directory.path());
+        let restored = load(directory.path());
+        assert!(restored.ide);
+        assert!(restored.account_lease.is_none());
+        assert!(restored.ide_lease.is_none());
+        let connection = rusqlite::Connection::open(database).unwrap();
+        let count: i32 = connection.query_row("SELECT COUNT(*) FROM ItemTable WHERE key LIKE 'cursorAuth/%'", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 0);
+        let text = std::fs::read_to_string(cursor_settings).unwrap();
+        assert!(text.contains("http://previous:8080"));
+        assert!(!text.contains("disableHttp2"));
+    }
+
+    #[test]
+    fn failed_proxy_settings_never_inject_a_local_account() {
+        for malformed in [true, false] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("settings.json");
+            let original = if malformed { "{ broken json" } else { "{}" };
+            std::fs::write(&path, original).unwrap();
+            if !malformed {
+                // Occupy the temporary write path without depending on OS permissions.
+                std::fs::create_dir(path.with_extension("json.agentharbor-tmp")).unwrap();
+            }
+            let mut settings = CursorSettings { ide: true, ..Default::default() };
+            let error = apply_ide_leases(&mut settings, "http://127.0.0.1:4567", Some(directory.path())).unwrap_err();
+            assert_eq!(error, if malformed { "cursor.errors.settingsUnreadable" } else { "cursor.errors.settingsWrite" });
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+            assert!(!directory.path().join("globalStorage").exists());
+            assert!(settings.account_lease.is_none());
+            assert!(settings.ide_lease.is_none());
+        }
+    }
+
+    #[test]
+    fn an_account_write_failure_keeps_the_proxy_lease_recoverable() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        std::fs::write(&path, r#"{"http.proxy":"http://previous:8080"}"#).unwrap();
+        std::fs::write(directory.path().join("globalStorage"), "occupied").unwrap();
+        let mut settings = CursorSettings { ide: true, ..Default::default() };
+        assert_eq!(apply_ide_leases(&mut settings, "http://127.0.0.1:4567", Some(directory.path())).unwrap_err(), "cursor.errors.accountWrite");
+        assert!(settings.account_lease.is_none());
+        assert!(settings.ide_lease.is_some());
+        save(directory.path(), &settings).unwrap();
+        release_on_exit(directory.path());
+        assert!(load(directory.path()).ide_lease.is_none());
+        assert!(std::fs::read_to_string(path).unwrap().contains("http://previous:8080"));
     }
 }

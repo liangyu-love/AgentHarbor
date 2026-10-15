@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 import { storageKeys } from "@/lib/storage-keys";
-import { loadSavedConfig, type SavedImageConfig } from "./workbench-types";
+import { loadSavedConfig, qualitiesForModel, type SavedImageConfig } from "./workbench-types";
 
 const IMAGE_MODEL = /image|dall|gpt-image/i;
 
@@ -42,13 +42,16 @@ export function useImageConnection(pageActive: boolean, setError: (error: string
   const [keySites, setKeySites] = useState<string[]>([]);
   const [model, setModel] = useState(savedConfig.model);
   const [size, setSize] = useState(savedConfig.size);
-  const [quality, setQuality] = useState(savedConfig.quality);
+  const [chosenQuality, setQuality] = useState(savedConfig.quality);
+  const qualityOptions = qualitiesForModel(model);
+  const quality = qualityOptions.some(item => item.value === chosenQuality) ? chosenQuality : "auto";
 
   const selectedProvider = providers.find(provider => provider.id === providerId);
   const availableModels = selectedProvider?.models.filter(item => IMAGE_MODEL.test(item.id)) ?? [];
   const modelOptions = Array.from(new Set([
     "gpt-image-2",
-    "gpt-image-2.5",
+    "gpt-image-2.5-sunburst",
+    "gpt-image-2.5-flare",
     ...availableModels.map(item => item.id),
   ]));
 
@@ -178,7 +181,7 @@ export function useImageConnection(pageActive: boolean, setError: (error: string
   return {
     imageProviders, providerId, chooseProvider,
     baseUrl, setBaseUrl, apiKey, setApiKey, keyStored, keySites, saveKey, forgetKey, markKeyUsed,
-    model, setModel, modelOptions, size, setSize, quality, setQuality, hasCredentials,
+    model, setModel, modelOptions, size, setSize, quality, setQuality, qualityOptions, hasCredentials,
   };
 }
 

@@ -53,6 +53,13 @@ impl CursorProxy {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn testing(upstream: String) -> Self {
+        let host = crate::Host::new();
+        host.set_egress(crate::Egress::Direct);
+        Self { clients: crate::network::NetworkClients::new(host), upstream }
+    }
+
     async fn client(&self) -> Result<reqwest::Client> {
         self.clients.cursor_client().await
     }
@@ -185,6 +192,7 @@ fn upstream_url(headers: &axum::http::HeaderMap, fallback: &str, path: &str) -> 
 pub fn is_cursor_host(host: &str) -> bool {
     let host = host.trim_end_matches('.').to_ascii_lowercase();
     host == "cursor.sh" || host.ends_with(".cursor.sh")
+        || host == "cursor.com" || host.ends_with(".cursor.com")
 }
 
 fn remove_hop_by_hop_headers(headers: &mut axum::http::HeaderMap) {

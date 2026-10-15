@@ -293,7 +293,7 @@ mod tests {
             .add_root_certificate(reqwest::Certificate::from_pem(authority.certificate_pem().as_bytes()).unwrap())
             .build()
             .unwrap();
-        for host in ["api2.cursor.sh", "agentn.global.api5.cursor.sh"] {
+        for host in ["api2.cursor.sh", "agentn.global.api5.cursor.sh", "cursor.com", "www.cursor.com"] {
             let body = client.get(format!("https://{host}/ping?x=1")).send().await.unwrap().text().await.unwrap();
             assert_eq!(body, format!("https://{host}/ping?x=1"));
         }

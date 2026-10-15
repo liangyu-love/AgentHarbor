@@ -1,6 +1,6 @@
 //! The local certificate authority Cursor trusts so the front can read its
 //! traffic to Cursor's servers. The authority is limited by a name constraint
-//! to `cursor.sh` and its subdomains: even if its key leaked, it could not
+//! to `cursor.sh`, `cursor.com` and their subdomains: even if its key leaked, it could not
 //! vouch for any other site.
 use std::{
     collections::HashMap,
@@ -26,6 +26,7 @@ use crate::{Error, Result};
 const CERT_FILE: &str = "cursor-ca.crt";
 const KEY_FILE: &str = "cursor-ca.key";
 pub const COMMON_NAME: &str = "AgentHarbor Cursor Local CA";
+const CURSOR_DOMAINS: [&str; 2] = ["cursor.sh", "cursor.com"];
 
 pub struct Authority {
     issuer: Issuer<'static, KeyPair>,
@@ -47,13 +48,13 @@ impl Authority {
         let key_path = dir.join(KEY_FILE);
         if let (Ok(pem), Ok(key)) = (std::fs::read_to_string(&cert_path), std::fs::read_to_string(&key_path)) {
             match Self::parse(&pem, &key, cert_path.clone()) {
-                Ok(authority) if !authority.expires_soon() => return Ok(authority),
-                Ok(_) => log::info!("Cursor CA is close to expiry; creating a new one"),
+                Ok(authority) if !authority.expires_soon() && authority.covers_cursor_hosts() => return Ok(authority),
+                Ok(_) => log::info!("Cursor CA needs renewal or new domain constraints; creating a new one"),
                 Err(error) => log::warn!("Cursor CA is unusable ({error}); creating a new one"),
             }
         }
         std::fs::create_dir_all(dir)?;
-        let (pem, key) = generate()?;
+        let (pem, key) = generate(&CURSOR_DOMAINS)?;
         write_private(&key_path, key.as_bytes())?;
         std::fs::write(&cert_path, pem.as_bytes())?;
         Self::parse(&pem, &key, cert_path)
@@ -73,6 +74,15 @@ impl Authority {
         parsed.validity().not_after.timestamp() - OffsetDateTime::now_utc().unix_timestamp() < 30 * 86_400
     }
 
+    fn covers_cursor_hosts(&self) -> bool {
+        let Ok((_, parsed)) = x509_parser::parse_x509_certificate(&self.der) else { return false };
+        let Ok(Some(constraints)) = parsed.name_constraints() else { return false };
+        let Some(permitted) = &constraints.value.permitted_subtrees else { return false };
+        permitted.len() == CURSOR_DOMAINS.len() && CURSOR_DOMAINS.iter().all(|domain| {
+            permitted.iter().any(|tree| matches!(tree.base, x509_parser::extensions::GeneralName::DNSName(name) if name == *domain))
+        })
+    }
+
     pub fn certificate_der(&self) -> &[u8] {
         &self.der
     }
@@ -88,6 +98,9 @@ impl Authority {
     /// A TLS configuration presenting a certificate for `host`, made once per host.
     pub(crate) fn server_config(&self, host: &str) -> Result<Arc<ServerConfig>> {
         let host = host.trim_end_matches('.').to_ascii_lowercase();
+        if !crate::api::cursor::proxy::is_cursor_host(&host) {
+            return Err(Error::Config("certificate host must be a Cursor domain".into()));
+        }
         if let Some(config) = self.configs.lock().get(&host) {
             return Ok(config.clone());
         }
@@ -127,7 +140,7 @@ fn certificate_error(error: rcgen::Error) -> Error {
 }
 
 /// A new authority: its certificate and private key, both PEM.
-fn generate() -> Result<(String, String)> {
+fn generate(domains: &[&str]) -> Result<(String, String)> {
     let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).map_err(certificate_error)?;
     let mut params = CertificateParams::new(Vec::<String>::new()).map_err(certificate_error)?;
     let mut name = DistinguishedName::new();
@@ -137,7 +150,7 @@ fn generate() -> Result<(String, String)> {
     params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
     params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign, KeyUsagePurpose::DigitalSignature];
     params.name_constraints = Some(NameConstraints {
-        permitted_subtrees: vec![GeneralSubtree::DnsName("cursor.sh".into())],
+        permitted_subtrees: domains.iter().map(|domain| GeneralSubtree::DnsName((*domain).into())).collect(),
         // A DNS constraint says nothing about IP addresses; rule them all out.
         excluded_subtrees: vec![
             GeneralSubtree::IpAddress(CidrSubnet::V4(Ipv4Addr::UNSPECIFIED.octets(), [0; 4])),
@@ -303,9 +316,23 @@ mod tests {
         assert!(parsed.is_ca());
         let constraints = parsed.name_constraints().unwrap().unwrap().value;
         let permitted = constraints.permitted_subtrees.as_ref().unwrap();
-        assert_eq!(permitted.len(), 1);
+        assert_eq!(permitted.len(), 2);
         assert!(matches!(permitted[0].base, x509_parser::extensions::GeneralName::DNSName("cursor.sh")));
+        assert!(matches!(permitted[1].base, x509_parser::extensions::GeneralName::DNSName("cursor.com")));
         assert_eq!(constraints.excluded_subtrees.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn the_old_cursor_sh_only_authority_is_replaced() {
+        let directory = tempfile::tempdir().unwrap();
+        let (pem, key) = generate(&["cursor.sh"]).unwrap();
+        std::fs::write(directory.path().join(CERT_FILE), &pem).unwrap();
+        std::fs::write(directory.path().join(KEY_FILE), &key).unwrap();
+        let upgraded = Authority::load_or_create(directory.path()).unwrap();
+        assert_ne!(upgraded.certificate_pem(), pem);
+        assert!(upgraded.covers_cursor_hosts());
+        assert!(upgraded.server_config("cursor.com").is_ok());
+        assert!(upgraded.server_config("cursor.com.evil.test").is_err());
     }
 
     #[test]

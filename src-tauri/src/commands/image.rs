@@ -17,7 +17,7 @@ use std::{
 };
 use tauri::State;
 
-const MAX_PROMPT_CHARS: usize = 20_000;
+const MAX_PROMPT_CHARS: usize = 32_000;
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 120 * 1024 * 1024;
 const THUMBNAIL_EDGE: u32 = 256;
@@ -166,6 +166,32 @@ fn default_count() -> u8 {
     1
 }
 
+/// GPT Image 2/2.5 accepts dimensions within these documented bounds.
+fn valid_size(size: &str) -> bool {
+    if size == "auto" {
+        return true;
+    }
+    let Some((width, height)) = size.split_once('x') else {
+        return false;
+    };
+    if !width.bytes().all(|byte| byte.is_ascii_digit())
+        || !height.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return false;
+    }
+    let (Ok(width), Ok(height)) = (width.parse::<u32>(), height.parse::<u32>()) else {
+        return false;
+    };
+    width > 0
+        && height > 0
+        && width <= 3840
+        && height <= 3840
+        && width % 16 == 0
+        && height % 16 == 0
+        && width.max(height) <= width.min(height) * 3
+        && (655_360..=8_294_400).contains(&(width * height))
+}
+
 fn validate(request: &ImageGenerationRequest) -> Result<(), String> {
     let model = request.model.trim();
     if model.is_empty() || model.len() > 200 || model.chars().any(char::is_control) {
@@ -175,13 +201,13 @@ fn validate(request: &ImageGenerationRequest) -> Result<(), String> {
     if prompt.is_empty() || prompt.chars().count() > MAX_PROMPT_CHARS {
         return Err("image.errors.prompt".into());
     }
-    if !matches!(
-        request.size.as_str(),
-        "auto" | "1024x1024" | "1536x1024" | "1024x1536" | "1792x1024" | "1024x1792"
-    ) {
+    if !valid_size(&request.size) {
         return Err("image.errors.size".into());
     }
-    if !matches!(request.quality.as_str(), "auto" | "low" | "medium" | "high") {
+    if !matches!(
+        request.quality.as_str(),
+        "auto" | "low" | "medium" | "high" | "xhigh" | "max"
+    ) {
         return Err("image.errors.quality".into());
     }
     if !(1..=4).contains(&request.count) {
@@ -496,7 +522,7 @@ async fn generate(
             .file_name(format!("input.{extension}"))
             .mime_str(&mime)
             .map_err(|_| "image.errors.input".to_owned())?;
-        form = form.part("image", part);
+        form = form.part("image[]", part);
         client
             .post(endpoint)
             .header(AUTHORIZATION, auth)
@@ -1048,6 +1074,65 @@ mod tests {
     use crate::core::models::ApiProxyMode;
     use std::io::Write;
 
+    #[test]
+    fn current_image_api_parameters_validate_with_bounded_custom_dimensions() {
+        let mut request = ImageGenerationRequest {
+            provider_id: None,
+            base_url: String::new(),
+            api_key: String::new(),
+            model: "gpt-image-2.5-sunburst".into(),
+            prompt: "画".repeat(32_000),
+            size: default_size(),
+            quality: "max".into(),
+            count: 1,
+            image_data: None,
+        };
+        for size in [
+            "auto",
+            "1024x1024",
+            "1536x864",
+            "864x1536",
+            "2048x2048",
+            "640x1024",
+            "3840x1280",
+            "3840x2160",
+            "2160x3840",
+            "1792x1024",
+        ] {
+            request.size = size.into();
+            assert!(validate(&request).is_ok(), "size {size}");
+        }
+        for size in [
+            "0x1024",
+            "1536x865",
+            "624x1024",
+            "3840x1264",
+            "3856x2160",
+            "3840x3840",
+            "4294967296x1024",
+            "+1024x1024",
+            "1024X1024",
+            "1024x1024x1",
+        ] {
+            request.size = size.into();
+            assert_eq!(
+                validate(&request).unwrap_err(),
+                "image.errors.size",
+                "size {size}"
+            );
+        }
+        request.size = default_size();
+        for quality in ["auto", "low", "medium", "high", "xhigh", "max"] {
+            request.quality = quality.into();
+            assert!(validate(&request).is_ok(), "quality {quality}");
+        }
+        request.quality = "unknown".into();
+        assert_eq!(validate(&request).unwrap_err(), "image.errors.quality");
+        request.quality = default_quality();
+        request.prompt.push('画');
+        assert_eq!(validate(&request).unwrap_err(), "image.errors.prompt");
+    }
+
     fn image_fixture(
         paths: &CodexPaths,
         width: u32,
@@ -1185,7 +1270,7 @@ mod tests {
                 assert!(size < 64 * 1024);
                 let mut body = vec![0; size];
                 stream.read_exact(&mut body).unwrap();
-                requests.push(headers);
+                requests.push(format!("{headers}{}", String::from_utf8_lossy(&body)));
                 stream.write_all(&response).unwrap();
             }
             requests
@@ -1244,6 +1329,68 @@ mod tests {
         assert!(requests[1].starts_with("GET http://8.8.8.8/generated.png "));
         assert!(!requests[1].to_ascii_lowercase().contains("authorization:"));
         assert!(!requests[1].contains("sk-download-fixture"));
+    }
+
+    #[test]
+    fn official_image_generation_and_edit_contracts_keep_new_parameters_and_decode_images() {
+        for edit in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = CodexPaths::from_home(dir.path().join("codex"));
+            let image =
+                std::fs::read(image_fixture(&paths, 2, 2, image::ImageFormat::Png)).unwrap();
+            let encoded = STANDARD.encode(image);
+            let data_url = format!("data:image/png;base64,{encoded}");
+            let response = serde_json::json!({
+                "created": 1792022400_u64, "output_format": "png", "size": "3840x2160",
+                "quality": "max", "data": [{"b64_json": encoded}],
+                "usage": {"total_tokens": 100, "input_tokens": 50, "output_tokens": 50}
+            });
+            let (base_url, server) = local_image_server(vec![image_response(response.to_string())]);
+            std::fs::write(
+                &paths.settings_path,
+                serde_json::json!({"apiProxy":{"mode":"direct"}}).to_string(),
+            )
+            .unwrap();
+            let result = tauri::async_runtime::block_on(generate(
+                ImageGenerationRequest {
+                    provider_id: None,
+                    base_url,
+                    api_key: "sk-local-image-fixture".into(),
+                    model: "gpt-image-2.5-flare".into(),
+                    prompt: "A local contract test".into(),
+                    size: "3840x2160".into(),
+                    quality: "max".into(),
+                    count: 1,
+                    image_data: edit.then(|| data_url.clone()),
+                },
+                &paths,
+            ))
+            .unwrap();
+            assert_eq!(result.images, vec![data_url]);
+            let requests = server.join().unwrap();
+            let (headers, body) = requests[0].split_once("\r\n\r\n").unwrap();
+            if edit {
+                assert!(headers.starts_with("POST /v1/images/edits "));
+                assert!(headers
+                    .to_ascii_lowercase()
+                    .contains("multipart/form-data; boundary="));
+                assert!(body.contains("name=\"image[]\"; filename=\"input.png\""));
+                for (field, value) in [
+                    ("model", "gpt-image-2.5-flare"),
+                    ("quality", "max"),
+                    ("size", "3840x2160"),
+                ] {
+                    assert!(body.contains(&format!("name=\"{field}\"\r\n\r\n{value}\r\n")));
+                }
+            } else {
+                assert!(headers.starts_with("POST /v1/images/generations "));
+                let body: Value = serde_json::from_str(body).unwrap();
+                assert_eq!(body["model"], "gpt-image-2.5-flare");
+                assert_eq!(body["quality"], "max");
+                assert_eq!(body["size"], "3840x2160");
+                assert_eq!(body["n"], 1);
+            }
+        }
     }
 
     #[test]

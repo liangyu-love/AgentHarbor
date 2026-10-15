@@ -15,7 +15,7 @@ import {
 import { InkModelCombobox } from "./ink-model-combobox";
 import { PromptLibrary } from "./prompt-library";
 import type { ImageConnection } from "./use-image-connection";
-import { QUALITIES, SIZES, type GenerationJob } from "./workbench-types";
+import { SIZES, type GenerationJob } from "./workbench-types";
 
 /** The left scroll: connection, parameters, prompt, reference image and the generate button. */
 export function GenerationForm({
@@ -37,7 +37,7 @@ export function GenerationForm({
 }) {
   const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
-  const selectedQuality = QUALITIES.find(item => item.value === connection.quality);
+  const selectedQuality = connection.qualityOptions.find(item => item.value === connection.quality);
   return (
     <div className="ink-scroll-frame min-w-0 p-4 transition-all duration-300 sm:p-5 sm:p-6">
       <div className="space-y-5">
@@ -175,7 +175,7 @@ export function GenerationForm({
                 <SelectValue>{selectedQuality?.label ?? connection.quality}</SelectValue>
               </SelectTrigger>
               <SelectContent className="ink-select-content" position="popper">
-                {QUALITIES.map(item => (
+                {connection.qualityOptions.map(item => (
                   <SelectItem key={item.value} value={item.value} className="ink-select-item">
                     <span className="flex flex-col gap-0.5">
                       <span>{item.label}</span>
@@ -195,7 +195,7 @@ export function GenerationForm({
               提示词
             </Label>
             <span className="font-mono text-[11px] text-muted-foreground">
-              {prompt.length}/20000 字符
+              {Array.from(prompt).length}/32000 字符
             </span>
           </div>
           <Textarea

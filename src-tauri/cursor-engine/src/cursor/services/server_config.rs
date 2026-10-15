@@ -32,6 +32,10 @@ struct ServerConfigResponse {
 }
 
 pub async fn get(Extension(proxy): Extension<CursorProxy>, request: Request<Body>) -> Result<Response<Body>> {
+    if super::account::request_uses_local_cursor_token(request.headers()) {
+        super::account::consume_body(request).await?;
+        return Ok(local_response(fallback().encode_to_vec()));
+    }
     // Read inside the IDE's CONNECT, a request names the server it was for;
     // the CLI talks to the local endpoint directly.
     let direct = !request.headers().contains_key(UPSTREAM_URL_HEADER);

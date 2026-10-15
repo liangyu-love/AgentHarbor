@@ -260,6 +260,10 @@ pub async fn available_models(
         models: models.iter().map(available_model).collect(),
     }
     .encode_to_vec();
+    if super::account::request_uses_local_cursor_token(request.headers()) {
+        super::account::consume_body(request).await?;
+        return Ok(local_response(local));
+    }
     match proxy::forward_buffered(&proxy, request).await {
         Ok(upstream) => merge_response(upstream, local),
         Err(error) => {
@@ -277,6 +281,10 @@ pub async fn usable_models(
     let models = registry.host().models();
     tracing::info!(model_count = models.len(), "appending AgentHarbor models to Cursor GetUsableModels");
     let local = UsableModelsAddition { models: models.iter().map(usable_model).collect() }.encode_to_vec();
+    if super::account::request_uses_local_cursor_token(request.headers()) {
+        super::account::consume_body(request).await?;
+        return Ok(local_response(local));
+    }
     match proxy::forward_buffered(&proxy, request).await {
         Ok(upstream) => merge_response(upstream, local),
         Err(error) => {
@@ -294,6 +302,15 @@ pub async fn default_model_nudge(
     request: Request<Body>,
 ) -> Result<Response<Body>> {
     let models = registry.host().models();
+    if super::account::request_uses_local_cursor_token(request.headers()) {
+        super::account::consume_body(request).await?;
+        return Ok(local_response(DefaultModelNudgeDataResponse {
+            nudge_date: "0".into(),
+            should_default_switch_on_new_chat: false,
+            models_with_no_default_switch: models.iter().map(|model| model.model_hash.clone()).collect(),
+            conversion_model_override: String::new(),
+        }.encode_to_vec()));
+    }
     let local = DefaultModelNudgeAddition {
         models_with_no_default_switch: models.iter().map(|model| model.model_hash.clone()).collect(),
     }

@@ -1575,7 +1575,7 @@
     "title": "Image Workbench",
     "errors": {
       "model": "Enter a valid image model ID.",
-      "prompt": "Enter a prompt no longer than 20000 characters.",
+      "prompt": "Enter a prompt no longer than 32000 characters.",
       "size": "Unsupported image size.",
       "quality": "Unsupported image quality.",
       "count": "Generate at most 4 images at a time.",
@@ -2698,7 +2698,7 @@
     "notApplied": "Not in effect",
     "copyCommand": "Copy command",
     "openTerminal": "Open a connected terminal",
-    "accountNote": "Sign in to Cursor with your own account. AgentHarbor leaves the account, plan and usage alone, and Cursor's own models keep going to Cursor. Quitting AgentHarbor restores the settings.",
+    "accountNote": "Signed-out IDE clients get a local account. Free accounts use a local subscription response to enable custom models; paid accounts keep their original state. Models use your configured providers; the simulated plan provides no official Cursor credits. Turning access off or quitting AgentHarbor restores the local account and proxy settings. Restart Cursor to apply the change.",
     "certificatePanel": "Local certificate",
     "certificate": {
       "trusted": "Trusted",
@@ -2708,7 +2708,7 @@
       "installed": "Certificate installed",
       "remove": "Remove certificate",
       "removed": "Certificate removed",
-      "hint": "Cursor IDE talks to its servers over HTTPS, so the local proxy needs a certificate Cursor trusts. It is made on this machine and name-constrained to cursor.sh and its subdomains, so it cannot stand in for any other site. Windows asks before installing it."
+      "hint": "Cursor IDE connects over HTTPS, so the local proxy needs a certificate Cursor trusts. It is generated on this machine and name-constrained to cursor.sh, cursor.com and their subdomains. Reinstall and trust older certificates to enable subscription checks. Windows asks before installing it."
     },
     "modelsPanel": "Models and completion",
     "sources": "Cursor's model list offers",
@@ -2737,7 +2737,7 @@
     "notesSummary": "Request path · Account and plan · Local certificate · Models and Tab",
     "notes": {
       "routing": "Request path",
-      "ide": "Cursor IDE sends its Agent, model list, Tab and commit messages through the local proxy; other calls go to Cursor unchanged.",
+      "ide": "Cursor IDE sends its Agent, model list, subscription checks, Tab and commit messages through the local proxy; other calls go to Cursor unchanged.",
       "account": "Account and plan",
       "models": "Models and Tab"
     },
@@ -2757,6 +2757,7 @@
       "restart": "Cursor could not be started again",
       "settingsUnreadable": "Cursor's settings.json could not be read",
       "settingsWrite": "Cursor's settings.json could not be written",
+      "accountWrite": "Cursor's local account could not be updated; fully quit Cursor and try again",
       "cliUnsupported": "A user-wide variable cannot be set on this system",
       "notRunning": "The Cursor port is not running"
     }

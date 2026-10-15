@@ -1,6 +1,7 @@
 import { testClaudeSupport } from "./test-claude-support.mjs";
 import { testPiIntegration } from "./test-pi-integration.mjs";
 import { testImageDownload } from "./test-image-download.mjs";
+import { testImageApi } from "./test-image-api.mjs";
 import { testOAuthLogin } from "./test-oauth-login.mjs";
 // Run after npm run build. No real Tauri backend, profiles, or external network.
 // Optional: --playwright-module=/path/to/playwright-core or PLAYWRIGHT_MODULE_PATH.
@@ -109,6 +110,8 @@ try {
     await testClaudeSupport({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "image-download") {
     await testImageDownload({ page, reset });
+  } else if (process.env.FRONTEND_QA_SCOPE === "image-api") {
+    await testImageApi({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "claude-cli-official") {
     await testClaudeCliOfficial({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "capability-clear") {
@@ -352,6 +355,7 @@ try {
   }
   console.log("PASS one image canvas fills the result panel and displays two images side by side");
   await testImageDownload({ page, reset });
+  await testImageApi({ page, reset, captureDir });
 
   await reset("groups");
   await page.getByRole("heading", { name: "relay.invalid" }).waitFor();

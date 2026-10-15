@@ -3,7 +3,7 @@ use axum::{
     body::{to_bytes, Body, Bytes},
     extract::{DefaultBodyLimit, Extension, State},
     http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode},
-    routing::post,
+    routing::{get, post},
     Router,
 };
 use tower_http::decompression::RequestDecompressionLayer;
@@ -19,7 +19,7 @@ use crate::{
             connect,
             proto::{agent::v1 as agent, aiserver::v1 as ai},
         },
-        services::{commit_message, model_catalog, server_config, tab},
+        services::{account, commit_message, entitlement::FreeEntitlementCache, model_catalog, server_config, tab},
         transport::{TransportParent, TransportRegistry},
     },
     Result,
@@ -38,6 +38,15 @@ pub fn router(registry: TransportRegistry, proxy: CursorProxy) -> Router {
         .route("/agent.v1.AgentService/GetUsableModels", post(model_catalog::usable_models))
         .route("/aiserver.v1.AiService/GetUsableModels", post(model_catalog::usable_models))
         .route("/aiserver.v1.AiService/GetDefaultModelNudgeData", post(model_catalog::default_model_nudge))
+        .route("/aiserver.v1.AuthService/GetEmail", post(account::get_email))
+        .route("/aiserver.v1.AuthService/GetUserMeta", post(account::get_user_meta))
+        .route("/aiserver.v1.DashboardService/GetMe", post(account::get_me))
+        .route("/aiserver.v1.DashboardService/GetTeams", post(account::get_teams))
+        .route("/aiserver.v1.DashboardService/GetUserProfile", post(account::get_user_profile))
+        .route("/aiserver.v1.DashboardService/GetCurrentPeriodUsage", post(account::current_period_usage))
+        .route("/aiserver.v1.DashboardService/GetUsageLimitStatusAndActiveGrants", post(account::usage_limit_status))
+        .route("/auth/full_stripe_profile", get(account::stripe_profile))
+        .route("/auth/stripe_profile", get(account::stripe_profile))
         .route("/aiserver.v1.AiService/WriteGitCommitMessage", post(commit_message::write_git_commit_message))
         .route("/aiserver.v1.NetworkService/IsConnected", post(is_connected))
         .merge(tab::router())
@@ -46,6 +55,7 @@ pub fn router(registry: TransportRegistry, proxy: CursorProxy) -> Router {
         .fallback(proxy::forward)
         .method_not_allowed_fallback(proxy::forward)
         .layer(Extension(proxy))
+        .layer(Extension(FreeEntitlementCache::default()))
         .with_state(registry)
         .merge(web_cache)
 }

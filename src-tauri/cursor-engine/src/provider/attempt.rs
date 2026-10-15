@@ -49,6 +49,10 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    fn local_client() -> reqwest::Client {
+        reqwest::Client::builder().no_proxy().build().unwrap()
+    }
+
     async fn server(response: &'static [u8]) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -65,7 +69,7 @@ mod tests {
     async fn non_success_status_is_one_failed_attempt() {
         let url =
             server(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 4\r\n\r\ndown").await;
-        let client = reqwest::Client::new();
+        let client = local_client();
         let error = send_once("test", || client.get(&url), &CancellationToken::new(), None)
             .await
             .unwrap_err();
@@ -78,7 +82,7 @@ mod tests {
     async fn response_body_transport_failure_is_one_failed_attempt() {
         let url =
             server(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 100\r\n\r\nshort").await;
-        let client = reqwest::Client::new();
+        let client = local_client();
         let error = send_once("test", || client.get(&url), &CancellationToken::new(), None)
             .await
             .unwrap_err();
@@ -91,7 +95,7 @@ mod tests {
         let address = listener.local_addr().unwrap();
         drop(listener);
         let url = format!("http://{address}");
-        let client = reqwest::Client::new();
+        let client = local_client();
         let error = send_once("test", || client.get(&url), &CancellationToken::new(), None)
             .await
             .unwrap_err();

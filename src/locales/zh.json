@@ -1575,7 +1575,7 @@
     "title": "生图工作台",
     "errors": {
       "model": "请输入有效的生图模型 ID。",
-      "prompt": "请输入提示词，长度不能超过 20000 字。",
+      "prompt": "请输入提示词，长度不能超过 32000 字。",
       "size": "不支持的图片尺寸。",
       "quality": "不支持的图片质量。",
       "count": "一次最多生成 4 张图片。",
@@ -2698,7 +2698,7 @@
     "notApplied": "未生效",
     "copyCommand": "复制命令",
     "openTerminal": "打开已接入的终端",
-    "accountNote": "需要在 Cursor 中登录你自己的账号；AgentHarbor 不改动账号、订阅与用量，选 Cursor 自带的模型时照常走官方。退出 AgentHarbor 时会自动还原设置。",
+    "accountNote": "未登录的 IDE 会注入本地账号；免费账号使用本地模拟订阅状态以启用自定义模型，已有付费账号保持原状态。模型通过你配置的渠道调用；模拟状态不提供 Cursor 官方额度。关闭接入或退出 AgentHarbor 时会还原本地账号与代理设置，重启 Cursor 后生效。",
     "certificatePanel": "本地证书",
     "certificate": {
       "trusted": "已信任",
@@ -2708,7 +2708,7 @@
       "installed": "证书已安装",
       "remove": "移除证书",
       "removed": "证书已移除",
-      "hint": "Cursor IDE 经 HTTPS 连接服务器，本地代理需要一张它信任的证书。这张证书在本机生成，并带有名称约束，只能用于 cursor.sh 及其子域名，无法冒充其他网站。安装时 Windows 会弹出确认框。"
+      "hint": "Cursor IDE 经 HTTPS 连接服务器，本地代理需要一张它信任的证书。这张证书在本机生成，并带有名称约束，只能用于 cursor.sh、cursor.com 及其子域名。旧版证书需重新安装并信任，以接入订阅检查。安装时 Windows 会弹出确认框。"
     },
     "modelsPanel": "模型与补全",
     "sources": "Cursor 模型列表提供",
@@ -2737,7 +2737,7 @@
     "notesSummary": "请求链路 · 账号与订阅 · 本地证书 · 模型与 Tab",
     "notes": {
       "routing": "请求链路",
-      "ide": "Cursor IDE 经本地代理接管 Agent、模型列表、Tab 与提交信息请求；其他请求原样发往 Cursor。",
+      "ide": "Cursor IDE 经本地代理接管 Agent、模型列表、订阅检查、Tab 与提交信息请求；其他请求原样发往 Cursor。",
       "account": "账号与订阅",
       "models": "模型与 Tab"
     },
@@ -2757,6 +2757,7 @@
       "restart": "Cursor 没能重新启动",
       "settingsUnreadable": "Cursor 的 settings.json 无法解析",
       "settingsWrite": "无法写入 Cursor 的 settings.json",
+      "accountWrite": "无法更新 Cursor 的本地账号状态，请完全退出 Cursor 后重试",
       "cliUnsupported": "这个系统上无法设置用户级环境变量",
       "notRunning": "Cursor 接入端口没有运行"
     }
