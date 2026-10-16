@@ -37,6 +37,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { AnimatedSegmentedControl } from "@/components/ui/animated-segmented-control";
+import { CLIENTS, useRoutingLinks } from "@/components/newapi/use-routing-links";
 
 export const appNavItems: {
   route: Route;
@@ -176,7 +177,10 @@ export function AppSidebar({
     resolvedTheme === "dark" ? t("nav.sidebarDarkTheme") : t("nav.sidebarLightTheme");
   // Routing at a glance from any page.
   const routing = useQuery({ queryKey: queryKeys.providers, queryFn: api.providers.loadState, staleTime: 30_000 });
-  const routeState = !routing.data?.proxyRunning ? "stopped" : routing.data.router.enabled ? "routing" : "listening";
+  // Any routed client counts, the same rule as the overview and the topology.
+  const { links } = useRoutingLinks(routing.data?.router);
+  const routeState = !routing.data?.proxyRunning ? "stopped"
+    : CLIENTS.some((client) => links[client] === "routed") ? "routing" : "listening";
   const routeLabel = t(routeState === "routing" ? "newapi.topology.hubRouting"
     : routeState === "listening" ? "newapi.topology.hubListening" : "newapi.topology.hubStopped");
 
