@@ -508,7 +508,7 @@ fn selected_native_search_reads_native_sse_and_account_wire_on_every_inference_r
         provider.models = vec![crate::core::newapi::Model {id:provider.model.clone(),protocol:Some(ModelProtocol::ChatCompletions),..Default::default()}];
         account_sources::store::mutate(&paths.app_data_dir,|store| {
             store.accounts.push(account_sources::store::Account {id:"kiro-account".into(),kind:account_sources::SourceKind::Kiro,name:"Kiro fixture".into(),subject:"fixture".into(),active:true,
-                credentials:account_sources::store::Credentials::Kiro(account_sources::kiro::Creds {access:"kiro-account-only".into(),expires_at:chrono::Utc::now().timestamp()+3600,profile:"arn:aws:codewhisperer:us-east-1:1:profile/P".into(),..Default::default()}),plan:None,added_at:0,lapsed:None,quota:None});Ok(())
+                credentials:account_sources::store::Credentials::Kiro(account_sources::kiro::Creds {access:"kiro-account-only".into(),expires_at:chrono::Utc::now().timestamp()+3600,profile:"arn:aws:codewhisperer:us-east-1:1:profile/P".into(),..Default::default()}),plan:None,added_at:0,lapsed:None,quota:None,checkin:None,checkin_off:false});Ok(())
         }).unwrap();
         for protocol in [ModelProtocol::Responses,ModelProtocol::AnthropicMessages] {
             let search = Mock::new(move |_,_| Reply::ok(json!(search_sse(protocol)))).await;
@@ -550,7 +550,7 @@ fn selected_native_search_account_source_uses_its_signin_and_rejects_lost_hard_b
         let _cleanup = Cleanup;
         account_sources::store::mutate(&paths.app_data_dir,|store| {
             store.accounts.push(account_sources::store::Account {id:"search-account".into(),kind:account_sources::SourceKind::ChatgptApi,name:"Search fixture".into(),subject:"fixture".into(),active:true,
-                credentials:account_sources::store::Credentials::ChatgptApi(account_sources::chatgpt_api::Creds {access:"search-account-only".into(),expires_at:chrono::Utc::now().timestamp()+3600,..Default::default()}),plan:None,added_at:0,lapsed:None,quota:None});Ok(())
+                credentials:account_sources::store::Credentials::ChatgptApi(account_sources::chatgpt_api::Creds {access:"search-account-only".into(),expires_at:chrono::Utc::now().timestamp()+3600,..Default::default()}),plan:None,added_at:0,lapsed:None,quota:None,checkin:None,checkin_off:false});Ok(())
         }).unwrap();
         let mut selected = card("search",&search.url,"search-model",ModelProtocol::Responses,protocol::ChatSearch::Auto);
         selected.account_source = Some(account_sources::SourceKind::ChatgptApi);
@@ -627,7 +627,7 @@ fn selected_native_search_does_not_activate_an_unused_expired_search_account() {
         std::fs::create_dir_all(&paths.app_data_dir).unwrap();
         account_sources::store::mutate(&paths.app_data_dir,|store| {
             store.accounts.push(account_sources::store::Account {id:"search-account".into(),kind:account_sources::SourceKind::ChatgptApi,name:"Search fixture".into(),subject:"fixture".into(),active:true,
-                credentials:account_sources::store::Credentials::ChatgptApi(account_sources::chatgpt_api::Creds {access:"expired-search-only".into(),refresh:"unused-refresh".into(),expires_at:0,..Default::default()}),plan:None,added_at:0,lapsed:None,quota:None});Ok(())
+                credentials:account_sources::store::Credentials::ChatgptApi(account_sources::chatgpt_api::Creds {access:"expired-search-only".into(),refresh:"unused-refresh".into(),expires_at:0,..Default::default()}),plan:None,added_at:0,lapsed:None,quota:None,checkin:None,checkin_off:false});Ok(())
         }).unwrap();
         let mut selected = card("search",&search.url,"search-model",ModelProtocol::Responses,protocol::ChatSearch::Auto);
         selected.account_source = Some(account_sources::SourceKind::ChatgptApi);

@@ -7,6 +7,8 @@ import { eventually } from "./eventually.mjs";
 export async function testAccountsSplit({ page, reset, captureDir }) {
   const tr = (key, options) => page.evaluate(({ key, options }) => window.review.t(key, options), { key, options });
   const calls = () => page.evaluate(() => window.review.sourceCalls);
+  // A panel's share switch, named by its label (check-in has switches of its own).
+  const share = async (panel) => panel.getByRole("switch", { name: await tr("accountSources.expose"), exact: true });
 
   await reset("accounts");
   await page.locator("article").filter({ hasText: "Alpha" }).first().waitFor();
@@ -21,9 +23,10 @@ export async function testAccountsSplit({ page, reset, captureDir }) {
   const tabs = page.getByRole("radiogroup");
   const berth = async (name, count) => tabs.getByRole("radio", { name: await tr("accountSources.berth", { name, count }), exact: true });
   await (await berth("Codex", 3)).waitFor();
-  await eventually(async () => assert.equal(await tabs.getByRole("radio").count(), 10));
+  await eventually(async () => assert.equal(await tabs.getByRole("radio").count(), 20));
   assert.deepEqual(await page.locator("[data-pier]").evaluateAll(piers => piers.map(pier => pier.getAttribute("data-pier"))),
-    ["openai", "tencent", "github", "google", "aws", "xai", "cursor"], "channels sit on their vendors' piers");
+    ["openai", "tencent", "github", "google", "aws", "xai", "cursor", "alibaba", "bytedance", "minimax", "zhipu", "opencode", "commandcode"],
+    "channels sit on their vendors' piers");
   assert.equal(await tabs.getByRole("radio", { name: /^Codex/ }).getAttribute("aria-checked"), "true");
   const hullLeft = () => page.locator(".source-dock-hull").evaluate(element => parseFloat(element.style.left));
   const codexLeft = await hullLeft();
@@ -44,8 +47,8 @@ export async function testAccountsSplit({ page, reset, captureDir }) {
   assert.match(await active.locator("[data-source-quota]").innerText(), /750\s*\/\s*1,000/);
   assert.equal(await active.getByRole("meter").getAttribute("aria-valuenow"), "25");
   await workbuddy.locator('[data-source-account="wb-2"]').getByText(await tr("accountSources.lapsed")).waitFor();
-  await eventually(async () => assert.match(await workbuddy.locator("[data-source-note]").innerText(), /OpenCode/));
-  assert.equal(await workbuddy.getByRole("switch").getAttribute("aria-checked"), "true");
+  await eventually(async () => assert.match(await workbuddy.locator("[data-source-note]").innerText(), /Claude Code/));
+  assert.equal(await (await share(workbuddy)).getAttribute("aria-checked"), "true");
   assert.equal(await workbuddy.locator("[data-source-channel]").getAttribute("data-source-channel"), "live",
     "shared with a signed-in current account: account → router → model inject all carry traffic");
   assert.equal(await workbuddy.locator('[data-source-channel] [data-signal="live"]').count(), 2);
@@ -69,7 +72,7 @@ export async function testAccountsSplit({ page, reset, captureDir }) {
   // source, but nothing reaches the router from its account.
   assert.equal(await channel.getAttribute("data-source-channel"), "waiting");
   assert.equal(await channel.locator('[data-signal="live"]').count(), 1);
-  await workbuddy.getByRole("switch").click();
+  await (await share(workbuddy)).click();
   await workbuddy.getByText(await tr("accountSources.notExposed"), { exact: true }).waitFor();
   assert.deepEqual(await calls(), [["activate", "wb-2"], ["refreshQuota", "wb-1"], ["setExposed", "workbuddy", false]]);
   await page.waitForFunction(() => document.querySelector("[data-source-channel]")?.getAttribute("data-source-channel") === "idle");
@@ -102,7 +105,7 @@ export async function testAccountsSplit({ page, reset, captureDir }) {
   await page.getByRole("radiogroup").getByRole("radio", { name: await tr("accountSources.berth", { name: "ChatGPT", count: 0 }), exact: true }).click();
   const chatgpt = page.locator('[data-account-source="chatgpt-api"]');
   await chatgpt.waitFor();
-  await eventually(async () => assert.equal(await chatgpt.getByRole("switch").isDisabled(), true, "nothing to share before a model list exists"));
+  await eventually(async () => assert.equal(await (await share(chatgpt)).isDisabled(), true, "nothing to share before a model list exists"));
   const signIn = await tr("accountSources.signIn", { name: "ChatGPT" });
   assert.equal(await page.getByRole("button", { name: signIn }).count(), 2, "hero and empty state both offer the sign-in");
   await chatgpt.getByRole("button", { name: signIn }).click();
@@ -118,7 +121,7 @@ export async function testAccountsSplit({ page, reset, captureDir }) {
   await added.waitFor();
   await eventually(async () => assert.match(await added.locator("h4").innerText(), /^m•+e@example\.com$/, "an email name is masked"));
   await added.getByText(/chatgpt\.com/).waitFor();
-  await eventually(async () => assert.equal(await chatgpt.getByRole("switch").getAttribute("aria-checked"), "true"));
+  await eventually(async () => assert.equal(await (await share(chatgpt)).getAttribute("aria-checked"), "true"));
   await added.getByRole("button", { name: await tr("accounts.remove") }).click();
   await page.getByRole("alertdialog").getByRole("button", { name: await tr("common.delete") }).click();
   await added.waitFor({ state: "detached" });
@@ -128,9 +131,9 @@ export async function testAccountsSplit({ page, reset, captureDir }) {
   // Arrow keys walk the berths; Copilot's device sign-in shows the code to type at GitHub.
   await page.locator('[data-berth="chatgpt-api"]').focus();
   await page.keyboard.press("End");
-  await page.locator('[data-account-source="cursor"]').waitFor();
-  await page.locator('[data-pier="cursor"] [data-berth="cursor"]').waitFor();
-  for (let step = 0; step < 5; step++) await page.keyboard.press("ArrowLeft");
+  await page.locator('[data-account-source="commandcode"]').waitFor();
+  await page.locator('[data-pier="commandcode"] [data-berth="commandcode"]').waitFor();
+  for (let step = 0; step < 15; step++) await page.keyboard.press("ArrowLeft");
   await page.locator('[data-account-source="copilot"]').waitFor();
   await eventually(async () => assert.equal(await page.locator('[data-berth="copilot"]').getAttribute("aria-checked"), "true"));
   await page.evaluate(() => {
@@ -190,6 +193,8 @@ export async function testAccountsSplit({ page, reset, captureDir }) {
       { ...base, id: "relay-a", name: "Relay A", enabled: true, hasApiKey: true, protocol: "chatCompletions", model: "relay-model", models: [model("relay-model")] },
       { ...base, id: "account-workbuddy", name: "WorkBuddy", enabled: true, hasApiKey: false, accountSource: "workbuddy",
         protocol: "chatCompletions", model: "glm-5.3", models: [model("glm-5.3")] },
+      { ...base, id: "account-antigravity", name: "Antigravity", enabled: true, hasApiKey: false, accountSource: "antigravity",
+        protocol: "chatCompletions", model: "gemini-3.5-flash", models: [model("gemini-3.5-flash")] },
     ];
     review.clientStatusFixtures = [{ targetId: "claudeCode", name: "Claude Code", path: "C:/synthetic/settings.json",
       protocols: ["anthropicMessages"], configured: false, conflict: false, error: null, providerId: null, model: null, request: null }];
@@ -204,9 +209,10 @@ export async function testAccountsSplit({ page, reset, captureDir }) {
   assert.match(await card.innerText(), new RegExp(await tr("clients.excluded.routerOnly", { count: 1 })));
   await dialog.getByRole("button", { name: await tr("clients.accessRouter"), exact: true }).click();
   await eventually(async () => assert.equal(await card.isDisabled(), false, "the router serves it"));
-  await card.locator("[data-account-source-refusal]").waitFor();
+  await dialog.getByRole("button").filter({ hasText: "Antigravity" }).locator("[data-account-source-refusal]").waitFor();
+  assert.equal(await card.locator("[data-account-source-refusal]").count(), 0, "WorkBuddy's flagged phrases are reworded, so Claude Code isn't warned off it");
   if (captureDir) await dialog.screenshot({ path: path.join(captureDir, "inject-account-source.png") });
-  console.log("PASS model inject badges account sources, keeps them router-only and warns Claude Code about WorkBuddy");
+  console.log("PASS model inject badges account sources, keeps them router-only and warns Claude Code about Antigravity only");
 
   // A source's models can be left out of the share; leaving all out stops it.
   await reset("accounts");
@@ -227,13 +233,63 @@ export async function testAccountsSplit({ page, reset, captureDir }) {
   await models.locator("[data-models-all]").click();
   await models.locator('[data-source-model="kimi-k3-1"][aria-pressed="true"]').waitFor();
   assert.deepEqual((await calls()).filter(call => call[0] === "setHiddenModels").at(-1), ["setHiddenModels", "workbuddy", []]);
-  const share = filtered.getByRole("switch");
-  assert.equal(await share.getAttribute("aria-checked"), "true");
+  const shared = await share(filtered);
+  assert.equal(await shared.getAttribute("aria-checked"), "true");
   await models.locator("[data-models-none]").click();
   await models.getByText(await tr("accountSources.modelListShared", { shared: 0, count: 2 })).waitFor();
   assert.deepEqual((await calls()).filter(call => call[0] === "setHiddenModels").at(-1), ["setHiddenModels", "workbuddy", ["glm-5.3", "kimi-k3-1"]]);
-  await eventually(async () => assert.equal(await share.getAttribute("aria-checked"), "false", "leaving every model out stops the share"));
-  assert.equal(await share.isDisabled(), true, "nothing to share until a model is chosen");
+  await eventually(async () => assert.equal(await shared.getAttribute("aria-checked"), "false", "leaving every model out stops the share"));
+  assert.equal(await shared.isDisabled(), true, "nothing to share until a model is chosen");
   await filtered.getByText(await tr("accountSources.noModelsChosen")).waitFor();
   console.log("PASS a source's models can be left out of the share and brought back; leaving all out stops sharing");
+
+  // Daily check-in: the source's switch and press, each account's status and its own switch.
+  await reset("accounts");
+  await page.locator('[data-berth="workbuddy"]').click();
+  const checkin = page.locator('[data-account-source="workbuddy"]');
+  const controls = checkin.locator("[data-checkin-controls]");
+  const auto = controls.getByRole("switch", { name: await tr("accountSources.checkin.auto"), exact: true });
+  assert.equal(await auto.getAttribute("aria-checked"), "true");
+  const claimed = checkin.locator('[data-source-account="wb-1"] [data-account-checkin="claimed"]');
+  await eventually(async () => assert.match(await claimed.innerText(), new RegExp(await tr("accountSources.checkin.outcome.claimed"))));
+  assert.match(await claimed.innerText(), /\+5/);
+  assert.equal(await checkin.locator('[data-source-account="wb-2"] [data-account-checkin]').count(), 0, "an expired sign-in shows no check-in");
+  const now = controls.getByRole("button", { name: await tr("accountSources.checkin.now") });
+  await now.click();
+  await page.waitForFunction(() => window.review.sourceCalls.some(call => call[0] === "checkIn"));
+  await claimed.getByRole("switch").click();
+  const leftOut = checkin.locator('[data-source-account="wb-1"] [data-account-checkin="off"]');
+  await leftOut.waitFor();
+  assert.equal(await leftOut.getByRole("switch").getAttribute("aria-checked"), "false");
+  await eventually(async () => assert.equal(await now.isDisabled(), true, "with every account left out or signed out there is nothing to press"));
+  await auto.click();
+  await eventually(async () => assert.equal(await auto.getAttribute("aria-checked"), "false"));
+  assert.deepEqual((await calls()).filter(call => call[0].startsWith("setCheckin") || call[0] === "checkIn"),
+    [["checkIn", "workbuddy"], ["setCheckinOff", "wb-1", true], ["setCheckin", "workbuddy", false]]);
+  if (captureDir) {
+    await page.waitForTimeout(600);
+    await page.screenshot({ path: path.join(captureDir, "accounts-checkin.png"), fullPage: true });
+  }
+  await page.locator('[data-berth="chatgpt-api"]').click();
+  await page.locator('[data-account-source="chatgpt-api"]').waitFor();
+  assert.equal(await page.locator("[data-checkin-controls]").count(), 0, "a source with no check-in shows none");
+  console.log("PASS a source's daily check-in is switched and pressed, and each account shows how it went and takes part or not");
+
+  // A source with several ways in offers a menu; a key asks for itself first.
+  await page.locator('[data-berth="commandcode"]').click();
+  const commandcode = page.locator('[data-account-source="commandcode"]');
+  await commandcode.waitFor();
+  await commandcode.locator('[data-sign-in-methods="commandcode"]').click();
+  const menu = page.getByRole("menu");
+  assert.equal(await menu.getByRole("menuitem").count(), 3);
+  if (captureDir) await page.screenshot({ path: path.join(captureDir, "accounts-sign-in-methods.png") });
+  await menu.getByRole("menuitem", { name: await tr("accountSources.method.commandcode.key") }).click();
+  const keyDialog = page.getByRole("dialog");
+  const field = keyDialog.getByRole("textbox").or(keyDialog.locator('input[type="password"]'));
+  await field.first().fill("  user_secret  ");
+  await keyDialog.getByRole("button", { name: await tr("accountSources.input.submit") }).click();
+  await page.waitForFunction(() => window.review.sourceCalls.some(call => call[0] === "signIn" && call[1] === "commandcode"));
+  assert.deepEqual((await calls()).filter(call => call[0] === "signIn").at(-1), ["signIn", "commandcode", "key", "user_secret"]);
+  await page.evaluate(() => window.review.sourceSignIns.at(-1).reject("accounts.loginCancelled"));
+  console.log("PASS a source's sign-in methods come as a menu, and a key is typed before signing in");
 }

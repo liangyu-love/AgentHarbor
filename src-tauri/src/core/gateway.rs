@@ -118,17 +118,7 @@ fn free_slug(store: &Store, provider_id: &str, wanted: &str) -> String {
 /// name, else its name, else its host.
 fn default_slug(provider: &router::Provider) -> String {
     if let Some(kind) = provider.account_source {
-        return match kind {
-            super::account_sources::SourceKind::ChatgptApi => "chatgpt",
-            super::account_sources::SourceKind::Workbuddy => "workbuddy",
-            super::account_sources::SourceKind::WorkbuddyAi => "workbuddy-ai",
-            super::account_sources::SourceKind::Copilot => "copilot",
-            super::account_sources::SourceKind::GeminiCli => "gemini-cli",
-            super::account_sources::SourceKind::Antigravity => "antigravity",
-            super::account_sources::SourceKind::Kiro => "kiro",
-            super::account_sources::SourceKind::Grok => "grok",
-            super::account_sources::SourceKind::Cursor => "cursor",
-        }.to_owned();
+        return kind.slug().to_owned();
     }
     let from_name = slugify(&provider.name);
     if from_name.is_empty() { host_label(&provider.base_url) } else { from_name }

@@ -23,7 +23,7 @@ import { OverviewPage } from "@/components/overview/overview-page";
 import { AccountsPage } from "@/components/accounts/accounts-page";
 import { TokenUsagePanel } from "@/components/usage/token-usage-panel";
 import { UsagePage } from "@/components/usage/usage-page";
-import type { AccountSourceKind, AccountSourceListPayload } from "@/types/account-sources";
+import type { AccountSource, AccountSourceKind, AccountSourceListPayload, AccountSourceMethod } from "@/types/account-sources";
 import type { GatewayModel, GatewayState } from "@/types/gateway";
 import type { CursorStatus } from "@/types/cursor";
 import { McpPage } from "@/components/mcp/mcp-page";
@@ -421,34 +421,45 @@ const accountList = { activeAccountKey: "acct-a", refreshedAt: 1_800_000_000, it
 api.accounts.refresh = async () => accountList as any;
 api.accounts.list = async () => accountList as any;
 api.usage.overview = async () => ({ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } });
-// Account sources: one WorkBuddy account with credits, a Gemini CLI account
-// still without its Google Cloud project, the rest empty.
-const accountSourcesFixture = (): AccountSourceListPayload => ({ sources: [
-  { kind: "chatgpt-api", name: "ChatGPT", providerId: "account-chatgpt-api", protocol: "responses", exposed: false, models: [],
-    accounts: [], usageUrl: "https://chatgpt.com/settings/usage", hasQuota: false, fetchesModels: true },
-  { kind: "workbuddy", name: "WorkBuddy", providerId: "account-workbuddy", protocol: "chatCompletions", exposed: true,
+// Account sources: one WorkBuddy account with credits and today's check-in,
+// a Gemini CLI account still without its Google Cloud project, the rest
+// empty; Command Code signs in three ways, one of them a pasted key.
+const beijingToday = () => new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10);
+const ACCOUNT_METHOD = [{ id: "account", input: null }] as AccountSourceMethod[];
+const plainSource = (kind: AccountSourceKind, name: string, extra: Partial<AccountSource> = {}): AccountSource => ({
+  kind, name, providerId: `account-${kind}`, protocol: "chatCompletions", exposed: false, models: [], accounts: [], usageUrl: null,
+  hasQuota: true, fetchesModels: true, methods: ACCOUNT_METHOD, checksIn: false, autoCheckin: false, ...extra,
+});
+const accountSourcesFixture = (): AccountSourceListPayload => ({ today: beijingToday(), sources: [
+  plainSource("chatgpt-api", "ChatGPT", { protocol: "responses", usageUrl: "https://chatgpt.com/settings/usage", hasQuota: false }),
+  plainSource("workbuddy", "WorkBuddy", { exposed: true, checksIn: true, autoCheckin: true,
     models: [{ id: "glm-5.3", name: "GLM-5.3", contextWindow: 1_000_000, reasoning: ["low", "high"] }, { id: "kimi-k3-1", name: "Kimi-K3", contextWindow: 1_000_000, reasoning: [] }],
     accounts: [
-      { id: "wb-1", name: "Harbor", plan: "Pro", active: true, lapsed: null, quota: { used: 750, limit: 1000, unit: "credits", paid: true, checkedAt: 1, error: null }, addedAt: 1 },
-      { id: "wb-2", name: "Spare", plan: null, active: false, lapsed: "signed out", quota: null, addedAt: 2 },
-    ], usageUrl: null, hasQuota: true, fetchesModels: false },
-  { kind: "workbuddy-ai", name: "WorkBuddy AI", providerId: "account-workbuddy-ai", protocol: "chatCompletions", exposed: false,
-    models: [{ id: "gpt-5.5", name: "GPT-5.5", contextWindow: 1_000_000, reasoning: [] }], accounts: [], usageUrl: null, hasQuota: true, fetchesModels: false },
-  { kind: "copilot", name: "GitHub Copilot", providerId: "account-copilot", protocol: "chatCompletions", exposed: false, models: [],
-    accounts: [], usageUrl: "https://github.com/settings/copilot/features", hasQuota: true, fetchesModels: true },
-  { kind: "gemini-cli", name: "Gemini CLI", providerId: "account-gemini-cli", protocol: "chatCompletions", exposed: false, models: [],
-    accounts: [{ id: "gc-1", name: "dev@corp.example", plan: "Standard", project: "", active: true, lapsed: null, addedAt: 1,
-      quota: { used: 0, limit: 0, unit: "", paid: null, checkedAt: 1, error: "Google serves Gemini CLI's sign-in only to Gemini Code Assist Standard and Enterprise" } }],
-    usageUrl: null, hasQuota: true, fetchesModels: true },
-  { kind: "antigravity", name: "Antigravity", providerId: "account-antigravity", protocol: "chatCompletions", exposed: false, models: [],
-    accounts: [], usageUrl: null, hasQuota: true, fetchesModels: true,
-    risk: "Google may suspend an Antigravity account it sees used outside Antigravity. Use one you can afford to lose." },
-  { kind: "kiro", name: "Kiro", providerId: "account-kiro", protocol: "chatCompletions", exposed: false, models: [],
-    accounts: [], usageUrl: "https://app.kiro.dev/account/usage", hasQuota: true, fetchesModels: true },
-  { kind: "grok", name: "Grok", providerId: "account-grok", protocol: "responses", exposed: false, models: [],
-    accounts: [], usageUrl: null, hasQuota: true, fetchesModels: true },
-  { kind: "cursor", name: "Cursor", providerId: "account-cursor", protocol: "chatCompletions", exposed: false, models: [],
-    accounts: [], usageUrl: "https://cursor.com/dashboard", hasQuota: true, fetchesModels: true },
+      { id: "wb-1", name: "Harbor", plan: "Pro", active: true, lapsed: null, quota: { used: 750, limit: 1000, unit: "credits", paid: true, checkedAt: 1, error: null }, addedAt: 1,
+        checkin: { day: beijingToday(), at: 1, outcome: "claimed", credit: 5, streak: 3, message: null, validUntil: null, offline: false, tries: 0 }, checkinOff: false },
+      { id: "wb-2", name: "Spare", plan: null, active: false, lapsed: "signed out", quota: null, addedAt: 2, checkin: null, checkinOff: false },
+    ] }),
+  plainSource("workbuddy-ai", "WorkBuddy AI", { models: [{ id: "gpt-5.5", name: "GPT-5.5", contextWindow: 1_000_000, reasoning: [] }] }),
+  plainSource("copilot", "GitHub Copilot", { usageUrl: "https://github.com/settings/copilot/features" }),
+  plainSource("gemini-cli", "Gemini CLI", {
+    accounts: [{ id: "gc-1", name: "dev@corp.example", plan: "Standard", project: "", active: true, lapsed: null, addedAt: 1, checkin: null, checkinOff: false,
+      quota: { used: 0, limit: 0, unit: "", paid: null, checkedAt: 1, error: "Google serves Gemini CLI's sign-in only to Gemini Code Assist Standard and Enterprise" } }] }),
+  plainSource("antigravity", "Antigravity", { risk: "Google may suspend an Antigravity account it sees used outside Antigravity. Use one you can afford to lose." }),
+  plainSource("kiro", "Kiro", { usageUrl: "https://app.kiro.dev/account/usage" }),
+  plainSource("grok", "Grok", { protocol: "responses" }),
+  plainSource("cursor", "Cursor", { usageUrl: "https://cursor.com/dashboard" }),
+  plainSource("minimax-code", "MiniMax Code", { protocol: "anthropicMessages", checksIn: true, risk: "MiniMax may limit an account used outside MiniMax Code." }),
+  plainSource("minimax-code-global", "MiniMax Code (Global)", { protocol: "anthropicMessages", checksIn: true, risk: "MiniMax may limit an account used outside MiniMax Code." }),
+  plainSource("commandcode", "Command Code", { methods: [{ id: "browser", input: null }, { id: "cli", input: null }, { id: "key", input: "secret" }] }),
+  plainSource("zcode", "ZCode", { protocol: "anthropicMessages", methods: [{ id: "zai", input: null }, { id: "bigmodel", input: null }, { id: "app", input: null },
+    { id: "key-zai", input: "secret" }, { id: "key-bigmodel", input: "secret" }] }),
+  plainSource("opencode-zen", "OpenCode Zen", { hasQuota: false, usageUrl: "https://opencode.ai/workspace",
+    methods: [{ id: "import", input: null }, { id: "key", input: "secret" }, { id: "free", input: null }] }),
+  plainSource("opencode-go", "OpenCode Go", { methods: [{ id: "import", input: null }, { id: "key", input: "secret" }] }),
+  plainSource("qoder", "Qoder", { checksIn: true, methods: [{ id: "account", input: null }, { id: "pat", input: "secret" }] }),
+  plainSource("qoder-cn", "Qoder CN", { checksIn: true, methods: [{ id: "account", input: null }, { id: "vpc", input: "text" }] }),
+  plainSource("trae-cn", "Trae CN", { checksIn: true }),
+  plainSource("trae-global", "Trae Global"),
 ] });
 const installAccountSources = () => {
   let payload = accountSourcesFixture();
@@ -460,14 +471,14 @@ const installAccountSources = () => {
     controls.review.sourcePrompt = callback;
     return () => { if (controls.review.sourcePrompt === callback) controls.review.sourcePrompt = undefined; };
   };
-  api.accountSources.signIn = (kind: AccountSourceKind, attemptId: string) => new Promise((resolve, reject) => {
-    record("signIn", kind);
+  api.accountSources.signIn = (kind: AccountSourceKind, attemptId: string, method?: string, input?: string) => new Promise((resolve, reject) => {
+    record("signIn", kind, ...(method ? [method, input ?? null] : []));
     if (kind === "copilot") {
       setTimeout(() => controls.review.sourcePrompt?.({ attemptId, kind, url: "https://github.com/login/device", code: "ABCD-1234" }), 0);
     }
     controls.review.sourceSignIns.push({ kind, attemptId, reject, resolve: () => {
-      payload = { sources: payload.sources.map(source => source.kind === kind
-        ? { ...source, exposed: true, accounts: [...source.accounts, { id: "new-1", name: "me@example.com", plan: "plus", active: source.accounts.length === 0, lapsed: null, quota: null, addedAt: 3 }] }
+      payload = { ...payload, sources: payload.sources.map(source => source.kind === kind
+        ? { ...source, exposed: true, accounts: [...source.accounts, { id: "new-1", name: "me@example.com", plan: "plus", active: source.accounts.length === 0, lapsed: null, quota: null, addedAt: 3, checkin: null, checkinOff: false }] }
         : source) };
       resolve(structuredClone(payload));
     } });
@@ -475,32 +486,43 @@ const installAccountSources = () => {
   api.accountSources.cancelSignIn = async attemptId => { record("cancelSignIn", attemptId); return true; };
   api.accountSources.activate = async id => {
     record("activate", id);
-    payload = { sources: payload.sources.map(source => source.accounts.some(account => account.id === id)
+    payload = { ...payload, sources: payload.sources.map(source => source.accounts.some(account => account.id === id)
       ? { ...source, accounts: source.accounts.map(account => ({ ...account, active: account.id === id })) } : source) };
     return structuredClone(payload);
   };
   api.accountSources.remove = async id => {
     record("remove", id);
-    payload = { sources: payload.sources.map(source => ({ ...source, accounts: source.accounts.filter(account => account.id !== id) })) };
+    payload = { ...payload, sources: payload.sources.map(source => ({ ...source, accounts: source.accounts.filter(account => account.id !== id) })) };
     return structuredClone(payload);
   };
   api.accountSources.refreshQuota = async id => { record("refreshQuota", id); return structuredClone(payload); };
   api.accountSources.refreshModels = async kind => { record("refreshModels", kind); return structuredClone(payload); };
   api.accountSources.setProject = async (id, project) => {
     record("setProject", id, project);
-    payload = { sources: payload.sources.map(source => ({ ...source, accounts: source.accounts.map(account => account.id === id
+    payload = { ...payload, sources: payload.sources.map(source => ({ ...source, accounts: source.accounts.map(account => account.id === id
       ? { ...account, project, quota: { used: 20, limit: 100, unit: "percent", paid: true, checkedAt: 2, error: null } } : account) })) };
     return structuredClone(payload);
   };
   api.accountSources.setExposed = async (kind, exposed) => {
     record("setExposed", kind, exposed);
-    payload = { sources: payload.sources.map(source => source.kind === kind ? { ...source, exposed } : source) };
+    payload = { ...payload, sources: payload.sources.map(source => source.kind === kind ? { ...source, exposed } : source) };
     return structuredClone(payload);
   };
+  api.accountSources.setCheckin = async (kind, on) => {
+    record("setCheckin", kind, on);
+    payload = { ...payload, sources: payload.sources.map(source => source.kind === kind ? { ...source, autoCheckin: on } : source) };
+    return structuredClone(payload);
+  };
+  api.accountSources.setCheckinOff = async (id, off) => {
+    record("setCheckinOff", id, off);
+    payload = { ...payload, sources: payload.sources.map(source => ({ ...source, accounts: source.accounts.map(account => account.id === id ? { ...account, checkinOff: off } : account) })) };
+    return structuredClone(payload);
+  };
+  api.accountSources.checkIn = async kind => { record("checkIn", kind); return structuredClone(payload); };
   api.accountSources.setHiddenModels = async (kind, hidden) => {
     record("setHiddenModels", kind, hidden);
     // Leaving every model out of a shared source stops sharing it.
-    payload = { sources: payload.sources.map(source => source.kind === kind ? { ...source, hiddenModels: hidden,
+    payload = { ...payload, sources: payload.sources.map(source => source.kind === kind ? { ...source, hiddenModels: hidden,
       exposed: source.exposed && source.models.some(model => !hidden.includes(model.id)) } : source) };
     return structuredClone(payload);
   };

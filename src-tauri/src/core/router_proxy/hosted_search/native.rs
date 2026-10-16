@@ -208,6 +208,12 @@ pub(super) async fn send(client: &Client, url: &str, headers: &HeaderMap, body: 
             bytes = encoded.body;
             decoder = Some(encoded.decoder);
             for (name,value) in encoded.headers {headers.insert(hyper::header::HeaderName::from_static(name),HeaderValue::from_str(&value).map_err(|_| INVALID)?);}
+        } else if let Some(rerouted) = auth.reroute(protocol,&bytes).transpose()? {
+            if let Some(rest) = url.strip_prefix(auth.base.trim_end_matches('/')) {url = format!("{}{rest}",rerouted.base.trim_end_matches('/'));}
+            for (name,_) in &auth.headers {headers.remove(*name);}
+            for (name,value) in rerouted.headers {headers.insert(hyper::header::HeaderName::from_static(name),HeaderValue::from_str(&value).map_err(|_| INVALID)?);}
+            bytes = rerouted.body;
+            fix = rerouted.fix;
         } else {
             fix = auth.reply_fix(protocol,&bytes);
             for (name,value) in auth.body_headers(protocol,&bytes) {headers.insert(hyper::header::HeaderName::from_static(name),HeaderValue::from_str(&value).map_err(|_| INVALID)?);}

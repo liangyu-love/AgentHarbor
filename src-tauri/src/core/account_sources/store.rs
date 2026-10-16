@@ -1,10 +1,10 @@
 //! Signed-in accounts of the official account sources, kept encrypted beside
 //! the relay store. Tokens leave this module only as request headers.
-use super::{chatgpt_api, copilot, cursor, google, grok, kiro, workbuddy, SourceKind};
+use super::{chatgpt_api, checkin::Checkin, commandcode, copilot, cursor, google, grok, kiro, minimax, opencode, qoder, trae, workbuddy, zcode, SourceKind};
 use crate::core::secret_file;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::{Mutex, MutexGuard, OnceLock},
 };
@@ -24,6 +24,8 @@ pub struct Store {
     /// Models the user left out of a source's share; a model fetched later
     /// is shared until left out too.
     pub hidden_models: BTreeMap<SourceKind, Vec<String>>,
+    /// Sources whose accounts are checked in each day (off until turned on).
+    pub checkin_on: BTreeSet<SourceKind>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -46,6 +48,12 @@ pub struct Account {
     pub lapsed: Option<String>,
     #[serde(default)]
     pub quota: Option<Quota>,
+    /// What came of its last daily check-in.
+    #[serde(default)]
+    pub checkin: Option<Checkin>,
+    /// Left out of its source's daily check-in.
+    #[serde(default)]
+    pub checkin_off: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -58,6 +66,12 @@ pub enum Credentials {
     Kiro(kiro::Creds),
     Grok(grok::Creds),
     Cursor(cursor::Creds),
+    MiniMax(minimax::Creds),
+    CommandCode(commandcode::Creds),
+    Zcode(zcode::Creds),
+    OpenCode(opencode::Creds),
+    Qoder(qoder::Creds),
+    Trae(trae::Creds),
 }
 
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
@@ -69,6 +83,8 @@ pub struct Quota {
     pub paid: Option<bool>,
     pub checked_at: i64,
     pub error: Option<String>,
+    /// Credits left, for an account whose balance has no cycle limit.
+    pub remaining: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -176,7 +192,7 @@ mod tests {
         Account {
             id: id.into(), kind, name: format!("{subject}-name"), subject: subject.into(), plan: None,
             active: false, credentials: Credentials::WorkBuddy(workbuddy::Creds::default()), added_at: 1,
-            lapsed: Some("old".into()), quota: None,
+            lapsed: Some("old".into()), quota: None, checkin: None, checkin_off: false,
         }
     }
 

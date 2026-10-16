@@ -1,8 +1,8 @@
-//! Accounts of the official account sources (WorkBuddy, WorkBuddy AI,
-//! ChatGPT through Sign in with ChatGPT, GitHub Copilot, Gemini CLI,
-//! Antigravity, Kiro) and their share with model inject.
+//! Accounts of the official account sources (WorkBuddy, ChatGPT through
+//! Sign in with ChatGPT, GitHub Copilot, Google's, Kiro, Grok, Cursor and
+//! the rest), their daily check-ins and their share with model inject.
 use crate::core::account_login::{self, LoginManager};
-use crate::core::account_sources::{self, ListPayload, SourceKind};
+use crate::core::account_sources::{self, checkin, ListPayload, SourceKind};
 use crate::core::repository::Repository;
 use crate::core::{newapi, routing_runtime};
 use crate::platform::paths::CodexPaths;
@@ -39,11 +39,13 @@ pub async fn sign_in_account_source(
     repo: State<'_, Mutex<Repository>>,
     manager: State<'_, SourceLoginManager>,
     kind: SourceKind,
+    method: Option<String>,
+    input: Option<String>,
     attempt_id: String,
 ) -> Result<ListPayload, String> {
     let attempt = manager.0.begin(attempt_id.clone())?;
     let (paths, client) = context(&repo)?;
-    let account = account_sources::sign_in(&paths, &client, kind, attempt.cancellation(), |prompt| {
+    let account = account_sources::sign_in(&paths, &client, kind, method.as_deref(), input.as_deref(), attempt.cancellation(), |prompt| {
         let _ = app.emit(SIGN_IN_PROMPT_EVENT, serde_json::json!({
             "attemptId": attempt_id, "kind": kind, "url": prompt.url, "code": prompt.code,
         }));
@@ -126,4 +128,32 @@ pub async fn set_account_source_exposed(repo: State<'_, Mutex<Repository>>, kind
         account_sources::set_exposed(&paths, kind, exposed)?;
         account_sources::list(&paths)
     }).await
+}
+
+/// Turn a source's daily auto check-in on or off.
+#[tauri::command]
+pub async fn set_account_source_checkin(repo: State<'_, Mutex<Repository>>, kind: SourceKind, on: bool) -> Result<ListPayload, String> {
+    let (paths, _) = context(&repo)?;
+    super::blocking(move || {
+        checkin::set_auto(&paths.app_data_dir, kind, on)?;
+        account_sources::list(&paths)
+    }).await
+}
+
+/// Leave an account out of its source's check-in, or bring it back.
+#[tauri::command]
+pub async fn set_account_source_checkin_off(repo: State<'_, Mutex<Repository>>, account_id: String, off: bool) -> Result<ListPayload, String> {
+    let (paths, _) = context(&repo)?;
+    super::blocking(move || {
+        checkin::set_account_off(&paths.app_data_dir, &account_id, off)?;
+        account_sources::list(&paths)
+    }).await
+}
+
+/// Check a source's accounts in for today now, those not in yet.
+#[tauri::command]
+pub async fn check_in_account_source(repo: State<'_, Mutex<Repository>>, kind: SourceKind) -> Result<ListPayload, String> {
+    let (paths, client) = context(&repo)?;
+    checkin::run(&paths.app_data_dir, &client, Some(kind), true).await?;
+    account_sources::list(&paths)
 }

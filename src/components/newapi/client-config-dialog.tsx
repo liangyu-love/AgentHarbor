@@ -642,9 +642,10 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
                     </span>
                     <span className="mt-1 block text-xs text-muted-foreground">{reason ? t("clients.excluded." + reason, { count: 1 })
                       : t("clients.modelsCount", { count: availableCount })}</span>
-                    {!reason && isClaude && (p.accountSource === "workbuddy" || p.accountSource === "workbuddy-ai" || p.accountSource === "antigravity") && (
+                    {/* WorkBuddy's channel check is met by rewording the phrases it flags; Antigravity's is not. */}
+                    {!reason && isClaude && p.accountSource === "antigravity" && (
                       <span className="mt-1 block text-[11px] leading-snug text-amber-700 dark:text-amber-300" data-account-source-refusal>
-                        {t("accountSources.refusesClaudeCode", { name: p.accountSource === "antigravity" ? "Antigravity" : "WorkBuddy" })}</span>
+                        {t("accountSources.refusesClaudeCode", { name: "Antigravity" })}</span>
                     )}</span>
                   <span className={"flex h-4 w-4 shrink-0 items-center justify-center border " + (isClaude && !routerMode ? "rounded-full " : "rounded ")
                     + (active ? "border-primary bg-primary text-primary-foreground" : "border-input")}>

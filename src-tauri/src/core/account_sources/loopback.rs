@@ -100,3 +100,74 @@ pub async fn redirect(socket: &mut TcpStream, url: &str) {
 pub async fn not_found(socket: &mut TcpStream) {
     let _ = socket.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
 }
+
+/// One HTTP request: method, path, headers and body.
+pub struct Incoming {
+    pub method: String,
+    pub path: String,
+    pub query: std::collections::HashMap<String, String>,
+    headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+impl Incoming {
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.iter().find(|(key, _)| key.eq_ignore_ascii_case(name)).map(|(_, value)| value.as_str())
+    }
+}
+
+/// Read one request off a socket (a body of up to 64 KiB).
+pub async fn read_incoming(socket: &mut TcpStream) -> Option<Incoming> {
+    let mut buffer = Vec::with_capacity(4096);
+    let mut chunk = [0u8; 4096];
+    let head_end = loop {
+        if let Some(end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+            break end + 4;
+        }
+        if buffer.len() > 32 * 1024 {
+            return None;
+        }
+        let read = tokio::time::timeout(Duration::from_secs(10), socket.read(&mut chunk)).await.ok()?.ok()?;
+        if read == 0 {
+            return None;
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+    };
+    let head = String::from_utf8_lossy(&buffer[..head_end]).into_owned();
+    let mut lines = head.lines();
+    let mut first = lines.next()?.split(' ');
+    let (method, target) = (first.next()?.to_owned(), first.next()?.to_owned());
+    let headers: Vec<(String, String)> = lines.filter_map(|line| line.split_once(':'))
+        .map(|(key, value)| (key.trim().to_owned(), value.trim().to_owned())).collect();
+    let length: usize = headers.iter().find(|(key, _)| key.eq_ignore_ascii_case("content-length"))
+        .and_then(|(_, value)| value.parse().ok()).unwrap_or(0).min(64 * 1024);
+    let mut body = buffer[head_end..].to_vec();
+    while body.len() < length {
+        let read = tokio::time::timeout(Duration::from_secs(10), socket.read(&mut chunk)).await.ok()?.ok()?;
+        if read == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..read]);
+    }
+    let url = reqwest::Url::parse(&format!("http://127.0.0.1{target}")).ok()?;
+    Some(Incoming { method, path: url.path().to_owned(), query: url.query_pairs().into_owned().collect(), headers, body })
+}
+
+/// Answer with a status, headers and a body, closing the connection.
+pub async fn respond(socket: &mut TcpStream, status: &str, headers: &[(&str, String)], body: &str) {
+    let mut head = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n", body.len());
+    for (name, value) in headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str("\r\n");
+    let _ = socket.write_all(head.as_bytes()).await;
+    let _ = socket.write_all(body.as_bytes()).await;
+}
+
+/// A short page saying how a sign-in went.
+pub fn page(ok: bool, title: &str, text: &str) -> String {
+    let escape = |text: &str| text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
+    format!("<!doctype html><meta charset=utf-8><title>{}</title><main style=\"font:15px system-ui;text-align:center;margin-top:20vh\">\
+        <div style=\"font-size:2rem;color:{}\">{}</div><h1>{}</h1><p>{}</p></main>",
+        escape(title), if ok { "#2a9d5c" } else { "#c0392b" }, if ok { "✓" } else { "✕" }, escape(title), escape(text))
+}

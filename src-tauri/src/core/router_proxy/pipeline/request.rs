@@ -55,7 +55,7 @@ pub(in crate::core::router_proxy) struct Prepared {
     /// Turns a source's reply into what the client takes (Grok's calls).
     pub reply_fix: Option<account_sources::ReplyFix>,
     /// A source that answers the request itself (Cursor's Runs).
-    pub exchange: Option<account_sources::cursor::Exchange>,
+    pub exchange: Option<account_sources::Exchange>,
     search_retry_allowed: bool,
     account: Option<account_sources::RequestAuth>,
     native_fallback: Option<Box<Prepared>>,
@@ -93,7 +93,7 @@ struct Draft {
     /// Reads the reply of a source spoken through Chat (`account_sources::wire`).
     wire: Option<account_sources::wire::Decoder>,
     reply_fix: Option<account_sources::ReplyFix>,
-    exchange: Option<account_sources::cursor::Exchange>,
+    exchange: Option<account_sources::Exchange>,
     deferred_search: Option<hosted_search::Selection>,
 }
 
@@ -302,7 +302,7 @@ fn vendor(attempt: &Attempt<'_>, draft: &mut Draft) -> ForwardResult<()> {
     let input = attempt.input;
     if let (Some(auth), Some(bytes), false) = (input.account, &draft.body, input.resource) {
         if let Some(exchange) = auth.exchange(attempt.upstream_protocol, bytes, &attempt.model).transpose()? {
-            draft.url = format!("{}/agent.v1.AgentService/Run", auth.base.trim_end_matches('/'));
+            draft.url = exchange.url(&auth.base);
             draft.exchange = Some(exchange);
             return Ok(());
         }
@@ -316,6 +316,23 @@ fn vendor(attempt: &Attempt<'_>, draft: &mut Draft) -> ForwardResult<()> {
             draft.headers.remove(hyper::header::CONTENT_LENGTH);
             draft.body = Some(Bytes::from(encoded.body));
             draft.wire = Some(encoded.decoder);
+            return Ok(());
+        }
+        if let Some(rerouted) = auth.reroute(attempt.upstream_protocol, bytes).transpose()? {
+            if let Some(rest) = draft.url.strip_prefix(auth.base.trim_end_matches('/')) {
+                draft.url = format!("{}{rest}", rerouted.base.trim_end_matches('/'));
+            }
+            for (name, _) in &auth.headers {
+                draft.headers.remove(*name);
+            }
+            for (name, value) in rerouted.headers {
+                let value = HeaderValue::from_str(&value)
+                    .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid account source header"))?;
+                draft.headers.insert(hyper::header::HeaderName::from_static(name), value);
+            }
+            draft.headers.remove(hyper::header::CONTENT_LENGTH);
+            draft.body = Some(Bytes::from(rerouted.body));
+            draft.reply_fix = rerouted.fix;
             return Ok(());
         }
         draft.reply_fix = auth.reply_fix(attempt.upstream_protocol, bytes);

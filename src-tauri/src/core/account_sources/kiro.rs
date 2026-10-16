@@ -450,7 +450,7 @@ pub async fn quota(client: &Client, creds: &Creds) -> (Quota, Option<String>) {
                 limit += usage["usageLimitWithPrecision"].as_f64().unwrap_or_default();
             }
             let paid = plan.as_deref().map(|plan| !plan.to_ascii_lowercase().contains("free"));
-            (Quota { used, limit, unit: "credits".into(), paid, checked_at, error: None }, plan)
+            (Quota { used, limit, unit: "credits".into(), paid, checked_at, error: None, remaining: None }, plan)
         }
         Err(error) => (Quota { checked_at, error: Some(error), ..Default::default() }, None),
     }

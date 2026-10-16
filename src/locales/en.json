@@ -2547,18 +2547,38 @@
       "antigravity": "Antigravity's Google sign-in: the Gemini, Claude and GPT-OSS models Antigravity offers, through Google Code Assist. Personal Google accounts work.",
       "kiro": "A Kiro account (signed in with Google, GitHub, AWS Builder ID or IAM Identity Center): Claude and other models through Kiro's own API. Each account is kept on its own; the Kiro IDE's and kiro-cli's sign-ins are left alone.",
       "grok": "A SuperGrok or X Premium+ subscription, signed in with xAI's Grok CLI (Grok Build): AgentHarbor runs `grok login` in a Grok home of its own, so the grok in your terminal stays signed in as it is. Models use Responses.",
-      "cursor": "A Cursor plan, signed in with Cursor's CLI (cursor-agent): its models are served to other clients through Cursor's agent API, tool calls go back to the client to run, and Cursor's own commands never run here."
+      "cursor": "A Cursor plan, signed in with Cursor's CLI (cursor-agent): its models are served to other clients through Cursor's agent API, tool calls go back to the client to run, and Cursor's own commands never run here.",
+      "minimax-code": "MiniMax Code (mcode) accounts on the China site: the account's credits (the daily check-in's among them) and its M Plan, on MiniMax Code's own models over Anthropic Messages.",
+      "minimax-code-global": "MiniMax Code (mcode) accounts on the international site (minimax.io): credits and M Plan, on MiniMax Code's own models over Anthropic Messages.",
+      "commandcode": "Command Code plans (Pro, GOAT, Max, Ultra, Go, Teams Pro): Claude over Anthropic Messages, the other models over Chat Completions or Responses, as Command Code serves each.",
+      "zcode": "ZCode (zcode.z.ai): Z.ai's or BigModel's (智谱) GLM Coding Plan, a team seat, or ZCode's free Start Plan, over Anthropic Messages.",
+      "opencode-zen": "OpenCode Zen: a pay-as-you-go key, or Zen's free models (no account). Each model is asked on its own API (Chat Completions, Responses or Anthropic Messages), as OpenCode's docs name it.",
+      "opencode-go": "OpenCode Go subscription: import the key `opencode auth login` saved, or paste one; each model is asked on its own API, as OpenCode asks it.",
+      "qoder": "Qoder (qoder.com) subscription: signs in as Qoder's desktop client does, and serves its models on the agent_chat_generation API that client talks to (COSY-signed envelope, the client's body codec), as Chat Completions here.",
+      "qoder-cn": "Qoder CN (qoder.cn, Alibaba Cloud or phone sign-in) subscription: the same protocol on the China site's own hosts; an enterprise's VPC instance can sign in too.",
+      "trae-cn": "Trae CN (trae.cn, ByteDance's AI IDE) accounts, the free tier too: sign in in the browser as the IDE does; models are asked on the IDE agent's llm_utils_chat and served here as Chat Completions.",
+      "trae-global": "Trae international (trae.ai) accounts: the same IDE sign-in and protocol, on the SG or US deployment by the account's region, with usage in dollars."
     },
     "note": {
       "chatgpt-api": "Some plans are not eligible for this sign-in; signing in says so. A Team, Business or Enterprise workspace must first allow Sign in with ChatGPT apps (its admin decides), or the sign-in page says the organization has not enabled access; you can also pick a personal workspace there. Nothing is stored at OpenAI, and some parameters and OpenAI-hosted tools are removed from requests.",
-      "workbuddy": "WorkBuddy refuses chats from Codex and Claude Code because of their system prompt: use it from OpenCode or Pi, or put it in an aggregate so a refused request moves to the next member. Streaming chats only.",
-      "workbuddy-ai": "WorkBuddy AI refuses chats from Codex and Claude Code because of their system prompt: use it from OpenCode or Pi, or put it in an aggregate so a refused request moves to the next member. Streaming chats only.",
+      "workbuddy": "The few phrases in Codex's and Claude Code's prompts that WorkBuddy's channel check refuses are reworded on the way (as magpie does), so every client works; wording it doesn't know yet may still be refused, and an aggregate moves such a request to its next member. Tools are reshaped into forms every WorkBuddy model takes. Streaming chats only.",
+      "workbuddy-ai": "The few phrases in Codex's and Claude Code's prompts that WorkBuddy AI's channel check refuses are reworded on the way (as magpie does), so every client works; wording it doesn't know yet may still be refused, and an aggregate moves such a request to its next member. Tools are reshaped into forms every model takes. Streaming chats only.",
       "copilot": "Only models this account may call now are listed; a model that asks you to accept its terms first (some Claude and Gemini models) is enabled in GitHub's Copilot settings, then refresh the models. Each turn you start counts as one premium request; tool results do not.",
       "gemini-cli": "Use Antigravity for a personal Google account. If signing in says a project is missing, enter the Google Cloud project ID on the account card. The models are the ones Gemini CLI offers this account.",
       "antigravity": "Antigravity answers the system prompt of Claude Code and the Claude Agent SDK with a 429 whatever quota is left: use it from OpenCode or Pi, or put it in an aggregate so a refused request moves to the next member. The allowance shown is the most-used model's.",
       "kiro": "Signing in opens Kiro's site; pick a way to sign in and it comes back here. The allowance is this month's credits; at medium or high effort, Claude models send their thinking too.",
       "grok": "Install Grok Build first (x.ai/cli). The Grok CLI keeps and renews the token; AgentHarbor only reads it per request. Codex's grouped and freeform tools are turned into what Grok takes and restored in the reply; whole numbers Grok writes as 2500.0 in tool arguments go back as 2500.",
-      "cursor": "Install cursor-agent first (cursor.com/cli). The CLI keeps one sign-in per machine, and this account is that one; removing it here does not sign the CLI out. Requests go in privacy mode (not used for training). Context follows the model's name: 1M where it says 1M, 200K otherwise."
+      "cursor": "Install cursor-agent first (cursor.com/cli). The CLI keeps one sign-in per machine, and this account is that one; removing it here does not sign the CLI out. Requests go in privacy mode (not used for training). Context follows the model's name: 1M where it says 1M, 200K otherwise.",
+      "minimax-code": "Signs in with MiniMax Code's own device code (as `mcode /login` does); your ~/.minimax sign-in is never read or changed. A refresh token works once, so AgentHarbor renews one at a time. The daily check-in (a week of credits, more on days 4 and 7) can be turned on above.",
+      "minimax-code-global": "Signs in with MiniMax Code's own device code; your ~/.minimax sign-in is never read or changed. The international site has the daily check-in too; turn it on above.",
+      "commandcode": "An account is a Command Code API key, which doesn't expire. A Go plan has no Provider API, so AgentHarbor asks /alpha/generate as the CLI does. The model list follows your plan (every model with extra credits); refresh the allowance after a plan change.",
+      "zcode": "Signs in as ZCode does: it finds or makes the zcode-api-key in the account's default project; with no plan of its own a team seat is used, and failing that the Start Plan (sent with ZCode's own system prompt and headers, as zcode.z.ai answers 405 otherwise). An account that also holds gift plans lists each gift model again as `-Trial`; picking it spends the gift.",
+      "opencode-zen": "The free tier answers only what looks like OpenCode's own request: AgentHarbor sends exactly OpenCode 1.19's headers and session ids of its shape, always streams, and offers OpenCode's core tools as stand-ins (a call of one is left out). Zen's Gemini models use Google's own API, which the router doesn't speak, and are left out.",
+      "opencode-go": "Importing only reads OpenCode's auth.json (it's never changed). Gemini models use Google's own API, which the router doesn't speak, and are left out. The allowance shows the tightest of the rolling, weekly and monthly windows.",
+      "qoder": "Requests open their system prompt with Qoder's own line, as its client's do. Tool calls the model writes in its text are lifted out as real calls. The daily credits need Qoder desktop installed or Qoder CLI signed in once on this computer (its runtime-info helper reads the device identity), or QODER_RUNTIME_INFO set to its path.",
+      "qoder-cn": "When qoder.cn won't give a job token, the account chats on its device token, as Qoder CN's CLI does. The daily credits can be claimed above (the China site needs no local runtime-info).",
+      "trae-cn": "Experimental (magpie has tried it on few accounts). Signing in makes a device for this computer (ids and a P-256 key), and the token is renewed bound to it, as TRAE SOLO CN renews. Trae's chat takes text only: tools are named to the model in a system prompt, and the calls it writes in its text (tags, GLM's template, DeepSeek's DSML) are lifted out as real calls. The daily check-in can be turned on above; when Trae pays it only to its own app, you're told to check in there.",
+      "trae-global": "Experimental (magpie tried it on one SG free account). Sign-in, the device and tool calls work as on Trae CN; the international site has no daily check-in."
     },
     "errors": {
       "storage": "Could not read or write the account source store",
@@ -2592,7 +2612,15 @@
       "grokCli": "The Grok CLI was not found. Install Grok Build (x.ai/cli), then sign in.",
       "cursorCli": "Cursor's CLI (cursor-agent) was not found. Install it (cursor.com/cli), then sign in.",
       "noAccount": "The sign-in ended without the CLI naming an account. Try again.",
-      "noModelsSelected": "Choose at least one model to share first"
+      "noModelsSelected": "Choose at least one model to share first",
+      "inputRequired": "This way of signing in needs something filled in first",
+      "commandcodeCli": "Command Code's CLI isn't signed in (~/.commandcode/auth.json); run `commandcode login` first",
+      "commandcodeKey": "Command Code didn't take this key",
+      "zcodeApp": "ZCode isn't signed in on this computer; sign in to ZCode, or sign in to Z.ai or BigModel here",
+      "opencodeNotSignedIn": "OpenCode has no key for this gateway; run `opencode auth login` first",
+      "opencodeKey": "OpenCode didn't take this key",
+      "qoderVpc": "Not a VPC instance: enter its name (letters, digits, -) or https://<instance>.vpc.qoder.com.cn",
+      "qoderRuntime": "Qoder's device identity helper (runtime-info) wasn't found: install Qoder desktop or sign in to Qoder CLI once, or set QODER_RUNTIME_INFO to its path"
     },
     "badge": "Official account",
     "refusesClaudeCode": "{{name}} refuses Claude Code's system prompt; requests may fail",
@@ -2603,21 +2631,30 @@
       "google": "Google",
       "aws": "AWS",
       "xai": "xAI",
-      "cursor": "Cursor"
+      "cursor": "Cursor",
+      "alibaba": "Alibaba",
+      "bytedance": "ByteDance",
+      "minimax": "MiniMax",
+      "zhipu": "Zhipu",
+      "opencode": "OpenCode",
+      "commandcode": "Command Code"
     },
     "berth": "{{name}}, {{count}} accounts",
     "berthEmpty": "No account",
     "premiumRequests": "Premium requests this month",
     "vendorUsage": "The vendor keeps the allowance; see what is left at",
     "usage": {
-      "chatgpt-api": "The limit is shared with ChatGPT; OpenAI shows what is left only at"
+      "chatgpt-api": "The limit is shared with ChatGPT; OpenAI shows what is left only at",
+      "opencode-zen": "Zen bills as you go; see the balance in OpenCode's console:"
     },
     "deviceCode": "Device code",
     "copyCode": "Copy code",
     "codeCopied": "Copied",
     "deviceCodeHint": "Enter this code on the page that opened and authorize; this page continues by itself.",
     "risk": {
-      "antigravity": "Google may suspend an account it sees used outside Antigravity. Use an account you can afford to lose."
+      "antigravity": "Google may suspend an account it sees used outside Antigravity. Use an account you can afford to lose.",
+      "minimax-code": "MiniMax gives its credits for use in MiniMax Code; using them from other agents isn't approved by MiniMax, which may limit, suspend or close an account used so. The risk is yours.",
+      "minimax-code-global": "MiniMax gives its credits for use in MiniMax Code; using them from other agents isn't approved by MiniMax, which may limit, suspend or close an account used so. The risk is yours."
     },
     "riskTitle": "Before signing in to {{name}}",
     "riskAccept": "I understand, sign in",
@@ -2630,7 +2667,112 @@
     "modelFilterHint": "Click a model to leave it out of the share or bring it back; a model left out is not offered to model inject or shown in Codex's model menu.",
     "modelsAll": "Share all",
     "modelsNone": "Leave all out",
-    "modelsNoneShared": "Leaving every model out also stops sharing with model inject"
+    "modelsNoneShared": "Leaving every model out also stops sharing with model inject",
+    "method": {
+      "account": "Account sign-in",
+      "browser": "Sign in in the browser",
+      "device": "Sign in with a device code",
+      "app": "Use the desktop app's sign-in",
+      "cli": "Use the CLI's sign-in",
+      "key": "API key",
+      "import": "Import from this computer",
+      "commandcode": {
+        "browser": "Approve in the browser (Command Code Studio)",
+        "cli": "Use the Command Code CLI's sign-in",
+        "key": "Paste an API key"
+      },
+      "zcode": {
+        "zai": "Z.ai account (browser)",
+        "bigmodel": "BigModel (智谱) account (browser)",
+        "app": "Use the ZCode app's sign-in",
+        "key-zai": "Paste a Z.ai API key",
+        "key-bigmodel": "Paste a BigModel API key"
+      },
+      "opencode-zen": {
+        "import": "Import the key from opencode auth login",
+        "key": "Paste a Zen API key",
+        "free": "Zen's free models (no account)"
+      },
+      "opencode-go": {
+        "import": "Import the key from opencode auth login",
+        "key": "Paste a Go API key"
+      },
+      "qoder": {
+        "account": "Qoder account (authorize this device in the browser)",
+        "pat": "Personal Access Token"
+      },
+      "qoder-cn": {
+        "account": "Qoder CN account (authorize this device in the browser)",
+        "vpc": "Enterprise VPC instance"
+      }
+    },
+    "input": {
+      "hint": "Signing in starts once this is filled in; it is kept encrypted on this computer and used only by the local router.",
+      "submit": "Sign in",
+      "commandcode": {
+        "key": {
+          "hint": "Create a key at commandcode.ai/settings/keys and paste it here.",
+          "placeholder": "user_…"
+        }
+      },
+      "zcode": {
+        "key-zai": {
+          "hint": "A Z.ai GLM Coding Plan key (<id>.<secret>).",
+          "placeholder": "xxxxxxxx.xxxxxxxx"
+        },
+        "key-bigmodel": {
+          "hint": "A BigModel GLM Coding Plan key (<id>.<secret>).",
+          "placeholder": "xxxxxxxx.xxxxxxxx"
+        }
+      },
+      "opencode-zen": {
+        "key": {
+          "hint": "A Zen key made in your opencode.ai workspace.",
+          "placeholder": "sk-…"
+        }
+      },
+      "opencode-go": {
+        "key": {
+          "hint": "Your OpenCode Go subscription's key.",
+          "placeholder": "sk-…"
+        }
+      },
+      "qoder": {
+        "pat": {
+          "hint": "A Personal Access Token from qoder.com/account/integrations (starts with pt-, lasts up to a year).",
+          "placeholder": "pt-…"
+        }
+      },
+      "qoder-cn": {
+        "vpc": {
+          "hint": "Your enterprise's VPC instance: its name (acme) or address (acme.vpc.qoder.com.cn).",
+          "placeholder": "acme"
+        }
+      }
+    },
+    "checkin": {
+      "auto": "Daily check-in",
+      "autoHint": "While on, AgentHarbor checks each account here in once a Beijing day (two minutes after it starts, then every 30 minutes; a failure is tried again later).",
+      "now": "Check in now",
+      "ran": "Check-in done",
+      "pending": "Check-in due today",
+      "notYet": "Not checked in today",
+      "left": "Left out of check-in",
+      "credit": "+{{value}} credits",
+      "streak": "{{count}}-day streak",
+      "takesPart": "{{name}} takes part in check-in",
+      "outcome": {
+        "claimed": "Checked in today",
+        "done": "Already checked in today",
+        "ineligible": "This account can't take part in the check-in",
+        "inactive": "No check-in event is running",
+        "failed": "Check-in failed: {{message}} (tried again later)",
+        "captcha": "{{name}} asks for a captcha; check in in its app",
+        "own-app": "{{name}} pays the check-in only to its own app; check in there"
+      }
+    },
+    "balance": "Credits left",
+    "dollars": "This month (USD)"
   },
   "gateway": {
     "groupTitle": "Gateway",

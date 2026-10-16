@@ -206,7 +206,7 @@ pub async fn quota(client: &Client, creds: &Creds) -> Quota {
             }
             let limit = premium["entitlement"].as_f64().unwrap_or_default();
             let remaining = premium["remaining"].as_f64().unwrap_or(limit).clamp(0.0, limit.max(0.0));
-            Quota { used: limit - remaining, limit, unit: "premium".into(), paid: Some(plan != "free"), checked_at, error: None }
+            Quota { used: limit - remaining, limit, unit: "premium".into(), paid: Some(plan != "free"), checked_at, error: None, remaining: None }
         }
         Err(_) => Quota { checked_at, error: Some("Copilot did not report its allowance".into()), ..Default::default() },
     }

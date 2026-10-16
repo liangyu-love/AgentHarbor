@@ -34,7 +34,7 @@ Codex 是主要集成对象，其他客户端共用同一套中转与路由。
 | **模型注入** | 把中转模型和官方账号的模型接到下列客户端：预览、应用、恢复配置，每次都有备份；路由模式下中转、官方账号、聚合模型三类可以任意组合<br>• Codex：本地路由或原生直连，支持无账号模式和子代理默认配置<br>• Claude Code、Claude Desktop、OpenCode、Pi、DeepSeek Harness<br>• Cursor IDE 与 cursor-agent：Agent、Tab 补全和提交信息都能用这些模型，见下文 |
 | **本地路由** | 三种协议互相转换<br>模型聚合：按优先级分层、失败切换、首字超时切换、实时成员状态<br>请求级路由诊断 |
 | **通用网关** | 一个本地地址加上命名 key，任何能填 Base URL 和 API Key 的 agent 都能使用全部开启的模型，见下文 |
-| **账号** | Codex：ChatGPT OAuth 登录、额度窗口、手动切号或按阈值自动切号（正在运行的 Codex 会把任务做完，原账号额度用尽时才重启）<br>账号来源：ChatGPT（Sign in with ChatGPT）、WorkBuddy、WorkBuddy AI、GitHub Copilot、Gemini CLI、Antigravity、Kiro、Grok、Cursor，登录后可以提供给模型注入使用，见下文 |
+| **账号** | Codex：ChatGPT OAuth 登录、额度窗口、手动切号或按阈值自动切号（正在运行的 Codex 会把任务做完，原账号额度用尽时才重启）<br>账号来源：ChatGPT（Sign in with ChatGPT）、WorkBuddy、WorkBuddy AI、GitHub Copilot、Gemini CLI、Antigravity、Kiro、Grok、Cursor、Qoder、Qoder CN、Trae CN、Trae 国际版、MiniMax Code（国内 / 国际）、ZCode、OpenCode Zen、OpenCode Go、Command Code，登录后可以提供给模型注入使用；有签到奖励的来源支持每日自动签到，见下文 |
 | **用量** | Token 监控覆盖 Codex、Claude Code 与中转流量，并记录当时价格 |
 | **线程管理** | 浏览、搜索、导出、删除 Codex 与 Claude Code 会话；恢复 Codex 索引里丢失的线程 |
 | **MCP / Skills / 自定义指令** | 管理 MCP 服务器、Skills（带备份），以及 Codex 和 Claude Code 的 `AGENTS.md` / `CLAUDE.md` 中由 AgentHarbor 管理的区块 |
@@ -122,14 +122,23 @@ Codex 与 Claude Code / Claude Desktop 保留各自原来的 WebSearch 用法，
 
 - **只共享需要的模型**：来源默认共享全部模型；在账号页点模型即可取消，取消的模型不提供给模型注入，也不进 Codex 的模型菜单（Codex 桌面版的菜单只显示前 100 个模型，超出时 Codex 卡片会列出被截掉的模型）。全部取消会同时停止共享。
 - **只经本地路由使用**：每次请求由路由取当前账号的令牌，快过期时自动刷新。客户端配置里不会写入任何账号令牌，所以直连模式和 Codex 原生直连都不能选账号来源。
+- **多种登录方式**：支持多种登录方式（浏览器、厂商自己的应用或 CLI、粘贴密钥）的来源，登录按钮会展开成菜单，第一项是常用方式。需要粘贴的密钥或地址在对话框里填写，和其他凭据一样加密保存。
+- **每日签到**：WorkBuddy、MiniMax Code、Qoder、Qoder CN、Trae CN 每天签到送积分。在来源面板打开「每日自动签到」后，AgentHarbor 每个北京时间日为它的每个账号签到一次（启动两分钟后先签，之后每 30 分钟检查；失败稍后重试）；「立即签到」马上执行，账号卡片上的开关可以让某个账号不参与。默认关闭。厂商只给自家应用发签到奖励或要求验证码时，卡片会提示，不会强行签到。
+- **提示词与客户端身份照 [magpie](https://github.com/yetone/magpie) 处理**：只回应自家客户端的厂商，AgentHarbor 会像 magpie 及其社区插件那样发送该客户端的请求头、系统提示词开头和请求形状，并改写厂商校验会拒绝的那几句话。AgentHarbor 不会替你同意任何厂商条款。在厂商应用之外使用订阅可能违反其条款；厂商明确说明有风险的来源，登录前账号页会先提示。
 - **ChatGPT**：使用 OpenAI 官方提供给本地应用的 Sign in with ChatGPT，请求走标准的 `api.openai.com/v1/responses`，提示词是客户端自己的。它和 Codex 账号互相独立，需要单独登录；额度与 ChatGPT 共用，剩余量只能在 chatgpt.com 查看；个别套餐没有资格，登录时会提示。Team、Business、Enterprise 工作区要管理员先允许「Sign in with ChatGPT」应用，或者在登录页切到个人工作区。
-- **WorkBuddy / WorkBuddy AI**：腾讯 CodeBuddy 套餐的国内版和国际版，使用自己的登录，不读取也不改动 WorkBuddy 桌面端的会话。它们会因系统提示词拒绝 Codex 和 Claude Code 的对话，适合在 OpenCode、Pi 中使用；放进聚合组时，被拒的请求会自动切到下一个成员。
+- **WorkBuddy / WorkBuddy AI**：腾讯 CodeBuddy 套餐的国内版和国际版，使用自己的登录，不读取也不改动 WorkBuddy 桌面端的会话。Codex 和 Claude Code 提示词里会被 WorkBuddy 渠道校验拒绝的那几句话会在转发时自动改写，所以各客户端都能用；遇到没收录的措辞仍可能被拒，放进聚合组时会切到下一个成员。企业账号会带上企业的请求头并显示企业用量。
 - **GitHub Copilot**：用 GitHub 设备码登录，账号页会显示要输入的代码。每个模型走 Copilot 提供它的接口：Claude 系列走 Anthropic Messages，新 GPT 走 Responses，其余走 Chat Completions。只列出账号现在能用的模型；需要先同意条款的模型请到 GitHub 的 Copilot 设置里启用，AgentHarbor 不会代为同意。卡片显示本月高级请求。
 - **Gemini CLI / Antigravity**：分别用两个应用自己的 Google 登录，由 Google Code Assist 提供模型。Gemini CLI 的登录只对 Gemini Code Assist 标准版 / 企业版开放，需要 Google Cloud 项目（在账号卡片里填写）。Antigravity 个人账号也能用，但 Google 可能封禁在 Antigravity 之外使用的账号，所以登录前会先确认。Antigravity 会对 Claude Code 和 Claude Agent SDK 的系统提示词返回 429，请在 OpenCode、Pi 中使用，或放进聚合组。
 - **Kiro**：在 Kiro 官网登录（Google、GitHub、AWS Builder ID 或 IAM Identity Center），每个账号独立保存，不影响 Kiro IDE 和 kiro-cli 的登录。卡片显示本月积分。
 - **Grok**（SuperGrok、X Premium+）：用 xAI 的 Grok CLI（Grok Build）登录，需要先安装。AgentHarbor 在自己的 Grok 目录里运行 `grok login`，不影响你终端里 grok 的登录；令牌由 CLI 保存并续期。请求走 CLI 用的 Responses 接口。Codex 的分组工具和自由格式工具会转成 Grok 能接受的形式，回复里再还原；工具参数里 Grok 写成 `2500.0` 的整数会改回 `2500`。
 - **Cursor**：用 Cursor CLI（`cursor-agent`）的登录，需要先安装；CLI 在本机只保留一个登录，移除这里的账号不会退出 CLI。每次请求是一次走 HTTP/2 的 Cursor Agent 运行：对话以隐私模式发送，客户端的工具作为 Cursor 可回调的工具提供，Cursor 自己的命令（终端、改文件）AgentHarbor 一律不执行。
-- Google、Kiro 和 Cursor 的接口在路由内部经 Chat Completions 转换，所以各种客户端协议都能照常用上它们。
+- **Qoder / Qoder CN**：照 Qoder 桌面客户端的方式登录（设备码；qoder.com 可用个人访问令牌；qoder.cn 可填企业 VPC 地址），模型走客户端自己的对话接口。模型写在正文里的工具调用会被提取成真正的工具调用。Qoder 的每日积分需要本机装有 Qoder 桌面版或 Qoder CLI（用它的 runtime-info 读取设备身份），或者设置 `QODER_RUNTIME_INFO` 指向它；Qoder CN 不需要。
+- **Trae CN / Trae 国际版**（实验性）：照 IDE 的方式在浏览器登录；登录时为本机生成设备（ID 与 P-256 密钥），令牌绑定到这个设备续期。Trae 的接口只收文本，工具会写进系统提示词，模型写出的调用（标签、GLM 模板、DeepSeek DSML）会被提取成真正的工具调用。国际版没有签到。
+- **MiniMax Code**（国内 / 国际）：用 MiniMax Code 自己的设备码登录，不读取也不改动 `~/.minimax`，模型走 Anthropic Messages。MiniMax 的积分只供 MiniMax Code 使用，在其他工具里用可能被限制账号，所以登录前会先确认。
+- **ZCode**：可用 Z.ai 或智谱 BigModel 登录、导入 ZCode 应用的登录，或填密钥。使用账号的 GLM Coding Plan、团队席位或免费的 Start Plan（带 ZCode 自己的提示词和请求头）；赠送套餐的模型以 `-Trial` 列出。
+- **OpenCode Zen / OpenCode Go**：导入 `opencode auth login` 保存的密钥（只读取 auth.json），或粘贴密钥；每个模型走 OpenCode 文档写明的接口。Zen 的免费模型不需要账号：请求按 OpenCode 1.19 的样子发送，始终流式，并以 OpenCode 的核心工具作为替身。Gemini 模型走 Google 自己的接口，不提供。
+- **Command Code**：可在浏览器登录、读取 CLI 的 `~/.commandcode/auth.json`，或填密钥。Claude 走 Anthropic Messages，其余按 Command Code 给出的接口；Go 套餐没有 Provider API，会像 CLI 那样走 `/alpha/generate`。
+- Google、Kiro、Cursor、Qoder、Trae 和 Command Code Go 的接口在路由内部经 Chat Completions 转换，所以各种客户端协议都能照常用上它们。
 - **Claude Desktop** 暂不支持账号来源。
 
 ## 数据与安全

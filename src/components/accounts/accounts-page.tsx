@@ -5,6 +5,7 @@ import { PageHero } from "@/components/layout/page-hero";
 
 import { AccountCard, planLabel } from "@/components/accounts/account-card";
 import { AccountSourcePanel } from "@/components/accounts/account-source-panel";
+import { SourceSignInButton } from "@/components/accounts/source-sign-in";
 import { useAccountSources } from "@/components/accounts/use-account-sources";
 import { useAccounts } from "@/components/accounts/use-accounts";
 import { DOCK_ORDER, SourceDock, type Berth, type DockValue } from "@/components/accounts/source-dock";
@@ -69,7 +70,7 @@ export function AccountsPage({ refreshInterval }: { refreshInterval: RefreshInte
     try { localStorage.setItem(TAB_KEY, next); } catch { /* storage unavailable: the tab is not remembered */ }
   };
   const sourceTab = tab === "codex" ? null : tab as AccountSourceKind;
-  const sourceName = (kind: AccountSourceKind) => sources.sources.find(source => source.kind === kind)?.name ?? kind;
+  const currentSource = sourceTab ? sources.sources.find(source => source.kind === sourceTab) : undefined;
   const berths: Berth[] = [
     { value: "codex", name: "Codex", lights: accounts.map(account => account.isActive ? "active" : "ready"), shared: false },
     ...sources.sources.map((source): Berth => ({
@@ -96,7 +97,7 @@ export function AccountsPage({ refreshInterval }: { refreshInterval: RefreshInte
               {t("common.refresh")}
             </Button>
             {sourceTab
-              ? sources.pending === null && <Button onClick={() => sources.signIn(sourceTab)}><LogIn />{t("accountSources.signIn", { name: sourceName(sourceTab) })}</Button>
+              ? sources.pending === null && currentSource && <SourceSignInButton source={currentSource} sources={sources} />
               : !loginPending && <Button onClick={startLogin}><LogIn />{t("accounts.oauthLogin")}</Button>}
           </>} />
 

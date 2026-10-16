@@ -90,6 +90,7 @@ pub fn run() {
                 let paths = repo_state.lock().map(|r| r.paths().clone());
                 if let Ok(paths) = paths {
                     commands::newapi::spawn_balance_refresh(app.handle().clone(), paths.clone());
+                    core::account_sources::checkin::spawn(paths.clone());
                     let reconciliation_paths = paths.clone();
                     tauri::async_runtime::spawn(async move {
                         {
@@ -241,6 +242,9 @@ pub fn run() {
             commands::account_sources::refresh_account_source_quota,
             commands::account_sources::refresh_account_source_models,
             commands::account_sources::set_account_source_exposed,
+            commands::account_sources::set_account_source_checkin,
+            commands::account_sources::set_account_source_checkin_off,
+            commands::account_sources::check_in_account_source,
             commands::account_sources::set_account_source_hidden_models,
             commands::account_sources::set_account_source_project,
             commands::accounts::cancel_codex_account_login,

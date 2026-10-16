@@ -580,7 +580,7 @@ pub async fn quota(client: &Client, app: App, creds: &Creds) -> Quota {
         return Quota { checked_at, unit: "percent".into(), ..Default::default() };
     };
     Quota { used: ((1.0 - tightest.clamp(0.0, 1.0)) * 100.0).round(), limit: 100.0, unit: "percent".into(),
-        paid: Some(!creds.paid.is_empty()), checked_at, error: None }
+        paid: Some(!creds.paid.is_empty()), checked_at, error: None, remaining: None }
 }
 
 #[cfg(test)]

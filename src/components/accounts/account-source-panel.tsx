@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import { AlertTriangle, Check, Copy, ExternalLink, Globe, KeyRound, Loader2, LogIn, Plug, RefreshCw, Sparkles, Trash2, UsersRound, Waypoints } from "lucide-react";
 
 import { maskEmail } from "@/components/accounts/account-card";
+import { CheckinControls, CheckinStatus } from "@/components/accounts/source-checkin";
+import { SignInInputDialog, SourceSignInButton } from "@/components/accounts/source-sign-in";
 import type { useAccountSources } from "@/components/accounts/use-account-sources";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -29,10 +31,17 @@ function CreditsMeter({ account }: { account: AccountSourceAccount }) {
   const quota = account.quota;
   if (!quota) return <p className="text-xs text-muted-foreground">{t("accountSources.quotaUnread")}</p>;
   if (quota.error) return <p className="text-xs text-destructive">{formatInvokeError(quota.error, quota.error)}</p>;
-  if (quota.limit <= 0) return <p className="text-xs text-muted-foreground">{t("accountSources.quotaNone")}</p>;
+  const balance = quota.remaining != null && (
+    <p className="flex items-baseline justify-between gap-2 text-xs" data-source-balance>
+      <span className="text-muted-foreground">{t("accountSources.balance")}</span>
+      <span className="font-mono tabular-nums text-foreground/90">{formatCount(quota.remaining)}</span>
+    </p>
+  );
+  if (quota.limit <= 0) return balance || <p className="text-xs text-muted-foreground">{t("accountSources.quotaNone")}</p>;
   const share = Math.min(100, Math.max(0, (quota.used / quota.limit) * 100));
   const left = 100 - share;
-  const label = quota.unit === "premium" ? "accountSources.premiumRequests" : quota.unit === "percent" ? "accountSources.tightestModel" : "accountSources.credits";
+  const label = quota.unit === "premium" ? "accountSources.premiumRequests" : quota.unit === "percent" ? "accountSources.tightestModel"
+    : quota.unit === "usd" ? "accountSources.dollars" : "accountSources.credits";
   return (
     <div className="space-y-1.5" data-source-quota>
       <div className="flex items-baseline justify-between gap-2 text-xs">
@@ -47,6 +56,7 @@ function CreditsMeter({ account }: { account: AccountSourceAccount }) {
         <div className={cn("source-credits-fill h-full rounded-full", left <= 15 ? "bg-rose-500" : left <= 35 ? "bg-amber-500" : "bg-emerald-500")}
           style={{ "--fill": share / 100 } as CSSProperties} />
       </div>
+      {balance}
     </div>
   );
 }
@@ -183,6 +193,7 @@ function SourceAccountCard({ source, account, sources, order, onRemove }: {
             )}
           </p>
         )}
+        {!account.lapsed && <CheckinStatus source={source} account={account} sources={sources} />}
       </div>
       <div className="flex items-center justify-between gap-2 px-4 py-2.5">
         {account.active ? (
@@ -317,6 +328,7 @@ export function AccountSourcePanel({ kind, sources }: { kind: AccountSourceKind;
               : source.models.length === 0 ? t("accountSources.noModelsYet")
                 : includedModels === 0 ? t("accountSources.noModelsChosen") : t("accountSources.notExposed")}
           </p>
+          <CheckinControls source={source} sources={sources} />
         </div>
       </div>
 
@@ -344,9 +356,7 @@ export function AccountSourcePanel({ kind, sources }: { kind: AccountSourceKind;
           <div className="mb-4 rounded-2xl bg-primary/10 p-4 text-primary"><UsersRound className="h-7 w-7" /></div>
           <h4 className="font-semibold">{t("accountSources.emptyTitle", { name: source.name })}</h4>
           <p className="mt-1 max-w-md text-sm text-muted-foreground">{t("accountSources.emptyDescription")}</p>
-          <Button className="mt-5" onClick={() => sources.signIn(kind)} disabled={sources.pending !== null}>
-            <LogIn />{t("accountSources.signIn", { name: source.name })}
-          </Button>
+          <SourceSignInButton className="mt-5" source={source} sources={sources} />
         </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -398,7 +408,8 @@ export function AccountSourcePanel({ kind, sources }: { kind: AccountSourceKind;
         </div>
       )}
       <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
-      <ConfirmDialog onClose={sources.dismissRisk} request={sources.riskFor === kind ? {
+      <SignInInputDialog sources={sources} />
+      <ConfirmDialog onClose={sources.dismissRisk} request={sources.riskFor?.kind === kind ? {
         title: t("accountSources.riskTitle", { name: source.name }),
         description: t(`accountSources.risk.${kind}`),
         confirmLabel: t("accountSources.riskAccept"),

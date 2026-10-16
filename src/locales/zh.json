@@ -2547,18 +2547,38 @@
       "antigravity": "用 Antigravity 的 Google 登录，经 Google Code Assist 使用 Antigravity 提供的 Gemini、Claude 和 GPT-OSS 模型，个人 Google 账号也能用。",
       "kiro": "Kiro 账号（Google、GitHub、AWS Builder ID 或 IAM Identity Center 登录），经 Kiro 自己的接口使用 Claude 等模型；每个账号独立保存，不影响 Kiro IDE 和 kiro-cli 的登录。",
       "grok": "SuperGrok / X Premium+ 订阅，用 xAI 的 Grok CLI（Grok Build）登录：AgentHarbor 在自己的 Grok 目录里运行 `grok login`，不影响你终端里 grok 的登录。模型走 Responses。",
-      "cursor": "Cursor 套餐，用 Cursor CLI（cursor-agent）的登录：模型经 Cursor 的 Agent 接口提供给其他客户端，工具调用交还给客户端执行，Cursor 自己的命令一律不在这里运行。"
+      "cursor": "Cursor 套餐，用 Cursor CLI（cursor-agent）的登录：模型经 Cursor 的 Agent 接口提供给其他客户端，工具调用交还给客户端执行，Cursor 自己的命令一律不在这里运行。",
+      "minimax-code": "MiniMax Code（mcode）国内站账号：账号自带的积分（包括每日签到送的）和 M Plan，用 MiniMax Code 自己的模型，走 Anthropic Messages。",
+      "minimax-code-global": "MiniMax Code（mcode）国际站（minimax.io）账号：积分和 M Plan，用 MiniMax Code 自己的模型，走 Anthropic Messages。",
+      "commandcode": "Command Code 套餐（Pro、GOAT、Max、Ultra、Go、Teams Pro）：Claude 走 Anthropic Messages，其余模型按 Command Code 给出的接口走 Chat Completions 或 Responses。",
+      "zcode": "ZCode（zcode.z.ai）：Z.ai 或智谱 BigModel 的 GLM Coding Plan、团队席位，以及 ZCode 免费的 Start Plan，走 Anthropic Messages。",
+      "opencode-zen": "OpenCode Zen：按量付费的 Key，或者 Zen 的免费模型（无需账号）。每个模型按 OpenCode 文档走它自己的接口（Chat Completions、Responses 或 Anthropic Messages）。",
+      "opencode-go": "OpenCode Go 订阅：导入 `opencode auth login` 保存的 Key 或直接粘贴，每个模型按 OpenCode 的规则走它自己的接口。",
+      "qoder": "Qoder（qoder.com）订阅：照 Qoder 桌面客户端的方式登录，模型走它客户端用的 agent_chat_generation 接口（COSY 签名信封 + 客户端编码），回到这里就是 Chat Completions。",
+      "qoder-cn": "Qoder CN（qoder.cn，阿里云或手机号登录）订阅：与国际站同一套协议，跑在国内站自己的域名上；企业 VPC 实例也可以登录。",
+      "trae-cn": "Trae CN（trae.cn，字节跳动的 AI IDE）账号，免费档也能用：照 IDE 的方式在浏览器登录，模型走 IDE agent 的 llm_utils_chat，回到这里就是 Chat Completions。",
+      "trae-global": "Trae 国际版（trae.ai）账号：同一套 IDE 登录与协议，按账号所在区域走新加坡或美国的部署，用量按美元计。"
     },
     "note": {
       "chatgpt-api": "有些套餐没有资格使用这种登录，登录时会明确提示。Team、Business、Enterprise 工作区要管理员先允许「Sign in with ChatGPT」应用，否则登录页会说组织尚未启用访问权限；也可以在登录页切到个人工作区。不会在 OpenAI 保存任何内容，部分参数和 OpenAI 托管工具会从请求中去掉。",
-      "workbuddy": "WorkBuddy 会因系统提示词拒绝 Codex 和 Claude Code 的对话：请在 OpenCode、Pi 中使用，或放进聚合组，被拒时自动切到下一个成员。只支持流式对话。",
-      "workbuddy-ai": "WorkBuddy AI 会因系统提示词拒绝 Codex 和 Claude Code 的对话：请在 OpenCode、Pi 中使用，或放进聚合组，被拒时自动切到下一个成员。只支持流式对话。",
+      "workbuddy": "Codex 和 Claude Code 里会被 WorkBuddy 渠道校验拒绝的那几句话会被自动改写（照 magpie 的做法），所以现在各客户端都能用；遇到没收录的措辞仍可能被拒，可放进聚合组让请求切到下一个成员。工具定义会适配成 WorkBuddy 各模型都接受的形式。只支持流式对话。",
+      "workbuddy-ai": "Codex 和 Claude Code 里会被 WorkBuddy AI 渠道校验拒绝的那几句话会被自动改写（照 magpie 的做法），所以现在各客户端都能用；遇到没收录的措辞仍可能被拒，可放进聚合组让请求切到下一个成员。工具定义会适配成各模型都接受的形式。只支持流式对话。",
       "copilot": "只列出这个账号现在能用的模型；需要先同意条款的模型（如部分 Claude、Gemini）请到 GitHub 的 Copilot 设置里启用，再刷新模型。每轮由你发起的对话计一次高级请求，工具回传不计。",
       "gemini-cli": "个人 Google 账号请用 Antigravity。登录后若提示缺少项目，在账号卡片里填上 Google Cloud 项目 ID 即可。模型列表按 Gemini CLI 对这个账号开放的为准。",
       "antigravity": "Antigravity 会对 Claude Code 和 Claude Agent SDK 的系统提示词直接返回 429（不管额度还剩多少），请在 OpenCode、Pi 中使用，或放进聚合组让被拒请求切到下一个成员。额度显示的是用得最多的那个模型。",
       "kiro": "登录页会打开 Kiro 官网，选择登录方式后回到这里。额度为本月积分；思考强度为中、高时，Claude 模型会把思考过程一并返回。",
       "grok": "需要先安装 Grok Build（x.ai/cli）。令牌由 Grok CLI 保存并续期，AgentHarbor 只在请求时读取。Codex 的分组工具和自由格式工具会转成 Grok 能接受的形式，回复里再还原；工具参数里 Grok 写成 2500.0 的整数会改回 2500。",
-      "cursor": "需要先安装 cursor-agent（cursor.com/cli）。CLI 在本机只保留一个登录，这里的账号就是它；移除账号不会退出 CLI。请求以隐私模式发送（不用于训练）。上下文按模型名判断：名字带 1M 的为 1M，其余为 200K。"
+      "cursor": "需要先安装 cursor-agent（cursor.com/cli）。CLI 在本机只保留一个登录，这里的账号就是它；移除账号不会退出 CLI。请求以隐私模式发送（不用于训练）。上下文按模型名判断：名字带 1M 的为 1M，其余为 200K。",
+      "minimax-code": "用 MiniMax Code 自己的设备码登录（和 `mcode /login` 一样），不读也不改本机 ~/.minimax 的登录。刷新令牌只能用一次，AgentHarbor 会串行刷新。每日签到（一周 7 天，第 4、7 天更多）可在上方开启。",
+      "minimax-code-global": "用 MiniMax Code 自己的设备码登录，不读也不改本机 ~/.minimax 的登录。国际站同样有每日签到，可在上方开启。",
+      "commandcode": "账号就是一把 Command Code API Key，不会过期。Go 套餐没有 Provider API，AgentHarbor 会像 CLI 那样走 /alpha/generate。模型列表按套餐过滤（有额外积分时全部可用）；套餐变了刷新一下额度即可。",
+      "zcode": "照 ZCode 的方式登录：找到或创建账号默认项目里的 zcode-api-key；没有个人套餐时用团队席位，再没有就用 Start Plan（会像 ZCode 一样加上它的系统提示词与请求头，否则会被 405 拒绝）。账号同时有赠送套餐时，赠送的模型会再列一份 `-Trial`，选它就消耗赠送额度。",
+      "opencode-zen": "免费层只接受“像 OpenCode 自己发出的”请求：AgentHarbor 会只带 OpenCode 1.19 的请求头和它格式的会话 ID、强制流式、附上 OpenCode 的核心工具占位（模型若调用占位工具会被剔除）。Zen 的 Gemini 模型走 Google 自己的接口，路由不支持，会被略过。",
+      "opencode-go": "导入时只读取 OpenCode 的 auth.json（不修改）。Gemini 模型走 Google 自己的接口，路由不支持，会被略过。额度显示滚动、每周、每月三个窗口里最紧的那个。",
+      "qoder": "请求会像 Qoder 客户端一样在系统提示词最前面加上它自己的那一行。模型写在正文里的工具调用会被提取成真正的工具调用。每日签到领积分需要本机安装过 Qoder 桌面版或登录过 Qoder CLI（要用它自带的 runtime-info 读取设备身份），也可以用 QODER_RUNTIME_INFO 指定路径。",
+      "qoder-cn": "qoder.cn 不给 job token 时，会像 Qoder CN 的 CLI 那样直接用设备令牌对话。每日签到领积分可在上方开启（国内站不需要本地 runtime-info）。",
+      "trae-cn": "实验性（magpie 也只在少量账号上验证过）。登录时会生成本机设备（ID 与 P-256 密钥），之后的令牌都按 TRAE SOLO CN 的方式绑定到这个设备续期。Trae 的接口只收文本：工具会以系统提示词告诉模型，模型写在正文里的调用（标签、GLM 模板、DeepSeek DSML）会被提取成真正的工具调用。每日签到可在上方开启；Trae 只给自家应用发放签到奖励时会提示你到应用里签到。",
+      "trae-global": "实验性（magpie 只在一个新加坡免费账号上试过）。登录、设备与工具调用的处理同 Trae CN；国际版没有每日签到。"
     },
     "errors": {
       "storage": "账号来源的存储读写失败",
@@ -2592,7 +2612,15 @@
       "grokCli": "没有找到 Grok CLI，请先安装 Grok Build（x.ai/cli）再登录。",
       "cursorCli": "没有找到 Cursor CLI（cursor-agent），请先安装（cursor.com/cli）再登录。",
       "noAccount": "登录结束了，但 CLI 没有给出账号，请重试。",
-      "noModelsSelected": "先选择至少一个要共享的模型"
+      "noModelsSelected": "先选择至少一个要共享的模型",
+      "inputRequired": "这种登录方式需要先填写内容",
+      "commandcodeCli": "没有找到 Command Code CLI 的登录（~/.commandcode/auth.json），请先运行 `commandcode login`",
+      "commandcodeKey": "Command Code 没有接受这把 Key",
+      "zcodeApp": "这台电脑上的 ZCode 没有登录；请先登录 ZCode，或在这里用浏览器登录 Z.ai / 智谱",
+      "opencodeNotSignedIn": "OpenCode 里没有这个网关的 Key，请先运行 `opencode auth login`",
+      "opencodeKey": "OpenCode 没有接受这把 Key",
+      "qoderVpc": "这不是一个 VPC 实例：请填实例名（字母、数字、-）或 https://<实例>.vpc.qoder.com.cn",
+      "qoderRuntime": "没有找到 Qoder 的设备身份程序 runtime-info：请安装 Qoder 桌面版或登录一次 Qoder CLI，或用 QODER_RUNTIME_INFO 指定它的路径"
     },
     "badge": "官方账号",
     "refusesClaudeCode": "{{name}} 会拒绝 Claude Code 的系统提示词，请求可能失败",
@@ -2603,21 +2631,30 @@
       "google": "Google",
       "aws": "AWS",
       "xai": "xAI",
-      "cursor": "Cursor"
+      "cursor": "Cursor",
+      "alibaba": "阿里",
+      "bytedance": "字节",
+      "minimax": "MiniMax",
+      "zhipu": "智谱",
+      "opencode": "OpenCode",
+      "commandcode": "Command Code"
     },
     "berth": "{{name}}，{{count}} 个账号",
     "berthEmpty": "未登录",
     "premiumRequests": "本月高级请求",
     "vendorUsage": "额度由厂商管理，剩余量请到网页查看：",
     "usage": {
-      "chatgpt-api": "额度与 ChatGPT 共用，OpenAI 只在网页上显示剩余量："
+      "chatgpt-api": "额度与 ChatGPT 共用，OpenAI 只在网页上显示剩余量：",
+      "opencode-zen": "Zen 按量计费，余额请到 OpenCode 控制台查看："
     },
     "deviceCode": "设备码",
     "copyCode": "复制代码",
     "codeCopied": "已复制",
     "deviceCodeHint": "在打开的页面输入这串代码并授权，完成后这里会自动继续。",
     "risk": {
-      "antigravity": "Google 可能封禁被发现在 Antigravity 之外使用的账号。请使用可以承受损失的账号。"
+      "antigravity": "Google 可能封禁被发现在 Antigravity 之外使用的账号。请使用可以承受损失的账号。",
+      "minimax-code": "MiniMax 发放的积分是给 MiniMax Code 用的，在其他客户端使用未经 MiniMax 认可，账号可能被限制、暂停或关闭，风险自负。",
+      "minimax-code-global": "MiniMax 发放的积分是给 MiniMax Code 用的，在其他客户端使用未经 MiniMax 认可，账号可能被限制、暂停或关闭，风险自负。"
     },
     "riskTitle": "登录 {{name}} 之前",
     "riskAccept": "我了解，继续登录",
@@ -2630,7 +2667,112 @@
     "modelFilterHint": "点模型可以取消或恢复共享；取消的模型不会提供给模型注入，也不会出现在 Codex 的模型菜单里。",
     "modelsAll": "全部共享",
     "modelsNone": "全部取消",
-    "modelsNoneShared": "取消全部模型会同时停止提供给模型注入"
+    "modelsNoneShared": "取消全部模型会同时停止提供给模型注入",
+    "method": {
+      "account": "账号登录",
+      "browser": "浏览器登录",
+      "device": "设备码登录",
+      "app": "使用桌面应用的登录",
+      "cli": "使用 CLI 的登录",
+      "key": "API Key",
+      "import": "从本机导入",
+      "commandcode": {
+        "browser": "浏览器授权（Command Code Studio）",
+        "cli": "使用 Command Code CLI 的登录",
+        "key": "粘贴 API Key"
+      },
+      "zcode": {
+        "zai": "Z.ai 账号（浏览器）",
+        "bigmodel": "智谱 BigModel 账号（浏览器）",
+        "app": "使用 ZCode 应用的登录",
+        "key-zai": "粘贴 Z.ai 的 API Key",
+        "key-bigmodel": "粘贴智谱 BigModel 的 API Key"
+      },
+      "opencode-zen": {
+        "import": "导入 opencode auth login 的 Key",
+        "key": "粘贴 Zen API Key",
+        "free": "Zen 免费模型（无需账号）"
+      },
+      "opencode-go": {
+        "import": "导入 opencode auth login 的 Key",
+        "key": "粘贴 Go API Key"
+      },
+      "qoder": {
+        "account": "Qoder 账号（浏览器授权本设备）",
+        "pat": "Personal Access Token"
+      },
+      "qoder-cn": {
+        "account": "Qoder CN 账号（浏览器授权本设备）",
+        "vpc": "企业 VPC 实例"
+      }
+    },
+    "input": {
+      "hint": "填好后开始登录；它只加密保存在本机，请求时由本地路由使用。",
+      "submit": "登录",
+      "commandcode": {
+        "key": {
+          "hint": "在 commandcode.ai/settings/keys 创建一把 Key 粘贴到这里。",
+          "placeholder": "user_…"
+        }
+      },
+      "zcode": {
+        "key-zai": {
+          "hint": "Z.ai GLM Coding Plan 的 Key（形如 <id>.<secret>）。",
+          "placeholder": "xxxxxxxx.xxxxxxxx"
+        },
+        "key-bigmodel": {
+          "hint": "智谱 BigModel GLM Coding Plan 的 Key（形如 <id>.<secret>）。",
+          "placeholder": "xxxxxxxx.xxxxxxxx"
+        }
+      },
+      "opencode-zen": {
+        "key": {
+          "hint": "在 opencode.ai 的工作区里创建的 Zen Key。",
+          "placeholder": "sk-…"
+        }
+      },
+      "opencode-go": {
+        "key": {
+          "hint": "OpenCode Go 订阅的 Key。",
+          "placeholder": "sk-…"
+        }
+      },
+      "qoder": {
+        "pat": {
+          "hint": "在 qoder.com/account/integrations 创建的个人访问令牌（pt- 开头，最长一年有效）。",
+          "placeholder": "pt-…"
+        }
+      },
+      "qoder-cn": {
+        "vpc": {
+          "hint": "企业 VPC 实例的名字（如 acme）或它的地址（acme.vpc.qoder.com.cn）。",
+          "placeholder": "acme"
+        }
+      }
+    },
+    "checkin": {
+      "auto": "每日自动签到",
+      "autoHint": "开启后，AgentHarbor 每个北京日为这里的每个账号签到一次（启动两分钟后、之后每 30 分钟检查，失败稍后重试）。",
+      "now": "立即签到",
+      "ran": "签到已完成",
+      "pending": "今日待签到",
+      "notYet": "今日未签到",
+      "left": "不参与签到",
+      "credit": "+{{value}} 积分",
+      "streak": "连续 {{count}} 天",
+      "takesPart": "{{name}} 参与签到",
+      "outcome": {
+        "claimed": "今日签到成功",
+        "done": "今日已签到",
+        "ineligible": "这个账号不能参加签到活动",
+        "inactive": "当前没有签到活动",
+        "failed": "签到失败：{{message}}（稍后自动重试）",
+        "captcha": "{{name}} 要求验证码，请在它的应用里签到",
+        "own-app": "{{name}} 只给自家应用发签到奖励，请在它的应用里签到"
+      }
+    },
+    "balance": "积分余额",
+    "dollars": "本月额度（美元）"
   },
   "gateway": {
     "groupTitle": "通用网关",

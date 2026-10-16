@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { Bot, Briefcase, Ghost, Globe2, Link2, MessageCircle, MousePointer2, Orbit, Sparkles, SquareTerminal, Zap, type LucideIcon } from "lucide-react";
+import { Bot, Braces, Briefcase, Code, Command, Cpu, Feather, Ghost, Globe, Globe2, Leaf, Link2, MessageCircle, MousePointer2, Orbit, Rocket, Sparkles, SquareTerminal, Waves, Wind, Zap, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AccountSourceKind } from "@/types/account-sources";
 
@@ -26,6 +26,12 @@ const PIERS: { id: string; berths: DockValue[] }[] = [
   { id: "aws", berths: ["kiro"] },
   { id: "xai", berths: ["grok"] },
   { id: "cursor", berths: ["cursor"] },
+  { id: "alibaba", berths: ["qoder", "qoder-cn"] },
+  { id: "bytedance", berths: ["trae-cn", "trae-global"] },
+  { id: "minimax", berths: ["minimax-code", "minimax-code-global"] },
+  { id: "zhipu", berths: ["zcode"] },
+  { id: "opencode", berths: ["opencode-zen", "opencode-go"] },
+  { id: "commandcode", berths: ["commandcode"] },
 ];
 export const DOCK_ORDER: DockValue[] = PIERS.flatMap(pier => pier.berths);
 
@@ -40,6 +46,16 @@ const GLYPHS: Record<DockValue, LucideIcon> = {
   kiro: Ghost,
   grok: Zap,
   cursor: MousePointer2,
+  qoder: Braces,
+  "qoder-cn": Code,
+  "trae-cn": Feather,
+  "trae-global": Wind,
+  "minimax-code": Waves,
+  "minimax-code-global": Globe,
+  zcode: Cpu,
+  "opencode-zen": Leaf,
+  "opencode-go": Rocket,
+  commandcode: Command,
 };
 
 /** At most this many lights; the rest read as "+n". */

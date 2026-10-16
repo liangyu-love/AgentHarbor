@@ -8,9 +8,11 @@ import { REFRESH_INTERVAL_MS, type RefreshInterval } from "@/hooks/use-auto-refr
 import { api } from "@/lib/api";
 import { errorMessage, formatInvokeError } from "@/lib/invoke-error";
 import { queryKeys } from "@/lib/query-keys";
-import type { AccountSourceKind, AccountSourceListPayload, AccountSourceSignInPrompt } from "@/types/account-sources";
+import type { AccountSourceKind, AccountSourceListPayload, AccountSourceMethod, AccountSourceSignInPrompt } from "@/types/account-sources";
 
-type Pending = { id: string; kind: AccountSourceKind };
+type Pending = { id: string; kind: AccountSourceKind; method?: string; input?: string };
+/** A sign-in waiting on the user: a risk to accept, or something to type. */
+export type SignInAsk = { kind: AccountSourceKind; method: AccountSourceMethod };
 
 // Account sources (WorkBuddy, ChatGPT, Copilot…): their accounts, one
 // cancellable sign-in at a time (with the device code a device sign-in asks
@@ -22,8 +24,10 @@ export function useAccountSources(refreshInterval: RefreshInterval) {
   const attempt = useRef<Pending | null>(null);
   const [pending, setPending] = useState<Pending | null>(null);
   const [prompt, setPrompt] = useState<AccountSourceSignInPrompt | null>(null);
-  // A source with a risk is signed in to only once the user accepts it.
-  const [riskFor, setRiskFor] = useState<AccountSourceKind | null>(null);
+  // A source with a risk is signed in to only once the user accepts it, and
+  // a method that asks for a key only once it is typed.
+  const [riskFor, setRiskFor] = useState<SignInAsk | null>(null);
+  const [inputFor, setInputFor] = useState<SignInAsk | null>(null);
   const clearAttempt = () => { attempt.current = null; setPending(null); setPrompt(null); };
   useEffect(() => {
     let disposed = false;
@@ -59,7 +63,7 @@ export function useAccountSources(refreshInterval: RefreshInterval) {
     toast({ title: t("common.error"), description: formatInvokeError(error), variant: "destructive" });
 
   const signInMutation = useMutation({
-    mutationFn: ({ id, kind }: Pending) => api.accountSources.signIn(kind, id),
+    mutationFn: ({ id, kind, method, input }: Pending) => api.accountSources.signIn(kind, id, method, input),
     onSuccess: (data, { id }) => {
       if (attempt.current?.id !== id) return;
       clearAttempt();
@@ -86,22 +90,37 @@ export function useAccountSources(refreshInterval: RefreshInterval) {
       toast({ title: t("accounts.cancelFailed"), description: formatInvokeError(error), variant: "destructive" });
     },
   });
-  const startSignIn = (kind: AccountSourceKind) => {
+  const startSignIn = (kind: AccountSourceKind, method?: string, input?: string) => {
     if (attempt.current) return;
-    const next = { id: crypto.randomUUID(), kind };
+    const next = { id: crypto.randomUUID(), kind, method, input };
     attempt.current = next;
     setPending(next);
     signInMutation.mutate(next);
   };
-  const signIn = (kind: AccountSourceKind) => {
+  // The source's first way is its default: only another is named to the backend.
+  const methodOf = (ask: SignInAsk) =>
+    query.data?.sources.find(item => item.kind === ask.kind)?.methods[0]?.id === ask.method.id ? undefined : ask.method.id;
+  const askInput = (ask: SignInAsk) => {
+    if (ask.method.input) setInputFor(ask);
+    else startSignIn(ask.kind, methodOf(ask));
+  };
+  /** Sign in to a source by one of its methods (its first when none is named). */
+  const signIn = (kind: AccountSourceKind, methodId?: string) => {
     if (attempt.current) return;
-    if (query.data?.sources.find(source => source.kind === kind)?.risk) setRiskFor(kind);
-    else startSignIn(kind);
+    const source = query.data?.sources.find(item => item.kind === kind);
+    const method = source?.methods.find(item => item.id === methodId) ?? source?.methods[0] ?? { id: "account", input: null };
+    if (source?.risk) setRiskFor({ kind, method });
+    else askInput({ kind, method });
   };
   const acceptRisk = () => {
-    const kind = riskFor;
+    const ask = riskFor;
     setRiskFor(null);
-    if (kind) startSignIn(kind);
+    if (ask) askInput(ask);
+  };
+  const submitInput = (value: string) => {
+    const ask = inputFor;
+    setInputFor(null);
+    if (ask && value.trim()) startSignIn(ask.kind, methodOf(ask), value.trim());
   };
   const cancelSignIn = () => {
     if (attempt.current && !cancelMutation.isPending) cancelMutation.mutate(attempt.current.id);
@@ -134,6 +153,21 @@ export function useAccountSources(refreshInterval: RefreshInterval) {
     onSuccess: settle,
     onError: failed,
   });
+  const setCheckin = useMutation({
+    mutationFn: ({ kind, on }: { kind: AccountSourceKind; on: boolean }) => api.accountSources.setCheckin(kind, on),
+    onSuccess: settle,
+    onError: failed,
+  });
+  const setCheckinOff = useMutation({
+    mutationFn: ({ id, off }: { id: string; off: boolean }) => api.accountSources.setCheckinOff(id, off),
+    onSuccess: settle,
+    onError: failed,
+  });
+  const checkIn = useMutation({
+    mutationFn: api.accountSources.checkIn,
+    onSuccess: (data) => { settle(data); toast({ title: t("accountSources.checkin.ran"), variant: "success" }); },
+    onError: failed,
+  });
   const setHiddenModels = useMutation({
     mutationFn: ({ kind, hidden }: { kind: AccountSourceKind; hidden: string[] }) => api.accountSources.setHiddenModels(kind, hidden),
     onSuccess: settle,
@@ -143,6 +177,7 @@ export function useAccountSources(refreshInterval: RefreshInterval) {
   return {
     query, sources: query.data?.sources ?? [], pending, prompt: pending && prompt?.attemptId === pending.id ? prompt : null,
     cancelling, signIn, cancelSignIn, riskFor, acceptRisk, dismissRisk: () => setRiskFor(null),
-    activate, remove, refreshQuota, refreshModels, setExposed, setHiddenModels, setProject,
+    inputFor, submitInput, dismissInput: () => setInputFor(null), today: query.data?.today ?? "",
+    activate, remove, refreshQuota, refreshModels, setExposed, setHiddenModels, setProject, setCheckin, setCheckinOff, checkIn,
   };
 }

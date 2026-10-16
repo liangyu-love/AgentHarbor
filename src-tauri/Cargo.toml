@@ -63,6 +63,13 @@ base64 = "0.22"
 # Codex compresses Responses bodies with zstd for its built-in OpenAI provider.
 zstd = { version = "0.13", default-features = false }
 sha2 = "0.10"
+# MiniMax Code signs its account and check-in requests with md5, as its client does.
+md-5 = "0.10"
+# ZCode's app keeps its sign-in AES-GCM encrypted; Trae binds its tokens to a P-256 device key.
+ring = "0.17"
+# Qoder's COSY envelope: the account AES-128-CBC encrypted, its key RSA-wrapped with Qoder's public key.
+aes = "0.8"
+rsa = "0.9"
 subtle = "2.6"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"

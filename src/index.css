@@ -1325,6 +1325,12 @@ body {
 [data-pier-tint="aws"] { --pier: 27 92% 46%; }
 [data-pier-tint="xai"] { --pier: 220 10% 30%; }
 [data-pier-tint="cursor"] { --pier: 188 70% 36%; }
+[data-pier-tint="alibaba"] { --pier: 22 90% 48%; }
+[data-pier-tint="bytedance"] { --pier: 340 72% 48%; }
+[data-pier-tint="minimax"] { --pier: 350 80% 52%; }
+[data-pier-tint="zhipu"] { --pier: 232 70% 54%; }
+[data-pier-tint="opencode"] { --pier: 140 40% 34%; }
+[data-pier-tint="commandcode"] { --pier: 280 45% 46%; }
 .dark [data-pier-tint="openai"] { --pier: 162 55% 55%; }
 .dark [data-pier-tint="tencent"] { --pier: 204 80% 62%; }
 .dark [data-pier-tint="github"] { --pier: 262 70% 72%; }
@@ -1332,6 +1338,12 @@ body {
 .dark [data-pier-tint="aws"] { --pier: 30 92% 60%; }
 .dark [data-pier-tint="xai"] { --pier: 220 12% 78%; }
 .dark [data-pier-tint="cursor"] { --pier: 188 65% 58%; }
+.dark [data-pier-tint="alibaba"] { --pier: 24 92% 62%; }
+.dark [data-pier-tint="bytedance"] { --pier: 340 75% 68%; }
+.dark [data-pier-tint="minimax"] { --pier: 350 82% 68%; }
+.dark [data-pier-tint="zhipu"] { --pier: 232 80% 72%; }
+.dark [data-pier-tint="opencode"] { --pier: 140 40% 60%; }
+.dark [data-pier-tint="commandcode"] { --pier: 280 55% 72%; }
 .source-berth-glyph { display: grid; width: 2rem; height: 2rem; flex: none; place-items: center; border-radius: 10px; color: hsl(var(--pier)); background: hsl(var(--pier) / 0.12); box-shadow: inset 0 0 0 1px hsl(var(--pier) / 0.2); transition: background-color 200ms ease; }
 .source-berth[data-chosen] .source-berth-glyph { background: hsl(var(--pier) / 0.18); }
 .source-berth-glyph.is-docking { animation: berth-dock 560ms cubic-bezier(.2, .8, .2, 1.15); }

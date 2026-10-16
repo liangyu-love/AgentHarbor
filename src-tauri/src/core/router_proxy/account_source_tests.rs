@@ -38,7 +38,7 @@ fn workbuddy_requests_are_signed_explained_and_fail_over_in_an_aggregate() {
         sources::mutate(&paths.app_data_dir, |store| {
             store.keep_sign_in(sources::Account {
                 id: "wb-account".into(), kind: SourceKind::Workbuddy, name: "Harbor".into(), subject: "uid-9".into(),
-                plan: None, active: true, added_at: 1, lapsed: None, quota: None,
+                plan: None, active: true, added_at: 1, lapsed: None, quota: None, checkin: None, checkin_off: false,
                 credentials: sources::Credentials::WorkBuddy(account_sources::workbuddy::Creds {
                     uid: "uid-9".into(), access: "wb-token".into(), refresh: "wb-refresh".into(),
                     expires_at: chrono::Utc::now().timestamp_millis() + 3_600_000, ..Default::default()
@@ -149,7 +149,7 @@ fn copilot_requests_carry_the_editor_headers_and_reach_each_models_own_api() {
         sources::mutate(&paths.app_data_dir, |store| {
             store.keep_sign_in(sources::Account {
                 id: "cp-account".into(), kind: SourceKind::Copilot, name: "Octo".into(), subject: "octo".into(),
-                plan: Some("Pro".into()), active: true, added_at: 1, lapsed: None, quota: None,
+                plan: Some("Pro".into()), active: true, added_at: 1, lapsed: None, quota: None, checkin: None, checkin_off: false,
                 credentials: sources::Credentials::Copilot(account_sources::copilot::Creds { token: "gho-route".into(), login: "Octo".into() }),
             });
             store.models.insert(SourceKind::Copilot, vec![
@@ -218,7 +218,7 @@ fn keep_shared(paths: &CodexPaths, kind: SourceKind, credentials: sources::Crede
     sources::mutate(&paths.app_data_dir, |store| {
         store.keep_sign_in(sources::Account {
             id: format!("{kind:?}-account"), kind, name: "me@example.com".into(), subject: "me".into(),
-            plan: None, active: true, added_at: 1, lapsed: None, quota: None, credentials,
+            plan: None, active: true, added_at: 1, lapsed: None, quota: None, checkin: None, checkin_off: false, credentials,
         });
         store.models.insert(kind, models.iter().map(|id| sources::SourceModel { id: (*id).into(), name: (*id).into(),
             context_window: Some(200_000), ..Default::default() }).collect());
@@ -644,5 +644,117 @@ fn cursor_runs_a_duplex_stream_that_serves_blobs_refuses_its_own_tools_and_hands
         stop_unchecked();
         account_sources::set_endpoint_override(SourceKind::Cursor, None);
         *account_sources::cursor::TOKEN.lock().unwrap() = None;
+    });
+}
+
+#[test]
+fn zen_free_is_asked_exactly_as_opencode_and_its_stand_ins_calls_are_left_out() {
+    let _guard = global_router_test_lock();
+    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    runtime.block_on(async {
+        let upstream = account_sources::tests::mock_raw(|seen| {
+            assert_eq!(seen.path, "/inference/v1/chat/completions");
+            let body: Value = serde_json::from_str(&seen.body).unwrap();
+            assert_eq!(body["stream"], true, "the free tier is always asked streamed");
+            let names: Vec<&str> = body["tools"].as_array().unwrap().iter().filter_map(|tool| tool["function"]["name"].as_str()).collect();
+            assert_eq!(names, ["Bash", "bash", "edit", "glob", "grep", "read"]);
+            let chunk = |delta: Value, finish: Value| json!({"id": "c", "object": "chat.completion.chunk", "model": "big-pickle",
+                "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]});
+            let reply = sse(&[
+                chunk(json!({"role": "assistant", "content": "ok"}), Value::Null),
+                chunk(json!({"tool_calls": [{"index": 0, "id": "c0", "type": "function", "function": {"name": "read", "arguments": "{}"}}]}), Value::Null),
+                chunk(json!({"tool_calls": [{"index": 1, "id": "c1", "type": "function", "function": {"name": "bash", "arguments": "{\"command\":"}}]}), Value::Null),
+                chunk(json!({"tool_calls": [{"index": 1, "function": {"arguments": "\"ls\"}"}}]}), Value::Null),
+                chunk(json!({}), json!("tool_calls")),
+                json!({"id": "c", "object": "chat.completion.chunk", "choices": [], "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6}}),
+            ]);
+            let mut reply = reply;
+            reply.extend_from_slice(b"data: [DONE]\r\n\r\n");
+            (200, "text/event-stream", reply)
+        }).await;
+        account_sources::set_endpoint_override(SourceKind::OpencodeZen, Some(upstream.base.clone()));
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().join("codex"));
+        paths.ensure_directories().unwrap();
+        keep_shared(&paths, SourceKind::OpencodeZen, sources::Credentials::OpenCode(account_sources::opencode::Creds { key: "public".into(), free: true }), &["big-pickle"]);
+        let port = ensure_running(0, paths.clone(), ApiProxyConfigPayload::default()).await.unwrap();
+        let client = Client::builder().no_proxy().timeout(Duration::from_secs(10)).build().unwrap();
+        let answer = client.post(format!("http://127.0.0.1:{port}/p/account-opencode-zen/v1/chat/completions")).bearer_auth(ROUTER_TOKEN)
+            .header("x-session-affinity", "client-session").header("x-stainless-lang", "js")
+            .json(&json!({"model": "big-pickle", "stream": false, "messages": [{"role": "user", "content": "list"}],
+                "tools": [{"type": "function", "function": {"name": "Bash", "parameters": {"type": "object"}}}]}))
+            .send().await.unwrap();
+        let status = answer.status();
+        let body: Value = answer.json().await.unwrap();
+        assert_eq!(status, 200, "{body}");
+        let message = &body["choices"][0]["message"];
+        assert_eq!(message["content"], "ok");
+        let calls = message["tool_calls"].as_array().unwrap();
+        assert_eq!(calls.len(), 1, "the stand-in's call is left out: {body}");
+        assert_eq!(calls[0]["function"]["name"], "Bash", "the agent's own name");
+        assert_eq!(calls[0]["function"]["arguments"], "{\"command\":\"ls\"}");
+
+        let sent = upstream.seen.lock().unwrap().last().cloned().unwrap();
+        assert!(!sent.headers.contains_key("x-session-affinity") && !sent.headers.contains_key("x-stainless-lang"), "no header of the client's own");
+        assert_eq!(sent.headers["authorization"], "Bearer public");
+        assert!(sent.headers["user-agent"].starts_with("opencode/1.19.0 ai-sdk/provider-utils/4.0.23"));
+        assert!(sent.headers["x-opencode-session"].starts_with("ses_"));
+        assert_eq!(sent.headers["x-opencode-client"], "cli");
+        assert!(!sent.headers.values().any(|value| value.contains(ROUTER_TOKEN)));
+        stop_unchecked();
+        account_sources::set_endpoint_override(SourceKind::OpencodeZen, None);
+    });
+}
+
+#[test]
+fn a_zcode_trial_entry_is_sent_to_the_gift_and_the_plain_model_to_the_coding_plan() {
+    let _guard = global_router_test_lock();
+    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    runtime.block_on(async {
+        let upstream = mock(|seen| {
+            let path = seen.path.split('?').next().unwrap_or_default();
+            let ok = |data: Value| (200, json!({"code": 0, "data": data}).to_string());
+            let message = |text: &str| json!({"id": "msg_1", "type": "message", "role": "assistant", "model": "m", "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": text}], "usage": {"input_tokens": 3, "output_tokens": 2}}).to_string();
+            match path {
+                "/api/biz/subscription/list" => ok(json!([{"status": "VALID", "productName": "GLM Coding Pro"}])),
+                "/api/v1/zcode-plan/billing/balance" => ok(json!({"plans": [{"status": "active", "name": "Trust Build", "user_plan_id": "u"}],
+                    "balances": [{"user_plan_id": "u", "capabilities": ["model:glm-5.3-flash"], "remaining_units": 9}]})),
+                "/api/anthropic/v1/messages" => {
+                    assert_eq!(seen.headers["x-api-key"], "kid.sec");
+                    (200, message("from the coding plan"))
+                }
+                "/api/v1/zcode-plan/anthropic/v1/messages" => {
+                    let body: Value = serde_json::from_str(&seen.body).unwrap();
+                    assert_eq!(body["model"], "glm-5.3-flash");
+                    assert_eq!(body["system"][0]["text"], "You are ZCode, an interactive coding agent");
+                    assert!(seen.headers["authorization"].starts_with("Bearer h."), "the session token, not the plan key");
+                    assert!(!seen.headers.contains_key("x-api-key"));
+                    assert_eq!(seen.headers["x-title"], "Z Code@cli");
+                    (200, message("from the gift"))
+                }
+                other => panic!("unexpected {other}"),
+            }
+        }).await;
+        account_sources::set_endpoint_override(SourceKind::Zcode, Some(upstream.base.clone()));
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().join("codex"));
+        paths.ensure_directories().unwrap();
+        use base64::Engine;
+        let jwt = format!("h.{}.s", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json!({"exp": chrono::Utc::now().timestamp() + 3600}).to_string()));
+        keep_shared(&paths, SourceKind::Zcode, sources::Credentials::Zcode(account_sources::zcode::Creds {
+            site: "zai".into(), base: format!("{}/api/anthropic", upstream.base), key: "kid.sec".into(), jwt, device: "dev".into(), ..Default::default()
+        }), &["GLM-5.3", "GLM-5.3-Flash-Trial"]);
+        let port = ensure_running(0, paths.clone(), ApiProxyConfigPayload::default()).await.unwrap();
+        let client = Client::builder().no_proxy().timeout(Duration::from_secs(10)).build().unwrap();
+        let ask = |model: &str| client.post(format!("http://127.0.0.1:{port}/p/account-zcode/v1/messages")).bearer_auth(ROUTER_TOKEN)
+            .header("anthropic-version", "2023-06-01")
+            .json(&json!({"model": model, "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}]})).send();
+        let plain = ask("GLM-5.3").await.unwrap().text().await.unwrap();
+        assert!(plain.contains("from the coding plan"), "{plain}");
+        let trial = ask("GLM-5.3-Flash-Trial").await.unwrap().text().await.unwrap();
+        assert!(trial.contains("from the gift"), "{trial}");
+        stop_unchecked();
+        account_sources::set_endpoint_override(SourceKind::Zcode, None);
     });
 }

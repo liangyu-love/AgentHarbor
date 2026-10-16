@@ -94,7 +94,13 @@ contain the snapshot.
   - the Cursor CLI sign-in and identity, token reading, model list,
     allowance, agent URL lookup, and the agent Run (conversation blobs, MCP
     tool definitions, Connect framing, server message handling and error
-    mapping) in `src-tauri/src/core/account_sources/cursor.rs`.
+    mapping) in `src-tauri/src/core/account_sources/cursor.rs`;
+  - the WorkBuddy daily check-in (activity status, claim, the replies it
+    reads) and the check-in schedule (Beijing days, retry and offline
+    backoff) in `src-tauri/src/core/account_sources/workbuddy.rs` and
+    `checkin.rs`;
+  - the OpenCode Zen and OpenCode Go sign-in import, endpoints, model list
+    and Go plan usage in `src-tauri/src/core/account_sources/opencode.rs`.
 - Other routing and catalog behaviour was only studied, not copied.
 
 The full MIT license text below applies to the ported code.
@@ -103,6 +109,139 @@ The full MIT license text below applies to the ported code.
 MIT License
 
 Copyright (c) 2026 yetone
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
+## magpie community plugins — account sources (MIT License)
+
+- Project: [magpie-community/plugins](https://github.com/magpie-community/plugins)
+  (commit `b549b40`)
+- License: MIT
+- Copyright: © 2026 magpie-community contributors
+- Ported into this repository (rewritten in Rust):
+  - `workbuddy`: the full client header set, enterprise headers and usage,
+    turn and conversation ids, the rewriting of phrases WorkBuddy's channel
+    check refuses, request shaping, tool fitting and refusal hints in
+    `src-tauri/src/core/account_sources/workbuddy.rs` and `chat_fit.rs`;
+  - `minimax`: the device sign-in, token refresh, signed account API, plan
+    quota, model list, request shaping and daily check-in in
+    `src-tauri/src/core/account_sources/minimax.rs`;
+  - `commandcode`: the browser, CLI and key sign-ins, plan reading, model
+    list, quota and the Go plan's `/alpha/generate` wire in
+    `src-tauri/src/core/account_sources/commandcode.rs` and the loopback
+    page in `loopback.rs`;
+  - `zcode`: the Z.ai and BigModel sign-ins, the ZCode app credential
+    import, key minting, Start Plan and trial routes, model config, quota,
+    request dressing and refusal hints in
+    `src-tauri/src/core/account_sources/zcode.rs`, with ZCode's prompt texts
+    copied unchanged into `zcode_prompt.json`;
+  - `qoder`: the Qoder and Qoder CN sign-ins (device, PAT, VPC), token
+    refresh, model list, request body, stream decoding with text tool calls,
+    quota and daily check-in in `src-tauri/src/core/account_sources/qoder.rs`;
+  - `trae`: the Trae CN and Trae Global sign-in, device binding and proof,
+    token refresh, model routes, the `llm_utils_chat` exchange with function
+    fallback, the text tool-call parser, quota and daily check-in in
+    `src-tauri/src/core/account_sources/trae.rs`.
+
+The full MIT license text below applies to the ported code.
+
+```
+MIT License
+
+Copyright (c) 2026 magpie-community contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
+## zen-free — OpenCode Zen free tier (MIT License)
+
+- Project: the `zen-free` package of
+  [magpie-community/plugins](https://github.com/magpie-community/plugins)
+- License: MIT
+- Copyright: © 2026 xiaozhou26
+- Ported into this repository (rewritten in Rust): the free tier's request
+  headers and session ids, stand-in tools, request shaping, reply guard and
+  reply collapse in `src-tauri/src/core/account_sources/opencode.rs`.
+
+```
+MIT License
+
+Copyright (c) 2026 xiaozhou26
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
+## CLIProxyAPI — Qoder protocol (MIT License)
+
+- Project: [CLIProxyAPI](https://github.com/ufec/CLIProxyAPI)'s Qoder support
+  (a fork of [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI))
+- License: MIT
+- Copyright: © 2025 Luis Pater, © 2025 Router-For.ME
+- Ported into this repository by way of the magpie community `qoder`
+  plugin (rewritten in Rust): the Qoder endpoints, the COSY request
+  envelope, the body codec and the device sign-in in
+  `src-tauri/src/core/account_sources/qoder.rs`.
+
+```
+MIT License
+
+Copyright (c) 2025-2005.9 Luis Pater
+Copyright (c) 2025.9-present Router-For.ME
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

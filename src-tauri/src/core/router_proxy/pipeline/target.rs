@@ -96,6 +96,9 @@ pub(in crate::core::router_proxy) fn account_target(
     if !auth.serves(upstream_protocol, suffix) {
         return Err((StatusCode::NOT_FOUND, "this account source serves only model requests"));
     }
+    if auth.exact {
+        headers.clear();
+    }
     headers.remove(AUTHORIZATION);
     headers.remove("x-api-key");
     headers.remove("anthropic-version");

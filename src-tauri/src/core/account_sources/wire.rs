@@ -5,7 +5,7 @@
 //! or one JSON body for a request that did not stream — before the router's
 //! own translation reads it. Errors pass through untouched, so refusals are
 //! explained on the vendor's own words.
-use super::{codeassist, kiro};
+use super::{codeassist, commandcode, kiro, qoder};
 use futures_util::StreamExt;
 use hyper::body::Bytes;
 use serde_json::{json, Value};
@@ -29,6 +29,8 @@ pub enum Event {
 pub enum Codec {
     CodeAssist(codeassist::Decoder),
     Kiro(kiro::Decoder),
+    CommandCode(commandcode::Decoder),
+    Qoder(qoder::Decoder),
 }
 
 impl Codec {
@@ -36,6 +38,8 @@ impl Codec {
         match self {
             Codec::CodeAssist(decoder) => decoder.feed(bytes, out),
             Codec::Kiro(decoder) => decoder.feed(bytes, out),
+            Codec::CommandCode(decoder) => decoder.feed(bytes, out),
+            Codec::Qoder(decoder) => decoder.feed(bytes, out),
         }
     }
 
@@ -43,6 +47,8 @@ impl Codec {
         match self {
             Codec::CodeAssist(decoder) => decoder.finish(out),
             Codec::Kiro(decoder) => decoder.finish(out),
+            Codec::CommandCode(decoder) => decoder.finish(out),
+            Codec::Qoder(decoder) => decoder.finish(out),
         }
     }
 }

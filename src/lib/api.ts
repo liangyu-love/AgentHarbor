@@ -288,8 +288,8 @@ const accountsApi = {
 
 const accountSourcesApi = {
   list: () => invoke<AccountSourceListPayload>("list_account_sources"),
-  signIn: (kind: AccountSourceKind, attemptId: string) =>
-    invoke<AccountSourceListPayload>("sign_in_account_source", { kind, attemptId }),
+  signIn: (kind: AccountSourceKind, attemptId: string, method?: string, input?: string) =>
+    invoke<AccountSourceListPayload>("sign_in_account_source", { kind, attemptId, method: method ?? null, input: input ?? null }),
   cancelSignIn: (attemptId: string) => invoke<boolean>("cancel_account_source_sign_in", { attemptId }),
   activate: (accountId: string) => invoke<AccountSourceListPayload>("activate_account_source", { accountId }),
   remove: (accountId: string) => invoke<AccountSourceListPayload>("remove_account_source", { accountId }),
@@ -301,6 +301,14 @@ const accountSourcesApi = {
     invoke<AccountSourceListPayload>("set_account_source_hidden_models", { kind, hidden }),
   setProject: (accountId: string, project: string) =>
     invoke<AccountSourceListPayload>("set_account_source_project", { accountId, project }),
+  /** Turn a source's daily auto check-in on or off. */
+  setCheckin: (kind: AccountSourceKind, on: boolean) =>
+    invoke<AccountSourceListPayload>("set_account_source_checkin", { kind, on }),
+  /** Leave an account out of its source's check-in, or bring it back. */
+  setCheckinOff: (accountId: string, off: boolean) =>
+    invoke<AccountSourceListPayload>("set_account_source_checkin_off", { accountId, off }),
+  /** Check a source's accounts in for today now. */
+  checkIn: (kind: AccountSourceKind) => invoke<AccountSourceListPayload>("check_in_account_source", { kind }),
   /** A sign-in's page and device code, as soon as the vendor gives them. */
   onSignInPrompt: async (callback: (prompt: import("@/types/account-sources").AccountSourceSignInPrompt) => void): Promise<() => void> => {
     const { listen } = await import("@tauri-apps/api/event");
