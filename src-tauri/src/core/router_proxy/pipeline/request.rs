@@ -40,6 +40,8 @@ pub(in crate::core::router_proxy) struct Prepared {
     pub provider_name: String,
     pub input: Vec<Value>,
     pub history: Option<protocol::message_history::Context>,
+    /// Reasoning a Chat upstream takes back, kept for a Responses caller.
+    pub reasoning: Option<protocol::chat_reasoning::Context>,
     pub tool_adapter: tool_schema::Adapter,
     pub namespaces: protocol::tool_namespaces::ToolNamespaces,
     pub response_options: protocol::ResponseOptions,
@@ -83,6 +85,7 @@ struct Draft {
     url: String,
     headers: HeaderMap,
     history: Option<protocol::message_history::Context>,
+    reasoning: Option<protocol::chat_reasoning::Context>,
     hosted: Option<hosted_search::Plan>,
     search_backend: Option<hosted_search::SearchBackend>,
     body: Option<Bytes>,
@@ -234,13 +237,31 @@ fn translate(attempt: &Attempt<'_>, draft: &mut Draft) -> ForwardResult<()> {
     Ok(())
 }
 
-/// Remembered history goes back into the translated body.
-fn restore(_attempt: &Attempt<'_>, draft: &mut Draft) -> ForwardResult<()> {
+/// Remembered history goes back into the translated body: a Messages
+/// caller's private turns, or the reasoning a Chat upstream wants from a
+/// Responses caller that cannot replay it.
+fn restore(attempt: &Attempt<'_>, draft: &mut Draft) -> ForwardResult<()> {
     if let (Some(history), Some(bytes)) = (&draft.history, &draft.body) {
         let mut value: Value = serde_json::from_slice(bytes)
             .map_err(|_| (StatusCode::BAD_REQUEST, "invalid translated request"))?;
         history.restore(&mut value);
         draft.body = Some(Bytes::from(value.to_string()));
+    }
+    let input = attempt.input;
+    if input.ingress == router::ModelProtocol::Responses && !input.resource && attempt.translation.is_some()
+        && attempt.upstream_protocol == router::ModelProtocol::ChatCompletions {
+        if let Some(bytes) = &draft.body {
+            let mut value: Value = serde_json::from_slice(bytes)
+                .map_err(|_| (StatusCode::BAD_REQUEST, "invalid translated request"))?;
+            let store = input.context.store_path.to_string_lossy();
+            let scope = [store.as_ref(), attempt.provider.id.as_str(), draft.url.as_str(), attempt.model.as_str()];
+            if let Some(reasoning) = protocol::chat_reasoning::Context::new(&scope, &value) {
+                if reasoning.restore(&mut value) {
+                    draft.body = Some(Bytes::from(value.to_string()));
+                }
+                draft.reasoning = Some(reasoning);
+            }
+        }
     }
     Ok(())
 }
@@ -506,6 +527,7 @@ fn meter(
         provider_name: provider.name.clone(),
         input: draft.input,
         history: draft.history,
+        reasoning: draft.reasoning,
         tool_adapter: draft.tool_adapter,
         namespaces: draft.namespaces,
         response_options: draft.response_options,
@@ -682,6 +704,7 @@ impl Prepared {
             self.model,
             self.metadata.attempt_id,
             self.history,
+            self.reasoning,
             self.tool_adapter,
             self.namespaces,
             self.response_options,

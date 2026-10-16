@@ -51,6 +51,7 @@ pub(in crate::core::router_proxy) async fn relay_response(
     upstream_model: String,
     attempt_id: String,
     message_context: Option<protocol::message_history::Context>,
+    reasoning: Option<protocol::chat_reasoning::Context>,
     tool_adapter: tool_schema::Adapter,
     tool_namespaces: protocol::tool_namespaces::ToolNamespaces,
     response_options: protocol::ResponseOptions,
@@ -99,6 +100,7 @@ pub(in crate::core::router_proxy) async fn relay_response(
             upstream_model,
             attempt_id,
             message_context,
+            reasoning,
             tool_adapter,
             tool_namespaces,
             response_options,
@@ -143,6 +145,9 @@ pub(in crate::core::router_proxy) async fn relay_response(
             tool_namespaces.restore_response(&mut converted);
             diagnostic.finish();
             if translation.from == router::ModelProtocol::Responses {
+                if let Some(reasoning) = reasoning.filter(|_| protocol::chat_reasoning::sent_reasoning_content(&value)) {
+                    reasoning.remember(&converted);
+                }
                 protocol::history::remember(&converted, translated_input);
             } else if let Some(history) = message_context {
                 if let Ok(canonical) = protocol::canonical_response(translation, &value) {
@@ -235,6 +240,7 @@ pub(in crate::core::router_proxy) fn translated_stream(
     upstream_model: String,
     attempt_id: String,
     message_context: Option<protocol::message_history::Context>,
+    reasoning: Option<protocol::chat_reasoning::Context>,
     tool_adapter: tool_schema::Adapter,
     tool_namespaces: protocol::tool_namespaces::ToolNamespaces,
     response_options: protocol::ResponseOptions,
@@ -264,7 +270,7 @@ pub(in crate::core::router_proxy) fn translated_stream(
             observer,
             translator,
             Some(translated_input),
-            message_context,
+            (message_context, reasoning),
             tool_adapter.stream(upstream_protocol),
             tool_namespaces,
             false,
@@ -306,12 +312,16 @@ pub(in crate::core::router_proxy) fn translated_stream(
             // before the upstream connection reaches EOF.
             if let Some(response) = translator.completed_response() {
                 if let Some(input) = recorded.take() {
+                    let (messages, reasoning) = &history;
                     if translation.from == router::ModelProtocol::Responses {
+                        if let Some(reasoning) = reasoning.as_ref().filter(|_| translator.sent_reasoning_content()) {
+                            reasoning.remember(response);
+                        }
                         let mut response = response.clone();
                         namespaces.restore_response(&mut response);
                         protocol::history::remember(&response, input);
-                    } else if let Some(history) = &history {
-                        history.remember(response);
+                    } else if let Some(messages) = messages {
+                        messages.remember(response);
                     }
                 }
             }

@@ -1931,7 +1931,7 @@
     "overview": "Conversation overview",
     "statsScope": "Overview: {{name}}",
     "statsStatus": "{{active}} active · {{archived}} archived",
-    "statsInputLabel": "Input tokens",
+    "statsInputLabel": "Uncached input",
     "statsCachedLabel": "Cached input",
     "statsOutputLabel": "Output tokens",
     "statsInputHint": "Includes cached",
@@ -2755,6 +2755,13 @@
       "autoHint": "While on, AgentHarbor checks each account here in once a Beijing day (two minutes after it starts, then every 30 minutes; a failure is tried again later).",
       "now": "Check in now",
       "ran": "Check-in done",
+      "ranPartly": "Not every account checked in",
+      "tally": {
+        "claimed": "{{count}} checked in",
+        "done": "{{count}} already in today",
+        "missed": "{{count}} not checked in; see each account"
+      },
+      "noneUsable": "No account can check in: they are signed out or all left out of check-in",
       "pending": "Check-in due today",
       "notYet": "Not checked in today",
       "left": "Left out of check-in",

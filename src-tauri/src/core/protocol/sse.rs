@@ -29,6 +29,9 @@ pub struct StreamTranslator {
     search_indices: HashMap<String, usize>,
     citations: Vec<Value>,
     native_search: bool,
+    /// A Chat upstream sent its reasoning as `reasoning_content`, the field
+    /// it takes back (`chat_reasoning`).
+    reasoning_content: bool,
     usage: Option<Value>,
     anthropic_input_tokens: u64,
     anthropic_cache_read_tokens: u64,
@@ -59,6 +62,7 @@ impl StreamTranslator {
             search_indices: HashMap::new(),
             citations: Vec::new(),
             native_search: false,
+            reasoning_content: false,
             usage: None,
             anthropic_input_tokens: 0,
             anthropic_cache_read_tokens: 0,
@@ -83,6 +87,9 @@ impl StreamTranslator {
     /// Only explicitly completed, validated responses may enter history.
     pub fn completed_response(&self) -> Option<&Value> {
         self.completed_response.as_ref()
+    }
+    pub fn sent_reasoning_content(&self) -> bool {
+        self.reasoning_content
     }
     pub fn failure(&self) -> Option<&'static str> {
         self.failure
@@ -259,6 +266,7 @@ impl StreamTranslator {
                 .or_else(|| delta.get("reasoning"))
                 .and_then(Value::as_str)
             {
+                self.reasoning_content |= !text.is_empty() && delta["reasoning_content"].is_string();
                 events.extend(self.text_delta(text, true));
             }
             if let Some(text) = delta.get("content").and_then(Value::as_str) {
@@ -579,35 +587,28 @@ impl StreamTranslator {
         events
     }
 
+    /// Messages counts are cumulative, so a later frame never lowers one; a
+    /// relay repeating zeros in `message_delta` keeps the start's counts.
     fn merge_anthropic_usage(&mut self, usage: &Value) {
-        if let Some(input) = usage["input_tokens"].as_u64() {
-            self.anthropic_input_tokens = input;
-        }
-        if let Some(read) = usage["cache_read_input_tokens"].as_u64() {
-            self.anthropic_cache_read_tokens = read;
-        }
-        if let Some(write) = usage["cache_creation_input_tokens"].as_u64() {
-            self.anthropic_cache_write_tokens = write;
-        }
+        let count = |key: &str| usage[key].as_u64().unwrap_or(0);
+        self.anthropic_input_tokens = self.anthropic_input_tokens.max(count("input_tokens"));
+        self.anthropic_cache_read_tokens = self.anthropic_cache_read_tokens.max(count("cache_read_input_tokens"));
+        self.anthropic_cache_write_tokens = self.anthropic_cache_write_tokens.max(count("cache_creation_input_tokens"));
         let merged = self
             .usage
             .get_or_insert_with(|| json!({"input_tokens":0,"output_tokens":0,"total_tokens":0}));
         if let Some(search) = usage.get("server_tool_use") {
             merged["server_tool_use"] = search.clone();
         }
-        for key in ["input_tokens", "output_tokens"] {
-            if let Some(count) = usage.get(key).and_then(Value::as_u64) {
-                merged[key] = json!(count);
-            }
-        }
-        if self.translation.from == ModelProtocol::ChatCompletions {
-            merged["input_tokens"] = json!(self
-                .anthropic_input_tokens
-                .saturating_add(self.anthropic_cache_read_tokens)
-                .saturating_add(self.anthropic_cache_write_tokens));
-            merged["input_tokens_details"] =
-                json!({"cached_tokens":self.anthropic_cache_read_tokens});
-        }
+        let output = merged["output_tokens"].as_u64().unwrap_or(0).max(count("output_tokens"));
+        merged["output_tokens"] = json!(output);
+        // Responses and Chat count cache reads and writes as part of the input
+        // (Messages leaves them out); a context meter reads this total.
+        merged["input_tokens"] = json!(self
+            .anthropic_input_tokens
+            .saturating_add(self.anthropic_cache_read_tokens)
+            .saturating_add(self.anthropic_cache_write_tokens));
+        merged["input_tokens_details"] = json!({"cached_tokens":self.anthropic_cache_read_tokens});
         merged["total_tokens"] = json!(
             merged["input_tokens"].as_u64().unwrap_or(0)
                 + merged["output_tokens"].as_u64().unwrap_or(0)

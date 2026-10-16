@@ -343,19 +343,20 @@ pub(super) fn openai_usage(usage: &Value) -> Value {
     })
 }
 
+/// Responses counts cache reads and writes as part of the input; Messages
+/// reports them beside it.
 fn anthropic_usage(usage: &Value) -> Value {
-    let input = usage
-        .get("input_tokens")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let output = usage
-        .get("output_tokens")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
+    let count = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+    let read = count("cache_read_input_tokens");
+    let input = count("input_tokens")
+        .saturating_add(read)
+        .saturating_add(count("cache_creation_input_tokens"));
+    let output = count("output_tokens");
     let mut mapped = json!({
         "input_tokens": input,
         "output_tokens": output,
         "total_tokens": input + output,
+        "input_tokens_details": {"cached_tokens": read},
     });
     if let Some(search) = usage.get("server_tool_use") { mapped["server_tool_use"] = search.clone(); }
     mapped

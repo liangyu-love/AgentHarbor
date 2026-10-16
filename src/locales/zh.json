@@ -1931,7 +1931,7 @@
     "overview": "会话统计",
     "statsScope": "统计范围：{{name}}",
     "statsStatus": "{{active}} 进行中 · {{archived}} 归档",
-    "statsInputLabel": "输入 Token",
+    "statsInputLabel": "未缓存输入",
     "statsCachedLabel": "缓存输入",
     "statsOutputLabel": "输出 Token",
     "statsInputHint": "含缓存",
@@ -2755,6 +2755,13 @@
       "autoHint": "开启后，AgentHarbor 每个北京日为这里的每个账号签到一次（启动两分钟后、之后每 30 分钟检查，失败稍后重试）。",
       "now": "立即签到",
       "ran": "签到已完成",
+      "ranPartly": "部分账号未签到",
+      "tally": {
+        "claimed": "{{count}} 个签到成功",
+        "done": "{{count}} 个今日已签",
+        "missed": "{{count}} 个未签到，原因见账号状态"
+      },
+      "noneUsable": "没有可签到的账号：账号已失效，或都已设为不参与签到",
       "pending": "今日待签到",
       "notYet": "今日未签到",
       "left": "不参与签到",

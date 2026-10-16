@@ -1279,7 +1279,7 @@ function mount(mode: FixtureMode) {
   if (mode === "groups") controls.review.providersClient = queryClient;
   root.render(<QueryClientProvider key={++mountSequence} client={queryClient}><TooltipProvider>
     <div style={{ position: "relative", height: 600 }}><PageStage state="active">
-      {(mode.startsWith("thread-details") || mode === "thread-tree" || mode === "thread-actions" || mode === "terminal-proxy" || mode === "autostart" || mode === "skills" || mode === "groups" || mode === "access") && <ThreadToastProbe />}
+      {(mode.startsWith("thread-details") || mode === "thread-tree" || mode === "thread-actions" || mode === "terminal-proxy" || mode === "autostart" || mode === "skills" || mode === "groups" || mode === "access" || mode === "accounts") && <ThreadToastProbe />}
       {mode === "sidebar" ? <AppAvatarProvider><SidebarProvider><AppSidebar activeRoute={controls.review.sidebarRoute ?? "relays"} onNavigate={route => { controls.review.navigatedTo = route; }} onThemeChange={noop} /><div className="flex-1" /></SidebarProvider></AppAvatarProvider> : mode === "routing-cache" ? <RoutingCacheFixture /> : mode === "desktop-updater" ? <DesktopUpdaterFixture /> : mode === "desktop-exit" ? <ClaudeDesktopRouterExitDialog /> : mode.startsWith("recovery-") ? <RecoveryFixture thread={threads[0] as ThreadSummary} /> :
         mode === "skills" ? <SkillsPage /> : mode === "terminal-proxy" ? <div className="mx-auto max-w-xl rounded-xl bg-card shadow-sm"><TerminalProxyFixture /></div> :
         mode === "autostart" ? <div className="mx-auto max-w-xl rounded-xl bg-card shadow-sm"><AutostartSetting /></div> :

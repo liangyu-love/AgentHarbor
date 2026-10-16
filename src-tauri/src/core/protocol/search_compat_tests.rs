@@ -89,7 +89,8 @@ fn native_search_does_not_discard_domain_limits_and_runs_codex_cached_mode_live(
         json!({"type":"web_search","external_web_access":false,"search_content_types":["text","image"]})] {
         let request = json!({"model":"m","input":"x","tools":[tool]});
         let messages = request_body(pair(ModelProtocol::Responses, ModelProtocol::AnthropicMessages), &request).unwrap();
-        assert_eq!(messages.body["tools"], json!([{"type":"web_search_20250305","name":"web_search"}]));
+        // Without a system prompt the last tool carries the prefix's cache mark.
+        assert_eq!(messages.body["tools"], json!([{"type":"web_search_20250305","name":"web_search","cache_control":{"type":"ephemeral"}}]));
         assert!(messages.response_options.search_cached_as_live);
         for format in [ChatSearch::OpenAi, ChatSearch::Mimo] {
             let chat = request_body_with_chat_search(pair(ModelProtocol::Responses, ModelProtocol::ChatCompletions), &request, Some(format)).unwrap();
@@ -113,7 +114,8 @@ fn codex_search_maps_to_messages_and_returns_real_search_blocks() {
         "tool_choice":{"type":"web_search"},"max_tool_calls":2});
     let translated = request_body(pair(ModelProtocol::Responses, ModelProtocol::AnthropicMessages), &request).unwrap();
     assert_eq!(translated.body["tools"][0], json!({"type":"web_search_20250305","name":"web_search",
-        "allowed_domains":["rust-lang.org"],"user_location":{"type":"approximate","country":"CN"},"max_uses":2}));
+        "allowed_domains":["rust-lang.org"],"user_location":{"type":"approximate","country":"CN"},"max_uses":2,
+        "cache_control":{"type":"ephemeral"}}));
     assert_eq!(translated.body["tool_choice"], json!({"type":"tool","name":"web_search"}));
     let answer = messages_search();
     let converted = response_body(pair(ModelProtocol::Responses, ModelProtocol::AnthropicMessages), &answer).unwrap();

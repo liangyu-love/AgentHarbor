@@ -7,9 +7,11 @@ mod anthropic;
 mod anthropic_sse;
 #[cfg(test)]
 mod anthropic_tests;
+mod cache_marks;
 pub mod canonical;
 mod chat;
 mod chat_ingress;
+pub mod chat_reasoning;
 #[cfg(test)]
 mod chat_ingress_tests;
 mod chat_sse;
@@ -200,6 +202,17 @@ pub fn request_body(translation: Translation, value: &Value) -> Result<Translate
 pub(crate) fn request_body_with_chat_search(
     translation: Translation, value: &Value, chat_search: Option<ChatSearch>,
 ) -> Result<TranslatedRequest, String> {
+    let mut translated = translate_request(translation, value, chat_search)?;
+    // Messages caches nothing unmarked; the other targets cache by prefix.
+    if translation.to == ModelProtocol::AnthropicMessages {
+        cache_marks::mark(&mut translated.body);
+    }
+    Ok(translated)
+}
+
+fn translate_request(
+    translation: Translation, value: &Value, chat_search: Option<ChatSearch>,
+) -> Result<TranslatedRequest, String> {
     use ModelProtocol::*;
     match (translation.from, translation.to) {
         (Responses, ChatCompletions) | (Responses, AnthropicMessages) => {
@@ -308,6 +321,12 @@ impl StreamTranslator {
                 .fail(code)
         }
     }
+    /// A Chat upstream streamed its reasoning as `reasoning_content`.
+    pub fn sent_reasoning_content(&self) -> bool {
+        self.responses
+            .as_ref()
+            .is_some_and(sse::StreamTranslator::sent_reasoning_content)
+    }
     pub fn completed_response(&self) -> Option<&Value> {
         self.responses
             .as_ref()
@@ -402,7 +421,13 @@ mod continuation_tests {
             assert_eq!(next.body["messages"][0]["content"], "question");
             assert_eq!(next.body["messages"][1]["role"], "assistant");
             assert_eq!(next.body["messages"][1]["content"], "answer");
-            assert_eq!(next.body["messages"][2]["content"], "follow-up");
+            // Messages carries its cache mark on the last turn's block.
+            let follow_up = if target == ModelProtocol::AnthropicMessages {
+                &next.body["messages"][2]["content"][0]["text"]
+            } else {
+                &next.body["messages"][2]["content"]
+            };
+            assert_eq!(follow_up, "follow-up");
         }
     }
 
@@ -452,7 +477,7 @@ mod continuation_tests {
                 assert_eq!(next["messages"][1]["content"], "persistent system");
                 assert_eq!(next["messages"].as_array().unwrap().len(), 5);
             } else {
-                assert_eq!(next["system"], "new instruction\npersistent system");
+                assert_eq!(next["system"][0]["text"], "new instruction\npersistent system");
                 assert_eq!(next["messages"].as_array().unwrap().len(), 3);
             }
             let without = request_body(

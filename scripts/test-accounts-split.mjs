@@ -257,11 +257,16 @@ export async function testAccountsSplit({ page, reset, captureDir }) {
   const now = controls.getByRole("button", { name: await tr("accountSources.checkin.now") });
   await now.click();
   await page.waitForFunction(() => window.review.sourceCalls.some(call => call[0] === "checkIn"));
+  // The toast says what came of it: the signed-out account takes no part.
+  const ran = [await tr("accountSources.checkin.ran"), await tr("accountSources.checkin.tally.claimed", { count: 1 })];
+  await eventually(async () => assert.deepEqual(
+    await page.evaluate(() => [window.review.lastToast, window.review.lastToastDescription]), ran));
   await claimed.getByRole("switch").click();
   const leftOut = checkin.locator('[data-source-account="wb-1"] [data-account-checkin="off"]');
   await leftOut.waitFor();
   assert.equal(await leftOut.getByRole("switch").getAttribute("aria-checked"), "false");
   await eventually(async () => assert.equal(await now.isDisabled(), true, "with every account left out or signed out there is nothing to press"));
+  assert.equal(await now.locator("xpath=..").getAttribute("title"), await tr("accountSources.checkin.noneUsable"), "a disabled press says why");
   await auto.click();
   await eventually(async () => assert.equal(await auto.getAttribute("aria-checked"), "false"));
   assert.deepEqual((await calls()).filter(call => call[0].startsWith("setCheckin") || call[0] === "checkIn"),

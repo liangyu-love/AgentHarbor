@@ -5,12 +5,26 @@ import type { useAccountSources } from "@/components/accounts/use-account-source
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
-import type { AccountSource, AccountSourceAccount } from "@/types/account-sources";
+import type { AccountSource, AccountSourceAccount, AccountSourceKind, AccountSourceListPayload } from "@/types/account-sources";
 
 type Sources = ReturnType<typeof useAccountSources>;
 
 function formatCredit(value: number) {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value);
+}
+
+/** How today's check-in stands for a source's taking-part accounts. */
+export function checkinTally(data: AccountSourceListPayload, kind: AccountSourceKind) {
+  const tally = { claimed: 0, done: 0, missed: 0 };
+  const accounts = data.sources.find(source => source.kind === kind)?.accounts ?? [];
+  for (const account of accounts) {
+    if (account.lapsed || account.checkinOff) continue;
+    const outcome = account.checkin?.day === data.today ? account.checkin.outcome : null;
+    if (outcome === "claimed") tally.claimed += 1;
+    else if (outcome === "done") tally.done += 1;
+    else tally.missed += 1;
+  }
+  return tally;
 }
 
 /** A source's daily check-in: on each day by itself, or pressed now. */
@@ -27,11 +41,14 @@ export function CheckinControls({ source, sources }: { source: AccountSource; so
           onCheckedChange={on => sources.setCheckin.mutate({ kind: source.kind, on })} />
         {t("accountSources.checkin.auto")}
       </label>
-      <Button variant="outline" size="xs" className="h-7 gap-1.5" disabled={checking || !usable}
-        onClick={() => sources.checkIn.mutate(source.kind)}>
-        {checking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CalendarCheck className="h-3.5 w-3.5" />}
-        {t("accountSources.checkin.now")}
-      </Button>
+      {/* A disabled button gets no pointer events; the wrapper carries the reason. */}
+      <span className="inline-flex" title={usable ? undefined : t("accountSources.checkin.noneUsable")}>
+        <Button variant="outline" size="xs" className="h-7 gap-1.5" disabled={checking || !usable}
+          onClick={() => sources.checkIn.mutate(source.kind)}>
+          {checking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CalendarCheck className="h-3.5 w-3.5" />}
+          {t("accountSources.checkin.now")}
+        </Button>
+      </span>
     </div>
   );
 }

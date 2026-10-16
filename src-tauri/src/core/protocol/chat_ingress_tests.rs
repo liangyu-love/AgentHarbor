@@ -66,7 +66,7 @@ fn chat_ingress_maps_history_tools_choices_and_limits_to_both_targets() {
     assert_eq!(responses.body["store"], false);
     assert!(responses.response_options.chat_include_usage);
     let messages = request_body(pair(ModelProtocol::AnthropicMessages), &value).unwrap();
-    assert_eq!(messages.body["system"], "be helpful");
+    assert_eq!(messages.body["system"], json!([{"type":"text","text":"be helpful","cache_control":{"type":"ephemeral"}}]));
     assert_eq!(messages.body["max_tokens"], 500);
     assert_eq!(
         messages.body["messages"][1]["content"][0]["text"],
@@ -756,4 +756,14 @@ fn chat_stream_terminal_reconciliation_does_not_accept_disappearing_tool_calls()
     assert_eq!(translator.failure(), Some("invalid_stream_frame"));
     assert!(translator.completed_response().is_none());
     assert!(!frames.iter().any(|frame| frame.contains("[DONE]")));
+}
+
+#[test]
+fn chat_cache_key_reaches_a_responses_upstream_only() {
+    let mut value = basic();
+    value["prompt_cache_key"] = json!("session-9");
+    let responses = request_body(pair(ModelProtocol::Responses), &value).unwrap();
+    assert_eq!(responses.body["prompt_cache_key"], "session-9");
+    let messages = request_body(pair(ModelProtocol::AnthropicMessages), &value).unwrap();
+    assert!(messages.body.get("prompt_cache_key").is_none());
 }

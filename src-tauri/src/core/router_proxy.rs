@@ -43,6 +43,8 @@ mod claude_cli_tests;
 #[cfg(test)]
 mod claude_continuation_tests;
 #[cfg(test)]
+mod codex_reasoning_tests;
+#[cfg(test)]
 #[path = "router_proxy/desktop_gateway_tests.rs"]
 mod desktop_gateway_tests;
 mod pipeline;
@@ -1339,7 +1341,7 @@ async fn handle(mut request: Request<Incoming>, context: Arc<ArcContext>) -> For
                 trace.clone(),
                 upstream_protocol,
                 upstream_model,
-                attempt_id, None, tool_adapter, Default::default(), Default::default(), None).await
+                attempt_id, None, None, tool_adapter, Default::default(), Default::default(), None).await
     }
     .await;
     if let Err((status, message)) = &result {
@@ -1891,6 +1893,7 @@ mod tests {
                                     protocol,
                                     "fixture".into(),
                                     "fixture-attempt".into(),
+                                    None,
                                     None,
                                     Default::default(),
                                     Default::default(),

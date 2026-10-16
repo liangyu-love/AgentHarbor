@@ -666,3 +666,36 @@ fn streamed_token_limited_text_retains_reasoning_for_tool_continuation() {
         assert!(body.to_string().contains("partial thinking"));
     }
 }
+
+#[test]
+fn messages_usage_reaches_responses_and_chat_callers_with_its_cache_counted_in() {
+    fn streamed(from: ModelProtocol, delta: Value) -> Value {
+        let mut translator = super::sse::StreamTranslator::new(Translation { from, to: ModelProtocol::AnthropicMessages });
+        let events = [
+            json!({"type":"message_start","message":{"id":"m1","type":"message","role":"assistant","model":"claude","content":[],
+                "usage":{"input_tokens":20,"cache_read_input_tokens":80,"cache_creation_input_tokens":5,"output_tokens":1}}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}),
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":delta}),
+            json!({"type":"message_stop"}),
+        ];
+        for event in events {
+            translator.push(format!("event: {}\ndata: {event}\n\n", event["type"].as_str().unwrap()).as_bytes());
+        }
+        translator.finish();
+        translator.completed_response().expect("a completed response")["usage"].clone()
+    }
+    let expected = json!({"input_tokens":105,"output_tokens":7,"total_tokens":112,"input_tokens_details":{"cached_tokens":80}});
+    for from in [ModelProtocol::Responses, ModelProtocol::ChatCompletions] {
+        assert_eq!(streamed(from, json!({"output_tokens":7})), expected, "{from:?}");
+        // Counts are cumulative: a relay repeating zeros keeps the start's.
+        assert_eq!(streamed(from, json!({"input_tokens":0,"cache_read_input_tokens":0,"output_tokens":7})), expected, "{from:?}");
+    }
+    let reply = json!({"id":"m1","type":"message","role":"assistant","model":"claude","stop_reason":"end_turn",
+        "content":[{"type":"text","text":"hi"}],
+        "usage":{"input_tokens":20,"cache_read_input_tokens":80,"cache_creation_input_tokens":5,"output_tokens":7}});
+    let converted = response_body(Translation { from: ModelProtocol::Responses, to: ModelProtocol::AnthropicMessages }, &reply).unwrap();
+    assert_eq!(converted["usage"]["input_tokens"], 105);
+    assert_eq!(converted["usage"]["input_tokens_details"]["cached_tokens"], 80);
+}

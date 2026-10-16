@@ -10,6 +10,9 @@ use std::sync::{Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 
 const LEDGER_FILE: &str = "token-usage-ledger.sqlite3";
+/// How transcripts are read into records; a ledger kept by another reading
+/// is parsed again (2: Claude turns without a message id go by request id).
+const PARSE_VERSION: i64 = 2;
 const DAILY_DAYS: i64 = 14;
 const RECENT_LIMIT: usize = 24;
 const LINEAGE_GAP_MS: i64 = 500;
@@ -215,6 +218,15 @@ fn sync(
          );",
     )
     .map_err(|error| error.to_string())?;
+    let version: i64 = db
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    if version != PARSE_VERSION {
+        db.execute_batch(&format!(
+            "DELETE FROM source_files; DELETE FROM payload_cache; PRAGMA user_version={PARSE_VERSION};"
+        ))
+        .map_err(|error| error.to_string())?;
+    }
 
     let fingerprints = {
         let mut query = db
@@ -582,11 +594,17 @@ fn parse_claude(path: &Path, fallback: i64) -> Result<(Vec<UsageRecord>, Option<
             .and_then(Value::as_str)
             .unwrap_or(fallback_session)
             .to_string();
+        // A resumed session copies earlier turns into its own file; the API
+        // request id still names the turn once when the message has no id.
+        let api_request = value
+            .get("requestId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty());
         records.push(UsageRecord {
-            request_id: if message_id.is_empty() {
-                format!("claude-noid:{}:{line}", path.display())
-            } else {
-                format!("claude:{message_id}")
+            request_id: match (message_id.is_empty(), api_request) {
+                (false, _) => format!("claude:{message_id}"),
+                (true, Some(request)) => format!("claude-request:{request}"),
+                (true, None) => format!("claude-noid:{}:{line}", path.display()),
             },
             timestamp,
             date: local_date(timestamp),
@@ -984,6 +1002,33 @@ mod tests {
         assert_eq!(source.file_count, 1);
         assert_eq!(source.totals.turn_count, 1);
         assert_eq!(source.totals.total_tokens, 21);
+    }
+
+    #[test]
+    fn a_resumed_copy_without_message_ids_counts_its_turns_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("claude/projects/p");
+        fs::create_dir_all(&project).unwrap();
+        let line = |request: &str| {
+            serde_json::json!({
+                "timestamp": "2026-09-25T01:00:00Z", "type": "assistant", "sessionId": "s", "requestId": request,
+                "message": {"model": "claude-test", "usage": {"input_tokens": 10, "output_tokens": 5}}
+            })
+            .to_string()
+        };
+        fs::write(project.join("first.jsonl"), format!("{}\n", line("req_1"))).unwrap();
+        fs::write(project.join("resumed.jsonl"), format!("{}\n{}\n", line("req_1"), line("req_2"))).unwrap();
+        let totals = || {
+            let payload = load(&dir.path().join("codex"), &dir.path().join("claude"), dir.path()).unwrap();
+            let source = payload.by_source.iter().find(|source| source.source_id == "claude").unwrap().clone();
+            (source.totals.turn_count, source.totals.total_tokens)
+        };
+        assert_eq!(totals(), (2, 30));
+        // A ledger kept by an earlier reading is parsed again, not trusted.
+        let db = Connection::open(dir.path().join(LEDGER_FILE)).unwrap();
+        db.execute_batch("UPDATE source_files SET records_json='[]'; DELETE FROM payload_cache; PRAGMA user_version=1;").unwrap();
+        drop(db);
+        assert_eq!(totals(), (2, 30));
     }
 
     #[test]

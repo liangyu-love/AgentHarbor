@@ -152,7 +152,9 @@ pub(super) fn request(target: ModelProtocol, value: &Value) -> Result<Translated
             return Err("protocol.errors.unsupportedToolDefinition".into());
         }
     }
-    for key in ["temperature", "top_p", "parallel_tool_calls"] {
+    // A Responses upstream takes the cache routing key Chat callers send;
+    // the Messages encoder leaves it out.
+    for key in ["temperature", "top_p", "parallel_tool_calls", "prompt_cache_key"] {
         if let Some(setting) = object.get(key).filter(|v| !v.is_null()) {
             canonical[key] = setting.clone();
         }

@@ -296,6 +296,13 @@ pub(in crate::core::router_proxy) fn upstream_body(
             };
             rewritten.response_options.search_downgraded = search_downgraded;
             rewritten.response_options.search_required = forced_search;
+            // OpenAI's Chat endpoint routes cache hits by the caller's key as its
+            // Responses endpoint does. Other Chat hosts may refuse the field.
+            if *upstream_protocol == router::ModelProtocol::ChatCompletions && router::official_endpoint_applies(provider) {
+                if let Some(key) = value.get("prompt_cache_key").filter(|key| key.is_string()) {
+                    rewritten.body["prompt_cache_key"] = key.clone();
+                }
+            }
             if translation.from == router::ModelProtocol::Responses {
                 // Check the expanded history too: a cached continuation may carry
                 // items that the target protocol cannot represent without loss.
@@ -494,5 +501,23 @@ mod tests {
         let mut forced = claude;
         forced["tool_choice"] = json!({"type":"tool","name":"web_search"});
         assert!(upstream_body(&target, Some(Bytes::from(forced.to_string()))).is_err());
+    }
+
+    #[test]
+    fn the_cache_key_reaches_only_the_official_chat_endpoint() {
+        let codex = json!({"model":"m","input":"hi","prompt_cache_key":"thread-7"});
+        let sent = |base: &str| {
+            let mut target = destination(router::ModelProtocol::ChatCompletions);
+            if let Destination::Provider { provider, .. } = &mut target {
+                provider.base_url = base.into();
+            }
+            let prepared = upstream_body(&target, Some(Bytes::from(codex.to_string()))).unwrap();
+            serde_json::from_slice::<Value>(&prepared.body.unwrap()).unwrap()
+        };
+        assert_eq!(sent("https://api.openai.com/v1")["prompt_cache_key"], "thread-7");
+        assert!(sent("https://relay.example/v1").get("prompt_cache_key").is_none(), "an unknown Chat host may refuse it");
+        let messages = upstream_body(&destination(router::ModelProtocol::AnthropicMessages), Some(Bytes::from(codex.to_string()))).unwrap();
+        let messages: Value = serde_json::from_slice(&messages.body.unwrap()).unwrap();
+        assert!(messages.get("prompt_cache_key").is_none());
     }
 }

@@ -206,7 +206,7 @@ fn native_search_recovers_misclassified_hosted_calls_on_the_original_provider() 
                 && if target == ModelProtocol::AnthropicMessages {request["path"] == "/v1/messages" && request["apiKey"] == "inference-only"}
                     else {request["path"] == "/v1/responses" && request["authorization"] == "Bearer inference-only"}));
             assert_ne!(requests[0]["idempotencyKey"],requests[1]["idempotencyKey"]);
-            assert_eq!(if target == ModelProtocol::Responses {&requests[2]["body"]["input"]} else {&requests[2]["body"]["messages"][0]["content"]},"Rust");
+            assert_eq!(if target == ModelProtocol::Responses {&requests[2]["body"]["input"]} else {&requests[2]["body"]["messages"][0]["content"][0]["text"]},"Rust");
             assert_eq!(requests[2]["body"]["tools"].as_array().unwrap().len(),1);
             assert_eq!(if target == ModelProtocol::Responses {&requests[2]["body"]["max_tool_calls"]}
                 else {&requests[2]["body"]["tools"][0]["max_uses"]},1);

@@ -2,6 +2,7 @@ import { useContext, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
+import { checkinTally } from "@/components/accounts/source-checkin";
 import { PageActiveContext } from "@/components/layout/page-stage";
 import { toast } from "@/hooks/use-toast";
 import { REFRESH_INTERVAL_MS, type RefreshInterval } from "@/hooks/use-auto-refresh";
@@ -165,7 +166,21 @@ export function useAccountSources(refreshInterval: RefreshInterval) {
   });
   const checkIn = useMutation({
     mutationFn: api.accountSources.checkIn,
-    onSuccess: (data) => { settle(data); toast({ title: t("accountSources.checkin.ran"), variant: "success" }); },
+    // Say what came of it: a press can find every account already in, or
+    // leave some out (captcha, the vendor's own app, a failed request).
+    onSuccess: (data, kind) => {
+      settle(data);
+      const tally = checkinTally(data, kind);
+      const description = (["claimed", "done", "missed"] as const)
+        .filter(part => tally[part] > 0)
+        .map(part => t(`accountSources.checkin.tally.${part}`, { count: tally[part] }))
+        .join(" · ");
+      toast({
+        title: t(tally.missed > 0 ? "accountSources.checkin.ranPartly" : "accountSources.checkin.ran"),
+        description: description || undefined,
+        variant: tally.missed > 0 ? "warning" : "success",
+      });
+    },
     onError: failed,
   });
   const setHiddenModels = useMutation({

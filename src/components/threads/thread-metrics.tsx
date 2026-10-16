@@ -21,10 +21,11 @@ export function ThreadMetrics({ list }: { list: ThreadList }) {
     { name: "projects", label: t("threads.statsFolders"), value: workspaceCount, Icon: FolderTree, hint: "" },
     { name: "storage", label: t("threads.statsStorage"), value: formatSize(totalBytes), Icon: HardDrive, hint: "" },
   ];
-  // Prompt tokens include the cached subset; the bar shows fresh, cached and output parts.
+  // Prompt tokens include the cached subset. Each part shows what its share of
+  // the bar is, so input reads as the usage page's: what was not cached.
   const fresh = Math.max(0, totalInputTokens - totalCachedTokens);
   const parts = [
-    { name: "input", label: t("threads.statsInputLabel"), value: totalInputTokens, share: fresh, tone: "bg-sky-500" },
+    { name: "input", label: t("threads.statsInputLabel"), value: fresh, share: fresh, tone: "bg-sky-500" },
     { name: "cached", label: t("threads.statsCachedLabel"), value: totalCachedTokens, share: totalCachedTokens, tone: "bg-emerald-500" },
     { name: "output", label: t("threads.statsOutputLabel"), value: totalOutputTokens, share: totalOutputTokens, tone: "bg-amber-500" },
   ];

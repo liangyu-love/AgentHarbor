@@ -119,8 +119,9 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   await tree.locator('button[title="D:/workspace/Lighthouse"]').click();
   await eventually(async () => assert.equal(await metric("threads").textContent(), "3"));
   // The overview card reports token breakdown now: 4 input / 3 cached / 6
-  // output per fixture thread.
-  assert.equal(await metric("input").textContent(), "12");
+  // output per fixture thread. Input shows its uncached part, as the usage
+  // page does, so the three parts add up to the total.
+  assert.equal(await metric("input").textContent(), "3");
   assert.equal(await metric("cached").textContent(), "9");
   assert.equal(await metric("output").textContent(), "18");
   assert.equal(await metric("tokens-total").textContent(), "Token 总量：30");
@@ -133,7 +134,7 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   await tree.getByRole("button", { name: "直接对话 2", exact: true }).click();
   await eventually(async () => assert.equal(await results.getByRole("checkbox").count(), 2));
   assert.equal(await metric("projects").textContent(), "0");
-  assert.equal(await metric("input").textContent(), "8");
+  assert.equal(await metric("input").textContent(), "2");
   assert.equal(await metric("cached").textContent(), "6");
   assert.equal(await metric("output").textContent(), "12");
   await tree.getByRole("button", { name: "展开或收起 直接对话", exact: true }).click();
@@ -141,7 +142,7 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   await eventually(async () => assert.equal(await results.getByRole("checkbox").count(), 1));
   assert.equal(await metric("threads").textContent(), "2", "Thread focus preserves the selected folder overview");
   await tree.getByRole("button", { name: "所有项目 7", exact: true }).click();
-  await eventually(async () => assert.equal(await metric("input").textContent(), "28"));
+  await eventually(async () => assert.equal(await metric("input").textContent(), "7"));
   assert.equal(await metric("output").textContent(), "42");
   await capture("thread-project-overview-desktop.png");
   await page.setViewportSize({ width: 390, height: 700 });
