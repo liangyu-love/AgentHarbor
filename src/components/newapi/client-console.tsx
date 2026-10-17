@@ -89,7 +89,6 @@ export function ClientConsole({ router, panels, shared }: {
   return (
     <section className="inject-console harbor-card !p-0" aria-label={t("newapi.groups.clients")} data-client-console>
       <div role="tablist" aria-orientation="vertical" aria-label={t("newapi.groups.clients")} className="inject-rail">
-        <p className="inject-rail-kicker poster-kicker text-[10px] text-muted-foreground">{t("newapi.console.kicker")}</p>
         {CLIENTS.map((client) => {
           const link = links[client];
           const current = selected === client;

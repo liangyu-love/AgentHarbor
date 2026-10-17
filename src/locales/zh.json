@@ -1521,7 +1521,12 @@
       "clients": "客户端接入",
       "clientsDesc": "为每个客户端选择经本地路由，或直连某个中转",
       "routing": "路由能力",
-      "routingDesc": "模型聚合、请求级诊断与上下文压缩"
+      "routingDesc": "模型聚合、请求级诊断与上下文压缩",
+      "clientsSummary": "{{routed}} 个经路由 · {{direct}} 个直连",
+      "clientsNone": "还没有接入的客户端",
+      "routingSummary": "{{count}} 个聚合模型",
+      "gatewaySummary": "{{state}} · {{keys}} 个 key",
+      "folded": "已收起"
     },
     "connectionPanel": "连接方式",
     "pipelinePanel": "当前链路",

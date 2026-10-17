@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 // Clicks on these keep their own behaviour instead of folding the section.
-const OWN_CLICK = "button, a, input, select, textarea, label, [role='switch'], [role='combobox'], [role='checkbox']";
+export const OWN_CLICK = "button, a, input, select, textarea, label, [role='switch'], [role='combobox'], [role='checkbox']";
 
 interface FoldHeaderProps {
   open: boolean;

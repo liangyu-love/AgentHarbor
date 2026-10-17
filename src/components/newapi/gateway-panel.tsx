@@ -229,11 +229,10 @@ export function GatewayPanel({ providersRevision }: { providersRevision: number 
   });
 
   return (
-    <section aria-labelledby="gateway-title" data-gateway className="space-y-4 rounded-2xl border border-border/70 bg-card/80 p-4 shadow-sm sm:p-5">
+    <section aria-label={t("gateway.title")} data-gateway className="space-y-4 rounded-2xl border border-border/70 bg-card/80 p-4 shadow-sm sm:p-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0 space-y-1">
+        <div className="min-w-0 space-y-1.5">
           <div className="flex items-center gap-2">
-            <h3 id="gateway-title" className="text-sm font-semibold">{t("gateway.title")}</h3>
             <span data-gateway-status className={cn("inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium",
               state?.running ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "bg-muted text-muted-foreground")}>
               <span aria-hidden className={cn("h-1.5 w-1.5 rounded-full", state?.running ? "bg-emerald-500" : "bg-muted-foreground/40")} />

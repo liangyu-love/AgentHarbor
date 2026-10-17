@@ -1521,7 +1521,12 @@
       "clients": "Client connections",
       "clientsDesc": "Route each client through the local router or connect it to a relay directly",
       "routing": "Routing capabilities",
-      "routingDesc": "Model aggregation, request diagnostics and context compaction"
+      "routingDesc": "Model aggregation, request diagnostics and context compaction",
+      "clientsSummary": "{{routed}} routed · {{direct}} direct",
+      "clientsNone": "No client connected yet",
+      "routingSummary": "{{count}} aggregate models",
+      "gatewaySummary": "{{state}} · {{keys}} keys",
+      "folded": "Folded"
     },
     "connectionPanel": "Connection",
     "pipelinePanel": "Current path",

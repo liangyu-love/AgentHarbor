@@ -1241,7 +1241,23 @@ body {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: none; }
 }
-.route-group-rule { background: linear-gradient(90deg, hsl(var(--border)), transparent); }
+/* Injection page groups open on a poster band: a full-width rule with an
+   accent tab, the title large on the left, kicker and live summary on the right. */
+.section-band { position: relative; cursor: pointer; }
+.section-band-rule { position: relative; height: 1px; background: linear-gradient(90deg, hsl(var(--foreground) / 0.22), hsl(var(--border)) 28%, hsl(var(--border) / 0.35)); }
+.section-band-rule::before { content: ""; position: absolute; left: 0; top: -1px; width: 2.75rem; height: 3px; border-radius: 999px; background: hsl(var(--primary)); transition: width 420ms cubic-bezier(0.16, 1, 0.3, 1); }
+.section-band:hover .section-band-rule::before { width: 4.5rem; }
+.section-band[data-folded="true"] .section-band-rule { background: repeating-linear-gradient(90deg, hsl(var(--border)) 0 6px, transparent 6px 11px); }
+.section-band[data-folded="true"] .section-band-rule::before { background: hsl(var(--muted-foreground) / 0.45); }
+.section-band-title { transition: color 200ms ease, opacity 200ms ease; }
+.section-band[data-folded="true"] .section-band-title { color: hsl(var(--muted-foreground)); }
+.section-band:hover .section-band-title { color: hsl(var(--foreground)); }
+.section-band-body:not([hidden]) { animation: section-band-in 320ms cubic-bezier(0.16, 1, 0.3, 1); }
+@keyframes section-band-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .section-band-rule::before { transition: none; }
+  .section-band-body:not([hidden]) { animation: none; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   .route-flow, .route-flow-slow, .route-hub-ring, .route-hub-halo, .route-hub-ignite,
@@ -1616,7 +1632,6 @@ body {
 .inject-console { display: grid; grid-template-columns: minmax(0, 1fr); overflow: hidden; }
 .inject-rail { display: flex; gap: 0.4rem; overflow-x: auto; padding: 0.7rem; border-bottom: 1px solid hsl(var(--border) / 0.7); background: hsl(var(--muted) / 0.35); scrollbar-width: none; }
 .inject-rail::-webkit-scrollbar { display: none; }
-.inject-rail-kicker { display: none; }
 .inject-tab { position: relative; display: flex; flex: none; min-width: 11.5rem; align-items: center; gap: 0.7rem; padding: 0.6rem 0.7rem; border-radius: 15px; text-align: left; transition: background-color 180ms ease, box-shadow 220ms ease, transform 220ms cubic-bezier(0.16, 1, 0.3, 1); }
 .inject-tab:hover { background: hsl(var(--muted) / 0.8); }
 .inject-tab:focus-visible { outline: none; box-shadow: 0 0 0 2px hsl(var(--ring)); }
@@ -1636,7 +1651,6 @@ body {
 @media (min-width: 1024px) {
   .inject-console { grid-template-columns: 15.5rem minmax(0, 1fr); }
   .inject-rail { flex-direction: column; overflow: visible; padding: 1.1rem 0.8rem; border-bottom: 0; border-right: 1px solid hsl(var(--border) / 0.7); }
-  .inject-rail-kicker { display: block; padding: 0.1rem 0.7rem 0.55rem; }
   .inject-tab { min-width: 0; }
   .inject-tab:hover { transform: translateX(2px); }
   .inject-tab[aria-selected="true"] { transform: translateX(4px); }
