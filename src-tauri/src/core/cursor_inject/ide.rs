@@ -73,6 +73,11 @@ pub fn installed() -> bool {
     user_dir().is_some_and(|dir| dir.is_dir())
 }
 
+/// Cursor IDE has a process running now.
+pub fn running() -> bool {
+    crate::platform::process::is_process_running(if cfg!(any(windows, target_os = "macos")) { "Cursor" } else { "cursor" })
+}
+
 fn parse(text: &str) -> Result<CstRootNode, String> {
     let text = if text.trim().is_empty() { "{}" } else { text };
     CstRootNode::parse(text, &ParseOptions::default()).map_err(|_| "cursor.errors.settingsUnreadable".to_owned())
@@ -200,23 +205,7 @@ pub fn restart() -> Result<(), String> {
     #[cfg(windows)]
     {
         let executable = windows_executable().ok_or("cursor.errors.ideMissing")?;
-        let running = || {
-            crate::platform::windows::background_command("tasklist")
-                .args(["/FI", "IMAGENAME eq Cursor.exe", "/NH"])
-                .output()
-                .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains("Cursor.exe"))
-        };
-        let _ = crate::platform::windows::background_command("taskkill").args(["/IM", "Cursor.exe"]).output();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
-        while running() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
-        if running() {
-            let _ = crate::platform::windows::background_command("taskkill").args(["/IM", "Cursor.exe", "/T", "/F"]).output();
-            std::thread::sleep(std::time::Duration::from_millis(800));
-        }
-        std::process::Command::new(executable).spawn().map_err(|_| "cursor.errors.restart")?;
-        Ok(())
+        crate::platform::process::restart_windows_app("Cursor.exe", &executable).map_err(|_| "cursor.errors.restart".into())
     }
     #[cfg(target_os = "macos")]
     {

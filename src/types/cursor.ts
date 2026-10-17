@@ -23,6 +23,8 @@ export interface CursorStatus {
   ide: boolean;
   cli: boolean;
   running: boolean;
+  /** Cursor IDE runs now: its button restarts it rather than starting it. */
+  ideRunning?: boolean;
   port: number | null;
   url: string | null;
   /** Cursor's settings.json points at the local port right now. */

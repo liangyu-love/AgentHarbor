@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  ArrowDown, ArrowRight, Check, ChevronDown, Copy, FileCode2, Info, Layers3, Loader2, RefreshCw, ShieldAlert, ShieldCheck, ShieldOff,
+  ArrowDown, ArrowRight, Check, ChevronDown, Copy, FileCode2, Info, Layers3, Loader2, Play, RefreshCw, ShieldAlert, ShieldCheck, ShieldOff,
   SquareTerminal, TerminalSquare, Waypoints,
 } from "lucide-react";
 import { api } from "@/lib/api";
@@ -197,9 +197,11 @@ export function CursorAccessCard({ onOpenRelays }: { onOpenRelays?: () => void }
         actions={
           <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5 rounded-xl px-3 text-xs font-medium"
             data-config-action="restart-cursor" disabled={locked || !data?.ideInstalled}
-            onClick={() => void run("restart", async () => { await api.cursor.restartIde(); }, t("cursor.restarted"))}>
-            {busy === "restart" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-            {t("cursor.restart")}
+            onClick={() => void run("restart", async () => { await api.cursor.restartIde(); },
+              t(data?.ideRunning === false ? "cursor.started" : "cursor.restarted"))}>
+            {busy === "restart" ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              : data?.ideRunning === false ? <Play className="h-3.5 w-3.5" /> : <RefreshCw className="h-3.5 w-3.5" />}
+            {t(data?.ideRunning === false ? "cursor.start" : "cursor.restart")}
           </Button>
         }
       />

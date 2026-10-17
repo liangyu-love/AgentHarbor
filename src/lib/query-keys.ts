@@ -12,6 +12,7 @@ export const queryKeys = {
   // invalidations cannot touch it; shared so every page shows the latest config write.
   providerApplied: ["provider-applied-config"],
   clientConfigs: ["client-configs"],
+  clientLaunch: (target: string, profile?: string | null) => ["client-launch", target, profile ?? null],
   clientFiles: ["client-files"],
   claudeDesktopStatus: ["claude-desktop", "status"],
   cursorStatus: ["cursor", "status"],

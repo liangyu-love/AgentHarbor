@@ -14,6 +14,7 @@ pub mod capability_preview;
 pub mod claude_desktop;
 pub mod claude_sessions;
 pub mod client_config;
+pub mod client_launch;
 pub mod client_files;
 pub mod codex_config;
 pub mod cursor_inject;

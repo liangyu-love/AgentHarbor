@@ -27,6 +27,7 @@ import { RoutingTopology } from "./routing-topology";
 import { ClientConsole } from "./client-console";
 import { WebSearchSettings } from "./web-search-settings";
 import { PortOwnerNotice } from "./port-owner-notice";
+import { useClientLaunch } from "./client-launch";
 
 // Section opener: an English kicker, the title and a hairline to the edge.
 function SectionGroup({ kicker, icon, title, description, delay, children }: {
@@ -60,6 +61,9 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
   const { state, run, error, setError, applyChange } = store;
   const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
   const [restartPromptOpen, setRestartPromptOpen] = useState(false);
+  const codexLaunch = useClientLaunch("codex");
+  // A Codex that is not running is simply started; a running one is confirmed first.
+  const askRestart = () => codexLaunch.data?.kind === "app" && !codexLaunch.data.running ? restartCodex() : setRestartConfirmOpen(true);
 
   const providers = state.data?.providers ?? [];
   const router = state.data?.router;
@@ -79,6 +83,7 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
         await api.targets.restart("codex");
         toast({ title: t("newapi.restartCodexSuccess"), variant: "success" });
         void state.refetch();
+        void codexLaunch.refetch();
       },
       t("newapi.restartCodexFailed"),
     );
@@ -86,7 +91,7 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
 
   return (
     <div className="space-y-7">
-      <RoutingTopology store={store} onOpenRelays={onOpenRelays} onRestart={() => setRestartConfirmOpen(true)} />
+      <RoutingTopology store={store} onOpenRelays={onOpenRelays} onRestart={askRestart} />
 
       <PortOwnerNotice routerRunning={state.data?.proxyRunning} />
 
@@ -121,7 +126,7 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
                 providers={providers}
                 selectedProvider={selectedProvider}
                 nativeCompatible={nativeCompatible}
-                onRestart={() => setRestartConfirmOpen(true)}
+                onRestart={askRestart}
                 onRestartRequired={() => setRestartPromptOpen(true)}
                 onOpenRelays={onOpenRelays}
               />

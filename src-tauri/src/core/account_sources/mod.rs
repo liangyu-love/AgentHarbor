@@ -8,7 +8,7 @@
 pub mod chat_fit;
 pub mod chatgpt_api;
 pub mod checkin;
-mod cli;
+pub(crate) mod cli;
 pub mod commandcode;
 pub mod codeassist;
 pub mod copilot;

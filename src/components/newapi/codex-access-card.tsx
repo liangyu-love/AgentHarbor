@@ -19,6 +19,7 @@ import { ClientGlyph } from "./configuration-shortcuts";
 import { CodexSubagentSettingsFields } from "./codex-subagent-settings";
 import { ModelSourceSwitches } from "./model-source-switches";
 import type { ModelSources } from "@/types/gateway";
+import { useClientLaunch } from "./client-launch";
 import { ConsoleHeader } from "./client-console";
 
 function Panel({ title, children, className }: { title: string; children: ReactNode; className?: string }) {
@@ -58,6 +59,8 @@ export function CodexAccessCard({
   const nativeAccess = accessMode === "native";
   const configDrifted = !!router?.configDrifted;
   const restartPending = !!router?.restartPending;
+  const codexLaunch = useClientLaunch("codex");
+  const codexRunning = codexLaunch.data?.kind !== "app" || codexLaunch.data.running;
   const listenerUnavailable = routingEnabled && !nativeAccess && !store.state.data?.proxyRunning;
   const routingReady = routingEnabled && !configDrifted && !listenerUnavailable;
   // The desktop app lists only the first page (100) of Codex's model catalog.
@@ -238,7 +241,8 @@ export function CodexAccessCard({
                 ) : (
                   <RefreshCw className="h-3.5 w-3.5" />
                 )}
-                <span>{t(busy === "restart-codex" ? "newapi.restartingCodex" : "newapi.restartCodex")}</span>
+                <span>{t(busy === "restart-codex" ? (codexRunning ? "newapi.restartingCodex" : "newapi.startingCodex")
+                  : codexRunning ? "newapi.restartCodex" : "newapi.startCodex")}</span>
               </Button>
               <Switch
                 aria-label={t("newapi.codexAccess")}

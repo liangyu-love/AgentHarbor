@@ -1,4 +1,5 @@
 use crate::core::{
+    client_launch,
     repository::Repository,
     targets::{TargetId, TargetRegistry},
 };
@@ -26,4 +27,30 @@ pub async fn restart_target(
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+/// How a client starts from its panel: a terminal, an app, or a command.
+#[tauri::command]
+pub async fn load_client_launch(
+    target_id: TargetId,
+    harness_profile: Option<String>,
+) -> Result<client_launch::Launch, String> {
+    super::blocking(move || Ok(client_launch::plan(target_id, harness_profile.as_deref()))).await
+}
+
+/// Starts a client: a CLI in a new terminal in `folder`, an app restarted.
+#[tauri::command]
+pub async fn launch_client(
+    target_id: TargetId,
+    harness_profile: Option<String>,
+    folder: Option<String>,
+) -> Result<(), String> {
+    super::blocking(move || {
+        client_launch::launch(
+            target_id,
+            harness_profile.as_deref(),
+            folder.as_deref().map(std::path::Path::new),
+        )
+    })
+    .await
 }

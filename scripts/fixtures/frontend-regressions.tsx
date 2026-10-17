@@ -617,6 +617,11 @@ api.targets.restart = async target => {
   state = { ...state, router: { ...state.router, restartPending: false } };
 };
 api.targets.configs = async () => [];
+api.targets.launchPlan = async target => controls.review.launchPlans?.[target]
+  ?? (target === "codex" ? { kind: "app", installed: true, running: true } : { kind: "terminal", command: target === "claudeCode" ? "claude" : target, installed: true });
+api.targets.launch = async (targetId, harnessProfile, folder) => {
+  (controls.review.launchCalls ??= []).push({ targetId, harnessProfile, folder });
+};
 const keyFile = (id: string, name: string, path: string, exists: boolean, directory = false) =>
   ({ id, name, path, exists, directory });
 api.targets.files = async () => [

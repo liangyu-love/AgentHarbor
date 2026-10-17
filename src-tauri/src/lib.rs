@@ -347,6 +347,8 @@ pub fn run() {
             commands::system::open_path,
             commands::system::get_system_info,
             commands::targets::restart_target,
+            commands::targets::load_client_launch,
+            commands::targets::launch_client,
             commands::threads::list_conversations,
             commands::threads::get_conversation_details,
             commands::threads::get_conversation_messages,

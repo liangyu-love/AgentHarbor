@@ -34,7 +34,7 @@ import type {
 import { claudeDesktopApi } from "@/lib/claude-desktop";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
 import { errorMessage } from "@/lib/invoke-error";
-import type { TargetId, ClientStatus, ClientFiles, ClientConfigRequest, ClientConfigPreview, ClientConfigApplied, ClaudeOfficialPreview } from "@/types/clients";
+import type { TargetId, ClientStatus, ClientFiles, ClientConfigRequest, ClientConfigPreview, ClientConfigApplied, ClaudeOfficialPreview, ClientLaunch } from "@/types/clients";
 import type { AccountSourceKind, AccountSourceListPayload } from "@/types/account-sources";
 import type { GatewayProfile, GatewayState, ModelSources } from "@/types/gateway";
 import type { CursorCommitLocale, CursorStatus } from "@/types/cursor";
@@ -302,6 +302,10 @@ const imageApi = {
 
 const targetsApi = {
   restart: (targetId: TargetId) => invoke<void>("restart_target", { targetId }),
+  launchPlan: (targetId: TargetId, harnessProfile?: string | null) =>
+    invoke<ClientLaunch>("load_client_launch", { targetId, harnessProfile: harnessProfile ?? null }),
+  launch: (targetId: TargetId, harnessProfile?: string | null, folder?: string | null) =>
+    invoke<void>("launch_client", { targetId, harnessProfile: harnessProfile ?? null, folder: folder ?? null }),
   configs: () => invoke<ClientStatus[]>("list_client_configs"),
   files: () => invoke<ClientFiles[]>("list_client_files"),
   previewConfig: (request: ClientConfigRequest, replaceConflicts = false) => invoke<ClientConfigPreview>("preview_client_config", { request, replaceConflicts }),

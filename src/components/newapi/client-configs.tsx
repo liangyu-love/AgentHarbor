@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ClientGlyph } from "./configuration-shortcuts";
 import { ConsoleHeader } from "./client-console";
+import { ClientLaunch } from "./client-launch";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -239,6 +240,8 @@ export function ClientConfigs({ providers, onOpenRelays, target }: {
         !clientModels(provider, protocols).includes(client.model ?? "") ||
         !!client.request?.providerIds.some((id) => !providers.some((p) => p.id === id && !exclusionOf(p, protocols, mode))));
 
+  // Harness starts as the profile it was configured in, else the one listed first.
+  const launchProfile = target === "harness" ? client?.request?.harnessProfile ?? client?.harness?.profiles[0]?.name ?? null : null;
   // Harness writes into a profile it initialized itself; none yet means nothing to write.
   const noHarnessProfile = target === "harness" && !client?.configured && !client?.harness?.profiles.length;
   const eligible = providers.filter((p) => !exclusionOf(p, protocols, mode));
@@ -298,6 +301,8 @@ export function ClientConfigs({ providers, onOpenRelays, target }: {
         )}
         actions={client && (
           <>
+            <ClientLaunch target={target} harnessProfile={launchProfile} disabled={actionsLocked}
+              name={target === "harness" && launchProfile === "desktop" ? "Harness Desktop" : client.name} />
             {client.conflict && (
               <Button
                 size="sm"

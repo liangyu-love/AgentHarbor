@@ -472,7 +472,7 @@ export function ClaudeDesktopConfigCard({ providers }: { providers: NewApiProvid
                     ) : (
                       <Rocket className="h-3.5 w-3.5" />
                     )}
-                    {t(restarting ? "claudeDesktop.card.restarting" : "claudeDesktop.card.restart")}
+                    {t(restarting ? "claudeDesktop.card.restarting" : data.appRunning ? "claudeDesktop.card.restart" : "claudeDesktop.card.start")}
                   </Button>
                 )}
 

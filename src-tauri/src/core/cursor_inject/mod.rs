@@ -320,6 +320,8 @@ pub struct CursorModelView {
 #[serde(rename_all = "camelCase")]
 pub struct CursorStatus {
     pub ide_installed: bool,
+    /// Cursor IDE runs now: its button restarts it rather than starting it.
+    pub ide_running: bool,
     pub cli_installed: bool,
     pub cli_supported: bool,
     pub settings_path: Option<String>,
@@ -365,6 +367,7 @@ pub fn status(paths: &CodexPaths) -> Result<CursorStatus, String> {
     let settings_path = ide::settings_path();
     Ok(CursorStatus {
         ide_installed: ide::installed(),
+        ide_running: ide::running(),
         cli_installed: cli::installed(),
         cli_supported: cli::supported(),
         settings_path: settings_path.as_ref().map(|path| path.display().to_string()),

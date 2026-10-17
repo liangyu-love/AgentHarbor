@@ -64,7 +64,7 @@ fn wait_for_process_start(name: &str, timeout: Duration) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn is_process_running(name: &str) -> bool {
+pub fn is_process_running(name: &str) -> bool {
     std::process::Command::new("pgrep")
         .args(["-x", name])
         .output()
@@ -73,12 +73,32 @@ fn is_process_running(name: &str) -> bool {
 }
 
 #[cfg(target_os = "windows")]
-fn is_process_running(name: &str) -> bool {
+pub fn is_process_running(name: &str) -> bool {
     if name.eq_ignore_ascii_case("Codex") {
         !windows_codex_desktop_processes().is_empty()
     } else {
         !win32_process::find_processes_by_name(name).is_empty()
     }
+}
+
+/// Closes a Windows app by image name (asking first, then forcing what is
+/// left after 8 s) and starts `executable` again from its folder.
+#[cfg(target_os = "windows")]
+pub fn restart_windows_app(image: &str, executable: &Path) -> std::io::Result<()> {
+    let name = image.trim_end_matches(".exe");
+    let running = || is_process_running(name);
+    if running() {
+        let _ = crate::platform::windows::background_command("taskkill").args(["/IM", image]).output();
+        if !wait_for_process_exit(name, Duration::from_secs(8)) {
+            let _ = crate::platform::windows::background_command("taskkill").args(["/IM", image, "/T", "/F"]).output();
+            wait_for_process_exit(name, Duration::from_secs(3));
+        }
+    }
+    let mut command = std::process::Command::new(executable);
+    if let Some(folder) = executable.parent() {
+        command.current_dir(folder);
+    }
+    command.spawn().map(|_| ())
 }
 
 #[cfg(target_os = "windows")]
@@ -205,7 +225,7 @@ mod win32_process {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn is_process_running(name: &str) -> bool {
+pub fn is_process_running(name: &str) -> bool {
     std::process::Command::new("pgrep")
         .args(["-x", name])
         .output()

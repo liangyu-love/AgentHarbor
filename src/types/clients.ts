@@ -37,6 +37,14 @@ export interface ClientStatus {
   harness?: HarnessInfo | null;
 }
 export type ClientAccessMode = "native" | "router";
+/** How a client starts from its panel. */
+export type ClientLaunch =
+  /** A command a new terminal runs in the chosen folder. */
+  | { kind: "terminal"; command: string; installed: boolean }
+  /** An app, started or (when it runs) restarted. */
+  | { kind: "app"; installed: boolean; running: boolean }
+  /** Nothing interactive to start: the command to run it with. */
+  | { kind: "copy"; command: string };
 /** One key file of a client on this machine; existence only, never contents. */
 export interface ClientKeyFile {
   /** Stable role, e.g. `config`, `sessions`, `normalConfig`. */
