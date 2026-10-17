@@ -6,6 +6,7 @@ export const CLIENT_SOURCES = [
   { value: "harness", labelKey: "newapi.routeSourceHarness" },
   { value: "claudeDesktop", labelKey: "newapi.routeSourceClaudeDesktop" },
   { value: "cursor", labelKey: "newapi.routeSourceCursor" },
+  { value: "imageWorkbench", labelKey: "newapi.routeSourceImageWorkbench" },
   { value: "aggregate", labelKey: "newapi.routeSourceAggregate" },
   { value: "unknown", labelKey: "newapi.routeSourceUnknown" },
 ] as const;

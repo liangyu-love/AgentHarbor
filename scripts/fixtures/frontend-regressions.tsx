@@ -82,6 +82,9 @@ const provider = (id: string) => ({ id, name: "Provider " + id, model: "model-" 
   modelsFetchedAt: null, balance: null, balanceSource: null, testStatus: "untested" as const,
   testAt: null, createdAt: 0, updatedAt: 0 });
 const imageProvider = { ...provider("image"), model: "gpt-image-2", models: [model("gpt-image-2")] };
+// Two image models and a chat model, so the model list must show exactly two.
+const studioImageProvider = { ...provider("studio"), model: "gpt-image-2.5-sunburst",
+  models: [model("gpt-image-2.5-sunburst"), model("gpt-image-2.5-flare"), model("studio-chat")] };
 const groupedProviders: NewApiProvider[] = [
   { ...provider("group-a"), name: "Relay Alpha", baseUrl: "https://relay.invalid/v1", model: "alpha-model" },
   { ...provider("group-b"), name: "Relay Beta", baseUrl: "https://relay.invalid/v1/", model: "beta-model", balanceSharedFrom: "group-a" },
@@ -98,9 +101,20 @@ const versionedProvider: NewApiProvider = { ...provider("versions"), protocol: "
   model: "claude-opus-5-5", models: [
     ["claude-opus-5-5", "Opus 5.5"], ["claude-fable-5-1", "Fable 5.1"], ["claude-opus-4-8", "Opus 4.8"],
   ].map(([id, displayName]) => ({ ...model(id), displayName, protocol: "anthropicMessages", endpointTypes: ["anthropic_messages"] })) };
+// Like the backend, modifiedAt is in milliseconds; item i is i hours old.
+// The two newest carry the record saved beside them; older ones predate records.
+const galleryMetas = [
+  { prompt: "窗边侧光人像，胶片质感", revisedPrompt: "A portrait lit by soft window light, film grain", model: "gpt-image-2", size: "1024x1536", quality: "high" },
+  { prompt: "雨夜霓虹街头的橘猫", revisedPrompt: null, model: "gpt-image-2.5-flare", size: "1536x1024", quality: "max" },
+];
 const galleryItems = Array.from({ length: 100 }, (_, i) => ({
-  name: "gallery-" + i + ".png", path: "C:/synthetic/gallery-" + i + ".png", size: 100, modifiedAt: i,
+  name: "gallery-" + i + ".png", path: "C:/synthetic/gallery-" + i + ".png", size: 100, modifiedAt: Date.now() - i * 3_600_000,
+  meta: galleryMetas[i] ?? null,
 }));
+// A full-size original large enough to zoom into and pan around.
+const largeOriginal = "data:image/svg+xml;utf8," + encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="1600"><rect width="2400" height="1600" fill="#c8844a"/>'
+  + '<circle cx="1200" cy="800" r="420" fill="#24466e"/></svg>');
 const pixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+nmQAAAABJRU5ErkJggg==";
 let state: NewApiState = { providers: [imageProvider], router: { enabled: false, accessMode: "router", accountless: false, port: 0, configDrifted: false }, proxyRunning: false, activeProviderId: null };
 api.providers.loadState = async () => state;
@@ -729,13 +743,31 @@ api.image.cancelGeneration = async jobId => {
   controls.review.imageCancels[jobId]?.();
   return true;
 };
-api.image.saveToGallery = async () => {
+api.image.saveToGallery = async (_dataUrls, meta) => {
   controls.review.gallerySaves += 1;
+  (controls.review.galleryMetas ??= []).push(meta ?? null);
   if (controls.review.failGallerySave) throw new Error("image.errors.save");
   return { directory: "C:/synthetic", files: ["C:/synthetic/generated.png"] };
 };
 api.image.saveFile = async (path, dataUrl) => { (controls.review.imageFileSaves ??= []).push({ path, dataUrl }); };
 api.image.listGallery = async () => ({ directory: "C:/synthetic", items: galleryItems });
+// Like image_prompts.rs, the saved copy is what the next load returns.
+api.image.loadPromptLibrary = async () => structuredClone(controls.review.promptLibrary);
+api.image.loadPromptAssist = async () => structuredClone(controls.review.promptAssist);
+api.image.savePromptAssistSettings = async settings => {
+  controls.review.promptAssist.settings = { ...settings };
+  return { ...settings };
+};
+// Each polish waits until the test answers or fails it.
+api.image.optimizePrompt = (model, prompt, request) => new Promise((resolve, reject) => {
+  controls.review.assistRequests.push({ model, prompt, request, resolve, reject });
+});
+api.image.savePromptLibrary = async library => {
+  if (controls.review.failPromptSave) throw "image.errors.promptLibrary";
+  controls.review.promptLibrary = structuredClone(library);
+  controls.review.promptSaves += 1;
+  return structuredClone(library);
+};
 api.openPath = async path => {
   controls.review.openedPath = path;
   if (controls.review.failOpenPath) throw new Error("synthetic open path failure");
@@ -750,7 +782,7 @@ api.image.loadGalleryImage = path => {
   controls.review.originalCalls.push(path);
   return controls.review.holdOriginal
     ? new Promise(resolve => { controls.review.resolveOriginal = () => resolve(pixel); })
-    : Promise.resolve(pixel);
+    : Promise.resolve(controls.review.largeOriginal ? largeOriginal : pixel);
 };
 api.providers.fetchModels = () => new Promise(resolve => {
   controls.review.resolveModels = (fetched = [model("model-A-returned")]) => resolve(fetched);
@@ -1019,7 +1051,7 @@ function mount(mode: FixtureMode) {
   }
   const selectedProvider = mode.startsWith("clients-versions") ? versionedProvider
     : mode === "incompatible" || mode === "native-invalid" ? { ...mixedProvider, model: "chat-model" } : mixedProvider;
-  state = { providers: mode === "image" ? [imageProvider] : mode === "groups" ? groupedProviders : mode === "overview" ? [...groupedProviders, provider("extra-1"), provider("extra-2")] : mode === "usage" ? [{ ...groupedProviders[0], balance: { remaining: 12.5, used: 7.5, unit: "USD", rawQuota: 12.5, quotaPerUnit: null, requestCount: 5, checkedAt: Math.floor(Date.now() / 1000), conversionAvailable: true } }] : [selectedProvider], router: { enabled: false, accessMode: mode === "native-invalid" ? "native" : "router", accountless: false, port: 43127, configDrifted: false }, proxyRunning: false, activeProviderId: mode === "image" || mode === "groups" || mode === "overview" || mode === "usage" ? null : selectedProvider.id };
+  state = { providers: mode === "image" ? [imageProvider, studioImageProvider] : mode === "groups" ? groupedProviders : mode === "overview" ? [...groupedProviders, provider("extra-1"), provider("extra-2")] : mode === "usage" ? [{ ...groupedProviders[0], balance: { remaining: 12.5, used: 7.5, unit: "USD", rawQuota: 12.5, quotaPerUnit: null, requestCount: 5, checkedAt: Math.floor(Date.now() / 1000), conversionAvailable: true } }] : [selectedProvider], router: { enabled: false, accessMode: mode === "native-invalid" ? "native" : "router", accountless: false, port: 43127, configDrifted: false }, proxyRunning: false, activeProviderId: mode === "image" || mode === "groups" || mode === "overview" || mode === "usage" ? null : selectedProvider.id };
   if (controls.review.providerFixtures) state.providers = controls.review.providerFixtures;
   if (controls.review.routerPatch) state.router = { ...state.router, ...controls.review.routerPatch };
   if (controls.review.statePatch) state = { ...state, ...controls.review.statePatch };
@@ -1235,7 +1267,7 @@ function mount(mode: FixtureMode) {
   if (mode === "groups") controls.review.providersClient = queryClient;
   root.render(<QueryClientProvider key={++mountSequence} client={queryClient}><TooltipProvider>
     <div style={{ position: "relative", height: 600 }}><PageStage state="active">
-      {(mode.startsWith("thread-details") || mode === "thread-tree" || mode === "thread-actions" || mode === "terminal-proxy" || mode === "autostart" || mode === "skills" || mode === "groups" || mode === "access" || mode === "accounts") && <ThreadToastProbe />}
+      {(mode.startsWith("thread-details") || mode === "thread-tree" || mode === "thread-actions" || mode === "terminal-proxy" || mode === "autostart" || mode === "skills" || mode === "groups" || mode === "access" || mode === "accounts" || mode === "image") && <ThreadToastProbe />}
       {mode === "sidebar" ? <AppAvatarProvider><SidebarProvider><AppSidebar activeRoute={controls.review.sidebarRoute ?? "relays"} onNavigate={route => { controls.review.navigatedTo = route; }} onThemeChange={noop} /><div className="flex-1" /></SidebarProvider></AppAvatarProvider> : mode === "routing-cache" ? <RoutingCacheFixture /> : mode === "desktop-updater" ? <DesktopUpdaterFixture /> : mode === "desktop-exit" ? <ClaudeDesktopRouterExitDialog /> : mode.startsWith("recovery-") ? <RecoveryFixture thread={threads[0] as ThreadSummary} /> :
         mode === "skills" ? <SkillsPage /> : mode === "terminal-proxy" ? <div className="mx-auto max-w-xl rounded-xl bg-card shadow-sm"><TerminalProxyFixture /></div> :
         mode === "autostart" ? <div className="mx-auto max-w-xl rounded-xl bg-card shadow-sm"><AutostartSetting /></div> :
@@ -1261,6 +1293,12 @@ controls.review = { mount, darkScrimFloor, usageEntry, t: (key: string, options?
   modelResolutionFixture, modelResolutionRequests: [], modelResolutionResolvers: [], modelResolutionRejectors: [], holdModelResolutions: false, modelResolutionPatches: {},
   navigatedTo: null, proxySettingsOpened: false,
   imageRequests: [], imageResolvers: [], imageCancels: {}, cancelledJobs: [], gallerySaves: 0, failGallerySave: false,
+  promptLibrary: { groups: [] }, promptSaves: 0, failPromptSave: false,
+  promptAssist: { settings: { model: "", instruction: "" }, defaultInstruction: "默认润色指令", models: [
+    { id: "relay-a/glm-5", label: "GLM 5", sourceName: "Relay A", kind: "relay" },
+    { id: "codex/gpt-5.5", label: "GPT-5.5", sourceName: "Codex", kind: "account" },
+    { id: "smart", label: "Smart", sourceName: "Smart", kind: "aggregate" },
+  ] }, assistRequests: [],
   balanceRequests: [], balanceResolvers: [], balanceRejectors: [], balanceCredentialSaves: [],
   restartCalls: [], recoveryApplyCalls: 0, recoveredCalls: 0, deleteCalls: [], openedPath: null,
   holdThumbnails: false, holdOriginal: false, labels: {

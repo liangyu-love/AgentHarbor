@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type GalleryItem } from "@/lib/api";
+import { api, type GalleryItem, type GalleryMeta, type GenerationMeta } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
 import { queryKeys } from "@/lib/query-keys";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
@@ -9,12 +9,26 @@ import { GALLERY_THUMBNAIL_CACHE_LIMIT } from "./workbench-types";
 
 const GALLERY_KEY = queryKeys.imageGallery;
 
+/** One image the preview can show: a canvas image already in memory, or a gallery file. */
+export type PreviewEntry = {
+  key: string;
+  src?: string;
+  path?: string;
+  meta?: GalleryMeta | null;
+  /** Milliseconds, for gallery files. */
+  modifiedAt?: number;
+};
+
+export type PreviewState = { entries: PreviewEntry[]; index: number; src: string };
+
 /** Local gallery: listing, thumbnails, previews, save-as, delete and its directory. */
 export function useImageGallery(pageActive: boolean) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [savedGalleryDir, setSavedGalleryDir] = useState<string | null>(null);
-  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const [preview, setPreview] = useState<PreviewState | null>(null);
+  // A neighbour is loading while the current image stays on screen.
+  const [previewLoading, setPreviewLoading] = useState(false);
   const thumbnailCache = useRef(new Map<string, string>());
   const thumbnailLoads = useRef(new Map<string, Promise<string>>());
   const gallerySession = useRef(0);
@@ -73,10 +87,10 @@ export function useImageGallery(pageActive: boolean) {
     return request;
   }, []);
 
-  const persistToGallery = async (images: string[]): Promise<boolean> => {
+  const persistToGallery = async (images: string[], meta?: GenerationMeta): Promise<boolean> => {
     if (!isTauriRuntime() || images.length === 0) return false;
     try {
-      const saved = await api.image.saveToGallery(images);
+      const saved = await api.image.saveToGallery(images, meta);
       setSavedGalleryDir(saved.directory);
       toast({
         title: t("image.savedToGallery"),
@@ -175,10 +189,52 @@ export function useImageGallery(pageActive: boolean) {
 
   const refreshGallery = () => void queryClient.invalidateQueries({ queryKey: GALLERY_KEY });
 
-  const showPreview = (src: string | null) => {
-    previewRequest.current += 1;
-    setGalleryPreviewPath(null);
-    setPreviewSrc(src);
+  /** Show entry `index`; a gallery file opens once its original has loaded. */
+  const showEntry = async (entries: PreviewEntry[], index: number) => {
+    const entry = entries[index];
+    if (!entry) return;
+    const request = ++previewRequest.current;
+    if (entry.src) {
+      setGalleryPreviewPath(null);
+      setPreviewLoading(false);
+      setPreview({ entries, index, src: entry.src });
+      return;
+    }
+    if (!entry.path) return;
+    setGalleryPreviewPath(entry.path);
+    setPreviewLoading(true);
+    try {
+      const src = await api.image.loadGalleryImage(entry.path);
+      if (request === previewRequest.current) setPreview({ entries, index, src });
+    } catch {
+      if (request === previewRequest.current) {
+        toast({ title: t("common.error"), description: t("image.errors.notFound"), variant: "destructive" });
+      }
+    } finally {
+      if (request === previewRequest.current) {
+        setGalleryPreviewPath(null);
+        setPreviewLoading(false);
+      }
+    }
+  };
+
+  /** Open the preview on `entries[index]`, or close it with null. */
+  const showPreview = (entries: PreviewEntry[] | null, index = 0) => {
+    if (!entries) {
+      previewRequest.current += 1;
+      setGalleryPreviewPath(null);
+      setPreviewLoading(false);
+      setPreview(null);
+      return;
+    }
+    void showEntry(entries, index);
+  };
+
+  /** Step to a neighbour of the image on screen. */
+  const stepPreview = (step: number) => {
+    if (!preview || previewLoading) return;
+    const next = preview.index + step;
+    if (next >= 0 && next < preview.entries.length) void showEntry(preview.entries, next);
   };
 
   const closeGallery = () => {
@@ -189,20 +245,11 @@ export function useImageGallery(pageActive: boolean) {
     setGalleryOpen(false);
   };
 
-  const openGalleryImage = async (item: GalleryItem) => {
-    const request = ++previewRequest.current;
-    setGalleryPreviewPath(item.path);
-    setPreviewSrc(null);
-    try {
-      const src = await api.image.loadGalleryImage(item.path);
-      if (request === previewRequest.current) setPreviewSrc(src);
-    } catch {
-      if (request === previewRequest.current) {
-        toast({ title: t("common.error"), description: t("image.errors.notFound"), variant: "destructive" });
-      }
-    } finally {
-      if (request === previewRequest.current) setGalleryPreviewPath(null);
-    }
+  /** Open a gallery image; the viewer then steps through `items` (what the grid shows). */
+  const openGalleryImage = (item: GalleryItem, items: GalleryItem[]) => {
+    setPreview(null);
+    const entries = items.map(entry => ({ key: entry.path, path: entry.path, meta: entry.meta, modifiedAt: entry.modifiedAt }));
+    void showEntry(entries, Math.max(0, items.indexOf(item)));
   };
 
   const saveGalleryImageAs = async (item: GalleryItem, index: number) => {
@@ -232,7 +279,7 @@ export function useImageGallery(pageActive: boolean) {
 
   return {
     galleryOpen, galleryRef, galleryQuery, galleryItems, savedGalleryDir,
-    previewSrc, galleryPreviewPath, pendingDelete, setPendingDelete,
+    preview, previewLoading, stepPreview, galleryPreviewPath, pendingDelete, setPendingDelete,
     loadGalleryThumbnail, persistToGallery, openGalleryDirectory, chooseGalleryDirectory,
     saveImageAs, openGallery, refreshGallery, showPreview, closeGallery, openGalleryImage,
     saveGalleryImageAs, deleteGalleryItem,

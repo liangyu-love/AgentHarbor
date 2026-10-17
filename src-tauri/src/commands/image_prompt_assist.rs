@@ -1,0 +1,332 @@
+//! Prompt polishing for the image workbench: one request through the local
+//! router to any text model a relay, account or aggregate offers.
+
+use super::image::{paths, MAX_PROMPT_CHARS};
+use crate::core::{
+    gateway, models_dev, repository::Repository, router, router_proxy, routing_runtime, storage,
+};
+use crate::platform::paths::CodexPaths;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::{sync::Mutex, time::Duration};
+use tauri::State;
+
+const SETTINGS_FILE: &str = "image-prompt-assist.json";
+const MAX_INSTRUCTION_CHARS: usize = 8_000;
+const MAX_REQUEST_CHARS: usize = 500;
+const MAX_MODEL_ID_CHARS: usize = 300;
+const MAX_OUTPUT_TOKENS: u64 = 4096;
+/// Reasoning models can think for a while before they answer.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
+/// Image models cannot rewrite text, so they are not offered.
+const IMAGE_MODEL_MARKERS: [&str; 2] = ["image", "dall"];
+
+pub const DEFAULT_INSTRUCTION: &str = "你是 GPT Image 生图提示词优化助手。把用户给出的画面描述改写成一段可直接用于生图的提示词：
+- 保留原意和所有明确要求（主体、数量、画面中的文字、比例、风格），不要擅自更换主题或增加敏感内容。
+- 补全画面要素：主体的外观与动作、场景与环境、构图与视角、光线、色彩、材质与质感、画风或媒介、整体氛围。
+- 画面中需要出现的文字用引号原样保留。
+- 使用与用户输入相同的语言，写成连贯的描述，不要列表、标题或解释。
+- 只输出优化后的提示词本身。";
+
+/// What the user chose: the model last used and their own instruction ("" for the default).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssistSettings {
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub instruction: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssistModel {
+    pub id: String,
+    pub label: String,
+    pub source_name: String,
+    pub kind: gateway::ModelKind,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssistState {
+    pub settings: AssistSettings,
+    pub default_instruction: &'static str,
+    pub models: Vec<AssistModel>,
+}
+
+fn settings_path(paths: &CodexPaths) -> std::path::PathBuf {
+    paths.app_data_dir.join(SETTINGS_FILE)
+}
+
+fn read_settings(paths: &CodexPaths) -> AssistSettings {
+    std::fs::read(settings_path(paths))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn write_settings(paths: &CodexPaths, settings: AssistSettings) -> Result<AssistSettings, String> {
+    let settings = AssistSettings {
+        model: settings.model.trim().to_owned(),
+        instruction: settings.instruction.trim().to_owned(),
+    };
+    if settings.model.chars().count() > MAX_MODEL_ID_CHARS
+        || settings.instruction.chars().count() > MAX_INSTRUCTION_CHARS
+    {
+        return Err("image.errors.assistSettings".into());
+    }
+    let contents = serde_json::to_vec_pretty(&settings)
+        .map_err(|_| "image.errors.assistSettings".to_owned())?;
+    storage::write_atomic(&settings_path(paths), &contents)
+        .map_err(|_| "image.errors.assistSettings".to_owned())?;
+    Ok(settings)
+}
+
+fn is_image_model(model_id: &str) -> bool {
+    let lower = model_id.to_ascii_lowercase();
+    IMAGE_MODEL_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
+}
+
+/// Every text model the router can reach, as the gateway names them.
+fn text_models(store: &router::Store, catalog: &models_dev::Catalog) -> Vec<AssistModel> {
+    gateway::all_models(store, catalog)
+        .into_iter()
+        .filter(|model| !is_image_model(&model.model_id))
+        .map(|model| AssistModel {
+            id: model.id,
+            label: model.label,
+            source_name: model.source_name,
+            kind: model.kind,
+        })
+        .collect()
+}
+
+fn load_state(paths: &CodexPaths) -> Result<AssistState, String> {
+    let store = router::load_store(paths)?;
+    let catalog = models_dev::load(&paths.app_data_dir);
+    Ok(AssistState {
+        settings: read_settings(paths),
+        default_instruction: DEFAULT_INSTRUCTION,
+        models: text_models(&store, &catalog),
+    })
+}
+
+/// The user turn: the prompt to rewrite, and the one-off requirement if any.
+fn user_message(prompt: &str, request: &str) -> String {
+    let mut message = format!(
+        "请优化下面的生图提示词：\n<prompt>\n{}\n</prompt>",
+        prompt.trim()
+    );
+    if !request.trim().is_empty() {
+        message.push_str(&format!("\n这次的额外要求：{}", request.trim()));
+    }
+    message
+}
+
+/// The text of a Messages reply, without a code fence a model may wrap it in.
+fn reply_text(reply: &Value) -> String {
+    let text: String = reply["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|block| block["type"] == "text")
+        .filter_map(|block| block["text"].as_str())
+        .collect();
+    let text = text.trim();
+    let unfenced = text
+        .strip_prefix("```")
+        .and_then(|rest| rest.strip_suffix("```"))
+        .map(|inner| inner.split_once('\n').map_or(inner, |(_, body)| body))
+        .unwrap_or(text);
+    unfenced.trim().to_owned()
+}
+
+fn check_input(model: &str, prompt: &str, request: &str) -> Result<(), String> {
+    let prompt_chars = prompt.trim().chars().count();
+    if prompt_chars == 0 || prompt_chars > MAX_PROMPT_CHARS {
+        return Err("image.errors.prompt".into());
+    }
+    if model.trim().is_empty() || model.chars().count() > MAX_MODEL_ID_CHARS {
+        return Err("image.errors.assistModel".into());
+    }
+    if request.chars().count() > MAX_REQUEST_CHARS {
+        return Err("image.errors.assistRequest".into());
+    }
+    Ok(())
+}
+
+async fn polish(
+    paths: CodexPaths,
+    model: String,
+    prompt: String,
+    request: String,
+) -> Result<String, String> {
+    check_input(&model, &prompt, &request)?;
+    {
+        let _guard = routing_runtime::mutation_guard().await;
+        routing_runtime::ensure_available(&paths).await?;
+    }
+    let port = router_proxy::running_port().ok_or("image.errors.assistRouter")?;
+    let token = router::load_store(&paths)?.router.bearer_token;
+    let settings = read_settings(&paths);
+    let instruction = match settings.instruction.trim() {
+        "" => DEFAULT_INSTRUCTION,
+        custom => custom,
+    };
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .map_err(|_| "image.errors.network".to_owned())?;
+    // `/clients/image-workbench` books the usage to the workbench.
+    let response = client
+        .post(format!(
+            "http://127.0.0.1:{port}/clients/image-workbench/mix/v1/messages"
+        ))
+        .header("x-api-key", token)
+        .header("anthropic-version", "2023-06-01")
+        .json(&json!({
+            "model": model.trim(),
+            "max_tokens": MAX_OUTPUT_TOKENS,
+            "system": instruction,
+            "messages": [{ "role": "user", "content": user_message(&prompt, &request) }],
+        }))
+        .send()
+        .await
+        .map_err(|error| {
+            let key = if error.is_timeout() {
+                "image.errors.timeout"
+            } else {
+                "image.errors.network"
+            };
+            key.to_owned()
+        })?;
+    let status = response.status();
+    let reply: Value = response
+        .json()
+        .await
+        .map_err(|_| "image.errors.response".to_owned())?;
+    if !status.is_success() {
+        // The router's and the upstream's own words say more than a generic key.
+        return Err(reply["error"]["message"]
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("HTTP {status}")));
+    }
+    let text = reply_text(&reply);
+    if text.is_empty() {
+        return Err("image.errors.assistEmpty".into());
+    }
+    Ok(text)
+}
+
+#[tauri::command]
+pub async fn load_prompt_assist(repo: State<'_, Mutex<Repository>>) -> Result<AssistState, String> {
+    let paths = paths(&repo)?;
+    super::blocking(move || load_state(&paths)).await
+}
+
+#[tauri::command]
+pub async fn save_prompt_assist_settings(
+    repo: State<'_, Mutex<Repository>>,
+    settings: AssistSettings,
+) -> Result<AssistSettings, String> {
+    let paths = paths(&repo)?;
+    super::blocking(move || write_settings(&paths, settings)).await
+}
+
+#[tauri::command]
+pub async fn optimize_image_prompt(
+    repo: State<'_, Mutex<Repository>>,
+    model: String,
+    prompt: String,
+    request: String,
+) -> Result<String, String> {
+    let paths = paths(&repo)?;
+    polish(paths, model, prompt, request).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_round_trip_trimmed_and_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().join("codex"));
+        assert_eq!(read_settings(&paths), AssistSettings::default());
+        let saved = write_settings(
+            &paths,
+            AssistSettings {
+                model: " relay/glm-5 ".into(),
+                instruction: "  只输出英文  ".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            saved,
+            AssistSettings {
+                model: "relay/glm-5".into(),
+                instruction: "只输出英文".into()
+            }
+        );
+        assert_eq!(read_settings(&paths), saved);
+        let long = AssistSettings {
+            model: String::new(),
+            instruction: "长".repeat(MAX_INSTRUCTION_CHARS + 1),
+        };
+        assert_eq!(
+            write_settings(&paths, long).unwrap_err(),
+            "image.errors.assistSettings"
+        );
+    }
+
+    #[test]
+    fn image_models_are_not_offered_for_rewriting() {
+        assert!(is_image_model("gpt-image-2.5-flare"));
+        assert!(is_image_model("DALL-E-3"));
+        assert!(is_image_model("gemini-2.5-flash-image"));
+        assert!(!is_image_model("claude-sonnet-5-5"));
+        assert!(!is_image_model("glm-5.3"));
+    }
+
+    #[test]
+    fn the_user_turn_carries_the_prompt_and_a_one_off_requirement() {
+        assert_eq!(
+            user_message("  雨夜橘猫 ", ""),
+            "请优化下面的生图提示词：\n<prompt>\n雨夜橘猫\n</prompt>"
+        );
+        assert!(user_message("雨夜橘猫", " 赛博朋克 ").ends_with("\n这次的额外要求：赛博朋克"));
+    }
+
+    #[test]
+    fn reply_text_joins_text_blocks_and_drops_a_fence() {
+        let reply = json!({ "content": [
+            { "type": "thinking", "thinking": "..." },
+            { "type": "text", "text": "```text\n雨夜霓虹街头的橘猫，" },
+            { "type": "text", "text": "电影感光影\n```" },
+        ]});
+        assert_eq!(reply_text(&reply), "雨夜霓虹街头的橘猫，电影感光影");
+        assert_eq!(reply_text(&json!({ "content": [] })), "");
+    }
+
+    #[test]
+    fn input_is_checked_before_any_request() {
+        assert_eq!(
+            check_input("relay/m", "  ", "").unwrap_err(),
+            "image.errors.prompt"
+        );
+        assert_eq!(
+            check_input(" ", "猫", "").unwrap_err(),
+            "image.errors.assistModel"
+        );
+        assert_eq!(
+            check_input("relay/m", "猫", &"长".repeat(MAX_REQUEST_CHARS + 1)).unwrap_err(),
+            "image.errors.assistRequest"
+        );
+        assert!(check_input("relay/m", "猫", "赛博朋克").is_ok());
+    }
+}

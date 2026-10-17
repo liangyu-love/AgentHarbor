@@ -1,6 +1,7 @@
+import { useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { Download, FolderOpen, History, RefreshCw, Trash2, X } from "lucide-react";
+import { Download, Feather, FolderOpen, History, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,14 +14,50 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { formatRelative } from "@/lib/format-time";
+import { formatDateTime, formatRelative } from "@/lib/format-time";
+import type { GalleryItem } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { GalleryThumbnail } from "./gallery-thumbnail";
+import { ImageViewer } from "./image-viewer";
 import type { ImageGallery } from "./use-image-gallery";
 
+/** Gallery images by the day they were saved, newest day first: 今天, 昨天, then dates. */
+function byDay(items: GalleryItem[]) {
+  const dayStart = (ms: number) => new Date(new Date(ms).toDateString()).getTime();
+  const today = dayStart(Date.now());
+  const groups: { label: string; items: GalleryItem[] }[] = [];
+  for (const item of items) {
+    const day = dayStart(item.modifiedAt);
+    const days = Math.round((today - day) / 86_400_000);
+    const date = new Date(day);
+    const label = days === 0 ? "今天" : days === 1 ? "昨天"
+      : date.getFullYear() === new Date().getFullYear()
+        ? `${date.getMonth() + 1}月${date.getDate()}日`
+        : `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
+    const last = groups[groups.length - 1];
+    if (last?.label === label) last.items.push(item);
+    else groups.push({ label, items: [item] });
+  }
+  return groups;
+}
+
+const matches = (item: GalleryItem, query: string) =>
+  [item.meta?.prompt, item.meta?.revisedPrompt, item.meta?.model, item.name]
+    .some(text => text?.toLowerCase().includes(query));
+
 /** The history gallery section, shown once the user opens it. */
-export function GalleryPanel({ gallery }: { gallery: ImageGallery }) {
+export function GalleryPanel({ gallery, onUsePrompt }: {
+  gallery: ImageGallery;
+  /** Put a saved prompt back in the prompt box. */
+  onUsePrompt: (prompt: string) => void;
+}) {
   const { t } = useTranslation();
+  const [query, setQuery] = useState("");
+  const shown = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return q ? gallery.galleryItems.filter(item => matches(item, q)) : gallery.galleryItems;
+  }, [gallery.galleryItems, query]);
+  const days = useMemo(() => byDay(shown), [shown]);
   return (
     <div ref={gallery.galleryRef} data-gallery-section className="ink-scroll-frame p-5 sm:p-6 scroll-mt-6">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-border/50 pb-3">
@@ -86,8 +123,27 @@ export function GalleryPanel({ gallery }: { gallery: ImageGallery }) {
         </div>
       )}
 
+      {gallery.galleryItems.length > 0 && (
+        <div className="relative mb-4">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/70" />
+          <input
+            value={query}
+            onChange={event => setQuery(event.target.value)}
+            placeholder="按提示词、模型或文件名检索画册"
+            aria-label="检索画册"
+            className="h-9 w-full min-w-0 rounded-lg border border-border/60 bg-background/80 pl-8 pr-8 text-xs outline-none transition-colors focus:border-[#b83b38]/40"
+          />
+          {query && (
+            <button type="button" onClick={() => setQuery("")} aria-label="清除检索"
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground/70 hover:text-foreground">
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+      )}
+
       {gallery.galleryQuery.isLoading ? (
-        <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
           {Array.from({ length: 5 }).map((_, index) => (
             <div
               key={index}
@@ -103,62 +159,99 @@ export function GalleryPanel({ gallery }: { gallery: ImageGallery }) {
         <p className="py-10 text-center font-serif text-sm text-muted-foreground">
           {t("image.galleryEmpty")}
         </p>
+      ) : shown.length === 0 ? (
+        <p className="py-10 text-center font-serif text-sm text-muted-foreground">
+          没有提示词、模型或文件名包含「{query.trim()}」的图片
+        </p>
       ) : (
-        <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-          {gallery.galleryItems.map((item, index) => {
-            return (
-              <div
-                key={item.path}
-                className="group relative overflow-hidden rounded-lg border border-border/60 bg-card/70"
-              >
-                <GalleryThumbnail
-                  item={item}
-                  load={gallery.loadGalleryThumbnail}
-                  onPreview={() => void gallery.openGalleryImage(item)}
-                  opening={gallery.galleryPreviewPath === item.path}
-                />
-                <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-1 bg-gradient-to-t from-black/70 to-transparent px-2 pb-1.5 pt-6 text-[10px] text-white">
-                  <span className="truncate font-mono" title={item.name}>
-                    {item.name}
-                  </span>
-                  <span className="shrink-0 opacity-90">{formatRelative(item.modifiedAt)}</span>
-                </div>
-                <div className="absolute right-1 top-1 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-                  <Button
-                    type="button"
-                    size="icon"
-                    variant="secondary"
-                    className="h-7 w-7 bg-black/55 text-white hover:bg-black/75"
-                    title={t("image.saveAs")}
-                    aria-label={t("image.saveAs")}
-                    onClick={() => void gallery.saveGalleryImageAs(item, index)}
-                  >
-                    <Download className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button
-                    type="button"
-                    size="icon"
-                    variant="secondary"
-                    className="h-7 w-7 bg-black/55 text-white hover:bg-destructive"
-                    title={t("image.galleryDelete")}
-                    aria-label={t("image.galleryDelete")}
-                    onClick={() => gallery.setPendingDelete(item)}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
+        <div className="space-y-5">
+          {days.map(day => (
+            <section key={day.label} aria-label={day.label}>
+              <h3 className="mb-2 flex items-baseline gap-2 font-serif text-xs font-semibold text-foreground/80">
+                {day.label}
+                <span className="font-sans text-[11px] font-normal text-muted-foreground">{day.items.length} 张</span>
+              </h3>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+                {day.items.map(item => (
+                  <GalleryCard
+                    key={item.path}
+                    item={item}
+                    gallery={gallery}
+                    onOpen={() => gallery.openGalleryImage(item, shown)}
+                    onUsePrompt={onUsePrompt}
+                  />
+                ))}
               </div>
-            );
-          })}
+            </section>
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-/** Delete confirmation and the full-size preview overlay. */
-export function GalleryOverlays({ gallery, pageActive }: { gallery: ImageGallery; pageActive: boolean }) {
+/** One saved image: its thumbnail, what made it, and quick actions on hover. */
+function GalleryCard({ item, gallery, onOpen, onUsePrompt }: {
+  item: GalleryItem;
+  gallery: ImageGallery;
+  onOpen: () => void;
+  onUsePrompt: (prompt: string) => void;
+}) {
   const { t } = useTranslation();
+  const prompt = item.meta?.prompt;
+  const overlayButton = "h-7 w-7 bg-black/55 text-white hover:bg-black/75";
+  return (
+    <div data-gallery-card className="group relative overflow-hidden rounded-xl border border-border/60 bg-card/70 shadow-sm transition-[border-color,box-shadow] hover:border-[#b83b38]/35 hover:shadow-md">
+      <GalleryThumbnail
+        item={item}
+        load={gallery.loadGalleryThumbnail}
+        onPreview={onOpen}
+        opening={gallery.galleryPreviewPath === item.path}
+      />
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 space-y-0.5 bg-gradient-to-t from-black/80 via-black/45 to-transparent px-2.5 pb-2 pt-8 text-white">
+        <p className={cn("line-clamp-2 break-words text-[11px] leading-snug", prompt ? "font-serif" : "font-mono text-[10px] opacity-90")}
+          title={prompt ?? item.name}>
+          {prompt ?? item.name}
+        </p>
+        <div className="flex min-w-0 items-center gap-1.5 text-[10px] text-white/75">
+          {/* The gallery reports milliseconds; the formatters take seconds. */}
+          <span className="pointer-events-auto shrink-0" title={formatDateTime(item.modifiedAt / 1000)}>
+            {formatRelative(item.modifiedAt / 1000)}
+          </span>
+          {item.meta?.model && <span className="truncate font-mono">· {item.meta.model}</span>}
+        </div>
+      </div>
+      <div className="absolute right-1.5 top-1.5 flex gap-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+        {prompt && (
+          <Button type="button" size="icon" variant="secondary" className={cn(overlayButton, "hover:bg-[#b83b38]")}
+            title="填入提示词" aria-label="填入提示词" onClick={() => onUsePrompt(prompt)}>
+            <Feather className="h-3.5 w-3.5" />
+          </Button>
+        )}
+        <Button type="button" size="icon" variant="secondary" className={overlayButton}
+          title={t("image.saveAs")} aria-label={t("image.saveAs")}
+          onClick={() => void gallery.saveGalleryImageAs(item, gallery.galleryItems.indexOf(item))}>
+          <Download className="h-3.5 w-3.5" />
+        </Button>
+        <Button type="button" size="icon" variant="secondary" className={cn(overlayButton, "hover:bg-destructive")}
+          title={t("image.galleryDelete")} aria-label={t("image.galleryDelete")}
+          onClick={() => gallery.setPendingDelete(item)}>
+          <Trash2 className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** Delete confirmation and the zoomable full-size preview. */
+export function GalleryOverlays({ gallery, pageActive, onUsePrompt }: {
+  gallery: ImageGallery;
+  pageActive: boolean;
+  onUsePrompt: (prompt: string) => void;
+}) {
+  const { t } = useTranslation();
+  const preview = gallery.preview;
+  const entry = preview?.entries[preview.index];
   return (
     <>
       <AlertDialog open={gallery.pendingDelete !== null} onOpenChange={open => !open && gallery.setPendingDelete(null)}>
@@ -179,31 +272,19 @@ export function GalleryOverlays({ gallery, pageActive }: { gallery: ImageGallery
         </AlertDialogContent>
       </AlertDialog>
 
-      {gallery.previewSrc && pageActive && createPortal(
-        <div
-          className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 p-4 sm:p-6 backdrop-blur-sm animate-in fade-in-0 duration-200"
-          role="dialog"
-          aria-modal="true"
-          aria-label="成图放大预览"
-          onKeyDown={event => { if (event.key === "Escape") gallery.showPreview(null); }}
-          onClick={() => gallery.showPreview(null)}
-        >
-          <button
-            type="button"
-            autoFocus
-            className="absolute right-5 top-5 inline-flex h-9 w-9 items-center justify-center rounded-full bg-black/60 text-white/80 hover:text-white hover:bg-black/80 transition-all hover:scale-105 active:scale-95"
-            onClick={() => gallery.showPreview(null)}
-            aria-label="关闭预览"
-          >
-            <X className="h-4 w-4" />
-          </button>
-          <img
-            src={gallery.previewSrc}
-            alt="成图放大预览"
-            className="max-h-[88vh] max-w-[92vw] rounded-xl object-contain shadow-2xl transition-transform duration-200 animate-in zoom-in-95 duration-200"
-            onClick={event => event.stopPropagation()}
-          />
-        </div>, document.body
+      {preview && entry && pageActive && createPortal(
+        <ImageViewer
+          src={preview.src}
+          alt="成图放大预览"
+          onClose={() => gallery.showPreview(null)}
+          meta={entry.meta}
+          takenAt={entry.modifiedAt}
+          position={{ index: preview.index, total: preview.entries.length }}
+          onStep={gallery.stepPreview}
+          loading={gallery.previewLoading}
+          onUsePrompt={onUsePrompt}
+        />,
+        document.body,
       )}
     </>
   );

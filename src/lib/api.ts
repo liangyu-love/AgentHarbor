@@ -188,17 +188,84 @@ export interface SavedImagesPayload {
   files: string[];
 }
 
+/** How a gallery image was made, from the record saved beside it. */
+export interface GalleryMeta {
+  prompt: string;
+  /** The prompt as the image API rewrote it, when it did. */
+  revisedPrompt?: string | null;
+  model: string;
+  size: string;
+  quality: string;
+}
+
+/** What a generation saves with its images; revisedPrompts follows the image order. */
+export interface GenerationMeta {
+  prompt: string;
+  model: string;
+  size: string;
+  quality: string;
+  revisedPrompts: string[];
+}
+
 export interface GalleryItem {
   name: string;
   path: string;
   size: number;
   modifiedAt: number;
+  /** Absent for images saved before records were kept. */
+  meta?: GalleryMeta | null;
 }
 
 export interface GalleryListPayload {
   directory: string;
   items: GalleryItem[];
   hasMore: boolean;
+}
+
+export interface PromptTemplate {
+  id: string;
+  title: string;
+  note: string;
+  prompt: string;
+  pinned: boolean;
+}
+
+/** Array order is display order; pinned templates lead their group. */
+export interface PromptGroup {
+  id: string;
+  name: string;
+  templates: PromptTemplate[];
+}
+
+export interface PromptLibrary {
+  groups: PromptGroup[];
+}
+
+export interface PromptAssistModel {
+  /** The gateway id the router resolves, `<short name>/<model>` or an aggregate. */
+  id: string;
+  label: string;
+  sourceName: string;
+  kind: "relay" | "account" | "aggregate";
+}
+
+export interface PromptAssistSettings {
+  model: string;
+  /** "" means the built-in instruction. */
+  instruction: string;
+}
+
+export interface PromptAssistState {
+  settings: PromptAssistSettings;
+  defaultInstruction: string;
+  models: PromptAssistModel[];
+}
+
+export interface PromptImportResult {
+  library: PromptLibrary;
+  groups: number;
+  templates: number;
+  skipped: number;
 }
 
 const imageApi = {
@@ -210,14 +277,25 @@ const imageApi = {
   keySites: () => invoke<string[]>("list_image_key_sites"),
   deleteKey: (baseUrl: string) => invoke<void>("delete_image_key", { baseUrl }),
   saveFile: (path: string, dataUrl: string) => invoke<void>("save_image_file", { path, dataUrl }),
-  saveToGallery: (dataUrls: string[]) =>
-    invoke<SavedImagesPayload>("save_images_to_gallery", { dataUrls }),
+  saveToGallery: (dataUrls: string[], meta?: GenerationMeta) =>
+    invoke<SavedImagesPayload>("save_images_to_gallery", { dataUrls, meta: meta ?? null }),
   setGalleryDirectory: (directory: string) =>
     invoke<string>("set_gallery_directory", { directory }),
   listGallery: () => invoke<GalleryListPayload>("list_gallery_images"),
   loadGalleryImage: (path: string) => invoke<string>("load_gallery_image", { path }),
   loadGalleryThumbnail: (path: string) => invoke<string>("load_gallery_thumbnail", { path }),
   deleteGalleryImage: (path: string) => invoke<void>("delete_gallery_image", { path }),
+  loadPromptLibrary: () => invoke<PromptLibrary>("load_image_prompt_library"),
+  savePromptLibrary: (library: PromptLibrary) =>
+    invoke<PromptLibrary>("save_image_prompt_library", { library }),
+  importPromptLibrary: (path: string) =>
+    invoke<PromptImportResult>("import_image_prompt_library", { path }),
+  exportPromptLibrary: (path: string) => invoke<void>("export_image_prompt_library", { path }),
+  loadPromptAssist: () => invoke<PromptAssistState>("load_prompt_assist"),
+  savePromptAssistSettings: (settings: PromptAssistSettings) =>
+    invoke<PromptAssistSettings>("save_prompt_assist_settings", { settings }),
+  optimizePrompt: (model: string, prompt: string, request: string) =>
+    invoke<string>("optimize_image_prompt", { model, prompt, request }),
 };
 
 const targetsApi = {

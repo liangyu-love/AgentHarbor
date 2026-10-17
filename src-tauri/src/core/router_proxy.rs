@@ -720,6 +720,7 @@ fn client_request_path(path: &str) -> (String, Option<&'static str>) {
         ("/clients/harness/", "harness"),
         ("/clients/codex/", "codex"),
         ("/clients/cursor/", "cursor"),
+        ("/clients/image-workbench/", "imageWorkbench"),
     ] {
         if let Some(rest) = path.strip_prefix(prefix) {
             return (format!("/{rest}"), Some(source));

@@ -1,18 +1,34 @@
 import { useTranslation } from "react-i18next";
-import { Download, ImagePlus, Loader2, Scroll, Square, X, ZoomIn } from "lucide-react";
+import { Download, Feather, ImagePlus, Loader2, Scroll, Square, X, ZoomIn } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { GenerationJob } from "./workbench-types";
+import type { PreviewEntry } from "./use-image-gallery";
+import { qualityLabel, sizeLabel, type GenerationJob } from "./workbench-types";
+
+/** A finished job's images as the viewer steps through them, each with what made it. */
+const previewEntries = (job: GenerationJob): PreviewEntry[] =>
+  (job.result?.images ?? []).map((src, index) => ({
+    key: `${job.id}-${index}`,
+    src,
+    meta: {
+      prompt: job.prompt,
+      revisedPrompt: job.result?.revisedPrompts[index] || null,
+      model: job.result?.model || job.model,
+      size: job.size,
+      quality: job.quality,
+    },
+  }));
 
 /** The result scroll: one canvas per generation job, with its status and images. */
-export function GenerationCanvas({ generationJobs, onCancel, onRemove, onRetrySave, onPreview, onSaveAs }: {
+export function GenerationCanvas({ generationJobs, onCancel, onRemove, onRetrySave, onPreview, onSaveAs, onUsePrompt }: {
   generationJobs: GenerationJob[];
   onCancel: (job: GenerationJob) => void;
   onRemove: (job: GenerationJob) => void;
   onRetrySave: (id: string, images: string[]) => Promise<void>;
-  onPreview: (src: string) => void;
+  onPreview: (entries: PreviewEntry[], index: number) => void;
   onSaveAs: (src: string, index: number) => Promise<void>;
+  onUsePrompt: (prompt: string) => void;
 }) {
   const { t } = useTranslation();
   return (
@@ -59,10 +75,21 @@ export function GenerationCanvas({ generationJobs, onCancel, onRemove, onRetrySa
             <section key={job.id} data-generation-job-status={job.status} className="min-w-0 space-y-3 rounded-2xl border border-border/70 bg-card/80 p-3 dark:border-[#c5a059]/30">
               <div className="flex items-start justify-between gap-3 border-b border-border/50 pb-2">
                 <div className="min-w-0">
-                  <p className="line-clamp-2 font-serif text-sm font-semibold">{job.prompt}</p>
-                  <p className="mt-1 font-mono text-[11px] text-muted-foreground">{job.model}</p>
+                  <p className="line-clamp-2 font-serif text-sm font-semibold" title={job.prompt}>{job.prompt}</p>
+                  <p className="mt-1 flex flex-wrap items-center gap-x-1.5 text-[11px] text-muted-foreground">
+                    <span className="font-mono">{job.model}</span>
+                    <span aria-hidden>·</span>
+                    <span>{sizeLabel(job.size)}</span>
+                    <span aria-hidden>·</span>
+                    <span>画质 {qualityLabel(job.quality)}</span>
+                  </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
+                  <button type="button" onClick={() => onUsePrompt(job.prompt)}
+                    aria-label="复用这条提示词" title="复用这条提示词"
+                    className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-[#b83b38] dark:hover:text-[#fca5a5]">
+                    <Feather className="h-3.5 w-3.5" />
+                  </button>
                   <Badge variant="outline">
                     {job.status === "queued" ? "排队中" : job.status === "running" ? "生成中" : job.status === "failed" ? "失败" : job.status === "cancelled" ? "已取消" : "完成"}
                   </Badge>
@@ -121,7 +148,7 @@ export function GenerationCanvas({ generationJobs, onCancel, onRemove, onRetrySa
                 <button
                   type="button"
                   className="relative block w-full overflow-hidden rounded-xl border border-border/80 bg-background/80 p-1.5 transition-[border-color,box-shadow] duration-200 hover:border-[#b83b38]/35 hover:shadow-sm"
-                  onClick={() => onPreview(src)}
+                  onClick={() => onPreview(previewEntries(job), index)}
                   title="点击放大预览"
                 >
                   <img
@@ -152,15 +179,15 @@ export function GenerationCanvas({ generationJobs, onCancel, onRemove, onRetrySa
                   </Button>
                 </div>
 
-                {job.result?.revisedPrompts[index] && (
-                  <div className="rounded-lg bg-black/[0.025] p-2.5 text-xs text-muted-foreground ring-1 ring-border/40 dark:bg-white/[0.02]">
-                    <p className="font-serif font-semibold text-foreground/80 mb-0.5">
-                      修订后的提示词
-                    </p>
-                    <p className="font-serif leading-relaxed text-[11px]">
+                {job.result?.revisedPrompts[index] && job.result.revisedPrompts[index] !== job.prompt && (
+                  <details className="rounded-lg bg-black/[0.025] px-2.5 py-2 text-xs text-muted-foreground ring-1 ring-border/40 dark:bg-white/[0.02]">
+                    <summary className="cursor-pointer select-none font-serif font-semibold text-foreground/80">
+                      模型修订后的提示词
+                    </summary>
+                    <p className="mt-1 font-serif text-[11px] leading-relaxed">
                       {job.result.revisedPrompts[index]}
                     </p>
-                  </div>
+                  </details>
                 )}
               </div>
             ))}

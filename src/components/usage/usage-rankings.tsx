@@ -2,7 +2,7 @@ import { useState, type CSSProperties, type ReactNode } from "react";
 import type { TFunction } from "i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { ArrowRight, ArrowUpRight, CircleHelp, KeyRound, Network, RefreshCw, Waypoints } from "lucide-react";
+import { ArrowRight, ArrowUpRight, CircleHelp, KeyRound, Network, Palette, RefreshCw, Waypoints } from "lucide-react";
 
 import { ClientGlyph } from "@/components/newapi/configuration-shortcuts";
 import { toast } from "@/hooks/use-toast";
@@ -23,6 +23,7 @@ type GlyphClient = typeof GLYPH_CLIENTS[number];
 export function ClientIcon({ client }: { client: string }) {
   if ((GLYPH_CLIENTS as readonly string[]).includes(client)) return <ClientGlyph client={client as GlyphClient} />;
   if (client === "aggregate") return <Network aria-hidden />;
+  if (client === "imageWorkbench") return <Palette aria-hidden />;
   if (client.startsWith("gateway:")) return <KeyRound aria-hidden />;
   return <CircleHelp aria-hidden />;
 }

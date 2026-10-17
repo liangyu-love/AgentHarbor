@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Brush, ImagePlus, Palette, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,8 @@ import {
 } from "@/components/ui/select";
 import { InkModelCombobox } from "./ink-model-combobox";
 import { PromptLibrary } from "./prompt-library";
+import { PromptAssistPanel, PromptAssistToggle } from "./prompt-assist";
+import { SaveAsTemplateButton } from "./prompt-template-dialog";
 import type { ImageConnection } from "./use-image-connection";
 import { SIZES, type GenerationJob } from "./workbench-types";
 
@@ -37,6 +39,7 @@ export function GenerationForm({
 }) {
   const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
+  const [assistOpen, setAssistOpen] = useState(false);
   const selectedQuality = connection.qualityOptions.find(item => item.value === connection.quality);
   return (
     <div className="ink-scroll-frame min-w-0 p-4 transition-all duration-300 sm:p-5 sm:p-6">
@@ -194,17 +197,26 @@ export function GenerationForm({
             <Label className="font-serif text-xs font-semibold text-foreground/90">
               提示词
             </Label>
-            <span className="font-mono text-[11px] text-muted-foreground">
-              {Array.from(prompt).length}/32000 字符
-            </span>
+            <div className="flex items-center gap-2">
+              <PromptAssistToggle open={assistOpen} onToggle={() => setAssistOpen(!assistOpen)} />
+              <SaveAsTemplateButton prompt={prompt} />
+              <span className="font-mono text-[11px] text-muted-foreground">
+                {Array.from(prompt).length}/32000 字符
+              </span>
+            </div>
           </div>
           <Textarea
+            data-image-prompt
             value={prompt}
             onChange={event => setPrompt(event.target.value)}
             placeholder="描述画面主体、构图、光线和风格…"
             className="min-h-36 resize-y bg-background/90 font-serif leading-relaxed text-sm placeholder:text-muted-foreground/60 focus:border-[#b83b38]/50 focus:ring-1 focus:ring-[#b83b38]/30"
           />
         </div>
+
+        {assistOpen && (
+          <PromptAssistPanel prompt={prompt} onPromptChange={setPrompt} onClose={() => setAssistOpen(false)} />
+        )}
 
         <PromptLibrary prompt={prompt} onPromptChange={setPrompt} />
 

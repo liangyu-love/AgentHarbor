@@ -1566,7 +1566,8 @@
     "codexContextPresetMax": "Codex default context · {{value}}, up to {{max}}",
     "codexMenuOverflow": "The Codex desktop app's model menu shows the first {{limit}} models. There are {{total}} now, so the last {{count}} are missing there (the CLI still has them): {{names}}. Leave unused models out on the relay cards, or share only the account-source models you need on the Accounts page.",
     "codexMenuOverflowMore": "{{names}} and more",
-    "routeSourceCursor": "Cursor"
+    "routeSourceCursor": "Cursor",
+    "routeSourceImageWorkbench": "Image workbench"
   },
   "avatar": {
     "title": "App avatar",
@@ -1619,7 +1620,16 @@
       "response": "The image service returned an unrecognized response.",
       "cancelled": "Generation cancelled.",
       "responseTooLarge": "The image response is too large.",
-      "save": "Could not save the image. Check the destination path and try again."
+      "save": "Could not save the image. Check the destination path and try again.",
+      "promptLibrary": "Could not read or write the prompt library file. Check access to the app data folder.",
+      "promptInvalid": "The prompt library is invalid or over its limits (100 groups, 2000 templates).",
+      "promptImport": "Could not import. Choose a prompt library JSON file exported by AgentHarbor (16 MB at most).",
+      "promptExport": "Export failed. Try another location.",
+      "assistSettings": "Could not save the polishing settings. The instruction can be 8000 characters at most.",
+      "assistModel": "Choose a model to polish with.",
+      "assistRequest": "The extra requirement can be 500 characters at most.",
+      "assistRouter": "The local router is not running, so the polishing model cannot be reached.",
+      "assistEmpty": "The model returned nothing. Try again or choose another model."
     },
     "saveLocal": "Save locally",
     "saveAs": "Save as…",

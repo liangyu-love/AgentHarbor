@@ -30,6 +30,12 @@ const QUALITIES = [
   { value: "low", label: "低", tip: "优先生成速度" },
 ];
 
+/** The quality's name as the form shows it, or the value itself. */
+export const qualityLabel = (value: string) => QUALITIES.find(item => item.value === value)?.label ?? value;
+
+/** The size's name as the form shows it ("1:1 方幅"), or the value itself. */
+export const sizeLabel = (value: string) => SIZES.find(item => item.value === value)?.label ?? value;
+
 export function qualitiesForModel(model: string) {
   const extended = /^gpt-image-2\.5-(sunburst|flare)(?:-\d{4}-\d{2}-\d{2})?$/.test(model.trim());
   return QUALITIES.filter(item => extended || !["xhigh", "max"].includes(item.value));
@@ -40,6 +46,8 @@ export type SavedImageConfig = {
   model: string;
   size: string;
   quality: string;
+  /** The relay last chosen; "" when manual setup was chosen, absent when never chosen. */
+  providerId?: string;
   legacyApiKey?: string;
 };
 
@@ -47,6 +55,8 @@ export type GenerationJob = {
   id: string;
   prompt: string;
   model: string;
+  size: string;
+  quality: string;
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
   result?: ImageGenerationResponse;
   error?: string;
@@ -64,6 +74,7 @@ export function loadSavedConfig(): SavedImageConfig {
         model: typeof parsed.model === "string" ? parsed.model : defaults.model,
         size: typeof parsed.size === "string" ? parsed.size : defaults.size,
         quality: typeof parsed.quality === "string" ? parsed.quality : defaults.quality,
+        providerId: typeof parsed.providerId === "string" ? parsed.providerId : undefined,
       };
       return { ...config, legacyApiKey: parsed.apiKey };
     }

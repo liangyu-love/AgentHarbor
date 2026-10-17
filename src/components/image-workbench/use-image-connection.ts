@@ -3,9 +3,20 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 import { storageKeys } from "@/lib/storage-keys";
+import type { NewApiProvider } from "@/types/newapi";
 import { loadSavedConfig, qualitiesForModel, type SavedImageConfig } from "./workbench-types";
 
 const IMAGE_MODEL = /image|dall|gpt-image/i;
+/** Offered for manual setup, where no relay lists its own models. */
+const OFFICIAL_IMAGE_MODELS = ["gpt-image-2", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare"];
+
+/** A relay's image models in its own order, plus its default model when that is one. */
+function imageModelsOf(provider: NewApiProvider) {
+  return Array.from(new Set([
+    ...provider.models.map(item => item.id).filter(id => IMAGE_MODEL.test(id)),
+    ...(IMAGE_MODEL.test(provider.model) ? [provider.model] : []),
+  ]));
+}
 
 /**
  * Provider choice, manual site/key credentials and the generation parameters that
@@ -15,13 +26,7 @@ export function useImageConnection(pageActive: boolean, setError: (error: string
   const state = useQuery({ queryKey: queryKeys.providers, queryFn: api.providers.loadState, refetchOnWindowFocus: false });
   const providers = state.data?.providers ?? [];
   const imageProviders = useMemo(
-    () =>
-      providers.filter(
-        provider =>
-          provider.hasApiKey &&
-          ((!!provider.model && IMAGE_MODEL.test(provider.model)) ||
-            provider.models.some(model => IMAGE_MODEL.test(model.id))),
-      ),
+    () => providers.filter(provider => provider.hasApiKey && imageModelsOf(provider).length > 0),
     [providers],
   );
 
@@ -30,8 +35,10 @@ export function useImageConnection(pageActive: boolean, setError: (error: string
   const [legacyKeyMigrationPending, setLegacyKeyMigrationPending] = useState(
     () => Boolean(savedConfig.legacyApiKey),
   );
+  // A remembered relay waits for the provider list; a remembered manual choice does not.
   const [providerChoiceInitialized, setProviderChoiceInitialized] = useState(
-    () => Boolean(savedConfig.baseUrl || savedConfig.legacyApiKey),
+    () => savedConfig.providerId === ""
+      || (savedConfig.providerId === undefined && Boolean(savedConfig.baseUrl || savedConfig.legacyApiKey)),
   );
   const [baseUrl, setBaseUrl] = useState(savedConfig.baseUrl);
   const currentSite = useRef(baseUrl.trim());
@@ -47,13 +54,8 @@ export function useImageConnection(pageActive: boolean, setError: (error: string
   const quality = qualityOptions.some(item => item.value === chosenQuality) ? chosenQuality : "auto";
 
   const selectedProvider = providers.find(provider => provider.id === providerId);
-  const availableModels = selectedProvider?.models.filter(item => IMAGE_MODEL.test(item.id)) ?? [];
-  const modelOptions = Array.from(new Set([
-    "gpt-image-2",
-    "gpt-image-2.5-sunburst",
-    "gpt-image-2.5-flare",
-    ...availableModels.map(item => item.id),
-  ]));
+  const providerModels = selectedProvider ? imageModelsOf(selectedProvider) : [];
+  const modelOptions = providerModels.length > 0 ? providerModels : OFFICIAL_IMAGE_MODELS;
 
   const refreshKeyStatus = useCallback(async (site: string, usedKey?: string) => {
     if (site.trim() !== currentSite.current) return;
@@ -106,14 +108,15 @@ export function useImageConnection(pageActive: boolean, setError: (error: string
   }, [baseUrl, pageActive, refreshKeyStatus]);
 
   useEffect(() => {
-    if (providerId || legacyKeyMigrationPending) return;
+    // Saving before the remembered relay is restored would overwrite it with manual setup.
+    if (!providerChoiceInitialized || legacyKeyMigrationPending) return;
     try {
       localStorage.setItem(
         storageKeys.imageWorkbenchConfig,
-        JSON.stringify({ baseUrl, model, size, quality } satisfies SavedImageConfig),
+        JSON.stringify({ baseUrl, model, size, quality, providerId } satisfies SavedImageConfig),
       );
     } catch { /* storage may be disabled */ }
-  }, [baseUrl, legacyKeyMigrationPending, model, providerId, quality, size]);
+  }, [baseUrl, legacyKeyMigrationPending, model, providerChoiceInitialized, providerId, quality, size]);
 
   const refreshKeySites = useCallback(() => {
     void api.image.keySites().then(setKeySites).catch(() => setKeySites([]));
@@ -154,26 +157,31 @@ export function useImageConnection(pageActive: boolean, setError: (error: string
   useEffect(() => {
     if (providerChoiceInitialized || !state.isSuccess) return;
     setProviderChoiceInitialized(true);
+    // The relay chosen last time keeps the model used with it.
+    const remembered = imageProviders.find(provider => provider.id === savedConfig.providerId);
+    if (remembered) {
+      setProviderId(remembered.id);
+      setModel(current => current.trim() || imageModelsOf(remembered)[0]);
+      return;
+    }
     if (baseUrl || apiKey || imageProviders.length === 0) return;
-    const provider = imageProviders[0];
-    setProviderId(provider.id);
-    setModel(
-      provider.models.find(item => IMAGE_MODEL.test(item.id))?.id ||
-        provider.model ||
-        "gpt-image-2",
-    );
-  }, [apiKey, baseUrl, imageProviders, providerChoiceInitialized, state.isSuccess]);
+    setProviderId(imageProviders[0].id);
+    setModel(imageModelsOf(imageProviders[0])[0]);
+  }, [apiKey, baseUrl, imageProviders, providerChoiceInitialized, savedConfig, state.isSuccess]);
+
+  // The chosen relay was deleted, lost its key or its image models: move to the next one.
+  useEffect(() => {
+    if (!providerId || !state.isSuccess || imageProviders.some(provider => provider.id === providerId)) return;
+    const next = imageProviders[0];
+    setProviderId(next?.id ?? "");
+    if (next) setModel(imageModelsOf(next)[0]);
+  }, [imageProviders, providerId, state.isSuccess]);
 
   const chooseProvider = (id: string) => {
     setProviderChoiceInitialized(true);
     setProviderId(id);
     const provider = providers.find(item => item.id === id);
-    if (provider) {
-      setModel(
-        provider.models.find(item => IMAGE_MODEL.test(item.id))?.id ||
-          (IMAGE_MODEL.test(provider.model) ? provider.model : "gpt-image-2"),
-      );
-    }
+    if (provider) setModel(imageModelsOf(provider)[0] ?? "gpt-image-2");
   };
 
   const hasCredentials = Boolean(providerId || (baseUrl.trim() && (apiKey.trim() || keyStored)));

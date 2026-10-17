@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { api, type ImageGenerationRequest } from "@/lib/api";
+import { api, type GenerationMeta, type ImageGenerationRequest } from "@/lib/api";
 import { errorKey } from "@/lib/invoke-error";
 import { queryKeys } from "@/lib/query-keys";
 import type { GenerationJob } from "./workbench-types";
@@ -9,7 +9,7 @@ import type { GenerationJob } from "./workbench-types";
 const MAX_ACTIVE_GENERATIONS = 2;
 
 export function useGenerationQueue({ persistToGallery, onManualKeyUsed }: {
-  persistToGallery: (images: string[]) => Promise<boolean>;
+  persistToGallery: (images: string[], meta: GenerationMeta | undefined) => Promise<boolean>;
   onManualKeyUsed: (baseUrl: string, apiKey: string) => void;
 }) {
   const queryClient = useQueryClient();
@@ -17,6 +17,8 @@ export function useGenerationQueue({ persistToGallery, onManualKeyUsed }: {
   const queuedGenerations = useRef<Array<{ id: string; run: () => Promise<void> }>>([]);
   const activeGenerations = useRef(0);
   const gallerySaves = useRef(new Set<string>());
+  // What each finished job saves beside its images, kept for a retried save.
+  const jobRecords = useRef(new Map<string, GenerationMeta>());
   const pumpGenerations = useRef<() => void>(() => {});
 
   pumpGenerations.current = () => {
@@ -36,7 +38,7 @@ export function useGenerationQueue({ persistToGallery, onManualKeyUsed }: {
     gallerySaves.current.add(id);
     setGenerationJobs(current => current.map(job => job.id === id ? { ...job, galleryStatus: "saving" } : job));
     try {
-      const saved = await persistToGallery(images);
+      const saved = await persistToGallery(images, jobRecords.current.get(id));
       setGenerationJobs(current => current.map(job => job.id === id
         ? { ...job, galleryStatus: saved ? "saved" : "failed" }
         : job));
@@ -52,6 +54,8 @@ export function useGenerationQueue({ persistToGallery, onManualKeyUsed }: {
       id,
       prompt: request.prompt,
       model: request.model,
+      size: request.size,
+      quality: request.quality,
       status: activeGenerations.current < MAX_ACTIVE_GENERATIONS ? "running" : "queued",
     };
     setGenerationJobs(current => [job, ...current]);
@@ -59,6 +63,13 @@ export function useGenerationQueue({ persistToGallery, onManualKeyUsed }: {
       setGenerationJobs(current => current.map(item => item.id === id ? { ...item, status: "running" } : item));
       try {
         const generated = await api.image.generate(request, id);
+        jobRecords.current.set(id, {
+          prompt: request.prompt,
+          model: generated.model || request.model,
+          size: request.size,
+          quality: request.quality,
+          revisedPrompts: generated.revisedPrompts,
+        });
         setGenerationJobs(current => current.map(item => item.id === id
           ? { ...item, status: "completed", result: generated }
           : item));
@@ -89,6 +100,7 @@ export function useGenerationQueue({ persistToGallery, onManualKeyUsed }: {
       if (!queuedGenerations.current.some(queued => queued.id === job.id)) return;
       queuedGenerations.current = queuedGenerations.current.filter(queued => queued.id !== job.id);
     }
+    jobRecords.current.delete(job.id);
     setGenerationJobs(current => current.filter(item => item.id !== job.id));
   };
 

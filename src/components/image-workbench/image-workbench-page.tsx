@@ -1,5 +1,6 @@
 import { useContext, useState } from "react";
 import { PageActiveContext } from "@/components/layout/page-stage";
+import { toast } from "@/hooks/use-toast";
 import { GalleryOverlays, GalleryPanel } from "./gallery-panel";
 import { GenerationCanvas } from "./generation-canvas";
 import { GenerationForm } from "./generation-form";
@@ -36,6 +37,15 @@ export function ImageWorkbenchPage() {
     prompt.trim().length > 0 &&
     connection.model.trim().length > 0 &&
     connection.hasCredentials;
+
+  /** Put a saved prompt back in the prompt box; from the page, also bring the box into view. */
+  const fillPrompt = (text: string, reveal: boolean) => {
+    setPrompt(text);
+    if (!reveal) return;
+    toast({ title: "已填入提示词", variant: "success" });
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    document.querySelector("[data-image-prompt]")?.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "center" });
+  };
 
   const generate = () => {
     if (!prompt.trim() || !connection.model.trim()) return;
@@ -82,13 +92,14 @@ export function ImageWorkbenchPage() {
           onRetrySave={queue.saveJobToGallery}
           onPreview={gallery.showPreview}
           onSaveAs={gallery.saveImageAs}
+          onUsePrompt={text => fillPrompt(text, true)}
         />
       </div>
 
       {/* 历史画册 */}
-      {gallery.galleryOpen && <GalleryPanel gallery={gallery} />}
+      {gallery.galleryOpen && <GalleryPanel gallery={gallery} onUsePrompt={text => fillPrompt(text, true)} />}
 
-      <GalleryOverlays gallery={gallery} pageActive={pageActive} />
+      <GalleryOverlays gallery={gallery} pageActive={pageActive} onUsePrompt={text => fillPrompt(text, false)} />
     </div>
   );
 }

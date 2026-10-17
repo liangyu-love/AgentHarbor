@@ -26,7 +26,7 @@ const MATCH_LAG_SECS: i64 = 120;
 /// Requests are logged when they end, so a long one lands after shorter later
 /// ones; new requests are taken from this far behind the newest one kept.
 const INGEST_OVERLAP_SECS: i64 = 6 * 3600;
-const KNOWN_CLIENTS: [&str; 8] = [
+const KNOWN_CLIENTS: [&str; 9] = [
     "codex",
     "claudeCode",
     "opencode",
@@ -34,6 +34,7 @@ const KNOWN_CLIENTS: [&str; 8] = [
     "harness",
     "claudeDesktop",
     "cursor",
+    "imageWorkbench",
     "aggregate",
 ];
 

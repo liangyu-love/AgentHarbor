@@ -1,11 +1,63 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 
+const MANUAL = "独立配置 / 手动填写连接凭据";
+
 export async function testImageApi({ page, reset, captureDir }) {
-  await reset("image");
-  await page.getByRole("combobox", { name: "图像供应商" }).click();
-  await page.getByRole("option", { name: "Provider image", exact: true }).click();
+  const providerSelect = page.getByRole("combobox", { name: "图像供应商" });
+  const chooseProvider = async name => {
+    await providerSelect.click();
+    await page.getByRole("option", { name, exact: true }).click();
+  };
   const model = page.getByPlaceholder("gpt-image-2", { exact: true });
+  const size = page.getByRole("combobox", { name: "画幅尺寸", exact: true });
+  const offeredModels = async () => {
+    await page.getByRole("button", { name: "展开模型选项" }).click();
+    const names = await page.getByRole("listbox", { name: "可用生图模型" }).getByRole("option").allTextContents();
+    await page.getByRole("button", { name: "收起模型选项" }).click();
+    return names.map(name => name.trim());
+  };
+
+  // Each provider offers its own image models only; manual setup offers the official names.
+  await reset("image");
+  await chooseProvider("Provider studio");
+  assert.equal(await model.inputValue(), "gpt-image-2.5-sunburst");
+  assert.deepEqual(await offeredModels(), ["gpt-image-2.5-sunburst", "gpt-image-2.5-flare"]);
+  await chooseProvider("Provider image");
+  assert.equal(await model.inputValue(), "gpt-image-2");
+  assert.deepEqual(await offeredModels(), ["gpt-image-2"]);
+  await chooseProvider(MANUAL);
+  assert.deepEqual(await offeredModels(), ["gpt-image-2", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare"]);
+  console.log("PASS switching image providers lists only the chosen provider's image models");
+
+  // The chosen provider, model and size are restored on the next visit.
+  await chooseProvider("Provider studio");
+  await page.getByRole("button", { name: "展开模型选项" }).click();
+  await page.getByRole("option", { name: "gpt-image-2.5-flare", exact: true }).click();
+  await size.click();
+  await page.getByRole("option", { name: "3:2 横卷 (1536x1024)", exact: true }).click();
+  await page.getByRole("listbox").waitFor({ state: "hidden" });
+  await reset("image");
+  await page.waitForFunction(() => document.querySelector('[role="combobox"][aria-label="图像供应商"]')?.textContent.includes("Provider studio"));
+  assert.equal(await model.inputValue(), "gpt-image-2.5-flare");
+  assert.equal((await size.textContent()).trim(), "3:2 横卷 (1536x1024)");
+  console.log("PASS the image provider choice and its parameters survive a reload");
+
+  // A chosen relay that disappears hands over to the next image relay.
+  await page.evaluate(() => {
+    // A new object: the cache holds the fixture's state itself, so mutating it changes nothing visible.
+    const client = window.review.frontendClient;
+    const current = client.getQueryData(["newapi-state"]);
+    client.setQueryData(["newapi-state"], {
+      ...current, providers: current.providers.filter(provider => provider.id !== "studio"),
+    });
+  });
+  await page.waitForFunction(() => document.querySelector('[role="combobox"][aria-label="图像供应商"]')?.textContent.includes("Provider image"));
+  assert.equal(await model.inputValue(), "gpt-image-2");
+  console.log("PASS a removed image provider falls back to the next one");
+
+  await reset("image");
+  await chooseProvider("Provider studio");
   await model.focus();
   assert.equal(await page.getByRole("option", { name: "gpt-image-2.5", exact: true }).count(), 0);
   await page.getByRole("option", { name: "gpt-image-2.5-flare", exact: true }).waitFor();
@@ -28,8 +80,8 @@ export async function testImageApi({ page, reset, captureDir }) {
   await page.locator('[data-generation-job-status="completed"]').waitFor();
   console.log("PASS official Sunburst/Flare choices and new quality/size reach image requests");
 
-  await model.click();
-  await page.getByRole("option", { name: "gpt-image-2", exact: true }).click();
+  await chooseProvider("Provider image");
+  assert.equal(await model.inputValue(), "gpt-image-2");
   assert.equal((await quality.textContent()).trim(), "自动");
   await quality.click();
   assert.equal(await page.getByRole("option", { name: /^最高 / }).count(), 0);

@@ -1566,7 +1566,8 @@
     "codexContextPresetMax": "Codex 默认上下文 · {{value}}，最大 {{max}}",
     "codexMenuOverflow": "Codex 桌面版的模型菜单只显示前 {{limit}} 个模型，现在有 {{total}} 个，排在后面的 {{count}} 个在桌面版里看不到（命令行不受影响）：{{names}}。可以在中转卡片里取消不用的模型，或在账号页只共享需要的账号来源模型。",
     "codexMenuOverflowMore": "{{names}} 等",
-    "routeSourceCursor": "Cursor"
+    "routeSourceCursor": "Cursor",
+    "routeSourceImageWorkbench": "生图工作台"
   },
   "avatar": {
     "title": "应用头像",
@@ -1619,7 +1620,16 @@
       "response": "生图服务返回了无法识别的数据。",
       "cancelled": "已取消生成。",
       "responseTooLarge": "生图响应过大。",
-      "save": "图片保存失败，请检查目标路径后重试。"
+      "save": "图片保存失败，请检查目标路径后重试。",
+      "promptLibrary": "无法读写画谱文件，请检查应用数据目录的权限。",
+      "promptInvalid": "画谱内容无效或超出上限（最多 100 个分组、2000 个模版）。",
+      "promptImport": "无法导入：请选择 AgentHarbor 导出的画谱 JSON 文件（最大 16 MB）。",
+      "promptExport": "导出失败，请换一个保存位置后重试。",
+      "assistSettings": "润色设置保存失败，指令最多 8000 字。",
+      "assistModel": "请选择一个用于润色的模型。",
+      "assistRequest": "额外要求最多 500 字。",
+      "assistRouter": "本地路由没有启动，无法请求润色模型。",
+      "assistEmpty": "模型没有返回内容，请换个模型或重试。"
     },
     "saveLocal": "存入本地",
     "saveAs": "另存为…",

@@ -17,7 +17,7 @@ use std::{
 };
 use tauri::State;
 
-const MAX_PROMPT_CHARS: usize = 32_000;
+pub(super) const MAX_PROMPT_CHARS: usize = 32_000;
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 120 * 1024 * 1024;
 const THUMBNAIL_EDGE: u32 = 256;
@@ -223,7 +223,7 @@ fn validate(request: &ImageGenerationRequest) -> Result<(), String> {
     Ok(())
 }
 
-fn paths(repo: &State<'_, Mutex<Repository>>) -> Result<CodexPaths, String> {
+pub(super) fn paths(repo: &State<'_, Mutex<Repository>>) -> Result<CodexPaths, String> {
     Ok(repo
         .lock()
         .map_err(|_| "image.errors.storage".to_owned())?
@@ -773,39 +773,134 @@ pub async fn save_image_file(path: String, data_url: String) -> Result<(), Strin
     .await
 }
 
-/// Persist generated images under the app gallery folder without a save dialog.
+/// How an image was made, kept beside it in a same-named `.json`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GalleryMeta {
+    pub prompt: String,
+    /// The prompt as the image API rewrote it, when it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revised_prompt: Option<String>,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub size: String,
+    #[serde(default)]
+    pub quality: String,
+}
+
+/// What a generation hands over with its images; each image may have its own revised prompt.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerationMeta {
+    pub prompt: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub size: String,
+    #[serde(default)]
+    pub quality: String,
+    #[serde(default)]
+    pub revised_prompts: Vec<String>,
+}
+
+/// The sidecar file. The marker tells it apart from a user's own JSON in a
+/// gallery that points at one of their folders, so deletes never touch theirs.
+#[derive(Serialize, Deserialize)]
+struct GallerySidecar {
+    agentharbor: u32,
+    #[serde(flatten)]
+    meta: GalleryMeta,
+}
+
+const SIDECAR_VERSION: u32 = 1;
+const MAX_SIDECAR_BYTES: u64 = 256 * 1024;
+
+fn sidecar_path(image: &std::path::Path) -> std::path::PathBuf {
+    image.with_extension("json")
+}
+
+fn clip(value: &str, limit: usize) -> String {
+    value.trim().chars().take(limit).collect()
+}
+
+fn meta_for_image(meta: &GenerationMeta, index: usize) -> GalleryMeta {
+    let revised = meta
+        .revised_prompts
+        .get(index)
+        .map(|text| clip(text, MAX_PROMPT_CHARS))
+        .filter(|text| !text.is_empty() && *text != meta.prompt.trim());
+    GalleryMeta {
+        prompt: clip(&meta.prompt, MAX_PROMPT_CHARS),
+        revised_prompt: revised,
+        model: clip(&meta.model, 200),
+        size: clip(&meta.size, 32),
+        quality: clip(&meta.quality, 32),
+    }
+}
+
+fn write_sidecar(image: &std::path::Path, meta: GalleryMeta) -> Result<(), String> {
+    let sidecar = GallerySidecar { agentharbor: SIDECAR_VERSION, meta };
+    let contents = serde_json::to_vec_pretty(&sidecar).map_err(|_| "image.errors.save".to_owned())?;
+    std::fs::write(sidecar_path(image), contents).map_err(|_| "image.errors.save".to_owned())
+}
+
+/// The record beside `image`, if there is one of ours.
+fn read_sidecar(image: &std::path::Path) -> Option<GalleryMeta> {
+    let path = sidecar_path(image);
+    if std::fs::metadata(&path).ok()?.len() > MAX_SIDECAR_BYTES {
+        return None;
+    }
+    let sidecar: GallerySidecar = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    (sidecar.agentharbor >= 1 && !sidecar.meta.prompt.is_empty()).then_some(sidecar.meta)
+}
+
+fn save_to_gallery(
+    paths: &CodexPaths,
+    data_urls: &[String],
+    meta: Option<&GenerationMeta>,
+) -> Result<SavedImagesPayload, String> {
+    if data_urls.is_empty() || data_urls.len() > 4 {
+        return Err("image.errors.save".into());
+    }
+    // Validate the entire batch before creating any gallery file.
+    let images = data_urls
+        .iter()
+        .map(|data_url| decode_data_url(data_url))
+        .collect::<Result<Vec<_>, _>>()?;
+    let directory = gallery_dir(paths);
+    std::fs::create_dir_all(&directory).map_err(|_| "image.errors.save".to_owned())?;
+    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S%.3f");
+    let nonce = uuid::Uuid::new_v4().simple().to_string()[..8].to_owned();
+    let mut files = Vec::with_capacity(data_urls.len());
+    for (index, (bytes, extension)) in images.iter().enumerate() {
+        let file_name = format!("{}-{}-{:02}.{}", stamp, nonce, index + 1, extension);
+        let target = directory.join(&file_name);
+        std::fs::write(&target, bytes).map_err(|_| "image.errors.save".to_owned())?;
+        // The image is what matters; a missing record only loses its prompt.
+        if let Some(meta) = meta.filter(|meta| !meta.prompt.trim().is_empty()) {
+            if let Err(error) = write_sidecar(&target, meta_for_image(meta, index)) {
+                log::warn!("gallery prompt record not written for {file_name}: {error}");
+            }
+        }
+        files.push(target.to_string_lossy().into_owned());
+    }
+    Ok(SavedImagesPayload {
+        directory: directory.to_string_lossy().into_owned(),
+        files,
+    })
+}
+
+/// Persist generated images under the app gallery folder without a save dialog,
+/// each with a record of the prompt and parameters that made it.
 #[tauri::command]
 pub async fn save_images_to_gallery(
     repo: State<'_, Mutex<Repository>>,
     data_urls: Vec<String>,
+    meta: Option<GenerationMeta>,
 ) -> Result<SavedImagesPayload, String> {
     let paths = paths(&repo)?;
-    super::blocking(move || {
-        if data_urls.is_empty() || data_urls.len() > 4 {
-            return Err("image.errors.save".into());
-        }
-        // Validate the entire batch before creating any gallery file.
-        let images = data_urls
-            .iter()
-            .map(|data_url| decode_data_url(data_url))
-            .collect::<Result<Vec<_>, _>>()?;
-        let directory = gallery_dir(&paths);
-        std::fs::create_dir_all(&directory).map_err(|_| "image.errors.save".to_owned())?;
-        let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S%.3f");
-        let nonce = uuid::Uuid::new_v4().simple().to_string()[..8].to_owned();
-        let mut files = Vec::with_capacity(data_urls.len());
-        for (index, (bytes, extension)) in images.iter().enumerate() {
-            let file_name = format!("{}-{}-{:02}.{}", stamp, nonce, index + 1, extension);
-            let target = directory.join(&file_name);
-            std::fs::write(&target, bytes).map_err(|_| "image.errors.save".to_owned())?;
-            files.push(target.to_string_lossy().into_owned());
-        }
-        Ok(SavedImagesPayload {
-            directory: directory.to_string_lossy().into_owned(),
-            files,
-        })
-    })
-    .await
+    super::blocking(move || save_to_gallery(&paths, &data_urls, meta.as_ref())).await
 }
 
 #[tauri::command]
@@ -862,6 +957,8 @@ pub struct GalleryItem {
     pub path: String,
     pub size: u64,
     pub modified_at: i64,
+    /// How the image was made; none for images saved before records were kept.
+    pub meta: Option<GalleryMeta>,
 }
 
 #[derive(Debug, Serialize)]
@@ -878,54 +975,60 @@ pub async fn list_gallery_images(
     repo: State<'_, Mutex<Repository>>,
 ) -> Result<GalleryListPayload, String> {
     let paths = paths(&repo)?;
-    super::blocking(move || {
-        const MAX_GALLERY_ITEMS: usize = 200;
-        let directory = gallery_dir(&paths);
-        if !directory.exists() {
-            return Ok(GalleryListPayload {
-                directory: directory.to_string_lossy().into_owned(),
-                items: Vec::new(),
-                has_more: false,
-            });
-        }
-        let mut items = Vec::new();
-        let entries = std::fs::read_dir(&directory).map_err(|_| "image.errors.save".to_owned())?;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_file() || !is_gallery_image(&path) {
-                continue;
-            }
-            let meta = match entry.metadata() {
-                Ok(meta) => meta,
-                Err(_) => continue,
-            };
-            let modified_at = meta
-                .modified()
-                .ok()
-                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|duration| duration.as_millis() as i64)
-                .unwrap_or(0);
-            items.push(GalleryItem {
-                name: entry.file_name().to_string_lossy().into_owned(),
-                path: path.to_string_lossy().into_owned(),
-                size: meta.len(),
-                modified_at,
-            });
-        }
-        items.sort_by(|a, b| {
-            b.modified_at
-                .cmp(&a.modified_at)
-                .then_with(|| b.name.cmp(&a.name))
-        });
-        let has_more = items.len() > MAX_GALLERY_ITEMS;
-        items.truncate(MAX_GALLERY_ITEMS);
-        Ok(GalleryListPayload {
+    super::blocking(move || list_gallery(&paths)).await
+}
+
+fn list_gallery(paths: &CodexPaths) -> Result<GalleryListPayload, String> {
+    const MAX_GALLERY_ITEMS: usize = 200;
+    let directory = gallery_dir(paths);
+    if !directory.exists() {
+        return Ok(GalleryListPayload {
             directory: directory.to_string_lossy().into_owned(),
-            items,
-            has_more,
-        })
+            items: Vec::new(),
+            has_more: false,
+        });
+    }
+    let mut items = Vec::new();
+    let entries = std::fs::read_dir(&directory).map_err(|_| "image.errors.save".to_owned())?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() || !is_gallery_image(&path) {
+            continue;
+        }
+        let meta = match entry.metadata() {
+            Ok(meta) => meta,
+            Err(_) => continue,
+        };
+        let modified_at = meta
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis() as i64)
+            .unwrap_or(0);
+        items.push(GalleryItem {
+            name: entry.file_name().to_string_lossy().into_owned(),
+            path: path.to_string_lossy().into_owned(),
+            size: meta.len(),
+            modified_at,
+            meta: None,
+        });
+    }
+    items.sort_by(|a, b| {
+        b.modified_at
+            .cmp(&a.modified_at)
+            .then_with(|| b.name.cmp(&a.name))
+    });
+    let has_more = items.len() > MAX_GALLERY_ITEMS;
+    items.truncate(MAX_GALLERY_ITEMS);
+    // Records are read only for the images shown.
+    for item in &mut items {
+        item.meta = read_sidecar(std::path::Path::new(&item.path));
+    }
+    Ok(GalleryListPayload {
+        directory: directory.to_string_lossy().into_owned(),
+        items,
+        has_more,
     })
-    .await
 }
 
 /// Load one gallery image as a data URL for WebView display.
@@ -1056,16 +1159,22 @@ pub async fn delete_gallery_image(
     path: String,
 ) -> Result<(), String> {
     let paths = paths(&repo)?;
-    super::blocking(move || {
-        let target = std::path::PathBuf::from(&path);
-        let target = ensure_inside_gallery(&paths, &target)?;
-        // The gallery can point at any user directory; never delete non-image files there.
-        if !is_gallery_image(&target) {
-            return Err("image.errors.notFound".into());
-        }
-        std::fs::remove_file(&target).map_err(|_| "image.errors.save".to_owned())
-    })
-    .await
+    super::blocking(move || delete_from_gallery(&paths, std::path::Path::new(&path))).await
+}
+
+fn delete_from_gallery(paths: &CodexPaths, path: &std::path::Path) -> Result<(), String> {
+    let target = ensure_inside_gallery(paths, path)?;
+    // The gallery can point at any user directory; never delete non-image files there.
+    if !is_gallery_image(&target) {
+        return Err("image.errors.notFound".into());
+    }
+    let record = read_sidecar(&target).is_some();
+    std::fs::remove_file(&target).map_err(|_| "image.errors.save".to_owned())?;
+    // Only a record of ours goes with it; a user's own JSON of the same name stays.
+    if record {
+        let _ = std::fs::remove_file(sidecar_path(&target));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1641,6 +1750,59 @@ mod tests {
             ensure_inside_gallery(&paths, &outside).unwrap_err(),
             "image.errors.notFound"
         );
+    }
+
+    fn png_data_url() -> String {
+        let image = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 4, image::Rgb([24, 96, 160])));
+        let mut bytes = Cursor::new(Vec::new());
+        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        format!("data:image/png;base64,{}", STANDARD.encode(bytes.into_inner()))
+    }
+
+    #[test]
+    fn gallery_images_keep_their_prompt_beside_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().join("codex"));
+        let meta = GenerationMeta {
+            prompt: " 雨夜橘猫 ".into(),
+            model: "gpt-image-2".into(),
+            size: "1024x1024".into(),
+            quality: "high".into(),
+            revised_prompts: vec!["雨夜橘猫".into(), "雨夜里的一只橘猫，电影感".into()],
+        };
+        let saved = save_to_gallery(&paths, &[png_data_url(), png_data_url()], Some(&meta)).unwrap();
+        let listed = list_gallery(&paths).unwrap();
+        assert_eq!(listed.items.len(), 2, "records are not listed as images");
+        let first = listed.items.iter().find(|item| item.path == saved.files[0]).unwrap();
+        let second = listed.items.iter().find(|item| item.path == saved.files[1]).unwrap();
+        let first_meta = first.meta.as_ref().unwrap();
+        assert_eq!(first_meta.prompt, "雨夜橘猫");
+        assert_eq!(first_meta.revised_prompt, None, "an unchanged prompt is not repeated");
+        assert_eq!((first_meta.model.as_str(), first_meta.size.as_str(), first_meta.quality.as_str()), ("gpt-image-2", "1024x1024", "high"));
+        assert_eq!(second.meta.as_ref().unwrap().revised_prompt.as_deref(), Some("雨夜里的一只橘猫，电影感"));
+
+        delete_from_gallery(&paths, std::path::Path::new(&saved.files[0])).unwrap();
+        assert!(!sidecar_path(std::path::Path::new(&saved.files[0])).exists());
+
+        // Images saved without a record list without one.
+        let plain = save_to_gallery(&paths, &[png_data_url()], None).unwrap();
+        let listed = list_gallery(&paths).unwrap();
+        assert!(listed.items.iter().find(|item| item.path == plain.files[0]).unwrap().meta.is_none());
+    }
+
+    #[test]
+    fn deleting_an_image_leaves_a_users_own_json_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().join("codex"));
+        let gallery = gallery_dir(&paths);
+        std::fs::create_dir_all(&gallery).unwrap();
+        let image = gallery.join("photo.png");
+        std::fs::write(&image, b"png").unwrap();
+        std::fs::write(gallery.join("photo.json"), br#"{"prompt":"not ours"}"#).unwrap();
+        assert!(read_sidecar(&image).is_none());
+        delete_from_gallery(&paths, &image).unwrap();
+        assert!(!image.exists());
+        assert!(gallery.join("photo.json").exists());
     }
 
     #[test]
