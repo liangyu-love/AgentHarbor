@@ -31,7 +31,7 @@ Codex 是主要集成对象，其他客户端共用同一套中转与路由。
 | --- | --- |
 | **仪表盘** | 各客户端的路由拓扑、今日 Token 概览、最近会话，以及可折叠的本地数据目录：列出各客户端的目录和关键文件 |
 | **中转模型** | 管理多个供应商；逐模型协议（Responses、Chat Completions、Anthropic Messages）、连通性测试、New API 余额、导入导出；能力目录与逐中转的匹配预览（上下文、输出上限、价格）来自内置的 [models.dev](https://github.com/anomalyco/models.dev) 快照 |
-| **模型注入** | 把中转模型和官方账号的模型接到下列客户端：预览、应用、恢复配置，每次都有备份；路由模式下中转、官方账号、聚合模型三类可以任意组合<br>• Codex：本地路由或原生直连，支持无账号模式和子代理默认配置<br>• Claude Code、Claude Desktop、OpenCode、Pi、DeepSeek Harness<br>• Cursor IDE 与 cursor-agent：Agent、Tab 补全和提交信息都能用这些模型，见下文 |
+| **模型注入** | 把中转模型和官方账号的模型接到下列客户端：预览、应用、恢复配置，每次都有备份；路由模式下中转、官方账号、聚合模型三类可以任意组合<br>• Codex：本地路由或原生直连，支持无账号模式和子代理默认配置<br>• Claude Code、Claude Desktop、OpenCode、Pi、DeepSeek Harness<br>• Cursor IDE 与 cursor-agent：Agent、Tab 补全和提交信息都能用这些模型，见下文<br>• 每个客户端面板都能一键启动或重启对应客户端，见下文 |
 | **本地路由** | 三种协议互相转换<br>模型聚合：按优先级分层、失败切换、首字超时切换、实时成员状态<br>请求级路由诊断 |
 | **通用网关** | 一个本地地址加上命名 key，任何能填 Base URL 和 API Key 的 agent 都能使用全部开启的模型，见下文 |
 | **账号** | Codex：ChatGPT OAuth 登录、额度窗口、手动切号或按阈值自动切号（正在运行的 Codex 会把任务做完，原账号额度用尽时才重启）<br>账号来源：ChatGPT（Sign in with ChatGPT）、WorkBuddy、WorkBuddy AI、GitHub Copilot、Gemini CLI、Antigravity、Kiro、Grok、Cursor、Qoder、Qoder CN、Trae CN、Trae 国际版、MiniMax Code（国内 / 国际）、ZCode、OpenCode Zen、OpenCode Go、Command Code，登录后可以提供给模型注入使用；有签到奖励的来源支持每日自动签到，见下文 |
@@ -60,6 +60,14 @@ Codex 是主要集成对象，其他客户端共用同一套中转与路由。
 - **Chat 中转的推理内容**：Codex 会回传推理项，但中转永远收不到它们。如果某个 Chat 中转用 `reasoning_content` 返回推理（DeepSeek 在带工具的对话里缺了它会直接拒绝），路由会按同一中转、同一模型把这段文本保存在内存里，并放回它所属的那一轮。用其他字段返回推理的中转不会收到额外内容。AgentHarbor 重启后，之前的轮次不再带推理内容。
 - **Native 鉴权**：使用供应商密钥。密钥存放在 Codex 的 `.env` 里一个随机命名的 AgentHarbor 变量中，通过 `env_key` 引用；不会写进 `auth.json`，也不会出现在预览里。`.env` 及其备份不加密，请当作机密文件保管。
 
+## 启动客户端
+
+注入页的每个客户端面板都能在改完配置后直接启动对应客户端：
+
+- **Claude Code、OpenCode、Pi、DeepSeek Harness**：在新终端（装了 Windows Terminal 就用它，否则用 PowerShell）里运行命令行，工作目录第一次选好后按客户端记住，按钮菜单里还有最近用过的目录。Harness 按注入的 profile 决定：`desktop` 启动或重启 Harness 桌面版，`web` 运行 `dsh web`，一次性的 `headless`、`sdk`、`acp` profile 则提供命令供复制。
+- **Codex、Claude Desktop、Cursor IDE**：没在运行时按钮显示「启动」，运行中显示「重启」；Codex 没在运行时直接启动，不再弹重启确认。
+- AgentHarbor 拉起的程序不再继承它的套接字，所以 Cursor 或 Codex 还开着时退出 AgentHarbor，路由端口也会被释放。若路由没在运行而端口确实被别的程序占着，注入页会显示占用的程序名和 PID，确认后结束它并重新启动路由。
+
 ## 组合模型来源
 
 Claude Code、OpenCode、Pi、DeepSeek Harness 的注入弹窗在路由模式下也有这三个开关：关掉一类会取消它已选的中转或聚合，并从列表里隐藏。Claude Code 只选一个中转、或只用聚合时和以前一样；同时选多个中转，或中转加聚合时，它经本地路由使用和网关相同的 `短名/模型` id，`/model` 菜单里会列出全部所选模型。
@@ -69,7 +77,7 @@ Claude Code、OpenCode、Pi、DeepSeek Harness 的注入弹窗在路由模式下
 DeepSeek Harness（`dsh`、Harness 桌面版）的自定义模型走 pi-ai 路由，写在 profile 的 `cordis.patch.yml` 里。注入弹窗只写入你选的一个 profile（`desktop`、`web` 或 `$DSH_HOME/profiles` 下的其他 profile；`$DSH_HOME` 默认为 `~/.dsh`）：
 
 - **路由**：每个中转按协议各建一条 `agentharbor-*` provider（一条路由只用 Chat Completions、Responses、Anthropic Messages 中的一种），所选聚合共用一条，都加进该 profile 自己的 `llm-pi-ai` 条目，和你的 provider 并列。patch 条目的 `config` 会整块替换组合出的配置，所以 AgentHarbor 不会另加第二个 `llm-pi-ai` 条目。
-- **密钥**：路由里只写凭据引用名，值存进 Harness 的 `$DSH_HOME/.credentials.yaml`（本地路由用 `AGENTHARBOR_ROUTER_TOKEN`，直连时每个中转一个 `AGENTHARBOR_RELAY_*`）。账号来源和聚合只能经本地路由使用，由路由持有并刷新它们的凭据。
+- **密钥**：路由里只写凭据引用名，值存进 Harness 的 `$DSH_HOME/.credentials.yaml`（本地路由用 `AGENTHARBOR_ROUTER_TOKEN`，直连时每个中转一个 `AGENTHARBOR_RELAY_*`）。账号来源和聚合只能经本地路由使用，由路由持有并刷新它们的凭据。headless profile（Harness 0.2.1 起）不带凭据存储，所以密钥改写进 `$DSH_HOME/.env`：只写 AgentHarbor 自己的几行，恢复时同样撤回。启动 `dsh` 时导出的同名环境变量、或工作目录 `.env` 里的同名变量会优先。
 - **默认模型**：可选写入 `agent-default-model`，让新会话用所选模型。之后在 Harness 里换成别的模型属于正常使用，不算冲突；恢复时也会保留你的选择。
 - 注释、`!!js` 表达式和其他条目都原样保留；每次修改都会重新解析，结果和预期不完全一致就拒绝写入。恢复时，文件没被别的改动过就逐字节还原，否则逐字段撤回；patch 被清空时写回 `[]`（Harness 遇到空文件会启动失败）。退出 AgentHarbor 时也会这样撤回路由模式的配置。
 - Harness 会在下一次请求时重新读取 profile patch。`$DSH_HOME/cordis.patch.yml` 中同 id 的条目优先级高于 profile，只会提示，不会被修改。
@@ -149,7 +157,7 @@ Codex 与 Claude Code / Claude Desktop 保留各自原来的 WebSearch 用法，
 - **AgentHarbor 数据目录**：存放中转、路由状态、用量账本和缓存。位于系统本地数据目录下的 `AgentHarbor`（例如 `%LOCALAPPDATA%\AgentHarbor`），也可以用 `AGENT_HARBOR_DATA_DIR` 指定。仪表盘的数据目录里能看到确切路径。
 - **供应商凭据**：保存在 `newapi-providers.dat` 中。Windows 上用当前用户的 DPAPI 加密；其他平台只限文件所有者读写（`0600`），不加密。界面不会回读已保存的密钥，编辑时留空即保留原值。
 - **账号来源凭据**：保存在 `account-sources.dat` 中，保护方式与供应商凭据相同；令牌只在路由转发请求时使用，界面里看不到。
-- **DeepSeek Harness**：路由所需的密钥存在它自己的 `.credentials.yaml` 里（macOS 和 Linux 上按 Harness 的要求只限所有者读写 `0600`，不加密）；profile patch 里只有引用名。
+- **DeepSeek Harness**：路由所需的密钥存在它自己的 `.credentials.yaml` 里，headless profile 则存在 `$DSH_HOME/.env`（macOS 和 Linux 上按 Harness 的要求只限所有者读写 `0600`，不加密）；profile patch 里只有引用名。
 - **网关 key**：和供应商凭据一起加密保存。网关只监听 `127.0.0.1`，只接受网关 key；转发给上游时用的是各中转自己的凭据，网关 key 不会发出去。
 - **本地路由**：需要本地令牌才能访问。发往中转的请求不会携带官方账号凭据。
 - **客户端配置**：逐字段写入并先备份。被你或其他工具改过的字段会提示冲突，不会被悄悄覆盖。

@@ -345,6 +345,14 @@
       "proxySocks": "The app proxy is a SOCKS address, which Claude Code cannot use, so no proxy was written. For a proxy, turn on the terminal proxy with an HTTP address, or use router mode.",
       "systemProxy": "The app proxy follows the system proxy, which Claude Code does not read, so no proxy was written. For a proxy, turn on the terminal proxy, or set the app proxy to a manual HTTP address in Settings."
     },
+    "dialog": {
+      "searchSources": "Search relays, accounts, aggregates or models",
+      "noSourceMatch": "No source matches",
+      "chosen": "{{count}} chosen",
+      "setDefault": "Make {{model}} the default model",
+      "noDefault": "No default model chosen yet",
+      "summaryCount": "{{models}} models · {{sources}} sources"
+    },
     "launch": {
       "terminal": "Open in terminal",
       "runIn": "Run {{command}} in {{folder}}",

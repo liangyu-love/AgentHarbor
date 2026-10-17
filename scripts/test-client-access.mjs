@@ -1,0 +1,101 @@
+import assert from "node:assert/strict";
+import path from "node:path";
+import { eventually } from "./eventually.mjs";
+
+// The injection page's newer pieces: the router port holder notice, the
+// folding group bands, each client's start button and the two-pane model
+// dialog.
+export async function testClientAccess({ page, reset, captureDir }) {
+  const tr = (key, options) => page.evaluate(({ key, options }) => window.review.t(key, options), { key, options });
+
+  // ---- the program holding the router's port
+  await reset("access");
+  await page.evaluate(() => {
+    window.review.portOwner = { port: 43127, pid: 4242, name: "Cursor.exe" };
+    window.review.mount("access");
+  });
+  const notice = page.locator("[data-port-owner]");
+  await notice.getByText(await tr("newapi.portOwner.title", { port: 43127, pid: 4242, name: "Cursor.exe" }), { exact: true }).waitFor();
+  await notice.getByRole("button", { name: await tr("newapi.portOwner.end"), exact: true }).click();
+  const alert = page.getByRole("alertdialog");
+  await alert.getByText(await tr("newapi.portOwner.confirmTitle", { name: "Cursor.exe" }), { exact: true }).waitFor();
+  await alert.getByRole("button", { name: await tr("newapi.portOwner.end"), exact: true }).click();
+  await page.waitForFunction(() => window.review.endedPortOwner === 4242);
+  await notice.waitFor({ state: "detached" });
+  console.log("PASS a program holding the router port is named and ended only after confirmation");
+
+  // ---- group bands fold from their title and keep a summary
+  await reset("access");
+  const band = id => page.locator(`[data-inject-section="${id}"]`);
+  const title = id => band(id).locator(":scope > header h2 button");
+  assert.equal(await title("gateway").getAttribute("aria-expanded"), "true");
+  await band("gateway").locator("[data-section-summary]").getByText(await tr("gateway.stopped"), { exact: false }).waitFor();
+  await title("gateway").click();
+  assert.equal(await title("gateway").getAttribute("aria-expanded"), "false");
+  assert.equal(await band("gateway").locator("[data-gateway]").isVisible(), false);
+  await band("gateway").locator("[data-section-summary]").getByText(await tr("newapi.groups.folded"), { exact: true }).waitFor();
+  await band("gateway").locator(".section-band-rule").click();
+  await eventually(async () => assert.equal(await title("gateway").getAttribute("aria-expanded"), "true"));
+  // A folded client group opens again for a shortcut that lands in it.
+  await title("clients").click();
+  assert.equal(await page.locator("[data-client-console]").isVisible(), false);
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("agentharbor:select-client", { detail: "pi" })));
+  await page.locator("[data-client-console]").waitFor({ state: "visible" });
+  assert.equal(await page.locator('[data-client-tab="pi"]').getAttribute("aria-selected"), "true");
+  await page.evaluate(() => localStorage.removeItem("agentharbor.folded-sections.v1"));
+  console.log("PASS group bands fold from their title, keep a summary, and unfold for shortcuts");
+
+  // ---- start buttons
+  await reset("clients-existing");
+  await page.evaluate(() => {
+    localStorage.setItem("agentharbor.launch-folders.v1", JSON.stringify({ recent: ["D:/work/alpha", "D:/work/beta"], last: { claudeCode: "D:/work/alpha" } }));
+    window.review.launchCalls = [];
+    window.review.mount("clients-existing");
+  });
+  const launch = page.locator('#client-config-claudeCode [data-client-launch="terminal"]');
+  await launch.getByText("alpha", { exact: true }).waitFor();
+  await launch.getByRole("button", { name: await tr("clients.launch.terminal") }).click();
+  await page.waitForFunction(() => window.review.launchCalls.length === 1);
+  assert.deepEqual(await page.evaluate(() => window.review.launchCalls[0]), { targetId: "claudeCode", harnessProfile: null, folder: "D:/work/alpha" });
+  await launch.getByRole("button", { name: await tr("clients.launch.folders") }).click();
+  await page.getByRole("menuitem").filter({ hasText: "D:/work/beta" }).click();
+  await page.waitForFunction(() => window.review.launchCalls.length === 2);
+  assert.equal(await page.evaluate(() => window.review.launchCalls[1].folder), "D:/work/beta");
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("agentharbor.launch-folders.v1")).last.claudeCode), "D:/work/beta");
+  await page.evaluate(() => {
+    window.review.launchPlans = { claudeCode: { kind: "terminal", command: "claude", installed: false } };
+    window.review.mount("clients-existing");
+  });
+  await eventually(async () => assert.equal(await page.locator('#client-config-claudeCode [data-client-launch="terminal"] button').first().isDisabled(), true));
+  await page.evaluate(() => {
+    window.review.launchPlans = { claudeCode: { kind: "app", installed: true, running: false } };
+    window.review.mount("clients-existing");
+  });
+  await page.locator('#client-config-claudeCode [data-client-launch="app"]')
+    .getByText(await tr("clients.launch.start", { name: "Claude Code" }), { exact: true }).waitFor();
+  await page.evaluate(() => {
+    localStorage.removeItem("agentharbor.launch-folders.v1");
+    window.review.launchPlans = null;
+  });
+  console.log("PASS CLI clients start in a remembered folder, recent folders are one click away, and missing CLIs are disabled");
+
+  // ---- the two-pane model dialog
+  await reset("clients-opencode");
+  await page.getByRole("button", { name: await tr("clients.configure"), exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.locator("[data-client-config-sources]").waitFor();
+  await dialog.getByRole("button", { name: /Provider alternate/ }).waitFor();
+  await dialog.getByRole("textbox", { name: await tr("clients.dialog.searchSources") }).fill("alternate");
+  await eventually(async () => assert.equal(await dialog.getByRole("button", { name: /Provider mixed/ }).count(), 0));
+  await dialog.getByRole("textbox", { name: await tr("clients.dialog.searchSources") }).fill("");
+  await dialog.locator("[data-client-config-models] details").filter({ hasText: "Provider mixed" }).locator("summary").click();
+  await dialog.getByRole("button", { name: await tr("clients.dialog.setDefault", { model: "chat-model" }), exact: true }).click();
+  await eventually(async () => assert.equal(await dialog.locator("#client-model").textContent(), "chat-model"));
+  await dialog.locator("[data-client-config-summary]").getByText("Provider mixed / chat-model", { exact: true }).waitFor();
+  if (captureDir) await page.screenshot({ path: path.join(captureDir, "client-config-two-pane.png"), animations: "disabled" });
+  await dialog.getByRole("button", { name: await tr("clients.preview"), exact: true }).click();
+  await page.waitForFunction(() => window.review.previewed?.model === "chat-model");
+  await dialog.locator("[data-client-config-preview] pre").waitFor();
+  await dialog.getByRole("button", { name: await tr("common.cancel"), exact: true }).click();
+  console.log("PASS the model dialog searches its sources and a star picks the default model");
+}

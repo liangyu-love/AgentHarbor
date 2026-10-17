@@ -41,6 +41,7 @@ import { testCodexSubagents } from "./test-codex-subagents.mjs";
 import { testCapabilityClear } from "./test-capability-clear.mjs";
 import { testClaudeCliOfficial } from "./test-claude-cli-official.mjs";
 import { testCursorInjection } from "./test-cursor-injection.mjs";
+import { testClientAccess } from "./test-client-access.mjs";
 import { eventually } from "./eventually.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -178,6 +179,8 @@ try {
     await testClaudeDesktopCard({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "cursor") {
     await testCursorInjection({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "client-access") {
+    await testClientAccess({ page, reset, captureDir });
   } else {
   await reset("compact");
   const errorCases = await page.evaluate(() => {
@@ -1502,6 +1505,7 @@ try {
   await testDashboardRecent({ page, reset });
   await testClaudeDesktopCard({ page, reset, captureDir });
   await testCursorInjection({ page, reset, captureDir });
+  await testClientAccess({ page, reset, captureDir });
   await testSkillsActivation({ page, reset, captureDir });
   await reset("warnings");
   await page.getByText("Review thread 0", { exact: true }).waitFor();

@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { aggregationQueryKey, type ModelTargetRef } from "@/types/aggregation";
 import { useTranslation } from "react-i18next";
-import { BookmarkPlus, Check, ChevronDown, Eye, Loader2, Trash2 } from "lucide-react";
+import { BookmarkPlus, Check, ChevronDown, Eye, Loader2, Search, Star, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { claudeRoles as roles, emptyClaudeRoles as emptyRoles, claudeOneMDefaults, clientDefaults, clientModels, clientProtocols, exclusionOf, knownSmallContext, effectiveContext, reloadHint } from "@/lib/client-config";
 import { ClaudeModelConfig } from "./claude-model-config";
@@ -119,6 +119,10 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
   const [editingProfile, setEditingProfile] = useState(false);
   const [managingProfiles, setManagingProfiles] = useState(false);
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
+  const [sourceQuery, setSourceQuery] = useState("");
+  const previewRef = useRef<HTMLDivElement>(null);
+  // A fresh preview scrolls into view beside the choices it describes.
+  useEffect(() => { if (preview) previewRef.current?.scrollIntoView({ block: "nearest" }); }, [preview]);
   const protocols = clientProtocols(client, request.accessMode);
   const routerMode = request.accessMode === "router";
   const defaultTarget = request.modelSelection?.defaultTarget;
@@ -535,43 +539,80 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
     } finally { setBusy(false); }
   };
 
+  // ---- layout: header bar, sources on the left, models on the right, a fixed footer ----
+  const query = sourceQuery.trim().toLowerCase();
+  const matches = (text: string) => !query || text.toLowerCase().includes(query);
+  const shownProviders = providers.filter(p => (!routerMode || sources[sourceKind(p)])
+    && matches(`${p.name} ${p.id} ${clientModels(p, protocols).join(" ")}`));
+  const shownAggregates = routerMode && sources.aggregate
+    ? aggregates.filter(entry => matches(`${entry.displayName} ${entry.publicModelId}`)) : [];
+  const providerGroups = (["relay", "account"] as const)
+    .map(kind => ({ kind, rows: shownProviders.filter(p => sourceKind(p) === kind) }))
+    .filter(group => group.rows.length > 0);
+  const defaultLabel = !modelCompatible ? null
+    : claudeMixed ? mixedEntry(request.model)?.label ?? request.model
+    : aggregateMode ? defaultAggregate?.displayName ?? request.model
+    : provider ? `${provider.name} / ${modelLabel(provider, request.model)}` : null;
+  const modelTotal = isClaude ? configuredModels.length
+    : selected.reduce((sum, entry) => sum + modelIdsForProvider(entry).length, 0) + selectedAggregates.length;
+  const harnessDotenv = isHarness && harnessProfiles.find(profile => profile.name === request.harnessProfile)?.dotenv;
+  const groupHeading = (label: string, count: number, chosen: number) => (
+    <p className="flex items-center justify-between gap-2 px-1 pb-1.5 pt-1 text-[11px] font-medium text-muted-foreground">
+      <span className="poster-kicker text-[10px]">{label}</span>
+      <span className="tabular-nums">{chosen ? t("clients.dialog.chosen", { count: chosen }) + " · " : ""}{count}</span>
+    </p>
+  );
+
   return (
     <Dialog open onOpenChange={open => { if (!open && !busy) onClose(); }}>
-      <DialogContent className={"flex max-h-[90vh] flex-col overflow-hidden " + (isClaude ? "sm:max-w-3xl" : "sm:max-w-2xl")}>
-        <DialogHeader className="shrink-0">
-          <DialogTitle>{t("clients.configureTitle", { name: client.name })}</DialogTitle>
-          <DialogDescription>{t(request.accessMode === "native" ? "clients.nativeHint" : "clients.localHint")}</DialogDescription>
-        </DialogHeader>
-        <div data-client-config-scroll className="-mx-1 min-h-0 space-y-4 overflow-y-auto px-1">
-        {client.conflict && <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm">
-          {t("clients.updateConflictDescription")}
-        </p>}
-        <fieldset disabled={busy} className="min-w-0 space-y-4">
-          {isHarness && <section className="space-y-1.5 border-b border-border/60 pb-4" data-harness-profile>
-            <Label htmlFor="harness-profile">{t("clients.harnessProfile")}</Label>
-            <Select disabled={busy || client.configured} value={request.harnessProfile ?? ""}
-              onValueChange={value => update({ harnessProfile: value })}>
-              <SelectTrigger id="harness-profile"><SelectValue placeholder={t("clients.harnessProfilePick")} /></SelectTrigger>
-              <SelectContent>{harnessProfiles.map(profile => <SelectItem key={profile.name} value={profile.name}>
-                {profile.name}{profile.name === "desktop" ? ` · ${t("clients.harnessDesktop")}` : profile.name === "web" ? " · dsh web" : ""}
-              </SelectItem>)}</SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">{t(client.configured ? "clients.harnessProfileLocked" : "clients.harnessProfileHint")}</p>
-          </section>}
-          {isClaude && <section className="space-y-2 border-b border-border/60 pb-4" aria-label={t("clients.savedProfiles")}>
+      <DialogContent data-client-config-dialog
+        className="flex max-h-[92vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl md:h-[min(88vh,820px)]">
+        <DialogHeader className="shrink-0 space-y-3 border-b border-border/70 px-5 pb-4 pt-5 sm:px-6">
+          <div className="space-y-1 pr-8">
+            <DialogTitle className="font-display text-xl tracking-tight">{t("clients.configureTitle", { name: client.name })}</DialogTitle>
+            <DialogDescription>{t(request.accessMode === "native" ? "clients.nativeHint" : "clients.localHint")}</DialogDescription>
+          </div>
+          <fieldset disabled={busy} className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2.5">
+            <div className="flex w-fit gap-1 rounded-lg border bg-muted/40 p-1" aria-label={t("clients.accessMode")}>
+              {(["native", "router"] as const).map(mode => <Button key={mode} type="button" size="sm" className="h-7"
+                variant={request.accessMode === mode ? "secondary" : "ghost"} aria-pressed={request.accessMode === mode}
+                disabled={busy} onClick={() => changeMode(mode)}>{t("clients.access" + (mode === "native" ? "Native" : "Router"))}</Button>)}
+            </div>
+            {routerMode && <section className="flex min-w-0 flex-wrap items-center gap-2" aria-labelledby="client-sources-label" data-client-sources>
+              <p id="client-sources-label" className="text-xs font-medium text-muted-foreground">{t("clients.sources")}</p>
+              <ModelSourceSwitches value={sources} disabled={busy} label={t("clients.sources")} onChange={changeSources}
+                counts={{ relay: compatible.filter(entry => !entry.accountSource).length,
+                  account: compatible.filter(entry => !!entry.accountSource).length, aggregate: aggregates.length }} />
+            </section>}
+            {isHarness && <section className="flex min-w-0 items-center gap-2 sm:ml-auto" data-harness-profile>
+              <Label htmlFor="harness-profile" className="shrink-0 text-xs text-muted-foreground">{t("clients.harnessProfile")}</Label>
+              <Select disabled={busy || client.configured} value={request.harnessProfile ?? ""}
+                onValueChange={value => update({ harnessProfile: value })}>
+                <SelectTrigger id="harness-profile" className="h-8 w-48"><SelectValue placeholder={t("clients.harnessProfilePick")} /></SelectTrigger>
+                <SelectContent>{harnessProfiles.map(profile => <SelectItem key={profile.name} value={profile.name}>
+                  {profile.name}{profile.name === "desktop" ? ` · ${t("clients.harnessDesktop")}` : profile.name === "web" ? " · dsh web" : profile.dotenv ? " · .env" : ""}
+                </SelectItem>)}</SelectContent>
+              </Select>
+            </section>}
+          </fieldset>
+          {isHarness && <p className="text-xs text-muted-foreground">
+            {t(client.configured ? "clients.harnessProfileLocked" : "clients.harnessProfileHint")}
+            {harnessDotenv && <span className="mt-0.5 block text-amber-700 dark:text-amber-300" data-harness-dotenv>{t("clients.warnings.harnessDotenv")}</span>}
+          </p>}
+          {isClaude && <section className="space-y-2" aria-label={t("clients.savedProfiles")}>
             <div className="flex flex-wrap items-center gap-2">
               {claudeProfiles.length > 0
-                ? <Label htmlFor="claude-saved-profile" className="min-w-0 text-sm font-medium">{t("clients.savedProfiles")}</Label>
-                : <span className="min-w-0 flex-1 text-sm text-muted-foreground">{t("clients.noSavedProfiles")}</span>}
+                ? <Label htmlFor="claude-saved-profile" className="min-w-0 text-xs font-medium text-muted-foreground">{t("clients.savedProfiles")}</Label>
+                : <span className="min-w-0 flex-1 text-xs text-muted-foreground">{t("clients.noSavedProfiles")}</span>}
               {claudeProfiles.length > 0 ? <Select disabled={busy} value="" onValueChange={value => void loadClaudeProfile(value)}>
-                <SelectTrigger id="claude-saved-profile" className="h-9 min-w-44 flex-1"><SelectValue placeholder={t("clients.selectSavedProfile")} /></SelectTrigger>
+                <SelectTrigger id="claude-saved-profile" className="h-8 min-w-44 flex-1"><SelectValue placeholder={t("clients.selectSavedProfile")} /></SelectTrigger>
                 <SelectContent>{claudeProfiles.map(item => <SelectItem key={item.id} value={item.id}>{item.name} · {profileTargetLabel(item)}</SelectItem>)}</SelectContent>
               </Select> : null}
-              <Button type="button" size="sm" variant="ghost" disabled={busy || (!editingProfile && !modelCompatible)}
+              <Button type="button" size="sm" variant="ghost" className="h-8" disabled={busy || (!editingProfile && !modelCompatible)}
                 aria-expanded={editingProfile} aria-controls="claude-profile-editor" onClick={() => setEditingProfile(value => !value)}>
                 <BookmarkPlus className="h-4 w-4" />{editingProfile ? t("common.cancel") : t("clients.saveProfile")}
               </Button>
-              {claudeProfiles.length > 0 && <Button type="button" size="sm" variant="ghost" disabled={busy}
+              {claudeProfiles.length > 0 && <Button type="button" size="sm" variant="ghost" className="h-8" disabled={busy}
                 aria-expanded={managingProfiles} aria-controls="claude-profile-management" onClick={() => setManagingProfiles(value => !value)}>
                 {t(managingProfiles ? "common.cancel" : "clients.manageProfiles")}
               </Button>}
@@ -583,7 +624,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
                 {t("clients.confirmSaveProfile")}
               </Button>
             </div>}
-            {managingProfiles && <ul id="claude-profile-management" className="space-y-1 rounded-lg border bg-muted/20 p-2 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-150">
+            {managingProfiles && <ul id="claude-profile-management" className="max-h-40 space-y-1 overflow-y-auto rounded-lg border bg-muted/20 p-2 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-150">
               {claudeProfiles.map(item => <li key={item.id} className="flex min-w-0 items-center gap-2 px-1 py-1">
                 <span className="min-w-0 flex-1 truncate text-sm" title={item.name}>{item.name}</span>
                 <span className="max-w-[40%] truncate text-xs text-muted-foreground" title={profileTargetLabel(item)}>
@@ -596,208 +637,255 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
               </li>)}
             </ul>}
           </section>}
-          <div className="flex w-fit gap-1 rounded-lg border bg-muted/40 p-1" aria-label={t("clients.accessMode")}>
-            {(["native", "router"] as const).map(mode => <Button key={mode} type="button" size="sm"
-              variant={request.accessMode === mode ? "secondary" : "ghost"} aria-pressed={request.accessMode === mode}
-              disabled={busy} onClick={() => changeMode(mode)}>{t("clients.access" + (mode === "native" ? "Native" : "Router"))}</Button>)}
-          </div>
-          {request.accessMode === "native" && <DirectProxyNote name={client.name} isClaude={isClaude} provider={provider} />}
-          {routerMode && <section className="space-y-1.5" aria-labelledby="client-sources-label" data-client-sources>
-            <p id="client-sources-label" className="text-sm font-medium">{t("clients.sources")}</p>
-            <ModelSourceSwitches value={sources} disabled={busy} label={t("clients.sources")} onChange={changeSources}
-              counts={{ relay: compatible.filter(entry => !entry.accountSource).length,
-                account: compatible.filter(entry => !!entry.accountSource).length, aggregate: aggregates.length }} />
-            <p className="text-xs text-muted-foreground">{t(isClaude ? "clients.sourcesHintClaude" : "clients.sourcesHint")}</p>
-          </section>}
-          {routerMode && sources.aggregate && <section className="space-y-2" aria-label={t("aggregation.title")}>
-            <p className="text-sm font-medium">{t("aggregation.title")}</p>
-            <div className="grid max-h-48 gap-2 overflow-y-auto sm:grid-cols-2">{aggregates.map(entry => <label key={entry.id}
-              className={"flex min-w-0 items-center gap-3 rounded-lg border p-3 " + (aggregateIds.includes(entry.id) ? "border-primary/50 bg-primary/5" : "bg-card/60")}>
-              <input type="checkbox" checked={aggregateIds.includes(entry.id)} disabled={busy || !entry.available && !aggregateIds.includes(entry.id)}
-                aria-label={t("clients.includeModel", { model: entry.displayName })} onChange={() => toggleAggregate(entry.id)} className="h-4 w-4 shrink-0 accent-primary" />
-              <span className="min-w-0"><span className="block truncate text-sm font-medium">{entry.displayName}</span>
-                <span className="block break-all text-xs text-muted-foreground">{entry.publicModelId}</span></span>
-            </label>)}</div>
-            {aggregateUnavailable && <p role="alert" className="text-xs text-destructive">{t("aggregation.targetUnavailable")}</p>}
-            {!isClaude && aggregateIds.length > 0 && <div className="space-y-1.5"><Label htmlFor="client-aggregate-protocol">{t("aggregation.ingress")}</Label>
-              <Select value={request.aggregateIngressProtocol ?? "responses"} onValueChange={value => update({ aggregateIngressProtocol: value as ClientConfigRequest["aggregateIngressProtocol"] })}>
-                <SelectTrigger id="client-aggregate-protocol"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="responses">Responses</SelectItem>
-                  <SelectItem value="chatCompletions">Chat</SelectItem>
-                  <SelectItem value="anthropicMessages">Messages</SelectItem></SelectContent></Select>
-            </div>}
-          </section>}
-          <div className="space-y-2">
-            <p id="client-provider-label" className="text-sm font-medium">{t(isClaude && !routerMode ? "clients.provider" : "clients.providers")}</p>
-            <div className="grid max-h-56 gap-2 overflow-y-auto sm:grid-cols-2" aria-labelledby="client-provider-label">
-              {providers.filter(p => !routerMode || sources[sourceKind(p)]).map(p => {
+          {client.conflict && <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm">
+            {t("clients.updateConflictDescription")}
+          </p>}
+        </DialogHeader>
+
+        <div data-client-config-scroll className="min-h-0 flex-1 overflow-y-auto md:grid md:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] md:overflow-hidden">
+          {/* Sources: relays, account sources and aggregates, searchable. */}
+          <fieldset disabled={busy} aria-labelledby="client-provider-label" data-client-config-sources
+            className="min-w-0 space-y-3 border-b border-border/70 bg-muted/[0.18] p-4 md:min-h-0 md:overflow-y-auto md:border-b-0 md:border-r sm:px-5">
+            <div className="flex items-center justify-between gap-2">
+              <p id="client-provider-label" className="text-sm font-semibold">{t(isClaude && !routerMode ? "clients.provider" : "clients.providers")}</p>
+              <span className="text-[11px] tabular-nums text-muted-foreground">{t("clients.dialog.chosen", { count: selected.length + selectedAggregates.length })}</span>
+            </div>
+            <div className="relative">
+              <Search aria-hidden className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input value={sourceQuery} onChange={event => setSourceQuery(event.target.value)} className="h-8 pl-8 text-xs"
+                placeholder={t("clients.dialog.searchSources")} aria-label={t("clients.dialog.searchSources")} />
+            </div>
+            {providerGroups.map(group => <div key={group.kind} data-client-source-group={group.kind}>
+              {routerMode && groupHeading(t(`gateway.kind.${group.kind}`), group.rows.length,
+                group.rows.filter(p => request.providerIds.includes(p.id) && !exclusionOf(p, protocols, request.accessMode)).length)}
+              <div className="space-y-1.5">{group.rows.map(p => {
                 const reason = exclusionOf(p, protocols, request.accessMode);
                 const active = request.providerIds.includes(p.id) && !reason;
                 const availableCount = clientModels(p, protocols).length;
+                const isDefaultSource = !aggregateMode && !claudeMixed && p.id === request.providerId && active;
                 return <button key={p.id} type="button" disabled={busy || !!reason} aria-pressed={active} onClick={() => toggleProvider(p)}
-                  className={"flex min-w-0 items-center gap-3 rounded-lg border p-3 text-left transition-[border-color,background-color,transform] duration-150 motion-safe:active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-45 "
-                    + (active ? "border-primary/50 bg-primary/5" : "bg-card/60 hover:bg-muted/60")}>
+                  className={"flex w-full min-w-0 items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-[border-color,background-color,transform] duration-150 motion-safe:active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-45 "
+                    + (active ? "border-primary/50 bg-primary/[0.06]" : "border-border/70 bg-card/70 hover:bg-muted/60")}>
+                  <span className={"flex h-4 w-4 shrink-0 items-center justify-center border " + (isClaude && !routerMode ? "rounded-full " : "rounded ")
+                    + (active ? "border-primary bg-primary text-primary-foreground" : "border-input")}>
+                    {active && <Check className="h-3 w-3" />}</span>
                   <span className="min-w-0 flex-1"><span className="flex min-w-0 items-center gap-1.5">
                       <span className="truncate text-sm font-medium" title={p.name}>{p.name}</span>
                       {p.accountSource && <span data-account-source-badge className="shrink-0 rounded-full border border-primary/25 bg-primary/5 px-1.5 text-[10px] font-medium text-primary">{t("accountSources.badge")}</span>}
+                      {isDefaultSource && <Star aria-hidden className="h-3 w-3 shrink-0 fill-amber-400 text-amber-500" />}
                     </span>
-                    <span className="mt-1 block text-xs text-muted-foreground">{reason ? t("clients.excluded." + reason, { count: 1 })
+                    <span className="mt-0.5 block text-xs text-muted-foreground">{reason ? t("clients.excluded." + reason, { count: 1 })
+                      : active && !isClaude ? t("clients.selectedOfAvailable", { selected: modelIdsForProvider(p).length, total: availableCount })
                       : t("clients.modelsCount", { count: availableCount })}</span>
                     {/* WorkBuddy's channel check is met by rewording the phrases it flags; Antigravity's is not. */}
                     {!reason && isClaude && p.accountSource === "antigravity" && (
                       <span className="mt-1 block text-[11px] leading-snug text-amber-700 dark:text-amber-300" data-account-source-refusal>
                         {t("accountSources.refusesClaudeCode", { name: "Antigravity" })}</span>
                     )}</span>
-                  <span className={"flex h-4 w-4 shrink-0 items-center justify-center border " + (isClaude && !routerMode ? "rounded-full " : "rounded ")
-                    + (active ? "border-primary bg-primary text-primary-foreground" : "border-input")}>
-                    {active && <Check className="h-3 w-3" />}</span>
                 </button>;
-              })}
-            </div>
-            {compatible.length === 0 && <p className="text-xs text-muted-foreground">{t(isClaude && request.accessMode === "native" ? "clients.noNativeProviders" : "clients.noProviders")}</p>}
-          </div>
-          {!isClaude && selected.length > 0 && <section className="space-y-2" aria-label={t("clients.modelSubset")}>
-            <p className="text-sm font-medium">{t("clients.modelSubset")}</p>
-            <div className="space-y-2">{selected.map(entry => {
-              const allModels = clientModels(entry, protocols);
-              const checkedModels = modelIdsForProvider(entry);
-              return <details key={entry.id} className="group overflow-hidden rounded-lg border bg-card/60">
-                <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
-                  <span className="min-w-0 truncate">{entry.name}</span>
-                  <span className="ml-auto shrink-0 text-xs font-normal tabular-nums text-muted-foreground">{t("clients.selectedOfAvailable", { selected: checkedModels.length, total: allModels.length })}</span>
-                  <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 group-open:rotate-180 motion-reduce:transition-none" />
-                </summary>
-                <div className="flex flex-wrap items-center justify-end gap-1 border-t px-2 py-1.5">
-                  <Button type="button" size="sm" variant="ghost" disabled={busy || checkedModels.length === allModels.length}
-                    onClick={() => selectOpenCodeModels(entry, allModels)}>{t("clients.selectAllModels")}</Button>
-                  <Button type="button" size="sm" variant="ghost" disabled={busy || checkedModels.length === 0}
-                    onClick={() => selectOpenCodeModels(entry, [])}>{t("clients.deselectAllModels")}</Button>
-                </div>
-                <div className="max-h-48 divide-y overflow-y-auto border-t motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-150">
-                  {allModels.map(id => <label key={id} className="flex min-w-0 items-center gap-3 px-3 py-2 transition-colors hover:bg-muted/40">
-                    <input type="checkbox" aria-label={t("clients.includeModel", { model: modelLabel(entry, id) })}
-                      checked={checkedModels.includes(id)} disabled={busy}
-                      className="h-4 w-4 shrink-0 accent-primary focus-visible:ring-2 focus-visible:ring-ring" onChange={() => selectOpenCodeModels(entry,
-                        checkedModels.includes(id) ? checkedModels.filter(model => model !== id) : [...checkedModels, id])} />
-                    <span className="min-w-0 flex-1 break-words text-sm">{modelLabel(entry, id)}</span>
-                    {id === entry.model && <Badge variant="outline" className="shrink-0 text-[10px]">{t("clients.providerDefault")}</Badge>}
-                  </label>)}
-                </div>
-              </details>;
-            })}</div>
-          </section>}
-          {isClaude && !aggregateMode && <ClaudeModelConfig key={claudeMixed ? "mixed" : request.providerId + ":" + request.accessMode}
-            provider={provider} models={models} selected={configuredModels} mapping={request.claudeModels}
-            labelOf={claudeMixed ? id => mixedEntry(id)?.label ?? id : undefined}
-            smallContext={claudeMixed ? id => !!mixedEntry(id)?.small : undefined}
-            defaultModel={request.model} disabled={busy} oneM={claudeOneMDefaults(request.claudeOneM)}
-            clientVersion={client.clientVersion}
-            onSelectedChange={selectClaudeModels} onMappingChange={claudeModels => update({ claudeModels })}
-            onOneMChange={claudeOneM => update({ claudeOneM })} />}
-          {isClaude && aggregateMode && <div className="grid gap-3 sm:grid-cols-2" data-aggregate-claude-roles>{roles.map(role => {
-            const id = `aggregate-claude-${role}`;
-            const chosen = request.claudeModels[role] || request.model;
-            const oneM = claudeOneMDefaults(request.claudeOneM);
-            return <div key={role} className="space-y-1.5"><Label htmlFor={id}>{role}</Label>
-              <Select value={request.claudeModels[role] || "__default__"} onValueChange={value => update({ claudeModels: { ...request.claudeModels, [role]: value === "__default__" ? "" : value } })}>
-                <SelectTrigger id={id}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__default__">{t("aggregation.followDefault")}</SelectItem>
-                  {selectedAggregates.map(model => <SelectItem key={model.id} value={model.publicModelId}>{model.displayName}</SelectItem>)}
-                </SelectContent></Select>
-              <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={oneM[role]} disabled={!oneM[role] && !aggregateOneM(chosen)}
-                onChange={event => update({ claudeOneM: { ...oneM, [role]: event.target.checked } })} />1M</label>
-            </div>;
-          })}</div>}
-          {!isClaude && staleOpenCodeModelSelection &&
-            <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
-              {t("clients.staleOpenCodeModels")}
-            </p>}
-          {isClaude && staleClaudeModelSelection && (() => {
-            const stale = (request.claudeModelIds ?? []).filter(id => !models.includes(id));
-            return <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
-              {t("clients.staleClaudeModels", { models: stale.map(id => provider ? modelLabel(provider, id) : id).join(" · ") })}
-            </p>;
-          })()}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between gap-2"><Label htmlFor="client-model">{t(isClaude ? "clients.startupModel" : client.targetId === "pi" ? "clients.piModel" : "clients.model")}</Label>
-              {selectedProtocol && <Badge variant="outline" className="text-[10px]">{t("newapi.protocol" + (selectedProtocol === "responses" ? "Responses" : selectedProtocol === "chatCompletions" ? "ChatCompletions" : "AnthropicMessages"))}</Badge>}
-            </div>
-            <Select disabled={busy || selected.length + selectedAggregates.length === 0} value={!modelCompatible ? "" : claudeMixed ? JSON.stringify(["mixed:", request.model])
-              : JSON.stringify([aggregateMode && defaultTarget?.kind === "aggregate" ? "aggregate:" + defaultTarget.aggregateId : request.providerId, request.model])}
-              onValueChange={value => { const [id, model] = JSON.parse(value) as [string, string];
-                if (id === "mixed:") {
-                  const target = mixedEntry(model)?.target;
-                  update({ model, providerId: target?.kind === "provider" ? target.providerId : "" });
-                } else if (id.startsWith("aggregate:")) chooseAggregate(id.slice("aggregate:".length));
-                else update(chooseDefault(selected.find(p => p.id === id), model)); }}>
-              <SelectTrigger id="client-model"><SelectValue placeholder={t("clients.selectModel")} /></SelectTrigger>
-              <SelectContent>{claudeMixed ? configuredModels.map(id => <SelectItem key={id} value={JSON.stringify(["mixed:", id])}>
-                {mixedEntry(id)?.label ?? id}
-              </SelectItem>) : selected.flatMap(p => (isClaude ? configuredModels : modelIdsForProvider(p)).map(id => <SelectItem key={JSON.stringify([p.id, id])} value={JSON.stringify([p.id, id])}>
-                {(!isClaude && selected.length > 1 ? p.name + " / " : "") + modelLabel(p, id)}
-              </SelectItem>))}
-                {!claudeMixed && selectedAggregates.map(model => <SelectItem key={model.id} value={JSON.stringify(["aggregate:" + model.id, model.publicModelId])}>
-                  {t("aggregation.target")} / {model.displayName}
-                </SelectItem>)}
-              </SelectContent>
-            </Select>
-            {isHarness && <label className="flex items-center gap-2 pt-1 text-xs text-muted-foreground" data-harness-default-model>
-              <input type="checkbox" checked={request.harnessDefaultModel !== false} disabled={busy}
-                className="h-4 w-4 accent-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-                onChange={event => update({ harnessDefaultModel: event.target.checked })} />
-              {t("clients.harnessDefaultModel")}
-            </label>}
-            {isClaude && <label className="flex items-center gap-2 pt-1 text-xs text-muted-foreground"
-              title={startupOneMUnavailable ? t("clients.oneMUnavailable") : undefined}>
-              <input type="checkbox" checked={!startupOneMUnavailable && (request.claudeOneM?.startup ?? false)}
-                disabled={busy || !request.model || startupOneMUnavailable}
-                className="h-4 w-4 accent-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-50"
-                onChange={event => update({ claudeOneM: { ...claudeOneMDefaults(request.claudeOneM), startup: event.target.checked } })} />
-              {t("clients.oneMStartup")}
-            </label>}
-          </div>
-          <details className="group rounded-lg border bg-muted/20">
-            <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-2.5 text-sm font-medium">
-              {t("clients.advanced")}<ChevronDown className="h-4 w-4 text-muted-foreground transition-transform group-open:rotate-180" />
-            </summary>
-            <div className="space-y-4 border-t p-3">
-              {isClaude ? <>
-                <div className="space-y-1.5"><Label htmlFor="client-auth">{t("clients.authField")}</Label>
-                  <Select disabled={busy} value={request.authField} onValueChange={value => update({ authField: value as ClientConfigRequest["authField"] })}>
-                    <SelectTrigger id="client-auth"><SelectValue /></SelectTrigger><SelectContent>
-                      <SelectItem value="authToken">ANTHROPIC_AUTH_TOKEN</SelectItem><SelectItem value="apiKey">ANTHROPIC_API_KEY</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </> : <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5"><Label htmlFor="client-context">{t("clients.context")}</Label>
-                  <Input id="client-context" type="number" min={1024} placeholder={t("clients.limitsAuto")} value={request.contextWindow ?? ""}
-                    onChange={event => update({ contextWindow: event.target.value === "" ? null : Number(event.target.value) })} />
-                </div>
-                <div className="space-y-1.5"><Label htmlFor="client-output">{t("clients.output")}</Label>
-                  <Input id="client-output" type="number" min={1} placeholder={t("clients.limitsAuto")} value={request.maxOutputTokens ?? ""}
-                    onChange={event => update({ maxOutputTokens: event.target.value === "" ? null : Number(event.target.value) })} />
-                </div>
-                <p className="col-span-2 text-[11px] leading-relaxed text-muted-foreground">{t("clients.limitsHint")}</p>
+              })}</div>
+            </div>)}
+            {shownAggregates.length > 0 && <section aria-label={t("aggregation.title")} data-client-source-group="aggregate">
+              {groupHeading(t("gateway.kind.aggregate"), shownAggregates.length, aggregateIds.length)}
+              <div className="space-y-1.5">{shownAggregates.map(entry => <label key={entry.id}
+                className={"flex min-w-0 cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 transition-colors "
+                  + (aggregateIds.includes(entry.id) ? "border-primary/50 bg-primary/[0.06]" : "border-border/70 bg-card/70 hover:bg-muted/60")}>
+                <input type="checkbox" checked={aggregateIds.includes(entry.id)} disabled={busy || !entry.available && !aggregateIds.includes(entry.id)}
+                  aria-label={t("clients.includeModel", { model: entry.displayName })} onChange={() => toggleAggregate(entry.id)} className="h-4 w-4 shrink-0 accent-primary" />
+                <span className="min-w-0 flex-1"><span className="flex min-w-0 items-center gap-1.5">
+                    <span className="truncate text-sm font-medium">{entry.displayName}</span>
+                    {aggregateMode && defaultTarget?.kind === "aggregate" && defaultTarget.aggregateId === entry.id
+                      && <Star aria-hidden className="h-3 w-3 shrink-0 fill-amber-400 text-amber-500" />}
+                  </span>
+                  <span className="block break-all font-mono text-[11px] text-muted-foreground">{entry.publicModelId}</span></span>
+              </label>)}</div>
+              {aggregateUnavailable && <p role="alert" className="mt-1.5 text-xs text-destructive">{t("aggregation.targetUnavailable")}</p>}
+              {!isClaude && aggregateIds.length > 0 && <div className="mt-2.5 space-y-1.5"><Label htmlFor="client-aggregate-protocol" className="text-xs">{t("aggregation.ingress")}</Label>
+                <Select value={request.aggregateIngressProtocol ?? "responses"} onValueChange={value => update({ aggregateIngressProtocol: value as ClientConfigRequest["aggregateIngressProtocol"] })}>
+                  <SelectTrigger id="client-aggregate-protocol" className="h-8"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="responses">Responses</SelectItem>
+                    <SelectItem value="chatCompletions">Chat</SelectItem>
+                    <SelectItem value="anthropicMessages">Messages</SelectItem></SelectContent></Select>
               </div>}
-              <p className="break-all font-mono text-xs text-muted-foreground">{client.path}</p>
-            </div>
-          </details>
-        </fieldset>
-        {preview && <div className="space-y-2"><p className="text-sm font-medium">{t("clients.previewTitle")}</p>
-          {!!preview.warnings?.length && <ul className="space-y-1">
-            {preview.warnings.map(key => <li key={key} role="status"
-              className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">{t(key)}</li>)}
-          </ul>}
-          <pre className="max-h-64 overflow-auto rounded-md bg-muted p-3 text-xs">{preview.content}</pre>
-          {!!preview.removedFields?.length && <p className="break-all text-xs text-muted-foreground">{t("clients.removedFields", { fields: preview.removedFields.join(", ") })}</p>}
-          <p className="text-xs text-muted-foreground">{t("clients.backupHint")}</p>
-        </div>}
-        {error && <p role="alert" className="text-sm text-destructive">{t(error)}</p>}
+            </section>}
+            {providerGroups.length === 0 && shownAggregates.length === 0 && <p className="rounded-lg border border-dashed px-3 py-4 text-center text-xs text-muted-foreground">
+              {t(query ? "clients.dialog.noSourceMatch" : isClaude && request.accessMode === "native" ? "clients.noNativeProviders" : "clients.noProviders")}
+            </p>}
+            {compatible.length === 0 && providerGroups.length > 0 && <p className="text-xs text-muted-foreground">{t(isClaude && request.accessMode === "native" ? "clients.noNativeProviders" : "clients.noProviders")}</p>}
+          </fieldset>
+
+          {/* Models: the default first, then which models each source writes. */}
+          <div className="min-w-0 space-y-5 p-4 md:min-h-0 md:overflow-y-auto sm:px-5" data-client-config-models>
+            <fieldset disabled={busy} className="min-w-0 space-y-5">
+              {request.accessMode === "native" && <DirectProxyNote name={client.name} isClaude={isClaude} provider={provider} />}
+              <section className="space-y-1.5 rounded-xl border border-primary/25 bg-primary/[0.04] p-3.5" aria-labelledby="client-model-label">
+                <div className="flex items-center justify-between gap-2"><Label id="client-model-label" htmlFor="client-model" className="flex items-center gap-1.5">
+                  <Star aria-hidden className="h-3.5 w-3.5 fill-amber-400 text-amber-500" />
+                  {t(isClaude ? "clients.startupModel" : client.targetId === "pi" ? "clients.piModel" : "clients.model")}</Label>
+                  {selectedProtocol && <Badge variant="outline" className="text-[10px]">{t("newapi.protocol" + (selectedProtocol === "responses" ? "Responses" : selectedProtocol === "chatCompletions" ? "ChatCompletions" : "AnthropicMessages"))}</Badge>}
+                </div>
+                <Select disabled={busy || selected.length + selectedAggregates.length === 0} value={!modelCompatible ? "" : claudeMixed ? JSON.stringify(["mixed:", request.model])
+                  : JSON.stringify([aggregateMode && defaultTarget?.kind === "aggregate" ? "aggregate:" + defaultTarget.aggregateId : request.providerId, request.model])}
+                  onValueChange={value => { const [id, model] = JSON.parse(value) as [string, string];
+                    if (id === "mixed:") {
+                      const target = mixedEntry(model)?.target;
+                      update({ model, providerId: target?.kind === "provider" ? target.providerId : "" });
+                    } else if (id.startsWith("aggregate:")) chooseAggregate(id.slice("aggregate:".length));
+                    else update(chooseDefault(selected.find(p => p.id === id), model)); }}>
+                  <SelectTrigger id="client-model" className="bg-card"><SelectValue placeholder={t("clients.selectModel")} /></SelectTrigger>
+                  <SelectContent>{claudeMixed ? configuredModels.map(id => <SelectItem key={id} value={JSON.stringify(["mixed:", id])}>
+                    {mixedEntry(id)?.label ?? id}
+                  </SelectItem>) : selected.flatMap(p => (isClaude ? configuredModels : modelIdsForProvider(p)).map(id => <SelectItem key={JSON.stringify([p.id, id])} value={JSON.stringify([p.id, id])}>
+                    {(!isClaude && selected.length > 1 ? p.name + " / " : "") + modelLabel(p, id)}
+                  </SelectItem>))}
+                    {!claudeMixed && selectedAggregates.map(model => <SelectItem key={model.id} value={JSON.stringify(["aggregate:" + model.id, model.publicModelId])}>
+                      {t("aggregation.target")} / {model.displayName}
+                    </SelectItem>)}
+                  </SelectContent>
+                </Select>
+                {isHarness && <label className="flex items-center gap-2 pt-1 text-xs text-muted-foreground" data-harness-default-model>
+                  <input type="checkbox" checked={request.harnessDefaultModel !== false} disabled={busy}
+                    className="h-4 w-4 accent-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                    onChange={event => update({ harnessDefaultModel: event.target.checked })} />
+                  {t("clients.harnessDefaultModel")}
+                </label>}
+                {isClaude && <label className="flex items-center gap-2 pt-1 text-xs text-muted-foreground"
+                  title={startupOneMUnavailable ? t("clients.oneMUnavailable") : undefined}>
+                  <input type="checkbox" checked={!startupOneMUnavailable && (request.claudeOneM?.startup ?? false)}
+                    disabled={busy || !request.model || startupOneMUnavailable}
+                    className="h-4 w-4 accent-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-50"
+                    onChange={event => update({ claudeOneM: { ...claudeOneMDefaults(request.claudeOneM), startup: event.target.checked } })} />
+                  {t("clients.oneMStartup")}
+                </label>}
+              </section>
+
+              {!isClaude && selected.length > 0 && <section className="space-y-2" aria-label={t("clients.modelSubset")}>
+                <p className="text-sm font-semibold">{t("clients.modelSubset")}</p>
+                <div className="space-y-2">{selected.map(entry => {
+                  const allModels = clientModels(entry, protocols);
+                  const checkedModels = modelIdsForProvider(entry);
+                  return <details key={entry.id} className="group overflow-hidden rounded-lg border bg-card/60">
+                    <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+                      <span className="min-w-0 truncate">{entry.name}</span>
+                      <span className="ml-auto shrink-0 text-xs font-normal tabular-nums text-muted-foreground">{t("clients.selectedOfAvailable", { selected: checkedModels.length, total: allModels.length })}</span>
+                      <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 group-open:rotate-180 motion-reduce:transition-none" />
+                    </summary>
+                    <div className="flex flex-wrap items-center justify-end gap-1 border-t px-2 py-1.5">
+                      <Button type="button" size="sm" variant="ghost" disabled={busy || checkedModels.length === allModels.length}
+                        onClick={() => selectOpenCodeModels(entry, allModels)}>{t("clients.selectAllModels")}</Button>
+                      <Button type="button" size="sm" variant="ghost" disabled={busy || checkedModels.length === 0}
+                        onClick={() => selectOpenCodeModels(entry, [])}>{t("clients.deselectAllModels")}</Button>
+                    </div>
+                    <div className="max-h-56 divide-y overflow-y-auto border-t motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-150">
+                      {allModels.map(id => {
+                        const checked = checkedModels.includes(id);
+                        const isDefault = !aggregateMode && entry.id === request.providerId && id === request.model;
+                        return <div key={id} className="flex min-w-0 items-center gap-3 px-3 py-1.5 transition-colors hover:bg-muted/40">
+                          <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 py-0.5">
+                            <input type="checkbox" aria-label={t("clients.includeModel", { model: modelLabel(entry, id) })}
+                              checked={checked} disabled={busy}
+                              className="h-4 w-4 shrink-0 accent-primary focus-visible:ring-2 focus-visible:ring-ring" onChange={() => selectOpenCodeModels(entry,
+                                checked ? checkedModels.filter(model => model !== id) : [...checkedModels, id])} />
+                            <span className="min-w-0 flex-1 break-words text-sm">{modelLabel(entry, id)}</span>
+                            {id === entry.model && <Badge variant="outline" className="shrink-0 text-[10px]">{t("clients.providerDefault")}</Badge>}
+                          </label>
+                          <button type="button" aria-pressed={isDefault} disabled={busy || !checked}
+                            aria-label={t("clients.dialog.setDefault", { model: modelLabel(entry, id) })} title={t("clients.dialog.setDefault", { model: modelLabel(entry, id) })}
+                            onClick={() => update(chooseDefault(entry, id))}
+                            className="rounded-md p-1 text-muted-foreground/60 transition-colors hover:text-amber-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-30 disabled:hover:text-muted-foreground/60">
+                            <Star className={"h-3.5 w-3.5 " + (isDefault ? "fill-amber-400 text-amber-500" : "")} />
+                          </button>
+                        </div>;
+                      })}
+                    </div>
+                  </details>;
+                })}</div>
+              </section>}
+              {isClaude && !aggregateMode && <ClaudeModelConfig key={claudeMixed ? "mixed" : request.providerId + ":" + request.accessMode}
+                provider={provider} models={models} selected={configuredModels} mapping={request.claudeModels}
+                labelOf={claudeMixed ? id => mixedEntry(id)?.label ?? id : undefined}
+                smallContext={claudeMixed ? id => !!mixedEntry(id)?.small : undefined}
+                defaultModel={request.model} disabled={busy} oneM={claudeOneMDefaults(request.claudeOneM)}
+                clientVersion={client.clientVersion}
+                onSelectedChange={selectClaudeModels} onMappingChange={claudeModels => update({ claudeModels })}
+                onOneMChange={claudeOneM => update({ claudeOneM })} />}
+              {isClaude && aggregateMode && <div className="grid gap-3 sm:grid-cols-2" data-aggregate-claude-roles>{roles.map(role => {
+                const id = `aggregate-claude-${role}`;
+                const chosen = request.claudeModels[role] || request.model;
+                const oneM = claudeOneMDefaults(request.claudeOneM);
+                return <div key={role} className="space-y-1.5"><Label htmlFor={id}>{role}</Label>
+                  <Select value={request.claudeModels[role] || "__default__"} onValueChange={value => update({ claudeModels: { ...request.claudeModels, [role]: value === "__default__" ? "" : value } })}>
+                    <SelectTrigger id={id}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__default__">{t("aggregation.followDefault")}</SelectItem>
+                      {selectedAggregates.map(model => <SelectItem key={model.id} value={model.publicModelId}>{model.displayName}</SelectItem>)}
+                    </SelectContent></Select>
+                  <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={oneM[role]} disabled={!oneM[role] && !aggregateOneM(chosen)}
+                    onChange={event => update({ claudeOneM: { ...oneM, [role]: event.target.checked } })} />1M</label>
+                </div>;
+              })}</div>}
+              {!isClaude && staleOpenCodeModelSelection &&
+                <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
+                  {t("clients.staleOpenCodeModels")}
+                </p>}
+              {isClaude && staleClaudeModelSelection && (() => {
+                const stale = (request.claudeModelIds ?? []).filter(id => !models.includes(id));
+                return <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
+                  {t("clients.staleClaudeModels", { models: stale.map(id => provider ? modelLabel(provider, id) : id).join(" · ") })}
+                </p>;
+              })()}
+              <details className="group rounded-lg border bg-muted/20">
+                <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-2.5 text-sm font-medium">
+                  {t("clients.advanced")}<ChevronDown className="h-4 w-4 text-muted-foreground transition-transform group-open:rotate-180" />
+                </summary>
+                <div className="space-y-4 border-t p-3">
+                  {isClaude ? <>
+                    <div className="space-y-1.5"><Label htmlFor="client-auth">{t("clients.authField")}</Label>
+                      <Select disabled={busy} value={request.authField} onValueChange={value => update({ authField: value as ClientConfigRequest["authField"] })}>
+                        <SelectTrigger id="client-auth"><SelectValue /></SelectTrigger><SelectContent>
+                          <SelectItem value="authToken">ANTHROPIC_AUTH_TOKEN</SelectItem><SelectItem value="apiKey">ANTHROPIC_API_KEY</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </> : <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1.5"><Label htmlFor="client-context">{t("clients.context")}</Label>
+                      <Input id="client-context" type="number" min={1024} placeholder={t("clients.limitsAuto")} value={request.contextWindow ?? ""}
+                        onChange={event => update({ contextWindow: event.target.value === "" ? null : Number(event.target.value) })} />
+                    </div>
+                    <div className="space-y-1.5"><Label htmlFor="client-output">{t("clients.output")}</Label>
+                      <Input id="client-output" type="number" min={1} placeholder={t("clients.limitsAuto")} value={request.maxOutputTokens ?? ""}
+                        onChange={event => update({ maxOutputTokens: event.target.value === "" ? null : Number(event.target.value) })} />
+                    </div>
+                    <p className="col-span-2 text-[11px] leading-relaxed text-muted-foreground">{t("clients.limitsHint")}</p>
+                  </div>}
+                  <p className="break-all font-mono text-xs text-muted-foreground">{client.path}</p>
+                </div>
+              </details>
+            </fieldset>
+            {preview && <div ref={previewRef} className="space-y-2" data-client-config-preview>
+              <p className="text-sm font-semibold">{t("clients.previewTitle")}</p>
+              {!!preview.warnings?.length && <ul className="space-y-1">
+                {preview.warnings.map(key => <li key={key} role="status"
+                  className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">{t(key)}</li>)}
+              </ul>}
+              <pre className="max-h-72 overflow-auto rounded-md bg-muted p-3 text-xs">{preview.content}</pre>
+              {!!preview.removedFields?.length && <p className="break-all text-xs text-muted-foreground">{t("clients.removedFields", { fields: preview.removedFields.join(", ") })}</p>}
+              <p className="text-xs text-muted-foreground">{t("clients.backupHint")}</p>
+            </div>}
+          </div>
         </div>
-        <DialogFooter className="shrink-0 gap-2 sm:gap-0"><Button variant="outline" onClick={onClose} disabled={busy}>{t("common.cancel")}</Button>
-          <Button disabled={busy || !modelCompatible || aggregateUnavailable || selected.length + selectedAggregates.length === 0
-            || (isHarness && !request.harnessProfile)} onClick={() => void run()}>
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}{t(preview ? client.conflict ? "clients.applyConflict" : "clients.apply" : "clients.preview")}
-          </Button>
+
+        {error && <p role="alert" className="shrink-0 border-t border-destructive/20 bg-destructive/5 px-5 py-2 text-sm text-destructive sm:px-6">{t(error)}</p>}
+        <DialogFooter className="shrink-0 flex-row flex-wrap items-center gap-2 border-t border-border/70 bg-muted/[0.18] px-5 py-3 sm:justify-between sm:space-x-0 sm:px-6">
+          <p className="flex min-w-0 flex-1 basis-56 items-center gap-2 text-xs text-muted-foreground" data-client-config-summary>
+            <Star aria-hidden className="h-3.5 w-3.5 shrink-0 fill-amber-400 text-amber-500" />
+            <span className="min-w-0 truncate"><span className="font-medium text-foreground">{defaultLabel ?? t("clients.dialog.noDefault")}</span>
+              <span className="ml-2 tabular-nums">{t("clients.dialog.summaryCount", { models: modelTotal, sources: selected.length + selectedAggregates.length })}</span></span>
+          </p>
+          <div className="ml-auto flex shrink-0 gap-2">
+            <Button variant="outline" onClick={onClose} disabled={busy}>{t("common.cancel")}</Button>
+            <Button disabled={busy || !modelCompatible || aggregateUnavailable || selected.length + selectedAggregates.length === 0
+              || (isHarness && !request.harnessProfile)} onClick={() => void run()}>
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}{t(preview ? client.conflict ? "clients.applyConflict" : "clients.apply" : "clients.preview")}
+            </Button>
+          </div>
         </DialogFooter>
         <ConfirmDialog request={confirmRequest} onClose={() => setConfirmRequest(null)} />
       </DialogContent>

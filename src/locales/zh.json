@@ -345,6 +345,14 @@
       "proxySocks": "软件代理是 SOCKS 地址，Claude Code 不支持，未写入代理。需要代理时请开启终端代理（HTTP 地址），或改用路由模式。",
       "systemProxy": "软件代理跟随系统代理，而 Claude Code 不读取系统代理，未写入代理。需要代理时请开启终端代理，或在设置中把软件代理改为手动 HTTP 地址。"
     },
+    "dialog": {
+      "searchSources": "搜索中转、账号、聚合或模型",
+      "noSourceMatch": "没有匹配的来源",
+      "chosen": "已选 {{count}}",
+      "setDefault": "设为默认模型：{{model}}",
+      "noDefault": "还没有选择默认模型",
+      "summaryCount": "{{models}} 个模型 · {{sources}} 个来源"
+    },
     "launch": {
       "terminal": "终端启动",
       "runIn": "在 {{folder}} 中运行 {{command}}",
