@@ -1539,7 +1539,9 @@ pub fn set_enabled(paths: &CodexPaths, id: &str, enabled: bool) -> Result<StateC
         .iter_mut()
         .find(|p| p.id == id)
         .ok_or("newapi.errors.notFound")?;
-    if enabled && (provider.api_key.is_empty() || provider.model.is_empty()) {
+    // A default model is optional: without one the relay still serves its
+    // models to the menus and clients, it just cannot be the one Codex starts on.
+    if enabled && provider.api_key.is_empty() {
         return Err("newapi.errors.enableRequirements".into());
     }
     if enabled && !provider.model_supports_protocol() {
@@ -1548,6 +1550,7 @@ pub fn set_enabled(paths: &CodexPaths, id: &str, enabled: bool) -> Result<StateC
     provider.enabled = enabled;
     provider.updated_at = now();
     if enabled
+        && provider.is_routable()
         && store.codex_access_mode == CodexAccessMode::Native
         && !store.providers.iter().any(|provider| {
             Some(provider.id.as_str()) == store.active_provider_id.as_deref()
@@ -4996,6 +4999,22 @@ base_url = "http://127.0.0.1:43127/codex/v1"
         assert_eq!(
             config["mcp_servers"]["context7"]["command"].as_str(),
             Some("npx")
+        );
+    }
+
+    #[test]
+    fn a_relay_without_a_default_model_can_be_enabled() {
+        let (_dir, paths) = paths();
+        let mut keyed = input("Relay A", "https://a.example.com");
+        keyed.model.clear();
+        let state = save_provider(&paths, keyed).unwrap();
+        let id = state.state.providers[0].id.clone();
+        let state = set_enabled(&paths, &id, true).unwrap();
+        assert!(state.state.providers[0].enabled);
+        // Codex still needs a model to start on before it connects.
+        assert_eq!(
+            set_smart_routing(&paths, true).unwrap_err(),
+            "newapi.errors.noActiveProvider"
         );
     }
 

@@ -509,6 +509,25 @@ fn entering_native_pins_the_provider_actually_used_after_router_fallback() {
 }
 
 #[test]
+fn a_native_provider_without_a_default_model_enables_without_taking_the_pin() {
+    let (_directory, paths) = fixture();
+    let mut store = load_store(&paths).unwrap();
+    let mut unpinned = store.providers[0].clone();
+    unpinned.id = "no-default-provider".into();
+    unpinned.model.clear();
+    unpinned.enabled = false;
+    store.codex_access_mode = CodexAccessMode::Native;
+    store.providers[0].enabled = false;
+    store.providers.push(unpinned);
+    save_store_unlocked(&paths, &store).unwrap();
+
+    set_enabled(&paths, "no-default-provider", true).unwrap();
+    let saved = load_store(&paths).unwrap();
+    assert!(saved.providers[1].enabled);
+    assert_ne!(saved.active_provider_id.as_deref(), Some("no-default-provider"));
+}
+
+#[test]
 fn enabling_a_native_provider_replaces_a_disabled_pin_before_connecting() {
     let (_directory, paths) = fixture();
     let mut store = load_store(&paths).unwrap();
