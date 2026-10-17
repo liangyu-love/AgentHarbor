@@ -182,7 +182,7 @@
     "enabledRelays": "{{count}} relays enabled",
     "pulse": "Live overview",
     "tokensToday": "Tokens today",
-    "tokensWeek": "This week {{value}} · {{turns}} turns today",
+    "tokensWeek": "Last 7 days {{value}} · {{turns}} requests today",
     "activeAccount": "Active account",
     "quotaUsed": "{{value}}% of the 5-hour window used",
     "quotaUnknown": "Quota not checked yet",
@@ -2512,8 +2512,122 @@
   },
   "usage": {
     "title": "Usage",
-    "heroDesc": "Local token usage of Codex and Claude Code, and relay traffic through the router",
-    "refreshSuccess": "Usage refreshed"
+    "heroDesc": "Tokens and cost of every client: local sessions and requests routed through AgentHarbor in one ledger",
+    "refreshSuccess": "Usage refreshed",
+    "rangeLabel": "Range",
+    "range": {
+      "today": "Today",
+      "week": "7 days",
+      "month": "30 days"
+    },
+    "metricLabel": "Measure",
+    "metric": {
+      "cost": "Cost",
+      "tokens": "Tokens"
+    },
+    "updated": "Updated {{time}}",
+    "sources": {
+      "codex": "Codex: {{count}} session files",
+      "claude": "Claude Code: {{count}} session files",
+      "missing": "No {{name}} sessions found",
+      "relay": "{{count}} routed requests since {{date}}",
+      "relayNone": "No routed requests yet",
+      "matched": "{{count}} routed requests matched to sessions"
+    },
+    "kpi": {
+      "cost": "Cost",
+      "tokens": "New tokens",
+      "cache": "Cache hit rate",
+      "requests": "Requests",
+      "costHint": "Routed requests use the price recorded when they ran; official accounts and unrouted calls are estimated at catalog API prices, which subscriptions do not bill.",
+      "estimated": "{{value}} estimated at catalog prices",
+      "noCost": "No priced requests yet",
+      "tokensHint": "New = uncached input + cache writes + output; cheaper cache reads are counted separately.",
+      "cacheRead": "Plus {{value}} cache reads",
+      "savings": "Cache saved about {{value}}",
+      "requestsTotal": "{{value}} in total"
+    },
+    "compare": {
+      "today": "vs. yesterday so far",
+      "week": "vs. previous 7 days",
+      "month": "vs. previous 30 days"
+    },
+    "deltaNone": "No data in the previous period",
+    "points": "{{value}} pts",
+    "chart": {
+      "title": "Trend",
+      "subtitle": {
+        "today": "By hour",
+        "week": "By day",
+        "month": "By day"
+      },
+      "groupLabel": "Group by",
+      "group": {
+        "client": "Client",
+        "channel": "Channel",
+        "model": "Model"
+      },
+      "label": "Usage trend chart; use the arrow keys to move between periods",
+      "total": "Total",
+      "other": "Other",
+      "empty": "No usage in this period",
+      "hour": "{{hour}}:00"
+    },
+    "channel": {
+      "official": "Official account",
+      "relay": "Relay",
+      "aggregate": "Aggregate"
+    },
+    "aggregateNamed": "Aggregate · {{name}}",
+    "gatewayClient": "Gateway · {{name}}",
+    "rank": {
+      "clients": "Clients",
+      "channels": "Channels and providers",
+      "models": "Models",
+      "work": "Projects and sessions",
+      "projects": "Projects",
+      "sessions": "Sessions",
+      "workHint": "From local Codex / Claude Code sessions",
+      "empty": "No data in this period",
+      "share": "{{value}} of total",
+      "balance": "Balance {{value}}",
+      "openThreads": "Open in sessions",
+      "manageProviders": "Manage relays"
+    },
+    "requests": {
+      "title": "Requests",
+      "subtitle": "Latest {{count}}",
+      "channelLabel": "Channel",
+      "all": "All",
+      "time": "Time",
+      "client": "Client",
+      "channel": "Channel / provider",
+      "model": "Model",
+      "tokens": "Tokens",
+      "cost": "Cost",
+      "latency": "Duration / first token",
+      "status": "Status",
+      "local": "Local",
+      "newTokens": "{{value}} new",
+      "cacheRead": "{{value}} cache reads",
+      "estimated": "Catalog estimate",
+      "more": "Show more",
+      "empty": "No requests match",
+      "details": "Show details",
+      "session": "Session",
+      "project": "Project",
+      "matched": "Matched to the session transcript",
+      "requested": "Requested model",
+      "served": "Upstream reported",
+      "credential": "Credential",
+      "pricing": "Pricing",
+      "cache": "Cache",
+      "reasoning": "Reasoning"
+    },
+    "empty": {
+      "title": "No usage yet",
+      "desc": "Usage appears here once you use Codex or Claude Code, or route a client through AgentHarbor."
+    }
   },
   "accountSources": {
     "tabs": "Account sources",

@@ -196,50 +196,39 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
 
   await reset("usage");
   await page.evaluate(() => {
-    const totals = (costMicros, pricedCount, partialCount = 0, unpricedCount = 0, coverageUnknownCount = 0) => ({
-      totalTokens: 100000, inputTokens: 50000, outputTokens: 50000, cacheReadTokens: 0, cacheWriteTokens: 0,
-      reasoningTokens: 0, requestCount: pricedCount + unpricedCount, successfulCount: pricedCount + unpricedCount,
-      reportedCount: pricedCount + unpricedCount, costMicros, pricedCount, unpricedCount, partialCount,
-      coverageUnknownCount, fullyPricedCount: pricedCount - partialCount - coverageUnknownCount,
-    });
-    window.review.relayPatch = {
-      today: totals(1000000, 1, 1), lastSevenDays: totals(4000000, 3, 1, 1, 1),
-      allTime: totals(4000000, 3, 1, 1, 1), week: totals(2000000, 2),
-      daily: [{ date: "2026-10-02", totals: totals(1000000, 1, 1) }],
-      byProvider: [{ providerId: "group-a", providerName: "Relay Alpha", totals: totals(4000000, 3, 1, 1, 1) }],
-      byModel: [
-        { providerId: "group-a", providerName: "Relay Alpha", model: "same-model", totals: totals(1000000, 1, 1) },
-        { providerId: "other", providerName: "Other", model: "same-model", totals: totals(0, 0, 0, 1) },
-        { providerId: "legacy", providerName: "Legacy", model: "legacy-model", totals: totals(3000000, 1, 0, 0, 1) },
-        { providerId: "free", providerName: "Free", model: "free-model", totals: totals(0, 1) },
-        { providerId: "unknown", providerName: "Unknown", model: "unknown-model", totals: totals(0, 0, 0, 1) },
-      ],
-    };
+    const now = Math.floor(Date.now() / 1000);
+    const request = { statusCode: 200, success: true, durationMs: 10, modelMatchStatus: "unknown", credentialStatus: "recorded", matched: false };
+    const entry = overrides => window.review.usageEntry({ timestamp: now - 120, client: "opencode", channel: "relay",
+      providerId: "group-a", providerName: "Relay Alpha", inputTokens: 50000, outputTokens: 50000, totalTokens: 100000,
+      estimated: false, request, ...overrides });
+    window.review.usageEntries = [
+      entry({ model: "same-model", costUsd: 1, pricingStatus: "partial" }),
+      entry({ model: "same-model", providerId: "other", providerName: "Other", costUsd: null, pricingStatus: "unpriced" }),
+      entry({ model: "legacy-model", providerId: "legacy", providerName: "Legacy", costUsd: 3, pricingStatus: "legacy" }),
+      entry({ model: "free-model", providerId: "free", providerName: "Free", costUsd: 0, pricingStatus: "priced" }),
+      entry({ model: "unknown-model", providerId: "unknown", providerName: "Unknown", costUsd: null, pricingStatus: "unpriced" }),
+    ];
     window.review.mount("usage");
   });
-  const usage = page.locator(".usage-relay-panel");
-  await usage.getByText("1 笔部分计价", { exact: false }).first().waitFor();
-  const sevenDays = usage.locator(".usage-relay-summary").filter({ hasText: "近七日预估费用" });
-  assert.match(await sevenDays.innerText(), /\$4\.00/);
-  assert.match(await sevenDays.innerText(), /1 笔部分计价/);
-  assert.match(await sevenDays.innerText(), /1 笔历史计价完整性未知/);
-  assert.match(await usage.locator(".usage-relay-day-details").innerText(), /1 笔部分计价/);
-  await usage.getByRole("tab", { name: "模型", exact: true }).click();
-  const sameModel = usage.locator(".usage-model-row").filter({ hasText: "same-model" });
-  assert.match(await sameModel.innerText(), /1 笔部分计价/);
+  const costKpi = page.locator('[data-usage-kpi="cost"]');
+  await eventually(async () => assert.match(await costKpi.innerText(), /\$4\.00/));
+  assert.match(await costKpi.innerText(), /2 笔未计价/);
+  assert.match(await costKpi.innerText(), /1 笔部分计价/);
+  assert.match(await costKpi.innerText(), /1 笔历史计价完整性未知/);
+  const models = page.getByRole("region", { name: "模型", exact: true });
+  const sameModel = models.locator("[data-usage-rank]").filter({ hasText: "same-model" });
+  assert.match(await sameModel.innerText(), /Relay Alpha · Other/);
   assert.match(await sameModel.innerText(), /1 笔未计价/);
-  assert.match(await usage.locator(".usage-model-row").filter({ hasText: "free-model" }).innerText(), /\$0/);
-  assert.match(await usage.locator(".usage-model-row").filter({ hasText: "unknown-model" }).innerText(), /无法可靠计算成本/);
-  await usage.getByRole("button", { name: "明细", exact: true }).click();
-  await eventually(async () => assert.match(await usage.locator(".usage-model-detail-row").filter({ hasText: "same-model" }).innerText(), /1 笔部分计价/));
-  await usage.getByRole("tab", { name: "供应商与额度" }).click();
-  await eventually(async () => assert.match(await usage.locator(".usage-cost-line").innerText(), /1 笔部分计价/));
+  assert.match(await sameModel.innerText(), /1 笔部分计价/);
+  assert.match(await models.locator("[data-usage-rank]").filter({ hasText: "free-model" }).innerText(), /\$0/);
+  await page.getByRole("radio", { name: "Token", exact: true }).click();
+  await eventually(async () => assert.match(await models.locator("[data-usage-rank]").filter({ hasText: "unknown-model" }).innerText(), /无法可靠计算成本/));
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
-  await usage.getByRole("tab", { name: "模型", exact: true }).click();
-  assert.equal(await usage.evaluate(element => element.scrollWidth <= element.clientWidth), true, "pricing coverage must wrap within the model panel");
+  assert.equal(await models.evaluate(element => element.scrollWidth <= element.clientWidth), true, "pricing coverage must wrap within the model ranking");
+  await page.evaluate(() => localStorage.removeItem("agentharbor.usage-metric"));
   await page.setViewportSize({ width: 1200, height: 700 });
-  console.log("PASS seven-day costs and partial/unknown coverage survive summaries, trends, merged model views and narrow screens");
+  console.log("PASS costs keep partial, unpriced and unknown coverage in the summary and per model, on narrow screens too");
 
   await reset("access");
   await page.evaluate(() => {
@@ -281,28 +270,27 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
 
   await reset("usage");
   await page.evaluate(() => {
-    const base = { timestamp: 1790000000, date: "2026-10-05", providerId: "fixture", providerName: "Relay Fixture",
-      model: "deepseek-fixture", protocol: "chatCompletions", statusCode: 200, durationMs: 20, success: true,
-      usageReported: true, inputTokens: 3, outputTokens: 4, totalTokens: 7, reasoningTokens: 0,
-      cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, pricingStatus: "priced", pricingSource: "catalogReference", catalogRevision: "fixture" };
-    window.review.relayPatch = { recent: [base, { ...base, timestamp: 1790000001, clientSource: "claudeDesktop",
-      requestedModel: "claude-sonnet-4-6", resolvedModel: "deepseek-fixture", routeRevision: 3 }] };
+    const now = Math.floor(Date.now() / 1000);
+    const request = { statusCode: 200, success: true, durationMs: 20, modelMatchStatus: "unknown", credentialStatus: "recorded", matched: false };
+    const base = { timestamp: now - 60, client: "unknown", channel: "relay", providerId: "fixture", providerName: "Relay Fixture",
+      model: "deepseek-fixture", inputTokens: 3, outputTokens: 4, totalTokens: 7, costUsd: 0, pricingStatus: "priced",
+      pricingSource: "catalogReference", estimated: false, request };
+    window.review.usageEntries = [window.review.usageEntry(base), window.review.usageEntry({ ...base, timestamp: now - 30,
+      client: "claudeDesktop", channel: "aggregate", requestedModel: "claude-sonnet-4-6" })];
     window.review.mount("usage");
   });
-  const desktopUsage = page.locator(".usage-relay-panel");
-  await desktopUsage.getByRole("tab", { name: "请求明细" }).click();
+  const desktopUsage = page.locator("[data-usage-requests]");
   await desktopUsage.locator("tbody tr").nth(1).waitFor();
   await eventually(async () => assert.equal(await desktopUsage.locator("tbody tr").count(), 2));
   await desktopUsage.getByLabel("客户端来源", { exact: true }).selectOption("claudeDesktop");
   await desktopUsage.getByText("claude-sonnet-4-6 → deepseek-fixture", { exact: true }).waitFor();
   await eventually(async () => assert.equal(await desktopUsage.locator("tbody tr").count(), 1));
-  assert.match(await desktopUsage.locator("tbody tr").innerText(), /claude-sonnet-4-6 → deepseek-fixture/);
   assert.match(await desktopUsage.locator("tbody tr").innerText(), /Claude Desktop/);
   assert.match(await desktopUsage.locator("tbody tr").innerText(), /\$0/);
-  assert.equal(await desktopUsage.locator('td[title="模型目录参考价"]').count(), 1,
+  assert.equal(await desktopUsage.locator('td[title^="模型目录参考价"]').count(), 1,
     "usage records retain and localize the reference-price source");
   await desktopUsage.getByLabel("客户端来源", { exact: true }).selectOption("unknown");
-  await desktopUsage.locator("tbody tr .usage-request-source").filter({ hasText: /^未记录$/ }).waitFor();
+  await desktopUsage.locator("tbody tr [data-usage-client]").filter({ hasText: /^未记录$/ }).waitFor();
   await eventually(async () => assert.equal(await desktopUsage.locator("tbody tr").count(), 1));
   assert.match(await desktopUsage.locator("tbody tr").innerText(), /未记录/);
   console.log("PASS Desktop diagnostics and usage filter client source while retaining alias, actual billing model and zero cost");
@@ -339,25 +327,25 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
 
   await reset("usage");
   await page.evaluate(samples => {
-    const base = { timestamp: 1790000000, date: "2026-10-05", providerId: "fixture", providerName: "Relay Fixture",
-      model: "deepseek-fixture", protocol: "chatCompletions", statusCode: 200, durationMs: 20, success: true,
-      usageReported: true, inputTokens: 3, outputTokens: 4, totalTokens: 7, reasoningTokens: 0,
-      cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, pricingStatus: "priced", pricingSource: "override", catalogRevision: "fixture" };
-    window.review.relayPatch = { recent: [
-      ...samples.map(([clientSource], index) => ({ ...base, timestamp: base.timestamp + index, clientSource,
-        requestedModel: `source-${clientSource}`, resolvedModel: base.model })),
-      { ...base, timestamp: base.timestamp + 5, clientSource: "future-client" },
-      { ...base, timestamp: base.timestamp + 6 },
-    ] };
+    const now = Math.floor(Date.now() / 1000);
+    const request = { statusCode: 200, success: true, durationMs: 20, modelMatchStatus: "unknown", credentialStatus: "recorded", matched: false };
+    const base = { channel: "relay", providerId: "fixture", providerName: "Relay Fixture", model: "deepseek-fixture",
+      inputTokens: 3, outputTokens: 4, totalTokens: 7, costUsd: 0, pricingSource: "manual", estimated: false, request };
+    // The ledger files missing and future client sources under one unknown client.
+    window.review.usageEntries = [
+      ...samples.map(([client], index) => window.review.usageEntry({ ...base, timestamp: now - 100 + index, client,
+        requestedModel: `source-${client}` })),
+      window.review.usageEntry({ ...base, timestamp: now - 10, client: "unknown" }),
+      window.review.usageEntry({ ...base, timestamp: now - 5, client: "unknown" }),
+    ];
     window.review.mount("usage");
   }, sourceSamples);
-  const sourceUsage = page.locator(".usage-relay-panel");
-  await sourceUsage.getByRole("tab", { name: "请求明细" }).click();
+  const sourceUsage = page.locator("[data-usage-requests]");
   for (const [value, label] of sourceSamples) {
     await sourceUsage.getByLabel("客户端来源", { exact: true }).selectOption(value);
     await sourceUsage.locator("tbody tr").filter({ hasText: `source-${value}` }).waitFor();
     await eventually(async () => assert.equal(await sourceUsage.locator("tbody tr").count(), 1));
-    assert.equal(await sourceUsage.locator("tbody tr .usage-request-source").innerText(), label);
+    assert.equal(await sourceUsage.locator("tbody tr [data-usage-client]").innerText(), label);
   }
   await sourceUsage.getByLabel("客户端来源", { exact: true }).selectOption("unknown");
   await sourceUsage.locator("tbody tr").nth(1).waitFor();

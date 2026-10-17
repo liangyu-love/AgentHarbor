@@ -40,6 +40,7 @@ pub mod search_probe;
 pub mod quota_store;
 pub mod relay_usage;
 pub mod usage_cache;
+pub mod usage_ledger;
 pub mod repository;
 pub(crate) mod request_diagnostics;
 pub mod route_trace;

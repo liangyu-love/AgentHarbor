@@ -28,7 +28,8 @@ import type {
   CustomInstructionPreviewPayload,
   CustomInstructionStatePayload,
   CodexAccountListPayload,
-  TokenUsagePayload,
+  UsagePayload,
+  UsageRange,
 } from "@/types";
 import { claudeDesktopApi } from "@/lib/claude-desktop";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
@@ -272,7 +273,7 @@ const conversationsApi = {
   };
 
 const usageApi = {
-  overview: () => invoke<TokenUsagePayload>("get_token_usage"),
+  overview: (range: UsageRange) => invoke<UsagePayload>("get_token_usage", { range }),
 };
 
 const accountsApi = {

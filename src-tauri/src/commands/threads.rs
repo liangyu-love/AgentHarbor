@@ -1,3 +1,4 @@
+use super::usage::LocalUsageDirs;
 use crate::core::auth::current_timestamp;
 use crate::core::claude_sessions;
 use crate::core::models::*;
@@ -231,9 +232,11 @@ pub async fn delete_conversations(
     target_id: TargetId,
     keys: Vec<String>,
 ) -> Result<CoreEnvelope<ThreadDeleteResult>, String> {
+    let usage = LocalUsageDirs::of(&repo)?;
     if target_id == TargetId::ClaudeCode {
         let root = claude_sessions::projects_root();
         let result = tauri::async_runtime::spawn_blocking(move || {
+            usage.record_before_delete();
             claude_sessions::delete_threads(&root, &keys)
         })
         .await
@@ -257,6 +260,7 @@ pub async fn delete_conversations(
         )
     };
     let result = tauri::async_runtime::spawn_blocking(move || {
+        usage.record_before_delete();
         thread_delete::delete_threads(
             &state_database_path,
             &sessions_dir,

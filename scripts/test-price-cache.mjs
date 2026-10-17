@@ -39,32 +39,23 @@ export async function testPriceCache({ page, reset, captureDir }) {
 
   await reset("usage");
   await page.evaluate(() => {
-    const stats = { reportedCount: 3, promptTokens: 1000, readTokens: 80, writeTokens: 10 };
-    const totals = { requestCount: 4, successfulCount: 4, reportedCount: 4, inputTokens: 4910, outputTokens: 0,
-      totalTokens: 5000, reasoningTokens: 0, cacheReadTokens: 80, cacheWriteTokens: 10, costMicros: 0,
-      pricedCount: 4, unpricedCount: 0, partialCount: 0, fullyPricedCount: 4, coverageUnknownCount: 0 };
-    const known = { ...totals, cacheUsage: stats };
-    const base = { timestamp: 1790000000, date: "2026-10-08", providerId: "actual-member", providerName: "Actual relay member",
-      model: "cache-hit", protocol: "responses", statusCode: 200, durationMs: 20, success: true, clientSource: "codex",
-      usageReported: true, cacheReported: true, inputTokens: 10, outputTokens: 0, totalTokens: 100,
-      reasoningTokens: 0, cacheReadTokens: 80, cacheWriteTokens: 10, costUsd: 0, pricingStatus: "priced",
-      pricingSource: "catalogReference", pricingSnapshot: { multiplier: 0.5 } };
-    window.review.relayPatch = {
-      today: { ...totals, cacheUsage: { reportedCount: 1, promptTokens: 900, readTokens: 0, writeTokens: 0 } },
-      lastSevenDays: totals, allTime: known,
-      byProvider: [{ providerId: "actual-member", providerName: "Actual relay member", totals: known },
-        { providerId: "unknown", providerName: "Unreported relay", totals }],
-      byModel: [{ providerId: "actual-member", providerName: "Actual relay member", model: "cache-hit", totals: known },
-        { providerId: "unknown", providerName: "Unreported relay", model: "unknown-model", totals }],
-      recent: [base, { ...base, model: "cache-miss", inputTokens: 900, totalTokens: 900, cacheReadTokens: 0, cacheWriteTokens: 0 },
-        { ...base, model: "unknown-model", cacheReported: false, inputTokens: 4000, totalTokens: 4000, cacheReadTokens: 0, cacheWriteTokens: 0 },
-        { ...base, model: "empty-input", inputTokens: 0, totalTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }],
-    };
+    const now = Math.floor(Date.now() / 1000);
+    const request = { statusCode: 200, success: true, durationMs: 20, modelMatchStatus: "unknown", credentialStatus: "recorded", matched: false };
+    const base = { timestamp: now - 60, client: "codex", channel: "relay", providerId: "actual-member", providerName: "Actual relay member",
+      model: "cache-hit", inputTokens: 10, outputTokens: 0, cacheReadTokens: 80, cacheWriteTokens: 10, totalTokens: 100, costUsd: 0,
+      pricingStatus: "priced", pricingSource: "catalogReference", multiplier: 0.5, estimated: false, request };
+    window.review.usageEntries = [base,
+      { ...base, model: "cache-miss", inputTokens: 900, totalTokens: 900, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      { ...base, model: "unknown-model", cacheReported: false, inputTokens: 4000, totalTokens: 4000, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      { ...base, model: "empty-input", inputTokens: 0, totalTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      { ...base, providerId: "unreported", providerName: "Unreported relay", model: "unreported-model", cacheReported: false,
+        inputTokens: 500, totalTokens: 500, cacheReadTokens: 0, cacheWriteTokens: 0 },
+    ].map(entry => window.review.usageEntry(entry));
     window.review.mount("usage");
   });
-  const usage = page.locator(".usage-relay-panel");
-  await usage.getByRole("tab", { name: "请求明细", exact: true }).click();
+  const usage = page.locator("[data-usage-requests]");
   const row = name => usage.locator("tbody tr").filter({ hasText: name });
+  await row("cache-hit").waitFor();
   assert.match(await row("cache-hit").innerText(), /缓存命中率 80%/);
   assert.match(await row("cache-hit").innerText(), /读取 80 · 写入 10/);
   assert.match(await row("cache-miss").innerText(), /缓存命中率 0%/);
@@ -72,18 +63,12 @@ export async function testPriceCache({ page, reset, captureDir }) {
   assert.match(await row("empty-input").innerText(), /缓存命中率 —/);
   assert.match(await row("cache-hit").locator("td").nth(5).getAttribute("title"), /倍率 ×0.5/);
   if (captureDir) await usage.screenshot({ path: path.join(captureDir, "cache-request-detail.png") });
-  await usage.getByRole("tab", { name: "缓存", exact: true }).click();
-  const cache = usage.getByTestId("cache-usage-panel");
-  await cache.waitFor();
-  const rates = await cache.locator("strong").allTextContents();
-  assert.deepEqual(rates, ["0%", "—", "8%"], "aggregate ratio is token weighted, excluding unreported requests");
-  assert.match(await row("Actual relay member").innerText(), /8%/);
-  assert.match(await row("Actual relay member").innerText(), /3 \/ 4/);
-  assert.deepEqual(await row("Unreported relay").locator("td").allTextContents(), ["Unreported relay", "—", "—", "—", "—", "0 / 4"]);
-  await cache.getByRole("tab", { name: "按模型", exact: true }).click();
-  await eventually(async () => assert.match(await cache.innerText(), /cache-hit/));
-  assert.match(await cache.innerText(), /unknown-model/);
-  if (captureDir) await usage.screenshot({ path: path.join(captureDir, "cache-usage-desktop.png") });
+  // Aggregate ratios weigh tokens and leave requests without cache counters out.
+  await eventually(async () => assert.match(await page.locator('[data-usage-kpi="cache"]').innerText(), /8%/));
+  const channels = page.getByRole("region", { name: "渠道与供应商", exact: true });
+  assert.match(await channels.locator('[data-usage-rank="relay:actual-member"]').innerText(), /缓存命中率 8%/);
+  assert.doesNotMatch(await channels.locator('[data-usage-rank="relay:unreported"]').innerText(), /缓存命中率/);
+  if (captureDir) await channels.screenshot({ path: path.join(captureDir, "cache-usage-desktop.png") });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.evaluate(() => document.documentElement.classList.add("dark"));
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);

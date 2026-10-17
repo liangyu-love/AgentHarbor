@@ -12,11 +12,11 @@ export async function testAccountsSplit({ page, reset, captureDir }) {
 
   await reset("accounts");
   await page.locator("article").filter({ hasText: "Alpha" }).first().waitFor();
-  await eventually(async () => assert.equal(await page.locator(".usage-today-card").count(), 0, "the accounts page carries no token monitor"));
+  await eventually(async () => assert.equal(await page.locator("[data-usage-kpi]").count(), 0, "the accounts page carries no token monitor"));
   await reset("usage-page");
-  await page.locator(".usage-today-card").first().waitFor();
+  await page.locator("[data-usage-kpi]").first().waitFor();
   await eventually(async () => assert.equal(await page.getByRole("heading", { level: 2, name: await tr("usage.title") }).count(), 1));
-  assert.equal(await page.locator(".usage-today-card").count(), 2);
+  assert.equal(await page.locator("[data-usage-kpi]").count(), 4);
   console.log("PASS usage has its own page and the accounts page keeps only accounts");
 
   await reset("accounts");

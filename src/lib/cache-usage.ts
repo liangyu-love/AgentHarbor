@@ -1,4 +1,4 @@
-import type { CacheUsageTotals, RelayUsageRecord } from "@/types";
+import type { CacheUsageTotals, UsageEntry } from "@/types";
 
 /** Aggregate token ratio, never the arithmetic mean of per-request percentages. */
 export function cacheHitRate(usage: CacheUsageTotals | undefined): number | null {
@@ -7,7 +7,7 @@ export function cacheHitRate(usage: CacheUsageTotals | undefined): number | null
   return usage.readTokens / usage.promptTokens * 100;
 }
 
-export function requestCacheUsage(record: RelayUsageRecord): CacheUsageTotals | undefined {
+export function requestCacheUsage(record: UsageEntry): CacheUsageTotals | undefined {
   if (!record.usageReported || !record.cacheReported) return undefined;
   return { reportedCount: 1, promptTokens: record.inputTokens + record.cacheReadTokens + record.cacheWriteTokens,
     readTokens: record.cacheReadTokens, writeTokens: record.cacheWriteTokens };

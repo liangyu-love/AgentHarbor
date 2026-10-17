@@ -36,6 +36,7 @@ export function AnimatedSegmentedControl({
   itemClassName,
   activeItemClassName,
   inactiveItemClassName,
+  ariaLabel,
 }: {
   items: readonly AnimatedSegmentedControlItem[];
   value: string;
@@ -49,6 +50,7 @@ export function AnimatedSegmentedControl({
   itemClassName?: string;
   activeItemClassName?: string;
   inactiveItemClassName?: string;
+  ariaLabel?: string;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const itemRefs = useRef(new Map<string, HTMLButtonElement | null>());
@@ -156,6 +158,7 @@ export function AnimatedSegmentedControl({
     <div
       ref={containerRef}
       role="radiogroup"
+      aria-label={ariaLabel}
       className={cn("relative", equalWidth ? "grid" : "inline-flex", className)}
       style={
         equalWidth

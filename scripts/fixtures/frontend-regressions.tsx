@@ -21,7 +21,6 @@ import { UpdateOverlay } from "@/components/update/update-overlay";
 import { useUpdateCheck } from "@/hooks/use-update-check";
 import { OverviewPage } from "@/components/overview/overview-page";
 import { AccountsPage } from "@/components/accounts/accounts-page";
-import { TokenUsagePanel } from "@/components/usage/token-usage-panel";
 import { UsagePage } from "@/components/usage/usage-page";
 import type { AccountSource, AccountSourceKind, AccountSourceListPayload, AccountSourceMethod } from "@/types/account-sources";
 import type { GatewayModel, GatewayState } from "@/types/gateway";
@@ -33,7 +32,7 @@ import { ClientConfigs } from "@/components/newapi/client-configs";
 import { TerminalProxySettings } from "@/components/settings/terminal-proxy-settings";
 import { AutostartSetting } from "@/components/settings/autostart-setting";
 import type { CodexSubagentSettings, NewApiProvider, NewApiState } from "@/types/newapi";
-import type { TokenUsagePayload } from "@/types";
+import { buildUsage, defaultUsageEntries, usageEntry } from "./scripts/fixtures/usage-fixture";
 import type { ClientConfigRequest, ClientStatus } from "@/types/clients";
 import type { AggregateModel, AggregateView, AggregationState, ConnectionExportResult } from "@/types/aggregation";
 import type { ThreadSummary } from "@/types/threads";
@@ -103,52 +102,6 @@ const galleryItems = Array.from({ length: 100 }, (_, i) => ({
   name: "gallery-" + i + ".png", path: "C:/synthetic/gallery-" + i + ".png", size: 100, modifiedAt: i,
 }));
 const pixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+nmQAAAABJRU5ErkJggg==";
-const tokens = (totalTokens: number, inputTokens: number, outputTokens: number, cacheReadTokens = 0) => ({
-  turnCount: 10, totalTokens, inputTokens, outputTokens, reasoningTokens: 0, cacheReadTokens, cacheWriteTokens: 0,
-});
-const relayTotals = (totalTokens: number, inputTokens: number, outputTokens: number, requestCount = 8) => ({
-  totalTokens, inputTokens, outputTokens, reasoningTokens: 0, requestCount, successfulCount: requestCount, reportedCount: requestCount,
-  cacheReadTokens: 0, cacheWriteTokens: 0, costMicros: Math.round(totalTokens * 0.00002 * 1_000_000), pricedCount: requestCount, unpricedCount: 0,
-  fullyPricedCount: requestCount, partialCount: 0, coverageUnknownCount: 0,
-});
-const usageFixture: TokenUsagePayload = {
-  generatedAt: Math.floor(Date.now() / 1000),
-  local: {
-    generatedAt: Math.floor(Date.now() / 1000), today: tokens(74_100_000, 2_030_000, 292_000, 71_778_000),
-    week: tokens(510_000_000, 15_790_000, 2_476_000, 491_734_000),
-    allTime: tokens(2_060_000_000, 170_000_000, 8_730_000, 1_881_270_000),
-    bySource: [
-      { sourceId: "codex", sourceName: "Codex", available: true, fileCount: 153, updatedFileCount: 4, totals: tokens(1_900_000_000, 170_000_000, 8_730_000, 1_721_270_000) },
-      { sourceId: "claude", sourceName: "Claude Code", available: true, fileCount: 5, updatedFileCount: 1, totals: tokens(160_000_000, 2_940_000, 397_000, 156_663_000) },
-    ],
-    byModel: [
-      { sourceId: "codex", sourceName: "Codex", model: "gpt-5.6-sol", totals: tokens(1_180_000_000, 80_000_000, 4_000_000, 1_096_000_000) },
-      { sourceId: "codex", sourceName: "Codex", model: "gpt-6-sol", totals: tokens(260_000_000, 20_000_000, 1_500_000, 238_500_000) },
-      { sourceId: "claude", sourceName: "Claude Code", model: "claude-opus-5.5", totals: tokens(160_000_000, 2_940_000, 397_000, 156_663_000) },
-      { sourceId: "codex", sourceName: "Codex", model: "gpt-6-astra", totals: tokens(100_000_000, 7_000_000, 300_000, 92_700_000) },
-    ],
-    daily: Array.from({ length: 14 }, (_, index) => {
-      const values = [26, 20, 2, 1, 1, 4, 35, 68, 4, 2, 3, 123, 78, 74];
-      const total = values[index] * 1_000_000;
-      return { date: `2026-09-${String(index + 14).padStart(2, "0")}`, totals: tokens(total, Math.round(total * .05), Math.round(total * .012), Math.round(total * .938)),
-        byModel: [
-          { sourceId: "codex", sourceName: "Codex", model: "gpt-5.6-sol", totals: tokens(Math.round(total * .62), 0, 0) },
-          { sourceId: "codex", sourceName: "Codex", model: "gpt-6-sol", totals: tokens(Math.round(total * .24), 0, 0) },
-          { sourceId: "claude", sourceName: "Claude Code", model: "claude-opus-5.5", totals: tokens(Math.round(total * .14), 0, 0) },
-        ] };
-    }),
-    recent: [], warningCount: 0, warnings: [],
-  },
-  relay: {
-    generatedAt: Math.floor(Date.now() / 1000), today: relayTotals(63_000, 62_988, 12, 1),
-    week: relayTotals(120_000, 116_000, 4_000, 3), allTime: relayTotals(330_000, 310_000, 20_000, 5),
-    lastSevenDays: relayTotals(220_000, 216_000, 4_000, 4), lastSevenDaysStart: "2026-09-21", lastSevenDaysEnd: "2026-09-27", statisticalTimezone: "local (+08:00)",
-    byProvider: [{ providerId: "group-a", providerName: "Relay Alpha", totals: relayTotals(330_000, 310_000, 20_000, 5) }],
-    byModel: [{ providerId: "group-a", providerName: "Relay Alpha", model: "gpt-6-luna", totals: relayTotals(330_000, 310_000, 20_000, 5) }],
-    daily: Array.from({ length: 14 }, (_, index) => ({ date: `2026-09-${String(index + 14).padStart(2, "0")}`, totals: relayTotals(index === 13 ? 63_000 : index * 1_200, index === 13 ? 62_988 : index * 1_000, index === 13 ? 12 : index * 200, index === 13 ? 1 : 0) })),
-    recent: [{ timestamp: Math.floor(Date.now() / 1000), date: "2026-09-27", providerId: "group-a", providerName: "Relay Alpha", model: "gpt-6-luna", protocol: "responses", statusCode: 200, durationMs: 1140, firstTokenMs: 320, success: true, usageReported: true, inputTokens: 62_988, outputTokens: 12, reasoningTokens: 0, totalTokens: 63_000, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.00126, pricingStatus: "priced", pricingSource: "catalog", catalogRevision: "abcdef" }],
-  },
-};
 let state: NewApiState = { providers: [imageProvider], router: { enabled: false, accessMode: "router", accountless: false, port: 0, configDrifted: false }, proxyRunning: false, activeProviderId: null };
 api.providers.loadState = async () => state;
 // Aggregation fixtures reuse exact saved provider/model identities. Availability
@@ -420,7 +373,10 @@ const accountList = { activeAccountKey: "acct-a", refreshedAt: 1_800_000_000, it
 ] };
 api.accounts.refresh = async () => accountList as any;
 api.accounts.list = async () => accountList as any;
-api.usage.overview = async () => ({ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } });
+// Tests replace `usageEntries` to aggregate their own calls, or patch the result.
+api.usage.overview = async range => ({
+  ...buildUsage(range, controls.review.usageEntries ?? defaultUsageEntries()), ...controls.review.usagePatch,
+});
 // Account sources: one WorkBuddy account with credits and today's check-in,
 // a Gemini CLI account still without its Google Cloud project, the rest
 // empty; Command Code signs in three ways, one of them a pasted key.
@@ -1283,7 +1239,7 @@ function mount(mode: FixtureMode) {
       {mode === "sidebar" ? <AppAvatarProvider><SidebarProvider><AppSidebar activeRoute={controls.review.sidebarRoute ?? "relays"} onNavigate={route => { controls.review.navigatedTo = route; }} onThemeChange={noop} /><div className="flex-1" /></SidebarProvider></AppAvatarProvider> : mode === "routing-cache" ? <RoutingCacheFixture /> : mode === "desktop-updater" ? <DesktopUpdaterFixture /> : mode === "desktop-exit" ? <ClaudeDesktopRouterExitDialog /> : mode.startsWith("recovery-") ? <RecoveryFixture thread={threads[0] as ThreadSummary} /> :
         mode === "skills" ? <SkillsPage /> : mode === "terminal-proxy" ? <div className="mx-auto max-w-xl rounded-xl bg-card shadow-sm"><TerminalProxyFixture /></div> :
         mode === "autostart" ? <div className="mx-auto max-w-xl rounded-xl bg-card shadow-sm"><AutostartSetting /></div> :
-        mode === "image" ? <ImageWorkbenchPage /> : mode === "instructions" ? <CustomInstructionsPage /> : mode === "mcp-clients" ? <McpClientFixture /> : mode === "mcp" ? <McpPage /> : mode === "accounts" || mode.startsWith("account-resets") ? <AccountsPage refreshInterval="5m" /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage-page" ? <UsagePage refreshInterval="5m" onManageProviders={() => { controls.review.navigatedTo = "relays"; }} /> : mode === "usage" ? <TokenUsagePanel data={{ ...usageFixture, relay: { ...usageFixture.relay, ...controls.review.relayPatch } }} loading={false} error={null} onRetry={noop} onManageProviders={noop} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode.startsWith("thread-details") || mode === "thread-tree" || mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :
+        mode === "image" ? <ImageWorkbenchPage /> : mode === "instructions" ? <CustomInstructionsPage /> : mode === "mcp-clients" ? <McpClientFixture /> : mode === "mcp" ? <McpPage /> : mode === "accounts" || mode.startsWith("account-resets") ? <AccountsPage refreshInterval="5m" /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage-page" || mode === "usage" ? <UsagePage refreshInterval="5m" onManageProviders={() => { controls.review.navigatedTo = "relays"; }} onOpenThreads={client => { controls.review.navigatedTo = `threads:${client}`; }} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode.startsWith("thread-details") || mode === "thread-tree" || mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :
         mode === "access" || mode === "incompatible" || mode === "native-invalid" || mode === "groups" ? <><NewApiPage onOpenRelays={() => { controls.review.navigatedTo = "relays"; }} /><RelayModelsPage /></> :
         mode === "test" ? <ProviderTestDialog open provider={mixedProvider} onOpenChange={noop} onTested={noop} onFailed={noop} /> :
         mode.startsWith("clients") ? <div className="space-y-8">{(["claudeCode", "opencode", "pi"] as const).filter(target => clientStatuses.some(status => status.targetId === target) || (!clientStatuses.length && target === (openCode ? "opencode" : "claudeCode"))).map(target => <ClientConfigs key={target} target={target} providers={controls.review.providerFixtures ? state.providers : openCode ? [mixedProvider, provider("alternate")] : [selectedProvider]} />)}</div> :
@@ -1294,7 +1250,7 @@ function mount(mode: FixtureMode) {
   </TooltipProvider></QueryClientProvider>);
 }
 
-controls.review = { mount, darkScrimFloor, t: (key: string, options?: Record<string, unknown>) => i18n.t(key, options),
+controls.review = { mount, darkScrimFloor, usageEntry, t: (key: string, options?: Record<string, unknown>) => i18n.t(key, options),
   setLanguage: (language: string) => i18n.changeLanguage(language),
   emitBalanceUpdate: (id: string, remaining: number) => {
     state = { ...state, providers: state.providers.map(provider => provider.id === id && provider.balance

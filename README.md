@@ -30,7 +30,7 @@ AgentHarbor is a Tauri 2 + React + Rust desktop app that does this for you. It r
 | **Local router** | Protocol translation between the three wire formats, model aggregation with priority tiers, failover, first-token timeout and live member state, plus request-level route diagnostics |
 | **Gateway** | One local address and named keys give any agent that takes a base URL and an API key every enabled model (see below) |
 | **Accounts** | Codex: ChatGPT OAuth login, quota windows, manual or threshold-based automatic switching (a running Codex keeps its task until the old account is used up). Account sources: ChatGPT (Sign in with ChatGPT), WorkBuddy, WorkBuddy AI, GitHub Copilot, Gemini CLI, Antigravity, Kiro, Grok, Cursor, Qoder, Qoder CN, Trae CN, Trae Global, MiniMax Code (China and Global), ZCode, OpenCode Zen, OpenCode Go and Command Code, which can be shared with model inject, plus a daily check-in for the sources that pay one (see below) |
-| **Usage** | A token monitor across Codex, Claude Code and relay traffic with recorded prices |
+| **Usage** | One ledger of every client's tokens and cost: local Codex and Claude Code sessions joined with routed requests, by client, channel, model and project; deleted sessions keep their usage |
 | **Sessions** | Browse, search, export and delete Codex and Claude Code conversations; recover Codex threads its index lost |
 | **MCP / Skills / Instructions** | Manage MCP servers, Skills (with backups) and the AgentHarbor-managed block of `AGENTS.md` / `CLAUDE.md` for Codex and Claude Code |
 | **Image workbench** | Generate or edit images through a configured provider and keep them in a local gallery |

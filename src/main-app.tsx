@@ -182,7 +182,12 @@ function MainApp() {
       case "accounts":
         return <AccountsPage refreshInterval={refreshInterval} />;
       case "usage":
-        return <UsagePage refreshInterval={refreshInterval} onManageProviders={() => setRoute("relays")} />;
+        return <UsagePage refreshInterval={refreshInterval} onManageProviders={() => setRoute("relays")}
+          onOpenThreads={client => {
+            // The threads page opens on the source the session belongs to.
+            try { localStorage.setItem(storageKeys.threadsSource, client); } catch { /* storage unavailable */ }
+            setRoute("threads");
+          }} />;
       case "newapi":
         return <NewApiPage onOpenRelays={() => setRoute("relays")} />;
       case "relays":

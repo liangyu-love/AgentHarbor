@@ -245,7 +245,23 @@ fn request_cost(tokens: &TokenCounts, pricing: &PricingSnapshot) -> Option<(f64,
     applicable.then_some((cost, complete))
 }
 
-fn to_micros(cost: f64) -> u64 {
+/// The cost of a call priced after the fact, and whether every rate it needed
+/// was known. `None` when no rate applies.
+pub(crate) fn estimate(tokens: &TokenCounts, pricing: &PricingSnapshot) -> Option<(f64, bool)> {
+    request_cost(tokens, pricing)
+}
+
+/// What the cache reads saved against paying the input rate for them.
+pub(crate) fn cache_savings(tokens: &TokenCounts, pricing: &PricingSnapshot) -> Option<f64> {
+    if tokens.cache_read_tokens == 0 {
+        return None;
+    }
+    let (rates, _) = pricing.rates_for(tokens.prompt_tokens());
+    let (input, read) = (rates.input?, rates.cache_read?);
+    (input > read).then(|| (tokens.cache_read_tokens as f64) * (input - read) / 1_000_000.0)
+}
+
+pub(crate) fn to_micros(cost: f64) -> u64 {
     if !cost.is_finite() || cost <= 0.0 {
         return 0;
     }
@@ -1016,6 +1032,11 @@ fn sort_totals(left: &RelayUsageTotals, right: &RelayUsageTotals) -> std::cmp::O
 
 pub fn load(app_data_dir: &Path) -> Result<RelayUsagePayload, String> {
     load_on(app_data_dir, Local::now().date_naive())
+}
+
+/// The itemized requests still in the log; compacted totals are left out.
+pub(crate) fn itemized(app_data_dir: &Path) -> Result<Vec<RelayUsageRecord>, String> {
+    read_ledger(app_data_dir).map(|ledger| ledger.records)
 }
 
 fn load_on(app_data_dir: &Path, today: NaiveDate) -> Result<RelayUsagePayload, String> {

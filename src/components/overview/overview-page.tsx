@@ -207,7 +207,7 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
   const systemInfo = useQuery({ queryKey: queryKeys.systemInfo, queryFn: api.getSystemInfo, staleTime: Infinity });
   // Stored results only: refreshing would query every account remotely.
   const accounts = useQuery({ queryKey: queryKeys.codexAccounts, queryFn: api.accounts.list, staleTime: 60_000, refetchOnWindowFocus: false });
-  const usage = useQuery({ queryKey: queryKeys.tokenUsage, queryFn: api.usage.overview, staleTime: 5 * 60_000, refetchOnWindowFocus: false, retry: false });
+  const usage = useQuery({ queryKey: [...queryKeys.tokenUsage, "week"], queryFn: () => api.usage.overview("week"), staleTime: 5 * 60_000, refetchOnWindowFocus: false, retry: false });
   const threads = useQuery({ queryKey: queryKeys.conversations("codex"), queryFn: () => api.conversations.list("codex"), staleTime: 30_000 });
   const claudeThreads = useQuery({ queryKey: queryKeys.conversations("claudeCode"), queryFn: () => api.conversations.list("claudeCode"), staleTime: 30_000 });
   const [recentSource, setRecentSource] = useState<RecentSource>("all");
@@ -314,8 +314,8 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
       ok: !!status?.paths.appDataDir, detail: t("workspace.dataHarbor") },
   ].map((location) => ({ ...location, path: location.path || locatedDir(location.key) }));
 
-  const local = usage.data?.local;
-  const daily = (local?.daily ?? []).slice(-14).map((day) => day.totals.totalTokens);
+  const week = usage.data;
+  const daily = (week?.buckets ?? []).map((day) => day.totals.newTokens);
   const activeAccount = accounts.data?.items.find((account) => account.isActive) ?? null;
   // Codex and Claude Code sessions together, newest first; each keeps the client it came from.
   const threadItems = [
@@ -387,8 +387,8 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
 
       <section className="dash-bento" aria-label={t("workspace.pulse")}>
         <Tile icon={<Zap className="h-3.5 w-3.5" />} label={t("workspace.tokensToday")} onClick={() => onNavigate("usage")}
-          caption={local ? t("workspace.tokensWeek", { value: formatTokenCount(local.week.totalTokens), turns: local.today.turnCount }) : t(usage.isError ? "workspace.checkFailed" : "workspace.checking")}>
-          <span className="dash-value"><CountUp value={local?.today.totalTokens ?? 0} format={formatTokenCount} /></span>
+          caption={week ? t("workspace.tokensWeek", { value: formatTokenCount(week.current.newTokens), turns: week.today.requestCount }) : t(usage.isError ? "workspace.checkFailed" : "workspace.checking")}>
+          <span className="dash-value"><CountUp value={week?.today.newTokens ?? 0} format={formatTokenCount} /></span>
           <Sparkline values={daily} />
         </Tile>
         <Tile icon={<UsersRound className="h-3.5 w-3.5" />} label={t("workspace.activeAccount")} onClick={() => onNavigate("accounts")}

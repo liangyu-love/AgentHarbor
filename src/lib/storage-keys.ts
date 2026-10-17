@@ -21,4 +21,6 @@ export const storageKeys = {
   claudeDesktopProfiles: "agentharbor.claude-desktop-profiles.v1",
   relayGroupAliases: "newapi-relay-group-aliases",
   foldedSections: "agentharbor.folded-sections.v1",
+  usageRange: "agentharbor.usage-range",
+  usageMetric: "agentharbor.usage-metric",
 } as const;

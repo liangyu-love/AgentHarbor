@@ -35,7 +35,7 @@ Codex 是主要集成对象，其他客户端共用同一套中转与路由。
 | **本地路由** | 三种协议互相转换<br>模型聚合：按优先级分层、失败切换、首字超时切换、实时成员状态<br>请求级路由诊断 |
 | **通用网关** | 一个本地地址加上命名 key，任何能填 Base URL 和 API Key 的 agent 都能使用全部开启的模型，见下文 |
 | **账号** | Codex：ChatGPT OAuth 登录、额度窗口、手动切号或按阈值自动切号（正在运行的 Codex 会把任务做完，原账号额度用尽时才重启）<br>账号来源：ChatGPT（Sign in with ChatGPT）、WorkBuddy、WorkBuddy AI、GitHub Copilot、Gemini CLI、Antigravity、Kiro、Grok、Cursor、Qoder、Qoder CN、Trae CN、Trae 国际版、MiniMax Code（国内 / 国际）、ZCode、OpenCode Zen、OpenCode Go、Command Code，登录后可以提供给模型注入使用；有签到奖励的来源支持每日自动签到，见下文 |
-| **用量** | Token 监控覆盖 Codex、Claude Code 与中转流量，并记录当时价格 |
+| **用量** | 所有客户端的 Token 与费用合成一本账：本地 Codex / Claude Code 会话与经路由的请求对齐去重，按客户端、渠道、模型和项目拆分；删除会话不影响已记录的用量 |
 | **线程管理** | 浏览、搜索、导出、删除 Codex 与 Claude Code 会话；恢复 Codex 索引里丢失的线程 |
 | **MCP / Skills / 自定义指令** | 管理 MCP 服务器、Skills（带备份），以及 Codex 和 Claude Code 的 `AGENTS.md` / `CLAUDE.md` 中由 AgentHarbor 管理的区块 |
 | **生图工作台** | 通过已配置的供应商生成或编辑图片，保存到本地图册 |

@@ -4,7 +4,6 @@ import { eventually } from "./eventually.mjs";
 
 export async function testProviderFeedback({ page, reset, captureDir }) {
   await reset("usage");
-  await page.getByRole("tab", { name: "供应商与额度" }).click();
   await page.getByText("12.5 USD").waitFor();
   await page.evaluate(() => window.review.emitBalanceUpdate("group-a", 98));
   await page.getByText("98 USD", { exact: true }).waitFor();

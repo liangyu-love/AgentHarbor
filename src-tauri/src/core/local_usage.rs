@@ -1,31 +1,39 @@
-use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, NaiveDate, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+//! Usage records read from local Codex and Claude Code transcripts. They live
+//! in the usage ledger (see `usage_ledger`) and outlive the transcripts: a
+//! deleted or archived session keeps its usage.
+use chrono::DateTime;
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 
-const LEDGER_FILE: &str = "token-usage-ledger.sqlite3";
-/// How transcripts are read into records; a ledger kept by another reading
-/// is parsed again (2: Claude turns without a message id go by request id).
-const PARSE_VERSION: i64 = 2;
-const DAILY_DAYS: i64 = 14;
-const RECENT_LIMIT: usize = 24;
+/// How transcripts are read into records; transcripts still on disk are parsed
+/// again under a new reading (2: Claude turns without a message id go by request
+/// id; 3: records carry the directory the session ran in).
+const PARSE_VERSION: i64 = 3;
+/// The fingerprint left on a transcript that is gone. Its records stay in the
+/// ledger, so deleting or archiving a session never takes its usage away.
+const GONE: (i64, u64) = (-2, 0);
 const LINEAGE_GAP_MS: i64 = 500;
 
-fn ledger_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-}
-
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+/// One model call read from a transcript. Input excludes cache reads and
+/// writes; output excludes reasoning.
+// Records of gone transcripts cannot be parsed again, so a field added later
+// must not make the stored ones unreadable.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", default)]
-pub struct TokenUsageTotals {
-    pub turn_count: u64,
+pub(crate) struct UsageRecord {
+    pub request_id: String,
+    pub timestamp: i64,
+    pub source_id: String,
+    pub model: String,
+    pub session_id: String,
+    /// Empty in records read before version 3.
+    pub project: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub reasoning_tokens: u64,
@@ -34,113 +42,24 @@ pub struct TokenUsageTotals {
     pub total_tokens: u64,
 }
 
-impl TokenUsageTotals {
-    fn add(&mut self, record: &UsageRecord) {
-        self.turn_count = self.turn_count.saturating_add(1);
-        self.input_tokens = self.input_tokens.saturating_add(record.input_tokens);
-        self.output_tokens = self.output_tokens.saturating_add(record.output_tokens);
-        self.reasoning_tokens = self
-            .reasoning_tokens
-            .saturating_add(record.reasoning_tokens);
-        self.cache_read_tokens = self
-            .cache_read_tokens
-            .saturating_add(record.cache_read_tokens);
-        self.cache_write_tokens = self
-            .cache_write_tokens
-            .saturating_add(record.cache_write_tokens);
-        self.total_tokens = self.total_tokens.saturating_add(record.total_tokens);
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
+/// A transcript source as this sync found it.
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TokenUsageSource {
-    pub source_id: String,
-    pub source_name: String,
+pub struct TranscriptSource {
+    pub source_id: &'static str,
     pub available: bool,
     pub file_count: u64,
     pub updated_file_count: u64,
-    pub totals: TokenUsageTotals,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TokenModelUsage {
-    pub source_id: String,
-    pub source_name: String,
-    pub model: String,
-    pub totals: TokenUsageTotals,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TokenUsageDay {
-    pub date: String,
-    pub totals: TokenUsageTotals,
-    #[serde(default)]
-    pub by_model: Vec<TokenModelUsage>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RecentTokenUsage {
-    pub timestamp: i64,
-    pub date: String,
-    pub source_id: String,
-    pub source_name: String,
-    pub model: String,
-    pub session_id: String,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub reasoning_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub cache_write_tokens: u64,
-    pub total_tokens: u64,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LocalTokenUsagePayload {
-    pub generated_at: i64,
-    pub today: TokenUsageTotals,
-    pub week: TokenUsageTotals,
-    pub all_time: TokenUsageTotals,
-    pub by_source: Vec<TokenUsageSource>,
-    pub by_model: Vec<TokenModelUsage>,
-    pub daily: Vec<TokenUsageDay>,
-    pub recent: Vec<RecentTokenUsage>,
-    pub warning_count: u64,
+pub(crate) struct Transcripts {
+    pub records: Vec<UsageRecord>,
     pub warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct UsageRecord {
-    request_id: String,
-    timestamp: i64,
-    date: String,
-    source_id: String,
-    source_name: String,
-    model: String,
-    session_id: String,
-    input_tokens: u64,
-    output_tokens: u64,
-    reasoning_tokens: u64,
-    cache_read_tokens: u64,
-    cache_write_tokens: u64,
-    total_tokens: u64,
 }
 
 struct SourceFile {
     source_id: &'static str,
     path: PathBuf,
-}
-
-#[derive(Default)]
-struct SourceScan {
-    available: bool,
-    files: u64,
-    updated: u64,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -166,55 +85,16 @@ impl RawCounts {
     }
 }
 
-pub fn load(
+/// Brings the ledger's transcript records up to date with the files on disk.
+pub(crate) fn sync(
+    db: &mut Connection,
     codex_home: &Path,
     claude_home: &Path,
-    data_dir: &Path,
-) -> Result<LocalTokenUsagePayload, String> {
-    let _guard = ledger_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::fs::create_dir_all(data_dir).map_err(|error| error.to_string())?;
-    let ledger = data_dir.join(LEDGER_FILE);
-    match sync(&ledger, codex_home, claude_home) {
-        Ok(payload) => Ok(payload),
-        Err(first) => {
-            remove_ledger_files(&ledger);
-            sync(&ledger, codex_home, claude_home).map_err(|second| {
-                format!("usage ledger rebuild failed: {second}; original error: {first}")
-            })
-        }
-    }
-}
-
-fn remove_ledger_files(ledger: &Path) {
-    let mut candidates = vec![ledger.to_path_buf()];
-    for suffix in ["-wal", "-shm", "-journal"] {
-        let mut path = ledger.as_os_str().to_os_string();
-        path.push(suffix);
-        candidates.push(PathBuf::from(path));
-    }
-    for path in candidates {
-        let _ = std::fs::remove_file(path);
-    }
-}
-
-fn sync(
-    ledger: &Path,
-    codex_home: &Path,
-    claude_home: &Path,
-) -> Result<LocalTokenUsagePayload, String> {
-    let mut db = Connection::open(ledger).map_err(|error| error.to_string())?;
+) -> Result<Vec<TranscriptSource>, String> {
     db.execute_batch(
-        "PRAGMA journal_mode=WAL;
-         PRAGMA synchronous=NORMAL;
-         CREATE TABLE IF NOT EXISTS source_files(
+        "CREATE TABLE IF NOT EXISTS source_files(
            path TEXT PRIMARY KEY, source TEXT NOT NULL, mtime_ms INTEGER NOT NULL,
            size INTEGER NOT NULL, records_json TEXT NOT NULL, warning TEXT
-         );
-         CREATE TABLE IF NOT EXISTS payload_cache(
-           id INTEGER PRIMARY KEY CHECK(id=1), local_date TEXT NOT NULL,
-           payload_json TEXT NOT NULL
          );",
     )
     .map_err(|error| error.to_string())?;
@@ -223,7 +103,8 @@ fn sync(
         .map_err(|error| error.to_string())?;
     if version != PARSE_VERSION {
         db.execute_batch(&format!(
-            "DELETE FROM source_files; DELETE FROM payload_cache; PRAGMA user_version={PARSE_VERSION};"
+            "DELETE FROM source_files WHERE mtime_ms<>{}; PRAGMA user_version={PARSE_VERSION};",
+            GONE.0
         ))
         .map_err(|error| error.to_string())?;
     }
@@ -254,22 +135,20 @@ fn sync(
         codex_home.join("archived_sessions"),
     ];
     let claude_root = claude_home.join("projects");
-    let mut scans = HashMap::from([
-        (
-            "codex",
-            SourceScan {
-                available: codex_roots.iter().any(|path| path.exists()),
-                ..Default::default()
-            },
-        ),
-        (
-            "claude",
-            SourceScan {
-                available: claude_root.exists(),
-                ..Default::default()
-            },
-        ),
-    ]);
+    let mut sources = vec![
+        TranscriptSource {
+            source_id: "codex",
+            available: codex_roots.iter().any(|path| path.exists()),
+            file_count: 0,
+            updated_file_count: 0,
+        },
+        TranscriptSource {
+            source_id: "claude",
+            available: claude_root.exists(),
+            file_count: 0,
+            updated_file_count: 0,
+        },
+    ];
     let mut files = Vec::new();
     for root in &codex_roots {
         discover(root, "codex", true, &mut files);
@@ -282,18 +161,18 @@ fn sync(
         .collect::<HashSet<_>>();
 
     let transaction = db.transaction().map_err(|error| error.to_string())?;
-    let mut dirty = false;
-    for stale_path in fingerprints
-        .keys()
-        .filter(|path| !seen_paths.contains(*path))
+    // A deleted or archived transcript keeps its records; request ids keep an
+    // archived copy from counting twice.
+    for (stale_path, _) in fingerprints
+        .iter()
+        .filter(|(path, fingerprint)| **fingerprint != GONE && !seen_paths.contains(*path))
     {
         transaction
             .execute(
-                "DELETE FROM source_files WHERE path=?1",
-                params![stale_path],
+                "UPDATE source_files SET mtime_ms=?2,size=?3,warning=NULL WHERE path=?1",
+                params![stale_path, GONE.0, GONE.1],
             )
             .map_err(|error| error.to_string())?;
-        dirty = true;
     }
     for source_file in files {
         let Some(metadata) = std::fs::metadata(&source_file.path).ok() else {
@@ -302,21 +181,25 @@ fn sync(
         let path = source_file.path.to_string_lossy().to_string();
         let mtime = modified_ns(&metadata);
         let size = metadata.len();
-        if let Some(scan) = scans.get_mut(source_file.source_id) {
-            scan.files += 1;
+        let unchanged = fingerprints.get(&path).copied() == Some((mtime, size));
+        if let Some(source) = sources
+            .iter_mut()
+            .find(|source| source.source_id == source_file.source_id)
+        {
+            source.file_count += 1;
+            source.updated_file_count += u64::from(!unchanged);
         }
-        if fingerprints.get(&path).copied() == Some((mtime, size)) {
+        if unchanged {
             continue;
         }
         let parsed = if source_file.source_id == "codex" {
-            parse_codex(&source_file.path, mtime / 1000)
+            parse_codex(&source_file.path, mtime / 1_000_000_000)
         } else {
-            parse_claude(&source_file.path, mtime / 1000)
+            parse_claude(&source_file.path, mtime / 1_000_000_000)
         };
         let (records, warning) = match parsed {
             Ok(result) => result,
             Err(error) => {
-                dirty = true;
                 if fingerprints.contains_key(&path) {
                     transaction
                         .execute(
@@ -333,13 +216,9 @@ fn sync(
                         params![path, source_file.source_id, error],
                     )
                     .map_err(|insert_error| insert_error.to_string())?;
-                if let Some(scan) = scans.get_mut(source_file.source_id) {
-                    scan.updated += 1;
-                }
                 continue;
             }
         };
-        dirty = true;
         let json = serde_json::to_string(&records).map_err(|error| error.to_string())?;
         transaction
             .execute(
@@ -350,87 +229,62 @@ fn sync(
                 params![path, source_file.source_id, mtime, size, json, warning],
             )
             .map_err(|error| error.to_string())?;
-        if let Some(scan) = scans.get_mut(source_file.source_id) {
-            scan.updated += 1;
-        }
     }
     transaction.commit().map_err(|error| error.to_string())?;
+    Ok(sources)
+}
 
-    let today_key = Local::now().date_naive().format("%Y-%m-%d").to_string();
-    if !dirty {
-        let cached = db
-            .query_row(
-                "SELECT payload_json FROM payload_cache WHERE id=1 AND local_date=?1",
-                params![today_key],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
+/// Every record once: a resumed session repeats earlier turns, and the fullest
+/// copy wins. `None` when unreadable rows were dropped instead; the transcripts
+/// still on disk come back with the next sync.
+pub(crate) fn read(db: &Connection) -> Result<Option<Transcripts>, String> {
+    let mut records = HashMap::<String, UsageRecord>::new();
+    let mut warnings = Vec::new();
+    let mut unreadable = Vec::new();
+    {
+        let mut query = db
+            .prepare("SELECT path,records_json,warning FROM source_files")
             .map_err(|error| error.to_string())?;
-        if let Some(json) = cached {
-            if let Ok(mut payload) = serde_json::from_str::<LocalTokenUsagePayload>(&json) {
-                payload.generated_at = Utc::now().timestamp();
-                apply_scan_metadata(&mut payload, &scans);
-                return Ok(payload);
+        let rows = query
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(|error| error.to_string())?;
+        for row in rows {
+            let (path, json, warning) = row.map_err(|error| error.to_string())?;
+            let Ok(cached) = serde_json::from_str::<Vec<UsageRecord>>(&json) else {
+                unreadable.push(path);
+                continue;
+            };
+            for record in cached {
+                merge_record(&mut records, record);
+            }
+            if let Some(warning) = warning.filter(|value| !value.is_empty()) {
+                let name = Path::new(&path)
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or(&path);
+                warnings.push(format!("{name}: {warning}"));
             }
         }
     }
-
-    let mut records = HashMap::<String, UsageRecord>::new();
-    let mut warnings = Vec::new();
-    let mut query = db
-        .prepare("SELECT path,records_json,warning FROM source_files")
-        .map_err(|error| error.to_string())?;
-    let rows = query
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-            ))
-        })
-        .map_err(|error| error.to_string())?;
-    for row in rows {
-        let (path, json, warning) = row.map_err(|error| error.to_string())?;
-        let cached = serde_json::from_str::<Vec<UsageRecord>>(&json)
-            .map_err(|error| format!("invalid cached usage for {path}: {error}"))?;
-        for record in cached {
-            merge_record(&mut records, record);
+    if !unreadable.is_empty() {
+        // Only the unreadable rows go, not the whole ledger.
+        for path in &unreadable {
+            db.execute("DELETE FROM source_files WHERE path=?1", params![path])
+                .map_err(|error| error.to_string())?;
         }
-        if let Some(warning) = warning.filter(|value| !value.is_empty()) {
-            let name = Path::new(&path)
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or(&path);
-            warnings.push(format!("{name}: {warning}"));
-        }
+        return Ok(None);
     }
-    let payload = aggregate(records, scans, warnings);
-    let json = serde_json::to_string(&payload).map_err(|error| error.to_string())?;
-    if db
-        .execute(
-            "INSERT INTO payload_cache(id,local_date,payload_json) VALUES(1,?1,?2)
-             ON CONFLICT(id) DO UPDATE SET local_date=excluded.local_date,
-               payload_json=excluded.payload_json",
-            params![today_key, json],
-        )
-        .is_err()
-    {
-        let _ = db.execute("DELETE FROM payload_cache WHERE id=1", []);
-    }
-    Ok(payload)
-}
-
-fn apply_scan_metadata(
-    payload: &mut LocalTokenUsagePayload,
-    scans: &HashMap<&'static str, SourceScan>,
-) {
-    for source in &mut payload.by_source {
-        if let Some(scan) = scans.get(source.source_id.as_str()) {
-            source.available = scan.available;
-            source.file_count = scan.files;
-            source.updated_file_count = scan.updated;
-        }
-    }
+    warnings.sort();
+    Ok(Some(Transcripts {
+        records: records.into_values().collect(),
+        warnings,
+    }))
 }
 
 fn merge_record(records: &mut HashMap<String, UsageRecord>, record: UsageRecord) {
@@ -495,17 +349,20 @@ fn parse_codex(path: &Path, fallback: i64) -> Result<(Vec<UsageRecord>, Option<S
             }
         }
     })?;
-    let mut session = path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("unknown")
-        .to_string();
-    let mut model = "unknown".to_string();
+    let mut context = CodexContext {
+        session: path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("unknown")
+            .to_string(),
+        model: "unknown".to_string(),
+        project: String::new(),
+    };
     let mut previous_total = RawCounts::default();
     let mut ordinal = 0_u64;
     let mut records = Vec::new();
     let invalid = visit_values(path, |index, value| {
-        update_context(&value, &mut session, &mut model);
+        context.update(&value);
         if index < start {
             if value.pointer("/payload/type").and_then(Value::as_str) == Some("token_count") {
                 if let Some(total) = value.pointer("/payload/info/total_token_usage") {
@@ -528,26 +385,27 @@ fn parse_codex(path: &Path, fallback: i64) -> Result<(Vec<UsageRecord>, Option<S
         if total.total > 0 || total.input > 0 || total.output > 0 {
             previous_total = total
         }
-        let counts = exclusive(raw);
-        if counts.total_tokens == 0 {
+        let total_tokens = raw.total.max(raw.input.saturating_add(raw.output));
+        if total_tokens == 0 {
             return;
         }
         ordinal += 1;
-        let timestamp = timestamp_seconds(&value).unwrap_or(fallback);
         records.push(UsageRecord {
-            request_id: format!("codex:{session}:{ordinal}"),
-            timestamp,
-            date: local_date(timestamp),
+            request_id: format!("codex:{}:{ordinal}", context.session),
+            timestamp: timestamp_seconds(&value).unwrap_or(fallback),
             source_id: "codex".into(),
-            source_name: "Codex".into(),
-            model: model.clone(),
-            session_id: session.clone(),
-            input_tokens: counts.input_tokens,
-            output_tokens: counts.output_tokens,
-            reasoning_tokens: counts.reasoning_tokens,
-            cache_read_tokens: counts.cache_read_tokens,
-            cache_write_tokens: counts.cache_write_tokens,
-            total_tokens: counts.total_tokens,
+            model: context.model.clone(),
+            session_id: context.session.clone(),
+            project: context.project.clone(),
+            input_tokens: raw
+                .input
+                .saturating_sub(raw.cached)
+                .saturating_sub(raw.cache_write),
+            output_tokens: raw.output.saturating_sub(raw.reasoning),
+            reasoning_tokens: raw.reasoning,
+            cache_read_tokens: raw.cached,
+            cache_write_tokens: raw.cache_write,
+            total_tokens,
         });
     })?;
     Ok((
@@ -588,34 +446,28 @@ fn parse_claude(path: &Path, fallback: i64) -> Result<(Vec<UsageRecord>, Option<
         if total == 0 {
             return;
         }
-        let timestamp = timestamp_seconds(&value).unwrap_or(fallback);
-        let session = value
-            .get("sessionId")
-            .and_then(Value::as_str)
-            .unwrap_or(fallback_session)
-            .to_string();
         // A resumed session copies earlier turns into its own file; the API
         // request id still names the turn once when the message has no id.
         let api_request = value
             .get("requestId")
             .and_then(Value::as_str)
             .filter(|id| !id.is_empty());
+        let text = |key: &str| value.get(key).and_then(Value::as_str);
         records.push(UsageRecord {
             request_id: match (message_id.is_empty(), api_request) {
                 (false, _) => format!("claude:{message_id}"),
                 (true, Some(request)) => format!("claude-request:{request}"),
                 (true, None) => format!("claude-noid:{}:{line}", path.display()),
             },
-            timestamp,
-            date: local_date(timestamp),
+            timestamp: timestamp_seconds(&value).unwrap_or(fallback),
             source_id: "claude".into(),
-            source_name: "Claude Code".into(),
             model: value
                 .pointer("/message/model")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown")
                 .to_string(),
-            session_id: session,
+            session_id: text("sessionId").unwrap_or(fallback_session).to_string(),
+            project: text("cwd").unwrap_or_default().to_string(),
             input_tokens: input,
             output_tokens: output,
             reasoning_tokens: 0,
@@ -655,168 +507,43 @@ fn visit_values(path: &Path, mut visit: impl FnMut(usize, Value)) -> Result<u64,
     Ok(invalid)
 }
 
-fn aggregate(
-    records: HashMap<String, UsageRecord>,
-    scans: HashMap<&'static str, SourceScan>,
-    mut warnings: Vec<String>,
-) -> LocalTokenUsagePayload {
-    let mut records = records.into_values().collect::<Vec<_>>();
-    records.sort_by_key(|record| record.timestamp);
-    let today = Local::now().date_naive();
-    let week_start = today - ChronoDuration::days(today.weekday().num_days_from_monday() as i64);
-    let first_day = today - ChronoDuration::days(DAILY_DAYS - 1);
-    let mut today_total = TokenUsageTotals::default();
-    let mut week_total = TokenUsageTotals::default();
-    let mut all_time = TokenUsageTotals::default();
-    let mut sources = HashMap::<String, TokenUsageTotals>::new();
-    let mut models = HashMap::<(String, String), (String, TokenUsageTotals)>::new();
-    let mut days = HashMap::<String, TokenUsageTotals>::new();
-    let mut daily_models = HashMap::<(String, String, String), (String, TokenUsageTotals)>::new();
-    for record in &records {
-        all_time.add(record);
-        if record.date == today.format("%Y-%m-%d").to_string() {
-            today_total.add(record)
-        }
-        if NaiveDate::parse_from_str(&record.date, "%Y-%m-%d")
-            .map(|date| date >= week_start && date <= today)
-            .unwrap_or(false)
-        {
-            week_total.add(record);
-        }
-        sources
-            .entry(record.source_id.clone())
-            .or_default()
-            .add(record);
-        models
-            .entry((record.source_id.clone(), record.model.clone()))
-            .or_insert_with(|| (record.source_name.clone(), TokenUsageTotals::default()))
-            .1
-            .add(record);
-        if NaiveDate::parse_from_str(&record.date, "%Y-%m-%d")
-            .map(|date| date >= first_day && date <= today)
-            .unwrap_or(false)
-        {
-            days.entry(record.date.clone()).or_default().add(record);
-            daily_models
-                .entry((
-                    record.date.clone(),
-                    record.source_id.clone(),
-                    record.model.clone(),
-                ))
-                .or_insert_with(|| (record.source_name.clone(), TokenUsageTotals::default()))
-                .1
-                .add(record);
-        }
-    }
-    let mut by_source = [("codex", "Codex"), ("claude", "Claude Code")]
-        .into_iter()
-        .map(|(id, name)| {
-            let scan = scans.get(id);
-            TokenUsageSource {
-                source_id: id.into(),
-                source_name: name.into(),
-                available: scan.map(|value| value.available).unwrap_or(false),
-                file_count: scan.map(|value| value.files).unwrap_or(0),
-                updated_file_count: scan.map(|value| value.updated).unwrap_or(0),
-                totals: sources.remove(id).unwrap_or_default(),
-            }
-        })
-        .collect::<Vec<_>>();
-    by_source.sort_by_key(|item| std::cmp::Reverse(item.totals.total_tokens));
-    let mut by_model = models
-        .into_iter()
-        .map(
-            |((source_id, model), (source_name, totals))| TokenModelUsage {
-                source_id,
-                source_name,
-                model,
-                totals,
-            },
-        )
-        .collect::<Vec<_>>();
-    by_model.sort_by_key(|item| std::cmp::Reverse(item.totals.total_tokens));
-    let daily = (0..DAILY_DAYS)
-        .map(|offset| first_day + ChronoDuration::days(offset))
-        .map(|date| {
-            let date = date.format("%Y-%m-%d").to_string();
-            let mut by_model = daily_models
-                .iter()
-                .filter(|((day, _, _), _)| day == &date)
-                .map(
-                    |((_, source_id, model), (source_name, totals))| TokenModelUsage {
-                        source_id: source_id.clone(),
-                        source_name: source_name.clone(),
-                        model: model.clone(),
-                        totals: *totals,
-                    },
-                )
-                .collect::<Vec<_>>();
-            by_model.sort_by_key(|item| std::cmp::Reverse(item.totals.total_tokens));
-            TokenUsageDay {
-                totals: days.remove(&date).unwrap_or_default(),
-                date,
-                by_model,
-            }
-        })
-        .collect();
-    let recent = records
-        .into_iter()
-        .rev()
-        .take(RECENT_LIMIT)
-        .map(|record| RecentTokenUsage {
-            timestamp: record.timestamp,
-            date: record.date,
-            source_id: record.source_id,
-            source_name: record.source_name,
-            model: record.model,
-            session_id: record.session_id,
-            input_tokens: record.input_tokens,
-            output_tokens: record.output_tokens,
-            reasoning_tokens: record.reasoning_tokens,
-            cache_read_tokens: record.cache_read_tokens,
-            cache_write_tokens: record.cache_write_tokens,
-            total_tokens: record.total_tokens,
-        })
-        .collect();
-    warnings.sort();
-    warnings.dedup();
-    let warning_count = warnings.len() as u64;
-    warnings.truncate(8);
-    LocalTokenUsagePayload {
-        generated_at: Utc::now().timestamp(),
-        today: today_total,
-        week: week_total,
-        all_time,
-        by_source,
-        by_model,
-        daily,
-        recent,
-        warning_count,
-        warnings,
-    }
-}
-
 fn is_session_meta(value: &Value) -> bool {
     value.get("type").and_then(Value::as_str) == Some("session_meta")
         || value.pointer("/payload/type").and_then(Value::as_str) == Some("session_meta")
 }
 
-fn update_context(value: &Value, session: &mut String, model: &mut String) {
-    if is_session_meta(value) {
-        if let Some(id) = value
-            .pointer("/payload/id")
-            .or_else(|| value.pointer("/payload/session_id"))
+/// The session, model and working directory a Codex transcript is at.
+struct CodexContext {
+    session: String,
+    model: String,
+    project: String,
+}
+
+impl CodexContext {
+    fn update(&mut self, value: &Value) {
+        if is_session_meta(value) {
+            if let Some(id) = value
+                .pointer("/payload/id")
+                .or_else(|| value.pointer("/payload/session_id"))
+                .and_then(Value::as_str)
+            {
+                self.session = id.to_string();
+            }
+        }
+        if let Some(next) = value
+            .pointer("/payload/model")
+            .or_else(|| value.pointer("/payload/info/model"))
             .and_then(Value::as_str)
         {
-            *session = id.to_string();
+            self.model = next.to_string();
         }
-    }
-    if let Some(next) = value
-        .pointer("/payload/model")
-        .or_else(|| value.pointer("/payload/info/model"))
-        .and_then(Value::as_str)
-    {
-        *model = next.to_string();
+        if let Some(cwd) = value
+            .pointer("/payload/cwd")
+            .and_then(Value::as_str)
+            .filter(|cwd| !cwd.is_empty())
+        {
+            self.project = cwd.to_string();
+        }
     }
 }
 
@@ -828,21 +555,6 @@ fn raw_counts(value: &Value) -> RawCounts {
         output: number(value.get("output_tokens")),
         reasoning: number(value.get("reasoning_output_tokens")),
         total: number(value.get("total_tokens")),
-    }
-}
-
-fn exclusive(raw: RawCounts) -> TokenUsageTotals {
-    TokenUsageTotals {
-        turn_count: 1,
-        input_tokens: raw
-            .input
-            .saturating_sub(raw.cached)
-            .saturating_sub(raw.cache_write),
-        output_tokens: raw.output.saturating_sub(raw.reasoning),
-        reasoning_tokens: raw.reasoning,
-        cache_read_tokens: raw.cached,
-        cache_write_tokens: raw.cache_write,
-        total_tokens: raw.total.max(raw.input.saturating_add(raw.output)),
     }
 }
 
@@ -876,11 +588,6 @@ fn timestamp_ms(value: &Value) -> Option<i64> {
 fn timestamp_seconds(value: &Value) -> Option<i64> {
     timestamp_ms(value).map(|value| value / 1000)
 }
-fn local_date(timestamp: i64) -> String {
-    DateTime::from_timestamp(timestamp, 0)
-        .map(|value| value.with_timezone(&Local).format("%Y-%m-%d").to_string())
-        .unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string())
-}
 fn modified_ns(metadata: &std::fs::Metadata) -> i64 {
     metadata
         .modified()
@@ -895,68 +602,67 @@ mod tests {
     use super::*;
     use std::fs;
 
-    #[test]
-    fn daily_totals_include_models_for_the_hovered_day() {
-        let date = Local::now().format("%Y-%m-%d").to_string();
-        let record = UsageRecord {
-            request_id: "turn-1".into(),
-            timestamp: Utc::now().timestamp(),
-            date: date.clone(),
-            source_id: "codex".into(),
-            source_name: "Codex".into(),
-            model: "gpt-test".into(),
-            session_id: "session-1".into(),
-            input_tokens: 11,
-            output_tokens: 3,
-            reasoning_tokens: 0,
-            cache_read_tokens: 0,
-            cache_write_tokens: 0,
-            total_tokens: 14,
+    /// Syncs the transcripts under `root` into a ledger there and reads them back.
+    fn synced(root: &Path) -> (Vec<TranscriptSource>, Transcripts) {
+        let mut db = Connection::open(root.join("ledger.sqlite3")).unwrap();
+        let sources = sync(&mut db, &root.join("codex"), &root.join("claude")).unwrap();
+        let transcripts = match read(&db).unwrap() {
+            Some(transcripts) => transcripts,
+            None => {
+                sync(&mut db, &root.join("codex"), &root.join("claude")).unwrap();
+                read(&db).unwrap().unwrap()
+            }
         };
-        let payload = aggregate(
-            HashMap::from([(record.request_id.clone(), record)]),
-            HashMap::new(),
-            Vec::new(),
-        );
-        let today = payload.daily.iter().find(|day| day.date == date).unwrap();
-        assert_eq!(today.by_model.len(), 1);
-        assert_eq!(today.by_model[0].model, "gpt-test");
-        assert_eq!(today.by_model[0].totals.total_tokens, 14);
+        (sources, transcripts)
+    }
+
+    fn total(transcripts: &Transcripts) -> (usize, u64) {
+        (
+            transcripts.records.len(),
+            transcripts
+                .records
+                .iter()
+                .map(|record| record.total_tokens)
+                .sum(),
+        )
     }
 
     #[test]
-    fn parses_codex_exclusive_dimensions_and_filters_lineage_copy() {
+    fn parses_codex_exclusive_dimensions_project_and_filters_lineage_copy() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("rollout-test.jsonl");
         fs::write(&path, concat!(
-            "{\"timestamp\":\"2026-09-25T00:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\"}}\n",
+            "{\"timestamp\":\"2026-09-25T00:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\",\"cwd\":\"D:\\\\work\\\\harbor\"}}\n",
             "{\"timestamp\":\"2026-09-25T00:00:00.100Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":99,\"output_tokens\":99,\"total_tokens\":198}}}}\n",
             "{\"timestamp\":\"2026-09-25T00:00:01.000Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-test\"}}\n",
             "{\"timestamp\":\"2026-09-25T00:00:02.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":100,\"cached_input_tokens\":60,\"cache_write_input_tokens\":20,\"output_tokens\":30,\"reasoning_output_tokens\":10,\"total_tokens\":130}}}}\n"
         )).unwrap();
         let (records, _) = parse_codex(&path, 0).unwrap();
         assert_eq!(records.len(), 1);
+        let record = &records[0];
         assert_eq!(
             (
-                records[0].input_tokens,
-                records[0].cache_read_tokens,
-                records[0].cache_write_tokens
+                record.input_tokens,
+                record.cache_read_tokens,
+                record.cache_write_tokens
             ),
             (20, 60, 20)
         );
         assert_eq!(
             (
-                records[0].output_tokens,
-                records[0].reasoning_tokens,
-                records[0].total_tokens
+                record.output_tokens,
+                record.reasoning_tokens,
+                record.total_tokens
             ),
             (20, 10, 130)
         );
-        assert_eq!(records[0].model, "gpt-test");
+        assert_eq!(record.model, "gpt-test");
+        assert_eq!(record.session_id, "s1");
+        assert_eq!(record.project, "D:\\work\\harbor");
     }
 
     #[test]
-    fn ledger_recurses_claude_subagents_and_deduplicates_snapshots() {
+    fn recurses_claude_subagents_and_deduplicates_snapshots() {
         let dir = tempfile::tempdir().unwrap();
         let claude = dir
             .path()
@@ -967,6 +673,7 @@ mod tests {
                 "timestamp": "2026-09-25T01:00:00Z",
                 "type": "assistant",
                 "sessionId": "s",
+                "cwd": "/home/me/app",
                 "message": {
                     "id": "m1",
                     "model": "claude-test",
@@ -988,20 +695,14 @@ mod tests {
             format!("{}\n{}\n", message(2), message(5)),
         )
         .unwrap();
-        let payload = load(
-            &dir.path().join("codex"),
-            &dir.path().join("claude"),
-            dir.path(),
-        )
-        .unwrap();
-        let source = payload
-            .by_source
+        let (sources, transcripts) = synced(dir.path());
+        let claude = sources
             .iter()
             .find(|source| source.source_id == "claude")
             .unwrap();
-        assert_eq!(source.file_count, 1);
-        assert_eq!(source.totals.turn_count, 1);
-        assert_eq!(source.totals.total_tokens, 21);
+        assert_eq!(claude.file_count, 1);
+        assert_eq!(total(&transcripts), (1, 21));
+        assert_eq!(transcripts.records[0].project, "/home/me/app");
     }
 
     #[test]
@@ -1017,28 +718,27 @@ mod tests {
             .to_string()
         };
         fs::write(project.join("first.jsonl"), format!("{}\n", line("req_1"))).unwrap();
-        fs::write(project.join("resumed.jsonl"), format!("{}\n{}\n", line("req_1"), line("req_2"))).unwrap();
-        let totals = || {
-            let payload = load(&dir.path().join("codex"), &dir.path().join("claude"), dir.path()).unwrap();
-            let source = payload.by_source.iter().find(|source| source.source_id == "claude").unwrap().clone();
-            (source.totals.turn_count, source.totals.total_tokens)
-        };
-        assert_eq!(totals(), (2, 30));
+        fs::write(
+            project.join("resumed.jsonl"),
+            format!("{}\n{}\n", line("req_1"), line("req_2")),
+        )
+        .unwrap();
+        assert_eq!(total(&synced(dir.path()).1), (2, 30));
         // A ledger kept by an earlier reading is parsed again, not trusted.
-        let db = Connection::open(dir.path().join(LEDGER_FILE)).unwrap();
-        db.execute_batch("UPDATE source_files SET records_json='[]'; DELETE FROM payload_cache; PRAGMA user_version=1;").unwrap();
+        let db = Connection::open(dir.path().join("ledger.sqlite3")).unwrap();
+        db.execute_batch("UPDATE source_files SET records_json='[]'; PRAGMA user_version=1;")
+            .unwrap();
         drop(db);
-        assert_eq!(totals(), (2, 30));
+        assert_eq!(total(&synced(dir.path()).1), (2, 30));
     }
 
     #[test]
-    fn payload_cache_skips_history_deserialization_and_deleted_files_invalidate_it() {
+    fn unreadable_rows_heal_from_the_transcripts_still_on_disk() {
         let dir = tempfile::tempdir().unwrap();
-        let claude = dir.path().join("claude/projects/p");
-        fs::create_dir_all(&claude).unwrap();
-        let source_path = claude.join("session.jsonl");
+        let project = dir.path().join("claude/projects/p");
+        fs::create_dir_all(&project).unwrap();
         fs::write(
-            &source_path,
+            project.join("session.jsonl"),
             concat!(
                 "{\"timestamp\":\"2026-09-25T01:00:00Z\",\"type\":\"assistant\",",
                 "\"sessionId\":\"s\",\"message\":{\"id\":\"m1\",",
@@ -1047,37 +747,53 @@ mod tests {
             ),
         )
         .unwrap();
-
-        let codex = dir.path().join("codex");
-        let claude_home = dir.path().join("claude");
-        let first = load(&codex, &claude_home, dir.path()).unwrap();
-        assert_eq!(first.all_time.total_tokens, 15);
-
-        let ledger = dir.path().join(LEDGER_FILE);
-        let db = Connection::open(&ledger).unwrap();
+        assert_eq!(total(&synced(dir.path()).1), (1, 15));
+        let db = Connection::open(dir.path().join("ledger.sqlite3")).unwrap();
         db.execute("UPDATE source_files SET records_json='not-json'", [])
             .unwrap();
         drop(db);
+        let (_, healed) = synced(dir.path());
+        assert_eq!(total(&healed), (1, 15));
+        assert!(healed.warnings.is_empty());
+    }
 
-        let cached = load(&codex, &claude_home, dir.path()).unwrap();
-        assert_eq!(cached.all_time.total_tokens, 15);
-        assert_eq!(cached.by_source[0].updated_file_count, 0);
-
-        fs::remove_file(source_path).unwrap();
-        let after_delete = load(&codex, &claude_home, dir.path()).unwrap();
-        assert_eq!(after_delete.all_time.total_tokens, 0);
-        assert_eq!(
-            after_delete
-                .by_source
+    #[test]
+    fn deleted_and_archived_transcripts_keep_their_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = dir.path().join("codex/sessions/2026/09/25");
+        let archived = dir.path().join("codex/archived_sessions");
+        fs::create_dir_all(&live).unwrap();
+        fs::create_dir_all(&archived).unwrap();
+        let rollout = live.join("rollout-a.jsonl");
+        fs::write(&rollout, concat!(
+            "{\"timestamp\":\"2026-09-25T00:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\"}}\n",
+            "{\"timestamp\":\"2026-09-25T00:00:02.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":100,\"output_tokens\":30,\"total_tokens\":130}}}}\n"
+        )).unwrap();
+        let codex = || {
+            let (sources, transcripts) = synced(dir.path());
+            let codex = sources
                 .iter()
-                .map(|item| item.file_count)
-                .sum::<u64>(),
-            0
-        );
-        let db = Connection::open(ledger).unwrap();
-        let remaining: u64 = db
-            .query_row("SELECT COUNT(*) FROM source_files", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(remaining, 0);
+                .find(|source| source.source_id == "codex")
+                .unwrap();
+            (
+                total(&transcripts).0,
+                total(&transcripts).1,
+                codex.file_count,
+            )
+        };
+        assert_eq!(codex(), (1, 130, 1));
+
+        let moved = archived.join("rollout-a.jsonl");
+        fs::rename(&rollout, &moved).unwrap();
+        assert_eq!(codex(), (1, 130, 1));
+
+        fs::remove_file(&moved).unwrap();
+        assert_eq!(codex(), (1, 130, 0));
+
+        // A new reading parses the files on disk again but keeps the gone ones.
+        let db = Connection::open(dir.path().join("ledger.sqlite3")).unwrap();
+        db.execute_batch("PRAGMA user_version=1;").unwrap();
+        drop(db);
+        assert_eq!(codex(), (1, 130, 0));
     }
 }

@@ -336,159 +336,132 @@ export interface CacheUsageTotals {
   writeTokens: number;
 }
 
-export interface RelayUsageTotals {
-  cacheUsage?: CacheUsageTotals;
+export type UsageRange = "today" | "week" | "month";
+export type UsageChannel = "official" | "relay" | "aggregate";
+
+export interface UsageTotals {
   requestCount: number;
-  successfulCount: number;
-  reportedCount: number;
   inputTokens: number;
   outputTokens: number;
   reasoningTokens: number;
-  totalTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
-  /** Estimated cost in micro-USD (1e-6 USD). */
+  totalTokens: number;
+  /** Input, cache writes and output: what the models processed anew. */
+  newTokens: number;
+  /** Cost in micro-USD (1e-6 USD). */
   costMicros: number;
   pricedCount: number;
   unpricedCount: number;
-  fullyPricedCount: number;
   partialCount: number;
   coverageUnknownCount: number;
+  /** The part of the cost priced afterwards at current rates. */
+  estimatedMicros: number;
+  estimatedCount: number;
+  cacheSavingsMicros: number;
+  cacheUsage: CacheUsageTotals;
 }
 
-export interface RelayProviderUsage {
-  providerId: string;
-  providerName: string;
-  totals: RelayUsageTotals;
-}
-
-export interface RelayModelUsage extends RelayProviderUsage {
-  model: string;
-}
-
-export interface RelayUsageDay {
-  date: string;
-  totals: RelayUsageTotals;
-}
-
-export interface RelayUsageRecord {
-  cacheReported?: boolean;
-  clientSource?: string | null;
-  requestedModel?: string | null;
-  resolvedModel?: string | null;
-  routeRevision?: number | null;
-  schemaVersion?: number;
-  requestId?: string;
-  attemptId?: string;
-  credential?: import("./newapi").CredentialSnapshot;
-  modelObservation?: import("./newapi").ServedModelObservation;
-  usageComplete?: boolean;
-  timestamp: number;
-  date: string;
-  providerId: string;
-  providerName: string;
-  model: string;
-  protocol: string;
+export interface UsageRequestFacts {
   statusCode: number;
+  success: boolean;
   durationMs: number;
   firstTokenMs?: number | null;
-  success: boolean;
-  usageReported: boolean;
+  servedModel?: string | null;
+  modelMatchStatus: string;
+  credentialStatus: string;
+  credentialFingerprint?: string | null;
+  /** Joined with the transcript turn of the same call. */
+  matched: boolean;
+}
+
+/** One model call, from whichever records saw it. */
+export interface UsageEntry {
+  timestamp: number;
+  client: string;
+  channel: UsageChannel;
+  providerId?: string | null;
+  providerName?: string | null;
+  model: string;
+  requestedModel?: string | null;
+  project?: string | null;
+  sessionId?: string | null;
+  /** Input excludes cache reads and writes; output includes reasoning. */
   inputTokens: number;
   outputTokens: number;
   reasoningTokens: number;
-  totalTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
-  /** Estimated cost in USD at the rates fixed when the request started. */
+  totalTokens: number;
+  usageReported: boolean;
+  cacheReported: boolean;
   costUsd?: number | null;
   /** priced | partial | unpriced | legacy */
   pricingStatus: string;
-  pricingSource: string;
-  catalogRevision: string;
-  pricingSnapshot?: import("./newapi").PricingSnapshot | null;
-  appliedRates?: import("./newapi").CostRates | null;
+  estimated: boolean;
+  pricingSource?: string | null;
+  multiplier?: number | null;
+  cacheSavingsUsd?: number | null;
+  request?: UsageRequestFacts | null;
 }
 
-export interface RelayUsagePayload {
-  generatedAt: number;
-  today: RelayUsageTotals;
-  week: RelayUsageTotals;
-  lastSevenDays: RelayUsageTotals;
-  lastSevenDaysStart: string;
-  lastSevenDaysEnd: string;
-  statisticalTimezone: string;
-  allTime: RelayUsageTotals;
-  byProvider: RelayProviderUsage[];
-  byModel: RelayModelUsage[];
-  daily: RelayUsageDay[];
-  recent: RelayUsageRecord[];
+export interface UsageGroup {
+  key: string;
+  label: string;
+  detail?: string | null;
+  client?: string | null;
+  channel?: UsageChannel | null;
+  providerId?: string | null;
+  totals: UsageTotals;
 }
 
-export interface TokenUsageTotals {
-  turnCount: number;
-  inputTokens: number;
-  outputTokens: number;
-  reasoningTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  totalTokens: number;
+export interface UsagePart {
+  key: string;
+  newTokens: number;
+  costMicros: number;
 }
 
-export interface TokenUsageSource {
-  sourceId: string;
-  sourceName: string;
+export interface UsageBucket {
+  /** An hour ("09") of today, or a date ("2026-10-17"). */
+  key: string;
+  start: number;
+  totals: UsageTotals;
+  byClient: UsagePart[];
+  byChannel: UsagePart[];
+  byModel: UsagePart[];
+}
+
+export interface TranscriptSource {
+  sourceId: "codex" | "claude";
   available: boolean;
   fileCount: number;
   updatedFileCount: number;
-  totals: TokenUsageTotals;
 }
 
-export interface TokenModelUsage {
-  sourceId: string;
-  sourceName: string;
-  model: string;
-  totals: TokenUsageTotals;
-}
-
-export interface TokenUsageDay {
-  date: string;
-  totals: TokenUsageTotals;
-  byModel: TokenModelUsage[];
-}
-
-export interface RecentTokenUsage {
-  timestamp: number;
-  date: string;
-  sourceId: string;
-  sourceName: string;
-  model: string;
-  sessionId: string;
-  inputTokens: number;
-  outputTokens: number;
-  reasoningTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  totalTokens: number;
-}
-
-export interface LocalTokenUsagePayload {
+export interface UsagePayload {
   generatedAt: number;
-  today: TokenUsageTotals;
-  week: TokenUsageTotals;
-  allTime: TokenUsageTotals;
-  bySource: TokenUsageSource[];
-  byModel: TokenModelUsage[];
-  daily: TokenUsageDay[];
-  recent: RecentTokenUsage[];
+  range: UsageRange;
+  start: number;
+  previousStart: number;
+  today: UsageTotals;
+  current: UsageTotals;
+  previous: UsageTotals;
+  allTime: UsageTotals;
+  buckets: UsageBucket[];
+  byClient: UsageGroup[];
+  byChannel: UsageGroup[];
+  byModel: UsageGroup[];
+  byProject: UsageGroup[];
+  bySession: UsageGroup[];
+  recent: UsageEntry[];
+  sources: {
+    transcripts: TranscriptSource[];
+    relaySince?: number | null;
+    relayCount: number;
+    matchedCount: number;
+  };
   warningCount: number;
   warnings: string[];
-}
-
-export interface TokenUsagePayload {
-  generatedAt: number;
-  local: LocalTokenUsagePayload;
-  relay: RelayUsagePayload;
 }
 
 // ---------------------------------------------------------------------------

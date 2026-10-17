@@ -527,42 +527,65 @@ try {
   console.log("PASS overview data map folds seamlessly, remembers the choice and lists every client's key files");
 
   await page.setViewportSize({ width: 1440, height: 900 });
+  await page.evaluate(() => { localStorage.removeItem("agentharbor.usage-range"); localStorage.removeItem("agentharbor.usage-metric"); });
   await reset("usage");
-  await page.locator(".usage-today-card").first().waitFor();
-  await eventually(async () => assert.equal(await page.locator(".usage-today-card").count(), 2));
-  assert.equal(await page.locator(".usage-source-card .usage-metric-orange").count(), 2);
-  const usageWidth = await page.locator(".usage-trend-card").evaluate(element => ({
+  const usagePage = page.locator("[data-usage-page]");
+  await usagePage.locator("[data-usage-kpi]").first().waitFor();
+  assert.deepEqual(await usagePage.locator("[data-usage-kpi]").evaluateAll(items => items.map(item => item.getAttribute("data-usage-kpi"))),
+    ["cost", "tokens", "cache", "requests"], "cost leads, then new tokens, cache and requests");
+  assert.match(await usagePage.locator('[data-usage-kpi="cost"]').innerText(), /按目录价估算/);
+  assert.match(await usagePage.locator('[data-usage-kpi="tokens"]').innerText(), /另有缓存读取/);
+  assert.match(await usagePage.locator("[data-usage-sources]").innerText(), /Codex 153 个会话文件.*1 条路由请求已与会话对齐/);
+  const chartWidth = await page.locator("[data-usage-chart]").evaluate(element => ({
     card: element.getBoundingClientRect().width, parent: element.parentElement.getBoundingClientRect().width,
   }));
-  assert.ok(usageWidth.card >= usageWidth.parent - 44, JSON.stringify(usageWidth));
+  assert.ok(chartWidth.card >= chartWidth.parent - 44, JSON.stringify(chartWidth));
+  if (captureDir) await page.screenshot({ path: path.join(captureDir, "usage-overview.png") });
+  // The chart is one keyboard stop; the readout follows the selected day.
+  const today = await page.evaluate(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; });
+  await page.locator("[data-usage-chart] .usage-chart").focus();
+  await page.keyboard.press("End");
+  await eventually(async () => assert.match(await page.locator("[data-usage-readout]").innerText(), new RegExp(today)));
+  await page.keyboard.press("Escape");
+  await eventually(async () => assert.match(await page.locator("[data-usage-readout]").innerText(), /合计/));
+  await page.locator("[data-usage-chart]").getByRole("radio", { name: "渠道", exact: true }).click();
+  await eventually(async () => assert.deepEqual(
+    await page.locator("[data-usage-readout] [data-usage-series]").evaluateAll(items => items.map(item => item.getAttribute("data-usage-series"))),
+    ["official", "relay", "aggregate"]));
+  // A routed call keeps the router's timing and the session it belongs to.
+  const requests = page.locator("[data-usage-requests]");
+  const routed = requests.locator("tbody tr").filter({ hasText: "gpt-6-luna" });
+  assert.match(await routed.innerText(), /Relay Alpha[\s\S]*1140 ms[\s\S]*首字 320 ms/);
+  await routed.getByRole("button", { name: /展开详情/ }).click();
+  await requests.getByText("已与会话记录对齐").waitFor();
+  await requests.getByText("codex-session-0").waitFor();
+  assert.match(await requests.locator("tbody tr").filter({ hasText: "deepseek-v4-pro" }).innerText(), /未计价[\s\S]*502/);
   if (captureDir) {
-    await page.screenshot({ path: path.join(captureDir, "usage-today.png") });
-    await page.locator(".usage-trend-card").evaluate(element => element.scrollIntoView({ block: "start" }));
-    await page.screenshot({ path: path.join(captureDir, "usage-trend.png") });
-  }
-  await page.locator(".usage-trend-svg").first().hover({ position: { x: 420, y: 100 } });
-  await eventually(async () => assert.equal(await page.locator(".usage-model-chip").count(), 3));
-  await page.getByRole("tab", { name: "请求明细" }).click();
-  await page.getByText("1140 ms").waitFor();
-  await page.getByText("320 ms").waitFor();
-  await eventually(async () => assert.equal(await page.locator(".usage-request-table tbody tr").count(), 1));
-  if (captureDir) {
-    await page.locator(".usage-relay-panel").evaluate(element => element.scrollIntoView({ block: "start" }));
+    await requests.evaluate(element => element.scrollIntoView({ block: "start" }));
     await page.screenshot({ path: path.join(captureDir, "usage-requests.png") });
   }
-  await page.getByRole("tab", { name: "供应商与额度" }).click();
+  // Channels carry the relay balance and refresh it in place.
   await page.getByText("12.5 USD").waitFor();
   await page.getByRole("button", { name: "刷新余额 Relay Alpha" }).click();
   await page.waitForFunction(() => window.review.balanceRequests.includes("group-a"));
   await page.evaluate(() => window.review.balanceResolvers.at(-1)());
   await page.getByText("9 USD").waitFor();
-  await page.getByRole("tab", { name: "模型" }).click();
-  await page.locator(".usage-relay-body .usage-model-row").first().hover();
-  await eventually(async () => assert.equal(await page.locator(".usage-relay-body .usage-donut-segment").first().getAttribute("stroke-width"), "16"));
+  // Sessions open the threads page on their own client.
+  const work = page.getByRole("region", { name: "项目与会话" });
+  assert.match(await work.locator("[data-usage-rank]").first().innerText(), /aimami/);
+  await work.getByRole("radio", { name: "会话", exact: true }).click();
+  await work.getByRole("button", { name: /在会话页查看/ }).first().click();
+  await eventually(async () => assert.match(await page.evaluate(() => window.review.navigatedTo), /^threads:(codex|claudeCode)$/));
+  // Today reads by the hour; the choice is remembered.
+  await page.getByRole("radio", { name: "今日", exact: true }).click();
+  await page.locator("[data-usage-chart]").getByText("按小时").waitFor();
+  assert.equal(await page.evaluate(() => localStorage.getItem("agentharbor.usage-range")), "today");
   await page.setViewportSize({ width: 390, height: 844 });
   await reset("usage");
+  await page.locator("[data-usage-chart]").getByText("按小时").waitFor();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
-  console.log("PASS usage dashboard prioritizes today, gives trend full width, and switches relay details with interactive model segments");
+  await page.evaluate(() => { localStorage.removeItem("agentharbor.usage-range"); localStorage.removeItem("agentharbor.usage-metric"); });
+  console.log("PASS usage leads with cost, stacks every client by period, ranks channels with balances and joins request details");
   await page.setViewportSize({ width: 1200, height: 700 });
 
   await reset("provider");

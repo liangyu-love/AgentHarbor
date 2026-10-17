@@ -182,7 +182,7 @@
     "enabledRelays": "{{count}} 个中转已启用",
     "pulse": "实时概览",
     "tokensToday": "今日 Token",
-    "tokensWeek": "本周 {{value}} · 今日 {{turns}} 轮",
+    "tokensWeek": "近 7 天 {{value}} · 今日 {{turns}} 次请求",
     "activeAccount": "当前账号",
     "quotaUsed": "5 小时窗口已用 {{value}}%",
     "quotaUnknown": "额度尚未查询",
@@ -2512,8 +2512,122 @@
   },
   "usage": {
     "title": "用量",
-    "heroDesc": "Codex、Claude Code 的本地 Token 用量与经路由的中转流量",
-    "refreshSuccess": "用量已刷新"
+    "heroDesc": "所有客户端的 Token 与费用：本地会话和经 AgentHarbor 路由的请求合成一本账",
+    "refreshSuccess": "用量已刷新",
+    "rangeLabel": "时间范围",
+    "range": {
+      "today": "今日",
+      "week": "7 天",
+      "month": "30 天"
+    },
+    "metricLabel": "衡量口径",
+    "metric": {
+      "cost": "费用",
+      "tokens": "Token"
+    },
+    "updated": "更新于 {{time}}",
+    "sources": {
+      "codex": "Codex {{count}} 个会话文件",
+      "claude": "Claude Code {{count}} 个会话文件",
+      "missing": "未发现 {{name}} 会话",
+      "relay": "路由请求 {{count}} 条，自 {{date}} 起",
+      "relayNone": "暂无路由请求",
+      "matched": "{{count}} 条路由请求已与会话对齐"
+    },
+    "kpi": {
+      "cost": "费用",
+      "tokens": "新增 Token",
+      "cache": "缓存命中率",
+      "requests": "请求",
+      "costHint": "经路由的请求按当时记录的价格计；官方账户和未经路由的调用按模型目录价估算等效 API 费用，订阅套餐不按此扣费。",
+      "estimated": "其中 {{value}} 按目录价估算",
+      "noCost": "尚无可计价的请求",
+      "tokensHint": "新增 = 未缓存输入 + 缓存写入 + 输出；缓存读取更便宜，单独统计。",
+      "cacheRead": "另有缓存读取 {{value}}",
+      "savings": "缓存约省下 {{value}}",
+      "requestsTotal": "累计 {{value}} 次"
+    },
+    "compare": {
+      "today": "较昨日同时段",
+      "week": "较前 7 天",
+      "month": "较前 30 天"
+    },
+    "deltaNone": "上一周期无数据",
+    "points": "{{value}} 个百分点",
+    "chart": {
+      "title": "趋势",
+      "subtitle": {
+        "today": "按小时",
+        "week": "按天",
+        "month": "按天"
+      },
+      "groupLabel": "分组",
+      "group": {
+        "client": "客户端",
+        "channel": "渠道",
+        "model": "模型"
+      },
+      "label": "用量趋势图，方向键切换时段",
+      "total": "合计",
+      "other": "其他",
+      "empty": "这段时间还没有用量",
+      "hour": "{{hour}}:00"
+    },
+    "channel": {
+      "official": "官方账户",
+      "relay": "中转",
+      "aggregate": "聚合"
+    },
+    "aggregateNamed": "聚合 · {{name}}",
+    "gatewayClient": "网关 · {{name}}",
+    "rank": {
+      "clients": "客户端",
+      "channels": "渠道与供应商",
+      "models": "模型",
+      "work": "项目与会话",
+      "projects": "项目",
+      "sessions": "会话",
+      "workHint": "来自 Codex / Claude Code 本地会话",
+      "empty": "这段时间没有数据",
+      "share": "占 {{value}}",
+      "balance": "余额 {{value}}",
+      "openThreads": "在会话页查看",
+      "manageProviders": "管理中转"
+    },
+    "requests": {
+      "title": "请求明细",
+      "subtitle": "最近 {{count}} 条",
+      "channelLabel": "渠道",
+      "all": "全部",
+      "time": "时间",
+      "client": "客户端",
+      "channel": "渠道 / 供应商",
+      "model": "模型",
+      "tokens": "Token",
+      "cost": "费用",
+      "latency": "耗时 / 首字",
+      "status": "状态",
+      "local": "本地",
+      "newTokens": "新增 {{value}}",
+      "cacheRead": "缓存读 {{value}}",
+      "estimated": "目录价估算",
+      "more": "显示更多",
+      "empty": "没有符合条件的请求",
+      "details": "展开详情",
+      "session": "会话",
+      "project": "项目",
+      "matched": "已与会话记录对齐",
+      "requested": "请求模型",
+      "served": "上游自报",
+      "credential": "凭据",
+      "pricing": "计价",
+      "cache": "缓存",
+      "reasoning": "推理"
+    },
+    "empty": {
+      "title": "还没有用量记录",
+      "desc": "使用 Codex、Claude Code，或让客户端经 AgentHarbor 路由后，用量会出现在这里。"
+    }
   },
   "accountSources": {
     "tabs": "账号来源",
