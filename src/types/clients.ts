@@ -6,6 +6,8 @@ export type TargetId = "codex" | "claudeCode" | "opencode" | "pi" | "harness";
 export interface HarnessProfile {
   name: string;
   path: string;
+  /** A headless profile without the credential store: keys go to `$DSH_HOME/.env`. */
+  dotenv?: boolean;
 }
 export interface HarnessInfo {
   /** `$DSH_HOME`, else `~/.dsh`. */

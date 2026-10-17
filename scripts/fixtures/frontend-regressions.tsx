@@ -118,6 +118,12 @@ const largeOriginal = "data:image/svg+xml;utf8," + encodeURIComponent(
 const pixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+nmQAAAABJRU5ErkJggg==";
 let state: NewApiState = { providers: [imageProvider], router: { enabled: false, accessMode: "router", accountless: false, port: 0, configDrifted: false }, proxyRunning: false, activeProviderId: null };
 api.providers.loadState = async () => state;
+api.providers.portOwner = async () => controls.review.portOwner ?? null;
+api.providers.endPortOwner = async pid => {
+  controls.review.endedPortOwner = pid;
+  controls.review.portOwner = null;
+  state = { ...state, proxyRunning: true };
+};
 // Aggregation fixtures reuse exact saved provider/model identities. Availability
 // changes with those same fixture providers, rather than inventing a fallback.
 const aggregateProjection = (contextWindow = 1_000_000) => ({ contextWindow, contextSource: "catalog", contextIsFallback: false,

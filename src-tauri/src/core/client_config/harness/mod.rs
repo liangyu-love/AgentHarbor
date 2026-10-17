@@ -5,6 +5,7 @@
 //!   - id: llm-pi-ai              config.providers.agentharbor-*   (one route per protocol)
 //!   - id: agent-default-model    config.provider / config.model   (optional)
 //! $DSH_HOME/.credentials.yaml    refs.AGENTHARBOR_*               (keys the routes name)
+//! $DSH_HOME/.env                 AGENTHARBOR_*=…                  (instead, for a headless profile)
 //! ```
 //! A patch row's `config` replaces the composed row's whole config, so the
 //! routes go into the user's own `llm-pi-ai` row next to their providers
@@ -12,6 +13,7 @@
 //! session: restore puts back exactly those, the files byte for byte when
 //! nothing else changed since. Harness reloads the profile patch on change;
 //! the home-level patch outranks it, which is reported, never edited.
+mod dotenv;
 mod routes;
 mod yaml;
 
@@ -26,6 +28,8 @@ const PROVIDERS_ROW: &str = "llm-pi-ai";
 const DEFAULT_ROW: &str = "agent-default-model";
 const PATCH_FILE: &str = "cordis.patch.yml";
 const CREDENTIALS_FILE: &str = ".credentials.yaml";
+const DOTENV_FILE: &str = ".env";
+const HEADLESS_BUNDLE: &str = "@deepseek-ai/dsh-headless";
 
 /// `$DSH_HOME` when set (a blank value is unset, as Harness reads it), else `~/.dsh`.
 pub(super) fn home(user_home: &Path, configured: Option<std::ffi::OsString>) -> PathBuf {
@@ -83,6 +87,32 @@ fn patch_path(home: &Path, profile: &str) -> PathBuf {
     home.join("profiles").join(profile).join(PATCH_FILE)
 }
 
+/// Harness 0.2.1's headless bundle leaves out the credential store, so its
+/// routes find keys in the environment and `$DSH_HOME/.env` instead, unless
+/// the store's row was turned back on in the profile or home patch.
+fn reads_dotenv(home: &Path, profile: &str) -> bool {
+    let headless = std::fs::read(home.join("profiles").join(profile).join("package.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|manifest| manifest.pointer("/dsh/profile/bundles").cloned())
+        .and_then(|bundles| bundles.as_array().cloned())
+        .is_some_and(|bundles| bundles.iter().any(|bundle| bundle.as_str() == Some(HEADLESS_BUNDLE)));
+    let store_restored = |path: PathBuf| {
+        read_text(&path)
+            .ok()
+            .flatten()
+            .and_then(|text| yaml::read(Some(&text)).ok())
+            .and_then(|document| yaml::row(&document, "credentials").cloned())
+            .is_some_and(|row| row.get("disabled") == Some(&json!(false)))
+    };
+    headless && !store_restored(patch_path(home, profile)) && !store_restored(home.join(PATCH_FILE))
+}
+
+/// Where a profile's routes read the keys they name.
+fn credentials_path(home: &Path, profile: &str) -> PathBuf {
+    home.join(if reads_dotenv(home, profile) { DOTENV_FILE } else { CREDENTIALS_FILE })
+}
+
 /// What the client list shows about Harness on this machine.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -97,6 +127,8 @@ pub struct HarnessInfo {
 pub struct HarnessProfile {
     pub name: String,
     pub path: String,
+    /// Keys go to `$DSH_HOME/.env`: a headless profile without the store.
+    pub dotenv: bool,
 }
 
 pub(super) fn info(home: &Path) -> HarnessInfo {
@@ -106,6 +138,7 @@ pub(super) fn info(home: &Path) -> HarnessInfo {
             .into_iter()
             .map(|name| HarnessProfile {
                 path: patch_path(home, &name).to_string_lossy().into(),
+                dotenv: reads_dotenv(home, &name),
                 name,
             })
             .collect(),
@@ -121,7 +154,7 @@ pub(super) fn info(home: &Path) -> HarnessInfo {
 enum Field {
     /// A value inside the `config` of the patch row `row`.
     Patch { row: String, path: Vec<String> },
-    /// `refs.<name>` in the credential store.
+    /// `refs.<name>` in the credential store, or `<name>=` in `.env`.
     Credential { name: String },
 }
 
@@ -204,6 +237,9 @@ impl Session {
 struct Texts {
     patch: Option<String>,
     credentials: Option<String>,
+    /// The keys live in `.env` rather than the YAML credential store.
+    #[serde(skip)]
+    dotenv: bool,
 }
 
 impl Texts {
@@ -211,6 +247,7 @@ impl Texts {
         Ok(Self {
             patch: read_text(patch)?,
             credentials: read_text(credentials)?,
+            dotenv: credentials.file_name().is_some_and(|name| name == DOTENV_FILE),
         })
     }
 
@@ -218,6 +255,9 @@ impl Texts {
         Ok(match field {
             Field::Patch { row, path } => {
                 yaml::patch_value(&yaml::read(self.patch.as_deref())?, row, path).cloned()
+            }
+            Field::Credential { name } if self.dotenv => {
+                dotenv::get(self.credentials.as_deref(), name).map(Value::String)
             }
             Field::Credential { name } => {
                 yaml::credential(&yaml::read(self.credentials.as_deref())?, name).cloned()
@@ -235,7 +275,11 @@ impl Texts {
                     Some(value) => Some(value.as_str().ok_or("clients.errors.invalidConfig")?),
                     None => None,
                 };
-                self.credentials = yaml::set_credential(self.credentials.as_deref(), name, value)?;
+                self.credentials = if self.dotenv {
+                    dotenv::set(self.credentials.as_deref(), name, value)?
+                } else {
+                    yaml::set_credential(self.credentials.as_deref(), name, value)?
+                };
             }
         }
         Ok(())
@@ -356,7 +400,8 @@ fn undo(session: &Session, texts: &Texts, kept: &[Field]) -> Result<Texts, Strin
             result.patch = None;
         }
     }
-    if !credentials_exact {
+    // `.env` edits drop their own lines, and a file left empty is gone already.
+    if !credentials_exact && !texts.dotenv {
         let original = yaml::read(session.credentials.original.as_deref())?;
         if original.get("refs").is_none()
             && is_empty_object(yaml::read(result.credentials.as_deref())?.get("refs"))
@@ -492,7 +537,14 @@ impl ConfigManager {
             return Err("clients.errors.harnessProfileChanged".into());
         }
         let patch = patch_path(home, profile);
-        let credentials = home.join(CREDENTIALS_FILE);
+        let credentials = credentials_path(home, profile);
+        if previous
+            .as_ref()
+            .is_some_and(|session| session.credentials.path != credentials)
+        {
+            // The keys would be withdrawn from one file and written to another.
+            return Err("clients.errors.harnessCredentialsMoved".into());
+        }
         let current = Texts::read(&patch, &credentials)?;
         let (baseline, original) = match previous.as_mut() {
             Some(session) => {
@@ -521,6 +573,7 @@ impl ConfigManager {
                     } else {
                         baseline.credentials.clone()
                     },
+                    dotenv: current.dotenv,
                 };
                 (baseline, original)
             }
@@ -580,7 +633,10 @@ impl ConfigManager {
             })
             .map(str::to_owned)
             .collect();
-        let warnings = self.harness_warnings(&rows_after, built.default.is_some())?;
+        let mut warnings = self.harness_warnings(&rows_after, built.default.is_some())?;
+        if current.dotenv {
+            warnings.push("clients.warnings.harnessDotenv".into());
+        }
         let session = Session {
             profile: profile.to_owned(),
             patch: FileState {
@@ -660,9 +716,14 @@ impl ConfigManager {
                     set_field(&mut patch, &key, change.after.clone())?;
                 }
                 Field::Credential { name } => {
+                    let key = if plan.current.dotenv {
+                        vec![name.clone()]
+                    } else {
+                        vec!["refs".into(), name.clone()]
+                    };
                     set_field(
                         &mut credentials,
-                        &["refs".into(), name.clone()],
+                        &key,
                         change.after.as_ref().map(|_| json!("[managed locally]")),
                     )?;
                 }

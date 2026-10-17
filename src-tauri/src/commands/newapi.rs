@@ -224,6 +224,38 @@ pub async fn load_newapi_state(repo: State<'_, Mutex<Repository>>) -> Result<New
     ))
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RouterPortOwner {
+    port: u16,
+    #[serde(flatten)]
+    owner: crate::platform::port_owner::PortOwner,
+}
+
+/// Another program holding the router's port while the router is down.
+#[tauri::command]
+pub async fn load_router_port_owner(repo: State<'_, Mutex<Repository>>) -> Result<Option<RouterPortOwner>, String> {
+    let paths = paths(&repo)?;
+    super::blocking(move || {
+        if router_proxy::is_running() {
+            return Ok(None);
+        }
+        let port = router::load_store(&paths)?.router.port;
+        Ok(crate::platform::port_owner::listener(port).map(|owner| RouterPortOwner { port, owner }))
+    })
+    .await
+}
+
+/// Ends the program holding the router's port, then starts what needs it.
+#[tauri::command]
+pub async fn end_router_port_owner(repo: State<'_, Mutex<Repository>>, pid: u32) -> Result<(), String> {
+    let paths = paths(&repo)?;
+    let port = router::load_store(&paths)?.router.port;
+    super::blocking(move || crate::platform::port_owner::end(port, pid)).await?;
+    let _guard = routing_runtime::mutation_guard().await;
+    routing_runtime::reconcile_with(&paths, true).await
+}
+
 #[tauri::command]
 pub async fn load_codex_subagents(
     repo: State<'_, Mutex<Repository>>,

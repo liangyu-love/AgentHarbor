@@ -416,5 +416,7 @@ fn real_harness_streams_and_calls_tools_through_every_route_kind() {
     manager.restore(TargetId::Harness).unwrap();
     assert_eq!(std::fs::read_to_string(&patch).unwrap(), original);
     assert!(!home.join(".credentials.yaml").exists());
+    // Harness 0.2.1's headless profile reads keys from `$DSH_HOME/.env`.
+    assert!(!home.join(".env").exists());
     router_proxy::stop();
 }

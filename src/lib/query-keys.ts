@@ -6,6 +6,7 @@ export const queryKeys = {
   runtimeState: ["runtime-state"],
   runtimeStateDisplay: ["runtime-state", "display"],
   providers: ["newapi-state"],
+  routerPortOwner: ["newapi-state", "port-owner"],
   codexSubagents: ["codex-subagents"],
   // Written by applyChange only (never fetched). Outside the `newapi-state` prefix so provider
   // invalidations cannot touch it; shared so every page shows the latest config write.

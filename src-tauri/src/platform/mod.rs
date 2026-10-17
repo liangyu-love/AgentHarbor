@@ -3,6 +3,7 @@ pub mod dock;
 #[cfg(target_os = "macos")]
 pub mod macos_main_bundle;
 pub mod paths;
+pub mod port_owner;
 pub mod process;
 pub mod proxy;
 pub mod single_instance;

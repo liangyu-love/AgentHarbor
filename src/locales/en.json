@@ -341,6 +341,7 @@
       "harnessHomeOverride": "$DSH_HOME/cordis.patch.yml configures these entries too and outranks the profile: remove them there or this injection has no effect.",
       "harnessDisabled": "llm-pi-ai is disabled in this profile; the routes load once you enable it.",
       "harnessRestart": "Config reload (hmr) is turned off: restart Harness to pick up the change.",
+      "harnessDotenv": "A headless profile skips the credential store, so keys go to $DSH_HOME/.env; a same-named variable exported at launch or in the working directory's .env wins.",
       "proxySocks": "The app proxy is a SOCKS address, which Claude Code cannot use, so no proxy was written. For a proxy, turn on the terminal proxy with an HTTP address, or use router mode.",
       "systemProxy": "The app proxy follows the system proxy, which Claude Code does not read, so no proxy was written. For a proxy, turn on the terminal proxy, or set the app proxy to a manual HTTP address in Settings."
     },
@@ -348,6 +349,7 @@
       "piProviderConflict": "Pi already has a provider with this ID. Rename the external provider before applying.",
       "harnessProfile": "Choose an existing Harness profile.",
       "harnessProfileChanged": "This injection lives in another Harness profile. Restore it first, then apply to the new profile.",
+      "harnessCredentialsMoved": "Where this profile reads keys has changed (credential store ↔ .env). Restore first, then inject again.",
       "harnessPatchShape": "This profile's cordis.patch.yml is not a list of entries, or an entry AgentHarbor writes into is not a plain mapping. Fix it in Harness first.",
       "harnessCredentialsShape": "Harness's .credentials.yaml is not a mapping of version, refs and records. Fix it first.",
       "harnessDuplicateRow": "The profile patch has the same entry id twice, so AgentHarbor cannot tell which one to change.",
@@ -945,6 +947,14 @@
     "saved": "Relay settings saved",
     "confirmDeleteTitle": "Delete relay",
     "confirmDeleteBody": "This removes the local configuration and credentials of “{{name}}” and updates enabled Codex access.",
+    "portOwner": {
+      "title": "Router port {{port}} is held by {{name}} (PID {{pid}})",
+      "hint": "The router needs this port to start, so routed clients cannot connect meanwhile. Usually a program started by an older AgentHarbor inherited the port; ending it restores routing.",
+      "end": "End it and restart routing",
+      "confirmTitle": "End {{name}}?",
+      "confirmDesc": "PID {{pid}} ({{name}}) will be force-closed and unsaved work in it is lost. AgentHarbor then takes port {{port}} back and restores routing.",
+      "ended": "Port freed and routing restored"
+    },
     "backup": "Config backup",
     "errors": {
       "nativeResponsesRequired": "Native access requires the selected model to use Responses. Select a Responses default model or use local routing.",
@@ -994,6 +1004,8 @@
       "balanceDetect": "Balance endpoint not recognized. Configure a custom query script.",
       "importFile": "The import file is invalid or malformed.",
       "portBusy": "The local proxy port is in use; free the port and retry.",
+      "portOwnerChanged": "The program holding the port has changed; refresh and try again.",
+      "portOwnerEnd": "Could not end the program holding the port; it may need administrator rights.",
       "routerSnapshot": "Cannot safely restore the configuration from before routing. The configuration was preserved; check the config backups and routing snapshot.",
       "noActiveProvider": "Enable a provider with an API key and a default model before enabling Codex access.",
       "changed": "The relay was edited while the request was running. Try again.",

@@ -38,7 +38,7 @@ import type { TargetId, ClientStatus, ClientFiles, ClientConfigRequest, ClientCo
 import type { AccountSourceKind, AccountSourceListPayload } from "@/types/account-sources";
 import type { GatewayProfile, GatewayState, ModelSources } from "@/types/gateway";
 import type { CursorCommitLocale, CursorStatus } from "@/types/cursor";
-import type { CodexAccessMode, ModelProtocol, NewApiState, NewApiStateChange, NewApiImportResult, NewApiProvider, NewApiProviderInput, NewApiModel } from "@/types/newapi";
+import type { CodexAccessMode, ModelProtocol, NewApiState, NewApiStateChange, NewApiImportResult, NewApiProvider, NewApiProviderInput, NewApiModel, RouterPortOwner } from "@/types/newapi";
 
 export interface ImageGenerationRequest {
   providerId: string | null;
@@ -70,6 +70,8 @@ export type { TargetId } from "@/types/clients";
 
 const providersApi = {
   loadState: () => invoke<NewApiState>("load_newapi_state"),
+  portOwner: () => invoke<RouterPortOwner | null>("load_router_port_owner"),
+  endPortOwner: (pid: number) => invoke<void>("end_router_port_owner", { pid }),
   revealApiKey: (id: string) => invoke<string>("reveal_newapi_provider_api_key", { id }),
   save: (provider: NewApiProviderInput) => invoke<NewApiStateChange>("save_newapi_provider", { provider }),
   delete: (id: string) => invoke<NewApiStateChange>("delete_newapi_provider", { id }),

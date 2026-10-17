@@ -443,6 +443,54 @@ fn a_fresh_profile_and_store_are_created_and_withdrawn_completely() {
     assert!(!fixture.credentials().exists());
 }
 
+/// Harness 0.2.1's headless bundle has no credential store: keys go to
+/// `$DSH_HOME/.env` next to the user's own lines, and come back out exactly.
+#[test]
+fn a_headless_profile_reads_keys_from_the_harness_home_env_file() {
+    let mut fixture = Fixture::new(ClientAccessMode::Router, None, Some(CREDENTIALS));
+    let home = fixture.manager.paths.harness.clone();
+    let headless = home.join("profiles/headless");
+    std::fs::create_dir_all(&headless).unwrap();
+    std::fs::write(
+        headless.join("package.json"),
+        r#"{"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base","@deepseek-ai/dsh-headless"]}}}"#,
+    )
+    .unwrap();
+    std::fs::write(headless.join(PATCH_FILE), FRESH).unwrap();
+    let env = "# mine
+DEEPSEEK_API_KEY=sk-user
+";
+    std::fs::write(home.join(DOTENV_FILE), env).unwrap();
+    let info = info(&home);
+    let listed = |name: &str| info.profiles.iter().find(|profile| profile.name == name).unwrap().dotenv;
+    assert!(listed("headless"));
+    assert!(!listed("desktop"));
+
+    fixture.request.options.harness_profile = Some("headless".into());
+    let preview = fixture.manager.preview(&fixture.store, &fixture.request).unwrap();
+    assert!(preview.warnings.contains(&"clients.warnings.harnessDotenv".to_owned()));
+    assert!(preview.content.contains(&format!("\"{ROUTER_CREDENTIAL}\": \"[managed locally]\"")), "{}", preview.content);
+    assert!(!preview.content.contains("local-secret"));
+    fixture.manager.apply(&fixture.store, &fixture.request, &preview.revision).unwrap();
+    let written = std::fs::read_to_string(home.join(DOTENV_FILE)).unwrap();
+    assert_eq!(written, format!("{env}{ROUTER_CREDENTIAL}=local-secret
+"));
+    assert_eq!(std::fs::read_to_string(fixture.credentials()).unwrap(), CREDENTIALS);
+    let patch = yaml::read(Some(&std::fs::read_to_string(headless.join(PATCH_FILE)).unwrap())).unwrap();
+    assert_eq!(route(&patch, "agentharbor-test-relay-openai-responses")["apiKeyEnv"], ROUTER_CREDENTIAL);
+    assert!(!fixture.status().conflict);
+
+    fixture.manager.restore(TargetId::Harness).unwrap();
+    assert_eq!(std::fs::read_to_string(home.join(DOTENV_FILE)).unwrap(), env);
+    assert_eq!(std::fs::read_to_string(headless.join(PATCH_FILE)).unwrap(), FRESH);
+
+    // The README's rows turn the store back on, and the keys follow it.
+    std::fs::write(headless.join(PATCH_FILE), "- id: credentials
+  disabled: false
+").unwrap();
+    assert!(!reads_dotenv(&home, "headless"));
+}
+
 #[test]
 fn direct_routes_keep_each_relays_key_in_the_credential_store() {
     let mut fixture = Fixture::new(ClientAccessMode::Native, Some(DESKTOP), Some(CREDENTIALS));

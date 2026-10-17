@@ -451,6 +451,12 @@ export interface ModelCapabilities {
   catalog: ModelsDevCatalogStatus;
   models: ModelCapability[];
 }
+/** Another program listening on the router's port while the router is down. */
+export interface RouterPortOwner {
+  port: number;
+  pid: number;
+  name: string;
+}
 export interface NewApiState {
   providers: NewApiProvider[];
   router: NewApiRouterView;

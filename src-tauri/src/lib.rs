@@ -251,6 +251,8 @@ pub fn run() {
             commands::accounts::switch_codex_account,
             commands::accounts::delete_codex_account,
             commands::newapi::load_newapi_state,
+            commands::newapi::load_router_port_owner,
+            commands::newapi::end_router_port_owner,
             commands::newapi::load_codex_subagents,
             commands::newapi::save_codex_subagents,
             commands::newapi::reveal_newapi_provider_api_key,

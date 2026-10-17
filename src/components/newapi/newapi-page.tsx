@@ -26,6 +26,7 @@ import { formatInvokeError } from "@/lib/invoke-error";
 import { RoutingTopology } from "./routing-topology";
 import { ClientConsole } from "./client-console";
 import { WebSearchSettings } from "./web-search-settings";
+import { PortOwnerNotice } from "./port-owner-notice";
 
 // Section opener: an English kicker, the title and a hairline to the edge.
 function SectionGroup({ kicker, icon, title, description, delay, children }: {
@@ -86,6 +87,8 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
   return (
     <div className="space-y-7">
       <RoutingTopology store={store} onOpenRelays={onOpenRelays} onRestart={() => setRestartConfirmOpen(true)} />
+
+      <PortOwnerNotice routerRunning={state.data?.proxyRunning} />
 
       {(error || state.error) && (
         <div

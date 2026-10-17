@@ -341,6 +341,7 @@
       "harnessHomeOverride": "$DSH_HOME/cordis.patch.yml 也配置了这些条目，且优先级高于 profile：请先在那里移除，否则本次注入不会生效。",
       "harnessDisabled": "该 profile 中禁用了 llm-pi-ai，启用后这些路由才会加载。",
       "harnessRestart": "配置热重载（hmr）已关闭：需要重启 Harness 才会生效。",
+      "harnessDotenv": "headless profile 不读取凭据存储，密钥写入 $DSH_HOME/.env；启动时导出的同名环境变量和当前目录的 .env 会优先。",
       "proxySocks": "软件代理是 SOCKS 地址，Claude Code 不支持，未写入代理。需要代理时请开启终端代理（HTTP 地址），或改用路由模式。",
       "systemProxy": "软件代理跟随系统代理，而 Claude Code 不读取系统代理，未写入代理。需要代理时请开启终端代理，或在设置中把软件代理改为手动 HTTP 地址。"
     },
@@ -348,6 +349,7 @@
       "piProviderConflict": "Pi 中已存在同名供应商。请先更名外部配置，避免覆盖。",
       "harnessProfile": "请选择一个已存在的 Harness profile。",
       "harnessProfileChanged": "当前注入在另一个 Harness profile 中。请先恢复，再应用到新的 profile。",
+      "harnessCredentialsMoved": "这个 profile 读取密钥的位置变了（凭据存储 ↔ .env），请先恢复原配置再重新注入。",
       "harnessPatchShape": "该 profile 的 cordis.patch.yml 不是条目列表，或 AgentHarbor 要写入的条目不是普通映射。请先在 Harness 中修正。",
       "harnessCredentialsShape": "Harness 的 .credentials.yaml 结构不正确（应为包含 version、refs、records 的映射），请先修正。",
       "harnessDuplicateRow": "profile patch 中同一个条目 id 出现了两次，无法确定该修改哪一个。",
@@ -945,6 +947,14 @@
     "saved": "中转设置已保存",
     "confirmDeleteTitle": "删除中转",
     "confirmDeleteBody": "将删除「{{name}}」的本机配置与凭据；Codex 接入开启时会同步更新配置。",
+    "portOwner": {
+      "title": "路由端口 {{port}} 被 {{name}}（PID {{pid}}）占用",
+      "hint": "路由需要这个端口才能启动，经路由接入的客户端此时都连不上。常见原因是旧版 AgentHarbor 拉起的程序继承了端口；结束它后路由会自动恢复。",
+      "end": "结束并重启路由",
+      "confirmTitle": "结束 {{name}}？",
+      "confirmDesc": "将强制结束 PID {{pid}}（{{name}}），未保存的内容会丢失。结束后 AgentHarbor 会重新占用端口 {{port}} 并恢复路由。",
+      "ended": "已释放端口，路由已恢复"
+    },
     "backup": "原配置备份",
     "errors": {
       "nativeResponsesRequired": "原生接入要求当前模型使用 Responses，请选择 Responses 默认模型或使用本地路由。",
@@ -994,6 +1004,8 @@
       "balanceDetect": "无法识别余额接口，可配置自定义查询脚本。",
       "importFile": "导入文件无效或格式不正确。",
       "portBusy": "本地代理端口被占用，请在关闭占用该端口的程序后重试。",
+      "portOwnerChanged": "占用端口的程序已经变化，请刷新后再试。",
+      "portOwnerEnd": "无法结束占用端口的程序，可能需要管理员权限。",
       "routerSnapshot": "无法安全恢复路由前的配置。原配置已保留，请检查配置备份与路由快照。",
       "noActiveProvider": "请先启用至少一个含 API Key 与默认模型的供应商，再开启 Codex 接入。",
       "changed": "配置在请求期间已被修改，请重试。",
