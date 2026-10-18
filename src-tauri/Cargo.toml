@@ -1,6 +1,6 @@
 [package]
 name = "agent-harbor"
-version = "1.0.7"
+version = "1.0.8"
 default-run = "AgentHarbor"
 description = "Cross-platform coding-agent desktop workspace"
 authors = ["AgentHarbor contributors"]
