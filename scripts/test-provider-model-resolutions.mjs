@@ -271,4 +271,26 @@ export async function testProviderModelResolutions({ page, reset, captureDir }) 
   await page.setViewportSize({ width: 1200, height: 700 });
   await page.evaluate(() => document.documentElement.classList.remove("dark"));
   console.log("PASS resolved model controls stay within the dialog at desktop and narrow widths in light and dark themes");
+
+  // A long pending list brings its next page in as it scrolls; there is no button to press.
+  await reset("provider");
+  await ready();
+  const { fetchModels, addModelPlaceholder } = await labels();
+  await page.getByRole("button", { name: fetchModels, exact: true }).click();
+  await page.evaluate(() => window.review.resolveModels(Array.from({ length: 130 }, (_, index) => (
+    { id: `bulk-${String(index).padStart(3, "0")}`, endpointTypes: ["responses"], included: true }))));
+  const pendingList = page.locator("[data-pending-list]");
+  const shown = () => pendingList.getByRole("checkbox").count();
+  await eventually(async () => assert.equal(await shown(), 50));
+  assert.equal(await page.locator("[data-pending-models]").getByRole("button", { name: /更多|more/i }).count(), 0);
+  await pendingList.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(150);
+  assert.equal(await shown(), 50, "The next page waits until the list nears its end");
+  for (const expected of [100, 130]) {
+    await pendingList.evaluate(element => { element.scrollTop = element.scrollHeight; });
+    await eventually(async () => assert.equal(await shown(), expected));
+  }
+  await page.getByPlaceholder(addModelPlaceholder, { exact: true }).fill("bulk-1");
+  await eventually(async () => assert.equal(await shown(), 30, "A search lists all of its matches from the top"));
+  console.log("PASS long pending model lists load page by page on scroll");
 }

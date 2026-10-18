@@ -940,7 +940,6 @@
     "pendingModels": "待加入模型（{{count}}）",
     "clearPendingModels": "清空待加入列表",
     "noMatchingPendingModels": "没有匹配的待加入模型，可手动加入该 ID。",
-    "morePendingModels": "显示更多模型",
     "noDefaultModel": "未设置默认模型。不影响保存和启用；要让 Codex 默认从这个中转启动时再选择。",
     "addModel": "加入",
     "addModelPlaceholder": "输入模型 ID 后回车加入",

@@ -940,7 +940,6 @@
     "pendingModels": "Models to add ({{count}})",
     "clearPendingModels": "Clear pending list",
     "noMatchingPendingModels": "No pending models match. You can add this ID manually.",
-    "morePendingModels": "Show more models",
     "noDefaultModel": "No default model. You can still save and enable this provider; pick one when Codex should start on it.",
     "addModel": "Add",
     "addModelPlaceholder": "Enter a model ID and press Enter",
