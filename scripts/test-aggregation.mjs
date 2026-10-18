@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { eventually } from "./eventually.mjs";
+import { showInjectTab } from "./inject-tabs.mjs";
 
 const PUBLIC_MODEL = "deepseek-v4.1-flash";
 const FAST_WIRE_MODEL = "vendor/deepseek-v4.1-flash-fast";
@@ -71,6 +72,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   };
 
   await seed(page, reset, "access");
+  await showInjectTab(page, "routing");
   const copyId = manager().getByRole("button", { name: await tr("aggregation.copyPublicId"), exact: true });
   await page.evaluate(() => {
     navigator.clipboard.writeText = async () => { throw new Error("Synthetic clipboard denied"); };
@@ -101,6 +103,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   await manager().locator("form").waitFor({ state: "detached" });
   console.log("PASS injection UI handles clipboard failures and pending saves without false success or duplicated channel lists");
 
+  await showInjectTab(page, "clients");
   const pipeline = page.locator('[aria-labelledby="newapi-routing-title"]');
   await page.evaluate(async () => {
     window.review.frontendClient.setQueryData(["newapi-state"], { ...window.review.getState(), activeProviderId: "relay-a" });
@@ -129,18 +132,31 @@ export async function testAggregation({ page, reset, captureDir }) {
       document.documentElement.classList.toggle("dark", theme === "dark");
       await window.review.setLanguage(language);
     }, { theme, language });
-    const overflow = await page.evaluate(() => [...document.querySelectorAll(
-      '[aria-labelledby="newapi-routing-title"], [data-client-console], [aria-labelledby="claude-desktop-title"], [aria-labelledby="aggregation-title"]'
-    )].filter(element => element.scrollWidth > element.clientWidth + 1).map(element => element.getAttribute("aria-labelledby") ?? "console"));
-    assert.deepEqual(overflow, [], `injection sections fit ${width}px ${language} ${theme}`);
+    // Hidden panels measure nothing, so each group is checked on its own tab.
+    for (const group of ["clients", "routing"]) {
+      await showInjectTab(page, group);
+      const overflow = await page.evaluate(() => [...document.querySelectorAll(
+        '[aria-labelledby="newapi-routing-title"], [data-client-console], [aria-labelledby="claude-desktop-title"], [aria-labelledby="aggregation-title"]'
+      )].filter(element => element.scrollWidth > element.clientWidth + 1).map(element => element.getAttribute("aria-labelledby") ?? "console"));
+      assert.deepEqual(overflow, [], `injection ${group} fit ${width}px ${language} ${theme}`);
+      // The tab bar clips its gliding highlight, whose scrollWidth Chrome can
+      // leave stale after the transition; the tabs themselves must fit.
+      assert.equal(await page.locator(".group-tabs").evaluate(list => {
+        const bounds = list.getBoundingClientRect();
+        return [...list.querySelectorAll('[role="tab"]')].every(tab => tab.getBoundingClientRect().right <= bounds.right + 1
+          && tab.scrollWidth <= tab.clientWidth + 1);
+      }), true, `group tabs fit ${width}px ${language} ${theme}`);
+    }
     if (captureDir) {
       await page.locator("[data-page-scroll-container]").evaluate((element, height) => {
         element.parentElement.style.height = height + "px";
       }, height);
       await page.locator("[data-page-scroll-container]").evaluate(element => { element.scrollTop = 0; });
+      await showInjectTab(page, "clients");
       await page.screenshot({ path: path.join(captureDir, `injection-top-${width}-${theme}.png`), animations: "disabled" });
       await page.locator("[data-client-console]").evaluate(element => element.scrollIntoView({ block: "start" }));
       await page.screenshot({ path: path.join(captureDir, `injection-clients-${width}-${theme}.png`), animations: "disabled" });
+      await showInjectTab(page, "routing");
       await manager().evaluate(element => element.scrollIntoView({ block: "start" }));
       await page.screenshot({ path: path.join(captureDir, `injection-aggregate-${width}-${theme}.png`), animations: "disabled" });
       await manager().getByRole("button", { name: await tr("common.edit"), exact: true }).click();
@@ -154,6 +170,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   console.log("PASS native topology, long model IDs and bilingual responsive theme layouts");
 
   await seed(page, reset, "access", { empty: true, suggestions: true });
+  await showInjectTab(page, "routing");
   await manager().getByRole("button", { name: await tr("aggregation.add"), exact: true }).click();
   const suggestionIds = () => manager().locator("#aggregate-official-models option").evaluateAll(options => options.map(option => option.value));
   await page.waitForFunction(() => document.querySelectorAll("#aggregate-official-models option").length === 4);
@@ -181,6 +198,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   console.log("PASS public model suggestions prioritize exact member matches while retaining all cards, deduplication and handwritten identities");
 
   await seed(page, reset, "access", { empty: true });
+  await showInjectTab(page, "routing");
   await manager().getByRole("button", { name: await tr("aggregation.add"), exact: true }).click();
   await manager().locator("#aggregate-public-id").fill(PUBLIC_MODEL);
   await manager().locator("#aggregate-display-name").fill(POOL_NAME);
@@ -240,6 +258,7 @@ export async function testAggregation({ page, reset, captureDir }) {
   console.log("PASS aggregation editor persists exact upstream identities, stable member IDs, priorities and weights");
 
 
+  await showInjectTab(page, "clients");
   const codex = page.locator('[aria-labelledby="newapi-routing-title"]');
   const source = kind => codex.locator(`[data-codex-sources] [data-model-source="${kind}"]`);
   assert.equal(await codex.locator("#codex-aggregate-model").count(), 0, "no startup aggregate while aggregates are off");
@@ -286,6 +305,7 @@ export async function testAggregation({ page, reset, captureDir }) {
     window.review.aggregateModels[0].enabled = false;
     await window.review.frontendClient.invalidateQueries({ queryKey: ["model-aggregation"] });
   });
+  await showInjectTab(page, "routing");
   await manager().getByRole("button", { name: await tr("common.delete"), exact: true }).click();
   const confirmation = page.getByRole("alertdialog");
   await confirmation.waitFor();

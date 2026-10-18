@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { eventually } from "./eventually.mjs";
+import { showInjectTab } from "./inject-tabs.mjs";
 
 export async function testMagpieOptimizations({ page, reset, captureDir }) {
   await reset("compact");
@@ -22,7 +23,7 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   const searchService = page.getByRole("combobox", { name: "搜索执行账号", exact: true });
   await searchService.waitFor();
   assert.equal(await page.locator("[data-client-console] > [data-client-shared] [data-web-search-settings]").count(), 1);
-  assert.equal(await page.locator('[role="tabpanel"] [data-web-search-settings]').count(), 0);
+  assert.equal(await page.locator('[data-client-console] [role="tabpanel"] [data-web-search-settings]').count(), 0);
   assert.equal(await page.locator("[data-route-diagnostics] [data-web-search-settings]").count(), 0);
   await page.locator('[data-client-tab="codex"]').click();
   assert.equal(await searchService.isVisible(), true);
@@ -67,6 +68,7 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
   await page.evaluate(() => { delete window.review.providerFixtures; });
   console.log("PASS search service selection accepts either model protocol, saves automatic mode and retains unavailable explicit choices");
   await reset("access");
+  await showInjectTab(page, "routing");
   const routes = page.getByRole("region", { name: "请求级路由诊断" });
   await routes.getByRole("button", { name: "请求级路由诊断", exact: true }).click();
   await routes.locator("summary").waitFor();
@@ -249,6 +251,7 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
 
   await reset("access");
   await page.evaluate(() => { window.review.desktopDiagnostics = true; });
+  await showInjectTab(page, "routing");
   const desktopRoutes = page.getByRole("region", { name: "请求级路由诊断" });
   await desktopRoutes.getByRole("button", { name: "请求级路由诊断", exact: true }).click();
   await desktopRoutes.getByText("claude-sonnet-4-6 → deepseek-fixture", { exact: true }).waitFor();
@@ -309,6 +312,7 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
     ];
     window.review.mount("access");
   }, sourceSamples);
+  await showInjectTab(page, "routing");
   const sourceRoutes = page.getByRole("region", { name: "请求级路由诊断" });
   await sourceRoutes.getByRole("button", { name: "请求级路由诊断", exact: true }).click();
   await sourceRoutes.getByText("source-codex", { exact: true }).waitFor();
@@ -378,6 +382,7 @@ export async function testMagpieOptimizations({ page, reset, captureDir }) {
     ];
     window.review.mount("access");
   });
+  await showInjectTab(page, "routing");
   const aggregateRoutes = page.getByRole("region", { name: "请求级路由诊断" });
   await aggregateRoutes.getByRole("button", { name: "请求级路由诊断", exact: true }).click();
   await aggregateRoutes.locator("summary").nth(1).waitFor();

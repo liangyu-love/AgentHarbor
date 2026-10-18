@@ -1543,7 +1543,7 @@
       "clientsNone": "No client connected yet",
       "routingSummary": "{{count}} aggregate models",
       "gatewaySummary": "{{state}} · {{keys}} keys",
-      "folded": "Folded"
+      "label": "Injection groups"
     },
     "connectionPanel": "Connection",
     "pipelinePanel": "Current path",

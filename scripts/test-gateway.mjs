@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { eventually } from "./eventually.mjs";
+import { showInjectTab } from "./inject-tabs.mjs";
 
 // The general gateway panel: keep-running switch, addresses, named keys
 // (reveal, copy, regenerate, delete), the model list by short name, the
@@ -18,6 +19,7 @@ export async function testGateway({ page, reset, captureDir }) {
   await page.evaluate(() => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async text => { window.review.copied = text; } } });
   });
+  await showInjectTab(page, "gateway");
   const gateway = page.locator("[data-gateway]");
   await gateway.waitFor();
   await eventually(async () => assert.equal(await gateway.locator("[data-gateway-status]").innerText(), await tr("gateway.stopped")));

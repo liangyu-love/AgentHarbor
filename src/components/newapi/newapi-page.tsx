@@ -1,12 +1,10 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { Layers3, Plug, Share2, X } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 import { aggregationQueryKey } from "@/types/aggregation";
-import { useFold } from "@/hooks/use-fold";
-import { OWN_CLICK } from "@/components/ui/fold-header";
 import { toast } from "@/hooks/use-toast";
 import {
   AlertDialog,
@@ -30,68 +28,23 @@ import { providerModelProtocol } from "@/lib/provider-models";
 import { formatInvokeError } from "@/lib/invoke-error";
 import { RoutingTopology } from "./routing-topology";
 import { ClientConsole, SELECT_CLIENT_EVENT } from "./client-console";
+import { InjectTabs, type InjectTab } from "./inject-tabs";
 import { CLIENTS, useRoutingLinks } from "./use-routing-links";
 import { WebSearchSettings } from "./web-search-settings";
 import { PortOwnerNotice } from "./port-owner-notice";
 import { useClientLaunch } from "./client-launch";
 
-// A group opens on a poster band: a full-width rule, the title large on the
-// left, the English kicker and a live summary on the right. Clicking the band
-// folds the group (no chevron: the title is the real button); the summary
-// stays readable while it is folded. Folded content stays mounted, so unsaved
-// edits survive and shortcuts can still reach it.
-function SectionGroup({ id, kicker, icon, title, description, summary, delay, expandOn, children }: {
-  id: string;
-  kicker: string;
-  icon: ReactNode;
-  title: string;
-  description: string;
-  summary?: ReactNode;
-  delay: number;
-  /** A window event that unfolds the group, for shortcuts that land inside it. */
-  expandOn?: string;
-  children: ReactNode;
-}) {
-  const { t } = useTranslation();
-  const foldId = `inject-section-${id}`;
-  const fold = useFold(foldId);
-  const titleId = `${foldId}-title`;
-  const bodyId = `${foldId}-body`;
-  useEffect(() => {
-    if (!expandOn) return;
-    const expand = () => window.dispatchEvent(new CustomEvent("agentharbor:expand-section", { detail: foldId }));
-    window.addEventListener(expandOn, expand);
-    return () => window.removeEventListener(expandOn, expand);
-  }, [expandOn, foldId]);
-  return (
-    <section className="route-rise space-y-4" style={{ animationDelay: `${delay}ms` } as CSSProperties}
-      aria-labelledby={titleId} data-inject-section={id}>
-      <header className="section-band" data-folded={!fold.open}
-        onClick={event => { if (!(event.target as HTMLElement).closest(OWN_CLICK)) fold.toggle(); }}>
-        <div aria-hidden className="section-band-rule" />
-        <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2 px-1 pt-4">
-          <div className="wallpaper-plate min-w-0">
-            <h2 id={titleId} className="font-display text-[1.6rem] font-semibold leading-tight tracking-tight text-foreground">
-              <button type="button" aria-expanded={fold.open} aria-controls={bodyId} onClick={fold.toggle}
-                className="section-band-title rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
-                {title}
-              </button>
-            </h2>
-            <p className="mt-1 text-xs text-muted-foreground">{description}</p>
-          </div>
-          <div className="wallpaper-plate flex min-w-0 flex-col items-end gap-1 text-right">
-            <p className="poster-kicker flex items-center gap-1.5 text-[10px] text-primary"><span aria-hidden>{icon}</span>{kicker}</p>
-            <p className="flex items-center gap-2 text-[11px] tabular-nums text-muted-foreground" data-section-summary>
-              {!fold.open && <span className="rounded-full border border-border/80 px-1.5 py-px text-[10px]">{t("newapi.groups.folded")}</span>}
-              {summary}
-            </p>
-          </div>
-        </div>
-      </header>
-      <div id={bodyId} hidden={!fold.open} className="section-band-body space-y-4">{children}</div>
-    </section>
-  );
-}
+// Which tab holds the section a shortcut unfolds (see configuration-shortcuts).
+const tabForFold: Record<string, InjectTabId> = {
+  "codex-access": "clients",
+  "client-configs": "clients",
+  "claude-desktop": "clients",
+  "gateway-models": "gateway",
+  "gateway-export": "gateway",
+  aggregation: "routing",
+};
+
+type InjectTabId = "clients" | "gateway" | "routing";
 
 // Injection page: how Codex, Claude Code, Claude Desktop, OpenCode, Pi, Cursor and the aggregation
 // gateway reach the relays. The relays themselves live on their own page.
@@ -113,12 +66,41 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
     ? providers.find((provider) => provider.id === activeId)
     : providers.find((provider) => provider.enabled && provider.hasApiKey && provider.model);
   const nativeCompatible = !!selectedProvider && providerModelProtocol(selectedProvider) === "responses";
-  // What each group's band says while it is folded.
+  // What each group's tab says about it.
   const { links } = useRoutingLinks(router);
   const gateway = useQuery({ queryKey: queryKeys.gateway, queryFn: api.gateway.state, refetchOnWindowFocus: false });
   const aggregates = useQuery({ queryKey: aggregationQueryKey, queryFn: api.aggregation.state });
   const routed = CLIENTS.filter(client => links[client] === "routed").length;
   const direct = CLIENTS.filter(client => links[client] === "direct").length;
+  // One group at a time. A shortcut that lands in another group switches to it;
+  // hidden panels stay mounted so unsaved edits survive.
+  const [tab, setTab] = useState<InjectTabId>("clients");
+  useEffect(() => {
+    const toClients = () => setTab("clients");
+    const toFold = (event: Event) => {
+      const next = tabForFold[(event as CustomEvent<string>).detail];
+      if (next) setTab(next);
+    };
+    window.addEventListener(SELECT_CLIENT_EVENT, toClients);
+    window.addEventListener("agentharbor:expand-section", toFold);
+    return () => {
+      window.removeEventListener(SELECT_CLIENT_EVENT, toClients);
+      window.removeEventListener("agentharbor:expand-section", toFold);
+    };
+  }, []);
+  const tabs: InjectTab<InjectTabId>[] = [
+    { id: "clients", icon: <Plug />, title: t("newapi.groups.clients"), description: t("newapi.groups.clientsDesc"),
+      summary: routed + direct ? t("newapi.groups.clientsSummary", { routed, direct }) : t("newapi.groups.clientsNone") },
+    { id: "gateway", icon: <Share2 />, title: t("gateway.groupTitle"), description: t("gateway.groupDesc"),
+      summary: gateway.data && t("newapi.groups.gatewaySummary", {
+        state: t(gateway.data.running ? "gateway.running" : "gateway.stopped"), keys: gateway.data.keys.length }) },
+    { id: "routing", icon: <Layers3 />, title: t("newapi.groups.routing"), description: t("newapi.groups.routingDesc"),
+      summary: aggregates.data && t("newapi.groups.routingSummary", { count: aggregates.data.models.length }) },
+  ];
+  const panel = (id: InjectTabId) => ({
+    role: "tabpanel", id: `group-panel-${id}`, "aria-labelledby": `group-tab-${id}`,
+    hidden: tab !== id, "data-inject-section": id, className: "group-panel space-y-4",
+  });
 
   const restartCodex = () => {
     setRestartConfirmOpen(false);
@@ -161,9 +143,10 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
         </div>
       )}
 
-      <SectionGroup id="clients" kicker="Clients" icon={<Plug className="h-3 w-3" />} title={t("newapi.groups.clients")}
-        description={t("newapi.groups.clientsDesc")} delay={80} expandOn={SELECT_CLIENT_EVENT}
-        summary={routed + direct ? t("newapi.groups.clientsSummary", { routed, direct }) : t("newapi.groups.clientsNone")}>
+      <div className="route-rise space-y-5" style={{ animationDelay: "80ms" } as CSSProperties}>
+      <InjectTabs tabs={tabs} active={tab} onChange={setTab} label={t("newapi.groups.label")} />
+
+      <section {...panel("clients")}>
         <ClientConsole
           router={router}
           panels={{
@@ -187,18 +170,13 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
           }}
           shared={<WebSearchSettings store={store} providers={providers} />}
         />
-      </SectionGroup>
+      </section>
 
-      <SectionGroup id="gateway" kicker="Gateway" icon={<Share2 className="h-3 w-3" />} title={t("gateway.groupTitle")}
-        description={t("gateway.groupDesc")} delay={120}
-        summary={gateway.data && t("newapi.groups.gatewaySummary", {
-          state: t(gateway.data.running ? "gateway.running" : "gateway.stopped"), keys: gateway.data.keys.length })}>
+      <section {...panel("gateway")}>
         <GatewayPanel providersRevision={state.dataUpdatedAt} />
-      </SectionGroup>
+      </section>
 
-      <SectionGroup id="routing" kicker="Routing" icon={<Layers3 className="h-3 w-3" />} title={t("newapi.groups.routing")}
-        description={t("newapi.groups.routingDesc")} delay={160}
-        summary={aggregates.data && t("newapi.groups.routingSummary", { count: aggregates.data.models.length })}>
+      <section {...panel("routing")}>
         <AggregationManager providers={providers} />
         <RoutingDiagnostics
           disabled={nativeAccess || !state.isSuccess || store.mutationLocked}
@@ -211,7 +189,8 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
             );
           }}
         />
-      </SectionGroup>
+      </section>
+      </div>
 
       <AlertDialog open={restartConfirmOpen} onOpenChange={setRestartConfirmOpen}>
         <AlertDialogContent className="max-w-sm">

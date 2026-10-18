@@ -1543,7 +1543,7 @@
       "clientsNone": "还没有接入的客户端",
       "routingSummary": "{{count}} 个聚合模型",
       "gatewaySummary": "{{state}} · {{keys}} 个 key",
-      "folded": "已收起"
+      "label": "注入分组"
     },
     "connectionPanel": "连接方式",
     "pipelinePanel": "当前链路",

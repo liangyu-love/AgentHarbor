@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { eventually } from "./eventually.mjs";
+import { showInjectTab } from "./inject-tabs.mjs";
 
 // The injection console and the aggregation routing board: one client panel
 // at a time, merge suggestions from relays serving the same model, tiers and
@@ -27,6 +28,7 @@ export async function testAggregationBoard({ page, reset, captureDir }) {
       review.aggregateSaves = [];
       review.mount("access");
     }, { aggregates, live });
+    await showInjectTab(page, "routing");
     await manager().waitFor();
   };
 
@@ -98,6 +100,7 @@ export async function testAggregationBoard({ page, reset, captureDir }) {
   console.log("PASS routing board shows tiers with live serving, cooling, off and unavailable members, and edits save tier positions");
 
   // The console shows one client at a time, remembers it and moves by keyboard.
+  await showInjectTab(page, "clients");
   const tab = client => page.locator(`[data-client-tab="${client}"]`);
   const panel = client => page.locator(`#client-panel-${client}`);
   assert.equal(await tab("codex").getAttribute("aria-selected"), "true");
@@ -148,6 +151,7 @@ export async function testAggregationBoard({ page, reset, captureDir }) {
     ];
     window.review.mount("access");
   });
+  await showInjectTab(page, "routing");
   const routes = page.getByRole("region", { name: await tr("newapi.routeDiagnostics"), exact: true });
   await routes.getByRole("button", { name: await tr("newapi.routeDiagnostics"), exact: true }).click();
   const summaries = routes.locator("summary");

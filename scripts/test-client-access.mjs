@@ -24,26 +24,60 @@ export async function testClientAccess({ page, reset, captureDir }) {
   await notice.waitFor({ state: "detached" });
   console.log("PASS a program holding the router port is named and ended only after confirmation");
 
-  // ---- group bands fold from their title and keep a summary
+  // ---- groups are tabs: one shows at a time, and every tab keeps its summary
   await reset("access");
-  const band = id => page.locator(`[data-inject-section="${id}"]`);
-  const title = id => band(id).locator(":scope > header h2 button");
-  assert.equal(await title("gateway").getAttribute("aria-expanded"), "true");
-  await band("gateway").locator("[data-section-summary]").getByText(await tr("gateway.stopped"), { exact: false }).waitFor();
-  await title("gateway").click();
-  assert.equal(await title("gateway").getAttribute("aria-expanded"), "false");
-  assert.equal(await band("gateway").locator("[data-gateway]").isVisible(), false);
-  await band("gateway").locator("[data-section-summary]").getByText(await tr("newapi.groups.folded"), { exact: true }).waitFor();
-  await band("gateway").locator(".section-band-rule").click();
-  await eventually(async () => assert.equal(await title("gateway").getAttribute("aria-expanded"), "true"));
-  // A folded client group opens again for a shortcut that lands in it.
-  await title("clients").click();
+  const tab = id => page.locator(`[data-inject-tab="${id}"]`);
+  const panel = id => page.locator(`[data-inject-section="${id}"]`);
+  const selected = async id => assert.equal(await tab(id).getAttribute("aria-selected"), "true");
+  await selected("clients");
+  await page.locator("[data-client-console]").waitFor({ state: "visible" });
+  assert.equal(await panel("gateway").isVisible(), false);
+  await tab("gateway").locator("[data-section-summary]").getByText(await tr("gateway.stopped"), { exact: false }).waitFor();
+  await tab("gateway").click();
+  await selected("gateway");
+  await panel("gateway").locator("[data-gateway]").waitFor({ state: "visible" });
   assert.equal(await page.locator("[data-client-console]").isVisible(), false);
+  await page.waitForFunction(() => document.getAnimations().every(animation => animation.playState !== "running"
+    || animation.effect?.getTiming().iterations === Infinity));
+  const [mark, chosen] = await Promise.all([page.locator(".group-tabs-indicator"), tab("gateway")].map(locator =>
+    locator.evaluate(element => { const { left, width } = element.getBoundingClientRect(); return { left, width }; })));
+  assert.ok(Math.abs(mark.left - chosen.left) <= 1 && Math.abs(mark.width - chosen.width) <= 1, JSON.stringify({ mark, chosen }));
+  await tab("gateway").press("ArrowRight");
+  await selected("routing");
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-inject-tab")), "routing");
+  // A shortcut into another group switches to it.
   await page.evaluate(() => window.dispatchEvent(new CustomEvent("agentharbor:select-client", { detail: "pi" })));
   await page.locator("[data-client-console]").waitFor({ state: "visible" });
+  await selected("clients");
   assert.equal(await page.locator('[data-client-tab="pi"]').getAttribute("aria-selected"), "true");
-  await page.evaluate(() => localStorage.removeItem("agentharbor.folded-sections.v1"));
-  console.log("PASS group bands fold from their title, keep a summary, and unfold for shortcuts");
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("agentharbor:expand-section", { detail: "aggregation" })));
+  await eventually(() => selected("routing"));
+  if (captureDir) {
+    const shot = name => page.locator(".group-tabs").evaluate(element => {
+      const scroller = element.closest("[data-page-scroll-container]");
+      scroller.scrollTop += element.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 16;
+    })
+      .then(() => page.screenshot({ path: path.join(captureDir, name), animations: "disabled" }));
+    await tab("gateway").click();
+    await page.mouse.move(0, 0);
+    await shot("inject-tabs-light.png");
+    await page.evaluate(() => document.documentElement.classList.add("dark"));
+    await shot("inject-tabs-dark.png");
+    await page.evaluate(() => {
+      document.documentElement.classList.remove("dark");
+      document.documentElement.dataset.hasCustomBg = "true";
+      const wallpaper = document.createElement("div");
+      wallpaper.style.cssText = "position:fixed;inset:0;z-index:-1;background:linear-gradient(135deg,#c7d2fe,#fbcfe8 50%,#fde68a)";
+      document.body.prepend(wallpaper);
+      document.body.style.background = "transparent";
+    });
+    await shot("inject-tabs-wallpaper.png");
+    await page.evaluate(() => { delete document.documentElement.dataset.hasCustomBg; document.body.firstElementChild.remove(); document.body.style.background = ""; });
+    await page.setViewportSize({ width: 720, height: 800 });
+    await shot("inject-tabs-narrow.png");
+    await page.setViewportSize({ width: 1200, height: 700 });
+  }
+  console.log("PASS groups are tabs with live summaries; the highlight follows, and keys and shortcuts switch them");
 
   // ---- start buttons
   await reset("clients-existing");
