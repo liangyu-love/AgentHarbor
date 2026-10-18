@@ -6,6 +6,7 @@ import { formatInvokeError } from "@/lib/invoke-error";
 import { isOfficialBalanceSite, isMimoBalanceSite, balanceSourceName, BALANCE_SCRIPT_TEMPLATE } from "@/lib/provider-balance";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SecretInput } from "@/components/ui/secret-input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import type { NewApiProvider, NewApiBalance } from "@/types/newapi";
@@ -363,12 +364,11 @@ export function ProviderBalanceDialog({ provider, store, onClose }: {
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="balance-access-token" className="text-xs">{t("newapi.accessToken")}</Label>
-                <Input
+                <SecretInput
                   id="balance-access-token"
-                  type="password"
-                  autoComplete="off"
                   value={token}
-                  onChange={event => setToken(event.target.value)}
+                  onChange={setToken}
+                  hasStoredSecret={provider.hasAccessToken}
                   placeholder={provider.hasAccessToken ? t("newapi.keepSecret") : ""}
                   disabled={busy}
                   className="h-8 text-xs"

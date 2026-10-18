@@ -7,6 +7,7 @@ import { Button, type ButtonProps } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { SecretInput } from "@/components/ui/secret-input";
 import type { AccountSource, AccountSourceMethod } from "@/types/account-sources";
 
 type Sources = ReturnType<typeof useAccountSources>;
@@ -76,10 +77,16 @@ export function SignInInputDialog({ sources }: { sources: Sources }) {
               <DialogTitle>{label(source, ask.method)}</DialogTitle>
               <DialogDescription>{t(`${key}.hint`, { defaultValue: t("accountSources.input.hint") })}</DialogDescription>
             </DialogHeader>
-            <Input autoFocus value={value} onChange={event => setValue(event.target.value)}
-              type={ask.method.input === "secret" ? "password" : "text"} autoComplete="off" spellCheck={false}
-              aria-label={label(source, ask.method)} className="font-mono"
-              placeholder={t(`${key}.placeholder`, { defaultValue: "" })} />
+            {ask.method.input === "secret" ? (
+              <SecretInput autoFocus value={value} onChange={setValue}
+                aria-label={label(source, ask.method)} className="font-mono"
+                placeholder={t(`${key}.placeholder`, { defaultValue: "" })} />
+            ) : (
+              <Input autoFocus value={value} onChange={event => setValue(event.target.value)}
+                type="text" autoComplete="off" spellCheck={false}
+                aria-label={label(source, ask.method)} className="font-mono"
+                placeholder={t(`${key}.placeholder`, { defaultValue: "" })} />
+            )}
             <DialogFooter>
               <Button type="button" variant="outline" onClick={sources.dismissInput}>{t("common.cancel")}</Button>
               <Button type="submit" disabled={!value.trim()}><LogIn />{t("accountSources.input.submit")}</Button>

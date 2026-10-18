@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Brush, ImagePlus, Palette, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SecretInput } from "@/components/ui/secret-input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -110,11 +111,11 @@ export function GenerationForm({
                 <Label className="font-serif text-xs font-semibold text-foreground/90">
                   API Key
                 </Label>
-                <Input
-                  type="password"
+                <SecretInput
                   value={connection.apiKey}
-                  onChange={event => connection.setApiKey(event.target.value)}
+                  onChange={connection.setApiKey}
                   onBlur={connection.saveKey}
+                  hasStoredSecret={connection.keyStored}
                   placeholder={connection.keyStored ? "已保存密钥；留空则继续使用" : "sk-…"}
                   className="bg-background/90 font-mono"
                 />

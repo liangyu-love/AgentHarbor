@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, ChevronDown, Eye, EyeOff, Loader2, Plug } from "lucide-react";
+import { Check, ChevronDown, Loader2, Plug } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SecretInput } from "@/components/ui/secret-input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -112,57 +113,6 @@ const protocolLabelKey: Record<ModelProtocol, string> = {
   chatCompletions: "newapi.protocolChatCompletions",
   anthropicMessages: "newapi.protocolAnthropicMessages",
 };
-
-function SecretInput({ id, value, placeholder, disabled, hasStoredSecret, onReveal, onChange }: {
-  id: string;
-  value: string;
-  placeholder?: string;
-  disabled?: boolean;
-  hasStoredSecret?: boolean;
-  onReveal?: () => Promise<boolean>;
-  onChange: (value: string) => void;
-}) {
-  const [visible, setVisible] = useState(false);
-  const [revealing, setRevealing] = useState(false);
-  const canToggle = Boolean(value) || Boolean(hasStoredSecret && onReveal);
-  const toggle = async () => {
-    if (!value && hasStoredSecret && onReveal) {
-      setRevealing(true);
-      try {
-        if (await onReveal()) setVisible(true);
-      } finally {
-        setRevealing(false);
-      }
-      return;
-    }
-    setVisible(current => !current);
-  };
-  return (
-    <div className="relative">
-      <Input
-        id={id}
-        type={visible ? "text" : "password"}
-        autoComplete="off"
-        spellCheck={false}
-        // WebView2 adds its own reveal eye to password fields; this one has a toggle already.
-        className="pr-9 [&::-ms-reveal]:hidden"
-        value={value}
-        disabled={disabled || revealing}
-        placeholder={placeholder}
-        onChange={e => onChange(e.target.value)}
-      />
-      <button
-        type="button"
-        onClick={() => void toggle()}
-        disabled={disabled || !canToggle || revealing}
-        aria-label={visible ? "hide" : "show"}
-        className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
-      >
-        {visible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-      </button>
-    </div>
-  );
-}
 
 function SectionLabel({ children }: { children: string }) {
   return (

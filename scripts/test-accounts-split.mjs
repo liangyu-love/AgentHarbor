@@ -292,6 +292,11 @@ export async function testAccountsSplit({ page, reset, captureDir }) {
   const keyDialog = page.getByRole("dialog");
   const field = keyDialog.getByRole("textbox").or(keyDialog.locator('input[type="password"]'));
   await field.first().fill("  user_secret  ");
+  // A secret is typed behind the shared show/hide eye.
+  assert.equal(await keyDialog.locator("input").getAttribute("type"), "password");
+  await keyDialog.getByRole("button", { name: "show", exact: true }).click();
+  assert.equal(await keyDialog.locator("input").getAttribute("type"), "text");
+  await keyDialog.getByRole("button", { name: "hide", exact: true }).click();
   await keyDialog.getByRole("button", { name: await tr("accountSources.input.submit") }).click();
   await page.waitForFunction(() => window.review.sourceCalls.some(call => call[0] === "signIn" && call[1] === "commandcode"));
   assert.deepEqual((await calls()).filter(call => call[0] === "signIn").at(-1), ["signIn", "commandcode", "key", "user_secret"]);
