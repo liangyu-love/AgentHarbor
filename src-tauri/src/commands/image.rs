@@ -18,8 +18,13 @@ use std::{
 use tauri::State;
 
 pub(super) const MAX_PROMPT_CHARS: usize = 32_000;
-const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
-const MAX_RESPONSE_BYTES: usize = 120 * 1024 * 1024;
+/// A high-quality 8 MP PNG (3840x2160, or what `auto` picks) runs past 30 MB;
+/// rejecting it would discard an image that was already paid for.
+const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+/// Room for `count` base64 images plus the JSON around them.
+fn max_response_bytes(count: u8) -> usize {
+    usize::from(count.max(1)) * MAX_IMAGE_BYTES.div_ceil(3) * 4 + 1024 * 1024
+}
 const THUMBNAIL_EDGE: u32 = 256;
 const MAX_THUMBNAIL_DIMENSION: u32 = 8192;
 const MAX_THUMBNAIL_PIXELS: u64 = 16 * 1024 * 1024;
@@ -294,9 +299,9 @@ async fn read_limited_response(
     Ok(bytes)
 }
 
-async fn response_json(response: reqwest::Response) -> Result<Value, String> {
+async fn response_json(response: reqwest::Response, count: u8) -> Result<Value, String> {
     let status = response.status();
-    let body = read_limited_response(response, MAX_RESPONSE_BYTES).await?;
+    let body = read_limited_response(response, max_response_bytes(count)).await?;
     if !status.is_success() {
         return Err(match status.as_u16() {
             401 | 403 => "image.errors.auth",
@@ -338,7 +343,8 @@ fn download_client_builder(
     proxy: &ApiProxyConfigPayload,
 ) -> Result<reqwest::ClientBuilder, String> {
     let builder = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
+        // A large original over a slow link takes well over half a minute.
+        .timeout(Duration::from_secs(180))
         .connect_timeout(Duration::from_secs(8))
         .redirect(reqwest::redirect::Policy::none());
     api_client::configure_async_client(builder, proxy).map_err(|_| "image.errors.network".into())
@@ -554,7 +560,7 @@ async fn generate(
             .await
             .map_err(network_error)?
     };
-    let value = response_json(response).await?;
+    let value = response_json(response, request.count).await?;
     let data = value
         .get("data")
         .and_then(Value::as_array)
@@ -1992,6 +1998,15 @@ mod tests {
         // Both generation slots are free again.
         assert_eq!(IMAGE_GENERATION_JOBS.available_permits(), 2);
         hold.join().unwrap();
+    }
+
+    #[test]
+    fn limits_fit_the_largest_generated_image_even_uncompressed() {
+        // 3840x2160 RGBA with no compression gain at all, as base64.
+        let raw = 3840 * 2160 * 4;
+        assert!(MAX_IMAGE_BYTES > raw);
+        assert!(max_response_bytes(4) > 4 * raw.div_ceil(3) * 4);
+        assert!(max_response_bytes(0) >= max_response_bytes(1));
     }
 
     #[test]
