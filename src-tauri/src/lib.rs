@@ -14,6 +14,10 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, RunEvent};
 
 pub fn run() {
+    // The elevated copy that optimizes memory does only that, before any setup.
+    if let Some(code) = core::system_memory::run_from_args() {
+        std::process::exit(code);
+    }
     let shared_paths = Arc::new(CodexPaths::new());
     let mut context = tauri::generate_context!();
     if std::env::var_os("AGENT_HARBOR_CODEX_HOME").is_some_and(|value| !value.is_empty()) {
@@ -347,6 +351,10 @@ pub fn run() {
             commands::system::check_update_installability,
             commands::system::open_path,
             commands::system::get_system_info,
+            commands::memory::get_memory_status,
+            commands::memory::get_memory_areas,
+            commands::memory::set_memory_areas,
+            commands::memory::optimize_memory,
             commands::targets::restart_target,
             commands::targets::load_client_launch,
             commands::targets::launch_client,

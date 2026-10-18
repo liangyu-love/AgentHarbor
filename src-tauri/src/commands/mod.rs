@@ -13,6 +13,7 @@ pub mod image;
 pub mod image_prompt_assist;
 pub mod image_prompts;
 pub mod mcp;
+pub mod memory;
 pub mod newapi;
 pub mod skills;
 pub mod system;

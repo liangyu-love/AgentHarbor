@@ -2390,7 +2390,48 @@
     "diagnoseResult": "{{os}}/{{arch}} · {{version}} · {{count}} accounts",
     "cleanResult": "Removed: {{authBackups}} auth backups, {{registryBackups}} registry backups, {{staleEntries}} stale entries",
     "rebuildResult": "Registry rebuilt with {{count}} accounts",
-    "codexRestarted": "Codex restarted"
+    "codexRestarted": "Codex restarted",
+    "memory": {
+      "title": "Memory Optimization",
+      "description": "Moves memory processes are not using out of their working sets and clears the standby cache, handing more memory back as free.",
+      "needsAdmin": "Needs administrator rights: Windows asks for confirmation each time.",
+      "elevated": "AgentHarbor is running as administrator, so it optimizes right away.",
+      "action": "Optimize Now",
+      "running": "Optimizing...",
+      "waitingConsent": "Waiting for consent...",
+      "usedOfTotal": "{{used}} used of {{total}}",
+      "lists": {
+        "inUse": "In use",
+        "modified": "Modified",
+        "standby": "Standby",
+        "free": "Free"
+      },
+      "areasTitle": "What to release",
+      "restoreDefaults": "Restore defaults",
+      "mayStall": "May stall briefly",
+      "areas": {
+        "workingSets": { "label": "Working sets", "hint": "Moves pages processes are not using out of physical memory." },
+        "systemFileCache": { "label": "System file cache", "hint": "Shrinks the memory the system file cache holds." },
+        "modifiedFileCache": { "label": "Disk write cache", "hint": "Writes data still waiting in each disk's cache to disk." },
+        "modifiedList": { "label": "Modified pages", "hint": "Writes pages waiting to be saved to disk, then releases them." },
+        "standbyList": { "label": "All standby cache", "hint": "Clears the whole standby cache; files opened next are read from disk again." },
+        "lowPriorityStandbyList": { "label": "Low-priority standby cache", "hint": "Clears only the least-used standby cache." },
+        "registryCache": { "label": "Registry cache", "hint": "Writes changes held in the registry cache to disk." },
+        "combinePages": { "label": "Combine pages", "hint": "Merges memory pages with identical contents (Windows 10 and later)." }
+      },
+      "optimized": "Released {{released}} in use and freed {{freed}}; {{available}} available now.",
+      "alreadyLean": "Memory was already lean; {{available}} available now.",
+      "partlyFailed": "Not done: {{areas}}.",
+      "listSeparator": ", ",
+      "errors": {
+        "cancelled": "Cancelled: no administrator rights were granted, so memory is unchanged.",
+        "elevate": "Memory optimization could not run as administrator.",
+        "failed": "Memory optimization did not finish. Try again in a moment.",
+        "busy": "The previous memory optimization is still running.",
+        "noAreas": "Choose at least one thing to release.",
+        "unsupported": "Memory optimization is only available on Windows."
+      }
+    }
   },
   "settings": {
     "terminalProxy": {

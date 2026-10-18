@@ -34,7 +34,7 @@ AgentHarbor is a Tauri 2 + React + Rust desktop app that does this for you. It r
 | **Sessions** | Browse, search, export and delete Codex and Claude Code conversations; recover Codex threads its index lost |
 | **MCP / Skills / Instructions** | Manage MCP servers, Skills (with backups) and the AgentHarbor-managed block of `AGENTS.md` / `CLAUDE.md` for Codex and Claude Code |
 | **Image workbench** | Generate or edit images through a configured provider and keep them in a local gallery with the prompt and settings that made each one; keep your own prompt templates in groups, with JSON import and export; polish a prompt with any model your relays, accounts or aggregates offer |
-| **Settings & maintenance** | Theme, language, custom wallpaper with automatic dark-mode contrast, app avatar, API proxy, Windows terminal proxy, start at sign-in (into the tray), diagnostics, backup cleanup and Codex restart |
+| **Settings & maintenance** | Theme, language, custom wallpaper with automatic dark-mode contrast, app avatar, API proxy, Windows terminal proxy, start at sign-in (into the tray), Windows memory optimization (working sets and standby cache, also from the tray), diagnostics, backup cleanup and Codex restart |
 
 Not available yet: account import/export, in-app plugin management, quota heatmaps and the macOS notch display. Updates come from GitHub Releases and are installed in the app once their signature checks out.
 

@@ -114,6 +114,9 @@ pub struct AgentHarborSettings {
     pub device_id: Option<String>,
     #[serde(default)]
     pub api_proxy: ApiProxyConfigPayload,
+    /// What memory optimization releases; unset means the safe defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_areas: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default)]
@@ -654,6 +657,23 @@ impl Repository {
         Ok(normalized.to_string())
     }
 
+    pub fn memory_areas(&self) -> Vec<super::system_memory::MemoryArea> {
+        match self.load_settings().memory_areas {
+            Some(names) => super::system_memory::known_areas(&names),
+            None => super::system_memory::default_areas(),
+        }
+    }
+
+    pub fn set_memory_areas(
+        &self,
+        areas: &[super::system_memory::MemoryArea],
+    ) -> Result<Vec<super::system_memory::MemoryArea>, CoreError> {
+        let mut settings = self.load_settings();
+        settings.memory_areas = Some(super::system_memory::area_names(areas));
+        self.save_settings(&settings)?;
+        Ok(self.memory_areas())
+    }
+
     pub fn get_or_create_device_id(&self) -> Result<String, CoreError> {
         let mut settings = self.load_settings();
         if let Some(ref id) = settings.device_id {
@@ -852,6 +872,19 @@ mod tests {
         fs::read_dir(dir)
             .map(|entries| entries.count())
             .unwrap_or(0)
+    }
+
+    #[test]
+    fn memory_areas_start_safe_and_a_saved_choice_sticks() {
+        use crate::core::system_memory::{default_areas, MemoryArea};
+        let (repo, codex_home) = make_test_repo("memory-areas");
+        assert_eq!(repo.memory_areas(), default_areas());
+        let chosen = [MemoryArea::StandbyList, MemoryArea::WorkingSets];
+        let saved = repo.set_memory_areas(&chosen).unwrap();
+        assert_eq!(saved, [MemoryArea::WorkingSets, MemoryArea::StandbyList]);
+        assert_eq!(repo.memory_areas(), saved);
+        assert_eq!(repo.get_usage_refresh_interval(), "1m", "other settings stay");
+        let _ = fs::remove_dir_all(codex_home);
     }
 
     #[test]

@@ -4,12 +4,13 @@ use tauri::{AppHandle, Wry};
 const TRAY_ID: &str = "main";
 const OPEN_MAIN_ID: &str = "tray_open_main";
 const QUIT_ID: &str = "tray_quit";
+const OPTIMIZE_MEMORY_ID: &str = "tray_optimize_memory";
 const BOOTSTRAP_HEADER_ID: &str = "tray_bootstrap_header";
 const BOOTSTRAP_TITLE_ID: &str = "tray_bootstrap_title";
 const BOOTSTRAP_SUBTITLE_ID: &str = "tray_bootstrap_subtitle";
 
 pub fn create_bootstrap_tray_menu(app: &AppHandle) -> Result<Menu<Wry>, String> {
-    MenuBuilder::new(app)
+    let menu = MenuBuilder::new(app)
         .item(
             &MenuItem::with_id(app, BOOTSTRAP_HEADER_ID, "AgentHarbor", false, None::<&str>)
                 .map_err(|e| e.to_string())?,
@@ -26,8 +27,17 @@ pub fn create_bootstrap_tray_menu(app: &AppHandle) -> Result<Menu<Wry>, String> 
         .item(
             &MenuItem::with_id(app, OPEN_MAIN_ID, "Open AgentHarbor", true, None::<&str>)
                 .map_err(|e| e.to_string())?,
+        );
+    // Releasing memory needs Windows' memory lists; elsewhere the menu has no item.
+    let menu = if cfg!(windows) {
+        menu.item(
+            &MenuItem::with_id(app, OPTIMIZE_MEMORY_ID, "Optimize memory", true, None::<&str>)
+                .map_err(|e| e.to_string())?,
         )
-        .separator()
+    } else {
+        menu
+    };
+    menu.separator()
         .item(
             &MenuItem::with_id(app, QUIT_ID, "Quit", true, None::<&str>)
                 .map_err(|e| e.to_string())?,
@@ -56,6 +66,11 @@ pub fn handle_tray_menu_event(app: &AppHandle, event_id: &str) {
         OPEN_MAIN_ID | BOOTSTRAP_TITLE_ID | BOOTSTRAP_SUBTITLE_ID
     ) {
         let _ = crate::commands::hotspot::focus_main_window(app.clone());
+        return;
+    }
+
+    if event_id == OPTIMIZE_MEMORY_ID {
+        crate::commands::memory::optimize_from_tray(app);
         return;
     }
 

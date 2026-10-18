@@ -59,6 +59,39 @@ export interface AutostartStatus {
   blocked: boolean;
 }
 
+/** What a memory optimization releases, in the order the backend runs them. */
+export type MemoryArea =
+  | "workingSets"
+  | "systemFileCache"
+  | "modifiedFileCache"
+  | "modifiedList"
+  | "standbyList"
+  | "lowPriorityStandbyList"
+  | "registryCache"
+  | "combinePages";
+
+/** Physical memory by page list, in bytes. */
+export interface MemorySnapshot {
+  total: number;
+  inUse: number;
+  modified: number;
+  standby: number;
+  free: number;
+}
+
+export interface MemoryStatus {
+  supported: boolean;
+  /** AgentHarbor runs as administrator: optimizing shows no consent prompt. */
+  elevated: boolean;
+  memory: MemorySnapshot | null;
+}
+
+export interface MemoryOptimizeOutcome {
+  before: MemorySnapshot;
+  after: MemorySnapshot;
+  failed: MemoryArea[];
+}
+
 export interface TerminalProxyProbe {
   service: string;
   reachable: boolean;

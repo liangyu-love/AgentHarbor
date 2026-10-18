@@ -33,6 +33,7 @@ import { SkillsPage } from "@/components/skills/skills-page";
 import { ClientConfigs } from "@/components/newapi/client-configs";
 import { TerminalProxySettings } from "@/components/settings/terminal-proxy-settings";
 import { AutostartSetting } from "@/components/settings/autostart-setting";
+import { MemoryOptimizer } from "@/components/maintenance/memory-optimizer";
 import type { CodexSubagentSettings, NewApiProvider, NewApiState } from "@/types/newapi";
 import { buildUsage, defaultUsageEntries, usageEntry } from "./scripts/fixtures/usage-fixture";
 import type { ClientConfigRequest, ClientStatus } from "@/types/clients";
@@ -857,7 +858,7 @@ function ProviderFixture({ mixed = false }: { mixed?: boolean }) {
       onOpenChange={open => setDialog(current => ({ ...current, open }))} onSaved={noop} /></>;
 }
 
-type FixtureMode = "sidebar" | "instructions" | "mcp-clients" | "skills" | "desktop-updater" | "desktop-exit" | "terminal-proxy" | "autostart" | "routing-cache" | "thread-details" | "thread-details-missing" | "thread-details-unknown" | "thread-details-error" | "compact" | "grid" | "image" | "mcp" | "accounts" | "account-resets" | "account-resets-unavailable" | "thread-tree" | "groups" | "overview" | "usage" | "usage-page" | "provider" | "warnings" | "thread-actions" | "thread-queue-recovery" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-conflict" | "clients-opencode" | "clients-opencode-stale" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official" | "recovery-long" | "recovery-router";
+type FixtureMode = "sidebar" | "instructions" | "mcp-clients" | "skills" | "desktop-updater" | "desktop-exit" | "terminal-proxy" | "autostart" | "memory" | "routing-cache" | "thread-details" | "thread-details-missing" | "thread-details-unknown" | "thread-details-error" | "compact" | "grid" | "image" | "mcp" | "accounts" | "account-resets" | "account-resets-unavailable" | "thread-tree" | "groups" | "overview" | "usage" | "usage-page" | "provider" | "warnings" | "thread-actions" | "thread-queue-recovery" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-conflict" | "clients-opencode" | "clients-opencode-stale" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official" | "recovery-long" | "recovery-router";
 
 // The app shell's sidebar beside an inset page, portalled out of PageStage so
 // the capsule is fixed to the viewport as in the app.
@@ -1038,6 +1039,31 @@ function mount(mode: FixtureMode) {
       if (controls.review.autostartFailure) throw "settings.autostart.errors.write";
       controls.review.autostartStatus = { ...controls.review.autostartStatus, enabled, blocked: false };
       return structuredClone(controls.review.autostartStatus);
+    };
+  }
+  if (mode === "memory") {
+    // Synthetic memory lists; nothing asks Windows for consent.
+    const gib = 1024 ** 3;
+    const snapshot = (patch = {}) => ({ total: 16 * gib, inUse: 9 * gib, modified: gib / 4, standby: 5 * gib, free: 1.75 * gib, ...patch });
+    controls.review.memoryCalls = { optimize: [], areas: [] };
+    controls.review.memoryStatus = { supported: true, elevated: false, memory: snapshot(), ...controls.review.memoryPatch };
+    controls.review.memoryAreas = ["workingSets", "systemFileCache", "modifiedFileCache", "lowPriorityStandbyList", "registryCache", "combinePages"];
+    api.memory.status = async () => structuredClone(controls.review.memoryStatus);
+    api.memory.areas = async () => structuredClone(controls.review.memoryAreas);
+    api.memory.setAreas = async areas => {
+      controls.review.memoryCalls.areas.push(areas);
+      controls.review.memoryAreas = areas;
+      return structuredClone(areas);
+    };
+    api.memory.optimize = async areas => {
+      controls.review.memoryCalls.optimize.push(areas);
+      if (controls.review.memoryHold) await new Promise(resolve => { controls.review.memoryResolve = resolve; });
+      if (controls.review.memoryFailure) throw controls.review.memoryFailure;
+      return { before: snapshot(), after: snapshot({ inUse: 7 * gib, standby: 3 * gib, free: 5.75 * gib }), failed: controls.review.memoryFailed ?? [] };
+    };
+    api.memory.onOptimized = async callback => {
+      controls.review.emitMemoryOptimized = (outcome: unknown) => callback(outcome as any);
+      return () => { delete controls.review.emitMemoryOptimized; };
     };
   }
   api.codexMenuOverflow = async () => structuredClone(controls.review.menuOverflow ?? { total: 12, limit: 100, cut: [] });
@@ -1300,6 +1326,7 @@ function mount(mode: FixtureMode) {
       {mode === "sidebar" ? <SidebarFixture /> : mode === "routing-cache" ? <RoutingCacheFixture /> : mode === "desktop-updater" ? <DesktopUpdaterFixture /> : mode === "desktop-exit" ? <ClaudeDesktopRouterExitDialog /> : mode.startsWith("recovery-") ? <RecoveryFixture thread={threads[0] as ThreadSummary} /> :
         mode === "skills" ? <SkillsPage /> : mode === "terminal-proxy" ? <div className="mx-auto max-w-xl rounded-xl bg-card shadow-sm"><TerminalProxyFixture /></div> :
         mode === "autostart" ? <div className="mx-auto max-w-xl rounded-xl bg-card shadow-sm"><AutostartSetting /></div> :
+        mode === "memory" ? <div className="mx-auto grid max-w-3xl gap-4 sm:grid-cols-2"><MemoryOptimizer /></div> :
         mode === "image" ? <ImageWorkbenchPage /> : mode === "instructions" ? <CustomInstructionsPage /> : mode === "mcp-clients" ? <McpClientFixture /> : mode === "mcp" ? <McpPage /> : mode === "accounts" || mode.startsWith("account-resets") ? <AccountsPage refreshInterval="5m" /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage-page" || mode === "usage" ? <UsagePage refreshInterval="5m" onManageProviders={() => { controls.review.navigatedTo = "relays"; }} onOpenThreads={client => { controls.review.navigatedTo = `threads:${client}`; }} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode.startsWith("thread-details") || mode === "thread-tree" || mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :
         mode === "access" || mode === "incompatible" || mode === "native-invalid" || mode === "groups" ? <><NewApiPage onOpenRelays={() => { controls.review.navigatedTo = "relays"; }} /><RelayModelsPage /></> :
         mode === "test" ? <ProviderTestDialog open provider={mixedProvider} onOpenChange={noop} onTested={noop} onFailed={noop} /> :

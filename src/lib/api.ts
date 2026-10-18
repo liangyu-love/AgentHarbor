@@ -11,6 +11,9 @@ import type {
   ApiProxyTestPayload,
   TerminalProxyStatus,
   AutostartStatus,
+  MemoryArea,
+  MemoryOptimizeOutcome,
+  MemoryStatus,
   TerminalProxyProbe,
   UpdateInstallabilityPayload,
   DiagnosePayload,
@@ -471,6 +474,18 @@ export const api = {
   autostart: {
     status: () => invoke<AutostartStatus>("get_autostart_status"),
     set: (enabled: boolean) => invoke<AutostartStatus>("set_autostart", { enabled }),
+  },
+
+  memory: {
+    status: () => invoke<MemoryStatus>("get_memory_status"),
+    areas: () => invoke<MemoryArea[]>("get_memory_areas"),
+    setAreas: (areas: MemoryArea[]) => invoke<MemoryArea[]>("set_memory_areas", { areas }),
+    optimize: (areas: MemoryArea[]) => invoke<MemoryOptimizeOutcome>("optimize_memory", { areas }),
+    /** Runs the tray started; the page shows their outcome too. */
+    onOptimized: async (callback: (outcome: MemoryOptimizeOutcome) => void): Promise<() => void> => {
+      const { listen } = await import("@tauri-apps/api/event");
+      return listen<MemoryOptimizeOutcome>("memory-optimized", event => callback(event.payload));
+    },
   },
 
   checkUpdateInstallability: () =>

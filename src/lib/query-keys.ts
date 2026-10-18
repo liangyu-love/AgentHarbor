@@ -36,4 +36,6 @@ export const queryKeys = {
   systemInfo: ["system-info"],
   terminalProxy: ["terminal-proxy"],
   autostart: ["autostart"],
+  memoryStatus: ["memory", "status"],
+  memoryAreas: ["memory", "areas"],
 } as const;

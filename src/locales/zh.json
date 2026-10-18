@@ -2390,7 +2390,48 @@
     "diagnoseResult": "{{os}}/{{arch}} · {{version}} · {{count}} 个账号",
     "cleanResult": "已清理: {{authBackups}} 认证备份, {{registryBackups}} 注册表备份, {{staleEntries}} 过期条目",
     "rebuildResult": "注册表已重建，包含 {{count}} 个账号",
-    "codexRestarted": "Codex 已重启"
+    "codexRestarted": "Codex 已重启",
+    "memory": {
+      "title": "内存优化",
+      "description": "把进程暂时用不到的内存移出工作集，并清理待机缓存，交还更多空闲内存。",
+      "needsAdmin": "需要管理员权限，每次优化都会弹出 Windows 用户账户控制确认。",
+      "elevated": "AgentHarbor 正以管理员身份运行，可以直接优化。",
+      "action": "立即优化",
+      "running": "优化中...",
+      "waitingConsent": "等待确认...",
+      "usedOfTotal": "已用 {{used}} / 共 {{total}}",
+      "lists": {
+        "inUse": "使用中",
+        "modified": "已修改",
+        "standby": "待机",
+        "free": "空闲"
+      },
+      "areasTitle": "释放范围",
+      "restoreDefaults": "恢复默认",
+      "mayStall": "可能短暂卡顿",
+      "areas": {
+        "workingSets": { "label": "进程工作集", "hint": "把所有进程暂时用不到的页面移出物理内存。" },
+        "systemFileCache": { "label": "系统文件缓存", "hint": "收缩系统文件缓存占用的内存。" },
+        "modifiedFileCache": { "label": "磁盘写入缓存", "hint": "把各磁盘尚未写入的数据写回磁盘。" },
+        "modifiedList": { "label": "已修改页面", "hint": "把等待写回的页面写入磁盘后再释放。" },
+        "standbyList": { "label": "全部待机缓存", "hint": "清空所有待机缓存，之后打开的文件需重新从磁盘读取。" },
+        "lowPriorityStandbyList": { "label": "低优先级待机缓存", "hint": "只清理最不常用的待机缓存。" },
+        "registryCache": { "label": "注册表缓存", "hint": "把注册表缓存中的改动写回磁盘。" },
+        "combinePages": { "label": "合并内存页", "hint": "合并内容完全相同的内存页（Windows 10 及以上）。" }
+      },
+      "optimized": "已释放占用 {{released}}，空闲内存增加 {{freed}}，当前可用 {{available}}。",
+      "alreadyLean": "内存已经很干净了，当前可用 {{available}}。",
+      "partlyFailed": "未完成：{{areas}}。",
+      "listSeparator": "、",
+      "errors": {
+        "cancelled": "已取消：没有获得管理员权限，内存未变动。",
+        "elevate": "无法以管理员身份运行内存优化。",
+        "failed": "内存优化没有完成，请稍后重试。",
+        "busy": "上一次内存优化还没结束。",
+        "noAreas": "请至少选择一项要释放的内容。",
+        "unsupported": "内存优化仅支持 Windows。"
+      }
+    }
   },
   "settings": {
     "terminalProxy": {

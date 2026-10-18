@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { PageHero } from "@/components/layout/page-hero";
 import { formatInvokeError } from "@/lib/invoke-error";
+import { MemoryOptimizer } from "./memory-optimizer";
 
 const MIN_FEEDBACK_MS = 800;
 
@@ -187,6 +188,7 @@ export function MaintenancePage() {
       <PageHero kicker="Maintenance" icon={<Wrench />} title={t("nav.maintenance")} description={t("maintenance.description")} />
 
       <div className="grid gap-4 sm:grid-cols-2">
+        <MemoryOptimizer />
         {actions.map(({ key, icon: Icon, iconTile, label, description, actionLabel, loadingLabel, onAction, variant }) => {
           const result = results[key];
           const busy = !!runningKeys[key];

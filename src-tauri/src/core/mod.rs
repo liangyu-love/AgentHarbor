@@ -52,6 +52,7 @@ pub mod routing_runtime;
 pub(crate) mod secret_file;
 pub mod skills;
 pub mod storage;
+pub mod system_memory;
 pub mod targets;
 pub mod terminal_proxy;
 pub mod thread_delete;
