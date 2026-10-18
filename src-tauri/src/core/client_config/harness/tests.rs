@@ -431,6 +431,22 @@ fn router_routes_per_protocol_reference_the_local_token_and_restore_byte_for_byt
 }
 
 #[test]
+fn router_routes_withdrawn_on_exit_resume_into_the_same_profile() {
+    let fixture = Fixture::new(ClientAccessMode::Router, Some(DESKTOP), Some(CREDENTIALS));
+    fixture.apply();
+    let installed = fixture.patch_text();
+    assert!(fixture.manager.restore_router_configs_on_exit().is_empty());
+    assert_eq!(fixture.patch_text(), DESKTOP);
+    let waiting = fixture.status();
+    assert!(!waiting.configured && waiting.resume_pending);
+    assert_eq!(waiting.request.as_ref().and_then(|request| request.options.harness_profile.as_deref()), Some("desktop"));
+    assert!(fixture.manager.resume_parked(&fixture.store).is_empty());
+    assert!(fixture.status().configured);
+    assert_eq!(fixture.patch_text(), installed);
+    assert_eq!(fixture.credentials_doc()["refs"][ROUTER_CREDENTIAL], "local-secret");
+}
+
+#[test]
 fn a_fresh_profile_and_store_are_created_and_withdrawn_completely() {
     let fixture = Fixture::new(ClientAccessMode::Router, Some(FRESH), None);
     fixture.apply();

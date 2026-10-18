@@ -258,6 +258,11 @@
     "releaseTitle": "放弃接管 {{name}}？",
     "releaseDescription": "AgentHarbor 将不再管理这个客户端，配置文件保持当前内容不变，也不会再尝试恢复旧值。之后可以基于当前文件重新配置。",
     "released": "已放弃接管，配置文件未改动",
+    "resume": {
+      "note": "退出时撤回的本地路由配置，会在路由启动后自动接回；点「配置」可先调整再应用。",
+      "discard": "不再接回",
+      "discarded": "已放弃接回，保持未配置"
+    },
     "configureTitle": "配置 {{name}}",
     "provider": "中转卡片",
     "model": "默认模型",

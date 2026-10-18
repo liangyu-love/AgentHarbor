@@ -209,6 +209,7 @@ pub fn run() {
             commands::client_config::preview_claude_code_official_config,
             commands::client_config::switch_claude_code_official_config,
             commands::client_config::release_client_config,
+            commands::client_config::discard_client_resume,
             commands::client_config::reapply_client_config,
             commands::accounts::list_codex_accounts,
             commands::usage::get_token_usage,

@@ -195,6 +195,20 @@ export function ClientConfigs({ providers, onOpenRelays, target }: {
     }
   };
 
+  const discardResume = async (target: ClientStatus) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.targets.discardResume(target.targetId);
+      toast({ title: t("clients.resume.discarded"), variant: "success" });
+    } catch (cause) {
+      setError(clientErrorKey(cause));
+    } finally {
+      setBusy(false);
+      await refresh();
+    }
+  };
+
   const release = async () => {
     if (!releasing || busy) return;
     setBusy(true);
@@ -414,6 +428,17 @@ export function ClientConfigs({ providers, onOpenRelays, target }: {
             </dl>
           ) : (
             <p className="harbor-well p-4 text-sm leading-relaxed text-muted-foreground">{t(`clients.${client.targetId}Hint`)}</p>
+          )}
+
+          {!client.configured && client.resumePending && (
+            <div role="status" data-client-resume
+              className="flex flex-col gap-2 rounded-xl border border-primary/25 bg-primary/[0.05] p-3 text-xs text-foreground sm:flex-row sm:items-center sm:justify-between">
+              <p className="flex items-start gap-2"><RefreshCw className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />{t("clients.resume.note")}</p>
+              <Button size="sm" variant="ghost" className="h-7 shrink-0 text-xs text-muted-foreground" disabled={actionsLocked}
+                onClick={() => void discardResume(client)}>
+                {t("clients.resume.discard")}
+              </Button>
+            </div>
           )}
 
           {noHarnessProfile && (

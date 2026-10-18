@@ -67,6 +67,7 @@ Codex 是主要集成对象，其他客户端共用同一套中转与路由。
 - **Claude Code、OpenCode、Pi、DeepSeek Harness**：在新终端（装了 Windows Terminal 就用它，否则用 PowerShell）里运行命令行，工作目录第一次选好后按客户端记住，按钮菜单里还有最近用过的目录。Harness 按注入的 profile 决定：`desktop` 启动或重启 Harness 桌面版，`web` 运行 `dsh web`，一次性的 `headless`、`sdk`、`acp` profile 则提供命令供复制。
 - **Codex、Claude Desktop、Cursor IDE**：没在运行时按钮显示「启动」，运行中显示「重启」；Codex 没在运行时直接启动，不再弹重启确认。
 - AgentHarbor 拉起的程序不再继承它的套接字，所以 Cursor 或 Codex 还开着时退出 AgentHarbor，路由端口也会被释放。若路由没在运行而端口确实被别的程序占着，注入页会显示占用的程序名和 PID，确认后结束它并重新启动路由。
+- **经路由的客户端会自动接回**：Claude Code、OpenCode、Pi、Harness 的本地路由配置在 AgentHarbor 退出时会撤回（路由随它一起停止），下次启动、路由占到端口后自动重新应用，和 Cursor 的重连方式一样。等待接回期间（比如端口被别的程序占着），面板会提示，「配置」弹窗也会带上这份配置；手动恢复原配置、解除管理，或点「不再接回」，就不会再自动接回。
 
 ## 组合模型来源
 
@@ -79,7 +80,7 @@ DeepSeek Harness（`dsh`、Harness 桌面版）的自定义模型走 pi-ai 路�
 - **路由**：每个中转按协议各建一条 `agentharbor-*` provider（一条路由只用 Chat Completions、Responses、Anthropic Messages 中的一种），所选聚合共用一条，都加进该 profile 自己的 `llm-pi-ai` 条目，和你的 provider 并列。patch 条目的 `config` 会整块替换组合出的配置，所以 AgentHarbor 不会另加第二个 `llm-pi-ai` 条目。
 - **密钥**：路由里只写凭据引用名，值存进 Harness 的 `$DSH_HOME/.credentials.yaml`（本地路由用 `AGENTHARBOR_ROUTER_TOKEN`，直连时每个中转一个 `AGENTHARBOR_RELAY_*`）。账号来源和聚合只能经本地路由使用，由路由持有并刷新它们的凭据。headless profile（Harness 0.2.1 起）不带凭据存储，所以密钥改写进 `$DSH_HOME/.env`：只写 AgentHarbor 自己的几行，恢复时同样撤回。启动 `dsh` 时导出的同名环境变量、或工作目录 `.env` 里的同名变量会优先。
 - **默认模型**：可选写入 `agent-default-model`，让新会话用所选模型。之后在 Harness 里换成别的模型属于正常使用，不算冲突；恢复时也会保留你的选择。
-- 注释、`!!js` 表达式和其他条目都原样保留；每次修改都会重新解析，结果和预期不完全一致就拒绝写入。恢复时，文件没被别的改动过就逐字节还原，否则逐字段撤回；patch 被清空时写回 `[]`（Harness 遇到空文件会启动失败）。退出 AgentHarbor 时也会这样撤回路由模式的配置。
+- 注释、`!!js` 表达式和其他条目都原样保留；每次修改都会重新解析，结果和预期不完全一致就拒绝写入。恢复时，文件没被别的改动过就逐字节还原，否则逐字段撤回；patch 被清空时写回 `[]`（Harness 遇到空文件会启动失败）。退出 AgentHarbor 时也会这样撤回路由模式的配置，下次启动再自动接回。
 - Harness 会在下一次请求时重新读取 profile patch。`$DSH_HOME/cordis.patch.yml` 中同 id 的条目优先级高于 profile，只会提示，不会被修改。
 
 ## Cursor 的接入方式

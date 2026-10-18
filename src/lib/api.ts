@@ -314,6 +314,7 @@ const targetsApi = {
   previewClaudeOfficial: () => invoke<ClaudeOfficialPreview>("preview_claude_code_official_config"),
   switchClaudeOfficial: (revision: string) => invoke<ClientConfigApplied>("switch_claude_code_official_config", { revision }),
   releaseConfig: (targetId: TargetId) => invoke<void>("release_client_config", { targetId }),
+  discardResume: (targetId: TargetId) => invoke<void>("discard_client_resume", { targetId }),
   reapplyConfig: (targetId: TargetId, rebaseline: boolean) =>
     invoke<ClientConfigApplied>("reapply_client_config", { targetId, rebaseline }),
 };

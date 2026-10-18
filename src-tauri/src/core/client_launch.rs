@@ -57,13 +57,21 @@ fn harness_desktop() -> Option<PathBuf> {
     #[cfg(windows)]
     {
         let exe = format!("{HARNESS_DESKTOP}.exe");
-        let recorded = crate::platform::windows::uninstall_location(HARNESS_DESKTOP).map(|folder| folder.join(&exe));
-        let per_user = dirs::data_local_dir().map(|dir| dir.join("Programs").join(HARNESS_DESKTOP).join(&exe));
-        [recorded, per_user].into_iter().flatten().find(|path| path.is_file())
+        let recorded = crate::platform::windows::uninstall_location(HARNESS_DESKTOP)
+            .map(|folder| folder.join(&exe));
+        let per_user =
+            dirs::data_local_dir().map(|dir| dir.join("Programs").join(HARNESS_DESKTOP).join(&exe));
+        [recorded, per_user]
+            .into_iter()
+            .flatten()
+            .find(|path| path.is_file())
     }
     #[cfg(target_os = "macos")]
     {
-        Some(PathBuf::from(format!("/Applications/{HARNESS_DESKTOP}.app"))).filter(|path| path.is_dir())
+        Some(PathBuf::from(format!(
+            "/Applications/{HARNESS_DESKTOP}.app"
+        )))
+        .filter(|path| path.is_dir())
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
@@ -83,9 +91,11 @@ pub fn plan(target: TargetId, profile: Option<&str>) -> Launch {
             installed: harness_desktop().is_some(),
             running: crate::platform::process::is_process_running(HARNESS_DESKTOP),
         },
-        (TargetId::Harness, Some(name)) if HARNESS_SERVICE_PROFILES.contains(&name) => Launch::Copy {
-            command: command(target, profile),
-        },
+        (TargetId::Harness, Some(name)) if HARNESS_SERVICE_PROFILES.contains(&name) => {
+            Launch::Copy {
+                command: command(target, profile),
+            }
+        }
         _ => Launch::Terminal {
             command: command(target, profile),
             installed: cli_installed(target),
@@ -94,13 +104,21 @@ pub fn plan(target: TargetId, profile: Option<&str>) -> Launch {
 }
 
 /// Starts `target` the way [`plan`] describes: a CLI in a terminal in `folder`.
-pub fn launch(target: TargetId, profile: Option<&str>, folder: Option<&Path>) -> Result<(), String> {
+pub fn launch(
+    target: TargetId,
+    profile: Option<&str>,
+    folder: Option<&Path>,
+) -> Result<(), String> {
     match plan(target, profile) {
         Launch::App { .. } if target == TargetId::Harness => restart_harness_desktop(),
         Launch::App { .. } | Launch::Copy { .. } => Err("clients.errors.launch".into()),
-        Launch::Terminal { installed: false, .. } => Err("clients.errors.cliMissing".into()),
+        Launch::Terminal {
+            installed: false, ..
+        } => Err("clients.errors.cliMissing".into()),
         Launch::Terminal { command, .. } => {
-            let folder = folder.filter(|folder| folder.is_dir()).ok_or("clients.errors.launchFolder")?;
+            let folder = folder
+                .filter(|folder| folder.is_dir())
+                .ok_or("clients.errors.launchFolder")?;
             open_terminal(&command, folder)
         }
     }
@@ -110,12 +128,17 @@ fn restart_harness_desktop() -> Result<(), String> {
     let executable = harness_desktop().ok_or("clients.errors.launch")?;
     #[cfg(windows)]
     {
-        crate::platform::process::restart_windows_app(&format!("{HARNESS_DESKTOP}.exe"), &executable)
-            .map_err(|_| "clients.errors.launch".into())
+        crate::platform::process::restart_windows_app(
+            &format!("{HARNESS_DESKTOP}.exe"),
+            &executable,
+        )
+        .map_err(|_| "clients.errors.launch".into())
     }
     #[cfg(not(windows))]
     {
-        let _ = std::process::Command::new("osascript").args(["-e", &format!("quit app \"{HARNESS_DESKTOP}\"")]).output();
+        let _ = std::process::Command::new("osascript")
+            .args(["-e", &format!("quit app \"{HARNESS_DESKTOP}\"")])
+            .output();
         std::thread::sleep(std::time::Duration::from_millis(1500));
         std::process::Command::new("open")
             .arg(executable)
@@ -132,19 +155,33 @@ fn open_terminal(command: &str, folder: &Path) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     use windows_sys::Win32::System::Threading::CREATE_NEW_CONSOLE;
     // An npm CLI's PowerShell shim must run even under a restrictive policy.
-    let shell = ["powershell.exe", "-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", command];
+    let shell = [
+        "powershell.exe",
+        "-NoLogo",
+        "-NoExit",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        command,
+    ];
     let terminal = dirs::data_local_dir()
         .map(|dir| dir.join(r"Microsoft\WindowsApps\wt.exe"))
         .filter(|path| path.exists());
     let started = match terminal {
-        Some(terminal) => std::process::Command::new(terminal).arg("-d").arg(folder).args(shell).spawn(),
+        Some(terminal) => std::process::Command::new(terminal)
+            .arg("-d")
+            .arg(folder)
+            .args(shell)
+            .spawn(),
         None => std::process::Command::new(shell[0])
             .args(&shell[1..])
             .current_dir(folder)
             .creation_flags(CREATE_NEW_CONSOLE)
             .spawn(),
     };
-    started.map(|_| ()).map_err(|_| "clients.errors.launch".into())
+    started
+        .map(|_| ())
+        .map_err(|_| "clients.errors.launch".into())
 }
 
 #[cfg(not(windows))]
@@ -161,10 +198,18 @@ mod tests {
     #[test]
     fn harness_profiles_choose_how_they_start() {
         assert_eq!(command(TargetId::Harness, Some("web")), "dsh web");
-        assert_eq!(command(TargetId::Harness, Some("dsh-tui")), "dsh --profile dsh-tui");
+        assert_eq!(
+            command(TargetId::Harness, Some("dsh-tui")),
+            "dsh --profile dsh-tui"
+        );
         assert_eq!(command(TargetId::ClaudeCode, None), "claude");
-        assert!(matches!(plan(TargetId::Harness, Some("headless")), Launch::Copy { command } if command.starts_with("dsh --profile headless")));
-        assert!(matches!(plan(TargetId::Harness, Some("desktop")), Launch::App { .. }));
+        assert!(
+            matches!(plan(TargetId::Harness, Some("headless")), Launch::Copy { command } if command.starts_with("dsh --profile headless"))
+        );
+        assert!(matches!(
+            plan(TargetId::Harness, Some("desktop")),
+            Launch::App { .. }
+        ));
         assert_eq!(
             launch(TargetId::Harness, Some("sdk"), None).unwrap_err(),
             "clients.errors.launch",
@@ -178,7 +223,13 @@ mod tests {
             return;
         }
         let missing = std::env::temp_dir().join("agentharbor-missing-folder-for-launch");
-        assert_eq!(launch(TargetId::Pi, None, Some(&missing)).unwrap_err(), "clients.errors.launchFolder");
-        assert_eq!(launch(TargetId::Pi, None, None).unwrap_err(), "clients.errors.launchFolder");
+        assert_eq!(
+            launch(TargetId::Pi, None, Some(&missing)).unwrap_err(),
+            "clients.errors.launchFolder"
+        );
+        assert_eq!(
+            launch(TargetId::Pi, None, None).unwrap_err(),
+            "clients.errors.launchFolder"
+        );
     }
 }

@@ -146,6 +146,61 @@ fn exit_restores_local_router_clients_but_keeps_direct_claude_configuration() {
     assert!(!manager.list()[1].configured);
 }
 
+/// Quitting withdraws a routed client; the next router brings it back, as
+/// Cursor comes back, unless it was configured by hand in between.
+#[test]
+fn a_router_client_withdrawn_on_exit_resumes_with_the_next_router() {
+    let (_temp, manager, store, mut request) = fixture();
+    request.target_id = TargetId::OpenCode;
+    apply(&manager, &store, &request);
+    let installed = std::fs::read_to_string(&manager.paths.opencode).unwrap();
+    assert!(manager.restore_router_configs_on_exit().is_empty());
+    assert!(!manager.paths.opencode.exists());
+    let waiting = &manager.list()[1];
+    assert!(!waiting.configured && waiting.resume_pending);
+    assert_eq!(waiting.request.as_ref().map(|request| request.model.as_str()), Some("claude-test"), "the dialog opens on it");
+
+    // A relay that is gone keeps it waiting instead of dropping it.
+    let mut emptied = store.clone();
+    emptied.providers.clear();
+    assert_eq!(manager.resume_parked(&emptied).len(), 1);
+    assert!(manager.list()[1].resume_pending);
+
+    assert!(manager.resume_parked(&store).is_empty());
+    let resumed = &manager.list()[1];
+    assert!(resumed.configured && !resumed.resume_pending && !resumed.conflict);
+    assert_eq!(std::fs::read_to_string(&manager.paths.opencode).unwrap(), installed);
+    assert!(!manager.has_parked());
+}
+
+#[test]
+fn a_client_restored_released_or_reconfigured_by_hand_does_not_come_back_on_its_own() {
+    let (_temp, manager, store, request) = fixture();
+    let id = request.target_id;
+    apply(&manager, &store, &request);
+    assert!(manager.restore_router_configs_on_exit().is_empty());
+    manager.discard_resume(id).unwrap();
+    assert!(manager.resume_parked(&store).is_empty());
+    assert!(!manager.list()[0].configured, "a discarded resume stays withdrawn");
+
+    // Configured again by hand while waiting: that configuration stands.
+    apply(&manager, &store, &request);
+    assert!(manager.restore_router_configs_on_exit().is_empty());
+    let mut direct = request.clone();
+    direct.options.access_mode = ClientAccessMode::Native;
+    apply(&manager, &store, &direct);
+    assert!(!manager.has_parked());
+
+    // Restoring by hand ends a wait the exit left behind.
+    let mut routed = request.clone();
+    routed.target_id = TargetId::OpenCode;
+    apply(&manager, &store, &routed);
+    assert!(manager.restore_router_configs_on_exit().is_empty());
+    assert!(manager.has_parked());
+    manager.release(TargetId::OpenCode).unwrap();
+    assert!(!manager.has_parked());
+}
+
 #[test]
 fn exit_does_not_overwrite_an_external_claude_takeover() {
     let (_temp, manager, store, request) = fixture();

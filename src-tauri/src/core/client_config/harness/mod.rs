@@ -461,9 +461,14 @@ impl ConfigManager {
             client_version: None,
             stale: false,
             harness: Some(info),
+            resume_pending: false,
         };
         let result = (|| -> Result<(), String> {
             let Some(session) = self.harness_session()? else {
+                if let Some(parked) = self.parked(TargetId::Harness) {
+                    status.resume_pending = true;
+                    status.request = Some(parked);
+                }
                 if let Some(profile) = default_profile {
                     yaml::read(read_text(&patch_path(home, &profile))?.as_deref())?;
                 }
@@ -768,6 +773,20 @@ impl ConfigManager {
         if plan.revision != expected_revision {
             return Err("clients.errors.changed".into());
         }
+        self.harness_commit(
+            &plan.session.patch.path,
+            &plan.session.credentials.path,
+            &plan.current,
+            &plan.next,
+            Some(&plan.session),
+            plan.warnings,
+        )
+    }
+
+    /// Applies a withdrawn router configuration again, without a preview.
+    /// The caller holds the write lock.
+    pub(super) fn harness_resume(&self, store: &Store, request: &ConfigRequest) -> Result<ConfigApplied, String> {
+        let plan = self.harness_prepare(store, request, false, false)?;
         self.harness_commit(
             &plan.session.patch.path,
             &plan.session.credentials.path,

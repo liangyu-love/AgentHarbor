@@ -253,7 +253,10 @@ pub async fn end_router_port_owner(repo: State<'_, Mutex<Repository>>, pid: u32)
     let port = router::load_store(&paths)?.router.port;
     super::blocking(move || crate::platform::port_owner::end(port, pid)).await?;
     let _guard = routing_runtime::mutation_guard().await;
-    routing_runtime::reconcile_with(&paths, true).await
+    let result = routing_runtime::reconcile_with(&paths, true).await;
+    // Clients withdrawn while the port was taken come back now.
+    routing_runtime::resume_router_clients(&paths).await;
+    result
 }
 
 #[tauri::command]

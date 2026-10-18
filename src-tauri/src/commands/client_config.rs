@@ -183,6 +183,16 @@ pub async fn release_client_config(
     Ok(())
 }
 
+/// Forget a router configuration waiting to come back after a restart.
+#[tauri::command]
+pub async fn discard_client_resume(
+    repo: State<'_, Mutex<Repository>>,
+    target_id: TargetId,
+) -> Result<(), String> {
+    let paths = paths(&repo)?;
+    super::blocking(move || manager(&paths).discard_resume(target_id)).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

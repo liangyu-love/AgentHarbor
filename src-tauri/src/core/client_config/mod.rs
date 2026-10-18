@@ -215,6 +215,9 @@ pub struct ClientStatus {
     /// DeepSeek Harness's home and profiles, for its card only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub harness: Option<HarnessInfo>,
+    /// A router configuration withdrawn when AgentHarbor last quit (or could
+    /// not take its port) waits to be applied again; `request` then holds it.
+    pub resume_pending: bool,
 }
 
 #[derive(Serialize)]
@@ -390,6 +393,7 @@ impl ConfigManager {
                     client_version: None,
                     stale: false,
                     harness: None,
+                    resume_pending: false,
                 };
                 if id == TargetId::ClaudeCode {
                     status.client_version = version::detected();
@@ -417,6 +421,10 @@ impl ConfigManager {
                             .map(|path| path.join("."))
                             .collect();
                     } else {
+                        if let Some(parked) = self.parked(id) {
+                            status.resume_pending = true;
+                            status.request = Some(parked);
+                        }
                         parse(read_text(adapter.path(&self.paths))?.as_deref(), id)?;
                     }
                     Ok(())
@@ -436,6 +444,94 @@ impl ConfigManager {
             TargetId::Harness => "harness.dat",
             TargetId::Codex => "codex.dat",
         })
+    }
+
+    fn parked_path(&self) -> PathBuf {
+        self.data_dir.join("router-resume.dat")
+    }
+
+    fn parked_requests(&self) -> Vec<ConfigRequest> {
+        secret_file::read(&self.parked_path())
+            .ok()
+            .flatten()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    /// The router configuration of `id` waiting to be applied again.
+    pub(super) fn parked(&self, id: TargetId) -> Option<ConfigRequest> {
+        self.parked_requests()
+            .into_iter()
+            .find(|request| request.target_id == id)
+    }
+
+    /// Keeps `request` (or nothing) as the configuration `id` resumes with.
+    fn park(&self, id: TargetId, request: Option<ConfigRequest>) -> Result<(), String> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let _guard = LOCK.lock().map_err(|_| "clients.errors.storage")?;
+        let mut parked = self.parked_requests();
+        if request.is_none() && !parked.iter().any(|entry| entry.target_id == id) {
+            return Ok(());
+        }
+        parked.retain(|entry| entry.target_id != id);
+        parked.extend(request);
+        let path = self.parked_path();
+        if parked.is_empty() {
+            return storage::remove_file_durable(&path).map_err(|_| "clients.errors.storage".into());
+        }
+        secret_file::write(&path, &serde_json::to_vec(&parked).map_err(|_| "clients.errors.storage")?)
+    }
+
+    /// Forgets the configuration `id` would resume with.
+    pub fn discard_resume(&self, id: TargetId) -> Result<(), String> {
+        self.park(id, None)
+    }
+
+    pub fn has_parked(&self) -> bool {
+        !self.parked_requests().is_empty()
+    }
+
+    /// Applies again what [`Self::restore_router_configs_on_exit`] withdrew,
+    /// once this process holds the router's port: a client routed before a
+    /// restart is routed after it, as Cursor is. A client configured since
+    /// keeps its configuration; one that cannot be applied stays waiting.
+    pub fn resume_parked(&self, store: &Store) -> Vec<(TargetId, String)> {
+        let mut failures = Vec::new();
+        for request in self.parked_requests() {
+            let id = request.target_id;
+            let result = (|| -> Result<(), String> {
+                let _guard = WRITE_LOCK
+                    .get_or_init(|| Mutex::new(()))
+                    .lock()
+                    .map_err(|_| "clients.errors.storage")?;
+                if id == TargetId::Harness {
+                    if self.harness_stored_request()?.is_none() {
+                        self.harness_resume(store, &request)?;
+                    }
+                    return Ok(());
+                }
+                if self.session(id)?.is_some() {
+                    return Ok(());
+                }
+                let plan = self.prepare(store, &request, false, false)?;
+                let text = format!(
+                    "{}\n",
+                    serde_json::to_string_pretty(&plan.session.installed)
+                        .map_err(|_| "clients.errors.storage")?
+                );
+                self.commit(id, &plan.session.path, plan.current, Some(text), Some(&plan.session), plan.warnings)
+                    .map(|_| ())
+            })();
+            match result {
+                Ok(()) => {
+                    if let Err(error) = self.park(id, None) {
+                        failures.push((id, error));
+                    }
+                }
+                Err(error) => failures.push((id, error)),
+            }
+        }
+        failures
     }
 
     fn session(&self, id: TargetId) -> Result<Option<Session>, String> {
@@ -512,7 +608,9 @@ impl ConfigManager {
             .lock()
             .map_err(|_| "clients.errors.storage")?;
         if request.target_id == TargetId::Harness {
-            return self.harness_apply(store, request, expected_revision, replace_conflicts);
+            let applied = self.harness_apply(store, request, expected_revision, replace_conflicts)?;
+            let _ = self.park(TargetId::Harness, None);
+            return Ok(applied);
         }
         let plan = self.prepare(store, request, false, replace_conflicts)?;
         if plan.revision != expected_revision {
@@ -523,14 +621,16 @@ impl ConfigManager {
             serde_json::to_string_pretty(&plan.session.installed)
                 .map_err(|_| "clients.errors.storage")?
         );
-        self.commit(
+        let applied = self.commit(
             request.target_id,
             &plan.session.path,
             plan.current,
             Some(text),
             Some(&plan.session),
             plan.warnings,
-        )
+        )?;
+        let _ = self.park(request.target_id, None);
+        Ok(applied)
     }
 
     pub fn restore(&self, id: TargetId) -> Result<ConfigApplied, String> {
@@ -544,6 +644,8 @@ impl ConfigManager {
         id: TargetId,
         replace_conflicts: bool,
     ) -> Result<ConfigApplied, String> {
+        // Restoring by hand means the client should not come back on its own.
+        let _ = self.park(id, None);
         if id == TargetId::Harness {
             let _guard = WRITE_LOCK.get_or_init(|| Mutex::new(())).lock().map_err(|_| "clients.errors.storage")?;
             return self.harness_restore(replace_conflicts);
@@ -668,6 +770,7 @@ impl ConfigManager {
     /// of a conflict (the user edited managed fields) or an unreadable session record:
     /// the file keeps whatever the user has now, and a later apply starts from it.
     pub fn release(&self, id: TargetId) -> Result<(), String> {
+        let _ = self.park(id, None);
         let _guard = WRITE_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
@@ -688,8 +791,10 @@ impl ConfigManager {
     /// Attempt each client independently so one conflict cannot strand another.
     /// A user's edit to a field other than the connection must not leave the
     /// client aimed at a dead router with the local token: the connection is
-    /// withdrawn and the edit kept.
+    /// withdrawn and the edit kept. What was withdrawn is kept to resume with
+    /// ([`Self::resume_parked`]) once the router listens again.
     pub fn restore_router_configs_on_exit(&self) -> Vec<(TargetId, String)> {
+        let harness = self.harness_stored_request().ok().flatten().filter(ConfigRequest::needs_router);
         [TargetId::ClaudeCode, TargetId::OpenCode, TargetId::Pi]
             .into_iter()
             .filter_map(|id| match self.session(id) {
@@ -699,7 +804,7 @@ impl ConfigManager {
                             if !applied.warnings.is_empty() {
                                 log::info!("{id:?} router config withdrawn on exit; the user's own edits were kept");
                             }
-                            None
+                            self.park(id, Some(session.request)).err().map(|error| (id, error))
                         }
                         Err(error) => Some((id, error)),
                     }
@@ -707,7 +812,13 @@ impl ConfigManager {
                 Ok(_) => None,
                 Err(error) => Some((id, error)),
             })
-            .chain(self.harness_restore_on_exit().and_then(|result| result.err()).map(|error| (TargetId::Harness, error)))
+            .chain(match self.harness_restore_on_exit() {
+                Some(Ok(())) => harness
+                    .and_then(|request| self.park(TargetId::Harness, Some(request)).err())
+                    .map(|error| (TargetId::Harness, error)),
+                Some(Err(error)) => Some((TargetId::Harness, error)),
+                None => None,
+            })
             .collect()
     }
 

@@ -105,8 +105,36 @@ fn release_router_clients_at(paths: &CodexPaths, clients: client_config::ClientP
     }
 }
 
+/// Router configurations withdrawn when this app last quit, or when it could
+/// not take its port, go back once this process holds the port. While another
+/// program holds it they keep waiting: a client aimed at that port would hand
+/// it the local token.
+pub async fn resume_router_clients(paths: &CodexPaths) {
+    resume_router_clients_at(paths, client_config::ClientPaths::discover()).await
+}
+
+async fn resume_router_clients_at(paths: &CodexPaths, clients: client_config::ClientPaths) {
+    let manager = client_config::ConfigManager::new(&paths.app_data_dir, clients)
+        .with_official_home(&paths.codex_home);
+    if !manager.has_parked() {
+        return;
+    }
+    if let Err(error) = ensure_available(paths).await {
+        log::warn!("router clients wait to resume: {error}");
+        return;
+    }
+    let store = match router::load_store(paths) {
+        Ok(store) => store,
+        Err(error) => return log::warn!("router clients wait to resume: {error}"),
+    };
+    for (target, error) in manager.resume_parked(&store) {
+        log::warn!("{target:?} router config did not resume: {error}");
+    }
+}
+
 /// Startup reconcile. If the router cannot bind its port, the clients configured
-/// to use it are released instead of being left aimed at that port.
+/// to use it are released instead of being left aimed at that port; otherwise
+/// the ones withdrawn at the last exit are applied again.
 pub async fn reconcile_on_startup(paths: &CodexPaths) -> Result<(), String> {
     reconcile_on_startup_at(paths, client_config::ClientPaths::discover()).await
 }
@@ -131,6 +159,8 @@ async fn reconcile_on_startup_at(
     let result = reconcile_with(paths, true).await;
     if result.as_ref().err().map(String::as_str) == Some("newapi.errors.portBusy") {
         release_router_clients_at(paths, clients);
+    } else {
+        resume_router_clients_at(paths, clients).await;
     }
     router::normalize_threads_when_stopped(paths);
     result
@@ -454,8 +484,18 @@ mod tests {
                     "port conflicts must not write Desktop configuration"
                 );
             }
+            // The withdrawn client waits while the port is still taken...
+            assert!(manager.list()[0].resume_pending);
+            resume_router_clients_at(&paths, clients.clone()).await;
+            assert_eq!(std::fs::read_to_string(&clients.claude).unwrap(), original);
             drop(squatter);
             reconcile(&paths).await.unwrap();
+            // ...and comes back once this process holds it.
+            resume_router_clients_at(&paths, clients.clone()).await;
+            assert!(std::fs::read_to_string(&clients.claude).unwrap().contains("127.0.0.1"));
+            assert!(std::fs::read_to_string(&clients.claude).unwrap().contains("CUSTOM"));
+            assert!(client_config::has_router_configs(&paths.app_data_dir).unwrap());
+            assert!(!manager.list()[0].resume_pending);
             let gateway = claude_desktop::gateway::committed_snapshot(&paths.app_data_dir)
                 .unwrap()
                 .unwrap();

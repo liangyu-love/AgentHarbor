@@ -619,6 +619,7 @@ api.targets.restart = async target => {
 api.targets.configs = async () => [];
 api.targets.launchPlan = async target => controls.review.launchPlans?.[target]
   ?? (target === "codex" ? { kind: "app", installed: true, running: true } : { kind: "terminal", command: target === "claudeCode" ? "claude" : target, installed: true });
+api.targets.discardResume = async targetId => { controls.review.discardedResume = targetId; };
 api.targets.launch = async (targetId, harnessProfile, folder) => {
   (controls.review.launchCalls ??= []).push({ targetId, harnessProfile, folder });
 };

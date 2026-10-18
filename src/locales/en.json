@@ -242,6 +242,11 @@
     "releaseTitle": "Release {{name}}?",
     "releaseDescription": "AgentHarbor stops managing this client. The config file keeps its current contents and old values are not restored. You can configure it again from the current file afterwards.",
     "released": "Released. The config file was not changed.",
+    "resume": {
+      "note": "The router configuration withdrawn when AgentHarbor quit comes back once the router runs; Configure lets you adjust it first.",
+      "discard": "Don't bring it back",
+      "discarded": "It stays unconfigured"
+    },
     "configureTitle": "Configure {{name}}",
     "provider": "Relay card",
     "model": "Default model",

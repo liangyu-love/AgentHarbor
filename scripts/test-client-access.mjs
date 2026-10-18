@@ -79,6 +79,21 @@ export async function testClientAccess({ page, reset, captureDir }) {
   });
   console.log("PASS CLI clients start in a remembered folder, recent folders are one click away, and missing CLIs are disabled");
 
+  // ---- a router configuration withdrawn at exit waits to come back
+  await reset("clients");
+  await page.evaluate(() => {
+    window.review.clientStatusFixtures = [{ targetId: "opencode", name: "OpenCode", path: "C:/synthetic/opencode.json",
+      protocols: ["responses", "chatCompletions", "anthropicMessages"], configured: false, conflict: false, conflictFields: [],
+      error: null, providerId: null, model: null, request: null, resumePending: true }];
+    window.review.mount("clients");
+  });
+  const resume = page.locator("#client-config-opencode [data-client-resume]");
+  await resume.getByText(await tr("clients.resume.note"), { exact: true }).waitFor();
+  await resume.getByRole("button", { name: await tr("clients.resume.discard"), exact: true }).click();
+  await page.waitForFunction(() => window.review.discardedResume === "opencode");
+  await page.evaluate(() => { window.review.clientStatusFixtures = null; });
+  console.log("PASS a router configuration withdrawn at exit says it will come back and can be dropped");
+
   // ---- the two-pane model dialog
   await reset("clients-opencode");
   await page.getByRole("button", { name: await tr("clients.configure"), exact: true }).click();

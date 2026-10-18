@@ -40,12 +40,15 @@ pub fn end(port: u16, pid: u32) -> Result<(), String> {
 #[cfg(windows)]
 mod platform {
     use std::net::Ipv4Addr;
-    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INSUFFICIENT_BUFFER, INVALID_HANDLE_VALUE, NO_ERROR};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_INSUFFICIENT_BUFFER, INVALID_HANDLE_VALUE, NO_ERROR,
+    };
     use windows_sys::Win32::NetworkManagement::IpHelper::{
         GetExtendedTcpTable, MIB_TCPROW_OWNER_PID, TCP_TABLE_OWNER_PID_LISTENER,
     };
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
     };
 
     /// `AF_INET`, without pulling in the WinSock bindings for one constant.
@@ -57,7 +60,14 @@ mod platform {
             // u32 words keep the table's rows aligned.
             let mut table = vec![0u32; (size as usize).div_ceil(4).max(1)];
             let status = unsafe {
-                GetExtendedTcpTable(table.as_mut_ptr().cast(), &mut size, 0, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0)
+                GetExtendedTcpTable(
+                    table.as_mut_ptr().cast(),
+                    &mut size,
+                    0,
+                    AF_INET,
+                    TCP_TABLE_OWNER_PID_LISTENER,
+                    0,
+                )
             };
             if status == ERROR_INSUFFICIENT_BUFFER {
                 continue;
@@ -67,13 +77,17 @@ mod platform {
             }
             let count = table[0] as usize;
             let rows = unsafe {
-                std::slice::from_raw_parts(table.as_ptr().add(1).cast::<MIB_TCPROW_OWNER_PID>(), count)
+                std::slice::from_raw_parts(
+                    table.as_ptr().add(1).cast::<MIB_TCPROW_OWNER_PID>(),
+                    count,
+                )
             };
             return rows
                 .iter()
                 .find(|row| {
                     let address = Ipv4Addr::from(u32::from_be(row.dwLocalAddr));
-                    u16::from_be(row.dwLocalPort as u16) == port && (address.is_loopback() || address.is_unspecified())
+                    u16::from_be(row.dwLocalPort as u16) == port
+                        && (address.is_loopback() || address.is_unspecified())
                 })
                 .map(|row| row.dwOwningPid);
         }
@@ -92,7 +106,11 @@ mod platform {
             let mut more = Process32FirstW(snapshot, &mut entry) != 0;
             while more {
                 if entry.th32ProcessID == pid {
-                    let length = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
+                    let length = entry
+                        .szExeFile
+                        .iter()
+                        .position(|&c| c == 0)
+                        .unwrap_or(entry.szExeFile.len());
                     name = Some(String::from_utf16_lossy(&entry.szExeFile[..length]));
                     break;
                 }
@@ -108,7 +126,10 @@ mod platform {
             .args(["/PID", &pid.to_string(), "/F"])
             .status()
             .map_err(|_| "newapi.errors.portOwnerEnd")?;
-        status.success().then_some(()).ok_or_else(|| "newapi.errors.portOwnerEnd".into())
+        status
+            .success()
+            .then_some(())
+            .ok_or_else(|| "newapi.errors.portOwnerEnd".into())
     }
 }
 
@@ -120,11 +141,19 @@ mod platform {
             .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-t"])
             .output()
             .ok()?;
-        String::from_utf8_lossy(&output.stdout).lines().next()?.trim().parse().ok()
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .next()?
+            .trim()
+            .parse()
+            .ok()
     }
 
     pub fn process_name(pid: u32) -> Option<String> {
-        let output = std::process::Command::new("ps").args(["-p", &pid.to_string(), "-o", "comm="]).output().ok()?;
+        let output = std::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "comm="])
+            .output()
+            .ok()?;
         let name = String::from_utf8_lossy(&output.stdout).trim().to_owned();
         (!name.is_empty()).then(|| name.rsplit('/').next().unwrap_or(&name).to_owned())
     }
@@ -134,7 +163,10 @@ mod platform {
             .arg(pid.to_string())
             .status()
             .map_err(|_| "newapi.errors.portOwnerEnd")?;
-        status.success().then_some(()).ok_or_else(|| "newapi.errors.portOwnerEnd".into())
+        status
+            .success()
+            .then_some(())
+            .ok_or_else(|| "newapi.errors.portOwnerEnd".into())
     }
 }
 
@@ -148,7 +180,10 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         assert_eq!(platform::listening_pid(port), Some(std::process::id()));
         assert_eq!(super::listener(port), None);
-        assert_eq!(end(port, 4242).unwrap_err(), "newapi.errors.portOwnerChanged");
+        assert_eq!(
+            end(port, 4242).unwrap_err(),
+            "newapi.errors.portOwnerChanged"
+        );
         drop(listener);
         assert_eq!(platform::listening_pid(port), None);
     }
@@ -163,11 +198,16 @@ mod tests {
         use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE_FLAG_INHERIT};
         let inheritable = |socket: &dyn AsRawSocket| {
             let mut flags = 0u32;
-            assert_ne!(unsafe { GetHandleInformation(socket.as_raw_socket() as _, &mut flags) }, 0);
+            assert_ne!(
+                unsafe { GetHandleInformation(socket.as_raw_socket() as _, &mut flags) },
+                0
+            );
             flags & HANDLE_FLAG_INHERIT != 0
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let client = tokio::net::TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
+        let client = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
         let (accepted, _) = listener.accept().await.unwrap();
         assert!(!inheritable(&listener));
         assert!(!inheritable(&accepted));

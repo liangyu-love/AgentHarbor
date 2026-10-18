@@ -33,6 +33,8 @@ export interface ClientStatus {
   conflictFields?: string[];
   /** A direct configuration whose relay card changed address or key since it was written. */
   stale?: boolean;
+  /** A router configuration withdrawn when AgentHarbor last quit waits to come back; `request` holds it. */
+  resumePending?: boolean;
   /** DeepSeek Harness's home and profiles; only on its own status. */
   harness?: HarnessInfo | null;
 }

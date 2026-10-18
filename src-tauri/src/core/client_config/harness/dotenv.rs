@@ -25,7 +25,10 @@ fn encode(value: &str) -> Result<String, String> {
 /// The variable a line assigns, and where its value starts.
 fn assignment(line: &str) -> Option<(&str, &str)> {
     let line = line.trim_start();
-    let line = line.strip_prefix("export ").map(str::trim_start).unwrap_or(line);
+    let line = line
+        .strip_prefix("export ")
+        .map(str::trim_start)
+        .unwrap_or(line);
     let (name, value) = line.split_once('=')?;
     let name = name.trim_end();
     (!name.is_empty() && !name.starts_with('#')).then_some((name, value))
@@ -34,7 +37,10 @@ fn assignment(line: &str) -> Option<(&str, &str)> {
 fn decode(raw: &str) -> String {
     let raw = raw.trim();
     for quote in ['\'', '"', '`'] {
-        if let Some(inner) = raw.strip_prefix(quote).and_then(|rest| rest.find(quote).map(|end| &rest[..end])) {
+        if let Some(inner) = raw
+            .strip_prefix(quote)
+            .and_then(|rest| rest.find(quote).map(|end| &rest[..end]))
+        {
             return inner.to_owned();
         }
     }
@@ -43,12 +49,23 @@ fn decode(raw: &str) -> String {
 
 /// The value the file gives `name`; a later line wins, as in Node.
 pub(super) fn get(text: Option<&str>, name: &str) -> Option<String> {
-    text?.lines().filter_map(assignment).filter(|(key, _)| *key == name).last().map(|(_, value)| decode(value))
+    text?
+        .lines()
+        .filter_map(assignment)
+        .filter(|(key, _)| *key == name)
+        .last()
+        .map(|(_, value)| decode(value))
 }
 
 /// The file with `name` set to `value`, or removed; `None` when nothing is left.
-pub(super) fn set(text: Option<&str>, name: &str, value: Option<&str>) -> Result<Option<String>, String> {
-    let line = value.map(|value| encode(value).map(|value| format!("{name}={value}"))).transpose()?;
+pub(super) fn set(
+    text: Option<&str>,
+    name: &str,
+    value: Option<&str>,
+) -> Result<Option<String>, String> {
+    let line = value
+        .map(|value| encode(value).map(|value| format!("{name}={value}")))
+        .transpose()?;
     let text = text.unwrap_or("");
     let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
     let mut lines: Vec<String> = Vec::new();
@@ -81,20 +98,36 @@ mod tests {
     #[test]
     fn edits_only_the_named_variable_and_keeps_the_rest() {
         let text = "# keys\r\nDEEPSEEK_API_KEY=sk-user\r\nexport AGENTHARBOR_X='old'\r\n";
-        let next = set(Some(text), "AGENTHARBOR_X", Some("sk-new")).unwrap().unwrap();
-        assert_eq!(next, "# keys\r\nDEEPSEEK_API_KEY=sk-user\r\nAGENTHARBOR_X=sk-new\r\n");
+        let next = set(Some(text), "AGENTHARBOR_X", Some("sk-new"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            next,
+            "# keys\r\nDEEPSEEK_API_KEY=sk-user\r\nAGENTHARBOR_X=sk-new\r\n"
+        );
         assert_eq!(get(Some(&next), "AGENTHARBOR_X").as_deref(), Some("sk-new"));
-        assert_eq!(get(Some(&next), "DEEPSEEK_API_KEY").as_deref(), Some("sk-user"));
+        assert_eq!(
+            get(Some(&next), "DEEPSEEK_API_KEY").as_deref(),
+            Some("sk-user")
+        );
         let removed = set(Some(&next), "AGENTHARBOR_X", None).unwrap().unwrap();
         assert_eq!(removed, "# keys\r\nDEEPSEEK_API_KEY=sk-user\r\n");
     }
 
     #[test]
     fn a_new_file_holds_just_the_variables_and_goes_once_empty() {
-        let created = set(None, "AGENTHARBOR_ROUTER_TOKEN", Some("token 1#")).unwrap().unwrap();
+        let created = set(None, "AGENTHARBOR_ROUTER_TOKEN", Some("token 1#"))
+            .unwrap()
+            .unwrap();
         assert_eq!(created, "AGENTHARBOR_ROUTER_TOKEN='token 1#'\n");
-        assert_eq!(get(Some(&created), "AGENTHARBOR_ROUTER_TOKEN").as_deref(), Some("token 1#"));
-        assert_eq!(set(Some(&created), "AGENTHARBOR_ROUTER_TOKEN", None).unwrap(), None);
+        assert_eq!(
+            get(Some(&created), "AGENTHARBOR_ROUTER_TOKEN").as_deref(),
+            Some("token 1#")
+        );
+        assert_eq!(
+            set(Some(&created), "AGENTHARBOR_ROUTER_TOKEN", None).unwrap(),
+            None
+        );
         assert!(set(None, "AGENTHARBOR_X", Some("it's\nmulti")).is_err());
     }
 }
