@@ -28,10 +28,15 @@ pub(in crate::core::router_proxy) struct Selection {
     usage: relay_usage::RelayUsageRequest,
     max_tokens: u64,
     account: Option<account_sources::RequestAuth>,
+    /// The card's REST Search API rather than one of its models.
+    api: bool,
 }
 
 impl Selection {
     pub fn validate(&self, plan: &Plan) -> ForwardResult<()> {
+        if self.api {
+            return if plan.host_filters() {Ok(())} else {Err((StatusCode::BAD_REQUEST,"DeepSeek search filters whole domains, not paths"))};
+        }
         let mut request = plan.native_request.clone().ok_or(INVALID)?;
         if let Some(pair) = protocol::Translation::between(plan.caller,self.protocol) {
             request = protocol::request_body(pair,&request).map_err(|_| (StatusCode::BAD_REQUEST,"selected search cannot preserve these WebSearch options"))?.body;
@@ -55,8 +60,13 @@ impl Selection {
         let id = store.router.web_search_provider_id.as_deref().ok_or(INVALID)?;
         let provider = store.providers.iter().find(|provider| provider.id == id)
             .ok_or((StatusCode::BAD_REQUEST,"configured WebSearch service is unavailable"))?;
-        let model = store.router.web_search_model_id.as_deref()
-            .ok_or((StatusCode::BAD_REQUEST,"select a native WebSearch service model"))?;
+        let Some(model) = store.router.web_search_model_id.as_deref() else {
+            if router::search_api(provider) != Some(router::SearchApi::DeepSeek) {
+                return Err((StatusCode::BAD_REQUEST,"select a native WebSearch service model"));
+            }
+            let protocol = provider.protocol_for_model(&provider.model);
+            return Ok(Self {api:true,..Self::for_provider(context,provider,&provider.model,protocol,catalog,trace,identity,None)});
+        };
         if !router::native_search_models(provider).iter().any(|candidate| candidate == model) {
             return Err((StatusCode::BAD_REQUEST,"configured WebSearch model is unavailable"));
         }
@@ -81,11 +91,12 @@ impl Selection {
             pipeline::request::protocol_name(protocol).into(),router::pricing_for(provider,model,catalog))
             .with_request_id(trace.request_id()).with_identity(identity);
         let max_tokens = router::resolve_model_metadata(provider,model,None,catalog).output_limit.value.unwrap_or(4096).min(4096).max(1);
-        Self {context:context.clone(),provider:provider.clone(),protocol,model:model.into(),usage,max_tokens,account}
+        Self {context:context.clone(),provider:provider.clone(),protocol,model:model.into(),usage,max_tokens,account,api:false}
     }
 
     pub async fn activate(self) -> ForwardResult<SearchBackend> {
-        let Self {context,provider,protocol,model,usage,max_tokens,account} = self;
+        let Self {context,provider,protocol,model,usage,max_tokens,account,api} = self;
+        if api {return SearchBackend::deepseek(&context,&provider)}
         let destination = Destination::Provider {provider:Box::new(provider.clone()),model_override:Some(model.clone()),upstream_protocol:protocol,translation:None};
         let client = client_for(&context,&destination)?;
         // Account refresh futures include every source's auth flow. Keep them
@@ -103,7 +114,7 @@ impl Selection {
             if account.is_some() {"accountSource"} else {"providerApiKey"},
             &format!("{}|{}",provider.id,endpoint),headers.get(AUTHORIZATION).or_else(|| headers.get("x-api-key")).and_then(|header| header.to_str().ok()),None);
         let usage = usage.with_credential(credential.clone());
-        Ok(SearchBackend {client,endpoint,headers,native:Some(Backend {protocol,model,provider_id:provider.id.clone(),provider_name:provider.name.clone(),account,credential,usage,max_tokens})})
+        Ok(SearchBackend {client,endpoint,headers,api:None,native:Some(Backend {protocol,model,provider_id:provider.id.clone(),provider_name:provider.name.clone(),account,credential,usage,max_tokens})})
     }
 }
 

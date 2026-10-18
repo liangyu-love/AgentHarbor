@@ -8,6 +8,8 @@ import type { ProviderState } from "./use-provider-state";
 
 const WEB_SEARCH_SECTION_ID = "client-web-search";
 const WEB_SEARCH_PROVIDER_ID = "client-web-search-provider";
+/** The model choice that stands for a card's REST Search API. */
+const SEARCH_API = "__search_api";
 
 /** Client panels link here: bring the shared setting into view and focus its search service. */
 export function revealWebSearchSettings() {
@@ -32,6 +34,7 @@ export function WebSearchSettings({ store, providers }: { store: ProviderState; 
   const selected = searchProviders.find(provider => provider.id === providerId);
   const unavailable = providerId !== null && !selected;
   const models = selected?.webSearchModels ?? [];
+  const searchApi = selected?.webSearchApi === "deepSeek";
   const disabled = !state.isSuccess || mutationLocked || (searchProviders.length === 0 && !unavailable);
 
   const save = (nextProvider: string | null, nextModel: string | null) =>
@@ -63,8 +66,10 @@ export function WebSearchSettings({ store, providers }: { store: ProviderState; 
             onValueChange={value => {
               const provider = searchProviders.find(candidate => candidate.id === value);
               const offered = provider?.webSearchModels ?? [];
+              // A DeepSeek card searches through its Search API unless a model is picked.
               save(value === "__automatic" ? null : value,
-                offered.includes(provider?.model ?? "") ? provider!.model : offered[0] ?? null);
+                provider?.webSearchApi === "deepSeek" ? null
+                  : offered.includes(provider?.model ?? "") ? provider!.model : offered[0] ?? null);
             }}>
             <SelectTrigger id={WEB_SEARCH_PROVIDER_ID} className="min-w-0 bg-card [&>span]:truncate"><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -74,13 +79,15 @@ export function WebSearchSettings({ store, providers }: { store: ProviderState; 
             </SelectContent>
           </Select>
         </div>
-        {selected && models.length > 0 && (
+        {selected && (models.length > 0 || searchApi) && (
           <div className="min-w-0 flex-1 space-y-1.5 sm:w-56 sm:flex-none">
             <Label htmlFor="client-web-search-model" className="text-xs text-muted-foreground">{t("newapi.webSearchModel")}</Label>
-            <Select value={modelId ?? "__missing"} disabled={disabled} onValueChange={value => save(selected.id, value)}>
+            <Select value={modelId ?? (searchApi ? SEARCH_API : "__missing")} disabled={disabled}
+              onValueChange={value => save(selected.id, value === SEARCH_API ? null : value)}>
               <SelectTrigger id="client-web-search-model" className="min-w-0 bg-card [&>span]:truncate"><SelectValue /></SelectTrigger>
               <SelectContent>
-                {(!modelId || !models.includes(modelId)) && (
+                {searchApi && <SelectItem value={SEARCH_API}>{t("newapi.webSearchDeepSeekApi")}</SelectItem>}
+                {(modelId ? !models.includes(modelId) : !searchApi) && (
                   <SelectItem value={modelId ?? "__missing"} disabled>{t("newapi.webSearchUnavailable")}</SelectItem>
                 )}
                 {models.map(model => <SelectItem key={model} value={model}>{model}</SelectItem>)}

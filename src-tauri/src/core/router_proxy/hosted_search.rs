@@ -8,6 +8,9 @@ pub(super) use native::Selection;
 const MAX_BODY: usize = 8 * 1024 * 1024;
 const MAX_ROUNDS: usize = 32;
 const COMMAND_SEARCH_ENDPOINT: &str = "https://api.commandcode.ai/alpha/web-search";
+const DEEPSEEK_SEARCH_ENDPOINT: &str = "https://api.deepseek.com/v1/tools/search";
+/// DeepSeek refuses longer queries.
+const DEEPSEEK_QUERY_CHARS: usize = 128;
 #[cfg(test)]
 pub(super) static TEST_SEARCH_ENDPOINT: Mutex<Option<String>> = Mutex::new(None);
 const INVALID: (StatusCode, &str) = (StatusCode::BAD_REQUEST, "invalid WebSearch request");
@@ -21,6 +24,9 @@ pub(super) struct Plan {
     caller: router::ModelProtocol,
     name: String,
     allowed_domains: Vec<String>,
+    blocked_domains: Vec<String>,
+    /// The tool's domain filters fit a REST service's host-only filtering.
+    host_filters: bool,
     options: protocol::ResponseOptions,
     streaming: bool,
     max_tokens: u64,
@@ -30,6 +36,7 @@ pub(super) struct Plan {
 
 impl Plan {
     pub fn is_native(&self) -> bool {self.native_request.is_some()}
+    pub fn host_filters(&self) -> bool {self.host_filters}
     pub fn required(&self) -> bool {self.options.search_required}
     pub fn native_reply_misclassified(&self, target: router::ModelProtocol, bytes: &[u8], sse: bool) -> bool {
         let Ok(reply) = native::reply(target,bytes,sse) else {return false};
@@ -217,31 +224,7 @@ impl Plan {
                 "Command search does not support user_location",
             ));
         }
-        let allowed_domains = tool["allowed_domains"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(|domain| {
-                let domain = domain.as_str().ok_or(INVALID)?.trim_start_matches('.');
-                let parsed =
-                    reqwest::Url::parse(&format!("https://{domain}")).map_err(|_| INVALID)?;
-                if parsed.path() != "/"
-                    || parsed.query().is_some()
-                    || parsed.fragment().is_some()
-                    || !parsed.username().is_empty()
-                    || parsed.password().is_some()
-                    || parsed.port().is_some()
-                    || domain.contains(['/', ':', '?', '#', '@'])
-                {
-                    return Err(INVALID);
-                }
-                parsed
-                    .host_str()
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.trim_end_matches('.').to_owned())
-                    .ok_or(INVALID)
-            })
-            .collect::<ForwardResult<Vec<_>>>()?;
+        let allowed_domains = domains(&tool["allowed_domains"])?;
         let name = internal_name(tools);
         let streaming = value["stream"] == true;
         let max_tokens = value["max_tokens"]
@@ -269,6 +252,8 @@ impl Plan {
             caller: router::ModelProtocol::AnthropicMessages,
             name,
             allowed_domains,
+            blocked_domains: Vec::new(),
+            host_filters: true,
             options,
             streaming,
             max_tokens,
@@ -313,6 +298,11 @@ impl Plan {
         }
         let streaming = value["stream"] == true;
         let name = internal_name(&tools);
+        // A model service gets these in its own request; a REST service filters with them.
+        let filters = domains(if caller == router::ModelProtocol::Responses {&searches[0]["filters"]["allowed_domains"]} else {&searches[0]["allowed_domains"]})
+            .and_then(|allowed| Ok((allowed,domains(&searches[0]["blocked_domains"])?)));
+        let host_filters = filters.is_ok();
+        let (allowed_domains,blocked_domains) = filters.unwrap_or_default();
         let mut probe = if caller == router::ModelProtocol::Responses {
             json!({"model":"search","input":"search","tools":searches,"tool_choice":"auto"})
         } else {json!({"model":"search","max_tokens":4096,"messages":[{"role":"user","content":"search"}],"tools":searches,"tool_choice":{"type":"auto"}})};
@@ -357,8 +347,16 @@ impl Plan {
         }
         if caller == router::ModelProtocol::Responses {value.as_object_mut().ok_or(INVALID)?.remove("max_tool_calls");}
         value["stream"] = json!(false);
-        Ok(Some(Self {normalized:Bytes::from(value.to_string()),caller,name,allowed_domains:Vec::new(),options,streaming,max_tokens,native_request:Some(probe)}))
+        Ok(Some(Self {normalized:Bytes::from(value.to_string()),caller,name,allowed_domains,blocked_domains,host_filters,options,streaming,max_tokens,native_request:Some(probe)}))
     }
+}
+
+fn endpoint(default: &str) -> String {
+    #[cfg(test)]
+    if let Some(endpoint) = TEST_SEARCH_ENDPOINT.lock().unwrap().clone() {
+        return endpoint;
+    }
+    default.into()
 }
 
 fn internal_name(tools: &[Value]) -> String {
@@ -369,6 +367,58 @@ fn internal_name(tools: &[Value]) -> String {
         name = format!("__agentharbor_web_search_{suffix}");
     }
     name
+}
+
+/// Bare host names; a scheme, path, port or credentials make the filter invalid.
+fn domains(values: &Value) -> ForwardResult<Vec<String>> {
+    values
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|domain| {
+            let domain = domain.as_str().ok_or(INVALID)?.trim_start_matches('.');
+            let parsed =
+                reqwest::Url::parse(&format!("https://{domain}")).map_err(|_| INVALID)?;
+            if parsed.path() != "/"
+                || parsed.query().is_some()
+                || parsed.fragment().is_some()
+                || !parsed.username().is_empty()
+                || parsed.password().is_some()
+                || parsed.port().is_some()
+                || domain.contains(['/', ':', '?', '#', '@'])
+            {
+                return Err(INVALID);
+            }
+            parsed
+                .host_str()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.trim_end_matches('.').to_owned())
+                .ok_or(INVALID)
+        })
+        .collect()
+}
+
+fn on_domain(host: &str, domain: &str) -> bool {
+    host == domain || host.strip_suffix(domain).is_some_and(|prefix| prefix.ends_with('.'))
+}
+
+/// The model's query with site operators for the domain filters. Operators
+/// that do not fit are left out; results are filtered locally either way.
+fn deepseek_query(query: &str, allowed: &[String], blocked: &[String]) -> String {
+    let mut operators = String::new();
+    let single = match allowed {
+        [domain] => Some(format!("site:{domain}")),
+        _ => None,
+    };
+    for operator in single.into_iter().chain(blocked.iter().map(|domain| format!("-site:{domain}"))) {
+        if operators.chars().count() + operator.chars().count() < DEEPSEEK_QUERY_CHARS / 2 {
+            operators.push(' ');
+            operators.push_str(&operator);
+        }
+    }
+    let room = DEEPSEEK_QUERY_CHARS - operators.chars().count();
+    let query: String = query.trim().chars().take(room).collect();
+    format!("{}{operators}", query.trim_end())
 }
 
 fn search_limit(value: Option<&Value>) -> ForwardResult<Option<u64>> {
@@ -382,6 +432,8 @@ pub(super) struct SearchBackend {
     pub endpoint: String,
     pub headers: HeaderMap,
     pub(super) native: Option<native::Backend>,
+    /// The REST contract when there is no native backend; Command's by default.
+    pub api: Option<router::SearchApi>,
 }
 
 impl SearchBackend {
@@ -414,22 +466,35 @@ impl SearchBackend {
         headers.insert("x-cli-environment", HeaderValue::from_static("production"));
         Ok(Self {
             client: client_for(context, &search_destination)?,
-            endpoint: {
-                #[cfg(test)]
-                {
-                    TEST_SEARCH_ENDPOINT
-                        .lock()
-                        .unwrap()
-                        .clone()
-                        .unwrap_or_else(|| COMMAND_SEARCH_ENDPOINT.into())
-                }
-                #[cfg(not(test))]
-                {
-                    COMMAND_SEARCH_ENDPOINT.into()
-                }
-            },
+            endpoint: endpoint(COMMAND_SEARCH_ENDPOINT),
             headers,
             native: None,
+            api: Some(router::SearchApi::Command),
+        })
+    }
+
+    /// DeepSeek's Search API on the selected card's key and network mode.
+    pub fn deepseek(context: &ArcContext, provider: &router::Provider) -> ForwardResult<Self> {
+        let destination = Destination::Provider {
+            provider: Box::new(provider.clone()),
+            model_override: None,
+            upstream_protocol: router::ModelProtocol::ChatCompletions,
+            translation: None,
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", provider.model_credential().api_key.trim()))
+                .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid search service key"))?,
+        );
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
+        Ok(Self {
+            client: client_for(context, &destination)?,
+            endpoint: endpoint(DEEPSEEK_SEARCH_ENDPOINT),
+            headers,
+            native: None,
+            api: Some(router::SearchApi::DeepSeek),
         })
     }
 
@@ -1047,10 +1112,18 @@ impl Execution {
             self.backend = Box::pin(selection.activate()).await.map_err(|(status,_)| if status == StatusCode::UNAUTHORIZED {"search_authentication_failed"} else {"search_service_unavailable"})?;
         }
         if let Some(backend) = &self.backend.native {return Box::pin(backend.search(self,query,remaining)).await}
-        let mut request = json!({"query":query,"numResults":5});
-        if !self.plan.allowed_domains.is_empty() {
-            request["allowedDomains"] = json!(self.plan.allowed_domains);
-        }
+        let deepseek = self.backend.api == Some(router::SearchApi::DeepSeek);
+        let request = if deepseek {
+            let filtered = !self.plan.allowed_domains.is_empty() || !self.plan.blocked_domains.is_empty();
+            // Extra hits leave enough after the local domain filter.
+            json!({"query":deepseek_query(query,&self.plan.allowed_domains,&self.plan.blocked_domains),"count":if filtered {30} else {10}})
+        } else {
+            let mut request = json!({"query":query,"numResults":5});
+            if !self.plan.allowed_domains.is_empty() {
+                request["allowedDomains"] = json!(self.plan.allowed_domains);
+            }
+            request
+        };
         let response = self
             .backend
             .client
@@ -1062,7 +1135,12 @@ impl Execution {
             .await
             .map_err(|_| "unavailable")?;
         if !response.status().is_success() {
-            return Err("unavailable");
+            return Err(match response.status().as_u16() {
+                401 | 403 if deepseek => "search_authentication_failed",
+                402 if deepseek => "search_balance_insufficient",
+                429 if deepseek => "too_many_requests",
+                _ => "unavailable",
+            });
         }
         let bytes = limited(response).await.map_err(|_| "unavailable")?;
         let value: Value = serde_json::from_slice(&bytes).map_err(|_| "unavailable")?;
@@ -1086,17 +1164,16 @@ impl Execution {
                 continue;
             }
             let host = parsed.host_str().unwrap().trim_end_matches('.');
-            if !self.plan.allowed_domains.is_empty()
-                && !self.plan.allowed_domains.iter().any(|domain| {
-                    host == domain
-                        || host
-                            .strip_suffix(domain)
-                            .is_some_and(|prefix| prefix.ends_with('.'))
-                })
+            if (!self.plan.allowed_domains.is_empty()
+                && !self.plan.allowed_domains.iter().any(|domain| on_domain(host, domain)))
+                || self.plan.blocked_domains.iter().any(|domain| on_domain(host, domain))
             {
                 continue;
             }
-            sources.push(json!({"url":url,"title":result["title"].as_str().unwrap_or(url),"snippet":result["snippet"].as_str().unwrap_or_default()}));
+            // DeepSeek's longer summary is written for model input.
+            let snippet = result["summary"].as_str().filter(|text| !text.trim().is_empty())
+                .or_else(|| result["snippet"].as_str()).unwrap_or_default();
+            sources.push(json!({"url":url,"title":result["title"].as_str().filter(|title| !title.is_empty()).unwrap_or(url),"snippet":snippet}));
             if sources.len() == 10 {
                 break;
             }
@@ -1199,6 +1276,20 @@ mod tests {
         unrelated.base_url = "https://other.example/v1".into();
         let mut selected = destination(unrelated);
         assert!(!Plan::command_responses_search_to_chat(&mut selected, Some(search), true));
+    }
+
+    #[test]
+    fn deepseek_queries_fit_its_limit_and_carry_domain_operators() {
+        let long = "长".repeat(200);
+        assert_eq!(deepseek_query(&long, &[], &[]).chars().count(), DEEPSEEK_QUERY_CHARS);
+        assert_eq!(deepseek_query(" Rust release ", &[], &[]), "Rust release");
+        let domains = |list: &[&str]| list.iter().map(|domain| domain.to_string()).collect::<Vec<_>>();
+        assert_eq!(deepseek_query("Rust", &domains(&["rust-lang.org"]), &domains(&["spam.example"])),
+            "Rust site:rust-lang.org -site:spam.example");
+        // Several allowed hosts cannot be one site operator; local filtering keeps them.
+        assert_eq!(deepseek_query("Rust", &domains(&["a.example", "b.example"]), &[]), "Rust");
+        let crowded = deepseek_query(&long, &domains(&["rust-lang.org"]), &domains(&["x".repeat(80).as_str()]));
+        assert!(crowded.ends_with(" site:rust-lang.org") && crowded.chars().count() == DEEPSEEK_QUERY_CHARS);
     }
 
     #[test]

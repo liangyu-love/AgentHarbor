@@ -271,6 +271,8 @@ pub struct ProviderView {
     pub has_api_key: bool,
     pub web_search_capable: bool,
     pub web_search_models: Vec<String>,
+    /// A REST search service this card's key also opens.
+    pub web_search_api: Option<SearchApi>,
     pub protocol: ModelProtocol,
     pub model: String,
     pub chat_search: protocol::ChatSearch,
@@ -305,8 +307,9 @@ impl Provider {
             user_id: self.user_id,
             has_access_token: !self.access_token.is_empty(),
             has_api_key: !self.api_key.is_empty(),
-            web_search_capable: supports_command_search(self) || !native_search_models(self).is_empty(),
+            web_search_capable: search_api(self).is_some() || !native_search_models(self).is_empty(),
             web_search_models: if supports_command_search(self) {Vec::new()} else {native_search_models(self)},
+            web_search_api: search_api(self),
             protocol: self.protocol,
             model: self.model.clone(),
             chat_search: self.chat_search,
@@ -2198,22 +2201,42 @@ fn codex_target_available(store: &Store) -> bool {
     }
 }
 
+/// A REST search service opened by a card's own key, separate from its models.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchApi {
+    /// Command Code's /alpha/web-search; its models search only through it.
+    Command,
+    /// DeepSeek's /v1/tools/search, beside the models' own hosted search.
+    DeepSeek,
+}
+
 /// Only identifies the REST search service; model protocols are independent.
-pub(crate) fn supports_command_search(provider: &Provider) -> bool {
+pub(crate) fn search_api(provider: &Provider) -> Option<SearchApi> {
     if provider.model_credential().api_key.trim().is_empty() {
-        return false;
+        return None;
     }
-    let Ok(url) = reqwest::Url::parse(&provider.base_url) else {
-        return false;
-    };
-    url.scheme() == "https"
-        && url.host_str() == Some("api.commandcode.ai")
-        && url.port_or_known_default() == Some(443)
-        && url.username().is_empty()
-        && url.password().is_none()
-        && url.query().is_none()
-        && url.fragment().is_none()
-        && matches!(url.path().trim_end_matches('/'), "" | "/provider" | "/provider/v1")
+    let url = reqwest::Url::parse(&provider.base_url).ok()?;
+    if url.scheme() != "https"
+        || url.port_or_known_default() != Some(443)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return None;
+    }
+    let path = url.path().trim_end_matches('/');
+    match url.host_str()? {
+        "api.commandcode.ai" if matches!(path, "" | "/provider" | "/provider/v1") => Some(SearchApi::Command),
+        "api.deepseek.com" if matches!(path, "" | "/v1" | "/beta" | "/anthropic" | "/anthropic/v1") => Some(SearchApi::DeepSeek),
+        _ => None,
+    }
+}
+
+/// Command Code cards route search turns to their Chat endpoint.
+pub(crate) fn supports_command_search(provider: &Provider) -> bool {
+    search_api(provider) == Some(SearchApi::Command)
 }
 
 pub fn set_web_search_provider(
@@ -2249,14 +2272,17 @@ pub fn set_web_search_service(
     let selected_model = if let Some(id) = provider_id.as_deref() {
         let provider = store.providers.iter().find(|provider| provider.id == id)
             .ok_or("newapi.errors.notFound")?;
-        if supports_command_search(provider) {
-            None
-        } else {
-            let model = model_id.unwrap_or_else(|| provider.model.clone());
-            if !native_search_models(provider).contains(&model) {
-            return Err("newapi.errors.webSearchProviderUnsupported".into());
+        match (search_api(provider), model_id) {
+            (Some(SearchApi::Command), _) => None,
+            // No model on a DeepSeek card selects its Search API.
+            (Some(SearchApi::DeepSeek), None) => None,
+            (_, model_id) => {
+                let model = model_id.unwrap_or_else(|| provider.model.clone());
+                if !native_search_models(provider).contains(&model) {
+                    return Err("newapi.errors.webSearchProviderUnsupported".into());
+                }
+                Some(model)
             }
-            Some(model)
         }
     } else { None };
     store.router.web_search_provider_id = provider_id;
@@ -4217,6 +4243,34 @@ mod tests {
             assert!(!supports_command_search(&provider), "{base_url}");
         }
         assert!(!supports_command_search(&Provider { base_url: "https://api.commandcode.ai".into(), ..Default::default() }));
+    }
+
+    #[test]
+    fn deepseek_search_api_is_offered_beside_its_native_models() {
+        for base_url in ["https://api.deepseek.com", "https://api.deepseek.com/v1/", "https://api.deepseek.com/anthropic"] {
+            let provider = Provider { base_url: base_url.into(), api_key: "sk-fixture".into(), model: "deepseek-v4-pro".into(),
+                protocol: ModelProtocol::Responses, ..Default::default() };
+            assert_eq!(search_api(&provider), Some(SearchApi::DeepSeek), "{base_url}");
+            assert!(!supports_command_search(&provider), "DeepSeek keeps its configured protocol");
+            let view = provider.view();
+            assert!(view.web_search_capable && view.web_search_api == Some(SearchApi::DeepSeek));
+            assert_eq!(view.web_search_models, ["deepseek-v4-pro"]);
+        }
+        for base_url in ["http://api.deepseek.com", "https://api.deepseek.com/other", "https://relay.example.com/v1"] {
+            let provider = Provider { base_url: base_url.into(), api_key: "sk-fixture".into(), ..Default::default() };
+            assert_eq!(search_api(&provider), None, "{base_url}");
+        }
+        assert_eq!(search_api(&Provider { base_url: "https://api.deepseek.com".into(), ..Default::default() }), None);
+
+        let (_dir, paths) = paths();
+        let mut draft = input("DeepSeek", "https://api.deepseek.com");
+        draft.protocol = ModelProtocol::Responses;
+        let id = save_provider(&paths, draft).unwrap().state.providers[0].id.clone();
+        let api = set_web_search_service(&paths, Some(id.clone()), None).unwrap();
+        assert_eq!(api.state.router.web_search_provider_id.as_deref(), Some(id.as_str()));
+        assert!(api.state.router.web_search_model_id.is_none(), "no model selects the Search API");
+        let native = set_web_search_service(&paths, Some(id), Some("model-a".into())).unwrap();
+        assert_eq!(native.state.router.web_search_model_id.as_deref(), Some("model-a"));
     }
 
     #[test]

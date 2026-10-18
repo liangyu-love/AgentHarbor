@@ -1217,6 +1217,7 @@
     },
     "webSearchService": "Search account",
     "webSearchModel": "Search model",
+    "webSearchDeepSeekApi": "DeepSeek Search API",
     "webSearchAutomatic": "No native search fallback",
     "webSearchUnavailable": "Selected search service unavailable",
     "chatSearch": {

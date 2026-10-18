@@ -865,3 +865,64 @@ fn search_capable_requests_still_stream_and_known_rejections_are_not_repeated() 
         stop_unchecked();
     });
 }
+
+#[test]
+fn selected_deepseek_search_api_serves_every_protocol_with_its_own_key() {
+    let _guard = global_router_test_lock();
+    struct Endpoint;
+    impl Drop for Endpoint {fn drop(&mut self) {*hosted_search::TEST_SEARCH_ENDPOINT.lock().unwrap() = None;}}
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(temp.path().join("codex"));
+        std::fs::create_dir_all(&paths.app_data_dir).unwrap();
+        let _cleanup = Cleanup;
+        let _endpoint = Endpoint;
+        let search = Mock::new(|_,_| Reply::ok(json!({"results":[
+            {"rerank_score":2.4,"title":"Rust release","url":"https://www.rust-lang.org/releases","snippet":"short","summary":"Rust 1.99 fixture","content":"","site_name":null,"site_icon":null,"date":null,"authority":3},
+            {"rerank_score":0.2,"title":"","url":"https://spam.example/rust","snippet":"blocked","summary":"","content":"","site_name":null,"site_icon":null,"date":null,"authority":-1}]}))).await;
+        *hosted_search::TEST_SEARCH_ENDPOINT.lock().unwrap() = Some(format!("{}/v1/tools/search",search.url));
+        let client = Client::builder().no_proxy().timeout(Duration::from_secs(10)).build().unwrap();
+        for target in [ModelProtocol::ChatCompletions,ModelProtocol::AnthropicMessages,ModelProtocol::Responses] {
+            let inference = Mock::new(move |_,body| Reply::ok(inference_reply(target,body))).await;
+            // A model that ignores hosted search (DeepSeek Flash) borrows the Search API.
+            let store = router::Store {providers:vec![card("inference",&inference.url,"inference-model",target,protocol::ChatSearch::Selected),
+                card("deepseek","https://api.deepseek.com","deepseek-v4-pro",ModelProtocol::Responses,protocol::ChatSearch::Auto)],
+                router:router::RouterSettings {bearer_token:"router-local".into(),web_search_provider_id:Some("deepseek".into()),..Default::default()},..Default::default()};
+            store_file(&paths,&store);
+            let port = ensure_running(0,paths.clone(),ApiProxyConfigPayload::default()).await.unwrap();
+            for caller in [ModelProtocol::Responses,ModelProtocol::AnthropicMessages] {
+                let inbound = if caller == ModelProtocol::Responses {
+                    json!({"model":"inference::inference-model","input":"private caller context","tools":[{"type":"web_search"}],"tool_choice":{"type":"web_search"}})
+                } else {
+                    let mut inbound = request(false);
+                    inbound["model"] = json!("inference::inference-model");
+                    inbound["tools"][0]["blocked_domains"] = json!(["spam.example"]);
+                    inbound
+                };
+                let suffix = if caller == ModelProtocol::Responses {"responses"} else {"messages"};
+                let response = client.post(format!("http://127.0.0.1:{port}/v1/{suffix}")).bearer_auth("router-local").json(&inbound).send().await.unwrap();
+                let status = response.status();
+                let text = response.text().await.unwrap();
+                assert_eq!(status,StatusCode::OK,"{target:?}/{caller:?}: {text}");
+                assert!(text.contains("https://www.rust-lang.org/releases") && text.contains("Rust answer"),"{text}");
+                assert!(!text.contains("__agentharbor"));
+                if caller == ModelProtocol::AnthropicMessages {assert!(!text.contains("spam.example"),"blocked domains are filtered locally");}
+            }
+            let requests = inference.captured();
+            assert_eq!(requests.len(),4);
+            assert!(requests.iter().all(|request| request["body"]["model"] == "inference-model"));
+            assert!(requests[1]["body"].to_string().contains("Rust 1.99 fixture"),"the long summary is the model's input");
+            stop_unchecked();
+        }
+        let searches = search.captured();
+        assert_eq!(searches.len(),6);
+        for request in &searches {
+            assert_eq!(request["path"],"/v1/tools/search");
+            assert_eq!(request["authorization"],"Bearer deepseek-only");
+            assert!(request["body"]["query"].as_str().unwrap().starts_with("Rust"));
+            assert!(!request["body"].to_string().contains("private caller context"));
+        }
+        assert_eq!(searches[1]["body"],json!({"query":"Rust -site:spam.example","count":30}));
+        assert_eq!(searches[0]["body"],json!({"query":"Rust","count":10}));
+    });
+}

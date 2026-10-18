@@ -719,7 +719,7 @@ impl Prepared {
         health: Option<crate::core::aggregation::runtime::Health>,
     ) -> ForwardResult {
         let backend = self.search_backend.unwrap_or_else(|| hosted_search::SearchBackend {
-            client:self.client.clone(),endpoint:String::new(),headers:HeaderMap::new(),native:None,
+            client:self.client.clone(),endpoint:String::new(),headers:HeaderMap::new(),native:None,api:None,
         });
         hosted_search::relay(hosted_search::Execution {
             plan: self.hosted.expect("hosted plan"),

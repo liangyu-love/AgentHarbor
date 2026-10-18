@@ -223,6 +223,7 @@ fn execution(
             endpoint: format!("{}/alpha/web-search", search.url),
             headers: bearer("Bearer search-only"),
             native: None,
+            api: None,
         },
         client,
         url: format!("{}/v1/chat/completions", model.url),

@@ -102,6 +102,8 @@ export interface NewApiProvider {
   hasApiKey: boolean;
   webSearchCapable?: boolean;
   webSearchModels?: string[];
+  /** A REST search service the card's key also opens. */
+  webSearchApi?: "command" | "deepSeek" | null;
   protocol: ModelProtocol;
   chatSearch?: "auto" | "openAi" | "mimo" | "command" | "selected" | "disabled";
   model: string;

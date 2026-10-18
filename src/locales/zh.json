@@ -1217,6 +1217,7 @@
     },
     "webSearchService": "搜索执行账号",
     "webSearchModel": "搜索模型",
+    "webSearchDeepSeekApi": "DeepSeek Search API",
     "webSearchAutomatic": "未指定原生搜索兜底",
     "webSearchUnavailable": "已选搜索服务不可用",
     "chatSearch": {
