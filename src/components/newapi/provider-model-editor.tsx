@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Brain, Library, Maximize2, Plus, RefreshCw, Search, Star, Trash2, Upload } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -7,11 +7,12 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { effectiveModelProtocol, supportsProtocol } from "@/lib/provider-models";
 import { cn } from "@/lib/utils";
+import { useScrollPaging } from "@/hooks/use-scroll-paging";
 import { compactTokens, ModelResolutionFields, resolvedLimitPlaceholder } from "./model-resolution-fields";
 import type { ModelResolutionState } from "./use-model-resolutions";
 import type { ModelProtocol, NewApiModel, ProviderModelResolution } from "@/types/newapi";
 
-// Pending models render a page at a time; scrolling near the end brings the next.
+// Pending models render a page at a time (useScrollPaging).
 const PENDING_PAGE = 50;
 
 interface Props {
@@ -96,24 +97,11 @@ function ModelFacts({ model, resolution, protocol, loading }: {
 export function ProviderModelEditor({ models, providerName, protocol, defaultModel, disabled, fetching, fetchError, resolutions, onFetch, onModelsChange, onDefaultModelChange }: Props) {
   const { t, i18n } = useTranslation();
   const [newModel, setNewModel] = useState("");
-  const [pendingLimit, setPendingLimit] = useState(PENDING_PAGE);
-  const pendingListRef = useRef<HTMLDivElement>(null);
-  const pendingEndRef = useRef<HTMLDivElement>(null);
   const [reasoningDrafts, setReasoningDrafts] = useState<Record<string, string>>({});
   const selected = models.filter(model => model.included).length;
   const pending = models.filter(model => !model.included);
   const matchingPending = pending.filter(model => `${model.id} ${model.displayName}`.toLowerCase().includes(newModel.trim().toLowerCase()));
-  const morePending = matchingPending.length > pendingLimit;
-  // Re-armed per page: a page that still leaves the end in view loads the next one too.
-  useEffect(() => {
-    const root = pendingListRef.current, end = pendingEndRef.current;
-    if (!morePending || !root || !end || typeof IntersectionObserver === "undefined") return;
-    const observer = new IntersectionObserver(entries => {
-      if (entries.some(entry => entry.isIntersecting)) setPendingLimit(limit => limit + PENDING_PAGE);
-    }, { root, rootMargin: "0px 0px 160px 0px" });
-    observer.observe(end);
-    return () => observer.disconnect();
-  }, [morePending, pendingLimit]);
+  const { limit: pendingLimit, more: morePending, endRef: pendingEndRef, reset: resetPending } = useScrollPaging(matchingPending.length, PENDING_PAGE);
 
   const patch = (id: string, change: Partial<NewApiModel>) => {
     onModelsChange(models.map(model => model.id === id ? { ...model, ...change } : model));
@@ -186,7 +174,7 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
             spellCheck={false}
             className="h-9 rounded-xl pl-9"
             placeholder={t("newapi.addModelPlaceholder")}
-            onChange={event => { setNewModel(event.target.value); setPendingLimit(PENDING_PAGE); }}
+            onChange={event => { setNewModel(event.target.value); resetPending(); }}
             onKeyDown={event => {
               if (event.key === "Enter") {
                 event.preventDefault();
@@ -216,7 +204,7 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
             }}>{t("newapi.clearPendingModels")}</Button>
           </span>
         </summary>
-        <div ref={pendingListRef} data-pending-list className="mt-2 grid max-h-44 gap-1 overflow-y-auto sm:grid-cols-2">
+        <div data-pending-list className="mt-2 grid max-h-44 gap-1 overflow-y-auto sm:grid-cols-2">
           {matchingPending.slice(0, pendingLimit).map(model => <label key={model.id} className="flex min-w-0 cursor-pointer items-center gap-2 rounded-lg border border-transparent bg-background/70 px-2 py-1.5 text-xs transition-colors hover:border-primary/30 hover:bg-background">
             <Checkbox checked={false} disabled={disabled} onCheckedChange={value => { if (value === true) setIncluded(model, true); }} aria-label={t("newapi.includeModelAria", { model: model.id })} />
             <span className="min-w-0 truncate font-mono" title={model.id}>{model.id}</span>

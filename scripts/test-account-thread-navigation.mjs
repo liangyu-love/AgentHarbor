@@ -61,7 +61,8 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   assert.ok(await results.getByRole("checkbox").count() < 90, "Main list stays virtualized");
   await tree.getByRole("button", { name: "展开或收起 Lighthouse", exact: true }).first().click();
   await eventually(async () => assert.equal(await tree.locator('button[title^="Review thread"]').count(), 30, "Large tree branches are paged"));
-  await tree.getByRole("button", { name: "显示更多（剩余 60 条）", exact: true }).click();
+  assert.equal(await tree.getByRole("button", { name: /显示更多/ }).count(), 0, "Branches page on scroll, not on a button");
+  await tree.locator('button[title^="Review thread"]').last().scrollIntoViewIfNeeded();
   await eventually(async () => assert.equal(await tree.locator('button[title^="Review thread"]').count(), 60));
   await tree.getByRole("button", { name: "Review thread 42", exact: true }).click();
   await eventually(async () => assert.equal(await results.getByRole("checkbox").count(), 1));

@@ -7,9 +7,9 @@ import {
   FolderGit2,
   FolderOpen,
   MessagesSquare,
-  Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useScrollPaging } from "@/hooks/use-scroll-paging";
 import type { FolderGroup } from "@/components/threads/thread-utils";
 import type { ThreadList } from "@/components/threads/use-thread-list";
 
@@ -40,11 +40,11 @@ function ProjectBranch({
   const { t } = useTranslation();
   const id = useId();
   const [expanded, setExpanded] = useState(false);
-  const [limit, setLimit] = useState(PAGE_SIZE);
 
   const matching = project.items.filter((thread) =>
     list.matchingKeys.has(thread.key),
   );
+  const paging = useScrollPaging(matching.length, PAGE_SIZE);
   const active = list.activeProject?.key === project.key;
 
   return (
@@ -70,7 +70,7 @@ function ProjectBranch({
           aria-controls={id}
           onClick={() => {
             setExpanded((value) => !value);
-            setLimit(PAGE_SIZE);
+            paging.reset();
           }}
         >
           <ChevronRight
@@ -134,7 +134,7 @@ function ProjectBranch({
           id={id}
           className="relative ml-4 mt-1 space-y-0.5 border-l-2 border-border/60 pl-2.5 pb-1"
         >
-          {matching.slice(0, limit).map((thread) => {
+          {matching.slice(0, paging.limit).map((thread) => {
             const isFocused = list.focusedThread?.key === thread.key;
             return (
               <li key={thread.key}>
@@ -169,25 +169,7 @@ function ProjectBranch({
               {t("threads.noFilteredResults")}
             </li>
           )}
-          {matching.length > limit && (
-            <li className="pt-0.5">
-              <button
-                type="button"
-                className={cn(
-                  rowClass,
-                  "w-full justify-center font-medium text-primary hover:bg-primary/10 rounded-lg",
-                )}
-                onClick={() => setLimit((value) => value + PAGE_SIZE)}
-              >
-                <Sparkles className="h-3 w-3 shrink-0" />
-                <span>
-                  {t("threads.showMoreThreads", {
-                    count: matching.length - limit,
-                  })}
-                </span>
-              </button>
-            </li>
-          )}
+          {paging.more && <li ref={paging.endRef} aria-hidden className="h-px" />}
         </ul>
       )}
     </li>
