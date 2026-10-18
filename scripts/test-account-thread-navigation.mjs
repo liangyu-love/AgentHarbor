@@ -125,6 +125,7 @@ export async function testAccountThreadNavigation({ page, reset, captureDir }) {
   assert.equal(await metric("cached").textContent(), "9");
   assert.equal(await metric("output").textContent(), "18");
   assert.equal(await metric("tokens-total").textContent(), "Token 总量：30");
+  assert.equal(await metric("cache-rate").textContent(), "75%", "Cache hit rate is the cached share of input");
   assert.equal(await metric("storage").textContent(), "300 B");
   assert.equal(await results.getByRole("checkbox").count(), 3, "Project filtering uses the normalized identity too");
   await page.getByPlaceholder(/搜索.*标题/).fill("no-such-thread");

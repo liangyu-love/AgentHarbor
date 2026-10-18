@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { Coins, FolderTree, HardDrive, MessagesSquare } from "lucide-react";
 import { formatSize, formatTokenCount } from "@/components/threads/thread-utils";
+import { formatCacheRate } from "@/lib/cache-usage";
 import type { ThreadList } from "@/components/threads/use-thread-list";
 import { focusRing, pressable } from "@/lib/a11y";
 import { cn } from "@/lib/utils";
@@ -21,15 +22,16 @@ export function ThreadMetrics({ list }: { list: ThreadList }) {
     { name: "projects", label: t("threads.statsFolders"), value: workspaceCount, Icon: FolderTree, hint: "" },
     { name: "storage", label: t("threads.statsStorage"), value: formatSize(totalBytes), Icon: HardDrive, hint: "" },
   ];
-  // Prompt tokens include the cached subset. Each part shows what its share of
-  // the bar is, so input reads as the usage page's: what was not cached.
+  // Prompt tokens include the cached subset, so input reads as the usage
+  // page's: what was not cached. The hit rate is the cached share of input.
   const fresh = Math.max(0, totalInputTokens - totalCachedTokens);
+  const cacheRate = totalInputTokens > 0 ? Math.min(totalCachedTokens, totalInputTokens) / totalInputTokens * 100 : null;
   const parts = [
-    { name: "input", label: t("threads.statsInputLabel"), value: fresh, share: fresh, tone: "bg-sky-500" },
-    { name: "cached", label: t("threads.statsCachedLabel"), value: totalCachedTokens, share: totalCachedTokens, tone: "bg-emerald-500" },
-    { name: "output", label: t("threads.statsOutputLabel"), value: totalOutputTokens, share: totalOutputTokens, tone: "bg-amber-500" },
+    { name: "input", label: t("threads.statsInputLabel"), value: formatTokenCount(fresh) },
+    { name: "cached", label: t("threads.statsCachedLabel"), value: formatTokenCount(totalCachedTokens) },
+    { name: "output", label: t("threads.statsOutputLabel"), value: formatTokenCount(totalOutputTokens) },
+    { name: "cache-rate", label: t("accounts.cacheHitRate"), value: formatCacheRate(cacheRate) },
   ];
-  const shareTotal = parts.reduce((sum, part) => sum + part.share, 0);
 
   return (
     <section aria-label={t("threads.overview")} data-thread-metrics className="thread-stats relative border-t border-border/60 bg-background/40 px-5 py-3.5 sm:px-6">
@@ -61,21 +63,14 @@ export function ThreadMetrics({ list }: { list: ThreadList }) {
                   {t("threads.statsTokens", { value: formatTokenCount(totalTokens) })}
                 </span>
               </div>
-              <div className="mt-1.5 grid grid-cols-3 gap-2">
-                {parts.map(({ name, label, value, tone }) => (
+              <div className="thread-token-parts mt-1.5">
+                {parts.map(({ name, label, value }) => (
                   <div key={name} className="min-w-0">
-                    <span className="flex items-center gap-1.5 truncate text-[11px] text-muted-foreground">
-                      <span aria-hidden className={cn("h-1.5 w-1.5 shrink-0 rounded-full", tone)} />{label}
-                    </span>
-                    <span data-metric={name} className="thread-stat-value text-lg">{formatTokenCount(value)}</span>
+                    <span className="block truncate text-[11px] text-muted-foreground">{label}</span>
+                    <span data-metric={name} className="thread-stat-value text-lg">{value}</span>
                   </div>
                 ))}
               </div>
-              <span aria-hidden className="mt-2 flex h-1.5 overflow-hidden rounded-full bg-muted">
-                {shareTotal > 0 && parts.map(({ name, share, tone }) => (
-                  <span key={name} className={cn("h-full transition-[width] duration-700", tone)} style={{ width: `${share / shareTotal * 100}%` }} />
-                ))}
-              </span>
             </>
           ) : (
             <>

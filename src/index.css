@@ -1152,6 +1152,7 @@ body {
 .thread-stat-label { display: flex; min-width: 0; align-items: center; gap: 6px; color: hsl(var(--muted-foreground)); font-size: 11px; font-weight: 600; white-space: nowrap; }
 .thread-stat-value { display: block; overflow: hidden; font-size: 24px; font-weight: 700; line-height: 1.2; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
 .thread-stat-value.text-lg { font-size: 18px; }
+.thread-token-parts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 .thread-stat-hint { overflow: hidden; color: hsl(var(--muted-foreground)); font-size: 11px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
 @container thread-stats (min-width: 900px) {
   .thread-stats-grid { grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, 2.2fr); }
@@ -1159,6 +1160,7 @@ body {
 }
 @container thread-stats (max-width: 420px) {
   .thread-stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .thread-token-parts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .thread-stat-value { font-size: 20px; }
 }
 /* A client mark with a status light: live, archived or missing its log. */
