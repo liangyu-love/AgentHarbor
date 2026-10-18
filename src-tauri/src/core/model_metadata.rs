@@ -444,6 +444,16 @@ fn reductions(current: &str) -> Vec<(&'static str, String)> {
             push("regionPrefix", rest);
         }
     }
+    // Relays label a channel or plan in a leading bracket: `[时间卡k]claude-opus-5-5`,
+    // `【官转】gpt-5`. A trailing bracket is a client option such as `[1m]`.
+    for (open, close) in [('[', ']'), ('【', '】')] {
+        if let Some((_, rest)) = current
+            .strip_prefix(open)
+            .and_then(|rest| rest.split_once(close))
+        {
+            push("bracketPrefix", rest);
+        }
+    }
     if let Some(index) = current.find('[') {
         push("clientOption", &current[..index]);
     }
@@ -1624,6 +1634,45 @@ mod tests {
             .map(|step| step.value)
             .collect();
         assert!(!values.contains(&"gpt-5.5".to_owned()));
+        // Leading bracket labels are relay channel names, in ASCII or full-width
+        // brackets, and combine with a trailing client option.
+        for (raw, base) in [
+            ("[时间卡k]claude-opus-5-5", "claude-opus-5-5"),
+            ("【官转】 gpt-5", "gpt-5"),
+            ("[限时]claude-opus-5-5[1m]", "claude-opus-5-5"),
+        ] {
+            let steps = candidates(raw);
+            assert!(
+                steps.iter().any(|step| step.value == base),
+                "{raw} reduces to {base}"
+            );
+            assert!(
+                steps.iter().all(|step| step.price_safe),
+                "{raw}: a channel label keeps prices"
+            );
+        }
+        assert_eq!(
+            candidates("[时间卡k]claude-opus-5-5")[1].step,
+            "bracketPrefix"
+        );
+        let values: Vec<String> = candidates("[unclosed-model")
+            .into_iter()
+            .map(|step| step.value)
+            .collect();
+        assert_eq!(values, vec!["[unclosed-model".to_owned()]);
+    }
+
+    #[test]
+    fn a_bracketed_channel_label_resolves_to_the_catalog_model() {
+        let catalog = catalog();
+        let resolved = resolve(&catalog, &input_for("[时间卡k]claude-sonnet-4-5"));
+        assert_eq!(resolved.match_kind, MatchKind::Consensus);
+        assert_eq!(
+            resolved.matched.as_ref().unwrap().model_id,
+            "claude-sonnet-4-5"
+        );
+        assert_eq!(resolved.context_window.value, Some(1_000_000));
+        assert_eq!(resolved.price.input, Some(3.0));
     }
 
     #[test]
