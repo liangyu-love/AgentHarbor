@@ -16,6 +16,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { testAccountThreadNavigation } from "./test-account-thread-navigation.mjs";
+import { testSidebarCapsule } from "./test-sidebar-capsule.mjs";
 import { testThreadDetails } from "./test-thread-details.mjs";
 import { testClaudeSessions } from "./test-claude-sessions.mjs";
 import { testThreadUiFixes } from "./test-thread-ui-fixes.mjs";
@@ -171,6 +172,8 @@ try {
     await testThreadUiFixes({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "account-thread-navigation") {
     await testAccountThreadNavigation({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "sidebar-capsule") {
+    await testSidebarCapsule({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "thread-details") {
     await testThreadDetails({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "claude-sessions") {
@@ -1479,6 +1482,7 @@ try {
   await page.getByRole("button", { name: "关闭预览" }).click();
   console.log("PASS gallery scrolls into view, previews above the page, and ignores late image responses");
   await testAccountThreadNavigation({ page, reset, captureDir });
+  await testSidebarCapsule({ page, reset, captureDir });
   await testThreadDetails({ page, reset, captureDir });
   await testClaudeSessions({ page, reset, captureDir });
   await testClaudeSupport({ page, reset, captureDir });

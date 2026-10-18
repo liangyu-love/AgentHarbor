@@ -271,6 +271,8 @@ function MainApp() {
           {
             "--sidebar-width": `${SIDEBAR_EXPANDED_WIDTH_PX}px`,
             "--sidebar-width-icon": `${SIDEBAR_COLLAPSED_WIDTH_PX}px`,
+            // The capsule stays clear of the macOS traffic lights.
+            "--app-drag-height": `${DRAG_REGION_HEIGHT}px`,
           } as CSSProperties
         }
         className="flex min-h-0 flex-1 overflow-hidden"

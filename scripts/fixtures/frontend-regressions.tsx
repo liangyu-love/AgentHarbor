@@ -13,9 +13,11 @@ import { ProviderDialog } from "@/components/newapi/provider-dialog";
 import { ProviderTestDialog } from "@/components/newapi/provider-test-dialog";
 import { NewApiPage } from "@/components/newapi/newapi-page";
 import { RelayModelsPage } from "@/components/newapi/relays-page";
-import { AppSidebar } from "@/components/layout/sidebar";
+import { createPortal } from "react-dom";
+import { AppSidebar, SIDEBAR_COLLAPSED_WIDTH_PX, SIDEBAR_EXPANDED_WIDTH_PX } from "@/components/layout/sidebar";
 import { AppAvatarProvider } from "@/hooks/use-app-avatar";
-import { SidebarProvider } from "@/components/ui/sidebar";
+import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import type { Route } from "@/types/navigation";
 import { ClaudeDesktopRouterExitDialog } from "@/components/newapi/claude-desktop-router-exit-dialog";
 import { UpdateOverlay } from "@/components/update/update-overlay";
 import { useUpdateCheck } from "@/hooks/use-update-check";
@@ -857,6 +859,21 @@ function ProviderFixture({ mixed = false }: { mixed?: boolean }) {
 
 type FixtureMode = "sidebar" | "instructions" | "mcp-clients" | "skills" | "desktop-updater" | "desktop-exit" | "terminal-proxy" | "autostart" | "routing-cache" | "thread-details" | "thread-details-missing" | "thread-details-unknown" | "thread-details-error" | "compact" | "grid" | "image" | "mcp" | "accounts" | "account-resets" | "account-resets-unavailable" | "thread-tree" | "groups" | "overview" | "usage" | "usage-page" | "provider" | "warnings" | "thread-actions" | "thread-queue-recovery" | "mixed" | "access" | "incompatible" | "native-invalid" | "test" | "clients" | "clients-existing" | "clients-conflict" | "clients-opencode" | "clients-opencode-stale" | "clients-versions" | "clients-versions-existing" | "recovery-missing" | "recovery-journal" | "recovery-official" | "recovery-long" | "recovery-router";
 
+// The app shell's sidebar beside an inset page, portalled out of PageStage so
+// the capsule is fixed to the viewport as in the app.
+function SidebarFixture() {
+  const [route, setRoute] = useState<Route>(controls.review.sidebarRoute ?? "relays");
+  return createPortal(<AppAvatarProvider>
+    <SidebarProvider className="fixed inset-0 overflow-hidden"
+      style={{ zIndex: 50, "--sidebar-width": `${SIDEBAR_EXPANDED_WIDTH_PX}px`, "--sidebar-width-icon": `${SIDEBAR_COLLAPSED_WIDTH_PX}px` } as React.CSSProperties}>
+      <AppSidebar activeRoute={route} onNavigate={next => { controls.review.navigatedTo = next; setRoute(next); }} onThemeChange={noop} />
+      <SidebarInset data-sidebar-fixture-page>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: 18 }}><SidebarTrigger /><strong>{route}</strong></div>
+      </SidebarInset>
+    </SidebarProvider>
+  </AppAvatarProvider>, document.body);
+}
+
 function RoutingCacheFixture() {
   const [page, setPage] = useState("threads");
   return <>
@@ -1280,7 +1297,7 @@ function mount(mode: FixtureMode) {
   root.render(<QueryClientProvider key={++mountSequence} client={queryClient}><TooltipProvider>
     <div style={{ position: "relative", height: 600 }}><PageStage state="active">
       {(mode.startsWith("thread-details") || mode === "thread-tree" || mode === "thread-actions" || mode === "terminal-proxy" || mode === "autostart" || mode === "skills" || mode === "groups" || mode === "access" || mode === "accounts" || mode === "image") && <ThreadToastProbe />}
-      {mode === "sidebar" ? <AppAvatarProvider><SidebarProvider><AppSidebar activeRoute={controls.review.sidebarRoute ?? "relays"} onNavigate={route => { controls.review.navigatedTo = route; }} onThemeChange={noop} /><div className="flex-1" /></SidebarProvider></AppAvatarProvider> : mode === "routing-cache" ? <RoutingCacheFixture /> : mode === "desktop-updater" ? <DesktopUpdaterFixture /> : mode === "desktop-exit" ? <ClaudeDesktopRouterExitDialog /> : mode.startsWith("recovery-") ? <RecoveryFixture thread={threads[0] as ThreadSummary} /> :
+      {mode === "sidebar" ? <SidebarFixture /> : mode === "routing-cache" ? <RoutingCacheFixture /> : mode === "desktop-updater" ? <DesktopUpdaterFixture /> : mode === "desktop-exit" ? <ClaudeDesktopRouterExitDialog /> : mode.startsWith("recovery-") ? <RecoveryFixture thread={threads[0] as ThreadSummary} /> :
         mode === "skills" ? <SkillsPage /> : mode === "terminal-proxy" ? <div className="mx-auto max-w-xl rounded-xl bg-card shadow-sm"><TerminalProxyFixture /></div> :
         mode === "autostart" ? <div className="mx-auto max-w-xl rounded-xl bg-card shadow-sm"><AutostartSetting /></div> :
         mode === "image" ? <ImageWorkbenchPage /> : mode === "instructions" ? <CustomInstructionsPage /> : mode === "mcp-clients" ? <McpClientFixture /> : mode === "mcp" ? <McpPage /> : mode === "accounts" || mode.startsWith("account-resets") ? <AccountsPage refreshInterval="5m" /> : mode === "overview" ? <OverviewPage onNavigate={route => { controls.review.navigatedTo = route; }} onOpenProxySettings={() => { controls.review.proxySettingsOpened = true; }} /> : mode === "usage-page" || mode === "usage" ? <UsagePage refreshInterval="5m" onManageProviders={() => { controls.review.navigatedTo = "relays"; }} onOpenThreads={client => { controls.review.navigatedTo = `threads:${client}`; }} /> : mode === "provider" || mode === "mixed" ? <ProviderFixture mixed={mode === "mixed"} /> : mode.startsWith("thread-details") || mode === "thread-tree" || mode === "warnings" || mode === "thread-actions" || mode === "thread-queue-recovery" ? <ThreadsPage /> :

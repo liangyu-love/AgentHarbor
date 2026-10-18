@@ -1019,27 +1019,88 @@ body {
   .ink-generate-button { transition: none; }
 }
 
-.app-nav-button:not([data-active="true"]):hover > svg {
-  transform: translateX(2px);
-}
-
-.app-nav-button[data-active="true"]::before {
-  animation: app-nav-marker 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-
 .app-search-trigger:focus-visible {
   outline: 2px solid hsl(var(--ring));
   outline-offset: 2px;
 }
 
-@keyframes app-nav-marker {
-  from { opacity: 0.35; scale: 1 0.25; }
-  to { opacity: 1; scale: 1 1; }
+/* The sidebar capsule: a pill centred on the left edge, as tall as its
+   content. Over a wallpaper it turns to frosted glass so the image reads
+   through it. Width changes spring a little past their mark and settle. */
+.sidebar-capsule-frame {
+  align-items: center;
+  padding: max(18px, var(--app-drag-height, 0px)) 12px 18px;
+  transition: width 480ms cubic-bezier(0.34, 1.22, 0.64, 1);
+}
+.sidebar-capsule-gap { transition: width 480ms cubic-bezier(0.22, 1, 0.36, 1); }
+.sidebar-capsule {
+  max-height: 100%;
+  overflow: hidden;
+  border-radius: 28px;
+  background: hsl(var(--card));
+  box-shadow: 0 0 0 1px hsl(var(--sidebar-border) / 0.9), 0 2px 6px -2px hsl(var(--foreground) / 0.08), 0 22px 44px -26px hsl(var(--foreground) / 0.32);
+  animation: sidebar-capsule-in 640ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+html[data-has-custom-bg="true"] .sidebar-capsule {
+  background: hsl(var(--card) / 0.52);
+  box-shadow: inset 0 0 0 1px hsl(0 0% 100% / 0.38), 0 22px 44px -24px rgb(0 0 0 / 0.4);
+  backdrop-filter: blur(20px) saturate(1.5);
+  -webkit-backdrop-filter: blur(20px) saturate(1.5);
+}
+html.dark[data-has-custom-bg="true"] .sidebar-capsule {
+  background: hsl(var(--card) / 0.56);
+  box-shadow: inset 0 0 0 1px hsl(0 0% 100% / 0.09), 0 22px 44px -24px rgb(0 0 0 / 0.6);
+}
+.sidebar-capsule [data-sidebar="content"] { scrollbar-width: none; }
+/* The wallpaper, not the sidebar tint, fills the canvas around the capsule. */
+html[data-has-custom-bg="true"] .group\/sidebar-wrapper { background-color: transparent; }
+/* Groups are parted by a hairline instead of a heading. */
+.app-nav-group + .app-nav-group::before {
+  content: "";
+  display: block;
+  height: 1px;
+  margin: 0 10px 6px;
+  background: hsl(var(--sidebar-border));
+}
+
+/* One highlight glides between items instead of each item lighting up. */
+.app-nav-indicator {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border-radius: 12px;
+  background: hsl(var(--primary) / 0.12);
+  box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.14);
+  pointer-events: none;
+  transition: transform 460ms cubic-bezier(0.34, 1.32, 0.64, 1), width 460ms cubic-bezier(0.34, 1.32, 0.64, 1), height 460ms cubic-bezier(0.34, 1.32, 0.64, 1), opacity 180ms ease;
+  animation: app-nav-fade-in 420ms 320ms ease both;
+}
+.app-nav-indicator[data-instant] { transition: opacity 180ms ease; }
+.dark .app-nav-indicator { background: hsl(var(--primary) / 0.2); }
+
+.app-nav-button > svg { transition: transform 280ms cubic-bezier(0.34, 1.56, 0.64, 1), color 150ms ease; }
+.app-nav-button:hover > svg { transform: translateY(-1px) scale(1.12); }
+.app-nav-button:active > svg { transform: scale(0.9); transition-duration: 90ms; }
+/* Labels return with the open capsule: they fade up from nothing as they reappear. */
+.app-nav-label { transition: opacity 240ms ease 80ms; }
+@starting-style { .app-nav-label { opacity: 0; } }
+
+/* Arrival: the capsule slides in, then its items follow one by one. */
+.app-nav-item { animation: app-nav-item-in 460ms cubic-bezier(0.16, 1, 0.3, 1) both; animation-delay: calc(140ms + var(--nav-index, 0) * 28ms); }
+@keyframes sidebar-capsule-in {
+  from { opacity: 0; transform: translateX(-22px) scale(0.97); }
+}
+@keyframes app-nav-item-in {
+  from { opacity: 0; transform: translateX(-8px); }
+}
+@keyframes app-nav-fade-in {
+  from { opacity: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .app-nav-button[data-active="true"]::before { animation: none; }
-  .app-nav-button > svg { transition: none; }
+  .sidebar-capsule, .app-nav-item, .app-nav-indicator { animation: none; }
+  .sidebar-capsule-frame, .sidebar-capsule-gap, .app-nav-indicator, .app-nav-label, .app-nav-button > svg { transition: none; }
+  .app-nav-button:hover > svg, .app-nav-button:active > svg { transform: none; }
 }
 
 /* Brief, one-time arrival for live summary tiles. Content is visible without motion. */

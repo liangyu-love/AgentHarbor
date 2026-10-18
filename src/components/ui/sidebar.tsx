@@ -145,7 +145,7 @@ const SidebarProvider = React.forwardRef<
               } as React.CSSProperties
             }
             className={cn(
-              "group/sidebar-wrapper flex min-h-svh w-full has-[[data-variant=inset]]:bg-sidebar",
+              "group/sidebar-wrapper flex min-h-svh w-full has-[[data-variant=inset]]:bg-sidebar has-[[data-variant=capsule]]:bg-sidebar",
               className
             )}
             ref={ref}
@@ -164,7 +164,8 @@ const Sidebar = React.forwardRef<
   HTMLDivElement,
   React.ComponentProps<"div"> & {
     side?: "left" | "right"
-    variant?: "sidebar" | "floating" | "inset"
+    // capsule: a floating pill centred on the edge, as tall as its content.
+    variant?: "sidebar" | "floating" | "inset" | "capsule"
     collapsible?: "offcanvas" | "icon" | "none"
   }
 >(
@@ -232,22 +233,27 @@ const Sidebar = React.forwardRef<
         {/* This is what handles the sidebar gap on desktop */}
         <div
           className={cn(
-            "relative w-[--sidebar-width] bg-transparent transition-[width] duration-200 ease-linear",
+            "relative w-[--sidebar-width] bg-transparent",
+            // The capsule's frame and gap carry their own spring (index.css).
+            variant === "capsule" ? "sidebar-capsule-gap" : "transition-[width] duration-200 ease-linear",
             "group-data-[collapsible=offcanvas]:w-0",
             "group-data-[side=right]:rotate-180",
-            variant === "floating" || variant === "inset"
+            variant === "floating" || variant === "inset" || variant === "capsule"
               ? "group-data-[collapsible=icon]:w-[var(--sidebar-width-icon)]"
               : "group-data-[collapsible=icon]:w-[--sidebar-width-icon]"
           )}
         />
         <div
           className={cn(
-            "fixed inset-y-0 z-10 hidden h-svh w-[--sidebar-width] transition-[left,right,width] duration-200 ease-linear md:flex",
+            "fixed inset-y-0 z-10 hidden h-svh w-[--sidebar-width] md:flex",
+            variant === "capsule" ? "sidebar-capsule-frame" : "transition-[left,right,width] duration-200 ease-linear",
             side === "left"
               ? "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]"
               : "right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",
             // Adjust the padding for floating and inset variants.
-            variant === "floating" || variant === "inset"
+            variant === "capsule"
+              ? "group-data-[collapsible=icon]:w-[var(--sidebar-width-icon)]"
+              : variant === "floating" || variant === "inset"
               ? "p-2 group-data-[collapsible=icon]:w-[var(--sidebar-width-icon)] group-data-[collapsible=icon]:px-1 group-data-[collapsible=icon]:py-2"
               : "group-data-[collapsible=icon]:w-[--sidebar-width-icon] group-data-[side=left]:border-r group-data-[side=right]:border-l",
             className
@@ -256,7 +262,12 @@ const Sidebar = React.forwardRef<
         >
           <div
             data-sidebar="sidebar"
-            className="flex h-full w-full flex-col bg-sidebar group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:border group-data-[variant=floating]:border-sidebar-border group-data-[variant=floating]:shadow"
+            className={cn(
+              "flex w-full flex-col",
+              variant === "capsule"
+                ? "sidebar-capsule"
+                : "h-full bg-sidebar group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:border group-data-[variant=floating]:border-sidebar-border group-data-[variant=floating]:shadow"
+            )}
           >
             {children}
           </div>
@@ -332,6 +343,8 @@ const SidebarInset = React.forwardRef<
       className={cn(
         "relative flex w-full flex-1 flex-col bg-[#FFFFFF] dark:bg-background",
         "md:peer-data-[variant=inset]:mt-[18px] md:peer-data-[variant=inset]:mb-[18px] md:peer-data-[variant=inset]:mr-[18px] md:peer-data-[variant=inset]:ml-0 md:peer-data-[state=collapsed]:peer-data-[variant=inset]:ml-2 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow",
+        // Beside a capsule the page is the same inset sheet; the capsule's frame holds the gap.
+        "md:peer-data-[variant=capsule]:my-[18px] md:peer-data-[variant=capsule]:mr-[18px] md:peer-data-[variant=capsule]:rounded-xl md:peer-data-[variant=capsule]:shadow",
         className
       )}
       {...props}
