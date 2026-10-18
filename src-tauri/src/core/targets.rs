@@ -58,23 +58,50 @@ impl ConversationSource for CodexTarget {
 
 impl ProcessController for CodexTarget {
     fn restart(&self) -> Result<(), CoreError> {
-        let global = super::newapi::proxy_from_settings(&self.paths.settings_path);
         let store = super::router::load_store(&self.paths).map_err(CoreError::OperationFailed)?;
-        let proxy = codex_process_proxy(&store, &global);
-        platform::process::restart_codex_app(&proxy, &self.paths)
+        let network = codex_process_network(&store, &self.global_proxy());
+        platform::process::restart_codex_app(&network, &self.paths)
     }
 }
 
-fn codex_process_proxy(
+impl CodexTarget {
+    fn global_proxy(&self) -> super::models::ApiProxyConfigPayload {
+        super::newapi::proxy_from_settings(&self.paths.settings_path)
+    }
+
+    /// Starts Codex on the network its connection calls for.
+    pub fn launch(&self) -> Result<(), CoreError> {
+        let global = self.global_proxy();
+        let network = match super::router::load_store(&self.paths) {
+            Ok(store) => codex_process_network(&store, &global),
+            Err(error) => {
+                log::warn!("Codex starts on the app proxy; the provider store is unreadable: {error}");
+                global.into()
+            }
+        };
+        super::codex_config::prepare_network_config(&self.paths, &network.proxy)?;
+        platform::process::launch_codex_app(&network)
+    }
+}
+
+/// Codex reaching a relay itself (native access) skips the proxy for a direct
+/// card's relay alone; its other traffic (sign-in, MCP, plugins) keeps it.
+/// Routed, Codex reaches only the local router, which picks each card's exit.
+fn codex_process_network(
     store: &super::router::Store,
     global: &super::models::ApiProxyConfigPayload,
-) -> super::models::ApiProxyConfigPayload {
+) -> super::api_client::ProcessNetwork {
     if store.router.enabled && store.codex_access_mode == super::router::CodexAccessMode::Native {
         if let Some(provider) = super::router::effective_active(store) {
-            return super::newapi::effective_proxy(provider.network_mode(), global);
+            if provider.network_mode() == "direct" {
+                return match provider.relay_host() {
+                    Some(host) => super::api_client::ProcessNetwork::bypassing(global, vec![host]),
+                    None => super::newapi::effective_proxy("direct", global).into(),
+                };
+            }
         }
     }
-    global.clone()
+    global.clone().into()
 }
 
 pub struct TargetRegistry {
@@ -112,8 +139,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_process_uses_selected_provider_egress_while_router_preserves_global_egress() {
+    fn native_process_skips_the_proxy_for_a_direct_relay_only() {
         use crate::core::{
+            api_client::ProcessNetwork,
             models::{ApiProxyConfigPayload, ApiProxyMode},
             router::{CodexAccessMode, Provider, Store},
         };
@@ -129,21 +157,24 @@ mod tests {
             enabled: true,
             api_key: "fixture-key".into(),
             model: "fixture-model".into(),
+            base_url: "https://relay.example:8443/v1".into(),
             network_mode: "direct".into(),
             ..Default::default()
         });
-        assert_eq!(
-            codex_process_proxy(&store, &global).mode,
-            ApiProxyMode::Direct
-        );
+        let network = codex_process_network(&store, &global);
+        assert_eq!(network.proxy, global, "everything else keeps the proxy");
+        assert_eq!(network.direct_hosts, ["relay.example"]);
         store.providers[0].network_mode = "proxy".into();
-        assert_eq!(codex_process_proxy(&store, &global), global);
+        assert_eq!(codex_process_network(&store, &global), ProcessNetwork::from(global.clone()));
         store.providers[0].network_mode = "direct".into();
         store.codex_access_mode = CodexAccessMode::Router;
-        assert_eq!(codex_process_proxy(&store, &global), global);
+        assert_eq!(codex_process_network(&store, &global), ProcessNetwork::from(global.clone()));
         store.codex_access_mode = CodexAccessMode::Native;
         store.router.enabled = false;
-        assert_eq!(codex_process_proxy(&store, &global), global);
+        assert_eq!(codex_process_network(&store, &global), ProcessNetwork::from(global.clone()));
+        store.router.enabled = true;
+        store.providers[0].base_url = "not a url".into();
+        assert_eq!(codex_process_network(&store, &global).proxy.mode, ApiProxyMode::Direct);
     }
 
     #[test]

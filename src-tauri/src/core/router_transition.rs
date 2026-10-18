@@ -62,7 +62,8 @@ impl CodexProcess for SystemCodex {
             .map_err(|e| e.to_string())
     }
     fn reopen(&mut self, paths: &CodexPaths) -> Result<(), String> {
-        process::launch_codex_app(&newapi::proxy_from_settings(&paths.settings_path))
+        crate::core::targets::CodexTarget::new(paths.clone())
+            .launch()
             .map_err(|e| e.to_string())
     }
 }

@@ -46,7 +46,7 @@ pub(crate) fn configure_async_client(
     // builds its own HTTP/2 client.
     let builder = builder.http1_only();
     Ok(match config.mode {
-        ApiProxyMode::System => builder,
+        ApiProxyMode::System => builder.no_proxy().proxy(system_proxy()),
         ApiProxyMode::Direct => builder.no_proxy(),
         ApiProxyMode::Manual => builder.no_proxy().proxy(
             reqwest::Proxy::all(config.url.as_deref().unwrap())
@@ -62,7 +62,7 @@ pub(crate) fn configure_blocking_client(
     let config = sanitize_proxy_config(config)?;
     let builder = builder.http1_only();
     Ok(match config.mode {
-        ApiProxyMode::System => builder,
+        ApiProxyMode::System => builder.no_proxy().proxy(system_proxy()),
         ApiProxyMode::Direct => builder.no_proxy(),
         ApiProxyMode::Manual => builder.no_proxy().proxy(
             reqwest::Proxy::all(config.url.as_deref().unwrap())
@@ -71,13 +71,190 @@ pub(crate) fn configure_blocking_client(
     })
 }
 
+/// The system proxy, looked up again every few seconds rather than once when
+/// a client is built: proxy software started, stopped or moved after a
+/// long-lived client (the router's) was built takes effect without a restart.
+pub(crate) fn system_proxy() -> reqwest::Proxy {
+    reqwest::Proxy::custom(|url: &reqwest::Url| system_route(url))
+}
+
+fn system_route(url: &reqwest::Url) -> Option<reqwest::Url> {
+    use hyper_util::client::proxy::matcher::Matcher;
+    struct Routes {
+        read: std::time::Instant,
+        matcher: Matcher,
+    }
+    static ROUTES: std::sync::Mutex<Option<Routes>> = std::sync::Mutex::new(None);
+    const FRESH: Duration = Duration::from_secs(2);
+    let uri = url.as_str().parse::<hyper::Uri>().ok()?;
+    let mut routes = ROUTES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if routes.as_ref().is_none_or(|routes| routes.read.elapsed() >= FRESH) {
+        *routes = Some(Routes {
+            read: std::time::Instant::now(),
+            matcher: system_matcher(),
+        });
+    }
+    proxy_url(&routes.as_ref()?.matcher.intercept(&uri)?)
+}
+
+/// Proxy variables first, then the registry, as reqwest's own system proxy
+/// does; but `ProxyServer`'s per-protocol form (`http=…;https=…`), which
+/// reqwest takes for one invalid address and silently ignores, is read too.
+#[cfg(target_os = "windows")]
+fn system_matcher() -> hyper_util::client::proxy::matcher::Matcher {
+    let system = crate::platform::proxy::wininet_proxy().unwrap_or_default();
+    matcher_from(|name| std::env::var(name).ok(), system)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn system_matcher() -> hyper_util::client::proxy::matcher::Matcher {
+    hyper_util::client::proxy::matcher::Matcher::from_system()
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn matcher_from(
+    env: impl Fn(&str) -> Option<String>,
+    system: crate::platform::proxy::SystemProxy,
+) -> hyper_util::client::proxy::matcher::Matcher {
+    let env = |names: [&str; 2]| {
+        names
+            .into_iter()
+            .find_map(|name| env(name).filter(|value| !value.trim().is_empty()))
+    };
+    hyper_util::client::proxy::matcher::Matcher::builder()
+        .all(env(["ALL_PROXY", "all_proxy"]).unwrap_or_default())
+        .http(env(["HTTP_PROXY", "http_proxy"]).or(system.http).unwrap_or_default())
+        .https(env(["HTTPS_PROXY", "https_proxy"]).or(system.https).unwrap_or_default())
+        .no(env(["NO_PROXY", "no_proxy"]).unwrap_or(system.bypass))
+        .build()
+}
+
+/// A matched proxy as the address reqwest takes, credentials included.
+fn proxy_url(
+    intercept: &hyper_util::client::proxy::matcher::Intercept,
+) -> Option<reqwest::Url> {
+    use base64::Engine as _;
+    let mut url = reqwest::Url::parse(&intercept.uri().to_string()).ok()?;
+    let credentials = match intercept.raw_auth() {
+        Some((user, password)) => Some((user.to_owned(), password.to_owned())),
+        None => intercept
+            .basic_auth()
+            .and_then(|header| header.to_str().ok()?.strip_prefix("Basic ").map(str::to_owned))
+            .and_then(|encoded| base64::engine::general_purpose::STANDARD.decode(encoded).ok())
+            .and_then(|decoded| String::from_utf8(decoded).ok())
+            .and_then(|pair| {
+                pair.split_once(':')
+                    .map(|(user, password)| (user.to_owned(), password.to_owned()))
+            }),
+    };
+    if let Some((user, password)) = credentials {
+        url.set_username(&user).ok()?;
+        url.set_password(Some(password.as_str()).filter(|password| !password.is_empty()))
+            .ok()?;
+    }
+    Some(url)
+}
+
+/// The network a launched process is handed: the app proxy, except for the
+/// relay hosts a direct card reaches without it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ProcessNetwork {
+    pub proxy: ApiProxyConfigPayload,
+    /// `NO_PROXY` entries reached without the proxy.
+    pub direct_hosts: Vec<String>,
+}
+
+impl From<ApiProxyConfigPayload> for ProcessNetwork {
+    fn from(proxy: ApiProxyConfigPayload) -> Self {
+        Self {
+            proxy,
+            direct_hosts: Vec::new(),
+        }
+    }
+}
+
+impl ProcessNetwork {
+    /// `global` for everything but `hosts`. A process can be told to skip
+    /// hosts only with an explicit proxy, so a system proxy is handed over as
+    /// the address it names now; with no proxy at all everything is direct.
+    pub fn bypassing(global: &ApiProxyConfigPayload, hosts: Vec<String>) -> Self {
+        let direct = || {
+            Self::from(ApiProxyConfigPayload {
+                mode: ApiProxyMode::Direct,
+                url: None,
+            })
+        };
+        let Ok(global) = sanitize_proxy_config(global) else {
+            return direct();
+        };
+        if hosts.is_empty() {
+            return Self::from(global);
+        }
+        match global.mode {
+            ApiProxyMode::Direct => direct(),
+            ApiProxyMode::Manual => Self {
+                proxy: global,
+                direct_hosts: hosts,
+            },
+            ApiProxyMode::System => {
+                let Some(system) = crate::platform::proxy::system_proxy() else {
+                    return direct();
+                };
+                let Some(url) = system.https.or(system.http) else {
+                    return direct();
+                };
+                let mut direct_hosts = hosts;
+                direct_hosts.extend(
+                    system
+                        .bypass
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|entry| !entry.is_empty())
+                        .map(str::to_owned),
+                );
+                let proxy = ApiProxyConfigPayload {
+                    mode: ApiProxyMode::Manual,
+                    url: Some(url),
+                };
+                match sanitize_proxy_config(&proxy) {
+                    Ok(proxy) => Self {
+                        proxy,
+                        direct_hosts,
+                    },
+                    Err(_) => direct(),
+                }
+            }
+        }
+    }
+
+    /// The hosts reached without the proxy, loopback first.
+    fn bypass(&self) -> Vec<&str> {
+        let mut hosts: Vec<&str> = vec!["localhost", "127.0.0.1", "::1"];
+        for host in &self.direct_hosts {
+            if !hosts.iter().any(|known| known.eq_ignore_ascii_case(host)) {
+                hosts.push(host);
+            }
+        }
+        hosts
+    }
+}
+
 /// Scope proxy changes to a child process. Loopback router and OAuth callback
 /// requests must never travel through an external proxy.
 pub(crate) fn configure_command_network(
     command: &mut std::process::Command,
     config: &ApiProxyConfigPayload,
 ) -> Result<(), CoreError> {
-    let config = sanitize_proxy_config(config)?;
+    configure_process_network(command, &ProcessNetwork::from(config.clone()))
+}
+
+/// [`configure_command_network`] with a direct card's relay hosts kept off
+/// the proxy.
+pub(crate) fn configure_process_network(
+    command: &mut std::process::Command,
+    network: &ProcessNetwork,
+) -> Result<(), CoreError> {
+    let config = sanitize_proxy_config(&network.proxy)?;
     if config.mode != ApiProxyMode::System {
         for key in [
             "HTTP_PROXY",
@@ -95,12 +272,16 @@ pub(crate) fn configure_command_network(
     }
     let bypass = match config.mode {
         ApiProxyMode::Direct => "*".to_owned(),
-        ApiProxyMode::Manual => "localhost,127.0.0.1,::1".to_owned(),
+        ApiProxyMode::Manual => network.bypass().join(","),
         ApiProxyMode::System => {
             let inherited = std::env::var("NO_PROXY")
                 .or_else(|_| std::env::var("no_proxy"))
                 .unwrap_or_default();
-            format!("{inherited},localhost,127.0.0.1,::1")
+            std::iter::once(inherited.as_str())
+                .filter(|inherited| !inherited.is_empty())
+                .chain(network.bypass())
+                .collect::<Vec<_>>()
+                .join(",")
         }
     };
     command.env("NO_PROXY", &bypass).env("no_proxy", &bypass);
@@ -129,10 +310,10 @@ pub(crate) fn configure_codex_cli_network(
 /// inherited by the Codex app-server child.
 pub(crate) fn configure_codex_desktop(
     command: &mut std::process::Command,
-    config: &ApiProxyConfigPayload,
+    network: &ProcessNetwork,
 ) -> Result<(), CoreError> {
-    configure_command_network(command, config)?;
-    let config = sanitize_proxy_config(config)?;
+    configure_process_network(command, network)?;
+    let config = sanitize_proxy_config(&network.proxy)?;
     match config.mode {
         ApiProxyMode::Manual => {
             let url = config
@@ -141,7 +322,15 @@ pub(crate) fn configure_codex_desktop(
                 .unwrap()
                 .replacen("socks5h://", "socks5://", 1);
             command.arg(format!("--proxy-server={url}"));
-            command.arg("--proxy-bypass-list=localhost;127.0.0.1;[::1]");
+            let bypass = network
+                .bypass()
+                .into_iter()
+                .map(|host| match host.contains(':') && !host.contains('/') {
+                    true => format!("[{host}]"),
+                    false => host.to_owned(),
+                })
+                .collect::<Vec<_>>();
+            command.arg(format!("--proxy-bypass-list={}", bypass.join(";")));
         }
         ApiProxyMode::Direct => {
             command.arg("--no-proxy-server");
@@ -149,6 +338,123 @@ pub(crate) fn configure_codex_desktop(
         ApiProxyMode::System => {}
     }
     Ok(())
+}
+
+/// Where a request that got no response failed, read from its cause chain:
+/// a stopped proxy, a blocked handshake and a slow relay look alike as a
+/// plain "cannot reach the provider".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TransportFailure {
+    Timeout,
+    Dns,
+    Proxy,
+    Tls,
+    Refused,
+    Reset,
+    Connect,
+    Other,
+}
+
+impl TransportFailure {
+    pub fn of(error: &reqwest::Error) -> Self {
+        if error.is_timeout() {
+            return Self::Timeout;
+        }
+        // The error itself names the URL, whose host may read like a cause.
+        let mut text = String::new();
+        let mut kind = None;
+        let mut source = std::error::Error::source(error);
+        while let Some(cause) = source {
+            text.push_str(&cause.to_string().to_ascii_lowercase());
+            text.push('\n');
+            if let Some(io) = cause.downcast_ref::<std::io::Error>() {
+                kind = kind.or(Some(io.kind()));
+            }
+            source = cause.source();
+        }
+        Self::classify(&text, kind, error.is_connect())
+    }
+
+    fn classify(text: &str, kind: Option<std::io::ErrorKind>, connect: bool) -> Self {
+        use std::io::ErrorKind;
+        let any = |words: &[&str]| words.iter().any(|word| text.contains(word));
+        if kind == Some(ErrorKind::TimedOut) {
+            Self::Timeout
+        } else if any(&["dns error", "failed to lookup address"]) {
+            Self::Dns
+        } else if any(&["tunnel", "proxy", "socks"]) {
+            Self::Proxy
+        } else if any(&["certificate", "handshake", "tls"]) {
+            Self::Tls
+        } else if kind == Some(ErrorKind::ConnectionRefused) {
+            Self::Refused
+        } else if matches!(
+            kind,
+            Some(ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted | ErrorKind::UnexpectedEof)
+        ) {
+            Self::Reset
+        } else if connect {
+            Self::Connect
+        } else {
+            Self::Other
+        }
+    }
+
+    /// The code a route trace records.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::Dns => "dns_error",
+            Self::Proxy => "proxy_error",
+            Self::Tls => "tls_error",
+            Self::Refused => "connection_refused",
+            Self::Reset => "connection_reset",
+            Self::Connect => "connect_error",
+            Self::Other => "transport_error",
+        }
+    }
+
+    /// What the client is told.
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Timeout => "cannot reach the provider: timed out",
+            Self::Dns => "cannot reach the provider: DNS lookup failed",
+            Self::Proxy => "cannot reach the provider: the proxy failed the connection",
+            Self::Tls => "cannot reach the provider: TLS handshake failed",
+            Self::Refused => "cannot reach the provider: connection refused (by the provider, or by a proxy that is not running)",
+            Self::Reset => "cannot reach the provider: connection reset",
+            Self::Connect => "cannot reach the provider: connection failed",
+            Self::Other => "cannot reach the provider",
+        }
+    }
+
+    /// The error key the app shows.
+    pub fn error_key(self) -> &'static str {
+        match self {
+            Self::Timeout => "newapi.errors.timeout",
+            Self::Dns => "newapi.errors.dns",
+            Self::Proxy => "newapi.errors.proxyConnect",
+            Self::Tls => "newapi.errors.tls",
+            Self::Refused => "newapi.errors.refused",
+            Self::Reset => "newapi.errors.reset",
+            Self::Connect | Self::Other => "newapi.errors.network",
+        }
+    }
+
+    /// Whether `key` is one of these: a failure worth one retry.
+    pub fn is_error_key(key: &str) -> bool {
+        [
+            Self::Timeout,
+            Self::Dns,
+            Self::Proxy,
+            Self::Tls,
+            Self::Refused,
+            Self::Reset,
+            Self::Other,
+        ]
+        .into_iter()
+        .any(|failure| failure.error_key() == key)
+    }
 }
 
 fn failed(code: &str, message: &str) -> ApiProxyTestPayload {
@@ -261,7 +567,7 @@ mod tests {
             mode: ApiProxyMode::Manual,
             url: Some("http://127.0.0.1:10808".into()),
         };
-        configure_codex_desktop(&mut command, &manual).unwrap();
+        configure_codex_desktop(&mut command, &manual.clone().into()).unwrap();
         let env = command
             .get_envs()
             .map(|(key, value)| {
@@ -292,7 +598,7 @@ mod tests {
             url: None,
         };
         let mut command = std::process::Command::new("codex-fixture");
-        configure_codex_desktop(&mut command, &direct).unwrap();
+        configure_codex_desktop(&mut command, &direct.into()).unwrap();
         assert!(command.get_args().any(|arg| arg == "--no-proxy-server"));
         assert!(command
             .get_envs()
@@ -306,7 +612,7 @@ mod tests {
         assert_eq!(system.mode, ApiProxyMode::System);
         let mut command = std::process::Command::new("codex-fixture");
         command.env("HTTPS_PROXY", "http://inherited.invalid:7890");
-        configure_codex_desktop(&mut command, &system).unwrap();
+        configure_codex_desktop(&mut command, &system.clone().into()).unwrap();
         assert_eq!(command.get_args().count(), 0);
         assert!(command.get_envs().any(|(key, value)| key == "HTTPS_PROXY"
             && value.is_some_and(|v| v == "http://inherited.invalid:7890")));
@@ -390,7 +696,13 @@ mod tests {
         let direct_url = format!("{}/probe", addresses[0]);
         let mut outcomes = Vec::new();
         for (mode, child_network, url, expected) in [
-            (ApiProxyMode::System, false, direct_url.as_str(), "system"),
+            // The registry's bypass list keeps loopback direct in system mode.
+            (
+                ApiProxyMode::System,
+                false,
+                "http://agentharbor-probe.invalid/system",
+                "system",
+            ),
             (ApiProxyMode::Manual, false, direct_url.as_str(), "manual"),
             (ApiProxyMode::Direct, false, direct_url.as_str(), "direct"),
             (ApiProxyMode::Manual, true, direct_url.as_str(), "direct"),
@@ -447,6 +759,100 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
+    }
+
+    #[test]
+    fn the_system_proxy_reads_per_protocol_entries_and_their_bypass_list() {
+        let system = crate::platform::proxy::SystemProxy {
+            http: Some("http://127.0.0.1:7890".into()),
+            https: Some("http://127.0.0.1:7891".into()),
+            bypass: "relay.top,127.0.0.0/8,localhost".into(),
+        };
+        let route = |env: &[(&str, &str)], url: &str| {
+            let env: std::collections::HashMap<String, String> = env
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect();
+            matcher_from(|name| env.get(name).cloned(), system.clone())
+                .intercept(&url.parse().unwrap())
+                .and_then(|intercept| proxy_url(&intercept))
+                .map(|url| url.to_string())
+        };
+        assert_eq!(route(&[], "https://api.openai.com/v1").as_deref(), Some("http://127.0.0.1:7891/"));
+        assert_eq!(route(&[], "http://example.com/").as_deref(), Some("http://127.0.0.1:7890/"));
+        assert_eq!(route(&[], "https://api.relay.top/v1"), None);
+        assert_eq!(route(&[], "http://127.0.0.1:8080/"), None);
+        // Proxy variables come first, and their bypass list replaces the registry's.
+        let variables = [
+            ("HTTPS_PROXY", "http://user:p%40ss@10.0.0.1:3128"),
+            ("NO_PROXY", "other.top"),
+        ];
+        assert_eq!(
+            route(&variables, "https://api.relay.top/").as_deref(),
+            Some("http://user:p%40ss@10.0.0.1:3128/")
+        );
+        assert_eq!(route(&variables, "https://x.other.top/"), None);
+        assert_eq!(route(&[("HTTPS_PROXY", " ")], "https://api.openai.com/").as_deref(), Some("http://127.0.0.1:7891/"));
+    }
+
+    #[test]
+    fn a_direct_cards_relay_host_alone_skips_the_proxy() {
+        let manual = ApiProxyConfigPayload {
+            mode: ApiProxyMode::Manual,
+            url: Some("http://127.0.0.1:10808".into()),
+        };
+        let network = ProcessNetwork::bypassing(&manual, vec!["relay.example".into()]);
+        assert_eq!(network.proxy, manual);
+        let mut command = std::process::Command::new("codex-fixture");
+        configure_codex_desktop(&mut command, &network).unwrap();
+        let env = |name: &str| {
+            command
+                .get_envs()
+                .find(|(key, _)| *key == name)
+                .and_then(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()))
+        };
+        assert_eq!(env("HTTPS_PROXY").as_deref(), Some("http://127.0.0.1:10808"));
+        assert_eq!(env("NO_PROXY").as_deref(), Some("localhost,127.0.0.1,::1,relay.example"));
+        assert!(command
+            .get_args()
+            .any(|arg| arg == "--proxy-bypass-list=localhost;127.0.0.1;[::1];relay.example"));
+
+        let direct = ApiProxyConfigPayload {
+            mode: ApiProxyMode::Direct,
+            url: None,
+        };
+        assert_eq!(
+            ProcessNetwork::bypassing(&direct, vec!["relay.example".into()]),
+            ProcessNetwork::from(direct)
+        );
+        assert_eq!(ProcessNetwork::bypassing(&manual, Vec::new()), ProcessNetwork::from(manual));
+    }
+
+    #[test]
+    fn a_failed_request_names_where_it_failed() {
+        use std::io::ErrorKind;
+        let classify = TransportFailure::classify;
+        assert_eq!(classify("client error (connect)\ndns error\n", None, true), TransportFailure::Dns);
+        assert_eq!(classify("unsuccessful tunnel\n", None, true), TransportFailure::Proxy);
+        assert_eq!(classify("invalid peer certificate: unknownissuer\n", None, true), TransportFailure::Tls);
+        assert_eq!(classify("tcp connect error\n", Some(ErrorKind::ConnectionRefused), true), TransportFailure::Refused);
+        assert_eq!(classify("connection reset\n", Some(ErrorKind::ConnectionReset), false), TransportFailure::Reset);
+        assert_eq!(classify("os error 10060\n", Some(ErrorKind::TimedOut), true), TransportFailure::Timeout);
+        assert_eq!(classify("", None, false), TransportFailure::Other);
+        assert!(TransportFailure::is_error_key("newapi.errors.network"));
+        assert!(TransportFailure::is_error_key("newapi.errors.proxyConnect"));
+        assert!(!TransportFailure::is_error_key("newapi.errors.auth"));
+
+        // A refused loopback port, end to end through reqwest's cause chain.
+        let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+        let error = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get(format!("http://127.0.0.1:{port}/proxy-in-the-path"))
+            .send()
+            .unwrap_err();
+        assert_eq!(TransportFailure::of(&error), TransportFailure::Refused);
     }
 
     #[test]

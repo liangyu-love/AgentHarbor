@@ -115,14 +115,21 @@ impl ClientAdapter for ClaudeCode {
         // and Claude Code reads only proxy variables. A proxy variable the user
         // set stays theirs; local addresses (MCP servers, a local relay) stay
         // off the proxy unless the user already chose otherwise.
+        let env = document.get("env");
+        let set = |name: &str| env.and_then(|env| env.get(name)).is_some_and(|value| !value.is_null());
         if let Some(proxy) = &ctx.proxy {
-            let env = document.get("env");
-            let set = |name: &str| env.and_then(|env| env.get(name)).is_some_and(|value| !value.is_null());
             if !["https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY"].into_iter().any(set) {
                 edits.push(edit(&["env", "HTTPS_PROXY"], json!(proxy)));
                 if !["no_proxy", "NO_PROXY"].into_iter().any(set) {
                     edits.push(edit(&["env", "NO_PROXY"], json!("localhost,127.0.0.1,::1")));
                 }
+            }
+        }
+        // The terminal proxy reaches Claude Code; a direct card's relay skips it
+        // while sign-in, MCP and web fetches keep it.
+        if let Some(bypass) = &ctx.bypass {
+            if !["no_proxy", "NO_PROXY"].into_iter().any(set) {
+                edits.push(edit(&["env", "NO_PROXY"], json!(bypass)));
             }
         }
         let mapping = &request.options.claude_models;

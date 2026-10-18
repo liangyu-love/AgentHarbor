@@ -356,6 +356,7 @@ fn pi_catalog_capabilities_prices_and_effort_levels_share_the_router_resolver() 
         warnings: &mut warnings,
         managed_provider_keys: Vec::new(),
         proxy: None,
+        bypass: None,
     };
     let edits = PI
         .edits(&json!({}), &store, &request, &catalog, &[], &mut ctx)

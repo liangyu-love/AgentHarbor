@@ -345,7 +345,8 @@ fn duplex_client(proxy: &ApiProxyConfigPayload) -> Result<Client, String> {
         crate::core::api_client::sanitize_proxy_config(proxy).map_err(|_| "newapi.errors.proxy")?
     };
     let builder = match config.mode {
-        ApiProxyMode::System => builder,
+        // Cached for the app's lifetime: the system proxy is looked up per request.
+        ApiProxyMode::System => builder.no_proxy().proxy(crate::core::api_client::system_proxy()),
         ApiProxyMode::Direct => builder.no_proxy(),
         ApiProxyMode::Manual => builder.no_proxy().proxy(reqwest::Proxy::all(config.url.as_deref().unwrap_or_default())
             .map_err(|_| "newapi.errors.proxy")?),

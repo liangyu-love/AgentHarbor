@@ -68,6 +68,17 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 
 export type { TargetId } from "@/types/clients";
 
+/** Requests that got no response (`TransportFailure` in the backend): worth one retry. */
+const TRANSPORT_ERRORS = new Set([
+  "newapi.errors.network",
+  "newapi.errors.timeout",
+  "newapi.errors.dns",
+  "newapi.errors.proxyConnect",
+  "newapi.errors.tls",
+  "newapi.errors.refused",
+  "newapi.errors.reset",
+]);
+
 const providersApi = {
   loadState: () => invoke<NewApiState>("load_newapi_state"),
   portOwner: () => invoke<RouterPortOwner | null>("load_router_port_owner"),
@@ -105,7 +116,7 @@ const providersApi = {
       return await invoke<NewApiProvider>("query_newapi_provider_balance", { id });
     } catch (error) {
       // Retry transport failures once; auth, malformed data and unsupported sites are final.
-      if (!["newapi.errors.network", "newapi.errors.timeout"].includes(errorMessage(error))) throw error;
+      if (!TRANSPORT_ERRORS.has(errorMessage(error))) throw error;
       return invoke<NewApiProvider>("query_newapi_provider_balance", { id });
     }
   },

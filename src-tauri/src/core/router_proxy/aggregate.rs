@@ -612,15 +612,8 @@ pub(super) async fn execute(
                 if let Some(usage) = prepared.usage {
                     usage.failed(502, "response_not_received");
                 }
-                trace.failed_attempt(
-                    "connect",
-                    if error.is_timeout() {
-                        "timeout"
-                    } else {
-                        "transport_error"
-                    },
-                    started.elapsed().as_millis() as u64,
-                );
+                let failure = crate::core::api_client::TransportFailure::of(&error);
+                trace.failed_attempt("connect", failure.code(), started.elapsed().as_millis() as u64);
                 let switch = selected.lease.fail(None);
                 if switch && connect && attempts.may_retry(Failure::ConnectBeforeSend) {
                     excluded.insert(plan.effective_target_key.clone());
@@ -636,7 +629,7 @@ pub(super) async fn execute(
                         continue;
                     }
                 }
-                trace.fail("connect", "transport_error");
+                trace.fail("connect", failure.code());
                 return Err((StatusCode::BAD_GATEWAY, "cannot reach aggregate provider"));
             }
         };

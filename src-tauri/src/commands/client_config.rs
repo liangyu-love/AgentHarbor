@@ -49,7 +49,7 @@ fn configuring(paths: &CodexPaths) -> ConfigManager {
         && !crate::platform::proxy::detect_system_proxy_candidates().is_empty();
     manager(paths).with_network(Network {
         proxy,
-        terminal: crate::core::terminal_proxy::active_url(paths),
+        terminal: crate::core::terminal_proxy::active(paths),
         system,
     })
 }

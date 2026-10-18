@@ -91,89 +91,70 @@ fn is_enabled(pairs: &std::collections::HashMap<String, String>, key: &str) -> b
 }
 
 #[cfg(target_os = "windows")]
+const INTERNET_SETTINGS: &str = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
+const LOOPBACK: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
+
+/// The proxies system settings name for plain and TLS traffic, and the hosts
+/// reached without them as a `NO_PROXY` list.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct SystemProxy {
+    pub http: Option<String>,
+    pub https: Option<String>,
+    pub bypass: String,
+}
+
+/// The WinINet proxy, which proxy software turns on as "the system proxy".
+/// Read natively, so it can be read again for every lookup.
+#[cfg(target_os = "windows")]
+pub(crate) fn wininet_proxy() -> Option<SystemProxy> {
+    use crate::platform::windows::{user_registry_dword, user_registry_text};
+    if user_registry_dword(INTERNET_SETTINGS, "ProxyEnable")? == 0 {
+        return None;
+    }
+    let server = parse_proxy_server(&user_registry_text(INTERNET_SETTINGS, "ProxyServer")?);
+    let proxy = SystemProxy {
+        http: server.http.or_else(|| server.socks.clone()),
+        https: server.https.or(server.socks),
+        bypass: bypass_list(&user_registry_text(INTERNET_SETTINGS, "ProxyOverride").unwrap_or_default()),
+    };
+    (proxy.http.is_some() || proxy.https.is_some()).then_some(proxy)
+}
+
+/// The system proxy as a child process can be handed it: WinINet's, else the
+/// first address a PAC file or WinHTTP names.
+pub(crate) fn system_proxy() -> Option<SystemProxy> {
+    #[cfg(target_os = "windows")]
+    if let Some(proxy) = wininet_proxy() {
+        return Some(proxy);
+    }
+    let url = detect_system_proxy_candidates().into_iter().next()?;
+    Some(SystemProxy {
+        http: Some(url.clone()),
+        https: Some(url),
+        bypass: LOOPBACK.join(","),
+    })
+}
+
+#[cfg(target_os = "windows")]
 fn detect_windows_system_proxy_candidates() -> Vec<String> {
+    use crate::platform::windows::{user_registry_dword, user_registry_text};
     let mut candidates = Vec::new();
-
-    if let Some(proxy_server) = read_windows_registry_proxy_server() {
-        candidates.extend(parse_windows_proxy_server(&proxy_server));
+    let mut push_server = |value: &str| {
+        let server = parse_proxy_server(value);
+        candidates.extend([server.http, server.https, server.socks].into_iter().flatten());
+    };
+    if user_registry_dword(INTERNET_SETTINGS, "ProxyEnable").is_some_and(|enabled| enabled != 0) {
+        if let Some(server) = user_registry_text(INTERNET_SETTINGS, "ProxyServer") {
+            push_server(&server);
+        }
     }
-
-    if let Some(auto_config_url) = read_windows_registry_auto_config_url() {
-        candidates.extend(parse_pac_candidates(&auto_config_url));
-    }
-
     if let Some(winhttp_proxy) = read_windows_winhttp_proxy_server() {
-        candidates.extend(parse_windows_proxy_server(&winhttp_proxy));
+        push_server(&winhttp_proxy);
     }
-
+    if let Some(pac) = user_registry_text(INTERNET_SETTINGS, "AutoConfigURL").filter(|url| !url.trim().is_empty()) {
+        candidates.extend(parse_pac_candidates(&pac));
+    }
     dedupe(candidates)
-}
-
-#[cfg(target_os = "windows")]
-fn read_windows_registry_auto_config_url() -> Option<String> {
-    let output = crate::platform::windows::background_command("reg")
-        .args([
-            "query",
-            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
-            "/v",
-            "AutoConfigURL",
-        ])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
-        .lines()
-        .find(|line| line.contains("AutoConfigURL"))
-        .and_then(|line| line.split("REG_SZ").nth(1))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_string())
-}
-
-#[cfg(target_os = "windows")]
-fn read_windows_registry_proxy_server() -> Option<String> {
-    let enabled_output = crate::platform::windows::background_command("reg")
-        .args([
-            "query",
-            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
-            "/v",
-            "ProxyEnable",
-        ])
-        .output()
-        .ok()?;
-    if !enabled_output.status.success() {
-        return None;
-    }
-    let enabled_stdout = String::from_utf8_lossy(&enabled_output.stdout);
-    if !(enabled_stdout.contains("0x1") || enabled_stdout.contains("0x00000001")) {
-        return None;
-    }
-
-    let server_output = crate::platform::windows::background_command("reg")
-        .args([
-            "query",
-            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
-            "/v",
-            "ProxyServer",
-        ])
-        .output()
-        .ok()?;
-    if !server_output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&server_output.stdout);
-    stdout
-        .lines()
-        .find(|line| line.contains("ProxyServer"))
-        .and_then(|line| line.split("REG_SZ").nth(1))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_string())
 }
 
 #[cfg(target_os = "windows")]
@@ -200,32 +181,90 @@ fn read_windows_winhttp_proxy_server() -> Option<String> {
     })
 }
 
-#[cfg(target_os = "windows")]
-fn parse_windows_proxy_server(value: &str) -> Vec<String> {
-    let mut candidates = Vec::new();
-    let trimmed = value.trim();
+#[cfg(any(target_os = "windows", test))]
+#[derive(Debug, Default, PartialEq)]
+struct ProxyServer {
+    http: Option<String>,
+    https: Option<String>,
+    socks: Option<String>,
+}
 
-    if !trimmed.contains('=') {
-        push_url(&mut candidates, "http", Some(trimmed), None);
-        return dedupe(candidates);
+/// `ProxyServer` as proxy software writes it: one `host:port` for every
+/// protocol, or `http=…;https=…;socks=…` per protocol.
+#[cfg(any(target_os = "windows", test))]
+fn parse_proxy_server(value: &str) -> ProxyServer {
+    let url = |address: &str, scheme: &str| {
+        let address = address.trim();
+        (!address.is_empty()).then(|| match address.contains("://") {
+            true => address.to_owned(),
+            false => format!("{scheme}://{address}"),
+        })
+    };
+    let value = value.trim();
+    if !value.contains('=') {
+        let all = url(value, "http");
+        return ProxyServer { http: all.clone(), https: all, socks: None };
     }
-
-    for part in trimmed
-        .split(';')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-    {
-        let Some((scheme, address)) = part.split_once('=') else {
-            continue;
-        };
+    let mut server = ProxyServer::default();
+    for (scheme, address) in value.split(';').filter_map(|part| part.split_once('=')) {
         match scheme.trim().to_ascii_lowercase().as_str() {
-            "http" | "https" => push_url(&mut candidates, "http", Some(address.trim()), None),
-            "socks" | "socks5" => push_url(&mut candidates, "socks5", Some(address.trim()), None),
+            "http" => server.http = url(address, "http"),
+            // The proxy for TLS traffic, itself spoken to in plain HTTP.
+            "https" => server.https = url(address, "http"),
+            "socks" | "socks5" => server.socks = url(address, "socks5"),
             _ => {}
         }
     }
+    server
+}
 
-    dedupe(candidates)
+/// `ProxyOverride` (`;`-separated, `*` wildcards, `<local>`) as a `NO_PROXY`
+/// list: `*.example.com` covers the domain, `10.*` the address range.
+/// Loopback always bypasses.
+#[cfg(any(target_os = "windows", test))]
+fn bypass_list(value: &str) -> String {
+    let mut entries: Vec<String> = Vec::new();
+    for entry in value.split(';').map(str::trim) {
+        let entry = entry.strip_prefix("*.").unwrap_or(entry);
+        let entry = match ipv4_range(entry) {
+            Some(range) => range,
+            // `<local>` (dotless intranet names) has no `NO_PROXY` form.
+            None if entry.is_empty() || entry.starts_with('<') => continue,
+            None if entry != "*" && entry.contains('*') => continue,
+            None => entry.to_owned(),
+        };
+        if !entries.iter().any(|known| known.eq_ignore_ascii_case(&entry)) {
+            entries.push(entry);
+        }
+    }
+    for host in LOOPBACK {
+        if !entries.iter().any(|known| known == host) {
+            entries.push(host.to_owned());
+        }
+    }
+    entries.join(",")
+}
+
+/// `10.*` or `192.168.*` as the CIDR range it covers.
+#[cfg(any(target_os = "windows", test))]
+fn ipv4_range(entry: &str) -> Option<String> {
+    let octets = entry
+        .strip_suffix(".*")?
+        .split('.')
+        .map(str::parse::<u8>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()
+        .filter(|octets| (1..=3).contains(&octets.len()))?;
+    let mut address = octets.clone();
+    address.resize(4, 0);
+    Some(format!(
+        "{}.{}.{}.{}/{}",
+        address[0],
+        address[1],
+        address[2],
+        address[3],
+        octets.len() * 8
+    ))
 }
 
 fn push_url(candidates: &mut Vec<String>, scheme: &str, host: Option<&str>, port: Option<&str>) {
@@ -331,4 +370,32 @@ fn dedupe(values: Vec<String>) -> Vec<String> {
     }
 
     deduped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proxy_server_reads_one_address_or_one_per_protocol() {
+        let one = parse_proxy_server(" 127.0.0.1:10808 ");
+        assert_eq!(one.http.as_deref(), Some("http://127.0.0.1:10808"));
+        assert_eq!(one.https, one.http);
+        let split = parse_proxy_server("http=127.0.0.1:7890;https=127.0.0.1:7891;socks=127.0.0.1:7892");
+        assert_eq!(split.http.as_deref(), Some("http://127.0.0.1:7890"));
+        assert_eq!(split.https.as_deref(), Some("http://127.0.0.1:7891"));
+        assert_eq!(split.socks.as_deref(), Some("socks5://127.0.0.1:7892"));
+        let socks_only = parse_proxy_server("socks=127.0.0.1:1080");
+        assert_eq!((socks_only.http, socks_only.https), (None, None));
+    }
+
+    #[test]
+    fn proxy_override_becomes_a_no_proxy_list() {
+        assert_eq!(
+            bypass_list("<local>;localhost;127.*;172.16.*;192.168.1.*;*.example.com;relay.top;10.70.0.223;bad*glob;"),
+            "localhost,127.0.0.0/8,172.16.0.0/16,192.168.1.0/24,example.com,relay.top,10.70.0.223,127.0.0.1,::1"
+        );
+        assert_eq!(bypass_list(""), "localhost,127.0.0.1,::1");
+        assert_eq!(bypass_list("*"), "*,localhost,127.0.0.1,::1");
+    }
 }

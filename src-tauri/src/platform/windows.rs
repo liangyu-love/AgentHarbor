@@ -81,3 +81,65 @@ pub fn uninstall_location(prefix: &str) -> Option<std::path::PathBuf> {
     }
     None
 }
+
+/// A string value (an expandable one expanded), or `None` when the key or
+/// value is missing.
+#[cfg(target_os = "windows")]
+fn registry_text(
+    hive: windows_sys::Win32::System::Registry::HKEY,
+    subkey: &str,
+    name: &str,
+) -> Option<String> {
+    use windows_sys::Win32::System::Registry::{RegGetValueW, RRF_RT_REG_SZ};
+    let wide = |text: &str| text.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    let (subkey, name) = (wide(subkey), wide(name));
+    let query = |data: *mut core::ffi::c_void, size: &mut u32| unsafe {
+        RegGetValueW(hive, subkey.as_ptr(), name.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), data, size)
+    };
+    let mut size = 0u32;
+    if query(std::ptr::null_mut(), &mut size) != 0 || size == 0 {
+        return None;
+    }
+    let mut buffer = vec![0u16; size as usize / 2 + 1];
+    if query(buffer.as_mut_ptr().cast(), &mut size) != 0 {
+        return None;
+    }
+    let length = buffer.iter().position(|&unit| unit == 0).unwrap_or(buffer.len());
+    Some(String::from_utf16_lossy(&buffer[..length]))
+}
+
+/// A current-user string value, or `None` when the key or value is missing.
+#[cfg(target_os = "windows")]
+pub(crate) fn user_registry_text(subkey: &str, name: &str) -> Option<String> {
+    registry_text(windows_sys::Win32::System::Registry::HKEY_CURRENT_USER, subkey, name)
+}
+
+/// An environment variable as a process started now gets it: the user's
+/// value, else the machine's. This app's own environment is the one it
+/// started with.
+#[cfg(target_os = "windows")]
+pub(crate) fn current_environment_text(name: &str) -> Option<String> {
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    registry_text(HKEY_CURRENT_USER, "Environment", name).or_else(|| {
+        registry_text(
+            HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+            name,
+        )
+    })
+}
+
+/// A current-user DWORD value, or `None` when the key or value is missing.
+#[cfg(target_os = "windows")]
+pub(crate) fn user_registry_dword(subkey: &str, name: &str) -> Option<u32> {
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+    let wide = |text: &str| text.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    let (subkey, name) = (wide(subkey), wide(name));
+    let mut value = 0u32;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    let status = unsafe {
+        RegGetValueW(HKEY_CURRENT_USER, subkey.as_ptr(), name.as_ptr(), RRF_RT_REG_DWORD, std::ptr::null_mut(),
+            (&mut value as *mut u32).cast(), &mut size)
+    };
+    (status == 0).then_some(value)
+}

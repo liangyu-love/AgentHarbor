@@ -56,7 +56,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 dotenvy = "0.15"
 reqwest = { version = "0.12", features = ["blocking", "http2", "json", "multipart", "rustls-tls", "socks", "stream", "system-proxy"], default-features = false }
 hyper = { version = "1", default-features = false, features = ["http1", "server"] }
-hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+# The proxy matcher resolves the system proxy per request (see api_client).
+hyper-util = { version = "0.1", default-features = false, features = ["tokio", "client-proxy", "client-proxy-system"] }
 http-body-util = "0.1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 base64 = "0.22"

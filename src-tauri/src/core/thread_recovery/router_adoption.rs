@@ -3,7 +3,7 @@
 //! guarded recovery transaction after a graceful desktop shutdown instead of
 //! starting another real-home app-server (which could run project hooks/MCP).
 use super::*;
-use crate::core::{newapi, router, router_proxy};
+use crate::core::{router, router_proxy};
 
 pub(super) fn validate_router_target(
     paths: &CodexPaths,
@@ -112,7 +112,8 @@ pub fn adopt_thread_into_router(
         }
     };
     let launch_error = if safe_to_launch {
-        process::launch_codex_app(&newapi::proxy_from_settings(&paths.settings_path))
+        crate::core::targets::CodexTarget::new(paths.clone())
+            .launch()
             .err()
             .map(|error| error.to_string())
     } else {

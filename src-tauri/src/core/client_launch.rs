@@ -103,11 +103,13 @@ pub fn plan(target: TargetId, profile: Option<&str>) -> Launch {
     }
 }
 
-/// Starts `target` the way [`plan`] describes: a CLI in a terminal in `folder`.
+/// Starts `target` the way [`plan`] describes: a CLI in a terminal in `folder`,
+/// `direct_hosts` (its direct cards' relays) kept off any proxy it is given.
 pub fn launch(
     target: TargetId,
     profile: Option<&str>,
     folder: Option<&Path>,
+    direct_hosts: &[String],
 ) -> Result<(), String> {
     match plan(target, profile) {
         Launch::App { .. } if target == TargetId::Harness => restart_harness_desktop(),
@@ -119,9 +121,81 @@ pub fn launch(
             let folder = folder
                 .filter(|folder| folder.is_dir())
                 .ok_or("clients.errors.launchFolder")?;
-            open_terminal(&command, folder)
+            open_terminal(&format!("{}{command}", proxy_prelude(direct_hosts)), folder)
         }
     }
+}
+
+/// The relay hosts of the direct cards `target`'s own configuration reaches;
+/// none when it goes through the router, which picks each card's exit.
+pub fn direct_relay_hosts(paths: &crate::platform::paths::CodexPaths, target: TargetId) -> Vec<String> {
+    use super::client_config::{ClientPaths, ConfigManager};
+    let manager = ConfigManager::new(&paths.app_data_dir, ClientPaths::discover());
+    let Ok(Some(request)) = manager.stored_request(target) else {
+        return Vec::new();
+    };
+    if request.needs_router() {
+        return Vec::new();
+    }
+    let Ok(store) = super::router::load_store(paths) else {
+        return Vec::new();
+    };
+    let mut hosts = Vec::new();
+    for provider in store.providers.iter().filter(|provider| {
+        provider.network_mode() == "direct"
+            && (provider.id == request.provider_id || request.options.provider_ids.contains(&provider.id))
+    }) {
+        if let Some(host) = provider.relay_host().filter(|host| !hosts.contains(host)) {
+            hosts.push(host);
+        }
+    }
+    hosts
+}
+
+/// PowerShell that gives a new terminal the proxy variables a terminal opened
+/// now has: this app's environment is the one it started with, from before
+/// the terminal proxy last changed. While a proxy applies, `direct_hosts`
+/// join `NO_PROXY`.
+#[cfg(windows)]
+fn proxy_prelude(direct_hosts: &[String]) -> String {
+    let mut values = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"]
+        .map(|name| (name, crate::platform::windows::current_environment_text(name)));
+    let proxied = values[..3]
+        .iter()
+        .any(|(_, value)| value.as_deref().is_some_and(|value| !value.trim().is_empty()));
+    if proxied && !direct_hosts.is_empty() {
+        values[3].1 = Some(with_hosts(values[3].1.as_deref(), direct_hosts));
+    }
+    values
+        .iter()
+        .map(|(name, value)| match value {
+            Some(value) => format!("$env:{name}='{}'; ", value.replace('\'', "''")),
+            None => format!("Remove-Item Env:{name} -ErrorAction SilentlyContinue; "),
+        })
+        .collect()
+}
+
+/// Shell that adds `direct_hosts` to the terminal's bypass lists.
+#[cfg(not(windows))]
+fn proxy_prelude(direct_hosts: &[String]) -> String {
+    if direct_hosts.is_empty() {
+        return String::new();
+    }
+    let hosts = direct_hosts.join(",");
+    format!("export NO_PROXY=\"${{NO_PROXY:+$NO_PROXY,}}{hosts}\" no_proxy=\"${{no_proxy:+$no_proxy,}}{hosts}\" && ")
+}
+
+/// A `NO_PROXY` list with `hosts` added; loopback stays off the proxy.
+#[cfg(any(windows, test))]
+fn with_hosts(list: Option<&str>, hosts: &[String]) -> String {
+    let list = list.filter(|list| !list.trim().is_empty()).unwrap_or("localhost,127.0.0.1,::1");
+    let mut entries: Vec<&str> = Vec::new();
+    for entry in list.split(',').map(str::trim).chain(hosts.iter().map(String::as_str)) {
+        if !entry.is_empty() && !entries.iter().any(|known| known.eq_ignore_ascii_case(entry)) {
+            entries.push(entry);
+        }
+    }
+    entries.join(",")
 }
 
 fn restart_harness_desktop() -> Result<(), String> {
@@ -154,6 +228,11 @@ fn restart_harness_desktop() -> Result<(), String> {
 fn open_terminal(command: &str, folder: &Path) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     use windows_sys::Win32::System::Threading::CREATE_NEW_CONSOLE;
+    use base64::Engine as _;
+    // `;` separates Windows Terminal's own commands, so the script travels
+    // encoded (UTF-16LE, as PowerShell takes it).
+    let script = base64::engine::general_purpose::STANDARD
+        .encode(command.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>());
     // An npm CLI's PowerShell shim must run even under a restrictive policy.
     let shell = [
         "powershell.exe",
@@ -161,8 +240,8 @@ fn open_terminal(command: &str, folder: &Path) -> Result<(), String> {
         "-NoExit",
         "-ExecutionPolicy",
         "Bypass",
-        "-Command",
-        command,
+        "-EncodedCommand",
+        &script,
     ];
     let terminal = dirs::data_local_dir()
         .map(|dir| dir.join(r"Microsoft\WindowsApps\wt.exe"))
@@ -211,7 +290,7 @@ mod tests {
             Launch::App { .. }
         ));
         assert_eq!(
-            launch(TargetId::Harness, Some("sdk"), None).unwrap_err(),
+            launch(TargetId::Harness, Some("sdk"), None, &[]).unwrap_err(),
             "clients.errors.launch",
             "nothing interactive runs for a service profile"
         );
@@ -224,12 +303,28 @@ mod tests {
         }
         let missing = std::env::temp_dir().join("agentharbor-missing-folder-for-launch");
         assert_eq!(
-            launch(TargetId::Pi, None, Some(&missing)).unwrap_err(),
+            launch(TargetId::Pi, None, Some(&missing), &[]).unwrap_err(),
             "clients.errors.launchFolder"
         );
         assert_eq!(
-            launch(TargetId::Pi, None, None).unwrap_err(),
+            launch(TargetId::Pi, None, None, &[]).unwrap_err(),
             "clients.errors.launchFolder"
         );
+    }
+
+    #[test]
+    fn a_direct_relay_joins_the_bypass_list() {
+        let hosts = ["relay.example".to_owned()];
+        assert_eq!(with_hosts(None, &hosts), "localhost,127.0.0.1,::1,relay.example");
+        assert_eq!(with_hosts(Some(" corp.internal, Relay.Example "), &hosts), "corp.internal,Relay.Example");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_terminal_gets_the_proxy_variables_set_now() {
+        let prelude = proxy_prelude(&[]);
+        for name in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"] {
+            assert!(prelude.contains(&format!("$env:{name}=")) || prelude.contains(&format!("Env:{name} ")));
+        }
     }
 }

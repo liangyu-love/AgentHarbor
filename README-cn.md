@@ -164,6 +164,7 @@ Codex 与 Claude Code / Claude Desktop 保留各自原来的 WebSearch 用法，
 - **客户端配置**：逐字段写入并先备份。被你或其他工具改过的字段会提示冲突，不会被悄悄覆盖。
 - **Cursor**：本地证书和它的私钥在 AgentHarbor 数据目录的 `cursor` 子目录里，私钥只限文件所有者读写。证书受名称约束，只能用于 `cursor.sh` 和 `cursor.com`。退出 AgentHarbor 时会还原自己写入的本地身份、Cursor 的 `settings.json` 和 `CURSOR_API_ENDPOINT`；下次启动时重新接入。
 - **代理探测**：只检测网络是否可达，不检查鉴权和额度。Codex 自身的登录和 Native 请求从 Codex 进程发出，改了它的代理后要重启 Codex。
+- **直连卡片**：只有该中转不走代理。经本地路由时每张卡各走各的出口；Codex 原生直连、直连配置的客户端和从面板启动的客户端，其余流量（登录、MCP、插件）照常走代理。系统代理实时读取，开关代理软件或换端口后不必重启 AgentHarbor。TUN 模式下由代理软件的分流规则决定，任何应用都绕不开 TUN 网卡。
 
 ## 平台支持
 

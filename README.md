@@ -159,6 +159,7 @@ An account source is a subscription whose own sign-in serves models. Sign in on 
 - **The local router** requires a local token. Requests to relays never carry the official account's credentials.
 - **Client configuration** is applied field by field with a backup. Fields edited by you or other tools are reported as conflicts instead of being overwritten silently.
 - **Proxy probes** only check network reachability, not authentication or quota. Codex's own login and Native requests leave from the Codex process, so restart Codex after changing its proxy.
+- **Direct cards** keep only their relay off the proxy. Through the router each card takes its own exit; Codex Native, direct client configurations and clients started from their panel keep the proxy for everything else (sign-in, MCP, plugins). The system proxy is read live, so starting, stopping or moving your proxy software needs no AgentHarbor restart. In TUN mode the proxy software's rules decide: no app can leave a TUN adapter.
 
 ## Platform support
 

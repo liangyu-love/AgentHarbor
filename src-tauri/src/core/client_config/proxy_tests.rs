@@ -67,11 +67,53 @@ fn nothing_is_written_for_the_router_a_direct_card_or_an_active_terminal_proxy()
             mode: ApiProxyMode::Manual,
             url: Some("http://127.0.0.1:7890".into()),
         },
-        terminal: Some("http://127.0.0.1:7890/".into()),
+        terminal: Some(terminal()),
         system: false,
     });
     apply(&manager, &store, &request);
-    assert!(read(&manager.paths.claude)["env"].get("HTTPS_PROXY").is_none());
+    let env = &read(&manager.paths.claude)["env"];
+    assert!(env.get("HTTPS_PROXY").is_none() && env.get("NO_PROXY").is_none());
+}
+
+fn terminal() -> crate::core::terminal_proxy::ActiveProxy {
+    crate::core::terminal_proxy::ActiveProxy {
+        url: "http://127.0.0.1:7890/".into(),
+        no_proxy: "corp.internal,localhost,127.0.0.1,::1".into(),
+    }
+}
+
+#[test]
+fn a_direct_card_under_the_terminal_proxy_skips_it_for_its_relay_alone() {
+    let (_temp, manager, mut store, request) = direct();
+    store.providers[0].network_mode = "direct".into();
+    let host = store.providers[0].relay_host().unwrap();
+    write(&manager.paths.claude, &json!({"env": {"CUSTOM": "kept"}}));
+    let manager = manager.with_network(Network {
+        terminal: Some(terminal()),
+        ..Default::default()
+    });
+    apply(&manager, &store, &request);
+    let env = &read(&manager.paths.claude)["env"];
+    assert!(env.get("HTTPS_PROXY").is_none(), "the terminal carries the proxy");
+    assert_eq!(env["NO_PROXY"], format!("corp.internal,localhost,127.0.0.1,::1,{host}"));
+    assert!(!manager.list_with(Some(&store))[0].stale);
+    store.providers[0].network_mode = "proxy".into();
+    assert!(manager.list_with(Some(&store))[0].stale, "the card follows the proxy again");
+    manager.restore(request.target_id).unwrap();
+    assert!(read(&manager.paths.claude)["env"].get("NO_PROXY").is_none());
+
+    // A bypass list the user wrote stays theirs.
+    let (_temp, manager, mut store, request) = direct();
+    store.providers[0].network_mode = "direct".into();
+    write(&manager.paths.claude, &json!({"env": {"no_proxy": "mine.internal"}}));
+    let manager = manager.with_network(Network {
+        terminal: Some(terminal()),
+        ..Default::default()
+    });
+    apply(&manager, &store, &request);
+    let env = &read(&manager.paths.claude)["env"];
+    assert_eq!(env["no_proxy"], "mine.internal");
+    assert!(env.get("NO_PROXY").is_none());
 }
 
 #[test]
@@ -125,7 +167,7 @@ fn a_changed_proxy_marks_a_direct_configuration_stale() {
     assert!(reopen(manual("http://127.0.0.1:7899")).list_with(Some(&store))[0].stale, "the file holds the old port");
     assert!(
         reopen(Network {
-            terminal: Some("http://127.0.0.1:7890/".into()),
+            terminal: Some(terminal()),
             ..manual("http://127.0.0.1:7890")
         })
         .list_with(Some(&store))[0]

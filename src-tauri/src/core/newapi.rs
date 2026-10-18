@@ -147,12 +147,7 @@ pub(crate) fn get(client: &Client, url: Url, headers: HeaderMap) -> Result<Value
 }
 
 pub(crate) fn request_error(error: reqwest::Error) -> String {
-    if error.is_timeout() {
-        "newapi.errors.timeout"
-    } else {
-        "newapi.errors.network"
-    }
-    .into()
+    super::api_client::TransportFailure::of(&error).error_key().into()
 }
 
 pub(crate) fn status_error(status: StatusCode) -> String {

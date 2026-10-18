@@ -1255,24 +1255,10 @@ async fn handle(mut request: Request<Incoming>, context: Arc<ArcContext>) -> For
                     if let Some(request) = prepared.usage {
                         request.failed(StatusCode::BAD_GATEWAY.as_u16(), "response_not_received");
                     }
-                    trace.failed_attempt(
-                        "connect",
-                        if error.is_timeout() {
-                            "timeout"
-                        } else {
-                            "transport_error"
-                        },
-                        started.elapsed().as_millis() as u64,
-                    );
-                    trace.fail(
-                        "connect",
-                        if error.is_timeout() {
-                            "timeout"
-                        } else {
-                            "transport_error"
-                        },
-                    );
-                    return Err((StatusCode::BAD_GATEWAY, "cannot reach the provider"));
+                    let failure = super::api_client::TransportFailure::of(&error);
+                    trace.failed_attempt("connect", failure.code(), started.elapsed().as_millis() as u64);
+                    trace.fail("connect", failure.code());
+                    return Err((StatusCode::BAD_GATEWAY, failure.message()));
                 }
             };
             if desktop_count_body.is_some()
@@ -1367,10 +1353,10 @@ impl OfficialAttempt<'_> {
             outbound = outbound.body(body);
         }
         outbound.send().await.map_err(|error| {
-            let reason = if error.is_timeout() { "timeout" } else { "transport_error" };
-            self.trace.failed_attempt("connect", reason, self.started.elapsed().as_millis() as u64);
-            self.trace.fail("connect", reason);
-            (StatusCode::BAD_GATEWAY, "cannot reach the provider")
+            let failure = super::api_client::TransportFailure::of(&error);
+            self.trace.failed_attempt("connect", failure.code(), self.started.elapsed().as_millis() as u64);
+            self.trace.fail("connect", failure.code());
+            (StatusCode::BAD_GATEWAY, failure.message())
         })
     }
 }

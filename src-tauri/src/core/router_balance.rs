@@ -154,7 +154,7 @@ fn detect_account_platform(
 
     for result in [newapi_status, sub2api_settings] {
         if let Err(error) = result {
-            if error == "newapi.errors.network" || error == "newapi.errors.timeout" {
+            if super::api_client::TransportFailure::is_error_key(&error) {
                 return Err(error);
             }
         }

@@ -137,6 +137,9 @@ pub(super) struct EditContext<'a> {
     pub managed_provider_keys: Vec<String>,
     /// The proxy a direct configuration's client reaches its relay through.
     pub proxy: Option<String>,
+    /// The `NO_PROXY` list a direct card's client is given while the terminal
+    /// proxy reaches it: its relay alone skips that proxy.
+    pub bypass: Option<String>,
 }
 
 trait ClientAdapter: Sync {
@@ -288,8 +291,8 @@ struct Session {
 pub struct Network {
     /// The app proxy, which relay cards follow unless set to direct.
     pub proxy: ApiProxyConfigPayload,
-    /// The terminal proxy's address while new terminals carry it.
-    pub terminal: Option<String>,
+    /// The terminal proxy while new terminals carry it.
+    pub terminal: Option<crate::core::terminal_proxy::ActiveProxy>,
     /// Whether a system proxy is set, for the app proxy's system mode.
     pub system: bool,
 }
@@ -304,6 +307,9 @@ enum DirectProxy {
     None,
     /// The app's manual HTTP proxy, written as the client's HTTPS_PROXY.
     Write(String),
+    /// A direct card under the terminal proxy: its relay host joins the
+    /// terminal proxy's bypass list, written as the client's NO_PROXY.
+    Bypass(String),
     /// A manual SOCKS proxy, which Claude Code cannot use.
     Socks,
     /// The system proxy, which Claude Code does not read.
@@ -341,15 +347,31 @@ impl ConfigManager {
     }
 
     fn direct_proxy(&self, store: &Store, request: &ConfigRequest) -> DirectProxy {
-        if request.target_id != TargetId::ClaudeCode
-            || request.needs_router()
-            || self.network.terminal.is_some()
-        {
+        if request.target_id != TargetId::ClaudeCode || request.needs_router() {
             return DirectProxy::None;
         }
-        match selected_provider(store, request) {
-            Ok(provider) if provider.network_mode() == "proxy" => {}
-            _ => return DirectProxy::None,
+        let Ok(provider) = selected_provider(store, request) else {
+            return DirectProxy::None;
+        };
+        if let Some(terminal) = &self.network.terminal {
+            // New terminals already carry the proxy; a direct relay skips it.
+            return match (provider.network_mode(), provider.relay_host()) {
+                ("direct", Some(host)) => DirectProxy::Bypass(
+                    terminal.no_proxy.split(',').map(str::trim).filter(|entry| !entry.is_empty())
+                        .chain(std::iter::once(host.as_str()))
+                        .fold(Vec::<&str>::new(), |mut entries, entry| {
+                            if !entries.iter().any(|known| known.eq_ignore_ascii_case(entry)) {
+                                entries.push(entry);
+                            }
+                            entries
+                        })
+                        .join(","),
+                ),
+                _ => DirectProxy::None,
+            };
+        }
+        if provider.network_mode() != "proxy" {
+            return DirectProxy::None;
         }
         match self.network.proxy.mode {
             ApiProxyMode::Manual => {
@@ -989,7 +1011,7 @@ impl ConfigManager {
         match &direct_proxy {
             DirectProxy::Socks => warnings.push("clients.warnings.proxySocks".into()),
             DirectProxy::System => warnings.push("clients.warnings.systemProxy".into()),
-            DirectProxy::None | DirectProxy::Write(_) => {}
+            DirectProxy::None | DirectProxy::Write(_) | DirectProxy::Bypass(_) => {}
         }
         let edits = {
             let catalog = models_dev::load(&self.app_data_dir);
@@ -1011,6 +1033,10 @@ impl ConfigManager {
                 }).unwrap_or_default(),
                 proxy: match &direct_proxy {
                     DirectProxy::Write(url) => Some(url.clone()),
+                    _ => None,
+                },
+                bypass: match &direct_proxy {
+                    DirectProxy::Bypass(list) => Some(list.clone()),
                     _ => None,
                 },
             };
@@ -1175,9 +1201,16 @@ fn connection_fingerprint(store: &Store, request: &ConfigRequest, proxy: &Direct
         hasher.update([1]);
     }
     // Absent from fingerprints written before proxies were.
-    if let DirectProxy::Write(url) = proxy {
-        hasher.update(b"proxy");
-        hasher.update(url.as_bytes());
+    match proxy {
+        DirectProxy::Write(url) => {
+            hasher.update(b"proxy");
+            hasher.update(url.as_bytes());
+        }
+        DirectProxy::Bypass(list) => {
+            hasher.update(b"bypass");
+            hasher.update(list.as_bytes());
+        }
+        _ => {}
     }
     format!("{:x}", hasher.finalize())
 }

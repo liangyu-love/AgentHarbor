@@ -41,15 +41,22 @@ pub async fn load_client_launch(
 /// Starts a client: a CLI in a new terminal in `folder`, an app restarted.
 #[tauri::command]
 pub async fn launch_client(
+    repo: State<'_, Mutex<Repository>>,
     target_id: TargetId,
     harness_profile: Option<String>,
     folder: Option<String>,
 ) -> Result<(), String> {
+    let paths = repo
+        .lock()
+        .map_err(|error| error.to_string())?
+        .paths()
+        .clone();
     super::blocking(move || {
         client_launch::launch(
             target_id,
             harness_profile.as_deref(),
             folder.as_deref().map(std::path::Path::new),
+            &client_launch::direct_relay_hosts(&paths, target_id),
         )
     })
     .await

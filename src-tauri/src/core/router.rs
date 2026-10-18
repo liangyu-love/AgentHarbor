@@ -404,6 +404,15 @@ impl Provider {
         }
     }
 
+    /// The relay's host, which a direct card reaches without the proxy while
+    /// the rest of a client's traffic keeps it.
+    pub fn relay_host(&self) -> Option<String> {
+        reqwest::Url::parse(self.base_url.trim())
+            .ok()?
+            .host_str()
+            .map(|host| host.trim_start_matches('[').trim_end_matches(']').to_owned())
+    }
+
     fn model_supports_protocol(&self) -> bool {
         self.supports_model(&self.model)
     }

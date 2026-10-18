@@ -1,5 +1,5 @@
-use crate::core::api_client::{configure_codex_desktop, configure_command_network};
-use crate::core::models::{ApiProxyConfigPayload, CoreError};
+use crate::core::api_client::{configure_codex_desktop, configure_process_network, ProcessNetwork};
+use crate::core::models::CoreError;
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "windows")]
@@ -608,7 +608,7 @@ pub fn open_terminal_with_command(command: &str) -> Result<(), CoreError> {
 }
 
 #[cfg(target_os = "macos")]
-pub fn launch_codex_app(proxy: &ApiProxyConfigPayload) -> Result<(), CoreError> {
+pub fn launch_codex_app(network: &ProcessNetwork) -> Result<(), CoreError> {
     let launch_timeout = Duration::from_secs(3);
 
     let bundle_ids = ["com.openai.codex", "com.openai.Codex"];
@@ -616,7 +616,7 @@ pub fn launch_codex_app(proxy: &ApiProxyConfigPayload) -> Result<(), CoreError> 
         for bid in &bundle_ids {
             let mut command = std::process::Command::new("open");
             command.args(["-b", bid]);
-            configure_macos_open(&mut command, proxy)?;
+            configure_macos_open(&mut command, network)?;
             let result = command.output();
             if let Ok(o) = result {
                 if o.status.success() && wait_for_process_start("Codex", launch_timeout) {
@@ -636,7 +636,7 @@ pub fn launch_codex_app(proxy: &ApiProxyConfigPayload) -> Result<(), CoreError> 
             if std::path::Path::new(path).exists() {
                 let mut command = std::process::Command::new("open");
                 command.arg(path);
-                configure_macos_open(&mut command, proxy)?;
+                configure_macos_open(&mut command, network)?;
                 command
                     .output()
                     .map_err(|e| CoreError::OperationFailed(format!("open app failed: {e}")))?;
@@ -656,13 +656,13 @@ pub fn launch_codex_app(proxy: &ApiProxyConfigPayload) -> Result<(), CoreError> 
 
 #[cfg(target_os = "macos")]
 pub fn restart_codex_app(
-    proxy: &ApiProxyConfigPayload,
+    network: &ProcessNetwork,
     paths: &crate::platform::paths::CodexPaths,
 ) -> Result<(), CoreError> {
     stop_codex_app_gracefully(Duration::from_secs(8))?;
     crate::core::router::normalize_threads_when_stopped(paths);
-    crate::core::codex_config::prepare_network_config(paths, proxy)?;
-    launch_codex_app(proxy)
+    crate::core::codex_config::prepare_network_config(paths, &network.proxy)?;
+    launch_codex_app(network)
 }
 
 #[cfg(all(test, target_os = "windows"))]
@@ -765,10 +765,10 @@ mod tests {
 #[cfg(target_os = "macos")]
 fn configure_macos_open(
     command: &mut std::process::Command,
-    proxy: &ApiProxyConfigPayload,
+    network: &ProcessNetwork,
 ) -> Result<(), CoreError> {
     let mut child = std::process::Command::new("Codex");
-    configure_codex_desktop(&mut child, proxy)?;
+    configure_codex_desktop(&mut child, network)?;
     // LaunchServices does not inherit `open`'s environment automatically.
     for (key, value) in child.get_envs() {
         command.arg("--env").arg(format!(
@@ -782,20 +782,20 @@ fn configure_macos_open(
 }
 
 #[cfg(target_os = "windows")]
-pub fn launch_codex_app(proxy: &ApiProxyConfigPayload) -> Result<(), CoreError> {
-    launch_windows_codex_app(proxy)
+pub fn launch_codex_app(network: &ProcessNetwork) -> Result<(), CoreError> {
+    launch_windows_codex_app(network)
 }
 
 #[cfg(target_os = "windows")]
 pub fn restart_codex_app(
-    proxy: &ApiProxyConfigPayload,
+    network: &ProcessNetwork,
     paths: &crate::platform::paths::CodexPaths,
 ) -> Result<(), CoreError> {
     snapshot_running_codex_path();
     stop_codex_app_gracefully(Duration::from_secs(8))?;
     crate::core::router::normalize_threads_when_stopped(paths);
-    crate::core::codex_config::prepare_network_config(paths, proxy)?;
-    launch_windows_codex_app(proxy)
+    crate::core::codex_config::prepare_network_config(paths, &network.proxy)?;
+    launch_windows_codex_app(network)
 }
 
 #[cfg(target_os = "windows")]
@@ -923,7 +923,7 @@ fn wait_for_windows_codex_start(path: &Path, timeout: Duration) -> bool {
 }
 
 #[cfg(target_os = "windows")]
-pub(crate) fn launch_windows_codex_app(proxy: &ApiProxyConfigPayload) -> Result<(), CoreError> {
+pub(crate) fn launch_windows_codex_app(network: &ProcessNetwork) -> Result<(), CoreError> {
     let cached = LAST_KNOWN_CODEX_PATH
         .lock()
         .ok()
@@ -932,13 +932,13 @@ pub(crate) fn launch_windows_codex_app(proxy: &ApiProxyConfigPayload) -> Result<
     let path = cached
         .or_else(find_windows_codex_exe)
         .ok_or_else(|| CoreError::NotFound("Codex.exe not found".to_string()))?;
-    launch_windows_codex_from_path(&path, proxy)
+    launch_windows_codex_from_path(&path, network)
 }
 
 #[cfg(target_os = "windows")]
 fn launch_windows_codex_from_path(
     path: &Path,
-    proxy: &ApiProxyConfigPayload,
+    network: &ProcessNetwork,
 ) -> Result<(), CoreError> {
     if !is_windows_codex_desktop_path(path) {
         return Err(CoreError::InvalidData(
@@ -973,7 +973,7 @@ fn launch_windows_codex_from_path(
     }
 
     let mut direct = crate::platform::windows::background_command_path(path);
-    configure_codex_desktop(&mut direct, proxy)?;
+    configure_codex_desktop(&mut direct, network)?;
     if let Some(parent) = path.parent() {
         direct.current_dir(parent);
     }
@@ -1003,7 +1003,7 @@ fn launch_windows_codex_from_path(
         format!(" -ArgumentList @({arguments})")
     };
     let mut fallback = crate::platform::windows::background_command("powershell");
-    configure_command_network(&mut fallback, proxy)?;
+    configure_process_network(&mut fallback, network)?;
     fallback
         .args([
             "-NoProfile",
@@ -1232,9 +1232,9 @@ fn windows_powershell_literal(value: &str) -> String {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub fn launch_codex_app(proxy: &ApiProxyConfigPayload) -> Result<(), CoreError> {
+pub fn launch_codex_app(network: &ProcessNetwork) -> Result<(), CoreError> {
     let mut command = std::process::Command::new("codex");
-    configure_command_network(&mut command, proxy)?;
+    configure_process_network(&mut command, network)?;
     command
         .spawn()
         .map_err(|e| CoreError::OperationFailed(format!("launch failed: {e}")))?;
@@ -1243,11 +1243,11 @@ pub fn launch_codex_app(proxy: &ApiProxyConfigPayload) -> Result<(), CoreError> 
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn restart_codex_app(
-    proxy: &ApiProxyConfigPayload,
+    network: &ProcessNetwork,
     paths: &crate::platform::paths::CodexPaths,
 ) -> Result<(), CoreError> {
     stop_codex_app_gracefully(Duration::from_secs(8))?;
     crate::core::router::normalize_threads_when_stopped(paths);
-    crate::core::codex_config::prepare_network_config(paths, proxy)?;
-    launch_codex_app(proxy)
+    crate::core::codex_config::prepare_network_config(paths, &network.proxy)?;
+    launch_codex_app(network)
 }

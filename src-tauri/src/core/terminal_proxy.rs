@@ -384,13 +384,22 @@ pub fn load_status(paths: &CodexPaths) -> Result<TerminalProxyStatus, String> {
     }
 }
 
-/// The terminal proxy's address while new terminals carry it: a client set
-/// up to reach its relay directly inherits it when started from one.
-pub fn active_url(paths: &CodexPaths) -> Option<String> {
-    load_status(paths)
-        .ok()
-        .filter(|status| status.applied)
-        .and_then(|status| status.url)
+/// The terminal proxy while new terminals carry it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ActiveProxy {
+    pub url: String,
+    /// Its `NO_PROXY` list, loopback included.
+    pub no_proxy: String,
+}
+
+/// The terminal proxy while new terminals carry it: a client set up to reach
+/// its relay directly inherits it when started from one.
+pub fn active(paths: &CodexPaths) -> Option<ActiveProxy> {
+    let status = load_status(paths).ok().filter(|status| status.applied)?;
+    Some(ActiveProxy {
+        url: status.url?,
+        no_proxy: status.no_proxy,
+    })
 }
 
 pub fn set(
