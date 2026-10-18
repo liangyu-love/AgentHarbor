@@ -144,7 +144,8 @@ function SecretInput({ id, value, placeholder, disabled, hasStoredSecret, onReve
         type={visible ? "text" : "password"}
         autoComplete="off"
         spellCheck={false}
-        className="pr-9"
+        // WebView2 adds its own reveal eye to password fields; this one has a toggle already.
+        className="pr-9 [&::-ms-reveal]:hidden"
         value={value}
         disabled={disabled || revealing}
         placeholder={placeholder}
