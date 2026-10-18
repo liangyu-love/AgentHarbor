@@ -22,6 +22,7 @@ const ZH = {
   stateManaged: "已配置",
   modeDirect: "AgentHarbor 直连",
   requiresRestart: "需要重启",
+  start: "启动 Claude Desktop",
   restart: "重启 Claude Desktop",
   warningRequiresRestart: "重启 Claude Desktop 后生效。",
   change: "切换 / 更新",
@@ -880,29 +881,31 @@ export async function testClaudeDesktopCard({ page, reset, captureDir }) {
     await window.review.providersClient.invalidateQueries({ queryKey: ["claude-desktop", "status"] });
   });
   await card().getByText("未配置", { exact: true }).waitFor();
-  assert.equal(await actionButton(ZH.restart).isEnabled(), true,
-    "a restored unmanaged configuration must still expose its required restart");
-  await actionButton(ZH.restart).click();
+  assert.equal(await actionButton(ZH.start).isEnabled(), true,
+    "a restored unmanaged configuration must offer start when Desktop is closed");
+  await actionButton(ZH.start).click();
   await page.waitForFunction(() => window.review.desktopCalls.restart === 1);
   await card().getByText(ZH.requiresRestart, { exact: true }).waitFor({ state: "hidden" });
   assert.equal(await card().getByText(ZH.requiresRestart, { exact: true }).count(), 0,
     "a successful restart must refresh status and remove the pending badge");
+  assert.equal(await actionButton(ZH.restart).isEnabled(), true,
+    "a running Desktop must offer restart after a successful launch");
   await page.evaluate(async () => {
     window.review.desktopStatus.restartRequired = false;
     window.review.desktopStatus.appRunning = false;
     await window.review.providersClient.invalidateQueries({ queryKey: ["claude-desktop", "status"] });
   });
-  assert.equal(await actionButton(ZH.restart).isEnabled(), true,
+  assert.equal(await actionButton(ZH.start).isEnabled(), true,
     "a confirmed launch method remains available when Desktop is closed and unmanaged");
   assert.equal(await card().getByText(ZH.requiresRestart, { exact: true }).count(), 0,
     "a launch action cannot invent a pending configuration change");
   await page.evaluate(() => { window.review.desktopRestartFailure = "claudeDesktop.errors.launchTimeout"; });
-  await actionButton(ZH.restart).click();
+  await actionButton(ZH.start).click();
   await card().getByRole("alert").filter({ hasText: "启动 Claude Desktop 超时" }).waitFor();
-  assert.equal(await actionButton(ZH.restart).isEnabled(), true,
+  assert.equal(await actionButton(ZH.start).isEnabled(), true,
     "a launch failure with no running process or pending change retains its retry button");
   await page.evaluate(() => { window.review.desktopRestartFailure = null; });
-  await actionButton(ZH.restart).click();
+  await actionButton(ZH.start).click();
   await card().getByRole("alert").filter({ hasText: "启动 Claude Desktop 超时" }).waitFor({ state: "hidden" });
   await page.waitForFunction(() => window.review.desktopStatus.appRunning);
   console.log("PASS an unmanaged configuration can restart or launch Desktop without inventing pending changes");
