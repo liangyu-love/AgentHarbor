@@ -551,7 +551,7 @@ try {
   console.log("PASS overview data map folds seamlessly, remembers the choice and lists every client's key files");
 
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.evaluate(() => { localStorage.removeItem("agentharbor.usage-range"); localStorage.removeItem("agentharbor.usage-metric"); });
+  await page.evaluate(() => { localStorage.removeItem("agentharbor.usage-range"); localStorage.removeItem("agentharbor.usage-metric"); localStorage.removeItem("agentharbor.usage-chart-form"); });
   await reset("usage");
   const usagePage = page.locator("[data-usage-page]");
   await usagePage.locator("[data-usage-kpi]").first().waitFor();
@@ -600,6 +600,29 @@ try {
   await work.getByRole("radio", { name: "会话", exact: true }).click();
   await work.getByRole("button", { name: /在会话页查看/ }).first().click();
   await eventually(async () => assert.match(await page.evaluate(() => window.review.navigatedTo), /^threads:(codex|claudeCode)$/));
+  // Every series wears its own categorical hue, not a shade of the theme colour.
+  await page.locator("[data-usage-chart]").getByRole("radio", { name: "模型", exact: true }).click();
+  const swatches = await page.locator("[data-usage-readout] .usage-swatch").evaluateAll(items => items.map(item => getComputedStyle(item).backgroundColor));
+  assert.ok(swatches.length >= 3);
+  assert.equal(new Set(swatches).size, swatches.length, swatches.join(" "));
+  // Lines compare series one by one; the form is remembered.
+  await page.locator("[data-usage-chart]").getByRole("radio", { name: "折线", exact: true }).click();
+  await eventually(async () => assert.equal(await page.locator("[data-usage-chart] .usage-chart-line").count(), swatches.length));
+  assert.equal(await page.evaluate(() => localStorage.getItem("agentharbor.usage-chart-form")), "line");
+  if (captureDir) await page.screenshot({ path: path.join(captureDir, "usage-lines.png") });
+  await page.locator("[data-usage-chart]").getByRole("radio", { name: "柱状", exact: true }).click();
+  await eventually(async () => assert.equal(await page.locator("[data-usage-chart] .usage-chart-line").count(), 0));
+  // Long rankings fold behind a fade and open in place; short ones have no toggle.
+  const models = page.getByRole("region", { name: "模型" });
+  const unfold = models.getByRole("button", { name: "展开全部 6 项" });
+  assert.equal(await unfold.getAttribute("aria-expanded"), "false");
+  assert.equal(await models.locator(".usage-rank-more").evaluate(element => element.hasAttribute("inert")), true);
+  assert.equal(await page.getByRole("region", { name: "客户端" }).locator(".usage-rank-toggle").count(), 0);
+  await unfold.click();
+  await models.getByRole("button", { name: "收起" }).waitFor();
+  assert.equal(await models.locator(".usage-rank-more").evaluate(element => element.hasAttribute("inert")), false);
+  await eventually(async () => assert.ok(await models.locator(".usage-rank-more [data-usage-rank]").isVisible()));
+  if (captureDir) await page.screenshot({ path: path.join(captureDir, "usage-rankings.png"), fullPage: true });
   // Today reads by the hour; the choice is remembered.
   await page.getByRole("radio", { name: "今日", exact: true }).click();
   await page.locator("[data-usage-chart]").getByText("按小时").waitFor();
@@ -608,7 +631,7 @@ try {
   await reset("usage");
   await page.locator("[data-usage-chart]").getByText("按小时").waitFor();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
-  await page.evaluate(() => { localStorage.removeItem("agentharbor.usage-range"); localStorage.removeItem("agentharbor.usage-metric"); });
+  await page.evaluate(() => { localStorage.removeItem("agentharbor.usage-range"); localStorage.removeItem("agentharbor.usage-metric"); localStorage.removeItem("agentharbor.usage-chart-form"); });
   console.log("PASS usage leads with cost, stacks every client by period, ranks channels with balances and joins request details");
   await page.setViewportSize({ width: 1200, height: 700 });
 

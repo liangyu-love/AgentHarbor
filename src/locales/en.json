@@ -2669,6 +2669,8 @@
         "month": "By day"
       },
       "groupLabel": "Group by",
+      "formLabel": "Chart form",
+      "form": {"bar": "Bars", "line": "Lines"},
       "group": {
         "client": "Client",
         "channel": "Channel",
@@ -2699,7 +2701,9 @@
       "share": "{{value}} of total",
       "balance": "Balance {{value}}",
       "openThreads": "Open in sessions",
-      "manageProviders": "Manage relays"
+      "manageProviders": "Manage relays",
+      "showAll": "Show all {{count}}",
+      "collapse": "Show less"
     },
     "requests": {
       "title": "Requests",

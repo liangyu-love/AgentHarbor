@@ -1141,6 +1141,15 @@ html[data-has-custom-bg="true"] .group\/sidebar-wrapper { background-color: tran
   .usage-kpi:first-child { padding-top: 0.2rem; }
   .usage-kpi + .usage-kpi { border-top: 1px solid hsl(var(--border) / 0.7); border-left: 0; }
 }
+.usage-swatch, .usage-chart, [data-usage-page] {
+  /* Categorical series, validated for colour-blind and normal-vision separation on the card surface; identity never follows the theme hue. */
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
+  --series-5: #e87ba4; --series-6: #008300; --series-7: #4a3aa7; --series-8: #e34948;
+}
+.dark [data-usage-page] {
+  --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+  --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
+}
 .usage-card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 1rem; }
 .usage-card-title { display: flex; min-width: 0; flex-direction: column; }
 .usage-card-title h3 { font-size: 1.05rem; font-weight: 700; letter-spacing: -0.015em; }
@@ -1178,6 +1187,20 @@ html[data-has-custom-bg="true"] .group\/sidebar-wrapper { background-color: tran
 .usage-rank-bar i { display: block; width: var(--share); height: 100%; border-radius: inherit; background: hsl(var(--primary)); transition: width 450ms cubic-bezier(0.2, 0.8, 0.2, 1); }
 .usage-rank-extra { display: flex; grid-column: 1 / -1; flex-wrap: wrap; align-items: center; gap: 0.3rem 0.9rem; color: hsl(var(--muted-foreground)); font-size: 0.7rem; }
 .usage-rank-extra strong { color: hsl(var(--foreground)); font-variant-numeric: tabular-nums; }
+.usage-rank-list { display: flex; flex: 1; flex-direction: column; }
+.usage-rank[data-folded] { -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 3.2rem), transparent); mask-image: linear-gradient(to bottom, #000 calc(100% - 3.2rem), transparent); }
+.usage-rank-more { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 380ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 260ms ease; }
+.usage-rank-list[data-open] .usage-rank-more { grid-template-rows: 1fr; opacity: 1; }
+.usage-rank-more > div { min-height: 0; overflow: hidden; }
+.usage-rank-more .usage-rank { margin-top: 0.1rem; }
+.usage-rank-toggle { display: inline-flex; align-self: center; align-items: center; gap: 0.3rem; margin-top: 0.15rem; padding: 0.45rem 0.8rem 0.1rem; color: hsl(var(--muted-foreground)); font-size: 0.72rem; font-weight: 600; transition: color 150ms ease; }
+.usage-rank-toggle:hover { color: hsl(var(--primary)); }
+.usage-rank-toggle:focus-visible { border-radius: 8px; outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }
+.usage-rank-toggle svg { width: 0.9rem; height: 0.9rem; transition: transform 260ms ease; }
+.usage-rank-list[data-open] .usage-rank-toggle svg { transform: rotate(180deg); }
+.usage-chart-line polyline { fill: none; stroke: var(--series); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.usage-chart-line circle { fill: var(--series); stroke: hsl(var(--card)); stroke-width: 2; }
+.usage-chart-crosshair { stroke: hsl(var(--muted-foreground) / 0.45); stroke-width: 1; stroke-dasharray: 3 3; }
 .usage-rank-empty { padding: 1.2rem 0.65rem; color: hsl(var(--muted-foreground)); font-size: 0.78rem; }
 .usage-icon-button { display: inline-grid; width: 1.6rem; height: 1.6rem; place-items: center; border-radius: 0.5rem; color: hsl(var(--muted-foreground)); transition: background-color 150ms ease, color 150ms ease; }
 .usage-icon-button:hover:not(:disabled) { background: hsl(var(--background)); color: hsl(var(--foreground)); }
@@ -1203,7 +1226,7 @@ html[data-has-custom-bg="true"] .group\/sidebar-wrapper { background-color: tran
 .usage-tag { display: inline-flex; align-items: center; padding: 0.05rem 0.45rem; border-radius: 999px; background: hsl(var(--muted)); font-size: 0.68rem; font-weight: 600; white-space: nowrap; }
 .usage-tag.is-error { background: hsl(var(--destructive) / 0.12); color: hsl(var(--destructive)); }
 .usage-tag.is-primary { background: hsl(var(--primary) / 0.12); color: hsl(var(--primary)); }
-@media (prefers-reduced-motion: reduce) { .usage-chart-col, .usage-rank-bar i, .usage-rank-row, .usage-row-toggle svg { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .usage-chart-col, .usage-rank-bar i, .usage-rank-row, .usage-row-toggle svg, .usage-rank-more, .usage-rank-toggle svg { transition: none; } }
 
 /* Thread summaries use compact outlines and labels along their upper edge. */
 .thread-stats { container: thread-stats / inline-size; }

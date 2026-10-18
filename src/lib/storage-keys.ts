@@ -24,4 +24,5 @@ export const storageKeys = {
   launchFolders: "agentharbor.launch-folders.v1",
   usageRange: "agentharbor.usage-range",
   usageMetric: "agentharbor.usage-metric",
+  usageChartForm: "agentharbor.usage-chart-form",
 } as const;

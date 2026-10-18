@@ -2669,6 +2669,8 @@
         "month": "按天"
       },
       "groupLabel": "分组",
+      "formLabel": "图形",
+      "form": {"bar": "柱状", "line": "折线"},
       "group": {
         "client": "客户端",
         "channel": "渠道",
@@ -2699,7 +2701,9 @@
       "share": "占 {{value}}",
       "balance": "余额 {{value}}",
       "openThreads": "在会话页查看",
-      "manageProviders": "管理中转"
+      "manageProviders": "管理中转",
+      "showAll": "展开全部 {{count}} 项",
+      "collapse": "收起"
     },
     "requests": {
       "title": "请求明细",

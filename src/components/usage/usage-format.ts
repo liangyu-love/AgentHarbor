@@ -73,8 +73,10 @@ export function niceScale(max: number, ticks = 4) {
 }
 
 /** Series fill: the accent in steps for the leaders, a neutral for the rest. */
+/** The usage page's eight categorical slots, in their validated order. */
+export const SERIES_SLOTS = 8;
+
 export function seriesColor(index: number, key: string) {
-  if (key === "other") return "hsl(var(--muted-foreground) / 0.32)";
-  const alphas = [1, 0.72, 0.52, 0.38, 0.27, 0.18];
-  return `hsl(var(--primary) / ${alphas[Math.min(index, alphas.length - 1)]})`;
+  if (key === "other") return "hsl(var(--muted-foreground) / 0.45)";
+  return `var(--series-${Math.min(index, SERIES_SLOTS - 1) + 1})`;
 }

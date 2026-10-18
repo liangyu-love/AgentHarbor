@@ -1,8 +1,8 @@
-import { useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { TFunction } from "i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { ArrowRight, ArrowUpRight, CircleHelp, KeyRound, Network, Palette, RefreshCw, Waypoints } from "lucide-react";
+import { ArrowRight, ArrowUpRight, ChevronDown, CircleHelp, KeyRound, Network, Palette, RefreshCw, Waypoints } from "lucide-react";
 
 import { ClientGlyph } from "@/components/newapi/configuration-shortcuts";
 import { toast } from "@/hooks/use-toast";
@@ -16,6 +16,9 @@ import type { NewApiState } from "@/types/newapi";
 import type { UsageGroup, UsagePayload } from "@/types";
 import { clientLabel, coverageNotes, formatMetric, formatTokens, groupChannelLabel, metricValue, totalsCost, type UsageMetric } from "./usage-format";
 import { UsageSegments } from "./usage-segments";
+
+/** Rows a ranking shows before the rest fold away. */
+const FOLD = 5;
 
 const GLYPH_CLIENTS = ["codex", "claudeCode", "claudeDesktop", "opencode", "pi", "harness", "cursor"] as const;
 type GlyphClient = typeof GLYPH_CLIENTS[number];
@@ -62,7 +65,7 @@ function RankRow({ group, metric, max, name, detail, icon, extra }: {
 function RankCard({ kicker, title, subtitle, actions, children }: {
   kicker: string; title: string; subtitle?: string; actions?: ReactNode; children: ReactNode;
 }) {
-  return <section className="harbor-card route-rise min-w-0" aria-label={title}>
+  return <section className="harbor-card route-rise flex min-w-0 flex-col" aria-label={title}>
     <div className="usage-card-head">
       <div className="usage-card-title">
         <span className="poster-kicker text-[9.5px] text-primary">{kicker}</span>
@@ -75,10 +78,32 @@ function RankCard({ kicker, title, subtitle, actions, children }: {
   </section>;
 }
 
+/** The first rows, then the rest folded behind a fade that opens in place without a jump. */
+function RankList({ items }: { items: ReactNode[] }) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const more = useRef<HTMLDivElement>(null);
+  const folded = items.length > FOLD;
+  // Folded rows stay mounted for the animation but out of reach of focus and readers.
+  useEffect(() => { more.current?.toggleAttribute("inert", !open); }, [open, folded]);
+  return <div className="usage-rank-list" data-open={open || undefined}>
+    <div className="usage-rank" data-folded={(folded && !open) || undefined}>{items.slice(0, FOLD)}</div>
+    {folded && <>
+      <div ref={more} className="usage-rank-more" aria-hidden={!open}>
+        <div><div className="usage-rank">{items.slice(FOLD)}</div></div>
+      </div>
+      <button type="button" className="usage-rank-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
+        {open ? t("usage.rank.collapse") : t("usage.rank.showAll", { count: items.length })}
+        <ChevronDown aria-hidden />
+      </button>
+    </>}
+  </div>;
+}
+
 function rows(groups: UsageGroup[], metric: UsageMetric, render: (group: UsageGroup, max: number) => ReactNode) {
   const ordered = sorted(groups, metric);
   const max = Math.max(0, ...ordered.map(group => metricValue(group.totals, metric)));
-  return ordered.length ? <div className="usage-rank">{ordered.map(group => render(group, max))}</div> : null;
+  return ordered.length ? <RankList items={ordered.map(group => render(group, max))} /> : null;
 }
 
 function Empty() {
@@ -171,7 +196,8 @@ export function UsageRankings({ data, metric, onManageProviders, onOpenThreads }
 }) {
   const { t } = useTranslation();
   const official = t("usage.channel.official");
-  return <div className="grid items-start gap-5 lg:grid-cols-2">
+  // Rows of a pair share one height; folding keeps both near the same length.
+  return <div className="grid gap-5 lg:grid-cols-2">
     <RankCard kicker="Clients" title={t("usage.rank.clients")}>
       {rows(data.byClient, metric, (group, max) => <RankRow key={group.key} group={group} metric={metric} max={max}
         name={clientLabel(group.key, t)} icon={<ClientIcon client={group.key} />} extra={cacheLine(group, t)} />) ?? <Empty />}
