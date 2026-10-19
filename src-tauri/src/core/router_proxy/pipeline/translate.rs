@@ -216,6 +216,9 @@ pub(in crate::core::router_proxy) fn upstream_body(
         Some(translation) => {
             let mut value: Value = serde_json::from_slice(bytes)
                 .map_err(|_| (StatusCode::BAD_REQUEST, "request body is not JSON"))?;
+            if !value.is_object() {
+                return Err((StatusCode::BAD_REQUEST, "request body is not an object"));
+            }
             if let Some(model) = model_override.as_deref() {
                 value["model"] = json!(model);
             }
@@ -519,5 +522,15 @@ mod tests {
         let messages = upstream_body(&destination(router::ModelProtocol::AnthropicMessages), Some(Bytes::from(codex.to_string()))).unwrap();
         let messages: Value = serde_json::from_slice(&messages.body.unwrap()).unwrap();
         assert!(messages.get("prompt_cache_key").is_none());
+    }
+
+    #[test]
+    fn non_object_bodies_are_refused_before_translation() {
+        // Valid JSON that is not an object must be a 400, not a panic when the model is written.
+        for body in ["[]", "\"text\"", "1", "true"] {
+            let error = upstream_body(&destination(router::ModelProtocol::ChatCompletions), Some(Bytes::from_static(body.as_bytes())))
+                .unwrap_err();
+            assert_eq!(error, (StatusCode::BAD_REQUEST, "request body is not an object"), "{body}");
+        }
     }
 }
