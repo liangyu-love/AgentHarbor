@@ -2,6 +2,17 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { eventually } from "./eventually.mjs";
 
+// Record before clicking: a slow CI round trip may outlast the 320ms flip.
+export async function recordRelayAnimations(page) {
+  return page.locator("[data-relay-card-face]").first().evaluateHandle(face => {
+    const names = [];
+    face.addEventListener("animationstart", event => {
+      if (event.target === face) names.push(event.animationName);
+    });
+    return names;
+  });
+}
+
 export async function testRelayDeck({ page, reset, captureDir }) {
   const deck = () => page.locator("[data-relay-deck]").first();
   const face = () => deck().locator("[data-relay-card-face]");
@@ -36,10 +47,12 @@ export async function testRelayDeck({ page, reset, captureDir }) {
   assert.ok(footprint[0].layerTops.every(top => top < footprint[0].faceTop) && footprint[0].layerTops[0] < footprint[0].layerTops[1], JSON.stringify(footprint));
   console.log("PASS normalized same URLs share a deck as tall as a single relay; single relay stays independent");
 
+  const animations = await recordRelayAnimations(page);
   await deck().getByRole("button", { name: "下一个站点配置", exact: true }).click();
   await member("group-b");
-  assert.equal(await face().evaluate(node => getComputedStyle(node).animationName), "relay-card-flip-next");
   await settled();
+  assert.ok((await animations.jsonValue()).includes("relay-card-flip-next"), "The incoming card must animate, even if it has already settled");
+  await animations.dispose();
   await turn("下一个站点配置", "group-c");
   await turn("下一个站点配置", "group-a");
   await turn("上一个站点配置", "group-c");
@@ -113,8 +126,11 @@ export async function testRelayDeck({ page, reset, captureDir }) {
   console.log("PASS expanded members select directly and never stretch independent relay cards");
 
   // Filter removal cancels the outgoing timer; remount keeps the last selection.
-  await deck().getByRole("button", { name: "下一个站点配置", exact: true }).click();
-  await page.getByRole("button", { name: /^solo\.invalid 1$/ }).click();
+  // Keep both actions in one browser task, before the 180ms timer can fire.
+  await page.getByRole("button", { name: /^solo\.invalid 1$/ }).evaluate(filter => {
+    document.querySelector('[data-relay-card-face] button[aria-label="下一个站点配置"]').click();
+    filter.click();
+  });
   await page.getByRole("heading", { name: "solo.invalid", exact: true }).waitFor();
   await page.getByRole("button", { name: "全部", exact: true }).click();
   await member("group-c");

@@ -30,7 +30,7 @@ import { testDirectProxy } from "./test-direct-proxy.mjs";
 import { testAutostart } from "./test-autostart.mjs";
 import { testMemoryOptimizer } from "./test-memory-optimizer.mjs";
 import { testCodexRoutingTransitions } from "./test-codex-routing-transitions.mjs";
-import { testRelayDeck } from "./test-relay-deck.mjs";
+import { testRelayDeck, recordRelayAnimations } from "./test-relay-deck.mjs";
 import { testUiRefresh } from "./test-ui-refresh.mjs";
 import { testAggregationBoard } from "./test-aggregation-board.mjs";
 import { testUiRound7 } from "./test-ui-round7.mjs";
@@ -386,10 +386,11 @@ try {
 
   await reset("groups");
   await page.getByRole("heading", { name: "relay.invalid" }).waitFor();
+  const relayAnimations = await recordRelayAnimations(page);
   await page.getByRole("button", { name: "下一个站点配置" }).click();
   await page.locator(".relay-member-name", { hasText: "Relay Beta" }).waitFor();
   await page.getByText("beta-model", { exact: true }).waitFor();
-  assert.equal(await page.locator("[data-relay-card-face]").first().evaluate(element => getComputedStyle(element).animationName), "relay-card-flip-next");
+  await eventually(async () => assert.ok((await relayAnimations.jsonValue()).includes("relay-card-flip-next")));
   const cardHeightsBefore = await page.locator("[data-relay-deck]").evaluateAll(cards => cards.map(card => card.getBoundingClientRect().height));
   await page.getByRole("button", { name: "展开同中转配置" }).click();
   const cardHeightsAfter = await page.locator("[data-relay-deck]").evaluateAll(cards => cards.map(card => card.getBoundingClientRect().height));
@@ -406,7 +407,8 @@ try {
   if (captureDir) await page.screenshot({ path: path.join(captureDir, "group-collapsed.png") });
   await page.getByRole("button", { name: "上一个站点配置" }).click();
   await page.locator(".relay-member-name", { hasText: "Relay Alpha" }).waitFor();
-  assert.equal(await page.locator("[data-relay-card-face]").first().evaluate(element => getComputedStyle(element).animationName), "relay-card-flip-prev");
+  await eventually(async () => assert.ok((await relayAnimations.jsonValue()).includes("relay-card-flip-prev")));
+  await relayAnimations.dispose();
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.getByRole("button", { name: "下一个站点配置" }).click();
   await page.locator(".relay-member-name", { hasText: "Relay Beta" }).waitFor();
